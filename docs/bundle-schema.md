@@ -423,6 +423,12 @@ producer could not do, so that a missing object is explicable rather than myster
 
 A consumer may ignore this file entirely. `counts.warnings`, if present, is its line count.
 
+**It is also how a producer declares a gap it could not close.** An `assetId` referenced by
+`instances.jsonl` with no `.glb` behind it is normally invalid — but dropping those instances
+instead would lose their placement, which §4.1 requires to survive even when geometry cannot.
+So a missing mesh **declared here** validates as a warning; an **undeclared** one stays an
+error. A consumer substitutes a stand-in and the objects still land in the right places.
+
 ---
 
 ## 11. Validating a bundle

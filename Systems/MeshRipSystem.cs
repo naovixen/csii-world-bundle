@@ -334,6 +334,15 @@ namespace Carto.Systems
             /// <summary>Per-file sizes, for the size breakdown.（各檔案大小，供大小分析使用。）</summary>
             public ConcurrentBag<KeyValuePair<string, long>> Sizes = new();
 
+            /// <summary>
+            /// Every prefab that produced no file, and why.（每個未產出檔案的預製模板及其原因。）<br/><br/>
+            /// These asset ids are still referenced by <c>instances.jsonl</c>, so the bundle must
+            /// account for them rather than leave a consumer to discover the gap.<br/>
+            /// （這些資產 ID 仍被 <c>instances.jsonl</c> 參照，因此束必須交代它們，
+            /// 而非讓消費端自行發現缺口。）
+            /// </summary>
+            public List<KeyValuePair<string, string>> SkippedAssets = new();
+
             /// <summary>The report accumulated on the main thread.（於主執行緒累積的報告。）</summary>
             public StringBuilder Report = new();
 
@@ -525,6 +534,7 @@ namespace Carto.Systems
                 if (prefab == null)
                 {
                     run.Skipped++;
+                    run.SkippedAssets.Add(new KeyValuePair<string, string>(item.AssetId, skipReason));
                     if (run.Skipped <= 20) run.Report.AppendLine($"  - {item.AssetId}: {skipReason}");
                     return;
                 }
@@ -705,6 +715,53 @@ namespace Carto.Systems
         }
 
         /// <summary>
+        /// Record every prefab that produced no mesh in the bundle's <c>warnings.jsonl</c>.
+        /// （將每個未產出網格的預製模板記錄至束的 <c>warnings.jsonl</c>。）<br/><br/>
+        /// A skipped prefab leaves an <c>assetId</c> that <c>instances.jsonl</c> still references
+        /// with no <c>.glb</c> behind it. The contract treats an unresolvable reference as invalid,
+        /// and rightly — but the honest fix is to <i>declare</i> the gap, not to hide it by dropping
+        /// the instances, which would cost their placement for nothing.<br/>
+        /// （被略過的預製模板會留下一個 <c>instances.jsonl</c> 仍在參照、卻沒有 <c>.glb</c> 的
+        /// <c>assetId</c>。契約視無法解析的參照為無效，此判斷正確；但誠實的處理方式是<i>宣告</i>該缺口，
+        /// 而非藉由丟棄實例來掩蓋，那將白白失去它們的擺放資訊。）<br/><br/>
+        /// Appends, because <see cref="InstanceRipSystem"/> owns the first pass over this file.
+        /// Ripping instances before meshes is the order the bundle is assembled in.<br/>
+        /// （採用附加模式，因為此檔案的首次寫入由 <see cref="InstanceRipSystem"/> 負責。
+        /// 先擷取實例再擷取網格，正是組裝束的順序。）
+        /// </summary>
+        /// <param name="run">The finished run.（已完成的工作。）</param>
+        private void WriteMeshWarnings(RipRun run)
+        {
+            if (run.SkippedAssets.Count == 0) return;
+
+            // warnings.jsonl sits at the bundle root, one level above meshes/.
+            // （warnings.jsonl 位於束的根目錄，即 meshes/ 的上一層。）
+            string root = System.IO.Path.GetDirectoryName(run.OutputDirectory);
+            string path = IOUtils.CombinePath(root, "warnings.jsonl");
+
+            try
+            {
+                using System.IO.StreamWriter writer = new(path, true, new UTF8Encoding(false)) { NewLine = "\n" };
+                foreach (KeyValuePair<string, string> skipped in run.SkippedAssets)
+                {
+                    Dictionary<string, object> warning = new()
+                    {
+                        ["kind"] = "mesh",
+                        ["assetId"] = skipped.Key,
+                        ["reason"] = skipped.Value
+                    };
+                    writer.WriteLine(Newtonsoft.Json.JsonConvert.SerializeObject(warning, Newtonsoft.Json.Formatting.None));
+                }
+
+                run.Report.AppendLine($"Recorded {run.SkippedAssets.Count} skipped prefab(s) in warnings.jsonl");
+            }
+            catch (Exception ex)
+            {
+                _log.Warn($"Could not append to warnings.jsonl: {ex.Message}");
+            }
+        }
+
+        /// <summary>
         /// Write the report, clear the indicator and tell the user what came out.
         /// （寫出報告、清除指示器，並告知使用者結果。）
         /// </summary>
@@ -725,6 +782,8 @@ namespace Carto.Systems
             }
 
             while (run.WriterNotes.TryDequeue(out string note)) run.Report.AppendLine(note);
+
+            WriteMeshWarnings(run);
 
             // Sizes are the point of a capped run: they are what says whether the uncapped rip is
             // 3 GB or 30. Report the total, the mean and the worst offenders.
@@ -1186,9 +1245,49 @@ namespace Carto.Systems
             // （契約要求首字元必須是英數字。）
             int start = 0;
             while ((start < result.Length) && !char.IsLetterOrDigit(result[start])) start++;
-            result = (start >= result.Length) ? "unnamed" : result.Substring(start);
 
-            return (result.Length > 180) ? result.Substring(0, 180) : result;
+            // Where sanitising destroys the name, the id must not. A prefab named entirely in a
+            // non-Latin script reduces to nothing at all, and a first full-city rip proved the
+            // consequence: five such prefabs all became `unnamed`, so four of their meshes were
+            // silently overwritten by the fifth and the instance layer referenced one id for five
+            // different assets. Falling back on a digest of the original name keeps distinct
+            // prefabs distinct, and keeps both layers agreeing on the id, since both derive it
+            // from the same prefab name.
+            // （當淨化摧毀了名稱時，ID 不應隨之毀損。完全以非拉丁文字命名的預製模板會縮減為空，
+            //   首次全城擷取即證實其後果：五個此類模板皆成為 `unnamed`，其中四個網格被第五個默默覆寫，
+            //   且實例層以單一 ID 參照五個不同的資產。改以原始名稱的摘要作為後備，
+            //   可使相異的預製模板保持相異，並使兩個層級對 ID 的認定一致，
+            //   因為兩者皆自相同的預製模板名稱推導而來。）
+            if (start >= result.Length) return $"asset_{Digest(name)}";
+
+            result = result.Substring(start);
+
+            // Truncation collides the same way, just more rarely: two long names sharing a prefix.
+            // （截斷會以相同方式造成碰撞，只是更為罕見：兩個共用前綴的長名稱。）
+            return (result.Length > 180) ? $"{result.Substring(0, 171)}_{Digest(name)}" : result;
+        }
+
+        /// <summary>
+        /// A short, stable digest of a string, used to keep asset ids distinct when sanitising
+        /// cannot.<br/>
+        /// （字串的簡短穩定摘要，用於在淨化無法區分時保持資產 ID 的相異性。）<br/><br/>
+        /// FNV-1a, written out rather than taken from <c>string.GetHashCode</c>, which is
+        /// randomised per process and would hand the same prefab a different id on every run.<br/>
+        /// （採用 FNV-1a 而非 <c>string.GetHashCode</c>：後者每個行程皆隨機化，
+        /// 將使同一個預製模板每次執行都得到不同的 ID。）
+        /// </summary>
+        /// <param name="value">The original, unsanitised name.（原始未經淨化的名稱。）</param>
+        /// <returns>Eight lowercase hex digits.（八位小寫十六進位數字。）</returns>
+        private static string Digest(string value)
+        {
+            uint hash = 2166136261u;
+            foreach (char c in value)
+            {
+                hash ^= c;
+                hash *= 16777619u;
+            }
+
+            return hash.ToString("x8");
         }
     }
 }

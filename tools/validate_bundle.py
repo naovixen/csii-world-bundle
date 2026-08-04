@@ -333,6 +333,37 @@ def _load_jsonl(path: Path, validator: Validator, label: str, report: Report) ->
     return records
 
 
+def _load_declared_missing(bundle_dir: Path) -> Dict[str, str]:
+    """Read warnings.jsonl and return {assetId: reason} for assets the producer could not deliver.
+
+    Advisory and not schema-validated (§10), so this is deliberately forgiving: an unreadable or
+    malformed file simply declares nothing, which leaves every gap an error rather than silently
+    excusing it.
+    """
+    path = bundle_dir / "warnings.jsonl"
+    declared: Dict[str, str] = {}
+    if not path.is_file():
+        return declared
+
+    try:
+        with path.open(encoding="utf-8") as handle:
+            for line in handle:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    record = json.loads(line)
+                except ValueError:
+                    continue
+                asset_id = record.get("assetId")
+                if isinstance(asset_id, str):
+                    declared[asset_id] = str(record.get("reason", "no reason given"))
+    except OSError:
+        pass
+
+    return declared
+
+
 def _resolve_layer(bundle_dir: Path, layers: Dict[str, str], key: str) -> Optional[Path]:
     rel = layers.get(key)
     return None if rel is None else bundle_dir / rel
@@ -400,7 +431,13 @@ def validate_bundle(bundle_dir: Path, schema_dir: Path) -> Report:
     if instances_path and instances_path.is_file():
         instances = _load_jsonl(instances_path, schemas["instance"], layers["instances"], report)
 
+    # A producer may declare, in warnings.jsonl, an asset it could not deliver (§10). That is the
+    # honest alternative to dropping the instances, which would lose their placement for nothing,
+    # so a declared gap is a warning rather than an error. An *undeclared* one stays an error.
+    declared_missing = _load_declared_missing(bundle_dir)
+
     seen_ids: Dict[int, str] = {}
+    missing_meshes: Dict[str, int] = {}
     for i, record in enumerate(instances):
         rid = record.get("id")
         if rid is not None:
@@ -412,7 +449,20 @@ def validate_bundle(bundle_dir: Path, schema_dir: Path) -> Report:
         if mesh_dir is None:
             report.error(f"instances.jsonl line {i + 1}: assetId {asset_id!r} but no 'meshes' layer is declared")
         elif not (mesh_dir / f"{asset_id}.glb").is_file():
-            report.error(f"instances.jsonl line {i + 1}: assetId {asset_id!r} has no mesh at {layers['meshes']}{asset_id}.glb")
+            # Aggregated by assetId: one broken prefab can be referenced by tens of thousands of
+            # instances, and a line-per-instance report buries every other finding.
+            missing_meshes[asset_id] = missing_meshes.get(asset_id, 0) + 1
+
+    for asset_id, count in sorted(missing_meshes.items(), key=lambda kv: -kv[1]):
+        where = f"{layers['meshes']}{asset_id}.glb"
+        plural = "instance" if count == 1 else "instances"
+        if asset_id in declared_missing:
+            report.warn(
+                f"assetId {asset_id!r} ({count} {plural}) has no mesh at {where}; "
+                f"declared in warnings.jsonl: {declared_missing[asset_id]}"
+            )
+        else:
+            report.error(f"assetId {asset_id!r} ({count} {plural}) has no mesh at {where}")
 
     for i, record in enumerate(instances):
         parent = record.get("parent")

@@ -163,6 +163,47 @@ class BundleContractTest(unittest.TestCase):
         self.patch_manifest(bundle, lambda m: m["counts"].update({"instances": 99}))
         self.assertRejected(bundle, "counts.instances is 99")
 
+    def test_undeclared_missing_mesh_rejected(self):
+        """An instance pointing at a mesh that is not there is an error unless the producer said so."""
+        bundle = self.fresh()
+        self.patch_first_instance(bundle, lambda r: r.update({"assetId": "no_such_prefab"}))
+        self.assertRejected(bundle, "no_such_prefab")
+
+    def test_declared_missing_mesh_is_a_warning_not_an_error(self):
+        """warnings.jsonl (§10) is how a producer declares an asset it could not deliver.
+
+        Dropping the instances instead would lose their placement, which the contract says must
+        survive even when geometry cannot — so a declared gap has to validate, loudly.
+        """
+        bundle = self.fresh()
+        self.patch_first_instance(bundle, lambda r: r.update({"assetId": "no_such_prefab"}))
+        (bundle / "warnings.jsonl").write_text(
+            json.dumps({"kind": "mesh", "assetId": "no_such_prefab",
+                        "reason": "empty SubMesh buffer"}) + "\n",
+            encoding="utf-8")
+
+        report = validate_bundle(bundle, DEFAULT_SCHEMA_DIR)
+        self.assertEqual(report.errors, [])
+        self.assertTrue(any("no_such_prefab" in w for w in report.warnings),
+                        f"expected a warning about the declared gap, got: {report.warnings}")
+
+    def test_missing_mesh_is_reported_once_per_asset_not_per_instance(self):
+        """One broken prefab can be referenced by tens of thousands of instances."""
+        bundle = self.fresh()
+        path = bundle / "instances.jsonl"
+        lines = path.read_text(encoding="utf-8").splitlines()
+        record = json.loads(lines[0])
+        clones = []
+        for i in range(5):
+            clone = dict(record, assetId="no_such_prefab", id=90000 + i)
+            clone.pop("parent", None)
+            clones.append(json.dumps(clone, separators=(",", ":")))
+        path.write_text("\n".join(lines + clones) + "\n", encoding="utf-8")
+
+        errors = [e for e in self.errors(bundle) if "no_such_prefab" in e]
+        self.assertEqual(len(errors), 1, f"expected one aggregated error, got:\n" + "\n".join(errors))
+        self.assertIn("5 instances", errors[0])
+
     def test_missing_layer_file_rejected(self):
         bundle = self.fresh()
         (bundle / "materials.json").unlink()
