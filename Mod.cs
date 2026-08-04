@@ -36,6 +36,7 @@ namespace Carto
             // （將系統實例註冊在遊戲中。）
             updateSystem.UpdateBefore<AreaSystem>(SystemUpdatePhase.GameSimulation);
             updateSystem.UpdateBefore<BuildingSystem>(SystemUpdatePhase.GameSimulation);
+            updateSystem.UpdateBefore<MeshRipSystem>(SystemUpdatePhase.GameSimulation);
             updateSystem.UpdateBefore<NetworkSystem>(SystemUpdatePhase.GameSimulation);
             updateSystem.UpdateBefore<POISystem>(SystemUpdatePhase.GameSimulation);
             updateSystem.UpdateBefore<RasterSystem>(SystemUpdatePhase.GameSimulation);

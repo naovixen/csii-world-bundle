@@ -146,6 +146,12 @@ namespace Carto
         public static NameManager Name { get; } = new();
 
         /// <summary>
+        /// The system that rips mesh geometry out of prefabs.
+        /// （自預製模板擷取網格幾何的系統。）
+        /// </summary>
+        public static MeshRipSystem MeshRip => World.DefaultGameObjectInjectionWorld.GetOrCreateSystemManaged<MeshRipSystem>();
+
+        /// <summary>
         /// The system that searches networks.
         /// （搜尋網路的系統。）
         /// </summary>

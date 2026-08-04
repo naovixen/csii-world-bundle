@@ -303,7 +303,10 @@ Conventions, all frozen in v1:
   instead of once per mesh. A URI that resolves outside the bundle is invalid. Embedded
   `data:` URIs are tolerated but defeat dedup and are flagged.
 - **Attributes** — `POSITION` always; `NORMAL`, `TEXCOORD_0`, `TANGENT` and `COLOR_0` when the
-  source has them.
+  source has them. `TEXCOORD_0` follows glTF's top-left UV origin, so the producer flips V from
+  the game's bottom-left convention (`v_glb = 1 - v_game`). `TANGENT.w` has its sign flipped
+  along with the X mirror, since mirroring reverses bitangent handedness.
+- **Indices** — always indexed geometry, `UNSIGNED_INT`, one index accessor per primitive.
 
 ---
 

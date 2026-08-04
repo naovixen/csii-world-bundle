@@ -393,6 +393,37 @@ namespace Carto
             set { IO.IO.Export(); }
         }
 
+        /// <summary>
+        /// The button that runs the world ripper's mesh-readback spike (PLAN Phase 1).
+        /// （執行世界擷取器網格回讀驗證的按鈕（PLAN 第一階段）。）<br/><br/>
+        /// Writes one <c>.glb</c> per unique building mesh into <c>ModsData/Carto/spike/meshes</c>
+        /// and reports the result in a dialog. Additive: it does not touch the vector export.<br/>
+        /// （為每個唯一的建築網格輸出一個 <c>.glb</c> 至 <c>ModsData/Carto/spike/meshes</c>，
+        /// 並以對話框回報結果。此功能為附加性質，不影響向量輸出。）
+        /// </summary>
+        [SettingsUISection(GeneralTab, GeneralGeneralGroup)]
+        [SettingsUIButton]
+        [SettingsUIDisableByCondition(typeof(Settings), nameof(IsInGameOrEditor), invert: true)]
+        public bool RipMeshSpikeButton
+        {
+            set
+            {
+                string report;
+                try
+                {
+                    report = Instance.MeshRip.RipSpike();
+                }
+                catch (System.Exception ex)
+                {
+                    Instance.Log.Error(ex.ToString());
+                    report = $"Mesh rip spike failed:\n{ex.Message}";
+                }
+
+                Game.UI.MessageDialog dialog = new("Options.SECTION[Carto.Carto.Mod]", report, "Common.OK");
+                Instance.UI.appBindings.ShowMessageDialog(dialog, null);
+            }
+        }
+
 # if false
         [SettingsUISection(GeneralTab, GeneralGeneralGroup)]
         [SettingsUIButton]
