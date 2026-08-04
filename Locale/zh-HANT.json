@@ -27,6 +27,8 @@
   "Options.Description.OpenButton": "開啟輸出檔案的資料夾。",
   "Options.Option.ExportButton": "輸出檔案",
   "Options.Description.ExportButton": "將遊戲內的物件輸出為地理空間檔案。",
+  "Options.Option.RipMeshSpikeButton": "網格擷取驗證",
+  "Options.Description.RipMeshSpikeButton": "將本城市中已放置建築的網格以 glTF 格式擷取至 ModsData/Carto/spike/meshes。開發中功能。",
   "Options.Option.ModVersion": "版本",
   "Options.Description.ModVersion": "目前執行中的 Carto 版本。",
   "Options.Option.ManualButton": "使用手冊",

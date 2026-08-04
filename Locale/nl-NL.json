@@ -27,6 +27,8 @@
   "Options.Description.OpenButton": "De map met de geëxporteerde bestanden openen.",
   "Options.Option.ExportButton": "Bestanden exporteren",
   "Options.Description.ExportButton": "In-game objecten als geospatiale bestanden exporteren.",
+  "Options.Option.RipMeshSpikeButton": "Rip Mesh Spike",
+  "Options.Description.RipMeshSpikeButton": "Rip the meshes of buildings placed in this city into ModsData/Carto/spike/meshes as glTF. Development feature.",
   "Options.Option.ModVersion": "Versie",
   "Options.Description.ModVersion": "De huidige Carto-versie.",
   "Options.Option.ManualButton": "Gebruikershandleiding",

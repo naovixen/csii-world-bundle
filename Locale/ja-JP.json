@@ -27,6 +27,8 @@
   "Options.Description.OpenButton": "エクスポートされたファイルのフォルダを開きます。",
   "Options.Option.ExportButton": "エクスポート",
   "Options.Description.ExportButton": "ゲーム内オブジェクトを地理空間ファイルとしてエクスポートします。",
+  "Options.Option.RipMeshSpikeButton": "Rip Mesh Spike",
+  "Options.Description.RipMeshSpikeButton": "Rip the meshes of buildings placed in this city into ModsData/Carto/spike/meshes as glTF. Development feature.",
   "Options.Option.ModVersion": "バージョン",
   "Options.Description.ModVersion": "現在実行中の Carto のバージョン。",
   "Options.Option.ManualButton": "利用案内書",

@@ -43,6 +43,17 @@ namespace Carto.Systems
         EntityQuery _subMeshPrefabQuery;
 
         /// <summary>
+        /// The query for buildings actually placed in the loaded city.
+        /// （已載入城市中實際放置之建築的查詢。）<br/><br/>
+        /// Placed buildings are what the ripper cares about, and — unlike the tens of thousands of
+        /// catalogue prefabs in the asset database — their meshes are the ones the game has
+        /// actually had to load.<br/>
+        /// （已放置的建築才是擷取的目標，且不同於資產資料庫中數以萬計的目錄預製模板，
+        /// 這些網格是遊戲確實已載入的。）
+        /// </summary>
+        EntityQuery _placedBuildingQuery;
+
+        /// <summary>
         /// The event triggered when the system instance is created.
         /// （當系統實例被創造時觸發的事件。）
         /// </summary>
@@ -54,6 +65,15 @@ namespace Carto.Systems
                 {
                     ComponentType.ReadOnly<PrefabData>(),
                     ComponentType.ReadOnly<SubMesh>()
+                }
+            });
+
+            _placedBuildingQuery = GetEntityQuery(new EntityQueryDesc()
+            {
+                All = new ComponentType[]
+                {
+                    ComponentType.ReadOnly<Game.Buildings.Building>(),
+                    ComponentType.ReadOnly<PrefabRef>()
                 }
             });
 
@@ -93,63 +113,72 @@ namespace Carto.Systems
             long bytesWritten = 0;
             HashSet<string> written = new();
 
-            NativeArray<Entity> prefabEntities = _subMeshPrefabQuery.ToEntityArray(Allocator.TempJob);
+            List<Entity> prefabEntities = GetCandidatePrefabs(report);
+            bool diagnosedOnce = false;
 
-            try
+            foreach (Entity prefabEntity in prefabEntities)
             {
-                report.AppendLine($"Prefabs with a SubMesh buffer: {prefabEntities.Length}");
+                if (prefabsWalked >= maxPrefabs) break;
+                if (!EntityManager.HasBuffer<SubMesh>(prefabEntity)) continue;
 
-                foreach (Entity prefabEntity in prefabEntities)
+                string prefabName = GetPrefabName(prefabEntity) ?? $"entity_{prefabEntity.Index}";
+                prefabsWalked++;
+
+                DynamicBuffer<SubMesh> subMeshes = EntityManager.GetBuffer<SubMesh>(prefabEntity, true);
+                report.AppendLine($"[{prefabsWalked}] {prefabName}  ({subMeshes.Length} sub-mesh)");
+
+                for (int i = 0; i < subMeshes.Length; i++)
                 {
-                    if (prefabsWalked >= maxPrefabs) break;
-
-                    // Only buildings, so the spike is checked against something recognisable in
-                    // Blender rather than an arbitrary prop.
-                    // （僅取建築，以便在 Blender 中對照可辨識的物件。）
-                    if (!Instance.Prefab.TryGetPrefab(EntityManager.GetComponentData<PrefabData>(prefabEntity), out PrefabBase prefab)) continue;
-                    if (prefab is not BuildingPrefab) continue;
-
-                    prefabsWalked++;
-                    report.AppendLine($"[{prefabsWalked}] {prefab.name}");
-
-                    DynamicBuffer<SubMesh> subMeshes = EntityManager.GetBuffer<SubMesh>(prefabEntity, true);
-                    for (int i = 0; i < subMeshes.Length; i++)
+                    Entity meshEntity = subMeshes[i].m_SubMesh;
+                    if (meshEntity == Entity.Null)
                     {
-                        Entity meshEntity = subMeshes[i].m_SubMesh;
-                        if (meshEntity == Entity.Null) continue;
+                        report.AppendLine($"      - sub{i}: null mesh entity");
+                        continue;
+                    }
 
-                        string meshName = GetPrefabName(meshEntity) ?? $"{prefab.name}_sub{i}";
-                        string assetId = SanitizeAssetId(meshName);
-                        if (!written.Add(assetId)) continue;
+                    string meshName = GetPrefabName(meshEntity) ?? $"{prefabName}_sub{i}";
+                    string assetId = SanitizeAssetId(meshName);
+                    if (!written.Add(assetId))
+                    {
+                        report.AppendLine($"      = {assetId}: already written");
+                        continue;
+                    }
 
-                        try
-                        {
-                            MeshAsset mesh = ReadMesh(meshEntity, assetId, meshName);
-                            if (mesh == null)
-                            {
-                                meshesSkipped++;
-                                report.AppendLine($"      - {assetId}: no geometry buffers");
-                                continue;
-                            }
-
-                            string path = IOUtils.CombinePath(outputDirectory, $"{assetId}.glb");
-                            long size = GltfWriter.Write(path, mesh);
-                            bytesWritten += size;
-                            meshesWritten++;
-                            report.AppendLine($"      + {assetId}: {mesh.Vertices.Length} verts, {mesh.TriangleCount} tris, {mesh.Primitives.Count} prim, {size} B");
-                        }
-                        catch (Exception ex)
+                    try
+                    {
+                        MeshAsset mesh = ReadMesh(meshEntity, assetId, meshName);
+                        if (mesh == null)
                         {
                             meshesSkipped++;
-                            report.AppendLine($"      ! {assetId}: {ex.Message}");
-                            _log.Warn($"Failed to rip mesh `{assetId}`: {ex}");
+                            report.AppendLine($"      - {assetId}: no geometry buffers");
+
+                            // Dump what the entity actually carries, once. Guessing twice at a
+                            // structure the game can simply be asked about is how a spike stalls.
+                            // （傾印實體實際帶有的元件一次。對於可直接詢問遊戲的結構重複猜測，
+                            //   正是驗證停滯的原因。）
+                            if (!diagnosedOnce)
+                            {
+                                diagnosedOnce = true;
+                                report.AppendLine($"        components on {assetId}:");
+                                foreach (string component in DescribeComponents(meshEntity))
+                                    report.AppendLine($"          {component}");
+                            }
+                            continue;
                         }
+
+                        string path = IOUtils.CombinePath(outputDirectory, $"{assetId}.glb");
+                        long size = GltfWriter.Write(path, mesh);
+                        bytesWritten += size;
+                        meshesWritten++;
+                        report.AppendLine($"      + {assetId}: {mesh.Vertices.Length} verts, {mesh.TriangleCount} tris, {mesh.Primitives.Count} prim, {size} B");
+                    }
+                    catch (Exception ex)
+                    {
+                        meshesSkipped++;
+                        report.AppendLine($"      ! {assetId}: {ex.Message}");
+                        _log.Warn($"Failed to rip mesh `{assetId}`: {ex}");
                     }
                 }
-            }
-            finally
-            {
-                prefabEntities.Dispose();
             }
 
             report.AppendLine();
@@ -158,6 +187,88 @@ namespace Carto.Systems
 
             _log.Info(report.ToString());
             return report.ToString();
+        }
+
+        /// <summary>
+        /// Collect the prefab entities worth ripping, preferring prefabs actually placed in the
+        /// loaded city over the asset database's full catalogue.<br/>
+        /// （收集值得擷取的預製模板實體，優先取用已放置於城市中者，而非資產資料庫的完整目錄。）<br/><br/>
+        /// The first spike run walked the catalogue and found 20,017 prefabs whose meshes were all
+        /// empty — unsurprising in hindsight, since the game has no reason to load geometry for an
+        /// asset nobody placed. Placed buildings are the ones whose meshes must be resident.<br/>
+        /// （首次驗證走訪目錄時找到 20,017 個預製模板，其網格皆為空。事後看來並不意外：
+        /// 遊戲沒有理由為無人放置的資產載入幾何。已放置的建築才是網格必然常駐者。）
+        /// </summary>
+        /// <param name="report">The report to append discovery counts to.（用以附加探索統計的報告。）</param>
+        /// <returns>Distinct prefab entities, in discovery order.（依探索順序排列的相異預製模板實體。）</returns>
+        private List<Entity> GetCandidatePrefabs(StringBuilder report)
+        {
+            List<Entity> result = new();
+            HashSet<Entity> seen = new();
+
+            NativeArray<Entity> placed = _placedBuildingQuery.ToEntityArray(Allocator.TempJob);
+            try
+            {
+                report.AppendLine($"Buildings placed in the city: {placed.Length}");
+                foreach (Entity building in placed)
+                {
+                    Entity prefabEntity = EntityManager.GetComponentData<PrefabRef>(building).m_Prefab;
+                    if ((prefabEntity != Entity.Null) && seen.Add(prefabEntity)) result.Add(prefabEntity);
+                }
+                report.AppendLine($"Distinct building prefabs in use: {result.Count}");
+            }
+            finally
+            {
+                placed.Dispose();
+            }
+
+            // An empty map (or the editor) has nothing placed; fall back to the catalogue so the
+            // spike still reports something useful rather than silently doing nothing.
+            // （空白地圖或編輯器中沒有已放置的物件；退回目錄查詢，使驗證仍能回報有用資訊。）
+            if (result.Count == 0)
+            {
+                report.AppendLine("No placed buildings; falling back to the prefab catalogue.");
+                NativeArray<Entity> catalogue = _subMeshPrefabQuery.ToEntityArray(Allocator.TempJob);
+                try
+                {
+                    report.AppendLine($"Prefabs with a SubMesh buffer: {catalogue.Length}");
+                    foreach (Entity prefabEntity in catalogue)
+                    {
+                        if (!Instance.Prefab.TryGetPrefab(EntityManager.GetComponentData<PrefabData>(prefabEntity), out PrefabBase prefab)) continue;
+                        if (prefab is not BuildingPrefab) continue;
+                        if (seen.Add(prefabEntity)) result.Add(prefabEntity);
+                    }
+                }
+                finally
+                {
+                    catalogue.Dispose();
+                }
+            }
+
+            return result;
+        }
+
+        /// <summary>
+        /// List the component and buffer types present on an entity, for diagnostics.
+        /// （列出實體上存在的元件與緩衝區型別，供診斷使用。）
+        /// </summary>
+        /// <param name="entity">The entity to describe.（待描述的實體。）</param>
+        /// <returns>The type names.（型別名稱。）</returns>
+        private List<string> DescribeComponents(Entity entity)
+        {
+            List<string> names = new();
+            NativeArray<ComponentType> types = EntityManager.GetComponentTypes(entity, Allocator.TempJob);
+            try
+            {
+                foreach (ComponentType type in types) names.Add(type.GetManagedType()?.Name ?? type.ToString());
+            }
+            finally
+            {
+                types.Dispose();
+            }
+
+            names.Sort(StringComparer.Ordinal);
+            return names;
         }
 
         /// <summary>
