@@ -150,19 +150,23 @@ namespace Carto.Systems
                         // game can simply be asked about is how a spike stalls.
                         // （於首次失敗時記錄每一次跳轉。對於可直接詢問遊戲的結構重複猜測，
                         //   正是驗證停滯的原因。）
+                        // Trace the first mesh whether or not it succeeds. A mesh that comes out
+                        // but comes out *reduced* looks like success in the counts alone.
+                        // （無論成功與否皆記錄首個網格。僅看數量時，讀到簡化網格與成功難以區分。）
                         List<string> trace = diagnosedOnce ? null : new();
                         MeshAsset mesh = ReadMesh(meshEntity, assetId, meshName, trace);
+
+                        if (!diagnosedOnce)
+                        {
+                            diagnosedOnce = true;
+                            report.AppendLine($"        resolution trace for {assetId}:");
+                            foreach (string hop in trace) report.AppendLine($"          {hop}");
+                        }
+
                         if (mesh == null)
                         {
                             meshesSkipped++;
                             report.AppendLine($"      - {assetId}: no geometry buffers");
-
-                            if (!diagnosedOnce)
-                            {
-                                diagnosedOnce = true;
-                                report.AppendLine($"        resolution trace for {assetId}:");
-                                foreach (string hop in trace) report.AppendLine($"          {hop}");
-                            }
                             continue;
                         }
 
@@ -207,46 +211,101 @@ namespace Carto.Systems
         /// <returns>Whether geometry was found.（是否找到幾何。）</returns>
         private bool TryResolveGeometry(Entity entity, out Entity geometry, out int lod, List<string> trace, int depth = 0)
         {
-            geometry = Entity.Null;
-            lod = 0;
+            List<GeometryCandidate> candidates = new();
+            Collect(entity, 0, "root", candidates, new HashSet<Entity>(), 0);
 
-            if ((entity == Entity.Null) || (depth > 4)) return false;
+            if (trace != null)
+            {
+                trace.Add($"container {entity.Index} [{string.Join(", ", DescribeComponents(entity))}]");
+                if (EntityManager.HasComponent<MeshData>(entity))
+                {
+                    MeshData data = EntityManager.GetComponentData<MeshData>(entity);
+                    // What the container *claims* the mesh holds. If the richest candidate falls
+                    // well short of m_IndexCount, we are reading a reduced LOD, not the real mesh.
+                    // （容器所「宣稱」的網格內容。若最豐富的候選遠低於 m_IndexCount，即代表讀到的是簡化 LOD。）
+                    trace.Add($"MeshData: indexCount={data.m_IndexCount} subMeshCount={data.m_SubMeshCount} minLod={data.m_MinLod} state={data.m_State}");
+                }
+                foreach (GeometryCandidate candidate in candidates)
+                    trace.Add($"candidate via {candidate.Path}: entity {candidate.Entity.Index}, {candidate.VertexCount} verts, {candidate.IndexCount / 3} tris, materials={candidate.MaterialCount} [{string.Join(", ", DescribeComponents(candidate.Entity))}]");
+            }
+
+            if (candidates.Count == 0)
+            {
+                geometry = Entity.Null;
+                lod = 0;
+                return false;
+            }
+
+            // Pick the richest candidate. LOD 0 is by definition the one with the most geometry,
+            // and picking by index count avoids depending on buffer ordering being detail-ordered.
+            // （選取最豐富的候選。LOD 0 依定義即幾何最多者，以索引數選取可避免依賴緩衝區排序。）
+            GeometryCandidate best = candidates[0];
+            foreach (GeometryCandidate candidate in candidates)
+                if (candidate.IndexCount > best.IndexCount) best = candidate;
+
+            geometry = best.Entity;
+            lod = best.Lod;
+            trace?.Add($"chosen: {best.Path} ({best.IndexCount / 3} tris)");
+            return true;
+        }
+
+        /// <summary>
+        /// A reachable entity that carries real geometry, and how it was reached.
+        /// （帶有實際幾何的可達實體，以及其抵達路徑。）
+        /// </summary>
+        private struct GeometryCandidate
+        {
+            public Entity Entity;
+            public int Lod;
+            public string Path;
+            public int VertexCount;
+            public int IndexCount;
+            public int MaterialCount;
+        }
+
+        /// <summary>
+        /// Walk every geometry reference reachable from <paramref name="entity"/>, collecting each
+        /// entity that carries non-empty vertex and index buffers.<br/>
+        /// （走訪自 <paramref name="entity"/> 可達的所有幾何參照，收集帶有非空頂點與索引緩衝區的實體。）<br/><br/>
+        /// A render prefab entity is a container carrying <c>MeshData</c>, a <c>LodMesh</c> buffer
+        /// and a <c>SharedMeshData</c> pointer, but often no vertices of its own. Taking the first
+        /// match found risks silently settling for a reduced LOD, so gather all of them and let the
+        /// caller choose.<br/>
+        /// （繪製預製模板實體為容器，往往不含自身頂點。僅取首個符合者可能默默採用簡化 LOD，
+        /// 因此全部收集後交由呼叫端選擇。）
+        /// </summary>
+        private void Collect(Entity entity, int lod, string path, List<GeometryCandidate> candidates, HashSet<Entity> visited, int depth)
+        {
+            if ((entity == Entity.Null) || (depth > 4) || !visited.Add(entity)) return;
 
             if (EntityManager.HasBuffer<MeshVertex>(entity) && EntityManager.HasBuffer<MeshIndex>(entity))
             {
-                if ((EntityManager.GetBuffer<MeshVertex>(entity, true).Length > 0)
-                 && (EntityManager.GetBuffer<MeshIndex>(entity, true).Length > 0))
+                int vertexCount = EntityManager.GetBuffer<MeshVertex>(entity, true).Length;
+                int indexCount = EntityManager.GetBuffer<MeshIndex>(entity, true).Length;
+                if ((vertexCount > 0) && (indexCount > 0))
                 {
-                    geometry = entity;
-                    trace?.Add($"depth {depth}: geometry found on entity {entity.Index}");
-                    return true;
+                    candidates.Add(new GeometryCandidate
+                    {
+                        Entity = entity,
+                        Lod = lod,
+                        Path = path,
+                        VertexCount = vertexCount,
+                        IndexCount = indexCount,
+                        MaterialCount = EntityManager.HasBuffer<MeshMaterial>(entity)
+                            ? EntityManager.GetBuffer<MeshMaterial>(entity, true).Length : 0
+                    });
                 }
             }
 
-            trace?.Add($"depth {depth}: entity {entity.Index} [{string.Join(", ", DescribeComponents(entity))}]");
-
             if (EntityManager.HasComponent<SharedMeshData>(entity))
-            {
-                Entity shared = EntityManager.GetComponentData<SharedMeshData>(entity).m_Mesh;
-                if ((shared != entity) && TryResolveGeometry(shared, out geometry, out lod, trace, depth + 1)) return true;
-            }
+                Collect(EntityManager.GetComponentData<SharedMeshData>(entity).m_Mesh, lod, $"{path}/shared", candidates, visited, depth + 1);
 
             if (EntityManager.HasBuffer<LodMesh>(entity))
             {
                 DynamicBuffer<LodMesh> lods = EntityManager.GetBuffer<LodMesh>(entity, true);
                 for (int i = 0; i < lods.Length; i++)
-                {
-                    Entity lodEntity = lods[i].m_LodMesh;
-                    if ((lodEntity == entity) || (lodEntity == Entity.Null)) continue;
-                    if (TryResolveGeometry(lodEntity, out geometry, out _, trace, depth + 1))
-                    {
-                        lod = i;
-                        return true;
-                    }
-                }
+                    Collect(lods[i].m_LodMesh, i, $"{path}/lod{i}", candidates, visited, depth + 1);
             }
-
-            return false;
         }
 
         /// <summary>
