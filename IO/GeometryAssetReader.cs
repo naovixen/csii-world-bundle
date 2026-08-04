@@ -94,6 +94,89 @@ namespace Carto.IO
         }
 
         /// <summary>
+        /// Read a mesh straight from a loaded Unity <see cref="UnityEngine.Mesh"/>.
+        /// （直接自已載入的 Unity <see cref="UnityEngine.Mesh"/> 讀取網格。）<br/><br/>
+        /// Used when the geometry asset's own accessors stay empty after loading. Slower and more
+        /// allocating than the native path, but it depends only on documented Unity API.<br/>
+        /// （當幾何資產本身的存取器於載入後仍為空時使用。較慢且配置較多，但僅依賴有文件的 Unity API。）
+        /// </summary>
+        /// <param name="source">The loaded mesh.（已載入的網格。）</param>
+        /// <param name="assetId">The sanitised asset id.（淨化後的資產 ID。）</param>
+        /// <param name="sourceName">The original prefab name.（原始的預製模板名稱。）</param>
+        /// <returns>The mesh, or <c>null</c> when it holds nothing usable.（網格，若無可用內容則為 <c>null</c>。）</returns>
+        public static MeshAsset ReadUnityMesh(UnityEngine.Mesh source, string assetId, string sourceName)
+        {
+            if ((source == null) || (source.vertexCount == 0)) return null;
+
+            UnityEngine.Vector3[] positions = source.vertices;
+            if ((positions == null) || (positions.Length == 0)) return null;
+
+            MeshAsset mesh = new()
+            {
+                AssetId = assetId,
+                SourceName = sourceName,
+                Vertices = new float3[positions.Length]
+            };
+            for (int i = 0; i < positions.Length; i++) mesh.Vertices[i] = positions[i];
+
+            UnityEngine.Vector3[] normals = source.normals;
+            if ((normals != null) && (normals.Length == positions.Length))
+            {
+                mesh.Normals = new float3[normals.Length];
+                for (int i = 0; i < normals.Length; i++) mesh.Normals[i] = normals[i];
+            }
+
+            UnityEngine.Vector2[] uvs = source.uv;
+            if ((uvs != null) && (uvs.Length == positions.Length))
+            {
+                mesh.Uvs = new float2[uvs.Length];
+                for (int i = 0; i < uvs.Length; i++) mesh.Uvs[i] = uvs[i];
+            }
+
+            UnityEngine.Vector4[] tangents = source.tangents;
+            if ((tangents != null) && (tangents.Length == positions.Length))
+            {
+                mesh.Tangents = new float4[tangents.Length];
+                for (int i = 0; i < tangents.Length; i++) mesh.Tangents[i] = tangents[i];
+            }
+
+            // Concatenate the sub-meshes into one index buffer, recording each as a primitive.
+            // applyBaseVertex keeps every index absolute, matching the native path.
+            // （將各子網格串接為單一索引緩衝區並記錄為 primitive。applyBaseVertex 使索引維持絕對值。）
+            List<int> indices = new();
+            for (int i = 0; i < source.subMeshCount; i++)
+            {
+                int[] subIndices = source.GetIndices(i, applyBaseVertex: true);
+                if ((subIndices == null) || (subIndices.Length == 0)) continue;
+
+                mesh.Primitives.Add(new MeshPrimitive
+                {
+                    StartIndex = indices.Count,
+                    IndexCount = subIndices.Length,
+                    StartVertex = 0,
+                    VertexCount = positions.Length,
+                    MaterialIndex = i,
+                    MaterialId = $"{assetId}_mat{i}"
+                });
+                indices.AddRange(subIndices);
+            }
+
+            if (indices.Count == 0) return null;
+            mesh.Indices = indices.ToArray();
+
+            float3 min = new(float.MaxValue), max = new(float.MinValue);
+            for (int i = 0; i < mesh.Vertices.Length; i++)
+            {
+                min = math.min(min, mesh.Vertices[i]);
+                max = math.max(max, mesh.Vertices[i]);
+            }
+            mesh.BoundsMin = min;
+            mesh.BoundsMax = max;
+
+            return mesh;
+        }
+
+        /// <summary>
         /// Read one mesh out of a geometry asset into a <see cref="MeshAsset"/>.
         /// （自幾何資產讀取單一網格至 <see cref="MeshAsset"/>。）
         /// </summary>

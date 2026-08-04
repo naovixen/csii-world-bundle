@@ -189,8 +189,17 @@ namespace Carto.Systems
             report.AppendLine($"Wrote {meshesWritten} mesh(es), skipped {meshesSkipped}, {bytesWritten} bytes total.");
             report.AppendLine($"Output: {outputDirectory}");
 
+            // The full report goes to the log. The in-game MessageDialog does not scroll, so a
+            // long body pushes its OK button off the bottom of the screen — return a summary.
+            // （完整報告寫入記錄檔。遊戲內的 MessageDialog 無法捲動，過長的內容會將確定按鈕擠出畫面。）
             _log.Info(report.ToString());
-            return report.ToString();
+
+            StringBuilder summary = new();
+            summary.AppendLine($"Wrote {meshesWritten} mesh(es), skipped {meshesSkipped}.");
+            summary.AppendLine($"{bytesWritten / 1024} KiB to ModsData/Carto/spike/meshes");
+            summary.AppendLine();
+            summary.Append("Full report: Logs/Carto.log");
+            return summary.ToString();
         }
 
         /// <summary>
@@ -220,32 +229,71 @@ namespace Carto.Systems
                 }
 
                 Colossal.IO.AssetDatabase.GeometryAsset asset = renderPrefab.geometryAsset;
-                List<GeometryAssetReader.MeshInfo> meshes = GeometryAssetReader.Describe(asset, renderPrefab.meshCount);
+                trace?.Add($"geometry asset: meshCount={renderPrefab.meshCount} vertexCount={renderPrefab.vertexCount} indexCount={renderPrefab.indexCount} materialCount={renderPrefab.materialCount}");
 
-                if (trace != null)
+                // The asset's accessors stay empty until its data is resident, and there is no
+                // public "ensure loaded" call — ObtainMeshes is the load trigger. Always release
+                // again: a city has thousands of buildings and holding every mesh would balloon.
+                // （資產的存取器在資料常駐前皆為空，且無公開的「確保載入」方法，ObtainMeshes 即為載入
+                //   觸發點。務必釋放：城市有數千棟建築，全數保留將使記憶體暴增。）
+                UnityEngine.Mesh[] loaded = null;
+                try
                 {
-                    trace.Add($"geometry asset: meshCount={renderPrefab.meshCount} vertexCount={renderPrefab.vertexCount} indexCount={renderPrefab.indexCount} materialCount={renderPrefab.materialCount}");
-                    foreach (GeometryAssetReader.MeshInfo info in meshes) trace.Add($"  {info}");
-                }
+                    try
+                    {
+                        loaded = asset.ObtainMeshes(true);
+                        trace?.Add($"geometry asset: ObtainMeshes returned {(loaded?.Length ?? 0)} mesh(es)");
+                    }
+                    catch (Exception ex)
+                    {
+                        trace?.Add($"geometry asset: ObtainMeshes failed — {ex.GetType().Name} {ex.Message}");
+                    }
 
-                if (meshes.Count == 0)
-                {
-                    trace?.Add("geometry asset: no readable meshes (likely not resident)");
+                    List<GeometryAssetReader.MeshInfo> meshes = GeometryAssetReader.Describe(asset, renderPrefab.meshCount);
+                    if (trace != null) foreach (GeometryAssetReader.MeshInfo info in meshes) trace.Add($"  {info}");
+
+                    if (meshes.Count > 0)
+                    {
+                        // Richest mesh wins, on the same reasoning as the ECS candidates: the LOD
+                        // chain is ordered by convention, not by guarantee.
+                        // （以最豐富者為準，理由同 ECS 候選：LOD 鏈的順序僅為慣例而非保證。）
+                        GeometryAssetReader.MeshInfo best = meshes[0];
+                        foreach (GeometryAssetReader.MeshInfo info in meshes)
+                            if (info.IndexCount > best.IndexCount) best = info;
+
+                        MeshAsset mesh = GeometryAssetReader.Read(asset, best.MeshIndex, assetId, sourceName);
+                        if (mesh != null)
+                        {
+                            trace?.Add($"geometry asset: chose mesh{best.MeshIndex} ({mesh.TriangleCount} tris, {mesh.Primitives.Count} primitives)");
+                            return mesh;
+                        }
+                    }
+
+                    // Native accessors still empty: fall back to the loaded Unity meshes.
+                    // （原生存取器仍為空：退回使用已載入的 Unity 網格。）
+                    if ((loaded != null) && (loaded.Length > 0))
+                    {
+                        MeshAsset best = null;
+                        foreach (UnityEngine.Mesh candidate in loaded)
+                        {
+                            MeshAsset converted = GeometryAssetReader.ReadUnityMesh(candidate, assetId, sourceName);
+                            if ((converted != null) && ((best == null) || (converted.TriangleCount > best.TriangleCount))) best = converted;
+                        }
+
+                        if (best != null)
+                        {
+                            trace?.Add($"geometry asset: via Unity mesh ({best.TriangleCount} tris, {best.Primitives.Count} primitives)");
+                            return best;
+                        }
+                    }
+
+                    trace?.Add("geometry asset: no readable meshes after loading");
                     return null;
                 }
-
-                // Richest mesh wins, on the same reasoning as the ECS candidates: the LOD chain is
-                // ordered by convention, not by guarantee.
-                // （以最豐富者為準，理由同 ECS 候選：LOD 鏈的順序僅為慣例而非保證。）
-                GeometryAssetReader.MeshInfo best = meshes[0];
-                foreach (GeometryAssetReader.MeshInfo info in meshes)
-                    if (info.IndexCount > best.IndexCount) best = info;
-
-                MeshAsset mesh = GeometryAssetReader.Read(asset, best.MeshIndex, assetId, sourceName);
-                trace?.Add(mesh == null
-                    ? $"geometry asset: mesh{best.MeshIndex} read returned nothing"
-                    : $"geometry asset: chose mesh{best.MeshIndex} ({mesh.TriangleCount} tris, {mesh.Primitives.Count} primitives)");
-                return mesh;
+                finally
+                {
+                    try { asset.ReleaseMeshes(); } catch { /* nothing useful to do if release fails */ }
+                }
             }
             catch (Exception ex)
             {
