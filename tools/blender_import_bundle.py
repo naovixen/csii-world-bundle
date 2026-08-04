@@ -18,6 +18,7 @@ Options (after the `--`):
     --kinds building,tree,prop   which instance kinds to place        (default: building)
     --limit N                    stop after N instances               (default: 20000)
     --center X Z --radius R      only place within R metres of a point, bundle-frame metres
+    --center auto --radius R     centre on the densest part of the selected kinds instead
     --keep-existing              don't wipe the scene first
     --save out.blend             write a .blend and exit, so the import is paid for once
 
@@ -25,13 +26,19 @@ Examples:
     # the 1:1 building check — start here, it is fast and the most diagnostic
     blender --python tools/blender_import_bundle.py -- "…/spike" --kinds building
 
-    # a textured-looking neighbourhood: everything within 300 m of the city centre
+    # a dense neighbourhood with its trees and props, wherever the city actually is
     blender --python tools/blender_import_bundle.py -- "…/spike" \\
-        --kinds building,tree,prop --center 0 0 --radius 300
+        --kinds building,tree,prop --center auto --radius 300
+
+The map origin is not the city. A save's buildings can sit kilometres off (0,0), so a radius
+around a guessed point mostly finds empty ground — which looks exactly like a broken import.
+Every run prints the bounds and centroid of the kinds it selected before placing anything, and
+`--center auto` picks the densest 250 m cell, so neither has to be guessed at.
 
 Placing all 1.3M instances of a full city is deliberately not the default: Blender handles the
 geometry fine (every instance is a collection instance sharing one mesh) but not that many
-objects in the depsgraph. Filter, or raise --limit knowing what you are asking for.
+objects in the depsgraph. Buildings alone are usually only thousands and need no filter at all;
+trees and props are the ones that need one.
 """
 
 import json
@@ -128,6 +135,44 @@ def read_declared_gaps(bundle_dir):
         if isinstance(asset_id, str):
             gaps[asset_id] = record.get("reason", "")
     return gaps
+
+
+def survey(instances_path, kinds, cell=250.0):
+    """Where the selected kinds actually are: bounds, centroid, and the densest cell.
+
+    A pre-pass over instances.jsonl, which costs a few seconds on a full city and saves the far
+    more expensive mistake of importing a patch of empty ground and concluding the bundle is
+    broken. Returns None when the selection is empty.
+    """
+    count = 0
+    min_x = min_z = float("inf")
+    max_x = max_z = float("-inf")
+    sum_x = sum_z = 0.0
+    grid = {}
+
+    for record in read_jsonl(instances_path):
+        if record.get("kind") not in kinds:
+            continue
+        x, _, z = record["pos"]
+        count += 1
+        min_x, max_x = min(min_x, x), max(max_x, x)
+        min_z, max_z = min(min_z, z), max(max_z, z)
+        sum_x += x
+        sum_z += z
+        cell_key = (math.floor(x / cell), math.floor(z / cell))
+        grid[cell_key] = grid.get(cell_key, 0) + 1
+
+    if count == 0:
+        return None
+
+    densest = max(grid, key=grid.get)
+    return {
+        "count": count,
+        "bounds": (min_x, max_x, min_z, max_z),
+        "centroid": (sum_x / count, sum_z / count),
+        "densest": (densest[0] * cell + cell / 2, densest[1] * cell + cell / 2),
+        "densest_count": grid[densest],
+    }
 
 
 def report_materials(bundle_dir):
@@ -258,8 +303,12 @@ def main():
             limit = int(argv[i + 1])
             i += 2
         elif arg == "--center":
-            center = (float(argv[i + 1]), float(argv[i + 2]))
-            i += 3
+            if argv[i + 1] == "auto":
+                center = "auto"
+                i += 2
+            else:
+                center = (float(argv[i + 1]), float(argv[i + 2]))
+                i += 3
         elif arg == "--radius":
             radius = float(argv[i + 1])
             i += 2
@@ -282,8 +331,31 @@ def main():
     print(f"bundle:    {bundle_dir}")
     print(f"meshes:    {mesh_dir}")
     print(f"kinds:     {sorted(kinds)}   limit: {limit}")
+
+    # Always survey before placing. Knowing where the selection is turns "nothing appeared" from
+    # a mystery into an arithmetic error the user can see.
+    where = survey(instances_path, kinds)
+    if where is None:
+        print(f"no instances of kinds {sorted(kinds)} in this bundle")
+        return 2
+
+    min_x, max_x, min_z, max_z = where["bounds"]
+    print(f"selected:  {where['count']} instance(s)")
+    print(f"           X {min_x:.0f} .. {max_x:.0f}   Z {min_z:.0f} .. {max_z:.0f}")
+    print(f"           centroid X {where['centroid'][0]:.0f} Z {where['centroid'][1]:.0f}"
+          f"   densest 250 m cell X {where['densest'][0]:.0f} Z {where['densest'][1]:.0f}"
+          f" ({where['densest_count']} there)")
+
+    if center == "auto":
+        center = where["densest"]
+        print(f"           --center auto resolved to X {center[0]:.0f} Z {center[1]:.0f}")
+
     if radius is not None:
-        print(f"region:    within {radius} m of {center}")
+        if center is None:
+            print("--radius needs --center (or --center auto)")
+            return 2
+        print(f"region:    within {radius} m of X {center[0]:.0f} Z {center[1]:.0f}")
+
     print(f"declared gaps in warnings.jsonl: {len(declared_gaps)}")
     report_materials(bundle_dir)
 
@@ -351,6 +423,13 @@ def main():
     print()
     print(f"placed {placed} instance(s) from {len(prefabs)} prefab(s) in {elapsed:.1f} s")
     print(f"skipped: {skipped_kind} by kind, {skipped_region} outside the region")
+
+    # An empty-looking scene is nearly always the region filter, not the bundle. Say so, with the
+    # coordinates that would have worked.
+    if radius is not None and placed < where["count"] / 20:
+        print(f"NOTE: the region kept {placed} of {where['count']} selected instance(s). "
+              f"The densest 250 m cell is at X {where['densest'][0]:.0f} Z {where['densest'][1]:.0f} — "
+              f"try --center auto, a larger --radius, or drop both.")
 
     if missing:
         undeclared = [a for a, r in missing.items() if r == "NOT DECLARED in warnings.jsonl"]
