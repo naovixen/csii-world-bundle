@@ -101,6 +101,7 @@ namespace Carto.Systems
             Dictionary<string, int> byKind = new();
             Dictionary<string, string> assetIdCache = new();
             int skippedNoPrefab = 0, withParent = 0;
+            List<string> skipSamples = new();
 
             NativeArray<Entity> entities = _objectQuery.ToEntityArray(Allocator.TempJob);
 
@@ -123,6 +124,16 @@ namespace Carto.Systems
                     if (assetId == null)
                     {
                         skippedNoPrefab++;
+
+                        // Record a few examples. A silent 1.7% drop is exactly the kind of thing
+                        // that quietly breaks the contract's 1:1 fidelity requirement later.
+                        // （記錄少數範例。默默丟棄 1.7% 的物件，正是日後破壞契約 1:1 保真要求的原因。）
+                        if (skipSamples.Count < 5)
+                        {
+                            skipSamples.Add($"entity {entity.Index} prefab {prefabEntity.Index} "
+                                + $"hasPrefabData={EntityManager.HasComponent<PrefabData>(prefabEntity)} "
+                                + $"[{string.Join(", ", DescribeComponents(entity))}]");
+                        }
                         continue;
                     }
 
@@ -138,14 +149,21 @@ namespace Carto.Systems
                         Rotation = transform.m_Rotation
                     };
 
-                    if (EntityManager.HasComponent<Attached>(entity))
+                    // Owner is the sub-object relationship (a prop on a lot, a wing of a building).
+                    // Attached is a different thing — an object bound to a network at a curve
+                    // position — and using it as the parent link found only 98 of 1.4M objects.
+                    // （Owner 才是子物件關係；Attached 表示物件綁定於路網上的某個曲線位置，
+                    //   以其作為父子連結時，140 萬個物件中僅有 98 個成立。）
+                    Entity parent = Entity.Null;
+                    if (EntityManager.HasComponent<Game.Common.Owner>(entity))
+                        parent = EntityManager.GetComponentData<Game.Common.Owner>(entity).m_Owner;
+                    if ((parent == Entity.Null) && EntityManager.HasComponent<Attached>(entity))
+                        parent = EntityManager.GetComponentData<Attached>(entity).m_Parent;
+
+                    if (parent != Entity.Null)
                     {
-                        Entity parent = EntityManager.GetComponentData<Attached>(entity).m_Parent;
-                        if (parent != Entity.Null)
-                        {
-                            record.Parent = parent.Index;
-                            withParent++;
-                        }
+                        record.Parent = parent.Index;
+                        withParent++;
                     }
 
                     AddAttributes(entity, record);
@@ -157,6 +175,7 @@ namespace Carto.Systems
                 }
 
                 report.AppendLine($"Wrote {writer.Count} instance(s) to instances.jsonl");
+                if (writer.NormalizedRotations > 0) report.AppendLine($"Normalised {writer.NormalizedRotations} non-unit rotation(s)");
             }
             finally
             {
@@ -166,7 +185,11 @@ namespace Carto.Systems
             foreach (KeyValuePair<string, int> kvp in byKind) report.AppendLine($"  {kvp.Key}: {kvp.Value}");
             report.AppendLine($"Sub-objects with a parent link: {withParent}");
             report.AppendLine($"Distinct assetIds referenced: {assetIds.Count}");
-            if (skippedNoPrefab > 0) report.AppendLine($"Skipped (unresolvable prefab): {skippedNoPrefab}");
+            if (skippedNoPrefab > 0)
+            {
+                report.AppendLine($"Skipped (unresolvable prefab): {skippedNoPrefab}");
+                foreach (string sample in skipSamples) report.AppendLine($"  e.g. {sample}");
+            }
             report.AppendLine($"Output: {path}");
 
             _log.Info(report.ToString());
@@ -209,7 +232,16 @@ namespace Carto.Systems
                 // m_Growth is a byte ramp; the contract defines growth as 0..1.
                 // （m_Growth 為位元組級距，契約定義的 growth 為 0 至 1。）
                 record.Attributes["growth"] = Math.Round(tree.m_Growth / 255d, 3);
-                record.Attributes["state"] = tree.m_State.ToString();
+
+                // Not `state`: the contract reserves that key for the building lifecycle enum, and
+                // a tree's vocabulary (Teen/Adult/Elderly/Dead/Stump/Collected) is a different one.
+                // A sapling has no flag set at all, where ToString() yields "0" — omit rather than
+                // emit a meaningless value, since `growth` already carries the information.
+                // （不使用 `state`：該鍵在契約中保留給建築生命週期枚舉，樹木的詞彙與之不同。
+                //   幼苗未設任何旗標，ToString() 會得到 "0"，此時略過而非寫出無意義的值。）
+                string treeState = tree.m_State.ToString();
+                if (!string.IsNullOrEmpty(treeState) && !char.IsDigit(treeState[0]))
+                    record.Attributes["treeState"] = treeState;
             }
 
             if (EntityManager.HasComponent<Game.Buildings.Building>(entity))
@@ -220,6 +252,29 @@ namespace Carto.Systems
                 else if (EntityManager.HasComponent<Game.Objects.UnderConstruction>(entity)) record.Attributes["state"] = "construction";
                 else record.Attributes["state"] = "normal";
             }
+        }
+
+        /// <summary>
+        /// List the component types present on an entity, for diagnostics.
+        /// （列出實體上存在的元件型別，供診斷使用。）
+        /// </summary>
+        /// <param name="entity">The entity to describe.（待描述的實體。）</param>
+        /// <returns>The type names.（型別名稱。）</returns>
+        private List<string> DescribeComponents(Entity entity)
+        {
+            List<string> names = new();
+            NativeArray<ComponentType> types = EntityManager.GetComponentTypes(entity, Allocator.TempJob);
+            try
+            {
+                foreach (ComponentType type in types) names.Add(type.GetManagedType()?.Name ?? type.ToString());
+            }
+            finally
+            {
+                types.Dispose();
+            }
+
+            names.Sort(StringComparer.Ordinal);
+            return names;
         }
 
         /// <summary>

@@ -31,6 +31,12 @@ namespace Carto.IO
         public int Count { get; private set; }
 
         /// <summary>
+        /// The number of rotations that had to be normalised before writing.
+        /// （寫出前必須正規化的旋轉數量。）
+        /// </summary>
+        public int NormalizedRotations { get; private set; }
+
+        /// <summary>
         /// Open a JSON Lines file for writing.
         /// （開啟 JSON Lines 檔案以供寫入。）
         /// </summary>
@@ -59,7 +65,7 @@ namespace Carto.IO
                 ["assetId"] = record.AssetId,
                 ["kind"] = record.Kind,
                 ["pos"] = Round(record.Position),
-                ["rot"] = Round(record.Rotation)
+                ["rot"] = Round(Normalize(record.Rotation))
             };
 
             if (record.Parent.HasValue) line["parent"] = record.Parent.Value;
@@ -67,6 +73,27 @@ namespace Carto.IO
 
             _writer.WriteLine(JsonConvert.SerializeObject(line, Formatting.None));
             Count++;
+        }
+
+        /// <summary>
+        /// Return a unit-length rotation, normalising if the game's value has drifted.
+        /// （回傳單位長度的旋轉，若遊戲提供的值已偏移則予以正規化。）<br/><br/>
+        /// The contract requires unit quaternions and a validator enforces it, so guaranteeing that
+        /// here is the producer's job. A degenerate rotation is replaced with identity rather than
+        /// written as NaN, which would make the whole line unparseable.<br/>
+        /// （契約要求單位四元數並由驗證器檢查，故此處由生產端負責保證。退化的旋轉會以單位旋轉取代，
+        /// 而非寫出會使整行無法解析的 NaN。）
+        /// </summary>
+        private quaternion Normalize(quaternion rotation)
+        {
+            float4 v = rotation.value;
+            float lengthSquared = math.dot(v, v);
+
+            if (math.abs(lengthSquared - 1f) <= 1e-6f) return rotation;
+
+            NormalizedRotations++;
+            if ((lengthSquared <= math.FLT_MIN_NORMAL) || !math.isfinite(lengthSquared)) return quaternion.identity;
+            return new quaternion(v * math.rsqrt(lengthSquared));
         }
 
         /// <summary>
