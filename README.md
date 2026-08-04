@@ -18,6 +18,27 @@
 * **Multiple file formats** – Supports GeoJSON and ESRI Shapefile for vector data; GeoTIFF for raster data.
 * **Projection support** – Uses WGS84 / UTM (EPSG: 326xx / 327xx) by default. Custom Transverse Mercator projections are also supported.
 
+## World Ripper (this fork)
+
+This fork extends Carto from a vector-geodata exporter into a **full world ripper**: beside the
+existing GeoJSON/Shapefile/GeoTIFF output, it walks the loaded city in-engine and writes real
+meshes, materials/textures, per-instance transforms and full attributes into a single,
+versioned, engine-neutral **CS2 World Bundle**.
+
+* The bundle contract is frozen and documented in **[`docs/bundle-schema.md`](docs/bundle-schema.md)**,
+  with JSON Schemas in [`docs/schema/`](docs/schema/) and a complete minimal example bundle in
+  [`docs/example-bundle/`](docs/example-bundle/). A consumer can be built against those alone —
+  no game, no mod source.
+* Validate any bundle with `python tools/validate_bundle.py <bundle_dir>` (standard library only).
+* Downstream consumers (Blender importers, level builders for other engines) are deliberately
+  **out of scope** for this repository. The bundle is the entire interface.
+* **Local and personal use only.** The ripper extracts assets from your own copy of the game for
+  interoperability with software you own. Do not publish, upload or redistribute ripped meshes
+  or textures, and never commit them to a repository.
+
+Implementation follows the phased plan in [`PLAN.md`](PLAN.md); the export path is still being
+built out, and vanilla Carto's vector/raster export is unaffected.
+
 ## Installation
 
 Carto is available exclusively via [Paradox Mods](https://mods.paradoxplaza.com/mods/87428/Windows), the official distribution platform. You can install it through the in-game mod browser, their website, or via [Skyve](https://github.com/JadHajjar/Skyve).

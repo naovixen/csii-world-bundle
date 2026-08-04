@@ -1,0 +1,102 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://taipei-native.github.io/carto-ripper/schema/v1/instance.schema.json",
+  "title": "CS2 World Bundle instance record",
+  "description": "One line of instances.jsonl. The file is JSON Lines: one complete JSON object per line, no enclosing array, so a huge city streams. This schema validates a single line.",
+  "type": "object",
+  "required": ["assetId", "kind", "pos", "rot"],
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "description": "Producer-local stable identifier of this instance (the ECS entity index). Unique within the bundle. Present so sub-objects can reference their owner.",
+      "type": "integer",
+      "minimum": 0
+    },
+    "parent": {
+      "description": "The 'id' of the owning instance when this record came from an owner's SubObject buffer (a street tree on a road, a prop on a lot, a wing of a building). Absent for free-standing instances. 'pos'/'rot' are already baked to world space either way.",
+      "type": "integer",
+      "minimum": 0
+    },
+    "assetId": {
+      "description": "Sanitised prefab name. Resolves to <layers.meshes><assetId>.glb.",
+      "$ref": "#/$defs/assetId"
+    },
+    "kind": {
+      "description": "Coarse class, for consumers that treat foliage or decals differently. Closed set in schema 1.",
+      "enum": ["building", "prop", "tree", "fence", "decal", "poi"]
+    },
+    "pos": {
+      "description": "World position in bundle-frame metres (left-handed, X=east, Y=up, Z=north).",
+      "$ref": "#/$defs/vec3"
+    },
+    "rot": {
+      "description": "World rotation as a unit quaternion [x, y, z, w] in the bundle frame.",
+      "$ref": "#/$defs/quat"
+    },
+    "scale": {
+      "description": "Per-axis scale. Omitted means [1,1,1].",
+      "$ref": "#/$defs/vec3",
+      "default": [1, 1, 1]
+    },
+    "attrs": {
+      "description": "Semantic attributes. Free-form: a consumer must ignore keys it does not know, and must not require any key to be present. The documented keys below are the ones the producer emits when available.",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "category": { "type": "string" },
+        "zone": { "type": "string" },
+        "zoning": { "type": "string" },
+        "theme": { "type": "string" },
+        "brand": { "type": "string" },
+        "level": { "type": "integer" },
+        "elevation": {
+          "description": "Terrain elevation under the instance, in metres.",
+          "type": "number"
+        },
+        "height": {
+          "description": "True height in metres, measured from the mesh bounds. Metadata attributes never override this.",
+          "type": "number"
+        },
+        "storey": { "type": "integer" },
+        "state": {
+          "enum": ["normal", "construction", "abandoned", "condemned", "destroyed"]
+        },
+        "growth": {
+          "description": "Tree growth stage, 0..1.",
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "season": { "type": "string" },
+        "address": {
+          "description": "[district, street, number].",
+          "type": "array",
+          "items": { "type": ["string", "number", "null"] },
+          "minItems": 3,
+          "maxItems": 3
+        }
+      }
+    }
+  },
+  "$defs": {
+    "vec3": {
+      "type": "array",
+      "items": { "type": "number" },
+      "minItems": 3,
+      "maxItems": 3
+    },
+    "quat": {
+      "type": "array",
+      "items": { "type": "number" },
+      "minItems": 4,
+      "maxItems": 4
+    },
+    "assetId": {
+      "description": "Filesystem-safe: ASCII alphanumerics, dot, underscore and hyphen; must start with an alphanumeric.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 180,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"
+    }
+  }
+}

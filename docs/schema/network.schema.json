@@ -1,0 +1,116 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://taipei-native.github.io/carto-ripper/schema/v1/network.schema.json",
+  "title": "CS2 World Bundle network record",
+  "description": "One line of networks.jsonl (JSON Lines). A record carries geometry in exactly one of two forms: a ripped mesh (assetId + pos + rot) or a centerline fallback (centerline + width) the consumer extrudes itself.",
+  "type": "object",
+  "required": ["kind"],
+  "additionalProperties": false,
+  "oneOf": [
+    {
+      "title": "Mesh form",
+      "required": ["assetId", "pos", "rot"],
+      "not": { "required": ["centerline"] }
+    },
+    {
+      "title": "Centerline fallback form",
+      "required": ["centerline", "width"],
+      "not": { "required": ["assetId"] }
+    }
+  ],
+  "properties": {
+    "id": {
+      "description": "Producer-local stable identifier (the ECS entity index). Unique within the bundle.",
+      "type": "integer",
+      "minimum": 0
+    },
+    "kind": {
+      "description": "'segment' is a run of network between two nodes; 'node' is a junction / intersection.",
+      "enum": ["segment", "node"]
+    },
+    "assetId": {
+      "description": "Mesh form only. Resolves to <layers.networkMeshes><assetId>.glb. Network meshes are generated per segment, so this is usually unique rather than deduped.",
+      "$ref": "#/$defs/assetId"
+    },
+    "pos": {
+      "description": "Mesh form only. World position in bundle-frame metres.",
+      "$ref": "#/$defs/vec3"
+    },
+    "rot": {
+      "description": "Mesh form only. World rotation as a unit quaternion [x, y, z, w].",
+      "$ref": "#/$defs/quat"
+    },
+    "centerline": {
+      "description": "Fallback form only. Polyline of world-space points in bundle-frame metres, from start node to end node. At least 2 points; curved segments are tessellated by the producer.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/vec3" },
+      "minItems": 2
+    },
+    "width": {
+      "description": "Fallback form only. Total network width in metres, to be extruded symmetrically about the centerline.",
+      "type": "number",
+      "exclusiveMinimum": 0
+    },
+    "startNode": {
+      "description": "'id' of the node record at the start of this segment.",
+      "type": "integer",
+      "minimum": 0
+    },
+    "endNode": {
+      "description": "'id' of the node record at the end of this segment.",
+      "type": "integer",
+      "minimum": 0
+    },
+    "attrs": {
+      "description": "Semantic attributes. Free-form: consumers must ignore unknown keys and must not require any key.",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "asset": { "type": "string" },
+        "category": { "type": "string" },
+        "form": {
+          "description": "Vertical form of the network, which a consumer needs to decide on bridges, tunnels and terrain cutting.",
+          "enum": ["normal", "elevated", "tunnel", "bridge"]
+        },
+        "lanes": { "type": "integer", "minimum": 0 },
+        "direction": { "enum": ["oneway", "twoway", "unknown"] },
+        "limit": {
+          "description": "Speed limit in km/h.",
+          "type": "number"
+        },
+        "length": {
+          "description": "Segment length in metres.",
+          "type": "number"
+        },
+        "width": {
+          "description": "Total width in metres. Also emitted in the mesh form, where the top-level 'width' is absent.",
+          "type": "number"
+        },
+        "elevation": {
+          "description": "Height of the network above terrain, in metres. Negative under terrain.",
+          "type": "number"
+        }
+      }
+    }
+  },
+  "$defs": {
+    "vec3": {
+      "type": "array",
+      "items": { "type": "number" },
+      "minItems": 3,
+      "maxItems": 3
+    },
+    "quat": {
+      "type": "array",
+      "items": { "type": "number" },
+      "minItems": 4,
+      "maxItems": 4
+    },
+    "assetId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 180,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"
+    }
+  }
+}

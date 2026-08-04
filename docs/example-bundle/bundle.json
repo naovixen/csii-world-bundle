@@ -1,0 +1,98 @@
+{
+  "schema": 1,
+  "generator": "carto-ripper example bundle generator",
+  "generatedAt": "2026-01-01T00:00:00Z",
+  "game": {
+    "name": "Cities: Skylines II",
+    "version": "1.5.7f1",
+    "mode": "Game"
+  },
+  "city": "Example City",
+  "map": "Example Map",
+  "frame": {
+    "units": "m",
+    "handedness": "left",
+    "up": "Y",
+    "axes": "X=east,Y=up,Z=north",
+    "meshFrame": {
+      "handedness": "right",
+      "conversion": "negate-x",
+      "windingReversed": true,
+      "note": "glTF requires a right-handed frame, so mesh payloads are mirrored on X. To place a mesh: v_world = T(pos) * R(rot) * S(scale) * diag(-1,1,1) * v_glb. Instance transforms, bounds and rasters are raw bundle-frame values and are NOT mirrored."
+    }
+  },
+  "geo": {
+    "crs": "EPSG:32651",
+    "projection": "UTM",
+    "tmParams": {
+      "ellipsoid": "WGS84",
+      "semiMajor": 6378137.0,
+      "inverseFlattening": 298.257223563,
+      "originLon": 123.0,
+      "originLat": 0.0,
+      "falseEasting": 500000.0,
+      "falseNorthing": 0.0,
+      "scaleFactor": 0.9996,
+      "utmZone": 51,
+      "hemisphere": "N",
+      "toWgs84": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    "originLatLon": [
+      25.033,
+      121.5654
+    ],
+    "originProjected": [
+      353128.0,
+      2770346.0
+    ],
+    "originWorld": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "north": 0.0
+  },
+  "bounds": {
+    "min": [
+      92.0,
+      12.0,
+      -368.0
+    ],
+    "max": [
+      188.0,
+      16.5,
+      -337.171573
+    ]
+  },
+  "mapSize": 14336.0,
+  "counts": {
+    "meshes": 1,
+    "materials": 1,
+    "textures": 1,
+    "instances": 2,
+    "networkSegments": 1,
+    "warnings": 0
+  },
+  "layers": {
+    "instances": "instances.jsonl",
+    "networks": "networks.jsonl",
+    "materials": "materials.json",
+    "meshes": "meshes/",
+    "textures": "textures/"
+  },
+  "ripOptions": {
+    "meshSource": "runtime",
+    "lodCap": 0,
+    "textureSizeCap": 2048,
+    "includeSubObjects": true,
+    "includeVector": false
+  }
+}

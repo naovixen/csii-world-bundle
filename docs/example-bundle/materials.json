@@ -1,0 +1,14 @@
+{
+  "carto_example_cube_mat": {
+    "baseColor": "textures/34b1ff0f92f36c0309c64d192ab5b694f7c9d9fdaef0140bd1b24ca328cfc04e.png",
+    "tint": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ],
+    "alphaMode": "opaque",
+    "doubleSided": false,
+    "flags": []
+  }
+}

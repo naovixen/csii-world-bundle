@@ -1,0 +1,276 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://taipei-native.github.io/carto-ripper/schema/v1/bundle.schema.json",
+  "title": "CS2 World Bundle manifest (bundle.json)",
+  "description": "The manifest at the root of a CS2 World Bundle. Fully specifies the coordinate frame, geo-referencing and layer index, so a consumer needs no game and no producer code.",
+  "type": "object",
+  "required": [
+    "schema",
+    "generator",
+    "generatedAt",
+    "city",
+    "frame",
+    "geo",
+    "bounds",
+    "mapSize",
+    "counts",
+    "layers"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "description": "Bundle contract version. Frozen at 1.",
+      "const": 1
+    },
+    "generator": {
+      "description": "Producer identification, e.g. \"carto-ripper 1.0.16\".",
+      "type": "string",
+      "minLength": 1
+    },
+    "generatedAt": {
+      "description": "Export wall-clock time, ISO 8601 UTC (…Z).",
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$"
+    },
+    "game": {
+      "description": "Game build the bundle was ripped from. Diagnostic only; consumers must not branch on it.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string" },
+        "version": { "type": "string" },
+        "mode": {
+          "description": "Game stage at export time.",
+          "enum": ["Game", "Editor", "MainMenu", "Other"]
+        }
+      }
+    },
+    "city": {
+      "description": "City name, as displayed in game. May be empty in the map editor.",
+      "type": "string"
+    },
+    "map": {
+      "description": "Map name, as displayed in game.",
+      "type": "string"
+    },
+    "frame": { "$ref": "#/$defs/frame" },
+    "geo": { "$ref": "#/$defs/geo" },
+    "bounds": {
+      "description": "Axis-aligned bounds of all exported content, in the bundle frame.",
+      "$ref": "#/$defs/bounds"
+    },
+    "mapSize": {
+      "description": "Playable map extent in metres (edge length of the square map).",
+      "type": "number",
+      "exclusiveMinimum": 0
+    },
+    "counts": {
+      "description": "Element counts. A consumer may use these to pre-allocate and to detect truncated bundles.",
+      "type": "object",
+      "required": ["meshes", "materials", "textures", "instances", "networkSegments"],
+      "additionalProperties": false,
+      "properties": {
+        "meshes": { "type": "integer", "minimum": 0 },
+        "materials": { "type": "integer", "minimum": 0 },
+        "textures": { "type": "integer", "minimum": 0 },
+        "instances": { "type": "integer", "minimum": 0 },
+        "networkSegments": { "type": "integer", "minimum": 0 },
+        "warnings": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "layers": {
+      "description": "Layer index. Presence of a key means the layer was exported; absence means it was not. Every value is a bundle-root-relative POSIX path; values ending in '/' are directories.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "instances": { "$ref": "#/$defs/relPath" },
+        "networks": { "$ref": "#/$defs/relPath" },
+        "materials": { "$ref": "#/$defs/relPath" },
+        "meshes": { "$ref": "#/$defs/relDir" },
+        "networkMeshes": { "$ref": "#/$defs/relDir" },
+        "textures": { "$ref": "#/$defs/relDir" },
+        "terrain": { "$ref": "#/$defs/relPath" },
+        "worldTerrain": { "$ref": "#/$defs/relPath" },
+        "surfaceIndex": { "$ref": "#/$defs/relPath" },
+        "surfaces": { "$ref": "#/$defs/relDir" },
+        "water": { "$ref": "#/$defs/relPath" },
+        "worldWater": { "$ref": "#/$defs/relPath" },
+        "vector": { "$ref": "#/$defs/relDir" },
+        "warnings": { "$ref": "#/$defs/relPath" }
+      }
+    },
+    "rasters": {
+      "description": "Geo-referencing and value semantics of the raster layers. Required if any raster layer is present in 'layers'.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "resolution": {
+          "description": "Raster cell size in metres.",
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "size": {
+          "description": "Raster dimensions in cells, [width, height].",
+          "type": "array",
+          "items": { "type": "integer", "exclusiveMinimum": 0 },
+          "minItems": 2,
+          "maxItems": 2
+        },
+        "originWorld": {
+          "description": "Bundle-frame world position of the raster's top-left cell centre. Row 0 runs toward -Z (south).",
+          "$ref": "#/$defs/vec3"
+        },
+        "elevationUnits": { "const": "m" },
+        "noData": {
+          "description": "Sentinel value for cells with no data.",
+          "type": "number"
+        }
+      }
+    },
+    "ripOptions": {
+      "description": "Provenance: the rip options actually in force for this export.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "meshSource": {
+          "description": "Where mesh geometry came from. 'stub' means placeholder geometry was substituted; instance transforms are still authoritative.",
+          "enum": ["runtime", "offline", "mixed", "stub"]
+        },
+        "lodCap": {
+          "description": "Highest LOD index exported per mesh. 0 = LOD0 only.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "textureSizeCap": {
+          "description": "Longest texture edge in pixels after downscaling. 0 = uncapped.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "includeSubObjects": { "type": "boolean" },
+        "includeVector": { "type": "boolean" }
+      }
+    }
+  },
+  "$defs": {
+    "vec3": {
+      "type": "array",
+      "items": { "type": "number" },
+      "minItems": 3,
+      "maxItems": 3
+    },
+    "bounds": {
+      "type": "object",
+      "required": ["min", "max"],
+      "additionalProperties": false,
+      "properties": {
+        "min": { "$ref": "#/$defs/vec3" },
+        "max": { "$ref": "#/$defs/vec3" }
+      }
+    },
+    "relPath": {
+      "description": "Bundle-root-relative POSIX path to a file. No leading slash, no '..' segment.",
+      "type": "string",
+      "pattern": "^(?!/)(?!.*(^|/)\\.\\.(/|$))[A-Za-z0-9._\\-/]+[^/]$"
+    },
+    "relDir": {
+      "description": "Bundle-root-relative POSIX path to a directory, with a trailing slash.",
+      "type": "string",
+      "pattern": "^(?!/)(?!.*(^|/)\\.\\.(/|$))[A-Za-z0-9._\\-/]+/$"
+    },
+    "frame": {
+      "description": "The coordinate frame of every position in this bundle. Stated literally so consumers convert deterministically.",
+      "type": "object",
+      "required": ["units", "handedness", "up", "axes", "meshFrame"],
+      "additionalProperties": false,
+      "properties": {
+        "units": { "const": "m" },
+        "handedness": {
+          "description": "CS2/Unity world space is left-handed.",
+          "const": "left"
+        },
+        "up": { "const": "Y" },
+        "axes": { "const": "X=east,Y=up,Z=north" },
+        "meshFrame": {
+          "description": "glTF mandates a right-handed frame, so mesh payloads are stored converted. Instance transforms, bounds and rasters are NOT converted — they are raw bundle-frame values.",
+          "type": "object",
+          "required": ["handedness", "conversion", "windingReversed"],
+          "additionalProperties": false,
+          "properties": {
+            "handedness": { "const": "right" },
+            "conversion": {
+              "description": "Applied to every vertex position, normal and tangent when writing meshes/*.glb and networks/*.glb.",
+              "const": "negate-x"
+            },
+            "windingReversed": {
+              "description": "Triangle winding was reversed to compensate for the mirror, so glTF front faces stay counter-clockwise.",
+              "const": true
+            },
+            "note": { "type": "string" }
+          }
+        }
+      }
+    },
+    "geo": {
+      "description": "World-to-geographic anchoring. Applies to instance positions, mesh placements and rasters alike.",
+      "type": "object",
+      "required": ["crs", "originLatLon", "originWorld", "north"],
+      "additionalProperties": false,
+      "properties": {
+        "crs": {
+          "description": "Target CRS, e.g. \"EPSG:32651\", \"EPSG:4326\" or \"custom-TM\".",
+          "type": "string",
+          "minLength": 1
+        },
+        "projection": { "enum": ["TransverseMercator", "UTM", "WGS84"] },
+        "tmParams": {
+          "description": "Transverse-Mercator parameters, present when projection is TransverseMercator or UTM.",
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "ellipsoid": { "type": "string" },
+            "semiMajor": { "type": "number" },
+            "inverseFlattening": { "type": "number" },
+            "originLon": { "type": "number" },
+            "originLat": { "type": "number" },
+            "falseEasting": { "type": "number" },
+            "falseNorthing": { "type": "number" },
+            "scaleFactor": { "type": "number" },
+            "utmZone": { "type": "integer", "minimum": 1, "maximum": 60 },
+            "hemisphere": { "enum": ["N", "S"] },
+            "toWgs84": {
+              "description": "Helmert transform, 7 parameters (dx,dy,dz,rx,ry,rz,ds). All zero when none applies.",
+              "type": "array",
+              "items": { "type": "number" },
+              "minItems": 7,
+              "maxItems": 7
+            }
+          }
+        },
+        "originLatLon": {
+          "description": "[latitude, longitude] in WGS84 of the point given by originWorld.",
+          "type": "array",
+          "items": { "type": "number" },
+          "minItems": 2,
+          "maxItems": 2
+        },
+        "originProjected": {
+          "description": "[easting, northing] in 'crs' of the point given by originWorld.",
+          "type": "array",
+          "items": { "type": "number" },
+          "minItems": 2,
+          "maxItems": 2
+        },
+        "originWorld": {
+          "description": "Bundle-frame position that originLatLon / originProjected refer to. Normally [0,0,0].",
+          "$ref": "#/$defs/vec3"
+        },
+        "north": {
+          "description": "Degrees to rotate the bundle's +Z axis, counter-clockwise about +Y, to reach geographic north. 0 means +Z already points north.",
+          "type": "number",
+          "minimum": -360,
+          "maximum": 360
+        }
+      }
+    }
+  }
+}

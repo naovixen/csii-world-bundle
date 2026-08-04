@@ -1,2 +1,8 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# The example bundle is a byte-exact contract artefact: a texture's file name is the SHA-256
+# of its own bytes, and the .glb header carries the file's total length. Line-ending
+# normalisation would break both, so keep every byte in it verbatim on every platform.
+docs/example-bundle/** -text
+*.glb binary

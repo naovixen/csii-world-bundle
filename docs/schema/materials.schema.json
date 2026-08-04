@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://taipei-native.github.io/carto-ripper/schema/v1/materials.schema.json",
+  "title": "CS2 World Bundle material table (materials.json)",
+  "description": "A flat object keyed by materialId. A mesh primitive in meshes/*.glb references a material by putting the materialId in the glTF material's 'name'.",
+  "type": "object",
+  "propertyNames": { "$ref": "#/$defs/materialId" },
+  "additionalProperties": { "$ref": "#/$defs/material" },
+  "$defs": {
+    "materialId": {
+      "description": "Sanitised material name: ASCII alphanumerics, dot, underscore and hyphen; must start with an alphanumeric.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 180,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"
+    },
+    "texRef": {
+      "description": "Bundle-root-relative POSIX path into the texture directory, e.g. \"textures/<sha256>.png\".",
+      "type": "string",
+      "pattern": "^(?!/)(?!.*(^|/)\\.\\.(/|$))[A-Za-z0-9._\\-/]+\\.png$"
+    },
+    "material": {
+      "description": "A CS2 PBR material reduced to a small documented set. Every map is optional; a consumer substitutes its own default for anything absent.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "baseColor": {
+          "description": "Albedo / diffuse map. sRGB.",
+          "$ref": "#/$defs/texRef"
+        },
+        "normal": {
+          "description": "Tangent-space normal map. Linear, OpenGL convention (+Y up).",
+          "$ref": "#/$defs/texRef"
+        },
+        "mask": {
+          "description": "CS2 control/MADS map. Linear. Channel semantics are fixed: R=metallic, G=ambient occlusion, B=detail//emissive mask, A=smoothness (roughness = 1 - A).",
+          "$ref": "#/$defs/texRef"
+        },
+        "emissive": {
+          "description": "Emissive map. sRGB.",
+          "$ref": "#/$defs/texRef"
+        },
+        "tint": {
+          "description": "Multiplied into baseColor. Linear RGBA in 0..1. Omitted means [1,1,1,1].",
+          "type": "array",
+          "items": { "type": "number", "minimum": 0, "maximum": 1 },
+          "minItems": 4,
+          "maxItems": 4,
+          "default": [1, 1, 1, 1]
+        },
+        "emissiveFactor": {
+          "description": "Multiplied into emissive. Linear RGB in 0..1.",
+          "type": "array",
+          "items": { "type": "number", "minimum": 0 },
+          "minItems": 3,
+          "maxItems": 3
+        },
+        "alphaMode": {
+          "description": "'mask' uses alphaCutoff; 'blend' is order-dependent transparency.",
+          "enum": ["opaque", "mask", "blend"],
+          "default": "opaque"
+        },
+        "alphaCutoff": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "default": 0.5
+        },
+        "doubleSided": {
+          "type": "boolean",
+          "default": false
+        },
+        "flags": {
+          "description": "Producer hints a consumer may act on or ignore. Known values in schema 1: 'foliage' (wind-animated / alpha-tested vegetation), 'decal' (projected surface, no thickness), 'glass', 'emissiveWindows' (night-lit windows driven by the emissive map), 'terrainBlend' (blends into the ground surface), 'colorVariation' (per-instance tint applied by the game).",
+          "type": "array",
+          "items": { "type": "string" },
+          "uniqueItems": true
+        }
+      }
+    }
+  }
+}
