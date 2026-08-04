@@ -63,7 +63,15 @@ namespace Carto.Systems
                     // （會移動者為車輛與市民，並非世界幾何；Deleted 與 Temp 為編輯中的暫存狀態。）
                     ComponentType.ReadOnly<Moving>(),
                     ComponentType.ReadOnly<Game.Common.Deleted>(),
-                    ComponentType.ReadOnly<Game.Tools.Temp>()
+                    ComponentType.ReadOnly<Game.Tools.Temp>(),
+
+                    // Markers — spawn points, pedestrian access, pipe and cable nodes — are editor
+                    // gizmos the game never draws. They are numerous enough to reach the top of the
+                    // prefab usage table, so keeping them would scatter stand-in boxes across the
+                    // whole reconstruction in exchange for nothing anyone can see.
+                    // （標記物——生成點、行人出入口、管線與電纜節點——是遊戲從不繪製的編輯器示意物。
+                    //   其數量足以躋身預製模板使用量前列，保留它們只會使重建成果佈滿無人可見的替代方塊。）
+                    ComponentType.ReadOnly<Marker>()
                 }
             });
 

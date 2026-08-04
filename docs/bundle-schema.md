@@ -240,6 +240,13 @@ Ground detail and grass are rendered by the game as a terrain surface layer, not
 objects. They appear in `terrain/surface_index.png` plus the ground textures (§8), **never**
 in `instances.jsonl`. Do not expect per-blade instances.
 
+**Markers are excluded.** Spawn points, pedestrian access points, and pipe, cable and network
+nodes are simulation anchors the game never draws, and a city holds enough of them that they
+outnumber most real props. A bundle contains **visible world geometry only**, so they appear
+in neither `instances.jsonl` nor `meshes/`. A consumer therefore never has to recognise and
+filter them, and the object count in a bundle is deliberately lower than the game's own
+internal object count. Building, tree and prop counts are unaffected.
+
 ---
 
 ## 5. `networks.jsonl`

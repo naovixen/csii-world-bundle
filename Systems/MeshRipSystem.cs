@@ -106,7 +106,8 @@ namespace Carto.Systems
                 {
                     ComponentType.ReadOnly<Moving>(),
                     ComponentType.ReadOnly<Game.Common.Deleted>(),
-                    ComponentType.ReadOnly<Game.Tools.Temp>()
+                    ComponentType.ReadOnly<Game.Tools.Temp>(),
+                    ComponentType.ReadOnly<Marker>()
                 }
             });
 
