@@ -405,3 +405,8 @@ Styles.zip
 
 # Posponed UI Project
 UI/
+# JetBrains Rider / IntelliJ local IDE state
+.idea/
+
+# ILPP's process id, rewritten by every build
+Library/ilpp.pid
