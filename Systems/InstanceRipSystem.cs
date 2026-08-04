@@ -71,7 +71,18 @@ namespace Carto.Systems
                     // whole reconstruction in exchange for nothing anyone can see.
                     // （標記物——生成點、行人出入口、管線與電纜節點——是遊戲從不繪製的編輯器示意物。
                     //   其數量足以躋身預製模板使用量前列，保留它們只會使重建成果佈滿無人可見的替代方塊。）
-                    ComponentType.ReadOnly<Marker>()
+                    ComponentType.ReadOnly<Marker>(),
+
+                    // Agents, not scenery. `Moving` only excludes the ones in motion at the instant
+                    // of export — a citizen waiting at a stop and a parked car have no `Moving`, so
+                    // they were being written into the bundle as world geometry. A level is the
+                    // built environment; the traffic and pedestrians passing through it at the
+                    // moment someone pressed the button are not part of it.
+                    // （這些是行為者而非場景。`Moving` 僅排除輸出當下正在移動者：等車的市民與停放的車輛
+                    //   皆無 `Moving`，因而被當作世界幾何寫入束中。關卡是既有的建成環境，
+                    //   按下按鈕當下恰好經過的車流與行人並不屬於它。）
+                    ComponentType.ReadOnly<Game.Creatures.Creature>(),
+                    ComponentType.ReadOnly<Game.Vehicles.Vehicle>()
                 }
             });
 

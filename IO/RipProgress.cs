@@ -208,13 +208,33 @@ namespace Carto.IO
         {
             try
             {
-                ResolveBinding()?.Update(key);
+                ValueBinding<string> binding = ResolveBinding();
+                if (binding == null) return;
+
+                binding.Update(key);
+
+                // Say once, out loud, that a caption really did reach the binding. Every failure
+                // path here used to be silent, which made "no indicator appeared" indistinguishable
+                // from "the indicator appeared and you looked away".
+                // （明確記錄一次說明文字確實已送達繫結。此處先前每條失敗路徑皆無聲，
+                //   使「未出現指示器」與「指示器出現但未被看見」無從區分。）
+                if (!_pushLogged && (key != null))
+                {
+                    _pushLogged = true;
+                    _log.Info($"Background-process indicator updated with `{key}`; translated = `{Carto.Utils.LocaleUtils.Translate(key)}`. 已更新背景程序指示器。");
+                }
             }
             catch (Exception ex)
             {
-                _log.Debug($"Could not update the background-process indicator: {ex.Message}");
+                _log.Warn($"Could not update the background-process indicator: {ex}");
             }
         }
+
+        /// <summary>
+        /// Whether the first successful push has already been logged.
+        /// （首次成功推送是否已被記錄。）
+        /// </summary>
+        private static bool _pushLogged;
 
         /// <summary>
         /// The game's background-process binding, resolved once and cached.
@@ -241,7 +261,16 @@ namespace Carto.IO
         private static ValueBinding<string> ResolveBinding()
         {
             Game.UI.AppBindings bindings = Instance.UI?.appBindings;
-            if (bindings == null) return null;
+            if (bindings == null)
+            {
+                if (!_bindingsMissingLogged)
+                {
+                    _bindingsMissingLogged = true;
+                    _log.Info("AppBindings is not available yet; the progress indicator will stay hidden. 目前無法取得 AppBindings，進度指示器將維持隱藏。");
+                }
+
+                return null;
+            }
 
             if (_bindingResolved) return _binding;
             _bindingResolved = true;
@@ -258,8 +287,21 @@ namespace Carto.IO
                 return null;
             }
 
-            _binding = field.GetValue(bindings) as ValueBinding<string>;
+            object value = field.GetValue(bindings);
+            _binding = value as ValueBinding<string>;
+
+            if (_binding == null)
+            {
+                _log.Info($"The background-process binding did not cast to ValueBinding<string> (it is {value?.GetType().FullName ?? "null"}); rips will run without an on-screen caption. 背景程序繫結的型別不符，擷取將不顯示畫面說明文字。");
+            }
+
             return _binding;
         }
+
+        /// <summary>
+        /// Whether the missing-<c>AppBindings</c> notice has already been logged.
+        /// （缺少 <c>AppBindings</c> 的提示是否已被記錄。）
+        /// </summary>
+        private static bool _bindingsMissingLogged;
     }
 }
