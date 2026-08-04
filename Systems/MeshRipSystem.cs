@@ -146,22 +146,22 @@ namespace Carto.Systems
 
                     try
                     {
-                        MeshAsset mesh = ReadMesh(meshEntity, assetId, meshName);
+                        // Trace every hop on the first failure. Guessing twice at a structure the
+                        // game can simply be asked about is how a spike stalls.
+                        // （於首次失敗時記錄每一次跳轉。對於可直接詢問遊戲的結構重複猜測，
+                        //   正是驗證停滯的原因。）
+                        List<string> trace = diagnosedOnce ? null : new();
+                        MeshAsset mesh = ReadMesh(meshEntity, assetId, meshName, trace);
                         if (mesh == null)
                         {
                             meshesSkipped++;
                             report.AppendLine($"      - {assetId}: no geometry buffers");
 
-                            // Dump what the entity actually carries, once. Guessing twice at a
-                            // structure the game can simply be asked about is how a spike stalls.
-                            // （傾印實體實際帶有的元件一次。對於可直接詢問遊戲的結構重複猜測，
-                            //   正是驗證停滯的原因。）
                             if (!diagnosedOnce)
                             {
                                 diagnosedOnce = true;
-                                report.AppendLine($"        components on {assetId}:");
-                                foreach (string component in DescribeComponents(meshEntity))
-                                    report.AppendLine($"          {component}");
+                                report.AppendLine($"        resolution trace for {assetId}:");
+                                foreach (string hop in trace) report.AppendLine($"          {hop}");
                             }
                             continue;
                         }
@@ -170,7 +170,7 @@ namespace Carto.Systems
                         long size = GltfWriter.Write(path, mesh);
                         bytesWritten += size;
                         meshesWritten++;
-                        report.AppendLine($"      + {assetId}: {mesh.Vertices.Length} verts, {mesh.TriangleCount} tris, {mesh.Primitives.Count} prim, {size} B");
+                        report.AppendLine($"      + {assetId}: {mesh.Vertices.Length} verts, {mesh.TriangleCount} tris, {mesh.Primitives.Count} prim, LOD{mesh.Lod}, {size} B");
                     }
                     catch (Exception ex)
                     {
@@ -187,6 +187,66 @@ namespace Carto.Systems
 
             _log.Info(report.ToString());
             return report.ToString();
+        }
+
+        /// <summary>
+        /// Find the entity that actually holds geometry buffers, starting from a sub-mesh entity.
+        /// （自子網格實體出發，尋找真正持有幾何緩衝區的實體。）<br/><br/>
+        /// A render prefab entity is a container: it carries <c>MeshData</c>, a <c>LodMesh</c>
+        /// buffer of per-LOD entities and a <c>SharedMeshData</c> pointer, but frequently no
+        /// vertices of its own. Geometry hangs off one of those references, so follow them —
+        /// <c>SharedMeshData</c> first, then LOD 0 — until a real vertex buffer turns up.<br/>
+        /// （繪製預製模板實體是一個容器：帶有 <c>MeshData</c>、逐 LOD 實體的 <c>LodMesh</c> 緩衝區
+        /// 與 <c>SharedMeshData</c> 指標，但往往不含自身的頂點。幾何掛在其中一個參照之下。）
+        /// </summary>
+        /// <param name="entity">The entity to start from.（起始實體。）</param>
+        /// <param name="geometry">The entity holding the geometry buffers.（持有幾何緩衝區的實體。）</param>
+        /// <param name="lod">The LOD level reached, <c>0</c> for full detail.（抵達的 LOD 層級，<c>0</c> 為完整細節。）</param>
+        /// <param name="trace">Optional sink recording each hop, for diagnostics.（可選的走訪紀錄，供診斷使用。）</param>
+        /// <param name="depth">The current recursion depth.（目前的遞迴深度。）</param>
+        /// <returns>Whether geometry was found.（是否找到幾何。）</returns>
+        private bool TryResolveGeometry(Entity entity, out Entity geometry, out int lod, List<string> trace, int depth = 0)
+        {
+            geometry = Entity.Null;
+            lod = 0;
+
+            if ((entity == Entity.Null) || (depth > 4)) return false;
+
+            if (EntityManager.HasBuffer<MeshVertex>(entity) && EntityManager.HasBuffer<MeshIndex>(entity))
+            {
+                if ((EntityManager.GetBuffer<MeshVertex>(entity, true).Length > 0)
+                 && (EntityManager.GetBuffer<MeshIndex>(entity, true).Length > 0))
+                {
+                    geometry = entity;
+                    trace?.Add($"depth {depth}: geometry found on entity {entity.Index}");
+                    return true;
+                }
+            }
+
+            trace?.Add($"depth {depth}: entity {entity.Index} [{string.Join(", ", DescribeComponents(entity))}]");
+
+            if (EntityManager.HasComponent<SharedMeshData>(entity))
+            {
+                Entity shared = EntityManager.GetComponentData<SharedMeshData>(entity).m_Mesh;
+                if ((shared != entity) && TryResolveGeometry(shared, out geometry, out lod, trace, depth + 1)) return true;
+            }
+
+            if (EntityManager.HasBuffer<LodMesh>(entity))
+            {
+                DynamicBuffer<LodMesh> lods = EntityManager.GetBuffer<LodMesh>(entity, true);
+                for (int i = 0; i < lods.Length; i++)
+                {
+                    Entity lodEntity = lods[i].m_LodMesh;
+                    if ((lodEntity == entity) || (lodEntity == Entity.Null)) continue;
+                    if (TryResolveGeometry(lodEntity, out geometry, out _, trace, depth + 1))
+                    {
+                        lod = i;
+                        return true;
+                    }
+                }
+            }
+
+            return false;
         }
 
         /// <summary>
@@ -279,14 +339,12 @@ namespace Carto.Systems
         /// <param name="assetId">The sanitised asset id.（淨化後的資產 ID。）</param>
         /// <param name="sourceName">The original prefab name.（原始的預製模板名稱。）</param>
         /// <returns>The mesh, or <c>null</c> when the entity carries no geometry.（網格，若實體沒有幾何則為 <c>null</c>。）</returns>
-        public MeshAsset ReadMesh(Entity meshEntity, string assetId, string sourceName)
+        public MeshAsset ReadMesh(Entity meshEntity, string assetId, string sourceName, List<string> trace = null)
         {
-            if (!EntityManager.HasBuffer<MeshVertex>(meshEntity)) return null;
-            if (!EntityManager.HasBuffer<MeshIndex>(meshEntity)) return null;
+            if (!TryResolveGeometry(meshEntity, out Entity geometryEntity, out int lod, trace)) return null;
 
-            DynamicBuffer<MeshVertex> vertices = EntityManager.GetBuffer<MeshVertex>(meshEntity, true);
-            DynamicBuffer<MeshIndex> indices = EntityManager.GetBuffer<MeshIndex>(meshEntity, true);
-            if ((vertices.Length == 0) || (indices.Length == 0)) return null;
+            DynamicBuffer<MeshVertex> vertices = EntityManager.GetBuffer<MeshVertex>(geometryEntity, true);
+            DynamicBuffer<MeshIndex> indices = EntityManager.GetBuffer<MeshIndex>(geometryEntity, true);
 
             MeshAsset mesh = new()
             {
@@ -299,9 +357,9 @@ namespace Carto.Systems
             for (int i = 0; i < vertices.Length; i++) mesh.Vertices[i] = vertices[i].m_Vertex;
             for (int i = 0; i < indices.Length; i++) mesh.Indices[i] = indices[i].m_Index;
 
-            if (EntityManager.HasBuffer<MeshNormal>(meshEntity))
+            if (EntityManager.HasBuffer<MeshNormal>(geometryEntity))
             {
-                DynamicBuffer<MeshNormal> normals = EntityManager.GetBuffer<MeshNormal>(meshEntity, true);
+                DynamicBuffer<MeshNormal> normals = EntityManager.GetBuffer<MeshNormal>(geometryEntity, true);
                 if (normals.Length == vertices.Length)
                 {
                     mesh.Normals = new float3[normals.Length];
@@ -309,9 +367,9 @@ namespace Carto.Systems
                 }
             }
 
-            if (EntityManager.HasBuffer<MeshUV0>(meshEntity))
+            if (EntityManager.HasBuffer<MeshUV0>(geometryEntity))
             {
-                DynamicBuffer<MeshUV0> uvs = EntityManager.GetBuffer<MeshUV0>(meshEntity, true);
+                DynamicBuffer<MeshUV0> uvs = EntityManager.GetBuffer<MeshUV0>(geometryEntity, true);
                 if (uvs.Length == vertices.Length)
                 {
                     mesh.Uvs = new float2[uvs.Length];
@@ -319,9 +377,9 @@ namespace Carto.Systems
                 }
             }
 
-            if (EntityManager.HasBuffer<MeshTangent>(meshEntity))
+            if (EntityManager.HasBuffer<MeshTangent>(geometryEntity))
             {
-                DynamicBuffer<MeshTangent> tangents = EntityManager.GetBuffer<MeshTangent>(meshEntity, true);
+                DynamicBuffer<MeshTangent> tangents = EntityManager.GetBuffer<MeshTangent>(geometryEntity, true);
                 if (tangents.Length == vertices.Length)
                 {
                     mesh.Tangents = new float4[tangents.Length];
@@ -329,9 +387,9 @@ namespace Carto.Systems
                 }
             }
 
-            if (EntityManager.HasBuffer<MeshMaterial>(meshEntity))
+            if (EntityManager.HasBuffer<MeshMaterial>(geometryEntity))
             {
-                DynamicBuffer<MeshMaterial> materials = EntityManager.GetBuffer<MeshMaterial>(meshEntity, true);
+                DynamicBuffer<MeshMaterial> materials = EntityManager.GetBuffer<MeshMaterial>(geometryEntity, true);
                 for (int i = 0; i < materials.Length; i++)
                 {
                     MeshMaterial material = materials[i];
