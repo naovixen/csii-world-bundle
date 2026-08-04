@@ -128,6 +128,16 @@ namespace Carto.Systems
 
             /// <summary>Everything that produced no entry, and why.（所有未產出條目者及其原因。）</summary>
             public List<RipWarning> Skipped = new();
+
+            /// <summary>
+            /// Texture keys already declared missing.（已宣告為缺失的貼圖索引鍵。）<br/><br/>
+            /// Locating a map runs once per surface that references it, but a gap is a property of
+            /// the texture, not of each surface that wanted it — without this a map shared by two
+            /// hundred surfaces would be declared two hundred times.<br/>
+            /// （定位貼圖的動作會在每個參照它的表面上各執行一次，但缺口是貼圖本身的性質，
+            /// 而非每個需要它的表面的性質；若無此集合，由兩百個表面共用的貼圖將被宣告兩百次。）
+            /// </summary>
+            public HashSet<string> Declared = new();
         }
 
         /// <summary>
@@ -392,43 +402,47 @@ namespace Carto.Systems
         {
             if (!surface.TryGetTexture(property, out TextureAsset texture) || (texture == null)) return null;
 
-            string key = Identity(texture);
+            // Locate before claiming. For a virtual-textured map the identity that matters is the
+            // preprocessed texture's, not the stub's — two surfaces sharing a packed layer hold
+            // different stubs pointing at the same pixels, and keying on the stub reads those
+            // pixels once per surface. A full-city rip made that concrete: 1,020 readbacks
+            // produced 321 distinct images, so two thirds of the most expensive work in the phase
+            // was spent re-decoding textures already in hand.
+            // （先定位再取用。虛擬貼圖真正重要的識別是預處理貼圖的識別，而非殘根的：
+            //   共用同一封裝層的兩個表面持有指向相同像素的不同殘根，以殘根為鍵將使該像素
+            //   每個表面各讀一次。全城擷取已具體證實：1,020 次回讀僅產生 321 張相異影像，
+            //   此階段最昂貴的工作有三分之二耗費在重新解碼早已在手的貼圖上。）
+            TextureSource source = Locate(run, surface, property, texture);
+            if (source.Key == null) return null;
 
-            // Claim before reading: a texture shared by fifty surfaces must be read back once, and
-            // the claim is what the other forty-nine see. A claim that goes on to fail is still
-            // worth keeping — it stops the next forty-nine retrying a lookup already known to lose.
-            // （先取用再讀取：由五十個表面共用的貼圖只須回讀一次，其餘四十九次所見的即是此取用標記。
-            //   即使取用後失敗仍值得保留：可避免其餘四十九次重試已知會失敗的查找。）
-            if (!run.Textures.Claim(key)) return key;
-
-            TextureAsset source = Bind(run, surface, property, texture, key);
+            // A claim that goes on to fail is still worth keeping: it stops every later surface
+            // retrying a lookup already known to lose.
+            // （即使取用後失敗仍值得保留：可避免其後每個表面重試已知會失敗的查找。）
+            if (!run.Textures.Claim(source.Key)) return source.Key;
 
             Stopwatch clock = Stopwatch.StartNew();
             try
             {
-                // A standalone asset is read directly; a virtual-textured map has no standalone
-                // asset and is read out of its preprocessed stack instead.
-                // （獨立資產直接讀取；虛擬貼圖沒有獨立資產，改自其預處理堆疊讀取。）
-                PendingTexture pending = (source != null)
-                    ? ReadBack(source, key, run.TextureSizeCap)
-                    : ReadBackVirtual(run, surface, property, key);
+                PendingTexture pending = source.IsVirtual
+                    ? ReadBackVirtual(run, source, surface.name, property)
+                    : ReadBack(source.Standalone, source.Key, run.TextureSizeCap);
 
                 if (pending == null) return null;
 
                 run.Enqueue(pending);
                 run.TexturesRead++;
-                return key;
+                return source.Key;
             }
             catch (Exception ex)
             {
-                run.Skipped.Add(new RipWarning("texture", Describe(source, key), $"{ex.GetType().Name} {ex.Message}"));
+                Skip(run, source.Key, $"{property}: {ex.GetType().Name} {ex.Message}");
 
                 // Log the first few in full and count the rest. A failure that hits every texture
                 // in the city writes the same stack trace thousands of times otherwise, which
                 // buries whatever else the log had to say.
                 // （前數筆完整記錄，其餘僅計數。若某項失敗遍及城市中每張貼圖，
                 //   否則將重複寫出同一段呼叫堆疊數千次，掩埋記錄檔中其他訊息。）
-                if (++run.ReadFailures <= 5) _log.Warn($"Failed to read texture `{Describe(source, key)}`: {ex}");
+                if (++run.ReadFailures <= 5) _log.Warn($"Failed to read texture `{source.Key}` ({property}): {ex}");
                 return null;
             }
             finally
@@ -438,57 +452,75 @@ namespace Carto.Systems
         }
 
         /// <summary>
-        /// Turn the texture reference a surface hands out into one that can actually be loaded, or
-        /// classify why it cannot.<br/>
-        /// （將表面資產交出的貼圖參照轉換為確實可載入者，或說明其為何不可載入。）<br/><br/>
-        /// <b>A surface's texture dictionary does not hold loadable assets.</b> Most CS2 surfaces
-        /// are virtual-textured, and for those the per-map entries are <i>dummy</i>
-        /// <see cref="TextureAsset"/>s: no name, no database, nothing behind them but a guid,
-        /// because the pixels were preprocessed into a VT stack at build time and the standalone
-        /// texture is not shipped. Calling <see cref="TextureAsset.Load(int)"/> on one dies inside
-        /// <c>AssetData.GetReadStream</c> on the null database.<br/>
-        /// （<b>表面資產的貼圖字典並不持有可載入的資產。</b>CS2 多數表面採虛擬貼圖，
-        /// 其逐貼圖條目為<i>虛設的</i> <see cref="TextureAsset"/>：沒有名稱、沒有資料庫，
-        /// 背後僅有一個 guid，因為像素於建置時已預處理進 VT 堆疊，獨立的貼圖並未隨遊戲附帶。
-        /// 對其呼叫 <see cref="TextureAsset.Load(int)"/> 會在 <c>AssetData.GetReadStream</c> 中
-        /// 因資料庫為 null 而失敗。）<br/><br/>
-        /// The game never makes that call: <c>SurfaceAsset.SyncToUnityMaterial</c> guards every
-        /// texture with <c>IsHandledByVirtualTexturing</c> and binds only the ones left over. This
-        /// does the same, and additionally tries the global asset database by guid first — a
-        /// reference can be unbound simply because the dictionary was deserialised without one,
-        /// and where that is the case the real asset is still there to be found.<br/>
-        /// （遊戲本身從不做此呼叫：<c>SurfaceAsset.SyncToUnityMaterial</c> 以
-        /// <c>IsHandledByVirtualTexturing</c> 守衛每張貼圖，僅繫結其餘者。此處作法相同，
-        /// 並額外先以 guid 查詢全域資產資料庫：參照可能僅因字典反序列化時未帶資料庫而未繫結，
-        /// 若屬此情形，真正的資產仍可被找到。）
+        /// Where one map's pixels actually live, and the identity they should be deduped under.
+        /// （某張貼圖的像素實際所在之處，以及其應據以去重的識別。）
+        /// </summary>
+        private readonly struct TextureSource
+        {
+            /// <summary>The dedup key, or <c>null</c> when there are no pixels to be had.（去重索引鍵，若無可取得的像素則為 <c>null</c>。）</summary>
+            public string Key { get; }
+
+            /// <summary>The loadable standalone asset, when there is one.（可載入的獨立資產，若存在。）</summary>
+            public TextureAsset Standalone { get; }
+
+            /// <summary>The preprocessed texture holding the pixels, when the map is virtual-textured.（貼圖為虛擬貼圖時，持有像素的預處理貼圖。）</summary>
+            public VTTextureAsset Packed { get; }
+
+            /// <summary>Whether the pixels come out of a VT stack.（像素是否來自 VT 堆疊。）</summary>
+            public bool IsVirtual => Packed != null;
+
+            private TextureSource(string key, TextureAsset standalone, VTTextureAsset packed)
+            {
+                Key = key;
+                Standalone = standalone;
+                Packed = packed;
+            }
+
+            /// <summary>A map with its own texture asset.（擁有自身貼圖資產的貼圖。）</summary>
+            public static TextureSource FromAsset(string key, TextureAsset asset) => new(key, asset, null);
+
+            /// <summary>A map packed into a virtual-texturing stack.（被封裝進虛擬貼圖堆疊的貼圖。）</summary>
+            public static TextureSource FromStack(string key, VTTextureAsset packed) => new(key, null, packed);
+
+            /// <summary>No pixels anywhere.（何處皆無像素。）</summary>
+            public static TextureSource None => default;
+        }
+
+        /// <summary>
+        /// Work out where a map's pixels are, trying each route the game itself uses.
+        /// （查明貼圖像素之所在，依序嘗試遊戲本身所使用的各條路徑。）<br/><br/>
+        /// In order: the asset the surface handed over, if it is loadable; the same guid looked up
+        /// in the global database, in case the reference was merely unbound; and failing both, the
+        /// preprocessed virtual-texturing stack the map was packed into.<br/>
+        /// （依序為：表面所交出的資產（若可載入）；於全域資料庫中查詢相同 guid（以防參照僅是未繫結）；
+        /// 若兩者皆不成，則為該貼圖所封裝進的預處理虛擬貼圖堆疊。）
         /// </summary>
         /// <param name="run">The run in progress.（進行中的工作。）</param>
-        /// <param name="surface">The surface the reference came from.（該參照的來源表面資產。）</param>
-        /// <param name="property">The shader property it sits under.（其所屬的著色器屬性。）</param>
-        /// <param name="texture">The reference to bind.（待繫結的參照。）</param>
-        /// <param name="key">Its texture key, for reporting.（其貼圖索引鍵，供回報使用。）</param>
-        /// <returns>A loadable asset, or <c>null</c>.（可載入的資產，或 <c>null</c>。）</returns>
-        private static TextureAsset Bind(MaterialRun run, SurfaceAsset surface, string property, TextureAsset texture, string key)
+        /// <param name="surface">The surface asset.（表面資產。）</param>
+        /// <param name="property">The CS2 shader property name.（CS2 著色器屬性名稱。）</param>
+        /// <param name="texture">The reference the surface handed over.（表面所交出的參照。）</param>
+        /// <returns>Where to read from, or <see cref="TextureSource.None"/>.（讀取來源，或 <see cref="TextureSource.None"/>。）</returns>
+        private static TextureSource Locate(MaterialRun run, SurfaceAsset surface, string property, TextureAsset texture)
         {
+            string key = Identity(texture);
+
             if (!IsUnbound(texture))
             {
                 run.TexturesBound++;
-                return texture;
+                return TextureSource.FromAsset(key, texture);
             }
 
             // Unbound, but the guid survives. If the standalone texture did ship, this finds it.
             // （雖未繫結，但 guid 仍在。若獨立貼圖確實隨遊戲附帶，此處即可找到。）
             try
             {
-                // Fully qualified: `using UnityEngine` brings in a different Hash128.
-                // （完整限定：`using UnityEngine` 會引入另一個同名的 Hash128。）
                 Colossal.Hash128 guid = texture.id.guid;
                 if (guid.isValid
                     && AssetDatabase.global.TryGetAsset(guid, out TextureAsset bound)
                     && (bound != null) && !IsUnbound(bound))
                 {
                     run.TexturesRebound++;
-                    return bound;
+                    return TextureSource.FromAsset(key, bound);
                 }
             }
             catch (Exception ex)
@@ -496,39 +528,107 @@ namespace Carto.Systems
                 if (run.BindFailures++ < 5) _log.Warn($"Texture guid lookup failed for `{key}`: {ex.Message}");
             }
 
-            // Nothing to load. Say which of the two reasons it is, because they call for different
-            // work: a virtual-textured map needs the VT stack decoding, while a merely missing one
-            // is a gap in the install.
-            // （無可載入者。須說明是兩種原因中的哪一種，因為兩者所需的處理不同：
-            //   虛擬貼圖需要解碼 VT 堆疊，而單純缺失者則是安裝內容的缺口。）
-            bool virtualTextured;
+            if (!IsVirtualTextured(surface, property, texture))
+            {
+                run.TexturesUnbound++;
+                Skip(run, key, $"unbound texture reference ({property}): no asset in the database for this guid");
+                return TextureSource.None;
+            }
+
+            run.TexturesVirtual++;
+            return LocateInStack(run, surface, property, key);
+        }
+
+        /// <summary>
+        /// Find the preprocessed texture a virtual-textured map was packed into.
+        /// （找出虛擬貼圖所封裝進的預處理貼圖。）<br/><br/>
+        /// The material template says where: <c>GetStackConfigIndex</c> and
+        /// <c>GetLayerIndexInStack</c> turn a shader property name into the stack and layer its map
+        /// occupies, and the surface's VT header holds a guid per slot.<br/>
+        /// （材質模板指出其位置：<c>GetStackConfigIndex</c> 與 <c>GetLayerIndexInStack</c>
+        /// 將著色器屬性名稱轉為其貼圖所占的堆疊與層，而表面的 VT 標頭於每個槽位持有一個 guid。）
+        /// </summary>
+        /// <param name="run">The run in progress.（進行中的工作。）</param>
+        /// <param name="surface">The surface asset.（表面資產。）</param>
+        /// <param name="property">The CS2 shader property name.（CS2 著色器屬性名稱。）</param>
+        /// <param name="key">The stub's key, for reporting.（殘根的索引鍵，供回報使用。）</param>
+        /// <returns>Where to read from, or <see cref="TextureSource.None"/>.（讀取來源，或 <see cref="TextureSource.None"/>。）</returns>
+        private static TextureSource LocateInStack(MaterialRun run, SurfaceAsset surface, string property, string key)
+        {
             try
             {
-                virtualTextured = surface.IsHandledByVirtualTexturing(
+                // Qualified through MaterialLibrary: the bundle's own MaterialDescription is a
+                // different type with the same short name, and Carto.Domain is in scope here.
+                // （以 MaterialLibrary 限定：束自身的 MaterialDescription 是同名的另一型別，
+                //   且 Carto.Domain 於此處在作用範圍內。）
+                MaterialLibrary.MaterialDescription description = AssetDatabase.global.resources.materialLibrary
+                    .GetMaterialDescription(surface.materialTemplateHash);
+
+                if (description == null)
+                {
+                    Skip(run, key, $"virtual-textured ({property}): no material description for template {surface.materialTemplateHash}");
+                    return TextureSource.None;
+                }
+
+                int stack = description.GetStackConfigIndex(property);
+                int layer = (stack < 0) ? -1 : description.GetLayerIndexInStack(stack, property);
+                if ((stack < 0) || (layer < 0))
+                {
+                    Skip(run, key, $"virtual-textured ({property}): the material template packs no such map");
+                    return TextureSource.None;
+                }
+
+                Colossal.Hash128 guid = surface.GetPreProcessedTextureGuid(stack, layer);
+                if (!guid.isValid)
+                {
+                    // The template declares the slot but this surface left it empty — a material
+                    // that lists an emissive map and does not use one, say.
+                    // （模板宣告了該槽位，但此表面並未填入——例如列有自發光貼圖卻未使用的材質。）
+                    Skip(run, key, $"virtual-textured ({property}): stack {stack} layer {layer} is empty on this surface");
+                    return TextureSource.None;
+                }
+
+                if (!AssetDatabase.global.TryGetAsset(guid, out VTTextureAsset packed) || (packed == null))
+                {
+                    Skip(run, key, $"virtual-textured ({property}): preprocessed texture {guid} is not in the database");
+                    return TextureSource.None;
+                }
+
+                // Keyed by the preprocessed texture, so surfaces sharing a packed layer share the
+                // readback rather than each paying for it.
+                // （以預處理貼圖為鍵，使共用同一封裝層的表面共享回讀，而非各自付出代價。）
+                return TextureSource.FromStack($"vt:{guid}", packed);
+            }
+            catch (Exception ex)
+            {
+                Skip(run, key, $"virtual-textured ({property}): {ex.GetType().Name} {ex.Message}");
+                if (run.BindFailures++ < 5) _log.Warn($"VT stack lookup failed for `{key}` ({property}): {ex}");
+                return TextureSource.None;
+            }
+        }
+
+        /// <summary>
+        /// Whether a map is one the game reads out of a virtual-texturing stack rather than from a
+        /// texture asset of its own.<br/>
+        /// （某貼圖是否為遊戲自虛擬貼圖堆疊讀取、而非自其專屬貼圖資產讀取者。）
+        /// </summary>
+        /// <param name="surface">The surface asset.（表面資產。）</param>
+        /// <param name="property">The CS2 shader property name.（CS2 著色器屬性名稱。）</param>
+        /// <param name="texture">The reference the surface handed over.（表面所交出的參照。）</param>
+        /// <returns>Whether virtual texturing owns it.（虛擬貼圖是否擁有它。）</returns>
+        private static bool IsVirtualTextured(SurfaceAsset surface, string property, TextureAsset texture)
+        {
+            try
+            {
+                return surface.IsHandledByVirtualTexturing(
                     new KeyValuePair<string, TextureAsset>(property, texture));
             }
             catch (Exception)
             {
                 // The material library could not say. Unbound-and-unknown is still unbound.
                 // （材質庫無法判定。未繫結且原因不明，仍屬未繫結。）
-                virtualTextured = false;
+                return false;
             }
-
-            if (virtualTextured)
-            {
-                // Not a failure — the pixels exist, just in the preprocessed stack rather than in a
-                // standalone asset. The caller reads them from there.
-                // （這並非失敗：像素確實存在，只是位於預處理堆疊而非獨立資產中。呼叫端將自該處讀取。）
-                run.TexturesVirtual++;
-            }
-            else
-            {
-                run.TexturesUnbound++;
-                run.Skipped.Add(new RipWarning("texture", key,
-                    $"unbound texture reference ({property}): no asset in the database for this guid"));
-            }
-
-            return null;
         }
 
         /// <summary>
@@ -554,28 +654,6 @@ namespace Carto.Systems
             {
                 return true;
             }
-        }
-
-        /// <summary>
-        /// Name a texture for a report. A dummy reference has no name, so the key stands in.
-        /// （為報告命名貼圖。虛設的參照沒有名稱，故以索引鍵替代。）
-        /// </summary>
-        /// <param name="asset">The asset.（資產。）</param>
-        /// <param name="key">Its texture key.（其貼圖索引鍵。）</param>
-        /// <returns>Something a human can act on.（可供人判讀處理的字串。）</returns>
-        private static string Describe(AssetData asset, string key)
-        {
-            try
-            {
-                string name = asset?.name;
-                if (!string.IsNullOrEmpty(name)) return name;
-            }
-            catch (Exception)
-            {
-                // An unbound asset throws rather than returning null.（未繫結的資產會擲出例外。）
-            }
-
-            return key;
         }
 
         /// <summary>
@@ -612,7 +690,7 @@ namespace Carto.Systems
             try
             {
                 source = asset.Load(mipBias);
-                return Capture(source, asset.format, asset.name, key, cap);
+                return Capture(source, key, asset.name, cap);
             }
             finally
             {
@@ -652,44 +730,16 @@ namespace Carto.Systems
         /// <param name="property">The CS2 shader property name.（CS2 著色器屬性名稱。）</param>
         /// <param name="key">The texture key.（貼圖索引鍵。）</param>
         /// <returns>The pixels, or <c>null</c> when the stack could not be read.（像素，若無法讀取堆疊則為 <c>null</c>。）</returns>
-        private static PendingTexture ReadBackVirtual(MaterialRun run, SurfaceAsset surface, string property, string key)
+        private static PendingTexture ReadBackVirtual(MaterialRun run, TextureSource source, string surfaceName, string property)
         {
-            VTTextureAsset packed = null;
+            VTTextureAsset packed = source.Packed;
             try
             {
-                // Qualified through MaterialLibrary: the bundle's own MaterialDescription is a
-                // different type with the same short name, and Carto.Domain is in scope here.
-                // （以 MaterialLibrary 限定：束自身的 MaterialDescription 是同名的另一型別，
-                //   且 Carto.Domain 於此處在作用範圍內。）
-                MaterialLibrary.MaterialDescription description = AssetDatabase.global.resources.materialLibrary
-                    .GetMaterialDescription(surface.materialTemplateHash);
-
-                if (description == null)
-                {
-                    Skip(run, key, $"virtual-textured ({property}): no material description for template {surface.materialTemplateHash}");
-                    return null;
-                }
-
-                int stack = description.GetStackConfigIndex(property);
-                int layer = (stack < 0) ? -1 : description.GetLayerIndexInStack(stack, property);
-                if ((stack < 0) || (layer < 0))
-                {
-                    Skip(run, key, $"virtual-textured ({property}): the material template packs no such map (stack {stack}, layer {layer})");
-                    return null;
-                }
-
-                Colossal.Hash128 guid = surface.GetPreProcessedTextureGuid(stack, layer);
-                if (!guid.isValid || !AssetDatabase.global.TryGetAsset(guid, out packed) || (packed == null))
-                {
-                    Skip(run, key, $"virtual-textured ({property}): stack {stack} layer {layer} has no preprocessed texture asset");
-                    return null;
-                }
-
-                Texture source = packed.Load();
-                PendingTexture pending = Capture(source, packed.format, surface.name, key, run.TextureSizeCap);
+                Texture texture = packed.Load();
+                PendingTexture pending = Capture(texture, source.Key, surfaceName, run.TextureSizeCap);
                 if (pending == null)
                 {
-                    Skip(run, key, $"virtual-textured ({property}): preprocessed texture yielded no pixels");
+                    Skip(run, source.Key, $"virtual-textured ({property}): preprocessed texture yielded no pixels");
                     return null;
                 }
 
@@ -702,22 +752,16 @@ namespace Carto.Systems
                 // （重組後的貼圖尺寸理應與其標頭所宣告者相符。若不符，即代表圖磚佈局外洩，
                 //   而這正是此路徑中唯一無法在遊戲執行外確認之事，故於最初數筆明確回報，
                 //   而非留待日後從古怪的輸出中發現。）
-                if (run.StackReports++ < 3)
-                    _log.Info($"VT recovery [{run.StackReports}] `{surface.name}` {property}: "
-                            + $"stack {stack} layer {layer}, header {packed.width}x{packed.height} {packed.format}, "
-                            + $"written {pending.Width}x{pending.Height}");
+                if (run.StackReports++ < 4)
+                    _log.Info($"VT recovery [{run.StackReports}] `{surfaceName}` {property}: "
+                            + $"header {packed.width}x{packed.height}, loaded {texture.width}x{texture.height} "
+                            + $"{texture.graphicsFormat}, written {pending.Width}x{pending.Height}");
 
                 return pending;
             }
-            catch (Exception ex)
-            {
-                Skip(run, key, $"virtual-textured ({property}): {ex.GetType().Name} {ex.Message}");
-                if (run.ReadFailures++ < 5) _log.Warn($"Failed to read VT stack for `{key}` ({property}): {ex}");
-                return null;
-            }
             finally
             {
-                if (packed != null) { try { packed.Unload(false); } catch { /* nothing useful to do */ } }
+                try { packed.Unload(false); } catch { /* nothing useful to do */ }
             }
         }
 
@@ -728,19 +772,20 @@ namespace Carto.Systems
         /// <param name="key">The texture key.（貼圖索引鍵。）</param>
         /// <param name="reason">Why it produced nothing.（其未產出的原因。）</param>
         private static void Skip(MaterialRun run, string key, string reason)
-            => run.Skipped.Add(new RipWarning("texture", key, reason));
+        {
+            if (run.Declared.Add(key)) run.Skipped.Add(new RipWarning("texture", key, reason));
+        }
 
         /// <summary>
         /// Scale a loaded texture to the cap and copy its pixels out as <c>RGBA8</c>.
         /// （將已載入的貼圖縮至上限，並將其像素以 <c>RGBA8</c> 複製出來。）
         /// </summary>
         /// <param name="source">The loaded texture.（已載入的貼圖。）</param>
-        /// <param name="format">Its graphics format, which decides the colour space.（其圖形格式，決定色彩空間。）</param>
-        /// <param name="name">A name for the record.（供紀錄使用的名稱。）</param>
         /// <param name="key">Its texture key.（其貼圖索引鍵。）</param>
+        /// <param name="name">A name for the record.（供紀錄使用的名稱。）</param>
         /// <param name="cap">The longest edge to write, or <c>0</c> for no cap.（寫出的最長邊上限，<c>0</c> 為不限。）</param>
         /// <returns>The pixels, or <c>null</c>.（像素，或 <c>null</c>。）</returns>
-        private static PendingTexture Capture(Texture source, GraphicsFormat format, string name, string key, int cap)
+        private static PendingTexture Capture(Texture source, string key, string name, int cap)
         {
             if (source == null) return null;
 
@@ -760,7 +805,17 @@ namespace Carto.Systems
                 }
             }
 
-            byte[] pixels = Blit(source, width, height, GraphicsFormatUtility.IsSRGBFormat(format));
+            // Take the colour space from the loaded texture, never from the asset that produced it.
+            // A VTTextureAsset's own `format` field is not populated by reading its header — only
+            // by paths that upload through the streaming system — so it reports whatever it last
+            // held. Trusting it wrote every normal and mask map through an sRGB render target,
+            // gamma-mangling linear data, and the output still rendered: exactly the silent failure
+            // §7.1 of the contract warns about. The Texture that came back cannot be stale.
+            // （色彩空間取自已載入的貼圖，絕不取自產生它的資產。VTTextureAsset 自身的 `format` 欄位
+            //   並非由讀取其標頭所填寫，而僅由經串流系統上傳的路徑填寫，因此它回報的是最後殘留的值。
+            //   採信該欄位會使所有法線與遮罩貼圖經 sRGB 繪製目標寫出，扭曲線性資料，
+            //   而輸出仍可正常算繪——正是契約 §7.1 所警告的無聲失敗。回傳的 Texture 則不可能陳舊。）
+            byte[] pixels = Blit(source, width, height, GraphicsFormatUtility.IsSRGBFormat(source.graphicsFormat));
             if (pixels == null) return null;
 
             return new PendingTexture
