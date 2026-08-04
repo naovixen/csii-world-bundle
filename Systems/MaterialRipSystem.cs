@@ -329,9 +329,15 @@ namespace Carto.Systems
         /// <returns>The bundle material id.（束材質 ID。）</returns>
         private string Rip(MaterialRun run, SurfaceAsset surface, string identity, RenderPrefab renderPrefab, int materialIndex)
         {
-            // The property dictionaries are empty until the asset's data is read off disk.
-            // （在資產資料自磁碟讀入前，屬性字典皆為空。）
-            surface.LoadProperties(false);
+            // The property dictionaries are empty until the asset's data is read off disk. The flag
+            // is not "load more" — it lands in `m_UsingVT = m_IsVTMaterial && flag`, so passing
+            // false tells a virtual-textured surface it is not one, which is a state the game never
+            // puts it in and which `IsHandledByVirtualTexturing` then reads back.
+            // （在資產資料自磁碟讀入前，屬性字典皆為空。此旗標並非「載入更多」之意：
+            //   它最終落入 `m_UsingVT = m_IsVTMaterial && flag`，因此傳入 false 等於告訴
+            //   虛擬貼圖表面它並非虛擬貼圖——遊戲從不使其處於此狀態，
+            //   而 `IsHandledByVirtualTexturing` 隨後又會讀回該值。）
+            surface.LoadProperties(true);
 
             try
             {
