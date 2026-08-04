@@ -146,6 +146,12 @@ namespace Carto
         public static NameManager Name { get; } = new();
 
         /// <summary>
+        /// The system that enumerates placed objects into instance records.
+        /// （將已放置物件列舉為實例紀錄的系統。）
+        /// </summary>
+        public static InstanceRipSystem InstanceRip => World.DefaultGameObjectInjectionWorld.GetOrCreateSystemManaged<InstanceRipSystem>();
+
+        /// <summary>
         /// The system that rips mesh geometry out of prefabs.
         /// （自預製模板擷取網格幾何的系統。）
         /// </summary>

@@ -29,6 +29,8 @@
   "Options.Description.ExportButton": "Exporter les objets en jeu en tant que fichiers géospatiaux.",
   "Options.Option.RipMeshSpikeButton": "Rip Mesh Spike",
   "Options.Description.RipMeshSpikeButton": "Rip the meshes of buildings placed in this city into ModsData/Carto/spike/meshes as glTF. Development feature.",
+  "Options.Option.RipInstancesButton": "Rip Instances",
+  "Options.Description.RipInstancesButton": "Enumerate every placed object in this city into instances.jsonl. Development feature.",
   "Options.Option.ModVersion": "Version",
   "Options.Description.ModVersion": "La version actuelle de Carto.",
   "Options.Option.ManualButton": "Manuel utilisateur",

@@ -424,6 +424,36 @@ namespace Carto
             }
         }
 
+        /// <summary>
+        /// The button that enumerates every placed object into <c>instances.jsonl</c> (PLAN Phase 2).
+        /// （將所有已放置物件列舉至 <c>instances.jsonl</c> 的按鈕（PLAN 第二階段）。）
+        /// </summary>
+        [SettingsUISection(GeneralTab, GeneralGeneralGroup)]
+        [SettingsUIButton]
+        [SettingsUIDisableByCondition(typeof(Settings), nameof(IsInGameOrEditor), invert: true)]
+        public bool RipInstancesButton
+        {
+            set
+            {
+                string summary;
+                try
+                {
+                    string directory = Utils.IOUtils.CombinePath(Instance.CartoDataPath, "spike");
+                    System.Collections.Generic.HashSet<string> assetIds = new();
+                    Instance.InstanceRip.RipInstances(directory, assetIds);
+                    summary = $"Wrote instances.jsonl\n{assetIds.Count} distinct assetIds referenced.\n\nFull report: Logs/Carto.log";
+                }
+                catch (System.Exception ex)
+                {
+                    Instance.Log.Error(ex.ToString());
+                    summary = $"Instance rip failed:\n{ex.Message}";
+                }
+
+                Game.UI.MessageDialog dialog = new("Options.SECTION[Carto.Carto.Mod]", summary, "Common.OK");
+                Instance.UI.appBindings.ShowMessageDialog(dialog, null);
+            }
+        }
+
 # if false
         [SettingsUISection(GeneralTab, GeneralGeneralGroup)]
         [SettingsUIButton]
