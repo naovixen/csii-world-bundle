@@ -114,8 +114,11 @@ namespace Carto.Systems
             /// <summary>How many failures have been logged in full.（已完整記錄的失敗數。）</summary>
             public int ReadFailures, BindFailures;
 
-            /// <summary>How many VT surfaces have been probed.（已探測的 VT 表面數。）</summary>
-            public int Probes;
+            /// <summary>Virtual-textured maps recovered from their preprocessed stack.（自預處理堆疊救回的虛擬貼圖數。）</summary>
+            public int TexturesFromStack;
+
+            /// <summary>How many stack recoveries have been described in the log.（已於記錄中描述的堆疊救回數。）</summary>
+            public int StackReports;
 
             /// <summary>How long the main thread spent reading pixels back.（主執行緒回讀像素所花的時間。）</summary>
             public double ReadbackMilliseconds;
@@ -399,17 +402,18 @@ namespace Carto.Systems
             if (!run.Textures.Claim(key)) return key;
 
             TextureAsset source = Bind(run, surface, property, texture, key);
-            if (source == null) return null;
 
             Stopwatch clock = Stopwatch.StartNew();
             try
             {
-                PendingTexture pending = ReadBack(source, key, run.TextureSizeCap);
-                if (pending == null)
-                {
-                    run.Skipped.Add(new RipWarning("texture", Describe(source, key), "no readable pixels"));
-                    return null;
-                }
+                // A standalone asset is read directly; a virtual-textured map has no standalone
+                // asset and is read out of its preprocessed stack instead.
+                // （獨立資產直接讀取；虛擬貼圖沒有獨立資產，改自其預處理堆疊讀取。）
+                PendingTexture pending = (source != null)
+                    ? ReadBack(source, key, run.TextureSizeCap)
+                    : ReadBackVirtual(run, surface, property, key);
+
+                if (pending == null) return null;
 
                 run.Enqueue(pending);
                 run.TexturesRead++;
@@ -512,10 +516,10 @@ namespace Carto.Systems
 
             if (virtualTextured)
             {
+                // Not a failure — the pixels exist, just in the preprocessed stack rather than in a
+                // standalone asset. The caller reads them from there.
+                // （這並非失敗：像素確實存在，只是位於預處理堆疊而非獨立資產中。呼叫端將自該處讀取。）
                 run.TexturesVirtual++;
-                run.Skipped.Add(new RipWarning("texture", key,
-                    $"virtual-textured ({property}): the pixels live in a VT stack, not a standalone texture asset"));
-                Probe(run, surface, property);
             }
             else
             {
@@ -525,66 +529,6 @@ namespace Carto.Systems
             }
 
             return null;
-        }
-
-        /// <summary>
-        /// Log what a virtual-textured surface offers instead of its textures, for the first few
-        /// such surfaces in a rip.<br/>
-        /// （對擷取工作中最初數個虛擬貼圖表面，記錄其以何者代替貼圖提供。）<br/><br/>
-        /// Purely diagnostic, and deliberately so. Whether a VT decoder is worth building depends
-        /// on facts that can only be established with the game running: whether the preprocessed
-        /// stacks resolve to assets at all, how many layers each carries, and what shape they are.
-        /// Guessing at that and writing the decoder anyway is how the standalone-texture assumption
-        /// got this far in the first place.<br/>
-        /// （純屬診斷，且刻意如此。是否值得建構 VT 解碼器，取決於唯有在遊戲執行時才能確立的事實：
-        /// 預處理堆疊是否確實可解析為資產、各自帶有多少層、其形狀為何。
-        /// 憑猜測逕行撰寫解碼器，正是「貼圖為獨立資產」這個假設得以走到此地步的原因。）
-        /// </summary>
-        /// <param name="run">The run in progress.（進行中的工作。）</param>
-        /// <param name="surface">The virtual-textured surface.（虛擬貼圖的表面資產。）</param>
-        /// <param name="property">The map that could not be taken.（無法取得的貼圖。）</param>
-        private static void Probe(MaterialRun run, SurfaceAsset surface, string property)
-        {
-            if (run.Probes++ >= 3) return;
-
-            StringBuilder report = new();
-            report.AppendLine($"VT probe [{run.Probes}] surface `{surface.name}`, missing map {property}:");
-
-            try
-            {
-                report.AppendLine($"  isVTMaterial={surface.isVTMaterial} isCurrentlyUsingVT={surface.isCurrentlyUsingVT} hasVTSurfaceAsset={surface.hasVTSurfaceAsset}");
-
-                int index = 0;
-                foreach (Colossal.Hash128 guid in surface.preProcessedTextureGuids)
-                {
-                    bool resolved = false;
-                    string detail = "no asset in the database";
-
-                    try
-                    {
-                        if (AssetDatabase.global.TryGetAsset(guid, out VTTextureAsset vt) && (vt != null))
-                        {
-                            resolved = true;
-                            vt.LoadHeader();
-                            detail = $"{vt.width}x{vt.height} {vt.format}, textureAsset={(IsUnbound(vt.textureAsset) ? "unbound" : "bound")}";
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        detail = $"{ex.GetType().Name} {ex.Message}";
-                    }
-
-                    report.AppendLine($"  preProcessed[{index++}] {guid} -> {(resolved ? "VTTextureAsset" : "nothing")}: {detail}");
-                }
-
-                if (index == 0) report.AppendLine("  no preprocessed texture guids at all");
-            }
-            catch (Exception ex)
-            {
-                report.AppendLine($"  probe failed: {ex}");
-            }
-
-            _log.Info(report.ToString());
         }
 
         /// <summary>
@@ -668,36 +612,7 @@ namespace Carto.Systems
             try
             {
                 source = asset.Load(mipBias);
-                if (source == null) return null;
-
-                int width = source.width, height = source.height;
-                if ((width <= 0) || (height <= 0)) return null;
-
-                if (cap > 0)
-                {
-                    // Scale the long edge to the cap and the short edge with it, so a non-square
-                    // texture keeps its aspect ratio and its UVs stay valid.
-                    // （將長邊縮至上限，短邊等比隨之縮放，使非正方形貼圖維持長寬比且 UV 仍然有效。）
-                    int longest = Mathf.Max(width, height);
-                    if (longest > cap)
-                    {
-                        width = Mathf.Max(1, (width * cap) / longest);
-                        height = Mathf.Max(1, (height * cap) / longest);
-                    }
-                }
-
-                bool srgb = GraphicsFormatUtility.IsSRGBFormat(asset.format);
-                byte[] pixels = Blit(source, width, height, srgb);
-                if (pixels == null) return null;
-
-                return new PendingTexture
-                {
-                    Key = key,
-                    SourceName = asset.name,
-                    Width = width,
-                    Height = height,
-                    Pixels = pixels
-                };
+                return Capture(source, asset.format, asset.name, key, cap);
             }
             finally
             {
@@ -706,6 +621,156 @@ namespace Carto.Systems
                 // （此貼圖僅為本次回讀而載入。保留城市所用的每一張貼圖，將使串流載入失去意義。）
                 if (source != null) { try { asset.Unload(false); } catch { /* nothing useful to do */ } }
             }
+        }
+
+        /// <summary>
+        /// Read a virtual-textured map out of the preprocessed stack that replaced it.
+        /// （自取代虛擬貼圖的預處理堆疊中讀出該貼圖。）<br/><br/>
+        /// Most CS2 surfaces have no standalone texture assets: their maps were preprocessed into
+        /// virtual-texturing stacks at build time, and what remains in
+        /// <c>SurfaceAsset.textures</c> is an unloadable stub. The pixels are still shipped, just
+        /// addressed differently — by stack and layer rather than by asset — and the route to them
+        /// is entirely public:<br/>
+        /// （CS2 多數表面沒有獨立的貼圖資產：其貼圖於建置時已預處理進虛擬貼圖堆疊，
+        /// <c>SurfaceAsset.textures</c> 中僅存無法載入的殘根。像素仍隨遊戲附帶，只是定址方式不同
+        /// ——以堆疊與層而非以資產定址——且通往它們的路徑完全是公開 API：）<br/><br/>
+        /// <c>MaterialDescription.GetStackConfigIndex(property)</c> and
+        /// <c>GetLayerIndexInStack(stack, property)</c> turn a shader property name into the
+        /// coordinates its map was packed at; <c>SurfaceAsset.GetPreProcessedTextureGuid</c> turns
+        /// those into a guid; and the <see cref="VTTextureAsset"/> behind it reassembles its own
+        /// tiles into an ordinary <c>Texture</c> when asked. From there it is the same blit and
+        /// readback as any other texture.<br/>
+        /// （<c>MaterialDescription.GetStackConfigIndex(property)</c> 與
+        /// <c>GetLayerIndexInStack(stack, property)</c> 將著色器屬性名稱轉為其貼圖被封裝的座標；
+        /// <c>SurfaceAsset.GetPreProcessedTextureGuid</c> 再轉為 guid；
+        /// 其背後的 <see cref="VTTextureAsset"/> 受請求時會自行將圖磚重組為一般的 <c>Texture</c>。
+        /// 自此之後便與其他貼圖採用相同的 blit 與回讀。）<br/><br/>
+        /// Must run on the main thread.（必須於主執行緒執行。）
+        /// </summary>
+        /// <param name="run">The run in progress.（進行中的工作。）</param>
+        /// <param name="surface">The surface the map belongs to.（該貼圖所屬的表面資產。）</param>
+        /// <param name="property">The CS2 shader property name.（CS2 著色器屬性名稱。）</param>
+        /// <param name="key">The texture key.（貼圖索引鍵。）</param>
+        /// <returns>The pixels, or <c>null</c> when the stack could not be read.（像素，若無法讀取堆疊則為 <c>null</c>。）</returns>
+        private static PendingTexture ReadBackVirtual(MaterialRun run, SurfaceAsset surface, string property, string key)
+        {
+            VTTextureAsset packed = null;
+            try
+            {
+                // Qualified through MaterialLibrary: the bundle's own MaterialDescription is a
+                // different type with the same short name, and Carto.Domain is in scope here.
+                // （以 MaterialLibrary 限定：束自身的 MaterialDescription 是同名的另一型別，
+                //   且 Carto.Domain 於此處在作用範圍內。）
+                MaterialLibrary.MaterialDescription description = AssetDatabase.global.resources.materialLibrary
+                    .GetMaterialDescription(surface.materialTemplateHash);
+
+                if (description == null)
+                {
+                    Skip(run, key, $"virtual-textured ({property}): no material description for template {surface.materialTemplateHash}");
+                    return null;
+                }
+
+                int stack = description.GetStackConfigIndex(property);
+                int layer = (stack < 0) ? -1 : description.GetLayerIndexInStack(stack, property);
+                if ((stack < 0) || (layer < 0))
+                {
+                    Skip(run, key, $"virtual-textured ({property}): the material template packs no such map (stack {stack}, layer {layer})");
+                    return null;
+                }
+
+                Colossal.Hash128 guid = surface.GetPreProcessedTextureGuid(stack, layer);
+                if (!guid.isValid || !AssetDatabase.global.TryGetAsset(guid, out packed) || (packed == null))
+                {
+                    Skip(run, key, $"virtual-textured ({property}): stack {stack} layer {layer} has no preprocessed texture asset");
+                    return null;
+                }
+
+                Texture source = packed.Load();
+                PendingTexture pending = Capture(source, packed.format, surface.name, key, run.TextureSizeCap);
+                if (pending == null)
+                {
+                    Skip(run, key, $"virtual-textured ({property}): preprocessed texture yielded no pixels");
+                    return null;
+                }
+
+                run.TexturesFromStack++;
+
+                // The reassembled texture ought to come out at the size its own header declares.
+                // A mismatch would mean the tile layout is leaking through — the one thing about
+                // this path that cannot be established without the game running — so say so on the
+                // first few rather than let it be discovered as odd-looking output.
+                // （重組後的貼圖尺寸理應與其標頭所宣告者相符。若不符，即代表圖磚佈局外洩，
+                //   而這正是此路徑中唯一無法在遊戲執行外確認之事，故於最初數筆明確回報，
+                //   而非留待日後從古怪的輸出中發現。）
+                if (run.StackReports++ < 3)
+                    _log.Info($"VT recovery [{run.StackReports}] `{surface.name}` {property}: "
+                            + $"stack {stack} layer {layer}, header {packed.width}x{packed.height} {packed.format}, "
+                            + $"written {pending.Width}x{pending.Height}");
+
+                return pending;
+            }
+            catch (Exception ex)
+            {
+                Skip(run, key, $"virtual-textured ({property}): {ex.GetType().Name} {ex.Message}");
+                if (run.ReadFailures++ < 5) _log.Warn($"Failed to read VT stack for `{key}` ({property}): {ex}");
+                return null;
+            }
+            finally
+            {
+                if (packed != null) { try { packed.Unload(false); } catch { /* nothing useful to do */ } }
+            }
+        }
+
+        /// <summary>
+        /// Record a texture that produced no file.（記錄未產出檔案的貼圖。）
+        /// </summary>
+        /// <param name="run">The run in progress.（進行中的工作。）</param>
+        /// <param name="key">The texture key.（貼圖索引鍵。）</param>
+        /// <param name="reason">Why it produced nothing.（其未產出的原因。）</param>
+        private static void Skip(MaterialRun run, string key, string reason)
+            => run.Skipped.Add(new RipWarning("texture", key, reason));
+
+        /// <summary>
+        /// Scale a loaded texture to the cap and copy its pixels out as <c>RGBA8</c>.
+        /// （將已載入的貼圖縮至上限，並將其像素以 <c>RGBA8</c> 複製出來。）
+        /// </summary>
+        /// <param name="source">The loaded texture.（已載入的貼圖。）</param>
+        /// <param name="format">Its graphics format, which decides the colour space.（其圖形格式，決定色彩空間。）</param>
+        /// <param name="name">A name for the record.（供紀錄使用的名稱。）</param>
+        /// <param name="key">Its texture key.（其貼圖索引鍵。）</param>
+        /// <param name="cap">The longest edge to write, or <c>0</c> for no cap.（寫出的最長邊上限，<c>0</c> 為不限。）</param>
+        /// <returns>The pixels, or <c>null</c>.（像素，或 <c>null</c>。）</returns>
+        private static PendingTexture Capture(Texture source, GraphicsFormat format, string name, string key, int cap)
+        {
+            if (source == null) return null;
+
+            int width = source.width, height = source.height;
+            if ((width <= 0) || (height <= 0)) return null;
+
+            if (cap > 0)
+            {
+                // Scale the long edge to the cap and the short edge with it, so a non-square
+                // texture keeps its aspect ratio and its UVs stay valid.
+                // （將長邊縮至上限，短邊等比隨之縮放，使非正方形貼圖維持長寬比且 UV 仍然有效。）
+                int longest = Mathf.Max(width, height);
+                if (longest > cap)
+                {
+                    width = Mathf.Max(1, (width * cap) / longest);
+                    height = Mathf.Max(1, (height * cap) / longest);
+                }
+            }
+
+            byte[] pixels = Blit(source, width, height, GraphicsFormatUtility.IsSRGBFormat(format));
+            if (pixels == null) return null;
+
+            return new PendingTexture
+            {
+                Key = key,
+                SourceName = name,
+                Width = width,
+                Height = height,
+                Pixels = pixels
+            };
         }
 
         /// <summary>
@@ -885,7 +950,8 @@ namespace Carto.Systems
             //   它們指出這是哪一種問題。）
             int references = run.TexturesBound + run.TexturesRebound + run.TexturesVirtual + run.TexturesUnbound;
             report.AppendLine($"Texture references: {references} distinct — {run.TexturesBound} loadable as given, "
-                            + $"{run.TexturesRebound} rebound by guid, {run.TexturesVirtual} virtual-textured, "
+                            + $"{run.TexturesRebound} rebound by guid, {run.TexturesVirtual} virtual-textured "
+                            + $"({run.TexturesFromStack} recovered from their stack), "
                             + $"{run.TexturesUnbound} with nothing behind them.");
 
             if (run.Skipped.Count > 0)
