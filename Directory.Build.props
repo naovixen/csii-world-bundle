@@ -1,0 +1,72 @@
+<!--
+  Build-environment fix: take the whole BCL from the game, not from .NET Framework 4.8.
+
+  Mod.props targets net48 and references the game's Unity mscorlib by full path
+  (CSII_MSCORLIBPATH). But CS2's assemblies are built against .NET Standard 2.1, and Carto's
+  own source uses 2.1-only APIs (System.Index for the `^1` operator, Math.Cbrt). Those do not
+  exist in the .NET Framework 4.8 reference assemblies.
+
+  With the SDK's implicit framework references left on, assembly resolution hits:
+
+      Encountered conflict between 'Reference:...\Cities2_Data\Managed\mscorlib.dll'
+      and 'Platform:mscorlib.dll'.
+
+  and the platform one wins, so the compile fails with CS0518/CS0656 on System.Index and
+  CS0117 on Math.Cbrt. Note the game's mscorlib is file version 4.6.57.0 — *lower* than a real
+  4.8 targeting pack's — so installing the .NET Framework 4.8 Developer Pack does not resolve
+  the conflict in the game's favour either.
+
+  Turning implicit framework references off lets the game's mscorlib through, but also drops
+  System / System.Core / System.Data / System.Xml / netstandard, so those are re-added by
+  simple name. They resolve out of $(ManagedPath), which Mod.props already appends to
+  AssemblySearchPaths — i.e. the same Unity BCL the game itself runs on, which is what a mod
+  should compile against.
+
+  Declared here rather than in Carto.csproj so the project file stays identical to upstream
+  Carto and merges cleanly. Directory.Build.props is imported before the project body, so
+  Carto.csproj's `<Reference Update="System" ...>` items find these and apply Private=False.
+-->
+<Project>
+
+  <PropertyGroup>
+    <DisableImplicitFrameworkReferences>true</DisableImplicitFrameworkReferences>
+    <!--
+      Also required. For a net48 target the SDK restores Microsoft.NETFramework.ReferenceAssemblies,
+      whose own build props point FrameworkPathOverride at the 4.8 reference assemblies — so the
+      4.8 BCL comes back in through the package even with implicit framework references off.
+    -->
+    <AutomaticallyUseReferenceAssemblyPackages>false</AutomaticallyUseReferenceAssemblyPackages>
+    <!--
+      With that package gone, MSBuild has no reference-assembly directory at all and fails with
+      MSB3644. Point it at the game's Managed folder, which is the BCL the game actually runs
+      on. Read straight from CSII_MANAGEDPATH rather than Mod.props' $(ManagedPath): Mod.props
+      is imported from the project body, i.e. after this file.
+    -->
+    <FrameworkPathOverride Condition="'$(FrameworkPathOverride)' == ''">$([System.Environment]::GetEnvironmentVariable('CSII_MANAGEDPATH', 'EnvironmentVariableTarget.User'))</FrameworkPathOverride>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!--
+      Deliberately no `mscorlib` entry: Mod.props already references it by full path via
+      CSII_MSCORLIBPATH, which is what pins it to the game's copy. Adding it here by simple
+      name resolves it out of the .NET Framework reference assemblies instead and puts the
+      System.Index / Math.Cbrt failures straight back.
+    -->
+    <Reference Include="netstandard">
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="System">
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="System.Core">
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="System.Data">
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="System.Xml">
+      <Private>False</Private>
+    </Reference>
+  </ItemGroup>
+
+</Project>

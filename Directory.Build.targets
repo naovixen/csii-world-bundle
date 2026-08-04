@@ -1,0 +1,50 @@
+<!--
+  Second half of the build-environment fix begun in Directory.Build.props — see the comment
+  there for the full story.
+
+  Beyond implicit framework references, the .NET SDK runs a `ResolvePackageFileConflicts` pass
+  that compares every reference against a *platform manifest* of .NET Framework assemblies and
+  drops the loser:
+
+      Encountered conflict between 'Reference:...\Cities2_Data\Managed\mscorlib.dll'
+      and 'Platform:mscorlib.dll'. Could not determine a winner because
+      'Platform:mscorlib.dll' has no file version.
+
+  Having no file version, the platform entry can never lose, so the game's mscorlib is dropped
+  no matter what the project asks for. Clearing the manifest list disables that comparison and
+  lets the explicit CSII_MSCORLIBPATH reference stand.
+
+  This must live in Directory.Build.targets, not .props: PackageConflictPlatformManifests is
+  populated by the SDK targets, which are imported after the project body.
+-->
+<Project>
+
+  <Target Name="CartoRipperDropPlatformManifests" BeforeTargets="_HandlePackageFileConflicts">
+    <ItemGroup>
+      <PackageConflictPlatformManifests Remove="@(PackageConflictPlatformManifests)" />
+    </ItemGroup>
+  </Target>
+
+  <!--
+    The toolchain's ModPostProcessor.exe targets .NET 6, which is not installed alongside the
+    .NET 8 SDK this repo builds with, so the post-build step dies with:
+
+        You must install or update .NET to run this application.
+        Framework: 'Microsoft.NETCore.App', version '6.0.0' (x64)
+
+    DOTNET_ROLL_FORWARD=Major lets it run on the newest installed major instead. 'Major' rather
+    than 'LatestMajor' deliberately: if .NET 6 *is* installed it is still preferred, and the
+    roll-forward only kicks in as a fallback.
+
+    This goes through CustomModPostProcessorConfig, the extension point Mod.targets documents,
+    rather than overriding RunModPostProcessor — so a future toolchain update to the
+    post-processing logic is picked up instead of being silently shadowed by a stale copy.
+    Exec runs through cmd.exe, hence the `set ... &&` prefix.
+  -->
+  <Target Name="CustomModPostProcessorConfig" AfterTargets="ModPostProcessorConfig">
+    <PropertyGroup>
+      <ModPostProcessorArgs>set DOTNET_ROLL_FORWARD=Major&amp;&amp; $(ModPostProcessorArgs)</ModPostProcessorArgs>
+    </PropertyGroup>
+  </Target>
+
+</Project>
