@@ -118,7 +118,6 @@ namespace Carto.Systems
             string path = IOUtils.CombinePath(outputDirectory, "instances.jsonl");
             StringBuilder report = new();
             Dictionary<string, int> byKind = new();
-            Dictionary<string, string> assetIdCache = new();
             int skippedNoPrefab = 0, withParent = 0;
             List<string> skipSamples = new();
             HashSet<int> unresolvedPrefabs = new();
@@ -128,6 +127,24 @@ namespace Carto.Systems
             try
             {
                 report.AppendLine($"Placed static objects: {entities.Length}");
+
+                // Asset ids have to be assigned over the whole prefab set at once: CS2 does not
+                // require prefab names to be unique, and two prefabs sharing an id would have the
+                // mesh layer overwrite one with the other. Collect the distinct prefabs first, then
+                // assign — MeshRipSystem walks the identical query and so derives identical ids.
+                // （資產 ID 必須就整個預製模板集合一次指派：CS2 並不要求預製模板名稱唯一，
+                //   而兩個共用 ID 的模板會使網格層以其中之一覆寫另一個。先收集相異模板再行指派——
+                //   MeshRipSystem 走訪完全相同的查詢，因而推導出完全相同的 ID。）
+                HashSet<Entity> prefabEntities = new();
+                foreach (Entity entity in entities)
+                {
+                    Entity prefabEntity = EntityManager.GetComponentData<PrefabRef>(entity).m_Prefab;
+                    if (prefabEntity != Entity.Null) prefabEntities.Add(prefabEntity);
+                }
+
+                Dictionary<Entity, MeshRipSystem.AssetIdEntry> assetIdTable =
+                    MeshRipSystem.BuildAssetIds(EntityManager, prefabEntities, out int disambiguated);
+                if (disambiguated > 0) report.AppendLine($"Disambiguated {disambiguated} prefab(s) sharing a name.");
 
                 using InstanceWriter writer = new(path);
 
@@ -148,11 +165,11 @@ namespace Carto.Systems
                     // contract's 1:1 fidelity requirement.
                     // （無法解析受管預製模板的物件，仍是城市中真實存在的物件，因此以合成 ID 保留其
                     //   擺放而非丟棄。PLAN §3 明確要求即使幾何無法取得，擺放仍須保留。）
-                    string assetId = ResolveAssetId(prefabEntity, assetIdCache);
-                    bool unresolved = assetId == null;
+                    MeshRipSystem.AssetIdEntry idEntry = assetIdTable[prefabEntity];
+                    string assetId = idEntry.AssetId;
+                    bool unresolved = !idEntry.Resolved;
                     if (unresolved)
                     {
-                        assetId = $"unresolved_{prefabEntity.Index}";
                         skippedNoPrefab++;
                         unresolvedPrefabs.Add(prefabEntity.Index);
 
@@ -348,30 +365,6 @@ namespace Carto.Systems
 
             names.Sort(StringComparer.Ordinal);
             return names;
-        }
-
-        /// <summary>
-        /// Resolve a prefab entity to its sanitised asset id, caching by entity.
-        /// （將預製模板實體解析為淨化後的資產 ID，並依實體快取。）<br/><br/>
-        /// A city has hundreds of thousands of objects across a few thousand prefabs, so the
-        /// managed prefab lookup is worth doing once per prefab rather than once per object.<br/>
-        /// （城市中數十萬個物件僅使用數千個預製模板，故每個預製模板僅查詢一次。）
-        /// </summary>
-        private string ResolveAssetId(Entity prefabEntity, Dictionary<string, string> cache)
-        {
-            string key = prefabEntity.Index.ToString();
-            if (cache.TryGetValue(key, out string cached)) return cached;
-
-            string assetId = null;
-            if (EntityManager.HasComponent<PrefabData>(prefabEntity)
-                && Instance.Prefab.TryGetPrefab(EntityManager.GetComponentData<PrefabData>(prefabEntity), out PrefabBase prefab)
-                && (prefab != null))
-            {
-                assetId = MeshRipSystem.SanitizeAssetId(prefab.name);
-            }
-
-            cache[key] = assetId;
-            return assetId;
         }
     }
 }

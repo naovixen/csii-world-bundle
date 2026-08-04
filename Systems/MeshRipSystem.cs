@@ -410,7 +410,15 @@ namespace Carto.Systems
             _run = run;
 
             RipProgress.Report(RipProgress.Phase.Meshes, 0, run.Items.Count);
-            return $"Ripping {run.Items.Count} prefab(s) in the background.\n\nWatch the indicator in the corner; a dialog reports the result when it finishes.";
+
+            // Be specific about where to look. The indicator draws in the game HUD, which this
+            // options page is covering — told only to "watch the corner", the obvious thing to do
+            // is stare at the menu and conclude nothing is happening.
+            // （明確說明該看何處。指示器繪製於遊戲 HUD 上，而該處正被此選項頁面遮蔽；
+            //   若只說「留意角落」，最自然的反應是盯著選單，並認定什麼事都沒發生。）
+            return $"Ripping {run.Items.Count} prefab(s) in the background.\n\n"
+                 + "Close this options page to watch the progress indicator — it appears in the top-right of the game view, not over the menu.\n\n"
+                 + "A dialog reports the result when it finishes.";
         }
 
         /// <summary>
@@ -451,10 +459,16 @@ namespace Carto.Systems
 
             distinctPrefabs = counts.Count;
 
+            // Ids come from the shared assignment, not from each name in isolation, so that a
+            // duplicated prefab name cannot make two prefabs write to the same file.
+            // （ID 來自共用的指派而非各自獨立的名稱，使重複的預製模板名稱無法讓兩個模板寫入同一檔案。）
+            Dictionary<Entity, AssetIdEntry> assetIds = BuildAssetIds(EntityManager, counts.Keys, out int disambiguated);
+            if (disambiguated > 0) report.AppendLine($"Disambiguated {disambiguated} prefab(s) sharing a name.");
+
             List<WorkItem> items = new(counts.Count);
             foreach (KeyValuePair<Entity, int> kvp in counts)
             {
-                string sourceName = GetPrefabName(kvp.Key);
+                AssetIdEntry entry = assetIds[kvp.Key];
 
                 // An unresolvable prefab still gets ripped under the same synthetic id
                 // InstanceRipSystem gives its instances, so the two layers keep joining up.
@@ -463,8 +477,8 @@ namespace Carto.Systems
                 items.Add(new WorkItem
                 {
                     PrefabEntity = kvp.Key,
-                    AssetId = (sourceName != null) ? SanitizeAssetId(sourceName) : $"unresolved_{kvp.Key.Index}",
-                    SourceName = sourceName ?? $"unresolved_{kvp.Key.Index}",
+                    AssetId = entry.AssetId,
+                    SourceName = GetPrefabName(kvp.Key) ?? entry.AssetId,
                     InstanceCount = kvp.Value
                 });
             }
@@ -1265,6 +1279,111 @@ namespace Carto.Systems
             // Truncation collides the same way, just more rarely: two long names sharing a prefix.
             // （截斷會以相同方式造成碰撞，只是更為罕見：兩個共用前綴的長名稱。）
             return (result.Length > 180) ? $"{result.Substring(0, 171)}_{Digest(name)}" : result;
+        }
+
+        /// <summary>
+        /// A prefab's bundle <c>assetId</c>, and whether its managed prefab resolved at all.
+        /// （預製模板的束 <c>assetId</c>，以及其受管預製模板是否成功解析。）
+        /// </summary>
+        public struct AssetIdEntry
+        {
+            /// <summary>The id both bundle layers join on.（兩個束層級用以連結的 ID。）</summary>
+            public string AssetId;
+
+            /// <summary>Whether a managed prefab was found behind the entity.（實體背後是否找到受管預製模板。）</summary>
+            public bool Resolved;
+        }
+
+        /// <summary>
+        /// Assign every prefab entity its bundle <c>assetId</c>, guaranteeing the ids are unique.
+        /// （為每個預製模板實體指派其束 <c>assetId</c>，並保證這些 ID 唯一。）<br/><br/>
+        /// <b>The id is the bundle's join key, so a duplicate is silent corruption:</b> two prefabs
+        /// sharing an id means one mesh file overwrites the other and every instance of both then
+        /// points at whichever won. A full-city rip proved it happens — writing 4,203 files left
+        /// 4,201 on disk — because CS2 does not require prefab names to be unique.
+        /// <see cref="SanitizeAssetId"/> alone cannot see this: it is handed one name at a time and
+        /// duplication is a property of the whole set.<br/>
+        /// （<b>ID 是束的連結鍵，重複即為無聲的資料損毀：</b>兩個預製模板共用 ID 意味著其中一個網格檔案
+        /// 會覆寫另一個，而雙方的所有實例都將指向勝出者。全城擷取已證實此事會發生：
+        /// 寫出 4,203 個檔案後磁碟上僅剩 4,201 個，因為 CS2 並不要求預製模板名稱唯一。）<br/><br/>
+        /// Only the names that actually clash are suffixed, so ordinary ids stay readable. The
+        /// suffix is a digest of the prefab's asset identifier, which makes the assignment a
+        /// function of the prefab set rather than of iteration order — that is what lets
+        /// <see cref="InstanceRipSystem"/> and this system compute the same ids independently.<br/>
+        /// （僅有實際衝突的名稱會被加上後綴，使一般 ID 維持可讀。後綴為預製模板資產識別碼的摘要，
+        /// 使指派結果僅取決於預製模板集合而非走訪順序；這正是兩個系統能各自算出相同 ID 的原因。）
+        /// </summary>
+        /// <param name="entityManager">The entity manager to read prefab data from.（用以讀取預製模板資料的實體管理器。）</param>
+        /// <param name="prefabEntities">The distinct prefab entities to assign ids to.（待指派 ID 的相異預製模板實體。）</param>
+        /// <param name="disambiguated">Receives how many ids needed a suffix.（接收需要加上後綴的 ID 數量。）</param>
+        /// <returns>The id for every entity given.（所給定的每個實體對應的 ID。）</returns>
+        public static Dictionary<Entity, AssetIdEntry> BuildAssetIds(EntityManager entityManager, ICollection<Entity> prefabEntities, out int disambiguated)
+        {
+            Dictionary<Entity, AssetIdEntry> result = new(prefabEntities.Count);
+            Dictionary<string, List<Entity>> byBaseId = new(prefabEntities.Count);
+            Dictionary<Entity, string> discriminators = new(prefabEntities.Count);
+
+            foreach (Entity prefabEntity in prefabEntities)
+            {
+                PrefabBase prefab = null;
+                if (entityManager.HasComponent<PrefabData>(prefabEntity))
+                    Instance.Prefab.TryGetPrefab(entityManager.GetComponentData<PrefabData>(prefabEntity), out prefab);
+
+                bool resolved = (prefab != null) && !string.IsNullOrEmpty(prefab.name);
+                string baseId = resolved ? SanitizeAssetId(prefab.name) : $"unresolved_{prefabEntity.Index}";
+
+                result[prefabEntity] = new AssetIdEntry { AssetId = baseId, Resolved = resolved };
+                discriminators[prefabEntity] = Discriminator(prefab, prefabEntity);
+
+                if (!byBaseId.TryGetValue(baseId, out List<Entity> sharing)) byBaseId[baseId] = sharing = new List<Entity>();
+                sharing.Add(prefabEntity);
+            }
+
+            disambiguated = 0;
+            foreach (KeyValuePair<string, List<Entity>> group in byBaseId)
+            {
+                if (group.Value.Count < 2) continue;
+
+                foreach (Entity prefabEntity in group.Value)
+                {
+                    AssetIdEntry entry = result[prefabEntity];
+                    entry.AssetId = $"{group.Key}_{Digest(discriminators[prefabEntity])}";
+                    result[prefabEntity] = entry;
+                    disambiguated++;
+                }
+            }
+
+            return result;
+        }
+
+        /// <summary>
+        /// Something that tells two same-named prefabs apart, stably across sessions.
+        /// （能穩定區分兩個同名預製模板的依據，且跨執行階段一致。）<br/><br/>
+        /// The asset identifier is unique per asset and survives a reload, which the entity index
+        /// does not — an id derived from the entity index would change every time the save is
+        /// loaded, and the two bundle layers are written by two separate button presses.<br/>
+        /// （資產識別碼在每個資產上唯一且可跨重新載入；實體索引則否——由實體索引推導的 ID
+        /// 每次載入存檔都會改變，而束的兩個層級是由兩次獨立的按鈕操作寫出的。）
+        /// </summary>
+        /// <param name="prefab">The managed prefab, if it resolved.（受管預製模板，若已解析。）</param>
+        /// <param name="prefabEntity">The prefab entity, as a last resort.（預製模板實體，作為最後手段。）</param>
+        /// <returns>A discriminating string.（用以區分的字串。）</returns>
+        private static string Discriminator(PrefabBase prefab, Entity prefabEntity)
+        {
+            if (prefab == null) return $"entity:{prefabEntity.Index}";
+
+            try
+            {
+                string identifier = prefab.asset?.identifier;
+                if (!string.IsNullOrEmpty(identifier)) return identifier;
+            }
+            catch (Exception)
+            {
+                // An asset-less prefab (generated at runtime) throws rather than returning null.
+                // （執行階段產生、不具資產的預製模板會擲出例外而非回傳 null。）
+            }
+
+            return $"{prefab.GetType().Name}:{prefab.name}";
         }
 
         /// <summary>
