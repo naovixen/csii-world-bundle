@@ -117,6 +117,9 @@ namespace Carto.Systems
             /// <summary>Virtual-textured maps recovered from their preprocessed stack.（自預處理堆疊救回的虛擬貼圖數。）</summary>
             public int TexturesFromStack;
 
+            /// <summary>Maps recovered off a live material, once every other route failed.（其餘路徑皆失敗後，自實際材質救回的貼圖數。）</summary>
+            public int TexturesFromMaterial;
+
             /// <summary>How many stack recoveries have been described in the log.（已於記錄中描述的堆疊救回數。）</summary>
             public int StackReports;
 
@@ -278,7 +281,7 @@ namespace Carto.Systems
 
             try
             {
-                string materialId = Rip(run, surface, identity);
+                string materialId = Rip(run, surface, identity, renderPrefab, materialIndex);
                 run.BySurface[identity] = materialId;
                 return materialId;
             }
@@ -327,7 +330,7 @@ namespace Carto.Systems
         /// <param name="surface">The surface asset.（表面資產。）</param>
         /// <param name="identity">Its stable identity.（其穩定識別。）</param>
         /// <returns>The bundle material id.（束材質 ID。）</returns>
-        private string Rip(MaterialRun run, SurfaceAsset surface, string identity)
+        private string Rip(MaterialRun run, SurfaceAsset surface, string identity, RenderPrefab renderPrefab, int materialIndex)
         {
             // The property dictionaries are empty until the asset's data is read off disk.
             // （在資產資料自磁碟讀入前，屬性字典皆為空。）
@@ -341,10 +344,10 @@ namespace Carto.Systems
                     SourceName = surface.name
                 };
 
-                material.MapKeys[(int)MaterialMap.BaseColor] = Take(run, surface, BaseColorMap);
-                material.MapKeys[(int)MaterialMap.Normal] = Take(run, surface, NormalMap);
-                material.MapKeys[(int)MaterialMap.Mask] = Take(run, surface, MaskMap);
-                material.MapKeys[(int)MaterialMap.Emissive] = Take(run, surface, EmissiveColorMap);
+                material.MapKeys[(int)MaterialMap.BaseColor] = Take(run, surface, BaseColorMap, renderPrefab, materialIndex);
+                material.MapKeys[(int)MaterialMap.Normal] = Take(run, surface, NormalMap, renderPrefab, materialIndex);
+                material.MapKeys[(int)MaterialMap.Mask] = Take(run, surface, MaskMap, renderPrefab, materialIndex);
+                material.MapKeys[(int)MaterialMap.Emissive] = Take(run, surface, EmissiveColorMap, renderPrefab, materialIndex);
 
                 if (surface.TryGetColorProperty("_BaseColor", out Color tint))
                     material.Tint = new Unity.Mathematics.float4(tint.r, tint.g, tint.b, tint.a);
@@ -411,7 +414,7 @@ namespace Carto.Systems
         /// <param name="surface">The surface asset.（表面資產。）</param>
         /// <param name="property">The CS2 shader property name.（CS2 著色器屬性名稱。）</param>
         /// <returns>The texture key, or <c>null</c> when the surface has no such map.（貼圖索引鍵，若表面沒有該貼圖則為 <c>null</c>。）</returns>
-        private string Take(MaterialRun run, SurfaceAsset surface, string property)
+        private string Take(MaterialRun run, SurfaceAsset surface, string property, RenderPrefab renderPrefab, int materialIndex)
         {
             if (!surface.TryGetTexture(property, out TextureAsset texture) || (texture == null)) return null;
 
@@ -425,7 +428,7 @@ namespace Carto.Systems
             //   共用同一封裝層的兩個表面持有指向相同像素的不同殘根，以殘根為鍵將使該像素
             //   每個表面各讀一次。全城擷取已具體證實：1,020 次回讀僅產生 321 張相異影像，
             //   此階段最昂貴的工作有三分之二耗費在重新解碼早已在手的貼圖上。）
-            TextureSource source = Locate(run, surface, property, texture);
+            TextureSource source = Locate(run, surface, property, texture, renderPrefab, materialIndex);
             if (source.Key == null) return null;
 
             // A claim that goes on to fail is still worth keeping: it stops every later surface
@@ -436,9 +439,10 @@ namespace Carto.Systems
             Stopwatch clock = Stopwatch.StartNew();
             try
             {
-                PendingTexture pending = source.IsVirtual
-                    ? ReadBackVirtual(run, source, surface.name, property)
-                    : ReadBack(source.Standalone, source.Key, run.TextureSizeCap);
+                PendingTexture pending;
+                if (source.IsVirtual) pending = ReadBackVirtual(run, source, surface.name, property);
+                else if (source.Live != null) pending = ReadBackLive(run, source, surface.name);
+                else pending = ReadBack(source.Standalone, source.Key, run.TextureSizeCap);
 
                 if (pending == null) return null;
 
@@ -479,21 +483,32 @@ namespace Carto.Systems
             /// <summary>The preprocessed texture holding the pixels, when the map is virtual-textured.（貼圖為虛擬貼圖時，持有像素的預處理貼圖。）</summary>
             public VTTextureAsset Packed { get; }
 
+            /// <summary>A texture already bound to a live material.（已繫結至實際材質的貼圖。）</summary>
+            public Texture Live { get; }
+
+            /// <summary>The prefab whose materials must be released once <see cref="Live"/> is read.（讀取 <see cref="Live"/> 後須釋放其材質的預製模板。）</summary>
+            public RenderPrefab Owner { get; }
+
             /// <summary>Whether the pixels come out of a VT stack.（像素是否來自 VT 堆疊。）</summary>
             public bool IsVirtual => Packed != null;
 
-            private TextureSource(string key, TextureAsset standalone, VTTextureAsset packed)
+            private TextureSource(string key, TextureAsset standalone, VTTextureAsset packed, Texture live, RenderPrefab owner)
             {
                 Key = key;
                 Standalone = standalone;
                 Packed = packed;
+                Live = live;
+                Owner = owner;
             }
 
             /// <summary>A map with its own texture asset.（擁有自身貼圖資產的貼圖。）</summary>
-            public static TextureSource FromAsset(string key, TextureAsset asset) => new(key, asset, null);
+            public static TextureSource FromAsset(string key, TextureAsset asset) => new(key, asset, null, null, null);
 
             /// <summary>A map packed into a virtual-texturing stack.（被封裝進虛擬貼圖堆疊的貼圖。）</summary>
-            public static TextureSource FromStack(string key, VTTextureAsset packed) => new(key, null, packed);
+            public static TextureSource FromStack(string key, VTTextureAsset packed) => new(key, null, packed, null, null);
+
+            /// <summary>A map read off a live material.（自實際材質讀取的貼圖。）</summary>
+            public static TextureSource FromLive(string key, Texture live, RenderPrefab owner) => new(key, null, null, live, owner);
 
             /// <summary>No pixels anywhere.（何處皆無像素。）</summary>
             public static TextureSource None => default;
@@ -513,7 +528,8 @@ namespace Carto.Systems
         /// <param name="property">The CS2 shader property name.（CS2 著色器屬性名稱。）</param>
         /// <param name="texture">The reference the surface handed over.（表面所交出的參照。）</param>
         /// <returns>Where to read from, or <see cref="TextureSource.None"/>.（讀取來源，或 <see cref="TextureSource.None"/>。）</returns>
-        private static TextureSource Locate(MaterialRun run, SurfaceAsset surface, string property, TextureAsset texture)
+        private static TextureSource Locate(MaterialRun run, SurfaceAsset surface, string property, TextureAsset texture,
+                                            RenderPrefab renderPrefab, int materialIndex)
         {
             string key = Identity(texture);
 
@@ -546,15 +562,75 @@ namespace Carto.Systems
                 if (run.BindFailures++ < 5) _log.Warn($"Texture guid lookup failed for `{key}`: {ex.Message}");
             }
 
-            if (!IsVirtualTextured(surface, property, texture))
+            string reason;
+            if (IsVirtualTextured(surface, property, texture))
+            {
+                if (first) run.TexturesVirtual++;
+
+                TextureSource packed = LocateInStack(run, surface, property, key, out reason);
+                if (packed.Key != null) return packed;
+            }
+            else
             {
                 if (first) run.TexturesUnbound++;
-                Skip(run, key, $"unbound texture reference ({property}): no asset in the database for this guid");
-                return TextureSource.None;
+                reason = $"unbound texture reference ({property}): no asset in the database for this guid";
             }
 
-            if (first) run.TexturesVirtual++;
-            return LocateInStack(run, surface, property, key);
+            // Last resort: ask the render prefab for the material the game would actually draw
+            // with. A surface whose stub does not resolve and whose VT header is empty has still
+            // been rendering all along, so if anything is bound to this property at all, this is
+            // where it shows up. It is deliberately last — it allocates a Unity material per
+            // surface, and every route above is cheaper and more direct.
+            // （最後手段：向繪製預製模板索取遊戲實際會用來繪製的材質。殘根無法解析、
+            //   且 VT 標頭為空的表面，一直以來仍在正常算繪；因此若該屬性上確實繫結了任何東西，
+            //   即會於此顯現。此法刻意置於最後：它會為每個表面配置一個 Unity 材質，
+            //   而上述每條路徑都更省且更直接。）
+            TextureSource live = LocateInMaterial(run, renderPrefab, materialIndex, property, key);
+            if (live.Key != null) return live;
+
+            Skip(run, key, reason);
+            return TextureSource.None;
+        }
+
+        /// <summary>
+        /// Read a map straight off the Unity material the render prefab would draw with.
+        /// （直接自繪製預製模板將用以繪製的 Unity 材質讀取貼圖。）<br/><br/>
+        /// This asks the game the question at its own level — "what texture is bound to this
+        /// property?" — instead of reconstructing the answer from asset records. It is the only
+        /// route left for surfaces that have neither a loadable texture asset nor preprocessed
+        /// virtual-texturing data, and it costs a material instantiation, so it runs only after
+        /// everything else has failed.<br/>
+        /// （此法以遊戲自身的層級提問——「此屬性上繫結了什麼貼圖？」——而非自資產紀錄重建答案。
+        /// 對既無可載入貼圖資產、亦無預處理虛擬貼圖資料的表面而言，這是僅存的路徑；
+        /// 其代價為實體化一個材質，故僅於其他一切皆失敗後才執行。）
+        /// </summary>
+        /// <param name="run">The run in progress.（進行中的工作。）</param>
+        /// <param name="renderPrefab">The render prefab owning the material.（擁有該材質的繪製預製模板。）</param>
+        /// <param name="materialIndex">The material slot.（材質槽位。）</param>
+        /// <param name="property">The CS2 shader property name.（CS2 著色器屬性名稱。）</param>
+        /// <param name="key">The texture key.（貼圖索引鍵。）</param>
+        /// <returns>Where to read from, or <see cref="TextureSource.None"/>.（讀取來源，或 <see cref="TextureSource.None"/>。）</returns>
+        private static TextureSource LocateInMaterial(MaterialRun run, RenderPrefab renderPrefab, int materialIndex,
+                                                      string property, string key)
+        {
+            if (renderPrefab == null) return TextureSource.None;
+
+            try
+            {
+                Material material = renderPrefab.ObtainMaterial(materialIndex, false);
+                if ((material == null) || !material.HasProperty(property)) return TextureSource.None;
+
+                Texture bound = material.GetTexture(property);
+                if (bound == null) return TextureSource.None;
+
+                run.TexturesFromMaterial++;
+                return TextureSource.FromLive(key, bound, renderPrefab);
+            }
+            catch (Exception ex)
+            {
+                if (run.BindFailures++ < 5) _log.Warn($"Material lookup failed for `{key}` ({property}): {ex.Message}");
+                return TextureSource.None;
+            }
         }
 
         /// <summary>
@@ -571,7 +647,7 @@ namespace Carto.Systems
         /// <param name="property">The CS2 shader property name.（CS2 著色器屬性名稱。）</param>
         /// <param name="key">The stub's key, for reporting.（殘根的索引鍵，供回報使用。）</param>
         /// <returns>Where to read from, or <see cref="TextureSource.None"/>.（讀取來源，或 <see cref="TextureSource.None"/>。）</returns>
-        private static TextureSource LocateInStack(MaterialRun run, SurfaceAsset surface, string property, string key)
+        private static TextureSource LocateInStack(MaterialRun run, SurfaceAsset surface, string property, string key, out string reason)
         {
             try
             {
@@ -584,7 +660,7 @@ namespace Carto.Systems
 
                 if (description == null)
                 {
-                    Skip(run, key, $"virtual-textured ({property}): no material description for template {surface.materialTemplateHash}");
+                    reason = $"virtual-textured ({property}): no material description for template {surface.materialTemplateHash}";
                     return TextureSource.None;
                 }
 
@@ -592,7 +668,7 @@ namespace Carto.Systems
                 int layer = (stack < 0) ? -1 : description.GetLayerIndexInStack(stack, property);
                 if ((stack < 0) || (layer < 0))
                 {
-                    Skip(run, key, $"virtual-textured ({property}): the material template packs no such map");
+                    reason = $"virtual-textured ({property}): the material template packs no such map";
                     return TextureSource.None;
                 }
 
@@ -607,25 +683,26 @@ namespace Carto.Systems
                     // （模板宣告了該槽位，但此表面的 VT 標頭於該座標處空無一物。
                     //   這或是該表面確實未使用的貼圖，或是模板編號與標頭編號不一致的徵兆；
                     //   兩者所需的處置相反，故完整描述其佈局而非臆測。）
-                    Skip(run, key, $"virtual-textured ({property}): stack {stack} layer {layer} is empty on this surface");
+                    reason = $"virtual-textured ({property}): stack {stack} layer {layer} is empty on this surface";
                     ProbeLayout(run, surface, description, property, stack, layer);
                     return TextureSource.None;
                 }
 
                 if (!AssetDatabase.global.TryGetAsset(guid, out VTTextureAsset packed) || (packed == null))
                 {
-                    Skip(run, key, $"virtual-textured ({property}): preprocessed texture {guid} is not in the database");
+                    reason = $"virtual-textured ({property}): preprocessed texture {guid} is not in the database";
                     return TextureSource.None;
                 }
 
                 // Keyed by the preprocessed texture, so surfaces sharing a packed layer share the
                 // readback rather than each paying for it.
                 // （以預處理貼圖為鍵，使共用同一封裝層的表面共享回讀，而非各自付出代價。）
+                reason = null;
                 return TextureSource.FromStack($"vt:{guid}", packed);
             }
             catch (Exception ex)
             {
-                Skip(run, key, $"virtual-textured ({property}): {ex.GetType().Name} {ex.Message}");
+                reason = $"virtual-textured ({property}): {ex.GetType().Name} {ex.Message}";
                 if (run.BindFailures++ < 5) _log.Warn($"VT stack lookup failed for `{key}` ({property}): {ex}");
                 return TextureSource.None;
             }
@@ -871,6 +948,30 @@ namespace Carto.Systems
         }
 
         /// <summary>
+        /// Copy a texture that is already bound to a live material.
+        /// （複製已繫結至實際材質的貼圖。）<br/><br/>
+        /// The texture belongs to the material, not to this rip, so it is read where it sits and
+        /// only the prefab's hold on its materials is released afterwards.<br/>
+        /// （此貼圖屬於該材質而非本次擷取，故就地讀取，事後僅釋放預製模板對其材質的持有。）<br/><br/>
+        /// Must run on the main thread.（必須於主執行緒執行。）
+        /// </summary>
+        /// <param name="run">The run in progress.（進行中的工作。）</param>
+        /// <param name="source">The located texture.（已定位的貼圖。）</param>
+        /// <param name="surfaceName">A name for the record.（供紀錄使用的名稱。）</param>
+        /// <returns>The pixels, or <c>null</c>.（像素，或 <c>null</c>。）</returns>
+        private static PendingTexture ReadBackLive(MaterialRun run, TextureSource source, string surfaceName)
+        {
+            try
+            {
+                return Capture(source.Live, source.Key, surfaceName, run.TextureSizeCap);
+            }
+            finally
+            {
+                try { source.Owner?.ReleaseMaterials(); } catch { /* nothing useful to do */ }
+            }
+        }
+
+        /// <summary>
         /// Record a texture that produced no file.（記錄未產出檔案的貼圖。）
         /// </summary>
         /// <param name="run">The run in progress.（進行中的工作。）</param>
@@ -1112,7 +1213,8 @@ namespace Carto.Systems
             report.AppendLine($"Texture references: {references} distinct — {run.TexturesBound} loadable as given, "
                             + $"{run.TexturesRebound} rebound by guid, {run.TexturesVirtual} virtual-textured "
                             + $"({run.TexturesFromStack} recovered from their stack), "
-                            + $"{run.TexturesUnbound} with nothing behind them.");
+                            + $"{run.TexturesUnbound} with nothing behind them; "
+                            + $"{run.TexturesFromMaterial} taken off a live material as a last resort.");
 
             if (run.Skipped.Count > 0)
             {
