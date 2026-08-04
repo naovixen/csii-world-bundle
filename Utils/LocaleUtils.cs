@@ -236,9 +236,38 @@ namespace Carto.Utils
         private static bool TryLoadLocaleFromResource(string languageID, string resourceName)
         {
             if (!SupportsLocale(languageID, createMissingLocale: true)) return false;
-            Instance.Localization.AddSource(languageID, new Locale(IOUtils.GetJsonResource(resourceName, new LocaleConverter("Carto.Carto.Mod"))));
+            Dictionary<string, string> entries = IOUtils.GetJsonResource(resourceName, new LocaleConverter("Carto.Carto.Mod"));
+            ExpandProgressTemplates(entries);
+            Instance.Localization.AddSource(languageID, new Locale(entries));
             Instance.Log.Debug($"Successfully add the {languageID} locale. 成功添加 {languageID} 語系檔案。");
             return true;
+        }
+
+        /// <summary>
+        /// Expand each <c>Carto.PROGRESS[&lt;phase&gt;]</c> caption into one entry per whole
+        /// percentage point.<br/>
+        /// （將每個 <c>Carto.PROGRESS[&lt;階段&gt;]</c> 說明文字展開為每個百分點各一筆條目。）<br/><br/>
+        /// The game's background-process indicator takes a <b>locale key</b>, not free text, so a
+        /// changing percentage means a changing key. Generating the keys up front keeps reporting
+        /// progress a plain binding update: the alternative — rewriting the dictionary as the rip
+        /// runs — would rebuild and re-push every string in the game once per update.<br/>
+        /// （遊戲的背景程序指示器接受<b>語系鍵</b>而非自由文字，因此變動的百分比意味著變動的鍵。
+        /// 預先產生這些鍵，使回報進度僅為一次繫結更新；另一種作法是在擷取過程中改寫字典，
+        /// 那將導致每次更新都重建並重新推送遊戲中的所有字串。）<br/><br/>
+        /// Only the per-phase caption is translated; translators never see the generated entries.<br/>
+        /// （僅有各階段的說明文字需要翻譯，譯者不會看到產生的條目。）
+        /// </summary>
+        /// <param name="entries">The parsed locale entries, expanded in place.（已解析的語系條目，將就地展開。）</param>
+        private static void ExpandProgressTemplates(Dictionary<string, string> entries)
+        {
+            foreach (IO.RipProgress.Phase phase in Enum.GetValues(typeof(IO.RipProgress.Phase)))
+            {
+                if (phase == IO.RipProgress.Phase.None) continue;
+                if (!entries.TryGetValue($"{IO.RipProgress.LocalePrefix}[{phase}]", out string caption)) continue;
+
+                for (int percent = 0; percent <= 100; percent++)
+                    entries[$"{IO.RipProgress.LocalePrefix}[{phase}.{percent}]"] = $"{caption} {percent}%";
+            }
         }
 
         /// <summary>

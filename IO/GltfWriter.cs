@@ -35,8 +35,8 @@ namespace Carto.IO
         private const int ModeTriangles = 4;
 
         /// <summary>
-        /// Write a mesh to <paramref name="path"/> as a <c>.glb</c>.
-        /// （將網格以 <c>.glb</c> 格式寫至 <paramref name="path"/>。）
+        /// Write a single mesh to <paramref name="path"/> as a <c>.glb</c>.
+        /// （將單一網格以 <c>.glb</c> 格式寫至 <paramref name="path"/>。）
         /// </summary>
         /// <param name="path">The destination file path.（目標檔案路徑。）</param>
         /// <param name="mesh">The mesh to write.（待寫出的網格。）</param>
@@ -44,12 +44,19 @@ namespace Carto.IO
         public static long Write(string path, MeshAsset mesh)
         {
             if (mesh == null) throw new ArgumentNullException(nameof(mesh));
-            if (mesh.Vertices == null || mesh.Vertices.Length == 0)
-                throw new ArgumentException($"Mesh `{mesh.AssetId}` has no vertices. 網格 `{mesh.AssetId}` 沒有頂點。");
-            if (mesh.Indices == null || mesh.Indices.Length == 0)
-                throw new ArgumentException($"Mesh `{mesh.AssetId}` has no indices. 網格 `{mesh.AssetId}` 沒有索引。");
+            return Write(path, Wrap(mesh));
+        }
 
-            byte[] glb = Build(mesh);
+        /// <summary>
+        /// Write an assembled prefab to <paramref name="path"/> as a <c>.glb</c>.
+        /// （將已組裝的預製模板以 <c>.glb</c> 格式寫至 <paramref name="path"/>。）
+        /// </summary>
+        /// <param name="path">The destination file path.（目標檔案路徑。）</param>
+        /// <param name="prefab">The prefab to write.（待寫出的預製模板。）</param>
+        /// <returns>The number of bytes written.（寫出的位元組數。）</returns>
+        public static long Write(string path, PrefabMesh prefab)
+        {
+            byte[] glb = Build(prefab);
 
             string directory = Path.GetDirectoryName(path);
             if (!string.IsNullOrEmpty(directory) && !Directory.Exists(directory)) Directory.CreateDirectory(directory);
@@ -58,12 +65,180 @@ namespace Carto.IO
         }
 
         /// <summary>
-        /// Build the in-memory <c>.glb</c> byte payload.
-        /// （建構記憶體中的 <c>.glb</c> 位元組內容。）
+        /// Build the in-memory <c>.glb</c> byte payload for a single mesh.
+        /// （為單一網格建構記憶體中的 <c>.glb</c> 位元組內容。）
         /// </summary>
         /// <param name="mesh">The mesh to serialise.（待序列化的網格。）</param>
         /// <returns>The complete GLB container.（完整的 GLB 容器。）</returns>
-        public static byte[] Build(MeshAsset mesh)
+        public static byte[] Build(MeshAsset mesh) => Build(Wrap(mesh));
+
+        /// <summary>
+        /// Present a lone mesh as a one-part prefab, so both entry points share one writer.
+        /// （將單一網格視為只有一個部件的預製模板，使兩個進入點共用同一個寫出器。）
+        /// </summary>
+        /// <param name="mesh">The mesh to wrap.（待包裝的網格。）</param>
+        /// <returns>The one-part prefab.（只有一個部件的預製模板。）</returns>
+        private static PrefabMesh Wrap(MeshAsset mesh) => new()
+        {
+            // The LOD suffix belongs on the root node, and for a lone mesh the root *is* the mesh.
+            // （LOD 後綴屬於根節點，而單一網格的根節點即為該網格本身。）
+            AssetId = NodeName(mesh),
+            SourceName = mesh.SourceName,
+            Parts = { new PrefabMeshPart { Mesh = mesh, NodeName = NodeName(mesh) } }
+        };
+
+        /// <summary>
+        /// Build the in-memory <c>.glb</c> byte payload for an assembled prefab.
+        /// （為已組裝的預製模板建構記憶體中的 <c>.glb</c> 位元組內容。）<br/><br/>
+        /// Every part shares one BIN chunk and becomes one glTF mesh hung off its own node under
+        /// the root, carrying the part's offset within the prefab as the node's TRS. A prefab whose
+        /// single part sits at the origin collapses to a bare root node with the mesh on it, since
+        /// most prefabs — every tree and prop — are exactly that.<br/>
+        /// （所有部件共用單一 BIN 區塊，各自成為一個 glTF 網格，並掛在根節點之下的專屬節點上，
+        /// 以節點的 TRS 帶有該部件在預製模板內的偏移。若預製模板僅有一個位於原點的部件，
+        /// 則收攏為僅有根節點並直接掛上網格——大多數預製模板（所有樹木與道具）正是如此。）
+        /// </summary>
+        /// <param name="prefab">The prefab to serialise.（待序列化的預製模板。）</param>
+        /// <returns>The complete GLB container.（完整的 GLB 容器。）</returns>
+        public static byte[] Build(PrefabMesh prefab)
+        {
+            if (prefab == null) throw new ArgumentNullException(nameof(prefab));
+            if ((prefab.Parts == null) || (prefab.Parts.Count == 0))
+                throw new ArgumentException($"Prefab `{prefab.AssetId}` has no parts. 預製模板 `{prefab.AssetId}` 沒有任何部件。");
+
+            using MemoryStream binStream = new();
+            using BinaryWriter bin = new(binStream);
+
+            List<object> bufferViews = new();
+            List<object> accessors = new();
+            List<object> materials = new();
+            List<object> meshes = new();
+            List<object> nodes = new();
+
+            // Reserve node 0 for the root; parts append after it and are listed as its children.
+            // （保留節點 0 給根節點，部件接續其後並列為其子節點。）
+            List<int> children = new();
+            nodes.Add(null);
+
+            foreach (PrefabMeshPart part in prefab.Parts)
+            {
+                MeshAsset mesh = part.Mesh;
+                if (mesh == null) continue;
+                if ((mesh.Vertices == null) || (mesh.Vertices.Length == 0))
+                    throw new ArgumentException($"Mesh `{mesh.AssetId}` has no vertices. 網格 `{mesh.AssetId}` 沒有頂點。");
+                if ((mesh.Indices == null) || (mesh.Indices.Length == 0))
+                    throw new ArgumentException($"Mesh `{mesh.AssetId}` has no indices. 網格 `{mesh.AssetId}` 沒有索引。");
+
+                string name = part.NodeName ?? NodeName(mesh);
+                meshes.Add(new Dictionary<string, object>
+                {
+                    ["name"] = name,
+                    ["primitives"] = BuildPrimitives(mesh, bin, binStream, bufferViews, accessors, materials)
+                });
+
+                Dictionary<string, object> node = new()
+                {
+                    ["name"] = name,
+                    ["mesh"] = meshes.Count - 1
+                };
+
+                // The bundle's mesh frame mirrors X, so a part's offset mirrors with it. A rotation
+                // survives a reflection as a rotation whose axis is the mirrored pseudo-vector —
+                // (x, -y, -z, w) — which is why y and z flip here while x does not.
+                // （束的網格座標系鏡射 X 軸，故部件偏移亦隨之鏡射。旋轉經鏡射後仍為旋轉，
+                //   其軸為鏡射後的偽向量 (x, -y, -z, w)，因此此處翻轉 y 與 z 而非 x。）
+                float3 translation = part.Position;
+                if (math.any(translation != float3.zero))
+                    node["translation"] = new[] { -translation.x, translation.y, translation.z };
+
+                float4 rotation = part.Rotation.value;
+                if (math.lengthsq(rotation) > 1e-6f)
+                {
+                    rotation = math.normalize(rotation);
+                    if (!rotation.Equals(new float4(0f, 0f, 0f, 1f)))
+                        node["rotation"] = new[] { rotation.x, -rotation.y, -rotation.z, rotation.w };
+                }
+
+                nodes.Add(node);
+                children.Add(nodes.Count - 1);
+            }
+
+            if (children.Count == 0)
+                throw new ArgumentException($"Prefab `{prefab.AssetId}` has no readable parts. 預製模板 `{prefab.AssetId}` 沒有可讀取的部件。");
+
+            // The contract names the root node exactly `<assetId>`.
+            // （契約規定根節點的名稱恰為 `<assetId>`。）
+            Dictionary<string, object> root = new() { ["name"] = prefab.AssetId };
+            Dictionary<string, object> only = (children.Count == 1) ? (Dictionary<string, object>)nodes[children[0]] : null;
+            if ((only != null) && !only.ContainsKey("translation") && !only.ContainsKey("rotation"))
+            {
+                // A single part at the origin needs no intermediate node — put the mesh straight on
+                // the root, which the contract requires to be named exactly `<assetId>`.
+                // （位於原點的單一部件無須中間節點：將網格直接掛於根節點，
+                //   契約要求其名稱恰為 `<assetId>`。）
+                root["mesh"] = only["mesh"];
+                nodes.RemoveAt(children[0]);
+            }
+            else
+            {
+                root["children"] = children;
+            }
+
+            nodes[0] = root;
+
+            bin.Flush();
+            byte[] binChunk = Pad(binStream.ToArray(), 0x00);
+
+            Dictionary<string, object> gltf = new()
+            {
+                ["asset"] = new Dictionary<string, object>
+                {
+                    ["version"] = "2.0",
+                    ["generator"] = $"carto-ripper {Instance.Version}"
+                },
+                ["scene"] = 0,
+                ["scenes"] = new object[] { new Dictionary<string, object> { ["nodes"] = new[] { 0 } } },
+                ["nodes"] = nodes,
+                ["meshes"] = meshes,
+                ["materials"] = materials,
+                ["buffers"] = new object[] { new Dictionary<string, object> { ["byteLength"] = binChunk.Length } },
+                ["bufferViews"] = bufferViews,
+                ["accessors"] = accessors
+            };
+
+            byte[] jsonChunk = Pad(Encoding.UTF8.GetBytes(
+                JsonConvert.SerializeObject(gltf, Formatting.None)), 0x20);
+
+            using MemoryStream glbStream = new();
+            using BinaryWriter glb = new(glbStream);
+            glb.Write(Encoding.ASCII.GetBytes("glTF"));
+            glb.Write(2u);
+            glb.Write((uint)(12 + 8 + jsonChunk.Length + 8 + binChunk.Length));
+            glb.Write((uint)jsonChunk.Length);
+            glb.Write(Encoding.ASCII.GetBytes("JSON"));
+            glb.Write(jsonChunk);
+            glb.Write((uint)binChunk.Length);
+            glb.Write(new byte[] { 0x42, 0x49, 0x4E, 0x00 });
+            glb.Write(binChunk);
+            glb.Flush();
+
+            return glbStream.ToArray();
+        }
+
+        /// <summary>
+        /// Append one mesh's vertex attributes and index ranges to the shared buffer, returning its
+        /// glTF primitives.<br/>
+        /// （將單一網格的頂點屬性與索引範圍附加至共用緩衝區，並回傳其 glTF primitive。）
+        /// </summary>
+        /// <param name="mesh">The mesh to append.（待附加的網格。）</param>
+        /// <param name="bin">The writer over the shared BIN chunk.（共用 BIN 區塊的寫出器。）</param>
+        /// <param name="binStream">The shared BIN chunk, for its current offset.（共用 BIN 區塊，用以取得目前位移。）</param>
+        /// <param name="bufferViews">The document's buffer views.（文件的 buffer view 集合。）</param>
+        /// <param name="accessors">The document's accessors.（文件的 accessor 集合。）</param>
+        /// <param name="materials">The document's materials.（文件的材質集合。）</param>
+        /// <returns>The primitives for this mesh.（此網格的 primitive。）</returns>
+        private static List<object> BuildPrimitives(MeshAsset mesh, BinaryWriter bin, MemoryStream binStream,
+                                                    List<object> bufferViews, List<object> accessors, List<object> materials)
         {
             int vertexCount = mesh.Vertices.Length;
             bool hasNormals = (mesh.Normals != null) && (mesh.Normals.Length == vertexCount);
@@ -71,12 +246,6 @@ namespace Carto.IO
             bool hasTangents = (mesh.Tangents != null) && (mesh.Tangents.Length == vertexCount);
 
             List<MeshPrimitive> primitives = NormalizePrimitives(mesh);
-
-            using MemoryStream binStream = new();
-            using BinaryWriter bin = new(binStream);
-
-            List<object> bufferViews = new();
-            List<object> accessors = new();
 
             // -- POSITION --------------------------------------------------------------------
             // The bundle's mesh frame is right-handed: mirror X. Track the bounds *after* the
@@ -152,7 +321,6 @@ namespace Carto.IO
 
             // -- Indices, one accessor per primitive ------------------------------------------
             List<object> gltfPrimitives = new();
-            List<object> materials = new();
             foreach (MeshPrimitive primitive in primitives)
             {
                 int offset = (int)binStream.Position;
@@ -202,45 +370,7 @@ namespace Carto.IO
                 });
             }
 
-            bin.Flush();
-            byte[] binChunk = Pad(binStream.ToArray(), 0x00);
-
-            Dictionary<string, object> gltf = new()
-            {
-                ["asset"] = new Dictionary<string, object>
-                {
-                    ["version"] = "2.0",
-                    ["generator"] = $"carto-ripper {Instance.Version}"
-                },
-                ["scene"] = 0,
-                ["scenes"] = new object[] { new Dictionary<string, object> { ["nodes"] = new[] { 0 } } },
-                // The contract names the root node after the assetId, and LOD n > 0 as
-                // "<assetId>_LOD<n>".（契約規定根節點以 assetId 命名，LOD n > 0 則為 "<assetId>_LOD<n>"。）
-                ["nodes"] = new object[] { new Dictionary<string, object> { ["name"] = NodeName(mesh), ["mesh"] = 0 } },
-                ["meshes"] = new object[] { new Dictionary<string, object> { ["name"] = NodeName(mesh), ["primitives"] = gltfPrimitives } },
-                ["materials"] = materials,
-                ["buffers"] = new object[] { new Dictionary<string, object> { ["byteLength"] = binChunk.Length } },
-                ["bufferViews"] = bufferViews,
-                ["accessors"] = accessors
-            };
-
-            byte[] jsonChunk = Pad(Encoding.UTF8.GetBytes(
-                JsonConvert.SerializeObject(gltf, Formatting.None)), 0x20);
-
-            using MemoryStream glbStream = new();
-            using BinaryWriter glb = new(glbStream);
-            glb.Write(Encoding.ASCII.GetBytes("glTF"));
-            glb.Write(2u);
-            glb.Write((uint)(12 + 8 + jsonChunk.Length + 8 + binChunk.Length));
-            glb.Write((uint)jsonChunk.Length);
-            glb.Write(Encoding.ASCII.GetBytes("JSON"));
-            glb.Write(jsonChunk);
-            glb.Write((uint)binChunk.Length);
-            glb.Write(new byte[] { 0x42, 0x49, 0x4E, 0x00 });
-            glb.Write(binChunk);
-            glb.Flush();
-
-            return glbStream.ToArray();
+            return gltfPrimitives;
         }
 
         /// <summary>

@@ -390,7 +390,14 @@ namespace Carto
         [SettingsUIDisableByCondition(typeof(Settings), nameof(IsInGameOrEditor), invert: true)]
         public bool ExportButton
         {
-            set { IO.IO.Export(); }
+            // Deferred by a couple of frames so the "Carto: exporting" caption reaches the screen
+            // before the export takes the main thread. The vanilla export is one synchronous call
+            // and stays that way — this does not make it interruptible, it only replaces an
+            // apparently hung game with a stated reason.
+            // （延後數幀執行，使「Carto：正在輸出」的說明文字於輸出佔用主執行緒前抵達畫面。
+            //   原版輸出為單一同步呼叫且維持不變——此舉並未使其可中斷，
+            //   只是將看似當機的遊戲換成有明確說明的狀態。）
+            set { IO.RipProgress.RunDeferred(IO.RipProgress.Phase.Export, IO.IO.Export); }
         }
 
         /// <summary>
@@ -447,6 +454,65 @@ namespace Carto
                 {
                     Instance.Log.Error(ex.ToString());
                     summary = $"Instance rip failed:\n{ex.Message}";
+                }
+
+                Game.UI.MessageDialog dialog = new("Options.SECTION[Carto.Carto.Mod]", summary, "Common.OK");
+                Instance.UI.appBindings.ShowMessageDialog(dialog, null);
+            }
+        }
+
+        /// <summary>
+        /// How many prefabs a mesh rip covers (PLAN Phase 3).
+        /// （網格擷取涵蓋的預製模板數量（PLAN 第三階段）。）<br/><br/>
+        /// A dense city references a few thousand distinct prefabs and a single full-detail building
+        /// runs to megabytes, so an uncapped rip is a multi-gigabyte operation. Capping to the
+        /// most-used prefabs covers most of the city for a fraction of the output, which is how the
+        /// real cost gets measured before it is paid.<br/>
+        /// （密集的城市會參照數千個相異預製模板，而單棟完整細節建築即達數 MB，
+        /// 因此未受限的擷取是數 GB 等級的操作。限制為最常用的預製模板，
+        /// 能以一小部分的輸出量涵蓋城市的大部分，藉此在付出代價前先量測實際成本。）
+        /// </summary>
+        [SettingsUISection(GeneralTab, GeneralGeneralGroup)]
+        [SettingsUIDropdown(typeof(Settings), nameof(GetRipMeshLimits))]
+        [SettingsUIDisableByCondition(typeof(Settings), nameof(IsInGameOrEditor), invert: true)]
+        public int RipMeshLimit { get; set; } = 50;
+
+        public DropdownItem<int>[] GetRipMeshLimits()
+        {
+            return new DropdownItem<int>[]
+            {
+                new() { value = 50, displayName = "Options.Carto.Carto.Mod.RIPMESHLIMIT[50]" },
+                new() { value = 250, displayName = "Options.Carto.Carto.Mod.RIPMESHLIMIT[250]" },
+                new() { value = 1000, displayName = "Options.Carto.Carto.Mod.RIPMESHLIMIT[1000]" },
+                new() { value = 0, displayName = "Options.Carto.Carto.Mod.RIPMESHLIMIT[All]" }
+            };
+        }
+
+        /// <summary>
+        /// The button that rips every unique prefab mesh into <c>meshes/*.glb</c> (PLAN Phase 3).
+        /// （將所有唯一預製模板網格擷取至 <c>meshes/*.glb</c> 的按鈕（PLAN 第三階段）。）<br/><br/>
+        /// Returns immediately: the rip runs a slice per frame with a progress indicator in the
+        /// corner, and reports its result in a dialog when it finishes.<br/>
+        /// （立即返回：擷取每幀推進一段，並於畫面角落顯示進度指示器，完成時以對話框回報結果。）
+        /// </summary>
+        [SettingsUISection(GeneralTab, GeneralGeneralGroup)]
+        [SettingsUIButton]
+        [SettingsUIDisableByCondition(typeof(Settings), nameof(IsInGameOrEditor), invert: true)]
+        public bool RipMeshesButton
+        {
+            set
+            {
+                string summary;
+                try
+                {
+                    string directory = Utils.IOUtils.CombinePath(Instance.CartoDataPath, "spike");
+                    summary = Instance.MeshRip.BeginRip(directory, RipMeshLimit);
+                }
+                catch (System.Exception ex)
+                {
+                    Instance.Log.Error(ex.ToString());
+                    IO.RipProgress.Clear();
+                    summary = $"Mesh rip failed to start:\n{ex.Message}";
                 }
 
                 Game.UI.MessageDialog dialog = new("Options.SECTION[Carto.Carto.Mod]", summary, "Common.OK");

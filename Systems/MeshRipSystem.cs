@@ -3,10 +3,14 @@ using Carto.IO;
 using Carto.Utils;
 using Colossal.Logging;
 using Game;
+using Game.Objects;
 using Game.Prefabs;
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Text;
+using System.Threading.Tasks;
 using Unity.Collections;
 using Unity.Entities;
 using Unity.Mathematics;
@@ -54,6 +58,19 @@ namespace Carto.Systems
         EntityQuery _placedBuildingQuery;
 
         /// <summary>
+        /// The query for every placed object, matching <see cref="InstanceRipSystem"/>'s exactly so
+        /// the prefab set ripped here is the prefab set <c>instances.jsonl</c> references.<br/>
+        /// （所有已放置物件的查詢，與 <see cref="InstanceRipSystem"/> 完全一致，
+        /// 使此處擷取的預製模板集合恰為 <c>instances.jsonl</c> 所參照者。）
+        /// </summary>
+        EntityQuery _objectQuery;
+
+        /// <summary>
+        /// The run in progress, or <c>null</c> when idle.（進行中的擷取工作，閒置時為 <c>null</c>。）
+        /// </summary>
+        RipRun _run;
+
+        /// <summary>
         /// The event triggered when the system instance is created.
         /// （當系統實例被創造時觸發的事件。）
         /// </summary>
@@ -77,21 +94,68 @@ namespace Carto.Systems
                 }
             });
 
+            _objectQuery = GetEntityQuery(new EntityQueryDesc()
+            {
+                All = new ComponentType[]
+                {
+                    ComponentType.ReadOnly<Game.Objects.Object>(),
+                    ComponentType.ReadOnly<Game.Objects.Transform>(),
+                    ComponentType.ReadOnly<PrefabRef>()
+                },
+                None = new ComponentType[]
+                {
+                    ComponentType.ReadOnly<Moving>(),
+                    ComponentType.ReadOnly<Game.Common.Deleted>(),
+                    ComponentType.ReadOnly<Game.Tools.Temp>()
+                }
+            });
+
             base.OnCreate();
             _log.Debug("MeshRipSystem instance created. 網格擷取系統實例創造完成。");
         }
 
         /// <summary>
         /// The event triggered when the system instance is destroyed.
-        /// （當系統實例被銷毀時所觸發的事件。）
+        /// （當系統實例被銷毀時所觸發的事件。）<br/><br/>
+        /// A rip in flight must be released here. The writer task blocks on the queue until the
+        /// reader declares it complete, and once this system stops updating — the user quit to the
+        /// menu mid-rip — nothing else ever would.<br/>
+        /// （進行中的擷取必須於此釋放。寫出工作會阻塞於佇列直到讀取端宣告完成，
+        /// 而一旦此系統停止更新（使用者於擷取途中返回主選單），便再無他者會做此宣告。）
         /// </summary>
-        protected override void OnDestroy() { base.OnDestroy(); }
+        protected override void OnDestroy()
+        {
+            RipRun run = _run;
+            _run = null;
+
+            if (run != null)
+            {
+                _log.Info($"Mesh rip abandoned at {run.Index}/{run.Items.Count} prefab(s); the world was unloaded. 網格擷取於世界卸載時中止。");
+                try { run.Queue.CompleteAdding(); } catch { /* already completed */ }
+                RipProgress.Clear();
+            }
+
+            base.OnDestroy();
+        }
 
         /// <summary>
-        /// The event triggered when the system instance is updated.
-        /// （當系統實例被更新時觸發的事件。）
+        /// Drive the progress indicator, and advance any rip in progress by one frame's worth of
+        /// work.<br/>
+        /// （驅動進度指示器，並將進行中的擷取工作推進一幀份的進度。）<br/><br/>
+        /// This system is registered at <see cref="SystemUpdatePhase.MainLoop"/> rather than with
+        /// the simulation, because a rip is started from the options page — which pauses the
+        /// simulation, so a simulation-phase system would never tick while the user is looking at
+        /// it.<br/>
+        /// （此系統註冊於 <see cref="SystemUpdatePhase.MainLoop"/> 而非模擬階段，因為擷取由選項頁面啟動，
+        /// 而該頁面會暫停模擬，模擬階段的系統在使用者注視時將完全不會更新。）
         /// </summary>
-        protected override void OnUpdate() { }
+        protected override void OnUpdate()
+        {
+            RipProgress.Pump();
+
+            RipRun run = _run;
+            if (run != null) Advance(run);
+        }
 
         /// <summary>
         /// The PLAN Phase 1 feasibility spike: rip the meshes of the first few building prefabs in
@@ -200,6 +264,497 @@ namespace Carto.Systems
             summary.AppendLine();
             summary.Append("Full report: Logs/Carto.log");
             return summary.ToString();
+        }
+
+        // ====================================================================================
+        // PLAN Phase 3 — mesh dump, one .glb per unique prefab.
+        // （PLAN 第三階段：網格輸出，每個唯一預製模板一個 .glb。）
+        // ====================================================================================
+
+        /// <summary>
+        /// One prefab waiting to be ripped.（一個等待擷取的預製模板。）
+        /// </summary>
+        private struct WorkItem
+        {
+            public Entity PrefabEntity;
+            public string AssetId;
+            public string SourceName;
+            public int InstanceCount;
+        }
+
+        /// <summary>
+        /// The mutable state of a rip in progress.（進行中擷取工作的可變狀態。）<br/><br/>
+        /// A full rip reads thousands of prefabs and writes gigabytes, which cannot happen inside a
+        /// button handler without freezing the game for minutes. The work is therefore split in two:
+        /// reading geometry stays on the main thread — <c>EntityManager</c> and the asset database
+        /// permit nothing else — but only for a few milliseconds per frame, while glTF serialisation
+        /// and disk writes run on a background task fed through <see cref="Queue"/>.<br/>
+        /// （完整擷取需讀取數千個預製模板並寫出數 GB，在按鈕處理常式中進行必然使遊戲凍結數分鐘。
+        /// 因此工作一分為二：讀取幾何仍在主執行緒（<c>EntityManager</c> 與資產資料庫別無選擇），
+        /// 但每幀僅佔數毫秒；glTF 序列化與磁碟寫入則於背景工作中透過 <see cref="Queue"/> 進行。）
+        /// </summary>
+        private class RipRun
+        {
+            /// <summary>The <c>meshes/</c> directory being written into.（正在寫入的 <c>meshes/</c> 目錄。）</summary>
+            public string OutputDirectory;
+
+            /// <summary>The prefabs to rip, richest-covering first.（待擷取的預製模板，覆蓋最廣者優先。）</summary>
+            public List<WorkItem> Items;
+
+            /// <summary>How far through <see cref="Items"/> the reader has got.（讀取端於 <see cref="Items"/> 中的進度。）</summary>
+            public int Index;
+
+            /// <summary>Assembled prefabs waiting to be serialised.（等待序列化的已組裝預製模板。）</summary>
+            public BlockingCollection<PrefabMesh> Queue;
+
+            /// <summary>The background serialiser.（背景序列化工作。）</summary>
+            public Task Writer;
+
+            /// <summary>Whether the reader has finished handing work over.（讀取端是否已交付完所有工作。）</summary>
+            public bool ReadingDone;
+
+            /// <summary>
+            /// Counters. The first three belong to the reader on the main thread, the rest to the
+            /// writer task — kept apart so neither needs to synchronise with the other.
+            /// （計數器。前三者屬於主執行緒的讀取端，其餘屬於寫出工作；分開存放使雙方皆無須彼此同步。）
+            /// </summary>
+            public int Read, Skipped, ReadFailed;
+            public int Written, WriteFailed;
+            public long Bytes;
+
+            /// <summary>Everything that did not become a file.（所有未能成為檔案者。）</summary>
+            public int Failed => ReadFailed + WriteFailed;
+
+            /// <summary>Lines the writer wants in the report.（寫出端欲納入報告的訊息。）</summary>
+            public ConcurrentQueue<string> WriterNotes = new();
+
+            /// <summary>Per-file sizes, for the size breakdown.（各檔案大小，供大小分析使用。）</summary>
+            public ConcurrentBag<KeyValuePair<string, long>> Sizes = new();
+
+            /// <summary>The report accumulated on the main thread.（於主執行緒累積的報告。）</summary>
+            public StringBuilder Report = new();
+
+            /// <summary>Wall-clock duration of the whole run.（整體工作的實際經過時間。）</summary>
+            public Stopwatch Clock = Stopwatch.StartNew();
+        }
+
+        /// <summary>
+        /// How long the reader may hold the main thread each frame.
+        /// （讀取端每幀可佔用主執行緒的時間上限。）<br/><br/>
+        /// One prefab is always processed per frame even when it overruns, so a single very large
+        /// mesh cannot deadlock the run.<br/>
+        /// （即使超時，每幀仍必定處理一個預製模板，使單一巨大網格不致使工作停滯。）
+        /// </summary>
+        private const double FrameBudgetMilliseconds = 6d;
+
+        /// <summary>
+        /// How many assembled prefabs may wait for the writer.
+        /// （可等待寫出端的已組裝預製模板數量上限。）<br/><br/>
+        /// Each one holds its full vertex arrays, so an unbounded queue would simply move the
+        /// memory problem rather than solve it. The reader pauses when the queue is full.<br/>
+        /// （每一個都持有完整的頂點陣列，因此無上限的佇列只是把記憶體問題搬家而非解決。
+        /// 佇列滿時讀取端暫停。）
+        /// </summary>
+        private const int QueueCapacity = 4;
+
+        /// <summary>
+        /// Whether a rip is currently running.（目前是否有擷取工作進行中。）
+        /// </summary>
+        public bool IsRipping => _run != null;
+
+        /// <summary>
+        /// Start ripping every unique prefab placed in the city into <c>meshes/&lt;assetId&gt;.glb</c>.
+        /// （開始將城市中每個唯一的已放置預製模板擷取至 <c>meshes/&lt;assetId&gt;.glb</c>。）<br/><br/>
+        /// Returns as soon as the work list is built; the rip itself proceeds a slice per frame in
+        /// <see cref="OnUpdate"/> and reports its result in a dialog when it finishes.<br/>
+        /// （工作清單建立後隨即返回；擷取本身於 <see cref="OnUpdate"/> 中每幀推進一段，
+        /// 完成時以對話框回報結果。）
+        /// </summary>
+        /// <param name="outputDirectory">The bundle root to write <c>meshes/</c> under.（要在其下寫入 <c>meshes/</c> 的束根目錄。）</param>
+        /// <param name="maxPrefabs">The most prefabs to rip, or <c>0</c> for all of them.（最多擷取的預製模板數量，<c>0</c> 為全部。）</param>
+        /// <returns>A short description of what was queued.（已排入工作的簡短說明。）</returns>
+        public string BeginRip(string outputDirectory, int maxPrefabs = 0)
+        {
+            if (_run != null) return "A mesh rip is already running.";
+
+            RipProgress.Report(RipProgress.Phase.Scan);
+
+            RipRun run = new()
+            {
+                OutputDirectory = IOUtils.CombinePath(outputDirectory, "meshes"),
+                Queue = new BlockingCollection<PrefabMesh>(QueueCapacity)
+            };
+
+            run.Items = CollectWorkItems(run.Report, maxPrefabs, out int distinctPrefabs, out int placedObjects);
+            run.Report.AppendLine($"Placed objects: {placedObjects}, distinct prefabs: {distinctPrefabs}, queued: {run.Items.Count}");
+
+            if (run.Items.Count == 0)
+            {
+                RipProgress.Clear();
+                return "Nothing to rip: no placed objects resolved to a prefab.";
+            }
+
+            run.Writer = Task.Run(() => WriteQueued(run));
+            _run = run;
+
+            RipProgress.Report(RipProgress.Phase.Meshes, 0, run.Items.Count);
+            return $"Ripping {run.Items.Count} prefab(s) in the background.\n\nWatch the indicator in the corner; a dialog reports the result when it finishes.";
+        }
+
+        /// <summary>
+        /// Build the work list: every distinct prefab referenced by a placed object, ordered by how
+        /// many objects use it.<br/>
+        /// （建立工作清單：所有已放置物件參照的相異預製模板，依使用該模板的物件數量排序。）<br/><br/>
+        /// Ordering matters only when the run is capped — ripping the most-used prefabs first means
+        /// a capped run still covers most of the city rather than an arbitrary corner of it.<br/>
+        /// （排序僅在限制數量時有意義：優先擷取最常用的預製模板，使受限的擷取仍能覆蓋城市的大部分，
+        /// 而非任意一角。）
+        /// </summary>
+        /// <param name="report">The report to note discovery counts in.（用以記錄探索統計的報告。）</param>
+        /// <param name="maxPrefabs">The cap, or <c>0</c> for none.（數量上限，<c>0</c> 為不限。）</param>
+        /// <param name="distinctPrefabs">Receives the number of distinct prefabs found.（接收找到的相異預製模板數量。）</param>
+        /// <param name="placedObjects">Receives the number of placed objects walked.（接收走訪的已放置物件數量。）</param>
+        /// <returns>The work list.（工作清單。）</returns>
+        private List<WorkItem> CollectWorkItems(StringBuilder report, int maxPrefabs, out int distinctPrefabs, out int placedObjects)
+        {
+            Dictionary<Entity, int> counts = new();
+            NativeArray<Entity> entities = _objectQuery.ToEntityArray(Allocator.TempJob);
+
+            try
+            {
+                placedObjects = entities.Length;
+                foreach (Entity entity in entities)
+                {
+                    Entity prefabEntity = EntityManager.GetComponentData<PrefabRef>(entity).m_Prefab;
+                    if (prefabEntity == Entity.Null) continue;
+
+                    counts.TryGetValue(prefabEntity, out int count);
+                    counts[prefabEntity] = count + 1;
+                }
+            }
+            finally
+            {
+                entities.Dispose();
+            }
+
+            distinctPrefabs = counts.Count;
+
+            List<WorkItem> items = new(counts.Count);
+            foreach (KeyValuePair<Entity, int> kvp in counts)
+            {
+                string sourceName = GetPrefabName(kvp.Key);
+
+                // An unresolvable prefab still gets ripped under the same synthetic id
+                // InstanceRipSystem gives its instances, so the two layers keep joining up.
+                // （無法解析的預製模板仍以 InstanceRipSystem 給予其實例的相同合成 ID 擷取，
+                //   使兩個層級持續得以連結。）
+                items.Add(new WorkItem
+                {
+                    PrefabEntity = kvp.Key,
+                    AssetId = (sourceName != null) ? SanitizeAssetId(sourceName) : $"unresolved_{kvp.Key.Index}",
+                    SourceName = sourceName ?? $"unresolved_{kvp.Key.Index}",
+                    InstanceCount = kvp.Value
+                });
+            }
+
+            items.Sort((a, b) => b.InstanceCount.CompareTo(a.InstanceCount));
+
+            if ((maxPrefabs > 0) && (items.Count > maxPrefabs))
+            {
+                report.AppendLine($"Capped to the {maxPrefabs} most-used prefab(s) of {items.Count}.");
+                items.RemoveRange(maxPrefabs, items.Count - maxPrefabs);
+            }
+
+            return items;
+        }
+
+        /// <summary>
+        /// Read one frame's worth of prefabs, then finish the run once the writer has drained.
+        /// （讀取一幀份的預製模板，並於寫出端排空後結束此次工作。）
+        /// </summary>
+        /// <param name="run">The run in progress.（進行中的工作。）</param>
+        private void Advance(RipRun run)
+        {
+            if (!run.ReadingDone)
+            {
+                Stopwatch budget = Stopwatch.StartNew();
+
+                while (run.Index < run.Items.Count)
+                {
+                    // Back-pressure: pause reading rather than pile assembled meshes up in memory
+                    // faster than they can be written.（背壓：暫停讀取，而非讓已組裝的網格在記憶體中
+                    // 堆積得比寫出更快。）
+                    if (run.Queue.Count >= QueueCapacity) break;
+
+                    ReadOne(run, run.Items[run.Index]);
+                    run.Index++;
+
+                    if (budget.Elapsed.TotalMilliseconds >= FrameBudgetMilliseconds) break;
+                }
+
+                RipProgress.Report(RipProgress.Phase.Meshes, run.Index, run.Items.Count);
+
+                if (run.Index >= run.Items.Count)
+                {
+                    run.ReadingDone = true;
+                    run.Queue.CompleteAdding();
+                }
+
+                return;
+            }
+
+            RipProgress.Report(RipProgress.Phase.Write, System.Threading.Volatile.Read(ref run.Written), run.Read);
+            if (run.Writer.IsCompleted) Finish(run);
+        }
+
+        /// <summary>
+        /// Assemble one prefab and hand it to the writer.
+        /// （組裝一個預製模板並交付寫出端。）
+        /// </summary>
+        /// <param name="run">The run in progress.（進行中的工作。）</param>
+        /// <param name="item">The prefab to read.（待讀取的預製模板。）</param>
+        private void ReadOne(RipRun run, WorkItem item)
+        {
+            try
+            {
+                PrefabMesh prefab = BuildPrefabMesh(item, out string skipReason);
+
+                if (prefab == null)
+                {
+                    run.Skipped++;
+                    if (run.Skipped <= 20) run.Report.AppendLine($"  - {item.AssetId}: {skipReason}");
+                    return;
+                }
+
+                run.Read++;
+                run.Queue.Add(prefab);
+            }
+            catch (Exception ex)
+            {
+                run.ReadFailed++;
+                run.Report.AppendLine($"  ! {item.AssetId}: {ex.GetType().Name} {ex.Message}");
+                _log.Warn($"Failed to assemble prefab `{item.AssetId}`: {ex}");
+            }
+        }
+
+        /// <summary>
+        /// Serialise queued prefabs to disk. Runs on a background task for the whole rip.
+        /// （將排入佇列的預製模板序列化至磁碟。整個擷取期間於背景工作中執行。）
+        /// </summary>
+        /// <param name="run">The run in progress.（進行中的工作。）</param>
+        private static void WriteQueued(RipRun run)
+        {
+            foreach (PrefabMesh prefab in run.Queue.GetConsumingEnumerable())
+            {
+                try
+                {
+                    string path = IOUtils.CombinePath(run.OutputDirectory, $"{prefab.AssetId}.glb");
+                    long size = GltfWriter.Write(path, prefab);
+
+                    System.Threading.Interlocked.Increment(ref run.Written);
+                    System.Threading.Interlocked.Add(ref run.Bytes, size);
+                    run.Sizes.Add(new KeyValuePair<string, long>(prefab.AssetId, size));
+                }
+                catch (Exception ex)
+                {
+                    System.Threading.Interlocked.Increment(ref run.WriteFailed);
+                    run.WriterNotes.Enqueue($"  ! {prefab.AssetId}: {ex.GetType().Name} {ex.Message}");
+                    _log.Warn($"Failed to write `{prefab.AssetId}.glb`: {ex}");
+                }
+            }
+        }
+
+        /// <summary>
+        /// Assemble a prefab entity's sub-meshes into one <see cref="PrefabMesh"/>.
+        /// （將預製模板實體的子網格組裝為單一 <see cref="PrefabMesh"/>。）
+        /// </summary>
+        /// <param name="item">The prefab to assemble.（待組裝的預製模板。）</param>
+        /// <param name="skipReason">Why nothing came out, when the result is <c>null</c>.（結果為 <c>null</c> 時，說明未能產出的原因。）</param>
+        /// <returns>The assembled prefab, or <c>null</c>.（已組裝的預製模板，或 <c>null</c>。）</returns>
+        private PrefabMesh BuildPrefabMesh(WorkItem item, out string skipReason)
+        {
+            skipReason = null;
+
+            if (!EntityManager.HasBuffer<SubMesh>(item.PrefabEntity))
+            {
+                skipReason = "no SubMesh buffer";
+                return null;
+            }
+
+            DynamicBuffer<SubMesh> buffer = EntityManager.GetBuffer<SubMesh>(item.PrefabEntity, true);
+            if (buffer.Length == 0)
+            {
+                skipReason = "empty SubMesh buffer";
+                return null;
+            }
+
+            // Copy out before reading geometry: obtaining a mesh loads an asset, and a dynamic
+            // buffer is only valid until the entity's chunk moves.
+            // （於讀取幾何前先複製：取得網格會載入資產，而動態緩衝區僅在實體所屬區塊未移動前有效。）
+            SubMesh[] subMeshes = new SubMesh[buffer.Length];
+            for (int i = 0; i < buffer.Length; i++) subMeshes[i] = buffer[i];
+
+            List<int> selected = SelectSubMeshes(subMeshes);
+
+            PrefabMesh prefab = new()
+            {
+                AssetId = item.AssetId,
+                SourceName = item.SourceName,
+                InstanceCount = item.InstanceCount,
+                SkippedVariants = subMeshes.Length - selected.Count
+            };
+
+            HashSet<string> nodeNames = new();
+
+            foreach (int index in selected)
+            {
+                Entity meshEntity = subMeshes[index].m_SubMesh;
+                if (meshEntity == Entity.Null) continue;
+
+                string meshName = GetPrefabName(meshEntity) ?? $"{item.AssetId}_sub{index}";
+                string meshAssetId = SanitizeAssetId(meshName);
+
+                MeshAsset mesh = ReadMesh(meshEntity, meshAssetId, meshName);
+                if (mesh == null) continue;
+
+                // Node names must be unique within the file; two entries pointing at the same
+                // render prefab (a mirrored pair, say) would otherwise collide.
+                // （節點名稱在檔案內必須唯一，否則兩筆指向同一繪製預製模板的條目（例如鏡射成對者）將衝突。）
+                string nodeName = meshAssetId;
+                for (int suffix = 2; !nodeNames.Add(nodeName); suffix++) nodeName = $"{meshAssetId}_{suffix}";
+
+                prefab.Parts.Add(new PrefabMeshPart
+                {
+                    Mesh = mesh,
+                    Position = subMeshes[index].m_Position,
+                    Rotation = subMeshes[index].m_Rotation,
+                    NodeName = nodeName
+                });
+            }
+
+            if (prefab.Parts.Count == 0)
+            {
+                skipReason = $"none of {subMeshes.Length} sub-mesh(es) yielded geometry";
+                return null;
+            }
+
+            return prefab;
+        }
+
+        /// <summary>
+        /// Every <c>Require*</c> bit, i.e. every flag that makes a sub-mesh conditional.
+        /// （所有 <c>Require*</c> 位元，亦即所有使子網格帶有條件的旗標。）
+        /// </summary>
+        private const SubMeshFlags RequireFlags =
+            SubMeshFlags.RequireSafe | SubMeshFlags.RequireLevelCrossing | SubMeshFlags.RequireChild
+            | SubMeshFlags.RequireTeen | SubMeshFlags.RequireAdult | SubMeshFlags.RequireElderly
+            | SubMeshFlags.RequireDead | SubMeshFlags.RequireStump | SubMeshFlags.RequireEmpty
+            | SubMeshFlags.RequireFull | SubMeshFlags.RequireEditor | SubMeshFlags.RequireClear
+            | SubMeshFlags.RequireTrack | SubMeshFlags.RequireLeftHandTraffic
+            | SubMeshFlags.RequireRightHandTraffic | SubMeshFlags.RequirePartial1
+            | SubMeshFlags.RequirePartial2 | SubMeshFlags.RequireForward | SubMeshFlags.RequireBackward;
+
+        /// <summary>
+        /// The state a ripped prefab is exported in.（擷取的預製模板所輸出的狀態。）<br/><br/>
+        /// A <c>SubMesh</c> buffer mixes two different things: parts drawn <i>together</i> (a
+        /// building and its roof units) and <i>alternatives</i> the game picks between at draw time
+        /// (a sapling, an adult tree, a dead tree and a stump are four entries on one tree prefab).
+        /// Exporting all of them would stack every alternative into the same file. One state is
+        /// therefore fixed and documented: a healthy adult, unloaded, undamaged, forward-facing.
+        /// Traffic side is not a choice — it is read from the city.<br/>
+        /// （<c>SubMesh</c> 緩衝區混合了兩種不同的東西：<i>共同</i>繪製的部件，以及遊戲於繪製時擇一的
+        /// <i>替代方案</i>（一個樹木預製模板上，幼苗、成樹、枯樹與樹樁是四筆條目）。
+        /// 全部輸出將使所有替代方案疊在同一個檔案中，因此固定並記錄單一狀態：
+        /// 健康的成體、未裝載、未受損、朝向前方。行車方向並非選擇，而是讀自城市設定。）
+        /// </summary>
+        private SubMeshFlags DefaultState => SubMeshFlags.RequireSafe | SubMeshFlags.RequireAdult
+            | SubMeshFlags.RequireEmpty | SubMeshFlags.RequireClear | SubMeshFlags.RequireForward
+            | (Instance.City.leftHandTraffic ? SubMeshFlags.RequireLeftHandTraffic : SubMeshFlags.RequireRightHandTraffic);
+
+        /// <summary>
+        /// Choose which sub-mesh entries belong in the exported file.
+        /// （選出應納入輸出檔案的子網格條目。）
+        /// </summary>
+        /// <param name="subMeshes">The prefab's sub-mesh entries.（預製模板的子網格條目。）</param>
+        /// <returns>The indices to export.（要輸出的索引。）</returns>
+        private List<int> SelectSubMeshes(SubMesh[] subMeshes)
+        {
+            SubMeshFlags state = DefaultState;
+            List<int> selected = new();
+
+            for (int i = 0; i < subMeshes.Length; i++)
+            {
+                // Unconditional entries are always drawn; conditional ones only when everything
+                // they ask for holds in the exported state.
+                // （無條件的條目一律繪製；有條件者僅在其所要求的一切於輸出狀態下皆成立時繪製。）
+                SubMeshFlags required = subMeshes[i].m_Flags & RequireFlags;
+                if ((required & ~state) == 0) selected.Add(i);
+            }
+
+            // A prefab whose every entry is conditional — some props exist only as state variants —
+            // would otherwise produce no file at all, breaking the contract's promise that every
+            // referenced assetId resolves. Fall back to its first entry.
+            // （若預製模板的每個條目皆有條件（部分道具僅以狀態變體存在），將完全不產生檔案，
+            //   違背契約中「所有被參照的 assetId 皆可解析」的承諾。此時退回使用其首個條目。）
+            if ((selected.Count == 0) && (subMeshes.Length > 0)) selected.Add(0);
+
+            return selected;
+        }
+
+        /// <summary>
+        /// Write the report, clear the indicator and tell the user what came out.
+        /// （寫出報告、清除指示器，並告知使用者結果。）
+        /// </summary>
+        /// <param name="run">The finished run.（已完成的工作。）</param>
+        private void Finish(RipRun run)
+        {
+            _run = null;
+            run.Clock.Stop();
+            RipProgress.Clear();
+
+            try
+            {
+                run.Writer.Wait();
+            }
+            catch (Exception ex)
+            {
+                _log.Warn($"Mesh writer ended with an error: {ex}");
+            }
+
+            while (run.WriterNotes.TryDequeue(out string note)) run.Report.AppendLine(note);
+
+            // Sizes are the point of a capped run: they are what says whether the uncapped rip is
+            // 3 GB or 30. Report the total, the mean and the worst offenders.
+            // （大小正是受限擷取的重點：唯有它能說明未受限的擷取是 3 GB 還是 30 GB。
+            //   回報總計、平均值與最大者。）
+            List<KeyValuePair<string, long>> sizes = new(run.Sizes);
+            sizes.Sort((a, b) => b.Value.CompareTo(a.Value));
+
+            run.Report.AppendLine();
+            run.Report.AppendLine($"Wrote {run.Written} .glb, skipped {run.Skipped}, failed {run.Failed}, in {run.Clock.Elapsed.TotalSeconds:F1} s.");
+            run.Report.AppendLine($"Total {run.Bytes / (1024d * 1024d):F1} MiB, mean {(run.Written > 0 ? run.Bytes / (double)run.Written / 1024d : 0d):F0} KiB per prefab.");
+            run.Report.AppendLine("Largest:");
+            for (int i = 0; (i < 15) && (i < sizes.Count); i++)
+                run.Report.AppendLine($"  {sizes[i].Value / 1024d:F0} KiB  {sizes[i].Key}");
+            run.Report.AppendLine($"Output: {run.OutputDirectory}");
+
+            _log.Info(run.Report.ToString());
+
+            StringBuilder summary = new();
+            summary.AppendLine($"Wrote {run.Written} mesh file(s), skipped {run.Skipped}, failed {run.Failed}.");
+            summary.AppendLine($"{run.Bytes / (1024d * 1024d):F1} MiB in {run.Clock.Elapsed.TotalSeconds:F0} s.");
+            summary.AppendLine();
+            summary.Append("Full report: Logs/Carto.log");
+
+            try
+            {
+                Game.UI.MessageDialog dialog = new("Options.SECTION[Carto.Carto.Mod]", summary.ToString(), "Common.OK");
+                Instance.UI.appBindings.ShowMessageDialog(dialog, null);
+            }
+            catch (Exception ex)
+            {
+                _log.Warn($"Could not show the mesh rip result dialog: {ex.Message}");
+            }
         }
 
         /// <summary>

@@ -308,6 +308,22 @@ Conventions, all frozen in v1:
   along with the X mirror, since mirroring reverses bitangent handedness.
 - **Indices** — always indexed geometry, `UNSIGNED_INT`, one index accessor per primitive.
 
+### 6.1 One state, not every state
+
+A prefab's sub-meshes are not all drawn together. The game mixes two kinds in one list: parts
+drawn *simultaneously* (a building and its roof units) and *alternatives* it picks between at
+draw time — a tree prefab carries sapling, adult, dead and stump meshes as four entries on the
+same asset. Exporting all of them would stack every alternative into one file.
+
+A bundle therefore contains **one documented state per prefab**: healthy, adult, unloaded,
+undamaged, forward-facing, and with the traffic side the city is actually configured for. A
+prefab that exists *only* as state variants falls back to its first entry rather than
+producing no file, so **every `assetId` referenced by an instance still resolves to a `.glb`**.
+
+Per-instance state is not lost — it is on the instance, not the mesh. `attrs.growth`,
+`attrs.treeState` and `attrs.state` say what state each object is actually in, and a consumer
+that cares can scale, swap or tint accordingly.
+
 ---
 
 ## 7. `materials.json`

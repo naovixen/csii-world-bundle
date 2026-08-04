@@ -37,7 +37,12 @@ namespace Carto
             updateSystem.UpdateBefore<AreaSystem>(SystemUpdatePhase.GameSimulation);
             updateSystem.UpdateBefore<BuildingSystem>(SystemUpdatePhase.GameSimulation);
             updateSystem.UpdateBefore<InstanceRipSystem>(SystemUpdatePhase.GameSimulation);
-            updateSystem.UpdateBefore<MeshRipSystem>(SystemUpdatePhase.GameSimulation);
+            // MainLoop, not the simulation: a rip is driven a slice per frame from OnUpdate, and it
+            // is started from the options page — which pauses the simulation, so a simulation-phase
+            // system would sit frozen exactly while the user is watching it.
+            // （使用 MainLoop 而非模擬階段：擷取由 OnUpdate 每幀推進一段，且由選項頁面啟動，
+            //   而該頁面會暫停模擬，模擬階段的系統將恰好在使用者注視時停滯。）
+            updateSystem.UpdateAt<MeshRipSystem>(SystemUpdatePhase.MainLoop);
             updateSystem.UpdateBefore<NetworkSystem>(SystemUpdatePhase.GameSimulation);
             updateSystem.UpdateBefore<POISystem>(SystemUpdatePhase.GameSimulation);
             updateSystem.UpdateBefore<RasterSystem>(SystemUpdatePhase.GameSimulation);
