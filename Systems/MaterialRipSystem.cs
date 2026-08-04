@@ -54,6 +54,13 @@ namespace Carto.Systems
         private const string EmissiveColorMap = "_EmissiveColorMap";
 
         /// <summary>
+        /// The same four names in the contract's map order, for the passes that have to sweep every
+        /// map rather than ask for one.<br/>
+        /// （契約貼圖順序下的同樣四個名稱，供須遍歷所有貼圖而非索取單一貼圖的流程使用。）
+        /// </summary>
+        private static readonly string[] Maps = { BaseColorMap, NormalMap, MaskMap, EmissiveColorMap };
+
+        /// <summary>
         /// The materials ripped so far in the run, or <c>null</c> when idle.
         /// （本次工作中已擷取的材質，閒置時為 <c>null</c>。）
         /// </summary>
@@ -117,11 +124,20 @@ namespace Carto.Systems
             /// <summary>Virtual-textured maps recovered from their preprocessed stack.（自預處理堆疊救回的虛擬貼圖數。）</summary>
             public int TexturesFromStack;
 
+            /// <summary>Virtual-textured maps recovered from the surface's own VT data.（自表面自身 VT 資料救回的虛擬貼圖數。）</summary>
+            public int TexturesFromSurfaceData;
+
+            /// <summary>Surfaces whose own VT data was opened, and those whose load threw.（已開啟自身 VT 資料的表面數，以及載入時擲出例外者。）</summary>
+            public int SurfaceDataLoads, SurfaceDataFailures;
+
             /// <summary>Maps recovered off a live material, once every other route failed.（其餘路徑皆失敗後，自實際材質救回的貼圖數。）</summary>
             public int TexturesFromMaterial;
 
             /// <summary>How many stack recoveries have been described in the log.（已於記錄中描述的堆疊救回數。）</summary>
             public int StackReports;
+
+            /// <summary>How many surface-data recoveries have been described in the log.（已於記錄中描述的表面資料救回數。）</summary>
+            public int SurfaceDataReports;
 
             /// <summary>
             /// Texture references already counted.（已計數的貼圖參照。）<br/><br/>
@@ -151,6 +167,32 @@ namespace Carto.Systems
             /// 而非每個需要它的表面的性質；若無此集合，由兩百個表面共用的貼圖將被宣告兩百次。）
             /// </summary>
             public HashSet<string> Declared = new();
+        }
+
+        /// <summary>
+        /// One surface's own virtual-texturing data, opened at most once and only if something
+        /// needs it.<br/>
+        /// （單一表面自身的虛擬貼圖資料，至多開啟一次，且僅於確有需要時開啟。）<br/><br/>
+        /// <see cref="VTSurfaceAsset.Load"/> decodes the whole file — every stack and layer — and
+        /// memoises the material it builds, so four map lookups cost one decode. That is also why
+        /// this is deferred: of the 2,447 surfaces that ship a <c>.VTSurface</c>, 2,228 are already
+        /// served by the shared stack, and their files run to tens of GiB in total. Opening one
+        /// before the cheaper routes have failed would be paying the whole cost for nothing.<br/>
+        /// （<see cref="VTSurfaceAsset.Load"/> 會解碼整個檔案——所有堆疊與層——並記憶其所建之材質，
+        /// 故四次貼圖查找僅需一次解碼。這也正是其延後載入的原因：隨遊戲附帶 <c>.VTSurface</c>
+        /// 的 2,447 個表面中，有 2,228 個已由共用堆疊供應，而這些檔案總計達數十 GiB。
+        /// 在較省的路徑尚未失敗前就開啟其一，等於白付全部代價。）
+        /// </summary>
+        private class SurfaceData
+        {
+            /// <summary>The surface being ripped.（正在擷取的表面資產。）</summary>
+            public SurfaceAsset Surface;
+
+            /// <summary>Whether the load has been tried, successfully or not.（是否已嘗試載入，無論成敗。）</summary>
+            public bool Attempted;
+
+            /// <summary>The material the decode produced, with its maps bound.（解碼所產生、已繫結貼圖的材質。）</summary>
+            public Material Material;
         }
 
         /// <summary>
@@ -339,6 +381,12 @@ namespace Carto.Systems
             //   而 `IsHandledByVirtualTexturing` 隨後又會讀回該值。）
             surface.LoadProperties(true);
 
+            // Shared by all four map lookups so that a surface which needs its own VT data decodes
+            // it once instead of four times. Nothing is opened unless a map actually asks.
+            // （由四次貼圖查找共用，使需要自身 VT 資料的表面僅解碼一次而非四次。
+            //   除非確有貼圖索取，否則不會開啟任何檔案。）
+            SurfaceData own = new() { Surface = surface };
+
             try
             {
                 MaterialAsset material = new()
@@ -347,10 +395,10 @@ namespace Carto.Systems
                     SourceName = surface.name
                 };
 
-                material.MapKeys[(int)MaterialMap.BaseColor] = Take(run, surface, BaseColorMap, renderPrefab, materialIndex);
-                material.MapKeys[(int)MaterialMap.Normal] = Take(run, surface, NormalMap, renderPrefab, materialIndex);
-                material.MapKeys[(int)MaterialMap.Mask] = Take(run, surface, MaskMap, renderPrefab, materialIndex);
-                material.MapKeys[(int)MaterialMap.Emissive] = Take(run, surface, EmissiveColorMap, renderPrefab, materialIndex);
+                material.MapKeys[(int)MaterialMap.BaseColor] = Take(run, surface, BaseColorMap, renderPrefab, materialIndex, own);
+                material.MapKeys[(int)MaterialMap.Normal] = Take(run, surface, NormalMap, renderPrefab, materialIndex, own);
+                material.MapKeys[(int)MaterialMap.Mask] = Take(run, surface, MaskMap, renderPrefab, materialIndex, own);
+                material.MapKeys[(int)MaterialMap.Emissive] = Take(run, surface, EmissiveColorMap, renderPrefab, materialIndex, own);
 
                 if (surface.TryGetColorProperty("_BaseColor", out Color tint))
                     material.Tint = new Unity.Mathematics.float4(tint.r, tint.g, tint.b, tint.a);
@@ -368,6 +416,8 @@ namespace Carto.Systems
             }
             finally
             {
+                Release(run, own);
+
                 // Every surface in a city held open at once is a large amount of managed state for
                 // dictionaries we have already copied out of.
                 // （同時保持城市中所有表面資產載入，等於為已複製完的字典佔用大量受管狀態。）
@@ -417,7 +467,8 @@ namespace Carto.Systems
         /// <param name="surface">The surface asset.（表面資產。）</param>
         /// <param name="property">The CS2 shader property name.（CS2 著色器屬性名稱。）</param>
         /// <returns>The texture key, or <c>null</c> when the surface has no such map.（貼圖索引鍵，若表面沒有該貼圖則為 <c>null</c>。）</returns>
-        private string Take(MaterialRun run, SurfaceAsset surface, string property, RenderPrefab renderPrefab, int materialIndex)
+        private string Take(MaterialRun run, SurfaceAsset surface, string property, RenderPrefab renderPrefab,
+                            int materialIndex, SurfaceData own)
         {
             if (!surface.TryGetTexture(property, out TextureAsset texture) || (texture == null)) return null;
 
@@ -431,7 +482,7 @@ namespace Carto.Systems
             //   共用同一封裝層的兩個表面持有指向相同像素的不同殘根，以殘根為鍵將使該像素
             //   每個表面各讀一次。全城擷取已具體證實：1,020 次回讀僅產生 321 張相異影像，
             //   此階段最昂貴的工作有三分之二耗費在重新解碼早已在手的貼圖上。）
-            TextureSource source = Locate(run, surface, property, texture, renderPrefab, materialIndex);
+            TextureSource source = Locate(run, surface, property, texture, renderPrefab, materialIndex, own);
             if (source.Key == null) return null;
 
             // A claim that goes on to fail is still worth keeping: it stops every later surface
@@ -532,7 +583,7 @@ namespace Carto.Systems
         /// <param name="texture">The reference the surface handed over.（表面所交出的參照。）</param>
         /// <returns>Where to read from, or <see cref="TextureSource.None"/>.（讀取來源，或 <see cref="TextureSource.None"/>。）</returns>
         private static TextureSource Locate(MaterialRun run, SurfaceAsset surface, string property, TextureAsset texture,
-                                            RenderPrefab renderPrefab, int materialIndex)
+                                            RenderPrefab renderPrefab, int materialIndex, SurfaceData own)
         {
             string key = Identity(texture);
 
@@ -578,6 +629,16 @@ namespace Carto.Systems
                 if (first) run.TexturesUnbound++;
                 reason = $"unbound texture reference ({property}): no asset in the database for this guid";
             }
+
+            // The surface's own virtual-texturing data, which is the other half of the scheme and
+            // where the buildings are. Tried after the shared stack because the stack's pixels are
+            // shared between surfaces and so dedupe far better, and before the live material
+            // because this is the actual source rather than a guess at one.
+            // （表面自身的虛擬貼圖資料，此為該機制的另一半，也是建築所在之處。
+            //   置於共用堆疊之後，因堆疊的像素為各表面共用、去重效果遠佳；
+            //   置於實際材質之前，因為這是真正的來源，而非對來源的猜測。）
+            TextureSource inner = LocateInSurfaceData(run, own, property, ref reason);
+            if (inner.Key != null) return inner;
 
             // Last resort: ask the render prefab for the material the game would actually draw
             // with. A surface whose stub does not resolve and whose VT header is empty has still
@@ -675,25 +736,23 @@ namespace Carto.Systems
                     return TextureSource.None;
                 }
 
-                Colossal.Hash128 guid = surface.GetPreProcessedTextureGuid(stack, layer);
+                Colossal.Hash128 guid = PreProcessedGuid(surface, stack, layer);
                 if (!guid.isValid)
                 {
-                    // These coordinates are not wrong; the header is empty. A surface in this state
-                    // reports isVTMaterial true, names all four maps in its texture dictionary, and
-                    // has a zeroed VT header at every one of its eight slots with a material
-                    // template hash of 0. Roughly a quarter of a city's surfaces — mostly
-                    // buildings — are like this, and none of the four routes reaches their pixels:
-                    // the texture assets are stubs, the guids are in no database, the stack is
-                    // empty, and nothing is bound to the property on the live material either. The
-                    // gap is declared rather than papered over; see §10 of the contract.
-                    // （此座標並無錯誤，而是標頭為空。處於此狀態的表面會回報 isVTMaterial 為真、
-                    //   於其貼圖字典中列出全部四張貼圖，而八個槽位的 VT 標頭皆為零、
-                    //   材質模板雜湊為 0。城市中約四分之一的表面（多為建築）屬於此類，
-                    //   而四條路徑皆無法觸及其像素：貼圖資產為殘根、guid 不在任何資料庫中、
-                    //   堆疊為空，實際材質上該屬性亦未繫結任何東西。
-                    //   此缺口予以宣告而非掩蓋，詳見契約 §10。）
-                    reason = $"virtual-textured ({property}): this surface ships no preprocessed VT data "
-                           + "and binds nothing at runtime, so its pixels are not reachable";
+                    // These coordinates are not wrong, and neither is the empty header: this
+                    // surface simply keeps its pixels in the other place. CS2 has two
+                    // virtual-texturing schemes, and they are very nearly complementary — of the
+                    // 5,832 surfaces the game ships, 2,014 use the shared preprocessed stack read
+                    // above and 2,233 use a `.VTSurface` file of their own with a zeroed stack
+                    // header. The second set is mostly buildings. `LocateInSurfaceData` reads it,
+                    // so falling through here is a route change rather than a dead end.
+                    // （此座標並無錯誤，標頭為空亦然：此表面只是將像素存放於另一處。
+                    //   CS2 有兩套虛擬貼圖機制，且兩者幾近互補——遊戲所附的 5,832 個表面中，
+                    //   2,014 個使用上方讀取的共用預處理堆疊，2,233 個則使用自身的 `.VTSurface`
+                    //   檔案而堆疊標頭為零。後者多為建築。`LocateInSurfaceData` 會讀取之，
+                    //   故自此落下是換路而非絕路。）
+                    reason = $"virtual-textured ({property}): no preprocessed VT data, and the "
+                           + "surface's own VT data could not be read either";
                     return TextureSource.None;
                 }
 
@@ -715,6 +774,225 @@ namespace Carto.Systems
                 if (run.BindFailures++ < 5) _log.Warn($"VT stack lookup failed for `{key}` ({property}): {ex}");
                 return TextureSource.None;
             }
+        }
+
+        /// <summary>
+        /// The guid of the preprocessed texture at one stack and layer of a surface's VT header.
+        /// （表面 VT 標頭中，某堆疊與某層之預處理貼圖的 guid。）<br/><br/>
+        /// <b>Do not replace this with <c>SurfaceAsset.GetPreProcessedTextureGuid(stack, layer)</c>,
+        /// which is the obvious call and is wrong.</b> That method bounds-checks both arguments and
+        /// then indexes the header with <c>stackIndex * layerIndex</c> where the flat index is
+        /// <c>stackIndex * 4 + layerIndex</c>. Every coordinate with a zero in it — which is every
+        /// coordinate a one-stack surface can produce, and layer 0 of any stack — therefore returns
+        /// slot 0. Since stack 0 layer 0 is the base colour, asking for a surface's normal or mask
+        /// hands back its base colour instead, and the caller cannot tell: the guid is valid, the
+        /// asset loads, and the pixels are a real texture. A full-city rip wrote the base colour
+        /// into the normal and mask of 1,428 of 1,926 materials this way, and the only visible
+        /// symptom was a suspiciously high dedupe rate.<br/>
+        /// （<b>切勿改用 <c>SurfaceAsset.GetPreProcessedTextureGuid(stack, layer)</c>——
+        /// 該呼叫看似理所當然，實則有誤。</b>該方法對兩個引數做邊界檢查後，
+        /// 以 <c>stackIndex * layerIndex</c> 索引標頭，而正確的平坦索引為
+        /// <c>stackIndex * 4 + layerIndex</c>。因此凡含有零的座標——單堆疊表面所能產生的全部座標，
+        /// 以及任何堆疊的第 0 層——皆會回傳槽位 0。由於堆疊 0 層 0 是基礎色，
+        /// 索取表面的法線或遮罩時得到的其實是其基礎色，而呼叫端無從察覺：
+        /// guid 有效、資產可載入、像素也是一張真實的貼圖。
+        /// 一次全城擷取即以此方式將基礎色寫入 1,926 個材質中 1,428 個的法線與遮罩，
+        /// 唯一可見的徵兆是高得可疑的去重率。）<br/><br/>
+        /// The enumerator does not share the fault — it walks <c>stackCount * 4</c> slots by flat
+        /// index, in order and unfiltered — so counting into it gives the value the accessor should
+        /// have returned. At most eight slots, so the walk is not worth avoiding.<br/>
+        /// （列舉子並無此缺陷——它以平坦索引依序走訪 <c>stackCount * 4</c> 個槽位且不作過濾——
+        /// 故對其計數即可取得該存取子本應回傳的值。至多八個槽位，此走訪不值得規避。）
+        /// </summary>
+        /// <param name="surface">The surface asset.（表面資產。）</param>
+        /// <param name="stack">The stack index.（堆疊索引。）</param>
+        /// <param name="layer">The layer index within that stack.（該堆疊內的層索引。）</param>
+        /// <returns>The guid, or an invalid one when the slot is past the end.（guid，若槽位超出範圍則為無效值。）</returns>
+        private static Colossal.Hash128 PreProcessedGuid(SurfaceAsset surface, int stack, int layer)
+        {
+            int target = (stack * 4) + layer;
+            int index = 0;
+
+            foreach (Colossal.Hash128 guid in surface.preProcessedTextureGuids)
+                if (index++ == target) return guid;
+
+            return default;
+        }
+
+        /// <summary>
+        /// Read a virtual-textured map out of the surface's own preprocessed data.
+        /// （自表面自身的預處理資料中讀出虛擬貼圖。）<br/><br/>
+        /// A <see cref="SurfaceAsset"/> can hold its virtual-texturing data in either of two
+        /// places. <see cref="LocateInStack"/> covers the first: layers packed into
+        /// <see cref="VTTextureAsset"/>s shared between every surface that uses them. The second is
+        /// a <c>.VTSurface</c> file belonging to this surface alone, resolved when the surface's
+        /// header is read and reached through <c>hasVTSurfaceAsset</c> / <c>vtSurfaceAsset</c>. A
+        /// surface using the second has a zeroed stack header, which is why it looks empty-handed
+        /// from the first route's point of view.<br/>
+        /// （<see cref="SurfaceAsset"/> 的虛擬貼圖資料可存放於兩處之一。
+        /// <see cref="LocateInStack"/> 涵蓋第一處：封裝進 <see cref="VTTextureAsset"/>、
+        /// 由所有使用它的表面共用的層。第二處則是專屬於此表面的 <c>.VTSurface</c> 檔案，
+        /// 於讀取表面標頭時解析，並經 <c>hasVTSurfaceAsset</c> / <c>vtSurfaceAsset</c> 取得。
+        /// 使用第二處的表面其堆疊標頭為零，這正是它從第一條路徑看來兩手空空的緣故。）<br/><br/>
+        /// <c>VTSurfaceAsset.Load</c> does the whole job: it reassembles the file's zstd tiles,
+        /// instantiates the material template the surface names, and binds each decoded layer under
+        /// the shader property the template gives it. What comes back is an ordinary Unity material
+        /// with ordinary textures on it, so this route ends where every other one does.<br/>
+        /// （<c>VTSurfaceAsset.Load</c> 一手包辦：重組檔案的 zstd 圖磚、實體化表面所指名的材質模板，
+        /// 並將每個已解碼的層繫結至模板所賦予的著色器屬性。回傳者是持有一般貼圖的一般 Unity 材質，
+        /// 故此路徑的終點與其他路徑相同。）
+        /// </summary>
+        /// <param name="run">The run in progress.（進行中的工作。）</param>
+        /// <param name="own">The surface's own VT data, opened on demand.（表面自身的 VT 資料，按需開啟。）</param>
+        /// <param name="property">The CS2 shader property name.（CS2 著色器屬性名稱。）</param>
+        /// <param name="reason">Replaced only when this route is the one that failed.（僅於此路徑即為失敗者時才取代。）</param>
+        /// <returns>Where to read from, or <see cref="TextureSource.None"/>.（讀取來源，或 <see cref="TextureSource.None"/>。）</returns>
+        private static TextureSource LocateInSurfaceData(MaterialRun run, SurfaceData own, string property, ref string reason)
+        {
+            if ((own?.Surface == null) || !own.Surface.hasVTSurfaceAsset) return TextureSource.None;
+
+            Material material = Obtain(run, own);
+            if (material == null)
+            {
+                reason = $"virtual-textured ({property}): the surface's own VT data could not be decoded";
+                return TextureSource.None;
+            }
+
+            if (!material.HasProperty(property)) return TextureSource.None;
+
+            Texture bound = material.GetTexture(property);
+            if (bound == null) return TextureSource.None;
+
+            run.TexturesFromSurfaceData++;
+
+            // Keyed by the VT data's own guid, which is the opposite of the rule the shared stack
+            // follows: these pixels belong to one surface and are not shared with any other, so
+            // keying them any more coarsely would make two surfaces collide on one image.
+            // （以該 VT 資料自身的 guid 為鍵，與共用堆疊所循的規則相反：
+            //   這些像素屬於單一表面、不與其他表面共用，若鍵取得更粗略將使兩個表面撞上同一張影像。）
+            string key = $"vts:{own.Surface.vtSurfaceAsset.id.guid}:{property}";
+
+            if (run.SurfaceDataReports++ < 4)
+                _log.Info($"VT surface recovery [{run.SurfaceDataReports}] `{own.Surface.name}` {property}: "
+                        + $"{bound.width}x{bound.height} {bound.graphicsFormat}");
+
+            return TextureSource.FromLive(key, bound, null);
+        }
+
+        /// <summary>
+        /// Open a surface's own virtual-texturing data, at most once per surface.
+        /// （開啟表面自身的虛擬貼圖資料，每個表面至多一次。）<br/><br/>
+        /// The attempt is recorded rather than the result, so a surface whose data will not decode
+        /// is not asked again for each of its remaining maps.<br/>
+        /// （記錄的是「已嘗試」而非結果，使資料無法解碼的表面不會在其餘每張貼圖上被重複詢問。）
+        /// </summary>
+        /// <param name="run">The run in progress.（進行中的工作。）</param>
+        /// <param name="own">The surface's own VT data.（表面自身的 VT 資料。）</param>
+        /// <returns>The decoded material, or <c>null</c>.（已解碼的材質，或 <c>null</c>。）</returns>
+        private static Material Obtain(MaterialRun run, SurfaceData own)
+        {
+            if (own.Attempted) return own.Material;
+            own.Attempted = true;
+
+            try
+            {
+                run.SurfaceDataLoads++;
+                own.Material = own.Surface.vtSurfaceAsset.Load();
+            }
+            catch (Exception ex)
+            {
+                run.SurfaceDataFailures++;
+                if (run.BindFailures++ < 5)
+                    _log.Warn($"VT surface data failed to load for `{own.Surface.name}`: {ex}");
+            }
+
+            return own.Material;
+        }
+
+        /// <summary>
+        /// Close a surface's own virtual-texturing data and destroy what decoding it created.
+        /// （關閉表面自身的虛擬貼圖資料，並銷毀解碼過程所建立之物。）<br/><br/>
+        /// <c>VTSurfaceAsset.Unload</c> destroys the material and nothing else, but the decode also
+        /// built a texture per layer, each held only by that material and marked so that Unity will
+        /// not collect it. Left alone they accumulate for the whole rip: a city's worth of building
+        /// surfaces at up to eight layers apiece, several megabytes each, is measured in gigabytes
+        /// and ends the run long before the city does. So the textures are taken off the material
+        /// and destroyed here, after their pixels have been read.<br/>
+        /// （<c>VTSurfaceAsset.Unload</c> 僅銷毀材質，別無其他；但解碼過程另為每一層建立了貼圖，
+        /// 各自僅由該材質持有，且經標記使 Unity 不會回收之。若置之不理，它們將於整次擷取中不斷累積：
+        /// 一座城市的建築表面，每個至多八層、每層數 MB，總量以 GB 計，
+        /// 遠在城市走完之前就會終結該次工作。故於其像素讀取完畢後，
+        /// 在此將貼圖自材質上取下並銷毀。）
+        /// </summary>
+        /// <param name="run">The run in progress.（進行中的工作。）</param>
+        /// <param name="own">The surface's own VT data.（表面自身的 VT 資料。）</param>
+        private static void Release(MaterialRun run, SurfaceData own)
+        {
+            if ((own == null) || !own.Attempted) return;
+
+            Material material = own.Material;
+            own.Material = null;
+
+            try
+            {
+                if (material != null) foreach (string property in DecodedProperties(own.Surface))
+                {
+                    if (!material.HasProperty(property)) continue;
+
+                    Texture texture = material.GetTexture(property);
+                    if (texture == null) continue;
+
+                    material.SetTexture(property, null);
+                    UnityEngine.Object.DestroyImmediate(texture, true);
+                }
+            }
+            catch (Exception ex)
+            {
+                if (run.BindFailures++ < 5) _log.Warn($"Releasing VT surface data for `{own.Surface?.name}` failed: {ex}");
+            }
+            finally
+            {
+                try { own.Surface?.vtSurfaceAsset?.Unload(false); } catch { /* nothing useful to do */ }
+            }
+        }
+
+        /// <summary>
+        /// Every shader property the decode could have bound a texture to.
+        /// （解碼過程可能繫結貼圖的所有著色器屬性。）<br/><br/>
+        /// The material template is the authority — it is what the decode itself consults to decide
+        /// where each layer goes — so the stacks it declares name exactly the textures that need
+        /// destroying, including any beyond the four the contract keeps. If it cannot be had, the
+        /// contract's four are still better than leaking all of them.<br/>
+        /// （材質模板即權威——解碼過程本身即據以決定每一層的去向——
+        /// 故其所宣告的堆疊恰好指名了所有需銷毀的貼圖，包括契約所保留的四張以外者。
+        /// 若無法取得模板，則契約的四張仍勝於全數洩漏。）
+        /// </summary>
+        /// <param name="surface">The surface asset.（表面資產。）</param>
+        /// <returns>The property names to sweep.（須遍歷的屬性名稱。）</returns>
+        private static IEnumerable<string> DecodedProperties(SurfaceAsset surface)
+        {
+            MaterialStackProperties[] stacks = null;
+            try
+            {
+                stacks = AssetDatabase.global.resources.materialLibrary
+                    .GetMaterialDescription(surface.materialTemplateHash)?.m_Stacks;
+            }
+            catch (Exception)
+            {
+                // Fall through to the contract's four.（退回契約的四張。）
+            }
+
+            if (stacks == null) return Maps;
+
+            List<string> properties = new();
+            foreach (MaterialStackProperties stack in stacks)
+            {
+                if (stack?.m_PropertyNames == null) continue;
+                foreach (string property in stack.m_PropertyNames)
+                    if (!string.IsNullOrEmpty(property)) properties.Add(property);
+            }
+
+            return (properties.Count > 0) ? properties : (IEnumerable<string>)Maps;
         }
 
         /// <summary>
@@ -1140,9 +1418,11 @@ namespace Carto.Systems
             int references = run.TexturesBound + run.TexturesRebound + run.TexturesVirtual + run.TexturesUnbound;
             report.AppendLine($"Texture references: {references} distinct — {run.TexturesBound} loadable as given, "
                             + $"{run.TexturesRebound} rebound by guid, {run.TexturesVirtual} virtual-textured "
-                            + $"({run.TexturesFromStack} recovered from their stack), "
+                            + $"({run.TexturesFromStack} recovered from a shared stack, "
+                            + $"{run.TexturesFromSurfaceData} from the surface's own VT data), "
                             + $"{run.TexturesUnbound} with nothing behind them; "
                             + $"{run.TexturesFromMaterial} taken off a live material as a last resort.");
+            report.AppendLine($"Surface VT data: {run.SurfaceDataLoads} file(s) opened, {run.SurfaceDataFailures} failed to decode.");
 
             if (run.Skipped.Count > 0)
             {
