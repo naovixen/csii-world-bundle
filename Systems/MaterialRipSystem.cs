@@ -120,6 +120,19 @@ namespace Carto.Systems
             /// <summary>How many stack recoveries have been described in the log.（已於記錄中描述的堆疊救回數。）</summary>
             public int StackReports;
 
+            /// <summary>How many empty-slot layouts have been described in the log.（已於記錄中描述的空槽位佈局數。）</summary>
+            public int LayoutProbes;
+
+            /// <summary>
+            /// Texture references already counted.（已計數的貼圖參照。）<br/><br/>
+            /// Locating runs once per map slot, not once per texture, so the buckets have to be
+            /// told apart from the slots that led to them — otherwise they report the number of
+            /// times a texture was asked for rather than the number of textures.<br/>
+            /// （定位是每個貼圖槽位執行一次，而非每張貼圖一次，因此各類別必須與導向它們的槽位區分開來，
+            /// 否則所回報的將是貼圖被索取的次數，而非貼圖的數量。）
+            /// </summary>
+            public HashSet<string> Counted = new();
+
             /// <summary>How long the main thread spent reading pixels back.（主執行緒回讀像素所花的時間。）</summary>
             public double ReadbackMilliseconds;
 
@@ -504,9 +517,14 @@ namespace Carto.Systems
         {
             string key = Identity(texture);
 
+            // Locating happens per map slot, but the buckets describe textures. Count each
+            // reference the first time it is seen and no more.
+            // （定位是逐貼圖槽位進行，但各類別描述的是貼圖。每個參照僅於首次見到時計數一次。）
+            bool first = run.Counted.Add(key);
+
             if (!IsUnbound(texture))
             {
-                run.TexturesBound++;
+                if (first) run.TexturesBound++;
                 return TextureSource.FromAsset(key, texture);
             }
 
@@ -519,7 +537,7 @@ namespace Carto.Systems
                     && AssetDatabase.global.TryGetAsset(guid, out TextureAsset bound)
                     && (bound != null) && !IsUnbound(bound))
                 {
-                    run.TexturesRebound++;
+                    if (first) run.TexturesRebound++;
                     return TextureSource.FromAsset(key, bound);
                 }
             }
@@ -530,12 +548,12 @@ namespace Carto.Systems
 
             if (!IsVirtualTextured(surface, property, texture))
             {
-                run.TexturesUnbound++;
+                if (first) run.TexturesUnbound++;
                 Skip(run, key, $"unbound texture reference ({property}): no asset in the database for this guid");
                 return TextureSource.None;
             }
 
-            run.TexturesVirtual++;
+            if (first) run.TexturesVirtual++;
             return LocateInStack(run, surface, property, key);
         }
 
@@ -581,10 +599,16 @@ namespace Carto.Systems
                 Colossal.Hash128 guid = surface.GetPreProcessedTextureGuid(stack, layer);
                 if (!guid.isValid)
                 {
-                    // The template declares the slot but this surface left it empty — a material
-                    // that lists an emissive map and does not use one, say.
-                    // （模板宣告了該槽位，但此表面並未填入——例如列有自發光貼圖卻未使用的材質。）
+                    // The template declares the slot but this surface's VT header has nothing at
+                    // those coordinates. That is either a map the surface genuinely does not use,
+                    // or a sign the template's numbering and the header's do not line up — and
+                    // those call for opposite responses, so describe the whole layout rather than
+                    // guess which.
+                    // （模板宣告了該槽位，但此表面的 VT 標頭於該座標處空無一物。
+                    //   這或是該表面確實未使用的貼圖，或是模板編號與標頭編號不一致的徵兆；
+                    //   兩者所需的處置相反，故完整描述其佈局而非臆測。）
                     Skip(run, key, $"virtual-textured ({property}): stack {stack} layer {layer} is empty on this surface");
+                    ProbeLayout(run, surface, description, property, stack, layer);
                     return TextureSource.None;
                 }
 
@@ -605,6 +629,87 @@ namespace Carto.Systems
                 if (run.BindFailures++ < 5) _log.Warn($"VT stack lookup failed for `{key}` ({property}): {ex}");
                 return TextureSource.None;
             }
+        }
+
+        /// <summary>
+        /// Describe a surface's whole virtual-texturing layout next to the template's, for the
+        /// first few surfaces whose slot came out empty.<br/>
+        /// （對最初數個槽位為空的表面，將其完整的虛擬貼圖佈局與模板的佈局並列描述。）<br/><br/>
+        /// An empty slot has two very different explanations. Either the surface really does not
+        /// use that map, in which case nothing is wrong and nothing is missing; or the template's
+        /// stack and layer numbering does not agree with the header's, in which case the
+        /// coordinates are being read from the wrong place and the map is there to be had. Printing
+        /// the template's stacks beside every guid the header actually holds distinguishes them
+        /// outright, which guessing has repeatedly failed to.<br/>
+        /// （槽位為空有兩種截然不同的解釋：其一，該表面確實不使用該貼圖，則一切正常、無物缺失；
+        /// 其二，模板的堆疊與層編號與標頭不一致，則座標讀取自錯誤之處，而該貼圖其實唾手可得。
+        /// 將模板的堆疊與標頭實際持有的每個 guid 並列印出，即可直接區分兩者，
+        /// 而臆測已數度未能做到。）
+        /// </summary>
+        /// <param name="run">The run in progress.（進行中的工作。）</param>
+        /// <param name="surface">The surface asset.（表面資產。）</param>
+        /// <param name="description">Its material template.（其材質模板。）</param>
+        /// <param name="property">The map that came up empty.（結果為空的貼圖。）</param>
+        /// <param name="stack">The stack index the template gave.（模板所給的堆疊索引。）</param>
+        /// <param name="layer">The layer index the template gave.（模板所給的層索引。）</param>
+        private static void ProbeLayout(MaterialRun run, SurfaceAsset surface,
+                                        MaterialLibrary.MaterialDescription description,
+                                        string property, int stack, int layer)
+        {
+            if (run.LayoutProbes++ >= 3) return;
+
+            StringBuilder report = new();
+            report.AppendLine($"VT layout probe [{run.LayoutProbes}] `{surface.name}`: {property} wanted stack {stack} layer {layer}, which is empty.");
+
+            try
+            {
+                report.AppendLine($"  isVTMaterial={surface.isVTMaterial} isCurrentlyUsingVT={surface.isCurrentlyUsingVT} template={surface.materialTemplateHash}");
+
+                // What the template says the stacks contain.（模板所述堆疊的內容。）
+                MaterialStackProperties[] stacks = description.m_Stacks;
+                if (stacks == null) report.AppendLine("  template stacks: null");
+                else
+                    for (int s = 0; s < stacks.Length; s++)
+                        report.AppendLine($"  template stack {s}: [{string.Join(", ", stacks[s]?.m_PropertyNames ?? new string[0])}]");
+
+                // What the surface's own header holds at every reachable coordinate.
+                // （表面自身標頭於各個可達座標處所持有的內容。）
+                for (int s = 0; s < 2; s++)
+                {
+                    for (int l = 0; l < 4; l++)
+                    {
+                        try
+                        {
+                            Colossal.Hash128 guid = surface.GetPreProcessedTextureGuid(s, l);
+                            if (guid.isValid) report.AppendLine($"  header [{s},{l}] = {guid}");
+                        }
+                        catch (Exception ex)
+                        {
+                            report.AppendLine($"  header [{s},{l}] unreachable: {ex.GetType().Name}");
+                            l = 4;
+                        }
+                    }
+                }
+
+                // And the flat enumeration, which does not depend on the coordinates at all.
+                // （以及完全不依賴座標的平坦列舉。）
+                int index = 0;
+                foreach (Colossal.Hash128 guid in surface.preProcessedTextureGuids)
+                    report.AppendLine($"  enumerated[{index++}] = {guid} (valid={guid.isValid})");
+                if (index == 0) report.AppendLine("  enumerated: none");
+
+                // The surface's own textures, so a map absent from the dictionary is visible as
+                // absent rather than mistaken for one the header lost.
+                // （表面自身的貼圖，使字典中原本就缺少的貼圖顯示為缺少，
+                //   而非被誤認為標頭遺失者。）
+                report.AppendLine($"  surface textures: [{string.Join(", ", surface.textures.Keys)}]");
+            }
+            catch (Exception ex)
+            {
+                report.AppendLine($"  probe failed: {ex}");
+            }
+
+            _log.Info(report.ToString());
         }
 
         /// <summary>
