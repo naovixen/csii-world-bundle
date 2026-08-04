@@ -102,6 +102,7 @@ namespace Carto.Systems
             Dictionary<string, string> assetIdCache = new();
             int skippedNoPrefab = 0, withParent = 0;
             List<string> skipSamples = new();
+            HashSet<int> unresolvedPrefabs = new();
 
             NativeArray<Entity> entities = _objectQuery.ToEntityArray(Allocator.TempJob);
 
@@ -120,21 +121,28 @@ namespace Carto.Systems
                         continue;
                     }
 
+                    // An object whose managed prefab will not resolve is still a real object
+                    // standing in the city, so keep its placement under a synthetic id rather than
+                    // dropping it. PLAN §3 is explicit that placement must survive even when the
+                    // geometry cannot: a consumer substitutes a stand-in mesh and every instance
+                    // still lands in the right place. Dropping them silently is what breaks the
+                    // contract's 1:1 fidelity requirement.
+                    // （無法解析受管預製模板的物件，仍是城市中真實存在的物件，因此以合成 ID 保留其
+                    //   擺放而非丟棄。PLAN §3 明確要求即使幾何無法取得，擺放仍須保留。）
                     string assetId = ResolveAssetId(prefabEntity, assetIdCache);
-                    if (assetId == null)
+                    bool unresolved = assetId == null;
+                    if (unresolved)
                     {
+                        assetId = $"unresolved_{prefabEntity.Index}";
                         skippedNoPrefab++;
+                        unresolvedPrefabs.Add(prefabEntity.Index);
 
-                        // Record a few examples. A silent 1.7% drop is exactly the kind of thing
-                        // that quietly breaks the contract's 1:1 fidelity requirement later.
-                        // （記錄少數範例。默默丟棄 1.7% 的物件，正是日後破壞契約 1:1 保真要求的原因。）
                         if (skipSamples.Count < 5)
                         {
                             skipSamples.Add($"entity {entity.Index} prefab {prefabEntity.Index} "
                                 + $"hasPrefabData={EntityManager.HasComponent<PrefabData>(prefabEntity)} "
                                 + $"[{string.Join(", ", DescribeComponents(entity))}]");
                         }
-                        continue;
                     }
 
                     Game.Objects.Transform transform = EntityManager.GetComponentData<Game.Objects.Transform>(entity);
@@ -168,6 +176,11 @@ namespace Carto.Systems
 
                     AddAttributes(entity, record);
 
+                    // Flag it in the record too, so a consumer can tell a stand-in from a real
+                    // asset without cross-referencing warnings.jsonl.
+                    // （於紀錄中一併標記，使消費端無須交叉比對 warnings.jsonl 即可辨識替代資產。）
+                    if (unresolved) record.Attributes["unresolved"] = true;
+
                     writer.Write(record);
                     assetIds.Add(assetId);
                     byKind.TryGetValue(kind, out int count);
@@ -187,7 +200,8 @@ namespace Carto.Systems
             report.AppendLine($"Distinct assetIds referenced: {assetIds.Count}");
             if (skippedNoPrefab > 0)
             {
-                report.AppendLine($"Skipped (unresolvable prefab): {skippedNoPrefab}");
+                report.AppendLine($"Unresolved prefabs: {unresolvedPrefabs.Count} distinct, {skippedNoPrefab} instance(s) kept under synthetic ids");
+                WriteWarnings(outputDirectory, unresolvedPrefabs, report);
                 foreach (string sample in skipSamples) report.AppendLine($"  e.g. {sample}");
             }
             report.AppendLine($"Output: {path}");
@@ -251,6 +265,46 @@ namespace Carto.Systems
                 else if (EntityManager.HasComponent<Game.Buildings.Condemned>(entity)) record.Attributes["state"] = "condemned";
                 else if (EntityManager.HasComponent<Game.Objects.UnderConstruction>(entity)) record.Attributes["state"] = "construction";
                 else record.Attributes["state"] = "normal";
+            }
+        }
+
+        /// <summary>
+        /// Write the bundle's <c>warnings.jsonl</c> layer, one line per thing the producer could
+        /// not fully deliver.<br/>
+        /// （寫出束的 <c>warnings.jsonl</c> 層，生產端每個無法完整產出的項目各佔一行。）<br/><br/>
+        /// The contract defines this layer as advisory so a consumer may ignore it — its purpose is
+        /// to make a stand-in asset explicable rather than mysterious.<br/>
+        /// （契約將此層定義為建議性質，消費端可忽略；其用途是讓替代資產有跡可循。）
+        /// </summary>
+        /// <param name="outputDirectory">The bundle root.（束的根目錄。）</param>
+        /// <param name="unresolvedPrefabs">The prefab entity indices that would not resolve.（無法解析的預製模板實體索引。）</param>
+        /// <param name="report">The report to note the outcome in.（用以記錄結果的報告。）</param>
+        private void WriteWarnings(string outputDirectory, HashSet<int> unresolvedPrefabs, StringBuilder report)
+        {
+            string path = IOUtils.CombinePath(outputDirectory, "warnings.jsonl");
+
+            try
+            {
+                string directory = System.IO.Path.GetDirectoryName(path);
+                if (!string.IsNullOrEmpty(directory) && !System.IO.Directory.Exists(directory)) System.IO.Directory.CreateDirectory(directory);
+
+                using System.IO.StreamWriter writer = new(path, false, new System.Text.UTF8Encoding(false)) { NewLine = "\n" };
+                foreach (int prefabIndex in unresolvedPrefabs)
+                {
+                    Dictionary<string, object> warning = new()
+                    {
+                        ["kind"] = "prefab",
+                        ["assetId"] = $"unresolved_{prefabIndex}",
+                        ["reason"] = "managed prefab did not resolve; instances kept with placement only"
+                    };
+                    writer.WriteLine(Newtonsoft.Json.JsonConvert.SerializeObject(warning, Newtonsoft.Json.Formatting.None));
+                }
+
+                report.AppendLine($"Wrote warnings.jsonl ({unresolvedPrefabs.Count} entries)");
+            }
+            catch (Exception ex)
+            {
+                _log.Warn($"Could not write warnings.jsonl: {ex.Message}");
             }
         }
 
