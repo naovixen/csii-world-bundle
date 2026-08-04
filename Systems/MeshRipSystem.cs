@@ -194,6 +194,68 @@ namespace Carto.Systems
         }
 
         /// <summary>
+        /// Read full-detail geometry through the render prefab's <c>GeometryAsset</c>.
+        /// （透過繪製預製模板的 <c>GeometryAsset</c> 讀取完整細節的幾何。）
+        /// </summary>
+        /// <param name="meshEntity">The sub-mesh (render prefab) entity.（子網格（繪製預製模板）實體。）</param>
+        /// <param name="assetId">The sanitised asset id.（淨化後的資產 ID。）</param>
+        /// <param name="sourceName">The original prefab name.（原始的預製模板名稱。）</param>
+        /// <param name="trace">Optional diagnostics sink.（可選的診斷紀錄。）</param>
+        /// <returns>The mesh, or <c>null</c> to fall back to the ECS buffers.（網格，若為 <c>null</c> 則退回 ECS 緩衝區。）</returns>
+        private MeshAsset TryReadGeometryAsset(Entity meshEntity, string assetId, string sourceName, List<string> trace)
+        {
+            try
+            {
+                if (!Instance.Prefab.TryGetPrefab(EntityManager.GetComponentData<PrefabData>(meshEntity), out PrefabBase prefabBase)
+                    || prefabBase is not RenderPrefab renderPrefab)
+                {
+                    trace?.Add("geometry asset: entity does not resolve to a RenderPrefab");
+                    return null;
+                }
+
+                if (!renderPrefab.hasGeometryAsset)
+                {
+                    trace?.Add("geometry asset: render prefab has none");
+                    return null;
+                }
+
+                Colossal.IO.AssetDatabase.GeometryAsset asset = renderPrefab.geometryAsset;
+                List<GeometryAssetReader.MeshInfo> meshes = GeometryAssetReader.Describe(asset, renderPrefab.meshCount);
+
+                if (trace != null)
+                {
+                    trace.Add($"geometry asset: meshCount={renderPrefab.meshCount} vertexCount={renderPrefab.vertexCount} indexCount={renderPrefab.indexCount} materialCount={renderPrefab.materialCount}");
+                    foreach (GeometryAssetReader.MeshInfo info in meshes) trace.Add($"  {info}");
+                }
+
+                if (meshes.Count == 0)
+                {
+                    trace?.Add("geometry asset: no readable meshes (likely not resident)");
+                    return null;
+                }
+
+                // Richest mesh wins, on the same reasoning as the ECS candidates: the LOD chain is
+                // ordered by convention, not by guarantee.
+                // （以最豐富者為準，理由同 ECS 候選：LOD 鏈的順序僅為慣例而非保證。）
+                GeometryAssetReader.MeshInfo best = meshes[0];
+                foreach (GeometryAssetReader.MeshInfo info in meshes)
+                    if (info.IndexCount > best.IndexCount) best = info;
+
+                MeshAsset mesh = GeometryAssetReader.Read(asset, best.MeshIndex, assetId, sourceName);
+                trace?.Add(mesh == null
+                    ? $"geometry asset: mesh{best.MeshIndex} read returned nothing"
+                    : $"geometry asset: chose mesh{best.MeshIndex} ({mesh.TriangleCount} tris, {mesh.Primitives.Count} primitives)");
+                return mesh;
+            }
+            catch (Exception ex)
+            {
+                trace?.Add($"geometry asset: {ex.GetType().Name} {ex.Message}");
+                _log.Warn($"Geometry asset unavailable for `{assetId}`: {ex.Message}");
+                return null;
+            }
+        }
+
+        /// <summary>
         /// Find the entity that actually holds geometry buffers, starting from a sub-mesh entity.
         /// （自子網格實體出發，尋找真正持有幾何緩衝區的實體。）<br/><br/>
         /// A render prefab entity is a container: it carries <c>MeshData</c>, a <c>LodMesh</c>
@@ -400,6 +462,12 @@ namespace Carto.Systems
         /// <returns>The mesh, or <c>null</c> when the entity carries no geometry.（網格，若實體沒有幾何則為 <c>null</c>。）</returns>
         public MeshAsset ReadMesh(Entity meshEntity, string assetId, string sourceName, List<string> trace = null)
         {
+            // Prefer the geometry asset: the ECS buffers only ever hold the reduced LOD the game
+            // keeps CPU-side for raycasting, and carry no sub-mesh ranges at all.
+            // （優先使用幾何資產：ECS 緩衝區僅存放遊戲為射線保留於 CPU 端的簡化 LOD，且不含子網格範圍。）
+            MeshAsset fromAsset = TryReadGeometryAsset(meshEntity, assetId, sourceName, trace);
+            if (fromAsset != null) return fromAsset;
+
             if (!TryResolveGeometry(meshEntity, out Entity geometryEntity, out int lod, trace)) return null;
 
             DynamicBuffer<MeshVertex> vertices = EntityManager.GetBuffer<MeshVertex>(geometryEntity, true);
