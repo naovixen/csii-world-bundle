@@ -805,7 +805,10 @@ namespace Carto.Systems
         /// <param name="run">The finished run.（已完成的工作。）</param>
         private void WriteMeshWarnings(RipRun run)
         {
-            if (run.SkippedAssets.Count == 0) return;
+            // No early return on an empty list: a rip that closed every gap still has to clear the
+            // declarations the previous one left, or the bundle keeps claiming losses it no longer
+            // has.（即使清單為空也不提前返回：已修復所有缺口的擷取仍須清除前次留下的宣告，
+            //   否則束將持續宣稱其實已不存在的缺失。）
 
             // warnings.jsonl sits at the bundle root, one level above meshes/.
             // （warnings.jsonl 位於束的根目錄，即 meshes/ 的上一層。）
@@ -814,7 +817,26 @@ namespace Carto.Systems
 
             try
             {
-                using System.IO.StreamWriter writer = new(path, true, new UTF8Encoding(false)) { NewLine = "\n" };
+                // Drop this rip's own kinds from any previous run before writing them again.
+                // The instance pass owns the file and its lines must survive, but re-ripping
+                // meshes used to append a second full set — so a bundle ripped twice declared
+                // every gap twice, and a gap since closed stayed declared forever.
+                // （寫入前先移除前次工作中屬於本次擷取之類別的行。實例階段擁有此檔案，其行必須保留；
+                //   但重新擷取網格過去會再附加一整份，使擷取兩次的束將每個缺口宣告兩次，
+                //   且已修復的缺口仍永久留存。）
+                List<string> kept = new();
+                if (System.IO.File.Exists(path))
+                {
+                    foreach (string line in System.IO.File.ReadAllLines(path))
+                    {
+                        if (string.IsNullOrWhiteSpace(line)) continue;
+                        if (!IsOwnedByMeshRip(line)) kept.Add(line);
+                    }
+                }
+
+                using System.IO.StreamWriter writer = new(path, false, new UTF8Encoding(false)) { NewLine = "\n" };
+                foreach (string line in kept) writer.WriteLine(line);
+
                 foreach (RipWarning skipped in run.SkippedAssets)
                 {
                     Dictionary<string, object> warning = new()
@@ -826,11 +848,34 @@ namespace Carto.Systems
                     writer.WriteLine(Newtonsoft.Json.JsonConvert.SerializeObject(warning, Newtonsoft.Json.Formatting.None));
                 }
 
-                run.Report.AppendLine($"Recorded {run.SkippedAssets.Count} gap(s) in warnings.jsonl");
+                run.Report.AppendLine($"Recorded {run.SkippedAssets.Count} gap(s) in warnings.jsonl, keeping {kept.Count} from the instance pass");
             }
             catch (Exception ex)
             {
-                _log.Warn($"Could not append to warnings.jsonl: {ex.Message}");
+                _log.Warn($"Could not write warnings.jsonl: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Whether a <c>warnings.jsonl</c> line was written by a mesh rip rather than by the
+        /// instance pass, and so is this rip's to replace.<br/>
+        /// （某行 <c>warnings.jsonl</c> 是否由網格擷取而非實例階段寫出，因而應由本次擷取取代。）<br/><br/>
+        /// Matched on the declared kind rather than by parsing: a line this system cannot read is
+        /// someone else's and is kept.<br/>
+        /// （以所宣告的類別比對而非解析全文：本系統無法讀取的行即屬他者，予以保留。）
+        /// </summary>
+        /// <param name="line">The line to classify.（待分類的行。）</param>
+        /// <returns>Whether the mesh rip owns it.（網格擷取是否擁有該行。）</returns>
+        private static bool IsOwnedByMeshRip(string line)
+        {
+            try
+            {
+                string kind = Newtonsoft.Json.Linq.JObject.Parse(line)["kind"]?.ToString();
+                return (kind == "mesh") || (kind == "material") || (kind == "texture");
+            }
+            catch (Exception)
+            {
+                return false;
             }
         }
 

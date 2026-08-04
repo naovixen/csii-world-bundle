@@ -65,6 +65,14 @@
 	</ItemGroup>
 
 	<ItemGroup>
+		<!--
+			Needed to resolve AssetDatabase.TryGetAsset<T>: AssetData implements diagnostic
+			interfaces declared in this assembly, so the compiler must see it to bind the call
+			even though none of those interfaces are used here.
+		-->
+		<Reference Include="Colossal.AssetPipeline">
+			<Private>False</Private>
+		</Reference>
 		<Reference Include="Colossal.Collections">
 			<Private>False</Private>
 		</Reference>

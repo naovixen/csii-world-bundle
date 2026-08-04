@@ -99,6 +99,24 @@ namespace Carto.Systems
             /// <summary>Textures handed to the encoder.（已交付編碼端的貼圖數。）</summary>
             public int TexturesRead;
 
+            /// <summary>
+            /// How each distinct texture reference turned out.（各相異貼圖參照的處理結果。）<br/><br/>
+            /// These four are the diagnosis, not decoration: they separate "the surface handed us a
+            /// loadable asset", "it did not, but the database had one under the same guid", "the
+            /// pixels are in a VT stack" and "there is nothing anywhere". Only the third calls for
+            /// a VT decoder; the others would be different bugs entirely.<br/>
+            /// （這四項是診斷而非裝飾：它們區分「表面交出了可載入的資產」、
+            /// 「表面未交出，但資料庫中有相同 guid 者」、「像素位於 VT 堆疊中」與「何處皆無」。
+            /// 唯有第三種需要 VT 解碼器，其餘者將是完全不同的問題。）
+            /// </summary>
+            public int TexturesBound, TexturesRebound, TexturesVirtual, TexturesUnbound;
+
+            /// <summary>How many failures have been logged in full.（已完整記錄的失敗數。）</summary>
+            public int ReadFailures, BindFailures;
+
+            /// <summary>How many VT surfaces have been probed.（已探測的 VT 表面數。）</summary>
+            public int Probes;
+
             /// <summary>How long the main thread spent reading pixels back.（主執行緒回讀像素所花的時間。）</summary>
             public double ReadbackMilliseconds;
 
@@ -374,17 +392,22 @@ namespace Carto.Systems
             string key = Identity(texture);
 
             // Claim before reading: a texture shared by fifty surfaces must be read back once, and
-            // the claim is what the other forty-nine see.
-            // （先取用再讀取：由五十個表面共用的貼圖只須回讀一次，其餘四十九次所見的即是此取用標記。）
+            // the claim is what the other forty-nine see. A claim that goes on to fail is still
+            // worth keeping — it stops the next forty-nine retrying a lookup already known to lose.
+            // （先取用再讀取：由五十個表面共用的貼圖只須回讀一次，其餘四十九次所見的即是此取用標記。
+            //   即使取用後失敗仍值得保留：可避免其餘四十九次重試已知會失敗的查找。）
             if (!run.Textures.Claim(key)) return key;
+
+            TextureAsset source = Bind(run, surface, property, texture, key);
+            if (source == null) return null;
 
             Stopwatch clock = Stopwatch.StartNew();
             try
             {
-                PendingTexture pending = ReadBack(texture, key, run.TextureSizeCap);
+                PendingTexture pending = ReadBack(source, key, run.TextureSizeCap);
                 if (pending == null)
                 {
-                    run.Skipped.Add(new RipWarning("texture", texture.name ?? key, "no readable pixels"));
+                    run.Skipped.Add(new RipWarning("texture", Describe(source, key), "no readable pixels"));
                     return null;
                 }
 
@@ -394,14 +417,221 @@ namespace Carto.Systems
             }
             catch (Exception ex)
             {
-                run.Skipped.Add(new RipWarning("texture", texture.name ?? key, $"{ex.GetType().Name} {ex.Message}"));
-                _log.Warn($"Failed to read texture `{texture.name}`: {ex}");
+                run.Skipped.Add(new RipWarning("texture", Describe(source, key), $"{ex.GetType().Name} {ex.Message}"));
+
+                // Log the first few in full and count the rest. A failure that hits every texture
+                // in the city writes the same stack trace thousands of times otherwise, which
+                // buries whatever else the log had to say.
+                // （前數筆完整記錄，其餘僅計數。若某項失敗遍及城市中每張貼圖，
+                //   否則將重複寫出同一段呼叫堆疊數千次，掩埋記錄檔中其他訊息。）
+                if (++run.ReadFailures <= 5) _log.Warn($"Failed to read texture `{Describe(source, key)}`: {ex}");
                 return null;
             }
             finally
             {
                 run.ReadbackMilliseconds += clock.Elapsed.TotalMilliseconds;
             }
+        }
+
+        /// <summary>
+        /// Turn the texture reference a surface hands out into one that can actually be loaded, or
+        /// classify why it cannot.<br/>
+        /// （將表面資產交出的貼圖參照轉換為確實可載入者，或說明其為何不可載入。）<br/><br/>
+        /// <b>A surface's texture dictionary does not hold loadable assets.</b> Most CS2 surfaces
+        /// are virtual-textured, and for those the per-map entries are <i>dummy</i>
+        /// <see cref="TextureAsset"/>s: no name, no database, nothing behind them but a guid,
+        /// because the pixels were preprocessed into a VT stack at build time and the standalone
+        /// texture is not shipped. Calling <see cref="TextureAsset.Load(int)"/> on one dies inside
+        /// <c>AssetData.GetReadStream</c> on the null database.<br/>
+        /// （<b>表面資產的貼圖字典並不持有可載入的資產。</b>CS2 多數表面採虛擬貼圖，
+        /// 其逐貼圖條目為<i>虛設的</i> <see cref="TextureAsset"/>：沒有名稱、沒有資料庫，
+        /// 背後僅有一個 guid，因為像素於建置時已預處理進 VT 堆疊，獨立的貼圖並未隨遊戲附帶。
+        /// 對其呼叫 <see cref="TextureAsset.Load(int)"/> 會在 <c>AssetData.GetReadStream</c> 中
+        /// 因資料庫為 null 而失敗。）<br/><br/>
+        /// The game never makes that call: <c>SurfaceAsset.SyncToUnityMaterial</c> guards every
+        /// texture with <c>IsHandledByVirtualTexturing</c> and binds only the ones left over. This
+        /// does the same, and additionally tries the global asset database by guid first — a
+        /// reference can be unbound simply because the dictionary was deserialised without one,
+        /// and where that is the case the real asset is still there to be found.<br/>
+        /// （遊戲本身從不做此呼叫：<c>SurfaceAsset.SyncToUnityMaterial</c> 以
+        /// <c>IsHandledByVirtualTexturing</c> 守衛每張貼圖，僅繫結其餘者。此處作法相同，
+        /// 並額外先以 guid 查詢全域資產資料庫：參照可能僅因字典反序列化時未帶資料庫而未繫結，
+        /// 若屬此情形，真正的資產仍可被找到。）
+        /// </summary>
+        /// <param name="run">The run in progress.（進行中的工作。）</param>
+        /// <param name="surface">The surface the reference came from.（該參照的來源表面資產。）</param>
+        /// <param name="property">The shader property it sits under.（其所屬的著色器屬性。）</param>
+        /// <param name="texture">The reference to bind.（待繫結的參照。）</param>
+        /// <param name="key">Its texture key, for reporting.（其貼圖索引鍵，供回報使用。）</param>
+        /// <returns>A loadable asset, or <c>null</c>.（可載入的資產，或 <c>null</c>。）</returns>
+        private static TextureAsset Bind(MaterialRun run, SurfaceAsset surface, string property, TextureAsset texture, string key)
+        {
+            if (!IsUnbound(texture))
+            {
+                run.TexturesBound++;
+                return texture;
+            }
+
+            // Unbound, but the guid survives. If the standalone texture did ship, this finds it.
+            // （雖未繫結，但 guid 仍在。若獨立貼圖確實隨遊戲附帶，此處即可找到。）
+            try
+            {
+                // Fully qualified: `using UnityEngine` brings in a different Hash128.
+                // （完整限定：`using UnityEngine` 會引入另一個同名的 Hash128。）
+                Colossal.Hash128 guid = texture.id.guid;
+                if (guid.isValid
+                    && AssetDatabase.global.TryGetAsset(guid, out TextureAsset bound)
+                    && (bound != null) && !IsUnbound(bound))
+                {
+                    run.TexturesRebound++;
+                    return bound;
+                }
+            }
+            catch (Exception ex)
+            {
+                if (run.BindFailures++ < 5) _log.Warn($"Texture guid lookup failed for `{key}`: {ex.Message}");
+            }
+
+            // Nothing to load. Say which of the two reasons it is, because they call for different
+            // work: a virtual-textured map needs the VT stack decoding, while a merely missing one
+            // is a gap in the install.
+            // （無可載入者。須說明是兩種原因中的哪一種，因為兩者所需的處理不同：
+            //   虛擬貼圖需要解碼 VT 堆疊，而單純缺失者則是安裝內容的缺口。）
+            bool virtualTextured;
+            try
+            {
+                virtualTextured = surface.IsHandledByVirtualTexturing(
+                    new KeyValuePair<string, TextureAsset>(property, texture));
+            }
+            catch (Exception)
+            {
+                // The material library could not say. Unbound-and-unknown is still unbound.
+                // （材質庫無法判定。未繫結且原因不明，仍屬未繫結。）
+                virtualTextured = false;
+            }
+
+            if (virtualTextured)
+            {
+                run.TexturesVirtual++;
+                run.Skipped.Add(new RipWarning("texture", key,
+                    $"virtual-textured ({property}): the pixels live in a VT stack, not a standalone texture asset"));
+                Probe(run, surface, property);
+            }
+            else
+            {
+                run.TexturesUnbound++;
+                run.Skipped.Add(new RipWarning("texture", key,
+                    $"unbound texture reference ({property}): no asset in the database for this guid"));
+            }
+
+            return null;
+        }
+
+        /// <summary>
+        /// Log what a virtual-textured surface offers instead of its textures, for the first few
+        /// such surfaces in a rip.<br/>
+        /// （對擷取工作中最初數個虛擬貼圖表面，記錄其以何者代替貼圖提供。）<br/><br/>
+        /// Purely diagnostic, and deliberately so. Whether a VT decoder is worth building depends
+        /// on facts that can only be established with the game running: whether the preprocessed
+        /// stacks resolve to assets at all, how many layers each carries, and what shape they are.
+        /// Guessing at that and writing the decoder anyway is how the standalone-texture assumption
+        /// got this far in the first place.<br/>
+        /// （純屬診斷，且刻意如此。是否值得建構 VT 解碼器，取決於唯有在遊戲執行時才能確立的事實：
+        /// 預處理堆疊是否確實可解析為資產、各自帶有多少層、其形狀為何。
+        /// 憑猜測逕行撰寫解碼器，正是「貼圖為獨立資產」這個假設得以走到此地步的原因。）
+        /// </summary>
+        /// <param name="run">The run in progress.（進行中的工作。）</param>
+        /// <param name="surface">The virtual-textured surface.（虛擬貼圖的表面資產。）</param>
+        /// <param name="property">The map that could not be taken.（無法取得的貼圖。）</param>
+        private static void Probe(MaterialRun run, SurfaceAsset surface, string property)
+        {
+            if (run.Probes++ >= 3) return;
+
+            StringBuilder report = new();
+            report.AppendLine($"VT probe [{run.Probes}] surface `{surface.name}`, missing map {property}:");
+
+            try
+            {
+                report.AppendLine($"  isVTMaterial={surface.isVTMaterial} isCurrentlyUsingVT={surface.isCurrentlyUsingVT} hasVTSurfaceAsset={surface.hasVTSurfaceAsset}");
+
+                int index = 0;
+                foreach (Colossal.Hash128 guid in surface.preProcessedTextureGuids)
+                {
+                    bool resolved = false;
+                    string detail = "no asset in the database";
+
+                    try
+                    {
+                        if (AssetDatabase.global.TryGetAsset(guid, out VTTextureAsset vt) && (vt != null))
+                        {
+                            resolved = true;
+                            vt.LoadHeader();
+                            detail = $"{vt.width}x{vt.height} {vt.format}, textureAsset={(IsUnbound(vt.textureAsset) ? "unbound" : "bound")}";
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        detail = $"{ex.GetType().Name} {ex.Message}";
+                    }
+
+                    report.AppendLine($"  preProcessed[{index++}] {guid} -> {(resolved ? "VTTextureAsset" : "nothing")}: {detail}");
+                }
+
+                if (index == 0) report.AppendLine("  no preprocessed texture guids at all");
+            }
+            catch (Exception ex)
+            {
+                report.AppendLine($"  probe failed: {ex}");
+            }
+
+            _log.Info(report.ToString());
+        }
+
+        /// <summary>
+        /// Whether an asset reference has nothing behind it to read.
+        /// （資產參照背後是否無可讀取之物。）<br/><br/>
+        /// The database is checked first and separately: <c>isDummy</c> is itself defined in terms
+        /// of the database, so asking a reference that has none is not obviously safe.<br/>
+        /// （先單獨檢查資料庫：<c>isDummy</c> 本身即以資料庫定義，
+        /// 對沒有資料庫的參照詢問該屬性並非顯然安全。）
+        /// </summary>
+        /// <param name="asset">The asset to test.（待檢測的資產。）</param>
+        /// <returns>Whether loading it would fail.（載入它是否將會失敗。）</returns>
+        private static bool IsUnbound(AssetData asset)
+        {
+            if (asset == null) return true;
+
+            try
+            {
+                if (asset.database == null) return true;
+                return asset.isDummy;
+            }
+            catch (Exception)
+            {
+                return true;
+            }
+        }
+
+        /// <summary>
+        /// Name a texture for a report. A dummy reference has no name, so the key stands in.
+        /// （為報告命名貼圖。虛設的參照沒有名稱，故以索引鍵替代。）
+        /// </summary>
+        /// <param name="asset">The asset.（資產。）</param>
+        /// <param name="key">Its texture key.（其貼圖索引鍵。）</param>
+        /// <returns>Something a human can act on.（可供人判讀處理的字串。）</returns>
+        private static string Describe(AssetData asset, string key)
+        {
+            try
+            {
+                string name = asset?.name;
+                if (!string.IsNullOrEmpty(name)) return name;
+            }
+            catch (Exception)
+            {
+                // An unbound asset throws rather than returning null.（未繫結的資產會擲出例外。）
+            }
+
+            return key;
         }
 
         /// <summary>
@@ -648,6 +878,15 @@ namespace Carto.Systems
             report.AppendLine($"Materials: {written} entries in materials.json from {run.Surfaces} surface(s), failed {run.Failed}, disambiguated {run.Disambiguated}.");
             report.AppendLine($"Textures: {run.TexturesRead} read back, {run.Textures.Written} file(s), {run.Textures.Deduped} duplicate(s) by content hash, failed {run.Textures.Failed}.");
             report.AppendLine($"Texture bytes: {run.Textures.Bytes / (1024d * 1024d):F1} MiB; readback held the main thread {run.ReadbackMilliseconds / 1000d:F1} s.");
+
+            // The four buckets every distinct texture reference lands in. Read these before
+            // concluding anything about the texture layer — they say which problem this is.
+            // （所有相異貼圖參照歸屬的四個類別。對貼圖層下任何結論前請先讀這幾項，
+            //   它們指出這是哪一種問題。）
+            int references = run.TexturesBound + run.TexturesRebound + run.TexturesVirtual + run.TexturesUnbound;
+            report.AppendLine($"Texture references: {references} distinct — {run.TexturesBound} loadable as given, "
+                            + $"{run.TexturesRebound} rebound by guid, {run.TexturesVirtual} virtual-textured, "
+                            + $"{run.TexturesUnbound} with nothing behind them.");
 
             if (run.Skipped.Count > 0)
             {
