@@ -1,0 +1,15 @@
+<!--
+  Deliberately empty, and deliberately here.
+
+  MSBuild walks up from a project directory and imports the *first* Directory.Build.props it
+  finds. The repo root has one, and it exists to make the mod compile: it turns off implicit
+  framework references and points FrameworkPathOverride at the game's Unity BCL, because
+  Carto targets net48 against CS2's .NET Standard 2.1 assemblies.
+
+  Every one of those settings is wrong for this tool, which is an ordinary net8.0 console app
+  and wants the ordinary .NET 8 BCL. This file stops the upward search before the root one is
+  reached. Removing it does not fail loudly — it fails as missing-type errors across the
+  System namespace.
+-->
+<Project>
+</Project>

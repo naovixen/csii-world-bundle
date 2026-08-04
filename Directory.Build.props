@@ -29,6 +29,17 @@
 <Project>
 
   <PropertyGroup>
+    <!--
+      Keep the mod's compile glob out of tools/. Carto.csproj is SDK-style, so it sweeps up
+      every .cs under the repo root; tools/mdump is a separate net8.0 console app and compiling
+      it into a net48 mod fails on the whole System.Reflection.Metadata surface.
+
+      This has to be DefaultItemExcludes rather than an <ItemGroup><Compile Remove="tools\**"/>.
+      Directory.Build.props is imported before the project body, i.e. before Sdk.props brings in
+      the default globs, so there are no Compile items to remove yet. DefaultItemExcludes is a
+      property, and the globs read it when they are finally expanded.
+    -->
+    <DefaultItemExcludes>$(DefaultItemExcludes);tools\**</DefaultItemExcludes>
     <DisableImplicitFrameworkReferences>true</DisableImplicitFrameworkReferences>
     <!--
       Also required. For a net48 target the SDK restores Microsoft.NETFramework.ReferenceAssemblies,
