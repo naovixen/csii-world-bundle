@@ -1,11 +1,16 @@
 #!/usr/bin/env python3
-"""Reconstruct a CS2 World Bundle in Blender — the PLAN Phase 3 acceptance harness.
+"""Reconstruct a CS2 World Bundle in Blender — the PLAN Phase 3 and 4 acceptance harness.
 
 This is a *test* tool, not a product. The repo's job is to produce a correct bundle; turning
 one into a scene is a consumer's job and explicitly out of scope (see CLAUDE.md). This script
-exists only to answer the acceptance question by eye: does `instances.jsonl` + `meshes/`
-actually reconstruct the city? It reads nothing but the documented contract, which is also
-what makes it a useful check — if it needs inside knowledge of the mod, the contract is wrong.
+exists only to answer the acceptance questions by eye: does `instances.jsonl` + `meshes/`
+actually reconstruct the city (Phase 3), and do the buildings come out textured (Phase 4)? It
+reads nothing but the documented contract, which is also what makes it a useful check — if it
+needs inside knowledge of the mod, the contract is wrong.
+
+Nothing here wires materials up by hand, and that is the point. Contract §6 has each `.glb`
+reference its textures by relative path into `textures/`, so Blender's stock glTF importer
+resolves them on its own; if the buildings arrive grey, the bundle is at fault, not the script.
 
     blender --python tools/blender_import_bundle.py -- <bundle_dir> [options]
 
@@ -125,6 +130,49 @@ def read_declared_gaps(bundle_dir):
     return gaps
 
 
+def report_materials(bundle_dir):
+    """Say what the material layer offers, so a grey scene has a diagnosis rather than a shrug.
+
+    Reads materials.json only to count and to check that its texture paths resolve. The meshes
+    reference textures themselves (contract §6), so nothing here feeds the import.
+    """
+    path = os.path.join(bundle_dir, "materials.json")
+    if not os.path.isfile(path):
+        print("materials: no materials.json — meshes will import untextured")
+        return
+
+    with open(path, encoding="utf-8") as handle:
+        materials = json.load(handle)
+
+    slots = ("baseColor", "normal", "mask", "emissive")
+    referenced, dangling, mapless = set(), [], 0
+    for mat_id, material in materials.items():
+        paths = [material[s] for s in slots if s in material]
+        if not paths:
+            mapless += 1
+        for rel in paths:
+            referenced.add(rel)
+            if not os.path.isfile(os.path.join(bundle_dir, rel)):
+                dangling.append(f"{mat_id}.{rel}")
+
+    print(f"materials: {len(materials)} ({mapless} with no maps), {len(referenced)} distinct textures")
+    if dangling:
+        # A path in the table with no file behind it is a producer bug: §7 lets a map be absent,
+        # but not present-and-broken.
+        print(f"CONTRACT VIOLATION: {len(dangling)} texture reference(s) do not resolve: {dangling[:5]}")
+
+
+def show_materials():
+    """Put every 3D viewport into material preview, so 'is it textured?' is a question you can
+    answer by looking. Solid shading is the default and would hide the entire Phase 4 result."""
+    for area in getattr(bpy.context.screen, "areas", []):
+        if area.type != "VIEW_3D":
+            continue
+        for space in area.spaces:
+            if space.type == "VIEW_3D":
+                space.shading.type = "MATERIAL"
+
+
 def resolve_layers(bundle_dir):
     """Read layer paths from bundle.json, falling back to the conventional layout.
 
@@ -237,6 +285,7 @@ def main():
     if radius is not None:
         print(f"region:    within {radius} m of {center}")
     print(f"declared gaps in warnings.jsonl: {len(declared_gaps)}")
+    report_materials(bundle_dir)
 
     if not keep:
         clear_scene()
@@ -295,6 +344,8 @@ def main():
     layer_child = bpy.context.view_layer.layer_collection.children.get(sources.name)
     if layer_child is not None:
         layer_child.exclude = True
+
+    show_materials()
 
     elapsed = time.time() - started
     print()

@@ -489,6 +489,33 @@ namespace Carto
         }
 
         /// <summary>
+        /// The longest edge a ripped texture may have (PLAN Phase 4).
+        /// （擷取貼圖的最長邊上限（PLAN 第四階段）。）<br/><br/>
+        /// Texture size dominates a bundle: a 4K base colour is 16 million pixels, and a city uses
+        /// hundreds of unique maps. Halving the cap quarters the pixels, and the game already
+        /// stores mip chains, so a capped rip loads a smaller image rather than shrinking a large
+        /// one.<br/>
+        /// （貼圖尺寸主宰束的大小：一張 4K 基礎色即一千六百萬像素，而城市會用到數百張唯一貼圖。
+        /// 上限減半即像素減為四分之一；由於遊戲本就存有 mip 鏈，受限的擷取是載入較小的影像，
+        /// 而非將大影像縮小。）
+        /// </summary>
+        [SettingsUISection(GeneralTab, GeneralGeneralGroup)]
+        [SettingsUIDropdown(typeof(Settings), nameof(GetRipTextureSizes))]
+        [SettingsUIDisableByCondition(typeof(Settings), nameof(IsInGameOrEditor), invert: true)]
+        public int RipTextureSize { get; set; } = 1024;
+
+        public DropdownItem<int>[] GetRipTextureSizes()
+        {
+            return new DropdownItem<int>[]
+            {
+                new() { value = 512, displayName = "Options.Carto.Carto.Mod.RIPTEXTURESIZE[512]" },
+                new() { value = 1024, displayName = "Options.Carto.Carto.Mod.RIPTEXTURESIZE[1024]" },
+                new() { value = 2048, displayName = "Options.Carto.Carto.Mod.RIPTEXTURESIZE[2048]" },
+                new() { value = 0, displayName = "Options.Carto.Carto.Mod.RIPTEXTURESIZE[Full]" }
+            };
+        }
+
+        /// <summary>
         /// The button that rips every unique prefab mesh into <c>meshes/*.glb</c> (PLAN Phase 3).
         /// （將所有唯一預製模板網格擷取至 <c>meshes/*.glb</c> 的按鈕（PLAN 第三階段）。）<br/><br/>
         /// Returns immediately: the rip runs a slice per frame with a progress indicator in the
@@ -506,7 +533,7 @@ namespace Carto
                 try
                 {
                     string directory = Utils.IOUtils.CombinePath(Instance.CartoDataPath, "spike");
-                    summary = Instance.MeshRip.BeginRip(directory, RipMeshLimit);
+                    summary = Instance.MeshRip.BeginRip(directory, RipMeshLimit, RipTextureSize);
                 }
                 catch (System.Exception ex)
                 {

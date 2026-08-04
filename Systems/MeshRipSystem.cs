@@ -135,6 +135,7 @@ namespace Carto.Systems
             {
                 _log.Info($"Mesh rip abandoned at {run.Index}/{run.Items.Count} prefab(s); the world was unloaded. 網格擷取於世界卸載時中止。");
                 try { run.Queue.CompleteAdding(); } catch { /* already completed */ }
+                Instance.MaterialRip.Abandon();
                 RipProgress.Clear();
             }
 
@@ -286,6 +287,30 @@ namespace Carto.Systems
         }
 
         /// <summary>
+        /// One thing waiting to be written: either an assembled prefab or a read-back texture.
+        /// （等待寫出的單一項目：已組裝的預製模板或已回讀的貼圖，二者其一。）<br/><br/>
+        /// <b>Both travel in one queue, drained by one writer, in the order they were produced.</b>
+        /// That ordering is not incidental — it is what lets a <c>.glb</c> reference its textures.
+        /// A texture's bundle path is the content hash of the PNG it becomes, which is only known
+        /// after encoding; the reader resolves and queues a prefab's textures before it queues the
+        /// prefab, so a single ordered writer always encodes them first and the mesh can name the
+        /// files by the time it is serialised. Two queues, or two writers, would race.<br/>
+        /// （<b>兩者共用單一佇列，由單一寫出端依產生順序排空。</b>此順序並非偶然，
+        /// 而是 <c>.glb</c> 得以參照其貼圖的關鍵。貼圖的束路徑是其所成 PNG 的內容雜湊，
+        /// 須待編碼後方能得知；讀取端於排入預製模板之前先解析並排入其貼圖，
+        /// 因此單一有序的寫出端必定先編碼貼圖，網格序列化時即可指名這些檔案。
+        /// 若採用兩個佇列或兩個寫出端，則會發生競爭。）
+        /// </summary>
+        private struct RipItem
+        {
+            /// <summary>The prefab to serialise, or <c>null</c>.（待序列化的預製模板，或 <c>null</c>。）</summary>
+            public PrefabMesh Prefab;
+
+            /// <summary>The texture to encode, or <c>null</c>.（待編碼的貼圖，或 <c>null</c>。）</summary>
+            public PendingTexture Texture;
+        }
+
+        /// <summary>
         /// The mutable state of a rip in progress.（進行中擷取工作的可變狀態。）<br/><br/>
         /// A full rip reads thousands of prefabs and writes gigabytes, which cannot happen inside a
         /// button handler without freezing the game for minutes. The work is therefore split in two:
@@ -307,11 +332,20 @@ namespace Carto.Systems
             /// <summary>How far through <see cref="Items"/> the reader has got.（讀取端於 <see cref="Items"/> 中的進度。）</summary>
             public int Index;
 
-            /// <summary>Assembled prefabs waiting to be serialised.（等待序列化的已組裝預製模板。）</summary>
-            public BlockingCollection<PrefabMesh> Queue;
+            /// <summary>Assembled prefabs and read-back textures waiting to be written.（等待寫出的已組裝預製模板與已回讀貼圖。）</summary>
+            public BlockingCollection<RipItem> Queue;
 
             /// <summary>The background serialiser.（背景序列化工作。）</summary>
             public Task Writer;
+
+            /// <summary>
+            /// The material system, resolved on the main thread and held for the writer.
+            /// （材質系統，於主執行緒解析後供寫出端持有。）<br/><br/>
+            /// Looking a system up goes through the ECS world, which is a main-thread affair; the
+            /// writer needs the reference but must not be the one to obtain it.<br/>
+            /// （查找系統須經由 ECS 世界，屬主執行緒事務；寫出端需要該參照，但不應由它取得。）
+            /// </summary>
+            public MaterialRipSystem Materials;
 
             /// <summary>Whether the reader has finished handing work over.（讀取端是否已交付完所有工作。）</summary>
             public bool ReadingDone;
@@ -341,7 +375,7 @@ namespace Carto.Systems
             /// （這些資產 ID 仍被 <c>instances.jsonl</c> 參照，因此束必須交代它們，
             /// 而非讓消費端自行發現缺口。）
             /// </summary>
-            public List<KeyValuePair<string, string>> SkippedAssets = new();
+            public List<RipWarning> SkippedAssets = new();
 
             /// <summary>The report accumulated on the main thread.（於主執行緒累積的報告。）</summary>
             public StringBuilder Report = new();
@@ -360,14 +394,14 @@ namespace Carto.Systems
         private const double FrameBudgetMilliseconds = 6d;
 
         /// <summary>
-        /// How many assembled prefabs may wait for the writer.
-        /// （可等待寫出端的已組裝預製模板數量上限。）<br/><br/>
-        /// Each one holds its full vertex arrays, so an unbounded queue would simply move the
-        /// memory problem rather than solve it. The reader pauses when the queue is full.<br/>
-        /// （每一個都持有完整的頂點陣列，因此無上限的佇列只是把記憶體問題搬家而非解決。
-        /// 佇列滿時讀取端暫停。）
+        /// How many items may wait for the writer.（可等待寫出端的項目數量上限。）<br/><br/>
+        /// Every item holds a full uncompressed payload — a prefab's vertex arrays, or a texture's
+        /// pixels at four bytes each — so an unbounded queue would simply move the memory problem
+        /// rather than solve it. The reader pauses when the queue is full.<br/>
+        /// （每個項目都持有完整未壓縮的內容：預製模板的頂點陣列，或每像素四位元組的貼圖像素。
+        /// 因此無上限的佇列只是把記憶體問題搬家而非解決。佇列滿時讀取端暫停。）
         /// </summary>
-        private const int QueueCapacity = 4;
+        private const int QueueCapacity = 8;
 
         /// <summary>
         /// Whether a rip is currently running.（目前是否有擷取工作進行中。）
@@ -384,8 +418,9 @@ namespace Carto.Systems
         /// </summary>
         /// <param name="outputDirectory">The bundle root to write <c>meshes/</c> under.（要在其下寫入 <c>meshes/</c> 的束根目錄。）</param>
         /// <param name="maxPrefabs">The most prefabs to rip, or <c>0</c> for all of them.（最多擷取的預製模板數量，<c>0</c> 為全部。）</param>
+        /// <param name="textureSizeCap">The longest edge a written texture may have, or <c>0</c> for no cap.（寫出貼圖的最長邊上限，<c>0</c> 為不限。）</param>
         /// <returns>A short description of what was queued.（已排入工作的簡短說明。）</returns>
-        public string BeginRip(string outputDirectory, int maxPrefabs = 0)
+        public string BeginRip(string outputDirectory, int maxPrefabs = 0, int textureSizeCap = 2048)
         {
             if (_run != null) return "A mesh rip is already running.";
 
@@ -394,7 +429,8 @@ namespace Carto.Systems
             RipRun run = new()
             {
                 OutputDirectory = IOUtils.CombinePath(outputDirectory, "meshes"),
-                Queue = new BlockingCollection<PrefabMesh>(QueueCapacity)
+                Queue = new BlockingCollection<RipItem>(QueueCapacity),
+                Materials = Instance.MaterialRip
             };
 
             run.Items = CollectWorkItems(run.Report, maxPrefabs, out int distinctPrefabs, out int placedObjects);
@@ -405,6 +441,14 @@ namespace Carto.Systems
                 RipProgress.Clear();
                 return "Nothing to rip: no placed objects resolved to a prefab.";
             }
+
+            // Materials ride along with the meshes: a prefab's surface assets are reached through
+            // the very render prefab its geometry came from, so resolving them in a second pass
+            // would mean walking the whole prefab set twice for data already in hand.
+            // （材質隨網格一同擷取：預製模板的表面資產正是經由其幾何來源的繪製預製模板取得，
+            //   若另闢第二回合解析，等於為已在手的資料再走訪整個預製模板集合一次。）
+            run.Materials.Begin(outputDirectory, textureSizeCap,
+                texture => run.Queue.Add(new RipItem { Texture = texture }));
 
             run.Writer = Task.Run(() => WriteQueued(run));
             _run = run;
@@ -548,13 +592,13 @@ namespace Carto.Systems
                 if (prefab == null)
                 {
                     run.Skipped++;
-                    run.SkippedAssets.Add(new KeyValuePair<string, string>(item.AssetId, skipReason));
+                    run.SkippedAssets.Add(new RipWarning("mesh", item.AssetId, skipReason));
                     if (run.Skipped <= 20) run.Report.AppendLine($"  - {item.AssetId}: {skipReason}");
                     return;
                 }
 
                 run.Read++;
-                run.Queue.Add(prefab);
+                run.Queue.Add(new RipItem { Prefab = prefab });
             }
             catch (Exception ex)
             {
@@ -571,12 +615,27 @@ namespace Carto.Systems
         /// <param name="run">The run in progress.（進行中的工作。）</param>
         private static void WriteQueued(RipRun run)
         {
-            foreach (PrefabMesh prefab in run.Queue.GetConsumingEnumerable())
+            MaterialRipSystem materials = run.Materials;
+
+            foreach (RipItem item in run.Queue.GetConsumingEnumerable())
             {
+                // Textures first, always: they arrive before the prefab that named them, and
+                // encoding one is what gives it the content hash the prefab's .glb writes down.
+                // （貼圖恆先處理：它們早於指名它們的預製模板抵達，
+                //   而編碼貼圖正是賦予其內容雜湊的動作，該雜湊將寫入預製模板的 .glb。）
+                if (item.Texture != null)
+                {
+                    materials.WriteTexture(item.Texture);
+                    continue;
+                }
+
+                PrefabMesh prefab = item.Prefab;
+                if (prefab == null) continue;
+
                 try
                 {
                     string path = IOUtils.CombinePath(run.OutputDirectory, $"{prefab.AssetId}.glb");
-                    long size = GltfWriter.Write(path, prefab);
+                    long size = GltfWriter.Write(path, prefab, materials.Describe);
 
                     System.Threading.Interlocked.Increment(ref run.Written);
                     System.Threading.Interlocked.Add(ref run.Bytes, size);
@@ -756,18 +815,18 @@ namespace Carto.Systems
             try
             {
                 using System.IO.StreamWriter writer = new(path, true, new UTF8Encoding(false)) { NewLine = "\n" };
-                foreach (KeyValuePair<string, string> skipped in run.SkippedAssets)
+                foreach (RipWarning skipped in run.SkippedAssets)
                 {
                     Dictionary<string, object> warning = new()
                     {
-                        ["kind"] = "mesh",
-                        ["assetId"] = skipped.Key,
-                        ["reason"] = skipped.Value
+                        ["kind"] = skipped.Kind,
+                        ["assetId"] = skipped.AssetId,
+                        ["reason"] = skipped.Reason
                     };
                     writer.WriteLine(Newtonsoft.Json.JsonConvert.SerializeObject(warning, Newtonsoft.Json.Formatting.None));
                 }
 
-                run.Report.AppendLine($"Recorded {run.SkippedAssets.Count} skipped prefab(s) in warnings.jsonl");
+                run.Report.AppendLine($"Recorded {run.SkippedAssets.Count} gap(s) in warnings.jsonl");
             }
             catch (Exception ex)
             {
@@ -797,6 +856,19 @@ namespace Carto.Systems
 
             while (run.WriterNotes.TryDequeue(out string note)) run.Report.AppendLine(note);
 
+            // Materials last: the table can only name a texture by the content hash of the file it
+            // became, so it is written once the encoder has drained.
+            // （材質最後處理：材質表只能以貼圖檔案的內容雜湊指名該貼圖，故須待編碼端排空後方能寫出。）
+            string materials = null;
+            try
+            {
+                materials = Instance.MaterialRip.Finish(run.Report, run.SkippedAssets);
+            }
+            catch (Exception ex)
+            {
+                _log.Error($"Material rip failed to finish: {ex}");
+            }
+
             WriteMeshWarnings(run);
 
             // Sizes are the point of a capped run: they are what says whether the uncapped rip is
@@ -819,6 +891,7 @@ namespace Carto.Systems
             StringBuilder summary = new();
             summary.AppendLine($"Wrote {run.Written} mesh file(s), skipped {run.Skipped}, failed {run.Failed}.");
             summary.AppendLine($"{run.Bytes / (1024d * 1024d):F1} MiB in {run.Clock.Elapsed.TotalSeconds:F0} s.");
+            if (!string.IsNullOrEmpty(materials)) summary.AppendLine(materials);
             summary.AppendLine();
             summary.Append("Full report: Logs/Carto.log");
 
@@ -840,14 +913,14 @@ namespace Carto.Systems
         /// <param name="meshEntity">The sub-mesh (render prefab) entity.（子網格（繪製預製模板）實體。）</param>
         /// <param name="assetId">The sanitised asset id.（淨化後的資產 ID。）</param>
         /// <param name="sourceName">The original prefab name.（原始的預製模板名稱。）</param>
+        /// <param name="renderPrefab">The render prefab behind the entity.（實體背後的繪製預製模板。）</param>
         /// <param name="trace">Optional diagnostics sink.（可選的診斷紀錄。）</param>
         /// <returns>The mesh, or <c>null</c> to fall back to the ECS buffers.（網格，若為 <c>null</c> 則退回 ECS 緩衝區。）</returns>
-        private MeshAsset TryReadGeometryAsset(Entity meshEntity, string assetId, string sourceName, List<string> trace)
+        private MeshAsset TryReadGeometryAsset(string assetId, string sourceName, RenderPrefab renderPrefab, List<string> trace)
         {
             try
             {
-                if (!Instance.Prefab.TryGetPrefab(EntityManager.GetComponentData<PrefabData>(meshEntity), out PrefabBase prefabBase)
-                    || prefabBase is not RenderPrefab renderPrefab)
+                if (renderPrefab == null)
                 {
                     trace?.Add("geometry asset: entity does not resolve to a RenderPrefab");
                     return null;
@@ -1141,11 +1214,23 @@ namespace Carto.Systems
         /// <returns>The mesh, or <c>null</c> when the entity carries no geometry.（網格，若實體沒有幾何則為 <c>null</c>。）</returns>
         public MeshAsset ReadMesh(Entity meshEntity, string assetId, string sourceName, List<string> trace = null)
         {
+            // The render prefab is both where the authored geometry lives and where the material
+            // slots live, so resolve it once and let both readers share it.
+            // （繪製預製模板既是製作完成的幾何所在，也是材質槽位所在，故解析一次供兩端共用。）
+            RenderPrefab renderPrefab = null;
+            if (EntityManager.HasComponent<PrefabData>(meshEntity)
+                && Instance.Prefab.TryGetPrefab(EntityManager.GetComponentData<PrefabData>(meshEntity), out PrefabBase prefabBase))
+                renderPrefab = prefabBase as RenderPrefab;
+
             // Prefer the geometry asset: the ECS buffers only ever hold the reduced LOD the game
             // keeps CPU-side for raycasting, and carry no sub-mesh ranges at all.
             // （優先使用幾何資產：ECS 緩衝區僅存放遊戲為射線保留於 CPU 端的簡化 LOD，且不含子網格範圍。）
-            MeshAsset fromAsset = TryReadGeometryAsset(meshEntity, assetId, sourceName, trace);
-            if (fromAsset != null) return fromAsset;
+            MeshAsset fromAsset = TryReadGeometryAsset(assetId, sourceName, renderPrefab, trace);
+            if (fromAsset != null)
+            {
+                AssignMaterials(fromAsset, renderPrefab);
+                return fromAsset;
+            }
 
             if (!TryResolveGeometry(meshEntity, out Entity geometryEntity, out int lod, trace)) return null;
 
@@ -1218,7 +1303,63 @@ namespace Carto.Systems
                 mesh.BoundsMax = data.m_Bounds.max;
             }
 
+            AssignMaterials(mesh, renderPrefab);
             return mesh;
+        }
+
+        /// <summary>
+        /// Give every primitive of a freshly read mesh a material id that resolves.
+        /// （為剛讀取完成的網格中每個 primitive 指派可解析的材質 ID。）<br/><br/>
+        /// The real id comes from the render prefab's surface assets, which are ripped — textures
+        /// and all — the first time each is seen. Where a surface does not resolve, the synthetic
+        /// <c>&lt;assetId&gt;_mat&lt;n&gt;</c> id stays and is <i>declared</i> in the material table
+        /// as an entry with no maps. Neither dropping the material nor leaving the name dangling is
+        /// acceptable: §6 of the contract requires a glTF material's name to be a key in
+        /// <c>materials.json</c>, so an undeclared placeholder is exactly the unresolvable
+        /// reference the validator is there to catch.<br/>
+        /// （真實 ID 來自繪製預製模板的表面資產，並於首次見到各表面時連同貼圖一併擷取。
+        /// 若表面無法解析，則保留合成的 <c>&lt;assetId&gt;_mat&lt;n&gt;</c> ID，
+        /// 並於材質表中<i>宣告</i>為一筆不含任何貼圖的條目。丟棄材質或放任名稱懸空皆不可接受：
+        /// 契約 §6 要求 glTF 材質名稱必須是 <c>materials.json</c> 的鍵，
+        /// 未經宣告的佔位正是驗證器意在攔截的無法解析參照。）
+        /// </summary>
+        /// <param name="mesh">The mesh whose primitives to relabel.（要重新標記其 primitive 的網格。）</param>
+        /// <param name="renderPrefab">The render prefab holding the surface assets.（持有表面資產的繪製預製模板。）</param>
+        private void AssignMaterials(MeshAsset mesh, RenderPrefab renderPrefab)
+        {
+            if (mesh == null) return;
+
+            // A mesh the game reported no drawable ranges for still draws with slot 0, and glTF
+            // still needs one primitive covering the whole index buffer. Making that explicit here
+            // rather than leaving it to the writer is what lets its material be declared at all —
+            // the writer runs on a background task, long after the material table is reachable.
+            // （遊戲未回報可繪製範圍的網格仍以槽位 0 繪製，而 glTF 仍需一個涵蓋整個索引緩衝區的
+            //   primitive。於此明確建立而非留給寫出端，正是其材質得以被宣告的原因：
+            //   寫出端於背景工作中執行，時點遠晚於材質表可及之時。）
+            if ((mesh.Primitives.Count == 0) && (mesh.Indices != null) && (mesh.Indices.Length >= 3))
+            {
+                mesh.Primitives.Add(new MeshPrimitive
+                {
+                    StartIndex = 0,
+                    IndexCount = mesh.Indices.Length - (mesh.Indices.Length % 3),
+                    StartVertex = 0,
+                    VertexCount = mesh.Vertices?.Length ?? 0,
+                    MaterialIndex = 0,
+                    MaterialId = $"{mesh.AssetId}_mat0"
+                });
+            }
+
+            if (!Instance.MaterialRip.IsRipping) return;
+
+            foreach (MeshPrimitive primitive in mesh.Primitives)
+            {
+                string materialId = Instance.MaterialRip.Resolve(renderPrefab, primitive.MaterialIndex);
+
+                if (!string.IsNullOrEmpty(materialId)) primitive.MaterialId = materialId;
+                else Instance.MaterialRip.Declare(primitive.MaterialId,
+                    (renderPrefab == null) ? "no render prefab behind the mesh entity"
+                                           : $"surface asset {primitive.MaterialIndex} did not resolve");
+            }
         }
 
         /// <summary>

@@ -43,6 +43,11 @@ namespace Carto
             // （使用 MainLoop 而非模擬階段：擷取由 OnUpdate 每幀推進一段，且由選項頁面啟動，
             //   而該頁面會暫停模擬，模擬階段的系統將恰好在使用者注視時停滯。）
             updateSystem.UpdateAt<MeshRipSystem>(SystemUpdatePhase.MainLoop);
+            // Registered for its lifecycle, not for a tick: MaterialRipSystem does no per-frame work
+            // of its own, but a rip abandoned when the world unloads must be released in OnDestroy.
+            // （註冊是為了生命週期而非逐幀更新：材質擷取系統本身沒有逐幀工作，
+            //   但世界卸載時中止的擷取必須於 OnDestroy 中釋放。）
+            updateSystem.UpdateAt<MaterialRipSystem>(SystemUpdatePhase.MainLoop);
             updateSystem.UpdateBefore<NetworkSystem>(SystemUpdatePhase.GameSimulation);
             updateSystem.UpdateBefore<POISystem>(SystemUpdatePhase.GameSimulation);
             updateSystem.UpdateBefore<RasterSystem>(SystemUpdatePhase.GameSimulation);

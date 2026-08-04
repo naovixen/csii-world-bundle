@@ -152,6 +152,12 @@ namespace Carto
         public static InstanceRipSystem InstanceRip => World.DefaultGameObjectInjectionWorld.GetOrCreateSystemManaged<InstanceRipSystem>();
 
         /// <summary>
+        /// The system that resolves prefab materials and textures.
+        /// （解析預製模板材質與貼圖的系統。）
+        /// </summary>
+        public static MaterialRipSystem MaterialRip => World.DefaultGameObjectInjectionWorld.GetOrCreateSystemManaged<MaterialRipSystem>();
+
+        /// <summary>
         /// The system that rips mesh geometry out of prefabs.
         /// （自預製模板擷取網格幾何的系統。）
         /// </summary>

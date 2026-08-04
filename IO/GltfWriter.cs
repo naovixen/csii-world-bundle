@@ -53,10 +53,11 @@ namespace Carto.IO
         /// </summary>
         /// <param name="path">The destination file path.（目標檔案路徑。）</param>
         /// <param name="prefab">The prefab to write.（待寫出的預製模板。）</param>
+        /// <param name="describe">Resolves a material id to its maps and factors, or <c>null</c> to write neutral placeholders.（將材質 ID 解析為其貼圖與係數，若為 <c>null</c> 則寫出中性佔位值。）</param>
         /// <returns>The number of bytes written.（寫出的位元組數。）</returns>
-        public static long Write(string path, PrefabMesh prefab)
+        public static long Write(string path, PrefabMesh prefab, Func<string, MaterialDescription> describe = null)
         {
-            byte[] glb = Build(prefab);
+            byte[] glb = Build(prefab, describe);
 
             string directory = Path.GetDirectoryName(path);
             if (!string.IsNullOrEmpty(directory) && !Directory.Exists(directory)) Directory.CreateDirectory(directory);
@@ -99,8 +100,9 @@ namespace Carto.IO
         /// 則收攏為僅有根節點並直接掛上網格——大多數預製模板（所有樹木與道具）正是如此。）
         /// </summary>
         /// <param name="prefab">The prefab to serialise.（待序列化的預製模板。）</param>
+        /// <param name="describe">Resolves a material id to its maps and factors.（將材質 ID 解析為其貼圖與係數。）</param>
         /// <returns>The complete GLB container.（完整的 GLB 容器。）</returns>
-        public static byte[] Build(PrefabMesh prefab)
+        public static byte[] Build(PrefabMesh prefab, Func<string, MaterialDescription> describe = null)
         {
             if (prefab == null) throw new ArgumentNullException(nameof(prefab));
             if ((prefab.Parts == null) || (prefab.Parts.Count == 0))
@@ -114,6 +116,12 @@ namespace Carto.IO
             List<object> materials = new();
             List<object> meshes = new();
             List<object> nodes = new();
+
+            // Images are shared across every material in the file — a prefab's parts routinely
+            // share an atlas — so they are pooled by URI rather than emitted per material.
+            // （影像於檔案內的所有材質間共用（預製模板的各部件經常共用同一圖集），
+            //   故以 URI 匯集，而非逐材質輸出。）
+            TextureTable textures = new(describe);
 
             // Reserve node 0 for the root; parts append after it and are listed as its children.
             // （保留節點 0 給根節點，部件接續其後並列為其子節點。）
@@ -133,7 +141,7 @@ namespace Carto.IO
                 meshes.Add(new Dictionary<string, object>
                 {
                     ["name"] = name,
-                    ["primitives"] = BuildPrimitives(mesh, bin, binStream, bufferViews, accessors, materials)
+                    ["primitives"] = BuildPrimitives(mesh, bin, binStream, bufferViews, accessors, materials, textures)
                 });
 
                 Dictionary<string, object> node = new()
@@ -206,6 +214,17 @@ namespace Carto.IO
                 ["accessors"] = accessors
             };
 
+            // glTF forbids empty arrays for these, so a prefab whose materials carried no maps
+            // must omit them entirely rather than write `"images": []`.
+            // （glTF 不允許這些為空陣列，因此材質不含任何貼圖的預製模板必須完全省略，
+            //   而非寫出 `"images": []`。）
+            if (textures.Images.Count > 0)
+            {
+                gltf["images"] = textures.Images;
+                gltf["textures"] = textures.Textures;
+                gltf["samplers"] = textures.Samplers;
+            }
+
             byte[] jsonChunk = Pad(Encoding.UTF8.GetBytes(
                 JsonConvert.SerializeObject(gltf, Formatting.None)), 0x20);
 
@@ -236,9 +255,11 @@ namespace Carto.IO
         /// <param name="bufferViews">The document's buffer views.（文件的 buffer view 集合。）</param>
         /// <param name="accessors">The document's accessors.（文件的 accessor 集合。）</param>
         /// <param name="materials">The document's materials.（文件的材質集合。）</param>
+        /// <param name="textures">The document's shared image pool.（文件的共用影像池。）</param>
         /// <returns>The primitives for this mesh.（此網格的 primitive。）</returns>
         private static List<object> BuildPrimitives(MeshAsset mesh, BinaryWriter bin, MemoryStream binStream,
-                                                    List<object> bufferViews, List<object> accessors, List<object> materials)
+                                                    List<object> bufferViews, List<object> accessors,
+                                                    List<object> materials, TextureTable textures)
         {
             int vertexCount = mesh.Vertices.Length;
             bool hasNormals = (mesh.Normals != null) && (mesh.Normals.Length == vertexCount);
@@ -353,24 +374,164 @@ namespace Carto.IO
                     ["mode"] = ModeTriangles
                 });
 
-                // The material's `name` is the bundle's join key into materials.json. The PBR
-                // values here are only a neutral placeholder so the mesh is viewable standalone;
-                // materials.json remains authoritative.
-                // （材質的 `name` 是連結 materials.json 的鍵。此處的 PBR 值僅為中性佔位。）
-                materials.Add(new Dictionary<string, object>
-                {
-                    ["name"] = primitive.MaterialId,
-                    ["pbrMetallicRoughness"] = new Dictionary<string, object>
-                    {
-                        ["baseColorFactor"] = new[] { 1f, 1f, 1f, 1f },
-                        ["metallicFactor"] = 0f,
-                        ["roughnessFactor"] = 0.9f
-                    },
-                    ["doubleSided"] = false
-                });
+                materials.Add(textures.BuildMaterial(primitive.MaterialId));
             }
 
             return gltfPrimitives;
+        }
+
+        /// <summary>
+        /// The glTF materials of one file, and the image pool they draw on.
+        /// （單一檔案的 glTF 材質，以及其所取用的影像池。）<br/><br/>
+        /// The contract (§6) references textures rather than embedding them: an image's <c>uri</c>
+        /// is a relative path into the bundle's texture directory, so a shared atlas is stored once
+        /// for the whole bundle instead of once per mesh that uses it. That is also what makes each
+        /// <c>.glb</c> open textured on its own — which is the Phase 4 acceptance test.<br/>
+        /// （契約 §6 規定貼圖採參照而非內嵌：影像的 <c>uri</c> 是指向束貼圖目錄的相對路徑，
+        /// 使共用的圖集於整個束中只存放一次，而非每個使用它的網格各存一份。
+        /// 這也是每個 <c>.glb</c> 能各自帶貼圖開啟的原因，而該點正是第四階段的驗收測試。）
+        /// </summary>
+        private class TextureTable
+        {
+            /// <summary>
+            /// Resolves a material id, or <c>null</c> when no table is available.
+            /// （解析材質 ID，若無材質表可用則為 <c>null</c>。）
+            /// </summary>
+            private readonly Func<string, MaterialDescription> _describe;
+
+            /// <summary>
+            /// Image index by URI, so an atlas shared by several materials is listed once.
+            /// （以 URI 為鍵的影像索引，使多個材質共用的圖集只列出一次。）
+            /// </summary>
+            private readonly Dictionary<string, int> _byUri = new();
+
+            /// <summary>The document's images, textures and samplers.（文件的影像、貼圖與取樣器集合。）</summary>
+            public List<object> Images { get; } = new();
+
+            /// <inheritdoc cref="Images"/>
+            public List<object> Textures { get; } = new();
+
+            /// <inheritdoc cref="Images"/>
+            public List<object> Samplers { get; } = new();
+
+            /// <summary>
+            /// Build a table over a material resolver.（依材質解析器建立表。）
+            /// </summary>
+            /// <param name="describe">The resolver, or <c>null</c>.（解析器，或 <c>null</c>。）</param>
+            public TextureTable(Func<string, MaterialDescription> describe) => _describe = describe;
+
+            /// <summary>
+            /// Build the glTF material for one bundle material id.
+            /// （為單一束材質 ID 建構 glTF 材質。）<br/><br/>
+            /// The <c>name</c> is the bundle's join key into <c>materials.json</c> and is always
+            /// written. Everything else is a best-effort approximation for standalone viewing:
+            /// where CS2's model and glTF's disagree, <c>materials.json</c> stays authoritative
+            /// and the disagreeing term is simply left out rather than mistranslated.<br/>
+            /// （<c>name</c> 是連結 <c>materials.json</c> 的鍵，恆會寫出。其餘皆為供獨立檢視的
+            /// 盡力近似：凡 CS2 的模型與 glTF 不一致者，一律以 <c>materials.json</c> 為準，
+            /// 並直接略去該項，而非做出錯誤的轉譯。）
+            /// </summary>
+            /// <param name="materialId">The bundle material id.（束材質 ID。）</param>
+            /// <returns>The glTF material.（glTF 材質。）</returns>
+            public Dictionary<string, object> BuildMaterial(string materialId)
+            {
+                Dictionary<string, object> pbr = new();
+                Dictionary<string, object> material = new()
+                {
+                    ["name"] = materialId,
+                    ["pbrMetallicRoughness"] = pbr
+                };
+
+                MaterialDescription description = (_describe == null) ? default : _describe(materialId);
+                if (!description.Found)
+                {
+                    // No material table — the Phase 1 spike path — so write something neutral and
+                    // let the name carry the join on its own.
+                    // （沒有材質表（第一階段驗證路徑），故寫出中性值，
+                    //   由名稱獨自承載連結關係。）
+                    pbr["baseColorFactor"] = new[] { 1f, 1f, 1f, 1f };
+                    pbr["metallicFactor"] = 0f;
+                    pbr["roughnessFactor"] = 0.9f;
+                    material["doubleSided"] = false;
+                    return material;
+                }
+
+                float4 tint = description.Tint;
+                pbr["baseColorFactor"] = new[] { tint.x, tint.y, tint.z, tint.w };
+
+                // CS2's smoothness/AO/metallic packing does not line up with glTF's
+                // metallic-roughness texture, so no mask map is wired here — see MaterialDescription.
+                // A neutral non-metal is the honest stand-in.
+                // （CS2 的平滑度／環境光遮蔽／金屬度封裝方式與 glTF 的金屬粗糙度貼圖不吻合，
+                //   故此處不接上遮罩貼圖，詳見 MaterialDescription。中性的非金屬是誠實的替代值。）
+                pbr["metallicFactor"] = 0f;
+                pbr["roughnessFactor"] = 0.9f;
+
+                int baseColor = Add(description.BaseColor);
+                if (baseColor >= 0) pbr["baseColorTexture"] = new Dictionary<string, object> { ["index"] = baseColor };
+
+                int normal = Add(description.Normal);
+                if (normal >= 0) material["normalTexture"] = new Dictionary<string, object> { ["index"] = normal };
+
+                int emissive = Add(description.Emissive);
+                if (emissive >= 0) material["emissiveTexture"] = new Dictionary<string, object> { ["index"] = emissive };
+
+                float3 emission = description.EmissiveFactor;
+                if (math.any(emission != float3.zero))
+                {
+                    // glTF caps emissiveFactor at 1 without KHR_materials_emissive_strength, so the
+                    // HDR value is clamped here and kept intact in materials.json.
+                    // （在沒有 KHR_materials_emissive_strength 的情況下，glTF 的 emissiveFactor 上限為 1，
+                    //   故此處夾住 HDR 值，並於 materials.json 中保留原值。）
+                    float3 clamped = math.saturate(emission);
+                    material["emissiveFactor"] = new[] { clamped.x, clamped.y, clamped.z };
+                }
+
+                if (description.AlphaMode != "opaque")
+                {
+                    material["alphaMode"] = description.AlphaMode.ToUpperInvariant();
+                    if (description.AlphaMode == "mask") material["alphaCutoff"] = description.AlphaCutoff;
+                }
+
+                material["doubleSided"] = description.DoubleSided;
+                return material;
+            }
+
+            /// <summary>
+            /// Add an image by its bundle-relative path and return its glTF texture index.
+            /// （依束相對路徑加入影像，並回傳其 glTF 貼圖索引。）
+            /// </summary>
+            /// <param name="bundlePath">The bundle-root-relative path, or <c>null</c>.（束根目錄相對路徑，或 <c>null</c>。）</param>
+            /// <returns>The texture index, or <c>-1</c>.（貼圖索引，或 <c>-1</c>。）</returns>
+            private int Add(string bundlePath)
+            {
+                if (string.IsNullOrEmpty(bundlePath)) return -1;
+
+                // The .glb lives in meshes/, so a bundle-root-relative path needs one level up.
+                // （.glb 位於 meshes/ 之下，故束根目錄相對路徑須向上一層。）
+                string uri = $"../{bundlePath}";
+                if (_byUri.TryGetValue(uri, out int existing)) return existing;
+
+                Images.Add(new Dictionary<string, object> { ["uri"] = uri });
+                if (Samplers.Count == 0)
+                {
+                    // One repeat sampler serves every map; CS2 tiles its textures and nothing in
+                    // the bundle records a per-texture wrap mode to do better with.
+                    // （單一重複取樣器即可服務所有貼圖；CS2 的貼圖採平鋪，
+                    //   且束中未記錄逐貼圖的環繞模式，無從做得更細。）
+                    Samplers.Add(new Dictionary<string, object> { ["wrapS"] = 10497, ["wrapT"] = 10497 });
+                }
+
+                Textures.Add(new Dictionary<string, object>
+                {
+                    ["sampler"] = 0,
+                    ["source"] = Images.Count - 1
+                });
+
+                int index = Textures.Count - 1;
+                _byUri[uri] = index;
+                return index;
+            }
         }
 
         /// <summary>
