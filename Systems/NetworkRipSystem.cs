@@ -36,10 +36,11 @@ namespace Carto.Systems
     /// 的四條邊界曲線。）<br/><br/>
     /// So both forms come off the same CPU-side data. <see cref="RipNetworks"/> writes the
     /// centerline form — the midline of the left and right boundary curves, which is exact and
-    /// cheap. <c>RipNetworkSpike</c> assembles and bends the pieces into real geometry, which is
-    /// what carries a road's thickness, shoulders, kerbs and materials.<br/>
+    /// cheap, and the mesh form — the pieces assembled and bent into real geometry, which is
+    /// what carries a road's thickness, shoulders, kerbs and materials. Which one a network gets
+    /// depends on whether it has a cross-section to assemble at all.<br/>
     /// （兩種形式皆源自同一份 CPU 端資料。<see cref="RipNetworks"/> 寫出中心線形式；
-    /// <c>RipNetworkSpike</c> 則組裝並彎折部件為真實幾何，
+    /// 亦寫出網格形式——將部件組裝並彎折為真實幾何，
     /// 後者方能承載道路的厚度、路肩、緣石與材質。）<br/><br/>
     /// <b>No <c>kind: "node"</c> records.</b> CS2 keeps no junction geometry on the node: the flare
     /// where an edge meets an intersection is stored on the <i>edge</i>, as
@@ -122,42 +123,149 @@ namespace Carto.Systems
         }
 
         /// <summary>
+        /// A network rip in flight, carried between frames.
+        /// （進行中的路網擷取，於幀與幀之間承載其狀態。）
+        /// </summary>
+        private class NetworkRun
+        {
+            public Entity[] Edges;
+            public int Index;
+            public NetworkWriter Writer;
+            public string OutputDirectory;
+            public string MeshDirectory;
+            public StringBuilder Report = new();
+            public Dictionary<Entity, MeshAsset> PieceCache = new();
+            public Dictionary<Entity, string> AggregateNames = new();
+            public Dictionary<string, int> ByCategory = new();
+            public Dictionary<string, int> ByForm = new();
+            public System.Diagnostics.Stopwatch Clock = System.Diagnostics.Stopwatch.StartNew();
+            public int SkippedMarker, SkippedNoWidth, SkippedDegenerate;
+            public int Points, Triangles;
+            public long Bytes;
+        }
+
+        /// <summary>
+        /// The rip in flight, or <c>null</c>.（進行中的擷取，或 <c>null</c>。）
+        /// </summary>
+        NetworkRun _run;
+
+        /// <summary>
+        /// Whether a rip is running.（是否有擷取正在進行。）
+        /// </summary>
+        public bool IsRipping => _run != null;
+
+        /// <summary>
+        /// How long a single frame may spend advancing a rip, in milliseconds.
+        /// （單幀可用於推進擷取的時間上限，單位為毫秒。）<br/><br/>
+        /// A budget rather than a fixed count of edges: a junction of a wide road costs many times
+        /// what a straight footpath does, so a fixed count would stutter on exactly the parts of a
+        /// city that are worth watching.<br/>
+        /// （採用時間預算而非固定邊數：寬闊道路的路口成本數倍於筆直的人行道，
+        /// 固定邊數會恰在城市中最值得觀看之處造成卡頓。）
+        /// </summary>
+        private const double FrameBudgetMs = 12d;
+
+        /// <summary>
         /// The event triggered when the system instance is destroyed.
-        /// （當系統實例被銷毀時所觸發的事件。）
+        /// （當系統實例被銷毀時所觸發的事件。）<br/><br/>
+        /// A rip in flight holds an open file, so it has to be closed here — the user quitting to
+        /// the menu mid-rip is otherwise a truncated <c>networks.jsonl</c>.<br/>
+        /// （進行中的擷取持有開啟的檔案，故須於此關閉；否則使用者於擷取途中返回主選單，
+        /// 將留下被截斷的 <c>networks.jsonl</c>。）
         /// </summary>
-        protected override void OnDestroy() { base.OnDestroy(); }
+        protected override void OnDestroy()
+        {
+            NetworkRun run = _run;
+            _run = null;
+
+            if (run != null)
+            {
+                _log.Info($"Network rip abandoned at {run.Index}/{run.Edges.Length} edge(s); the world was unloaded. 路網擷取於世界卸載時中止。");
+                run.Writer?.Dispose();
+                RipProgress.Clear();
+            }
+
+            base.OnDestroy();
+        }
 
         /// <summary>
-        /// The event triggered when the system instance is updated.
-        /// （當系統實例被更新時觸發的事件。）
+        /// Drive the progress indicator, and advance any rip in progress by one frame's worth.
+        /// （驅動進度指示器，並將進行中的擷取推進一幀份的進度。）
         /// </summary>
-        protected override void OnUpdate() { }
+        protected override void OnUpdate()
+        {
+            RipProgress.Pump();
+
+            NetworkRun run = _run;
+            if (run != null) Advance(run);
+        }
 
         /// <summary>
-        /// Write every network edge in the loaded city into <c>networks.jsonl</c>.
-        /// （將已載入城市中的所有路網邊寫出至 <c>networks.jsonl</c>。）
+        /// Start a network rip, returning at once.（開始路網擷取並立即返回。）
         /// </summary>
         /// <param name="outputDirectory">The bundle root to write into.（要寫入的束根目錄。）</param>
-        /// <returns>A human-readable report.（可供閱讀的報告。）</returns>
-        public string RipNetworks(string outputDirectory)
+        /// <returns>What the caller should tell the user.（呼叫端應告知使用者的訊息。）</returns>
+        public string BeginRip(string outputDirectory)
         {
-            string path = IOUtils.CombinePath(outputDirectory, "networks.jsonl");
-            StringBuilder report = new();
-            Dictionary<string, int> byCategory = new();
-            Dictionary<string, int> byForm = new();
-            Dictionary<Entity, string> aggregateNames = new();
-            int skippedMarker = 0, skippedNoWidth = 0, skippedDegenerate = 0;
-            int points = 0;
+            if (_run != null) return "A network rip is already running.";
+
+            RipProgress.Report(RipProgress.Phase.Scan);
 
             NativeArray<Entity> entities = _edgeQuery.ToEntityArray(Allocator.TempJob);
-
+            Entity[] edges;
             try
             {
-                report.AppendLine($"Network edges: {entities.Length}");
+                edges = entities.ToArray();
+            }
+            finally
+            {
+                entities.Dispose();
+            }
 
-                using NetworkWriter writer = new(path);
+            NetworkRun run = new()
+            {
+                Edges = edges,
+                OutputDirectory = outputDirectory,
+                MeshDirectory = IOUtils.CombinePath(outputDirectory, "networks"),
+                Writer = new NetworkWriter(IOUtils.CombinePath(outputDirectory, "networks.jsonl"))
+            };
 
-                foreach (Entity entity in entities)
+            run.Report.AppendLine($"Network edges: {edges.Length}");
+            _run = run;
+            RipProgress.Report(RipProgress.Phase.Networks, 0, edges.Length);
+
+            return $"Ripping {edges.Length} network edge(s).\n\n"
+                 + "Progress shows in the corner; a dialog reports the result when it finishes.";
+        }
+
+        /// <summary>
+        /// Advance a rip by one frame's budget.（以一幀的預算推進擷取。）
+        /// </summary>
+        /// <param name="run">The rip in flight.（進行中的擷取。）</param>
+        private void Advance(NetworkRun run)
+        {
+            double started = run.Clock.Elapsed.TotalMilliseconds;
+
+            while (run.Index < run.Edges.Length)
+            {
+                RipOne(run, run.Edges[run.Index]);
+                run.Index++;
+
+                if ((run.Clock.Elapsed.TotalMilliseconds - started) >= FrameBudgetMs) break;
+            }
+
+            RipProgress.Report(RipProgress.Phase.Networks, run.Index, run.Edges.Length);
+
+            if (run.Index >= run.Edges.Length) Finish(run);
+        }
+
+        /// <summary>
+        /// Rip one network edge into the run.（將單一路網邊擷取至該次工作中。）
+        /// </summary>
+        /// <param name="run">The rip in flight.（進行中的擷取。）</param>
+        /// <param name="entity">The edge to rip.（待擷取的邊。）</param>
+        private void RipOne(NetworkRun run, Entity entity)
+        {
                 {
                     Composition composition = EntityManager.GetComponentData<Composition>(entity);
                     Entity edgeComposition = composition.m_Edge;
@@ -174,19 +282,20 @@ namespace Carto.Systems
                     //   故為唯一例外，與向量輸出的處理相同。）
                     if (EntityManager.HasComponent<Game.Net.Marker>(entity) && !isTaxiway)
                     {
-                        skippedMarker++;
-                        continue;
+                        run.SkippedMarker++;
+                        return;
                     }
 
                     if (isTaxiway
                         && ((EntityManager.GetComponentData<TaxiwayComposition>(edgeComposition).m_Flags & TaxiwayFlags.Airspace) != 0))
                     {
-                        skippedMarker++;
-                        continue;
+                        run.SkippedMarker++;
+                        return;
                     }
 
                     EdgeGeometry geometry = EntityManager.GetComponentData<EdgeGeometry>(entity);
                     Edge edge = EntityManager.GetComponentData<Edge>(entity);
+                    float3 center = Colossal.Mathematics.MathUtils.Center(geometry.m_Bounds);
 
                     float width = GetWidth(edgeComposition, entity, geometry);
                     if (!(width > 0f))
@@ -194,350 +303,185 @@ namespace Carto.Systems
                         // The schema's centerline form requires a positive width, since a consumer
                         // extrudes by it; a zero-width run is nothing anyone can draw.
                         // （結構描述的中心線形式要求正值寬度，因消費端據以擠出；零寬度者無從繪製。）
-                        skippedNoWidth++;
-                        continue;
+                        run.SkippedNoWidth++;
+                        return;
                     }
 
-                    List<float3> centerline = BuildCenterline(entity, edge, geometry);
-                    if (centerline.Count < 2)
+                    NetworkRecord record = new() { Id = entity.Index, Kind = "segment" };
+
+                    // Mesh form where the network has a cross-section to assemble, centerline form
+                    // where it does not. The contract allows a bundle to mix them freely and this
+                    // is what that is for: a road, a rail line or a path is built from pieces and
+                    // becomes real geometry, while a pipe or a cable has no surface at all and is
+                    // only ever a line the consumer extrudes.
+                    // （有橫斷面可組裝者採網格形式，無者採中心線形式。契約允許束自由混用兩者，
+                    //   其用意正在於此：道路、軌道與路徑由部件構成，可成為真實幾何；
+                    //   而管線或電纜根本沒有表面，永遠只是一條供消費端擠出的線。）
+                    string assetId = $"seg_{entity.Index}";
+                    MeshAsset assembled = AssembleNetwork(entity, geometry, center, assetId, run.PieceCache, null);
+
+                    if (assembled != null)
                     {
-                        skippedDegenerate++;
-                        continue;
+                        run.Bytes += GltfWriter.Write(IOUtils.CombinePath(run.MeshDirectory, $"{assetId}.glb"), assembled);
+                        record.AssetId = assetId;
+                        record.Position = center;
+                        record.Rotation = quaternion.identity;
+                        run.Triangles += assembled.TriangleCount;
+                    }
+                    else
+                    {
+                        List<float3> centerline = BuildCenterline(entity, edge, geometry);
+                        if (centerline.Count < 2)
+                        {
+                            run.SkippedDegenerate++;
+                            return;
+                        }
+
+                        record.Centerline = centerline;
+                        record.Width = width;
+                        run.Points += centerline.Count;
                     }
 
-                    NetworkRecord record = new()
-                    {
-                        Id = entity.Index,
-                        Kind = "segment",
-                        Centerline = centerline,
-                        Width = width
-                    };
+                    AddAttributes(entity, edgeComposition, width, record, run.AggregateNames);
 
-                    AddAttributes(entity, edgeComposition, width, record, aggregateNames);
-
-                    writer.Write(record);
-                    points += centerline.Count;
+                    run.Writer.Write(record);
 
                     string category = record.Attributes.TryGetValue("category", out object c) ? c.ToString() : "other";
-                    byCategory.TryGetValue(category, out int categoryCount);
-                    byCategory[category] = categoryCount + 1;
+                    run.ByCategory.TryGetValue(category, out int categoryCount);
+                    run.ByCategory[category] = categoryCount + 1;
 
                     string form = record.Attributes.TryGetValue("form", out object f) ? f.ToString() : "normal";
-                    byForm.TryGetValue(form, out int formCount);
-                    byForm[form] = formCount + 1;
+                    run.ByForm.TryGetValue(form, out int formCount);
+                    run.ByForm[form] = formCount + 1;
                 }
 
-                report.AppendLine($"Wrote {writer.Count} segment(s) to networks.jsonl, {points} centerline point(s)");
-            }
-            finally
-            {
-                entities.Dispose();
-            }
-
-            foreach (KeyValuePair<string, int> kvp in byCategory) report.AppendLine($"  {kvp.Key}: {kvp.Value}");
-            report.AppendLine("By form:");
-            foreach (KeyValuePair<string, int> kvp in byForm) report.AppendLine($"  {kvp.Key}: {kvp.Value}");
-            if (skippedMarker > 0) report.AppendLine($"Skipped {skippedMarker} marker network(s)");
-            if (skippedNoWidth > 0) report.AppendLine($"Skipped {skippedNoWidth} edge(s) with no usable width");
-            if (skippedDegenerate > 0) report.AppendLine($"Skipped {skippedDegenerate} edge(s) whose centerline collapsed to a point");
-            report.AppendLine($"Output: {path}");
-
-            _log.Info(report.ToString());
-            return report.ToString();
         }
 
         /// <summary>
-        /// Dump one curved road edge's composition mesh, raw and deformed, so the deform can be
-        /// worked out without paying for a full rip (PLAN Phase 5, level 2 spike).<br/>
-        /// （傾印一條彎曲道路邊的組成網格，包含原始與變形兩版，
-        /// 使變形方式的推導無須付出完整擷取的代價（PLAN 第五階段，第二層驗證）。）<br/><br/>
-        /// <b>What is already known, from the game's own code.</b>
-        /// <c>BatchDataHelpers.CalculateEdgeParameters</c> fills the eight per-instance
-        /// <c>CompositionMatrix</c> values the net shader deforms by, and
-        /// <c>BuildEdgeMatrix</c> shows each one is nothing but a bezier's four control points
-        /// (relative to the edge's bounds centre) with UV mapping offsets in <c>w</c>. For an edge
-        /// they are <c>m_Start.m_Left</c>, <c>m_End.m_Left</c>, <c>m_Start.m_Right</c>,
-        /// <c>m_End.m_Right</c>, and matrices 4–7 are identity. So the shader's whole input is
-        /// <see cref="EdgeGeometry"/> — data this system already reads. The one thing the managed
-        /// assemblies cannot answer is how the mesh encodes its along- and across-parameters,
-        /// which is what the ranges below are for.<br/>
-        /// （由遊戲自身程式碼已知：八個 <c>CompositionMatrix</c> 各自僅是一條貝茲曲線的四個控制點，
-        /// 對邊而言即 <see cref="EdgeGeometry"/> 的四條邊界曲線。唯一無法自受管組件得知者，
-        /// 是網格如何編碼其縱向與橫向參數，此即下列數值範圍的用途。）<br/><br/>
-        /// A curved edge is chosen deliberately: on a straight one, a wrong deform still looks
-        /// plausible.<br/>
-        /// （刻意選用彎曲的邊：在筆直的邊上，錯誤的變形看起來仍屬合理。）
+        /// Close the file, report, and tell the user what came out.
+        /// （關閉檔案、產出報告，並告知使用者結果。）
         /// </summary>
-        /// <param name="outputDirectory">The bundle root to write into.（要寫入的束根目錄。）</param>
-        /// <returns>A human-readable report.（可供閱讀的報告。）</returns>
-        public string RipNetworkSpike(string outputDirectory)
+        /// <param name="run">The finished run.（已完成的工作。）</param>
+        private void Finish(NetworkRun run)
         {
-            StringBuilder report = new();
-            NativeArray<Entity> entities = _edgeQuery.ToEntityArray(Allocator.TempJob);
+            _run = null;
+            run.Clock.Stop();
+            RipProgress.Clear();
+            run.Writer.Dispose();
+
+            StringBuilder report = run.Report;
+            report.AppendLine($"Wrote {run.Writer.Count} segment(s) to networks.jsonl in {run.Clock.Elapsed.TotalSeconds:F1} s");
+            report.AppendLine($"  mesh form: {run.Writer.MeshForm} ({run.Triangles} triangles, "
+                            + $"{run.Bytes / 1048576d:F1} MiB of glTF in networks/)");
+            report.AppendLine($"  centerline form: {run.Writer.CenterlineForm} ({run.Points} point(s))");
+            report.AppendLine($"Distinct cross-section pieces read: {run.PieceCache.Count}");
+
+            foreach (KeyValuePair<string, int> kvp in run.ByCategory) report.AppendLine($"  {kvp.Key}: {kvp.Value}");
+            report.AppendLine("By form:");
+            foreach (KeyValuePair<string, int> kvp in run.ByForm) report.AppendLine($"  {kvp.Key}: {kvp.Value}");
+            if (run.SkippedMarker > 0) report.AppendLine($"Skipped {run.SkippedMarker} marker network(s)");
+            if (run.SkippedNoWidth > 0) report.AppendLine($"Skipped {run.SkippedNoWidth} edge(s) with no usable width");
+            if (run.SkippedDegenerate > 0) report.AppendLine($"Skipped {run.SkippedDegenerate} edge(s) whose centerline collapsed to a point");
+            report.AppendLine($"Output: {run.OutputDirectory}");
+
+            _log.Info(report.ToString());
 
             try
             {
-                // Rip the road the player is looking at. Comparing a ripped mesh against the game
-                // means finding the same road in both, and CS2 offers no way to fly to a
-                // coordinate — so the camera picks the subject instead, and the comparison is
-                // already framed before the button is pressed.
-                // （擷取玩家正在注視的道路。將擷取的網格與遊戲比對，意味著必須在兩邊找到同一條路，
-                //   而 CS2 並無飛往指定座標的方式——因此改由攝影機決定對象，
-                //   按下按鈕之前，比對的畫面就已經對好了。）
-                bool hasFocus = false;
-                float3 focus = default;
-                try
-                {
-                    Game.Rendering.IGameCameraController controller = Instance.Camera?.activeCameraController;
-                    if (controller != null)
-                    {
-                        UnityEngine.Vector3 pivot = controller.pivot;
-                        focus = new float3(pivot.x, pivot.y, pivot.z);
-                        hasFocus = true;
-                    }
-                }
-                catch (Exception ex)
-                {
-                    _log.Warn($"Could not read the camera pivot, falling back to the whole city: {ex.Message}");
-                }
-
-                report.AppendLine(hasFocus
-                    ? $"Camera pivot {focus} — choosing the most curved road within {FocusRadius} m of it."
-                    : "No camera available — choosing the most curved road in the city.");
-
-                Entity chosen = Entity.Null;
-                Entity chosenComposition = Entity.Null;
-                float chosenScore = -1f;
-                Entity nearest = Entity.Null;
-                Entity nearestComposition = Entity.Null;
-                float nearestDistance = float.MaxValue;
-
-                foreach (Entity entity in entities)
-                {
-                    Composition composition = EntityManager.GetComponentData<Composition>(entity);
-                    Entity edgeComposition = composition.m_Edge;
-                    if (edgeComposition == Entity.Null) continue;
-                    if (EntityManager.HasComponent<Game.Net.Marker>(entity)) continue;
-
-                    string category = GetCategory(EntityManager.GetComponentData<PrefabRef>(entity).m_Prefab, edgeComposition);
-                    if ((category != "road") && (category != "highway")) continue;
-                    if (!EntityManager.HasComponent<NetCompositionMeshRef>(edgeComposition)) continue;
-
-                    EdgeGeometry geometry = EntityManager.GetComponentData<EdgeGeometry>(entity);
-                    float3 edgeCenter = Colossal.Mathematics.MathUtils.Center(geometry.m_Bounds);
-
-                    // Horizontal distance only: the pivot sits on the ground and an elevated road
-                    // overhead is still the road being looked at.
-                    // （僅計水平距離：樞紐點位於地面，而頭頂的高架道路仍是所注視的那條路。）
-                    float distance = hasFocus ? math.distance(edgeCenter.xz, focus.xz) : 0f;
-                    if (distance < nearestDistance)
-                    {
-                        nearestDistance = distance;
-                        nearest = entity;
-                        nearestComposition = edgeComposition;
-                    }
-
-                    if (hasFocus && (distance > FocusRadius)) continue;
-
-                    // Prefer an edge that runs into a real intersection, then the most curved of
-                    // those. Junction fill is the thing being judged, and a road meeting three or
-                    // more others is where a missing flare shows as a hole; curvature is the
-                    // tie-breaker because a wrong deform still looks plausible on a straight road.
-                    // （優先取駛入真實路口的邊，再於其中取最彎者。受檢驗者為路口的填補，
-                    //   而與三條以上道路相接之處，正是缺漏的擴張部會顯現為破洞之處；
-                    //   彎曲度作為平手時的判準，因錯誤的變形在筆直道路上看起來仍屬合理。）
-                    Edge ends = EntityManager.GetComponentData<Edge>(entity);
-                    int connections = math.max(CountConnections(ends.m_Start), CountConnections(ends.m_End));
-
-                    Bezier4x3 mid = Midline(geometry.m_Start);
-                    float bend = math.distance(mid.b, math.lerp(mid.a, mid.d, 1f / 3f))
-                               + math.distance(mid.c, math.lerp(mid.a, mid.d, 2f / 3f));
-
-                    // A junction is worth more than any amount of bend, so it dominates the score
-                    // rather than competing with it.
-                    // （路口的價值高於任何彎曲程度，故其於評分中居主導地位而非與之競爭。）
-                    float score = ((connections >= 3) ? 1000f : 0f) + bend;
-
-                    if (score > chosenScore)
-                    {
-                        chosenScore = score;
-                        chosen = entity;
-                        chosenComposition = edgeComposition;
-                    }
-                }
-
-                // Nothing in range is not a failure — the camera may simply be over open ground.
-                // （範圍內沒有道路並非失敗：攝影機可能只是停在空地上方。）
-                if ((chosen == Entity.Null) && (nearest != Entity.Null))
-                {
-                    chosen = nearest;
-                    chosenComposition = nearestComposition;
-                    report.AppendLine($"No road within {FocusRadius} m; took the nearest, {nearestDistance:F0} m away.");
-                }
-
-                if (chosen == Entity.Null) return "Network spike: no road edge with a composition mesh was found.";
-
-                NetCompositionMeshRef meshRef = EntityManager.GetComponentData<NetCompositionMeshRef>(chosenComposition);
-                Entity meshEntity = meshRef.m_Mesh;
-                EdgeGeometry chosenGeometry = EntityManager.GetComponentData<EdgeGeometry>(chosen);
-                float3 center = Colossal.Mathematics.MathUtils.Center(chosenGeometry.m_Bounds);
-
-                Edge chosenEnds = EntityManager.GetComponentData<Edge>(chosen);
-                report.AppendLine($"Start node has {CountConnections(chosenEnds.m_Start)} connected edge(s), "
-                                + $"end node {CountConnections(chosenEnds.m_End)} — 3 or more is an intersection.");
-                report.AppendLine($"Edge {chosen.Index}, score {chosenScore:F2}, "
-                                + $"asset '{Instance.Name.GetPrefabName(EntityManager.GetComponentData<PrefabRef>(chosen).m_Prefab)}'");
-                report.AppendLine($"Composition {chosenComposition.Index}, mesh entity {meshEntity.Index}, rotate={meshRef.m_Rotate}");
-                report.AppendLine($"Mesh entity components: [{string.Join(", ", DescribeComponents(meshEntity))}]");
-
-                if (EntityManager.HasComponent<NetCompositionMeshData>(meshEntity))
-                {
-                    NetCompositionMeshData meshData = EntityManager.GetComponentData<NetCompositionMeshData>(meshEntity);
-                    report.AppendLine($"NetCompositionMeshData: width {meshData.m_Width:F3}, middleOffset {meshData.m_MiddleOffset:F3}, "
-                                    + $"indexFactor {meshData.m_IndexFactor:F3}, heightRange [{meshData.m_HeightRange.min:F3}, {meshData.m_HeightRange.max:F3}], "
-                                    + $"state {meshData.m_State}, layers {meshData.m_DefaultLayers}");
-                }
-
-                if (EntityManager.HasComponent<NetCompositionData>(chosenComposition))
-                {
-                    NetCompositionData compositionData = EntityManager.GetComponentData<NetCompositionData>(chosenComposition);
-                    report.AppendLine($"NetCompositionData: width {compositionData.m_Width:F3}, middleOffset {compositionData.m_MiddleOffset:F3}, "
-                                    + $"widthOffset {compositionData.m_WidthOffset:F3}, nodeOffset {compositionData.m_NodeOffset:F3}");
-
-                    // Whether the boundary curves sit at the drawn road surface, or the surface is
-                    // meant to sit below them. The pieces are all authored at y = -0.2, so this
-                    // says whether that offset is real or already accounted for.
-                    // （邊界曲線是否位於實際繪製的路面高度，抑或路面應在其下方。
-                    //   各部件皆製作於 y = -0.2，此處說明該偏移是真實存在，或已被計入。）
-                    report.AppendLine($"NetCompositionData surfaceHeight: [{compositionData.m_SurfaceHeight.min:F3}, "
-                                    + $"{compositionData.m_SurfaceHeight.max:F3}], heightRange ["
-                                    + $"{compositionData.m_HeightRange.min:F3}, {compositionData.m_HeightRange.max:F3}], "
-                                    + $"edgeHeights {compositionData.m_EdgeHeights}");
-                }
-
-                report.AppendLine($"Segment lengths: start {chosenGeometry.m_Start.m_Length}, end {chosenGeometry.m_End.m_Length}");
-                report.AppendLine($"Bounds centre {center}");
-
-                // A composition mesh entity holds no vertices of its own. It is an assembly: a
-                // `NetCompositionPiece` buffer naming the cross-section's parts — carriageway,
-                // kerb, pavement, barrier — each an ordinary prefab with its own geometry, placed
-                // by an offset and a size. That is why a road has sidewalks and markings the
-                // centerline form could never carry, and it means net geometry comes through the
-                // same proven route as buildings rather than needing anything new.
-                // （組成網格實體本身不含頂點。它是一份組裝清單：`NetCompositionPiece` 緩衝區
-                //   列出橫斷面的各個部件——車道、緣石、人行道、護欄——每個都是具有自身幾何的
-                //   一般預製模板，依偏移與尺寸擺放。）
-                if (EntityManager.HasBuffer<NetCompositionPiece>(meshEntity))
-                {
-                    DynamicBuffer<NetCompositionPiece> pieces = EntityManager.GetBuffer<NetCompositionPiece>(meshEntity, true);
-                    report.AppendLine($"NetCompositionPiece buffer: {pieces.Length} piece(s)");
-
-                    for (int i = 0; i < pieces.Length; i++)
-                    {
-                        NetCompositionPiece piece = pieces[i];
-                        string name = Instance.Name.GetPrefabName(piece.m_Piece);
-
-                        report.AppendLine($"  [{i}] '{name}' offset {piece.m_Offset} size {piece.m_Size} "
-                                        + $"section {piece.m_SectionIndex} sectionFlags {piece.m_SectionFlags} "
-                                        + $"pieceFlags {piece.m_PieceFlags}");
-
-                        if ((piece.m_Piece != Entity.Null) && EntityManager.HasComponent<NetPieceData>(piece.m_Piece))
-                        {
-                            NetPieceData pieceData = EntityManager.GetComponentData<NetPieceData>(piece.m_Piece);
-                            report.AppendLine($"        NetPieceData: width {pieceData.m_Width:F3} length {pieceData.m_Length:F3} "
-                                            + $"widthOffset {pieceData.m_WidthOffset:F3} heightRange "
-                                            + $"[{pieceData.m_HeightRange.min:F3}, {pieceData.m_HeightRange.max:F3}] "
-                                            + $"surfaceHeights {pieceData.m_SurfaceHeights}");
-                        }
-                    }
-
-                    // `NetPiecePrefab` derives from `RenderPrefab`, so a piece entity *is* the
-                    // render prefab — there is no `SubMesh` indirection to follow, which is why
-                    // every piece above reports none. The mesh rip's reader takes it directly,
-                    // which means road geometry needs no new machinery at all: it is the Phase 1
-                    // geometry-asset route and the Phase 4 material route, unchanged.
-                    // （`NetPiecePrefab` 衍生自 `RenderPrefab`，故部件實體本身即是繪製預製模板，
-                    //   無須經由 `SubMesh` 轉介。網格擷取的讀取器可直接處理，
-                    //   意即道路幾何完全無須新機制。）
-                    string pieceDirectory = IOUtils.CombinePath(outputDirectory, "networks");
-
-                    for (int i = 0; i < pieces.Length; i++)
-                    {
-                        Entity pieceEntity = pieces[i].m_Piece;
-                        if (pieceEntity == Entity.Null) continue;
-
-                        string pieceName = Instance.Name.GetPrefabName(pieceEntity);
-                        List<string> trace = new();
-                        MeshAsset pieceMesh = Instance.MeshRip.ReadMesh(pieceEntity, $"net_spike_piece{i}", pieceName, trace);
-
-                        if (pieceMesh == null)
-                        {
-                            report.AppendLine($"  [{i}] '{pieceName}' geometry would not read: {string.Join("; ", trace)}");
-                            continue;
-                        }
-
-                        float3 minPiece = pieceMesh.Vertices[0], maxPiece = pieceMesh.Vertices[0];
-                        foreach (float3 v in pieceMesh.Vertices) { minPiece = math.min(minPiece, v); maxPiece = math.max(maxPiece, v); }
-
-                        report.AppendLine($"  [{i}] '{pieceName}': {pieceMesh.Vertices.Length} verts, {pieceMesh.TriangleCount} tris, "
-                                        + $"{pieceMesh.Primitives.Count} prim, x [{minPiece.x:F3}, {maxPiece.x:F3}] "
-                                        + $"y [{minPiece.y:F3}, {maxPiece.y:F3}] z [{minPiece.z:F3}, {maxPiece.z:F3}]");
-
-                        GltfWriter.Write(IOUtils.CombinePath(pieceDirectory, $"net_spike_piece{i}.glb"), pieceMesh);
-                    }
-
-                    report.AppendLine($"Wrote net_spike_piece*.glb to {pieceDirectory}");
-
-                    // The edge, plus the junction flare at each end. `Composition` names three
-                    // composition entities, and the two node ones carry their own piece lists —
-                    // an intersection's surface is genuinely different geometry from the road
-                    // leading into it. Assembling all three into one mesh is what closes the
-                    // junction gaps, because between them they cover node to node with nothing
-                    // left over.
-                    // （邊，加上兩端的路口擴張部。`Composition` 指名三個組成實體，
-                    //   其中兩個節點組成各有自身的部件清單——路口表面確實是與駛入其中的道路
-                    //   截然不同的幾何。將三者組裝為單一網格，正是路口空隙得以閉合之處。）
-                    Composition chosenParts = EntityManager.GetComponentData<Composition>(chosen);
-                    List<float3> vertices = new();
-                    List<float2> uvs = new();
-                    List<int> indices = new();
-                    List<MeshPrimitive> primitives = new();
-
-                    if (EntityManager.HasComponent<StartNodeGeometry>(chosen))
-                    {
-                        EdgeNodeGeometry node = EntityManager.GetComponentData<StartNodeGeometry>(chosen).m_Geometry;
-                        AppendComposition(chosenParts.m_StartNode, node.m_Left, node.m_Right, true, center,
-                                          "startNode", vertices, uvs, indices, primitives, report);
-                    }
-
-                    AppendComposition(chosenParts.m_Edge, chosenGeometry.m_Start, chosenGeometry.m_End, false, center,
-                                      "edge", vertices, uvs, indices, primitives, report);
-
-                    if (EntityManager.HasComponent<EndNodeGeometry>(chosen))
-                    {
-                        EdgeNodeGeometry node = EntityManager.GetComponentData<EndNodeGeometry>(chosen).m_Geometry;
-                        AppendComposition(chosenParts.m_EndNode, node.m_Left, node.m_Right, true, center,
-                                          "endNode", vertices, uvs, indices, primitives, report);
-                    }
-
-                    MeshAsset assembled = Finish("net_spike_edge", vertices, uvs, indices, primitives);
-                    if (assembled != null)
-                    {
-                        long bytes = GltfWriter.Write(IOUtils.CombinePath(pieceDirectory, "net_spike_edge.glb"), assembled);
-                        report.AppendLine($"Wrote net_spike_edge.glb ({bytes} bytes): {assembled.Vertices.Length} verts, "
-                                        + $"{assembled.TriangleCount} tris, {assembled.Primitives.Count} primitive(s)");
-                        report.AppendLine($"Place it at world position {center} with identity rotation.");
-                    }
-                }
+                Game.UI.MessageDialog dialog = new("Options.SECTION[Carto.Carto.Mod]",
+                                                   Settings.Fit(report.ToString()), "Common.OK");
+                Instance.UI.appBindings.ShowMessageDialog(dialog, null);
             }
-            finally
+            catch (Exception ex)
             {
-                entities.Dispose();
+                _log.Warn($"Could not show the network rip result: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Assemble one network edge into a single mesh: the junction flare at its start, the run
+        /// between the nodes, and the flare at its end.<br/>
+        /// （將單一路網邊組裝為單一網格：起點的路口擴張部、節點之間的路段，以及終點的擴張部。）
+        /// <br/><br/>
+        /// <c>Composition</c> names three composition entities and each has its own cross-section,
+        /// because an intersection's surface is genuinely different geometry from the road leading
+        /// into it. Assembling all three covers node to node with nothing left between them, which
+        /// is what a constant-width ribbon could never do at a skewed junction.<br/>
+        /// （<c>Composition</c> 指名三個組成實體，各有自身的橫斷面，因為路口表面確實是與駛入其中
+        /// 的道路截然不同的幾何。組裝三者即可自節點涵蓋至節點，中間毫無空隙。）
+        /// </summary>
+        /// <param name="entity">The edge entity.（邊實體。）</param>
+        /// <param name="geometry">Its edge geometry.（其邊的幾何。）</param>
+        /// <param name="center">The origin the mesh is built around.（網格所環繞的原點。）</param>
+        /// <param name="assetId">The asset id to label it with.（用以標記的資產 ID。）</param>
+        /// <param name="cache">The piece mesh cache.（部件網格快取。）</param>
+        /// <param name="report">Where to note the working, or <c>null</c> to stay quiet.（記錄過程之處，或 <c>null</c> 表示不記錄。）</param>
+        /// <returns>The mesh, or <c>null</c> when the network has no pieces to assemble.（網格；若該路網無部件可組裝則為 <c>null</c>。）</returns>
+        private MeshAsset AssembleNetwork(Entity entity, EdgeGeometry geometry, float3 center, string assetId,
+                                          Dictionary<Entity, MeshAsset> cache, StringBuilder report)
+        {
+            Composition parts = EntityManager.GetComponentData<Composition>(entity);
+
+            List<float3> vertices = new();
+            List<float2> uvs = new();
+            List<int> indices = new();
+            List<MeshPrimitive> primitives = new();
+
+            if (EntityManager.HasComponent<StartNodeGeometry>(entity))
+            {
+                EdgeNodeGeometry node = EntityManager.GetComponentData<StartNodeGeometry>(entity).m_Geometry;
+                AppendComposition(parts.m_StartNode, node.m_Left, node.m_Right, true, center,
+                                  "startNode", cache, vertices, uvs, indices, primitives, report);
             }
 
-            _log.Info(report.ToString());
-            return report.ToString();
+            AppendComposition(parts.m_Edge, geometry.m_Start, geometry.m_End, false, center,
+                              "edge", cache, vertices, uvs, indices, primitives, report);
+
+            if (EntityManager.HasComponent<EndNodeGeometry>(entity))
+            {
+                EdgeNodeGeometry node = EntityManager.GetComponentData<EndNodeGeometry>(entity).m_Geometry;
+                AppendComposition(parts.m_EndNode, node.m_Left, node.m_Right, true, center,
+                                  "endNode", cache, vertices, uvs, indices, primitives, report);
+            }
+
+            return Finish(assetId, vertices, uvs, indices, primitives);
         }
+
+        /// <summary>
+        /// Reduce a name to the character set the contract allows an <c>assetId</c>.
+        /// （將名稱化簡為契約允許 <c>assetId</c> 使用的字元集合。）
+        /// </summary>
+        /// <param name="name">The raw name.（原始名稱。）</param>
+        /// <returns>A safe id.（可安全使用的識別碼。）</returns>
+        private static string SanitizeId(string name)
+        {
+            if (string.IsNullOrEmpty(name)) return "unnamed";
+
+            StringBuilder safe = new(name.Length);
+            foreach (char c in name)
+            {
+                safe.Append(char.IsLetterOrDigit(c) || (c == '.') || (c == '-') || (c == '_') ? c : '_');
+            }
+
+            // The pattern requires the first character to be alphanumeric.
+            // （該樣式要求首字元為英數字。）
+            if (!char.IsLetterOrDigit(safe[0])) safe.Insert(0, 'x');
+            return safe.ToString();
+        }
+
+        /// <summary>
+        /// How many edges meet at a node. Three or more makes it an intersection rather than a
+        /// bend or a dead end.<br/>
+        /// （於某節點交會的邊數。三條以上者為路口，而非轉折或盡頭。）
+        /// </summary>
+        /// <param name="node">The node entity.（節點實體。）</param>
+        /// <returns>The number of connected edges.（相接的邊數。）</returns>
+        private int CountConnections(Entity node)
+        {
+            if ((node == Entity.Null) || !EntityManager.HasBuffer<ConnectedEdge>(node)) return 0;
+            return EntityManager.GetBuffer<ConnectedEdge>(node, true).Length;
+        }
+
 
         /// <summary>
         /// Assemble one edge's road geometry: every cross-section piece, tiled along the edge and
@@ -575,7 +519,8 @@ namespace Carto.Systems
         /// <returns>The assembled mesh, or <c>null</c> when no piece would read.（組裝後的網格；若無部件可讀則為 <c>null</c>。）</returns>
         private void AppendPart(DynamicBuffer<NetCompositionPiece> pieces, Segment half0, Segment half1,
                                 bool splitAcross, float compositionWidth, float3 center, string label,
-                                List<float3> vertices, List<float2> uvs, List<int> indices,
+                                Dictionary<Entity, MeshAsset> cache, List<float3> vertices,
+                                List<float2> uvs, List<int> indices,
                                 List<MeshPrimitive> primitives, StringBuilder report)
         {
             // The part's own length decides how many times a piece tiles. Left and right differ on
@@ -596,7 +541,16 @@ namespace Carto.Systems
                 if (piece.m_Piece == Entity.Null) continue;
 
                 string pieceName = Instance.Name.GetPrefabName(piece.m_Piece);
-                MeshAsset source = Instance.MeshRip.ReadMesh(piece.m_Piece, $"{label}_p{p}", pieceName);
+
+                // Cache by piece prefab. A city has thousands of edges but a few hundred distinct
+                // pieces, and reading one loads and releases its geometry asset - doing that per
+                // edge would repeat the same expensive load tens of thousands of times.
+                if (!cache.TryGetValue(piece.m_Piece, out MeshAsset source))
+                {
+                    source = Instance.MeshRip.ReadMesh(piece.m_Piece, SanitizeId(pieceName), pieceName);
+                    cache[piece.m_Piece] = source;
+                }
+
                 if ((source == null) || (source.Vertices.Length == 0)) continue;
 
                 float minZ = source.Vertices[0].z, maxZ = source.Vertices[0].z;
@@ -700,25 +654,15 @@ namespace Carto.Systems
                     StartVertex = startVertex,
                     VertexCount = vertices.Count - startVertex,
                     MaterialIndex = primitives.Count,
-                    MaterialId = $"{pieceName}_mat0"
+                    MaterialId = ((source.Primitives.Count > 0)
+                                  && !string.IsNullOrEmpty(source.Primitives[0].MaterialId))
+                                 ? source.Primitives[0].MaterialId
+                                 : $"{SanitizeId(pieceName)}_mat0"
                 });
 
-                report.AppendLine($"  {label} [{p}] '{pieceName}': {tiles} tile(s) of {tileLength:F1} m "
+                report?.AppendLine($"  {label} [{p}] '{pieceName}': {tiles} tile(s) of {tileLength:F1} m "
                                 + $"over {edgeLength:F1} m, widthScale {widthScale:F3}");
             }
-        }
-
-        /// <summary>
-        /// How many edges meet at a node. Three or more makes it an intersection rather than a
-        /// bend or a dead end.<br/>
-        /// （於某節點交會的邊數。三條以上者為路口，而非轉折或盡頭。）
-        /// </summary>
-        /// <param name="node">The node entity.（節點實體。）</param>
-        /// <returns>The number of connected edges.（相接的邊數。）</returns>
-        private int CountConnections(Entity node)
-        {
-            if ((node == Entity.Null) || !EntityManager.HasBuffer<ConnectedEdge>(node)) return 0;
-            return EntityManager.GetBuffer<ConnectedEdge>(node, true).Length;
         }
 
         /// <summary>
@@ -739,7 +683,8 @@ namespace Carto.Systems
         /// <param name="primitives">The shared primitive list.（共用的圖元列表。）</param>
         /// <param name="report">The report to note the working in.（用以記錄過程的報告。）</param>
         private void AppendComposition(Entity composition, Segment half0, Segment half1, bool splitAcross,
-                                       float3 center, string label, List<float3> vertices, List<float2> uvs,
+                                       float3 center, string label, Dictionary<Entity, MeshAsset> cache,
+                                       List<float3> vertices, List<float2> uvs,
                                        List<int> indices, List<MeshPrimitive> primitives, StringBuilder report)
         {
             if ((composition == Entity.Null) || !EntityManager.HasComponent<NetCompositionMeshRef>(composition)) return;
@@ -752,7 +697,7 @@ namespace Carto.Systems
             if (!(width > 0f)) return;
 
             AppendPart(EntityManager.GetBuffer<NetCompositionPiece>(meshEntity, true), half0, half1,
-                       splitAcross, width, center, label, vertices, uvs, indices, primitives, report);
+                       splitAcross, width, center, label, cache, vertices, uvs, indices, primitives, report);
         }
 
         /// <summary>
@@ -815,29 +760,6 @@ namespace Carto.Systems
 
             return normals;
         }
-        /// <summary>
-        /// List the component types present on an entity, for the spike's diagnostics.
-        /// （列出實體上存在的元件型別，供驗證診斷使用。）
-        /// </summary>
-        /// <param name="entity">The entity to describe.（待描述的實體。）</param>
-        /// <returns>The type names.（型別名稱。）</returns>
-        private List<string> DescribeComponents(Entity entity)
-        {
-            List<string> names = new();
-            NativeArray<ComponentType> types = EntityManager.GetComponentTypes(entity, Allocator.TempJob);
-            try
-            {
-                foreach (ComponentType type in types) names.Add(type.GetManagedType()?.Name ?? type.ToString());
-            }
-            finally
-            {
-                types.Dispose();
-            }
-
-            names.Sort(StringComparer.Ordinal);
-            return names;
-        }
-
         /// <summary>
         /// Build the world-space centerline of one edge, from its start node to its end node.
         /// （建構單一邊自起點節點至終點節點的世界座標中心線。）<br/><br/>

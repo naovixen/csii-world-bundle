@@ -33,8 +33,34 @@ namespace Carto.Domain
         public string Kind { get; set; } = "segment";
 
         /// <summary>
-        /// The world-space polyline from the start node to the end node, already tessellated.
-        /// （已細分的世界座標折線，自起點節點至終點節點。）
+        /// Mesh form only. The id of the assembled mesh under the bundle's network mesh layer.
+        /// （僅用於網格形式。組裝後網格於束的路網網格層中的識別碼。）<br/><br/>
+        /// When this is set the record carries no <see cref="Centerline"/>, which the schema
+        /// enforces: a record is one form or the other, never both.<br/>
+        /// （設定此值時，紀錄不帶 <see cref="Centerline"/>，此點由結構描述強制：
+        /// 一筆紀錄只能是其中一種形式。）
+        /// </summary>
+        public string AssetId { get; set; }
+
+        /// <summary>
+        /// Mesh form only. Where the mesh sits in the world, in metres.
+        /// （僅用於網格形式。網格於世界中的位置，單位為公尺。）
+        /// </summary>
+        public float3 Position { get; set; }
+
+        /// <summary>
+        /// Mesh form only. The mesh's world rotation.
+        /// （僅用於網格形式。網格的世界旋轉。）<br/><br/>
+        /// Always identity: a network mesh is assembled in world space and then shifted to its
+        /// own origin, so there is no orientation left to express.<br/>
+        /// （恆為單位旋轉：路網網格於世界座標中組裝後再平移至自身原點，故無方向可表示。）
+        /// </summary>
+        public quaternion Rotation { get; set; } = quaternion.identity;
+
+        /// <summary>
+        /// Centerline form only. The world-space polyline from the start node to the end node,
+        /// already tessellated.<br/>
+        /// （僅用於中心線形式。已細分的世界座標折線，自起點節點至終點節點。）
         /// </summary>
         public List<float3> Centerline { get; set; } = new();
 

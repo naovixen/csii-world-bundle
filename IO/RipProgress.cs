@@ -51,6 +51,9 @@ namespace Carto.IO
             /// <summary>Reading prefab geometry.（讀取預製模板幾何。）</summary>
             Meshes,
 
+            /// <summary>Assembling and bending network geometry.（組裝並彎折路網幾何。）</summary>
+            Networks,
+
             /// <summary>Draining the writer queue to disk.（將寫出佇列排空至磁碟。）</summary>
             Write,
 

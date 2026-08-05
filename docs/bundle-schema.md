@@ -290,21 +290,34 @@ terrain, negative below).
 The schema stays as frozen; this section records which of its options the Carto ripper takes,
 so a consumer knows what to expect from a real bundle without reading the mod.
 
-**Centerline form, always.** CS2 has no per-segment road mesh to rip. It stores one straight
-mesh per *composition* — a cross-section extruded over a unit length — and bends it along the
-edge in the **vertex shader**, from the eight `CompositionMatrix` values the renderer writes per
-instance. The mesh on its own is a straight strip at the origin, and baking the bend means
-reimplementing an HLSL vertex program. What the game *does* compute CPU-side is the road
-surface's own boundary — `EdgeGeometry` holds the world-space left and right bezier of the
-painted surface — so the centerline written here is the exact average of those two curves,
-tessellated to 3 m (straight runs collapse to two points). The mesh form remains valid in the
-schema for a producer that has real meshes; this one does not pretend to.
+**Both forms, mixed — mesh where there is geometry, centerline where there is not.** A record
+is one form or the other and never both, but a bundle mixes them freely, and this is what that
+is for. Roads, rail, paths and taxiways are built from a cross-section and come out as real
+assembled geometry in the mesh form. Pipes and cables have no surface at all — they are only
+ever a line — so they come out in the centerline form, which is the honest description of them.
+
+**How a network mesh is assembled.** CS2 stores no per-segment road mesh, but the parts are all
+CPU-side. A composition names a cross-section: a list of pieces — carriageway, shoulder, kerb,
+sidewalk, median, side skirt — each an ordinary prefab with its own geometry and materials,
+placed by an offset across the width and tiled along the length. The game bends that assembly
+onto the road surface in the vertex shader, and the eight matrices it uses turn out to be
+nothing but the four control points of `EdgeGeometry`'s left and right boundary béziers. The
+producer therefore does the same bend itself, on the same data. Each `.glb` is one edge plus
+the junction flare at either end, so a segment covers node to node with nothing between.
+
+**Sections mirrored.** CS2 authors one side of a road and mirrors it for the other. Pieces on
+the mirrored side are reflected across the width, which matters wherever a piece is asymmetric —
+a sidewalk with a parking bay has its kerb on one side only.
 
 **No `kind: "node"` records, and so no `startNode` / `endNode`.** CS2 keeps no junction geometry
-on the node. The flare where an edge meets an intersection is stored on the *edge*, and a
-junction is the union of the segment ends meeting in it. Every segment's centerline already runs
-node-to-node, so the junction area is covered; a node record would either duplicate that or
-invent geometry the game does not have.
+on the node: the flare where an edge meets an intersection is stored on the *edge*, and each
+segment mesh already carries its own half of every junction it touches. A node record would
+either duplicate that or invent geometry the game does not have.
+
+**Network meshes are not deduped.** Every segment is bent onto its own curve, so each `.glb` is
+unique. Expect roughly one file per edge, of the order of tens of kilobytes each. The mesh's
+origin is the point `pos` places it at, which is *not* its bounding-box centre — a flare
+extends past the edge that owns it.
 
 **`form` is never `bridge`.** CS2 elevates a road and lets the terrain and water underneath
 decide what that reads as. An elevated segment over water is a bridge, which a consumer decides

@@ -399,38 +399,6 @@ namespace Carto
             //   只是將看似當機的遊戲換成有明確說明的狀態。）
             set { IO.RipProgress.RunDeferred(IO.RipProgress.Phase.Export, IO.IO.Export); }
         }
-
-        /// <summary>
-        /// The button that runs the world ripper's mesh-readback spike (PLAN Phase 1).
-        /// （執行世界擷取器網格回讀驗證的按鈕（PLAN 第一階段）。）<br/><br/>
-        /// Writes one <c>.glb</c> per unique building mesh into <c>ModsData/Carto/spike/meshes</c>
-        /// and reports the result in a dialog. Additive: it does not touch the vector export.<br/>
-        /// （為每個唯一的建築網格輸出一個 <c>.glb</c> 至 <c>ModsData/Carto/spike/meshes</c>，
-        /// 並以對話框回報結果。此功能為附加性質，不影響向量輸出。）
-        /// </summary>
-        [SettingsUISection(GeneralTab, GeneralGeneralGroup)]
-        [SettingsUIButton]
-        [SettingsUIDisableByCondition(typeof(Settings), nameof(IsInGameOrEditor), invert: true)]
-        public bool RipMeshSpikeButton
-        {
-            set
-            {
-                string report;
-                try
-                {
-                    report = Instance.MeshRip.RipSpike();
-                }
-                catch (System.Exception ex)
-                {
-                    Instance.Log.Error(ex.ToString());
-                    report = $"Mesh rip spike failed:\n{ex.Message}";
-                }
-
-                Game.UI.MessageDialog dialog = new("Options.SECTION[Carto.Carto.Mod]", report, "Common.OK");
-                Instance.UI.appBindings.ShowMessageDialog(dialog, null);
-            }
-        }
-
         /// <summary>
         /// The button that enumerates every placed object into <c>instances.jsonl</c> (PLAN Phase 2).
         /// （將所有已放置物件列舉至 <c>instances.jsonl</c> 的按鈕（PLAN 第二階段）。）
@@ -476,7 +444,7 @@ namespace Carto
                 try
                 {
                     string directory = Utils.IOUtils.CombinePath(Instance.CartoDataPath, "spike");
-                    summary = Instance.NetworkRip.RipNetworks(directory);
+                    summary = Instance.NetworkRip.BeginRip(directory);
                 }
                 catch (System.Exception ex)
                 {
@@ -501,7 +469,7 @@ namespace Carto
         /// <param name="report">The full report.（完整報告。）</param>
         /// <param name="maxLines">How many lines the dialog can hold.（對話框可容納的行數。）</param>
         /// <returns>The trimmed text.（裁減後的文字。）</returns>
-        private static string Fit(string report, int maxLines = 18)
+        internal static string Fit(string report, int maxLines = 18)
         {
             if (string.IsNullOrEmpty(report)) return report;
 
@@ -511,41 +479,6 @@ namespace Carto
             return string.Join("\n", lines, 0, maxLines)
                  + $"\n… {lines.Length - maxLines} more line(s) — full report in Logs/Carto.log";
         }
-
-        /// <summary>
-        /// The button that dumps one curved road edge's composition mesh, raw and deformed
-        /// (PLAN Phase 5, level 2 spike).<br/>
-        /// （傾印一條彎曲道路邊的組成網格，包含原始與變形兩版的按鈕（PLAN 第五階段，第二層驗證）。）
-        /// <br/><br/>
-        /// One edge, not a city: the whole point is that working out how the net shader bends a
-        /// composition mesh costs seconds per attempt instead of a full rip.<br/>
-        /// （僅取一條邊而非整座城市：其用意正是使推導網路著色器彎折組成網格的方式，
-        /// 每次嘗試僅耗費數秒而非一次完整擷取。）
-        /// </summary>
-        [SettingsUISection(GeneralTab, GeneralGeneralGroup)]
-        [SettingsUIButton]
-        [SettingsUIDisableByCondition(typeof(Settings), nameof(IsInGameOrEditor), invert: true)]
-        public bool RipNetworkSpikeButton
-        {
-            set
-            {
-                string summary;
-                try
-                {
-                    string directory = Utils.IOUtils.CombinePath(Instance.CartoDataPath, "spike");
-                    summary = Instance.NetworkRip.RipNetworkSpike(directory);
-                }
-                catch (System.Exception ex)
-                {
-                    Instance.Log.Error(ex.ToString());
-                    summary = $"Network spike failed:\n{ex.Message}";
-                }
-
-                Game.UI.MessageDialog dialog = new("Options.SECTION[Carto.Carto.Mod]", Fit(summary), "Common.OK");
-                Instance.UI.appBindings.ShowMessageDialog(dialog, null);
-            }
-        }
-
         /// <summary>
         /// How many prefabs a mesh rip covers (PLAN Phase 3).
         /// （網格擷取涵蓋的預製模板數量（PLAN 第三階段）。）<br/><br/>

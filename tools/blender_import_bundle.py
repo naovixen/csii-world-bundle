@@ -241,12 +241,15 @@ def resolve_layers(bundle_dir):
         meshes = layers.get("meshes", "meshes/")
         instances = layers.get("instances", "instances.jsonl")
         networks = layers.get("networks", "networks.jsonl")
+        net_meshes = layers.get("networkMeshes", "networks/")
     else:
-        meshes, instances, networks = "meshes/", "instances.jsonl", "networks.jsonl"
+        meshes, instances = "meshes/", "instances.jsonl"
+        networks, net_meshes = "networks.jsonl", "networks/"
 
     return (os.path.join(bundle_dir, meshes),
             os.path.join(bundle_dir, instances),
-            os.path.join(bundle_dir, networks))
+            os.path.join(bundle_dir, networks),
+            os.path.join(bundle_dir, net_meshes))
 
 
 # -- networks, contract §5 ------------------------------------------------------------------
@@ -331,7 +334,37 @@ def ribbon(centerline, width, lift, mitre_limit=4.0):
     return verts, faces
 
 
-def build_networks(networks_path, categories, collection, lift=0.05):
+def place_network_mesh(record, mesh_dir, collection):
+    """Import <assetId>.glb and place it by the record's pos/rot, contract §2.2.
+
+    Unlike a prefab mesh, a network mesh is unique to its segment, so it is imported once and
+    used once — no collection instancing to set up.
+    """
+    path = os.path.join(mesh_dir, record["assetId"] + ".glb")
+    if not os.path.isfile(path):
+        return False
+
+    before = set(bpy.data.objects)
+    try:
+        bpy.ops.import_scene.gltf(filepath=path)
+    except Exception as exc:                                    # noqa: BLE001 - report and go on
+        print(f"  ! {record['assetId']}: import failed — {exc}")
+        return False
+
+    matrix = instance_matrix(record)
+    for obj in bpy.data.objects:
+        if obj in before:
+            continue
+        for existing in list(obj.users_collection):
+            existing.objects.unlink(obj)
+        collection.objects.link(obj)
+        if obj.parent is None:
+            obj.matrix_world = matrix @ obj.matrix_world
+
+    return True
+
+
+def build_networks(networks_path, categories, collection, net_mesh_dir=None, lift=0.05):
     """Extrude every centerline record into one merged mesh per (category, form).
 
     Merged rather than one object per segment: a city has tens of thousands of edges, and
@@ -344,6 +377,7 @@ def build_networks(networks_path, categories, collection, lift=0.05):
     groups = {}
     counts = {"form": {}, "category": {}}
     mesh_form = 0
+    missing_mesh = 0
     skipped_category = 0
     degenerate = 0
     total = 0
@@ -359,7 +393,17 @@ def build_networks(networks_path, categories, collection, lift=0.05):
             continue
 
         if "centerline" not in record:
+            # Mesh form: the producer assembled real geometry for this segment. It is placed the
+            # same way an instance is, and is unique per segment rather than deduped, so there is
+            # no point caching the collection — link the imported objects straight in.
             mesh_form += 1
+            if net_mesh_dir is not None:
+                placed = place_network_mesh(record, net_mesh_dir, collection)
+                if placed:
+                    counts["form"][form] = counts["form"].get(form, 0) + 1
+                    counts["category"][category] = counts["category"].get(category, 0) + 1
+                else:
+                    missing_mesh += 1
             continue
 
         built = ribbon(record["centerline"], float(record["width"]), lift)
@@ -411,9 +455,11 @@ def build_networks(networks_path, categories, collection, lift=0.05):
     if degenerate:
         print(f"           {degenerate} centerline(s) collapsed to a point")
     if mesh_form:
-        # Not a producer bug — §5 allows it — but this harness cannot check what it cannot draw.
-        print(f"           NOTE: {mesh_form} record(s) use the mesh form, which this harness "
-              f"does not implement; they were not drawn")
+        print(f"           {mesh_form} record(s) use the mesh form")
+    if missing_mesh:
+        # A referenced mesh that is not on disk is a broken reference, not a style choice.
+        print(f"           CONTRACT VIOLATION: {missing_mesh} mesh-form record(s) reference a "
+              f"missing .glb under {net_mesh_dir}")
 
     return sum(counts["category"].values())
 
@@ -575,7 +621,7 @@ def main():
             print(f"unknown option {arg!r}")
             return 2
 
-    mesh_dir, instances_path, networks_path = resolve_layers(bundle_dir)
+    mesh_dir, instances_path, networks_path, net_mesh_dir = resolve_layers(bundle_dir)
     if kinds and not os.path.isfile(instances_path):
         print(f"no instances.jsonl at {instances_path}")
         return 2
@@ -688,7 +734,7 @@ def main():
     if do_networks:
         network_collection = bpy.data.collections.new("bundle_networks")
         bpy.context.scene.collection.children.link(network_collection)
-        networks = build_networks(networks_path, net_categories, network_collection)
+        networks = build_networks(networks_path, net_categories, network_collection, net_mesh_dir)
 
     # Hide the templates from the view layer without unlinking them; instances still resolve.
     layer_child = bpy.context.view_layer.layer_collection.children.get(sources.name)

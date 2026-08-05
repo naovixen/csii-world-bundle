@@ -50,27 +50,64 @@ namespace Carto.IO
         /// <param name="record">The record to write.（待寫出的紀錄。）</param>
         public void Write(NetworkRecord record)
         {
-            double[][] centerline = new double[record.Centerline.Count][];
-            for (int i = 0; i < record.Centerline.Count; i++) centerline[i] = Round(record.Centerline[i]);
-
-            // Key order follows the contract's own example so a hand-read line looks familiar; the
-            // centerline form is `centerline` + `width` and must carry neither `assetId` nor `pos`,
-            // which the schema enforces with a `oneOf`.
-            // （鍵的順序沿用契約自身的範例；中心線形式為 `centerline` 與 `width`，
-            //   且不得帶有 `assetId` 或 `pos`，此點由結構描述的 `oneOf` 強制。）
+            // A record is one geometry form or the other and never both, which the schema enforces
+            // with a `oneOf`: the mesh form carries `assetId` + `pos` + `rot` and no `centerline`;
+            // the centerline form carries `centerline` + `width` and no `assetId`. Branching here
+            // is what keeps that guarantee in one place.
+            // （紀錄只能是其中一種幾何形式，絕不並存，此點由結構描述的 `oneOf` 強制：
+            //   網格形式帶有 `assetId`、`pos` 與 `rot` 而無 `centerline`；
+            //   中心線形式帶有 `centerline` 與 `width` 而無 `assetId`。）
             Dictionary<string, object> line = new()
             {
                 ["id"] = record.Id,
-                ["kind"] = record.Kind,
-                ["centerline"] = centerline,
-                ["width"] = Math.Round((double)record.Width, 3)
+                ["kind"] = record.Kind
             };
+
+            if (!string.IsNullOrEmpty(record.AssetId))
+            {
+                line["assetId"] = record.AssetId;
+                line["pos"] = Round(record.Position);
+                line["rot"] = Round(record.Rotation);
+                MeshForm++;
+            }
+            else
+            {
+                double[][] centerline = new double[record.Centerline.Count][];
+                for (int i = 0; i < record.Centerline.Count; i++) centerline[i] = Round(record.Centerline[i]);
+
+                line["centerline"] = centerline;
+                line["width"] = Math.Round((double)record.Width, 3);
+                CenterlineForm++;
+            }
 
             if ((record.Attributes != null) && (record.Attributes.Count > 0)) line["attrs"] = record.Attributes;
 
             _writer.WriteLine(JsonConvert.SerializeObject(line, Formatting.None));
             Count++;
         }
+
+        /// <summary>
+        /// How many records were written in the mesh form.（以網格形式寫出的紀錄數。）
+        /// </summary>
+        public int MeshForm { get; private set; }
+
+        /// <summary>
+        /// How many records were written in the centerline form.（以中心線形式寫出的紀錄數。）
+        /// </summary>
+        public int CenterlineForm { get; private set; }
+
+        /// <summary>
+        /// Round a rotation, keeping enough precision that it stays a unit quaternion within the
+        /// tolerance a validator checks.<br/>
+        /// （四捨五入旋轉，並保留足夠精度使其在驗證器容差內仍為單位四元數。）
+        /// </summary>
+        private static double[] Round(quaternion value) => new[]
+        {
+            Math.Round((double)value.value.x, 6),
+            Math.Round((double)value.value.y, 6),
+            Math.Round((double)value.value.z, 6),
+            Math.Round((double)value.value.w, 6)
+        };
 
         /// <summary>
         /// Round a position to millimetres, as <see cref="InstanceWriter"/> does.
