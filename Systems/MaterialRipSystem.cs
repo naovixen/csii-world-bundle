@@ -146,19 +146,6 @@ namespace Carto.Systems
             public List<string> TemplateReports = new();
 
             /// <summary>
-            /// Base-colour textures whose alpha channel is a cutout mask, by texture key.
-            /// （其 alpha 通道為鏤空遮罩的基礎色貼圖，以貼圖索引鍵為鍵。）<br/><br/>
-            /// Kept for the whole run because a texture is read once and then shared: the second
-            /// surface to reference it never sees its pixels.<br/>
-            /// （保存於整次工作期間，因為貼圖僅讀取一次即共用：
-            /// 第二個參照它的表面永遠看不到其像素。）
-            /// </summary>
-            public Dictionary<string, bool> Cutout = new();
-
-            /// <summary>How many materials were made cutout by their texture.（因其貼圖而被判定為鏤空的材質數。）</summary>
-            public int CutoutByTexture;
-
-            /// <summary>
             /// Texture references already counted.（已計數的貼圖參照。）<br/><br/>
             /// Locating runs once per map slot, not once per texture, so the buckets have to be
             /// told apart from the slots that led to them — otherwise they report the number of
@@ -434,31 +421,10 @@ namespace Carto.Systems
 
                 material.AlphaMode = AlphaMode(surface, template);
 
-                // A cutoff of zero is not a cutoff: glTF's mask keeps every texel with
-                // alpha >= cutoff, so writing 0 makes the material opaque again by another route.
-                // Left unset it defaults to 0.5, which is what a cutout mask wants.
-                // （門檻為零並非門檻：glTF 的 mask 會保留所有 alpha >= 門檻的紋素，
-                //   故寫入 0 等於換個方式讓材質重新變回不透明。不設定時預設為 0.5，
-                //   而這正是鏤空遮罩所需。）
-                if (surface.TryGetFloatProperty("_AlphaCutoff", out float cutoff) && (cutoff > 0f))
-                    material.AlphaCutoff = cutoff;
-                else if (TryGetTemplateFloat(template, "_AlphaCutoff", out float templateCutoff) && (templateCutoff > 0f))
-                    material.AlphaCutoff = templateCutoff;
+                if (surface.TryGetFloatProperty("_AlphaCutoff", out float cutoff)) material.AlphaCutoff = cutoff;
+                else if (TryGetTemplateFloat(template, "_AlphaCutoff", out float templateCutoff)) material.AlphaCutoff = templateCutoff;
 
                 DescribeTemplate(run, surface, template, material);
-
-                // Last, because it is the least direct evidence and must not override anything
-                // that said so outright — and after DescribeTemplate, which assigns DoubleSided.
-                // （置於最後，因其為最間接的證據，不得覆寫任何已明言者；
-                //   且須在指派 DoubleSided 的 DescribeTemplate 之後。）
-                if ((material.AlphaMode == "opaque")
-                    && run.Cutout.TryGetValue(material.MapKeys[(int)MaterialMap.BaseColor] ?? string.Empty, out bool cutout)
-                    && cutout)
-                {
-                    material.AlphaMode = "mask";
-                    material.DoubleSided = true;
-                    run.CutoutByTexture++;
-                }
 
                 run.Materials[material.MaterialId] = material;
                 return material.MaterialId;
@@ -548,15 +514,6 @@ namespace Carto.Systems
                 else pending = ReadBack(source.Standalone, source.Key, run.TextureSizeCap);
 
                 if (pending == null) return null;
-
-                // The only moment this surface's base-colour pixels exist on this thread. Whether
-                // its alpha is a cutout mask decides the material's alpha mode, and no later stage
-                // can tell — the writer sees bytes, and the next surface to want this texture gets
-                // the key alone.
-                // （此為該表面基礎色像素存在於本執行緒的唯一時刻。其 alpha 是否為鏤空遮罩
-                //   決定了材質的 alpha 模式，而其後任何階段皆無從得知：寫出端只見位元組，
-                //   下一個需要此貼圖的表面則僅取得索引鍵。）
-                if (property == BaseColorMap) run.Cutout[source.Key] = LooksLikeCutout(pending.Pixels);
 
                 run.Enqueue(pending);
                 run.TexturesRead++;
@@ -1370,56 +1327,6 @@ namespace Carto.Systems
         }
 
         /// <summary>
-        /// Whether a base colour's alpha channel is a cutout mask rather than real translucency.
-        /// （某基礎色的 alpha 通道是否為鏤空遮罩，而非真正的半透明。）<br/><br/>
-        /// CS2's foliage does not declare its alpha test anywhere the runtime can be asked. The
-        /// surface sets no keyword, and the material library ships eight templates — all of them
-        /// <c>_SurfaceType 0</c>, <c>_AlphaCutoffEnable 0</c>, <c>_CullMode 2</c> — because the
-        /// clip is compiled into the vegetation shader rather than switched on per material. So
-        /// every tree came back opaque, which draws each leaf card as a solid rectangle and its
-        /// back faces not at all.<br/>
-        /// （CS2 的植被並未於執行階段任何可查詢之處宣告其 alpha 測試。表面不設關鍵字，
-        /// 而材質庫所附的八個模板全部為 <c>_SurfaceType 0</c>、<c>_AlphaCutoffEnable 0</c>、
-        /// <c>_CullMode 2</c>，因為裁切是編譯進植被著色器，而非逐材質開啟。
-        /// 於是每棵樹都回傳不透明，使每張葉片卡被繪成實心矩形，且完全不繪製其背面。）<br/><br/>
-        /// The texture itself is not coy about it. A cutout mask is strongly bimodal — an oak's
-        /// base colour is 55.8% alpha 0 and 35.6% alpha 255, with 8.6% in between — where real
-        /// translucency is smooth and a solid texture has no transparent texels at all. Both
-        /// halves of that test matter: requiring transparent texels rejects opaque art, and
-        /// requiring the histogram to be mostly at the two ends rejects soft-edged glass, which is
-        /// <c>blend</c> and would be ruined by a hard clip.<br/>
-        /// （貼圖本身對此並不含蓄。鏤空遮罩具強烈雙峰性——橡樹的基礎色有 55.8% 為 alpha 0、
-        /// 35.6% 為 alpha 255，其間僅 8.6%——而真正的半透明是平滑的，
-        /// 全不透明的貼圖則根本沒有透明紋素。此測試的兩半皆不可少：
-        /// 要求存在透明紋素可排除不透明美術資源，要求直方圖集中於兩端則可排除邊緣柔和的玻璃，
-        /// 後者屬於 <c>blend</c>，若施以硬裁切將被毀掉。）
-        /// </summary>
-        /// <param name="pixels">Row-major <c>RGBA8</c> pixels.（以列為主的 <c>RGBA8</c> 像素。）</param>
-        /// <returns>Whether it reads as a cutout mask.（其是否可判讀為鏤空遮罩。）</returns>
-        private static bool LooksLikeCutout(byte[] pixels)
-        {
-            if ((pixels == null) || (pixels.Length < 4)) return false;
-
-            long texels = pixels.Length / 4, clear = 0, solid = 0;
-            for (long i = 3; i < pixels.Length; i += 4)
-            {
-                byte alpha = pixels[i];
-                if (alpha == 0) clear++;
-                else if (alpha == 255) solid++;
-            }
-
-            // At least a fiftieth of the image punched out, and at most a quarter of it in the
-            // soft middle. Below the first it is opaque art with a stray texel; above the second
-            // it is a gradient, not a mask.
-            // （至少五十分之一的影像被鏤空，且至多四分之一落於柔和的中間地帶。
-            //   低於前者即為帶有零星紋素的不透明美術資源；高於後者則是漸層而非遮罩。）
-            double clearFraction = clear / (double)texels;
-            double middleFraction = (texels - clear - solid) / (double)texels;
-
-            return (clearFraction >= 0.02) && (middleFraction <= 0.25);
-        }
-
-        /// <summary>
         /// The Unity material a surface is built from, or <c>null</c>.
         /// （表面資產所據以建構的 Unity 材質，若無則為 <c>null</c>。）
         /// </summary>
@@ -1696,9 +1603,6 @@ namespace Carto.Systems
                             + $"{run.TexturesUnbound} with nothing behind them; "
                             + $"{run.TexturesFromMaterial} taken off a live material as a last resort.");
             report.AppendLine($"Surface VT data: {run.SurfaceDataLoads} file(s) opened, {run.SurfaceDataFailures} failed to decode.");
-
-            report.AppendLine($"Cutout by texture: {run.CutoutByTexture} material(s) made mask + double-sided "
-                            + "from a bimodal base-colour alpha channel.");
 
             if (run.TemplateReports.Count > 0)
             {
