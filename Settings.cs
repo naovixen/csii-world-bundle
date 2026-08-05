@@ -462,6 +462,91 @@ namespace Carto
         }
 
         /// <summary>
+        /// The button that writes every network edge into <c>networks.jsonl</c> (PLAN Phase 5).
+        /// （將所有路網邊寫出至 <c>networks.jsonl</c> 的按鈕（PLAN 第五階段）。）
+        /// </summary>
+        [SettingsUISection(GeneralTab, GeneralGeneralGroup)]
+        [SettingsUIButton]
+        [SettingsUIDisableByCondition(typeof(Settings), nameof(IsInGameOrEditor), invert: true)]
+        public bool RipNetworksButton
+        {
+            set
+            {
+                string summary;
+                try
+                {
+                    string directory = Utils.IOUtils.CombinePath(Instance.CartoDataPath, "spike");
+                    summary = Instance.NetworkRip.RipNetworks(directory);
+                }
+                catch (System.Exception ex)
+                {
+                    Instance.Log.Error(ex.ToString());
+                    summary = $"Network rip failed:\n{ex.Message}";
+                }
+
+                Game.UI.MessageDialog dialog = new("Options.SECTION[Carto.Carto.Mod]", Fit(summary), "Common.OK");
+                Instance.UI.appBindings.ShowMessageDialog(dialog, null);
+            }
+        }
+
+        /// <summary>
+        /// Trim a report to what a message dialog can show without pushing its button off screen.
+        /// （將報告裁減至訊息對話框可顯示的長度，以免其按鈕被推出畫面之外。）<br/><br/>
+        /// The dialog does not scroll, so a long report hides the only way to dismiss it. The full
+        /// text always reaches <c>Logs/Carto.log</c> either way, which is where anything longer
+        /// than a glance belongs.<br/>
+        /// （對話框不會捲動，故過長的報告會遮蔽唯一的關閉方式。完整內容一律會寫入
+        /// <c>Logs/Carto.log</c>。）
+        /// </summary>
+        /// <param name="report">The full report.（完整報告。）</param>
+        /// <param name="maxLines">How many lines the dialog can hold.（對話框可容納的行數。）</param>
+        /// <returns>The trimmed text.（裁減後的文字。）</returns>
+        private static string Fit(string report, int maxLines = 18)
+        {
+            if (string.IsNullOrEmpty(report)) return report;
+
+            string[] lines = report.Replace("\r\n", "\n").Split('\n');
+            if (lines.Length <= maxLines) return report;
+
+            return string.Join("\n", lines, 0, maxLines)
+                 + $"\n… {lines.Length - maxLines} more line(s) — full report in Logs/Carto.log";
+        }
+
+        /// <summary>
+        /// The button that dumps one curved road edge's composition mesh, raw and deformed
+        /// (PLAN Phase 5, level 2 spike).<br/>
+        /// （傾印一條彎曲道路邊的組成網格，包含原始與變形兩版的按鈕（PLAN 第五階段，第二層驗證）。）
+        /// <br/><br/>
+        /// One edge, not a city: the whole point is that working out how the net shader bends a
+        /// composition mesh costs seconds per attempt instead of a full rip.<br/>
+        /// （僅取一條邊而非整座城市：其用意正是使推導網路著色器彎折組成網格的方式，
+        /// 每次嘗試僅耗費數秒而非一次完整擷取。）
+        /// </summary>
+        [SettingsUISection(GeneralTab, GeneralGeneralGroup)]
+        [SettingsUIButton]
+        [SettingsUIDisableByCondition(typeof(Settings), nameof(IsInGameOrEditor), invert: true)]
+        public bool RipNetworkSpikeButton
+        {
+            set
+            {
+                string summary;
+                try
+                {
+                    string directory = Utils.IOUtils.CombinePath(Instance.CartoDataPath, "spike");
+                    summary = Instance.NetworkRip.RipNetworkSpike(directory);
+                }
+                catch (System.Exception ex)
+                {
+                    Instance.Log.Error(ex.ToString());
+                    summary = $"Network spike failed:\n{ex.Message}";
+                }
+
+                Game.UI.MessageDialog dialog = new("Options.SECTION[Carto.Carto.Mod]", Fit(summary), "Common.OK");
+                Instance.UI.appBindings.ShowMessageDialog(dialog, null);
+            }
+        }
+
+        /// <summary>
         /// How many prefabs a mesh rip covers (PLAN Phase 3).
         /// （網格擷取涵蓋的預製模板數量（PLAN 第三階段）。）<br/><br/>
         /// A dense city references a few thousand distinct prefabs and a single full-detail building

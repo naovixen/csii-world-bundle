@@ -49,6 +49,7 @@ namespace Carto
             //   但世界卸載時中止的擷取必須於 OnDestroy 中釋放。）
             updateSystem.UpdateAt<MaterialRipSystem>(SystemUpdatePhase.MainLoop);
             updateSystem.UpdateBefore<NetworkSystem>(SystemUpdatePhase.GameSimulation);
+            updateSystem.UpdateBefore<NetworkRipSystem>(SystemUpdatePhase.GameSimulation);
             updateSystem.UpdateBefore<POISystem>(SystemUpdatePhase.GameSimulation);
             updateSystem.UpdateBefore<RasterSystem>(SystemUpdatePhase.GameSimulation);
             updateSystem.UpdateBefore<RouteSystem>(SystemUpdatePhase.GameSimulation);

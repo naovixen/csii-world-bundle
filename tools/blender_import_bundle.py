@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
-"""Reconstruct a CS2 World Bundle in Blender — the PLAN Phase 3 and 4 acceptance harness.
+"""Reconstruct a CS2 World Bundle in Blender — the PLAN Phase 3, 4 and 5 acceptance harness.
 
 This is a *test* tool, not a product. The repo's job is to produce a correct bundle; turning
 one into a scene is a consumer's job and explicitly out of scope (see CLAUDE.md). This script
 exists only to answer the acceptance questions by eye: does `instances.jsonl` + `meshes/`
-actually reconstruct the city (Phase 3), and do the buildings come out textured (Phase 4)? It
-reads nothing but the documented contract, which is also what makes it a useful check — if it
-needs inside knowledge of the mod, the contract is wrong.
+actually reconstruct the city (Phase 3), do the buildings come out textured (Phase 4), and do
+the roads reconstruct with elevated and tunnel runs told apart (Phase 5)? It reads nothing but
+the documented contract, which is also what makes it a useful check — if it needs inside
+knowledge of the mod, the contract is wrong.
 
 Nothing here wires materials up by hand, and that is the point. Contract §6 has each `.glb`
 reference its textures by relative path into `textures/`, so Blender's stock glTF importer
@@ -16,9 +17,15 @@ resolves them on its own; if the buildings arrive grey, the bundle is at fault, 
 
 Options (after the `--`):
     --kinds building,tree,prop   which instance kinds to place        (default: building)
+                                 `--kinds none` places no instances at all
     --limit N                    stop after N instances               (default: 20000)
+    --assets a,b,c               only place instances whose assetId contains one of these
+                                 (case-insensitive substring), e.g. --assets pillar
     --center X Z --radius R      only place within R metres of a point, bundle-frame metres
     --center auto --radius R     centre on the densest part of the selected kinds instead
+    --networks                   also extrude networks.jsonl          (Phase 5)
+    --net-categories a,b,c       which network categories to extrude, or `all`
+                                 (default: road,highway,train,tram,subway,pathway,taxiway,runway)
     --keep-existing              don't wipe the scene first
     --save out.blend             write a .blend and exit, so the import is paid for once
 
@@ -29,6 +36,9 @@ Examples:
     # a dense neighbourhood with its trees and props, wherever the city actually is
     blender --python tools/blender_import_bundle.py -- "…/spike" \\
         --kinds building,tree,prop --center auto --radius 300
+
+    # the Phase 5 check: the road network alone, coloured by form
+    blender --python tools/blender_import_bundle.py -- "…/spike" --kinds none --networks
 
 The map origin is not the city. A save's buildings can sit kilometres off (0,0), so a radius
 around a guessed point mostly finds empty ground — which looks exactly like a broken import.
@@ -230,10 +240,182 @@ def resolve_layers(bundle_dir):
             layers = json.load(handle).get("layers", {})
         meshes = layers.get("meshes", "meshes/")
         instances = layers.get("instances", "instances.jsonl")
+        networks = layers.get("networks", "networks.jsonl")
     else:
-        meshes, instances = "meshes/", "instances.jsonl"
+        meshes, instances, networks = "meshes/", "instances.jsonl", "networks.jsonl"
 
-    return os.path.join(bundle_dir, meshes), os.path.join(bundle_dir, instances)
+    return (os.path.join(bundle_dir, meshes),
+            os.path.join(bundle_dir, instances),
+            os.path.join(bundle_dir, networks))
+
+
+# -- networks, contract §5 ------------------------------------------------------------------
+#
+# A network record carries geometry in exactly one of two forms, and §5 is explicit that a
+# consumer must implement both. Only the centerline form is implemented here, because that is
+# the only one the Carto ripper emits (§5.1) — a mesh-form record is counted and reported
+# rather than silently dropped, so the day a producer starts emitting them this says so.
+
+# Colour by `form`, which is the whole Phase 5 acceptance question: an elevated run and a
+# tunnel have to be distinguishable without opening the JSON.
+_FORM_COLOURS = {
+    "normal": (0.22, 0.22, 0.24, 1.0),
+    "elevated": (0.20, 0.45, 0.85, 1.0),
+    "tunnel": (0.85, 0.30, 0.20, 1.0),
+    "bridge": (0.85, 0.70, 0.20, 1.0),
+}
+
+_DRIVABLE = ("road", "highway", "train", "tram", "subway", "pathway", "taxiway", "runway")
+
+
+def _segment_normals(clean):
+    """The left-hand horizontal unit normal of each segment of a polyline."""
+    normals = []
+    for a, b in zip(clean, clean[1:]):
+        direction = Vector((b.x - a.x, b.y - a.y, 0.0))
+        if direction.length < 1e-6:
+            direction = Vector((1.0, 0.0, 0.0))
+        direction.normalize()
+        normals.append(Vector((-direction.y, direction.x, 0.0)))
+    return normals
+
+
+def ribbon(centerline, width, lift, mitre_limit=4.0):
+    """Extrude a centerline into a flat ribbon, in Blender coordinates.
+
+    Contract §5: `width` is the *total* width, extruded symmetrically about the line. The
+    offset is taken in the horizontal plane only — a banked road is not a thing CS2 builds, and
+    a horizontal offset keeps a steep ramp's surface the right width in plan.
+
+    Corners are properly mitred: the offset at a bend is pushed out by 1/cos(θ/2) so the ribbon
+    keeps its full width *across* the turn instead of pinching to width·cos(θ/2). Taking the
+    average normal alone is the easy version and is visibly wrong exactly where roads matter —
+    at the junction ends the producer's centerlines run into. The limit caps a hairpin, where
+    the exact mitre goes to infinity.
+    """
+    points = [bundle_to_blender_point(p) for p in centerline]
+
+    # Duplicate points would give a zero-length direction and a NaN normal.
+    clean = [points[0]]
+    for point in points[1:]:
+        if (point - clean[-1]).length > 1e-4:
+            clean.append(point)
+    if len(clean) < 2:
+        return None
+
+    half = width / 2.0
+    normals = _segment_normals(clean)
+
+    verts, faces = [], []
+    for i, point in enumerate(clean):
+        before = normals[max(i - 1, 0)]
+        after = normals[min(i, len(normals) - 1)]
+
+        bisector = before + after
+        if bisector.length < 1e-6:
+            # A perfect reversal has no bisector; there is no sane mitre, so butt it.
+            offset = after * half
+        else:
+            bisector.normalize()
+            scale = min(1.0 / max(bisector.dot(after), 1e-3), mitre_limit)
+            offset = bisector * (half * scale)
+
+        lifted = Vector((point.x, point.y, point.z + lift))
+        verts.append(lifted - offset)
+        verts.append(lifted + offset)
+
+    for i in range(len(clean) - 1):
+        a = 2 * i
+        faces.append((a, a + 1, a + 3, a + 2))
+
+    return verts, faces
+
+
+def build_networks(networks_path, categories, collection, lift=0.05):
+    """Extrude every centerline record into one merged mesh per (category, form).
+
+    Merged rather than one object per segment: a city has tens of thousands of edges, and
+    Blender's depsgraph is the thing that struggles with object count, not with polygons.
+    """
+    if not os.path.isfile(networks_path):
+        print(f"no networks.jsonl at {networks_path} — skipping networks")
+        return 0
+
+    groups = {}
+    counts = {"form": {}, "category": {}}
+    mesh_form = 0
+    skipped_category = 0
+    degenerate = 0
+    total = 0
+
+    for record in read_jsonl(networks_path):
+        total += 1
+        attrs = record.get("attrs", {})
+        category = attrs.get("category", "other")
+        form = attrs.get("form", "normal")
+
+        if categories is not None and category not in categories:
+            skipped_category += 1
+            continue
+
+        if "centerline" not in record:
+            mesh_form += 1
+            continue
+
+        built = ribbon(record["centerline"], float(record["width"]), lift)
+        if built is None:
+            degenerate += 1
+            continue
+
+        verts, faces = built
+        key = (category, form)
+        if key not in groups:
+            groups[key] = ([], [])
+        all_verts, all_faces = groups[key]
+        base = len(all_verts)
+        all_verts.extend(verts)
+        all_faces.extend(tuple(index + base for index in face) for face in faces)
+
+        counts["form"][form] = counts["form"].get(form, 0) + 1
+        counts["category"][category] = counts["category"].get(category, 0) + 1
+
+    placed = 0
+    for (category, form), (verts, faces) in sorted(groups.items()):
+        mesh = bpy.data.meshes.new(f"net_{category}_{form}")
+        mesh.from_pydata([tuple(v) for v in verts], [], faces)
+        mesh.update()
+
+        material = bpy.data.materials.new(f"net_{form}")
+        material.diffuse_color = _FORM_COLOURS.get(form, (0.5, 0.5, 0.5, 1.0))
+        # New materials already carry a node tree; setting `use_nodes` is deprecated in 5.x.
+        tree = getattr(material, "node_tree", None)
+        principled = tree.nodes.get("Principled BSDF") if tree is not None else None
+        if principled is not None:
+            principled.inputs["Base Color"].default_value = material.diffuse_color
+            principled.inputs["Roughness"].default_value = 0.9
+        mesh.materials.append(material)
+
+        obj = bpy.data.objects.new(f"net_{category}_{form}", mesh)
+        collection.objects.link(obj)
+        placed += len(faces)
+
+    print()
+    print(f"networks:  {total} record(s) read, {sum(counts['category'].values())} extruded "
+          f"into {len(groups)} mesh(es), {placed} quad(s)")
+    for form, count in sorted(counts["form"].items()):
+        print(f"           form {form}: {count}")
+    for category, count in sorted(counts["category"].items()):
+        print(f"           category {category}: {count}")
+    if skipped_category:
+        print(f"           {skipped_category} skipped by --net-categories")
+    if degenerate:
+        print(f"           {degenerate} centerline(s) collapsed to a point")
+    if mesh_form:
+        # Not a producer bug — §5 allows it — but this harness cannot check what it cannot draw.
+        print(f"           NOTE: {mesh_form} record(s) use the mesh form, which this harness "
+              f"does not implement; they were not drawn")
+
+    return sum(counts["category"].values())
 
 
 # -- scene building -------------------------------------------------------------------------
@@ -295,7 +477,17 @@ def aim_viewports(collection):
     if not objects:
         return
 
-    points = [o.matrix_world.translation for o in objects]
+    # Instances are empties, so their origin *is* their position. A network ribbon is one big
+    # mesh whose vertices are already world-space, so its origin sits at (0,0,0) and aiming at
+    # that would point the camera at the map corner. Use the bounding box where there is one.
+    points = []
+    for obj in objects:
+        if obj.type == "MESH" and len(obj.data.vertices):
+            points.extend(obj.matrix_world @ Vector(corner) for corner in obj.bound_box)
+        else:
+            points.append(obj.matrix_world.translation)
+    if not points:
+        return
     centre = Vector((sum(p.x for p in points) / len(points),
                      sum(p.y for p in points) / len(points),
                      sum(p.z for p in points) / len(points)))
@@ -337,15 +529,31 @@ def main():
     radius = None
     keep = False
     save_path = None
+    do_networks = False
+    net_categories = set(_DRIVABLE)
+    assets = None
 
     i = 1
     while i < len(argv):
         arg = argv[i]
         if arg == "--kinds":
             kinds = {k.strip() for k in argv[i + 1].split(",") if k.strip()}
+            if kinds == {"none"}:
+                kinds = set()
+            i += 2
+        elif arg == "--networks":
+            do_networks = True
+            i += 1
+        elif arg == "--net-categories":
+            do_networks = True
+            value = argv[i + 1].strip()
+            net_categories = None if value == "all" else {c.strip() for c in value.split(",") if c.strip()}
             i += 2
         elif arg == "--limit":
             limit = int(argv[i + 1])
+            i += 2
+        elif arg == "--assets":
+            assets = [a.strip().lower() for a in argv[i + 1].split(",") if a.strip()]
             i += 2
         elif arg == "--center":
             if argv[i + 1] == "auto":
@@ -367,33 +575,42 @@ def main():
             print(f"unknown option {arg!r}")
             return 2
 
-    mesh_dir, instances_path = resolve_layers(bundle_dir)
-    if not os.path.isfile(instances_path):
+    mesh_dir, instances_path, networks_path = resolve_layers(bundle_dir)
+    if kinds and not os.path.isfile(instances_path):
         print(f"no instances.jsonl at {instances_path}")
         return 2
 
     declared_gaps = read_declared_gaps(bundle_dir)
     print(f"bundle:    {bundle_dir}")
     print(f"meshes:    {mesh_dir}")
-    print(f"kinds:     {sorted(kinds)}   limit: {limit}")
+    print(f"kinds:     {sorted(kinds) or 'none'}   limit: {limit}")
+    if assets is not None:
+        print(f"assets:    matching {assets}")
+    if do_networks:
+        print(f"networks:  {networks_path}")
+        print(f"           categories: {'all' if net_categories is None else sorted(net_categories)}")
 
     # Always survey before placing. Knowing where the selection is turns "nothing appeared" from
     # a mystery into an arithmetic error the user can see.
-    where = survey(instances_path, kinds)
-    if where is None:
+    where = survey(instances_path, kinds) if kinds else None
+    if kinds and where is None:
         print(f"no instances of kinds {sorted(kinds)} in this bundle")
         return 2
 
-    min_x, max_x, min_z, max_z = where["bounds"]
-    print(f"selected:  {where['count']} instance(s)")
-    print(f"           X {min_x:.0f} .. {max_x:.0f}   Z {min_z:.0f} .. {max_z:.0f}")
-    print(f"           centroid X {where['centroid'][0]:.0f} Z {where['centroid'][1]:.0f}"
-          f"   densest 250 m cell X {where['densest'][0]:.0f} Z {where['densest'][1]:.0f}"
-          f" ({where['densest_count']} there)")
+    if where is not None:
+        min_x, max_x, min_z, max_z = where["bounds"]
+        print(f"selected:  {where['count']} instance(s)")
+        print(f"           X {min_x:.0f} .. {max_x:.0f}   Z {min_z:.0f} .. {max_z:.0f}")
+        print(f"           centroid X {where['centroid'][0]:.0f} Z {where['centroid'][1]:.0f}"
+              f"   densest 250 m cell X {where['densest'][0]:.0f} Z {where['densest'][1]:.0f}"
+              f" ({where['densest_count']} there)")
 
-    if center == "auto":
-        center = where["densest"]
-        print(f"           --center auto resolved to X {center[0]:.0f} Z {center[1]:.0f}")
+        if center == "auto":
+            center = where["densest"]
+            print(f"           --center auto resolved to X {center[0]:.0f} Z {center[1]:.0f}")
+    elif center == "auto":
+        print("--center auto needs instances to survey; drop it or add --kinds")
+        return 2
 
     if radius is not None:
         if center is None:
@@ -418,16 +635,26 @@ def main():
     placed = 0
     skipped_kind = 0
     skipped_region = 0
+    skipped_asset = 0
     missing = {}
     started = time.time()
 
-    for record in read_jsonl(instances_path):
+    for record in (read_jsonl(instances_path) if kinds else ()):
         if placed >= limit:
             break
 
         if record.get("kind") not in kinds:
             skipped_kind += 1
             continue
+
+        # Substring rather than exact match: a family like the elevated-road supports spans
+        # Vertical_Pillar, Pillar_Top_16, Horizontal_Pillar_12 …, and `--assets pillar` should
+        # bring the whole family without having to enumerate it.
+        if assets is not None:
+            lowered = record["assetId"].lower()
+            if not any(a in lowered for a in assets):
+                skipped_asset += 1
+                continue
 
         pos = record["pos"]
         if radius is not None and center is not None:
@@ -457,6 +684,12 @@ def main():
         if placed % 500 == 0:
             print(f"  … {placed} placed, {len(prefabs)} prefabs loaded")
 
+    networks = 0
+    if do_networks:
+        network_collection = bpy.data.collections.new("bundle_networks")
+        bpy.context.scene.collection.children.link(network_collection)
+        networks = build_networks(networks_path, net_categories, network_collection)
+
     # Hide the templates from the view layer without unlinking them; instances still resolve.
     layer_child = bpy.context.view_layer.layer_collection.children.get(sources.name)
     if layer_child is not None:
@@ -464,16 +697,20 @@ def main():
 
     show_materials()
 
-    aim_viewports(placed_collection)
+    # Aim at whatever there is to look at. With `--kinds none --networks` the instance
+    # collection is empty, and aiming at an empty collection leaves the viewport at the origin
+    # — which is where a city almost never is.
+    aim_viewports(placed_collection if placed else
+                  (network_collection if networks else placed_collection))
 
     elapsed = time.time() - started
     print()
     print(f"placed {placed} instance(s) from {len(prefabs)} prefab(s) in {elapsed:.1f} s")
-    print(f"skipped: {skipped_kind} by kind, {skipped_region} outside the region")
+    print(f"skipped: {skipped_kind} by kind, {skipped_asset} by --assets, {skipped_region} outside the region")
 
     # An empty-looking scene is nearly always the region filter, not the bundle. Say so, with the
     # coordinates that would have worked.
-    if radius is not None and placed < where["count"] / 20:
+    if radius is not None and where is not None and placed < where["count"] / 20:
         print(f"NOTE: the region kept {placed} of {where['count']} selected instance(s). "
               f"The densest 250 m cell is at X {where['densest'][0]:.0f} Z {where['densest'][1]:.0f} — "
               f"try --center auto, a larger --radius, or drop both.")

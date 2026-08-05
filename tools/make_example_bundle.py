@@ -290,7 +290,7 @@ def build(out_dir: Path) -> None:
             "attrs": {
                 "name": "Example Road",
                 "asset": "Medium Road",
-                "category": "Medium",
+                "category": "road",
                 "form": "normal",
                 "lanes": 4,
                 "direction": "twoway",

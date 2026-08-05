@@ -270,7 +270,8 @@ so they are generally unique rather than deduped.
 ```jsonc
 { "id": 2001, "kind": "segment",
   "centerline": [[100,12,-360], [140,12,-360], [180,12.2,-360]], "width": 16.0,
-  "attrs": { "form": "normal", "lanes": 4, "direction": "twoway", "limit": 50.0, … } }
+  "attrs": { "category": "road", "form": "normal", "lanes": 4,
+             "direction": "twoway", "limit": 50.0, … } }
 ```
 
 `centerline` is a world-space polyline from start node to end node, already tessellated by the
@@ -283,6 +284,41 @@ Network `attrs`: `name`, `asset`, `category`, `form` (`normal|elevated|tunnel|br
 consumer needs to decide bridges, tunnels and terrain cutting), `lanes`, `direction`
 (`oneway|twoway|unknown`), `limit` (km/h), `length` (m), `width` (m), `elevation` (m above
 terrain, negative below).
+
+### 5.1 What this producer emits, and why
+
+The schema stays as frozen; this section records which of its options the Carto ripper takes,
+so a consumer knows what to expect from a real bundle without reading the mod.
+
+**Centerline form, always.** CS2 has no per-segment road mesh to rip. It stores one straight
+mesh per *composition* — a cross-section extruded over a unit length — and bends it along the
+edge in the **vertex shader**, from the eight `CompositionMatrix` values the renderer writes per
+instance. The mesh on its own is a straight strip at the origin, and baking the bend means
+reimplementing an HLSL vertex program. What the game *does* compute CPU-side is the road
+surface's own boundary — `EdgeGeometry` holds the world-space left and right bezier of the
+painted surface — so the centerline written here is the exact average of those two curves,
+tessellated to 3 m (straight runs collapse to two points). The mesh form remains valid in the
+schema for a producer that has real meshes; this one does not pretend to.
+
+**No `kind: "node"` records, and so no `startNode` / `endNode`.** CS2 keeps no junction geometry
+on the node. The flare where an edge meets an intersection is stored on the *edge*, and a
+junction is the union of the segment ends meeting in it. Every segment's centerline already runs
+node-to-node, so the junction area is covered; a node record would either duplicate that or
+invent geometry the game does not have.
+
+**`form` is never `bridge`.** CS2 elevates a road and lets the terrain and water underneath
+decide what that reads as. An elevated segment over water is a bridge, which a consumer decides
+by sampling the water raster (§8) — the producer does not guess.
+
+**`category`** is one of `road`, `highway`, `train`, `tram`, `subway`, `pathway`, `waterway`,
+`taxiway`, `runway`, `pipe`, `cable`, `fence`, `other`, read off the composition's own
+components. A consumer that only wants drivable surfaces filters on it: pipes and cables are in
+the file because they are real placed networks, not because anything expects them to be
+extruded as ribbons.
+
+**Markers are excluded**, on the same grounds as in §4: network markers are the invisible
+anchors for pipe and cable junctions, plus airport airspace. Taxiways carry the marker component
+and *are* drawn, so they are the one exception.
 
 ---
 
