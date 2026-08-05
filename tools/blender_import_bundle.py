@@ -218,63 +218,6 @@ def show_materials():
                 space.shading.type = "MATERIAL"
 
 
-def enable_cutouts():
-    """Turn base-colour alpha into a cutout wherever the texture carries one.
-
-    CS2 foliage is alpha-cut leaf cards, but nothing in the game says so anywhere the rip can
-    read it: the surface sets no keyword, and all eight material templates report
-    _SurfaceType 0, _AlphaCutoffEnable 0, _CullMode 2 -- including VegRoot, which is what trees
-    use. The clip is compiled into the foliage shader rather than switched on per material. So
-    the bundle honestly records `opaque`, glTF says OPAQUE, and Blender then discards the alpha
-    channel and draws each leaf card as a solid rectangle with its back face culled.
-
-    The texture is not coy about it though, and it is right here. A material whose base colour
-    has real transparency is treated as a cutout: the image's alpha is wired to the shader and
-    both faces are drawn. Doing it here costs nothing and is instantly re-runnable, where doing
-    it in the rip meant scanning every texture on the main thread during a run that already
-    takes a quarter of an hour.
-
-    This is a harness convenience, not a contract change -- the bundle still says opaque, and a
-    consumer that wants cutouts would have to make the same decision for itself.
-    """
-    changed = 0
-    named = []
-    for material in bpy.data.materials:
-        tree = getattr(material, "node_tree", None)
-        if tree is None:
-            continue
-
-        principled = next((n for n in tree.nodes if n.type == "BSDF_PRINCIPLED"), None)
-        if principled is None:
-            continue
-
-        base = principled.inputs.get("Base Color")
-        alpha = principled.inputs.get("Alpha")
-        if (base is None) or (alpha is None) or not base.is_linked or alpha.is_linked:
-            continue
-
-        image_node = base.links[0].from_node
-        image = getattr(image_node, "image", None)
-        if (image is None) or not image.alpha_mode or image.depth not in (32, 64):
-            continue
-
-        tree.links.new(image_node.outputs["Alpha"], alpha)
-
-        # Blender 4.2 replaced blend_method with surface_render_method for EEVEE Next, and
-        # older builds have only the former, so set whichever exists.
-        if hasattr(material, "blend_method"):
-            material.blend_method = "CLIP"
-        if hasattr(material, "surface_render_method"):
-            material.surface_render_method = "DITHERED"
-        material.use_backface_culling = False
-        changed += 1
-        if len(named) < 6:
-            named.append(material.name)
-
-    if changed:
-        print(f"cutout: wired base-colour alpha on {changed} material(s), e.g. {', '.join(named)}")
-
-
 def resolve_layers(bundle_dir):
     """Read layer paths from bundle.json, falling back to the conventional layout.
 
@@ -520,7 +463,6 @@ def main():
         layer_child.exclude = True
 
     show_materials()
-    enable_cutouts()
 
     aim_viewports(placed_collection)
 
