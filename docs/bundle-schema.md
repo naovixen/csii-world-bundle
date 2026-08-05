@@ -313,12 +313,42 @@ a sidewalk with a parking bay has its kerb on one side only.
 on the node: the flare where an edge meets an intersection is stored on the *edge*, and each
 segment mesh carries its own half of every junction it touches.
 
-**Known defect: junction corners are not filled.** An earlier version of this section claimed a
-junction is the union of the segment ends meeting in it. That is measurably false. Each flare
-spans only its own road's width, kerb to kerb, so the *corner fillet* between two roads meeting
-at an angle lies outside every flare and is covered by none of them. Measured on a three-way
-junction: coverage is 100% at 2 m from the node and again from 6 m out, with a ~40 degree wedge
-missing at 4 m. A consumer will see a hole at each junction corner until this is fixed.
+**Junctions are closed by a producer-built fill, not by CS2's own geometry.** An earlier version of
+this section claimed a junction is the union of the segment ends meeting in it. That is measurably
+false. Across a full city, **1,607 of 1,817 road junctions have every flare ending more than a
+metre short of the node**, and 316 more than four metres; other network types are the other way
+round, 77% of them reaching within a metre. The gap is a property of carriageways, and it is what
+a consumer saw as a hole at every junction.
+
+The producer closes it. Each flare presents a chord at its node end, from its left outer boundary
+to its right outer one — kerb to kerb. Those chords, taken in bearing order around the node, bound
+exactly the area no flare covers: the middle of the junction and the corner fillets between
+adjacent roads. That polygon is triangulated from a hub at the node position, once per junction,
+and carried in the `.glb` of the connected segment with the lowest id. Height and material come
+from the composition's own median surface piece. Measured with a point-in-triangle coverage test
+on a three-way highway junction, this takes ring coverage from 86–93% with a 60-degree missing
+sector to **100% at every radius from 1 m to the end of the flares**.
+
+A second, smaller defect is fixed the same way: at an intersection node the inner curve of the
+outer half and the inner curve of the inner half are **not the same curve** — measured lengths
+11.67 m and 8.05 m on one junction, against 10.01 m and 10.01 m at an ordinary node on the same
+road, and 17,111 of 19,445 intersection nodes city-wide against **0 of 32,473 ordinary ones**. The
+wedge between them is bridged, bounded to the composition's own width so that genuinely diverging
+carriageways are not paved over.
+
+**This is a reconstruction, not a reproduction of CS2.** A node feeds the vertex shader three
+curves beyond its four boundaries — `m_Middle` in composition matrix 4 and two side-connection
+curves in 6 and 7, where an edge has `identity` in all four — but which vertices ride which matrix
+is decided in the shader, and CS2 ships shaders compiled inside asset bundles. That mapping is not
+recoverable the way `CalculateNodeParameters` itself was. Every vertex of the fill is a point on a
+boundary curve the game computed, so nothing is invented; but a consumer should expect the
+junction surface to be flat where CS2 may have shaped it.
+
+Ruled out by measurement: `m_MiddleRadius` (zero), the intersection piece (an ordinary 4 m slot),
+and `NetCompositionArea` (read only by the tools' snapping, so it places buildings rather than
+drawing anything). Vertex sync was previously recorded here as ruled out — "offsets equal targets"
+— and that was wrong: it was measured on an ordinary node, where they are equal. At an
+intersection node the right-hand four columns move by up to 1.7 m. It remains unimplemented.
 
 **Network meshes are not deduped.** Every segment is bent onto its own curve, so each `.glb` is
 unique. Expect roughly one file per edge, of the order of tens of kilobytes each. The mesh's
@@ -413,6 +443,12 @@ keyed by `materialId`.
 Every map is optional; a consumer substitutes its own default for anything absent. Material
 objects are **closed** — an unknown field is an error, so a consumer never quietly drops a map
 it should have handled.
+
+The table is bundle-wide and **accumulates**. Meshes and networks are ripped by separate passes,
+each resolving the materials of what it touches, and a later pass merges into the file rather
+than replacing it — a network rip must not strip out the buildings' entries, since every glTF
+material name in the bundle has to remain a key here (§6). Where two passes produce the same
+`materialId`, the later one wins.
 
 ### 7.1 Channel semantics — read this before wiring a shader
 
