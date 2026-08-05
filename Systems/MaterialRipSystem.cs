@@ -139,6 +139,12 @@ namespace Carto.Systems
             /// <summary>How many surface-data recoveries have been described in the log.（已於記錄中描述的表面資料救回數。）</summary>
             public int SurfaceDataReports;
 
+            /// <summary>Material templates already described.（已描述過的材質模板。）</summary>
+            public HashSet<string> Templates = new();
+
+            /// <summary>What was read off each distinct template.（自各相異模板所讀取的內容。）</summary>
+            public List<string> TemplateReports = new();
+
             /// <summary>
             /// Texture references already counted.（已計數的貼圖參照。）<br/><br/>
             /// Locating runs once per map slot, not once per texture, so the buckets have to be
@@ -406,10 +412,19 @@ namespace Carto.Systems
                 if (surface.TryGetColorProperty("_EmissiveColor", out Color emissive))
                     material.EmissiveFactor = new Unity.Mathematics.float3(emissive.r, emissive.g, emissive.b);
 
-                material.AlphaMode = AlphaMode(surface);
-                if (surface.TryGetFloatProperty("_AlphaCutoff", out float cutoff)) material.AlphaCutoff = cutoff;
+                // The template is fetched once and consulted by everything that follows: it is the
+                // authority on how the surface is actually drawn, and three separate questions
+                // below were previously answered without asking it.
+                // （模板僅取得一次，供其後所有判斷使用：它才是該表面實際如何繪製的權威，
+                //   而以下三個問題先前皆未曾詢問它。）
+                Material template = TemplateMaterial(surface);
 
-                DescribeTemplate(surface, material);
+                material.AlphaMode = AlphaMode(surface, template);
+
+                if (surface.TryGetFloatProperty("_AlphaCutoff", out float cutoff)) material.AlphaCutoff = cutoff;
+                else if (TryGetTemplateFloat(template, "_AlphaCutoff", out float templateCutoff)) material.AlphaCutoff = templateCutoff;
+
+                DescribeTemplate(run, surface, template, material);
 
                 run.Materials[material.MaterialId] = material;
                 return material.MaterialId;
@@ -1312,12 +1327,151 @@ namespace Carto.Systems
         }
 
         /// <summary>
-        /// Read the transparency mode out of the surface's shader keywords.
-        /// （自表面資產的著色器關鍵字讀出透明模式。）
+        /// The Unity material a surface is built from, or <c>null</c>.
+        /// （表面資產所據以建構的 Unity 材質，若無則為 <c>null</c>。）
         /// </summary>
         /// <param name="surface">The surface asset.（表面資產。）</param>
+        /// <returns>The template material.（模板材質。）</returns>
+        private static Material TemplateMaterial(SurfaceAsset surface)
+        {
+            try { return surface.GetTemplateMaterial(); }
+            catch (Exception ex)
+            {
+                _log.Verbose($"No material template for `{surface.name}`: {ex.Message}");
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// Read a float off a template material, without asking for one it does not have.
+        /// （自模板材質讀取浮點數，且不索取其所無者。）<br/><br/>
+        /// <c>Material.GetFloat</c> on an absent property logs an error per call, which at one call
+        /// per surface per property is thousands of lines of nothing.<br/>
+        /// （對不存在的屬性呼叫 <c>Material.GetFloat</c> 每次都會記錄一則錯誤，
+        /// 而以每表面每屬性一次的頻率計，將是數千行毫無內容的訊息。）
+        /// </summary>
+        /// <param name="template">The template material, possibly <c>null</c>.（模板材質，可能為 <c>null</c>。）</param>
+        /// <param name="property">The property name.（屬性名稱。）</param>
+        /// <param name="value">The value read.（讀取到的值。）</param>
+        /// <returns>Whether the property was there.（該屬性是否存在。）</returns>
+        private static bool TryGetTemplateFloat(Material template, string property, out float value)
+        {
+            value = 0f;
+            if (template == null) return false;
+
+            try
+            {
+                if (!template.HasProperty(property)) return false;
+                value = template.GetFloat(property);
+                return true;
+            }
+            catch (Exception)
+            {
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Whether a template material has a float property set to something other than zero.
+        /// （模板材質的某浮點屬性是否為非零值。）
+        /// </summary>
+        /// <param name="template">The template material.（模板材質。）</param>
+        /// <param name="property">The property name.（屬性名稱。）</param>
+        /// <returns>Whether it is on.（其是否開啟。）</returns>
+        private static bool TemplateFlag(Material template, string property)
+            => TryGetTemplateFloat(template, property, out float value) && (value > 0.5f);
+
+        /// <summary>
+        /// Whether a shader keyword is on, tolerating a template that cannot be asked.
+        /// （某著色器關鍵字是否開啟，並容忍無法被詢問的模板。）
+        /// </summary>
+        /// <param name="template">The template material.（模板材質。）</param>
+        /// <param name="keyword">The keyword.（關鍵字。）</param>
+        /// <returns>Whether it is enabled.（其是否啟用。）</returns>
+        private static bool IsKeywordOn(Material template, string keyword)
+        {
+            if (template == null) return false;
+            try { return template.IsKeywordEnabled(keyword); }
+            catch (Exception) { return false; }
+        }
+
+        /// <summary>
+        /// Whether a template draws both faces because it culls neither.
+        /// （模板是否因不剔除任何面而繪製雙面。）<br/><br/>
+        /// <c>UnityEngine.Rendering.CullMode.Off</c> is 0, so a zero here means both faces are
+        /// drawn — the same thing <c>_DoubleSidedEnable</c> says, by a different route, and some
+        /// templates set only one of the two.<br/>
+        /// （<c>UnityEngine.Rendering.CullMode.Off</c> 為 0，故此處為零即代表兩面皆繪製
+        /// ——與 <c>_DoubleSidedEnable</c> 所述相同，只是途徑不同，
+        /// 而有些模板僅設定其中之一。）
+        /// </summary>
+        /// <param name="template">The template material.（模板材質。）</param>
+        /// <returns>Whether culling is off.（是否關閉剔除。）</returns>
+        private static bool IsCullingOff(Material template)
+            => TryGetTemplateFloat(template, "_CullMode", out float mode) && (mode < 0.5f);
+
+        /// <summary>
+        /// Describe each distinct material template once, the first few times it is seen.
+        /// （對每個相異的材質模板各描述一次，僅記錄最初數個。）<br/><br/>
+        /// Alpha mode and face mode are now read from the template's render state rather than
+        /// guessed from its name, and neither is visible in the bundle when it comes out wrong —
+        /// an opaque leaf card is a well-formed material that happens to render as a box. Naming
+        /// the templates and what was read off each turns "the trees look odd" into a line that
+        /// can be checked against the game.<br/>
+        /// （alpha 模式與面向模式現已自模板的算繪狀態讀取，而非自其名稱臆測，
+        /// 且兩者出錯時皆無法從束中看出——不透明的葉片卡是一個格式良好、
+        /// 只是算繪成方塊的材質。列出模板名稱及自各模板所讀取的內容，
+        /// 可將「樹看起來怪怪的」化為一行能與遊戲對照查核的紀錄。）
+        /// </summary>
+        /// <param name="run">The run in progress.（進行中的工作。）</param>
+        /// <param name="name">The template's name.（模板名稱。）</param>
+        /// <param name="template">The template material.（模板材質。）</param>
+        /// <param name="material">The material being built.（正在建構的材質。）</param>
+        private static void DescribeTemplateOnce(MaterialRun run, string name, Material template, MaterialAsset material)
+        {
+            string key = string.IsNullOrEmpty(name) ? "<unnamed>" : name;
+            if (!run.Templates.Add(key) || (run.Templates.Count > 24)) return;
+
+            run.TemplateReports.Add($"  {key}: alpha={material.AlphaMode} doubleSided={material.DoubleSided}"
+                                  + $" surfaceType={Describe(template, "_SurfaceType")}"
+                                  + $" alphaCutoffEnable={Describe(template, "_AlphaCutoffEnable")}"
+                                  + $" cullMode={Describe(template, "_CullMode")}"
+                                  + $" alphaTest={IsKeywordOn(template, "_ALPHATEST_ON")}");
+        }
+
+        /// <summary>
+        /// A template float as text, or why it could not be had.
+        /// （以文字表示的模板浮點數，或無法取得的原因。）
+        /// </summary>
+        /// <param name="template">The template material.（模板材質。）</param>
+        /// <param name="property">The property name.（屬性名稱。）</param>
+        /// <returns>The value, or a placeholder.（其值，或佔位符。）</returns>
+        private static string Describe(Material template, string property)
+            => TryGetTemplateFloat(template, property, out float value) ? value.ToString("0.##") : "-";
+
+        /// <summary>
+        /// Work out how a surface handles transparency.（判定表面資產如何處理透明度。）<br/><br/>
+        /// The surface's own keyword set is asked first, but it only describes what the surface
+        /// <i>overrides</i>. CS2's cutout and vegetation templates carry the alpha test in the
+        /// template material itself, so a tree's surface sets no keyword at all and used to come
+        /// back opaque — which turns every leaf card into a solid rectangle, because the cutout
+        /// lives in the base colour's alpha channel and an opaque material throws that away. An
+        /// oak exported this way is 6,175 triangles of canopy that renders as a box.<br/>
+        /// （表面自身的關鍵字集合會先被詢問，但它僅描述該表面所<i>覆寫</i>者。
+        /// CS2 的鏤空與植被模板將 alpha 測試置於模板材質本身，因此樹木的表面完全不設關鍵字，
+        /// 過去便回傳不透明——這會使每張葉片卡變成實心矩形，因為鏤空資訊位於基礎色的 alpha 通道，
+        /// 而不透明材質會將其丟棄。如此輸出的橡樹是 6,175 個三角形的樹冠，算繪出來卻是一個方塊。）<br/><br/>
+        /// So the template is asked too, by render state rather than by name: HDRP spells this out
+        /// in <c>_SurfaceType</c>, <c>_AlphaCutoffEnable</c>, the <c>_ALPHATEST_ON</c> keyword and
+        /// the <c>RenderType</c> tag, none of which depend on how the template was christened.<br/>
+        /// （因此亦會詢問模板，且依算繪狀態而非名稱：HDRP 以 <c>_SurfaceType</c>、
+        /// <c>_AlphaCutoffEnable</c>、<c>_ALPHATEST_ON</c> 關鍵字與 <c>RenderType</c> 標籤明載此事，
+        /// 這些皆不取決於模板的命名。）
+        /// </summary>
+        /// <param name="surface">The surface asset.（表面資產。）</param>
+        /// <param name="template">Its template material, possibly <c>null</c>.（其模板材質，可能為 <c>null</c>。）</param>
         /// <returns>The contract's alpha mode.（契約所定義的 alpha 模式。）</returns>
-        private static string AlphaMode(SurfaceAsset surface)
+        private static string AlphaMode(SurfaceAsset surface, Material template)
         {
             try
             {
@@ -1326,9 +1480,26 @@ namespace Carto.Systems
             }
             catch (Exception)
             {
-                // A surface whose keywords did not load says nothing about transparency, and
-                // opaque is the contract's default.（關鍵字未載入的表面對透明度未置一詞，
-                // 而契約的預設值即為不透明。）
+                // A surface whose keywords did not load says nothing about transparency; the
+                // template may still.（關鍵字未載入的表面對透明度未置一詞，但模板仍可能有話要說。）
+            }
+
+            if (template == null) return "opaque";
+
+            try
+            {
+                // _SurfaceType is 0 for opaque and 1 for transparent.
+                // （_SurfaceType 為 0 表示不透明，1 表示透明。）
+                if (TemplateFlag(template, "_SurfaceType")) return "blend";
+
+                if (template.IsKeywordEnabled("_ALPHATEST_ON")) return "mask";
+                if (TemplateFlag(template, "_AlphaCutoffEnable")) return "mask";
+                if (template.GetTag("RenderType", false) == "TransparentCutout") return "mask";
+            }
+            catch (Exception)
+            {
+                // An unreadable template is no worse than the absent one handled above.
+                // （無法讀取的模板，並不比上方已處理的「不存在」情形更糟。）
             }
 
             return "opaque";
@@ -1346,25 +1517,34 @@ namespace Carto.Systems
         /// 以及此表面意圖為何的地方。契約的旗標僅為消費端可忽略的提示，
         /// 因此只輸出確實能自模板名稱判讀的訊號：錯誤的提示比缺少提示更糟。）
         /// </summary>
+        /// <param name="run">The run in progress.（進行中的工作。）</param>
         /// <param name="surface">The surface asset.（表面資產。）</param>
+        /// <param name="template">The template material, possibly <c>null</c>.（模板材質，可能為 <c>null</c>。）</param>
         /// <param name="material">The material being built.（正在建構的材質。）</param>
-        private static void DescribeTemplate(SurfaceAsset surface, MaterialAsset material)
+        private static void DescribeTemplate(MaterialRun run, SurfaceAsset surface, Material template, MaterialAsset material)
         {
-            string template;
-            try
-            {
-                template = surface.GetTemplateMaterial()?.name;
-            }
-            catch (Exception ex)
-            {
-                _log.Verbose($"No material template for `{surface.name}`: {ex.Message}");
-                return;
-            }
+            // Back faces are a render state, not a naming convention. The name is still consulted,
+            // because CS2's own templates are candid about it — `defaultCutoutDoubleSided`,
+            // `defaultTransparentDoubleSided` — but a template that draws both faces without
+            // saying so in its name used to be reported as single-sided, which culls half of every
+            // leaf card and every piece of cloth.
+            // （繪製背面與否是算繪狀態，而非命名慣例。名稱仍會被參考，
+            //   因為 CS2 自身的模板對此相當坦白；但若某模板繪製雙面卻未於名稱中言明，
+            //   過去便會被回報為單面，而這會剔除每張葉片卡與每塊布料的一半。）
+            material.DoubleSided = TemplateFlag(template, "_DoubleSidedEnable")
+                                || IsKeywordOn(template, "_DOUBLESIDED_ON")
+                                || IsCullingOff(template);
 
-            if (string.IsNullOrEmpty(template)) return;
+            string name;
+            try { name = template?.name; }
+            catch (Exception) { name = null; }
 
-            string name = template.ToLowerInvariant();
-            material.DoubleSided = name.Contains("doublesided");
+            DescribeTemplateOnce(run, name, template, material);
+
+            if (string.IsNullOrEmpty(name)) return;
+
+            name = name.ToLowerInvariant();
+            material.DoubleSided |= name.Contains("doublesided");
 
             if (name.Contains("vegetation") || name.Contains("grass") || name.Contains("leaves") || name.Contains("branches"))
                 material.Flags.Add("foliage");
@@ -1423,6 +1603,12 @@ namespace Carto.Systems
                             + $"{run.TexturesUnbound} with nothing behind them; "
                             + $"{run.TexturesFromMaterial} taken off a live material as a last resort.");
             report.AppendLine($"Surface VT data: {run.SurfaceDataLoads} file(s) opened, {run.SurfaceDataFailures} failed to decode.");
+
+            if (run.TemplateReports.Count > 0)
+            {
+                report.AppendLine($"Material templates ({run.Templates.Count} distinct):");
+                foreach (string line in run.TemplateReports) report.AppendLine(line);
+            }
 
             if (run.Skipped.Count > 0)
             {
