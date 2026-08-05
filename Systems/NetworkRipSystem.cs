@@ -139,7 +139,7 @@ namespace Carto.Systems
             public Dictionary<string, int> ByCategory = new();
             public Dictionary<string, int> ByForm = new();
             public System.Diagnostics.Stopwatch Clock = System.Diagnostics.Stopwatch.StartNew();
-            public int SkippedMarker, SkippedNoWidth, SkippedDegenerate;
+            public int SkippedMarker, SkippedNoWidth, SkippedDegenerate, SkippedStale;
             public int Points, Triangles;
             public long Bytes;
         }
@@ -267,6 +267,23 @@ namespace Carto.Systems
         private void RipOne(NetworkRun run, Entity entity)
         {
                 {
+                    // The work list is captured once and then worked through over many frames, so
+                    // the world moves underneath it: the simulation deletes and rebuilds net
+                    // entities as it runs, and an edge captured at the start may be gone by the
+                    // time its turn comes. Nothing in ECS makes a stale Entity safe to ask about —
+                    // it faults inside EntityComponentStore rather than answering false — so the
+                    // liveness check has to come first.
+                    // （工作清單只擷取一次，卻分散於多幀處理，故世界會在其下改變：
+                    //   模擬執行期間會刪除並重建路網實體，開始時擷取的邊，輪到它時可能已不存在。
+                    //   ECS 中沒有任何機制能讓失效的 Entity 可安全查詢——
+                    //   它會在 EntityComponentStore 內部發生錯誤而非回傳 false——
+                    //   故存活檢查必須置於最前。）
+                    if (!EntityManager.Exists(entity))
+                    {
+                        run.SkippedStale++;
+                        return;
+                    }
+
                     Composition composition = EntityManager.GetComponentData<Composition>(entity);
                     Entity edgeComposition = composition.m_Edge;
                     bool isTaxiway = (edgeComposition != Entity.Null)
@@ -382,6 +399,7 @@ namespace Carto.Systems
             if (run.SkippedMarker > 0) report.AppendLine($"Skipped {run.SkippedMarker} marker network(s)");
             if (run.SkippedNoWidth > 0) report.AppendLine($"Skipped {run.SkippedNoWidth} edge(s) with no usable width");
             if (run.SkippedDegenerate > 0) report.AppendLine($"Skipped {run.SkippedDegenerate} edge(s) whose centerline collapsed to a point");
+            if (run.SkippedStale > 0) report.AppendLine($"Skipped {run.SkippedStale} edge(s) the simulation removed mid-rip");
             report.AppendLine($"Output: {run.OutputDirectory}");
 
             _log.Info(report.ToString());
@@ -557,7 +575,18 @@ namespace Carto.Systems
                 foreach (float3 v in source.Vertices) { minZ = math.min(minZ, v.z); maxZ = math.max(maxZ, v.z); }
                 float tileLength = math.max(maxZ - minZ, 1e-3f);
 
-                int tiles = math.max(1, (int)math.round(edgeLength / tileLength));
+                // A piece flagged `DisableTiling` is a one-off — an end cap or a transition, not a
+                // repeating section — so tiling it fills the whole run with stacked copies of a
+                // cap. Measured on a real city: one elevated road came out at 393,235 triangles,
+                // 388,000 of which were three "Ending" pieces repeated down its length, where an
+                // ordinary drive piece costs 768. Half of a 1.4 GiB network layer sat in 2% of its
+                // files for this reason.
+                // （標記 `DisableTiling` 的部件是一次性的——端蓋或轉換段，而非可重複的區段——
+                //   故將其鋪排會使整段路填滿層疊的端蓋副本。實測於真實城市：
+                //   一條高架道路產生 393,235 個三角形，其中 388,000 個來自沿其長度重複的三個
+                //   「Ending」部件，而一般車道部件僅需 768 個。）
+                bool tiled = (piece.m_PieceFlags & NetPieceFlags.DisableTiling) == 0;
+                int tiles = tiled ? math.max(1, (int)math.round(edgeLength / tileLength)) : 1;
 
                 // A piece authored at a different width than the slot it fills is scaled across,
                 // which is how one shoulder mesh serves several road widths.

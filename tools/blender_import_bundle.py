@@ -24,6 +24,7 @@ Options (after the `--`):
     --center X Z --radius R      only place within R metres of a point, bundle-frame metres
     --center auto --radius R     centre on the densest part of the selected kinds instead
     --networks                   also extrude networks.jsonl          (Phase 5)
+    --net-limit N                stop after N network records — the fast way to look
     --net-categories a,b,c       which network categories to extrude, or `all`
                                  (default: road,highway,train,tram,subway,pathway,taxiway,runway)
     --keep-existing              don't wipe the scene first
@@ -364,7 +365,8 @@ def place_network_mesh(record, mesh_dir, collection):
     return True
 
 
-def build_networks(networks_path, categories, collection, net_mesh_dir=None, lift=0.05):
+def build_networks(networks_path, categories, collection, net_mesh_dir=None, lift=0.05,
+                   center=None, radius=None, limit=None):
     """Extrude every centerline record into one merged mesh per (category, form).
 
     Merged rather than one object per segment: a city has tens of thousands of edges, and
@@ -379,6 +381,9 @@ def build_networks(networks_path, categories, collection, net_mesh_dir=None, lif
     mesh_form = 0
     missing_mesh = 0
     skipped_category = 0
+    skipped_region = 0
+    skipped_limit = 0
+    placed_records = 0
     degenerate = 0
     total = 0
 
@@ -391,6 +396,21 @@ def build_networks(networks_path, categories, collection, net_mesh_dir=None, lif
         if categories is not None and category not in categories:
             skipped_category += 1
             continue
+
+        # Importing a network mesh costs a fixed ~100 ms per file whatever its size, so a whole
+        # city is a quarter of an hour of overhead. Both filters exist to make looking at one
+        # neighbourhood cheap enough to do repeatedly.
+        if radius is not None and center is not None:
+            where = record["pos"] if "pos" in record else record.get("centerline", [[0, 0, 0]])[0]
+            if math.hypot(where[0] - center[0], where[2] - center[1]) > radius:
+                skipped_region += 1
+                continue
+
+        if limit is not None and placed_records >= limit:
+            skipped_limit += 1
+            continue
+
+        placed_records += 1
 
         if "centerline" not in record:
             # Mesh form: the producer assembled real geometry for this segment. It is placed the
@@ -452,6 +472,10 @@ def build_networks(networks_path, categories, collection, net_mesh_dir=None, lif
         print(f"           category {category}: {count}")
     if skipped_category:
         print(f"           {skipped_category} skipped by --net-categories")
+    if skipped_region:
+        print(f"           {skipped_region} skipped outside the region")
+    if skipped_limit:
+        print(f"           {skipped_limit} skipped by --net-limit")
     if degenerate:
         print(f"           {degenerate} centerline(s) collapsed to a point")
     if mesh_form:
@@ -577,6 +601,7 @@ def main():
     save_path = None
     do_networks = False
     net_categories = set(_DRIVABLE)
+    net_limit = None
     assets = None
 
     i = 1
@@ -590,6 +615,10 @@ def main():
         elif arg == "--networks":
             do_networks = True
             i += 1
+        elif arg == "--net-limit":
+            do_networks = True
+            net_limit = int(argv[i + 1])
+            i += 2
         elif arg == "--net-categories":
             do_networks = True
             value = argv[i + 1].strip()
@@ -734,7 +763,9 @@ def main():
     if do_networks:
         network_collection = bpy.data.collections.new("bundle_networks")
         bpy.context.scene.collection.children.link(network_collection)
-        networks = build_networks(networks_path, net_categories, network_collection, net_mesh_dir)
+        networks = build_networks(networks_path, net_categories, network_collection,
+                                  net_mesh_dir, center=center, radius=radius,
+                                  limit=net_limit)
 
     # Hide the templates from the view layer without unlinking them; instances still resolve.
     layer_child = bpy.context.view_layer.layer_collection.children.get(sources.name)
