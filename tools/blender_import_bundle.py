@@ -443,6 +443,36 @@ def build_networks(networks_path, categories, collection, net_mesh_dir=None, lif
         counts["form"][form] = counts["form"].get(form, 0) + 1
         counts["category"][category] = counts["category"].get(category, 0) + 1
 
+    # Blender suffixes a duplicate material name on every import, so 7,380 segments sharing
+    # ~170 cross-section pieces produce ~91,000 datablocks that are all the same handful of
+    # materials. Collapse them back onto the first of each name: same look, a fraction of the
+    # memory, and a .blend that opens.
+    if net_mesh_dir is not None:
+        canonical = {}
+        merged = 0
+        for mat in list(bpy.data.materials):
+            base = mat.name.rsplit(".", 1)[0] if mat.name.rsplit(".", 1)[-1].isdigit() else mat.name
+            if base not in canonical:
+                canonical[base] = mat
+        for obj in collection.objects:
+            if obj.type != "MESH":
+                continue
+            for slot in obj.material_slots:
+                if slot.material is None:
+                    continue
+                name = slot.material.name
+                base = name.rsplit(".", 1)[0] if name.rsplit(".", 1)[-1].isdigit() else name
+                keep = canonical.get(base)
+                if keep is not None and keep is not slot.material:
+                    slot.material = keep
+                    merged += 1
+        for mat in list(bpy.data.materials):
+            if mat.users == 0:
+                bpy.data.materials.remove(mat)
+        if merged:
+            print(f"           merged {merged} duplicate material slot(s) onto "
+                  f"{len(bpy.data.materials)} material(s)")
+
     placed = 0
     for (category, form), (verts, faces) in sorted(groups.items()):
         mesh = bpy.data.meshes.new(f"net_{category}_{form}")

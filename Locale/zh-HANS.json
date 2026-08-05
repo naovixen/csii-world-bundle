@@ -364,5 +364,7 @@
   "Carto.Common.ERROR[UTMZone]": "{INPUT}：UTM 分区代码应为介于 1 至 60 的整数。",
   "Carto.Common.IGNORE[MissingWorldHeightmap]": "编辑器或存档中没有世界高度图的资讯",
   "Carto.Common.SUCCESS[Ignore]": "因为{REASON}，忽略了 {NUMBER} 个文件。",
-  "Carto.Common.SUCCESS[Normal]": "成功导出 {NUMBER} 个文件。"
+  "Carto.Common.SUCCESS[Normal]": "成功导出 {NUMBER} 个文件。",
+  "Options.Option.DumpJunctionButton": "转储路口（诊断）",
+  "Options.Description.DumpJunctionButton": "临时诊断：将摄像机下方路口的节点数据写入 Logs/Carto.log。"
 }

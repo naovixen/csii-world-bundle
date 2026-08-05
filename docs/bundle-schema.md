@@ -311,8 +311,14 @@ a sidewalk with a parking bay has its kerb on one side only.
 
 **No `kind: "node"` records, and so no `startNode` / `endNode`.** CS2 keeps no junction geometry
 on the node: the flare where an edge meets an intersection is stored on the *edge*, and each
-segment mesh already carries its own half of every junction it touches. A node record would
-either duplicate that or invent geometry the game does not have.
+segment mesh carries its own half of every junction it touches.
+
+**Known defect: junction corners are not filled.** An earlier version of this section claimed a
+junction is the union of the segment ends meeting in it. That is measurably false. Each flare
+spans only its own road's width, kerb to kerb, so the *corner fillet* between two roads meeting
+at an angle lies outside every flare and is covered by none of them. Measured on a three-way
+junction: coverage is 100% at 2 m from the node and again from 6 m out, with a ~40 degree wedge
+missing at 4 m. A consumer will see a hole at each junction corner until this is fixed.
 
 **Network meshes are not deduped.** Every segment is bent onto its own curve, so each `.glb` is
 unique. Expect roughly one file per edge, of the order of tens of kilobytes each. The mesh's

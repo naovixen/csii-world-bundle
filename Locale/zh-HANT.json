@@ -364,5 +364,7 @@
   "Carto.Common.ERROR[UTMZone]": "{INPUT}：UTM 分區編號應為介於 1 至 60 的整數。",
   "Carto.Common.IGNORE[MissingWorldHeightmap]": "編輯器或存檔中沒有世界高度圖的資訊",
   "Carto.Common.SUCCESS[Ignore]": "因為{REASON}，忽略了 {NUMBER} 個檔案。",
-  "Carto.Common.SUCCESS[Normal]": "成功輸出 {NUMBER} 個檔案。"
+  "Carto.Common.SUCCESS[Normal]": "成功輸出 {NUMBER} 個檔案。",
+  "Options.Option.DumpJunctionButton": "傾印路口（診斷）",
+  "Options.Description.DumpJunctionButton": "暫時性診斷：將攝影機下方路口的節點資料寫入 Logs/Carto.log。"
 }

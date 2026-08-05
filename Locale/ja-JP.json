@@ -364,5 +364,7 @@
   "Carto.Common.ERROR[UTMZone]": "{INPUT}：ゾーンの値は 1 ～ 60 の整数である必要があります。",
   "Carto.Common.IGNORE[MissingWorldHeightmap]": "ワールドの高さマップが存在しないため",
   "Carto.Common.SUCCESS[Ignore]": "{NUMBER} 件のファイルは、{REASON}無視されました。",
-  "Carto.Common.SUCCESS[Normal]": "{NUMBER} 件のファイルが正常にエクスポートされました。"
+  "Carto.Common.SUCCESS[Normal]": "{NUMBER} 件のファイルが正常にエクスポートされました。",
+  "Options.Option.DumpJunctionButton": "Dump Junction (diagnostic)",
+  "Options.Description.DumpJunctionButton": "Temporary diagnostic. Writes the node data for the junction under the camera into Logs/Carto.log. Removed once junctions close."
 }

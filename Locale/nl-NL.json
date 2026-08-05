@@ -364,5 +364,7 @@
   "Carto.Common.ERROR[UTMZone]": "{INPUT}: De zonewaarde moet een geheel getal tussen 1 en 60 zijn.",
   "Carto.Common.IGNORE[MissingWorldHeightmap]": "de wereldhoogtekaart ontbreekt aan de editor/opslagbestand",
   "Carto.Common.SUCCESS[Ignore]": "{NUMBER} bestand(en) werden genegeerd doordat {REASON}.",
-  "Carto.Common.SUCCESS[Normal]": "{NUMBER} bestand(en) succesvol geëxporteerd."
+  "Carto.Common.SUCCESS[Normal]": "{NUMBER} bestand(en) succesvol geëxporteerd.",
+  "Options.Option.DumpJunctionButton": "Dump Junction (diagnostic)",
+  "Options.Description.DumpJunctionButton": "Temporary diagnostic. Writes the node data for the junction under the camera into Logs/Carto.log. Removed once junctions close."
 }

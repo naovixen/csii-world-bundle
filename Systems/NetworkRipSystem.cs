@@ -260,6 +260,306 @@ namespace Carto.Systems
         }
 
         /// <summary>
+        /// Dump everything the game knows about the junction under the camera, so the node's
+        /// middle region can be worked out in seconds instead of a full rip.<br/>
+        /// （傾印遊戲對攝影機下方路口所知的一切，使節點中央區域的推導能以秒計而非付出完整擷取的代價。）
+        /// <br/><br/>
+        /// <b>What is missing, and why this exists.</b> <c>CalculateNodeParameters</c> fills twelve
+        /// slots for a node where an edge leaves eight of them inert. This system uses the four
+        /// boundary curves in <c>CompositionMatrix0..3</c> and ignores the rest: matrices 4–7,
+        /// which build the node's inner rounded region from <c>m_Middle</c>, <c>m_MiddleRadius</c>
+        /// and the boundaries' tangents, and the four <c>CompositionSync</c> vectors, which snap
+        /// designated vertices onto targets so a node's boundary lands exactly on the adjoining
+        /// edge's. Between them those are the hole in the middle of a junction and the seam at its
+        /// connection points.<br/>
+        /// （<b>所缺者為何，以及此功能存在的理由。</b><c>CalculateNodeParameters</c> 為節點填入十二個槽位，
+        /// 而邊使其中八個保持惰性。本系統僅使用 <c>CompositionMatrix0..3</c> 中的四條邊界曲線，
+        /// 其餘一概忽略：矩陣 4 至 7 以 <c>m_Middle</c>、<c>m_MiddleRadius</c> 與邊界的切線
+        /// 建構節點的內側圓弧區域；四個 <c>CompositionSync</c> 向量則將指定頂點吸附至目標，
+        /// 使節點邊界恰好落在相鄰邊之上。兩者合起來，正是路口中央的破洞與其接點的裂縫。）
+        /// </summary>
+        /// <param name="outputDirectory">Unused; kept so the button reads like the others.（未使用，僅為使按鈕形式一致。）</param>
+        /// <returns>A human-readable report.（可供閱讀的報告。）</returns>
+        public string DumpJunction(string outputDirectory)
+        {
+            StringBuilder report = new();
+            float3 focus = default;
+            bool hasFocus = false;
+
+            try
+            {
+                Game.Rendering.IGameCameraController controller = Instance.Camera?.activeCameraController;
+                if (controller != null)
+                {
+                    UnityEngine.Vector3 pivot = controller.pivot;
+                    focus = new float3(pivot.x, pivot.y, pivot.z);
+                    hasFocus = true;
+                }
+            }
+            catch (Exception ex)
+            {
+                _log.Warn($"Could not read the camera pivot: {ex.Message}");
+            }
+
+            NativeArray<Entity> entities = _edgeQuery.ToEntityArray(Allocator.TempJob);
+
+            try
+            {
+                Entity chosen = Entity.Null;
+                float best = float.MaxValue;
+
+                foreach (Entity entity in entities)
+                {
+                    if (!EntityManager.HasComponent<StartNodeGeometry>(entity)) continue;
+
+                    Edge ends = EntityManager.GetComponentData<Edge>(entity);
+                    if (math.max(CountConnections(ends.m_Start), CountConnections(ends.m_End)) < 3) continue;
+
+                    EdgeGeometry geometry = EntityManager.GetComponentData<EdgeGeometry>(entity);
+                    float3 edgeCenter = Colossal.Mathematics.MathUtils.Center(geometry.m_Bounds);
+                    float distance = hasFocus ? math.distance(edgeCenter.xz, focus.xz) : entity.Index;
+
+                    if (distance < best)
+                    {
+                        best = distance;
+                        chosen = entity;
+                    }
+                }
+
+                if (chosen == Entity.Null) return "No junction found.";
+
+                Composition parts = EntityManager.GetComponentData<Composition>(chosen);
+                report.AppendLine($"Edge {chosen.Index} '{Instance.Name.GetPrefabName(EntityManager.GetComponentData<PrefabRef>(chosen).m_Prefab)}', "
+                                + $"{best:F0} m from the camera");
+
+                Edge chosenEnds = EntityManager.GetComponentData<Edge>(chosen);
+
+                DumpNode(report, "START", parts.m_StartNode,
+                         EntityManager.GetComponentData<StartNodeGeometry>(chosen).m_Geometry);
+
+                if (EntityManager.HasComponent<EndNodeGeometry>(chosen))
+                {
+                    DumpNode(report, "END", parts.m_EndNode,
+                             EntityManager.GetComponentData<EndNodeGeometry>(chosen).m_Geometry);
+                }
+
+                // Whichever end is the real intersection is the one worth measuring.
+                // （真正構成路口的那一端，才是值得量測者。）
+                Entity junction = (CountConnections(chosenEnds.m_Start) >= CountConnections(chosenEnds.m_End))
+                    ? chosenEnds.m_Start : chosenEnds.m_End;
+                DumpCoverage(report, junction);
+            }
+            finally
+            {
+                entities.Dispose();
+            }
+
+            _log.Info(report.ToString());
+            return report.ToString();
+        }
+
+        /// <summary>
+        /// Measure whether the flares of every edge meeting at a node actually cover the junction,
+        /// and if not, where the hole is.<br/>
+        /// （量測交會於某節點的各邊擴張部是否確實覆蓋該路口；若否，破洞位於何處。）<br/><br/>
+        /// Three mechanisms have been ruled out by measurement — sync vertices are the identity
+        /// here, <c>m_MiddleRadius</c> is zero, and the intersection piece occupies an ordinary
+        /// 4 m slot — so the remaining question is the one never actually tested: a junction is
+        /// covered by the <i>union</i> of the flares of the three or more edges meeting in it, and
+        /// nothing has checked that the union closes. This samples rings outward from the node and
+        /// reports what fraction of each is within reach of any flare's geometry, which answers
+        /// "is there a hole, how big, and in which direction" with numbers rather than another
+        /// theory.<br/>
+        /// （三項機制已由量測排除，故剩下的問題是從未真正檢驗過的那一項：
+        /// 路口由交會其中的三條以上邊的擴張部之<i>聯集</i>所覆蓋，而從未有人確認該聯集是否閉合。
+        /// 此處自節點向外逐環取樣，回報各環有多少比例落在任一擴張部幾何的可及範圍內。）
+        /// </summary>
+        /// <param name="report">The report to write into.（要寫入的報告。）</param>
+        /// <param name="node">The junction node.（路口節點。）</param>
+        private void DumpCoverage(StringBuilder report, Entity node)
+        {
+            if ((node == Entity.Null) || !EntityManager.HasBuffer<ConnectedEdge>(node)) return;
+            if (!EntityManager.HasComponent<Node>(node)) return;
+
+            float3 centre = EntityManager.GetComponentData<Node>(node).m_Position;
+            DynamicBuffer<ConnectedEdge> connected = EntityManager.GetBuffer<ConnectedEdge>(node, true);
+
+            List<float3> vertices = new();
+            List<float2> uvs = new();
+            List<int> indices = new();
+            List<MeshPrimitive> primitives = new();
+            Dictionary<Entity, MeshAsset> cache = new();
+            int contributing = 0;
+
+            for (int i = 0; i < connected.Length; i++)
+            {
+                Entity edge = connected[i].m_Edge;
+                if ((edge == Entity.Null) || !EntityManager.Exists(edge)) continue;
+                if (!EntityManager.HasComponent<Composition>(edge) || !EntityManager.HasComponent<Edge>(edge)) continue;
+
+                Composition parts = EntityManager.GetComponentData<Composition>(edge);
+                Edge ends = EntityManager.GetComponentData<Edge>(edge);
+                int before = vertices.Count;
+
+                if ((ends.m_Start == node) && EntityManager.HasComponent<StartNodeGeometry>(edge))
+                {
+                    EdgeNodeGeometry g = EntityManager.GetComponentData<StartNodeGeometry>(edge).m_Geometry;
+                    AppendComposition(parts.m_StartNode, g.m_Left, g.m_Right, true, centre,
+                                      "u", cache, vertices, uvs, indices, primitives, null);
+                }
+
+                if ((ends.m_End == node) && EntityManager.HasComponent<EndNodeGeometry>(edge))
+                {
+                    EdgeNodeGeometry g = EntityManager.GetComponentData<EndNodeGeometry>(edge).m_Geometry;
+                    AppendComposition(parts.m_EndNode, g.m_Left, g.m_Right, true, centre,
+                                      "u", cache, vertices, uvs, indices, primitives, null);
+                }
+
+                if (vertices.Count > before)
+                {
+                    contributing++;
+                    report.AppendLine($"  edge {edge.Index} contributed {vertices.Count - before} vertices");
+                }
+            }
+
+            report.AppendLine($"--- COVERAGE at node {node.Index}: {connected.Length} connected edge(s), "
+                            + $"{contributing} contributing, {vertices.Count} vertices");
+
+            if (vertices.Count == 0) return;
+
+            // A sample counts as covered when some flare vertex is within `reach` of it. The
+            // geometry is tessellated at metre scale, so a sample further than that from every
+            // vertex is genuinely outside the assembled surface rather than merely between two
+            // of its vertices.
+            // （當某擴張部頂點位於取樣點的 `reach` 範圍內，即視為已覆蓋。幾何以公尺級細分，
+            //   故距所有頂點皆超過此距離的取樣點，確實位於已組裝表面之外，而非僅落於兩頂點之間。）
+            const float Reach = 2.5f;
+            const int Rays = 36;
+
+            report.AppendLine("  ring   covered   worst gap direction");
+            for (int r = 2; r <= 20; r += 2)
+            {
+                int covered = 0;
+                float worstAngle = -1f;
+
+                for (int a = 0; a < Rays; a++)
+                {
+                    float angle = (a / (float)Rays) * 2f * math.PI;
+                    float2 sample = new(math.sin(angle) * r, math.cos(angle) * r);
+
+                    float nearest = float.MaxValue;
+                    foreach (float3 v in vertices) nearest = math.min(nearest, math.distance(v.xz, sample));
+
+                    if (nearest <= Reach) covered++;
+                    else if (worstAngle < 0f) worstAngle = math.degrees(angle);
+                }
+
+                string direction = (worstAngle < 0f) ? "-" : $"{worstAngle:F0} deg";
+                report.AppendLine($"  {r,3} m   {100f * covered / Rays,5:F0}%   {direction}");
+            }
+        }
+
+        /// <summary>
+        /// Dump one node composition and its geometry.（傾印單一節點組成及其幾何。）
+        /// </summary>
+        /// <param name="report">The report to write into.（要寫入的報告。）</param>
+        /// <param name="label">Which end this is.（此為哪一端。）</param>
+        /// <param name="composition">The node composition entity.（節點組成實體。）</param>
+        /// <param name="node">The node geometry.（節點幾何。）</param>
+        private void DumpNode(StringBuilder report, string label, Entity composition, EdgeNodeGeometry node)
+        {
+            report.AppendLine($"--- {label} node, composition {composition.Index}");
+            report.AppendLine($"  middleRadius {node.m_MiddleRadius:F3}");
+            report.AppendLine($"  middle a {node.m_Middle.a} b {node.m_Middle.b}");
+            report.AppendLine($"         c {node.m_Middle.c} d {node.m_Middle.d}");
+            report.AppendLine($"  left  lengths {node.m_Left.m_Length}  a {node.m_Left.m_Left.a} .. d {node.m_Left.m_Left.d}");
+            report.AppendLine($"  right lengths {node.m_Right.m_Length} a {node.m_Right.m_Left.a} .. d {node.m_Right.m_Left.d}");
+            report.AppendLine($"  syncTargetsLeft  {node.m_SyncVertexTargetsLeft}");
+            report.AppendLine($"  syncTargetsRight {node.m_SyncVertexTargetsRight}");
+
+            if (EntityManager.HasComponent<NetCompositionData>(composition))
+            {
+                NetCompositionData data = EntityManager.GetComponentData<NetCompositionData>(composition);
+                report.AppendLine($"  syncOffsetsLeft  {data.m_SyncVertexOffsetsLeft}");
+                report.AppendLine($"  syncOffsetsRight {data.m_SyncVertexOffsetsRight}");
+                report.AppendLine($"  width {data.m_Width:F3} middleOffset {data.m_MiddleOffset:F3} "
+                                + $"widthOffset {data.m_WidthOffset:F3} nodeOffset {data.m_NodeOffset:F3}");
+                report.AppendLine($"  sideConnectionOffset {data.m_SideConnectionOffset} minLod {data.m_MinLod}");
+                report.AppendLine($"  flags general {data.m_Flags.m_General}");
+                report.AppendLine($"  state {data.m_State}");
+            }
+
+            if (!EntityManager.HasComponent<NetCompositionMeshRef>(composition)) return;
+            Entity meshEntity = EntityManager.GetComponentData<NetCompositionMeshRef>(composition).m_Mesh;
+            if ((meshEntity == Entity.Null) || !EntityManager.HasBuffer<NetCompositionPiece>(meshEntity)) return;
+
+            if (EntityManager.HasComponent<NetCompositionMeshData>(meshEntity))
+            {
+                NetCompositionMeshData mesh = EntityManager.GetComponentData<NetCompositionMeshData>(meshEntity);
+                report.AppendLine($"  meshData indexFactor {mesh.m_IndexFactor:F3} state {mesh.m_State} "
+                                + $"defaultLayers {mesh.m_DefaultLayers} availableLayers {mesh.m_AvailableLayers}");
+            }
+
+            DynamicBuffer<NetCompositionPiece> pieces = EntityManager.GetBuffer<NetCompositionPiece>(meshEntity, true);
+            Dictionary<Entity, MeshAsset> cache = new();
+
+            for (int i = 0; i < pieces.Length; i++)
+            {
+                NetCompositionPiece piece = pieces[i];
+                string name = Instance.Name.GetPrefabName(piece.m_Piece);
+                report.AppendLine($"  [{i}] '{name}' off {piece.m_Offset} "
+                                + $"size {piece.m_Size} sec {piece.m_SectionFlags} pc {piece.m_PieceFlags}");
+
+                if (EntityManager.HasComponent<NetPieceData>(piece.m_Piece))
+                {
+                    NetPieceData data = EntityManager.GetComponentData<NetPieceData>(piece.m_Piece);
+                    report.AppendLine($"        pieceData width {data.m_Width:F3} length {data.m_Length:F3} "
+                                    + $"widthOffset {data.m_WidthOffset:F3} nodeOffset {data.m_NodeOffset:F3} "
+                                    + $"sideConnectionOffset {data.m_SideConnectionOffset:F3}");
+                }
+
+                // The shape itself, which is the question these two "Intersection" pieces raise.
+                // A piece whose slot width is zero can still be a wide mesh — `m_Size.x` is the
+                // slot, not the geometry — and one flagged `AsymmetricMeshZ` varies along its
+                // length, so what its Z means decides whether it lands as a fill or a sliver.
+                // （形狀本身，正是這兩個「Intersection」部件所提出的問題。槽位寬度為零的部件仍可能是
+                //   寬闊的網格——`m_Size.x` 是槽位而非幾何——而標記 `AsymmetricMeshZ` 者沿其長度變化，
+                //   故其 Z 的意義決定了它落地時是填充面還是細條。）
+                if (!cache.TryGetValue(piece.m_Piece, out MeshAsset mesh))
+                {
+                    mesh = Instance.MeshRip.ReadMesh(piece.m_Piece, SanitizeId(name), name);
+                    cache[piece.m_Piece] = mesh;
+                }
+
+                if ((mesh == null) || (mesh.Vertices.Length == 0))
+                {
+                    report.AppendLine("        mesh: would not read");
+                    continue;
+                }
+
+                float3 lo = mesh.Vertices[0], hi = mesh.Vertices[0];
+                foreach (float3 v in mesh.Vertices) { lo = math.min(lo, v); hi = math.max(hi, v); }
+
+                report.AppendLine($"        mesh {mesh.Vertices.Length}v {mesh.TriangleCount}t  "
+                                + $"x [{lo.x:F3}, {hi.x:F3}]  y [{lo.y:F3}, {hi.y:F3}]  z [{lo.z:F3}, {hi.z:F3}]");
+
+                // How many distinct stations the mesh has along each axis. A constant cross-section
+                // swept along Z has two distinct x and many z; a fill patch has many of both, and
+                // that difference is what says which axis is which.
+                // （網格於各軸上有多少相異的取樣位置。沿 Z 掃掠的等斷面有兩個相異的 x 與許多 z；
+                //   填充面則兩者皆多，此差異即可辨明各軸的意義。）
+                HashSet<int> xs = new(), zs = new();
+                foreach (float3 v in mesh.Vertices)
+                {
+                    xs.Add((int)math.round(v.x * 100f));
+                    zs.Add((int)math.round(v.z * 100f));
+                }
+
+                report.AppendLine($"        distinct x {xs.Count}, distinct z {zs.Count}");
+            }
+        }
+
+        /// <summary>
         /// Rip one network edge into the run.（將單一路網邊擷取至該次工作中。）
         /// </summary>
         /// <param name="run">The rip in flight.（進行中的擷取。）</param>
