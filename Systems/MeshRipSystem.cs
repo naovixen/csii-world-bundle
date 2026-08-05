@@ -660,6 +660,19 @@ namespace Carto.Systems
 
             for (int i = 0; i < subMeshes.Length; i++)
             {
+                // An `OutlineOnly` entry is never world geometry. The game clears every layer but
+                // `Outline` for it (`BatchInstanceJob.UpdateObjectInstances` does
+                // `layers &= ~Outline; if (OutlineOnly) layers &= Outline;`), so outside a tool's
+                // selection highlight its layer mask is empty and it draws nothing at all. It is
+                // the silhouette shell a highlight is drawn from, and exporting it buries the real
+                // mesh inside a second copy of itself.
+                // （`OutlineOnly` 條目絕非世界幾何。遊戲會為其清除 `Outline` 以外的所有圖層
+                //   （`BatchInstanceJob.UpdateObjectInstances` 執行
+                //   `layers &= ~Outline; if (OutlineOnly) layers &= Outline;`），
+                //   故在工具的選取高亮之外，其圖層遮罩為空，完全不會繪製。
+                //   它是繪製高亮所用的輪廓外殼，輸出它會使真正的網格埋在自身的第二個複本之中。）
+                if ((subMeshes[i].m_Flags & SubMeshFlags.OutlineOnly) != 0) continue;
+
                 // Unconditional entries are always drawn; conditional ones only when everything
                 // they ask for holds in the exported state.
                 // （無條件的條目一律繪製；有條件者僅在其所要求的一切於輸出狀態下皆成立時繪製。）
@@ -672,7 +685,18 @@ namespace Carto.Systems
             // referenced assetId resolves. Fall back to its first entry.
             // （若預製模板的每個條目皆有條件（部分道具僅以狀態變體存在），將完全不產生檔案，
             //   違背契約中「所有被參照的 assetId 皆可解析」的承諾。此時退回使用其首個條目。）
-            if ((selected.Count == 0) && (subMeshes.Length > 0)) selected.Add(0);
+            // The fallback skips outline shells for the same reason the loop does: falling back to
+            // one would hand the bundle a silhouette in place of the object.
+            // （後備方案基於與迴圈相同的理由略過輪廓外殼：退回使用它會讓束得到輪廓而非物件本身。）
+            if (selected.Count == 0)
+            {
+                for (int i = 0; i < subMeshes.Length; i++)
+                {
+                    if ((subMeshes[i].m_Flags & SubMeshFlags.OutlineOnly) != 0) continue;
+                    selected.Add(i);
+                    break;
+                }
+            }
 
             return selected;
         }

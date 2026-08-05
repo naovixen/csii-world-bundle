@@ -1,4 +1,4 @@
-using Carto.Domain;
+﻿using Carto.Domain;
 using Carto.IO;
 using Carto.Utils;
 using Colossal.Logging;
@@ -53,10 +53,15 @@ namespace Carto.Systems
     /// <c>Game.Net.NodeGeometry</c>，其僅含邊界、高度、平坦度與偏移，全無表面可言；
     /// 邊與路口相接處的擴張形狀存於<i>邊</i>之上。輸出節點紀錄等同憑空捏造遊戲所無的幾何。）<br/><br/>
     /// A node holding no geometry does <i>not</i> make a junction the union of the segment ends
-    /// meeting in it. An earlier version of this comment said it did, and that is measurably false;
-    /// see <see cref="DumpJunction"/> for what is missing and what has been ruled out.<br/>
+    /// meeting in it. An earlier version of this comment said it did, and that is measurably false:
+    /// across a full city, 1,607 of 1,817 road junctions have every flare ending more than a metre
+    /// short of the node. The gap is closed by <see cref="AppendJunctionFan"/> and
+    /// <see cref="AppendMedianFill"/>; what has been ruled out, and what remains a reconstruction
+    /// rather than a reproduction, is recorded in <c>docs/bundle-schema.md</c> §5.1.<br/>
     /// （節點不持有幾何，並不意味著路口即為交會其中的各區段端點之聯集。本註解的舊版曾如此宣稱，
-    /// 而該說法可由量測證否；所缺者為何、已排除者為何，見 <see cref="DumpJunction"/>。）
+    /// 而該說法可由量測證否：全城 1,817 個道路路口中，有 1,607 個的所有擴張部皆止於距節點一公尺以外。
+    /// 此空缺由 <see cref="AppendJunctionFan"/> 與 <see cref="AppendMedianFill"/> 填補；
+    /// 已排除者為何、以及何以仍屬重建而非重現，記於 <c>docs/bundle-schema.md</c> §5.1。）
     /// </summary>
     public partial class NetworkRipSystem : GameSystemBase
     {
@@ -277,6 +282,9 @@ namespace Carto.Systems
                 return "A mesh rip is running. Wait for it to finish — the two share the material table.";
 
             RipProgress.Report(RipProgress.Phase.Scan);
+            // Keyed by the mesh objects in the run's own piece cache, so it has the run's lifetime.
+            // （以該次工作自身部件快取中的網格物件為鍵，故其生命週期與該次工作相同。）
+            m_Tiling.Clear();
             _seamsFilled = 0;
             _seamsSkipped = 0;
             _fansBuilt = 0;
@@ -338,830 +346,6 @@ namespace Carto.Systems
             RipProgress.Report(RipProgress.Phase.Networks, run.Index, run.Edges.Length);
 
             if (run.Index >= run.Edges.Length) Finish(run);
-        }
-
-        /// <summary>
-        /// Dump everything the game knows about the junction under the camera, so the node's
-        /// middle region can be worked out in seconds instead of a full rip.<br/>
-        /// （傾印遊戲對攝影機下方路口所知的一切，使節點中央區域的推導能以秒計而非付出完整擷取的代價。）
-        /// <br/><br/>
-        /// <b>What is missing, and why this exists.</b> This system uses the four boundary curves
-        /// in <c>CompositionMatrix0..3</c> and ignores the rest. For an <i>edge</i> that loses
-        /// nothing: <c>CalculateEdgeParameters</c> writes <c>float4x4.identity</c> into matrices
-        /// 4–7 and they are genuinely inert. For a <i>node</i> they are not. Whatever
-        /// <c>m_MiddleRadius</c> is, <c>CalculateNodeParameters</c> puts <c>m_Middle</c> in matrix
-        /// 4 and a curve built from each outer boundary's start tangent in matrices 6 and 7; only
-        /// matrix 5 goes identity, and only when the radius is zero. So a node has three live
-        /// curves beyond its four boundaries, and the four <c>CompositionSync</c> vectors besides.<br/>
-        /// （<b>所缺者為何，以及此功能存在的理由。</b>本系統僅使用 <c>CompositionMatrix0..3</c>
-        /// 中的四條邊界曲線，其餘一概忽略。對<i>邊</i>而言毫無損失：矩陣 4 至 7 皆為單位矩陣，
-        /// 確為惰性。對<i>節點</i>則不然：無論 <c>m_MiddleRadius</c> 為何，矩陣 4 皆置入
-        /// <c>m_Middle</c>，矩陣 6 與 7 則置入由各外側邊界起始切線所建構的曲線；
-        /// 僅矩陣 5 為單位矩陣，且僅於半徑為零時如此。故節點於四條邊界之外尚有三條實際曲線。）
-        /// </summary>
-        /// <param name="outputDirectory">Unused; kept so the button reads like the others.（未使用，僅為使按鈕形式一致。）</param>
-        /// <returns>A human-readable report.（可供閱讀的報告。）</returns>
-        public string DumpJunction(string outputDirectory)
-        {
-            StringBuilder report = new();
-            float3 focus = default;
-            bool hasFocus = false;
-
-            try
-            {
-                Game.Rendering.IGameCameraController controller = Instance.Camera?.activeCameraController;
-                if (controller != null)
-                {
-                    UnityEngine.Vector3 pivot = controller.pivot;
-                    focus = new float3(pivot.x, pivot.y, pivot.z);
-                    hasFocus = true;
-                }
-            }
-            catch (Exception ex)
-            {
-                _log.Warn($"Could not read the camera pivot: {ex.Message}");
-            }
-
-            NativeArray<Entity> entities = _edgeQuery.ToEntityArray(Allocator.TempJob);
-
-            try
-            {
-                // Nearest junction first, then the widest road at it. Nearest edge picked an
-                // invisible car path at a crossroads; widest edge in range picked a highway 118 m
-                // away and ignored where the camera was pointing. What the camera selects is a
-                // junction; what describes that junction is the widest thing meeting in it.
-                // （先取最近的路口，再取其中最寬的道路。取最近的邊會選中十字路口上的不可見車道；
-                //   取範圍內最寬的邊則會選中 118 公尺外的公路而無視攝影機朝向。
-                //   攝影機所選定者為一個路口，而描述該路口者為交會其中最寬者。）
-                Entity junctionNode = Entity.Null;
-                float nearestJunction = float.MaxValue;
-
-                foreach (Entity entity in entities)
-                {
-                    if (IsMarkerNetwork(entity)) continue;
-
-                    Edge candidateEnds = EntityManager.GetComponentData<Edge>(entity);
-                    foreach (Entity end in new[] { candidateEnds.m_Start, candidateEnds.m_End })
-                    {
-                        if ((end == Entity.Null) || !EntityManager.HasComponent<Node>(end)) continue;
-                        if (CountConnections(end) < 3) continue;
-
-                        float3 position = EntityManager.GetComponentData<Node>(end).m_Position;
-                        float distance = hasFocus ? math.distance(position.xz, focus.xz) : end.Index;
-
-                        if (distance < nearestJunction)
-                        {
-                            nearestJunction = distance;
-                            junctionNode = end;
-                        }
-                    }
-                }
-
-                if (junctionNode == Entity.Null) return "No junction found.";
-
-                Entity chosen = Entity.Null;
-                float best = float.MaxValue;
-                float widest = -1f;
-
-                // Widest in range rather than nearest. Nearest picked an "Invisible Car Path -
-                // 1xTwoway" at a crossroads — a real edge with a real node geometry, 68 vertices
-                // of it, and no drawable surface at all — so the whole dump read 0% at every ring
-                // and said nothing about the junction underneath it. A junction's character comes
-                // from the widest thing meeting in it.
-                // （取範圍內最寬者而非最近者。取最近者曾選中十字路口上的「Invisible Car Path」——
-                //   一條具備真實節點幾何、僅 68 個頂點且完全無可繪製表面的邊——
-                //   使整份傾印於各環皆為 0%，對其下的路口毫無著墨。
-                //   路口的特徵取決於交會其中最寬者。）
-                DynamicBuffer<ConnectedEdge> atJunction = EntityManager.GetBuffer<ConnectedEdge>(junctionNode, true);
-
-                for (int i = 0; i < atJunction.Length; i++)
-                {
-                    Entity entity = atJunction[i].m_Edge;
-                    if ((entity == Entity.Null) || !EntityManager.Exists(entity)) continue;
-                    if (!EntityManager.HasComponent<StartNodeGeometry>(entity)) continue;
-                    if (!EntityManager.HasComponent<Composition>(entity) || IsMarkerNetwork(entity)) continue;
-
-                    EdgeGeometry geometry = EntityManager.GetComponentData<EdgeGeometry>(entity);
-                    float width = GetWidth(EntityManager.GetComponentData<Composition>(entity).m_Edge, entity, geometry);
-                    if (width <= widest) continue;
-
-                    widest = width;
-                    best = nearestJunction;
-                    chosen = entity;
-                }
-
-                if (chosen == Entity.Null) return "No junction found.";
-
-                Composition parts = EntityManager.GetComponentData<Composition>(chosen);
-                report.AppendLine($"Edge {chosen.Index} '{Instance.Name.GetPrefabName(EntityManager.GetComponentData<PrefabRef>(chosen).m_Prefab)}', "
-                                + $"{best:F0} m from the camera");
-
-                Edge chosenEnds = EntityManager.GetComponentData<Edge>(chosen);
-
-                DumpNode(report, "START", parts.m_StartNode,
-                         EntityManager.GetComponentData<StartNodeGeometry>(chosen).m_Geometry);
-
-                if (EntityManager.HasComponent<EndNodeGeometry>(chosen))
-                {
-                    DumpNode(report, "END", parts.m_EndNode,
-                             EntityManager.GetComponentData<EndNodeGeometry>(chosen).m_Geometry);
-                }
-
-                DumpCoverage(report, junctionNode);
-                SurveySeams(report, entities);
-                SurveyStandoff(report, entities);
-            }
-            finally
-            {
-                entities.Dispose();
-            }
-
-            _log.Info(report.ToString());
-            return report.ToString();
-        }
-
-        /// <summary>
-        /// Measure whether the flares of every edge meeting at a node actually cover the junction,
-        /// and if not, where the hole is.<br/>
-        /// （量測交會於某節點的各邊擴張部是否確實覆蓋該路口；若否，破洞位於何處。）<br/><br/>
-        /// Three mechanisms have been ruled out by measurement — sync vertices are the identity
-        /// here, <c>m_MiddleRadius</c> is zero, and the intersection piece occupies an ordinary
-        /// 4 m slot. <c>NetCompositionArea</c> is a fourth: its only readers in the game are the
-        /// net and object tools' snapping, so it places buildings rather than drawing anything.
-        /// This samples rings outward from the node and reports what fraction of each falls inside
-        /// an assembled triangle, which answers "is there a hole, how big, and in which direction"
-        /// with numbers rather than another theory.<br/>
-        /// （三項機制已由量測排除；<c>NetCompositionArea</c> 為第四項：其於遊戲中的唯一使用者
-        /// 為路網與物件工具的吸附功能，故其用於配置建築而非繪製任何幾何。
-        /// 此處自節點向外逐環取樣，回報各環有多少比例落於已組裝的三角形之內。）
-        /// </summary>
-        /// <param name="report">The report to write into.（要寫入的報告。）</param>
-        /// <param name="node">The junction node.（路口節點。）</param>
-        private void DumpCoverage(StringBuilder report, Entity node)
-        {
-            if ((node == Entity.Null) || !EntityManager.HasBuffer<ConnectedEdge>(node)) return;
-            if (!EntityManager.HasComponent<Node>(node)) return;
-
-            float3 centre = EntityManager.GetComponentData<Node>(node).m_Position;
-            DynamicBuffer<ConnectedEdge> connected = EntityManager.GetBuffer<ConnectedEdge>(node, true);
-
-            List<float3> vertices = new();
-            List<float2> uvs = new();
-            List<int> indices = new();
-            List<MeshPrimitive> primitives = new();
-            Dictionary<Entity, MeshAsset> cache = new();
-            List<int3> spans = new();
-            List<Entity> nodeCompositions = new();
-            int contributing = 0;
-
-            for (int i = 0; i < connected.Length; i++)
-            {
-                Entity edge = connected[i].m_Edge;
-                if ((edge == Entity.Null) || !EntityManager.Exists(edge)) continue;
-                if (!EntityManager.HasComponent<Composition>(edge) || !EntityManager.HasComponent<Edge>(edge)) continue;
-
-                Composition parts = EntityManager.GetComponentData<Composition>(edge);
-                Edge ends = EntityManager.GetComponentData<Edge>(edge);
-                int before = vertices.Count;
-                int beforeIndices = indices.Count;
-                nodeCompositions.Add((ends.m_Start == node) ? parts.m_StartNode : parts.m_EndNode);
-
-                if ((ends.m_Start == node) && EntityManager.HasComponent<StartNodeGeometry>(edge))
-                {
-                    EdgeNodeGeometry g = EntityManager.GetComponentData<StartNodeGeometry>(edge).m_Geometry;
-                    AppendComposition(parts.m_StartNode, g.m_Left, g.m_Right, true, centre,
-                                      "u", cache, vertices, uvs, indices, primitives, null);
-                }
-
-                if ((ends.m_End == node) && EntityManager.HasComponent<EndNodeGeometry>(edge))
-                {
-                    EdgeNodeGeometry g = EntityManager.GetComponentData<EndNodeGeometry>(edge).m_Geometry;
-                    AppendComposition(parts.m_EndNode, g.m_Left, g.m_Right, true, centre,
-                                      "u", cache, vertices, uvs, indices, primitives, null);
-                }
-
-                if (vertices.Count > before)
-                {
-                    contributing++;
-                    spans.Add(new int3(edge.Index, beforeIndices, indices.Count));
-
-                    // How far into the junction this edge's flare actually reaches. A flare that
-                    // stops short of the node cannot help cover its middle however wide it is, and
-                    // the union's gap is then nobody's fault in particular — so the nearest and
-                    // furthest its geometry comes to the node is worth having beside the coverage.
-                    // （此邊的擴張部實際深入路口多遠。未及節點的擴張部無論多寬都無助於覆蓋其中央，
-                    //   故其幾何距節點的最近與最遠距離值得與覆蓋率並列。）
-                    float nearest = float.MaxValue, furthest = 0f;
-                    for (int v = before; v < vertices.Count; v++)
-                    {
-                        float radius = math.length(vertices[v].xz);
-                        nearest = math.min(nearest, radius);
-                        furthest = math.max(furthest, radius);
-                    }
-
-                    report.AppendLine($"  edge {edge.Index} contributed {vertices.Count - before} vertices, "
-                                    + $"reaching {nearest:F1} m to {furthest:F1} m from the node");
-                }
-            }
-
-            // The junction fill, measured as its own contributor. The rip adds it in
-            // AssembleNetwork rather than in AppendComposition, so without this the rings would be
-            // measuring an assembly the bundle does not contain.
-            // （路口填補面亦視為獨立的貢獻者。擷取於 AssembleNetwork 而非 AppendComposition 中加入它，
-            //   若無此段，各環所量測者將是束中並不存在的組裝結果。）
-            int beforeFan = indices.Count;
-            foreach (Entity candidate in nodeCompositions)
-            {
-                if (BuildJunctionFan(node, candidate, centre, cache, vertices, uvs, indices, primitives, report)) break;
-            }
-
-            if (indices.Count > beforeFan) spans.Add(new int3(-1, beforeFan, indices.Count));
-
-            report.AppendLine($"--- COVERAGE at node {node.Index} {centre}: {connected.Length} connected edge(s), "
-                            + $"{contributing} contributing, {vertices.Count} vertices, {indices.Count / 3} triangles");
-
-            if (vertices.Count == 0) return;
-
-            // A sample counts as covered when it falls inside an assembled triangle, projected to
-            // the ground plane. The first version of this asked whether some vertex was within
-            // 2.5 m instead, which cannot tell a hole from a coarse surface: a 4 m drive piece
-            // carries vertices only at its two edges, and a flare widens those 4 m to over 5 m at
-            // its far end, so the middle of an intact lane reads as missing. Triangle containment
-            // has no such threshold to tune, and is what "is there a hole" actually means.
-            // （當取樣點投影至地平面後落於某個已組裝三角形內，即視為已覆蓋。
-            //   本測試的初版改問是否有頂點位於 2.5 公尺內，然而該問法無法區分破洞與粗糙的表面：
-            //   4 公尺寬的車道部件僅於兩側帶有頂點，而擴張部會將該 4 公尺於遠端拉寬至逾 5 公尺，
-            //   使完好車道的中央被判為缺失。三角形包含測試沒有需要調校的閾值。）
-            const int Rays = 72;
-
-            // Per edge as well as for the union. A hole in the union is one of two very different
-            // faults: every flare stops short of it, in which case the missing geometry belongs to
-            // all of them and is a shared mechanism; or one flare should reach it and does not, in
-            // which case that edge is the one to look at. The union alone cannot tell those apart,
-            // and guessing which it is has already cost several wrong mechanisms.
-            // （除聯集外亦逐邊統計。聯集中的破洞可能出於兩種截然不同的成因：
-            //   所有擴張部皆未及該處，則所缺幾何為各邊共有，屬普遍機制；
-            //   或某一擴張部本應觸及卻未觸及，則該邊才是應檢視的對象。單看聯集無從分辨兩者。）
-            StringBuilder heading = new("  ring   union");
-            foreach (int3 span in spans) heading.Append((span.x < 0) ? "   junction fan" : $"   edge {span.x,-8}");
-            report.AppendLine(heading.ToString());
-
-            for (int r = 1; r <= 14; r++)
-            {
-                int covered = 0;
-                List<int> missing = new();
-
-                for (int a = 0; a < Rays; a++)
-                {
-                    float angle = (a / (float)Rays) * 2f * math.PI;
-                    float2 sample = new(math.sin(angle) * r, math.cos(angle) * r);
-
-                    if (Covers(vertices, indices, sample, 0, indices.Count)) covered++;
-                    else missing.Add((int)math.round(math.degrees(angle)));
-                }
-
-                StringBuilder row = new($"  {r,3} m   {100f * covered / Rays,4:F0}%");
-
-                foreach (int3 span in spans)
-                {
-                    int own = 0;
-                    for (int a = 0; a < Rays; a++)
-                    {
-                        float angle = (a / (float)Rays) * 2f * math.PI;
-                        float2 sample = new(math.sin(angle) * r, math.cos(angle) * r);
-                        if (Covers(vertices, indices, sample, span.y, span.z)) own++;
-                    }
-
-                    row.Append($"   {100f * own / Rays,11:F0}%");
-                }
-
-                report.AppendLine(row.ToString());
-                if (missing.Count > 0) report.AppendLine($"          missing {Sectors(missing, 360 / Rays)}");
-            }
-        }
-
-        /// <summary>
-        /// Whether a ground-plane point falls inside any assembled triangle.
-        /// （某地平面上的點是否落於任一已組裝三角形之內。）
-        /// </summary>
-        /// <param name="vertices">The assembled vertices.（已組裝的頂點。）</param>
-        /// <param name="indices">The assembled triangle list.（已組裝的三角形列表。）</param>
-        /// <param name="point">The sample, in the same space.（取樣點，與前者同一空間。）</param>
-        /// <param name="from">The first index to consider.（起始索引。）</param>
-        /// <param name="to">One past the last index to consider.（結束索引之後一位。）</param>
-        /// <returns>Whether anything covers it.（是否有幾何覆蓋之。）</returns>
-        private static bool Covers(List<float3> vertices, List<int> indices, float2 point, int from, int to)
-        {
-            for (int i = from; (i + 2) < to; i += 3)
-            {
-                float2 a = vertices[indices[i]].xz;
-                float2 b = vertices[indices[i + 1]].xz;
-                float2 c = vertices[indices[i + 2]].xz;
-
-                // The sign of the three edge cross products agrees exactly when the point is on
-                // the same side of all three edges. Winding is mixed here — the assembly reverses
-                // it for mirrored pieces — so both all-negative and all-positive count.
-                // （當該點位於三條邊的同一側時，三個外積的正負號一致。此處的纏繞方向並不一致
-                //   （組裝時會為鏡射部件反轉），故全負與全正皆計為包含。）
-                float d0 = Cross(point - a, b - a);
-                float d1 = Cross(point - b, c - b);
-                float d2 = Cross(point - c, a - c);
-
-                bool negative = (d0 < 0f) || (d1 < 0f) || (d2 < 0f);
-                bool positive = (d0 > 0f) || (d1 > 0f) || (d2 > 0f);
-                if (!(negative && positive)) return true;
-            }
-
-            return false;
-        }
-
-        /// <summary>
-        /// The 2D cross product of two vectors.（兩向量的二維外積。）
-        /// </summary>
-        /// <param name="u">The first vector.（第一個向量。）</param>
-        /// <param name="v">The second vector.（第二個向量。）</param>
-        /// <returns>Its signed magnitude.（其帶號大小。）</returns>
-        private static float Cross(float2 u, float2 v) => (u.x * v.y) - (u.y * v.x);
-
-        /// <summary>
-        /// Collapse a list of uncovered ray bearings into contiguous angular sectors, so a hole
-        /// reads as one span rather than a column of numbers.<br/>
-        /// （將未覆蓋的射線方位角合併為連續的角度區間，使破洞呈現為單一跨距而非一長串數字。）
-        /// </summary>
-        /// <param name="bearings">The uncovered bearings, ascending, in degrees.（未覆蓋的方位角，遞增，單位為度。）</param>
-        /// <param name="step">The spacing between rays, in degrees.（射線間距，單位為度。）</param>
-        /// <returns>A human-readable list of sectors.（可供閱讀的區間列表。）</returns>
-        private static string Sectors(List<int> bearings, int step)
-        {
-            if (bearings.Count == 0) return "-";
-
-            StringBuilder spans = new();
-            int start = bearings[0], previous = start;
-
-            for (int i = 1; i <= bearings.Count; i++)
-            {
-                if ((i < bearings.Count) && (bearings[i] == (previous + step)))
-                {
-                    previous = bearings[i];
-                    continue;
-                }
-
-                if (spans.Length > 0) spans.Append(", ");
-                spans.Append($"{start}-{previous + step} deg");
-
-                if (i < bearings.Count) { start = bearings[i]; previous = start; }
-            }
-
-            return spans.ToString();
-        }
-
-        /// <summary>
-        /// Measure the median seam across every node geometry in the city, so one junction's
-        /// numbers are not mistaken for the mechanism.<br/>
-        /// （量測全城每一份節點幾何的中線接縫，以免將單一路口的數值誤認為普遍機制。）<br/><br/>
-        /// A node's flare is bent onto two ruled halves: the outer one spans <c>m_Left.m_Left</c>
-        /// to <c>m_Left.m_Right</c>, the inner one <c>m_Right.m_Left</c> to <c>m_Right.m_Right</c>.
-        /// The assembly assumes the two curves in the middle are one median. Where they are not,
-        /// nothing is written between them. This reports how far apart they end up, split by
-        /// whether the composition calls itself an intersection, which says whether the seam is a
-        /// property of junctions or of one ramp.<br/>
-        /// （節點的擴張部彎折於兩片直紋曲面之上。組裝時假設中間的兩條曲線為同一條分隔線；
-        /// 若非如此，兩者之間即無任何幾何寫出。此處回報兩者最終相距多遠，
-        /// 並依組成是否自稱路口分別統計，藉以判斷該接縫是路口的普遍性質，還是單一匝道的個案。）
-        /// </summary>
-        /// <param name="report">The report to write into.（要寫入的報告。）</param>
-        /// <param name="edges">Every placed network edge.（所有已放置的路網邊。）</param>
-        private void SurveySeams(StringBuilder report, NativeArray<Entity> edges)
-        {
-            // Buckets are 1 m wide up to 8 m, then everything above.
-            // （分組寬度為 1 公尺，至 8 公尺為止，其餘歸入最後一組。）
-            int[] intersectionBuckets = new int[10];
-            int[] ordinaryBuckets = new int[10];
-            float worst = 0f;
-            Entity worstEdge = Entity.Null;
-
-            foreach (Entity entity in edges)
-            {
-                if (!EntityManager.HasComponent<Composition>(entity)) continue;
-                Composition parts = EntityManager.GetComponentData<Composition>(entity);
-
-                if (EntityManager.HasComponent<StartNodeGeometry>(entity))
-                {
-                    Tally(EntityManager.GetComponentData<StartNodeGeometry>(entity).m_Geometry, parts.m_StartNode,
-                          intersectionBuckets, ordinaryBuckets, entity, ref worst, ref worstEdge);
-                }
-
-                if (EntityManager.HasComponent<EndNodeGeometry>(entity))
-                {
-                    Tally(EntityManager.GetComponentData<EndNodeGeometry>(entity).m_Geometry, parts.m_EndNode,
-                          intersectionBuckets, ordinaryBuckets, entity, ref worst, ref worstEdge);
-                }
-            }
-
-            report.AppendLine("--- MEDIAN SEAM across the whole city");
-            report.AppendLine("  gap at the node end   intersection   ordinary");
-
-            for (int i = 0; i < intersectionBuckets.Length; i++)
-            {
-                if ((intersectionBuckets[i] == 0) && (ordinaryBuckets[i] == 0)) continue;
-                string band = (i == 0) ? "     under 0.01 m"
-                            : (i == intersectionBuckets.Length - 1) ? $"      over {i - 1} m"
-                            : $"       {i - 1} - {i} m";
-                report.AppendLine($"  {band}  {intersectionBuckets[i],12}   {ordinaryBuckets[i],8}");
-            }
-
-            report.AppendLine($"  worst {worst:F3} m on edge {worstEdge.Index}");
-        }
-
-        /// <summary>
-        /// Measure how close the flares meeting at each junction actually get to the node they meet
-        /// at, city-wide.<br/>
-        /// （量測全城各路口交會的擴張部實際逼近其所交會節點的程度。）<br/><br/>
-        /// On the junction measured so far, three flares reached no nearer than 0.8 m, 2.0 m and
-        /// 2.4 m, and the two furthest covered exactly 0% of the rings at 1 m and 2 m — so the
-        /// middle of that junction is covered by whichever flare happens to come closest rather
-        /// than by anything that set out to cover it. That junction is an elevated highway ramp,
-        /// which is the one the camera happened to be over every time. Before treating a standoff
-        /// as the mechanism it has to be shown on ordinary junctions too, and shown to be the same
-        /// size, which is what this reports.<br/>
-        /// （於目前量測的路口，三片擴張部最近僅達 0.8、2.0 與 2.4 公尺，
-        /// 且其中較遠的兩片於 1 公尺與 2 公尺環上的覆蓋率恰為 0%。該路口為高架公路匝道，
-        /// 亦即攝影機每次恰好所在之處。在將此退縮視為普遍機制之前，
-        /// 須證明其於一般路口亦然且幅度相同。）<br/><br/>
-        /// The near edge of a flare is measured as the chord between its two outer boundaries at
-        /// the node end, which needs four bezier evaluations rather than an assembled mesh — cheap
-        /// enough to run over every edge in the city.<br/>
-        /// （擴張部的近端以其節點端兩條外側邊界之間的弦量測，僅需四次貝茲求值而非組裝網格。）
-        /// </summary>
-        /// <param name="report">The report to write into.（要寫入的報告。）</param>
-        /// <param name="edges">Every placed network edge.（所有已放置的路網邊。）</param>
-        private void SurveyStandoff(StringBuilder report, NativeArray<Entity> edges)
-        {
-            Dictionary<Entity, float> nearest = new();
-            Dictionary<Entity, bool> roadLike = new();
-
-            foreach (Entity entity in edges)
-            {
-                if (!EntityManager.HasComponent<Composition>(entity) || !EntityManager.HasComponent<Edge>(entity)) continue;
-
-                // The same exclusion the rip applies, plus the widths: a survey that counts pipe
-                // anchors and invisible paths alongside carriageways is measuring the wrong
-                // population, and the first version of this did exactly that.
-                // （與擷取相同的排除條件，並加入寬度：若統計將管線錨與不可見路徑
-                //   與車道一併計入，所量測的母體即為錯誤，而本測試的初版正是如此。）
-                if (IsMarkerNetwork(entity)) continue;
-
-                Composition parts = EntityManager.GetComponentData<Composition>(entity);
-                Edge ends = EntityManager.GetComponentData<Edge>(entity);
-
-                Entity prefab = EntityManager.HasComponent<PrefabRef>(entity)
-                    ? EntityManager.GetComponentData<PrefabRef>(entity).m_Prefab : Entity.Null;
-                string category = GetCategory(prefab, parts.m_Edge);
-                bool isRoad = (category == "road") || (category == "highway");
-
-                if (EntityManager.HasComponent<StartNodeGeometry>(entity))
-                {
-                    Reach(EntityManager.GetComponentData<StartNodeGeometry>(entity).m_Geometry,
-                          ends.m_Start, isRoad, nearest, roadLike);
-                }
-
-                if (EntityManager.HasComponent<EndNodeGeometry>(entity))
-                {
-                    Reach(EntityManager.GetComponentData<EndNodeGeometry>(entity).m_Geometry,
-                          ends.m_End, isRoad, nearest, roadLike);
-                }
-            }
-
-            float[] bands = { 0.25f, 0.5f, 1f, 2f, 4f, float.MaxValue };
-            int[] roads = new int[bands.Length];
-            int[] other = new int[bands.Length];
-
-            foreach (KeyValuePair<Entity, float> entry in nearest)
-            {
-                // Junctions only. Two edges meeting is a bend, and a bend has no middle to leave
-                // uncovered.（僅計路口。兩邊相接為轉折，而轉折沒有中央區域會未被覆蓋。）
-                if (CountConnections(entry.Key) < 3) continue;
-
-                int band = 0;
-                while ((band < (bands.Length - 1)) && (entry.Value > bands[band])) band++;
-
-                if (roadLike.TryGetValue(entry.Key, out bool isRoad) && isRoad) roads[band]++;
-                else other[band]++;
-            }
-
-            report.AppendLine("--- JUNCTION STANDOFF across the whole city");
-            report.AppendLine("  nearest flare reaches   road/highway   other");
-
-            for (int i = 0; i < bands.Length; i++)
-            {
-                if ((roads[i] == 0) && (other[i] == 0)) continue;
-                string band = (i == bands.Length - 1) ? $"        over {bands[i - 1]} m"
-                            : $"        under {bands[i]} m";
-                report.AppendLine($"  {band,-24}{roads[i],13}{other[i],8}");
-            }
-        }
-
-        /// <summary>
-        /// Record how near one edge's flare comes to the node it meets.
-        /// （記錄某邊的擴張部逼近其所交會節點的程度。）
-        /// </summary>
-        /// <param name="geometry">The node geometry.（節點幾何。）</param>
-        /// <param name="node">The node entity.（節點實體。）</param>
-        /// <param name="isRoad">Whether this edge is a road or a highway.（此邊是否為道路或公路。）</param>
-        /// <param name="nearest">The nearest reach per node so far.（各節點目前最近的逼近距離。）</param>
-        /// <param name="roadLike">Whether any edge at each node is a carriageway.（各節點是否有任一邊為車道。）</param>
-        private void Reach(EdgeNodeGeometry geometry, Entity node, bool isRoad,
-                           Dictionary<Entity, float> nearest, Dictionary<Entity, bool> roadLike)
-        {
-            if ((node == Entity.Null) || !EntityManager.HasComponent<Node>(node)) return;
-
-            float2 centre = EntityManager.GetComponentData<Node>(node).m_Position.xz;
-            float2 left = Colossal.Mathematics.MathUtils.Position(geometry.m_Left.m_Left, 1f).xz;
-            float2 right = Colossal.Mathematics.MathUtils.Position(geometry.m_Right.m_Right, 1f).xz;
-
-            float distance = DistanceToSegment(centre, left, right);
-            if (!nearest.TryGetValue(node, out float best) || (distance < best)) nearest[node] = distance;
-
-            roadLike[node] = isRoad || (roadLike.TryGetValue(node, out bool was) && was);
-        }
-
-        /// <summary>
-        /// The distance from a point to a line segment, in the ground plane.
-        /// （地平面上某點至線段的距離。）
-        /// </summary>
-        /// <param name="point">The point.（該點。）</param>
-        /// <param name="a">One end of the segment.（線段的一端。）</param>
-        /// <param name="b">The other end.（另一端。）</param>
-        /// <returns>The distance.（距離。）</returns>
-        private static float DistanceToSegment(float2 point, float2 a, float2 b)
-        {
-            float2 span = b - a;
-            float lengthSq = math.lengthsq(span);
-            if (lengthSq < 1e-6f) return math.distance(point, a);
-
-            float t = math.saturate(math.dot(point - a, span) / lengthSq);
-            return math.distance(point, a + (span * t));
-        }
-
-        /// <summary>
-        /// Add one node geometry's median seam to the survey.
-        /// （將單一節點幾何的中線接縫計入統計。）
-        /// </summary>
-        /// <param name="node">The node geometry.（節點幾何。）</param>
-        /// <param name="composition">Its composition entity.（其組成實體。）</param>
-        /// <param name="intersectionBuckets">Counts for intersection compositions.（路口組成的計數。）</param>
-        /// <param name="ordinaryBuckets">Counts for every other composition.（其餘組成的計數。）</param>
-        /// <param name="entity">The edge, for reporting the worst case.（邊，用於回報最差情形。）</param>
-        /// <param name="worst">The widest seam so far.（目前最寬的接縫。）</param>
-        /// <param name="worstEdge">The edge holding it.（持有該接縫的邊。）</param>
-        private void Tally(EdgeNodeGeometry node, Entity composition, int[] intersectionBuckets,
-                           int[] ordinaryBuckets, Entity entity, ref float worst, ref Entity worstEdge)
-        {
-            // The seam is measured at the node end, which is where it is widest: the two halves
-            // leave the edge together and separate as they reach into the junction.
-            // （於節點端量測接縫，因該處最寬：兩半自邊出發時相接，深入路口時漸行漸遠。）
-            float gap = math.distance(Colossal.Mathematics.MathUtils.Position(node.m_Left.m_Right, 1f),
-                                      Colossal.Mathematics.MathUtils.Position(node.m_Right.m_Left, 1f));
-
-            bool intersection = (composition != Entity.Null)
-                             && EntityManager.HasComponent<NetCompositionData>(composition)
-                             && ((EntityManager.GetComponentData<NetCompositionData>(composition).m_Flags.m_General
-                                  & CompositionFlags.General.Intersection) != 0);
-
-            int bucket = (gap < 0.01f) ? 0 : math.min(intersectionBuckets.Length - 1, 1 + (int)gap);
-            if (intersection) intersectionBuckets[bucket]++;
-            else ordinaryBuckets[bucket]++;
-
-            if (gap > worst) { worst = gap; worstEdge = entity; }
-        }
-
-        /// <summary>
-        /// Say where the three composition matrices a node uses and this system does not actually
-        /// go, measured against the node they are supposed to serve.<br/>
-        /// （指出節點所用而本系統未用的三個組成矩陣實際通往何處，並以其所應服務的節點為基準量測。）
-        /// <br/><br/>
-        /// The four boundary curves stop short of the node — measured city-wide, 1,607 of 1,817
-        /// road junctions have every flare ending more than a metre away from it. Three curves
-        /// remain that the game feeds the vertex shader and this system ignores: matrix 4 is
-        /// <c>m_Middle</c>, and matrices 6 and 7 are <c>BuildCurve</c> run from each outer
-        /// boundary's start along its start tangent for a full composition width. A curve that
-        /// reaches the node is a candidate for what covers it; one that does not is not, and can be
-        /// dropped without another round of reasoning.<br/>
-        /// （四條邊界曲線皆未及節點——全城量測顯示 1,817 個道路路口中有 1,607 個的所有擴張部
-        /// 皆止於距其一公尺之外。尚有三條曲線為遊戲送入頂點著色器而本系統忽略者：
-        /// 矩陣 4 為 <c>m_Middle</c>，矩陣 6 與 7 則以 <c>BuildCurve</c> 自各外側邊界的起點
-        /// 沿其起始切線延伸一整個組成寬度。能觸及節點的曲線方為覆蓋該處的候選者。）<br/><br/>
-        /// <c>BuildCurve</c> is reproduced from its IL: the tangent is normalised across the ground
-        /// plane and its rise clamped, and the curve runs a full <c>width</c> along it. Only the far
-        /// end is needed to say where it arrives, so the two interior control points are not
-        /// reconstructed.<br/>
-        /// （<c>BuildCurve</c> 依其 IL 重現：切線於地平面上正規化並限制其升幅，
-        /// 曲線沿其延伸一整個 <c>width</c>。欲知其抵達何處只需末端，故不重建兩個內部控制點。）
-        /// </summary>
-        /// <param name="report">The report to write into.（要寫入的報告。）</param>
-        /// <param name="composition">The node composition entity.（節點組成實體。）</param>
-        /// <param name="node">The node geometry.（節點幾何。）</param>
-        private void DumpUnusedMatrices(StringBuilder report, Entity composition, EdgeNodeGeometry node)
-        {
-            if (!EntityManager.HasComponent<NetCompositionData>(composition)) return;
-            float width = EntityManager.GetComponentData<NetCompositionData>(composition).m_Width;
-
-            // The node end of the flare is t=1; the four boundary curves all run edge-to-node.
-            // （擴張部的節點端為 t=1；四條邊界曲線皆自邊延伸至節點。）
-            float3 nodeEnd = (Colossal.Mathematics.MathUtils.Position(node.m_Left.m_Right, 1f)
-                            + Colossal.Mathematics.MathUtils.Position(node.m_Right.m_Left, 1f)) * 0.5f;
-
-            report.AppendLine("  unused matrices, and where they end relative to the flare's node end:");
-            report.AppendLine($"    m4 middle    {Colossal.Mathematics.MathUtils.Position(node.m_Middle, 1f)}  "
-                            + $"{math.distance(Colossal.Mathematics.MathUtils.Position(node.m_Middle, 1f), nodeEnd):F2} m past it");
-
-            float3 side0 = SideConnectionEnd(node.m_Left.m_Left, width);
-            float3 side1 = SideConnectionEnd(node.m_Right.m_Right, width);
-
-            report.AppendLine($"    m6 sideLeft  {side0}  {math.distance(side0, nodeEnd):F2} m from it");
-            report.AppendLine($"    m7 sideRight {side1}  {math.distance(side1, nodeEnd):F2} m from it");
-        }
-
-        /// <summary>
-        /// Where a side-connection curve arrives: a full composition width along the start tangent
-        /// of an outer boundary.<br/>
-        /// （側向連接曲線的終點：自外側邊界的起始切線延伸一整個組成寬度之處。）
-        /// </summary>
-        /// <param name="boundary">The outer boundary curve.（外側邊界曲線。）</param>
-        /// <param name="width">The composition width.（組成寬度。）</param>
-        /// <returns>The far end.（遠端點。）</returns>
-        private static float3 SideConnectionEnd(Bezier4x3 boundary, float width)
-        {
-            float3 tangent = Colossal.Mathematics.MathUtils.StartTangent(boundary);
-            float2 flat = math.normalizesafe(tangent.xz);
-            return boundary.a + (new float3(flat.x, math.clamp(tangent.y, -1f, 1f), flat.y) * width);
-        }
-
-        /// <summary>
-        /// Print one bezier's four control points and its chord length.
-        /// （列印單一貝茲曲線的四個控制點與其弦長。）
-        /// </summary>
-        /// <param name="report">The report to write into.（要寫入的報告。）</param>
-        /// <param name="label">What to call the curve.（曲線的名稱。）</param>
-        /// <param name="curve">The curve.（曲線。）</param>
-        private static void DumpCurve(StringBuilder report, string label, Bezier4x3 curve)
-        {
-            report.AppendLine($"{label} a {curve.a} d {curve.d}  chord {math.distance(curve.a, curve.d):F3} m");
-            report.AppendLine($"{new string(' ', label.Length)} b {curve.b} c {curve.c}");
-        }
-
-        /// <summary>
-        /// Dump one node composition and its geometry.（傾印單一節點組成及其幾何。）
-        /// </summary>
-        /// <param name="report">The report to write into.（要寫入的報告。）</param>
-        /// <param name="label">Which end this is.（此為哪一端。）</param>
-        /// <param name="composition">The node composition entity.（節點組成實體。）</param>
-        /// <param name="node">The node geometry.（節點幾何。）</param>
-        private void DumpNode(StringBuilder report, string label, Entity composition, EdgeNodeGeometry node)
-        {
-            report.AppendLine($"--- {label} node, composition {composition.Index}");
-            report.AppendLine($"  middleRadius {node.m_MiddleRadius:F3}");
-            report.AppendLine($"  lengths left {node.m_Left.m_Length} right {node.m_Right.m_Length}");
-
-            // All four boundary curves, not two. The assembly lerps left.m_Left -> left.m_Right
-            // across the outer half and right.m_Left -> right.m_Right across the inner one, so it
-            // assumes the two inner curves are the same median. Printing only one curve per half
-            // is what hid that they are not.
-            // （四條邊界曲線，而非兩條。組裝時於外半部由 left.m_Left 內插至 left.m_Right、
-            //   於內半部由 right.m_Left 內插至 right.m_Right，故假設兩條內側曲線為同一條分隔線。
-            //   每半僅列印一條曲線，正是掩蓋了兩者並不相同的原因。）
-            DumpCurve(report, "  left.left  ", node.m_Left.m_Left);
-            DumpCurve(report, "  left.right ", node.m_Left.m_Right);
-            DumpCurve(report, "  right.left ", node.m_Right.m_Left);
-            DumpCurve(report, "  right.right", node.m_Right.m_Right);
-            DumpCurve(report, "  middle     ", node.m_Middle);
-
-            // The seam itself. `CalculateEdgeParameters` leaves composition matrices 4-7 identity
-            // for an edge; `CalculateNodeParameters` puts m_Middle in matrix 4 for a node, so the
-            // middle curve is live geometry the assembly ignores. If the two inner curves separate
-            // and m_Middle runs between them, that gap is the junction hole.
-            // （接縫本身。邊的組成矩陣 4 至 7 為單位矩陣，節點則將 m_Middle 置於矩陣 4，
-            //   故中線是組裝過程忽略的實際幾何。若兩條內側曲線分離而 m_Middle 行於其間，
-            //   該間隙即為路口的破洞。）
-            report.AppendLine("  median seam:  t    gap    left.right -> right.left    middle offset");
-            for (int i = 0; i <= 4; i++)
-            {
-                float t = i * 0.25f;
-                float3 inner0 = Colossal.Mathematics.MathUtils.Position(node.m_Left.m_Right, t);
-                float3 inner1 = Colossal.Mathematics.MathUtils.Position(node.m_Right.m_Left, t);
-                float3 middle = Colossal.Mathematics.MathUtils.Position(node.m_Middle, t);
-
-                report.AppendLine($"    {t:F2}  {math.distance(inner0, inner1),6:F3} m  "
-                                + $"{inner0} -> {inner1}  "
-                                + $"middle {middle} ({math.distance(middle, inner0):F3} / {math.distance(middle, inner1):F3})");
-            }
-
-            report.AppendLine($"  syncTargetsLeft  {node.m_SyncVertexTargetsLeft}");
-            report.AppendLine($"  syncTargetsRight {node.m_SyncVertexTargetsRight}");
-
-            DumpUnusedMatrices(report, composition, node);
-
-            if (EntityManager.HasComponent<NetCompositionData>(composition))
-            {
-                NetCompositionData data = EntityManager.GetComponentData<NetCompositionData>(composition);
-                report.AppendLine($"  syncOffsetsLeft  {data.m_SyncVertexOffsetsLeft}");
-                report.AppendLine($"  syncOffsetsRight {data.m_SyncVertexOffsetsRight}");
-
-                // How far the sync vertices actually move, in metres across the composition.
-                // This was recorded as ruled out — "offsets equal targets" — but that was measured
-                // on an ordinary node, where they are. On the intersection node in the same dump
-                // the right-hand four differ, so the mechanism is live exactly where the hole is
-                // and was closed on the wrong sample.
-                // （同步頂點實際移動多遠，以組成寬度上的公尺計。此機制曾被記為已排除——
-                //   「偏移等於目標」——然而該量測取自一般節點，於其上兩者確實相等。
-                //   同一份傾印中的路口節點，右側四者並不相等，
-                //   故此機制正活躍於破洞所在之處，而當初是以錯誤的樣本將其排除。）
-                float4 movedLeft = (node.m_SyncVertexTargetsLeft - data.m_SyncVertexOffsetsLeft) * data.m_Width;
-                float4 movedRight = (node.m_SyncVertexTargetsRight - data.m_SyncVertexOffsetsRight) * data.m_Width;
-                report.AppendLine($"  syncMoves left {movedLeft} m, right {movedRight} m");
-                report.AppendLine($"  width {data.m_Width:F3} middleOffset {data.m_MiddleOffset:F3} "
-                                + $"widthOffset {data.m_WidthOffset:F3} nodeOffset {data.m_NodeOffset:F3}");
-                report.AppendLine($"  sideConnectionOffset {data.m_SideConnectionOffset} minLod {data.m_MinLod}");
-                report.AppendLine($"  flags general {data.m_Flags.m_General}");
-                report.AppendLine($"  state {data.m_State}");
-            }
-
-            if (!EntityManager.HasComponent<NetCompositionMeshRef>(composition)) return;
-            NetCompositionMeshRef meshRef = EntityManager.GetComponentData<NetCompositionMeshRef>(composition);
-            Entity meshEntity = meshRef.m_Mesh;
-            if ((meshEntity == Entity.Null) || !EntityManager.HasBuffer<NetCompositionPiece>(meshEntity)) return;
-
-            // The assembly reads m_Mesh and ignores m_Rotate. In the game m_Rotate swaps the draw
-            // from the Edge sub-mesh slot to RotatedEdge, so a composition that sets it is placed
-            // the other way round along its length.
-            // （組裝時只讀取 m_Mesh 而忽略 m_Rotate。遊戲中 m_Rotate 會將繪製由 Edge 子網格槽位
-            //   切換至 RotatedEdge，故設定該旗標的組成沿其長度方向反向放置。）
-            report.AppendLine($"  meshRotate {meshRef.m_Rotate}");
-
-            if (EntityManager.HasComponent<NetCompositionMeshData>(meshEntity))
-            {
-                NetCompositionMeshData mesh = EntityManager.GetComponentData<NetCompositionMeshData>(meshEntity);
-                report.AppendLine($"  meshData indexFactor {mesh.m_IndexFactor:F3} state {mesh.m_State} "
-                                + $"defaultLayers {mesh.m_DefaultLayers} availableLayers {mesh.m_AvailableLayers}");
-            }
-
-            DynamicBuffer<NetCompositionPiece> pieces = EntityManager.GetBuffer<NetCompositionPiece>(meshEntity, true);
-            Dictionary<Entity, MeshAsset> cache = new();
-
-            for (int i = 0; i < pieces.Length; i++)
-            {
-                NetCompositionPiece piece = pieces[i];
-                string name = Instance.Name.GetPrefabName(piece.m_Piece);
-                report.AppendLine($"  [{i}] '{name}' off {piece.m_Offset} "
-                                + $"size {piece.m_Size} sec {piece.m_SectionFlags} pc {piece.m_PieceFlags}");
-
-                if (EntityManager.HasComponent<NetPieceData>(piece.m_Piece))
-                {
-                    NetPieceData data = EntityManager.GetComponentData<NetPieceData>(piece.m_Piece);
-                    report.AppendLine($"        pieceData width {data.m_Width:F3} length {data.m_Length:F3} "
-                                    + $"widthOffset {data.m_WidthOffset:F3} nodeOffset {data.m_NodeOffset:F3} "
-                                    + $"sideConnectionOffset {data.m_SideConnectionOffset:F3}");
-                }
-
-                // The shape itself, which is the question these two "Intersection" pieces raise.
-                // A piece whose slot width is zero can still be a wide mesh — `m_Size.x` is the
-                // slot, not the geometry — and one flagged `AsymmetricMeshZ` varies along its
-                // length, so what its Z means decides whether it lands as a fill or a sliver.
-                // （形狀本身，正是這兩個「Intersection」部件所提出的問題。槽位寬度為零的部件仍可能是
-                //   寬闊的網格——`m_Size.x` 是槽位而非幾何——而標記 `AsymmetricMeshZ` 者沿其長度變化，
-                //   故其 Z 的意義決定了它落地時是填充面還是細條。）
-                if (!cache.TryGetValue(piece.m_Piece, out MeshAsset mesh))
-                {
-                    mesh = Instance.MeshRip.ReadMesh(piece.m_Piece, SanitizeId(name), name);
-                    cache[piece.m_Piece] = mesh;
-                }
-
-                if ((mesh == null) || (mesh.Vertices.Length == 0))
-                {
-                    report.AppendLine("        mesh: would not read");
-                    continue;
-                }
-
-                float3 lo = mesh.Vertices[0], hi = mesh.Vertices[0];
-                foreach (float3 v in mesh.Vertices) { lo = math.min(lo, v); hi = math.max(hi, v); }
-
-                report.AppendLine($"        mesh {mesh.Vertices.Length}v {mesh.TriangleCount}t  "
-                                + $"x [{lo.x:F3}, {hi.x:F3}]  y [{lo.y:F3}, {hi.y:F3}]  z [{lo.z:F3}, {hi.z:F3}]");
-
-                // How many distinct stations the mesh has along each axis. A constant cross-section
-                // swept along Z has two distinct x and many z; a fill patch has many of both, and
-                // that difference is what says which axis is which.
-                // （網格於各軸上有多少相異的取樣位置。沿 Z 掃掠的等斷面有兩個相異的 x 與許多 z；
-                //   填充面則兩者皆多，此差異即可辨明各軸的意義。）
-                HashSet<int> xs = new(), zs = new();
-                foreach (float3 v in mesh.Vertices)
-                {
-                    xs.Add((int)math.round(v.x * 100f));
-                    zs.Add((int)math.round(v.z * 100f));
-                }
-
-                report.AppendLine($"        distinct x {xs.Count}, distinct z {zs.Count}");
-            }
         }
 
         /// <summary>
@@ -1416,17 +600,17 @@ namespace Carto.Systems
             {
                 EdgeNodeGeometry node = EntityManager.GetComponentData<StartNodeGeometry>(entity).m_Geometry;
                 AppendComposition(parts.m_StartNode, node.m_Left, node.m_Right, true, center,
-                                  "startNode", cache, vertices, uvs, indices, primitives, report);
+                                  "startNode", cache, vertices, uvs, indices, primitives, node, report);
             }
 
             AppendComposition(parts.m_Edge, geometry.m_Start, geometry.m_End, false, center,
-                              "edge", cache, vertices, uvs, indices, primitives, report);
+                              "edge", cache, vertices, uvs, indices, primitives, null, report);
 
             if (EntityManager.HasComponent<EndNodeGeometry>(entity))
             {
                 EdgeNodeGeometry node = EntityManager.GetComponentData<EndNodeGeometry>(entity).m_Geometry;
                 AppendComposition(parts.m_EndNode, node.m_Left, node.m_Right, true, center,
-                                  "endNode", cache, vertices, uvs, indices, primitives, report);
+                                  "endNode", cache, vertices, uvs, indices, primitives, node, report);
             }
 
             // The junction itself, once per junction rather than once per edge meeting in it.
@@ -1536,11 +720,225 @@ namespace Carto.Systems
         /// <param name="assetId">The asset id to label it with.（用以標記的資產 ID。）</param>
         /// <param name="report">The report to note the working in.（用以記錄過程的報告。）</param>
         /// <returns>The assembled mesh, or <c>null</c> when no piece would read.（組裝後的網格；若無部件可讀則為 <c>null</c>。）</returns>
+        /// <summary>
+        /// Per-piece work that does not change from one edge to the next.<br/>
+        /// （逐部件、且不隨邊改變的計算結果。）<br/><br/>
+        /// Bending a piece onto a curve asks two questions of every vertex: how far along the run
+        /// it sits, and where the boundary curves are at that distance. The first depends only on
+        /// the vertex's <c>z</c> in the authored mesh, and the second only on the first — so both
+        /// are properties of the <i>piece</i>, not of the edge it is being placed on. A road piece
+        /// is a lattice: the 1,150-vertex elevated side piece has 83 distinct <c>z</c> values, so
+        /// evaluating the béziers per vertex evaluates each one about fourteen times over. Doing it
+        /// per distinct <c>z</c> instead costs the same answer once.<br/>
+        /// （將部件彎折至曲線上，需對每個頂點提問兩件事：其沿線位置，以及邊界曲線於該處之所在。
+        /// 前者僅取決於頂點在製作網格中的 <c>z</c>，後者又僅取決於前者——故兩者皆為<i>部件</i>的性質，
+        /// 而非其所置於之邊的性質。道路部件是格狀結構：1,150 個頂點的高架側邊部件僅有 83 個相異
+        /// <c>z</c> 值，故逐頂點求值等同於將每個答案重算約十四次。改為逐相異 <c>z</c> 求值，
+        /// 同樣的答案只需算一次。）<br/><br/>
+        /// The <c>z</c> census itself was also being retaken for every edge; a city has tens of
+        /// thousands of edges and a few hundred pieces.<br/>
+        /// （<c>z</c> 值的普查本身亦曾對每條邊重做一次；城市有數萬條邊，卻僅有數百種部件。）
+        /// </summary>
+        private sealed class PieceTiling
+        {
+            public float MinZ;
+            public float TileLength;
+
+            /// <summary>Per source vertex, which distinct-<c>z</c> slot it belongs to.
+            /// （逐來源頂點，其所屬的相異 <c>z</c> 槽位。）</summary>
+            public int[] Slot;
+
+            /// <summary>Per slot, its fraction along one tile.（逐槽位，其於單一鋪排單元中的比例。）</summary>
+            public float[] Within;
+
+            // Scratch, refilled per tile. A is the first half's curve pair, B the second's, used
+            // only when the part splits across the width.
+            // （暫存區，逐鋪排單元重填。A 為第一半的曲線對，B 為第二半的，僅於橫向分割時使用。）
+            public float3[] LeftA, RightA, LeftB, RightB;
+
+            public static PieceTiling Build(MeshAsset source)
+            {
+                float3[] verts = source.Vertices;
+                float minZ = verts[0].z, maxZ = verts[0].z;
+                for (int i = 0; i < verts.Length; i++)
+                {
+                    minZ = math.min(minZ, verts[i].z);
+                    maxZ = math.max(maxZ, verts[i].z);
+                }
+
+                float tileLength = math.max(maxZ - minZ, 1e-3f);
+                PieceTiling tiling = new()
+                {
+                    MinZ = minZ,
+                    TileLength = tileLength,
+                    Slot = new int[verts.Length]
+                };
+
+                // Exact equality is the right test: these are the authored coordinates of a lattice,
+                // so vertices that share a row share the bit pattern. A tolerance would risk welding
+                // two genuinely close rows into one and shearing the piece.
+                // （精確相等是正確的判準：這些是格狀結構的製作座標，同一列的頂點具有相同的位元樣式。
+                //   採用容差反而可能將兩個確實相近的列併為一列，使部件產生剪切變形。）
+                Dictionary<float, int> slots = new();
+                List<float> within = new();
+                for (int i = 0; i < verts.Length; i++)
+                {
+                    float z = verts[i].z;
+                    if (!slots.TryGetValue(z, out int slot))
+                    {
+                        slot = within.Count;
+                        slots[z] = slot;
+                        within.Add((z - minZ) / tileLength);
+                    }
+                    tiling.Slot[i] = slot;
+                }
+
+                tiling.Within = within.ToArray();
+                tiling.LeftA = new float3[within.Count];
+                tiling.RightA = new float3[within.Count];
+                tiling.LeftB = new float3[within.Count];
+                tiling.RightB = new float3[within.Count];
+                return tiling;
+            }
+
+            /// <summary>
+            /// Place every distinct <c>z</c> of one tile on the boundary curves.
+            /// （將單一鋪排單元的每個相異 <c>z</c> 置於邊界曲線之上。）
+            /// </summary>
+            public void Evaluate(int tile, int tiles, bool splitAcross, Segment half0, Segment half1)
+            {
+                for (int k = 0; k < Within.Length; k++)
+                {
+                    float along = math.saturate((tile + Within[k]) / tiles);
+
+                    if (splitAcross)
+                    {
+                        LeftA[k] = Colossal.Mathematics.MathUtils.Position(half0.m_Left, along);
+                        RightA[k] = Colossal.Mathematics.MathUtils.Position(half0.m_Right, along);
+                        LeftB[k] = Colossal.Mathematics.MathUtils.Position(half1.m_Left, along);
+                        RightB[k] = Colossal.Mathematics.MathUtils.Position(half1.m_Right, along);
+                    }
+                    else
+                    {
+                        bool firstHalf = along < 0.5f;
+                        Segment segment = firstHalf ? half0 : half1;
+                        float t = firstHalf ? (along * 2f) : ((along - 0.5f) * 2f);
+                        LeftA[k] = Colossal.Mathematics.MathUtils.Position(segment.m_Left, t);
+                        RightA[k] = Colossal.Mathematics.MathUtils.Position(segment.m_Right, t);
+                    }
+                }
+            }
+        }
+
+        /// <summary>The per-piece tiling cache, valid for one rip.（逐部件鋪排快取，於單次擷取內有效。）</summary>
+        private readonly Dictionary<MeshAsset, PieceTiling> m_Tiling = new();
+
+        private PieceTiling GetTiling(MeshAsset source)
+        {
+            if (!m_Tiling.TryGetValue(source, out PieceTiling tiling))
+            {
+                tiling = PieceTiling.Build(source);
+                m_Tiling[source] = tiling;
+            }
+
+            return tiling;
+        }
+
+        /// <summary>
+        /// The across-width vertex remap CS2 applies to a junction flare.<br/>
+        /// （CS2 施加於路口擴張部的橫向頂點重映射。）<br/><br/>
+        /// A composition names four positions across each half of its cross-section
+        /// (<c>NetCompositionData.m_SyncVertexOffsets*</c>), and a node geometry names where those
+        /// four have to end up in this particular junction
+        /// (<c>EdgeNodeGeometry.m_SyncVertexTargets*</c>). The game hands both to the vertex shader
+        /// as <c>m_CompositionSync0..3</c> and lets it move each vertex across the width to match —
+        /// which is how a lane edge still lines up with the lane it meets when four roads of
+        /// different widths share a junction.<br/>
+        /// （組成為其橫斷面每一半指名四個橫向位置，節點幾何則指名這四者在此特定路口應落於何處。
+        /// 遊戲將兩者作為 <c>m_CompositionSync0..3</c> 交予頂點著色器，使其橫向移動各頂點以吻合——
+        /// 此即四條不同寬度的道路共用一個路口時，車道邊界仍能對齊其所接車道之由。）<br/><br/>
+        /// The knots are measured per half, from the outer edge to the median, which is the
+        /// coordinate the assembly's own <c>s</c> already runs in — <c>CalculateSyncVertexOffsets</c>
+        /// normalises by <c>(x - middleOffset) / (width / 2)</c>, and every real composition
+        /// measured has <c>middleOffset</c> zero. Both outermost knots are fixed points in the
+        /// measured data, so this moves lane boundaries within a flare and never its outer kerb or
+        /// its median: it is not what closes a junction, it is what stops the pieces inside one
+        /// from stepping.<br/>
+        /// （節點以每一半為單位量測，自外緣至中線，此即組裝所用 <c>s</c> 所在的座標系。
+        /// 實測資料中最外側的兩個節點皆為不動點，故此重映射僅移動擴張部內的車道邊界，
+        /// 絕不動及其外側緣石或中線：它並非用以閉合路口，而是使路口內的部件不再錯位。）<br/><br/>
+        /// The interpolation between knots is the shader's, and CS2 ships shaders compiled inside
+        /// asset bundles, so it is read here as piecewise linear — the reading the measured knots
+        /// support and the only one that keeps every knot exactly on its target. Outside the
+        /// outermost knots the shift is held constant rather than extrapolated, so a composition
+        /// whose knots do not span the full half cannot throw a vertex past the kerb.<br/>
+        /// （節點之間的內插屬於著色器，而 CS2 的著色器編譯於資產包內，故此處以分段線性解讀——
+        /// 此為實測節點所支持、且是唯一能使每個節點精確落於其目標的解讀。
+        /// 於最外側節點之外，位移保持定值而不外推，故節點未涵蓋整個半幅的組成不會將頂點拋出緣石之外。）
+        /// </summary>
+        private readonly struct VertexSync
+        {
+            private readonly float4 m_OffsetsLeft, m_TargetsLeft, m_OffsetsRight, m_TargetsRight;
+            private readonly bool m_Active;
+
+            /// <summary>No remap — what an edge, and any composition without sync data, gets.
+            /// （不重映射，邊與任何無同步資料的組成皆適用。）</summary>
+            public static VertexSync None => default;
+
+            public VertexSync(NetCompositionData composition, EdgeNodeGeometry node)
+            {
+                m_OffsetsLeft = composition.m_SyncVertexOffsetsLeft;
+                m_TargetsLeft = node.m_SyncVertexTargetsLeft;
+                m_OffsetsRight = composition.m_SyncVertexOffsetsRight;
+                m_TargetsRight = node.m_SyncVertexTargetsRight;
+
+                // An unset target arrives as NaN, and one NaN would propagate into every vertex of
+                // the flare. Where the two agree there is nothing to do anyway, so treat that as
+                // inactive too and keep the cost off the ordinary node.
+                // （未設定的目標值為 NaN，而單一個 NaN 會擴散至擴張部的每個頂點。
+                //   兩者相同時本就無事可做，故亦視為未啟用，使一般節點免除此開銷。）
+                m_Active = !math.any(math.isnan(m_OffsetsLeft)) && !math.any(math.isnan(m_TargetsLeft))
+                        && !math.any(math.isnan(m_OffsetsRight)) && !math.any(math.isnan(m_TargetsRight))
+                        && (math.any(m_OffsetsLeft != m_TargetsLeft)
+                            || math.any(m_OffsetsRight != m_TargetsRight));
+            }
+
+            /// <summary>
+            /// Move one across-half position from where the cross-section authored it to where this
+            /// junction needs it.（將某橫向位置自橫斷面所製作之處，移至此路口所需之處。）
+            /// </summary>
+            /// <param name="s">The position across this half, 0 at the outer edge.
+            /// （於此半幅的橫向位置，0 為外緣。）</param>
+            /// <param name="leftHalf">Whether this is the left half.（是否為左半幅。）</param>
+            /// <returns>The remapped position.（重映射後的位置。）</returns>
+            public float Apply(float s, bool leftHalf)
+            {
+                if (!m_Active) return s;
+                return leftHalf ? Remap(s, m_OffsetsLeft, m_TargetsLeft)
+                                : Remap(s, m_OffsetsRight, m_TargetsRight);
+            }
+
+            private static float Remap(float s, float4 o, float4 t)
+            {
+                if (s <= o.x) return s + (t.x - o.x);
+                if (s <= o.y) return Between(s, o.x, o.y, t.x, t.y);
+                if (s <= o.z) return Between(s, o.y, o.z, t.y, t.z);
+                if (s <= o.w) return Between(s, o.z, o.w, t.z, t.w);
+                return s + (t.w - o.w);
+            }
+
+            // Two knots at the same offset are a collapsed interval, not a slope; snapping to the
+            // far target keeps the map monotone instead of dividing by zero.
+            // （兩個節點位於相同偏移量代表區間退化，而非斜率；取用遠端目標可維持映射單調，避免除以零。）
+            private static float Between(float s, float o0, float o1, float t0, float t1)
+                => ((o1 - o0) > 1e-6f) ? math.lerp(t0, t1, (s - o0) / (o1 - o0)) : t1;
+        }
+
         private void AppendPart(DynamicBuffer<NetCompositionPiece> pieces, Segment half0, Segment half1,
                                 bool splitAcross, float compositionWidth, float3 center, string label,
                                 Dictionary<Entity, MeshAsset> cache, List<float3> vertices,
                                 List<float2> uvs, List<int> indices,
-                                List<MeshPrimitive> primitives, StringBuilder report)
+                                List<MeshPrimitive> primitives, VertexSync sync, StringBuilder report)
         {
             // The part's own length decides how many times a piece tiles. Left and right differ on
             // a curve, so the mean is what the tiling should follow — and when the two Segments
@@ -1559,22 +957,27 @@ namespace Carto.Systems
                 NetCompositionPiece piece = pieces[p];
                 if (piece.m_Piece == Entity.Null) continue;
 
-                string pieceName = Instance.Name.GetPrefabName(piece.m_Piece);
-
                 // Cache by piece prefab. A city has thousands of edges but a few hundred distinct
                 // pieces, and reading one loads and releases its geometry asset - doing that per
-                // edge would repeat the same expensive load tens of thousands of times.
+                // edge would repeat the same expensive load tens of thousands of times. The name
+                // lookup belongs inside the miss for the same reason: the mesh already carries the
+                // name and its sanitised id, so asking the prefab again on every one of tens of
+                // thousands of edges buys nothing.
+                // （依部件預製模板快取。城市有數千條邊，卻僅有數百種相異部件，而讀取其一需載入並
+                //   釋放其幾何資產——逐邊執行將使同一次昂貴的載入重複數萬次。
+                //   名稱查詢基於相同理由置於快取未命中的分支內：網格本身已帶有名稱及其淨化後的 ID，
+                //   故於數萬條邊上反覆詢問預製模板毫無所得。）
                 if (!cache.TryGetValue(piece.m_Piece, out MeshAsset source))
                 {
-                    source = Instance.MeshRip.ReadMesh(piece.m_Piece, SanitizeId(pieceName), pieceName);
+                    string name = Instance.Name.GetPrefabName(piece.m_Piece);
+                    source = Instance.MeshRip.ReadMesh(piece.m_Piece, SanitizeId(name), name);
                     cache[piece.m_Piece] = source;
                 }
 
                 if ((source == null) || (source.Vertices.Length == 0)) continue;
 
-                float minZ = source.Vertices[0].z, maxZ = source.Vertices[0].z;
-                foreach (float3 v in source.Vertices) { minZ = math.min(minZ, v.z); maxZ = math.max(maxZ, v.z); }
-                float tileLength = math.max(maxZ - minZ, 1e-3f);
+                PieceTiling tiling = GetTiling(source);
+                float tileLength = tiling.TileLength;
 
                 // A piece flagged `DisableTiling` is a one-off — an end cap or a transition, not a
                 // repeating section — so tiling it fills the whole run with stacked copies of a
@@ -1613,16 +1016,15 @@ namespace Carto.Systems
                 for (int tile = 0; tile < tiles; tile++)
                 {
                     int baseVertex = vertices.Count;
+                    tiling.Evaluate(tile, tiles, splitAcross, half0, half1);
 
                     for (int i = 0; i < source.Vertices.Length; i++)
                     {
                         float3 local = source.Vertices[i];
+                        int slot = tiling.Slot[i];
 
                         float across = piece.m_Offset.x + ((invert ? -local.x : local.x) * widthScale);
                         float u = math.saturate((across + (compositionWidth * 0.5f)) / compositionWidth);
-
-                        float withinTile = (local.z - minZ) / tileLength;
-                        float along = math.saturate((tile + withinTile) / tiles);
 
                         // The two Segments split the part in two, but along different axes, which
                         // the game's identical matrix slots hide. An edge's `m_Start`/`m_End` are
@@ -1638,26 +1040,34 @@ namespace Carto.Systems
                         //   此即節點的部件清單中央有分隔帶部件而邊沒有的緣故。
                         //   若將節點當作邊處理，橫向內插只會由外側緣石延伸至中線，
                         //   擴張部因而恰好只有道路的一半寬。）
-                        float t, s;
-                        Segment segment;
+                        float s;
+                        float3 left, right;
 
                         if (splitAcross)
                         {
                             bool leftHalf = u < 0.5f;
-                            segment = leftHalf ? half0 : half1;
                             s = leftHalf ? (u * 2f) : ((u - 0.5f) * 2f);
-                            t = along;
+
+                            // Where the cross-section sits across a flare is not where it sits
+                            // across the edge: a junction stretches some lanes and squeezes others
+                            // so that lane edges still meet what they meet on the far side. The
+                            // remap is the game's own, and `s` is already in its coordinate — see
+                            // <see cref="VertexSync"/>.
+                            // （橫斷面於擴張部的橫向位置與其於邊上的位置並不相同：路口會拉伸某些
+                            //   車道並壓縮另一些，使車道邊界仍能與對側所接之物對齊。
+                            //   此重映射取自遊戲本身，且 `s` 已位於其座標系中。）
+                            s = sync.Apply(s, leftHalf);
+
+                            left = leftHalf ? tiling.LeftA[slot] : tiling.LeftB[slot];
+                            right = leftHalf ? tiling.RightA[slot] : tiling.RightB[slot];
                         }
                         else
                         {
-                            bool firstHalf = along < 0.5f;
-                            segment = firstHalf ? half0 : half1;
                             s = u;
-                            t = firstHalf ? (along * 2f) : ((along - 0.5f) * 2f);
+                            left = tiling.LeftA[slot];
+                            right = tiling.RightA[slot];
                         }
 
-                        float3 left = Colossal.Mathematics.MathUtils.Position(segment.m_Left, t);
-                        float3 right = Colossal.Mathematics.MathUtils.Position(segment.m_Right, t);
                         float3 surface = math.lerp(left, right, s);
 
                         vertices.Add(surface - center + new float3(0f, local.y + piece.m_Offset.y, 0f));
@@ -1687,10 +1097,10 @@ namespace Carto.Systems
                     MaterialId = ((source.Primitives.Count > 0)
                                   && !string.IsNullOrEmpty(source.Primitives[0].MaterialId))
                                  ? source.Primitives[0].MaterialId
-                                 : $"{SanitizeId(pieceName)}_mat0"
+                                 : $"{source.AssetId}_mat0"
                 });
 
-                report?.AppendLine($"  {label} [{p}] '{pieceName}': {tiles} tile(s) of {tileLength:F1} m "
+                report?.AppendLine($"  {label} [{p}] '{source.SourceName}': {tiles} tile(s) of {tileLength:F1} m "
                                 + $"over {edgeLength:F1} m, widthScale {widthScale:F3}");
             }
         }
@@ -1715,21 +1125,27 @@ namespace Carto.Systems
         private void AppendComposition(Entity composition, Segment half0, Segment half1, bool splitAcross,
                                        float3 center, string label, Dictionary<Entity, MeshAsset> cache,
                                        List<float3> vertices, List<float2> uvs,
-                                       List<int> indices, List<MeshPrimitive> primitives, StringBuilder report)
+                                       List<int> indices, List<MeshPrimitive> primitives,
+                                       EdgeNodeGeometry? node, StringBuilder report)
         {
             if ((composition == Entity.Null) || !EntityManager.HasComponent<NetCompositionMeshRef>(composition)) return;
 
             Entity meshEntity = EntityManager.GetComponentData<NetCompositionMeshRef>(composition).m_Mesh;
             if ((meshEntity == Entity.Null) || !EntityManager.HasBuffer<NetCompositionPiece>(meshEntity)) return;
 
-            float width = EntityManager.HasComponent<NetCompositionData>(composition)
-                ? EntityManager.GetComponentData<NetCompositionData>(composition).m_Width : 0f;
+            if (!EntityManager.HasComponent<NetCompositionData>(composition)) return;
+            NetCompositionData data = EntityManager.GetComponentData<NetCompositionData>(composition);
+            float width = data.m_Width;
             if (!(width > 0f)) return;
 
             DynamicBuffer<NetCompositionPiece> pieces = EntityManager.GetBuffer<NetCompositionPiece>(meshEntity, true);
 
+            // Only a node carries sync targets; an edge's cross-section is where it was authored.
+            // （唯有節點帶有同步目標；邊的橫斷面即其製作時所在之處。）
+            VertexSync sync = node.HasValue ? new VertexSync(data, node.Value) : VertexSync.None;
+
             AppendPart(pieces, half0, half1, splitAcross, width, center, label, cache,
-                       vertices, uvs, indices, primitives, report);
+                       vertices, uvs, indices, primitives, sync, report);
 
             // Only a node splits across the width, and only a node has a median to bridge.
             // （唯有節點橫向分割，也唯有節點有中線需要橋接。）
@@ -1903,7 +1319,7 @@ namespace Carto.Systems
                 _seamsFilled++;
                 _worstSeam = math.max(_worstSeam, gap);
 
-                report?.AppendLine($"  {label} median fill '{pieceName}': {gap:F2} m wedge at the node, "
+                report?.AppendLine($"  {label} median fill '{source.SourceName}': {gap:F2} m wedge at the node, "
                                  + $"height {height:F2} m");
             }
         }

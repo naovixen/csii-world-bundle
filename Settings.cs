@@ -480,38 +480,6 @@ namespace Carto
                  + $"\n… {lines.Length - maxLines} more line(s) — full report in Logs/Carto.log";
         }
         /// <summary>
-        /// A temporary diagnostic: dump the junction under the camera (PLAN Phase 5).
-        /// （暫時性診斷：傾印攝影機下方的路口（PLAN 第五階段）。）<br/><br/>
-        /// Here only while the node's middle region is being worked out — the assembly ignores
-        /// four of a node's matrices and all four of its sync vectors, which is the hole in a
-        /// junction's centre. Goes once junctions close.<br/>
-        /// （僅於推導節點中央區域期間存在；組裝目前忽略節點的四個矩陣與全部四個同步向量，
-        /// 此即路口中央的破洞。待路口閉合後即移除。）
-        /// </summary>
-        [SettingsUISection(GeneralTab, GeneralGeneralGroup)]
-        [SettingsUIButton]
-        [SettingsUIDisableByCondition(typeof(Settings), nameof(IsInGameOrEditor), invert: true)]
-        public bool DumpJunctionButton
-        {
-            set
-            {
-                string summary;
-                try
-                {
-                    summary = Instance.NetworkRip.DumpJunction(Utils.IOUtils.CombinePath(Instance.CartoDataPath, "spike"));
-                }
-                catch (System.Exception ex)
-                {
-                    Instance.Log.Error(ex.ToString());
-                    summary = $"Junction dump failed:\n{ex.Message}";
-                }
-
-                Game.UI.MessageDialog dialog = new("Options.SECTION[Carto.Carto.Mod]", Fit(summary), "Common.OK");
-                Instance.UI.appBindings.ShowMessageDialog(dialog, null);
-            }
-        }
-
-        /// <summary>
         /// How many prefabs a mesh rip covers (PLAN Phase 3).
         /// （網格擷取涵蓋的預製模板數量（PLAN 第三階段）。）<br/><br/>
         /// A dense city references a few thousand distinct prefabs and a single full-detail building

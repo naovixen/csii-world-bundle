@@ -376,7 +376,5 @@
   "Carto.Common.ERROR[UTMZone]": "{INPUT}: The zone value should be an integer between 1 and 60.",
   "Carto.Common.IGNORE[MissingWorldHeightmap]": "the world heightmap is missing from the editor/save",
   "Carto.Common.SUCCESS[Ignore]": "{NUMBER} file(s) were ignored because {REASON}.",
-  "Carto.Common.SUCCESS[Normal]": "{NUMBER} file(s) exported successfully.",
-  "Options.Option.DumpJunctionButton": "Dump Junction (diagnostic)",
-  "Options.Description.DumpJunctionButton": "Temporary diagnostic. Writes the node data for the junction under the camera into Logs/Carto.log. Removed once junctions close."
+  "Carto.Common.SUCCESS[Normal]": "{NUMBER} file(s) exported successfully."
 }

@@ -344,11 +344,42 @@ recoverable the way `CalculateNodeParameters` itself was. Every vertex of the fi
 boundary curve the game computed, so nothing is invented; but a consumer should expect the
 junction surface to be flat where CS2 may have shaped it.
 
+**Vertex sync is applied.** A junction stretches some lanes across its flare and squeezes others,
+so that a lane edge still meets whatever it meets on the far side. CS2 describes that as four
+positions across each half of the cross-section (`NetCompositionData.m_SyncVertexOffsets*`) and
+four places they have to reach in this particular junction (`EdgeNodeGeometry.m_SyncVertexTargets*`),
+handed to the vertex shader as `m_CompositionSync0..3`. The producer applies the same remap, in
+the same coordinate — `CalculateSyncVertexOffsets` normalises each half by
+`(x - middleOffset) / (width / 2)`, and `middleOffset` is zero on every real composition measured,
+which makes it exactly the coordinate the assembly already interpolates in. Both outermost knots
+are fixed points in the measured data, so this moves lane boundaries *within* a flare and never its
+outer kerb or its median: it is not what closes a junction, it is what stops the pieces inside one
+from stepping. On a measured five-way ground crossroads the interior knots move 0.20 m and 0.60 m
+on the left half and −0.54 m and −0.18 m on the right; at an ordinary node offsets and targets are
+equal and nothing moves. The interpolation *between* knots is the shader's and is read here as
+piecewise linear — the reading the measured knots support, and the only one that puts every knot
+exactly on its target.
+
 Ruled out by measurement: `m_MiddleRadius` (zero), the intersection piece (an ordinary 4 m slot),
 and `NetCompositionArea` (read only by the tools' snapping, so it places buildings rather than
-drawing anything). Vertex sync was previously recorded here as ruled out — "offsets equal targets"
-— and that was wrong: it was measured on an ordinary node, where they are equal. At an
-intersection node the right-hand four columns move by up to 1.7 m. It remains unimplemented.
+drawing anything).
+
+`NetCompositionMeshData.m_IndexFactor` is **not** a UV or tiling term, which its scale invites you
+to assume. It is `Σ (piece index count / piece length)` — indices per metre of road, summed across
+the cross-section, used to size render batches. Computed from the pieces this producer reads it
+reproduces the game's own value to five significant figures on both a ground road (21.000) and an
+elevated highway node (125.812 against 125.813), which is also the check that the producer is
+reading the same geometry the game rasterises rather than some richer authored LOD. UVs need no
+correction at all: `GenerateCompositionMesh` copies each piece's authored UV through unchanged, and
+so does this.
+
+Also ruled out, having been suspected: the `NetSectionFlags.Hidden*` family does not hide anything
+in this path. `GenerateCompositionMesh` — the game's own piece-to-vertex assembly — skips a piece if
+and only if it has no `MeshVertex` buffer, and reads no `Hidden*` bit at all; `Hidden` instead
+raises `CompositionState.Hidden` on the composition as a whole. `MeshLayer` likewise selects batch
+groups on the *baked* composition mesh, which this producer does not use, and every composition
+measured reports `defaultLayers 0`. `NetPieceFlags.Bottom` needs no ground/elevated rule either:
+ground compositions carry no `Bottom` piece to begin with.
 
 **Network meshes are not deduped.** Every segment is bent onto its own curve, so each `.glb` is
 unique. Expect roughly one file per edge, of the order of tens of kilobytes each. The mesh's

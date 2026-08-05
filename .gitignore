@@ -410,3 +410,9 @@ UI/
 
 # ILPP's process id, rewritten by every build
 Library/ilpp.pid
+
+# Blender scenes saved by tools/blender_import_bundle.py --save. These hold geometry and
+# textures ripped from the user's own copy of the game, which never belongs in this repo
+# (CLAUDE.md); they are also hundreds of megabytes.
+*.blend
+*.blend[0-9]

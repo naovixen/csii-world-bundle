@@ -21,8 +21,13 @@ Options (after the `--`):
     --limit N                    stop after N instances               (default: 20000)
     --assets a,b,c               only place instances whose assetId contains one of these
                                  (case-insensitive substring), e.g. --assets pillar
+    --everything R               every kind and every network category, within R metres of
+                                 downtown — the whole bundle at neighbourhood scale. A base:
+                                 any option named alongside it still wins.
     --center X Z --radius R      only place within R metres of a point, bundle-frame metres
     --center auto --radius R     centre on the densest part of the selected kinds instead
+    --center downtown --radius R centre on the tallest 250 m cell of buildings, whatever kinds
+                                 are being placed — the useful centre for a mixed look
     --networks                   also extrude networks.jsonl          (Phase 5)
     --net-limit N                stop after N network records — the fast way to look
     --net-categories a,b,c       which network categories to extrude, or `all`
@@ -40,6 +45,10 @@ Examples:
 
     # the Phase 5 check: the road network alone, coloured by form
     blender --python tools/blender_import_bundle.py -- "…/spike" --kinds none --networks
+
+    # everything at once — buildings, trees, props, every network category, all textured —
+    # over 500 m of downtown, which is small enough to import repeatedly
+    blender --python tools/blender_import_bundle.py -- "…/spike" --everything 500
 
 The map origin is not the city. A save's buildings can sit kilometres off (0,0), so a radius
 around a guessed point mostly finds empty ground — which looks exactly like a broken import.
@@ -148,12 +157,32 @@ def read_declared_gaps(bundle_dir):
     return gaps
 
 
-def survey(instances_path, kinds, cell=250.0):
+def skyline_weight(record):
+    """How much a building counts towards "this cell is downtown".
+
+    The square of its height, so that a cluster of towers outranks a larger number of houses:
+    five 60 m towers score 18,000 against a hundred 4 m houses' 1,600, where a plain count puts
+    the houses twenty to one. Downtown is what makes a useful test region — it is where the tall
+    meshes, the dense props and every road category are — and a plain densest-cell search finds
+    suburbia instead, because that is where the object count is.
+    """
+    height = record.get("attrs", {}).get("height")
+    try:
+        height = float(height)
+    except (TypeError, ValueError):
+        height = 0.0
+    # A building with no height attribute still counts as one building rather than nothing.
+    return max(height, 1.0) ** 2
+
+
+def survey(instances_path, kinds, cell=250.0, weight=None):
     """Where the selected kinds actually are: bounds, centroid, and the densest cell.
 
     A pre-pass over instances.jsonl, which costs a few seconds on a full city and saves the far
     more expensive mistake of importing a patch of empty ground and concluding the bundle is
     broken. Returns None when the selection is empty.
+
+    `weight` scores each record's contribution to the densest cell; the default counts them.
     """
     count = 0
     min_x = min_z = float("inf")
@@ -171,7 +200,7 @@ def survey(instances_path, kinds, cell=250.0):
         sum_x += x
         sum_z += z
         cell_key = (math.floor(x / cell), math.floor(z / cell))
-        grid[cell_key] = grid.get(cell_key, 0) + 1
+        grid[cell_key] = grid.get(cell_key, 0) + (weight(record) if weight else 1)
 
     if count == 0:
         return None
@@ -271,6 +300,12 @@ _FORM_COLOURS = {
 
 _DRIVABLE = ("road", "highway", "train", "tram", "subway", "pathway", "taxiway", "runway")
 
+# Contract §4: the closed `kind` set. Listed rather than derived so that a v2 kind shows up here
+# as a deliberate edit instead of silently joining `--everything`.
+_ALL_KINDS = ("building", "prop", "tree", "fence", "decal", "poi")
+
+_UNSET = object()
+
 
 def _segment_normals(clean):
     """The left-hand horizontal unit normal of each segment of a polyline."""
@@ -345,19 +380,12 @@ def place_network_mesh(record, mesh_dir, collection):
     if not os.path.isfile(path):
         return False
 
-    before = set(bpy.data.objects)
-    try:
-        bpy.ops.import_scene.gltf(filepath=path)
-    except Exception as exc:                                    # noqa: BLE001 - report and go on
-        print(f"  ! {record['assetId']}: import failed — {exc}")
+    imported = import_glb(path)
+    if not imported:
         return False
 
     matrix = instance_matrix(record)
-    for obj in bpy.data.objects:
-        if obj in before:
-            continue
-        for existing in list(obj.users_collection):
-            existing.objects.unlink(obj)
+    for obj in imported:
         collection.objects.link(obj)
         if obj.parent is None:
             obj.matrix_world = matrix @ obj.matrix_world
@@ -529,6 +557,101 @@ def clear_scene():
                 block.remove(item)
 
 
+_SCRATCH_NAME = "_carto_import_scratch"
+
+
+def find_layer_collection(collection, root=None):
+    """The LayerCollection for `collection` in the active view layer, or None."""
+    root = root or bpy.context.view_layer.layer_collection
+    if root.collection is collection:
+        return root
+    for child in root.children:
+        found = find_layer_collection(collection, child)
+        if found is not None:
+            return found
+    return None
+
+
+class parked_out_of_view_layer:                                 # noqa: N801 - used as a context
+    """Keep a collection out of the view layer for the duration of a bulk import.
+
+    The glTF importer ends every file with `bpy.ops.object.select_all(action='DESELECT')`, which
+    walks *every object in the view layer* — so once a few thousand segments have landed, each
+    further import pays for all of them. Profiled over 500 network meshes it was 70 s of 197 s,
+    and it grows with the scene. Objects in an excluded collection are not in the view layer, so
+    parking the destination there makes that deselect walk only the handful the current file just
+    produced. Everything is linked back at the end and nothing is lost — exclusion hides a
+    collection from the view layer, it does not unlink it.
+    """
+
+    def __init__(self, collection):
+        self.collection = collection
+        self.layer = None
+
+    def __enter__(self):
+        self.layer = find_layer_collection(self.collection)
+        if self.layer is not None:
+            self.was_excluded = self.layer.exclude
+            self.layer.exclude = True
+        return self
+
+    def __exit__(self, *exc):
+        if self.layer is not None:
+            self.layer.exclude = self.was_excluded
+        return False
+
+
+def _scratch_layer_collection():
+    """A collection the glTF importer drops its objects into, so they can be found in O(1).
+
+    The importer links what it creates into the view layer's *active* collection. Pointing that at
+    a small scratch collection does two things. It turns "what did this import produce" into
+    reading one short list, where the obvious `set(bpy.data.objects)` before/after diff is two
+    passes over the whole scene — quadratic across a city, though measurement put it well below
+    the costs that actually dominate. More importantly it is what lets the destination collection
+    be parked outside the view layer entirely (see `parked_out_of_view_layer`): the importer has
+    to link its output *somewhere* in the view layer, and if that somewhere is the scene's master
+    collection then the scene grows and the parking buys nothing.
+    """
+    scene_collection = bpy.context.scene.collection
+    scratch = bpy.data.collections.get(_SCRATCH_NAME)
+    if scratch is None:
+        scratch = bpy.data.collections.new(_SCRATCH_NAME)
+    if scratch.name not in scene_collection.children:
+        scene_collection.children.link(scratch)
+    for layer in bpy.context.view_layer.layer_collection.children:
+        if layer.collection is scratch:
+            return layer
+    return None
+
+
+def import_glb(path):
+    """Import one .glb and return the objects it created, unlinked from every collection.
+
+    The caller links them wherever they belong. Returns [] if the import failed, having already
+    said why — one unreadable file should not end a city-sized import.
+    """
+    layer = _scratch_layer_collection()
+    if layer is None:
+        return []
+
+    view_layer = bpy.context.view_layer
+    previous = view_layer.active_layer_collection
+    view_layer.active_layer_collection = layer
+    try:
+        bpy.ops.import_scene.gltf(filepath=path)
+    except Exception as exc:                                    # noqa: BLE001 - report and go on
+        print(f"  ! {os.path.basename(path)}: import failed — {exc}")
+        return []
+    finally:
+        view_layer.active_layer_collection = previous
+
+    imported = list(layer.collection.objects)
+    for obj in imported:
+        layer.collection.objects.unlink(obj)
+    return imported
+
+
 def load_prefab_collection(asset_id, mesh_dir, sources):
     """Import <asset_id>.glb once and return a Collection holding it, or None.
 
@@ -540,22 +663,13 @@ def load_prefab_collection(asset_id, mesh_dir, sources):
     if not os.path.isfile(path):
         return None
 
-    before = set(bpy.data.objects)
-    try:
-        bpy.ops.import_scene.gltf(filepath=path)
-    except Exception as exc:                                    # noqa: BLE001 - report and go on
-        print(f"  ! {asset_id}: import failed — {exc}")
-        return None
-
-    imported = [obj for obj in bpy.data.objects if obj not in before]
+    imported = import_glb(path)
     if not imported:
         return None
 
     collection = bpy.data.collections.new(f"prefab_{asset_id}")
     sources.children.link(collection)
     for obj in imported:
-        for existing in list(obj.users_collection):
-            existing.objects.unlink(obj)
         collection.objects.link(obj)
 
     return collection
@@ -623,16 +737,17 @@ def main():
         return 1
 
     bundle_dir = argv[0]
-    kinds = {"building"}
-    limit = 20000
+    kinds = _UNSET
+    limit = _UNSET
     center = None
     radius = None
     keep = False
     save_path = None
     do_networks = False
-    net_categories = set(_DRIVABLE)
+    net_categories = _UNSET
     net_limit = None
     assets = None
+    everything = None
 
     i = 1
     while i < len(argv):
@@ -660,9 +775,12 @@ def main():
         elif arg == "--assets":
             assets = [a.strip().lower() for a in argv[i + 1].split(",") if a.strip()]
             i += 2
+        elif arg == "--everything":
+            everything = float(argv[i + 1])
+            i += 2
         elif arg == "--center":
-            if argv[i + 1] == "auto":
-                center = "auto"
+            if argv[i + 1] in ("auto", "downtown"):
+                center = argv[i + 1]
                 i += 2
             else:
                 center = (float(argv[i + 1]), float(argv[i + 2]))
@@ -680,6 +798,28 @@ def main():
             print(f"unknown option {arg!r}")
             return 2
 
+    # `--everything R` is a base, not an override: anything named explicitly still wins, so
+    # `--everything 400 --kinds building` is a legal way to say "that region, buildings only".
+    if everything is not None:
+        do_networks = True
+        if kinds is _UNSET:
+            kinds = set(_ALL_KINDS)
+        if net_categories is _UNSET:
+            net_categories = None                               # every category
+        if limit is _UNSET:
+            limit = None                                        # the radius is the limit
+        if center is None:
+            center = "downtown"
+        if radius is None:
+            radius = everything
+
+    if kinds is _UNSET:
+        kinds = {"building"}
+    if net_categories is _UNSET:
+        net_categories = set(_DRIVABLE)
+    if limit is _UNSET:
+        limit = 20000
+
     mesh_dir, instances_path, networks_path, net_mesh_dir = resolve_layers(bundle_dir)
     if kinds and not os.path.isfile(instances_path):
         print(f"no instances.jsonl at {instances_path}")
@@ -688,7 +828,7 @@ def main():
     declared_gaps = read_declared_gaps(bundle_dir)
     print(f"bundle:    {bundle_dir}")
     print(f"meshes:    {mesh_dir}")
-    print(f"kinds:     {sorted(kinds) or 'none'}   limit: {limit}")
+    print(f"kinds:     {sorted(kinds) or 'none'}   limit: {'none' if limit is None else limit}")
     if assets is not None:
         print(f"assets:    matching {assets}")
     if do_networks:
@@ -717,6 +857,20 @@ def main():
         print("--center auto needs instances to survey; drop it or add --kinds")
         return 2
 
+    # Downtown is decided by buildings whatever is being placed. Centring on the densest cell of
+    # a selection that includes trees finds a forest, and of one that includes props finds a car
+    # park; and with `--kinds none` there is nothing to survey at all, though a networks-only run
+    # still wants to look at the middle of the city.
+    if center == "downtown":
+        skyline = survey(instances_path, {"building"}, weight=skyline_weight)
+        if skyline is None:
+            print("--center downtown needs buildings in the bundle; "
+                  "use --center auto, or give explicit X Z")
+            return 2
+        center = skyline["densest"]
+        print(f"           --center downtown resolved to X {center[0]:.0f} Z {center[1]:.0f}"
+              f"   (tallest 250 m cell of {skyline['count']} building(s))")
+
     if radius is not None:
         if center is None:
             print("--radius needs --center (or --center auto)")
@@ -736,6 +890,14 @@ def main():
     placed_collection = bpy.data.collections.new("bundle_instances")
     bpy.context.scene.collection.children.link(placed_collection)
 
+    # Park both out of the view layer for the placement pass, for the reason given on
+    # `parked_out_of_view_layer`: every prefab import deselects the whole view layer, and the
+    # instances placed so far are in it. They are put back before anything has to look at them.
+    instance_park = parked_out_of_view_layer(placed_collection)
+    sources_park = parked_out_of_view_layer(sources)
+    instance_park.__enter__()
+    sources_park.__enter__()
+
     prefabs = {}
     placed = 0
     skipped_kind = 0
@@ -745,7 +907,7 @@ def main():
     started = time.time()
 
     for record in (read_jsonl(instances_path) if kinds else ()):
-        if placed >= limit:
+        if limit is not None and placed >= limit:
             break
 
         if record.get("kind") not in kinds:
@@ -793,9 +955,26 @@ def main():
     if do_networks:
         network_collection = bpy.data.collections.new("bundle_networks")
         bpy.context.scene.collection.children.link(network_collection)
-        networks = build_networks(networks_path, net_categories, network_collection,
-                                  net_mesh_dir, center=center, radius=radius,
-                                  limit=net_limit)
+        with parked_out_of_view_layer(network_collection):
+            networks = build_networks(networks_path, net_categories, network_collection,
+                                      net_mesh_dir, center=center, radius=radius,
+                                      limit=net_limit)
+
+    # Everything is imported, so the placed instances can come back into the view layer. This is
+    # deliberately after the networks: an instance parked here is an instance the segment imports
+    # do not have to deselect, and there are two orders of magnitude more of them than there are
+    # segments. Un-parking before the network pass put 40,500 empties back in front of every
+    # segment import and took each one from 0.06 s to 1.5 s.
+    instance_park.__exit__()
+    sources_park.__exit__()
+
+    # The scratch collection is empty by construction — every import unlinks what it produced —
+    # so drop it rather than leave an empty entry in the outliner.
+    scratch = bpy.data.collections.get(_SCRATCH_NAME)
+    if scratch is not None:
+        if scratch.name in bpy.context.scene.collection.children:
+            bpy.context.scene.collection.children.unlink(scratch)
+        bpy.data.collections.remove(scratch)
 
     # Hide the templates from the view layer without unlinking them; instances still resolve.
     layer_child = bpy.context.view_layer.layer_collection.children.get(sources.name)
@@ -816,11 +995,15 @@ def main():
     print(f"skipped: {skipped_kind} by kind, {skipped_asset} by --assets, {skipped_region} outside the region")
 
     # An empty-looking scene is nearly always the region filter, not the bundle. Say so, with the
-    # coordinates that would have worked.
-    if radius is not None and where is not None and placed < where["count"] / 20:
+    # coordinates that would have worked. The absolute floor matters as much as the ratio: a
+    # deliberate 500 m window on a 14 km city keeps well under a twentieth of it by design, and
+    # tens of thousands of instances is not an empty scene — pointing that run at `--center auto`
+    # would have moved it from downtown to whichever field has the most trees.
+    if (radius is not None and where is not None
+            and placed < where["count"] / 20 and placed < 500):
         print(f"NOTE: the region kept {placed} of {where['count']} selected instance(s). "
               f"The densest 250 m cell is at X {where['densest'][0]:.0f} Z {where['densest'][1]:.0f} — "
-              f"try --center auto, a larger --radius, or drop both.")
+              f"try --center auto, --center downtown, a larger --radius, or drop them.")
 
     if missing:
         undeclared = [a for a, r in missing.items() if r == "NOT DECLARED in warnings.jsonl"]
