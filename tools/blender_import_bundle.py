@@ -279,6 +279,51 @@ def load_prefab_collection(asset_id, mesh_dir, sources):
     return collection
 
 
+def aim_viewports(collection):
+    """Point every 3D viewport at what was just placed, and move the far clip plane past it.
+
+    A city is not near Blender's origin and is much bigger than Blender expects. An instance
+    at bundle X 1375 Z -1625 lands at Blender (1375, -1625, h), some 2.1 km out, while the
+    viewport's far clip defaults to 1000 m — so the import is complete, correct, and entirely
+    invisible. Frame All does not rescue it either: framing pushes the camera further back,
+    which clips the content harder. Both have to change together, so both are set here rather
+    than left as two manual steps to rediscover on every run.
+
+    No-ops under `-b`, where there are no screens to aim.
+    """
+    objects = list(collection.objects)
+    if not objects:
+        return
+
+    points = [o.matrix_world.translation for o in objects]
+    centre = Vector((sum(p.x for p in points) / len(points),
+                     sum(p.y for p in points) / len(points),
+                     sum(p.z for p in points) / len(points)))
+    span = max((p - centre).length for p in points)
+
+    aimed = 0
+    for screen in bpy.data.screens:
+        for area in screen.areas:
+            if area.type != "VIEW_3D":
+                continue
+            for space in area.spaces:
+                if space.type != "VIEW_3D":
+                    continue
+                # Far enough for a whole city; near plane lifted off 0.1 m to keep some depth
+                # precision at that range, but still well under building scale.
+                space.clip_start = 0.5
+                space.clip_end = 100000.0
+                region = space.region_3d
+                if region is not None:
+                    region.view_location = centre
+                    region.view_distance = max(span * 2.5, 100.0)
+                aimed += 1
+
+    if aimed:
+        print(f"aimed {aimed} viewport(s) at X {centre.x:.0f} Y {centre.y:.0f} Z {centre.z:.0f}, "
+              f"clip end 100000")
+
+
 def main():
     argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
     if not argv:
@@ -419,6 +464,8 @@ def main():
 
     show_materials()
 
+    aim_viewports(placed_collection)
+
     elapsed = time.time() - started
     print()
     print(f"placed {placed} instance(s) from {len(prefabs)} prefab(s) in {elapsed:.1f} s")
@@ -442,7 +489,12 @@ def main():
             print(f"CONTRACT VIOLATION: {len(undeclared)} undeclared: {undeclared[:10]}")
 
     if save_path:
-        bpy.ops.wm.save_as_mainfile(filepath=save_path)
+        # relative_remap=False because the textures stay where the rip put them, under
+        # ModsData on the system drive, and a .blend saved anywhere else cannot express that
+        # as a relative path. Blender's default is to try anyway and warn once per image --
+        # "cannot be made relative" for every one of a few thousand textures, which buries the
+        # import's own output. The paths are absolute either way; only the noise differs.
+        bpy.ops.wm.save_as_mainfile(filepath=save_path, relative_remap=False)
         print(f"saved {save_path}")
 
     return 0
