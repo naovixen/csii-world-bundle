@@ -121,6 +121,7 @@ namespace Carto.Systems
             int skippedNoPrefab = 0, withParent = 0;
             List<string> skipSamples = new();
             HashSet<int> unresolvedPrefabs = new();
+            HashSet<string> geometrylessPrefabs = new();
 
             NativeArray<Entity> entities = _objectQuery.ToEntityArray(Allocator.TempJob);
 
@@ -168,6 +169,22 @@ namespace Carto.Systems
                     MeshRipSystem.AssetIdEntry idEntry = assetIdTable[prefabEntity];
                     string assetId = idEntry.AssetId;
                     bool unresolved = !idEntry.Resolved;
+
+                    // A prefab with no SubMesh buffer has no geometry to rip, and the mesh rip
+                    // will never say so: its query requires SubMesh, so such a prefab is not
+                    // enumerated at all and cannot be skipped with a reason. This is the only
+                    // place both facts are in hand — the reference is being written here, and the
+                    // prefab entity is right there to ask — so the gap is declared here. Parking
+                    // lots, helipad airspace, area placeholders and intersections are all real
+                    // objects with real placements and no mesh of their own.
+                    // （沒有 SubMesh 緩衝區的預製模板無幾何可擷取，而網格擷取永遠不會言明此事：
+                    //   其查詢要求 SubMesh，故此類預製模板根本不會被列舉，也就無法附帶原因跳過。
+                    //   唯有此處同時掌握兩項事實——參照正於此寫出，而預製模板實體就在手邊——
+                    //   因此於此宣告該缺口。停車場、停機坪空域、區域佔位物與交叉路口
+                    //   皆是具有真實擺放、卻無自身網格的真實物件。）
+                    if (!unresolved && !EntityManager.HasBuffer<SubMesh>(prefabEntity))
+                        geometrylessPrefabs.Add(assetId);
+
                     if (unresolved)
                     {
                         skippedNoPrefab++;
@@ -237,7 +254,7 @@ namespace Carto.Systems
             if (skippedNoPrefab > 0)
             {
                 report.AppendLine($"Unresolved prefabs: {unresolvedPrefabs.Count} distinct, {skippedNoPrefab} instance(s) kept under synthetic ids");
-                WriteWarnings(outputDirectory, unresolvedPrefabs, report);
+                WriteWarnings(outputDirectory, unresolvedPrefabs, geometrylessPrefabs, report);
                 foreach (string sample in skipSamples) report.AppendLine($"  e.g. {sample}");
             }
             report.AppendLine($"Output: {path}");
@@ -314,8 +331,10 @@ namespace Carto.Systems
         /// </summary>
         /// <param name="outputDirectory">The bundle root.（束的根目錄。）</param>
         /// <param name="unresolvedPrefabs">The prefab entity indices that would not resolve.（無法解析的預製模板實體索引。）</param>
+        /// <param name="geometrylessPrefabs">Asset ids referenced here that no mesh will back.（此處參照、但不會有網格支撐的資產 ID。）</param>
         /// <param name="report">The report to note the outcome in.（用以記錄結果的報告。）</param>
-        private void WriteWarnings(string outputDirectory, HashSet<int> unresolvedPrefabs, StringBuilder report)
+        private void WriteWarnings(string outputDirectory, HashSet<int> unresolvedPrefabs,
+                                   HashSet<string> geometrylessPrefabs, StringBuilder report)
         {
             string path = IOUtils.CombinePath(outputDirectory, "warnings.jsonl");
 
@@ -324,7 +343,29 @@ namespace Carto.Systems
                 string directory = System.IO.Path.GetDirectoryName(path);
                 if (!string.IsNullOrEmpty(directory) && !System.IO.Directory.Exists(directory)) System.IO.Directory.CreateDirectory(directory);
 
+                // Keep every line this pass does not own, exactly as the mesh rip keeps ours.
+                // Truncating instead made the file order-dependent: the mesh rip declares its
+                // gaps and then a later instance pass erased all of them, so a bundle ripped
+                // meshes-first reported 118 declarations and shipped 87. Every one of those
+                // erased lines became an undeclared gap — a contract violation manufactured by
+                // the writer rather than by anything missing.
+                // （保留所有非本階段所擁有的行，正如網格擷取保留我們的行一樣。
+                //   先前的截斷寫入使該檔案與執行順序相關：網格擷取宣告其缺口後，
+                //   稍後的實例階段將其全數抹除，因此先擷取網格的束回報 118 筆宣告卻只輸出 87 筆。
+                //   每一筆被抹除的行都成為未宣告的缺口——由寫出端而非任何缺失所製造的契約違規。）
+                List<string> kept = new();
+                if (System.IO.File.Exists(path))
+                {
+                    foreach (string line in System.IO.File.ReadAllLines(path))
+                    {
+                        if (string.IsNullOrWhiteSpace(line)) continue;
+                        if (!IsOwnedByInstanceRip(line)) kept.Add(line);
+                    }
+                }
+
                 using System.IO.StreamWriter writer = new(path, false, new System.Text.UTF8Encoding(false)) { NewLine = "\n" };
+                foreach (string line in kept) writer.WriteLine(line);
+
                 foreach (int prefabIndex in unresolvedPrefabs)
                 {
                     Dictionary<string, object> warning = new()
@@ -336,11 +377,49 @@ namespace Carto.Systems
                     writer.WriteLine(Newtonsoft.Json.JsonConvert.SerializeObject(warning, Newtonsoft.Json.Formatting.None));
                 }
 
-                report.AppendLine($"Wrote warnings.jsonl ({unresolvedPrefabs.Count} entries)");
+                foreach (string assetId in geometrylessPrefabs)
+                {
+                    Dictionary<string, object> warning = new()
+                    {
+                        ["kind"] = "prefab",
+                        ["assetId"] = assetId,
+                        ["reason"] = "prefab has no SubMesh buffer, so no mesh is produced; "
+                                   + "instances kept with placement only"
+                    };
+                    writer.WriteLine(Newtonsoft.Json.JsonConvert.SerializeObject(warning, Newtonsoft.Json.Formatting.None));
+                }
+
+                report.AppendLine($"Wrote warnings.jsonl ({unresolvedPrefabs.Count + geometrylessPrefabs.Count} entries: "
+                                + $"{unresolvedPrefabs.Count} unresolved, {geometrylessPrefabs.Count} without geometry), "
+                                + $"keeping {kept.Count} from the mesh pass");
             }
             catch (Exception ex)
             {
                 _log.Warn($"Could not write warnings.jsonl: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Whether a <c>warnings.jsonl</c> line is one this pass writes.
+        /// （某 <c>warnings.jsonl</c> 行是否為本階段所寫出者。）<br/><br/>
+        /// The instance pass owns <c>prefab</c>; the mesh pass owns <c>mesh</c>, <c>material</c>
+        /// and <c>texture</c>. Each rewrites only its own kinds, so the two can run in either
+        /// order, and re-running one does not double or erase the other's declarations.<br/>
+        /// （實例階段擁有 <c>prefab</c>；網格階段擁有 <c>mesh</c>、<c>material</c> 與 <c>texture</c>。
+        /// 各自僅重寫自身類別，故兩者可依任意順序執行，
+        /// 且重跑其一不會使另一者的宣告重複或遭抹除。）
+        /// </summary>
+        /// <param name="line">One line of the file.（檔案中的一行。）</param>
+        /// <returns>Whether this pass owns it.（本階段是否擁有該行。）</returns>
+        private static bool IsOwnedByInstanceRip(string line)
+        {
+            try
+            {
+                return Newtonsoft.Json.Linq.JObject.Parse(line)["kind"]?.ToString() == "prefab";
+            }
+            catch (Exception)
+            {
+                return false;
             }
         }
 
