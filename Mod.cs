@@ -49,6 +49,11 @@ namespace Carto
             //   但世界卸載時中止的擷取必須於 OnDestroy 中釋放。）
             updateSystem.UpdateAt<MaterialRipSystem>(SystemUpdatePhase.MainLoop);
             updateSystem.UpdateBefore<NetworkSystem>(SystemUpdatePhase.GameSimulation);
+            // MainLoop for the same reason as the mesh rip: a network rip advances a slice per
+            // frame from OnUpdate and is started from the options page, which pauses the
+            // simulation - so a simulation-phase system would sit frozen exactly while the user
+            // is watching its progress bar.
+            updateSystem.UpdateAt<NetworkRipSystem>(SystemUpdatePhase.MainLoop);
             updateSystem.UpdateBefore<POISystem>(SystemUpdatePhase.GameSimulation);
             updateSystem.UpdateBefore<RasterSystem>(SystemUpdatePhase.GameSimulation);
             updateSystem.UpdateBefore<RouteSystem>(SystemUpdatePhase.GameSimulation);

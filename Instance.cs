@@ -164,10 +164,22 @@ namespace Carto
         public static MeshRipSystem MeshRip => World.DefaultGameObjectInjectionWorld.GetOrCreateSystemManaged<MeshRipSystem>();
 
         /// <summary>
+        /// The vanilla camera system, which knows where the player is looking.
+        /// （遊戲原生的攝影機系統，其知曉玩家正在注視何處。）
+        /// </summary>
+        public static Game.Rendering.CameraUpdateSystem Camera => World.DefaultGameObjectInjectionWorld.GetOrCreateSystemManaged<Game.Rendering.CameraUpdateSystem>();
+
+        /// <summary>
         /// The system that searches networks.
         /// （搜尋網路的系統。）
         /// </summary>
         public static NetworkSystem Network => World.DefaultGameObjectInjectionWorld.GetOrCreateSystemManaged<NetworkSystem>();
+
+        /// <summary>
+        /// The system that writes network edges into network records.
+        /// （將路網邊寫出為路網紀錄的系統。）
+        /// </summary>
+        public static NetworkRipSystem NetworkRip => World.DefaultGameObjectInjectionWorld.GetOrCreateSystemManaged<NetworkRipSystem>();
 
         /// <summary>
         /// The system that searches point of interests (POIs).

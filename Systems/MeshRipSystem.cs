@@ -160,116 +160,6 @@ namespace Carto.Systems
             RipRun run = _run;
             if (run != null) Advance(run);
         }
-
-        /// <summary>
-        /// The PLAN Phase 1 feasibility spike: rip the meshes of the first few building prefabs in
-        /// the loaded world and write one <c>.glb</c> per unique mesh.<br/>
-        /// （PLAN 第一階段的可行性驗證：擷取已載入世界中前數個建築預製模板的網格，並為每個唯一網格輸出一個 <c>.glb</c>。）<br/><br/>
-        /// This deliberately writes one file per <i>mesh</i> rather than per <i>building</i>: the
-        /// point is to prove that real vertices, indices and UVs come out and open correctly, not
-        /// to assemble multi-part buildings, which is Phase 3's job.<br/>
-        /// （此處刻意以「網格」而非「建築」為單位輸出檔案：目的是驗證能取出正確的頂點、索引與 UV，
-        /// 而組裝多部件建築屬於第三階段的工作。）
-        /// </summary>
-        /// <param name="maxPrefabs">The number of building prefabs to walk.（要走訪的建築預製模板數量。）</param>
-        /// <returns>A human-readable report of what was written.（可供閱讀的輸出報告。）</returns>
-        public string RipSpike(int maxPrefabs = 8)
-        {
-            string outputDirectory = IOUtils.CombinePath(Instance.CartoDataPath, "spike", "meshes");
-            StringBuilder report = new();
-            int prefabsWalked = 0, meshesWritten = 0, meshesSkipped = 0;
-            long bytesWritten = 0;
-            HashSet<string> written = new();
-
-            List<Entity> prefabEntities = GetCandidatePrefabs(report);
-            bool diagnosedOnce = false;
-
-            foreach (Entity prefabEntity in prefabEntities)
-            {
-                if (prefabsWalked >= maxPrefabs) break;
-                if (!EntityManager.HasBuffer<SubMesh>(prefabEntity)) continue;
-
-                string prefabName = GetPrefabName(prefabEntity) ?? $"entity_{prefabEntity.Index}";
-                prefabsWalked++;
-
-                DynamicBuffer<SubMesh> subMeshes = EntityManager.GetBuffer<SubMesh>(prefabEntity, true);
-                report.AppendLine($"[{prefabsWalked}] {prefabName}  ({subMeshes.Length} sub-mesh)");
-
-                for (int i = 0; i < subMeshes.Length; i++)
-                {
-                    Entity meshEntity = subMeshes[i].m_SubMesh;
-                    if (meshEntity == Entity.Null)
-                    {
-                        report.AppendLine($"      - sub{i}: null mesh entity");
-                        continue;
-                    }
-
-                    string meshName = GetPrefabName(meshEntity) ?? $"{prefabName}_sub{i}";
-                    string assetId = SanitizeAssetId(meshName);
-                    if (!written.Add(assetId))
-                    {
-                        report.AppendLine($"      = {assetId}: already written");
-                        continue;
-                    }
-
-                    try
-                    {
-                        // Trace every hop on the first failure. Guessing twice at a structure the
-                        // game can simply be asked about is how a spike stalls.
-                        // （於首次失敗時記錄每一次跳轉。對於可直接詢問遊戲的結構重複猜測，
-                        //   正是驗證停滯的原因。）
-                        // Trace the first mesh whether or not it succeeds. A mesh that comes out
-                        // but comes out *reduced* looks like success in the counts alone.
-                        // （無論成功與否皆記錄首個網格。僅看數量時，讀到簡化網格與成功難以區分。）
-                        List<string> trace = diagnosedOnce ? null : new();
-                        MeshAsset mesh = ReadMesh(meshEntity, assetId, meshName, trace);
-
-                        if (!diagnosedOnce)
-                        {
-                            diagnosedOnce = true;
-                            report.AppendLine($"        resolution trace for {assetId}:");
-                            foreach (string hop in trace) report.AppendLine($"          {hop}");
-                        }
-
-                        if (mesh == null)
-                        {
-                            meshesSkipped++;
-                            report.AppendLine($"      - {assetId}: no geometry buffers");
-                            continue;
-                        }
-
-                        string path = IOUtils.CombinePath(outputDirectory, $"{assetId}.glb");
-                        long size = GltfWriter.Write(path, mesh);
-                        bytesWritten += size;
-                        meshesWritten++;
-                        report.AppendLine($"      + {assetId}: {mesh.Vertices.Length} verts, {mesh.TriangleCount} tris, {mesh.Primitives.Count} prim, LOD{mesh.Lod}, {size} B");
-                    }
-                    catch (Exception ex)
-                    {
-                        meshesSkipped++;
-                        report.AppendLine($"      ! {assetId}: {ex.Message}");
-                        _log.Warn($"Failed to rip mesh `{assetId}`: {ex}");
-                    }
-                }
-            }
-
-            report.AppendLine();
-            report.AppendLine($"Wrote {meshesWritten} mesh(es), skipped {meshesSkipped}, {bytesWritten} bytes total.");
-            report.AppendLine($"Output: {outputDirectory}");
-
-            // The full report goes to the log. The in-game MessageDialog does not scroll, so a
-            // long body pushes its OK button off the bottom of the screen — return a summary.
-            // （完整報告寫入記錄檔。遊戲內的 MessageDialog 無法捲動，過長的內容會將確定按鈕擠出畫面。）
-            _log.Info(report.ToString());
-
-            StringBuilder summary = new();
-            summary.AppendLine($"Wrote {meshesWritten} mesh(es), skipped {meshesSkipped}.");
-            summary.AppendLine($"{bytesWritten / 1024} KiB to ModsData/Carto/spike/meshes");
-            summary.AppendLine();
-            summary.Append("Full report: Logs/Carto.log");
-            return summary.ToString();
-        }
-
         // ====================================================================================
         // PLAN Phase 3 — mesh dump, one .glb per unique prefab.
         // （PLAN 第三階段：網格輸出，每個唯一預製模板一個 .glb。）
@@ -770,6 +660,19 @@ namespace Carto.Systems
 
             for (int i = 0; i < subMeshes.Length; i++)
             {
+                // An `OutlineOnly` entry is never world geometry. The game clears every layer but
+                // `Outline` for it (`BatchInstanceJob.UpdateObjectInstances` does
+                // `layers &= ~Outline; if (OutlineOnly) layers &= Outline;`), so outside a tool's
+                // selection highlight its layer mask is empty and it draws nothing at all. It is
+                // the silhouette shell a highlight is drawn from, and exporting it buries the real
+                // mesh inside a second copy of itself.
+                // （`OutlineOnly` 條目絕非世界幾何。遊戲會為其清除 `Outline` 以外的所有圖層
+                //   （`BatchInstanceJob.UpdateObjectInstances` 執行
+                //   `layers &= ~Outline; if (OutlineOnly) layers &= Outline;`），
+                //   故在工具的選取高亮之外，其圖層遮罩為空，完全不會繪製。
+                //   它是繪製高亮所用的輪廓外殼，輸出它會使真正的網格埋在自身的第二個複本之中。）
+                if ((subMeshes[i].m_Flags & SubMeshFlags.OutlineOnly) != 0) continue;
+
                 // Unconditional entries are always drawn; conditional ones only when everything
                 // they ask for holds in the exported state.
                 // （無條件的條目一律繪製；有條件者僅在其所要求的一切於輸出狀態下皆成立時繪製。）
@@ -782,7 +685,18 @@ namespace Carto.Systems
             // referenced assetId resolves. Fall back to its first entry.
             // （若預製模板的每個條目皆有條件（部分道具僅以狀態變體存在），將完全不產生檔案，
             //   違背契約中「所有被參照的 assetId 皆可解析」的承諾。此時退回使用其首個條目。）
-            if ((selected.Count == 0) && (subMeshes.Length > 0)) selected.Add(0);
+            // The fallback skips outline shells for the same reason the loop does: falling back to
+            // one would hand the bundle a silhouette in place of the object.
+            // （後備方案基於與迴圈相同的理由略過輪廓外殼：退回使用它會讓束得到輪廓而非物件本身。）
+            if (selected.Count == 0)
+            {
+                for (int i = 0; i < subMeshes.Length; i++)
+                {
+                    if ((subMeshes[i].m_Flags & SubMeshFlags.OutlineOnly) != 0) continue;
+                    selected.Add(i);
+                    break;
+                }
+            }
 
             return selected;
         }

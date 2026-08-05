@@ -1445,11 +1445,19 @@ namespace Carto.Systems
         /// <returns>The number of materials written.（寫出的材質數量。）</returns>
         private int WriteTable(MaterialRun run)
         {
-            Dictionary<string, object> table = new(run.Materials.Count);
+            string path = IOUtils.CombinePath(run.BundleRoot, "materials.json");
+
+            // The table is bundle-wide but its producers are not: meshes and networks are separate
+            // buttons, each ripping the materials of what it touches. Overwriting would mean a
+            // network rip after a mesh rip leaves a bundle whose every building names a material
+            // that is no longer in the file — every glTF material name has to stay a key (§6).
+            // Keys this run resolved win, since they were read from the live game just now.
+            // （材質表涵蓋整個束，其產生者則否：網格與路網為各自獨立的按鈕，各自擷取所觸及者的材質。
+            //   若直接覆寫，則於網格擷取後再擷取路網，會使束中每棟建築所指名的材質不復存在於檔案中；
+            //   而每個 glTF 材質名稱都必須是一個鍵（§6）。本次工作解析出的鍵優先，因其方才自遊戲讀出。）
+            Dictionary<string, object> table = ReadTable(path);
             foreach (KeyValuePair<string, MaterialAsset> entry in run.Materials)
                 table[entry.Key] = entry.Value.ToJson(run.Textures.Resolve);
-
-            string path = IOUtils.CombinePath(run.BundleRoot, "materials.json");
 
             try
             {
@@ -1467,6 +1475,34 @@ namespace Carto.Systems
             }
 
             return table.Count;
+        }
+
+        /// <summary>
+        /// Read the material table a previous phase left on disk, or an empty one.
+        /// （讀取前一階段留於磁碟上的材質表；若無則為空表。）<br/><br/>
+        /// A file that will not parse is treated as absent rather than fatal: losing a phase's
+        /// entries is bad, but refusing to write this phase's would lose both.<br/>
+        /// （無法解析的檔案視為不存在而非致命錯誤：遺失某一階段的條目固然不好，
+        /// 但拒絕寫出本階段的條目會使兩者俱失。）
+        /// </summary>
+        /// <param name="path">The <c>materials.json</c> path.（<c>materials.json</c> 的路徑。）</param>
+        /// <returns>The entries already there.（已存在的條目。）</returns>
+        private static Dictionary<string, object> ReadTable(string path)
+        {
+            try
+            {
+                if (!System.IO.File.Exists(path)) return new Dictionary<string, object>();
+
+                Dictionary<string, object> existing =
+                    JsonConvert.DeserializeObject<Dictionary<string, object>>(System.IO.File.ReadAllText(path));
+
+                return existing ?? new Dictionary<string, object>();
+            }
+            catch (Exception ex)
+            {
+                _log.Warn($"Could not read the existing materials.json, starting a new table: {ex.Message}");
+                return new Dictionary<string, object>();
+            }
         }
 
         /// <summary>

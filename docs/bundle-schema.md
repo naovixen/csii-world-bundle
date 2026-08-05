@@ -270,7 +270,8 @@ so they are generally unique rather than deduped.
 ```jsonc
 { "id": 2001, "kind": "segment",
   "centerline": [[100,12,-360], [140,12,-360], [180,12.2,-360]], "width": 16.0,
-  "attrs": { "form": "normal", "lanes": 4, "direction": "twoway", "limit": 50.0, … } }
+  "attrs": { "category": "road", "form": "normal", "lanes": 4,
+             "direction": "twoway", "limit": 50.0, … } }
 ```
 
 `centerline` is a world-space polyline from start node to end node, already tessellated by the
@@ -283,6 +284,121 @@ Network `attrs`: `name`, `asset`, `category`, `form` (`normal|elevated|tunnel|br
 consumer needs to decide bridges, tunnels and terrain cutting), `lanes`, `direction`
 (`oneway|twoway|unknown`), `limit` (km/h), `length` (m), `width` (m), `elevation` (m above
 terrain, negative below).
+
+### 5.1 What this producer emits, and why
+
+The schema stays as frozen; this section records which of its options the Carto ripper takes,
+so a consumer knows what to expect from a real bundle without reading the mod.
+
+**Both forms, mixed — mesh where there is geometry, centerline where there is not.** A record
+is one form or the other and never both, but a bundle mixes them freely, and this is what that
+is for. Roads, rail, paths and taxiways are built from a cross-section and come out as real
+assembled geometry in the mesh form. Pipes and cables have no surface at all — they are only
+ever a line — so they come out in the centerline form, which is the honest description of them.
+
+**How a network mesh is assembled.** CS2 stores no per-segment road mesh, but the parts are all
+CPU-side. A composition names a cross-section: a list of pieces — carriageway, shoulder, kerb,
+sidewalk, median, side skirt — each an ordinary prefab with its own geometry and materials,
+placed by an offset across the width and tiled along the length. The game bends that assembly
+onto the road surface in the vertex shader, and the eight matrices it uses turn out to be
+nothing but the four control points of `EdgeGeometry`'s left and right boundary béziers. The
+producer therefore does the same bend itself, on the same data. Each `.glb` is one edge plus
+the junction flare at either end, so a segment covers node to node with nothing between.
+
+**Sections mirrored.** CS2 authors one side of a road and mirrors it for the other. Pieces on
+the mirrored side are reflected across the width, which matters wherever a piece is asymmetric —
+a sidewalk with a parking bay has its kerb on one side only.
+
+**No `kind: "node"` records, and so no `startNode` / `endNode`.** CS2 keeps no junction geometry
+on the node: the flare where an edge meets an intersection is stored on the *edge*, and each
+segment mesh carries its own half of every junction it touches.
+
+**Junctions are closed by a producer-built fill, not by CS2's own geometry.** An earlier version of
+this section claimed a junction is the union of the segment ends meeting in it. That is measurably
+false. Across a full city, **1,607 of 1,817 road junctions have every flare ending more than a
+metre short of the node**, and 316 more than four metres; other network types are the other way
+round, 77% of them reaching within a metre. The gap is a property of carriageways, and it is what
+a consumer saw as a hole at every junction.
+
+The producer closes it. Each flare presents a chord at its node end, from its left outer boundary
+to its right outer one — kerb to kerb. Those chords, taken in bearing order around the node, bound
+exactly the area no flare covers: the middle of the junction and the corner fillets between
+adjacent roads. That polygon is triangulated from a hub at the node position, once per junction,
+and carried in the `.glb` of the connected segment with the lowest id. Height and material come
+from the composition's own median surface piece. Measured with a point-in-triangle coverage test
+on a three-way highway junction, this takes ring coverage from 86–93% with a 60-degree missing
+sector to **100% at every radius from 1 m to the end of the flares**.
+
+A second, smaller defect is fixed the same way: at an intersection node the inner curve of the
+outer half and the inner curve of the inner half are **not the same curve** — measured lengths
+11.67 m and 8.05 m on one junction, against 10.01 m and 10.01 m at an ordinary node on the same
+road, and 17,111 of 19,445 intersection nodes city-wide against **0 of 32,473 ordinary ones**. The
+wedge between them is bridged, bounded to the composition's own width so that genuinely diverging
+carriageways are not paved over.
+
+**This is a reconstruction, not a reproduction of CS2.** A node feeds the vertex shader three
+curves beyond its four boundaries — `m_Middle` in composition matrix 4 and two side-connection
+curves in 6 and 7, where an edge has `identity` in all four — but which vertices ride which matrix
+is decided in the shader, and CS2 ships shaders compiled inside asset bundles. That mapping is not
+recoverable the way `CalculateNodeParameters` itself was. Every vertex of the fill is a point on a
+boundary curve the game computed, so nothing is invented; but a consumer should expect the
+junction surface to be flat where CS2 may have shaped it.
+
+**Vertex sync is applied.** A junction stretches some lanes across its flare and squeezes others,
+so that a lane edge still meets whatever it meets on the far side. CS2 describes that as four
+positions across each half of the cross-section (`NetCompositionData.m_SyncVertexOffsets*`) and
+four places they have to reach in this particular junction (`EdgeNodeGeometry.m_SyncVertexTargets*`),
+handed to the vertex shader as `m_CompositionSync0..3`. The producer applies the same remap, in
+the same coordinate — `CalculateSyncVertexOffsets` normalises each half by
+`(x - middleOffset) / (width / 2)`, and `middleOffset` is zero on every real composition measured,
+which makes it exactly the coordinate the assembly already interpolates in. Both outermost knots
+are fixed points in the measured data, so this moves lane boundaries *within* a flare and never its
+outer kerb or its median: it is not what closes a junction, it is what stops the pieces inside one
+from stepping. On a measured five-way ground crossroads the interior knots move 0.20 m and 0.60 m
+on the left half and −0.54 m and −0.18 m on the right; at an ordinary node offsets and targets are
+equal and nothing moves. The interpolation *between* knots is the shader's and is read here as
+piecewise linear — the reading the measured knots support, and the only one that puts every knot
+exactly on its target.
+
+Ruled out by measurement: `m_MiddleRadius` (zero), the intersection piece (an ordinary 4 m slot),
+and `NetCompositionArea` (read only by the tools' snapping, so it places buildings rather than
+drawing anything).
+
+`NetCompositionMeshData.m_IndexFactor` is **not** a UV or tiling term, which its scale invites you
+to assume. It is `Σ (piece index count / piece length)` — indices per metre of road, summed across
+the cross-section, used to size render batches. Computed from the pieces this producer reads it
+reproduces the game's own value to five significant figures on both a ground road (21.000) and an
+elevated highway node (125.812 against 125.813), which is also the check that the producer is
+reading the same geometry the game rasterises rather than some richer authored LOD. UVs need no
+correction at all: `GenerateCompositionMesh` copies each piece's authored UV through unchanged, and
+so does this.
+
+Also ruled out, having been suspected: the `NetSectionFlags.Hidden*` family does not hide anything
+in this path. `GenerateCompositionMesh` — the game's own piece-to-vertex assembly — skips a piece if
+and only if it has no `MeshVertex` buffer, and reads no `Hidden*` bit at all; `Hidden` instead
+raises `CompositionState.Hidden` on the composition as a whole. `MeshLayer` likewise selects batch
+groups on the *baked* composition mesh, which this producer does not use, and every composition
+measured reports `defaultLayers 0`. `NetPieceFlags.Bottom` needs no ground/elevated rule either:
+ground compositions carry no `Bottom` piece to begin with.
+
+**Network meshes are not deduped.** Every segment is bent onto its own curve, so each `.glb` is
+unique. Expect roughly one file per edge, of the order of tens of kilobytes each. The mesh's
+origin is the point `pos` places it at, which is *not* its bounding-box centre — a flare
+extends past the edge that owns it.
+
+**`form` is never `bridge`.** CS2 elevates a road and lets the terrain and water underneath
+decide what that reads as. An elevated segment over water is a bridge, which a consumer decides
+by sampling the water raster (§8) — the producer does not guess.
+
+**`category`** is one of `road`, `highway`, `train`, `tram`, `subway`, `pathway`, `waterway`,
+`taxiway`, `runway`, `pipe`, `cable`, `fence`, `other`, read off the composition's own
+components. A consumer that only wants drivable surfaces filters on it: pipes and cables are in
+the file because they are real placed networks, not because anything expects them to be
+extruded as ribbons.
+
+**Markers are excluded**, on the same grounds as in §4: network markers are the invisible
+anchors for pipe and cable junctions, plus airport airspace. Taxiways carry the marker component
+and *are* drawn, so they are the one exception.
 
 ---
 
@@ -358,6 +474,12 @@ keyed by `materialId`.
 Every map is optional; a consumer substitutes its own default for anything absent. Material
 objects are **closed** — an unknown field is an error, so a consumer never quietly drops a map
 it should have handled.
+
+The table is bundle-wide and **accumulates**. Meshes and networks are ripped by separate passes,
+each resolving the materials of what it touches, and a later pass merges into the file rather
+than replacing it — a network rip must not strip out the buildings' entries, since every glTF
+material name in the bundle has to remain a key here (§6). Where two passes produce the same
+`materialId`, the later one wins.
 
 ### 7.1 Channel semantics — read this before wiring a shader
 

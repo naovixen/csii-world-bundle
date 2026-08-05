@@ -96,7 +96,7 @@ static class Program
                 var fd = md.GetFieldDefinition(fh);
                 string name = md.GetString(fd.Name);
                 if (mrx != null && !mrx.IsMatch(name)) continue;
-                Console.WriteLine($"  F {fd.Attributes,-30} {fd.DecodeSignature(prov, null)} {name}");
+                Console.WriteLine($"  F {fd.Attributes,-30} {fd.DecodeSignature(prov, null)} {name}{ConstSuffix(md, fd)}");
             }
             foreach (var ph in td.GetProperties())
             {
@@ -148,6 +148,41 @@ static class Program
             if (s.Length == 0 || !rx.IsMatch(s)) continue;
             if (seen.Add(s)) Console.WriteLine($"{asm}: \"{s}\"");
         }
+    }
+
+    // ---- literal field values --------------------------------------------
+
+    /// <summary>
+    /// Decodes a literal field's constant into " = <value>", with a hex form for
+    /// integers so that flag-enum bit values are readable at a glance. Enum members
+    /// compile to bare <c>ldc.i4</c> in IL, so a bit test is only recognisable once
+    /// its numeric value is known; without this the <c>find</c> mode cannot see them.
+    /// Returns "" for a field that has no constant.
+    /// </summary>
+    static string ConstSuffix(MetadataReader md, FieldDefinition fd)
+    {
+        var ch = fd.GetDefaultValue();
+        if (ch.IsNil) return "";
+        var c = md.GetConstant(ch);
+        var br = md.GetBlobReader(c.Value);
+        switch (c.TypeCode)
+        {
+            case ConstantTypeCode.SByte: return Num(br.ReadSByte());
+            case ConstantTypeCode.Byte: return Num(br.ReadByte());
+            case ConstantTypeCode.Int16: return Num(br.ReadInt16());
+            case ConstantTypeCode.UInt16: return Num(br.ReadUInt16());
+            case ConstantTypeCode.Int32: return Num(br.ReadInt32());
+            case ConstantTypeCode.UInt32: return Num(br.ReadUInt32());
+            case ConstantTypeCode.Int64: return Num(br.ReadInt64());
+            case ConstantTypeCode.UInt64: return Num((long)br.ReadUInt64());
+            case ConstantTypeCode.Boolean: return " = " + br.ReadBoolean();
+            case ConstantTypeCode.Single: return " = " + br.ReadSingle();
+            case ConstantTypeCode.Double: return " = " + br.ReadDouble();
+            case ConstantTypeCode.String: return " = \"" + br.ReadUTF16(br.Length) + "\"";
+            default: return "";
+        }
+
+        static string Num(long v) => v >= 0 ? $" = {v} (0x{v:X})" : $" = {v}";
     }
 
     // ---- crude IL walker -------------------------------------------------
@@ -248,7 +283,57 @@ static class Program
                 try { arg = "\"" + md.GetUserString(MetadataTokens.UserStringHandle(tok & 0xFFFFFF)) + "\""; }
                 catch { arg = "<str>"; }
             }
+            // Branch targets. Without these a `brfalse` is unreadable: there is no way to tell
+            // a jump that skips one step from one that skips the whole loop body, which is
+            // exactly the difference between "adjust this piece" and "do not emit this piece".
+            else if (name.StartsWith("b") && (size == 1 || size == 4)
+                     && (name.StartsWith("br") || name.StartsWith("beq") || name.StartsWith("bge")
+                         || name.StartsWith("bgt") || name.StartsWith("ble") || name.StartsWith("blt")
+                         || name.StartsWith("bne")))
+            {
+                int delta = size == 1 ? (sbyte)il[i] : BitConverter.ToInt32(il, i);
+                i += size;
+                arg = $"-> IL_{i + delta:X4}";
+            }
+            else if (name == "leave" || name == "leave.s")
+            {
+                int delta = size == 1 ? (sbyte)il[i] : BitConverter.ToInt32(il, i);
+                i += size;
+                arg = $"-> IL_{i + delta:X4}";
+            }
+            // Numeric literals. A flag test compiles to `ldc.i4 <bits>; and`, so without the
+            // operand a bit test is indistinguishable from any other `and` — which is what
+            // hid the Hidden*/MeshLayer masks. Hex is printed alongside for mask reading.
+            else if (name == "ldc.i4" && size == 4)
+            {
+                int v = BitConverter.ToInt32(il, i); i += 4;
+                arg = v >= 0 ? $"{v} (0x{v:X})" : v.ToString();
+            }
+            else if (name == "ldc.i4.s" && size == 1)
+            {
+                int v = (sbyte)il[i]; i += 1;
+                arg = v >= 0 ? $"{v} (0x{v:X})" : v.ToString();
+            }
+            else if (name == "ldc.r4" && size == 4)
+            {
+                arg = BitConverter.ToSingle(il, i).ToString("R"); i += 4;
+            }
+            else if (name == "ldc.r8" && size == 8)
+            {
+                arg = BitConverter.ToDouble(il, i).ToString("R"); i += 8;
+            }
+            else if (name == "ldc.i8" && size == 8)
+            {
+                arg = BitConverter.ToInt64(il, i).ToString(); i += 8;
+            }
             else i += size;
+            if (arg == null && name.StartsWith("ldc.i4.") && name.Length > 7)
+            {
+                // ldc.i4.0 .. ldc.i4.8 and ldc.i4.M1 carry the value in the opcode itself.
+                string t = name.Substring(7);
+                if (t == "M1") arg = "-1";
+                else if (t.Length == 1 && t[0] >= '0' && t[0] <= '8') arg = t;
+            }
             ops.Add(new Op { Offset = start, Name = name, Arg = arg });
         }
         return ops;

@@ -399,38 +399,6 @@ namespace Carto
             //   只是將看似當機的遊戲換成有明確說明的狀態。）
             set { IO.RipProgress.RunDeferred(IO.RipProgress.Phase.Export, IO.IO.Export); }
         }
-
-        /// <summary>
-        /// The button that runs the world ripper's mesh-readback spike (PLAN Phase 1).
-        /// （執行世界擷取器網格回讀驗證的按鈕（PLAN 第一階段）。）<br/><br/>
-        /// Writes one <c>.glb</c> per unique building mesh into <c>ModsData/Carto/spike/meshes</c>
-        /// and reports the result in a dialog. Additive: it does not touch the vector export.<br/>
-        /// （為每個唯一的建築網格輸出一個 <c>.glb</c> 至 <c>ModsData/Carto/spike/meshes</c>，
-        /// 並以對話框回報結果。此功能為附加性質，不影響向量輸出。）
-        /// </summary>
-        [SettingsUISection(GeneralTab, GeneralGeneralGroup)]
-        [SettingsUIButton]
-        [SettingsUIDisableByCondition(typeof(Settings), nameof(IsInGameOrEditor), invert: true)]
-        public bool RipMeshSpikeButton
-        {
-            set
-            {
-                string report;
-                try
-                {
-                    report = Instance.MeshRip.RipSpike();
-                }
-                catch (System.Exception ex)
-                {
-                    Instance.Log.Error(ex.ToString());
-                    report = $"Mesh rip spike failed:\n{ex.Message}";
-                }
-
-                Game.UI.MessageDialog dialog = new("Options.SECTION[Carto.Carto.Mod]", report, "Common.OK");
-                Instance.UI.appBindings.ShowMessageDialog(dialog, null);
-            }
-        }
-
         /// <summary>
         /// The button that enumerates every placed object into <c>instances.jsonl</c> (PLAN Phase 2).
         /// （將所有已放置物件列舉至 <c>instances.jsonl</c> 的按鈕（PLAN 第二階段）。）
@@ -461,6 +429,56 @@ namespace Carto
             }
         }
 
+        /// <summary>
+        /// The button that writes every network edge into <c>networks.jsonl</c> (PLAN Phase 5).
+        /// （將所有路網邊寫出至 <c>networks.jsonl</c> 的按鈕（PLAN 第五階段）。）
+        /// </summary>
+        [SettingsUISection(GeneralTab, GeneralGeneralGroup)]
+        [SettingsUIButton]
+        [SettingsUIDisableByCondition(typeof(Settings), nameof(IsInGameOrEditor), invert: true)]
+        public bool RipNetworksButton
+        {
+            set
+            {
+                string summary;
+                try
+                {
+                    string directory = Utils.IOUtils.CombinePath(Instance.CartoDataPath, "spike");
+                    summary = Instance.NetworkRip.BeginRip(directory, RipTextureSize);
+                }
+                catch (System.Exception ex)
+                {
+                    Instance.Log.Error(ex.ToString());
+                    summary = $"Network rip failed:\n{ex.Message}";
+                }
+
+                Game.UI.MessageDialog dialog = new("Options.SECTION[Carto.Carto.Mod]", Fit(summary), "Common.OK");
+                Instance.UI.appBindings.ShowMessageDialog(dialog, null);
+            }
+        }
+
+        /// <summary>
+        /// Trim a report to what a message dialog can show without pushing its button off screen.
+        /// （將報告裁減至訊息對話框可顯示的長度，以免其按鈕被推出畫面之外。）<br/><br/>
+        /// The dialog does not scroll, so a long report hides the only way to dismiss it. The full
+        /// text always reaches <c>Logs/Carto.log</c> either way, which is where anything longer
+        /// than a glance belongs.<br/>
+        /// （對話框不會捲動，故過長的報告會遮蔽唯一的關閉方式。完整內容一律會寫入
+        /// <c>Logs/Carto.log</c>。）
+        /// </summary>
+        /// <param name="report">The full report.（完整報告。）</param>
+        /// <param name="maxLines">How many lines the dialog can hold.（對話框可容納的行數。）</param>
+        /// <returns>The trimmed text.（裁減後的文字。）</returns>
+        internal static string Fit(string report, int maxLines = 18)
+        {
+            if (string.IsNullOrEmpty(report)) return report;
+
+            string[] lines = report.Replace("\r\n", "\n").Split('\n');
+            if (lines.Length <= maxLines) return report;
+
+            return string.Join("\n", lines, 0, maxLines)
+                 + $"\n… {lines.Length - maxLines} more line(s) — full report in Logs/Carto.log";
+        }
         /// <summary>
         /// How many prefabs a mesh rip covers (PLAN Phase 3).
         /// （網格擷取涵蓋的預製模板數量（PLAN 第三階段）。）<br/><br/>

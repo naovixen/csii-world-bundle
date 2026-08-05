@@ -340,26 +340,68 @@ namespace Carto.IO
                                               ComponentTypeFloat, vertexCount, "VEC4");
             }
 
-            // -- Indices, one accessor per primitive ------------------------------------------
-            List<object> gltfPrimitives = new();
+            // -- Indices, one accessor per material -------------------------------------------
+            //
+            // Grouped by material, not emitted one per source range, because contract §6 is "one
+            // primitive per material" and a source mesh routinely presents the same material
+            // several times over — a road composition contributes one range per cross-section
+            // piece, and a dozen of those pieces share one asphalt. Ungrouped, each range became
+            // its own glTF material: measured over 60 network meshes, 651 materials carrying only
+            // 60 distinct names. That is what a consumer pays for, too — importing those 60 files
+            // into Blender built 651 PBR node trees instead of 60, and material creation was 51%
+            // of the import's entire run time.
+            // （依材質分組，而非逐來源範圍輸出，因為契約 §6 規定「每種材質一個 primitive」，
+            //   而來源網格經常重複呈現同一材質——道路組成的每個橫斷面部件各貢獻一個範圍，
+            //   其中十餘個部件共用同一種瀝青。若不分組，每個範圍都會成為獨立的 glTF 材質：
+            //   實測 60 個道路網格產生 651 種材質，卻僅有 60 個相異名稱。
+            //   消費端同樣為此付出代價——將該 60 個檔案匯入 Blender 會建立 651 棵 PBR 節點樹
+            //   而非 60 棵，且材質建立占整個匯入執行時間的 51%。）
+            List<string> materialOrder = new();
+            Dictionary<string, List<MeshPrimitive>> byMaterial = new();
             foreach (MeshPrimitive primitive in primitives)
             {
-                int offset = (int)binStream.Position;
-                int triangles = primitive.IndexCount / 3;
-                for (int t = 0; t < triangles; t++)
+                string materialId = string.IsNullOrEmpty(primitive.MaterialId)
+                    ? $"{mesh.AssetId}_mat{primitive.MaterialIndex}"
+                    : primitive.MaterialId;
+
+                if (!byMaterial.TryGetValue(materialId, out List<MeshPrimitive> group))
                 {
-                    int b = primitive.StartIndex + (t * 3);
-                    // Mirroring X inverts triangle facing, so reverse the winding to compensate
-                    // and keep glTF front faces counter-clockwise.
-                    // （鏡射 X 會反轉三角形朝向，因此反轉繞序以維持 glTF 正面為逆時針。）
-                    bin.Write((uint)mesh.Indices[b]);
-                    bin.Write((uint)mesh.Indices[b + 2]);
-                    bin.Write((uint)mesh.Indices[b + 1]);
+                    group = new List<MeshPrimitive>();
+                    byMaterial[materialId] = group;
+                    materialOrder.Add(materialId);
                 }
 
+                group.Add(primitive);
+            }
+
+            List<object> gltfPrimitives = new();
+            foreach (string materialId in materialOrder)
+            {
+                int offset = (int)binStream.Position;
+                int indexCount = 0;
+
+                foreach (MeshPrimitive primitive in byMaterial[materialId])
+                {
+                    int triangles = primitive.IndexCount / 3;
+                    for (int t = 0; t < triangles; t++)
+                    {
+                        int b = primitive.StartIndex + (t * 3);
+                        // Mirroring X inverts triangle facing, so reverse the winding to compensate
+                        // and keep glTF front faces counter-clockwise.
+                        // （鏡射 X 會反轉三角形朝向，因此反轉繞序以維持 glTF 正面為逆時針。）
+                        bin.Write((uint)mesh.Indices[b]);
+                        bin.Write((uint)mesh.Indices[b + 2]);
+                        bin.Write((uint)mesh.Indices[b + 1]);
+                    }
+
+                    indexCount += triangles * 3;
+                }
+
+                if (indexCount == 0) continue;
+
                 int indexAccessor = AddAccessor(accessors,
-                    AddBufferView(bufferViews, offset, primitive.IndexCount * 4, TargetElementArrayBuffer),
-                    ComponentTypeUnsignedInt, primitive.IndexCount, "SCALAR");
+                    AddBufferView(bufferViews, offset, indexCount * 4, TargetElementArrayBuffer),
+                    ComponentTypeUnsignedInt, indexCount, "SCALAR");
 
                 Dictionary<string, object> attributes = new() { ["POSITION"] = positionAccessor };
                 if (normalAccessor >= 0) attributes["NORMAL"] = normalAccessor;
@@ -374,7 +416,7 @@ namespace Carto.IO
                     ["mode"] = ModeTriangles
                 });
 
-                materials.Add(textures.BuildMaterial(primitive.MaterialId));
+                materials.Add(textures.BuildMaterial(materialId));
             }
 
             return gltfPrimitives;
