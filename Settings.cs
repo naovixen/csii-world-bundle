@@ -444,7 +444,7 @@ namespace Carto
                 try
                 {
                     string directory = Utils.IOUtils.CombinePath(Instance.CartoDataPath, "spike");
-                    summary = Instance.NetworkRip.BeginRip(directory);
+                    summary = Instance.NetworkRip.BeginRip(directory, RipTextureSize);
                 }
                 catch (System.Exception ex)
                 {
