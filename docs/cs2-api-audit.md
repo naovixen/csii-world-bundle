@@ -787,3 +787,32 @@ and `Colossal.IO.AssetDatabase.GeometryAsset` (dump kept at `E:\carto-out\game-s
 
 The §8 contract freeze that came out of this (16-bit PNG rasters + `rasters` scale keys, PNG
 instead of the placeholder GeoTIFF wording) is recorded in `docs/bundle-schema.md` §12.1.
+
+## 18. The junction interior, reopened by measurement (2026-08-06, late)
+
+§16 round 5 concluded the *visible* junction asphalt was the flattened terrain (dirt splat)
+under the ~13 %-alpha drive-lane decals. **A pixel measurement of an in-game screenshot
+falsifies the appearance half of that claim.** Method: sample the junction interior and the
+adjacent carriageway in the same shot, compare per-channel ratios; materials differ → ratios
+differ regardless of lighting. Data (`E:\carto-out\shots\ingame.png`):
+
+- junction interior (clean patch): (121, 109, 74) — R/B 1.635
+- carriageway between markings:   (121, 109, 75) — R/B 1.613, and (114, 102, 69)
+- road surface texture mean (bundle): (83, 82, 79) — neutral, R−B = 4
+- theme dirt texture mean (bundle):   (96, 87, 79) — warm, R−B = 17
+
+If the interior were dirt terrain its R/B under that light would be ≈ 1.87; measured 1.635 ≡
+the road's. **The interior is drawn with the road's own albedo — it is geometry (or a decal
+carrying the road texture), not terrain.** The drive-lane decal cannot be it: measured
+(18,18,18) at α ≤ 113 × 0.5 tint — a ~12 % wear tint, confirmed as the dark curved streaks in
+the same screenshot.
+
+What still stands from §16/§17: no *fan* exists; `UpdateNetInstances` draws only per-edge node
+meshes + orphans; the ground under junctions genuinely IS flattened (the ripped heightmap shows
+it) and the Phase 6 terrain layer is correct and needed under everything. What falls: terrain
+as the interior's visible surface. Since the interior is road-material geometry and the only
+draws there are the per-edge node meshes, **the game's node meshes must tile the whole interior
+— and the Blender petals are coverage our `GenerateCompositionMesh` port under-builds**, not
+missing terrain. Rotated node parts are not the gap (assembled + counted; 0 fired this rip).
+Round 6's task: diff the port's node coverage against the game's, piece class by piece class,
+until the petal area is accounted for.
