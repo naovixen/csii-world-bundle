@@ -21,18 +21,20 @@ namespace Carto.Systems
     /// <summary>
     /// The system that rips the terrain, water and ground-surface layers (PLAN Phase 6).
     /// （擷取地形、水體與地表層的系統（PLAN 第六階段）。）<br/><br/>
-    /// <b>Why the heightmap alone closes the junctions.</b> The game's junction interiors are not
-    /// geometry: <c>TerrainSystem</c>'s road job flattens the height cascade under every net whose
-    /// prefab carries <c>GeometryFlags.FlattenTerrain</c>/<c>ClipTerrain</c>, and
-    /// <c>GetHeightData()</c> reads back exactly that cascade slice (<c>baseLod</c>) — the base
-    /// heightmap is blitted in and the lot/lane/area height adjustments are drawn over it before
-    /// the readback is requested. The elevation this system writes therefore already contains the
-    /// road-flattened final ground, junction petals included.<br/>
-    /// （<b>為何高度圖本身即能閉合路口。</b>遊戲的路口內部並非幾何：<c>TerrainSystem</c> 的道路作業
-    /// 於每個預製模板帶有 <c>GeometryFlags.FlattenTerrain</c>／<c>ClipTerrain</c> 的路網之下壓平
-    /// 高度串接紋理，而 <c>GetHeightData()</c> 回讀的正是該串接切片——基底高度圖先行貼入，
-    /// 地塊／車道／區域的高度調整繪於其上，之後才提出回讀。故本系統寫出的高程已含
-    /// 道路壓平後的最終地面，路口花瓣亦在其中。）<br/><br/>
+    /// <b>The heightmap is the final, road-flattened ground.</b> <c>TerrainSystem</c>'s road job
+    /// flattens the height cascade under every net whose prefab carries
+    /// <c>GeometryFlags.FlattenTerrain</c>/<c>ClipTerrain</c>, and <c>GetHeightData()</c> reads
+    /// back exactly that cascade slice (<c>baseLod</c>) — the base heightmap is blitted in and
+    /// the lot/lane/area height adjustments are drawn over it before the readback is requested.
+    /// The elevation this system writes therefore already contains the flattened final ground.
+    /// (It is the ground <i>beneath</i> junctions, not their visible surface — the arms' node
+    /// meshes pave the interior; audit §18. An earlier revision claimed the heightmap closed the
+    /// junctions; that was the §18 misreading.)<br/>
+    /// （<b>高度圖即道路壓平後的最終地面。</b><c>TerrainSystem</c> 的道路作業於每個預製模板帶有
+    /// <c>GeometryFlags.FlattenTerrain</c>／<c>ClipTerrain</c> 的路網之下壓平高度串接紋理，
+    /// 而 <c>GetHeightData()</c> 回讀的正是該串接切片。故本系統寫出的高程已含壓平後的最終地面。
+    /// （其為路口<i>之下</i>的地面而非其可見表面——各臂的節點網格鋪滿內部；審計 §18。
+    /// 先前版本稱高度圖可閉合路口，即 §18 所載之誤讀。））<br/><br/>
     /// <b>Why the roadbed mask is stamped from net geometry.</b> The terrain material has no
     /// roadbed texture and no roadbed mask — its grounds are grass, dirt, rock and four paintable
     /// extras, classified per-pixel on the GPU. What makes flattened ground read as roadbed
@@ -583,8 +585,12 @@ namespace Carto.Systems
             else if (math.lengthsq(node.m_Left.m_Right.d - node.m_Right.m_Left.d) > 0.0001f)
             {
                 // A junction arm: both halves as authored, plus each half's wedge to the middle
-                // curve. The wedges are the petals that no mesh covers.
-                // （路口臂：兩半照製作蓋印，外加各半通往中線曲線的楔形。楔形即無網格覆蓋的花瓣。）
+                // curve — the same strips the game's terrain job flattens (its AddNode does
+                // exactly this). The node MESH paves the same wedges above (audit §18); this is
+                // the ground beneath them.
+                // （路口臂：兩半照製作蓋印，外加各半通往中線曲線的楔形——與遊戲地形作業壓平的
+                //   條帶相同（其 AddNode 正是如此）。節點網格於其上鋪滿同樣的楔形（審計 §18）；
+                //   此處為其下的地面。）
                 strip = node.m_Left;
                 StampSegment(surfaceIndex, heightData, strip, terrain, true, false);
                 strip.m_Left = strip.m_Right;

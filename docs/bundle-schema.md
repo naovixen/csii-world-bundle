@@ -453,55 +453,40 @@ of these so a bundle states how often each rule fired.
 on the node: the flare where an edge meets an intersection is stored on the *edge*, and each
 segment mesh carries its own half of every junction it touches.
 
-**Junctions are closed by a producer-built fill, not by CS2's own geometry.** An earlier version of
-this section claimed a junction is the union of the segment ends meeting in it. That is measurably
-false. Across a full city, **1,607 of 1,817 road junctions have every flare ending more than a
-metre short of the node**, and 316 more than four metres; other network types are the other way
-round, 77% of them reaching within a metre. The gap is a property of carriageways, and it is what
-a consumer saw as a hole at every junction.
+**Junctions are closed by the arms' own node meshes — CS2's mapping, ported** *(settled
+2026-08-07; the record of every earlier wrong reconstruction is `docs/cs2-api-audit.md`
+§16–§18)*. An early version of this section claimed a junction is the union of the segment
+ends meeting in it. That is measurably false — across a full city, **1,607 of 1,817 road
+junctions have every flare ending more than a metre short of the node**, 316 more than four
+metres — but the closing geometry is still entirely the game's: each edge's node mesh tiles
+its whole sector of the interior, out to the junction centre, and the union of the arms'
+sectors closes the junction with no producer-invented fill of any kind.
 
-The bulk of the closing is **the game's own mapping, applied unconditionally** *(revised
-2026-08-06)*. `GenerateCompositionMesh`'s median branch (`flag12`) diverts every
-`NetSectionFlags.Median` piece of a node composition — surface, kerb and bottom alike — onto
-the middle matrices: the piece's centre column of vertices (`|x − offset.x| < 0.01`, the game's
-own test) rides `EdgeNodeGeometry.m_Middle` (cut at t = 0.99, which ends at the junction
-centre), while every other vertex keeps its proportional position within its half's frame — the
-same frame the drive pieces are mapped in. The kerbs keep their authored width; the edges stay
-flush with the lanes either side; authored UVs and heights carry across. The game applies this
-at **every** node — there is no gap threshold and no width cap — and so, now, does the
-producer, excluding median pieces from the ordinary half mapping at nodes so each is emitted
-once. An earlier revision gated the bend on a measured parting (17,111 of 19,445 intersection
-nodes part, up to 8 m and beyond; 0 of 32,473 ordinary ones) and capped it at the composition's
-width; both were producer inventions, and the cap alone left 201 junction wedges of a full city
-as visible holes. One fallback remains, and it is a documented producer deviation: a
-composition with no median piece at all (a one-way carriageway, most highways) parts at an
-intersection just the same, and there the widest carriageway surface piece is stretched
-inner-left → middle → inner-right so the surface stays closed — the geometry the game covers
-that hole with (junction pieces on the corner matrices) is not assembled by this producer. It
-fires only when the halves have measurably parted.
+Two mappings do it, both from `GenerateCompositionMesh`'s node branch. **Median pieces**
+(`NetSectionFlags.Median`) divert onto the middle matrices: the piece's centre column of
+vertices (`|x − offset.x| < 0.01`, computed on the authored x) rides
+`EdgeNodeGeometry.m_Middle` (cut at t = 0.99, ending at the junction centre), while every
+other vertex keeps its proportional position within its half's frame — kerbs keep their
+authored width, edges stay flush with the lanes either side, authored UVs and heights carry
+across, at **every** node with no gap threshold and no width cap. And **the zero-width
+intersection piece** closes the wedge between the halves: every node composition — alleys and
+highways as much as boulevards — carries a `* Intersection Piece 0` median section with
+`m_Size.x = 0` and a real-width authored mesh, and the generator computes each vertex's side
+(`dx`) **before** pinning its lerp coordinate to the offset. The pinned side columns therefore
+land exactly on the inner boundary curves of the two halves while the centre column runs down
+`m_Middle` — a **three-rail ruled surface** spanning inner-left → centre → inner-right, which
+is the pointed dart of road surface a consumer can see interlocking in the game's own
+selection outlines. Misreading that pin as "every vertex is centre column" collapses the piece
+to a zero-area ribbon and opens a three-cusped hole at every junction of every road class —
+the producer shipped exactly that bug until 2026-08-07 (audit §18), which is why this
+paragraph documents the order of operations explicitly.
 
-What remains after the bend is a small **residual centre patch**, and it is an approximation,
-counted in the rip report. Each arm's emitted geometry now ends at three points — its two inner
-boundary ends and its middle curve at the 0.99 cut — and the polygon those points bound across
-all arms (a few metres wide at most) is triangulated flat from a hub, once per junction,
-carried in the `.glb` of the connected segment with the lowest id. Arms are ordered by bearing
-around the node with each arm's points contiguous (a single global bearing sort self-crosses at
-shallow-angle junctions and leaves sawtooth holes). Height and shade come from the
-composition's widest carriageway surface piece (its top vertices' height and mean UV), falling
-back to the median piece. The outer flare corners are deliberately **not** part of the ring:
-they belong to the flares, and a ring through them spanned the whole junction — over geometry
-that already covers it, which is what a consumer saw as z-fighting and a differently-shaded
-slab at every junction.
-
-**The wedge is a reproduction; the centre patch remains a reconstruction.** An earlier version
-of this section claimed the vertex-to-matrix mapping lives in CS2's compiled shaders and is
-unrecoverable. That was wrong: the mapping is baked per vertex by managed code
-(`GenerateCompositionMesh`), which is how the median case above was recovered. The still-open
-part is the corner case — `PreserveShape` pieces ride two straight side-connection curves
-(matrices 6/7, built by `BuildCurve` from the flare corners at composition width; reproduced
-for corner rails and crosswalks) with flag bits (0x80 on the baked index, roundabout branches)
-whose meaning has not been decoded. A consumer should expect the few square metres at a
-junction's very centre flat where CS2 may have shaped them.
+**Everything at a junction centre is now reproduction, not reconstruction.** No fan, no wedge
+fill, no residual centre patch, no fallback stretch — every prior producer invention here is
+deleted, and the interior a consumer reconstructs is triangle-for-triangle the mapping the
+game bakes. The one remaining approximation at nodes is the roundabout three-matrix blend
+(0x80 colour bits, shader-side feathering), still approximated by the nearer pair and counted
+in the rip report.
 
 **Vertex sync is applied.** A junction stretches some lanes across its flare and squeezes others,
 so that a lane edge still meets whatever it meets on the far side. CS2 describes that as four
@@ -630,14 +615,18 @@ Three pieces:
        } ] } }                                //   projects this part onto the ground — see below
    ```
 
-   **`decal` parts are the game's junction interiors.** CS2 covers the area between a
-   junction's arms with no composition geometry at all: `TerrainSystem` flattens the ground
-   under the junction (`ShiftTerrain`/`ClipTerrain`), and the drive lanes crossing it carry
-   decal-state sub-meshes that project asphalt and markings onto that ground. A consumer that
-   skips `decal` parts gets petal-shaped holes at every junction centre; the reference
+   **`decal` parts are wear tint and markings, not the junction surface.** The junction
+   interior itself is composition geometry — the arms' node meshes tile it to the centre
+   (§5.1) — and the ground beneath is flattened by `TerrainSystem` (the §8 terrain layer).
+   The drive lanes crossing a junction carry decal-state sub-meshes that project over that
+   surface: a ~12%-opacity near-black wear tint on the drive lanes (measured: texture
+   ~(18,18,18) at α ≤ 113 × 0.5 material tint) and the fully opaque road markings —
+   crosswalks, centre lines, stop lines (α ≈ 254 where painted). A consumer that skips
+   `decal` parts loses the markings and the wear shading, not the asphalt; the reference
    importer bends them like any part and lifts them slightly (`_DECAL_LIFT`) so they sit on
-   the surface the way the projection does. Until the terrain layer ships (Phase 6) they are
-   also the only thing standing in for the flattened ground beneath.
+   the surface the way the projection does. *(Corrected 2026-08-07 — an earlier version of
+   this note claimed the decals stood in for a mesh-less junction interior; audit §18 records
+   why that was wrong.)*
 
 3. **`lanemeshes.jsonl`** — one line per lane that draws:
 
@@ -897,9 +886,10 @@ toward +X (east).
   `value * rasters.elevationScale + rasters.elevationOffset`. These are the **final** heights —
   after the game's road job has flattened the ground under roads and junctions
   (`TerrainSystem`'s ShiftTerrain/ClipTerrain lane draws, building lots and area grading are
-  all baked in). Junction interiors have **no mesh in the game**: the visible floor there *is*
-  this terrain, so a consumer that skips the heightmap will see holes between the junction
-  flares.
+  all baked in). Junction interiors are paved by the arms' node meshes (§5.1) — this terrain
+  is the flattened ground *beneath* them, not the visible junction surface; skipping the
+  heightmap costs the ground everywhere, not the junction floors. *(Corrected 2026-08-07,
+  audit §18.)*
 - **`terrain/water_depth.png`** (`layers.water`) — 16-bit grayscale. Water depth in metres is
   `value * rasters.depthScale`; 0 means dry. The water *surface* elevation at a cell is ground
   height + depth. The simulation's coarser grid is resampled bilinearly onto the terrain grid

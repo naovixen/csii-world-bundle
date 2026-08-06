@@ -515,7 +515,7 @@ matrix selection, baked into vertex colour), `Game.Rendering.BatchInstanceSystem
 |---|---|---|---|
 | 1 | Edge: matrices 0–3 = start/end Segment boundary curves; halves along the length; across = lerp left→right | Same curves, same halves, geometric bend | **match** |
 | 2 | Node: matrices 0/2 and 1/3 = the two across-width halves; sync remap `m_CompositionSync0..3` | Same, incl. piecewise-linear sync | **match** |
-| 3 | Median piece at a node: centre column (`\|x−offset.x\|<0.01`) rides `m_Middle`×0.99; other vertices proportional in their half's frame; `size.x==0` collapses to the offset | Same mapping; stretch fallback for pieces with no centre column and for median-less compositions (documented in schema §5.1) | **match** (fallbacks are producer additions) |
+| 3 | Median piece at a node: centre column (`\|x−offset.x\|<0.01`, **`dx` computed before the zero-width pin**) rides `m_Middle`×0.99; other vertices proportional in their half's frame; `size.x==0` pins only the lerp coordinate, so a zero-width `* Intersection Piece 0` becomes a three-rail surface paving the centre wedge (§18) | Same mapping since f7cba22. The earlier port — and an earlier revision of this very row — read the pin as "all vertices are centre column" and collapsed the piece to a zero-area ribbon, opening a three-cusped hole at every junction of every road class; the "stretch fallback" it also claimed never survived into the GameMesh port | **match** (was the §18 divergence; this row itself was the misreading that cost the round-6 hunt) |
 | 4 | Winding reverses on `Invert` XOR `FlipMesh`; `Invert` mirrors x, `FlipMesh` mirrors z | Same | **match** |
 | 5 | Node one-off pieces draw only triangles whose vertices all sit at authored `z ≥ −0.01` | `GetFrontHalf`, same rule | **match** |
 | 6 | `HalfLength` sections: front half stretched over the full run | Front half substituted after the tile count is taken from the full length | **match** |
@@ -764,6 +764,13 @@ baking (33,500 files / 8.6 GiB from 112 unique meshes) was replaced by contract 
 straight part meshes once + per-lane bend parameters, the bend reference-implemented in the
 Blender harness — which is also what the game itself stores and does.
 
+> **Superseded in part (2026-08-07, §18):** row 2's "residual centre patch" was later deleted
+> outright — the interior needs no patch: the arms' node meshes tile it completely once the
+> zero-width intersection piece is mapped as the three-rail wedge paver. The intermediate
+> rounds 4–5 theory ("the interior is flattened terrain painted by decals") is also dead —
+> §18's pixel measurement falsified it. The flattening itself is real (§17) but is not the
+> visible surface.
+
 Acceptance for the re-rip: junction interiors close (the coverage raster that showed empty
 small-road junctions shows them paved), no flat differently-shaded facets and no fill
 z-fighting; "too wide" no longer appears in the report; road-marking text reads correctly;
@@ -772,7 +779,10 @@ z-fighting; "too wide" no longer appears in the report; road-marking text reads 
 
 ## 17. Terrain, water and the roadbed, settled from source (2026-08-06, Phase 6)
 
-§16's rounds 4–5 established that junction interiors are flattened ground, not geometry. This
+§16's rounds 4–5 believed junction interiors were flattened ground; §18 later falsified the
+appearance half of that (the visible interior is the arms' own node meshes). What survives —
+and what this section records — is that the ground under roads and junctions genuinely IS
+flattened, which the terrain layer ships. This
 section records what the Phase 6 build proved about *how* that ground works, from the decompiled
 `Game.Simulation.TerrainSystem`, `Game.Rendering.TerrainMaterialSystem`/`TerrainRenderSystem`
 and `Colossal.IO.AssetDatabase.GeometryAsset` (dump kept at `E:\carto-out\game-src`).

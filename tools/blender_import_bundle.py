@@ -47,9 +47,10 @@ Options (after the `--`):
                                  v=0 ring is the consumer rule in contract §4.1)
     --terrain                    also place the §8 terrain under everything: the road-flattened
                                  heightmap as a ground grid (roadbed faces textured from
-                                 surface_index.png) and the water surface at ground + depth.
-                                 This is what floors junction interiors — the game draws no
-                                 mesh there (same region filter as everything else)
+                                 surface_index.png) and the water surface at ground + depth
+                                 (same region filter as everything else). The ground, not the
+                                 junction floors — junction interiors are the arms' own node
+                                 meshes (audit §18)
     --keep-existing              don't wipe the scene first
     --save out.blend             write a .blend and exit, so the import is paid for once
 
@@ -846,9 +847,10 @@ def _bend_lane_part(part, source, curve, spans, curve_length, width_scale, hang,
     as (material key, vertex indices, uvs). Everything here mirrors the producer's former
     baking loop, which reproduced what the game's vertex shader does.
 
-    A `decal` part is how the game paints its junction interiors: asphalt and markings
-    projected onto ground the game flattens under the junction. Bent here like any part, it is
-    lifted a little above the surface so it wins the depth test the projection wins in-game.
+    A `decal` part is wear tint and road markings — crosswalks, centre lines, the drive lanes'
+    ~12%-alpha darkening — projected over the junction surface the arms' node meshes pave
+    (contract §5B, audit §18). Bent here like any part, it is lifted a little above the
+    surface so it wins the depth test the projection wins in-game.
     """
     lift = _DECAL_LIFT if part.get("decal") else 0.0
     pos, rot = part["pos"], part["rot"]
@@ -1091,12 +1093,12 @@ def build_lanes(lanes_path, catalogue_path, lane_mesh_dir, collection,
 
 # -- terrain, contract §8 -------------------------------------------------------------------
 #
-# The terrain is the Phase 6 acceptance layer, and the one that closes the junctions: the game
-# floors a junction's interior with road-flattened ground, not with any mesh, so the petals
-# between the flares are holes until this layer is under everything. The rasters are decoded
-# here in plain Python rather than through Blender's image loader so that no colour-management
-# transform can touch the samples — the decoder below is also deliberately a reference
-# implementation of §8's file format for any consumer to lift.
+# The terrain is the Phase 6 acceptance layer: the ground everything else stands on, with the
+# road-flattened cells recorded in surface_index.png. (It is NOT what closes junctions — the
+# arms' node meshes pave those; audit §18 corrected an earlier claim here.) The rasters are
+# decoded in plain Python rather than through Blender's image loader so that no
+# colour-management transform can touch the samples — the decoder below is also deliberately a
+# reference implementation of §8's file format for any consumer to lift.
 
 def _decode_png_gray(path):
     """Decode a single-channel PNG (§8) to (width, height, samples).
