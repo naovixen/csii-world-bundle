@@ -816,3 +816,30 @@ draws there are the per-edge node meshes, **the game's node meshes must tile the
 missing terrain. Rotated node parts are not the gap (assembled + counted; 0 fired this rip).
 Round 6's task: diff the port's node coverage against the game's, piece class by piece class,
 until the petal area is accounted for.
+
+### §18 resolution (2026-08-07): the wedge-paver was misread, one line was wrong
+
+The round-6 piece-table dump answered it. **Every** parted node composition carries a
+zero-width `* Intersection Piece 0` median section (`Highway/Median/Alley Intersection
+Piece 0`, `m_Size.x = 0`) whose **authored mesh has real width** (x ∈ −2..2 or −1..1, 53
+verts). The decompile's subtlety: `GenerateCompositionMesh` computes `dx = vertex.x −
+offset.x` **before** `vertex.x = select(vertex.x, offset.x, size.x == 0)` pins the lerp
+coordinate — so the piece's side columns still route into the half frames by their authored
+sign, where the pinned x lands them exactly ON the inner boundary curves, while the true
+centre column rides `m_Middle` to the junction centre. A zero-width intersection piece is
+therefore a **three-rail ruled surface** — inner-left curve, middle-to-centre, inner-right
+curve — and it is what paves the centre wedge of every junction arm, medians or not.
+
+The port (and audit §8's "zero-width median collapse" row, now corrected by this note) read
+the `select` as "every vertex is centre column" and collapsed the piece to a zero-area ribbon
+on `m_Middle` — which is precisely the astroid/petal hole at every junction of every road
+class, avenues' visible medians having masked it there. Fix: drop `zeroWidth` from the
+centre-column condition (`if (math.abs(dx) < 0.01f)`); the pinned `vertex.x` already sends
+the side columns to the boundary rails. One line.
+
+Method note for the next mystery of this kind: the sequence that cracked it was (1) pixel
+ratios on an in-game screenshot to falsify the wrong appearance theory, (2) the info-panel
+outline to see true per-arm coverage (sectors to the centre), (3) a top-down rasterisation of
+the ripped glbs to shape the hole exactly (three-cusped darts), and (4) an 8-composition
+piece-table dump from a live rip to name the paver. Screenshots were evidence, not
+decoration — the user's overlap outlines carried the decisive shape.
