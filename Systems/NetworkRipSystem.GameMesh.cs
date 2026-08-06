@@ -261,9 +261,68 @@ namespace Carto.Systems
                 && EntityManager.GetComponentData<NetCompositionMeshRef>(composition).m_Rotate) _rotatedNodeParts++;
 
             NetCompositionData data = EntityManager.GetComponentData<NetCompositionData>(composition);
+            DiagnoseWedge(composition, geometry, label);
             CompositionCurves curves = NodeCurves(geometry, data);
             BuildGameComposition(composition, curves, center, label, cache,
                                  vertices, uvs, indices, primitives, report);
+        }
+
+        /// <summary>Node compositions whose wedge diagnostic has been printed.（已印出楔形診斷的節點組成。）</summary>
+        private readonly HashSet<Entity> _wedgeDiagnosed = new();
+
+        /// <summary>
+        /// Round-6 diagnostic: how does the game close the centre wedge of a <i>median-less</i>
+        /// node composition?（第六輪診斷：遊戲如何閉合<i>無分隔帶</i>節點組成的中央楔形？）<br/><br/>
+        /// Audit §18 proved junction interiors are road-material geometry, and the info-panel
+        /// outline shows every arm's sector reaching the junction centre. Median pieces ride
+        /// <c>m_Middle</c> there; a composition with <b>no</b> median-flagged piece has nothing
+        /// mapped to matrices 4/5 in the documented vertex path, yet in-game its wedge is closed.
+        /// This dump prints the full piece table of the first few such compositions whose halves
+        /// have actually parted, so the closing mechanism can be read off real data instead of
+        /// guessed: a synthesized centre piece would show here; if nothing does, the mechanism is
+        /// in the shader's extra channels.<br/>
+        /// （§18 已證路口內部為道路材質的幾何，而資訊面板的輪廓顯示各臂扇區皆達路口中心。
+        /// 分隔帶部件於彼處依循 <c>m_Middle</c>；無分隔帶部件的組成在已記載的頂點路徑中
+        /// 無物映射至矩陣 4/5，但遊戲中其楔形仍閉合。此傾印列出前幾個兩半確已分離之此類組成的
+        /// 完整部件表，使閉合機制得以自實際資料讀出而非猜測。）
+        /// </summary>
+        private void DiagnoseWedge(Entity composition, EdgeNodeGeometry geometry, string label)
+        {
+            if ((_wedgeDiagnosed.Count >= 8) || !_wedgeDiagnosed.Add(composition)) return;
+            if (!EntityManager.HasComponent<NetCompositionMeshRef>(composition)) return;
+
+            Entity meshEntity = EntityManager.GetComponentData<NetCompositionMeshRef>(composition).m_Mesh;
+            if ((meshEntity == Entity.Null) || !EntityManager.HasBuffer<NetCompositionPiece>(meshEntity)) return;
+
+            float gap = math.distance(geometry.m_Left.m_Right.d, geometry.m_Right.m_Left.d);
+            DynamicBuffer<NetCompositionPiece> pieces = EntityManager.GetBuffer<NetCompositionPiece>(meshEntity, true);
+
+            bool hasMedian = false;
+            for (int i = 0; i < pieces.Length; i++)
+            {
+                if ((pieces[i].m_SectionFlags & NetSectionFlags.Median) != 0) { hasMedian = true; break; }
+            }
+
+            // Only the interesting case: halves parted, nothing declared to ride the middle.
+            // （僅記錄有意義的情形：兩半已分離，卻無任何部件宣告依循中線。）
+            if (hasMedian || (gap < 0.05f))
+            {
+                _wedgeDiagnosed.Remove(composition);
+                return;
+            }
+
+            System.Text.StringBuilder dump = new();
+            dump.AppendLine($"WEDGE DIAG [{_wedgeDiagnosed.Count}] {label}: median-less node composition, halves part {gap:F2} m");
+            dump.AppendLine($"  middle ends {geometry.m_Middle.d} radius {geometry.m_MiddleRadius:F2}");
+            for (int i = 0; i < pieces.Length; i++)
+            {
+                NetCompositionPiece piece = pieces[i];
+                dump.AppendLine($"  [{i}] `{Instance.Name.GetPrefabName(piece.m_Piece)}` "
+                              + $"section={piece.m_SectionFlags} piece={piece.m_PieceFlags} "
+                              + $"offset=({piece.m_Offset.x:F2},{piece.m_Offset.y:F2},{piece.m_Offset.z:F2}) "
+                              + $"size=({piece.m_Size.x:F2},{piece.m_Size.y:F2},{piece.m_Size.z:F2})");
+            }
+            _log.Info(dump.ToString());
         }
 
         private void BuildGameComposition(Entity composition, in CompositionCurves p,

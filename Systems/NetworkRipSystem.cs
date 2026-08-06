@@ -432,6 +432,7 @@ namespace Carto.Systems
             m_PieceGeometry.Clear();
             _rotatedEdges = 0;
             _rotatedNodeParts = 0;
+            _wedgeDiagnosed.Clear();
             _roundaboutParts = 0;
             _skipBottomPieces = 0;
             _railPieces = 0;
