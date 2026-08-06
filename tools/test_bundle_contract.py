@@ -83,6 +83,35 @@ class BundleContractTest(unittest.TestCase):
         self.assertEqual(report.errors, [])
         self.assertEqual(report.warnings, [])
 
+    # -- lane geometry, contract §5B v2 ------------------------------------------------
+
+    def test_lane_record_with_unknown_prefab_rejected(self):
+        bundle = self.fresh()
+        path = bundle / "lanemeshes.jsonl"
+        record = json.loads(path.read_text(encoding="utf-8").splitlines()[0])
+        record["prefab"] = "No_Such_Prefab"
+        path.write_text(json.dumps(record, separators=(",", ":")) + "\n", encoding="utf-8")
+        self.assertRejected(bundle, "not in laneprefabs.json")
+
+    def test_lane_part_index_out_of_range_rejected(self):
+        bundle = self.fresh()
+        path = bundle / "lanemeshes.jsonl"
+        record = json.loads(path.read_text(encoding="utf-8").splitlines()[0])
+        record["parts"] = [5]
+        path.write_text(json.dumps(record, separators=(",", ":")) + "\n", encoding="utf-8")
+        self.assertRejected(bundle, "out of range")
+
+    def test_lane_part_mesh_missing_rejected(self):
+        bundle = self.fresh()
+        for path in (bundle / "lanemeshes").glob("*.glb"):
+            path.unlink()
+        self.assertRejected(bundle, "has no mesh in lanemeshes/")
+
+    def test_lanemeshes_without_catalogue_rejected(self):
+        bundle = self.fresh()
+        (bundle / "laneprefabs.json").unlink()
+        self.assertRejected(bundle, "laneprefabs.json is missing")
+
     def test_glb_winding_matches_the_documented_convention(self):
         """frame.meshFrame claims front faces are CCW in the right-handed mesh frame.
 

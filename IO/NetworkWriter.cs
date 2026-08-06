@@ -87,6 +87,70 @@ namespace Carto.IO
         }
 
         /// <summary>
+        /// Write one lane-geometry parameter record as a single line (contract §5B v2).
+        /// （將一筆車道幾何參數紀錄寫為一行（契約 §5B v2）。）<br/><br/>
+        /// Optional keys are omitted rather than defaulted: a straight, uncut, unhung lane is
+        /// the common case, and 300k records of <c>"spans":[[0,1]]</c> would be pure bulk.
+        /// （可省略的鍵直接省略而非填入預設值：未切割、未懸垂的直線車道是常態，
+        /// 三十萬筆 <c>"spans":[[0,1]]</c> 只是徒增體積。）
+        /// </summary>
+        /// <param name="record">The record to write.（待寫出的紀錄。）</param>
+        public void Write(LaneGeometryRecord record)
+        {
+            Dictionary<string, object> line = new()
+            {
+                ["id"] = record.Id,
+                ["prefab"] = record.Prefab,
+                ["category"] = record.Category,
+                ["curve"] = new[]
+                {
+                    Round(record.CurveA), Round(record.CurveB),
+                    Round(record.CurveC), Round(record.CurveD)
+                },
+                ["parts"] = record.Parts
+            };
+
+            if (record.Owner >= 0) line["owner"] = record.Owner;
+
+            if (record.Spans.Count > 0)
+            {
+                double[][] spans = new double[record.Spans.Count][];
+                for (int i = 0; i < record.Spans.Count; i++)
+                {
+                    spans[i] = new[]
+                    {
+                        Math.Round((double)record.Spans[i].x, 5),
+                        Math.Round((double)record.Spans[i].y, 5)
+                    };
+                }
+                line["spans"] = spans;
+            }
+
+            if (!record.WidthScale.Equals(new float2(1f, 1f)))
+            {
+                line["widthScale"] = new[]
+                {
+                    Math.Round((double)record.WidthScale.x, 4),
+                    Math.Round((double)record.WidthScale.y, 4)
+                };
+            }
+
+            if (record.HasHang)
+            {
+                line["hang"] = new[]
+                {
+                    Math.Round((double)record.HangDistances.x, 4),
+                    Math.Round((double)record.HangDistances.y, 4)
+                };
+            }
+
+            if (record.ColorSet != null) line["colorSet"] = record.ColorSet;
+
+            _writer.WriteLine(JsonConvert.SerializeObject(line, Formatting.None));
+            Count++;
+        }
+
+        /// <summary>
         /// How many records were written in the mesh form.（以網格形式寫出的紀錄數。）
         /// </summary>
         public int MeshForm { get; private set; }

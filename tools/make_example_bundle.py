@@ -305,6 +305,53 @@ def build(out_dir: Path) -> None:
         for record in networks:
             fh.write(json.dumps(record, separators=(",", ":")) + "\n")
 
+    # -- lane geometry (contract §5B v2): a fence along a gentle curve -----------------
+    # The cube stands in for a straight fence part; the record's parameters are what a
+    # consumer's bend has to consume: curve, spans (one hole), a width scale and paint.
+    (out_dir / "lanemeshes").mkdir(exist_ok=True)
+    (out_dir / "lanemeshes" / f"{ASSET_ID}_fence.glb").write_bytes(
+        make_cube_glb(f"../textures/{Path(tex_rel).name}"))
+
+    lane_catalogue = {
+        "Example_Fence": {
+            "category": "fence",
+            "hanging": 0.0,
+            "parts": [
+                {
+                    "assetId": f"{ASSET_ID}_fence",
+                    "pos": [0.0, 0.0, 0.0],
+                    "rot": [0.0, 0.0, 0.0, 1.0],
+                    "inverted": False,
+                    "tilingCount": 0,
+                    "geometryTiling": True,
+                    "boundsMin": [-HALF, 0.0, -HALF],
+                    "boundsMax": [HALF, HEIGHT, HALF],
+                }
+            ],
+        }
+    }
+    (out_dir / "laneprefabs.json").write_text(
+        json.dumps(lane_catalogue, indent=2) + "\n", encoding="utf-8"
+    )
+
+    lanes = [
+        {
+            "id": 3001,
+            "prefab": "Example_Fence",
+            "category": "fence",
+            "owner": 2001,
+            "curve": [[100.0, 12.0, -352.0], [126.0, 12.0, -352.0],
+                      [154.0, 12.0, -350.0], [180.0, 12.2, -350.0]],
+            "parts": [0],
+            "spans": [[0.0, 0.45], [0.6, 1.0]],
+            "widthScale": [1.0, 1.0],
+            "colorSet": [[0.35, 0.3, 0.25, 1.0], [1.0, 1.0, 1.0, 1.0], [1.0, 1.0, 1.0, 1.0]],
+        }
+    ]
+    with (out_dir / "lanemeshes.jsonl").open("w", encoding="utf-8", newline="\n") as fh:
+        for record in lanes:
+            fh.write(json.dumps(record, separators=(",", ":")) + "\n")
+
     # Bounds must enclose every placed mesh. The cube reaches HALF*sqrt(2) horizontally
     # under an arbitrary yaw, so pad the footprint by that instead of by HALF.
     reach = HALF * math.sqrt(2.0)

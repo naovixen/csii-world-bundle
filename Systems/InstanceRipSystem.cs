@@ -84,6 +84,12 @@ namespace Carto.Systems
         readonly Dictionary<Entity, DecalInfo> _decalPrefabs = new();
 
         /// <summary>
+        /// Counters for the resolved-paint and growth-scale attributes, per rip.
+        /// （逐次擷取的已解析塗裝與生長縮放屬性計數。）
+        /// </summary>
+        int _colorSets, _customColors, _divergentColorSets, _growthScales;
+
+        /// <summary>
         /// The event triggered when the system instance is created.
         /// （當系統實例被創造時觸發的事件。）
         /// </summary>
@@ -161,7 +167,8 @@ namespace Carto.Systems
             Dictionary<string, int> byKind = new();
             int skippedNoPrefab = 0, withParent = 0, skippedUtilityNodes = 0;
             Dictionary<Entity, int> utilityNodesByPrefab = new();
-            int stackExpanded = 0, stackRecords = 0, withColor = 0;
+            int stackExpanded = 0, stackRecords = 0;
+            _colorSets = 0; _customColors = 0; _divergentColorSets = 0; _growthScales = 0;
             List<string> skipSamples = new();
             HashSet<int> unresolvedPrefabs = new();
             HashSet<string> geometrylessPrefabs = new();
@@ -284,7 +291,6 @@ namespace Carto.Systems
 
                     Game.Objects.Transform transform = EntityManager.GetComponentData<Game.Objects.Transform>(entity);
                     string kind = ClassifyKind(entity, prefabEntity);
-                    if (EntityManager.HasComponent<Game.Objects.Color>(entity)) withColor++;
 
                     InstanceRecord record = new()
                     {
@@ -339,11 +345,13 @@ namespace Carto.Systems
                 }
 
                 report.AppendLine($"Wrote {writer.Count} instance(s) to instances.jsonl");
-                if (withColor > 0)
+                if (_colorSets > 0)
                 {
-                    report.AppendLine($"  {withColor} instance(s) carry a per-instance colour choice "
-                                    + "the bundle does not yet record");
+                    report.AppendLine($"  {_colorSets} instance(s) carry the game's resolved paint (attrs.colorSet), "
+                                    + $"{_customColors} of them player-painted; "
+                                    + $"{_divergentColorSets} had per-part sets that differ (first part exported)");
                 }
+                if (_growthScales > 0) report.AppendLine($"  {_growthScales} tree(s) carry the game's growth scale (attrs.growthScale)");
                 if (stackExpanded > 0)
                 {
                     report.AppendLine($"Expanded {stackExpanded} stacked object(s) into {stackRecords} "
@@ -453,6 +461,41 @@ namespace Carto.Systems
             if (sections.Count == 0) return 0;
 
             int written = 0;
+
+            // Parts with no stack role are drawn once at the instance transform — the game's
+            // sub-mesh test passes them regardless of the `IsStack*` bits — and they live in the
+            // `__stack_rest` file the mesh pass ships, because the whole-prefab file is never
+            // referenced for a stacked prefab and the stack part files must not tile them.
+            // （無堆疊角色的部件於實例變換處繪製一次——遊戲的子網格測試不論 `IsStack*` 位元
+            //   皆使其通過——它們位於網格階段輸出的 `__stack_rest` 檔案中：
+            //   堆疊式預製模板的整體檔案從不被參照，而堆疊部件檔案不得使其隨鋪排重複。）
+            bool hasRest = false;
+            for (int i = 0; i < buffer.Length; i++)
+            {
+                if (!PrefabMesh.RoleOf(buffer[i].m_Flags).HasValue
+                    && MeshRipSystem.ExportsSubMesh(buffer[i].m_Flags)) { hasRest = true; break; }
+            }
+
+            if (hasRest)
+            {
+                string restId = PrefabMesh.StackRestId(template.AssetId);
+                InstanceRecord rest = new()
+                {
+                    Id = template.Id,
+                    AssetId = restId,
+                    Kind = template.Kind,
+                    Position = template.Position,
+                    Rotation = template.Rotation,
+                    Parent = template.Parent
+                };
+
+                foreach (KeyValuePair<string, object> attribute in template.Attributes)
+                    rest.Attributes[attribute.Key] = attribute.Value;
+
+                writer.Write(rest);
+                assetIds.Add(restId);
+                written++;
+            }
             foreach ((StackRole role, float3 localPosition, quaternion localRotation) in sections)
             {
                 int tiles = role switch
@@ -601,7 +644,14 @@ namespace Carto.Systems
                 ("decal", MeshFlags.Decal), ("impostor", MeshFlags.Impostor),
                 ("animated", MeshFlags.Animated), ("skeleton", MeshFlags.Skeleton),
                 ("character", MeshFlags.Character), ("prop", MeshFlags.Prop),
-                ("stackX", MeshFlags.StackX), ("stackY", MeshFlags.StackY), ("stackZ", MeshFlags.StackZ)
+                ("stackX", MeshFlags.StackX), ("stackY", MeshFlags.StackY), ("stackZ", MeshFlags.StackZ),
+
+                // The generated foundation skirt (`BaseProperties`): the game draws one extra
+                // batch past the last sub-mesh for these, which the bundle does not yet carry —
+                // the census is what says how much of the city that omission touches.
+                // （生成的基座裙板（`BaseProperties`）：遊戲為其於最後一個子網格之後多繪一個批次，
+                //   束尚未承載——此普查即說明該省略觸及城市多少範圍。）
+                ("base", MeshFlags.Base)
             };
 
             (string Name, SubMeshFlags Flag)[] subMeshFlags =
@@ -631,11 +681,11 @@ namespace Carto.Systems
                 // does not carry at all.
                 // （光源是物件預製模板上的元件而非網格旗標：燈具外殼為一般幾何，
                 //   而其投射的光是束完全未承載的另一份資料。）
-                // Per-instance colour: the prefab holds a palette of variations and each placed
-                // object picks one. The bundle carries neither, so every copy of a prefab comes
-                // out the same colour where the city shows a street of different ones.
-                // （逐實例顏色：預製模板持有一組變化色盤，各放置物件從中擇一。
-                //   束兩者皆未承載，故同一預製模板的每個複本顏色相同，而城市中實為一整排不同顏色。）
+                // Per-instance colour: the prefab holds a palette of variations
+                // (colors.json) and the game resolves each placed object's paint into its
+                // `MeshColor` buffer, which `AddAttributes` exports as `attrs.colorSet`.
+                // （逐實例顏色：預製模板持有變化色盤（colors.json），遊戲將各放置物件的塗裝
+                //   解析至其 `MeshColor` 緩衝區，由 `AddAttributes` 輸出為 `attrs.colorSet`。）
                 // Checked on the object prefab and on its sub-meshes, because which of the two
                 // holds the palette decides where a colour export would read from, and guessing
                 // is how a whole feature gets built against the wrong entity.
@@ -831,11 +881,13 @@ namespace Carto.Systems
                 Game.Objects.Elevation elevation = EntityManager.GetComponentData<Game.Objects.Elevation>(entity);
                 record.Attributes["elevation"] = Math.Round((double)elevation.m_Elevation, 3);
 
-                // The magnitude is clamped at zero, so it cannot express "below ground" at all.
-                // `Lowered` is the only thing that says so, and a consumer cutting terrain for an
-                // underpass needs it.
-                // （其量值下限為零，因而完全無法表達「位於地面之下」。
-                //   唯有 `Lowered` 能說明此事，而為地下道開挖地形的消費端需要它。）
+                // The stored component is *not* clamped at zero — a full city measured 29,610
+                // negative values (audit §4.1's own correction); only the placement-definition
+                // path clamps. The flags still matter: `Lowered` is how the game marks a
+                // deliberate below-ground placement, which a consumer cutting terrain needs.
+                // （儲存的元件<b>並未</b>以零為下限——完整城市實測有 29,610 筆負值
+                //   （稽核 §4.1 自身的更正）；僅擺放定義路徑會夾住。旗標仍然重要：
+                //   `Lowered` 是遊戲標記刻意置於地下者的方式，開挖地形的消費端需要它。）
                 string[] flags = FlagNames(elevation.m_Flags.ToString());
                 if (flags.Length > 0) record.Attributes["elevationFlags"] = flags;
             }
@@ -856,25 +908,50 @@ namespace Carto.Systems
                 if (info.Height > 0f) record.Attributes["decalHeight"] = math.round(info.Height * 1000f) / 1000f;
             }
 
-            // Which of its prefab's colour variations this particular object was painted. CS2
-            // chooses it once, by probability and a seed, and stores the answer here — so the
-            // bundle records the answer rather than trying to reproduce the choice. Without it
-            // every copy of a prefab comes out the same colour where the city shows a street of
-            // different ones: 349,865 objects in a full city carry one.
-            // （此特定物件被塗上其預製模板的哪一種顏色變化。CS2 依機率與種子選擇一次並將結果存於此處，
-            //   故束記錄該結果，而非試圖重現該選擇。若無此項，同一預製模板的每個複本顏色皆相同，
-            //   而城市中實為一整排不同顏色：完整城市中有 349,865 個物件帶有它。）
-            if (EntityManager.HasComponent<Game.Objects.Color>(entity))
+            // The paint this particular object was drawn with — the game's own resolved answer,
+            // not a key to look it up by. `Game.Objects.Color` is **not** that answer: its only
+            // writer is `ObjectColorSystem`, which fills it from the active *infoview* — the value
+            // is UI-overlay state that changes with whichever info mode was last open, and a
+            // previous version of this attribute exported it as the paint choice (357,176 records
+            // of infoview state in one full city). The real choice is computed by
+            // `MeshColorSystem` from `PseudoRandomSeed`, the palette's probabilities and the
+            // season filters, and stored per instance in the `MeshColor` buffer — recomputed for
+            // every entity on load, so it is always populated by the time a rip can run.
+            // `CustomMeshColor` overrides it wholesale when the player painted the thing
+            // (`SetCustomColor` applies entry 0 to every part).
+            // （此特定物件被繪上的塗裝——遊戲自身已解析的答案，而非用以查找的鍵。
+            //   `Game.Objects.Color` 並<b>非</b>該答案：其唯一寫入者是 `ObjectColorSystem`，
+            //   由當前<b>資訊檢視</b>填入——該值是隨最後開啟的資訊模式而變的 UI 疊加狀態，
+            //   而此屬性的前一版將其當作塗裝選擇輸出（一座完整城市中 357,176 筆皆為資訊檢視狀態）。
+            //   真正的選擇由 `MeshColorSystem` 依 `PseudoRandomSeed`、色盤機率與季節篩選計算，
+            //   逐實例存於 `MeshColor` 緩衝區——載入時對所有實體重算，故擷取時必已填妥。
+            //   玩家手動上色時 `CustomMeshColor` 整體覆蓋之。）
+            if (EntityManager.HasBuffer<Game.Rendering.CustomMeshColor>(entity)
+                && (EntityManager.GetBuffer<Game.Rendering.CustomMeshColor>(entity, true).Length > 0))
             {
-                Game.Objects.Color color = EntityManager.GetComponentData<Game.Objects.Color>(entity);
-                Dictionary<string, object> chosen = new()
+                DynamicBuffer<Game.Rendering.CustomMeshColor> custom = EntityManager.GetBuffer<Game.Rendering.CustomMeshColor>(entity, true);
+                record.Attributes["colorSet"] = ColorSetJson(custom[0].m_ColorSet);
+                record.Attributes["colorCustom"] = true;
+                _colorSets++;
+                _customColors++;
+            }
+            else if (EntityManager.HasBuffer<Game.Rendering.MeshColor>(entity))
+            {
+                DynamicBuffer<Game.Rendering.MeshColor> colors = EntityManager.GetBuffer<Game.Rendering.MeshColor>(entity, true);
+                if (colors.Length > 0)
                 {
-                    ["variation"] = color.m_Index,
-                    ["value"] = Math.Round(color.m_Value / 255.0, 4)
-                };
+                    record.Attributes["colorSet"] = ColorSetJson(colors[0].m_ColorSet);
+                    _colorSets++;
 
-                if (color.m_SubColor) chosen["subColor"] = true;
-                record.Attributes["color"] = chosen;
+                    // Parts of one instance can resolve different sets (per-part random seeds).
+                    // The first part's set is exported; count how often that approximates.
+                    // （同一實例的各部件可解析出不同的色組（逐部件的隨機種子）。
+                    //   輸出首個部件的色組，並計數此近似的發生次數。）
+                    for (int i = 1; i < colors.Length; i++)
+                    {
+                        if (!colors[i].m_ColorSet.Equals(colors[0].m_ColorSet)) { _divergentColorSets++; break; }
+                    }
+                }
             }
 
             if (EntityManager.HasComponent<Tree>(entity))
@@ -884,6 +961,25 @@ namespace Carto.Systems
                 // m_Growth is a byte ramp; the contract defines growth as 0..1.
                 // （m_Growth 為位元組級距，契約定義的 growth 為 0 至 1。）
                 record.Attributes["growth"] = Math.Round(tree.m_Growth / 255d, 3);
+
+                // The size the game actually draws this tree at. The renderer multiplies the
+                // instance transform by a scale from `BatchDataHelpers.CalculateTreeSubMeshData` —
+                // a √-lerp between the prefab's per-stage sizes (`GrowthScaleData`) — and a
+                // consumer cannot reproduce it from `growth` alone because the per-stage sizes are
+                // prefab data the bundle does not carry. Uniform, so one number.
+                // （遊戲實際繪製此樹的尺寸。繪製器以 `CalculateTreeSubMeshData` 所得的縮放
+                //   乘入實例變換——即預製模板各階段尺寸間的 √ 插值——而消費端無法僅憑
+                //   `growth` 重現，因為各階段尺寸是束未承載的預製模板資料。等比縮放，故僅一個數。）
+                if (EntityManager.HasComponent<GrowthScaleData>(prefabEntity))
+                {
+                    GrowthScaleData growthScale = EntityManager.GetComponentData<GrowthScaleData>(prefabEntity);
+                    Game.Rendering.BatchDataHelpers.CalculateTreeSubMeshData(tree, growthScale, out float3 treeScale);
+                    if (math.abs(treeScale.x - 1f) > 1e-3f)
+                    {
+                        record.Attributes["growthScale"] = Math.Round((double)treeScale.x, 4);
+                        _growthScales++;
+                    }
+                }
 
                 // Not `state`: the contract reserves that key for the building lifecycle enum, and
                 // a tree's vocabulary (Teen/Adult/Elderly/Dead/Stump/Collected) is a different one.
@@ -919,6 +1015,23 @@ namespace Carto.Systems
         /// </summary>
         /// <param name="flags">The enum's <c>ToString</c>.（列舉的 <c>ToString</c> 結果。）</param>
         /// <returns>The names, possibly empty.（各名稱，可能為空。）</returns>
+        /// <summary>
+        /// A resolved <c>ColorSet</c> as the contract writes colours: three linear RGBA channels.
+        /// （已解析的 <c>ColorSet</c>，依契約的顏色寫法：三個線性 RGBA 通道。）
+        /// </summary>
+        /// <param name="set">The set.（色組。）</param>
+        /// <returns>Three RGBA arrays.（三個 RGBA 陣列。）</returns>
+        internal static double[][] ColorSetJson(Game.Rendering.ColorSet set) => new[]
+        {
+            ChannelJson(set.m_Channel0), ChannelJson(set.m_Channel1), ChannelJson(set.m_Channel2)
+        };
+
+        /// <inheritdoc cref="ColorSetJson"/>
+        private static double[] ChannelJson(UnityEngine.Color color) => new double[]
+        {
+            Math.Round(color.r, 4), Math.Round(color.g, 4), Math.Round(color.b, 4), Math.Round(color.a, 4)
+        };
+
         private static string[] FlagNames(string flags)
         {
             if (string.IsNullOrEmpty(flags) || char.IsDigit(flags[0])) return Array.Empty<string>();

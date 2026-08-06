@@ -66,6 +66,15 @@ namespace Carto.Systems
         EntityQuery _objectQuery;
 
         /// <summary>
+        /// The query for the game's <c>MeshSettings</c> singleton, which names the default base
+        /// mesh a building's foundation skirt draws with when its prefab declares no
+        /// <c>BaseProperties</c> of its own.<br/>
+        /// （遊戲 <c>MeshSettings</c> 單例的查詢；當預製模板未宣告自身的 <c>BaseProperties</c> 時，
+        /// 建築基座裙板即以其指名的預設基座網格繪製。）
+        /// </summary>
+        EntityQuery _meshSettingsQuery;
+
+        /// <summary>
         /// The run in progress, or <c>null</c> when idle.（進行中的擷取工作，閒置時為 <c>null</c>。）
         /// </summary>
         RipRun _run;
@@ -112,6 +121,8 @@ namespace Carto.Systems
                     ComponentType.ReadOnly<Game.Vehicles.Vehicle>()
                 }
             });
+
+            _meshSettingsQuery = GetEntityQuery(ComponentType.ReadOnly<MeshSettingsData>());
 
             base.OnCreate();
             _log.Debug("MeshRipSystem instance created. 網格擷取系統實例創造完成。");
@@ -198,6 +209,42 @@ namespace Carto.Systems
 
             /// <summary>The texture to encode, or <c>null</c>.（待編碼的貼圖，或 <c>null</c>。）</summary>
             public PendingTexture Texture;
+
+            /// <summary>A foundation skirt to generate and serialise, or <c>null</c>.（待產生並序列化的基座裙板，或 <c>null</c>。）</summary>
+            public SkirtWork Skirt;
+        }
+
+        /// <summary>
+        /// One prefab's foundation-skirt job, generated on the writer task so the silhouette scan
+        /// costs the main thread nothing.
+        /// （單一預製模板的基座裙板工作，於寫出工作中產生，使輪廓掃描不佔主執行緒。）<br/><br/>
+        /// A prefab part whose <c>MeshData</c> carries <c>MeshFlags.Base</c> draws one extra
+        /// generated batch — the skirt between its floor and the terrain (see
+        /// <see cref="IO.BaseSkirtBuilder"/>). The band is written as
+        /// <c>&lt;assetId&gt;__base.glb</c>, separate from the prefab's own file, because it obeys
+        /// a draw rule of its own: a consumer drops its bottom ring to the terrain surface, and
+        /// skips it entirely for instances not resting on the ground.<br/>
+        /// （<c>MeshData</c> 帶有 <c>MeshFlags.Base</c> 的部件會多繪製一批產生的幾何——
+        /// 地板與地形之間的裙板。帶狀幾何寫為獨立的 <c>&lt;assetId&gt;__base.glb</c>，
+        /// 因其有自己的繪製規則：消費端將其下環下拉至地形表面，且對未貼地的實例整體略過。）
+        /// </summary>
+        private class SkirtWork
+        {
+            public string AssetId;
+            public string SourceName;
+            public int InstanceCount;
+            public List<SkirtPart> Parts = new();
+        }
+
+        /// <inheritdoc cref="SkirtWork"/>
+        private struct SkirtPart
+        {
+            public MeshAsset Source;
+            public float BaseOffset;
+            public float3 Position;
+            public quaternion Rotation;
+            public string NodeName;
+            public string MaterialId;
         }
 
         /// <summary>
@@ -249,6 +296,15 @@ namespace Carto.Systems
             public int Written, WriteFailed;
             public long Bytes;
 
+            /// <summary>
+            /// Foundation skirts written, and Base-flagged parts whose mesh presented no
+            /// silhouette at the base level (a valid outcome — the game generates an empty batch
+            /// for those too). Writer-task counters, read after it drains.
+            /// （已寫出的基座裙板數，以及帶 Base 旗標但於基準面無輪廓的部件數（此為有效結果——
+            ///   遊戲對其亦產生空批次）。寫出工作的計數器，於其排空後讀取。）
+            /// </summary>
+            public int SkirtsWritten, SkirtsEmpty;
+
             /// <summary>Everything that did not become a file.（所有未能成為檔案者。）</summary>
             public int Failed => ReadFailed + WriteFailed;
 
@@ -299,6 +355,60 @@ namespace Carto.Systems
         public bool IsRipping => _run != null;
 
         /// <summary>
+        /// How many prefabs merged more than one geometry-asset mesh since the rip began.
+        /// （自擷取開始以來，合併了多於一個幾何資產網格的預製模板數量。）<br/><br/>
+        /// Zero on a vanilla city means every placed prefab keeps one mesh per asset; a non-zero
+        /// count is the rule <c>RenderPrefab.ObtainMesh</c> flattens actually firing, and the
+        /// report states it rather than leaving the merge unobserved.<br/>
+        /// （在原版城市中為零代表所有已放置的預製模板每資產僅一個網格；非零則代表
+        /// <c>RenderPrefab.ObtainMesh</c> 所平坦化的規則確實生效，報告據實陳述而非任其無人聞問。）
+        /// </summary>
+        public int MultiMeshPrefabs { get; private set; }
+
+        /// <summary>
+        /// How many prefabs yielded fewer meshes than their geometry asset holds.
+        /// （產出網格數少於其幾何資產所持有者的預製模板數量。）<br/><br/>
+        /// A geometry asset's meshes are simultaneous parts, so a partial merge is dropped
+        /// geometry — the adult oak's leaves are mesh 1 behind the same asset as its trunk, and
+        /// losing them silently is how every tree in a bundle came out dead. Non-zero demands a
+        /// look at the log, where each drop names its prefab.<br/>
+        /// （幾何資產的網格是同時繪製的部件，部分合併即為丟失的幾何——成年橡樹的樹葉是與樹幹
+        /// 同一資產下的網格 1，無聲丟棄它便是整個束中每棵樹都枯死的原因。非零時應查看記錄，
+        /// 每筆丟棄都記有其預製模板名稱。）
+        /// </summary>
+        public int PartialMeshPrefabs { get; private set; }
+
+        /// <summary>
+        /// How many sub-mesh entries were the obsolete-content placeholder, stretched to the
+        /// prefab's bounds the way the renderer stretches it.
+        /// （屬於過時內容佔位網格、並依繪製器方式拉伸至預製模板邊界的子網格條目數量。）
+        /// </summary>
+        public int PlaceholderParts { get; private set; }
+
+        /// <summary>
+        /// How many stacked prefabs also carried parts with no stack role, shipped as the
+        /// <c>__stack_rest</c> file the instance pass places once per stacked instance.
+        /// （另帶有無堆疊角色部件的堆疊式預製模板數量；該等部件以 <c>__stack_rest</c> 檔案輸出，
+        /// 由實例階段為每個堆疊實例擺放一次。）
+        /// </summary>
+        public int StackRestParts { get; private set; }
+
+        /// <summary>
+        /// Where a partial-read declaration goes when no mesh rip is in flight.
+        /// （無網格擷取進行中時，部分讀取宣告的去處。）<br/><br/>
+        /// The network rip reads lane part meshes through <see cref="ReadMesh"/>; a mesh that
+        /// comes up short there was declared only when a <i>mesh</i> run existed — a full-city
+        /// rip logged <c>Highway_Lane_4_Mesh</c> unreadable and its bundle's
+        /// <c>warnings.jsonl</c> said nothing. The active network run registers its own warning
+        /// list here for the duration (contract §10: incompleteness is declared, never silent).
+        /// （路網擷取經由 <see cref="ReadMesh"/> 讀取車道部件網格；該處短少的網格過去僅在
+        /// <i>網格</i>擷取存在時才被宣告——全城擷取記錄了 <c>Highway_Lane_4_Mesh</c> 無法讀取，
+        /// 而其束的 <c>warnings.jsonl</c> 卻隻字未提。進行中的路網擷取於此註冊其警告列表
+        /// （契約 §10：不完整必須宣告，絕不沉默）。）
+        /// </summary>
+        public List<RipWarning> WarningSink;
+
+        /// <summary>
         /// Start ripping every unique prefab placed in the city into <c>meshes/&lt;assetId&gt;.glb</c>.
         /// （開始將城市中每個唯一的已放置預製模板擷取至 <c>meshes/&lt;assetId&gt;.glb</c>。）<br/><br/>
         /// Returns as soon as the work list is built; the rip itself proceeds a slice per frame in
@@ -313,6 +423,11 @@ namespace Carto.Systems
         public string BeginRip(string outputDirectory, int maxPrefabs = 0, int textureSizeCap = 2048)
         {
             if (_run != null) return "A mesh rip is already running.";
+
+            MultiMeshPrefabs = 0;
+            PartialMeshPrefabs = 0;
+            PlaceholderParts = 0;
+            StackRestParts = 0;
 
             RipProgress.Report(RipProgress.Phase.Scan);
 
@@ -491,7 +606,7 @@ namespace Carto.Systems
         {
             try
             {
-                PrefabMesh prefab = BuildPrefabMesh(item, out string skipReason);
+                PrefabMesh prefab = BuildPrefabMesh(item, out string skipReason, out SkirtWork skirt);
 
                 if (prefab == null)
                 {
@@ -504,6 +619,13 @@ namespace Carto.Systems
                 run.Read++;
                 run.Queue.Add(new RipItem { Prefab = prefab });
 
+                // The skirt rides behind the prefab that owns it. Its base surface was resolved —
+                // and its textures queued — while the prefab was assembled, so the ordered writer
+                // encodes them before the band's .glb needs their names.
+                // （裙板緊隨其所屬的預製模板。其基座表面於組裝該模板時解析、貼圖亦已排入，
+                //   故有序的寫出端必在帶狀 .glb 需要其名稱前先行編碼。）
+                if (skirt != null) run.Queue.Add(new RipItem { Skirt = skirt });
+
                 // A stacked prefab also ships one file per stack role, so that the instance pass
                 // can place a foot once, a repeating section as many times as that instance needs,
                 // and a cap once. The whole-prefab file above stays, and is still the right thing
@@ -513,8 +635,10 @@ namespace Carto.Systems
                 //   將可重複區段依該實例所需擺放多次、並將頂蓋擺放一次。上方的整體預製模板檔案予以保留，
                 //   對於同一預製模板但不具 `Stack` 元件的實例（作為獨立道具而非高架橋下的橋墩）
                 //   它仍是正確的選擇。）
+                bool stacked = false;
                 foreach (StackRole role in prefab.StackRoles())
                 {
+                    stacked = true;
                     PrefabMesh part = new()
                     {
                         AssetId = PrefabMesh.StackPartId(prefab.AssetId, role),
@@ -526,6 +650,36 @@ namespace Carto.Systems
                         if (p.StackRole == role) part.Parts.Add(p);
 
                     run.Queue.Add(new RipItem { Prefab = part });
+                }
+
+                // Parts with no stack role on a stacked prefab are drawn once, untiled, at the
+                // instance transform — the game's sub-mesh test grants `IsStack*` bits through the
+                // instance's `Stack` component and an unflagged entry passes regardless. They get
+                // their own file because the instance pass never references the whole-prefab file
+                // for a stacked prefab (every instance of one carries `Stack` by archetype), and
+                // the stack part files must not double them per tile.
+                // （堆疊式預製模板上無堆疊角色的部件僅於實例變換處繪製一次、不鋪排——
+                //   遊戲的子網格測試經由實例的 `Stack` 元件授予 `IsStack*` 位元，
+                //   而未標記的條目無論如何都會通過。它們獲得自己的檔案，因為實例階段對堆疊式
+                //   預製模板從不參照整體檔案（其每個實例依原型必帶 `Stack`），
+                //   且堆疊部件檔案不得使其隨鋪排重複。）
+                if (stacked)
+                {
+                    PrefabMesh rest = new()
+                    {
+                        AssetId = PrefabMesh.StackRestId(prefab.AssetId),
+                        SourceName = prefab.SourceName,
+                        InstanceCount = prefab.InstanceCount
+                    };
+
+                    foreach (PrefabMeshPart p in prefab.Parts)
+                        if (p.StackRole == null) rest.Parts.Add(p);
+
+                    if (rest.Parts.Count > 0)
+                    {
+                        StackRestParts++;
+                        run.Queue.Add(new RipItem { Prefab = rest });
+                    }
                 }
             }
             catch (Exception ex)
@@ -557,6 +711,12 @@ namespace Carto.Systems
                     continue;
                 }
 
+                if (item.Skirt != null)
+                {
+                    WriteSkirt(run, item.Skirt);
+                    continue;
+                }
+
                 PrefabMesh prefab = item.Prefab;
                 if (prefab == null) continue;
 
@@ -579,15 +739,73 @@ namespace Carto.Systems
         }
 
         /// <summary>
+        /// Generate one prefab's foundation-skirt band and write it as
+        /// <c>&lt;assetId&gt;__base.glb</c>. Runs on the writer task.
+        /// （產生單一預製模板的基座裙板帶並寫為 <c>&lt;assetId&gt;__base.glb</c>。於寫出工作中執行。）
+        /// </summary>
+        /// <param name="run">The run in progress.（進行中的工作。）</param>
+        /// <param name="skirt">The gathered inputs.（已收集的輸入。）</param>
+        private static void WriteSkirt(RipRun run, SkirtWork skirt)
+        {
+            try
+            {
+                PrefabMesh prefab = new()
+                {
+                    AssetId = skirt.AssetId,
+                    SourceName = skirt.SourceName,
+                    InstanceCount = skirt.InstanceCount
+                };
+
+                foreach (SkirtPart part in skirt.Parts)
+                {
+                    MeshAsset band = BaseSkirtBuilder.Build(part.Source, part.BaseOffset,
+                                                            skirt.AssetId, skirt.SourceName, part.MaterialId);
+                    if (band == null) continue;
+
+                    prefab.Parts.Add(new PrefabMeshPart
+                    {
+                        Mesh = band,
+                        Position = part.Position,
+                        Rotation = part.Rotation,
+                        NodeName = part.NodeName
+                    });
+                }
+
+                // No silhouette at the base level is a valid outcome — the game generates an empty
+                // batch there too — so it is counted, not warned about.
+                // （基準面無輪廓屬有效結果——遊戲於該處亦產生空批次——故僅計數而不警告。）
+                if (prefab.Parts.Count == 0)
+                {
+                    System.Threading.Interlocked.Increment(ref run.SkirtsEmpty);
+                    return;
+                }
+
+                string path = IOUtils.CombinePath(run.OutputDirectory, $"{prefab.AssetId}.glb");
+                long size = GltfWriter.Write(path, prefab, run.Materials.Describe);
+
+                System.Threading.Interlocked.Increment(ref run.SkirtsWritten);
+                System.Threading.Interlocked.Add(ref run.Bytes, size);
+                run.Sizes.Add(new KeyValuePair<string, long>(prefab.AssetId, size));
+            }
+            catch (Exception ex)
+            {
+                System.Threading.Interlocked.Increment(ref run.WriteFailed);
+                run.WriterNotes.Enqueue($"  ! {skirt.AssetId}: {ex.GetType().Name} {ex.Message}");
+                _log.Warn($"Failed to write `{skirt.AssetId}.glb`: {ex}");
+            }
+        }
+
+        /// <summary>
         /// Assemble a prefab entity's sub-meshes into one <see cref="PrefabMesh"/>.
         /// （將預製模板實體的子網格組裝為單一 <see cref="PrefabMesh"/>。）
         /// </summary>
         /// <param name="item">The prefab to assemble.（待組裝的預製模板。）</param>
         /// <param name="skipReason">Why nothing came out, when the result is <c>null</c>.（結果為 <c>null</c> 時，說明未能產出的原因。）</param>
         /// <returns>The assembled prefab, or <c>null</c>.（已組裝的預製模板，或 <c>null</c>。）</returns>
-        private PrefabMesh BuildPrefabMesh(WorkItem item, out string skipReason)
+        private PrefabMesh BuildPrefabMesh(WorkItem item, out string skipReason, out SkirtWork skirt)
         {
             skipReason = null;
+            skirt = null;
 
             if (!EntityManager.HasBuffer<SubMesh>(item.PrefabEntity))
             {
@@ -637,14 +855,70 @@ namespace Carto.Systems
                 string nodeName = meshAssetId;
                 for (int suffix = 2; !nodeNames.Add(nodeName); suffix++) nodeName = $"{meshAssetId}_{suffix}";
 
-                prefab.Parts.Add(new PrefabMeshPart
+                PrefabMeshPart part = new()
                 {
                     Mesh = mesh,
                     Position = subMeshes[index].m_Position,
                     Rotation = subMeshes[index].m_Rotation,
                     NodeName = nodeName,
                     StackRole = PrefabMesh.RoleOf(subMeshes[index].m_Flags)
-                });
+                };
+
+                // The obsolete-content placeholder — the box a prefab gets when its asset went
+                // missing — is not drawn at its authored size. The renderer stretches it over
+                // `ObjectGeometryData.m_Bounds` (`BatchDataSystem.UpdateObjectData`,
+                // `DefaultMissingMesh` branch: translate to the bounds' centre, scale to half
+                // their size), so the exported node carries the same TRS.
+                // （過時內容的佔位網格——資產遺失時預製模板所得的方盒——並非以其製作尺寸繪製。
+                //   繪製器將其拉伸覆蓋 `ObjectGeometryData.m_Bounds`（平移至邊界中心、
+                //   縮放至其半尺寸），故輸出節點帶有相同的 TRS。）
+                if (((subMeshes[index].m_Flags & SubMeshFlags.DefaultMissingMesh) != 0)
+                    && EntityManager.HasComponent<ObjectGeometryData>(item.PrefabEntity))
+                {
+                    Colossal.Mathematics.Bounds3 bounds = EntityManager.GetComponentData<ObjectGeometryData>(item.PrefabEntity).m_Bounds;
+                    part.Position += (bounds.min + bounds.max) * 0.5f;
+                    part.Scale = (bounds.max - bounds.min) * 0.5f;
+                    PlaceholderParts++;
+                }
+
+                prefab.Parts.Add(part);
+
+                // A part whose MeshData carries `MeshFlags.Base` draws one extra generated batch:
+                // the foundation skirt between its floor and the terrain. `MeshSystem` sets the
+                // flag for a render prefab declaring `BaseProperties`, and
+                // `ObjectInitializeSystem` grants it to every building mesh even without one, so
+                // the ECS state — not the managed component — is the authoritative gate. The
+                // silhouette scan itself runs on the writer task; here only the inputs are
+                // gathered, including the base surface, which must be resolved on the main thread
+                // while the material window is open.
+                // （MeshData 帶有 `MeshFlags.Base` 的部件會多繪製一批產生的幾何：地板與地形之間的
+                //   基座裙板。`MeshSystem` 為宣告 `BaseProperties` 的繪製預製模板設置此旗標，
+                //   `ObjectInitializeSystem` 則授予每個建築網格，即使其未宣告——故以 ECS 狀態
+                //   而非受控元件為權威判準。輪廓掃描於寫出工作中執行；此處僅收集輸入，
+                //   包括必須於主執行緒、材質窗口開啟期間解析的基座表面。）
+                if (EntityManager.HasComponent<MeshData>(meshEntity))
+                {
+                    MeshData meshData = EntityManager.GetComponentData<MeshData>(meshEntity);
+                    if ((meshData.m_State & MeshFlags.Base) != 0)
+                    {
+                        skirt ??= new SkirtWork
+                        {
+                            AssetId = $"{item.AssetId}__base",
+                            SourceName = item.SourceName,
+                            InstanceCount = item.InstanceCount
+                        };
+
+                        skirt.Parts.Add(new SkirtPart
+                        {
+                            Source = mesh,
+                            BaseOffset = ((meshData.m_State & MeshFlags.MinBounds) != 0) ? meshData.m_Bounds.min.y : 0f,
+                            Position = part.Position,
+                            Rotation = part.Rotation,
+                            NodeName = $"{nodeName}__base",
+                            MaterialId = ResolveBaseMaterial(meshEntity)
+                        });
+                    }
+                }
             }
 
             if (prefab.Parts.Count == 0)
@@ -654,6 +928,50 @@ namespace Carto.Systems
             }
 
             return prefab;
+        }
+
+        /// <summary>
+        /// Resolve the surface a part's foundation skirt draws with: surface 0 of the render
+        /// prefab's <c>BaseProperties.m_BaseType</c>, or of the game-wide default base mesh when
+        /// the prefab declares none (<c>ManagedBatchSystem.CreateBatch</c>, the
+        /// <c>GeneratedType.ObjectBase</c> branch).<br/>
+        /// （解析部件基座裙板所用的表面：繪製預製模板 <c>BaseProperties.m_BaseType</c> 的表面 0，
+        /// 或當模板未宣告時，全遊戲預設基座網格的表面 0。）
+        /// </summary>
+        /// <param name="meshEntity">The part's mesh entity.（部件的網格實體。）</param>
+        /// <returns>The bundle material id.（束材質 ID。）</returns>
+        private string ResolveBaseMaterial(Entity meshEntity)
+        {
+            RenderPrefab baseType = null;
+
+            if (EntityManager.HasComponent<PrefabData>(meshEntity)
+                && Instance.Prefab.TryGetPrefab(EntityManager.GetComponentData<PrefabData>(meshEntity), out PrefabBase prefabBase)
+                && (prefabBase is RenderPrefab renderPrefab))
+            {
+                BaseProperties properties = renderPrefab.GetComponent<BaseProperties>();
+                if ((properties != null) && (properties.m_BaseType != null)) baseType = properties.m_BaseType;
+            }
+
+            if ((baseType == null) && (_meshSettingsQuery.CalculateEntityCount() == 1))
+            {
+                MeshSettingsData settings = _meshSettingsQuery.GetSingleton<MeshSettingsData>();
+                if ((settings.m_DefaultBaseMesh != Entity.Null)
+                    && EntityManager.HasComponent<PrefabData>(settings.m_DefaultBaseMesh)
+                    && Instance.Prefab.TryGetPrefab(EntityManager.GetComponentData<PrefabData>(settings.m_DefaultBaseMesh), out PrefabBase defaultBase))
+                    baseType = defaultBase as RenderPrefab;
+            }
+
+            string materialId = ((baseType != null) && Instance.MaterialRip.IsRipping)
+                              ? Instance.MaterialRip.Resolve(baseType, 0) : null;
+
+            if (string.IsNullOrEmpty(materialId))
+            {
+                materialId = "base_default_mat0";
+                if (Instance.MaterialRip.IsRipping)
+                    Instance.MaterialRip.Declare(materialId, "base surface did not resolve");
+            }
+
+            return materialId;
         }
 
         /// <summary>
@@ -682,9 +1000,24 @@ namespace Carto.Systems
         /// 全部輸出將使所有替代方案疊在同一個檔案中，因此固定並記錄單一狀態：
         /// 健康的成體、未裝載、未受損、朝向前方。行車方向並非選擇，而是讀自城市設定。）
         /// </summary>
-        private SubMeshFlags DefaultState => SubMeshFlags.RequireSafe | SubMeshFlags.RequireAdult
+        public static SubMeshFlags DefaultState => SubMeshFlags.RequireSafe | SubMeshFlags.RequireAdult
             | SubMeshFlags.RequireEmpty | SubMeshFlags.RequireClear | SubMeshFlags.RequireForward
             | (Instance.City.leftHandTraffic ? SubMeshFlags.RequireLeftHandTraffic : SubMeshFlags.RequireRightHandTraffic);
+
+        /// <summary>
+        /// Whether one sub-mesh entry belongs in the exported state.
+        /// （單一子網格條目是否屬於輸出狀態。）<br/><br/>
+        /// Public and static so <see cref="InstanceRipSystem"/> can apply the identical test when
+        /// deciding whether a stacked prefab has untiled rest parts — the two layers must agree on
+        /// which entries exist or the <c>__stack_rest</c> reference dangles.<br/>
+        /// （設為公開靜態，使 <see cref="InstanceRipSystem"/> 於判斷堆疊式預製模板是否帶有
+        /// 不鋪排的其餘部件時能套用完全相同的測試——兩層對條目的認定必須一致，
+        /// 否則 <c>__stack_rest</c> 參照將懸空。）
+        /// </summary>
+        /// <param name="flags">The entry's flags.（條目的旗標。）</param>
+        /// <returns>Whether the entry is exported.（該條目是否輸出。）</returns>
+        public static bool ExportsSubMesh(SubMeshFlags flags)
+            => ((flags & SubMeshFlags.OutlineOnly) == 0) && (((flags & RequireFlags) & ~DefaultState) == 0);
 
         /// <summary>
         /// Choose which sub-mesh entries belong in the exported file.
@@ -694,7 +1027,6 @@ namespace Carto.Systems
         /// <returns>The indices to export.（要輸出的索引。）</returns>
         private List<int> SelectSubMeshes(SubMesh[] subMeshes)
         {
-            SubMeshFlags state = DefaultState;
             List<int> selected = new();
 
             for (int i = 0; i < subMeshes.Length; i++)
@@ -710,13 +1042,10 @@ namespace Carto.Systems
                 //   `layers &= ~Outline; if (OutlineOnly) layers &= Outline;`），
                 //   故在工具的選取高亮之外，其圖層遮罩為空，完全不會繪製。
                 //   它是繪製高亮所用的輪廓外殼，輸出它會使真正的網格埋在自身的第二個複本之中。）
-                if ((subMeshes[i].m_Flags & SubMeshFlags.OutlineOnly) != 0) continue;
-
                 // Unconditional entries are always drawn; conditional ones only when everything
                 // they ask for holds in the exported state.
                 // （無條件的條目一律繪製；有條件者僅在其所要求的一切於輸出狀態下皆成立時繪製。）
-                SubMeshFlags required = subMeshes[i].m_Flags & RequireFlags;
-                if ((required & ~state) == 0) selected.Add(i);
+                if (ExportsSubMesh(subMeshes[i].m_Flags)) selected.Add(i);
             }
 
             // A prefab whose every entry is conditional — some props exist only as state variants —
@@ -878,6 +1207,17 @@ namespace Carto.Systems
 
             run.Report.AppendLine();
             run.Report.AppendLine($"Wrote {run.Written} .glb, skipped {run.Skipped}, failed {run.Failed}, in {run.Clock.Elapsed.TotalSeconds:F1} s.");
+
+            // The rules the game applies that a vanilla city may never exercise — counted so a rip
+            // states how often each fired instead of leaving them unobservable.
+            // （遊戲適用、但原版城市未必觸發的規則——予以計數，使擷取據實陳述其觸發次數。）
+            if (MultiMeshPrefabs > 0) run.Report.AppendLine($"Merged multi-mesh geometry assets: {MultiMeshPrefabs} prefab(s).");
+            if (PartialMeshPrefabs > 0) run.Report.AppendLine($"Prefabs that lost meshes their geometry asset holds: {PartialMeshPrefabs} — see the log.");
+            if (PlaceholderParts > 0) run.Report.AppendLine($"Missing-asset placeholder parts stretched to prefab bounds: {PlaceholderParts}.");
+            if (StackRestParts > 0) run.Report.AppendLine($"Stacked prefabs with untiled rest parts (__stack_rest): {StackRestParts}.");
+            if ((run.SkirtsWritten > 0) || (run.SkirtsEmpty > 0))
+                run.Report.AppendLine($"Foundation skirts (__base): {run.SkirtsWritten} file(s); "
+                                    + $"{run.SkirtsEmpty} Base-flagged prefab(s) presented no silhouette at the base level.");
             run.Report.AppendLine($"Total {run.Bytes / (1024d * 1024d):F1} MiB, mean {(run.Written > 0 ? run.Bytes / (double)run.Written / 1024d : 0d):F0} KiB per prefab.");
             run.Report.AppendLine("Largest:");
             for (int i = 0; (i < 15) && (i < sizes.Count); i++)
@@ -951,42 +1291,70 @@ namespace Carto.Systems
                         trace?.Add($"geometry asset: ObtainMeshes failed — {ex.GetType().Name} {ex.Message}");
                     }
 
-                    List<GeometryAssetReader.MeshInfo> meshes = GeometryAssetReader.Describe(asset, renderPrefab.meshCount);
-                    if (trace != null) foreach (GeometryAssetReader.MeshInfo info in meshes) trace.Add($"  {info}");
+                    // Which count to trust: the asset's own file header, not the prefab's
+                    // serialized `m_MeshCount`. They agree on vanilla content (`MeshSystem`
+                    // warns whenever meshCount != materialCount and a vanilla load logs none),
+                    // but the header is what `CreateMeshes` actually iterates, and after
+                    // `ObtainMeshes` it is resident — so it is the ground truth at zero cost.
+                    // （該信任哪個數量：資產自身的檔頭，而非預製模板序列化的 `m_MeshCount`。
+                    //   兩者在原版內容上一致，但檔頭才是 `CreateMeshes` 實際走訪的數量，
+                    //   且於 `ObtainMeshes` 之後已常駐——故其為零成本的權威事實。）
+                    int meshCount = renderPrefab.meshCount;
+                    try { if (asset.meshCount > 0) meshCount = asset.meshCount; }
+                    catch (Exception) { /* header not resident; the prefab's declared count is the best available */ }
 
-                    if (meshes.Count > 0)
+                    if (trace != null)
+                        foreach (GeometryAssetReader.MeshInfo info in GeometryAssetReader.Describe(asset, meshCount))
+                            trace.Add($"  {info}");
+
+                    // Every mesh of the asset, not the richest one. The meshes are simultaneous
+                    // parts — LODs live behind LodProperties as separate render prefabs — and the
+                    // game binds surface i to the i-th (mesh, sub-mesh) pair in flat order
+                    // (`RenderPrefab.ObtainMesh`), which is exactly the ordinal the reader assigns.
+                    // Picking one mesh dropped its siblings and, off the first slot, mis-assigned
+                    // their surfaces.
+                    // （讀取資產的每個網格而非最豐富者。這些網格是同時繪製的部件——LOD 以獨立繪製
+                    //   預製模板存在於 LodProperties 之後——且遊戲將表面 i 繫結至平坦順序下第 i 個
+                    //   （網格、子網格）配對（`RenderPrefab.ObtainMesh`），讀取器指派的序數正是它。
+                    //   只挑一個網格會丟棄其兄弟部件，且於首槽位之外錯配其表面。）
+                    MeshAsset merged = GeometryAssetReader.ReadAll(asset, meshCount, assetId, sourceName, out int meshesMerged);
+                    if (merged != null)
                     {
-                        // Richest mesh wins, on the same reasoning as the ECS candidates: the LOD
-                        // chain is ordered by convention, not by guarantee.
-                        // （以最豐富者為準，理由同 ECS 候選：LOD 鏈的順序僅為慣例而非保證。）
-                        GeometryAssetReader.MeshInfo best = meshes[0];
-                        foreach (GeometryAssetReader.MeshInfo info in meshes)
-                            if (info.IndexCount > best.IndexCount) best = info;
-
-                        MeshAsset mesh = GeometryAssetReader.Read(asset, best.MeshIndex, assetId, sourceName);
-                        if (mesh != null)
+                        if (meshesMerged > 1) MultiMeshPrefabs++;
+                        if (meshesMerged < meshCount)
                         {
-                            trace?.Add($"geometry asset: chose mesh{best.MeshIndex} ({mesh.TriangleCount} tris, {mesh.Primitives.Count} primitives)");
-                            return mesh;
+                            // The meshes of one asset draw together, so coming up short is lost
+                            // geometry, not a variant choice — counted, named in the log, and
+                            // declared in warnings.jsonl: the .glb exists but is incomplete,
+                            // which a consumer cannot see from the file alone (contract §10).
+                            // （同一資產的網格是共同繪製的，故短少即為丟失的幾何而非變體選擇——
+                            //   予以計數、具名記錄，並於 warnings.jsonl 宣告：.glb 存在但不完整，
+                            //   消費端無法僅憑檔案察覺。）
+                            PartialMeshPrefabs++;
+                            _log.Warn($"`{assetId}`: geometry asset holds {meshCount} mesh(es) but only {meshesMerged} could be read; the rest are missing from the bundle.");
+                            (_run?.SkippedAssets ?? WarningSink)?.Add(new RipWarning("mesh", assetId,
+                                $"partial: {meshesMerged} of {meshCount} geometry-asset meshes read; the .glb is incomplete"));
                         }
+                        trace?.Add($"geometry asset: merged {meshesMerged} of {meshCount} mesh(es) ({merged.TriangleCount} tris, {merged.Primitives.Count} primitives)");
+                        return merged;
                     }
 
-                    // Native accessors still empty: fall back to the loaded Unity meshes.
-                    // （原生存取器仍為空：退回使用已載入的 Unity 網格。）
-                    if ((loaded != null) && (loaded.Length > 0))
+                    // Native accessors still empty: fall back to the loaded Unity meshes, merged
+                    // under the same flat ordinal.
+                    // （原生存取器仍為空：退回使用已載入的 Unity 網格，並以同一平坦序數合併。）
+                    MeshAsset viaUnity = GeometryAssetReader.ReadUnityMeshes(loaded, assetId, sourceName, out int unityMerged);
+                    if (viaUnity != null)
                     {
-                        MeshAsset best = null;
-                        foreach (UnityEngine.Mesh candidate in loaded)
+                        if (unityMerged > 1) MultiMeshPrefabs++;
+                        if ((loaded != null) && (unityMerged < loaded.Length))
                         {
-                            MeshAsset converted = GeometryAssetReader.ReadUnityMesh(candidate, assetId, sourceName);
-                            if ((converted != null) && ((best == null) || (converted.TriangleCount > best.TriangleCount))) best = converted;
+                            PartialMeshPrefabs++;
+                            _log.Warn($"`{assetId}`: {loaded.Length} loaded Unity mesh(es) but only {unityMerged} could be read; the rest are missing from the bundle.");
+                            (_run?.SkippedAssets ?? WarningSink)?.Add(new RipWarning("mesh", assetId,
+                                $"partial: {unityMerged} of {loaded.Length} Unity meshes read; the .glb is incomplete"));
                         }
-
-                        if (best != null)
-                        {
-                            trace?.Add($"geometry asset: via Unity mesh ({best.TriangleCount} tris, {best.Primitives.Count} primitives)");
-                            return best;
-                        }
+                        trace?.Add($"geometry asset: via {unityMerged} Unity mesh(es) ({viaUnity.TriangleCount} tris, {viaUnity.Primitives.Count} primitives)");
+                        return viaUnity;
                     }
 
                     trace?.Add("geometry asset: no readable meshes after loading");
@@ -1279,6 +1647,22 @@ namespace Carto.Systems
 
             if (EntityManager.HasBuffer<MeshMaterial>(geometryEntity))
             {
+                // The material slot is the buffer *position*, never the stored `m_MaterialIndex`.
+                // Nothing in the game ever writes authored ranges into this buffer; its one writer
+                // is `MeshSystem.OnUpdate`, which runs at prefab creation, resizes the buffer to
+                // one entry per surface asset *in order*, stores a session-global library id in
+                // `m_MaterialIndex`, and leaves the range fields uninitialised. The game itself
+                // resolves a surface from this buffer by position (`ManagedBatchSystem.CreateBatch`
+                // matches the global id and then calls `GetSurfaceAsset(position)`), so position
+                // is the only meaning the slot has — and the global id, used positionally, would
+                // pick an arbitrary surface. The garbage ranges are dropped by the range check in
+                // `GltfWriter.NormalizePrimitives` / `NetworkRipSystem.AppendPieceIndices`.
+                // （材質槽位是緩衝區的<b>位置</b>，絕非其中儲存的 `m_MaterialIndex`。遊戲中無人寫入
+                //   製作時的範圍：此緩衝區唯一的寫入者是預製模板建立時執行的 `MeshSystem.OnUpdate`，
+                //   它依序為每個表面資產各存一筆、於 `m_MaterialIndex` 存入全域材質庫 ID，
+                //   並使範圍欄位維持未初始化。遊戲自身亦以位置解析表面，
+                //   故位置是槽位僅有的意義；全域 ID 若按位置使用將選中任意表面。
+                //   無效的範圍由下游的範圍檢查丟棄。）
                 DynamicBuffer<MeshMaterial> materials = EntityManager.GetBuffer<MeshMaterial>(geometryEntity, true);
                 for (int i = 0; i < materials.Length; i++)
                 {
@@ -1289,8 +1673,8 @@ namespace Carto.Systems
                         IndexCount = material.m_IndexCount,
                         StartVertex = material.m_StartVertex,
                         VertexCount = material.m_VertexCount,
-                        MaterialIndex = material.m_MaterialIndex,
-                        MaterialId = $"{assetId}_mat{material.m_MaterialIndex}"
+                        MaterialIndex = i,
+                        MaterialId = $"{assetId}_mat{i}"
                     });
                 }
             }
@@ -1373,35 +1757,61 @@ namespace Carto.Systems
             //   而非化為零面積的四邊形。）
             if (!((max.x - min.x) > 1e-4f) || !((max.z - min.z) > 1e-4f)) return false;
 
-            float2 areaMin = decal.m_TextureArea.min;
-            float2 areaMax = decal.m_TextureArea.max;
             float y = (min.y + max.y) * 0.5f;
 
-            mesh.Vertices = new[]
+            float3[] corners =
             {
                 new float3(min.x, y, min.z), new float3(max.x, y, min.z),
                 new float3(max.x, y, max.z), new float3(min.x, y, max.z)
             };
 
-            // V is pre-flipped so the writer's own flip cancels it. `MeshUV0` is authored in
-            // Unity's bottom-left origin and `GltfWriter` writes `1 - v` to reach glTF's top-left,
-            // which is right for every mesh that comes from those buffers — but `m_TextureArea` is
-            // *already* in the top-left convention, so passing it straight through flips it once
-            // too often. Verified against the arrow sheet: unflipped, the rects for
-            // `NA_RoadArrow_Forward`, `_Left180` and `_Right90` crop to a straight arrow, a U-turn
-            // and a right turn; flipped, all three crop to unrelated glyphs.
-            // （此處預先翻轉 V，使寫出端自身的翻轉相互抵銷。`MeshUV0` 以 Unity 的左下角為原點，
-            //   而 `GltfWriter` 寫出 `1 - v` 以符合 glTF 的左上角原點，此舉對所有來自該緩衝區的
-            //   網格皆為正確；然而 `m_TextureArea` **本就**採用左上角慣例，若直接傳遞則會多翻轉一次。
-            //   已對照箭頭圖集驗證：未翻轉時，三者分別裁切出直行箭頭、迴轉與右轉；翻轉後則皆為無關圖樣。）
-            float v0 = 1f - areaMin.y;
-            float v1 = 1f - areaMax.y;
-
-            mesh.Uvs = new[]
+            // The UVs are taken from the authored mesh, not rebuilt from `m_TextureArea`. The
+            // game does the reverse — `AssetImportPipeline` *derives* `m_TextureArea` as the
+            // min/max of the authored mesh's UVs over its up-facing vertices — so the authored
+            // pairing of position to UV is the ground truth, and any reconstruction from the
+            // bounds alone has to guess which way `u` and `v` run across the quad. An earlier
+            // version guessed `+x → +u` and pre-flipped `v`; the guess was mirrored, and every
+            // road-marking text in the city read backwards ("TAXI" as "IXAT", a backwards S in
+            // "BUS"), while the pre-flip cancelled the writer's Unity→glTF flip and cropped
+            // some markings to the wrong band of their atlas outright. Sampling each corner's
+            // nearest up-facing authored vertex keeps orientation and crop exactly as the game
+            // renders them, and the writer's usual flip applies as it does to every other mesh.
+            // （UV 取自製作原始網格，而非依 `m_TextureArea` 重建。遊戲的方向恰好相反——
+            //   `AssetImportPipeline` 以朝上頂點的 UV 最小／最大值*推導出* `m_TextureArea`——
+            //   故位置與 UV 的製作配對才是基準，僅憑邊界重建必然要猜測 `u`、`v` 於四邊形上的走向。
+            //   舊版猜測 `+x → +u` 並預先翻轉 `v`：該猜測為鏡像，全城的路面文字因而反讀
+            //   （「TAXI」成「IXAT」、「BUS」的 S 反向），預翻轉又抵銷了寫出端的 Unity→glTF
+            //   翻轉，使部分標線裁切至圖集的錯誤色帶。對每個角取最近的朝上製作頂點，
+            //   可使方向與裁切與遊戲的繪製完全一致，寫出端的例行翻轉亦如其他網格般照常適用。）
+            // The same up-facing selection the game's derivation uses; a projector volume whose
+            // top face carries no upward normal (none measured, but authored content varies)
+            // falls back to every vertex rather than shipping an unmapped quad.
+            // （與遊戲推導所用相同的朝上頂點選擇；若投影體頂面無朝上法線（實測未見，
+            //   惟製作內容各異），則退回全部頂點，而非輸出未映射的四邊形。）
+            float2[] cornerUvs = new float2[4];
+            for (int c = 0; c < 4; c++)
             {
-                new float2(areaMin.x, v0), new float2(areaMax.x, v0),
-                new float2(areaMax.x, v1), new float2(areaMin.x, v1)
-            };
+                float best = float.MaxValue;
+                for (int pass = 0; (pass < 2) && (best == float.MaxValue); pass++)
+                {
+                    for (int i = 0; i < mesh.Vertices.Length; i++)
+                    {
+                        if ((pass == 0) && (mesh.Normals != null) && (i < mesh.Normals.Length)
+                            && (mesh.Normals[i].y < 0.9f)) continue;
+
+                        float2 offset = mesh.Vertices[i].xz - corners[c].xz;
+                        float distance = math.lengthsq(offset);
+                        if (distance < best)
+                        {
+                            best = distance;
+                            cornerUvs[c] = ((mesh.Uvs != null) && (i < mesh.Uvs.Length)) ? mesh.Uvs[i] : default;
+                        }
+                    }
+                }
+            }
+
+            mesh.Vertices = corners;
+            mesh.Uvs = cornerUvs;
 
             mesh.Normals = new[] { math.up(), math.up(), math.up(), math.up() };
             mesh.Tangents = null;
@@ -1433,7 +1843,7 @@ namespace Carto.Systems
             mesh.BoundsMax = new float3(max.x, y, max.z);
 
             trace?.Add($"decal: flattened to a {max.x - min.x:F2} × {max.z - min.z:F2} m quad at y {y:F2}, "
-                     + $"texture area [{areaMin.x:F4}, {areaMin.y:F4}]–[{areaMax.x:F4}, {areaMax.y:F4}]");
+                     + $"corner uvs [{cornerUvs[0].x:F4}, {cornerUvs[0].y:F4}]–[{cornerUvs[2].x:F4}, {cornerUvs[2].y:F4}]");
             return true;
         }
 
@@ -1548,8 +1958,12 @@ namespace Carto.Systems
             result = result.Substring(start);
 
             // Truncation collides the same way, just more rarely: two long names sharing a prefix.
-            // （截斷會以相同方式造成碰撞，只是更為罕見：兩個共用前綴的長名稱。）
-            return (result.Length > 180) ? $"{result.Substring(0, 171)}_{Digest(name)}" : result;
+            // Capped at 160 rather than the contract's 180 so a derived id — `__stack_first` and
+            // friends add up to 13 characters — still fits the schema's assetId pattern.
+            // （截斷會以相同方式造成碰撞，只是更為罕見：兩個共用前綴的長名稱。
+            //   上限取 160 而非契約的 180，使衍生 ID（`__stack_first` 等最多加 13 字元）
+            //   仍符合綱要的 assetId 樣式。）
+            return (result.Length > 160) ? $"{result.Substring(0, 151)}_{Digest(name)}" : result;
         }
 
         /// <summary>

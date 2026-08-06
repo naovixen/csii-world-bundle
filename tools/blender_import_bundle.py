@@ -12,6 +12,11 @@ knowledge of the mod, the contract is wrong.
 Nothing here wires materials up by hand, and that is the point. Contract §6 has each `.glb`
 reference its textures by relative path into `textures/`, so Blender's stock glTF importer
 resolves them on its own; if the buildings arrive grey, the bundle is at fault, not the script.
+The one exception is per-instance paint (contract §7.2): CS2 authors tintable surfaces —
+foliage above all — desaturated, and colours them per object at draw time, so the tint *cannot*
+live inside a shared `.glb`. Applying `attrs.colorSet` through the material's `colorMask` is a
+documented consumer rule, and the harness implements exactly that rule and nothing more; without
+it every tree and bush renders the grey the atlas actually stores.
 
     blender --python tools/blender_import_bundle.py -- <bundle_dir> [options]
 
@@ -34,6 +39,12 @@ Options (after the `--`):
     --net-limit N                stop after N network records — the fast way to look
     --net-categories a,b,c       which network categories to extrude, or `all`
                                  (default: road,highway,train,tram,subway,pathway,taxiway,runway)
+    --lanes                      also bend lanemeshes.jsonl — cables, fences, hedges assembled
+                                 from laneprefabs.json + lanemeshes/ (contract §5B v2; same
+                                 region filter as networks)
+    --skirts                     also place each building's <assetId>__base.glb foundation
+                                 skirt, as authored (the 1 m band; the terrain drop of its
+                                 v=0 ring is the consumer rule in contract §4.1)
     --keep-existing              don't wipe the scene first
     --save out.blend             write a .blend and exit, so the import is paid for once
 
@@ -316,6 +327,113 @@ def show_materials():
                 space.shading.type = "MATERIAL"
 
 
+_TINT_PROPS = ("cs2_color0", "cs2_color1", "cs2_color2")
+_TINT_LABEL = "cs2_tint"
+
+
+def set_paint(obj, attrs):
+    """Store a record's resolved paint (contract §7.2) as custom properties on its object.
+
+    The three colours land on the instancing empty (or the placed mesh object, for lane
+    geometry), where the material's Attribute nodes read them per instance — one shared
+    material, thousands of individually-painted copies, exactly the game's own split between
+    prefab data and per-object state. White is the identity for the multiply, so objects
+    without a colorSet — older bundles predate the field — render the atlas untouched.
+    """
+    color_set = (attrs or {}).get("colorSet")
+    for i, prop in enumerate(_TINT_PROPS):
+        channel = color_set[i] if color_set and i < len(color_set) else None
+        if channel:
+            obj[prop] = [float(channel[0]), float(channel[1]), float(channel[2]),
+                         float(channel[3]) if len(channel) > 3 else 1.0]
+        else:
+            obj[prop] = [1.0, 1.0, 1.0, 1.0]
+
+
+def _bundle_material_id(name):
+    """Blender suffixes `.001` on every duplicate name; the bundle id is what is left."""
+    stem, dot, suffix = name.rpartition(".")
+    return stem if dot and suffix.isdigit() else name
+
+
+def _mix_socket(node, name, outputs=False):
+    """Pick a Mix node socket by name among the *enabled* ones.
+
+    A ShaderNodeMix carries float, vector and colour variants of `A`/`B`/`Result` under the
+    same names, and name lookup returns the first — the float one. Only the sockets of the
+    active data_type are enabled, so enabled-ness is the reliable selector.
+    """
+    pool = node.outputs if outputs else node.inputs
+    return next(s for s in pool if s.name == name and s.enabled)
+
+
+def apply_color_tints(bundle_dir):
+    """Wire contract §7.2 into every imported material that carries a colorMask.
+
+    For each such material: base colour becomes
+    `lerp(base, base × colorN, colorMask.{R,G,B})`, chained over the three channels — the
+    per-texel selection the contract documents, with the per-instance colours read from the
+    `cs2_color*` properties `set_paint` stored. `colorMask.A` is snow coverage and a harness
+    city has no weather, so it is ignored. Returns how many materials were rigged.
+    """
+    path = os.path.join(bundle_dir, "materials.json")
+    if not os.path.isfile(path):
+        return 0
+    with open(path, encoding="utf-8") as handle:
+        table = json.load(handle)
+
+    rigged = 0
+    for mat in bpy.data.materials:
+        entry = table.get(_bundle_material_id(mat.name))
+        if not entry or "colorMask" not in entry:
+            continue
+        tree = getattr(mat, "node_tree", None)
+        if tree is None:
+            continue
+        if any(node.label == _TINT_LABEL for node in tree.nodes):
+            continue                                            # already rigged (--keep-existing rerun)
+        principled = next((n for n in tree.nodes if n.type == "BSDF_PRINCIPLED"), None)
+        if principled is None:
+            continue
+        base_in = principled.inputs.get("Base Color")
+        if base_in is None or not base_in.links:
+            continue                                            # no base texture to tint
+
+        mask_path = os.path.join(bundle_dir, entry["colorMask"])
+        if not os.path.isfile(mask_path):
+            continue                                            # report_materials already flagged it
+        image = bpy.data.images.load(mask_path, check_existing=True)
+        image.colorspace_settings.name = "Non-Color"
+
+        anchor = principled.location
+        tex = tree.nodes.new("ShaderNodeTexImage")
+        tex.image, tex.label = image, _TINT_LABEL
+        tex.location = (anchor.x - 1000, anchor.y - 600)
+        sep = tree.nodes.new("ShaderNodeSeparateColor")
+        sep.label = _TINT_LABEL
+        sep.location = (anchor.x - 700, anchor.y - 600)
+        tree.links.new(tex.outputs["Color"], sep.inputs["Color"])
+
+        upstream = base_in.links[0].from_socket
+        for i, (prop, channel) in enumerate(zip(_TINT_PROPS, ("Red", "Green", "Blue"))):
+            attr = tree.nodes.new("ShaderNodeAttribute")
+            attr.attribute_type = "INSTANCER"                   # instancer empty first, object itself second
+            attr.attribute_name, attr.label = prop, _TINT_LABEL
+            attr.location = (anchor.x - 700 + i * 60, anchor.y - 900)
+            mix = tree.nodes.new("ShaderNodeMix")
+            mix.data_type, mix.blend_type, mix.label = "RGBA", "MULTIPLY", _TINT_LABEL
+            mix.location = (anchor.x - 450 + i * 150, anchor.y - 500)
+            tree.links.new(sep.outputs[channel], _mix_socket(mix, "Factor"))
+            tree.links.new(upstream, _mix_socket(mix, "A"))
+            tree.links.new(attr.outputs["Color"], _mix_socket(mix, "B"))
+            upstream = _mix_socket(mix, "Result", outputs=True)
+
+        tree.links.new(upstream, base_in)                       # replaces the existing link
+        rigged += 1
+
+    return rigged
+
+
 def resolve_layers(bundle_dir):
     """Read layer paths from bundle.json, falling back to the conventional layout.
 
@@ -330,14 +448,20 @@ def resolve_layers(bundle_dir):
         instances = layers.get("instances", "instances.jsonl")
         networks = layers.get("networks", "networks.jsonl")
         net_meshes = layers.get("networkMeshes", "networks/")
+        lanes = layers.get("laneMeshes", "lanemeshes.jsonl")
+        lane_meshes = layers.get("laneMeshDir", "lanemeshes/")
     else:
         meshes, instances = "meshes/", "instances.jsonl"
         networks, net_meshes = "networks.jsonl", "networks/"
+        lanes, lane_meshes = "lanemeshes.jsonl", "lanemeshes/"
 
     return (os.path.join(bundle_dir, meshes),
             os.path.join(bundle_dir, instances),
             os.path.join(bundle_dir, networks),
-            os.path.join(bundle_dir, net_meshes))
+            os.path.join(bundle_dir, net_meshes),
+            os.path.join(bundle_dir, lanes),
+            os.path.join(bundle_dir, lane_meshes),
+            os.path.join(bundle_dir, "laneprefabs.json"))
 
 
 # -- networks, contract §5 ------------------------------------------------------------------
@@ -447,6 +571,8 @@ def place_network_mesh(record, mesh_dir, collection):
         collection.objects.link(obj)
         if obj.parent is None:
             obj.matrix_world = matrix @ obj.matrix_world
+        # Lane records carry resolved paint too (contract §5B) — hedges are the visible case.
+        set_paint(obj, record.get("attrs"))
 
     return True
 
@@ -602,6 +728,360 @@ def build_networks(networks_path, categories, collection, net_mesh_dir=None, lif
               f"missing .glb under {net_mesh_dir}")
 
     return sum(counts["category"].values())
+
+
+# -- lane geometry, contract §5B v2 ---------------------------------------------------------
+#
+# lanemeshes.jsonl records are bend parameters, not baked meshes: the straight part meshes are
+# stored once under lanemeshes/, laneprefabs.json says how each lane prefab assembles them, and
+# the consumer bends each record's parts along its bézier. The functions below are the
+# reference implementation of the contract's bend algorithm, ported from the producer's former
+# baking code — which itself reproduced the game's BatchDataSystem.UpdateLaneData /
+# BatchInstanceSystem.UpdateLaneInstances. The math is deliberately bpy-free so it can be
+# exercised outside Blender.
+
+_LANE_ARC_SAMPLES = 32
+_LANE_MAX_TILES = 256
+
+
+def _bezier_point(c, t):
+    u = 1.0 - t
+    return tuple(u * u * u * c[0][i] + 3 * u * u * t * c[1][i]
+                 + 3 * u * t * t * c[2][i] + t * t * t * c[3][i] for i in range(3))
+
+
+def _bezier_tangent(c, t):
+    u = 1.0 - t
+    return tuple(3 * u * u * (c[1][i] - c[0][i]) + 6 * u * t * (c[2][i] - c[1][i])
+                 + 3 * t * t * (c[3][i] - c[2][i]) for i in range(3))
+
+
+def _cut_bezier(c, t0, t1):
+    """The sub-segment of a cubic bézier over [t0, t1], by two De Casteljau splits."""
+    def split_after(points, t):
+        p01 = tuple((1 - t) * points[0][i] + t * points[1][i] for i in range(3))
+        p12 = tuple((1 - t) * points[1][i] + t * points[2][i] for i in range(3))
+        p23 = tuple((1 - t) * points[2][i] + t * points[3][i] for i in range(3))
+        p012 = tuple((1 - t) * p01[i] + t * p12[i] for i in range(3))
+        p123 = tuple((1 - t) * p12[i] + t * p23[i] for i in range(3))
+        p = tuple((1 - t) * p012[i] + t * p123[i] for i in range(3))
+        return (p, p123, p23, points[3]), (points[0], p01, p012, p)
+
+    tail, _ = split_after(c, t0)
+    if t1 >= 1.0 - 1e-9:
+        return tail
+    local = (t1 - t0) / max(1.0 - t0, 1e-9)
+    _, head = split_after(tail, local)
+    return head
+
+
+def _arc_table(c):
+    """Cumulative arc length at _LANE_ARC_SAMPLES+1 evenly spaced parameters."""
+    table = [0.0]
+    previous = _bezier_point(c, 0.0)
+    for i in range(1, _LANE_ARC_SAMPLES + 1):
+        point = _bezier_point(c, i / _LANE_ARC_SAMPLES)
+        table.append(table[-1] + math.dist(previous, point))
+        previous = point
+    return table
+
+
+def _param_at_arc(table, position):
+    """Invert the arc table: the curve parameter at a given arc position."""
+    total = table[-1]
+    if position <= 0.0:
+        return 0.0
+    if position >= total:
+        return 1.0
+    low, high = 0, len(table) - 1
+    while high - low > 1:
+        mid = (low + high) // 2
+        if table[mid] <= position:
+            low = mid
+        else:
+            high = mid
+    segment = table[high] - table[low]
+    within = (position - table[low]) / segment if segment > 1e-6 else 0.0
+    return (low + within) / (len(table) - 1)
+
+
+def _lane_tile_count(span_length, mesh_length, tiling_count, geometry_tiling):
+    """BatchDataHelpers.GetTileCount with the span's length in place of the whole curve's."""
+    if tiling_count:
+        clip = round(span_length / max(1.0, mesh_length) * tiling_count)
+        tiles = (clip + tiling_count - 1) // tiling_count
+        return (min(_LANE_MAX_TILES, tiles) if geometry_tiling else min(1, tiles)), clip
+    if geometry_tiling:
+        return max(1, min(_LANE_MAX_TILES,
+                          math.ceil(span_length / max(1.0, mesh_length) - 0.0001))), 0
+    return 1, 0
+
+
+def _hang_drop(control, t):
+    u = 1.0 - t
+    return (u * u * u * control[0] + 3 * u * u * t * control[1]
+            + 3 * u * t * t * control[2] + t * t * t * control[3])
+
+
+def _quat_apply(q, v):
+    """Rotate bundle-frame vector v by bundle quaternion [x, y, z, w]."""
+    x, y, z, w = q
+    tx = 2 * (y * v[2] - z * v[1])
+    ty = 2 * (z * v[0] - x * v[2])
+    tz = 2 * (x * v[1] - y * v[0])
+    return (v[0] + w * tx + y * tz - z * ty,
+            v[1] + w * ty + z * tx - x * tz,
+            v[2] + w * tz + x * ty - y * tx)
+
+
+def _bend_lane_part(part, source, curve, spans, curve_length, width_scale, hang, sink):
+    """Bend one catalogue part along one lane record's curve into `sink`.
+
+    `sink` collects (verts, loops) in bundle frame: verts world positions, loops per triangle
+    as (material key, vertex indices, uvs). Everything here mirrors the producer's former
+    baking loop, which reproduced what the game's vertex shader does.
+
+    A `decal` part is how the game paints its junction interiors: asphalt and markings
+    projected onto ground the game flattens under the junction. Bent here like any part, it is
+    lifted a little above the surface so it wins the depth test the projection wins in-game.
+    """
+    lift = _DECAL_LIFT if part.get("decal") else 0.0
+    pos, rot = part["pos"], part["rot"]
+    bmin, bmax = part["boundsMin"], part["boundsMax"]
+    mesh_length = max(bmax[2] - bmin[2], 0.001)
+    tiling_count = part.get("tilingCount", 0)
+    geometry_tiling = part.get("geometryTiling", False)
+    inverted = part.get("inverted", False)
+
+    for span in spans:
+        span_length = curve_length * (span[1] - span[0])
+        if span_length <= 0.1:
+            continue
+
+        bezier = _cut_bezier(curve, span[0], span[1])
+        if inverted:
+            bezier = (bezier[3], bezier[2], bezier[1], bezier[0])
+
+        tiles, clip = _lane_tile_count(span_length, mesh_length, tiling_count, geometry_tiling)
+        if tiles < 1 or (tiling_count > 0 and clip < 1):
+            continue
+
+        arc = _arc_table(bezier)
+        total_arc = max(arc[-1], 0.001)
+
+        # A decal part is a projector box the game stretches chord-to-chord along the lane
+        # (BuildTransformMatrix's isDecal path) — it never tiles. Mapped by its authored
+        # length, a 64 m box left the tail of longer connector lanes unpainted.
+        decal_stretch = bool(part.get("decal"))
+        if decal_stretch:
+            tiles, clip, tiling_count = 1, 0, 0
+
+        for tile in range(tiles):
+            if tiling_count > 0:
+                clip0 = tile * clip // tiles
+                clip1 = (tile + 1) * clip // tiles
+                if clip1 <= clip0:
+                    continue
+                arc_start = total_arc * clip0 / clip
+                arc_per_z = total_arc * tiling_count / clip
+                arc_limit = total_arc * clip1 / clip
+            elif decal_stretch:
+                arc_start = 0.0
+                arc_per_z = total_arc
+                arc_limit = total_arc
+            else:
+                arc_start = tile * mesh_length
+                arc_per_z = mesh_length
+                arc_limit = total_arc
+
+            base = len(sink["verts"])
+            for v in source["verts"]:
+                local = _quat_apply(rot, v)
+                local = (local[0] + pos[0], local[1] + pos[1], local[2] + pos[2])
+                z_fraction = (local[2] - bmin[2]) / mesh_length
+                arc_position = min(max(arc_start + z_fraction * arc_per_z, 0.0), arc_limit)
+                t = _param_at_arc(arc, arc_position)
+                t_global = (span[1] - (span[1] - span[0]) * t) if inverted \
+                    else (span[0] + (span[1] - span[0]) * t)
+
+                point = _bezier_point(bezier, t)
+                forward = _bezier_tangent(bezier, t)
+                length = math.sqrt(sum(f * f for f in forward)) or 1.0
+                forward = tuple(f / length for f in forward)
+                # right = normalize(cross(up, forward)) with up = +y (bundle frame)
+                right = (forward[2], 0.0, -forward[0])
+                length = math.hypot(right[0], right[2]) or 1.0
+                right = (right[0] / length, 0.0, right[2] / length)
+
+                width = width_scale[0] + (width_scale[1] - width_scale[0]) * t_global
+                world = (point[0] + right[0] * local[0] * width,
+                         point[1] + local[1] + lift,
+                         point[2] + right[2] * local[0] * width)
+                if hang is not None:
+                    world = (world[0], world[1] - _hang_drop(hang, t_global), world[2])
+                sink["verts"].append(world)
+
+            for material, tri, uvs in source["tris"]:
+                sink["loops"].append((material, tuple(base + i for i in tri), uvs))
+
+
+def _load_lane_source(asset_id, lane_mesh_dir, cache):
+    """Import one part .glb once and reduce it to bundle-frame arrays plus its materials.
+
+    The importer hands back Blender-local coordinates (glTF x, -z, y); the bundle frame is
+    recovered as (-x, z, -y) of those — the writer's X mirror undone, axes restored.
+    """
+    if asset_id in cache:
+        return cache[asset_id]
+
+    path = os.path.join(lane_mesh_dir, asset_id + ".glb")
+    source = None
+    if os.path.isfile(path):
+        imported = import_glb(path)
+        for obj in imported:
+            if obj.type != "MESH" or source is not None:
+                continue
+            mesh = obj.data
+            uv_layer = mesh.uv_layers.active
+            verts = [(-v.co.x, v.co.z, -v.co.y) for v in mesh.vertices]
+            tris = []
+            for poly in mesh.polygons:
+                indices = list(poly.vertices)
+                uvs = [tuple(uv_layer.data[i].uv) if uv_layer else (0.0, 0.0)
+                       for i in poly.loop_indices]
+                material = mesh.materials[poly.material_index] if mesh.materials else None
+                # fan-triangulate the rare n-gon; glb import normally hands triangles
+                for k in range(1, len(indices) - 1):
+                    tris.append((material,
+                                 (indices[0], indices[k], indices[k + 1]),
+                                 (uvs[0], uvs[k], uvs[k + 1])))
+            source = {"verts": verts, "tris": tris}
+        for obj in imported:
+            bpy.data.objects.remove(obj, do_unlink=True)
+
+    cache[asset_id] = source
+    return source
+
+
+def build_lanes(lanes_path, catalogue_path, lane_mesh_dir, collection,
+                center=None, radius=None, limit=None):
+    """Bend every lane record's parts along its curve, merged into one object per prefab."""
+    if not os.path.isfile(lanes_path):
+        print(f"no lanemeshes.jsonl at {lanes_path} — skipping lane geometry")
+        return 0
+    if not os.path.isfile(catalogue_path):
+        print(f"CONTRACT VIOLATION: lanemeshes.jsonl without {catalogue_path}")
+        return 0
+
+    with open(catalogue_path, encoding="utf-8") as handle:
+        catalogue = json.load(handle)
+
+    sources = {}
+    builders = {}
+    counts = {}
+    bent = missing_prefab = missing_mesh = skipped_region = skipped_limit = 0
+
+    for record in read_jsonl(lanes_path):
+        entry = catalogue.get(record.get("prefab"))
+        if entry is None:
+            missing_prefab += 1
+            continue
+
+        curve = record["curve"]
+        if radius is not None and center is not None:
+            if math.hypot(curve[0][0] - center[0], curve[0][2] - center[1]) > radius:
+                skipped_region += 1
+                continue
+        if limit is not None and bent >= limit:
+            skipped_limit += 1
+            continue
+
+        table = _arc_table(curve)
+        curve_length = table[-1]
+        spans = record.get("spans") or [[0.0, 1.0]]
+        width_scale = record.get("widthScale", [1.0, 1.0])
+
+        hang = None
+        distances = record.get("hang")
+        hanging = entry.get("hanging", 0.0)
+        if distances is not None or hanging:
+            d0, d1 = distances if distances is not None else (0.0, 0.0)
+            # The game's quadratic-to-cubic lift of the hanging parabola, at calm air.
+            hang = (d0, (d0 + hanging * curve_length) * 2 / 3,
+                    (d1 + hanging * curve_length) * 2 / 3, d1)
+
+        # Grouped by (prefab, paint): one object per prefab would lose the per-lane colorSet
+        # (§7.2), and the distinct paints per prefab are few — the variation table is small.
+        color_set = record.get("colorSet")
+        key = (record["prefab"], json.dumps(color_set, sort_keys=True) if color_set else "")
+        sink = builders.setdefault(key, {"verts": [], "loops": [], "colorSet": color_set})
+
+        for index in record.get("parts", []):
+            parts = entry.get("parts", [])
+            if not 0 <= index < len(parts):
+                continue
+            source = _load_lane_source(parts[index]["assetId"], lane_mesh_dir, sources)
+            if source is None:
+                missing_mesh += 1
+                continue
+            _bend_lane_part(parts[index], source, curve, spans, curve_length,
+                            width_scale, hang, sink)
+
+        bent += 1
+        category = record.get("category", "lane")
+        counts[category] = counts.get(category, 0) + 1
+        if bent % 5000 == 0:
+            print(f"  … {bent} lane(s) bent")
+
+    built = 0
+    for (prefab_key, _), sink in builders.items():
+        if not sink["loops"]:
+            continue
+
+        mesh = bpy.data.meshes.new(f"lane_{prefab_key}")
+        # Bundle → Blender is P·(bend), det -1, so faces are emitted reversed to keep their
+        # facing — the same compensation the writer applies for its X mirror.
+        mesh.from_pydata([bundle_to_blender_point(v) for v in sink["verts"]], [],
+                         [tuple(reversed(loop[1])) for loop in sink["loops"]])
+
+        slots = {}
+        for material, _, _ in sink["loops"]:
+            if material is not None and material.name not in slots:
+                slots[material.name] = len(mesh.materials)
+                mesh.materials.append(material)
+
+        uv_layer = mesh.uv_layers.new()
+        loop_cursor = 0
+        for polygon, (material, _, uvs) in zip(mesh.polygons, sink["loops"]):
+            if material is not None:
+                polygon.material_index = slots[material.name]
+            for uv in reversed(uvs):
+                uv_layer.data[loop_cursor].uv = uv
+                loop_cursor += 1
+
+        mesh.validate()
+        obj = bpy.data.objects.new(f"lane_{prefab_key}", mesh)
+        collection.objects.link(obj)
+        if sink["colorSet"] is not None:
+            set_paint(obj, {"colorSet": sink["colorSet"]})
+        built += 1
+
+    print()
+    print(f"lanes:     {bent} record(s) bent into {built} object(s), "
+          f"{len(sources)} part mesh(es) loaded")
+    for category, count in sorted(counts.items()):
+        print(f"           category {category}: {count}")
+    if skipped_region:
+        print(f"           {skipped_region} skipped outside the region")
+    if skipped_limit:
+        print(f"           {skipped_limit} skipped by --net-limit")
+    if missing_prefab:
+        print(f"           CONTRACT VIOLATION: {missing_prefab} record(s) name a prefab "
+              f"missing from laneprefabs.json")
+    if missing_mesh:
+        print(f"           CONTRACT VIOLATION: {missing_mesh} part reference(s) missing "
+              f"their .glb under {lane_mesh_dir}")
+    return bent
 
 
 # -- scene building -------------------------------------------------------------------------
@@ -802,6 +1282,8 @@ def main():
     keep = False
     save_path = None
     do_networks = False
+    do_lanes = False
+    do_skirts = False
     net_categories = _UNSET
     net_limit = None
     assets = None
@@ -817,6 +1299,12 @@ def main():
             i += 2
         elif arg == "--networks":
             do_networks = True
+            i += 1
+        elif arg == "--lanes":
+            do_lanes = True
+            i += 1
+        elif arg == "--skirts":
+            do_skirts = True
             i += 1
         elif arg == "--net-limit":
             do_networks = True
@@ -860,6 +1348,8 @@ def main():
     # `--everything 400 --kinds building` is a legal way to say "that region, buildings only".
     if everything is not None:
         do_networks = True
+        do_lanes = True
+        do_skirts = True
         if kinds is _UNSET:
             kinds = set(_ALL_KINDS)
         if net_categories is _UNSET:
@@ -878,7 +1368,8 @@ def main():
     if limit is _UNSET:
         limit = 20000
 
-    mesh_dir, instances_path, networks_path, net_mesh_dir = resolve_layers(bundle_dir)
+    (mesh_dir, instances_path, networks_path, net_mesh_dir,
+     lanes_path, lane_mesh_dir, lane_prefabs_path) = resolve_layers(bundle_dir)
     if kinds and not os.path.isfile(instances_path):
         print(f"no instances.jsonl at {instances_path}")
         return 2
@@ -971,7 +1462,9 @@ def main():
     sources_park.__enter__()
 
     prefabs = {}
+    skirt_prefabs = {}
     placed = 0
+    skirts_placed = 0
     skipped_kind = 0
     skipped_region = 0
     skipped_asset = 0
@@ -1017,6 +1510,7 @@ def main():
         empty.instance_collection = collection
         empty.empty_display_size = 0.01
         empty.matrix_world = instance_matrix(record)
+        set_paint(empty, record.get("attrs"))
 
         # Decals go in their own collection. The producer ships a decal as the flat quad it
         # paints rather than as the projector volume it paints through, so these now lie on the
@@ -1027,6 +1521,28 @@ def main():
         # （貼花置於獨立集合。產出端輸出的是貼花所繪出的平面四邊形，而非其藉以投影的體積，
         #   故它們現已貼合於車道之上，呈現為其所代表的路面標線——但它們仍是塗料而非路面本身，
         #   在任何據此建構的成果中都絕不可成為碰撞幾何。分開放置使此事僅需一道指令。）
+        # Foundation skirts, contract §4.1: <assetId>__base.glb placed at the same transform,
+        # for instances resting on the ground. The band is shown as authored (a 1 m plinth);
+        # dropping its v=0 ring to the terrain raster is a consumer's job, and this harness has
+        # no terrain — so slopes will still show a gap below the band, and that is expected.
+        if do_skirts and record.get("kind") == "building":
+            flags = record.get("attrs", {}).get("elevationFlags")
+            if not flags or flags == ["OnGround"]:
+                base_id = asset_id + "__base"
+                if base_id not in skirt_prefabs:
+                    base_path = os.path.join(mesh_dir, base_id + ".glb")
+                    skirt_prefabs[base_id] = (load_prefab_collection(base_id, mesh_dir, sources)
+                                              if os.path.isfile(base_path) else None)
+                if skirt_prefabs[base_id] is not None:
+                    skirt = bpy.data.objects.new(f"{base_id}.{record.get('id', placed)}", None)
+                    skirt.instance_type = "COLLECTION"
+                    skirt.instance_collection = skirt_prefabs[base_id]
+                    skirt.empty_display_size = 0.01
+                    skirt.matrix_world = instance_matrix(record)
+                    set_paint(skirt, record.get("attrs"))
+                    placed_collection.objects.link(skirt)
+                    skirts_placed += 1
+
         if record.get("kind") == "decal":
             # Coplanar paint z-fights the carriageway it sits on, which in the viewport looks
             # like the marking is flickering in and out of the road. A lift far below the
@@ -1051,6 +1567,23 @@ def main():
                                       net_mesh_dir, center=center, radius=radius,
                                       limit=net_limit)
 
+    lanes = 0
+    if do_lanes:
+        # Contract §5B v2: lanemeshes.jsonl carries bend parameters, laneprefabs.json the part
+        # catalogue, lanemeshes/ the straight part meshes stored once. The bend runs here —
+        # this importer is the contract's reference implementation of it.
+        if os.path.isfile(lanes_path):
+            lane_collection = bpy.data.collections.new("bundle_lanemeshes")
+            bpy.context.scene.collection.children.link(lane_collection)
+            print()
+            print("lane geometry (lanemeshes.jsonl):")
+            with parked_out_of_view_layer(lane_collection):
+                lanes = build_lanes(lanes_path, lane_prefabs_path, lane_mesh_dir,
+                                    lane_collection, center=center, radius=radius,
+                                    limit=net_limit)
+        else:
+            print(f"no lanemeshes.jsonl at {lanes_path} — skipping lane geometry")
+
     # Everything is imported, so the placed instances can come back into the view layer. This is
     # deliberately after the networks: an instance parked here is an instance the segment imports
     # do not have to deselect, and there are two orders of magnitude more of them than there are
@@ -1059,6 +1592,11 @@ def main():
     decal_park.__exit__()
     instance_park.__exit__()
     sources_park.__exit__()
+
+    # Every .glb is in, so every material exists: apply the per-instance paint rule (§7.2).
+    tinted = apply_color_tints(bundle_dir)
+    if tinted:
+        print(f"tinted:    {tinted} material(s) wired to per-instance colorSet via their colorMask")
 
     # The scratch collection is empty by construction — every import unlinks what it produced —
     # so drop it rather than leave an empty entry in the outliner.
@@ -1079,11 +1617,15 @@ def main():
     # collection is empty, and aiming at an empty collection leaves the viewport at the origin
     # — which is where a city almost never is.
     aim_viewports(placed_collection if placed else
-                  (network_collection if networks else placed_collection))
+                  (network_collection if networks else
+                   (lane_collection if lanes else placed_collection)))
 
     elapsed = time.time() - started
     print()
     print(f"placed {placed} instance(s) from {len(prefabs)} prefab(s) in {elapsed:.1f} s")
+    if do_skirts:
+        print(f"placed {skirts_placed} foundation skirt(s) (__base, as-authored 1 m bands — "
+              f"the terrain drop is the consumer rule, contract §4.1)")
     print(f"skipped: {skipped_kind} by kind, {skipped_asset} by --assets, {skipped_region} outside the region")
 
     # An empty-looking scene is nearly always the region filter, not the bundle. Say so, with the

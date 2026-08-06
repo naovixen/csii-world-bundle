@@ -453,7 +453,25 @@ namespace Carto.Systems
                     material.EmissiveFactor = new Unity.Mathematics.float3(emissive.r, emissive.g, emissive.b);
 
                 material.AlphaMode = AlphaMode(surface);
-                if (surface.TryGetFloatProperty("_AlphaCutoff", out float cutoff)) material.AlphaCutoff = cutoff;
+                if (surface.TryGetFloatProperty("_AlphaCutoff", out float cutoff))
+                {
+                    material.AlphaCutoff = cutoff;
+                }
+                else if (material.AlphaMode == "mask")
+                {
+                    // A surface that clips through its template alone carries no cutoff of its
+                    // own either — the leaf surfaces serialise only wind floats — so the value
+                    // the game actually tests against is the template's.
+                    // （僅經模板裁切的表面同樣不帶自身門檻——樹葉表面只序列化風的浮點數——
+                    //   遊戲實際比對的數值即為模板之值。）
+                    try
+                    {
+                        UnityEngine.Material template = surface.GetTemplateMaterial();
+                        if ((template != null) && template.HasProperty("_AlphaCutoff"))
+                            material.AlphaCutoff = template.GetFloat("_AlphaCutoff");
+                    }
+                    catch (Exception) { /* glTF's own default of 0.5 applies */ }
+                }
 
                 DescribeTemplate(surface, material);
 
@@ -556,6 +574,13 @@ namespace Carto.Systems
                 else pending = ReadBack(source.Standalone, source.Key, run.TextureSizeCap);
 
                 if (pending == null) return null;
+
+                // Normal maps only: the slot decides, the packing signature merely confirms.
+                // Content sniffing alone was measured to false-positive on five mask maps of a
+                // full city (metallic-1, varying smoothness), which reconstruction would corrupt.
+                // （僅限法線貼圖：由槽位決定，封裝特徵僅作確認。單憑內容判斷經實測會在全城五張
+                //   遮罩貼圖上誤判（金屬度 1、平滑度有變化），重建將破壞其內容。）
+                if (property == NormalMap) ReconstructTwoChannelNormal(pending.Pixels);
 
                 run.Enqueue(pending);
                 run.TexturesRead++;
@@ -1044,13 +1069,32 @@ namespace Carto.Systems
                 return;
             }
 
-            if (stacks == null) return;
-
-            foreach (MaterialStackProperties stack in stacks)
+            if (stacks != null)
             {
-                if (stack?.m_PropertyNames == null) continue;
-                foreach (string property in stack.m_PropertyNames)
-                    if (!string.IsNullOrEmpty(property)) run.TemplateProperties.Add(property);
+                foreach (MaterialStackProperties stack in stacks)
+                {
+                    if (stack?.m_PropertyNames == null) continue;
+                    foreach (string property in stack.m_PropertyNames)
+                        if (!string.IsNullOrEmpty(property)) run.TemplateProperties.Add(property);
+                }
+            }
+
+            // The stacks only name the virtual-textured maps. A non-VT surface binds whatever is
+            // in its own texture dictionary (`SyncToUnityMaterial` walks `m_Textures` directly),
+            // so those keys go into the same census — otherwise a map that exists only outside
+            // the VT scheme could still ship unnoticed, which is the §4.2 failure shape again.
+            // （堆疊僅指名虛擬貼圖。非 VT 表面繫結的是其自身貼圖字典中的內容
+            //   （`SyncToUnityMaterial` 直接走訪 `m_Textures`），故該等鍵一併納入普查——
+            //   否則僅存在於 VT 機制之外的貼圖仍可能無聲出貨，即 §4.2 失敗型態的重演。）
+            try
+            {
+                foreach (KeyValuePair<string, TextureAsset> texture in surface.textures)
+                    if (!string.IsNullOrEmpty(texture.Key)) run.TemplateProperties.Add(texture.Key);
+            }
+            catch (Exception)
+            {
+                // A surface whose dictionaries did not load adds nothing.
+                // （字典未載入的表面不增添任何內容。）
             }
         }
 
@@ -1336,6 +1380,59 @@ namespace Carto.Systems
         }
 
         /// <summary>
+        /// Rebuild a two-channel-packed normal map into a standard tangent normal.
+        /// （將雙通道封裝的法線貼圖重建為標準切線空間法線。）<br/><br/>
+        /// Unity's DXT5nm/BC3n packing stores X in <b>alpha</b> and Y in green, forcing red to 1
+        /// and leaving blue to mirror green; the shader reconstructs Z. Written out raw, a
+        /// consumer reading it as an ordinary tangent normal map gets <c>normal.x = +1</c> for
+        /// every texel — measured on a full city, every road surface shaded by its compass
+        /// bearing, which is what "each road is a different colour" turned out to be. The
+        /// packing's signature — red pinned at white while green varies and alpha is not
+        /// constant — matches no legitimate colour or mask content (white-with-alpha decals have
+        /// green pinned too), so it is detected here, where every readback route converges, and
+        /// rebuilt to <c>(x, y, z, 1)</c> exactly as the shader would.
+        /// （Unity 的 DXT5nm/BC3n 封裝將 X 存於<b>alpha</b>、Y 存於綠色，紅色強制為 1、
+        /// 藍色複寫綠色；Z 由著色器重建。若原樣寫出，消費端視其為一般切線法線時，
+        /// 每個像素皆得 <c>normal.x = +1</c>——實測全城，每條道路依其方位角被著色，
+        /// 即「每條路顏色不同」的真相。該封裝的特徵——紅色恆為白、綠色有變化、alpha 非定值——
+        /// 不會與任何正當的顏色或遮罩內容相符（帶 alpha 的白色貼花其綠色亦恆為白），
+        /// 故於所有回讀路徑匯聚之處偵測並重建為 <c>(x, y, z, 1)</c>，與著色器一致。）
+        /// </summary>
+        /// <param name="pixels">RGBA8 pixels, rebuilt in place.（RGBA8 像素，就地重建。）</param>
+        private static void ReconstructTwoChannelNormal(byte[] pixels)
+        {
+            // The fraction test rather than a strict minimum: block compression dents a few
+            // texels of the constant-white red channel (247–249, and one map to 191), and a
+            // strict minimum was measured to miss 235 of 784 packed normals in a full city. A
+            // standard three-channel normal has red centred at 128 and passes nowhere near 90 %.
+            // （採比例判定而非嚴格最小值：區塊壓縮會使恆為白的紅色通道少數像素凹陷
+            //   （247–249，甚至一張至 191），嚴格最小值經實測漏掉全城 784 張封裝法線中的 235 張。
+            //   標準三通道法線的紅色以 128 為中心，遠不及 90%。）
+            int count = pixels.Length / 4;
+            if (count == 0) return;
+
+            int highRed = 0, minA = 255;
+            for (int i = 0; i < pixels.Length; i += 4)
+            {
+                if (pixels[i] >= 250) highRed++;
+                if (pixels[i + 3] < minA) minA = pixels[i + 3];
+            }
+
+            if ((highRed < (count * 0.9f)) || (minA >= 250)) return;
+
+            for (int i = 0; i < pixels.Length; i += 4)
+            {
+                float x = (pixels[i + 3] / 255f * 2f) - 1f;
+                float y = (pixels[i + 1] / 255f * 2f) - 1f;
+                float z = Mathf.Sqrt(Mathf.Max(0f, 1f - (x * x) - (y * y)));
+
+                pixels[i] = (byte)Mathf.RoundToInt(((x * 0.5f) + 0.5f) * 255f);
+                pixels[i + 2] = (byte)Mathf.RoundToInt(((z * 0.5f) + 0.5f) * 255f);
+                pixels[i + 3] = 255;
+            }
+        }
+
+        /// <summary>
         /// Blit a texture through a render target and read the result back as <c>RGBA8</c>.
         /// （將貼圖經繪製目標 blit 後，以 <c>RGBA8</c> 回讀結果。）<br/><br/>
         /// Rows come back bottom-up, which is Unity's convention and the opposite of PNG's, so they
@@ -1407,23 +1504,73 @@ namespace Carto.Systems
         }
 
         /// <summary>
-        /// Read the transparency mode out of the surface's shader keywords.
-        /// （自表面資產的著色器關鍵字讀出透明模式。）
+        /// Read the transparency mode out of the surface's shader keywords, falling back to the
+        /// material template the surface is built from.
+        /// （自表面資產的著色器關鍵字讀出透明模式，並在必要時回退至其所依據的材質模板。）<br/><br/>
+        /// The surface's own keyword set is only half the story: the runtime material is
+        /// <c>new Material(template)</c> with the surface's properties overlaid
+        /// (<c>SurfaceAsset.Load</c>), so a template that alpha-tests passes clipping to every
+        /// surface built from it. Vegetation is the canonical case — the oak leaf surface
+        /// serialises no keywords at all; its cutout lives entirely on the template.<br/>
+        /// （表面自身的關鍵字只是一半的事實：執行期材質是以模板複製再疊上表面屬性而成，
+        /// 故會裁切的模板將裁切傳給由其建構的每個表面。植被即為典型——橡樹樹葉表面
+        /// 完全未序列化任何關鍵字，其裁切全在模板之上。）
         /// </summary>
         /// <param name="surface">The surface asset.（表面資產。）</param>
         /// <returns>The contract's alpha mode.（契約所定義的 alpha 模式。）</returns>
         private static string AlphaMode(SurfaceAsset surface)
         {
+            // HDRP serialises the switches as floats and `HDMaterial.ValidateMaterial` — which
+            // `SurfaceAsset.Load` ends on — re-derives the keywords from them, so a float the
+            // surface carries overrides the template outright, in either direction.
+            // （HDRP 以浮點數序列化開關，且 `SurfaceAsset.Load` 收尾的
+            //   `HDMaterial.ValidateMaterial` 會依浮點數重新推導關鍵字，
+            //   故表面所帶的浮點數在兩個方向上都直接凌駕模板。）
+            bool surfaceAnswersType = false, surfaceAnswersClip = false;
+
             try
             {
                 if (surface.HasKeyword("_SURFACE_TYPE_TRANSPARENT")) return "blend";
                 if (surface.HasKeyword("_ALPHATEST_ON")) return "mask";
+
+                if (surface.TryGetFloatProperty("_SurfaceType", out float surfaceType))
+                {
+                    surfaceAnswersType = true;
+                    if (surfaceType > 0.5f) return "blend";
+                }
+                if (surface.TryGetFloatProperty("_AlphaCutoffEnable", out float clipEnable))
+                {
+                    surfaceAnswersClip = true;
+                    if (clipEnable > 0.5f) return "mask";
+                }
             }
             catch (Exception)
             {
-                // A surface whose keywords did not load says nothing about transparency, and
-                // opaque is the contract's default.（關鍵字未載入的表面對透明度未置一詞，
-                // 而契約的預設值即為不透明。）
+                // A surface whose keywords did not load says nothing about transparency; the
+                // template below still can.（關鍵字未載入的表面對透明度未置一詞，
+                // 但下方的模板仍可能言明。）
+            }
+
+            try
+            {
+                UnityEngine.Material template = surface.GetTemplateMaterial();
+                if (template != null)
+                {
+                    if (!surfaceAnswersType
+                        && (template.IsKeywordEnabled("_SURFACE_TYPE_TRANSPARENT")
+                            || (template.HasProperty("_SurfaceType") && (template.GetFloat("_SurfaceType") > 0.5f))))
+                        return "blend";
+
+                    if (!surfaceAnswersClip
+                        && (template.IsKeywordEnabled("_ALPHATEST_ON")
+                            || (template.HasProperty("_AlphaCutoffEnable") && (template.GetFloat("_AlphaCutoffEnable") > 0.5f))))
+                        return "mask";
+                }
+            }
+            catch (Exception)
+            {
+                // No template resolves; opaque is the contract's default.
+                // （模板無法解析；契約的預設值即為不透明。）
             }
 
             return "opaque";
@@ -1459,7 +1606,28 @@ namespace Carto.Systems
             if (string.IsNullOrEmpty(template)) return;
 
             string name = template.ToLowerInvariant();
-            material.DoubleSided = name.Contains("doublesided");
+
+            // Double-sidedness is a material *property* before it is a naming convention: HDRP's
+            // switch is the `_DoubleSidedEnable` float, which the surface can carry itself
+            // (`SyncToUnityMaterial` copies every float the shader knows) and the template
+            // material holds otherwise. The name check stays as the fallback for templates whose
+            // shader hides the property.
+            // （雙面與否首先是材質<b>屬性</b>，其次才是命名慣例：HDRP 的開關是
+            //   `_DoubleSidedEnable` 浮點數，表面自身可攜帶（`SyncToUnityMaterial` 會複製著色器
+            //   認得的每個浮點數），否則由模板材質持有。名稱檢查保留為著色器隱藏該屬性時的後備。）
+            if (surface.TryGetFloatProperty("_DoubleSidedEnable", out float doubleSided))
+            {
+                material.DoubleSided = doubleSided > 0.5f;
+            }
+            else
+            {
+                Material templateMaterial = null;
+                try { templateMaterial = surface.GetTemplateMaterial(); } catch (Exception) { /* name fallback below */ }
+
+                material.DoubleSided = ((templateMaterial != null) && templateMaterial.HasProperty("_DoubleSidedEnable"))
+                    ? templateMaterial.GetFloat("_DoubleSidedEnable") > 0.5f
+                    : name.Contains("doublesided");
+            }
 
             if (name.Contains("vegetation") || name.Contains("grass") || name.Contains("leaves") || name.Contains("branches"))
                 material.Flags.Add("foliage");

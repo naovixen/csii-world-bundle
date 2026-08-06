@@ -54,7 +54,7 @@
           "type": "number"
         },
         "elevationFlags": {
-          "description": "CS2 ElevationFlags names: 'Stacked', 'OnGround', 'Lowered', 'OnAttachedParent'. 'Lowered' marks an object placed below ground, which the clamped-at-zero elevation magnitude cannot express. Open - ignore what you do not recognise.",
+          "description": "CS2 ElevationFlags names: 'Stacked', 'OnGround', 'Lowered', 'OnAttachedParent'. 'Lowered' marks a deliberate below-ground placement. Open - ignore what you do not recognise.",
           "type": "array",
           "items": { "type": "string" },
           "uniqueItems": true
@@ -64,6 +64,11 @@
           "type": "array",
           "items": { "type": "string" },
           "uniqueItems": true
+        },
+        "decalHeight": {
+          "description": "For kind 'decal': the height in metres of the volume the marking was projected through - what a consumer needs to re-project the producer's flat quad onto a cambered or sloped surface. Not a thickness. See contract section 4.2a.",
+          "type": "number",
+          "exclusiveMinimum": 0
         },
         "height": {
           "description": "True height in metres, measured from the mesh bounds. Metadata attributes never override this.",
@@ -78,6 +83,27 @@
           "type": "number",
           "minimum": 0,
           "maximum": 1
+        },
+        "growthScale": {
+          "description": "The uniform scale the game draws a growing tree at (a sqrt-lerp between the prefab's per-stage sizes). Multiply into the instance transform. Absent means 1.",
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "colorSet": {
+          "description": "The paint this instance was drawn with: three linear RGBA channels (CS2 ColorSet), selected per texel by the material's colorMask map (section 7.1/7.2). This is the game's resolved answer, not an index into colors.json.",
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 3,
+          "items": {
+            "type": "array",
+            "items": { "type": "number" },
+            "minItems": 4,
+            "maxItems": 4
+          }
+        },
+        "colorCustom": {
+          "description": "True when colorSet is a player-painted override rather than the game's random variation.",
+          "type": "boolean"
         },
         "season": { "type": "string" },
         "address": {

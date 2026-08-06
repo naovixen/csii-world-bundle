@@ -103,6 +103,21 @@ namespace Carto.Systems
             Dictionary<string, int> byKind = new();
             int secondary = 0, degenerate = 0;
 
+            // Lanes are not only a graph: a lane whose prefab carries a `SubMesh` buffer is drawn
+            // world geometry — hanging utility cables, fence lanes, hedge rows — assembled along
+            // the lane's curve by `BatchInstanceSystem.UpdateLaneInstances`. The network rip
+            // bakes that geometry into the `lanemeshes/` layer (contract §5B); this census stays
+            // as the cross-check — the count here should track what that stage bakes plus what
+            // it deliberately skips (tunnel, pipeline, decal), and a mismatch is a bug.
+            // （車道不僅是圖：其預製模板帶有 `SubMesh` 緩衝區的車道是被繪製的世界幾何——
+            //   懸掛的公用設施電纜、圍籬車道、樹籬——由 `UpdateLaneInstances` 沿車道曲線組裝。
+            //   路網擷取將該幾何烘焙至 `lanemeshes/` 層（契約 §5B）；此普查保留作為交叉檢核——
+            //   此處的計數應與該階段所烘焙者加上其刻意略過者（隧道、管線、貼花）相符，
+            //   不符即為缺陷。）
+            Dictionary<Entity, bool> prefabHasGeometry = new();
+            Dictionary<Entity, int> drawnLanesByPrefab = new();
+            int drawnLanes = 0;
+
             NativeArray<Entity> entities = _laneQuery.ToEntityArray(Allocator.TempJob);
 
             try
@@ -114,6 +129,27 @@ namespace Carto.Systems
                 foreach (Entity entity in entities)
                 {
                     Curve curve = EntityManager.GetComponentData<Curve>(entity);
+
+                    if (EntityManager.HasComponent<Game.Prefabs.PrefabRef>(entity))
+                    {
+                        Entity lanePrefab = EntityManager.GetComponentData<Game.Prefabs.PrefabRef>(entity).m_Prefab;
+                        if (lanePrefab != Entity.Null)
+                        {
+                            if (!prefabHasGeometry.TryGetValue(lanePrefab, out bool drawn))
+                            {
+                                drawn = EntityManager.HasBuffer<Game.Prefabs.SubMesh>(lanePrefab)
+                                     && (EntityManager.GetBuffer<Game.Prefabs.SubMesh>(lanePrefab, true).Length > 0);
+                                prefabHasGeometry[lanePrefab] = drawn;
+                            }
+
+                            if (drawn)
+                            {
+                                drawnLanes++;
+                                drawnLanesByPrefab.TryGetValue(lanePrefab, out int seen);
+                                drawnLanesByPrefab[lanePrefab] = seen + 1;
+                            }
+                        }
+                    }
 
                     LaneRecord record = new()
                     {
@@ -147,6 +183,24 @@ namespace Carto.Systems
                 foreach (KeyValuePair<string, int> pair in byKind) report.AppendLine($"  {pair.Key}: {pair.Value}");
                 report.AppendLine($"  {secondary} derived from a master lane");
                 if (degenerate > 0) report.AppendLine($"Skipped {degenerate} lane(s) with no usable curve");
+
+                if (drawnLanes > 0)
+                {
+                    int drawnPrefabs = 0;
+                    foreach (KeyValuePair<Entity, bool> pair in prefabHasGeometry) if (pair.Value) drawnPrefabs++;
+
+                    report.AppendLine($"Lane geometry cross-check: {drawnLanes} lane(s) over "
+                                    + $"{drawnPrefabs} prefab(s) draw a mesh along their curve "
+                                    + "(baked by the network rip into lanemeshes/, minus its counted skips). Largest:");
+
+                    List<KeyValuePair<Entity, int>> ranked = new(drawnLanesByPrefab);
+                    ranked.Sort((a, b) => b.Value.CompareTo(a.Value));
+                    for (int i = 0; (i < 10) && (i < ranked.Count); i++)
+                    {
+                        string name = Instance.Name.GetPrefabName(ranked[i].Key);
+                        report.AppendLine($"  {(string.IsNullOrEmpty(name) ? $"prefab {ranked[i].Key.Index}" : name),-40} {ranked[i].Value,8}");
+                    }
+                }
             }
             finally
             {

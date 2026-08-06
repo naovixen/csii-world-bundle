@@ -1,0 +1,87 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://taipei-native.github.io/carto-ripper/schema/v1/lanemesh.schema.json",
+  "title": "CS2 World Bundle lane-geometry record (contract section 5B v2)",
+  "description": "One line of lanemeshes.jsonl (JSON Lines): the parameters a consumer needs to bend the referenced prefab's straight part meshes (laneprefabs.json + lanemeshes/) along the lane's curve. The bend algorithm is normative in the contract and reference-implemented in tools/blender_import_bundle.py.",
+  "type": "object",
+  "required": ["id", "prefab", "category", "curve", "parts"],
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "description": "Producer-local stable identifier (the ECS entity index). Unique within the file.",
+      "type": "integer",
+      "minimum": 0
+    },
+    "prefab": {
+      "description": "Key into laneprefabs.json.",
+      "type": "string",
+      "minLength": 1
+    },
+    "category": {
+      "description": "Copy of the catalogue entry's category, for filtering without the join.",
+      "enum": ["cable", "pipe", "fence", "lane"]
+    },
+    "owner": {
+      "description": "The id of the owning edge, node or object where one exists - the same id space lanes.jsonl and instances.jsonl use.",
+      "type": "integer",
+      "minimum": 0
+    },
+    "curve": {
+      "description": "The lane's cubic bezier: four world-space control points in bundle-frame metres.",
+      "type": "array",
+      "minItems": 4,
+      "maxItems": 4,
+      "items": { "$ref": "#/$defs/vec3" }
+    },
+    "parts": {
+      "description": "Indices into the catalogue entry's parts array this lane draws - the game's per-lane sub-mesh selection, already resolved by the producer.",
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "integer", "minimum": 0 }
+    },
+    "spans": {
+      "description": "Uncut curve-parameter ranges (CutRange holes: a driveway through a fence, a junction through a hedge). Absent means the whole curve [0, 1].",
+      "type": "array",
+      "items": {
+        "type": "array",
+        "minItems": 2,
+        "maxItems": 2,
+        "items": { "type": "number", "minimum": 0, "maximum": 1 }
+      }
+    },
+    "widthScale": {
+      "description": "Width scale at the curve's start and end (NodeLane.m_WidthOffset over the prefab width). Absent means [1, 1].",
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "items": { "type": "number" }
+    },
+    "hang": {
+      "description": "HangingLane.m_Distances: the drop in metres at the curve's two ends. Present only for hanging lanes; the prefab-level sag factor is the catalogue entry's 'hanging'. The consumer builds the cubic (d0, (d0+h*L)*2/3, (d1+h*L)*2/3, d1) and subtracts it from world y at tGlobal.",
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "items": { "type": "number" }
+    },
+    "colorSet": {
+      "description": "The lane's resolved paint - three linear RGBA channels, same shape and meaning as the instance attrs.colorSet (contract section 7.2). Hedges are the visible case.",
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 3,
+      "items": {
+        "type": "array",
+        "minItems": 4,
+        "maxItems": 4,
+        "items": { "type": "number" }
+      }
+    }
+  },
+  "$defs": {
+    "vec3": {
+      "type": "array",
+      "items": { "type": "number" },
+      "minItems": 3,
+      "maxItems": 3
+    }
+  }
+}

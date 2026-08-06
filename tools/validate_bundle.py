@@ -490,10 +490,54 @@ def validate_bundle(bundle_dir: Path, schema_dir: Path) -> Report:
             if key in record and record[key] not in net_ids:
                 report.error(f"{label}: {key} {record[key]} matches no network record id")
 
+    # -- lanemeshes.jsonl + laneprefabs.json (contract §5B v2) -------------------------
+    # Not part of the manifest's layer map yet (that lands with the Phase 7 manifest), so the
+    # conventional paths are checked when present: parameter records against their schema, the
+    # prefab join against the catalogue, and every part's assetId against lanemeshes/.
+    lanes_path = bundle_dir / "lanemeshes.jsonl"
+    catalogue_path = bundle_dir / "laneprefabs.json"
+    lane_mesh_dir = bundle_dir / "lanemeshes"
+    if lanes_path.is_file():
+        lane_schema_path = schema_dir / "lanemesh.schema.json"
+        lane_schema = Validator(json.loads(lane_schema_path.read_text(encoding="utf-8")),
+                                lane_schema_path.name)
+        lanes = _load_jsonl(lanes_path, lane_schema, "lanemeshes.jsonl", report)
+
+        catalogue: Dict[str, Any] = {}
+        if catalogue_path.is_file():
+            catalogue = json.loads(catalogue_path.read_text(encoding="utf-8"))
+        elif lanes:
+            report.error("lanemeshes.jsonl is present but laneprefabs.json is missing")
+
+        checked_parts: set = set()
+        for entry_key, entry in catalogue.items():
+            for j, part in enumerate(entry.get("parts", [])):
+                asset_id = part.get("assetId")
+                if not asset_id:
+                    report.error(f"laneprefabs.json[{entry_key}].parts[{j}]: no assetId")
+                elif asset_id not in checked_parts:
+                    checked_parts.add(asset_id)
+                    if not (lane_mesh_dir / f"{asset_id}.glb").is_file():
+                        report.error(f"laneprefabs.json[{entry_key}].parts[{j}]: "
+                                     f"assetId {asset_id!r} has no mesh in lanemeshes/")
+
+        for i, record in enumerate(lanes):
+            label = f"lanemeshes.jsonl line {i + 1}"
+            entry = catalogue.get(record.get("prefab"))
+            if entry is None:
+                report.error(f"{label}: prefab {record.get('prefab')!r} is not in laneprefabs.json")
+                continue
+            part_count = len(entry.get("parts", []))
+            for index in record.get("parts", []):
+                if not 0 <= index < part_count:
+                    report.error(f"{label}: part index {index} out of range "
+                                 f"(catalogue entry has {part_count})")
+
     # -- meshes ------------------------------------------------------------------------
     mesh_files: List[Path] = sorted(mesh_dir.glob("*.glb")) if mesh_dir and mesh_dir.is_dir() else []
     net_mesh_files: List[Path] = sorted(net_mesh_dir.glob("*.glb")) if net_mesh_dir and net_mesh_dir.is_dir() else []
-    for path in mesh_files + net_mesh_files:
+    lane_mesh_files: List[Path] = sorted(lane_mesh_dir.glob("*.glb")) if lane_mesh_dir.is_dir() else []
+    for path in mesh_files + net_mesh_files + lane_mesh_files:
         _check_mesh(path, bundle_dir, materials, materials_path is not None, referenced_textures, report)
 
     used_assets = {r["assetId"] for r in instances}

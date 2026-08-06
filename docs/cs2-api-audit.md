@@ -48,7 +48,7 @@ Query: `Object + Transform + PrefabRef`, excluding `Moving`, `Deleted`, `Temp`,
 | `Game.Common.Owner.m_Owner` | `parent` | Confirmed. Wiki: "used to denote the owner of an entity". |
 | `Game.Objects.Attached.m_Parent` | `parent` fallback | Confirmed, and correctly used only as a fallback — `Attached` also carries `m_OldParent` and `m_CurvePosition`, i.e. it is a bind-to-network relation, not ownership. |
 | `Game.Objects.Elevation.m_Elevation / m_Flags` | `attrs.elevation`, `attrs.elevationFlags` | Value was always correct; the contract's description of it was wrong, and `m_Flags` was dropped — see §4.1. |
-| `Game.Objects.Color.m_Index / m_Value / m_SubColor` | `attrs.color` | Confirmed against the renderer. `BatchDataJob.UpdateObjectData` builds `float2(m_Index + 0.5f, m_Value * 0.003921569f)` — so `m_Value / 255` is exactly the game's own scaling, and `m_Index` is the palette row. |
+| `Game.Objects.Color.m_Index / m_Value / m_SubColor` | ~~`attrs.color`~~ **no longer read** | **This row was wrong about what the value means, and §10.3 retires it.** The scaling observation was correct but the palette is the *infoview* palette: `ObjectColorSystem` is the component's only writer and fills it from the active info mode (`InfoviewUtils.GetColor`), so the exported "paint choice" was UI-overlay state that depended on which infoview was last open. The real paint is the instance's `MeshColor` buffer — see §10.3. |
 | `Game.Objects.Tree.m_State / m_Growth` | `attrs.treeState`, `attrs.growth` | Confirmed. `TreeState` = `Teen 1, Adult 2, Elderly 4, Dead 8, Stump 16, Collected 32`; a sapling really is `0`, so omitting the key rather than writing `"0"` is right. `m_Growth` is a `byte`, so `/255` is right. |
 | `Game.Objects.Stack.m_Range`, `Game.Prefabs.StackData` | stack expansion | Confirmed. Both overloads of `Game.Rendering.BatchDataHelpers.CalculateStackSubMeshData` match the two call sites signature-for-signature. |
 | `Buildings.Building`, `Buildings.Abandoned`, `Buildings.Condemned`, `Common.Destroyed`, `Objects.UnderConstruction` | `attrs.state` | Confirmed as presence tests. Wiki confirms `Destroyed` = "destroyed structures, for example a collapsed building". |
@@ -186,12 +186,17 @@ while `m_MaterialIndex` is the authored *local* slot — and the game rewrites i
 because they are global). After that rewrite the entry's start/count ranges are zeroed and the
 buffer position, not the stored index, is what maps to a surface.
 
-Measured on the shipped bundle, the buffers the ripper reads are still in the authored state:
-zero out-of-range fallbacks in `materials.json`, and road pieces resolve to the surfaces their
-shading confirms (asphalt dark, kerbs light). So no change is needed today. The seam to check if a
-future rip suddenly produces empty sub-meshes or wrong surfaces is exactly this: a buffer that has
-been through `MeshSystem` has zeroed ranges and global indices, and positional resolution through
-`GetSurfaceAsset(m_MaterialIndex)` stops being valid.
+Measured on the shipped bundle, the outputs looked authored — zero out-of-range fallbacks in
+`materials.json`, road pieces resolving to the surfaces their shading confirms — and this entry
+originally concluded the buffers had not yet been rewritten. **§9.2 corrects that conclusion from
+source.** The rewrite happens exactly once, at prefab creation (`MeshSystem`'s query is
+`MeshData + PrefabData + (Created|Deleted)`), so every `MeshMaterial` buffer a rip can ever see
+has already been through it; nothing in the game writes authored ranges into ECS at all. The
+measured cleanliness has a structural explanation instead: object render prefabs never carry a
+`MeshMaterial` buffer (only net pieces and the baked composition-mesh archetype do), and the
+ripper's ranges come from the geometry *asset*, whose sub-mesh ordinals the game itself resolves
+positionally. The ECS fallback now uses the buffer position — the only meaning the slot has —
+rather than the stored global id (§9.2).
 
 The same job settled a rendering question this audit had marked unrecoverable:
 `GenerateBatchMeshJob.GenerateCompositionMesh` bakes each composition vertex's matrix selection
@@ -537,3 +542,230 @@ produced one yet.
 `CalculateNodeParameters` produced two wrong readings that decompiled source settled in minutes.
 The decompiler is now the committed tool [`tools/decomp`](../tools/decomp/README.md); use it for
 everything, and treat source as the only acceptable evidence for arithmetic.
+
+## 9. Object meshes versus the game, rule by rule
+
+A ground-up validation of `MeshRipSystem` (with `GeometryAssetReader` and the parts of
+`GltfWriter` it feeds) against the game's own object pipeline, decompiled to C# on 2026-08-06.
+Authorities: `Game.Rendering.BatchInstanceSystem.UpdateObjectInstances` (which sub-meshes an
+entity draws), `Game.Rendering.BatchDataSystem.UpdateObjectData` (transforms, stacks, tree
+scale, the placeholder stretch), `Game.Rendering.BatchDataHelpers` (the `Calculate*SubMeshData`
+family), `Game.Prefabs.MeshSystem` (the `MeshMaterial` rewrite), `Game.Prefabs.RenderPrefab`
+(`ObtainMesh`, the material-index flattening), `Game.Rendering.ManagedBatchSystem.CreateBatch`
+(surface binding), and `Game.Prefabs.ObjectInitializeSystem` / `ObjectGeometryPrefab`
+(archetypes, sub-mesh flags at authoring).
+
+| # | Game rule | Producer | Verdict |
+|---|---|---|---|
+| 1 | A sub-mesh draws when `(m_Flags & state) == m_Flags` — a full-subset test over *all* flags. Baseline state is `DefaultMissingMesh \| HasTransform \|` traffic side; per-instance components add tree/stack/net-object/quantity bits | `ExportsSubMesh`: `Require*` bits ⊆ documented state, `OutlineOnly` excluded, `IsStack*`/`HasTransform`/`DefaultMissingMesh` ignored | **match** for the documented one-state export. The producer's fixed `RequireSafe\|RequireAdult\|RequireEmpty\|RequireClear\|RequireForward` is exactly what the game's per-instance calculators produce for the common case (no `Quantity` fullness, `NetObject` clear+forward, adult tree). `ObjectState` has no `Safe`/`LevelCrossing` cases, so those two bits cannot occur on object sub-meshes — harmless in the state |
+| 2 | The meshes of one geometry asset are simultaneous parts; the game creates one batch per flattened (mesh, sub-mesh) pair and binds `GetSurfaceAsset(flatOrdinal)` (`RenderPrefab.ObtainMesh` defines the flattening; LODs are separate render prefabs behind `LodProperties`) | Was: richest mesh wins, sub-mesh ordinal local to it | **divergence — fixed.** `GeometryAssetReader.ReadAll` now merges every mesh of the asset with flat material ordinals; the Unity-mesh fallback merges the same way. Report counts multi-mesh prefabs. The earlier "every object mesh measures one primitive, nothing visible changes" reading of the shipped bundle was circular — the bundle was ripped by the one-mesh code. Offline parsing of the game's own `.cok` archives shows vanilla trees are the mass-market case: every tree stage is `meshCount = 2` (trunk + leaf cards), which is why every tree in the pre-fix bundle exported dead. §15 has the file-level evidence |
+| 3 | `MeshMaterial` buffers: only writer is `MeshSystem.OnUpdate` at prefab `Created` — resizes to one entry per surface *in order*, stores a session-global library id, leaves ranges uninitialised. The game resolves surfaces from this buffer by *position* (`CreateBatch` matches the global id, then `GetSurfaceAsset(position)`). Only net-piece prefabs and the baked composition archetype carry the buffer at all | Was: `m_MaterialIndex` used positionally (§3.4's "benign" reading) | **latent divergence — fixed.** The ECS fallback now uses the buffer position; garbage ranges are dropped by the existing range checks. Unreachable today (objects have no such buffer; pieces read through the geometry asset), but the fallback no longer depends on that |
+| 4 | `SubMeshGroup`/`MeshGroup` — per-instance random variant selection (`MeshGroupSystem`, `PseudoRandomSeed.kMeshGroup`) | Not handled | **benign.** `SubMeshGroup` entries are created only on the `CharacterGroup` path (`ObjectInitializeSystem.InitializePrefab`) and the buffer only exists when a mesh is a `CharacterGroup` — creatures, which the bundle excludes |
+| 5 | `DefaultMissingMesh` placeholder (obsolete content, `InitializeObsoleteSystem`) draws stretched over `ObjectGeometryData.m_Bounds` (translate to centre, scale to half-size) | Was: exported at authored size | **divergence — fixed.** The part now carries the same TRS (node `scale` added to the writer); counted in the report. Zero in a healthy city |
+| 6 | Stack sections: counts/offsets/scales from `CalculateStackSubMeshData`, applied along `StackData.m_Direction`; every instance of a stackable prefab has `Stack` (archetype); parts with no stack role draw once, untiled | Sections expanded with the same public helper; whole-prefab file also shipped. Was: non-stack parts of a stacked prefab unreachable (whole file never referenced, sections files tile everything) | **match** on the arithmetic; the untiled-rest rule is now implemented as `__stack_rest` (file + one record per stacked instance), counted. All six stacked prefabs in the measured city are fully stack-flagged, so the rule is insurance |
+| 7 | Trees: state selects the sub-mesh (`CalculateTreeSubMeshData`), growth √-lerps a uniform scale between the prefab's per-stage sizes, applied to the instance transform | One adult-state mesh, `attrs.growth`/`treeState` | **approximated by design** on the mesh (documented one-state export); the scale — which a consumer could not reproduce without `GrowthScaleData` — is now exported per instance as `attrs.growthScale`, via the game's own helper (§10.2) |
+| 8 | `MeshFlags.Base`: a prefab with `BaseProperties` — and every building mesh, granted the flag by `ObjectInitializeSystem` even without one — draws one extra generated batch past its last sub-mesh: the foundation skirt. `BatchMeshHelpers.GenerateObjectMesh` builds it from the mesh's own silhouette at the base level (±0.01 m band, upward-continuing edges minus interior seams), as a 1 m quad band whose v=0 ring the shader drops to terrain; material = surface 0 of `BaseProperties.m_BaseType` or `MeshSettings.m_DefaultBaseMesh`; `MeshFlags.MinBounds` moves the base level to `m_Bounds.min.y`; `colossal_BaseState`=1 (instance not plain `OnGround`, owner's elevation for non-external building extensions) disables the stretch | Was: not exported | **reproduced (2026-08-06).** `IO/BaseSkirtBuilder` ports the silhouette scan (linear scan in place of the BVH; chain-accumulated perimeter u, loop seams split); `MeshRipSystem` gathers Base parts and the base surface on the main thread and generates on the writer, emitting `<assetId>__base.glb`. Terrain drop + elevation gate are the documented consumer rule (contract §4.1) since the bundle ships the terrain raster. Counted: skirts written, Base parts with no silhouette |
+| 9 | `UnderConstruction` with `m_NewPrefab == Entity.Null` draws nothing (the finished mesh is hidden until built); `Destroyed` + physical-lot with `m_Cleared ≥ 0` draws nothing | Instance exported with `state: "construction"` / `"destroyed"` referencing the finished mesh | **deliberate deviation** — the bundle describes the built environment; the consumer decides what a construction site or rubble looks like. Documented in contract §4.2 |
+| 10 | `Elevation.m_Elevation < 0` moves rendering to the Tunnel layer; `OutlineOnly` sub-meshes draw only in the outline pass | Excluded / not applicable | **match** (§2.1, tools/decomp README) |
+
+## 10. Instances versus the game
+
+`InstanceRipSystem` against culling, ownership, colour and growth. The transform, parent,
+exclusion and elevation rows of §2.1 stand as validated; what follows is what this pass changed
+or newly established.
+
+### 10.1 The query and the exclusions
+
+`PreCullingData` and the culling flags turn out to be irrelevant to the producer: culling
+selects what is *drawn this frame*, and the bundle wants what is *placed*. The query's actual
+divergences from the game's draw set are all deliberate and documented: `Moving`, `Creature`,
+`Vehicle`, `Marker` (§2.1), the buried utility-node filter (§3.3), and Temp/Deleted lifecycle
+state. No change.
+
+### 10.2 Tree growth is also a scale
+
+`BatchDataSystem.UpdateObjectData` multiplies the instance transform by the scale from
+`CalculateTreeSubMeshData` — a √-lerp between `GrowthScaleData.m_ChildSize…m_DeadSize` across
+the growth byte. `attrs.growth` alone cannot reproduce it because the per-stage sizes are
+prefab data the bundle does not carry. The producer now calls the same public helper per tree
+and writes `attrs.growthScale` (uniform, one number, omitted at 1). Without it every sapling
+and half-grown tree rendered at adult size.
+
+### 10.3 `attrs.color` was infoview state, not paint
+
+The finding of this pass. `Game.Objects.Color` — exported since Phase 3 as "which colour
+variation this object was painted" — has exactly one writer in the game: `ObjectColorSystem`,
+which fills it from the **active infoview** (`activeData.m_Index` is the info-mode index,
+`m_Value` a 0–255 status ramp through `InfoviewUtils.GetColor`). The exported value was UI
+overlay state that depended on which info panel the player last had open: 357,176 records of it
+in the shipped bundle.
+
+The paint the renderer actually uses is computed by `MeshColorSystem` — `PseudoRandomSeed` ×
+palette probabilities × season/age/gender filters × sync groups — and stored per instance in
+the `MeshColor` buffer (`m_ColorSet`, three RGBA channels), recomputed for every entity on game
+load, so it is always populated when a rip can run. `CustomMeshColor` overrides it when the
+player painted the object (`SetCustomColor` applies entry 0 to every part).
+
+**Fixed:** `attrs.colorSet` now carries the resolved `ColorSet` (first part's; instances whose
+parts resolve different sets are counted in the report), `attrs.colorCustom` marks player
+paint, and `attrs.color` is gone. Contract §7.2 corrected in place — the documented semantics
+were never delivered, so this is a bug fix, not a meaning change. `colors.json` keeps its role
+as the prefab's *possible* variations.
+
+## 11. Materials and textures versus `SurfaceAsset`
+
+`MaterialRipSystem` against `SurfaceAsset.SyncToUnityMaterial`, `GetTemplateMaterial` and the
+VT routes, re-checked from source rather than trusted from the session that wrote them.
+
+| # | Game rule | Producer | Verdict |
+|---|---|---|---|
+| 1 | A decode binds every entry of `m_Textures` whose property the template shader has (VT-handled entries bind through param blocks instead), plus all floats/ints/vectors/colors, plus every keyword in `m_Keywords` | The five contract maps via `TryGetTexture`, `_BaseColor`/`_EmissiveColor`/`_AlphaCutoff` scalars | **match** for the contract's surface. The run census now also accumulates the *surfaces' own* texture-dictionary keys, not just the material library's VT stack names — a non-VT-only map can no longer ship unnoticed (the §4.2 failure shape) |
+| 2 | Alpha: `_SURFACE_TYPE_TRANSPARENT` and `_ALPHATEST_ON` are the keywords the game itself branches on (`ManagedBatchSystem`, `RenderPrefabRenderer`) — but the runtime material is `new Material(template)` + surface overlay, so a template's clipping reaches surfaces that serialise no keywords of their own (vegetation, §15.3) | Was: the surface's two keywords only | **divergence — fixed (superseding this row's earlier "match", which held only for surfaces that carry their own keywords).** Surface keywords and floats first, then the template's keywords/floats, surface floats vetoing — §15.3 |
+| 3 | Double-sidedness is HDRP's `_DoubleSidedEnable` float on the template material; surface floats override template floats in `SyncToUnityMaterial` | Was: template-*name* substring `doublesided` | **approximated — improved.** Now reads the surface float, then the template material's property, with the name check as last fallback |
+| 4 | Decals: import gates on `lod.surfaces[0].template == "DefaultDecal"` (`AssetImportPipeline.SetupDecalComponent`); the projection composites by base-colour alpha | Template-name flag `decal`; `alphaMode` forced to `blend` for opaque-keyword decals | **match** — `"DefaultDecal"` contains the substring the flag tests, and the blend override matches what the projection does. `m_TextureArea` is computed from the *import-time* mesh UVs of up-facing vertices, which differ from runtime `MeshUV0` by the V-flip the producer already verified empirically against the arrow sheet (three distinct glyphs); the source reading and the measurement agree |
+| 5 | VT: `GetPreProcessedTextureGuid` still indexes `stack * layer` in this build (§2.3); the two VT schemes are complementary | Own flat-index walk; four-route `Locate` | **match**, unchanged |
+
+## 12. Lanes versus the game
+
+`LaneRipSystem` publishes the drivable graph; `BatchInstanceSystem.UpdateLaneInstances` draws
+lane *geometry*. Two findings:
+
+1. **The lane sub-mesh test is the object test inverted.** For lanes the accumulated flags are
+   an *exclusion* mask — `(subMesh.m_Flags & state) != 0 → skip` — and the bits read
+   accordingly: outside the editor the state contains `RequireEditor` (so editor-only lane
+   meshes are excluded), and the traffic side is reversed — left-hand traffic excludes
+   `RequireRightHandTraffic` sub-meshes. Any future lane-geometry exporter must use this
+   semantics, not §9's subset test; recorded here so it is not rediscovered the hard way.
+   The graph layer itself reads none of these flags — no change to `lanes.jsonl`.
+
+2. **Lane-drawn geometry is now baked (2026-08-06)** into the additive `lanemeshes/` layer
+   (contract §5B), as a stage of the network rip — same material window, same ordered
+   texture-then-mesh queue. The selection reproduces `UpdateLaneInstances`: the inverted
+   sub-mesh mask above plus the per-lane bits (`Unsafe`→`RequireSafe`,
+   `!LevelCrossing`→`RequireLevelCrossing`, track `Switch|DiamondCrossing`→`RequireClear` else
+   `RequireTrack`), `CutRange`s cutting holes, and the 0.1 m draw gate. The bend reproduces
+   what `BatchDataSystem.UpdateLaneData` hands the shader: spans cut by curve delta, tiles per
+   `GetTileCount` (rounded clips for authored `m_TilingCount`, partial last tile covering only
+   its clip share), mesh Z mapped over each tile's arc-length share, `NodeLane.m_WidthOffset`
+   width scaling, `MeshFlags.Invert` inverting the curve, and the hanging drop as the cubic
+   `(d.x, (d.x+h·L)·⅔, (d.y+h·L)·⅔, d.y)` from `HangingLane.m_Distances` +
+   `UtilityLaneData.m_Hanging`. Deliberate exclusions, counted per rip: tunnel-owned lanes and
+   `Pipeline`/`SubPipeline`-layer parts (`SearchSystem.GetLayers` — the underground cutaway
+   rendering), and decal-flagged lane parts. Approximations, also counted or noted: cut/end
+   clipping is per-vertex-clamp + drop-fully-clamped-triangles where the game clips per-pixel;
+   arc inversion uses a 32-sample table where the shader interpolates the `BuildCurveMatrix`
+   weights; the hang bake omits the game's wind modulation (calm-day shape);
+   `BuildCurveParams`' shared-end taper factors (`m_SharedStartCount`/`m_ConnectedStartCount`)
+   are not reproduced.
+
+The graph fields themselves (`m_SpeedLimit` in m/s, `m_Curviness`, flags-as-names,
+master/`SecondaryLane`) re-validated against `Game.Net.CarLane`/`TrackLane`/etc. unchanged —
+§2.4 stands.
+
+## 13. Appearance versus the game
+
+`AppearanceRipSystem` (colors.json / lights.json) against `MeshColorSystem` and the
+`ProceduralLight` construction in `MeshSystem.OnUpdate`:
+
+- **Palettes**: `ColorVariation` read per sub-mesh — confirmed as the very buffer
+  `MeshColorSystem` selects from, and the sub-mesh (not the object prefab) is confirmed as the
+  carrier (§7.2's census). `m_Probability` is the additive weight in the game's reservoir pick —
+  correct as published. The detail the file drops — `m_GroupID`, `m_SyncFlags`, seasonal
+  `ColorFilter`s, HSV ranges — remains §5.5's open item; with `attrs.colorSet` now carrying the
+  resolved answer (§10.3), that detail only matters to a consumer re-randomising a city.
+- **Lights**: `ProceduralLight` values are written by `MeshSystem.OnUpdate` from
+  `EmissiveProperties` — colours converted to linear, intensity ×100 into `w`, response speed as
+  `1/max(0.001, responseTime)`, animation indices offset past the signal-group block. The
+  producer reads the post-construction component, so all of that is already applied — the
+  published values are exactly what the renderer consumes. `LightEffectData.m_Range` /
+  `m_ColorTemperature` confirmed as the effect-level pairing. **match**
+- The palette/light files are keyed by sub-mesh asset id = glTF node name — which survives §9's
+  multi-mesh merge, because the merge is within one render prefab (one node) — still sound.
+
+## 14. The writers versus their specs
+
+No game counterpart; validated against glTF 2.0, the PNG spec, and the bundle contract.
+
+- **GltfWriter**: container framing (12-byte header, padded JSON/BIN chunks), accessor
+  min/max after the X-mirror, winding reversal, tangent `w` flip, and the V flip all conform.
+  Two changes: node `scale` is now emitted for parts that carry one (§9.5), and materials are
+  pooled per file rather than per part, so a prefab whose parts share a surface declares that
+  material once — same join key, smaller files, and one PBR node tree per material on import.
+- **Png**: colour type 6, bit depth 8, filter `None`, zlib with Adler-32, CRC over type+data —
+  spec-conformant and deterministic, which the content-hash naming requires. Per-row adaptive
+  filtering would shrink output at the cost of the encoder's obvious correctness; declined.
+- **TextureWriter**: two-stage dedup (claim by asset identity, then content hash) unchanged.
+- **Performance**: the write path is dominated by PNG deflate on the background writer, not by
+  the per-float `BinaryWriter` loops (~seconds per full city); per the prefer-simple rule, no
+  micro-optimisation without a measured target. The rip's main-thread cost is unchanged by this
+  pass except `attrs.colorSet`/`growthScale` (two buffer/component reads per instance, within
+  the existing per-entity budget).
+
+### 14.1 What this pass changed, in one list
+
+Producer behaviour (all schema-1-compatible): multi-mesh geometry assets merged with the game's
+surface mapping; ECS material fallback made positional; missing-asset placeholders stretched as
+the game stretches them; `__stack_rest` for untiled parts of stacked prefabs; `attrs.color`
+(infoview state) replaced by `attrs.colorSet`/`colorCustom` (resolved paint); `attrs.growthScale`
+added; double-sidedness read from the material property before the template name; sanitised ids
+capped at 160 so derived ids stay inside the contract's 180; glTF materials pooled per file;
+node scale support. Counters added for every rule a vanilla city may not exercise: multi-mesh
+merges, placeholder stretches, stack-rest parts, divergent per-part colour sets, `mesh:base`
+census row, and lane-drawn geometry. The two gaps this pass initially left counted-but-unbuilt
+were closed the same day: building foundation skirts (§9.8, `<assetId>__base.glb` + contract
+§4.1) and lane-drawn geometry (§12.2, the `lanemeshes/` layer + contract §5B).
+
+## 15. Tree foliage, validated from the game's own files (2026-08-06)
+
+Prompted by the Blender harness showing every tree as a bare trunk. Validated offline, without
+launching the game: the vanilla asset database (`Cities2_Data/Content/Game/Blob*.cok`) is a
+stored ZIP whose `.Geometry` and `.Surface` entries parse with the layouts decompiled from
+`Colossal.IO.AssetDatabase.GeometryAsset` (`MeshInfoHeader` at file offset 10, `SubMeshInfo`
+table after) and `SurfaceAsset` (`ReadHeader`/`LoadProperties`).
+
+| # | Game fact (from the files + decompiled source) | Producer | Verdict |
+|---|---|---|---|
+| 1 | `OakTreeAdult01…Geometry` holds **two meshes**: mesh 0 = trunk (4,293 verts / 18,525 indices), mesh 1 = leaf cards (6,400 verts / 15,360 indices — 1,600 quads). Same layout for every growth stage and every vanilla tree checked. LODs are separate assets (`_LOD1…Geometry`, 10 verts) | The shipped bundle's `OakTree01.glb` is byte-for-byte mesh 0 — every triangle UV-maps to the bark strip of the atlas | **root cause confirmed.** The bundle predates `ReadAll` (§9.2); the one-mesh reader kept mesh 0 and dropped the canopy. The current tree exports both with flat ordinals — re-rip required |
+| 2 | The adult oak render prefab carries **two surfaces** — `OakTreeAdult01` (template id 3) and `OakTreeAdult01#1` (template id 4) — and `MeshSystem` warns whenever `meshCount != materialCount`; a vanilla load logs no such warning, so serialized `m_MeshCount` agrees with the asset header on vanilla content. DLC `.Prefab` entries (`Prefabs_FreeUpdate02.cok`) confirm multi-mesh counts serialize correctly (ParkCafe01 = 5) | `TryReadGeometryAsset` trusted `renderPrefab.meshCount` alone | **hardened.** After `ObtainMeshes` the asset's own header count (`asset.meshCount`, what `CreateMeshes` iterates) is resident and now preferred; the prefab's declared count is the fallback |
+| 3 | The two oak surfaces are byte-identical property bags — same four texture GUIDs (one shared atlas: leaves left ~72 %, bark right), same wind floats (`_WindRangeLvlB`, `_WindElasticityLvlB`), same keywords (`_ANIM_HIERARCHY_PIVOT`, `_TANGENTSPACE_OCTO`) — **differing only in template id**. Neither carries `_ALPHATEST_ON`, `_AlphaCutoffEnable`, or `_AlphaCutoff`: the leaf cutout lives entirely on the library template, and `SurfaceAsset.Load` builds `new Material(template)` before overlaying surface properties, with `HDMaterial.ValidateMaterial` re-deriving keywords from floats | `AlphaMode` read only the surface's keywords → leaf material would export `opaque` and Blender would draw the cards as solid rectangles | **divergence — fixed.** `AlphaMode` now falls back to the template material (keywords, then HDRP's serialized `_SurfaceType`/`_AlphaCutoffEnable` floats), with a surface-carried float vetoing the template in either direction, matching `ValidateMaterial`'s float-wins semantics. `_AlphaCutoff` falls back to the template the same way. Double-sidedness already resolved through the template (§9) |
+| 4 | Leaf base colour is authored desaturated; the game tints it per instance through `_ControlMask` and the colour-set system | `attrs.colorSet` + `materials.json.colorMask` already shipped (§10, §13) | **match** — the data a consumer needs to tint foliage is in the bundle; the application formula is now stated in contract §7.2, and the Blender harness implements it (`apply_color_tints`, per-instance via `INSTANCER` attributes) |
+| 5 | Leaf meshes also carry `Color` (UNorm8×4) and `TexCoord3` (float32×3) — wind animation inputs consumed under `_ANIM_HIERARCHY_PIVOT` (per-leaf pivot hierarchy), plus `_WindRange/_WindElasticity` floats | Not exported | **deliberate deviation.** Wind is engine animation, not shape; the static rest pose is complete without it. Revisit only if a consumer wants to re-create wind |
+| 6 | A geometry asset's meshes draw together (§9.2), so a partial merge is lost geometry, not a variant choice | Per-mesh read failures were swallowed at Verbose with no counter | **hack removed.** `PartialMeshPrefabs` counter + report line ("Prefabs that lost meshes their geometry asset holds"); per-prefab `Warn` naming the asset in both the native and Unity-mesh paths; the reader's catch upgraded to `Warn` with the exception type; and a `"partial: …"` declaration in `warnings.jsonl` (contract §10), since an incomplete `.glb` is invisible from the file alone |
+
+Acceptance for the re-rip: `OakTree01.glb` gains a second primitive (6,400 verts) whose
+material is `OakTreeAdult01#1…` with `alphaMode: "MASK"` and an `alphaCutoff`
+(`doubleSided` follows the template's `_DoubleSidedEnable`, expected true for foliage but only
+observable at runtime); the report's multi-mesh counter goes from absent (0) to roughly the
+vegetation prefab count; the partial-merge counter stays 0; the Blender harness shows canopies.
+
+---
+
+## 16. The junction interior, settled from source (2026-08-06)
+
+The first full-city rip after §9–§15 still showed three junction defects in Blender: empty
+interiors (screenshot-confirmed holes, the world background visible through them), the fill
+rendering as large flat facets in a different grey, and z-fighting where the fill overlapped
+the flares. All three trace to one divergence, settled by re-reading
+`GenerateCompositionMesh`'s node branch against the producer:
+
+| # | Game fact (decompiled source) | Producer | Verdict |
+|---|---|---|---|
+| 1 | `flag12` (the median branch) tests **only** `NetSectionFlags.Median` — every median piece of a node composition (surface, kerb, bottom) rides the middle matrices, at **every** node, with **no gap threshold and no width cap**. `m_Middle` is cut at 0.99 and ends at the junction centre, so the arm's median-slot pieces are what pave the interior, with authored UVs | The median bend fired only when the halves had measurably parted (`gap ≥ 0.01 m`), only for `Surface` pieces, and was capped at the composition width — 201 wedges of a full city skipped as "too wide to be a median" and left as holes | **divergence — fixed.** The bend is unconditional at nodes, takes every median-flagged piece, and the cap is gone. The threshold and cap were producer inventions |
+| 2 | Nothing else covers a junction: `UpdateNetInstances` renders per-edge node meshes (plus orphans) and no other entity draws there. There is no fan | A constant-UV fan spanned flare-to-flare per junction — the flat differently-shaded facets, z-fighting the flares it overlapped; at the measured small-road junctions it did not even fire, leaving the interior empty | **hack reduced.** With the median bend always on, the fan shrinks to a residual centre patch bounded by the arms' inner-boundary and middle-curve ends (outer corners dropped from the ring), counted as APPROXIMATED |
+| 3 | Bent node pieces keep their authored UVs; the shader retiles V procedurally (per-primitive `du/dz` in the vertex stream) | The wedge fill tiles geometrically with authored UVs — equivalent under the documented normals deviation | **match** |
+
+Also found on the same screenshots and fixed the same day: the decal quad rebuild in
+`TryFlattenDecal` paired positions with UVs by assumption (`+x → +u`, pre-flipped V) instead of
+keeping the authored pairing the game derives `m_TextureArea` *from* — every road-marking text
+in the city read mirrored ("TAXI" as "IXAT"), and some crops landed on the wrong atlas band
+outright. The quad now samples each corner's nearest up-facing authored vertex UV, so
+orientation and crop are the authored ones by construction. And `lanemeshes` v1's per-lane
+baking (33,500 files / 8.6 GiB from 112 unique meshes) was replaced by contract §5B v2:
+straight part meshes once + per-lane bend parameters, the bend reference-implemented in the
+Blender harness — which is also what the game itself stores and does.
+
+Acceptance for the re-rip: junction interiors close (the coverage raster that showed empty
+small-road junctions shows them paved), no flat differently-shaded facets and no fill
+z-fighting; "too wide" no longer appears in the report; road-marking text reads correctly;
+`lanemeshes/` drops from 33,500 files to ~112 plus `laneprefabs.json` and a ~100 MB
+`lanemeshes.jsonl`.

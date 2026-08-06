@@ -1,0 +1,35 @@
+{
+  "Example_Fence": {
+    "category": "fence",
+    "hanging": 0.0,
+    "parts": [
+      {
+        "assetId": "carto_example_cube_fence",
+        "pos": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rot": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "inverted": false,
+        "tilingCount": 0,
+        "geometryTiling": true,
+        "boundsMin": [
+          -2.0,
+          0.0,
+          -2.0
+        ],
+        "boundsMax": [
+          2.0,
+          4.0,
+          2.0
+        ]
+      }
+    ]
+  }
+}

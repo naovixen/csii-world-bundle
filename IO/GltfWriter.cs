@@ -124,6 +124,13 @@ namespace Carto.IO
             //   故以 URI 匯集，而非逐材質輸出。）
             TextureTable textures = new(describe);
 
+            // Materials pool per file, not per part: several parts of one prefab routinely share a
+            // surface, and §6 keys the join on the material's name — one entry per name keeps the
+            // file honest about how many materials it actually has.
+            // （材質以檔案為單位匯集而非逐部件：同一預製模板的多個部件經常共用一個表面，
+            //   而 §6 以材質名稱作為連結鍵——每個名稱一筆條目，使檔案如實呈現其材質數量。）
+            Dictionary<string, int> materialPool = new();
+
             // Reserve node 0 for the root; parts append after it and are listed as its children.
             // （保留節點 0 給根節點，部件接續其後並列為其子節點。）
             List<int> children = new();
@@ -142,7 +149,7 @@ namespace Carto.IO
                 meshes.Add(new Dictionary<string, object>
                 {
                     ["name"] = name,
-                    ["primitives"] = BuildPrimitives(mesh, bin, binStream, bufferViews, accessors, materials, textures)
+                    ["primitives"] = BuildPrimitives(mesh, bin, binStream, bufferViews, accessors, materials, materialPool, textures)
                 });
 
                 Dictionary<string, object> node = new()
@@ -168,6 +175,12 @@ namespace Carto.IO
                         node["rotation"] = new[] { rotation.x, -rotation.y, -rotation.z, rotation.w };
                 }
 
+                // A per-axis magnitude, indifferent to the mirror — the reflection is carried by
+                // the position/rotation/winding changes, not by a negative scale.
+                // （逐軸的量值，與鏡射無涉——反射由位置、旋轉與繞序的變更承載，而非負縮放。）
+                if (part.Scale.HasValue && math.any(part.Scale.Value != new float3(1f)))
+                    node["scale"] = new[] { part.Scale.Value.x, part.Scale.Value.y, part.Scale.Value.z };
+
                 nodes.Add(node);
                 children.Add(nodes.Count - 1);
             }
@@ -179,7 +192,7 @@ namespace Carto.IO
             // （契約規定根節點的名稱恰為 `<assetId>`。）
             Dictionary<string, object> root = new() { ["name"] = prefab.AssetId };
             Dictionary<string, object> only = (children.Count == 1) ? (Dictionary<string, object>)nodes[children[0]] : null;
-            if ((only != null) && !only.ContainsKey("translation") && !only.ContainsKey("rotation"))
+            if ((only != null) && !only.ContainsKey("translation") && !only.ContainsKey("rotation") && !only.ContainsKey("scale"))
             {
                 // A single part at the origin needs no intermediate node — put the mesh straight on
                 // the root, which the contract requires to be named exactly `<assetId>`.
@@ -260,7 +273,8 @@ namespace Carto.IO
         /// <returns>The primitives for this mesh.（此網格的 primitive。）</returns>
         private static List<object> BuildPrimitives(MeshAsset mesh, BinaryWriter bin, MemoryStream binStream,
                                                     List<object> bufferViews, List<object> accessors,
-                                                    List<object> materials, TextureTable textures)
+                                                    List<object> materials, Dictionary<string, int> materialPool,
+                                                    TextureTable textures)
         {
             int vertexCount = mesh.Vertices.Length;
             bool hasNormals = (mesh.Normals != null) && (mesh.Normals.Length == vertexCount);
@@ -409,15 +423,20 @@ namespace Carto.IO
                 if (uvAccessor >= 0) attributes["TEXCOORD_0"] = uvAccessor;
                 if (tangentAccessor >= 0) attributes["TANGENT"] = tangentAccessor;
 
+                if (!materialPool.TryGetValue(materialId, out int materialIndex))
+                {
+                    materialIndex = materials.Count;
+                    materials.Add(textures.BuildMaterial(materialId));
+                    materialPool[materialId] = materialIndex;
+                }
+
                 gltfPrimitives.Add(new Dictionary<string, object>
                 {
                     ["attributes"] = attributes,
                     ["indices"] = indexAccessor,
-                    ["material"] = materials.Count,
+                    ["material"] = materialIndex,
                     ["mode"] = ModeTriangles
                 });
-
-                materials.Add(textures.BuildMaterial(materialId));
             }
 
             return gltfPrimitives;

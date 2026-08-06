@@ -37,6 +37,17 @@ namespace Carto.Domain
         public string NodeName { get; set; }
 
         /// <summary>
+        /// The part's per-axis scale, or <c>null</c> for none.（部件的逐軸縮放；無縮放時為 <c>null</c>。）<br/><br/>
+        /// Only the obsolete-content placeholder uses this: the renderer draws that box stretched
+        /// to the prefab's <c>ObjectGeometryData.m_Bounds</c>
+        /// (<c>BatchDataSystem.UpdateObjectData</c>, the <c>DefaultMissingMesh</c> branch), and the
+        /// stretch is a property of the prefab, so it bakes into the part's node.<br/>
+        /// （僅過時內容的佔位網格使用此欄位：繪製器將該方盒拉伸至預製模板的
+        /// <c>ObjectGeometryData.m_Bounds</c>，且該拉伸屬於預製模板本身，故烘焙至部件節點。）
+        /// </summary>
+        public float3? Scale { get; set; }
+
+        /// <summary>
         /// Which role this part plays in a stacked prefab, or <c>null</c> for an ordinary part.
         /// （此部件於堆疊式預製模板中所扮演的角色；一般部件為 <c>null</c>。）<br/><br/>
         /// CS2 does not store a tall pillar, a high wall or a long fence — it stores a foot, one
@@ -110,6 +121,16 @@ namespace Carto.Domain
             StackRole.Middle => $"{assetId}__stack_mid",
             _ => $"{assetId}__stack_last"
         };
+
+        /// <summary>
+        /// The <c>assetId</c> of a stacked prefab's parts that carry no stack role, drawn once per
+        /// instance rather than per tile. Same purity contract as <see cref="StackPartId"/>.<br/>
+        /// （堆疊式預製模板中不帶堆疊角色部件的 <c>assetId</c>，每個實例繪製一次而非隨鋪排重複。
+        /// 純函數性質與 <see cref="StackPartId"/> 相同。）
+        /// </summary>
+        /// <param name="assetId">The prefab's own id.（預製模板自身的 ID。）</param>
+        /// <returns>The rest-parts asset id.（其餘部件的資產 ID。）</returns>
+        public static string StackRestId(string assetId) => $"{assetId}__stack_rest";
 
         /// <summary>
         /// The stack role a <c>SubMesh</c>'s flags declare, or <c>null</c> if it is an ordinary

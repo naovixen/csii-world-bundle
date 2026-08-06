@@ -26,11 +26,14 @@ everything else is found through the manifest's `layers` index.
   instances.jsonl                 # one line per placed object
   networks.jsonl                  # one line per network segment / node
   lanes.jsonl                     # one line per lane — the drivable graph
+  lanemeshes.jsonl                # one line per lane that draws geometry (§5B)
+  laneprefabs.json                # lane prefab catalogue: parts + bend inputs (§5B)
   materials.json                  # material table, keyed by materialId
   colors.json                     # per-mesh colour palettes, keyed by sub-mesh assetId
   lights.json                     # per-mesh light emitters, keyed by sub-mesh assetId
   meshes/<assetId>.glb            # unique prefab meshes, deduped by prefab
   networks/<assetId>.glb          # generated per-segment network meshes
+  lanemeshes/<assetId>.glb        # straight lane part meshes, stored once each (§5B)
   textures/<sha256>.png           # textures, deduped by content hash
   terrain/elevation.tif           # elevation raster
   terrain/world_elevation.tif     # optional world-elevation surround
@@ -229,10 +232,39 @@ middle at draw time to span whatever that instance needs — a viaduct pillar's 
 two metres tall. A bundle cannot carry that as one mesh, because the repeat count is a property of
 the *instance*, so the producer emits a record per section, each with its world transform baked,
 exactly as it does for sub-objects above. Those records reference `<assetId>__stack_first`,
-`__stack_mid` and `__stack_last`, which are ordinary meshes under `layers.meshes`; the undivided
-`<assetId>` is also present, and is what an instance of the same prefab *without* a stack uses. A
-section carries `scale` only where the game stretches it to make the sections meet exactly. A
-consumer needs to do nothing special: these are ordinary instance records naming ordinary meshes.
+`__stack_mid` and `__stack_last`, which are ordinary meshes under `layers.meshes`; a prefab whose
+sub-meshes include parts with *no* stack role additionally ships them as `<assetId>__stack_rest`,
+referenced once per stacked instance — the game draws such parts untiled at the instance
+transform. The undivided `<assetId>` is also present for completeness, though every placed
+instance of a stackable prefab carries a stack in CS2 (the `Stack` component is part of the
+archetype), so instance records normally reference only the section files. A section carries
+`scale` only where the game stretches it to make the sections meet exactly. A consumer needs to
+do nothing special: these are ordinary instance records naming ordinary meshes.
+
+**Foundation skirts: `<assetId>__base.glb`** *(producer addition, 2026-08-06)*. CS2 draws one
+extra generated batch under most buildings: the *foundation skirt*, a band of wall that fills the
+gap between the building's flat floor and sloping terrain. The game generates it from the
+building's own silhouette at its base level (`BatchMeshHelpers.GenerateObjectMesh`) and stretches
+its lower edge down to the terrain in the vertex shader; its material comes from the render
+prefab's `BaseProperties.m_BaseType`, or a game-wide default when the prefab declares none. The
+producer bakes that same silhouette band and ships it as `<assetId>__base.glb` beside the
+prefab's own file — separate, because it obeys a draw rule of its own:
+
+- The band's top ring sits at the prefab's base level (UV `v = 1`); the bottom ring is authored
+  **1 m** below it (UV `v = 0`), and `u` is the perimeter distance in metres.
+- A consumer places the file at each instance's transform and **moves every `v = 0` vertex down
+  to the terrain surface at its world X/Z** (never up above the top ring), exactly as the game's
+  shader does. Left as authored, the band is simply a 1 m plinth — acceptable, but slopes will
+  show gaps.
+- Skip the skirt for instances not resting on the ground: any instance whose
+  `attrs.elevationFlags` is present and is not just `OnGround` (for a building extension —
+  a record with `parent` — read the parent's flags). This mirrors the game's
+  `colossal_BaseState` switch.
+
+No instance record references `__base` explicitly; its presence beside `<assetId>.glb` is the
+signal. Buildings get a skirt even when their prefab declares no `BaseProperties` — the game
+grants `MeshFlags.Base` to every non-decal building mesh — so expect one for nearly every
+building prefab whose walls touch its base level.
 
 ### 4.2 `attrs`
 
@@ -243,7 +275,9 @@ version, and by which optional properties the user enabled. Documented keys:
 `name`, `category`, `zone`, `zoning`, `theme`, `brand`, `level`, `elevation`, `elevationFlags`,
 `height` (true height in m from the mesh bounds), `storey`, `state`
 (`normal|construction|abandoned|condemned|destroyed`), `growth` (tree stage, 0..1), `treeState`,
-`color`, `season`, `address` (`[district, street, number]`), `decalLayers`, `decalHeight` (§4.2a).
+`growthScale` (the uniform scale the game draws a growing tree at — see §7.2), `colorSet`,
+`colorCustom` (§7.2), `season`, `address` (`[district, street, number]`), `decalLayers`,
+`decalHeight` (§4.2a).
 
 `height` comes from mesh bounds and is authoritative. `storey` and `level` are game metadata
 and must never be used to derive geometry.
@@ -426,53 +460,48 @@ metre short of the node**, and 316 more than four metres; other network types ar
 round, 77% of them reaching within a metre. The gap is a property of carriageways, and it is what
 a consumer saw as a hole at every junction.
 
-The producer closes it. Each flare presents five points at its node end — its two outer
-boundaries, its two inner boundaries, and its middle curve at the 0.99 cut the game itself uses.
-The polygon is assembled flare by flare: flares are ordered by bearing around the node, and each
-flare's points stay contiguous, ordered by bearing relative to the flare's own mean. It is not
-one global bearing sort of every point — that breaks exactly where junctions are hardest, two
-roads meeting at a shallow angle whose points interleave in bearing, and the sorted ring zigzags
-between them into a self-crossing polygon whose fan leaves sawtooth holes. The polygon bounds
-exactly the area neither the flares nor the wedge fills cover: the middle of the junction and the
-corner fillets between adjacent roads. It is triangulated from a hub at the node position, once
-per junction, and carried in the `.glb` of the connected segment with the lowest id. Its boundary
-coincides with where the assembled flares and wedge fills actually end, so the fan abuts them
-instead of cutting kerb-to-kerb chords across them. Height and shade come from the composition's
-widest carriageway surface piece (its top vertices' height and mean UV), falling back to the
-median piece — the junction interior stands in for carriageway, so it samples where the
-carriageway samples. Measured with a point-in-triangle coverage test on a three-way highway
-junction, the fill takes ring coverage from 86–93% with a 60-degree missing sector to **100% at
-every radius from 1 m to the end of the flares**.
+The bulk of the closing is **the game's own mapping, applied unconditionally** *(revised
+2026-08-06)*. `GenerateCompositionMesh`'s median branch (`flag12`) diverts every
+`NetSectionFlags.Median` piece of a node composition — surface, kerb and bottom alike — onto
+the middle matrices: the piece's centre column of vertices (`|x − offset.x| < 0.01`, the game's
+own test) rides `EdgeNodeGeometry.m_Middle` (cut at t = 0.99, which ends at the junction
+centre), while every other vertex keeps its proportional position within its half's frame — the
+same frame the drive pieces are mapped in. The kerbs keep their authored width; the edges stay
+flush with the lanes either side; authored UVs and heights carry across. The game applies this
+at **every** node — there is no gap threshold and no width cap — and so, now, does the
+producer, excluding median pieces from the ordinary half mapping at nodes so each is emitted
+once. An earlier revision gated the bend on a measured parting (17,111 of 19,445 intersection
+nodes part, up to 8 m and beyond; 0 of 32,473 ordinary ones) and capped it at the composition's
+width; both were producer inventions, and the cap alone left 201 junction wedges of a full city
+as visible holes. One fallback remains, and it is a documented producer deviation: a
+composition with no median piece at all (a one-way carriageway, most highways) parts at an
+intersection just the same, and there the widest carriageway surface piece is stretched
+inner-left → middle → inner-right so the surface stays closed — the geometry the game covers
+that hole with (junction pieces on the corner matrices) is not assembled by this producer. It
+fires only when the halves have measurably parted.
 
-A second defect is closed with the game's own mapping: at an intersection node the inner curve of
-the outer half and the inner curve of the inner half are **not the same curve** — measured lengths
-11.67 m and 8.05 m on one junction, against 10.01 m and 10.01 m at an ordinary node on the same
-road, and 17,111 of 19,445 intersection nodes city-wide against **0 of 32,473 ordinary ones**.
-CS2 covers that wedge with the median surface piece, and the mapping is decompiled from
-`GenerateCompositionMesh`: the piece's centre column of vertices (`|x − offset.x| < 0.01`, the
-game's own test) rides `EdgeNodeGeometry.m_Middle` (cut at t = 0.99), while every other vertex
-keeps its proportional position within its half's frame — the same frame the drive pieces are
-mapped in. The centre of the median stretches across the wedge; its kerbs keep their authored
-width and its edges stay flush with the lanes either side. The producer reproduces exactly that,
-tiling the piece along the wedge with its authored UVs and heights, and excludes it from the
-ordinary half mapping at such a node so it is emitted once. The bend is bounded to the
-composition's own width so that genuinely diverging carriageways are not paved over. Two
-compositions fall back to a full-width stretch across inner-left → middle → inner-right: a median
-piece authored without a centre column, and — so the surface stays closed — a composition with no
-median surface piece at all (a one-way carriageway, most highways), which parts at an
-intersection just the same; there the widest carriageway surface piece is stretched across, since
-the geometry the game covers that hole with (junction pieces on the corner matrices) is not
-assembled by this producer.
+What remains after the bend is a small **residual centre patch**, and it is an approximation,
+counted in the rip report. Each arm's emitted geometry now ends at three points — its two inner
+boundary ends and its middle curve at the 0.99 cut — and the polygon those points bound across
+all arms (a few metres wide at most) is triangulated flat from a hub, once per junction,
+carried in the `.glb` of the connected segment with the lowest id. Arms are ordered by bearing
+around the node with each arm's points contiguous (a single global bearing sort self-crosses at
+shallow-angle junctions and leaves sawtooth holes). Height and shade come from the
+composition's widest carriageway surface piece (its top vertices' height and mean UV), falling
+back to the median piece. The outer flare corners are deliberately **not** part of the ring:
+they belong to the flares, and a ring through them spanned the whole junction — over geometry
+that already covers it, which is what a consumer saw as z-fighting and a differently-shaded
+slab at every junction.
 
-**The wedge is a reproduction; the corner fillets remain a reconstruction.** An earlier version of
-this section claimed the vertex-to-matrix mapping lives in CS2's compiled shaders and is
+**The wedge is a reproduction; the centre patch remains a reconstruction.** An earlier version
+of this section claimed the vertex-to-matrix mapping lives in CS2's compiled shaders and is
 unrecoverable. That was wrong: the mapping is baked per vertex by managed code
-(`GenerateCompositionMesh`), which is how the median case above was recovered. The still-open part
-is the corner case — side pieces near a flare's outer corners blend toward two straight
-side-connection curves (matrices 6/7, built by `BuildCurve` from the flare corners at composition
-width) under flag bits (0x80 on the baked index) whose meaning has not been decoded. The corner
-fillets between adjacent roads therefore still fall to the flat fan, and a consumer should expect
-them flat where CS2 may have shaped them.
+(`GenerateCompositionMesh`), which is how the median case above was recovered. The still-open
+part is the corner case — `PreserveShape` pieces ride two straight side-connection curves
+(matrices 6/7, built by `BuildCurve` from the flare corners at composition width; reproduced
+for corner rails and crosswalks) with flag bits (0x80 on the baked index, roundabout branches)
+whose meaning has not been decoded. A consumer should expect the few square metres at a
+junction's very centre flat where CS2 may have shaped them.
 
 **Vertex sync is applied.** A junction stretches some lanes across its flare and squeezes others,
 so that a lane edge still meets whatever it meets on the far side. CS2 describes that as four
@@ -563,6 +592,97 @@ One JSON object per lane:
 Both master and derived lanes are emitted, the derived ones marked: a consumer laying out
 traffic wants every lane a vehicle can occupy, while one drawing lane lines may want only the
 placed ones.
+
+---
+
+## 5B. `lanemeshes.jsonl` — lane-drawn geometry *(v2, 2026-08-06)*
+
+A lane is usually just a path — but a lane whose prefab carries sub-meshes is **drawn world
+geometry**: hanging utility cables between poles, fences, hedge rows, all assembled along the
+lane's curve at draw time (`BatchInstanceSystem.UpdateLaneInstances`). Neither `networks/` (the
+road surface) nor `meshes/` (straight prefab meshes) carries it, so it is its own additive
+layer.
+
+**v2 replaces the baked form on the day of its introduction.** v1 baked each lane into its own
+`lanemeshes/lane_<id>.glb`; a full city produced 33,500 files and 8.6 GiB from only 112 unique
+source meshes, in breach of the bundle's dedupe-by-prefab principle (§6). v2 ships what the
+game itself stores — the straight meshes once, plus per-lane bend parameters — and the
+consumer bends. No v1 bundle was ever accepted, so there is no compatibility path.
+
+Three pieces:
+
+1. **`lanemeshes/<assetId>.glb`** — one file per unique straight part mesh, standard mesh
+   frame (§2.2 / §6), materials joining `materials.json` as everywhere else.
+2. **`laneprefabs.json`** — the catalogue: one entry per lane prefab that draws.
+
+   ```jsonc
+   { "PowerLine_Cable": {
+       "category": "cable",          // cable | pipe | fence | lane (from UtilityTypes)
+       "hanging": 0.15,              // UtilityLaneData.m_Hanging, 0 when the prefab never sags
+       "parts": [ {
+         "assetId": "PowerLine_Cable_Mesh",   // -> lanemeshes/<assetId>.glb
+         "pos": [0,0,0], "rot": [0,0,0,1],    // part offset within the prefab, §2.2 frame
+         "inverted": false,                   // MeshFlags.Invert: bend runs the curve backwards
+         "tilingCount": 0,                    // MeshData.m_TilingCount (see bend algorithm)
+         "geometryTiling": true,              // MeshFlags.Tiling: real tiling vs single stretch
+         "boundsMin": [-0.1,-0.1,-4], "boundsMax": [0.1,0.1,4],  // authored bounds; z span is
+         "decal": true                        //   the tile length. `decal` (optional): the game
+       } ] } }                                //   projects this part onto the ground — see below
+   ```
+
+   **`decal` parts are the game's junction interiors.** CS2 covers the area between a
+   junction's arms with no composition geometry at all: `TerrainSystem` flattens the ground
+   under the junction (`ShiftTerrain`/`ClipTerrain`), and the drive lanes crossing it carry
+   decal-state sub-meshes that project asphalt and markings onto that ground. A consumer that
+   skips `decal` parts gets petal-shaped holes at every junction centre; the reference
+   importer bends them like any part and lifts them slightly (`_DECAL_LIFT`) so they sit on
+   the surface the way the projection does. Until the terrain layer ships (Phase 6) they are
+   also the only thing standing in for the flattened ground beneath.
+
+3. **`lanemeshes.jsonl`** — one line per lane that draws:
+
+   ```jsonc
+   { "id": 481233, "prefab": "PowerLine_Cable", "category": "cable", "owner": 434062,
+     "curve": [[x,y,z],[x,y,z],[x,y,z],[x,y,z]],  // world-space cubic bézier control points
+     "parts": [0],                     // catalogue part indices this lane draws — the game's
+                                       // per-lane sub-mesh selection, already resolved
+     "spans": [[0.0,0.42],[0.55,1.0]], // uncut curve-parameter ranges (CutRange holes: a
+                                       // driveway through a fence). Omitted = whole curve.
+     "widthScale": [1.0,1.1],          // NodeLane width scale at curve start/end. Omitted = 1.
+     "hang": [0.0,0.0],                // HangingLane.m_Distances end drops. Omitted = none.
+     "colorSet": [[…],[…],[…]] }       // resolved paint, §7.2 shape. Omitted when absent.
+   ```
+
+**The bend algorithm** (normative; reference implementation in
+`tools/blender_import_bundle.py`, ported from the game-validated producer code — audit §12):
+
+- For each span (default `[0,1]`): cut the bézier to the span; if the part is `inverted`,
+  reverse the control points. Let `spanLength = curveLength × (span₁ − span₀)`; skip spans
+  ≤ 0.1 m (the game's draw gate). `curveLength` is the arc length of the whole curve.
+- Tile count, `meshLength = max(boundsMax.z − boundsMin.z, 0.001)`:
+  with `tilingCount > 0`: `clip = round(spanLength / max(1, meshLength) × tilingCount)`,
+  `tiles = ceil(clip / tilingCount)` capped at 256 when `geometryTiling`, else 1, and each
+  tile `t` covers clips `⌊t·clip/tiles⌋ … ⌊(t+1)·clip/tiles⌋` of the arc;
+  with `tilingCount == 0`: `geometryTiling` ? `clamp(ceil(spanLength/meshLength), 1, 256)`
+  tiles of `meshLength` metres each : one stretched tile.
+- Per vertex: `local = rot·v + pos`; `zFraction = (local.z − boundsMin.z) / meshLength`;
+  `arcPos = clamp(arcStart + zFraction · arcPerZ, 0, arcLimit)` (the clamp is an
+  approximation — the game clips per-pixel at cuts); invert the 32-sample arc-length table
+  for `t`; frame is `forward = normalize(tangent)`, `right = normalize(cross(up, forward))`,
+  `up = +y`; `width = lerp(widthScale₀, widthScale₁, tGlobal)`;
+  `world = point + right·(local.x·width) + up·local.y`.
+- Hanging (cables): with catalogue `hanging` h and record `hang` `[d₀,d₁]`, drop `world.y` by
+  the scalar cubic `(d₀, (d₀+h·L)·⅔, (d₁+h·L)·⅔, d₁)` at `tGlobal` (`L = curveLength`) — the
+  game's quadratic-to-cubic lift of the sag parabola, at calm air; the game additionally sways
+  these with sampled wind in the shader, which a static bundle does not carry.
+
+**What is deliberately not here**, each counted in the rip report: tunnel-owned lanes (whole
+lanes), and — excluded at the catalogue, since it is a property of the part —
+`Pipeline`-layer parts (underground pipes and cables the game draws only in the utility
+cutaway views). Decal-flagged parts are **included** and tagged (see above) — an earlier
+revision excluded them as "projected markings", which is what opened every junction centre.
+Editor-only and wrong-traffic-side sub-meshes are excluded per lane by the game's own
+(inverted) lane sub-mesh test (audit §12), already resolved into each record's `parts`.
 
 ---
 
@@ -668,15 +788,51 @@ lights likewise, on 1,184 sub-meshes covering 153,548 instances.
 **Colours.** A variation is CS2's `ColorSet`: three channels, and **the material's `colorMask`
 map (§7.1) is what selects between them, per texel.** Not the `mask` map — that is the PBR
 packing, and confusing the two is how this layer shipped once with a palette nothing could
-apply. A consumer needs all three of: the palette here, the `colorMask` texture on the
-primitive's material, and the instance's chosen variation.
+apply. A consumer needs both the `colorMask` texture on the primitive's material and the
+instance's resolved colours.
 
-Which variation a given object was painted is on the instance, as
-`attrs.color = { "variation": n, "value": v }` — CS2 chooses it once by probability and a seed
-and stores the answer, so the bundle records the answer rather than reproducing the choice.
-`variation` indexes this array; `value` is the game's own `m_Value / 255`, which it feeds to
-the shader as `float2(variation + 0.5, value)`. Without any of this, every copy of a prefab
-renders identically where the city shows a street of different colours.
+**How to apply it — the formula.** The tint is a masked *multiply*, not a replacement:
+
+```
+tinted = baseColor.rgb
+tinted = lerp(tinted, tinted × colorSet[0].rgb, colorMask.R)
+tinted = lerp(tinted, tinted × colorSet[1].rgb, colorMask.G)
+tinted = lerp(tinted, tinted × colorSet[2].rgb, colorMask.B)
+```
+
+Multiplying keeps the albedo's authored detail; the channels are authored disjoint, so the
+chain order is immaterial in practice. CS2's shaders ship compiled, so this is not lifted from
+shader source — it is the standard tint-mask-over-desaturated-albedo construction the game's
+asset-authoring documentation describes, and `tools/blender_import_bundle.py`
+(`apply_color_tints`) implements it as the working reference. Reading "selects" as *replace the
+albedo with the channel colour* flattens every surface to a solid tone; reading it as this
+multiply is correct.
+
+**Vegetation is grey until you do this.** CS2 authors tintable albedo desaturated — trees,
+bushes and hedges above all — and gives it colour only through this per-instance tint. A
+consumer that skips `colorSet` renders every tree and bush grey-brown, and the whole city reads
+as dead. The `foliage` flag (§7.1) marks the materials concerned. The companion trap is alpha:
+leaf canopies are alpha-tested card geometry (`alphaMode: "mask"` on the leaf material), so a
+loader that ignores `alphaMode` draws each canopy as solid grey rectangles. Honouring
+`alphaMode` is required glTF conformance, but game-engine import pipelines frequently need it
+switched on per material — check this first when foliage looks wrong.
+
+The paint a given object was drawn with is on the instance, as
+`attrs.colorSet = [[r,g,b,a],[r,g,b,a],[r,g,b,a]]` — three linear RGBA channels, the game's own
+resolved answer read from the renderer's per-instance state (`MeshColor`). CS2 computes it once
+from a per-object random seed, the palette's probabilities and the season filters; the bundle
+records the result rather than reproducing the computation. `attrs.colorCustom: true` marks a
+player-painted override. The palette in this file remains what it is: the prefab's *possible*
+variations with their weights, for a consumer re-colouring a city rather than reproducing this
+one. Without `colorSet`, every copy of a prefab renders identically where the city shows a
+street of different colours.
+
+*(Correction, 2026-08-06: this file previously documented `attrs.color = {variation, value}` as
+the chosen variation. The component that value was read from — `Game.Objects.Color` — is written
+only by the game's infoview overlay system and holds UI-overlay state, not paint; the documented
+semantics were never actually delivered. `attrs.color` is gone and `attrs.colorSet` carries what
+the description always promised. A consumer must tolerate both keys' absence, per §4.2's own
+rule.)*
 
 A material with no `colorMask` has no per-texel selection, so its meshes take channel 0
 everywhere or, more safely, are left at their base colour.
@@ -700,7 +856,7 @@ CS2 packs several PBR terms into one texture. The packing is fixed in v1:
 | `normal` | linear | Tangent-space, **OpenGL convention (+Y up)** |
 | `mask` | linear | **R** metallic · **G** ambient occlusion · **B** detail/emissive mask · **A** smoothness |
 | `emissive` | sRGB | RGB emission |
-| `colorMask` | linear | **R**, **G**, **B** select which `colors.json` channel applies per texel · **A** snow coverage (white = no snow) |
+| `colorMask` | linear | **R**, **G**, **B** — per-texel weights for the three `colorSet`/`colors.json` channels, applied by §7.2's formula · **A** snow mask (advisory — see below) |
 
 Note `mask.A` is **smoothness**, so `roughness = 1 - A`. Getting this backwards is the most
 common way to make a bundle look wrong, and it is silent — everything just renders too shiny
@@ -711,6 +867,15 @@ own asset-authoring documentation describes them instead as a glossy-coat layer 
 channel. CS2 ships its shaders compiled inside asset bundles, so the packing is not recoverable
 from the game's managed assemblies and the disagreement is recorded rather than resolved. Both
 readings agree on R and on A, which are the two that matter most. Treat G and B as advisory.
+
+`colorMask.A` was documented at the freeze as "snow coverage (white = no snow)", with no
+recorded source. Measured over a full city — 731 distinct `colorMask` textures — 317 are
+all-black in A, 59 all-white and 355 mixed, and **every vegetation mask is all-black**, which
+under the frozen reading would mean permanently snow-covered foliage. The polarity is therefore
+recorded as the opposite — **white = snow may accumulate here** — but like `mask.G`/`B` it is
+not recoverable from managed code and stays advisory: a consumer building weather should
+validate it against the game before trusting either reading. *(Corrected 2026-08-06; see
+§12.1.)*
 
 `flags` are producer hints a consumer may act on or ignore. Known in v1: `foliage`, `decal`,
 `glass`, `emissiveWindows`, `terrainBlend`, `colorVariation`.
@@ -766,6 +931,12 @@ A consumer may ignore this file entirely. `counts.warnings`, if present, is its 
 instead would lose their placement, which §4.1 requires to survive even when geometry cannot.
 So a missing mesh **declared here** validates as a warning; an **undeclared** one stays an
 error. A consumer substitutes a stand-in and the objects still land in the right places.
+
+A declared `assetId` may also **exist but be incomplete**: a geometry asset whose meshes could
+not all be read still writes the `.glb` from what survived, with a `"partial: …"` reason here —
+because the meshes of one asset draw together (§6), an incomplete file is invisible from the
+file alone. Presence of a warning therefore does not imply absence of the file; check the
+reason. *(Added 2026-08-06.)*
 
 ---
 
@@ -842,3 +1013,13 @@ The other changes made at the same time are ordinary v1-compatible additions: th
 `elevationEnd` (§5). The corrected descriptions of `elevation` (§4.2) and of what selects
 between colour channels (§7.2) are not changes to the format at all — the producer always wrote
 those values; the document described them wrongly.
+
+**`colorMask` semantics made explicit; `colorMask.A` polarity corrected (2026-08-06).**
+Documentation only — no producer byte changed; the textures pass through from the game as they
+always did. Two description fixes: §7.2 now states the tint's application formula (a masked
+multiply), which was previously only implied by "selects" and could be misread as
+replace-the-albedo; and §7.1's `colorMask.A` row said "white = no snow", which the shipped data
+contradicts — every vegetation mask is all-black in A, which would have meant permanently
+snowed foliage. A is now documented as "white = snow may accumulate", advisory. A consumer
+built on the pre-correction description of A renders inverted snow if it implemented weather;
+nothing else it could have built is affected.
