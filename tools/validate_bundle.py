@@ -585,11 +585,90 @@ def validate_bundle(bundle_dir: Path, schema_dir: Path) -> Report:
     raster_layers = [k for k in ("terrain", "worldTerrain", "surfaceIndex", "water", "worldWater") if k in layers]
     if raster_layers and "rasters" not in manifest:
         report.error(f"bundle.json declares raster layers {raster_layers} but has no 'rasters' block")
+    elif raster_layers:
+        _check_raster_layers(bundle_dir, manifest, layers, report)
 
     report.note(f"schema {manifest['schema']}, generator {manifest['generator']!r}")
     report.note(f"{len(instances)} instances, {len(networks)} network records")
     report.note(f"{len(mesh_files)} meshes, {len(materials)} materials, {len(texture_files)} textures")
     return report
+
+
+def _png_header(path: Path) -> Optional[Tuple[int, int, int, int]]:
+    """Return (width, height, bit depth, colour type) from a PNG's IHDR, or None."""
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return None
+    if not data.startswith(b"\x89PNG\r\n\x1a\n") or len(data) < 29 or data[12:16] != b"IHDR":
+        return None
+    width, height = struct.unpack(">II", data[16:24])
+    return width, height, data[24], data[25]
+
+
+def _check_raster_layers(bundle_dir: Path, manifest: Dict[str, Any],
+                         layers: Dict[str, str], report: Report) -> None:
+    """The terrain-layer invariants of contract §8.
+
+    Every raster is a single-channel PNG on the one grid the manifest's `rasters` block
+    geo-references: elevation and water depth at bit depth 16 (the game's native sample
+    width, value * scale + offset = metres), the surface index at bit depth 8 (ids, not
+    colours). The world rasters (`worldTerrain`/`worldWater`) cover a larger area at their
+    own size, so only the playable-area rasters are held to `rasters.size`.
+    """
+    rasters = manifest.get("rasters", {})
+    size = rasters.get("size")
+
+    expectations = (
+        ("terrain", 16, True, ("elevationScale", "elevationOffset")),
+        ("surfaceIndex", 8, True, ()),
+        ("water", 16, True, ("depthScale",)),
+        ("worldTerrain", 16, False, ("elevationScale", "elevationOffset")),
+        ("worldWater", 16, False, ("depthScale",)),
+    )
+    for key, depth, playable_grid, needed_keys in expectations:
+        rel = layers.get(key)
+        if rel is None:
+            continue
+        path = bundle_dir / rel
+        if not path.is_file():
+            continue  # the existence pass has already reported it
+        header = _png_header(path)
+        if header is None:
+            report.error(f"layers.{key}: {rel!r} is not a PNG")
+            continue
+        width, height, bit_depth, colour_type = header
+        if colour_type != 0:
+            report.error(f"layers.{key}: {rel!r} colour type is {colour_type}, contract §8 requires 0 (grayscale)")
+        if bit_depth != depth:
+            report.error(f"layers.{key}: {rel!r} bit depth is {bit_depth}, contract §8 requires {depth}")
+        if playable_grid and isinstance(size, list) and len(size) == 2 and [width, height] != size:
+            report.error(f"layers.{key}: {rel!r} is {width}x{height}, but rasters.size is {size[0]}x{size[1]}")
+        for needed in needed_keys:
+            if needed not in rasters:
+                report.error(f"layers.{key} is declared but rasters.{needed} is missing")
+
+    surfaces_dir = layers.get("surfaces")
+    if surfaces_dir is not None:
+        index_path = bundle_dir / surfaces_dir / "index.json"
+        if not index_path.is_file():
+            report.error(f"layers.surfaces: {surfaces_dir!r} has no index.json")
+        else:
+            try:
+                index = json.loads(index_path.read_text(encoding="utf-8"))
+            except ValueError as exc:
+                report.error(f"{surfaces_dir}index.json: not valid JSON ({exc})")
+                index = {}
+            for surface_id, entry in index.items():
+                label = f"{surfaces_dir}index.json[{surface_id}]"
+                if not surface_id.isdigit() or not 0 <= int(surface_id) <= 255:
+                    report.error(f"{label}: id must be an integer 0..255")
+                if not isinstance(entry, dict) or not isinstance(entry.get("name"), str):
+                    report.error(f"{label}: entry must carry a string 'name'")
+                    continue
+                texture = entry.get("texture")
+                if texture is not None and not (bundle_dir / texture).is_file():
+                    report.error(f"{label}: texture {texture!r} does not exist")
 
 
 def _check_quat(rot: Any, label: str, report: Report) -> None:

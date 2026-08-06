@@ -1,0 +1,10 @@
+{
+  "0": {
+    "name": "natural",
+    "texture": "terrain/surfaces/grass.png"
+  },
+  "1": {
+    "name": "roadbed",
+    "texture": "terrain/surfaces/dirt.png"
+  }
+}

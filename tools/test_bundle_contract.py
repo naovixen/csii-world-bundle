@@ -240,10 +240,53 @@ class BundleContractTest(unittest.TestCase):
 
     def test_declared_raster_layer_without_raster_block_rejected(self):
         bundle = self.fresh()
-        (bundle / "terrain").mkdir()
-        (bundle / "terrain" / "elevation.tif").write_bytes(b"II*\x00")
-        self.patch_manifest(bundle, lambda m: m["layers"].update({"terrain": "terrain/elevation.tif"}))
+        self.patch_manifest(bundle, lambda m: m.pop("rasters"))
         self.assertRejected(bundle, "no 'rasters' block")
+
+    # -- negative: terrain rasters (contract §8) ---------------------------------------
+
+    def test_raster_size_mismatch_rejected(self):
+        bundle = self.fresh()
+        self.patch_manifest(bundle, lambda m: m["rasters"].update({"size": [16, 16]}))
+        self.assertRejected(bundle, "rasters.size")
+
+    def test_raster_wrong_bit_depth_rejected(self):
+        bundle = self.fresh()
+        # An 8-bit heightmap quantises the world to 256 levels; the contract requires 16.
+        grid = json.loads((bundle / "bundle.json").read_text(encoding="utf-8"))["rasters"]["size"]
+        flat = [0] * (grid[0] * grid[1])
+        (bundle / "terrain" / "heightmap.png").write_bytes(
+            make_example_bundle.make_gray_png(flat, grid[0], grid[1], 8))
+        self.assertRejected(bundle, "bit depth")
+
+    def test_raster_not_grayscale_rejected(self):
+        bundle = self.fresh()
+        (bundle / "terrain" / "surface_index.png").write_bytes(
+            make_example_bundle.make_checker_png(32, 8))
+        self.assertRejected(bundle, "colour type")
+
+    def test_terrain_without_elevation_scale_rejected(self):
+        bundle = self.fresh()
+        self.patch_manifest(bundle, lambda m: m["rasters"].pop("elevationScale"))
+        self.assertRejected(bundle, "rasters.elevationScale is missing")
+
+    def test_water_without_depth_scale_rejected(self):
+        bundle = self.fresh()
+        self.patch_manifest(bundle, lambda m: m["rasters"].pop("depthScale"))
+        self.assertRejected(bundle, "rasters.depthScale is missing")
+
+    def test_surfaces_without_index_rejected(self):
+        bundle = self.fresh()
+        (bundle / "terrain" / "surfaces" / "index.json").unlink()
+        self.assertRejected(bundle, "has no index.json")
+
+    def test_surfaces_index_dangling_texture_rejected(self):
+        bundle = self.fresh()
+        index_path = bundle / "terrain" / "surfaces" / "index.json"
+        index = json.loads(index_path.read_text(encoding="utf-8"))
+        index["1"]["texture"] = "terrain/surfaces/no_such.png"
+        index_path.write_text(json.dumps(index, indent=2) + "\n", encoding="utf-8")
+        self.assertRejected(bundle, "does not exist")
 
     def test_layer_path_escaping_the_bundle_rejected(self):
         bundle = self.fresh()

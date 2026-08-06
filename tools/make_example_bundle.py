@@ -46,10 +46,9 @@ def _png_chunk(tag: bytes, payload: bytes) -> bytes:
     )
 
 
-def make_checker_png(size: int = 64, cell: int = 8) -> bytes:
+def make_checker_png(size: int = 64, cell: int = 8,
+                     a: tuple = (198, 202, 206, 255), b: tuple = (126, 132, 140, 255)) -> bytes:
     """An 8-bit RGBA checkerboard, so a consumer can see UVs are being applied."""
-    a = (198, 202, 206, 255)
-    b = (126, 132, 140, 255)
     raw = bytearray()
     for y in range(size):
         raw.append(0)  # filter type 0 (None) for this scanline
@@ -57,6 +56,24 @@ def make_checker_png(size: int = 64, cell: int = 8) -> bytes:
             raw.extend(a if ((x // cell) + (y // cell)) % 2 == 0 else b)
 
     ihdr = struct.pack(">IIBBBBB", size, size, 8, 6, 0, 0, 0)  # 8-bit, colour type 6 = RGBA
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + _png_chunk(b"IHDR", ihdr)
+        + _png_chunk(b"IDAT", zlib.compress(bytes(raw), 9))
+        + _png_chunk(b"IEND", b"")
+    )
+
+
+def make_gray_png(samples: list, width: int, height: int, depth: int) -> bytes:
+    """A single-channel PNG at bit depth 8 or 16 — the contract's raster format (§8)."""
+    raw = bytearray()
+    for y in range(height):
+        raw.append(0)  # filter type 0 (None)
+        for x in range(width):
+            value = samples[y * width + x]
+            raw.extend(struct.pack(">H", value) if depth == 16 else struct.pack("B", value))
+
+    ihdr = struct.pack(">IIBBBBB", width, height, depth, 0, 0, 0, 0)  # colour type 0 = grayscale
     return (
         b"\x89PNG\r\n\x1a\n"
         + _png_chunk(b"IHDR", ihdr)
@@ -352,6 +369,63 @@ def build(out_dir: Path) -> None:
         for record in lanes:
             fh.write(json.dumps(record, separators=(",", ":")) + "\n")
 
+    # -- terrain layers (contract §8): one small grid shared by every raster -----------
+    # 32x32 cells at 4 m cover x 80..208, z -300..-428 — the whole example scene. Rows run
+    # toward -Z (row 0 is the northernmost, z = -300), columns toward +X.
+    grid = 32
+    cell_m = 4.0
+    origin = (80.0, 0.0, -300.0)  # top-left cell centre
+    elevation_scale = 0.001       # worldY = value * 0.001 m
+    depth_scale = 0.03125         # depth = value / 32 m
+
+    heights: list[int] = []
+    surface: list[int] = []
+    depths: list[int] = []
+    for row in range(grid):
+        z = origin[2] - row * cell_m
+        for col in range(grid):
+            x = origin[0] + col * cell_m
+            # A gentle west-east slope around the 12 m the instances stand at...
+            world_y = 11.0 + (x - origin[0]) * 0.02
+            # ...flattened to exactly 12 m under the example road (z -368..-352, §5's
+            # segment), which is what a road-flattened band looks like in a real rip.
+            on_road = -368.0 <= z <= -352.0
+            if on_road:
+                world_y = 12.0
+            heights.append(round(world_y / elevation_scale))
+            surface.append(1 if on_road else 0)
+            # A pond in the north-east corner, 2 m at its deepest.
+            pond = max(0.0, 2.0 - 0.1 * (abs(x - 196.0) + abs(z - -308.0)))
+            depths.append(round(pond / depth_scale))
+
+    terrain_dir = out_dir / "terrain"
+    (terrain_dir / "surfaces").mkdir(parents=True, exist_ok=True)
+    (terrain_dir / "heightmap.png").write_bytes(make_gray_png(heights, grid, grid, 16))
+    (terrain_dir / "surface_index.png").write_bytes(make_gray_png(surface, grid, grid, 8))
+    (terrain_dir / "water_depth.png").write_bytes(make_gray_png(depths, grid, grid, 16))
+
+    grass_png = make_checker_png(16, 4, (96, 132, 72, 255), (84, 118, 64, 255))
+    dirt_png = make_checker_png(16, 4, (128, 108, 88, 255), (112, 94, 76, 255))
+    (terrain_dir / "surfaces" / "grass.png").write_bytes(grass_png)
+    (terrain_dir / "surfaces" / "dirt.png").write_bytes(dirt_png)
+    surfaces_index = {
+        "0": {"name": "natural", "texture": "terrain/surfaces/grass.png"},
+        "1": {"name": "roadbed", "texture": "terrain/surfaces/dirt.png"},
+    }
+    (terrain_dir / "surfaces" / "index.json").write_text(
+        json.dumps(surfaces_index, indent=2) + "\n", encoding="utf-8"
+    )
+
+    rasters = {
+        "resolution": cell_m,
+        "size": [grid, grid],
+        "originWorld": list(origin),
+        "elevationUnits": "m",
+        "elevationScale": elevation_scale,
+        "elevationOffset": 0.0,
+        "depthScale": depth_scale,
+    }
+
     # Bounds must enclose every placed mesh. The cube reaches HALF*sqrt(2) horizontally
     # under an arbitrary yaw, so pad the footprint by that instead of by HALF.
     reach = HALF * math.sqrt(2.0)
@@ -432,7 +506,12 @@ def build(out_dir: Path) -> None:
             "materials": "materials.json",
             "meshes": "meshes/",
             "textures": "textures/",
+            "terrain": "terrain/heightmap.png",
+            "surfaceIndex": "terrain/surface_index.png",
+            "surfaces": "terrain/surfaces/",
+            "water": "terrain/water_depth.png",
         },
+        "rasters": rasters,
         "ripOptions": {
             "meshSource": "runtime",
             "lodCap": 0,

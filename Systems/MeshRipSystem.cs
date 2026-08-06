@@ -1307,6 +1307,30 @@ namespace Carto.Systems
                         foreach (GeometryAssetReader.MeshInfo info in GeometryAssetReader.Describe(asset, meshCount))
                             trace.Add($"  {info}");
 
+                    // `ObtainMeshes` loads the CPU-side data only when no instances exist yet.
+                    // For a prefab the game is rendering right now — every drawn lane mesh, for
+                    // one — `m_Instances` is already non-null, the call returns the live meshes
+                    // without touching `m_Data`, and every native accessor then throws
+                    // `ArgumentOutOfRangeException` off `data.meshCount == 0`. (Its
+                    // `keepReadable` parameter is dead in this game build — the decompiled body
+                    // never reads it.) That is not a failed read, it is a path choice: skip the
+                    // native accessors entirely and read the live Unity meshes, which
+                    // `CreateMeshes` built readable. A full-city rip warned 16 times over
+                    // exactly this and every one of the 16 files was fine.
+                    // （`ObtainMeshes` 僅在尚無實例時載入 CPU 端資料。對於遊戲此刻正在繪製的
+                    //   預製模板——所有繪製中的車道網格皆然——`m_Instances` 已非空，呼叫直接
+                    //   回傳現存網格而不觸及 `m_Data`，其後所有原生存取器皆因
+                    //   `data.meshCount == 0` 拋出例外。（其 `keepReadable` 參數於本版遊戲為
+                    //   死參數——反編譯後的方法主體從未讀取它。）這並非讀取失敗而是路徑選擇：
+                    //   全然跳過原生存取器，改讀 `CreateMeshes` 建立為可讀的現存 Unity 網格。
+                    //   全城擷取正是為此警告了 16 次，而 16 個檔案無一有缺。）
+                    bool dataResident = asset.data.IsValid;
+                    if (!dataResident)
+                    {
+                        trace?.Add("geometry asset: CPU data not resident (the game holds live instances); reading the Unity meshes");
+                        _log.Debug($"`{assetId}`: geometry data not resident (live instances held by the game); reading Unity meshes instead.");
+                    }
+
                     // Every mesh of the asset, not the richest one. The meshes are simultaneous
                     // parts — LODs live behind LodProperties as separate render prefabs — and the
                     // game binds surface i to the i-th (mesh, sub-mesh) pair in flat order
@@ -1317,7 +1341,10 @@ namespace Carto.Systems
                     //   預製模板存在於 LodProperties 之後——且遊戲將表面 i 繫結至平坦順序下第 i 個
                     //   （網格、子網格）配對（`RenderPrefab.ObtainMesh`），讀取器指派的序數正是它。
                     //   只挑一個網格會丟棄其兄弟部件，且於首槽位之外錯配其表面。）
-                    MeshAsset merged = GeometryAssetReader.ReadAll(asset, meshCount, assetId, sourceName, out int meshesMerged);
+                    int meshesMerged = 0;
+                    MeshAsset merged = dataResident
+                        ? GeometryAssetReader.ReadAll(asset, meshCount, assetId, sourceName, out meshesMerged)
+                        : null;
                     if (merged != null)
                     {
                         if (meshesMerged > 1) MultiMeshPrefabs++;
@@ -1999,7 +2026,15 @@ namespace Carto.Systems
         /// type alone would delete every pylon in the city.<br/>
         /// （<b>所有者必須是 <c>Game.Net.Marker</c>。</b>真實高壓線的節點並非標記，
         /// 而其塔架正是與此完全相同的節點道具，故僅測試網路型別將刪光全城的塔架。）<br/><br/>
-        /// <b>And that is the whole test, minus one exception.</b> An earlier version also required
+        /// <b>Buildings hang the same furniture with themselves as owner</b>, so the owner test
+        /// alone is not the whole story: every lot's water, sewage and cable connection nodes have
+        /// the building as <c>Owner</c> and no marker net anywhere in the chain. Those are caught
+        /// by <see cref="IsUndergroundOnlyPrefab"/> — the game's own draw-layer rule — which is
+        /// checked first.<br/>
+        /// （<b>建築以自身為所有者掛載相同的配件</b>，故所有者測試並非全貌：每個地塊的自來水、
+        /// 污水與電纜接點皆以建築為 <c>Owner</c>，鏈上無任何標記網路。這些由
+        /// <see cref="IsUndergroundOnlyPrefab"/>——遊戲自身的繪製圖層規則——優先攔下。）<br/><br/>
+        /// <b>For the owner test itself, one exception.</b> An earlier version also required
         /// the owner's prefab to carry <c>PipelineData</c> or <c>PowerLineData</c>, which is what
         /// let the buried nodes through: those two components come only from
         /// <c>PipelinePrefab</c> and <c>PowerLinePrefab</c>
@@ -2032,6 +2067,17 @@ namespace Carto.Systems
         /// <returns>Whether to leave it out of the bundle.（是否將其排除於束之外。）</returns>
         public static bool IsUtilityMarkerSubObject(EntityManager entityManager, Entity entity)
         {
+            // The owner test alone proved incomplete in the field: a full-city rip still carried
+            // 29,648 pipe and cable node props whose owner is the *building* whose lot spawns
+            // them, not a marker net — buildings hang their own utility connection furniture as
+            // sub-objects, and those owners carry no `Game.Net.Marker`. The prefab test below is
+            // the game's own draw rule and catches both parents.
+            // （僅測試所有者已於實地證明不完整：全城擷取仍帶著 29,648 個管線與電纜節點道具，
+            //   其所有者是生成它們的<i>建築</i>而非標記網路——建築以子物件掛載自己的公用設施
+            //   接點配件，而這些所有者不帶 `Game.Net.Marker`。下方的預製模板測試是遊戲自身的
+            //   繪製規則，兩種親代皆能涵蓋。）
+            if (IsUndergroundOnlyPrefab(entityManager, entity)) return true;
+
             if (!entityManager.HasComponent<Game.Common.Owner>(entity)) return false;
 
             Entity owner = entityManager.GetComponentData<Game.Common.Owner>(entity).m_Owner;
@@ -2044,6 +2090,50 @@ namespace Carto.Systems
             // Drawn, despite being a marker net. The only such case the game has.
             // （雖為標記網路卻確實會被繪製。此為遊戲中唯一的此類情形。）
             return !entityManager.HasComponent<TaxiwayData>(ownerPrefab);
+        }
+
+        /// <summary>
+        /// Whether an object's prefab draws only on the underground utility layers, and so is never
+        /// visible in normal rendering.
+        /// （物件的預製模板是否僅於地下公用設施圖層繪製，因而在一般繪製中永不可見。）<br/><br/>
+        /// The game's rule, from <c>BatchInstanceSystem.UpdateObjectInstances</c>: a sub-mesh whose
+        /// <c>MeshData.m_DefaultLayers</c> is non-zero has its batch layer replaced by those
+        /// defaults, and <c>Pipeline</c>/<c>SubPipeline</c> map to camera layers only the
+        /// underground cutaway view renders. A prefab all of whose sub-meshes live there — the
+        /// pipe and cable connection nodes — therefore draws nothing in the world view, exactly
+        /// like the Pipeline-layer lane parts the lane catalogue already excludes. A prefab with
+        /// even one ordinary sub-mesh keeps drawing and is kept: the test is every-part, not
+        /// any-part.<br/>
+        /// （遊戲的規則，出自 <c>BatchInstanceSystem.UpdateObjectInstances</c>：
+        /// <c>MeshData.m_DefaultLayers</c> 非零的子網格，其批次圖層會被該預設值取代，而
+        /// <c>Pipeline</c>／<c>SubPipeline</c> 對應的攝影機圖層僅於地下剖視圖繪製。
+        /// 所有子網格皆屬於該處的預製模板——管線與電纜接點——因而在世界視圖中一無所繪，
+        /// 與車道目錄已排除的 Pipeline 圖層部件如出一轍。只要有一個一般子網格，模板便仍會繪製，
+        /// 故此測試為「每個部件」而非「任一部件」。）
+        /// </summary>
+        /// <param name="entityManager">The entity manager to ask.（用以查詢的實體管理器。）</param>
+        /// <param name="entity">The placed object.（已放置的物件。）</param>
+        /// <returns>Whether every sub-mesh is underground-only.（是否所有子網格皆僅屬地下圖層。）</returns>
+        private static bool IsUndergroundOnlyPrefab(EntityManager entityManager, Entity entity)
+        {
+            if (!entityManager.HasComponent<PrefabRef>(entity)) return false;
+
+            Entity prefab = entityManager.GetComponentData<PrefabRef>(entity).m_Prefab;
+            if ((prefab == Entity.Null) || !entityManager.HasBuffer<SubMesh>(prefab)) return false;
+
+            DynamicBuffer<SubMesh> subMeshes = entityManager.GetBuffer<SubMesh>(prefab, true);
+            if (subMeshes.Length == 0) return false;
+
+            const MeshLayer underground = MeshLayer.Pipeline | MeshLayer.SubPipeline;
+            foreach (SubMesh subMesh in subMeshes)
+            {
+                if (!entityManager.HasComponent<MeshData>(subMesh.m_SubMesh)) return false;
+
+                MeshLayer layers = entityManager.GetComponentData<MeshData>(subMesh.m_SubMesh).m_DefaultLayers;
+                if ((layers == 0) || ((layers & ~underground) != 0)) return false;
+            }
+
+            return true;
         }
 
         /// <summary>

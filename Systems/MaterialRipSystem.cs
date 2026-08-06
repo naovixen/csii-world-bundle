@@ -1336,7 +1336,7 @@ namespace Carto.Systems
         /// <param name="name">A name for the record.（供紀錄使用的名稱。）</param>
         /// <param name="cap">The longest edge to write, or <c>0</c> for no cap.（寫出的最長邊上限，<c>0</c> 為不限。）</param>
         /// <returns>The pixels, or <c>null</c>.（像素，或 <c>null</c>。）</returns>
-        private static PendingTexture Capture(Texture source, string key, string name, int cap)
+        internal static PendingTexture Capture(Texture source, string key, string name, int cap)
         {
             if (source == null) return null;
 

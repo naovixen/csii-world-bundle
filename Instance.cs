@@ -194,6 +194,12 @@ namespace Carto
         public static AppearanceRipSystem AppearanceRip => World.DefaultGameObjectInjectionWorld.GetOrCreateSystemManaged<AppearanceRipSystem>();
 
         /// <summary>
+        /// The system that rips the terrain, water and ground-surface layers.
+        /// （擷取地形、水體與地表層的系統。）
+        /// </summary>
+        public static TerrainRipSystem TerrainRip => World.DefaultGameObjectInjectionWorld.GetOrCreateSystemManaged<TerrainRipSystem>();
+
+        /// <summary>
         /// The system that searches point of interests (POIs).
         /// （搜尋興趣點（POI）的系統。）
         /// </summary>

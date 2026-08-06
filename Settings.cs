@@ -548,6 +548,37 @@ namespace Carto
         }
 
         /// <summary>
+        /// The button that rips the terrain, water and ground-surface rasters (PLAN Phase 6).
+        /// （擷取地形、水體與地表網格的按鈕（PLAN 第六階段）。）<br/><br/>
+        /// Synchronous and quick: two GPU readbacks plus a CPU rasterisation, a couple of seconds
+        /// on a full city — no frame-budgeted queue needed.<br/>
+        /// （同步且快速：兩次 GPU 回讀加一次 CPU 光柵化，全城僅需數秒——無須分幀佇列。）
+        /// </summary>
+        [SettingsUISection(GeneralTab, GeneralGeneralGroup)]
+        [SettingsUIButton]
+        [SettingsUIDisableByCondition(typeof(Settings), nameof(IsInGameOrEditor), invert: true)]
+        public bool RipTerrainButton
+        {
+            set
+            {
+                string summary;
+                try
+                {
+                    string directory = Utils.IOUtils.CombinePath(Instance.CartoDataPath, "spike");
+                    summary = Instance.TerrainRip.RipTerrain(directory);
+                }
+                catch (System.Exception ex)
+                {
+                    Instance.Log.Error(ex.ToString());
+                    summary = $"Terrain rip failed:\n{ex.Message}";
+                }
+
+                Game.UI.MessageDialog dialog = new("Options.SECTION[Carto.Carto.Mod]", Fit(summary), "Common.OK");
+                Instance.UI.appBindings.ShowMessageDialog(dialog, null);
+            }
+        }
+
+        /// <summary>
         /// The button that rips every unique prefab mesh into <c>meshes/*.glb</c> (PLAN Phase 3).
         /// （將所有唯一預製模板網格擷取至 <c>meshes/*.glb</c> 的按鈕（PLAN 第三階段）。）<br/><br/>
         /// Returns immediately: the rip runs a slice per frame with a progress indicator in the

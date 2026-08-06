@@ -86,7 +86,27 @@
     "networks": "networks.jsonl",
     "materials": "materials.json",
     "meshes": "meshes/",
-    "textures": "textures/"
+    "textures": "textures/",
+    "terrain": "terrain/heightmap.png",
+    "surfaceIndex": "terrain/surface_index.png",
+    "surfaces": "terrain/surfaces/",
+    "water": "terrain/water_depth.png"
+  },
+  "rasters": {
+    "resolution": 4.0,
+    "size": [
+      32,
+      32
+    ],
+    "originWorld": [
+      80.0,
+      0.0,
+      -300.0
+    ],
+    "elevationUnits": "m",
+    "elevationScale": 0.001,
+    "elevationOffset": 0.0,
+    "depthScale": 0.03125
   },
   "ripOptions": {
     "meshSource": "runtime",

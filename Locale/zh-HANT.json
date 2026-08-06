@@ -50,6 +50,8 @@
   "Options.Dropdown.RipTextureSize[Full]": "完整尺寸",
   "Options.Option.RipMeshesButton": "2. 擷取網格與貼圖",
   "Options.Description.RipMeshesButton": "完整擷取的第 2 步。將所有唯一預製模板網格連同其材質與貼圖擷取至 meshes/*.glb，並受上方兩項設定限制。耗時最長——每幀推進一段，畫面角落顯示進度。開發中功能。",
+  "Options.Option.RipTerrainButton": "4. 擷取地形",
+  "Options.Description.RipTerrainButton": "完整擷取的第四步。將道路壓平後的最終高度圖、路床地表索引、水深網格與主題地面貼圖寫入 terrain/。同步執行，僅需數秒。開發功能。",
   "Options.Option.ModVersion": "版本",
   "Options.Description.ModVersion": "目前執行中的 Carto 版本。",
   "Options.Option.ManualButton": "使用手冊",

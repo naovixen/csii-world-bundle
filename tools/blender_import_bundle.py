@@ -45,6 +45,11 @@ Options (after the `--`):
     --skirts                     also place each building's <assetId>__base.glb foundation
                                  skirt, as authored (the 1 m band; the terrain drop of its
                                  v=0 ring is the consumer rule in contract §4.1)
+    --terrain                    also place the §8 terrain under everything: the road-flattened
+                                 heightmap as a ground grid (roadbed faces textured from
+                                 surface_index.png) and the water surface at ground + depth.
+                                 This is what floors junction interiors — the game draws no
+                                 mesh there (same region filter as everything else)
     --keep-existing              don't wipe the scene first
     --save out.blend             write a .blend and exit, so the import is paid for once
 
@@ -1084,6 +1089,297 @@ def build_lanes(lanes_path, catalogue_path, lane_mesh_dir, collection,
     return bent
 
 
+# -- terrain, contract §8 -------------------------------------------------------------------
+#
+# The terrain is the Phase 6 acceptance layer, and the one that closes the junctions: the game
+# floors a junction's interior with road-flattened ground, not with any mesh, so the petals
+# between the flares are holes until this layer is under everything. The rasters are decoded
+# here in plain Python rather than through Blender's image loader so that no colour-management
+# transform can touch the samples — the decoder below is also deliberately a reference
+# implementation of §8's file format for any consumer to lift.
+
+def _decode_png_gray(path):
+    """Decode a single-channel PNG (§8) to (width, height, samples).
+
+    Samples come back as an array of ints at the file's own bit depth — 16-bit values 0..65535
+    for elevation and depth, 8-bit ids for the surface index. All five standard scanline
+    filters are handled; the producer writes filter 0 (None) rows, which is the fast path.
+    """
+    import zlib
+    from array import array
+
+    data = open(path, "rb").read()
+    if not data.startswith(b"\x89PNG\r\n\x1a\n"):
+        raise ValueError(f"{path} is not a PNG")
+
+    pos = 8
+    width = height = depth = None
+    colour_type = None
+    idat = []
+    while pos + 8 <= len(data):
+        (length,) = __import__("struct").unpack(">I", data[pos:pos + 4])
+        tag = data[pos + 4:pos + 8]
+        payload = data[pos + 8:pos + 8 + length]
+        pos += 12 + length
+        if tag == b"IHDR":
+            width, height = __import__("struct").unpack(">II", payload[:8])
+            depth, colour_type = payload[8], payload[9]
+        elif tag == b"IDAT":
+            idat.append(payload)
+        elif tag == b"IEND":
+            break
+
+    if colour_type != 0 or depth not in (8, 16):
+        raise ValueError(f"{path}: contract §8 rasters are 8- or 16-bit grayscale, "
+                         f"got colour type {colour_type} at depth {depth}")
+
+    raw = zlib.decompress(b"".join(idat))
+    bpp = depth // 8
+    stride = width * bpp
+    out = bytearray(width * height * bpp)
+    previous = bytearray(stride)
+
+    for y in range(height):
+        offset = y * (stride + 1)
+        filter_type = raw[offset]
+        line = bytearray(raw[offset + 1:offset + 1 + stride])
+        if filter_type == 1:    # Sub
+            for i in range(bpp, stride):
+                line[i] = (line[i] + line[i - bpp]) & 0xFF
+        elif filter_type == 2:  # Up
+            for i in range(stride):
+                line[i] = (line[i] + previous[i]) & 0xFF
+        elif filter_type == 3:  # Average
+            for i in range(stride):
+                left = line[i - bpp] if i >= bpp else 0
+                line[i] = (line[i] + ((left + previous[i]) >> 1)) & 0xFF
+        elif filter_type == 4:  # Paeth
+            for i in range(stride):
+                left = line[i - bpp] if i >= bpp else 0
+                up = previous[i]
+                corner = previous[i - bpp] if i >= bpp else 0
+                estimate = left + up - corner
+                distances = (abs(estimate - left), abs(estimate - up), abs(estimate - corner))
+                predictor = (left, up, corner)[distances.index(min(distances))]
+                line[i] = (line[i] + predictor) & 0xFF
+        out[y * stride:(y + 1) * stride] = line
+        previous = line
+
+    if depth == 16:
+        samples = array("H", bytes(out))
+        if sys.byteorder == "little":
+            samples.byteswap()
+    else:
+        samples = array("B", bytes(out))
+    return width, height, samples
+
+
+def _terrain_paths(bundle_dir):
+    """The §8 layer paths and the `rasters` geo-reference block.
+
+    Reads bundle.json when it exists; otherwise the conventional layout plus the producer's
+    pre-manifest terrain/rasters.json sidecar (§8).
+    """
+    manifest_path = os.path.join(bundle_dir, "bundle.json")
+    layers = {}
+    rasters = None
+    if os.path.isfile(manifest_path):
+        with open(manifest_path, encoding="utf-8") as handle:
+            manifest = json.load(handle)
+        layers = manifest.get("layers", {})
+        rasters = manifest.get("rasters")
+
+    heightmap = os.path.join(bundle_dir, layers.get("terrain", "terrain/heightmap.png"))
+    surface = os.path.join(bundle_dir, layers.get("surfaceIndex", "terrain/surface_index.png"))
+    water = os.path.join(bundle_dir, layers.get("water", "terrain/water_depth.png"))
+    surfaces_dir = os.path.join(bundle_dir, layers.get("surfaces", "terrain/surfaces/"))
+
+    if rasters is None:
+        sidecar = os.path.join(bundle_dir, "terrain", "rasters.json")
+        if os.path.isfile(sidecar):
+            with open(sidecar, encoding="utf-8") as handle:
+                rasters = json.load(handle)
+
+    return heightmap, surface, water, surfaces_dir, rasters
+
+
+def _ground_material(name, texture_path, fallback_colour):
+    material = bpy.data.materials.new(name)
+    material.use_nodes = True
+    bsdf = material.node_tree.nodes.get("Principled BSDF")
+    bsdf.inputs["Roughness"].default_value = 0.95
+    if texture_path and os.path.isfile(texture_path):
+        image_node = material.node_tree.nodes.new("ShaderNodeTexImage")
+        image_node.image = bpy.data.images.load(texture_path)
+        material.node_tree.links.new(image_node.outputs["Color"], bsdf.inputs["Base Color"])
+    else:
+        bsdf.inputs["Base Color"].default_value = fallback_colour
+    return material
+
+
+def build_terrain(bundle_dir, collection, center, radius):
+    """Place the §8 terrain under everything: ground grid, roadbed split, water surface.
+
+    Returns the number of objects placed (0 when the layer is absent). The region filter crops
+    the grid to the same window as everything else; without one, the grid is subsampled to at
+    most ~1024 cells per axis so a full 4096² map stays viewable.
+    """
+    heightmap_path, surface_path, water_path, surfaces_dir, rasters = _terrain_paths(bundle_dir)
+    if not os.path.isfile(heightmap_path):
+        print(f"no terrain layer at {heightmap_path} — skipping terrain")
+        return 0
+    if rasters is None:
+        print("terrain rasters present but no geo-reference (bundle.json rasters or "
+              "terrain/rasters.json) — skipping terrain")
+        return 0
+
+    width, height, heights = _decode_png_gray(heightmap_path)
+    cell = float(rasters["resolution"])
+    origin_x, _, origin_z = rasters["originWorld"]
+    elevation_scale = float(rasters.get("elevationScale", 1.0))
+    elevation_offset = float(rasters.get("elevationOffset", 0.0))
+    depth_scale = float(rasters.get("depthScale", 1.0))
+
+    surface_ids = None
+    if os.path.isfile(surface_path):
+        sw, sh, surface_ids = _decode_png_gray(surface_path)
+        if (sw, sh) != (width, height):
+            print(f"CONTRACT VIOLATION: surface_index is {sw}x{sh}, heightmap {width}x{height}")
+            surface_ids = None
+
+    depths = None
+    if os.path.isfile(water_path):
+        ww, wh, depths = _decode_png_gray(water_path)
+        if (ww, wh) != (width, height):
+            print(f"CONTRACT VIOLATION: water_depth is {ww}x{wh}, heightmap {width}x{height}")
+            depths = None
+
+    # The crop window, in raster indices. Row 0 is the northernmost (§3: rows toward -Z).
+    if center is not None and radius is not None:
+        margin = 2.0 * cell
+        col0 = max(0, int((center[0] - radius - margin - origin_x) / cell))
+        col1 = min(width - 1, int(math.ceil((center[0] + radius + margin - origin_x) / cell)))
+        row0 = max(0, int((origin_z - (center[1] + radius + margin)) / cell))
+        row1 = min(height - 1, int(math.ceil((origin_z - (center[1] - radius - margin)) / cell)))
+        stride = 1
+    else:
+        col0, col1, row0, row1 = 0, width - 1, 0, height - 1
+        stride = max(1, (max(width, height) + 1023) // 1024)
+
+    if col0 >= col1 or row0 >= row1:
+        print("terrain: the region window misses the raster entirely — skipping terrain")
+        return 0
+
+    cols = list(range(col0, col1 + 1, stride))
+    rows = list(range(row0, row1 + 1, stride))
+
+    def world_y(row, col):
+        return heights[row * width + col] * elevation_scale + elevation_offset
+
+    # -- the ground grid -------------------------------------------------------------------
+    verts = []
+    for row in rows:
+        z = origin_z - row * cell
+        for col in cols:
+            x = origin_x + col * cell
+            verts.append((x, z, world_y(row, col)))     # Blender: X east, Y north, Z up
+
+    ncols = len(cols)
+    faces = []
+    face_cell = []
+    for r in range(len(rows) - 1):
+        for c in range(ncols - 1):
+            a = r * ncols + c
+            # Row 0 is the north edge, so winding (a, a+ncols, a+ncols+1, a+1) — south then
+            # east — keeps the face normal pointing up in Blender's right-handed frame.
+            faces.append((a, a + ncols, a + ncols + 1, a + 1))
+            face_cell.append((rows[r], cols[c]))
+
+    mesh = bpy.data.meshes.new("bundle_terrain")
+    mesh.from_pydata(verts, [], faces)
+
+    grass = _ground_material("terrain_natural", os.path.join(surfaces_dir, "grass.png"),
+                             (0.20, 0.30, 0.12, 1.0))
+    dirt = _ground_material("terrain_roadbed", os.path.join(surfaces_dir, "dirt.png"),
+                            (0.35, 0.28, 0.20, 1.0))
+    mesh.materials.append(grass)
+    mesh.materials.append(dirt)
+
+    roadbed_faces = 0
+    if surface_ids is not None:
+        for face, (row, col) in zip(mesh.polygons, face_cell):
+            if surface_ids[row * width + col] != 0:
+                face.material_index = 1
+                roadbed_faces += 1
+
+    # World-anchored UVs so the ground textures tile at a plausible density without any
+    # per-face unwrap. 8 m per repeat reads roughly like the game's near tiling.
+    uv_layer = mesh.uv_layers.new(name="UVMap")
+    for loop in mesh.loops:
+        x, y, _ = mesh.vertices[loop.vertex_index].co
+        uv_layer.data[loop.index].uv = (x / 8.0, y / 8.0)
+
+    mesh.validate()
+    terrain_object = bpy.data.objects.new("bundle_terrain", mesh)
+    collection.objects.link(terrain_object)
+    placed = 1
+
+    # -- the water surface -----------------------------------------------------------------
+    # Per-vertex surface height is ground + depth, so a face is placed wherever any corner is
+    # wet and its dry corners sit exactly on the ground — the shoreline closes itself.
+    wet_faces = 0
+    if depths is not None:
+        water_verts = {}
+        water_faces = []
+
+        def water_vertex(row, col):
+            key = (row, col)
+            if key not in water_verts:
+                depth = depths[row * width + col] * depth_scale
+                x = origin_x + col * cell
+                z = origin_z - row * cell
+                water_verts[key] = (len(water_verts), (x, z, world_y(row, col) + depth))
+            return water_verts[key][0]
+
+        for r in range(len(rows) - 1):
+            for c in range(ncols - 1):
+                corner_rows = (rows[r], rows[r + 1])
+                corner_cols = (cols[c], cols[c + 1])
+                if any(depths[cr * width + cc] for cr in corner_rows for cc in corner_cols):
+                    water_faces.append((water_vertex(corner_rows[0], corner_cols[0]),
+                                        water_vertex(corner_rows[1], corner_cols[0]),
+                                        water_vertex(corner_rows[1], corner_cols[1]),
+                                        water_vertex(corner_rows[0], corner_cols[1])))
+
+        if water_faces:
+            ordered = [None] * len(water_verts)
+            for index, position in water_verts.values():
+                ordered[index] = position
+            water_mesh = bpy.data.meshes.new("bundle_water")
+            water_mesh.from_pydata(ordered, [], water_faces)
+            water_material = bpy.data.materials.new("terrain_water")
+            water_material.use_nodes = True
+            water_bsdf = water_material.node_tree.nodes.get("Principled BSDF")
+            water_bsdf.inputs["Base Color"].default_value = (0.08, 0.22, 0.35, 1.0)
+            water_bsdf.inputs["Roughness"].default_value = 0.05
+            if "Alpha" in water_bsdf.inputs:
+                water_bsdf.inputs["Alpha"].default_value = 0.8
+            if hasattr(water_material, "blend_method"):
+                water_material.blend_method = "BLEND"
+            water_mesh.materials.append(water_material)
+            water_mesh.validate()
+            water_object = bpy.data.objects.new("bundle_water", water_mesh)
+            collection.objects.link(water_object)
+            placed += 1
+            wet_faces = len(water_faces)
+
+    print()
+    print(f"terrain:   {len(rows)}x{ncols} sample window of {width}x{height} at {cell:g} m"
+          + (f", stride {stride}" if stride > 1 else ""))
+    print(f"           {roadbed_faces} roadbed face(s), {wet_faces} water face(s)")
+    return placed
+
+
 # -- scene building -------------------------------------------------------------------------
 
 def clear_scene():
@@ -1284,6 +1580,7 @@ def main():
     do_networks = False
     do_lanes = False
     do_skirts = False
+    do_terrain = False
     net_categories = _UNSET
     net_limit = None
     assets = None
@@ -1305,6 +1602,9 @@ def main():
             i += 1
         elif arg == "--skirts":
             do_skirts = True
+            i += 1
+        elif arg == "--terrain":
+            do_terrain = True
             i += 1
         elif arg == "--net-limit":
             do_networks = True
@@ -1350,6 +1650,7 @@ def main():
         do_networks = True
         do_lanes = True
         do_skirts = True
+        do_terrain = True
         if kinds is _UNSET:
             kinds = set(_ALL_KINDS)
         if net_categories is _UNSET:
@@ -1584,6 +1885,12 @@ def main():
         else:
             print(f"no lanemeshes.jsonl at {lanes_path} — skipping lane geometry")
 
+    terrain_objects = 0
+    if do_terrain:
+        terrain_collection = bpy.data.collections.new("bundle_terrain")
+        bpy.context.scene.collection.children.link(terrain_collection)
+        terrain_objects = build_terrain(bundle_dir, terrain_collection, center, radius)
+
     # Everything is imported, so the placed instances can come back into the view layer. This is
     # deliberately after the networks: an instance parked here is an instance the segment imports
     # do not have to deselect, and there are two orders of magnitude more of them than there are
@@ -1626,6 +1933,8 @@ def main():
     if do_skirts:
         print(f"placed {skirts_placed} foundation skirt(s) (__base, as-authored 1 m bands — "
               f"the terrain drop is the consumer rule, contract §4.1)")
+    if do_terrain:
+        print(f"placed {terrain_objects} terrain object(s) (ground grid + water; §8)")
     print(f"skipped: {skipped_kind} by kind, {skipped_asset} by --assets, {skipped_region} outside the region")
 
     # An empty-looking scene is nearly always the region filter, not the bundle. Say so, with the

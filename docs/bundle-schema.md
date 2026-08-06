@@ -888,21 +888,51 @@ validate it against the game before trusting either reading. *(Corrected 2026-08
 The file name **is** the lowercase hex SHA-256 of the file's own bytes; a validator checks
 this, because it is the invariant that makes dedup verifiable rather than merely claimed.
 
-**Elevation and water** are GeoTIFFs written by Carto's existing raster path, geo-referenced by
-the same frame as the meshes (§2.3), described by the manifest's `rasters` block.
+**Terrain, water and surfaces** *(frozen 2026-08-06, Phase 6)* are single-channel PNGs on one
+grid, geo-referenced by the manifest's `rasters` block (§3) and placed in the same frame as the
+meshes (§2.3): `originWorld` is the top-left cell centre, rows run toward −Z (south), columns
+toward +X (east).
 
-**Ground surfaces** are the meaningful upgrade over a bare heightmap:
-
-- `terrain/surface_index.png` — 8-bit single-channel raster, one pixel per terrain cell, the
-  value being a surface id.
-- `terrain/surfaces/index.json` — maps that id to a name and a texture:
+- **`terrain/heightmap.png`** (`layers.terrain`) — 16-bit grayscale. World height in metres is
+  `value * rasters.elevationScale + rasters.elevationOffset`. These are the **final** heights —
+  after the game's road job has flattened the ground under roads and junctions
+  (`TerrainSystem`'s ShiftTerrain/ClipTerrain lane draws, building lots and area grading are
+  all baked in). Junction interiors have **no mesh in the game**: the visible floor there *is*
+  this terrain, so a consumer that skips the heightmap will see holes between the junction
+  flares.
+- **`terrain/water_depth.png`** (`layers.water`) — 16-bit grayscale. Water depth in metres is
+  `value * rasters.depthScale`; 0 means dry. The water *surface* elevation at a cell is ground
+  height + depth. The simulation's coarser grid is resampled bilinearly onto the terrain grid
+  so every raster shares one geo-reference.
+- **`terrain/surface_index.png`** (`layers.surfaceIndex`) — 8-bit grayscale, the value being a
+  surface id, **not** a colour (nearest-neighbour only; never resample ids bilinearly).
+  - `0` — natural ground. The game classifies it per-pixel on the GPU (grass/dirt/rock by
+    slope, height and noise); the bundle does not reproduce that classification.
+  - `1` — **roadbed**: ground the road job flattens. Stamped from the exact footprints the
+    game draws its terrain adjustments with — every edge segment, junction-node strip and
+    orphan cap of a net whose prefab carries `FlattenTerrain`/`ClipTerrain`, trimmed by
+    `TerrainComposition.m_WidthOffset`, elevated decks and tunnels excluded (their terrain is
+    shifted *away* from the road, not onto it). The smoothing apron where terrain slopes to
+    meet the road is not included. In-game this ground reads as dirt tinted by the drive
+    lanes' ~13%-alpha wear decals (§5B `decal`); consumers texture it as roadbed and give it
+    road physics.
+- **`terrain/surfaces/index.json`** (`layers.surfaces`) — maps each id to a name and a
+  representative texture:
   ```jsonc
-  { "0": { "name": "grass", "texture": "terrain/surfaces/grass.png" },
-    "1": { "name": "dirt",  "texture": "terrain/surfaces/dirt.png" } }
+  { "0": { "name": "natural", "texture": "terrain/surfaces/grass.png" },
+    "1": { "name": "roadbed", "texture": "terrain/surfaces/dirt.png" } }
   ```
-- `terrain/surfaces/*.png` — the referenced ground textures.
+  `texture` may be `null` when the theme texture could not be read. The referenced
+  `terrain/surfaces/*.png` are the loaded map theme's ground textures, ripped as bound.
 
-The index raster shares the manifest's `rasters` geo-referencing.
+The `rasters` block gains three keys for this (`elevationScale`, `elevationOffset`,
+`depthScale` — see the schema); they are v1-compatible optional manifest additions, required by
+the validator when the corresponding layer is declared. `worldTerrain`/`worldWater` (the 4×
+backdrop) keep the same value semantics at their own size when present.
+
+**Until the producer assembles `bundle.json` (Phase 7)**, the identical `rasters` object is
+written at `terrain/rasters.json`, and Phase 7 lifts it into the manifest verbatim. A consumer
+of a *complete* bundle reads the manifest only.
 
 ---
 
@@ -1023,3 +1053,16 @@ contradicts — every vegetation mask is all-black in A, which would have meant 
 snowed foliage. A is now documented as "white = snow may accumulate", advisory. A consumer
 built on the pre-correction description of A renders inverted snow if it implemented weather;
 nothing else it could have built is affected.
+
+**Terrain rasters frozen as 16-bit PNG, not GeoTIFF (2026-08-06, Phase 6).** The original §8
+placeholder said elevation and water would be "GeoTIFFs written by Carto's existing raster
+path". Freezing the layer for real changed that to single-channel PNG with scale/offset keys
+in `rasters`, on these grounds: the vanilla GeoTIFF writer is inseparable from the CRS options
+and file-naming of the vector export, and the bundle's geo-referencing authority is the
+manifest, not per-file tags; 16-bit grayscale is a *lossless passthrough* of the game's native
+height samples where a float GeoTIFF would be a re-quantisation twice the size; PNG is already
+the bundle's only raster format, so consumers gain no second decoder; and no bundle with a
+terrain layer existed before this freeze, so no consumer breaks. The vanilla GeoTIFF export
+remains available unchanged through `vector/` (§9) for CRS-referenced GIS workflows. The
+`rasters` additions (`elevationScale`, `elevationOffset`, `depthScale`) are ordinary
+v1-compatible optional-key additions.

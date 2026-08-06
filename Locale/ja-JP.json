@@ -50,6 +50,8 @@
   "Options.Dropdown.RipTextureSize[Full]": "Full size",
   "Options.Option.RipMeshesButton": "2. Rip Meshes & Textures",
   "Options.Description.RipMeshesButton": "Step 2 of a full rip. Rip every unique prefab mesh into meshes/*.glb with its materials and textures, capped by the two settings above. The long one - runs a slice per frame with progress in the corner. Development feature.",
+  "Options.Option.RipTerrainButton": "4. Rip Terrain",
+  "Options.Description.RipTerrainButton": "Step 4 of a full rip. Write the final road-flattened heightmap, the roadbed surface index, the water depth grid and the theme's ground textures into terrain/. Synchronous, a few seconds. Development feature.",
   "Options.Option.ModVersion": "バージョン",
   "Options.Description.ModVersion": "現在実行中の Carto のバージョン。",
   "Options.Option.ManualButton": "利用案内書",

@@ -121,6 +121,20 @@
           "$ref": "#/$defs/vec3"
         },
         "elevationUnits": { "const": "m" },
+        "elevationScale": {
+          "description": "Metres of world height per stored unit of the elevation rasters: worldY = value * elevationScale + elevationOffset. Required when a terrain layer is declared.",
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "elevationOffset": {
+          "description": "World height of elevation-raster value 0, in metres.",
+          "type": "number"
+        },
+        "depthScale": {
+          "description": "Metres of water depth per stored unit of the water rasters: depth = value * depthScale; 0 = dry. Required when a water layer is declared.",
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
         "noData": {
           "description": "Sentinel value for cells with no data.",
           "type": "number"
