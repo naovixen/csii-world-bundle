@@ -10,6 +10,7 @@ using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.IO;
 using System.Text;
 using UnityEngine;
 using UnityEngine.Experimental.Rendering;
@@ -164,6 +165,12 @@ namespace Carto.Systems
             /// <summary>Surfaces whose own VT data was opened, and those whose load threw.（已開啟自身 VT 資料的表面數，以及載入時擲出例外者。）</summary>
             public int SurfaceDataLoads, SurfaceDataFailures;
 
+            /// <summary>Surfaces skipped because a previous rip's crash marker names them.（因前次擷取的當機標記指名而跳過的表面數。）</summary>
+            public int SurfaceDataGuarded;
+
+            /// <summary>The surfaces <c>vt_crash_guard.txt</c> lists as having crashed the game.（<c>vt_crash_guard.txt</c> 所列曾使遊戲當機的表面。）</summary>
+            public HashSet<string> CrashGuard = new();
+
             /// <summary>Maps recovered off a live material, once every other route failed.（其餘路徑皆失敗後，自實際材質救回的貼圖數。）</summary>
             public int TexturesFromMaterial;
 
@@ -281,6 +288,62 @@ namespace Carto.Systems
                 Textures = new TextureWriter(IOUtils.CombinePath(bundleRoot, "textures")),
                 Enqueue = enqueue
             };
+
+            LoadCrashGuard(_run);
+        }
+
+        /// <summary>The list of surfaces whose VT decode has crashed the game; survives restarts.（VT 解碼曾使遊戲當機的表面清單；重啟後仍保留。）</summary>
+        private static string GuardPath => IOUtils.CombinePath(Instance.CartoDataPath, "vt_crash_guard.txt");
+
+        /// <summary>The marker naming the surface whose VT decode is in flight right now.（指名此刻正在解碼 VT 的表面的標記檔。）</summary>
+        private static string InflightPath => IOUtils.CombinePath(Instance.CartoDataPath, "vt_inflight.txt");
+
+        /// <summary>
+        /// Arm the crash fence around <c>VTSurfaceAsset.Load</c>.
+        /// （為 <c>VTSurfaceAsset.Load</c> 設置當機防護。）<br/><br/>
+        /// The game's decoder (<c>VTSurfaceDataHandler.FillDebugMaterial</c>) slices its
+        /// decompressed tile stream by header-derived offsets with no bounds checks in the release
+        /// build, so a header/stream mismatch is a <b>native</b> crash — no managed catch ever
+        /// sees it, and one bad surface ends the whole rip and the game with it. The fence turns
+        /// that into evidence: a marker file names each surface before its decode and is deleted
+        /// after, so a marker still on disk at the next rip <i>is</i> the culprit, gets appended
+        /// to the guard list, and is never decoded again — its maps fall through to the
+        /// live-material route and the skip is declared in the report and warnings.
+        /// （遊戲的解碼器以標頭推得的偏移切割解壓後的圖磚串流，發行版中毫無邊界檢查，
+        /// 故標頭與串流不符即為<b>原生</b>當機——受管的 catch 永遠看不見，一個壞表面便終結整次擷取
+        /// 連同遊戲。此防護將其化為證據：標記檔於每次解碼前指名該表面、成功後刪除；
+        /// 下次擷取時仍在磁碟上的標記<i>即為</i>元兇，被附入防護清單後不再解碼——
+        /// 其貼圖改走實際材質路徑，且跳過之事於報告與警告中言明。）
+        /// </summary>
+        /// <param name="run">The run to arm.（要設置防護的工作。）</param>
+        private static void LoadCrashGuard(MaterialRun run)
+        {
+            try
+            {
+                if (File.Exists(InflightPath))
+                {
+                    string victim = File.ReadAllText(InflightPath).Trim();
+                    File.Delete(InflightPath);
+                    if (victim.Length > 0)
+                    {
+                        _log.Warn($"A previous rip crashed while decoding VT surface data for `{victim}`; "
+                                + $"it is now on the skip list at {GuardPath}.");
+                        File.AppendAllText(GuardPath, victim + Environment.NewLine);
+                    }
+                }
+
+                if (File.Exists(GuardPath))
+                {
+                    foreach (string line in File.ReadAllLines(GuardPath))
+                    {
+                        if (line.Trim().Length > 0) run.CrashGuard.Add(line.Trim());
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _log.Warn($"Crash guard unavailable: {ex.Message}");
+            }
         }
 
         /// <summary>
@@ -976,9 +1039,25 @@ namespace Carto.Systems
             if (own.Attempted) return own.Material;
             own.Attempted = true;
 
+            // The decode is a native-crash risk (see LoadCrashGuard), so the fence brackets it:
+            // skip surfaces a previous crash convicted, and name the one in flight on disk so
+            // that a crash here convicts it for the next run.
+            // （解碼具原生當機風險（見 LoadCrashGuard），故防護將其夾住：跳過前次當機定罪的表面，
+            //   並將進行中的表面指名於磁碟，使此處的當機能為下次執行定罪。）
+            string marker = $"{own.Surface.name} ({own.Surface.vtSurfaceAsset?.id.guid})";
+            if (run.CrashGuard.Contains(marker))
+            {
+                run.SurfaceDataGuarded++;
+                run.Skipped.Add(new RipWarning("texture", own.Surface.name,
+                    "own VT data not decoded: it crashed the game in a previous rip (vt_crash_guard.txt); "
+                    + "maps fall back to the live material where possible"));
+                return null;
+            }
+
             try
             {
                 run.SurfaceDataLoads++;
+                try { File.WriteAllText(InflightPath, marker); } catch { /* fence unavailable; proceed */ }
                 own.Material = own.Surface.vtSurfaceAsset.Load();
             }
             catch (Exception ex)
@@ -986,6 +1065,13 @@ namespace Carto.Systems
                 run.SurfaceDataFailures++;
                 if (run.BindFailures++ < 5)
                     _log.Warn($"VT surface data failed to load for `{own.Surface.name}`: {ex}");
+            }
+            finally
+            {
+                // Reached on success and on managed failure alike; only a native crash leaves the
+                // marker behind, which is precisely the signal it exists to give.
+                // （成功與受管失敗皆會到達此處；唯有原生當機會留下標記——這正是其存在要給的訊號。）
+                try { File.Delete(InflightPath); } catch { /* nothing useful to do */ }
             }
 
             return own.Material;
@@ -1685,7 +1771,10 @@ namespace Carto.Systems
                             + $"{run.TexturesFromSurfaceData} from the surface's own VT data), "
                             + $"{run.TexturesUnbound} with nothing behind them; "
                             + $"{run.TexturesFromMaterial} taken off a live material as a last resort.");
-            report.AppendLine($"Surface VT data: {run.SurfaceDataLoads} file(s) opened, {run.SurfaceDataFailures} failed to decode.");
+            report.AppendLine($"Surface VT data: {run.SurfaceDataLoads} file(s) opened, {run.SurfaceDataFailures} failed to decode."
+                + (run.SurfaceDataGuarded > 0
+                    ? $" {run.SurfaceDataGuarded} skipped by vt_crash_guard.txt (crashed the game in a previous rip)."
+                    : ""));
 
             // The colour mask is what makes colors.json applicable, so say plainly whether it came
             // out. Zero here does not mean the city has no colour variation — it means this code is
