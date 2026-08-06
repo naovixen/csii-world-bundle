@@ -35,6 +35,35 @@ namespace Carto.Domain
         /// （此部件的 glTF 節點名稱，於預製模板內唯一。）
         /// </summary>
         public string NodeName { get; set; }
+
+        /// <summary>
+        /// Which role this part plays in a stacked prefab, or <c>null</c> for an ordinary part.
+        /// （此部件於堆疊式預製模板中所扮演的角色；一般部件為 <c>null</c>。）<br/><br/>
+        /// CS2 does not store a tall pillar, a high wall or a long fence — it stores a foot, one
+        /// repeating section and a cap, and repeats the middle at draw time to span whatever the
+        /// instance needs (<c>Game.Objects.Stack.m_Range</c>). A prefab carrying these is therefore
+        /// not one mesh but three, and the bundle has to be able to place them independently.<br/>
+        /// （CS2 不儲存高聳的橋墩、牆或長籬——它儲存一個基座、一段可重複的區段與一個頂蓋，
+        /// 並於繪製時重複中段以填滿該實例所需的跨距。帶有這些部件的預製模板因而並非一個網格
+        /// 而是三個，束必須能夠獨立擺放它們。）
+        /// </summary>
+        public StackRole? StackRole { get; set; }
+    }
+
+    /// <summary>
+    /// The three parts of a stacked prefab, mirroring <c>SubMeshFlags.IsStack*</c>.
+    /// （堆疊式預製模板的三個部分，對應 <c>SubMeshFlags.IsStack*</c>。）
+    /// </summary>
+    public enum StackRole
+    {
+        /// <summary>The foot, drawn once at the bottom.（基座，於底部繪製一次。）</summary>
+        First,
+
+        /// <summary>The repeating section.（可重複的區段。）</summary>
+        Middle,
+
+        /// <summary>The cap, drawn once at the top.（頂蓋，於頂部繪製一次。）</summary>
+        Last
     }
 
     /// <summary>
@@ -63,6 +92,40 @@ namespace Carto.Domain
         public string AssetId { get; set; }
 
         /// <summary>
+        /// The <c>assetId</c> of one part of a stacked prefab.（堆疊式預製模板中某一部分的 <c>assetId</c>。）
+        /// <br/><br/>
+        /// A pure function of the prefab's id and the role, so that <see cref="Systems.MeshRipSystem"/>
+        /// and <see cref="Systems.InstanceRipSystem"/> agree on the name without having to share
+        /// state or ordering — the instance pass runs first and never sees the mesh pass's output.
+        /// The result stays inside the contract's <c>assetId</c> pattern.<br/>
+        /// （此為預製模板 ID 與角色的純函數，使網格擷取與實例擷取無須共享狀態或次序即可對名稱取得一致
+        /// ——實例階段先執行，且從未見過網格階段的輸出。結果仍符合契約的 <c>assetId</c> 樣式。）
+        /// </summary>
+        /// <param name="assetId">The prefab's own id.（預製模板自身的 ID。）</param>
+        /// <param name="role">Which part.（哪一部分。）</param>
+        /// <returns>The part's asset id.（該部分的資產 ID。）</returns>
+        public static string StackPartId(string assetId, StackRole role) => role switch
+        {
+            StackRole.First => $"{assetId}__stack_first",
+            StackRole.Middle => $"{assetId}__stack_mid",
+            _ => $"{assetId}__stack_last"
+        };
+
+        /// <summary>
+        /// The stack role a <c>SubMesh</c>'s flags declare, or <c>null</c> if it is an ordinary
+        /// part.（子網格旗標所宣告的堆疊角色；若為一般部件則為 <c>null</c>。）
+        /// </summary>
+        /// <param name="flags">The sub-mesh flags.（子網格旗標。）</param>
+        /// <returns>The role, or <c>null</c>.（角色，或 <c>null</c>。）</returns>
+        public static StackRole? RoleOf(Game.Prefabs.SubMeshFlags flags)
+        {
+            if ((flags & Game.Prefabs.SubMeshFlags.IsStackStart) != 0) return StackRole.First;
+            if ((flags & Game.Prefabs.SubMeshFlags.IsStackMiddle) != 0) return StackRole.Middle;
+            if ((flags & Game.Prefabs.SubMeshFlags.IsStackEnd) != 0) return StackRole.Last;
+            return null;
+        }
+
+        /// <summary>
         /// The prefab's original, unsanitised name.（預製模板未經淨化的原始名稱。）
         /// </summary>
         public string SourceName { get; set; }
@@ -71,6 +134,23 @@ namespace Carto.Domain
         /// The parts drawn together to make this prefab.（共同繪製以構成此預製模板的部件。）
         /// </summary>
         public List<PrefabMeshPart> Parts { get; set; } = new();
+
+        /// <summary>
+        /// The distinct stack roles among this prefab's parts, in first-middle-last order, or
+        /// empty if it is not a stacked prefab.
+        /// （此預製模板部件中出現的相異堆疊角色，依基座、中段、頂蓋排序；非堆疊式時為空。）
+        /// </summary>
+        /// <returns>The roles present.（出現的角色。）</returns>
+        public IEnumerable<StackRole> StackRoles()
+        {
+            foreach (StackRole role in new[] { StackRole.First, StackRole.Middle, StackRole.Last })
+            {
+                foreach (PrefabMeshPart part in Parts)
+                {
+                    if (part.StackRole == role) { yield return role; break; }
+                }
+            }
+        }
 
         /// <summary>
         /// How many placed objects in the city use this prefab. Used to rip the prefabs that cover

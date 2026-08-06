@@ -182,6 +182,18 @@ namespace Carto
         public static NetworkRipSystem NetworkRip => World.DefaultGameObjectInjectionWorld.GetOrCreateSystemManaged<NetworkRipSystem>();
 
         /// <summary>
+        /// The system that writes the drivable lane graph into lane records.
+        /// （將可行駛車道圖寫出為車道紀錄的系統。）
+        /// </summary>
+        public static LaneRipSystem LaneRip => World.DefaultGameObjectInjectionWorld.GetOrCreateSystemManaged<LaneRipSystem>();
+
+        /// <summary>
+        /// The system that writes colour palettes and light emitters into their own tables.
+        /// （將顏色色盤與發光體寫出為各自表格的系統。）
+        /// </summary>
+        public static AppearanceRipSystem AppearanceRip => World.DefaultGameObjectInjectionWorld.GetOrCreateSystemManaged<AppearanceRipSystem>();
+
+        /// <summary>
         /// The system that searches point of interests (POIs).
         /// （搜尋興趣點（POI）的系統。）
         /// </summary>

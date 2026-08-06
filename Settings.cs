@@ -416,7 +416,14 @@ namespace Carto
                     string directory = Utils.IOUtils.CombinePath(Instance.CartoDataPath, "spike");
                     System.Collections.Generic.HashSet<string> assetIds = new();
                     Instance.InstanceRip.RipInstances(directory, assetIds);
-                    summary = $"Wrote instances.jsonl\n{assetIds.Count} distinct assetIds referenced.\n\nFull report: Logs/Carto.log";
+
+                    // Colours and lights are per-render-prefab tables, resolved from the same
+                    // prefab set the instances just referenced, so they belong to this step.
+                    // （顏色與燈光為逐繪製預製模板的表格，且解析自實例方才參照的同一組預製模板，
+                    //   故屬於此步驟。）
+                    string appearance = Instance.AppearanceRip.RipAppearance(directory);
+                    summary = $"Wrote instances.jsonl\n{assetIds.Count} distinct assetIds referenced.\n"
+                            + $"{appearance}\nFull report: Logs/Carto.log";
                 }
                 catch (System.Exception ex)
                 {
@@ -444,7 +451,14 @@ namespace Carto
                 try
                 {
                     string directory = Utils.IOUtils.CombinePath(Instance.CartoDataPath, "spike");
-                    summary = Instance.NetworkRip.BeginRip(directory, RipTextureSize);
+
+                    // The lane graph rides with the networks: it is the same domain seen as a
+                    // graph rather than a surface, and it is plain ECS data, so it finishes in one
+                    // pass rather than needing the network rip's frame-budgeted queue.
+                    // （車道圖隨路網一併擷取：兩者為同一領域，只是分別以圖與表面呈現；
+                    //   且其為一般 ECS 資料，一次走訪即可完成，無須路網擷取的分幀佇列。）
+                    string lanes = Instance.LaneRip.RipLanes(directory);
+                    summary = lanes + "\n" + Instance.NetworkRip.BeginRip(directory, RipTextureSize);
                 }
                 catch (System.Exception ex)
                 {

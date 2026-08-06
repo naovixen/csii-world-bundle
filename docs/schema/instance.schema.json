@@ -50,8 +50,20 @@
         "brand": { "type": "string" },
         "level": { "type": "integer" },
         "elevation": {
-          "description": "Terrain elevation under the instance, in metres.",
+          "description": "How far the object stands above the terrain (or water) surface, in metres. Signed - negative means buried. Absent for objects sitting flat on the ground. This is NOT the ground's own height: ground level is pos[1] - elevation.",
           "type": "number"
+        },
+        "elevationFlags": {
+          "description": "CS2 ElevationFlags names: 'Stacked', 'OnGround', 'Lowered', 'OnAttachedParent'. 'Lowered' marks an object placed below ground, which the clamped-at-zero elevation magnitude cannot express. Open - ignore what you do not recognise.",
+          "type": "array",
+          "items": { "type": "string" },
+          "uniqueItems": true
+        },
+        "decalLayers": {
+          "description": "For kind 'decal': which surfaces the game projects this decal onto. CS2 DecalLayers names: 'Terrain', 'Roads', 'Buildings', 'Vehicles', 'Creatures', 'Other'. See contract section 4.2a. Open - ignore what you do not recognise.",
+          "type": "array",
+          "items": { "type": "string" },
+          "uniqueItems": true
         },
         "height": {
           "description": "True height in metres, measured from the mesh bounds. Metadata attributes never override this.",

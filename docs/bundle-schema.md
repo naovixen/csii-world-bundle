@@ -25,7 +25,10 @@ everything else is found through the manifest's `layers` index.
   bundle.json                     # manifest — frame, geo-referencing, counts, layer index
   instances.jsonl                 # one line per placed object
   networks.jsonl                  # one line per network segment / node
+  lanes.jsonl                     # one line per lane — the drivable graph
   materials.json                  # material table, keyed by materialId
+  colors.json                     # per-mesh colour palettes, keyed by sub-mesh assetId
+  lights.json                     # per-mesh light emitters, keyed by sub-mesh assetId
   meshes/<assetId>.glb            # unique prefab meshes, deduped by prefab
   networks/<assetId>.glb          # generated per-segment network meshes
   textures/<sha256>.png           # textures, deduped by content hash
@@ -196,7 +199,7 @@ line). One line per placed object.
 | Field | Required | Meaning |
 |---|---|---|
 | `assetId` | yes | Sanitised prefab name. Resolves to `<layers.meshes><assetId>.glb`. Pattern `^[A-Za-z0-9][A-Za-z0-9._-]*$`. |
-| `kind` | yes | One of `building`, `prop`, `tree`, `fence`, `decal`, `poi`. Closed set in v1. |
+| `kind` | yes | One of `building`, `prop`, `tree`, `fence`, `decal`, `poi`. Closed set in v1. `decal` has collision implications — see §4.2a. |
 | `pos` | yes | World position, bundle frame, metres. |
 | `rot` | yes | Unit quaternion `[x,y,z,w]`, bundle frame. Validators check `|q| = 1` to 1e-3. |
 | `scale` | no | Per-axis scale; absent means `[1,1,1]`. |
@@ -220,19 +223,85 @@ and break the 1:1 building-count requirement.
 Fixed sub-*meshes* of a single rigid prefab are the opposite case — they have no per-instance
 variation, so they live inside that prefab's one `.glb` as a node hierarchy (§6).
 
+**Stacked objects are expanded into one record per section.** CS2 does not store a tall pillar, a
+high wall or a long fence. It stores a foot, one repeating section and a cap, and repeats the
+middle at draw time to span whatever that instance needs — a viaduct pillar's shaft is authored
+two metres tall. A bundle cannot carry that as one mesh, because the repeat count is a property of
+the *instance*, so the producer emits a record per section, each with its world transform baked,
+exactly as it does for sub-objects above. Those records reference `<assetId>__stack_first`,
+`__stack_mid` and `__stack_last`, which are ordinary meshes under `layers.meshes`; the undivided
+`<assetId>` is also present, and is what an instance of the same prefab *without* a stack uses. A
+section carries `scale` only where the game stretches it to make the sections meet exactly. A
+consumer needs to do nothing special: these are ordinary instance records naming ordinary meshes.
+
 ### 4.2 `attrs`
 
 `attrs` is deliberately open. A consumer **must** ignore keys it does not recognise and
 **must not** require any key to be present — availability varies by object type, by game
 version, and by which optional properties the user enabled. Documented keys:
 
-`name`, `category`, `zone`, `zoning`, `theme`, `brand`, `level`, `elevation` (terrain height
-under the instance, m), `height` (true height in m from the mesh bounds), `storey`, `state`
-(`normal|construction|abandoned|condemned|destroyed`), `growth` (tree stage, 0..1), `season`,
-`address` (`[district, street, number]`).
+`name`, `category`, `zone`, `zoning`, `theme`, `brand`, `level`, `elevation`, `elevationFlags`,
+`height` (true height in m from the mesh bounds), `storey`, `state`
+(`normal|construction|abandoned|condemned|destroyed`), `growth` (tree stage, 0..1), `treeState`,
+`color`, `season`, `address` (`[district, street, number]`), `decalLayers`, `decalHeight` (§4.2a).
 
 `height` comes from mesh bounds and is authoritative. `storey` and `level` are game metadata
 and must never be used to derive geometry.
+
+**`elevation` is how far the object stands _above_ the ground, not the ground's own height.**
+A consumer that reads it as terrain height gets a city where everything sits at a couple of
+metres. Ground level under an instance is `pos[1] − elevation`.
+
+It is **signed**: negative means buried. Measured over one full city, of 517,398 records
+carrying the key, 436,329 are positive, 51,459 are exactly zero and 29,610 are negative, down
+to −86.3 m — the buried utility hookups under every lot, and the underground parts of transit
+stations. The component is absent altogether for objects sitting flat on the ground.
+
+`elevationFlags` carries CS2's own `ElevationFlags` names alongside it — `Stacked`, `OnGround`,
+`Lowered`, `OnAttachedParent` — which say *why* an object is off the ground where the magnitude
+says only by how much.
+
+### 4.2a Decals — read this before generating collision
+
+`kind: "decal"` is a road marking, a parking bay, a patch of grime: something the game paints
+onto a surface rather than an object standing on one.
+
+**The mesh is the painted quad.** In CS2 a decal is a *projector volume* — for a road arrow, a
+box roughly a metre tall hovering over the carriageway — and the marking is the artwork projected
+down through it. The producer resolves that projection and ships the result: four vertices at the
+volume's mid-height, UV-mapped to the atlas rect the game would have sampled. It is flat, it lies
+on the carriageway, and it draws correctly in any renderer with no further work.
+
+Shipping the raw volume instead is not an option, and this is worth stating because it looks like
+the more faithful choice. The volume does not identify the marking. Every variant shares one box:
+`NA_RoadArrow_Forward`, `NA_RoadArrow_Forward_Left90` and `NA_RoadArrow_Left180` are byte-identical
+3 × 1 × 6 m boxes with byte-identical UVs and one shared material, and those mesh UVs are a default
+box unwrap across six unrelated atlas rects. What distinguishes them is
+`DecalProperties.m_TextureArea`, which the game hands the shader as `_TextureArea` alongside
+`_MeshSize` and `_DecalLayerMask`. A consumer given the box has no way to recover the arrow.
+
+A consumer **must not** treat a decal as ordinary geometry:
+
+- **Never generate collision from it.** A city holds thousands of road arrows and lane markings.
+  This is the single most likely way to render a bundle unusable.
+- **It is paint, not surface.** A decal quad is coplanar with the road by construction, so a
+  renderer that depth-tests it against the carriageway will z-fight. Lift it by a millimetre or
+  two, or draw it with a depth bias. The material also carries `"decal"` in its `flags` (§7).
+- **It blends by alpha.** A decal material always declares `alphaMode: "blend"` — the marking's
+  texture is the graphic plus a transparent rectangle around it, and compositing by the base
+  colour's alpha is what a decal *is*. CS2's decal shaders carry none of the lit-shader
+  transparency keywords, so a producer reading only keywords would call them opaque and a
+  consumer would render each road arrow as a solid box.
+- **`attrs.decalLayers`** names what CS2 targets the projection at — `Terrain`, `Roads`,
+  `Buildings`, `Vehicles`, `Creatures`, `Other`. It matters if you re-project: a road marking
+  whose `decalLayers` is `["Roads"]` must not be painted across the wall behind it.
+- **`attrs.decalHeight`** is the height of the volume the marking was projected through, in
+  metres. It is the one thing flattening discards, and it is what you need to re-project onto a
+  surface the producer's flat quad does not follow — a heavily cambered or sloped carriageway.
+  Nothing else about it is a thickness.
+
+Decals are ordinary instance records in every other respect, and a consumer that only wants
+drivable geometry can drop them with a single `kind` test.
 
 ### 4.3 What is *not* an instance
 
@@ -282,8 +351,14 @@ forms freely — a consumer must implement both.
 
 Network `attrs`: `name`, `asset`, `category`, `form` (`normal|elevated|tunnel|bridge` — what a
 consumer needs to decide bridges, tunnels and terrain cutting), `lanes`, `direction`
-(`oneway|twoway|unknown`), `limit` (km/h), `length` (m), `width` (m), `elevation` (m above
-terrain, negative below).
+(`oneway|twoway|unknown`), `limit` (km/h), `length` (m), `width` (m), `elevation`,
+`elevationStart`, `elevationEnd` (m above terrain, negative below).
+
+**Prefer `elevationStart` / `elevationEnd` to `elevation`.** CS2 stores an elevation per end of
+a segment, not one for the segment; `elevation` is their mean, kept so a consumer reading only
+it keeps working. A segment climbing from `0` m onto a `12` m viaduct and one sitting flat at
+`6` m have the same `elevation` and are completely different roads — and it is the sloping ones
+that a consumer has to bridge or cut terrain for.
 
 ### 5.1 What this producer emits, and why
 
@@ -305,9 +380,40 @@ nothing but the four control points of `EdgeGeometry`'s left and right boundary 
 producer therefore does the same bend itself, on the same data. Each `.glb` is one edge plus
 the junction flare at either end, so a segment covers node to node with nothing between.
 
-**Sections mirrored.** CS2 authors one side of a road and mirrors it for the other. Pieces on
-the mirrored side are reflected across the width, which matters wherever a piece is asymmetric —
-a sidewalk with a parking bay has its kerb on one side only.
+**Sections mirrored, both ways.** CS2 authors one side of a road and mirrors it for the other.
+Pieces on the mirrored side are reflected across the width (`Invert`), which matters wherever a
+piece is asymmetric — a sidewalk with a parking bay has its kerb on one side only. The far
+carriageway of a two-way road is additionally reversed end for end (`FlipMesh`), and triangle
+winding is reversed on `Invert` XOR `FlipMesh`, which is the game's own rule: each mirror flips
+handedness, two mirrors restore it. A producer that reversed on `Invert` alone shipped every
+`FlipMesh` piece inside out — faces wound downward, rebuilt normals following, one side of the
+road lit from below.
+
+**One-off pieces at a node contribute only their node-side half.** `GenerateCompositionMesh`
+keeps a triangle at a node only when all three of its vertices sit at authored `z ≥ −0.01`, so an
+end cap (a `DisableTiling` piece) draws just its rounded front half, spanning the flare with its
+tip on the node end. Bending the whole cap instead wraps its straight back half around the
+flare's converged tip curves — a crossing-triangle dart where a path's rounded end should be, and
+end caps that do not line up with the run they cap. The same cut serves `HalfLength` sections,
+whose front half the game stretches over the full run.
+
+**Four more of the game's rules, reproduced after a ground-up validation** (the full rule-by-rule
+matrix lives in `docs/cs2-api-audit.md` §8): a composition whose cross-section is another's
+mirror image shares that mesh with `m_Rotate` set, and the edge is assembled 180°-turned —
+inverted curves, start↔end and left↔right swapped — exactly as the game's `RotatedEdge` path
+draws it, which is what keeps an asymmetric road's wide side on the correct side. The game's draw
+gates apply: an edge part below 0.1 m of run, or a flare below 0.05 m per half, emits nothing.
+V coordinates accumulate across tiles at the game's own density (mean |ΔV|/|Δz|) instead of
+repeating per tile, so tiling textures are continuous along a run. And **orphan nodes** — placed
+nodes no edge connects to — are ripped as the two half-disc caps the game draws for them,
+emitted as ordinary mesh-form records with `assetId` `orphan_<id>`; outside connections and
+markers are excluded, as the game excludes them. `SkipBottomHalf` pieces are halved and placed as
+the game places them, and `PreserveShape` pieces at a node ride the straight corner rails
+(matrices 6/7) at their authored length — a crosswalk sits straight across a junction entry
+however the flare curves. Roundabout compositions are approximated: the halves and the wedge fill
+cover the ring surface out to the island edge (`m_Middle`, cut at 0.99 like the game's matrix 4),
+while the exact shader-side blend feathering is not reproduced; the rip report counts every one
+of these so a bundle states how often each rule fired.
 
 **No `kind: "node"` records, and so no `startNode` / `endNode`.** CS2 keeps no junction geometry
 on the node: the flare where an edge meets an intersection is stored on the *edge*, and each
@@ -320,29 +426,53 @@ metre short of the node**, and 316 more than four metres; other network types ar
 round, 77% of them reaching within a metre. The gap is a property of carriageways, and it is what
 a consumer saw as a hole at every junction.
 
-The producer closes it. Each flare presents a chord at its node end, from its left outer boundary
-to its right outer one — kerb to kerb. Those chords, taken in bearing order around the node, bound
-exactly the area no flare covers: the middle of the junction and the corner fillets between
-adjacent roads. That polygon is triangulated from a hub at the node position, once per junction,
-and carried in the `.glb` of the connected segment with the lowest id. Height and material come
-from the composition's own median surface piece. Measured with a point-in-triangle coverage test
-on a three-way highway junction, this takes ring coverage from 86–93% with a 60-degree missing
-sector to **100% at every radius from 1 m to the end of the flares**.
+The producer closes it. Each flare presents five points at its node end — its two outer
+boundaries, its two inner boundaries, and its middle curve at the 0.99 cut the game itself uses.
+The polygon is assembled flare by flare: flares are ordered by bearing around the node, and each
+flare's points stay contiguous, ordered by bearing relative to the flare's own mean. It is not
+one global bearing sort of every point — that breaks exactly where junctions are hardest, two
+roads meeting at a shallow angle whose points interleave in bearing, and the sorted ring zigzags
+between them into a self-crossing polygon whose fan leaves sawtooth holes. The polygon bounds
+exactly the area neither the flares nor the wedge fills cover: the middle of the junction and the
+corner fillets between adjacent roads. It is triangulated from a hub at the node position, once
+per junction, and carried in the `.glb` of the connected segment with the lowest id. Its boundary
+coincides with where the assembled flares and wedge fills actually end, so the fan abuts them
+instead of cutting kerb-to-kerb chords across them. Height and shade come from the composition's
+widest carriageway surface piece (its top vertices' height and mean UV), falling back to the
+median piece — the junction interior stands in for carriageway, so it samples where the
+carriageway samples. Measured with a point-in-triangle coverage test on a three-way highway
+junction, the fill takes ring coverage from 86–93% with a 60-degree missing sector to **100% at
+every radius from 1 m to the end of the flares**.
 
-A second, smaller defect is fixed the same way: at an intersection node the inner curve of the
-outer half and the inner curve of the inner half are **not the same curve** — measured lengths
+A second defect is closed with the game's own mapping: at an intersection node the inner curve of
+the outer half and the inner curve of the inner half are **not the same curve** — measured lengths
 11.67 m and 8.05 m on one junction, against 10.01 m and 10.01 m at an ordinary node on the same
-road, and 17,111 of 19,445 intersection nodes city-wide against **0 of 32,473 ordinary ones**. The
-wedge between them is bridged, bounded to the composition's own width so that genuinely diverging
-carriageways are not paved over.
+road, and 17,111 of 19,445 intersection nodes city-wide against **0 of 32,473 ordinary ones**.
+CS2 covers that wedge with the median surface piece, and the mapping is decompiled from
+`GenerateCompositionMesh`: the piece's centre column of vertices (`|x − offset.x| < 0.01`, the
+game's own test) rides `EdgeNodeGeometry.m_Middle` (cut at t = 0.99), while every other vertex
+keeps its proportional position within its half's frame — the same frame the drive pieces are
+mapped in. The centre of the median stretches across the wedge; its kerbs keep their authored
+width and its edges stay flush with the lanes either side. The producer reproduces exactly that,
+tiling the piece along the wedge with its authored UVs and heights, and excludes it from the
+ordinary half mapping at such a node so it is emitted once. The bend is bounded to the
+composition's own width so that genuinely diverging carriageways are not paved over. Two
+compositions fall back to a full-width stretch across inner-left → middle → inner-right: a median
+piece authored without a centre column, and — so the surface stays closed — a composition with no
+median surface piece at all (a one-way carriageway, most highways), which parts at an
+intersection just the same; there the widest carriageway surface piece is stretched across, since
+the geometry the game covers that hole with (junction pieces on the corner matrices) is not
+assembled by this producer.
 
-**This is a reconstruction, not a reproduction of CS2.** A node feeds the vertex shader three
-curves beyond its four boundaries — `m_Middle` in composition matrix 4 and two side-connection
-curves in 6 and 7, where an edge has `identity` in all four — but which vertices ride which matrix
-is decided in the shader, and CS2 ships shaders compiled inside asset bundles. That mapping is not
-recoverable the way `CalculateNodeParameters` itself was. Every vertex of the fill is a point on a
-boundary curve the game computed, so nothing is invented; but a consumer should expect the
-junction surface to be flat where CS2 may have shaped it.
+**The wedge is a reproduction; the corner fillets remain a reconstruction.** An earlier version of
+this section claimed the vertex-to-matrix mapping lives in CS2's compiled shaders and is
+unrecoverable. That was wrong: the mapping is baked per vertex by managed code
+(`GenerateCompositionMesh`), which is how the median case above was recovered. The still-open part
+is the corner case — side pieces near a flare's outer corners blend toward two straight
+side-connection curves (matrices 6/7, built by `BuildCurve` from the flare corners at composition
+width) under flag bits (0x80 on the baked index) whose meaning has not been decoded. The corner
+fillets between adjacent roads therefore still fall to the flat fan, and a consumer should expect
+them flat where CS2 may have shaped them.
 
 **Vertex sync is applied.** A junction stretches some lanes across its flare and squeezes others,
 so that a lane edge still meets whatever it meets on the far side. CS2 describes that as four
@@ -399,6 +529,40 @@ extruded as ribbons.
 **Markers are excluded**, on the same grounds as in §4: network markers are the invisible
 anchors for pipe and cable junctions, plus airport airspace. Taxiways carry the marker component
 and *are* drawn, so they are the one exception.
+
+---
+
+## 5A. `lanes.jsonl` — the drivable graph
+
+`networks.jsonl` and `networks/` are the road *surface*: where the asphalt is and what it is
+made of. `lanes.jsonl` is the road *graph*: where a vehicle may go, in which direction and how
+fast. A level built from the surface alone is scenery; the graph is what makes it drivable, and
+CS2 holds it as plain ECS data, so it is one of the cheapest useful things in the bundle.
+
+One JSON object per lane:
+
+```jsonc
+{ "id": 481230, "owner": 434062, "kind": "car",
+  "path": [[100,12,-360], [110,12,-360], [120,12.1,-360]],
+  "length": 20.4, "limit": 50.0, "curviness": 0.02,
+  "flags": ["Twoway", "Yield"] }
+```
+
+| Field | Required | Meaning |
+|---|---|---|
+| `id` | yes | Producer-local unique integer. |
+| `kind` | yes | `car`, `track`, `pedestrian`, `parking`, `connection`, `other`. Closed set in v1. |
+| `path` | yes | World-space polyline, bundle frame, already tessellated from CS2's bézier. At least two points, no two consecutive points coincident. |
+| `length` | yes | The curve's length in metres — CS2's own value, not the polyline's. |
+| `owner` | no | The `id` of the `networks.jsonl` record this lane belongs to, where it belongs to an edge. Absent for lanes owned by a node. |
+| `limit` | no | Speed limit in km/h, for the kinds that have one (`car`, `track`). |
+| `curviness` | no | How much the lane bends, on CS2's own scale. Carried rather than recomputed. |
+| `secondary` | no | `true` where CS2 derived this lane from a master lane rather than placing it. |
+| `flags` | no | Lane-type flag **names** (`Twoway`, `Yield`, `Runway`, …). Open — ignore what you do not recognise. Names, not a bit field, because the numeric values are CS2 internals that can change meaning between game versions. |
+
+Both master and derived lanes are emitted, the derived ones marked: a consumer laying out
+traffic wants every lane a vehicle can occupy, while one drawing lane lines may want only the
+placed ones.
 
 ---
 
@@ -461,6 +625,7 @@ keyed by `materialId`.
     "normal":    "textures/<sha256>.png",
     "mask":      "textures/<sha256>.png",
     "emissive":  "textures/<sha256>.png",
+    "colorMask": "textures/<sha256>.png",
     "tint": [1, 1, 1, 1],
     "emissiveFactor": [1, 1, 1],
     "alphaMode": "opaque",
@@ -481,6 +646,50 @@ than replacing it — a network rip must not strip out the buildings' entries, s
 material name in the bundle has to remain a key here (§6). Where two passes produce the same
 `materialId`, the later one wins.
 
+### 7.2 `colors.json` and `lights.json`
+
+Both are keyed by a **sub-mesh `assetId`** — the glTF node name inside the owning prefab's
+`.glb` (§6) — because that is where CS2 keeps them. Measured over a full city: colour palettes
+sit on 3,984 sub-meshes covering 1,132,295 instances and on no object prefab at all; procedural
+lights likewise, on 1,184 sub-meshes covering 153,548 instances.
+
+```jsonc
+// colors.json
+{ "NA_ResidentialHigh01_Mesh": [
+    { "channels": [[0.8,0.7,0.6,1], [0.3,0.3,0.3,1], [1,1,1,1]], "probability": 100 } ] }
+
+// lights.json
+{ "StreetlightSingle02_Mesh": [
+    { "slot": 0, "color": [1,0.87,0.68,1], "colorOff": [0,0,0,1],
+      "purpose": "StreetLight", "responseSpeed": 0.5,
+      "range": 24.0, "temperature": 2700.0, "animation": -1 } ] }
+```
+
+**Colours.** A variation is CS2's `ColorSet`: three channels, and **the material's `colorMask`
+map (§7.1) is what selects between them, per texel.** Not the `mask` map — that is the PBR
+packing, and confusing the two is how this layer shipped once with a palette nothing could
+apply. A consumer needs all three of: the palette here, the `colorMask` texture on the
+primitive's material, and the instance's chosen variation.
+
+Which variation a given object was painted is on the instance, as
+`attrs.color = { "variation": n, "value": v }` — CS2 chooses it once by probability and a seed
+and stores the answer, so the bundle records the answer rather than reproducing the choice.
+`variation` indexes this array; `value` is the game's own `m_Value / 255`, which it feeds to
+the shader as `float2(variation + 0.5, value)`. Without any of this, every copy of a prefab
+renders identically where the city shows a street of different colours.
+
+A material with no `colorMask` has no per-texel selection, so its meshes take channel 0
+everywhere or, more safely, are left at their base colour.
+
+**Lights.** The colours, purpose, response speed, range and colour temperature are the light's
+own data and are exact. **There is no position, because CS2 does not store one.** A procedural
+light binds to a *material slot*, and its place in the world is wherever the geometry using that
+material is. A consumer places each emitter at the centroid of the primitive using the
+corresponding material in the same `.glb`. `colorOff` is the unlit colour, and `responseSpeed`
+how fast it crosses between the two — which is what makes a day/night cycle look right rather
+than switching. Inventing a transform here would be inventing data, on the same grounds as
+§5.1.
+
 ### 7.1 Channel semantics — read this before wiring a shader
 
 CS2 packs several PBR terms into one texture. The packing is fixed in v1:
@@ -491,10 +700,17 @@ CS2 packs several PBR terms into one texture. The packing is fixed in v1:
 | `normal` | linear | Tangent-space, **OpenGL convention (+Y up)** |
 | `mask` | linear | **R** metallic · **G** ambient occlusion · **B** detail/emissive mask · **A** smoothness |
 | `emissive` | sRGB | RGB emission |
+| `colorMask` | linear | **R**, **G**, **B** select which `colors.json` channel applies per texel · **A** snow coverage (white = no snow) |
 
 Note `mask.A` is **smoothness**, so `roughness = 1 - A`. Getting this backwards is the most
 common way to make a bundle look wrong, and it is silent — everything just renders too shiny
 or too flat.
+
+`mask.G` and `mask.B` are the producer's reading of CS2 as an HDRP derivative, and the game's
+own asset-authoring documentation describes them instead as a glossy-coat layer and an unused
+channel. CS2 ships its shaders compiled inside asset bundles, so the packing is not recoverable
+from the game's managed assemblies and the disagreement is recorded rather than resolved. Both
+readings agree on R and on A, which are the two that matter most. Treat G and B as advisory.
 
 `flags` are producer hints a consumer may act on or ignore. Known in v1: `foliage`, `decal`,
 `glass`, `emissiveWindows`, `terrainBlend`, `colorVariation`.
@@ -572,7 +788,7 @@ consumer against it before pointing one at a real city.
 
 ```
 python tools/make_example_bundle.py    # regenerate it (deterministic, byte-identical)
-python tools/test_bundle_contract.py   # 26 checks: the example is valid, its winding really
+python tools/test_bundle_contract.py   # 30 checks: the example is valid, its winding really
                                        # follows §2.2, and each way to break the contract is
                                        # actually caught
 ```
@@ -602,3 +818,27 @@ field required.
 The closed enums and the closed manifest/material objects exist precisely so that these
 changes cannot slip through unnoticed: a v1 consumer given v2 data fails loudly at its
 validator rather than quietly rendering a wrong city.
+
+### 12.1 Amendments to schema 1
+
+One change has been made to `schema: 1` after the freeze, recorded here rather than folded in
+silently.
+
+**`colorMask` added to the material object (2026-08-05).** The material object is closed, so by
+the rule above this needed `schema: 2`. It was amended in place instead, on these grounds: the
+map is the one that makes `colors.json` applicable at all (§7.2), so without it the frozen v1
+was internally inconsistent — it specified a colour palette and no way to use it; the closure
+exists to stop a consumer *silently dropping* a map, and a consumer that has never seen
+`colorMask` drops exactly the map the closure was meant to protect; and no bundle conforming to
+v1 has been produced end-to-end yet, because the manifest (§3) and the terrain layers (§8) are
+not built, so there is no v1 consumer in the field to break.
+
+A consumer written against the pre-amendment v1 rejects a bundle carrying `colorMask` at its
+validator, which is the loud failure the closure promises. Any further change to a closed object
+needs `schema: 2`.
+
+The other changes made at the same time are ordinary v1-compatible additions: the `attrs` keys
+`elevationFlags` and `decalLayers` (§4.2), and the network `attrs` keys `elevationStart` and
+`elevationEnd` (§5). The corrected descriptions of `elevation` (§4.2) and of what selects
+between colour channels (§7.2) are not changes to the format at all — the producer always wrote
+those values; the document described them wrongly.

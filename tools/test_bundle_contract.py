@@ -296,6 +296,24 @@ class BundleContractTest(unittest.TestCase):
         path.write_text(json.dumps(materials, indent=2) + "\n", encoding="utf-8")
         self.assertRejected(bundle, "must be named by its own SHA-256")
 
+    def test_color_mask_is_a_known_map_and_is_resolved(self):
+        """The map that makes colors.json applicable is a first-class texture reference.
+
+        Two things at once, because they fail differently: the schema has to accept the key at
+        all (it was added to a closed object after the freeze), and the validator has to resolve
+        it like any other map rather than passing it through unchecked.
+        """
+        bundle = self.fresh()
+        path = bundle / "materials.json"
+        materials = json.loads(path.read_text(encoding="utf-8"))
+        materials["carto_example_cube_mat"]["colorMask"] = materials["carto_example_cube_mat"]["baseColor"]
+        path.write_text(json.dumps(materials, indent=2) + "\n", encoding="utf-8")
+        self.assertEqual(self.errors(bundle), [])
+
+        materials["carto_example_cube_mat"]["colorMask"] = "textures/deadbeef.png"
+        path.write_text(json.dumps(materials, indent=2) + "\n", encoding="utf-8")
+        self.assertRejected(bundle, "does not exist")
+
     def test_unknown_material_field_rejected(self):
         bundle = self.fresh()
         path = bundle / "materials.json"

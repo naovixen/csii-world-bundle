@@ -40,6 +40,10 @@
           "description": "Emissive map. sRGB.",
           "$ref": "#/$defs/texRef"
         },
+        "colorMask": {
+          "description": "CS2 _ControlMask. Linear. R, G and B select, per texel, which of the three colour channels of the mesh's colors.json palette entry applies there; A is snow coverage (white = no snow). Without this map the palette in colors.json cannot be applied to anything.",
+          "$ref": "#/$defs/texRef"
+        },
         "tint": {
           "description": "Multiplied into baseColor. Linear RGBA in 0..1. Omitted means [1,1,1,1].",
           "type": "array",

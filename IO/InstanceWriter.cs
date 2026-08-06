@@ -68,6 +68,7 @@ namespace Carto.IO
                 ["rot"] = Round(Normalize(record.Rotation))
             };
 
+            if (record.Scale.HasValue) line["scale"] = Round(record.Scale.Value);
             if (record.Parent.HasValue) line["parent"] = record.Parent.Value;
             if ((record.Attributes != null) && (record.Attributes.Count > 0)) line["attrs"] = record.Attributes;
 

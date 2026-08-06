@@ -87,7 +87,15 @@
           "type": "number"
         },
         "elevation": {
-          "description": "Height of the network above terrain, in metres. Negative under terrain.",
+          "description": "Height of the network above terrain, in metres. Negative under terrain. CS2 stores one per end, so this is their mean; prefer elevationStart / elevationEnd, which are what the game actually holds.",
+          "type": "number"
+        },
+        "elevationStart": {
+          "description": "Height above terrain at the start node, in metres. Negative under terrain.",
+          "type": "number"
+        },
+        "elevationEnd": {
+          "description": "Height above terrain at the end node, in metres. Negative under terrain. A segment whose two ends differ climbs, and is where a consumer has to bridge or cut.",
           "type": "number"
         }
       }

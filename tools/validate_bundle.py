@@ -414,7 +414,7 @@ def validate_bundle(bundle_dir: Path, schema_dir: Path) -> Report:
         for mat_id, material in materials.items():
             if not isinstance(material, dict):
                 continue
-            for slot in ("baseColor", "normal", "mask", "emissive"):
+            for slot in ("baseColor", "normal", "mask", "emissive", "colorMask"):
                 rel = material.get(slot)
                 if rel is None:
                     continue

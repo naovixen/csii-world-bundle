@@ -377,14 +377,28 @@ namespace Carto.Systems
             try
             {
                 placedObjects = entities.Length;
+                int utilityNodes = 0;
+
                 foreach (Entity entity in entities)
                 {
+                    // Dropped before it is counted, so the prefab set here matches the one
+                    // InstanceRipSystem builds and the two layers assign the same ids.
+                    // （於計數前即丟棄，使此處的預製模板集合與 InstanceRipSystem 所建者一致，
+                    //   兩層因而指派相同的 ID。）
+                    if (IsUtilityMarkerSubObject(EntityManager, entity))
+                    {
+                        utilityNodes++;
+                        continue;
+                    }
+
                     Entity prefabEntity = EntityManager.GetComponentData<PrefabRef>(entity).m_Prefab;
                     if (prefabEntity == Entity.Null) continue;
 
                     counts.TryGetValue(prefabEntity, out int count);
                     counts[prefabEntity] = count + 1;
                 }
+
+                if (utilityNodes > 0) report.AppendLine($"Skipped {utilityNodes} buried utility-network node object(s).");
             }
             finally
             {
@@ -489,6 +503,30 @@ namespace Carto.Systems
 
                 run.Read++;
                 run.Queue.Add(new RipItem { Prefab = prefab });
+
+                // A stacked prefab also ships one file per stack role, so that the instance pass
+                // can place a foot once, a repeating section as many times as that instance needs,
+                // and a cap once. The whole-prefab file above stays, and is still the right thing
+                // for an instance of the same prefab that has no `Stack` component — a pillar used
+                // as a standalone prop rather than under a viaduct.
+                // （堆疊式預製模板另外為每個堆疊角色輸出一個檔案，使實例階段能夠將基座擺放一次、
+                //   將可重複區段依該實例所需擺放多次、並將頂蓋擺放一次。上方的整體預製模板檔案予以保留，
+                //   對於同一預製模板但不具 `Stack` 元件的實例（作為獨立道具而非高架橋下的橋墩）
+                //   它仍是正確的選擇。）
+                foreach (StackRole role in prefab.StackRoles())
+                {
+                    PrefabMesh part = new()
+                    {
+                        AssetId = PrefabMesh.StackPartId(prefab.AssetId, role),
+                        SourceName = prefab.SourceName,
+                        InstanceCount = prefab.InstanceCount
+                    };
+
+                    foreach (PrefabMeshPart p in prefab.Parts)
+                        if (p.StackRole == role) part.Parts.Add(p);
+
+                    run.Queue.Add(new RipItem { Prefab = part });
+                }
             }
             catch (Exception ex)
             {
@@ -604,7 +642,8 @@ namespace Carto.Systems
                     Mesh = mesh,
                     Position = subMeshes[index].m_Position,
                     Rotation = subMeshes[index].m_Rotation,
-                    NodeName = nodeName
+                    NodeName = nodeName,
+                    StackRole = PrefabMesh.RoleOf(subMeshes[index].m_Flags)
                 });
             }
 
@@ -1188,6 +1227,7 @@ namespace Carto.Systems
             if (fromAsset != null)
             {
                 AssignMaterials(fromAsset, renderPrefab);
+                TryFlattenDecal(fromAsset, renderPrefab, trace);
                 return fromAsset;
             }
 
@@ -1263,7 +1303,138 @@ namespace Carto.Systems
             }
 
             AssignMaterials(mesh, renderPrefab);
+            TryFlattenDecal(mesh, renderPrefab, trace);
             return mesh;
+        }
+
+        /// <summary>
+        /// Replace a decal's projector volume with the quad it actually paints.
+        /// （以貼花實際繪出的四邊形取代其投影體積。）<br/><br/>
+        /// <b>Why the volume alone is useless.</b> A decal's mesh is not its artwork — it is the
+        /// box the game projects artwork down through, and every variant shares one box. Measured
+        /// in a real city: <c>NA_RoadArrow_Forward</c>, <c>NA_RoadArrow_Forward_Left90</c> and
+        /// <c>NA_RoadArrow_Left180</c> are byte-identical 3 × 1 × 6 m boxes with byte-identical
+        /// UVs and one shared material, and their mesh UVs are a default box unwrap — six faces
+        /// across six unrelated atlas rects, one of them with a zero normal. Nothing in the mesh
+        /// says which arrow it is.<br/>
+        /// （<b>單有體積為何無用。</b>貼花的網格並非其圖樣，而是遊戲藉以向下投影圖樣的方盒，
+        /// 且所有變體共用同一個方盒。實測於真實城市：三種不同的路面箭頭其方盒、UV 與材質
+        /// 皆逐位元組相同，而其網格 UV 僅是預設的方盒展開——六個面散落於六塊無關的圖集矩形，
+        /// 其中一面的法線甚至為零。網格中沒有任何資訊指出它是哪一種箭頭。）<br/><br/>
+        /// <b>What does say.</b> <c>DecalProperties.m_TextureArea</c> — a <c>Bounds2</c> the game
+        /// hands the shader as <c>_TextureArea</c> alongside <c>_MeshSize</c> and
+        /// <c>_DecalLayerMask</c> (see <c>ManagedBatchSystem.CreateBatch</c> and
+        /// <c>RenderPrefabRenderer.Instance.SetDecalProperties</c>). It is the sub-rect of the
+        /// atlas this prefab draws, and the arrow sheet is a 8 × 4 grid of 0.125 × 0.25 cells whose
+        /// aspect matches the 3 × 6 m footprint exactly. Baking that rect across the footprint
+        /// turns a shared box into the marking it stands for, and shrinks the mesh from 24
+        /// vertices to 4.<br/>
+        /// （<b>真正指出的是什麼。</b><c>DecalProperties.m_TextureArea</c> 即該預製模板所繪的
+        /// 圖集子矩形。箭頭圖集為 8 × 4 的網格，每格 0.125 × 0.25，其長寬比恰與 3 × 6 公尺的
+        /// 投影足跡相符。將該矩形烘焙至足跡上，即可將共用的方盒化為其所代表的標線，
+        /// 並使網格由 24 個頂點縮減為 4 個。）<br/><br/>
+        /// The quad sits at the volume's mid-height, not its floor: a projector is centred on the
+        /// surface it paints so that it catches ground a little above and below, so the midpoint is
+        /// the best estimate of the carriageway and the floor would bury the marking half a metre
+        /// under it.<br/>
+        /// （四邊形置於體積的半高處而非底面：投影體以其所繪表面為中心，方能涵蓋略高與略低的
+        /// 地面，故中點是車道位置的最佳估計，若取底面則會使標線埋入路面下半公尺。）
+        /// </summary>
+        /// <param name="mesh">The mesh to rewrite in place.（待就地改寫的網格。）</param>
+        /// <param name="renderPrefab">The render prefab that may carry decal properties.（可能帶有貼花屬性的繪製預製模板。）</param>
+        /// <param name="trace">Optional sink recording the decision.（可選的決策紀錄。）</param>
+        /// <returns>Whether the mesh was replaced.（網格是否已被取代。）</returns>
+        private bool TryFlattenDecal(MeshAsset mesh, RenderPrefab renderPrefab, List<string> trace)
+        {
+            if ((mesh == null) || (renderPrefab == null)) return false;
+            if ((mesh.Vertices == null) || (mesh.Vertices.Length == 0)) return false;
+
+            DecalProperties decal;
+            try
+            {
+                if (!renderPrefab.TryGet(out decal) || (decal == null) || !decal.active) return false;
+            }
+            catch (Exception ex)
+            {
+                trace?.Add($"decal: properties did not resolve — {ex.GetType().Name} {ex.Message}");
+                return false;
+            }
+
+            float3 min = mesh.Vertices[0], max = mesh.Vertices[0];
+            for (int i = 1; i < mesh.Vertices.Length; i++)
+            {
+                min = math.min(min, mesh.Vertices[i]);
+                max = math.max(max, mesh.Vertices[i]);
+            }
+
+            // A volume with no footprint projects nothing; leaving it alone keeps a degenerate
+            // prefab visible as itself rather than as a zero-area quad.
+            // （沒有足跡的體積不會投影出任何東西；保留原狀可使退化的預製模板維持原貌，
+            //   而非化為零面積的四邊形。）
+            if (!((max.x - min.x) > 1e-4f) || !((max.z - min.z) > 1e-4f)) return false;
+
+            float2 areaMin = decal.m_TextureArea.min;
+            float2 areaMax = decal.m_TextureArea.max;
+            float y = (min.y + max.y) * 0.5f;
+
+            mesh.Vertices = new[]
+            {
+                new float3(min.x, y, min.z), new float3(max.x, y, min.z),
+                new float3(max.x, y, max.z), new float3(min.x, y, max.z)
+            };
+
+            // V is pre-flipped so the writer's own flip cancels it. `MeshUV0` is authored in
+            // Unity's bottom-left origin and `GltfWriter` writes `1 - v` to reach glTF's top-left,
+            // which is right for every mesh that comes from those buffers — but `m_TextureArea` is
+            // *already* in the top-left convention, so passing it straight through flips it once
+            // too often. Verified against the arrow sheet: unflipped, the rects for
+            // `NA_RoadArrow_Forward`, `_Left180` and `_Right90` crop to a straight arrow, a U-turn
+            // and a right turn; flipped, all three crop to unrelated glyphs.
+            // （此處預先翻轉 V，使寫出端自身的翻轉相互抵銷。`MeshUV0` 以 Unity 的左下角為原點，
+            //   而 `GltfWriter` 寫出 `1 - v` 以符合 glTF 的左上角原點，此舉對所有來自該緩衝區的
+            //   網格皆為正確；然而 `m_TextureArea` **本就**採用左上角慣例，若直接傳遞則會多翻轉一次。
+            //   已對照箭頭圖集驗證：未翻轉時，三者分別裁切出直行箭頭、迴轉與右轉；翻轉後則皆為無關圖樣。）
+            float v0 = 1f - areaMin.y;
+            float v1 = 1f - areaMax.y;
+
+            mesh.Uvs = new[]
+            {
+                new float2(areaMin.x, v0), new float2(areaMax.x, v0),
+                new float2(areaMax.x, v1), new float2(areaMin.x, v1)
+            };
+
+            mesh.Normals = new[] { math.up(), math.up(), math.up(), math.up() };
+            mesh.Tangents = null;
+
+            // Same rule the network layer's generated strips use: take the winding the quad
+            // actually produces rather than assume one, and reverse it when it faces the ground.
+            // （與路網層產生的帶狀面採用同一準則：依四邊形實際產生的繞向決定，而非預設某一方向，
+            //   若其朝向地面則反轉。）
+            bool flip = math.cross(mesh.Vertices[1] - mesh.Vertices[0],
+                                   mesh.Vertices[2] - mesh.Vertices[0]).y < 0f;
+
+            mesh.Indices = flip ? new[] { 0, 2, 1, 0, 3, 2 } : new[] { 0, 1, 2, 0, 2, 3 };
+
+            string materialId = ((mesh.Primitives.Count > 0) && !string.IsNullOrEmpty(mesh.Primitives[0].MaterialId))
+                ? mesh.Primitives[0].MaterialId : $"{mesh.AssetId}_mat0";
+
+            mesh.Primitives.Clear();
+            mesh.Primitives.Add(new MeshPrimitive
+            {
+                StartIndex = 0,
+                IndexCount = 6,
+                StartVertex = 0,
+                VertexCount = 4,
+                MaterialIndex = 0,
+                MaterialId = materialId
+            });
+
+            mesh.BoundsMin = new float3(min.x, y, min.z);
+            mesh.BoundsMax = new float3(max.x, y, max.z);
+
+            trace?.Add($"decal: flattened to a {max.x - min.x:F2} × {max.z - min.z:F2} m quad at y {y:F2}, "
+                     + $"texture area [{areaMin.x:F4}, {areaMin.y:F4}]–[{areaMax.x:F4}, {areaMax.y:F4}]");
+            return true;
         }
 
         /// <summary>
@@ -1392,6 +1563,73 @@ namespace Carto.Systems
 
             /// <summary>Whether a managed prefab was found behind the entity.（實體背後是否找到受管預製模板。）</summary>
             public bool Resolved;
+        }
+
+        /// <summary>
+        /// Whether an object is the node furniture of a buried utility network, and so is not part
+        /// of the built environment the bundle describes.
+        /// （物件是否為地下公用設施網路的節點配件，因而不屬於束所描述的建成環境。）<br/><br/>
+        /// Every road lays hidden water, sewage and electricity along itself, as <i>marker</i>
+        /// networks the player never places or sees, and each of their nodes hangs a prop off
+        /// itself: <c>Water_Pipe_Node_*</c>, <c>Sewage_Pipe_Node_*</c>, <c>Ground_Cable_Node_*</c>.
+        /// A full city has tens of thousands — the counts give it away, ~7,300 water pipe nodes
+        /// against the 105 pipe segments a player actually built. The props themselves are ordinary
+        /// objects, not <see cref="Marker"/>s, so the query's marker exclusion never reaches
+        /// them.<br/>
+        /// （每條道路都沿線鋪設隱藏的自來水、污水與電力，作為玩家從不擺放也看不見的<i>標記</i>網路，
+        /// 且其每個節點都掛著一個道具。整座城市有數萬個——數量本身即是證據：約 7,300 個自來水管節點，
+        /// 而玩家實際建造的管線僅 105 段。這些道具本身是一般物件而非 <see cref="Marker"/>，
+        /// 故查詢的標記排除永遠無法涵蓋它們。）<br/><br/>
+        /// <b>The owner must be a <c>Game.Net.Marker</c>.</b> A real high-voltage line's nodes are
+        /// not markers, and its pylons are node props exactly like these, so testing the network
+        /// type alone would delete every pylon in the city.<br/>
+        /// （<b>所有者必須是 <c>Game.Net.Marker</c>。</b>真實高壓線的節點並非標記，
+        /// 而其塔架正是與此完全相同的節點道具，故僅測試網路型別將刪光全城的塔架。）<br/><br/>
+        /// <b>And that is the whole test, minus one exception.</b> An earlier version also required
+        /// the owner's prefab to carry <c>PipelineData</c> or <c>PowerLineData</c>, which is what
+        /// let the buried nodes through: those two components come only from
+        /// <c>PipelinePrefab</c> and <c>PowerLinePrefab</c>
+        /// (<c>GetPrefabComponents</c>), and the marker nets a road lays along itself are not
+        /// those classes. The extra clause could only ever narrow a test that was already exact —
+        /// <c>Game.Net.Marker</c> is added by <c>MarkerNet.GetArchetypeComponents</c> and by
+        /// nothing else in the game, to the node archetype and the edge archetype alike, so an
+        /// owner carrying it <i>is</i> a marker net by construction.<br/>
+        /// （<b>而這便是全部的判準，僅有一項例外。</b>先前的版本另要求所有者的預製模板帶有
+        /// <c>PipelineData</c> 或 <c>PowerLineData</c>，這正是埋設節點得以漏網之處：
+        /// 該二元件僅來自 <c>PipelinePrefab</c> 與 <c>PowerLinePrefab</c>，
+        /// 而道路沿線鋪設的標記網路並非這些類別。此附加條件只能使一個本已精確的判準變窄——
+        /// <c>Game.Net.Marker</c> 由 <c>MarkerNet.GetArchetypeComponents</c> 加入，
+        /// 且遊戲中別無他處，節點與邊的原型皆然，故帶有它的所有者依其構成即為標記網路。）<br/><br/>
+        /// <b>The exception is taxiways</b>, which are marker nets and yet are genuinely drawn —
+        /// <see cref="NetworkRipSystem"/> already makes the same exception. They are named directly
+        /// by <c>TaxiwayData</c>, which <c>TaxiwayPrefab.GetPrefabComponents</c> is the only source
+        /// of, rather than indirectly by listing the network types that are not taxiways.<br/>
+        /// （<b>例外是滑行道</b>：其為標記網路卻確實會被繪製，<see cref="NetworkRipSystem"/>
+        /// 已設有相同例外。此處以 <c>TaxiwayData</c> 直接指名之（其唯一來源為
+        /// <c>TaxiwayPrefab.GetPrefabComponents</c>），而非反過來列舉所有並非滑行道的網路型別。）<br/><br/>
+        /// <b>Both rip systems must apply this identically.</b> The asset ids are assigned over the
+        /// prefab set as a whole, so a set that differs between the two layers can shift a
+        /// disambiguating suffix and break the join — see <see cref="BuildAssetIds"/>.<br/>
+        /// （<b>兩個擷取系統必須以完全相同的方式套用此判斷。</b>資產 ID 就整個預製模板集合指派，
+        /// 故兩層所見集合若有差異，可能改變消歧義後綴而破壞連結，詳見 <see cref="BuildAssetIds"/>。）
+        /// </summary>
+        /// <param name="entityManager">The entity manager to ask.（用以查詢的實體管理器。）</param>
+        /// <param name="entity">The placed object.（已放置的物件。）</param>
+        /// <returns>Whether to leave it out of the bundle.（是否將其排除於束之外。）</returns>
+        public static bool IsUtilityMarkerSubObject(EntityManager entityManager, Entity entity)
+        {
+            if (!entityManager.HasComponent<Game.Common.Owner>(entity)) return false;
+
+            Entity owner = entityManager.GetComponentData<Game.Common.Owner>(entity).m_Owner;
+            if ((owner == Entity.Null) || !entityManager.HasComponent<Game.Net.Marker>(owner)) return false;
+            if (!entityManager.HasComponent<PrefabRef>(owner)) return false;
+
+            Entity ownerPrefab = entityManager.GetComponentData<PrefabRef>(owner).m_Prefab;
+            if (ownerPrefab == Entity.Null) return false;
+
+            // Drawn, despite being a marker net. The only such case the game has.
+            // （雖為標記網路卻確實會被繪製。此為遊戲中唯一的此類情形。）
+            return !entityManager.HasComponent<TaxiwayData>(ownerPrefab);
         }
 
         /// <summary>

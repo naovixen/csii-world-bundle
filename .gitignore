@@ -416,3 +416,6 @@ Library/ilpp.pid
 # (CLAUDE.md); they are also hundreds of megabytes.
 *.blend
 *.blend[0-9]
+
+# Claude Code local (per-user) permissions; the shared commands in .claude/commands are tracked.
+.claude/settings.local.json

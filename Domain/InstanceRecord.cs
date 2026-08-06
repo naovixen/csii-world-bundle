@@ -56,6 +56,18 @@ namespace Carto.Domain
         public quaternion Rotation { get; set; }
 
         /// <summary>
+        /// Per-axis scale, or <c>null</c> when the object is at its authored size.
+        /// （逐軸縮放；若物件維持製作尺寸則為 <c>null</c>。）<br/><br/>
+        /// Contract §4 makes <c>scale</c> optional and an absent value means <c>[1,1,1]</c>, so it
+        /// is written only where it carries information. The one producer that sets it is the stack
+        /// expansion, where CS2 stretches a repeating section along one axis to make the sections
+        /// span exactly the gap the instance needs.<br/>
+        /// （契約 §4 規定 <c>scale</c> 為選填，且省略即代表 <c>[1,1,1]</c>，故僅於其帶有資訊時寫出。
+        /// 目前唯一會設定它的是堆疊展開：CS2 會沿單一軸拉伸可重複區段，使各區段恰好填滿該實例所需的跨距。）
+        /// </summary>
+        public float3? Scale { get; set; }
+
+        /// <summary>
         /// Semantic attributes. Consumers ignore keys they do not recognise.
         /// （語意屬性。消費端會忽略無法辨識的鍵。）
         /// </summary>

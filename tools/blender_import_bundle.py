@@ -28,6 +28,8 @@ Options (after the `--`):
     --center auto --radius R     centre on the densest part of the selected kinds instead
     --center downtown --radius R centre on the tallest 250 m cell of buildings, whatever kinds
                                  are being placed — the useful centre for a mixed look
+    --center interchange         centre on the tallest skyline that has a highway or elevated
+                                 segment in it — tall buildings and motorway junctions together
     --networks                   also extrude networks.jsonl          (Phase 5)
     --net-limit N                stop after N network records — the fast way to look
     --net-categories a,b,c       which network categories to extrude, or `all`
@@ -109,6 +111,11 @@ _UNMIRROR_UNIMPORT = Matrix(((-1, 0, 0, 0),
                              (0, -1, 0, 0),
                              (0, 0, 0, 1)))
 
+# How far a road marking is lifted off the carriageway, in metres of Blender world Z. Enough to
+# beat depth precision at city scale, small enough that nothing downstream can care: a 1.5 cm
+# kerb-height error is already inside the tolerance of the road surface it sits on.
+_DECAL_LIFT = 0.015
+
 
 def bundle_to_blender_point(pos):
     """Bundle-frame position (X east, Y up, Z north) to Blender (X east, Y north, Z up)."""
@@ -175,6 +182,50 @@ def skyline_weight(record):
     return max(height, 1.0) ** 2
 
 
+def survey_interchange(instances_path, networks_path, cell=250.0):
+    """The tallest place that also has a motorway junction in it.
+
+    Downtown and the motorway are usually not the same place, and looking at either alone leaves
+    half the interesting geometry out of frame: junction flares and elevated forms are on the
+    motorway, tall meshes and dense props are downtown. This scores only those cells that hold
+    highway or elevated network records, by the building skyline over their 3x3 neighbourhood —
+    a junction cell often holds no buildings itself, but the one next to it does.
+
+    Returns (x, z) or None if the bundle has no highway records.
+    """
+    if not os.path.isfile(networks_path):
+        return None
+
+    junction_cells = set()
+    for record in read_jsonl(networks_path):
+        attrs = record.get("attrs", {})
+        if attrs.get("category") != "highway" and attrs.get("form") != "elevated":
+            continue
+        where = record["pos"] if "pos" in record else record.get("centerline", [[0, 0, 0]])[0]
+        junction_cells.add((math.floor(where[0] / cell), math.floor(where[2] / cell)))
+
+    if not junction_cells:
+        return None
+
+    skyline = {}
+    for record in read_jsonl(instances_path):
+        if record.get("kind") != "building":
+            continue
+        x, _, z = record["pos"]
+        key = (math.floor(x / cell), math.floor(z / cell))
+        skyline[key] = skyline.get(key, 0.0) + skyline_weight(record)
+
+    def neighbourhood(key):
+        cx, cz = key
+        return sum(skyline.get((cx + dx, cz + dz), 0.0)
+                   for dx in (-1, 0, 1) for dz in (-1, 0, 1))
+
+    best = max(junction_cells, key=neighbourhood)
+    if neighbourhood(best) <= 0:
+        return None
+    return (best[0] * cell + cell / 2, best[1] * cell + cell / 2)
+
+
 def survey(instances_path, kinds, cell=250.0, weight=None):
     """Where the selected kinds actually are: bounds, centroid, and the densest cell.
 
@@ -229,18 +280,25 @@ def report_materials(bundle_dir):
     with open(path, encoding="utf-8") as handle:
         materials = json.load(handle)
 
-    slots = ("baseColor", "normal", "mask", "emissive")
-    referenced, dangling, mapless = set(), [], 0
+    slots = ("baseColor", "normal", "mask", "emissive", "colorMask")
+    referenced, dangling, mapless, masked = set(), [], 0, 0
     for mat_id, material in materials.items():
         paths = [material[s] for s in slots if s in material]
         if not paths:
             mapless += 1
+        if "colorMask" in material:
+            masked += 1
         for rel in paths:
             referenced.add(rel)
             if not os.path.isfile(os.path.join(bundle_dir, rel)):
                 dangling.append(f"{mat_id}.{rel}")
 
     print(f"materials: {len(materials)} ({mapless} with no maps), {len(referenced)} distinct textures")
+
+    # colors.json is a palette; colorMask is what says where each channel of it lands. Counting
+    # them here is how "did the colour layer actually come out?" gets answered by the harness
+    # rather than by opening a texture folder and squinting.
+    print(f"materials: {masked} with a colorMask (the map colors.json needs to be applicable)")
     if dangling:
         # A path in the table with no file behind it is a producer bug: §7 lets a map be absent,
         # but not present-and-broken.
@@ -779,7 +837,7 @@ def main():
             everything = float(argv[i + 1])
             i += 2
         elif arg == "--center":
-            if argv[i + 1] in ("auto", "downtown"):
+            if argv[i + 1] in ("auto", "downtown", "interchange"):
                 center = argv[i + 1]
                 i += 2
             else:
@@ -871,6 +929,16 @@ def main():
         print(f"           --center downtown resolved to X {center[0]:.0f} Z {center[1]:.0f}"
               f"   (tallest 250 m cell of {skyline['count']} building(s))")
 
+    if center == "interchange":
+        found = survey_interchange(instances_path, networks_path)
+        if found is None:
+            print("--center interchange needs highway or elevated network records with buildings "
+                  "near them; use --center downtown, or give explicit X Z")
+            return 2
+        center = found
+        print(f"           --center interchange resolved to X {center[0]:.0f} Z {center[1]:.0f}"
+              f"   (tallest skyline with a highway junction in it)")
+
     if radius is not None:
         if center is None:
             print("--radius needs --center (or --center auto)")
@@ -889,10 +957,14 @@ def main():
     bpy.context.scene.collection.children.link(sources)
     placed_collection = bpy.data.collections.new("bundle_instances")
     bpy.context.scene.collection.children.link(placed_collection)
+    decal_collection = bpy.data.collections.new("bundle_decals")
+    bpy.context.scene.collection.children.link(decal_collection)
 
     # Park both out of the view layer for the placement pass, for the reason given on
     # `parked_out_of_view_layer`: every prefab import deselects the whole view layer, and the
     # instances placed so far are in it. They are put back before anything has to look at them.
+    decal_park = parked_out_of_view_layer(decal_collection)
+    decal_park.__enter__()
     instance_park = parked_out_of_view_layer(placed_collection)
     sources_park = parked_out_of_view_layer(sources)
     instance_park.__enter__()
@@ -945,7 +1017,26 @@ def main():
         empty.instance_collection = collection
         empty.empty_display_size = 0.01
         empty.matrix_world = instance_matrix(record)
-        placed_collection.objects.link(empty)
+
+        # Decals go in their own collection. The producer ships a decal as the flat quad it
+        # paints rather than as the projector volume it paints through, so these now lie on the
+        # carriageway and read as the road markings they are — but they are still paint, not
+        # surface, and must never become collision geometry in anything built from this.
+        # Separating them keeps that one command away: hide the collection and the markings go,
+        # and nothing else moves.
+        # （貼花置於獨立集合。產出端輸出的是貼花所繪出的平面四邊形，而非其藉以投影的體積，
+        #   故它們現已貼合於車道之上，呈現為其所代表的路面標線——但它們仍是塗料而非路面本身，
+        #   在任何據此建構的成果中都絕不可成為碰撞幾何。分開放置使此事僅需一道指令。）
+        if record.get("kind") == "decal":
+            # Coplanar paint z-fights the carriageway it sits on, which in the viewport looks
+            # like the marking is flickering in and out of the road. A lift far below the
+            # tolerance of anything downstream costs nothing and settles it.
+            # （與其所在車道共面的塗料會產生深度衝突，於視埠中看似標線在路面上忽隱忽現。
+            #   遠低於下游任何容差的微小抬升毫無代價，即可解決此問題。）
+            empty.matrix_world = Matrix.Translation((0.0, 0.0, _DECAL_LIFT)) @ empty.matrix_world
+            decal_collection.objects.link(empty)
+        else:
+            placed_collection.objects.link(empty)
         placed += 1
 
         if placed % 500 == 0:
@@ -965,6 +1056,7 @@ def main():
     # do not have to deselect, and there are two orders of magnitude more of them than there are
     # segments. Un-parking before the network pass put 40,500 empties back in front of every
     # segment import and took each one from 0.06 s to 1.5 s.
+    decal_park.__exit__()
     instance_park.__exit__()
     sources_park.__exit__()
 

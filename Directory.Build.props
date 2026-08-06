@@ -31,7 +31,7 @@
   <PropertyGroup>
     <!--
       Keep the mod's compile glob out of tools/. Carto.csproj is SDK-style, so it sweeps up
-      every .cs under the repo root; tools/mdump is a separate net8.0 console app and compiling
+      every .cs under the repo root; tools/decomp is a separate net8.0 console app and compiling
       it into a net48 mod fails on the whole System.Reflection.Metadata surface.
 
       This has to be DefaultItemExcludes rather than an <ItemGroup><Compile Remove="tools\**"/>.

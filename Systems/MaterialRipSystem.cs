@@ -23,12 +23,19 @@ namespace Carto.Systems
     /// A CS2 <see cref="RenderPrefab"/> holds one <see cref="SurfaceAsset"/> per material slot, and
     /// a surface is a property bag: dictionaries of textures, colours, floats and shader keywords,
     /// keyed by HDRP-style names (<c>_BaseColorMap</c>, <c>_NormalMap</c>, <c>_MaskMap</c>,
-    /// <c>_EmissiveColorMap</c>). Those four maps plus a handful of scalars are exactly the model
-    /// the bundle contract froze in §7, so the reduction is mostly a lookup — the work is in
-    /// getting the pixels out.<br/>
+    /// <c>_EmissiveColorMap</c>, <c>_ControlMask</c>). Those five maps plus a handful of scalars are
+    /// exactly the model the bundle contract froze in §7, so the reduction is mostly a lookup — the
+    /// work is in getting the pixels out.<br/>
     /// （CS2 的 <see cref="RenderPrefab"/> 於每個材質槽位持有一個 <see cref="SurfaceAsset"/>，
     /// 而表面資產本身是一個屬性袋：以 HDRP 風格名稱為鍵的貼圖、顏色、浮點數與著色器關鍵字字典。
-    /// 那四張貼圖加上少數純量恰為束契約 §7 所凍結的模型，因此化約大抵只是查表——真正的工作在於取出像素。）<br/><br/>
+    /// 那五張貼圖加上少數純量恰為束契約 §7 所凍結的模型，因此化約大抵只是查表——真正的工作在於取出像素。）<br/><br/>
+    /// <b>Note that not every map name ends in <c>Map</c>.</b> <c>_ControlMask</c> is the colour
+    /// mask, and it went unnoticed because every sweep for CS2's texture properties had been
+    /// written as a search for <c>_*Map</c> — so <c>colors.json</c> was built and shipped with a
+    /// palette nothing could apply. See <see cref="MaterialMap.ColorMask"/>.<br/>
+    /// （<b>並非每個貼圖名稱都以 <c>Map</c> 結尾。</b><c>_ControlMask</c> 即顏色遮罩，
+    /// 而它之所以未被察覺，是因為歷來搜尋 CS2 貼圖屬性的方式皆寫成尋找 <c>_*Map</c>——
+    /// 以致 <c>colors.json</c> 建構並出貨時，帶著一份無從套用的色盤。）<br/><br/>
     /// <b>Deduplication is the whole economy of this phase.</b> A surface asset is shared by every
     /// prefab that uses it and a texture by every surface, so both are keyed by asset identity and
     /// resolved once. What lands on disk is deduped a second time by content hash, because two
@@ -54,11 +61,17 @@ namespace Carto.Systems
         private const string EmissiveColorMap = "_EmissiveColorMap";
 
         /// <summary>
-        /// The same four names in the contract's map order, for the passes that have to sweep every
-        /// map rather than ask for one.<br/>
-        /// （契約貼圖順序下的同樣四個名稱，供須遍歷所有貼圖而非索取單一貼圖的流程使用。）
+        /// The colour mask. Not <c>*Map</c>-suffixed, which is exactly why it was missed.
+        /// （顏色遮罩。其名稱不以 <c>*Map</c> 結尾，這正是它先前被遺漏的原因。）
         /// </summary>
-        private static readonly string[] Maps = { BaseColorMap, NormalMap, MaskMap, EmissiveColorMap };
+        private const string ControlMask = "_ControlMask";
+
+        /// <summary>
+        /// The same five names in the contract's map order, for the passes that have to sweep every
+        /// map rather than ask for one.<br/>
+        /// （契約貼圖順序下的同樣五個名稱，供須遍歷所有貼圖而非索取單一貼圖的流程使用。）
+        /// </summary>
+        private static readonly string[] Maps = { BaseColorMap, NormalMap, MaskMap, EmissiveColorMap, ControlMask };
 
         /// <summary>
         /// The materials ripped so far in the run, or <c>null</c> when idle.
@@ -105,6 +118,27 @@ namespace Carto.Systems
 
             /// <summary>Textures handed to the encoder.（已交付編碼端的貼圖數。）</summary>
             public int TexturesRead;
+
+            /// <summary>
+            /// Materials that came out with a colour mask.（產出時帶有顏色遮罩的材質數。）<br/><br/>
+            /// Reported rather than assumed: if this is zero on a real city then the colour masks
+            /// are not where this code looks for them, and <c>colors.json</c> is still decoration.
+            /// A count is the difference between knowing that and believing it.<br/>
+            /// （此數值須回報而非臆測：若於真實城市中為零，則顏色遮罩並不在此處所查找之處，
+            /// 而 <c>colors.json</c> 仍只是裝飾。有無計數，正是「確知」與「相信」之別。）
+            /// </summary>
+            public int ColorMasks;
+
+            /// <summary>
+            /// Every shader property the material library says a surface decode binds, across the
+            /// whole run.（整次工作中，材質庫所稱各表面解碼時會繫結的所有著色器屬性。）<br/><br/>
+            /// The game's own answer to "what maps are there", so the next one does not need an
+            /// offline sweep — and so a map outside the contract's five is visible in the report
+            /// instead of silently unexported.<br/>
+            /// （此即遊戲對「究竟有哪些貼圖」的自述，使下一次無須離線掃描；
+            /// 亦使契約五張之外的貼圖顯現於報告中，而非默默地未被輸出。）
+            /// </summary>
+            public HashSet<string> TemplateProperties = new();
 
             /// <summary>
             /// How each distinct texture reference turned out.（各相異貼圖參照的處理結果。）<br/><br/>
@@ -399,6 +433,18 @@ namespace Carto.Systems
                 material.MapKeys[(int)MaterialMap.Normal] = Take(run, surface, NormalMap, renderPrefab, materialIndex, own);
                 material.MapKeys[(int)MaterialMap.Mask] = Take(run, surface, MaskMap, renderPrefab, materialIndex, own);
                 material.MapKeys[(int)MaterialMap.Emissive] = Take(run, surface, EmissiveColorMap, renderPrefab, materialIndex, own);
+                material.MapKeys[(int)MaterialMap.ColorMask] = Take(run, surface, ControlMask, renderPrefab, materialIndex, own);
+
+                if (!string.IsNullOrEmpty(material.MapKeys[(int)MaterialMap.ColorMask])) run.ColorMasks++;
+
+                // What the material library says this surface's decode binds, recorded so that
+                // "is there a map we are still not exporting?" is answered by the run's own report
+                // rather than by another offline sweep. The colour mask was missing because that
+                // question had only ever been put to a regex, never to the game.
+                // （記錄材質庫所稱此表面解碼時會繫結的屬性，
+                //   使「是否仍有未輸出的貼圖？」由本次工作的報告回答，而非再一次離線掃描。
+                //   顏色遮罩之所以缺席，正因為此問題向來只問過正規表示式，從未問過遊戲本身。）
+                DeclaredProperties(run, surface);
 
                 if (surface.TryGetColorProperty("_BaseColor", out Color tint))
                     material.Tint = new Unity.Mathematics.float4(tint.r, tint.g, tint.b, tint.a);
@@ -410,6 +456,17 @@ namespace Carto.Systems
                 if (surface.TryGetFloatProperty("_AlphaCutoff", out float cutoff)) material.AlphaCutoff = cutoff;
 
                 DescribeTemplate(surface, material);
+
+                // A decal is alpha compositing by definition — the shader projects it over
+                // whatever is beneath and blends by the base colour's alpha — but decal shaders
+                // carry neither of the lit-shader keywords the sweep above reads, so the mode
+                // comes out `opaque` and a consumer renders the marking's whole texture rectangle
+                // as a solid box. The template names the truth the keywords cannot.
+                // （貼花的本質即為 alpha 合成——著色器將其投影於下方表面並依基礎色的 alpha 混合——
+                //   但貼花著色器不帶上述掃描所讀的兩個標準關鍵字，模式因而判為 `opaque`，
+                //   消費端便將標線的整個貼圖矩形繪成實心方塊。關鍵字說不出的真相，模板名稱說得出。）
+                if ((material.AlphaMode == "opaque") && material.Flags.Contains("decal"))
+                    material.AlphaMode = "blend";
 
                 run.Materials[material.MaterialId] = material;
                 return material.MaterialId;
@@ -957,15 +1014,53 @@ namespace Carto.Systems
         }
 
         /// <summary>
-        /// Every shader property the decode could have bound a texture to.
-        /// （解碼過程可能繫結貼圖的所有著色器屬性。）<br/><br/>
+        /// Record what the material library says this surface's decode binds.
+        /// （記錄材質庫所稱此表面解碼時會繫結的屬性。）<br/><br/>
         /// The material template is the authority — it is what the decode itself consults to decide
-        /// where each layer goes — so the stacks it declares name exactly the textures that need
-        /// destroying, including any beyond the four the contract keeps. If it cannot be had, the
-        /// contract's four are still better than leaking all of them.<br/>
+        /// where each layer goes — so the stacks it declares name every texture the surface has,
+        /// including any beyond the five the contract keeps. Accumulating them over a run turns
+        /// "is there a map we are still missing?" from an offline question into a line in the
+        /// report — which is what the colour mask needed, since that question had only ever been
+        /// put to a regex.<br/>
         /// （材質模板即權威——解碼過程本身即據以決定每一層的去向——
-        /// 故其所宣告的堆疊恰好指名了所有需銷毀的貼圖，包括契約所保留的四張以外者。
-        /// 若無法取得模板，則契約的四張仍勝於全數洩漏。）
+        /// 故其所宣告的堆疊指名了該表面所擁有的每一張貼圖，包括契約所保留的五張以外者。
+        /// 於整次工作中累積這些名稱，可將「是否仍有遺漏的貼圖？」從離線問題化為報告中的一行——
+        /// 這正是顏色遮罩所需者，因為該問題向來只問過正規表示式。）
+        /// </summary>
+        /// <param name="run">The run in progress.（進行中的工作。）</param>
+        /// <param name="surface">The surface asset.（表面資產。）</param>
+        private static void DeclaredProperties(MaterialRun run, SurfaceAsset surface)
+        {
+            MaterialStackProperties[] stacks;
+            try
+            {
+                stacks = AssetDatabase.global.resources.materialLibrary
+                    .GetMaterialDescription(surface.materialTemplateHash)?.m_Stacks;
+            }
+            catch (Exception)
+            {
+                // A surface whose template will not resolve says nothing about the others.
+                // （模板無法解析的表面，對其他表面不具說明力。）
+                return;
+            }
+
+            if (stacks == null) return;
+
+            foreach (MaterialStackProperties stack in stacks)
+            {
+                if (stack?.m_PropertyNames == null) continue;
+                foreach (string property in stack.m_PropertyNames)
+                    if (!string.IsNullOrEmpty(property)) run.TemplateProperties.Add(property);
+            }
+        }
+
+        /// <summary>
+        /// Every shader property the decode could have bound a texture to, so that the sweep in
+        /// <see cref="Release"/> destroys all of them and not merely the ones the contract keeps.
+        /// If the template cannot be had, the contract's own maps are still better than leaking
+        /// every one.
+        /// （解碼過程可能繫結貼圖的所有著色器屬性，使 <see cref="Release"/> 中的遍歷能銷毀全部
+        /// 而非僅止於契約所保留者。若無法取得模板，則退回契約自身的貼圖清單，仍勝於全數洩漏。）
         /// </summary>
         /// <param name="surface">The surface asset.（表面資產。）</param>
         /// <returns>The property names to sweep.（須遍歷的屬性名稱。）</returns>
@@ -1423,6 +1518,32 @@ namespace Carto.Systems
                             + $"{run.TexturesUnbound} with nothing behind them; "
                             + $"{run.TexturesFromMaterial} taken off a live material as a last resort.");
             report.AppendLine($"Surface VT data: {run.SurfaceDataLoads} file(s) opened, {run.SurfaceDataFailures} failed to decode.");
+
+            // The colour mask is what makes colors.json applicable, so say plainly whether it came
+            // out. Zero here does not mean the city has no colour variation — it means this code is
+            // looking in the wrong place, and the line below says where to look instead.
+            // （顏色遮罩正是使 colors.json 得以套用之物，故須明白說出它是否確實產出。
+            //   此處為零並不代表城市沒有顏色變化，而是代表此段程式查找的位置有誤，
+            //   而下一行會指出應改查何處。）
+            report.AppendLine($"Colour masks: {run.ColorMasks} of {written} material(s) carry one "
+                            + "(the texture colors.json needs to be applicable at all).");
+
+            if (run.TemplateProperties.Count > 0)
+            {
+                List<string> properties = new(run.TemplateProperties);
+                properties.Sort(StringComparer.Ordinal);
+
+                List<string> unexported = new();
+                foreach (string property in properties)
+                    if (Array.IndexOf(Maps, property) < 0) unexported.Add(property);
+
+                report.AppendLine($"Surface template properties declared by the material library "
+                                + $"({properties.Count}): {string.Join(", ", properties)}");
+                if (unexported.Count > 0)
+                {
+                    report.AppendLine($"  not exported by the contract's five: {string.Join(", ", unexported)}");
+                }
+            }
 
             if (run.Skipped.Count > 0)
             {

@@ -3,8 +3,9 @@
     <OutputType>Exe</OutputType>
     <TargetFramework>net8.0</TargetFramework>
     <Nullable>disable</Nullable>
-    <AssemblyName>mdump</AssemblyName>
-    <RootNamespace>mdump</RootNamespace>
-    <InvariantGlobalization>true</InvariantGlobalization>
+    <AssemblyName>decomp</AssemblyName>
   </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="ICSharpCode.Decompiler" Version="8.2.0.7535" />
+  </ItemGroup>
 </Project>

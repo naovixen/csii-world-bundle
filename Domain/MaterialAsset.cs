@@ -4,9 +4,9 @@ using Unity.Mathematics;
 namespace Carto.Domain
 {
     /// <summary>
-    /// The four texture slots the bundle contract defines, in the order they appear in
+    /// The five texture slots the bundle contract defines, in the order they appear in
     /// <c>materials.json</c>.<br/>
-    /// （束契約所定義的四個貼圖槽位，順序與 <c>materials.json</c> 中一致。）<br/><br/>
+    /// （束契約所定義的五個貼圖槽位，順序與 <c>materials.json</c> 中一致。）<br/><br/>
     /// The contract's material object is <b>closed</b> — a map outside this set cannot be written
     /// at all, which is deliberate: a consumer must never silently drop a map it should have
     /// handled. CS2 surfaces carry plenty of other textures (wind flutter, emissive ids, interior
@@ -27,7 +27,24 @@ namespace Carto.Domain
         Mask = 2,
 
         /// <summary>Emission, sRGB.（自發光，sRGB。）</summary>
-        Emissive = 3
+        Emissive = 3,
+
+        /// <summary>
+        /// CS2 <c>_ControlMask</c>: R, G and B select between the three channels of a
+        /// <c>ColorVariation</c>, A is snow coverage.<br/>
+        /// （CS2 的 <c>_ControlMask</c>：R、G、B 用以在 <c>ColorVariation</c> 的三個通道間取捨，
+        /// A 為積雪覆蓋。）<br/><br/>
+        /// <b>Without this the colour palette is decoration.</b> <c>colors.json</c> carries each
+        /// render prefab's three colour channels and each instance carries which variation it was
+        /// painted, but neither says <i>where</i> on the mesh each channel applies — this texture
+        /// does, per texel. Exporting the palette without it leaves a consumer with three colours
+        /// and no way to use them, which is the failure the palette was added to prevent.<br/>
+        /// （<b>若無此貼圖，顏色色盤只是裝飾。</b><c>colors.json</c> 帶有各繪製預製模板的三個顏色通道，
+        /// 各實例亦帶有自身被塗上哪一種變化，但兩者皆未說明各通道<i>作用於網格何處</i>——
+        /// 而此貼圖逐紋素地說明了這件事。輸出色盤卻不附上它，消費端只會得到三個無從使用的顏色，
+        /// 這正是加入色盤原本要避免的失敗。）
+        /// </summary>
+        ColorMask = 4
     }
 
     /// <summary>
@@ -107,7 +124,7 @@ namespace Carto.Domain
         /// The texture key per <see cref="MaterialMap"/> slot, or <c>null</c> where the surface has
         /// no such map.（各 <see cref="MaterialMap"/> 槽位的貼圖索引鍵，若表面沒有該貼圖則為 <c>null</c>。）
         /// </summary>
-        public string[] MapKeys { get; } = new string[4];
+        public string[] MapKeys { get; } = new string[5];
 
         /// <summary>
         /// Multiplied into <see cref="MaterialMap.BaseColor"/>. Linear RGBA in 0..1. <c>null</c>
@@ -160,6 +177,7 @@ namespace Carto.Domain
             AddMap(result, "normal", MaterialMap.Normal, resolve);
             AddMap(result, "mask", MaterialMap.Mask, resolve);
             AddMap(result, "emissive", MaterialMap.Emissive, resolve);
+            AddMap(result, "colorMask", MaterialMap.ColorMask, resolve);
 
             if (Tint.HasValue)
             {

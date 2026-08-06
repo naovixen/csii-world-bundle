@@ -40,11 +40,12 @@ namespace Carto.IO
         /// </summary>
         /// <param name="path">The destination file path.（目標檔案路徑。）</param>
         /// <param name="mesh">The mesh to write.（待寫出的網格。）</param>
+        /// <param name="describe">Resolves a material id to its maps and factors, or <c>null</c> to write neutral placeholders.（將材質 ID 解析為其貼圖與係數，若為 <c>null</c> 則寫出中性佔位值。）</param>
         /// <returns>The number of bytes written.（寫出的位元組數。）</returns>
-        public static long Write(string path, MeshAsset mesh)
+        public static long Write(string path, MeshAsset mesh, Func<string, MaterialDescription> describe = null)
         {
             if (mesh == null) throw new ArgumentNullException(nameof(mesh));
-            return Write(path, Wrap(mesh));
+            return Write(path, Wrap(mesh), describe);
         }
 
         /// <summary>
@@ -549,8 +550,10 @@ namespace Carto.IO
             {
                 if (string.IsNullOrEmpty(bundlePath)) return -1;
 
-                // The .glb lives in meshes/, so a bundle-root-relative path needs one level up.
-                // （.glb 位於 meshes/ 之下，故束根目錄相對路徑須向上一層。）
+                // The .glb lives one level down from the bundle root — in meshes/ for a prefab, in
+                // networks/ for a segment — so a bundle-root-relative path needs one level up.
+                // （.glb 位於束根目錄下一層（預製模板於 meshes/，路段於 networks/），
+                //   故束根目錄相對路徑須向上一層。）
                 string uri = $"../{bundlePath}";
                 if (_byUri.TryGetValue(uri, out int existing)) return existing;
 
