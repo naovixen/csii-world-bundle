@@ -259,6 +259,16 @@ class BundleContractTest(unittest.TestCase):
             make_example_bundle.make_gray_png(flat, grid[0], grid[1], 8))
         self.assertRejected(bundle, "bit depth")
 
+    def test_cutout_wrong_bit_depth_rejected(self):
+        # The cutout mask is a 0/255 hole mask at 8 bits on the terrain grid (§8); a
+        # 16-bit file would be a different encoding a consumer has no rule for.
+        bundle = self.fresh()
+        grid = json.loads((bundle / "bundle.json").read_text(encoding="utf-8"))["rasters"]["size"]
+        flat = [0] * (grid[0] * grid[1])
+        (bundle / "terrain" / "cutout.png").write_bytes(
+            make_example_bundle.make_gray_png(flat, grid[0], grid[1], 16))
+        self.assertRejected(bundle, "bit depth")
+
     def test_raster_not_grayscale_rejected(self):
         bundle = self.fresh()
         (bundle / "terrain" / "surface_index.png").write_bytes(

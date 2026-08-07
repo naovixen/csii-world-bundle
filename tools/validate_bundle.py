@@ -582,7 +582,7 @@ def validate_bundle(bundle_dir: Path, schema_dir: Path) -> Report:
                 report.error(f"{label}: axis {axis} value {point[axis]} lies outside bundle.json bounds")
 
     # -- raster layers need raster geo-referencing -------------------------------------
-    raster_layers = [k for k in ("terrain", "worldTerrain", "surfaceIndex", "water", "worldWater") if k in layers]
+    raster_layers = [k for k in ("terrain", "worldTerrain", "surfaceIndex", "cutout", "water", "worldWater") if k in layers]
     if raster_layers and "rasters" not in manifest:
         report.error(f"bundle.json declares raster layers {raster_layers} but has no 'rasters' block")
     elif raster_layers:
@@ -616,7 +616,8 @@ def _check_raster_layers(bundle_dir: Path, manifest: Dict[str, Any],
     Every raster is a single-channel PNG on the one grid the manifest's `rasters` block
     geo-references: elevation and the water surface level at bit depth 16 (the game's
     native sample width, value * scale + offset = metres; the water level shares the
-    elevation encoding, 0 = dry), the surface index at bit depth 8 (ids, not colours).
+    elevation encoding, 0 = dry), the surface index and the terrain cutout mask at bit
+    depth 8 (ids and a 0/255 mask respectively, not colours).
     The world rasters (`worldTerrain`/`worldWater`) cover a larger area at their own
     size, so only the playable-area rasters are held to `rasters.size`.
     """
@@ -626,6 +627,7 @@ def _check_raster_layers(bundle_dir: Path, manifest: Dict[str, Any],
     expectations = (
         ("terrain", 16, True, ("elevationScale", "elevationOffset")),
         ("surfaceIndex", 8, True, ()),
+        ("cutout", 8, True, ()),
         ("water", 16, True, ("elevationScale", "elevationOffset")),
         ("worldTerrain", 16, False, ("elevationScale", "elevationOffset")),
         ("worldWater", 16, False, ("elevationScale", "elevationOffset")),

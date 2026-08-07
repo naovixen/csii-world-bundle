@@ -884,3 +884,43 @@ up-facing UV rect into `m_TextureArea`. Identity for object decals whose area wa
 the same UVs; the correct band for lane parts. Contract §4.2a / §5B note it; no schema change
 — the quads simply now carry the UVs §4.2a always promised. Needs a mesh + network re-rip to
 land in `meshes/` and `lanemeshes/`.
+
+## 20. Terrain cutouts: the game hides tunnel portals per-frame; the heightmap never has holes (2026-08-07)
+
+The drive-through inspection asked why the ripped terrain walls off every underground road.
+Answer, decompiled from `Game.Simulation.TerrainSystem`: **the heightmap is never carved.**
+The open cut you see at a tunnel mouth or along a sunken trench is a screen-space effect
+re-drawn every frame:
+
+- `CullRoadsJob` (the §17 flattening walk) also emits, per lane section, the `ClipTerrain`
+  flag (from the prefab's `GeometryFlags.ClipTerrain`) and a vertical `m_ClipOffset` band.
+  `GenerateClipDataJob` turns every `ClipTerrain` section into a `ClipMapDraw` — the section's
+  left/right béziers with the band base added to their y column and the band height — after
+  expanding the band ±0.3 m.
+- `TerrainSurface.RenderClipAreas` (a per-camera HDRP callback) draws those sections with the
+  `RoadClip` shader (`m_ClipMesh` instanced over the `_RoadData` buffer), plus `areaClipMesh`
+  (triangles of areas whose prefab carries `ClipArea`), into a stencil/depth pre-pass that the
+  terrain renderer then tests to discard covered terrain pixels. `_ClipOffset.w =
+  tan(fov/2)·0.002` and `m_OffsetFactor = ±1` (`InverseClipOffset`, set on Tunnel
+  compositions, cleared at transition nodes) are a depth-bias magnitude and sign, not a
+  semantic inversion.
+- The band (`AddSegment`): base = the composition's edge-height extremes
+  (`m_EdgeHeights` start/end half by `isStart`, with `m_SurfaceHeight.min`) plus
+  `TerrainComposition.m_ClipHeightOffset`. Raised to `NetGeometryData.m_ElevationLimit * 3`
+  (30 m for roads) when the composition is **Tunnel with a transition side** (the portal) or
+  has a **Lowered side and is not elevated** (the open trench). The extra ShiftTerrain-only
+  sections (`float4/float5/float6` caps) all clear `ClipTerrain`.
+- Correspondingly, the *height* clamp for a Lowered composition keeps terrain anywhere in
+  `[lane, lane + ElevationLimit·3]` — a trench's covering bulge stays in the height cascade
+  and is only ever hidden by the clip pass — and a shallow tunnel's cover is shifted **up** to
+  `lane + HeightRange.max + 1`, which sits above its own small clip band, so tube cover is
+  never cut from above. Deep tunnel sections clip nothing for the same reason.
+
+**Producer consequence (`TerrainRipSystem.StampCutout`, `terrain/cutout.png`):** the §17
+roadbed walk re-runs with `GenerateClipDataJob`'s gate (prefab `ClipTerrain`; tunnels and
+trenches now included) and marks a cell where the section ribbon covers it and the terrain
+stands within `(lane + 0.5 m, lane + band top]`. `ClipArea` area triangles stamp with an
+unbounded top. One deliberate divergence: the game's band starts 0.3 m below the lane and so
+clips the roadbed itself (its road meshes hide the hole); the bundle keeps ground at or below
+the lane, so ordinary surface roads mark nothing. Schema note and amendment: bundle-schema §8,
+§12.1.

@@ -89,6 +89,7 @@
     "textures": "textures/",
     "terrain": "terrain/heightmap.png",
     "surfaceIndex": "terrain/surface_index.png",
+    "cutout": "terrain/cutout.png",
     "surfaces": "terrain/surfaces/",
     "water": "terrain/water_level.png"
   },

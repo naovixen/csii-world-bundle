@@ -379,6 +379,7 @@ def build(out_dir: Path) -> None:
 
     heights: list[int] = []
     surface: list[int] = []
+    cutout: list[int] = []
     levels: list[int] = []
     for row in range(grid):
         z = origin[2] - row * cell_m
@@ -391,8 +392,17 @@ def build(out_dir: Path) -> None:
             on_road = -368.0 <= z <= -352.0
             if on_road:
                 world_y = 12.0
+            # The road's eastern end dives under a covering bulge — the shape a tunnel
+            # portal or sunken trench has in a real rip: the game keeps the covering
+            # terrain in the heightmap and hides it per-frame, so the bundle records the
+            # bulge in the heightmap AND marks it cut in cutout.png (§8: cut cells are
+            # void; a consumer deletes them or the road is walled off).
+            cut = on_road and x >= 188.0
+            if cut:
+                world_y = 18.0
             heights.append(round(world_y / elevation_scale))
             surface.append(1 if on_road else 0)
+            cutout.append(255 if cut else 0)
             # A pond in the north-east corner. The water layer stores the SURFACE LEVEL
             # in the heightmap's own encoding (0 = dry): a still pond is one constant
             # level wherever there is water, and the ground plane cuts the shoreline.
@@ -404,6 +414,7 @@ def build(out_dir: Path) -> None:
     (terrain_dir / "surfaces").mkdir(parents=True, exist_ok=True)
     (terrain_dir / "heightmap.png").write_bytes(make_gray_png(heights, grid, grid, 16))
     (terrain_dir / "surface_index.png").write_bytes(make_gray_png(surface, grid, grid, 8))
+    (terrain_dir / "cutout.png").write_bytes(make_gray_png(cutout, grid, grid, 8))
     (terrain_dir / "water_level.png").write_bytes(make_gray_png(levels, grid, grid, 16))
 
     grass_png = make_checker_png(16, 4, (96, 132, 72, 255), (84, 118, 64, 255))
@@ -528,6 +539,7 @@ def build(out_dir: Path) -> None:
             "textures": "textures/",
             "terrain": "terrain/heightmap.png",
             "surfaceIndex": "terrain/surface_index.png",
+            "cutout": "terrain/cutout.png",
             "surfaces": "terrain/surfaces/",
             "water": "terrain/water_level.png",
         },

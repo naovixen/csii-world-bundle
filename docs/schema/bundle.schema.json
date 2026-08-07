@@ -92,6 +92,7 @@
         "terrain": { "$ref": "#/$defs/relPath" },
         "worldTerrain": { "$ref": "#/$defs/relPath" },
         "surfaceIndex": { "$ref": "#/$defs/relPath" },
+        "cutout": { "$ref": "#/$defs/relPath" },
         "surfaces": { "$ref": "#/$defs/relDir" },
         "water": { "$ref": "#/$defs/relPath" },
         "worldWater": { "$ref": "#/$defs/relPath" },

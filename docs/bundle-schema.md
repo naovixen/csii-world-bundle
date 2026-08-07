@@ -38,6 +38,7 @@ everything else is found through the manifest's `layers` index.
   terrain/elevation.tif           # elevation raster
   terrain/world_elevation.tif     # optional world-elevation surround
   terrain/surface_index.png       # per-cell ground-material id
+  terrain/cutout.png              # per-cell terrain cut mask (tunnel portals, trenches)
   terrain/surfaces/index.json     # id -> ground texture map
   terrain/surfaces/*.png          # ground textures
   water/depth.tif                 # water depth raster
@@ -930,6 +931,26 @@ toward +X (east).
     will crest through the road meshes between samples. Dropping the faces marked `1` by a
     small constant is the same clamp direction and keeps ground and carriageway from
     z-fighting; the reference importer does this (`_ROADBED_SINK`). *(Added 2026-08-07.)*
+- **`terrain/cutout.png`** (`layers.cutout`) — 8-bit grayscale, `0` = terrain present,
+  `255` = **cut**: the game never shows this cell's ground. *(Added 2026-08-07, see §12.1.)*
+  The game does not carve tunnel portals or sunken trenches out of its heightmap — a trench's
+  ground is merely clamped into `[lane, lane + 30 m]` and a shallow tube's cover is shifted
+  *up*, and every frame a stencil pre-pass (`RoadClip`) discards the covering terrain pixels
+  on screen. The heightmap therefore legitimately contains ground that walls off every tunnel
+  mouth and sunken road. This mask is that stencil pass projected top-down: a cell is marked
+  where a clip section's ribbon (every edge segment, node strip and orphan cap of a net whose
+  prefab carries `ClipTerrain`, plus the triangles of `ClipArea` surfaces) crosses it **and**
+  the terrain stands above the lane surface within the section's clip band — the composition's
+  edge-height band, raised to `ElevationLimit·3` (30 m for roads) at tunnel portals
+  (Tunnel + transition side) and open trenches (Lowered side), expanded by the game's own
+  0.3 m. Terrain above the band (the cover over a deep tube) is kept, exactly as in-game.
+  **Consumer rule — cells marked `255` must be removed** (delete the faces / punch heightfield
+  holes); rendering them walls off the underground network they hide. The mask **overrides
+  `surface_index.png`**: a cut cell's surface id is meaningless. One deliberate divergence
+  from the game: the game's clip band starts 0.3 m *below* the lane and so also discards the
+  roadbed itself (its road meshes hide the hole); the bundle keeps any ground at or below the
+  lane — only terrain that would *block* the way is cut — so the mask is empty over ordinary
+  surface roads.
 - **`terrain/surfaces/index.json`** (`layers.surfaces`) — maps each id to a name and a
   representative texture:
   ```jsonc
@@ -1128,6 +1149,20 @@ frozen 2026-08-06 and no consumer besides this repo's own harness ever read it; 
 moves in the same commit. A consumer written against the depth reading fails loudly at its
 validator (`depthScale` is gone; pre-amendment validators required it), which is the closure
 working as promised.
+
+**Terrain cutout mask added (2026-08-07, Phase 6).** A v1-compatible addition: one new raster
+(`terrain/cutout.png`, `layers.cutout`, 8-bit on the §8 grid) and no change to any existing
+object. Added because the first drive-through inspection found every underground network
+walled off: the game never removes the terrain covering tunnel portals and sunken trenches
+from its heightmap — `TerrainSystem` clamps a Lowered composition's ground into
+`[lane, lane + ElevationLimit·3]` and hides the remainder per-frame with the `RoadClip`
+stencil pass (`GenerateClipDataJob` → `TerrainSurface.RenderClipAreas`, decompiled) — so the
+§8 heightmap alone reproduces the blockage faithfully and uselessly. The mask is that stencil
+pass projected top-down (see §8 for the exact band rule and the one divergence: the roadbed
+under the lane is kept). It also settles the splat question the same inspection raised: a cut
+cell's `surface_index` value is declared void rather than re-stamped. A consumer built before
+this addition ignores the file and keeps the walls; one that honours it must delete the marked
+cells.
 
 **Terrain rasters frozen as 16-bit PNG, not GeoTIFF (2026-08-06, Phase 6).** The original §8
 placeholder said elevation and water would be "GeoTIFFs written by Carto's existing raster

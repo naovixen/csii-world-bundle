@@ -48,10 +48,12 @@ Options (after the `--`):
     --terrain                    also place the §8 terrain under everything: the road-flattened
                                  heightmap as a ground grid (roadbed faces textured from
                                  surface_index.png and sunk slightly, steep faces textured
-                                 rock) and the water surface where water_level.png rises above
-                                 the ground (same region filter as everything else). The
-                                 ground, not the junction floors — junction interiors are the
-                                 arms' own node meshes (audit §18)
+                                 rock, faces marked in cutout.png deleted — the terrain the
+                                 game stencil-clips over tunnel portals and trenches) and the
+                                 water surface where water_level.png rises above the ground
+                                 (same region filter as everything else). The ground, not the
+                                 junction floors — junction interiors are the arms' own node
+                                 meshes (audit §18)
     --areas                      also place the §8b surface areas from areas.jsonl — house
                                  driveways, parking-lot pavement, park paths: the painted
                                  ground of every meshless prefab
@@ -1215,6 +1217,7 @@ def _terrain_paths(bundle_dir):
 
     heightmap = os.path.join(bundle_dir, layers.get("terrain", "terrain/heightmap.png"))
     surface = os.path.join(bundle_dir, layers.get("surfaceIndex", "terrain/surface_index.png"))
+    cutout = os.path.join(bundle_dir, layers.get("cutout", "terrain/cutout.png"))
     water = os.path.join(bundle_dir, layers.get("water", "terrain/water_level.png"))
     surfaces_dir = os.path.join(bundle_dir, layers.get("surfaces", "terrain/surfaces/"))
 
@@ -1224,7 +1227,7 @@ def _terrain_paths(bundle_dir):
             with open(sidecar, encoding="utf-8") as handle:
                 rasters = json.load(handle)
 
-    return heightmap, surface, water, surfaces_dir, rasters
+    return heightmap, surface, cutout, water, surfaces_dir, rasters
 
 
 def _ground_material(name, texture_path, fallback_colour, gain=1.0):
@@ -1259,7 +1262,7 @@ def build_terrain(bundle_dir, collection, center, radius):
     the grid to the same window as everything else; without one, the grid is subsampled to at
     most ~1024 cells per axis so a full 4096² map stays viewable.
     """
-    heightmap_path, surface_path, water_path, surfaces_dir, rasters = _terrain_paths(bundle_dir)
+    heightmap_path, surface_path, cutout_path, water_path, surfaces_dir, rasters = _terrain_paths(bundle_dir)
     if not os.path.isfile(heightmap_path):
         print(f"no terrain layer at {heightmap_path} — skipping terrain")
         return 0
@@ -1280,6 +1283,13 @@ def build_terrain(bundle_dir, collection, center, radius):
         if (sw, sh) != (width, height):
             print(f"CONTRACT VIOLATION: surface_index is {sw}x{sh}, heightmap {width}x{height}")
             surface_ids = None
+
+    cut_ids = None
+    if os.path.isfile(cutout_path):
+        cw, ch, cut_ids = _decode_png_gray(cutout_path)
+        if (cw, ch) != (width, height):
+            print(f"CONTRACT VIOLATION: cutout is {cw}x{ch}, heightmap {width}x{height}")
+            cut_ids = None
 
     levels = None
     if os.path.isfile(water_path):
@@ -1343,10 +1353,22 @@ def build_terrain(bundle_dir, collection, center, radius):
             verts.append((x, z, world_y(row, col) - drop))  # Blender: X east, Y north, Z up
             index += 1
 
+    # §8 cutout: cells the game stencil-clips per-frame instead of carving the heightmap —
+    # the terrain covering tunnel portals and sunken trenches. Keeping their faces walls off
+    # every underground network, so a face is dropped when any of its corner samples is cut;
+    # the opening over-reaches by at most half a cell, leaving a rim instead of a wall.
+    def vertex_cut(row, col):
+        return cut_ids is not None and cut_ids[row * width + col] != 0
+
+    cut_faces = 0
     faces = []
     face_rc = []
     for r in range(len(rows) - 1):
         for c in range(ncols - 1):
+            if any(vertex_cut(cr, cc)
+                   for cr in (rows[r], rows[r + 1]) for cc in (cols[c], cols[c + 1])):
+                cut_faces += 1
+                continue
             a = r * ncols + c
             # Row 0 is the north edge, so winding (a, a+ncols, a+ncols+1, a+1) — south then
             # east — keeps the face normal pointing up in Blender's right-handed frame.
@@ -1465,7 +1487,8 @@ def build_terrain(bundle_dir, collection, center, radius):
     print(f"terrain:   {len(rows)}x{ncols} sample window of {width}x{height} at {cell:g} m"
           + (f", stride {stride}" if stride > 1 else ""))
     print(f"           {roadbed_faces} roadbed face(s) (sunk {_ROADBED_SINK:g} m), "
-          f"{rock_faces} rock face(s), {wet_faces} water face(s)")
+          f"{rock_faces} rock face(s), {wet_faces} water face(s), "
+          f"{cut_faces} face(s) cut (tunnel portals / trenches)")
     return placed
 
 

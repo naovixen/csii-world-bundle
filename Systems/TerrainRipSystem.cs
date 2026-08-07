@@ -47,7 +47,20 @@ namespace Carto.Systems
     /// 岩與四個可繪製的額外層，於 GPU 逐像素分類。使壓平地面在遊戲中呈現路床樣貌的，正是壓平本身
     /// （加上約 13% 不透明度的車道貼花）。故誠實的遮罩即道路作業所繪的同一足跡：
     /// Flatten／ClipTerrain 路網的每個邊區段、路口節點條帶與孤立節點蓋，
-    /// 本系統以相同的 <c>Segment</c> 貝茲曲線於 CPU 上將其光柵化。）
+    /// 本系統以相同的 <c>Segment</c> 貝茲曲線於 CPU 上將其光柵化。）<br/><br/>
+    /// <b>Why a cutout mask exists at all.</b> The game never carves tunnel portals or sunken
+    /// trenches out of the heightmap. A Lowered composition's ground is merely clamped into
+    /// <c>[lane, lane + ElevationLimit·3]</c> and a shallow tube's cover is shifted <i>up</i> —
+    /// the covering terrain stays in the height cascade, and every frame the <c>RoadClip</c>
+    /// stencil pass (<c>GenerateClipDataJob</c> → <c>TerrainSurface.RenderClipAreas</c>) discards
+    /// its pixels on screen instead. A consumer that rebuilds the ground from the heightmap alone
+    /// therefore walls off every tunnel mouth and trench; <c>terrain/cutout.png</c> is that
+    /// stencil pass projected top-down, and consumers must delete the cells it marks.<br/>
+    /// （<b>為何需要裁切遮罩。</b>遊戲從不將隧道洞口或下沉壕溝自高度圖鑿除：Lowered 組成的地面僅被
+    /// 鉗制於 <c>[車道, 車道 + ElevationLimit·3]</c>，淺埋管段的覆土則被向<i>上</i>推移——覆蓋的
+    /// 地形留在高度串接紋理中，由 <c>RoadClip</c> 模板繪次每影格於螢幕上捨棄其像素。僅憑高度圖
+    /// 重建地面的消費端因此會封死每個洞口與壕溝；<c>terrain/cutout.png</c> 即該繪次的俯視投影，
+    /// 消費端必須刪除其標記的格。）
     /// </summary>
     public partial class TerrainRipSystem : GameSystemBase
     {
@@ -65,6 +78,18 @@ namespace Carto.Systems
         /// </summary>
         const float NoLevel = float.MinValue;
 
+        /// <summary>
+        /// How far above the lane surface terrain must stand before the cutout removes it. The
+        /// game's clip band reaches 0.3 m <i>below</i> the lane and so clips the roadbed itself —
+        /// in-game the road mesh hides that hole. The bundle keeps the bed a consumer drives on
+        /// and cuts only terrain that would block the way; 0.5 m clears curb heights and the
+        /// readback's quantisation with room to spare.
+        /// （地形須高出車道面多少才會被裁切。遊戲的裁切帶向下達車道<i>之下</i> 0.3 公尺，連路床
+        /// 一併裁去——遊戲中道路網格遮住該洞。束保留消費端行駛其上的路床，僅裁去會擋路的地形；
+        /// 0.5 公尺足以避開路緣高度與回讀的量化誤差。）
+        /// </summary>
+        const float CutoutFloor = 0.5f;
+
         /// <summary>The query for placed network edges.（已放置路網邊的查詢。）</summary>
         EntityQuery _edgeQuery;
 
@@ -74,8 +99,12 @@ namespace Carto.Systems
         /// <summary>The query for rendered surface areas.（已繪製地表區域的查詢。）</summary>
         EntityQuery _surfaceAreaQuery;
 
+        /// <summary>The query for terrain-clipping areas.（裁切地形的區域的查詢。）</summary>
+        EntityQuery _clipAreaQuery;
+
         // Stamp tallies for the report.（供報告使用的蓋印統計。）
         int _edgesStamped, _nodesStamped, _orphansStamped, _skippedForm, _skippedNoFlatten;
+        int _cutEdges, _cutNodes, _cutOrphans, _cutAreas;
 
         /// <summary>
         /// The event triggered when the system instance is created.
@@ -131,6 +160,25 @@ namespace Carto.Systems
                 }
             });
 
+            // Areas whose prefab carries ClipArea (a SurfacePrefab add-on): the terrain job draws
+            // them into the same RoadClip stencil (its areaClipMesh path) instead of flattening.
+            // （預製模板帶有 ClipArea 的區域：地形作業將其繪入同一 RoadClip 模板（areaClipMesh
+            //   路徑）而非壓平。）
+            _clipAreaQuery = GetEntityQuery(new EntityQueryDesc()
+            {
+                All = new ComponentType[]
+                {
+                    ComponentType.ReadOnly<Game.Areas.Clip>(),
+                    ComponentType.ReadOnly<Game.Areas.Node>(),
+                    ComponentType.ReadOnly<Game.Areas.Triangle>()
+                },
+                None = new ComponentType[]
+                {
+                    ComponentType.ReadOnly<Game.Common.Deleted>(),
+                    ComponentType.ReadOnly<Game.Tools.Temp>()
+                }
+            });
+
             base.OnCreate();
             _log.Debug("TerrainRipSystem instance created. 地形擷取系統實例創造完成。");
         }
@@ -149,9 +197,11 @@ namespace Carto.Systems
 
         /// <summary>
         /// Rip the terrain layers into <c>terrain/</c>: the final (road-flattened) heightmap, the
-        /// roadbed surface index, the water surface level grid, the theme's ground textures and
-        /// the geo-referencing sidecar. Contract §8 of <c>docs/bundle-schema.md</c>.
-        /// （將地形層擷取至 <c>terrain/</c>：最終（道路壓平後）高度圖、路床地表索引、水面高程網格、
+        /// roadbed surface index, the cutout mask (the cells the game's clip pass hides — tunnel
+        /// portals, sunken trenches), the water surface level grid, the theme's ground textures
+        /// and the geo-referencing sidecar. Contract §8 of <c>docs/bundle-schema.md</c>.
+        /// （將地形層擷取至 <c>terrain/</c>：最終（道路壓平後）高度圖、路床地表索引、裁切遮罩
+        /// （遊戲裁切繪次隱藏的格——隧道洞口、下沉壕溝）、水面高程網格、
         /// 主題的地面貼圖與地理參照附檔。契約見 <c>docs/bundle-schema.md</c> §8。）
         /// </summary>
         /// <param name="outputDirectory">The bundle root to write into.（要寫入的束根目錄。）</param>
@@ -191,6 +241,25 @@ namespace Carto.Systems
                             + $"{roadbedCells} cell(s) = {roadbedCells * 100.0 / surfaceIndex.Length:F1}% of the map");
             report.AppendLine($"  skipped {_skippedNoFlatten} edge(s) whose prefab does not flatten terrain, "
                             + $"{_skippedForm} elevated/tunnel composition(s) (their ground is not pulled to the road)");
+
+            // ---- 2b. The terrain cutout, stamped from the game's clip sections. The game never
+            // carves these holes into the heightmap: every frame the RoadClip stencil pass
+            // discards the terrain pixels covering tunnel portals and sunken trenches, so the
+            // readback legitimately contains ground that blocks them. This mask is that pass
+            // projected top-down — a cell is cut where a clip section's ribbon crosses it and the
+            // terrain stands above the lane within the section's clip band.
+            // （地形裁切遮罩：自遊戲的裁切區段蓋印。遊戲從不在高度圖上開這些洞——每一影格
+            //   RoadClip 模板繪次都會捨棄覆蓋隧道洞口與下沉壕溝的地形像素，故回讀本就含有
+            //   擋住它們的地面。此遮罩即該繪次的俯視投影——凡裁切區段的帶狀範圍經過、且地形
+            //   高於車道並落於該區段裁切帶內的格，皆被裁去。）
+            byte[] cutout = new byte[width * height];
+            _cutEdges = _cutNodes = _cutOrphans = _cutAreas = 0;
+            StampCutout(cutout, heightData);
+
+            int cutCells = 0;
+            foreach (byte cell in cutout) if (cell != 0) cutCells++;
+            report.AppendLine($"Cutout: {cutCells} cell(s) opened over tunnel portals and sunken roads; "
+                            + $"{_cutEdges} edge(s), {_cutNodes} node strip(s), {_cutOrphans} orphan cap(s), {_cutAreas} clip area(s) stamped");
 
             // ---- 3. Water surface LEVEL, built on the sim grid and resampled onto the terrain
             // grid. Depth was resampled directly once, and the river climbed its gorge: bilinear
@@ -245,6 +314,8 @@ namespace Carto.Systems
                                        Png.EncodeGray16(FlipRows(heights, width, height), width, height));
                     File.WriteAllBytes(IOUtils.CombinePath(terrainDirectory, "surface_index.png"),
                                        Png.EncodeGray8(FlipRows(surfaceIndex, width, height), width, height));
+                    File.WriteAllBytes(IOUtils.CombinePath(terrainDirectory, "cutout.png"),
+                                       Png.EncodeGray8(FlipRows(cutout, width, height), width, height));
                     if (waterLevel != null)
                     {
                         File.WriteAllBytes(IOUtils.CombinePath(terrainDirectory, "water_level.png"),
@@ -755,6 +826,7 @@ namespace Carto.Systems
         /// <param name="heightData">The terrain grid, for the world-to-cell mapping.（地形網格，供世界至格的映射。）</param>
         private void StampRoadbed(byte[] surfaceIndex, TerrainHeightData heightData)
         {
+            StampContext context = new() { Mask = surfaceIndex, Value = 1 };
             var edges = _edgeQuery.ToEntityArray(Unity.Collections.Allocator.TempJob);
             try
             {
@@ -780,23 +852,25 @@ namespace Carto.Systems
                     if (TryGetGroundComposition(composition.m_Edge, out TerrainComposition edgeTerrain))
                     {
                         EdgeGeometry geometry = EntityManager.GetComponentData<EdgeGeometry>(entity);
-                        StampSegment(surfaceIndex, heightData, geometry.m_Start, edgeTerrain, true, true);
-                        StampSegment(surfaceIndex, heightData, geometry.m_End, edgeTerrain, true, true);
+                        StampSegment(in context, heightData, geometry.m_Start, edgeTerrain, true, true);
+                        StampSegment(in context, heightData, geometry.m_End, edgeTerrain, true, true);
                         _edgesStamped++;
                     }
 
                     if (EntityManager.HasComponent<StartNodeGeometry>(entity)
-                        && TryGetGroundComposition(composition.m_StartNode, out TerrainComposition startTerrain))
+                        && TryGetGroundComposition(composition.m_StartNode, out TerrainComposition startTerrain)
+                        && StampNode(in context, heightData,
+                                     EntityManager.GetComponentData<StartNodeGeometry>(entity).m_Geometry, startTerrain))
                     {
-                        StampNode(surfaceIndex, heightData,
-                                  EntityManager.GetComponentData<StartNodeGeometry>(entity).m_Geometry, startTerrain);
+                        _nodesStamped++;
                     }
 
                     if (EntityManager.HasComponent<EndNodeGeometry>(entity)
-                        && TryGetGroundComposition(composition.m_EndNode, out TerrainComposition endTerrain))
+                        && TryGetGroundComposition(composition.m_EndNode, out TerrainComposition endTerrain)
+                        && StampNode(in context, heightData,
+                                     EntityManager.GetComponentData<EndNodeGeometry>(entity).m_Geometry, endTerrain))
                     {
-                        StampNode(surfaceIndex, heightData,
-                                  EntityManager.GetComponentData<EndNodeGeometry>(entity).m_Geometry, endTerrain);
+                        _nodesStamped++;
                     }
                 }
             }
@@ -824,7 +898,7 @@ namespace Carto.Systems
                     float width = EntityManager.GetComponentData<NetCompositionData>(composition).m_Width;
                     if (!(width > 0f)) continue;
 
-                    StampOrphan(surfaceIndex, heightData,
+                    StampOrphan(in context, heightData,
                                 EntityManager.GetComponentData<Node>(entity).m_Position, width, terrain);
                     _orphansStamped++;
                 }
@@ -876,6 +950,251 @@ namespace Carto.Systems
         }
 
         /// <summary>
+        /// One stamping pass's target and rule, threaded through the shared segment walk.
+        /// （單次蓋印的目標與規則，貫穿共用的區段走訪。）<br/><br/>
+        /// With <see cref="Cut"/> unset the fill is unconditional (the roadbed mask). With it
+        /// set, a cell is written only where the terrain stands between
+        /// <c>lane + CutBottom</c> and <c>lane + CutTop</c> — the clip band test.
+        /// （未設 <see cref="Cut"/> 時無條件填入（路床遮罩）；設定時僅於地形介於
+        /// <c>車道 + CutBottom</c> 與 <c>車道 + CutTop</c> 之間的格寫入——即裁切帶測試。）
+        /// </summary>
+        private struct StampContext
+        {
+            /// <summary>The mask, south-to-north rows.（遮罩，列序由南至北。）</summary>
+            public byte[] Mask;
+
+            /// <summary>The value written into covered cells.（寫入覆蓋格的值。）</summary>
+            public byte Value;
+
+            /// <summary>Whether the clip band test applies.（是否套用裁切帶測試。）</summary>
+            public bool Cut;
+
+            /// <summary>Band floor, metres above the lane surface.（帶底，高於車道面的公尺數。）</summary>
+            public float CutBottom;
+
+            /// <summary>Band ceiling, metres above the lane surface.（帶頂，高於車道面的公尺數。）</summary>
+            public float CutTop;
+        }
+
+        /// <summary>
+        /// A composition's clip band top, per the game's <c>CullRoadsJob.AddSegment</c>.
+        /// （組成的裁切帶頂，依遊戲的 <c>CullRoadsJob.AddSegment</c>。）<br/><br/>
+        /// The base is the composition's edge-height extreme (the start or end half, like the
+        /// game's <c>isStart</c> select) plus <c>TerrainComposition.m_ClipHeightOffset</c>. Tunnel
+        /// portals (Tunnel with a transition side) and open trenches (a Lowered side, not
+        /// elevated) raise it to <c>ElevationLimit·3</c> — the 30 m open cut. The job's own
+        /// 0.3 m expansion is added last. Deep tube sections keep the small base band: the
+        /// terrain covering them sits far above it, so the band test cuts nothing there, which is
+        /// the game's behaviour too (their cover is never clipped from above).<br/>
+        /// （帶底取組成的緣高極值（依 <c>isStart</c> 選取起訖半段）加上
+        /// <c>TerrainComposition.m_ClipHeightOffset</c>；隧道洞口（帶過渡側的 Tunnel）與明挖壕溝
+        /// （帶 Lowered 側且非高架）將其抬升至 <c>ElevationLimit·3</c>——即 30 公尺的明挖範圍；
+        /// 最後加上作業自身的 0.3 公尺擴張。深埋管段維持小帶：其覆土遠高於帶頂，故帶測試於彼處
+        /// 不裁任何格，與遊戲行為一致。）
+        /// </summary>
+        /// <param name="composition">The composition entity.（組成實體。）</param>
+        /// <param name="raisedTop">The prefab's <c>ElevationLimit * 3</c>.（預製模板的 <c>ElevationLimit * 3</c>。）</param>
+        /// <param name="isStart">Which edge-height half applies.（適用哪一半的緣高。）</param>
+        /// <param name="terrain">Receives the terrain offsets, or default.（接收地形偏移，或預設值。）</param>
+        /// <param name="cutTop">Receives the band top.（接收帶頂。）</param>
+        /// <returns>Whether the band can cut anything at all.（該帶是否可能裁到任何格。）</returns>
+        private bool TryGetClipBand(Entity composition, float raisedTop, bool isStart,
+                                    out TerrainComposition terrain, out float cutTop)
+        {
+            terrain = default;
+            cutTop = 0f;
+            if ((composition == Entity.Null) || !EntityManager.HasComponent<NetCompositionData>(composition)) return false;
+
+            NetCompositionData data = EntityManager.GetComponentData<NetCompositionData>(composition);
+            if (EntityManager.HasComponent<TerrainComposition>(composition))
+            {
+                terrain = EntityManager.GetComponentData<TerrainComposition>(composition);
+            }
+
+            float3 baseHeights = isStart
+                ? new float3(data.m_EdgeHeights.x, data.m_SurfaceHeight.min, data.m_EdgeHeights.y)
+                : new float3(data.m_EdgeHeights.z, data.m_SurfaceHeight.min, data.m_EdgeHeights.w);
+            cutTop = math.cmax(baseHeights) + terrain.m_ClipHeightOffset.y;
+
+            bool tunnel = (data.m_Flags.m_General & CompositionFlags.General.Tunnel) != 0;
+            bool elevated = (data.m_Flags.m_General & CompositionFlags.General.Elevated) != 0;
+            CompositionFlags.Side sides = data.m_Flags.m_Left | data.m_Flags.m_Right;
+            bool transition = (sides & (CompositionFlags.Side.LowTransition | CompositionFlags.Side.HighTransition)) != 0;
+            bool lowered = (sides & CompositionFlags.Side.Lowered) != 0;
+            if ((tunnel && transition) || (!tunnel && !elevated && lowered))
+            {
+                cutTop = math.max(cutTop, raisedTop);
+            }
+            cutTop += 0.3f;
+
+            // A band that never rises above the floor cannot mark a cell; skip the walk.
+            // （帶頂不高於帶底者不可能標記任何格；跳過走訪。）
+            return cutTop > CutoutFloor;
+        }
+
+        /// <summary>
+        /// Stamp the terrain cutout — the cells the game's <c>RoadClip</c> stencil pass hides
+        /// every frame instead of carving them out of the heightmap.
+        /// （蓋印地形裁切遮罩——遊戲的 <c>RoadClip</c> 模板繪次每影格隱藏、而非自高度圖鑿除的格。）<br/><br/>
+        /// The walk is <c>CullRoadsJob</c>'s once more, but through <c>GenerateClipDataJob</c>'s
+        /// gate: every edge segment, node strip and orphan cap of a net whose prefab carries
+        /// <c>GeometryFlags.ClipTerrain</c> — tunnels and trenches <i>included</i> this time,
+        /// because the clip is exactly what opens them. Areas whose prefab carries
+        /// <c>ClipArea</c> join at the end (the pass's <c>areaClipMesh</c>). The band per
+        /// composition is <see cref="TryGetClipBand"/>'s.<br/>
+        /// （走訪仍是 <c>CullRoadsJob</c> 的，但改依 <c>GenerateClipDataJob</c> 的條件：預製模板帶有
+        /// <c>GeometryFlags.ClipTerrain</c> 的路網的每個邊區段、節點條帶與孤立節點蓋——這次
+        /// <i>包含</i>隧道與壕溝，因為裁切正是開通它們的機制。帶 <c>ClipArea</c> 的區域最後加入
+        /// （即該繪次的 <c>areaClipMesh</c>）。各組成的帶見 <see cref="TryGetClipBand"/>。）
+        /// </summary>
+        /// <param name="cutout">The mask to stamp into, south-to-north rows.（要蓋印的遮罩，列序由南至北。）</param>
+        /// <param name="heightData">The terrain grid.（地形網格。）</param>
+        private void StampCutout(byte[] cutout, TerrainHeightData heightData)
+        {
+            StampContext context = new() { Mask = cutout, Value = 255, Cut = true, CutBottom = CutoutFloor };
+
+            var edges = _edgeQuery.ToEntityArray(Unity.Collections.Allocator.TempJob);
+            try
+            {
+                foreach (Entity entity in edges)
+                {
+                    if (!EntityManager.Exists(entity)) continue;
+
+                    Entity prefab = EntityManager.GetComponentData<PrefabRef>(entity).m_Prefab;
+                    if ((prefab == Entity.Null) || !EntityManager.HasComponent<NetGeometryData>(prefab)) continue;
+
+                    NetGeometryData netGeometry = EntityManager.GetComponentData<NetGeometryData>(prefab);
+                    if ((netGeometry.m_Flags & Game.Net.GeometryFlags.ClipTerrain) == 0) continue;
+                    float raisedTop = netGeometry.m_ElevationLimit * 3f;
+
+                    Composition composition = EntityManager.GetComponentData<Composition>(entity);
+                    bool stamped = false;
+
+                    // The edge halves take the composition's start/end edge heights respectively,
+                    // like the game's isStart select.（邊的兩半各取組成起／訖半段的緣高，
+                    // 一如遊戲的 isStart 選取。）
+                    if (TryGetClipBand(composition.m_Edge, raisedTop, true, out TerrainComposition edgeTerrain, out context.CutTop))
+                    {
+                        StampSegment(in context, heightData,
+                                     EntityManager.GetComponentData<EdgeGeometry>(entity).m_Start, edgeTerrain, true, true);
+                        stamped = true;
+                    }
+                    if (TryGetClipBand(composition.m_Edge, raisedTop, false, out edgeTerrain, out context.CutTop))
+                    {
+                        StampSegment(in context, heightData,
+                                     EntityManager.GetComponentData<EdgeGeometry>(entity).m_End, edgeTerrain, true, true);
+                        stamped = true;
+                    }
+                    if (stamped) _cutEdges++;
+
+                    if (EntityManager.HasComponent<StartNodeGeometry>(entity)
+                        && TryGetClipBand(composition.m_StartNode, raisedTop, true, out TerrainComposition startTerrain, out context.CutTop)
+                        && StampNode(in context, heightData,
+                                     EntityManager.GetComponentData<StartNodeGeometry>(entity).m_Geometry, startTerrain))
+                    {
+                        _cutNodes++;
+                    }
+
+                    if (EntityManager.HasComponent<EndNodeGeometry>(entity)
+                        && TryGetClipBand(composition.m_EndNode, raisedTop, true, out TerrainComposition endTerrain, out context.CutTop)
+                        && StampNode(in context, heightData,
+                                     EntityManager.GetComponentData<EndNodeGeometry>(entity).m_Geometry, endTerrain))
+                    {
+                        _cutNodes++;
+                    }
+                }
+            }
+            finally
+            {
+                edges.Dispose();
+            }
+
+            var orphans = _orphanQuery.ToEntityArray(Unity.Collections.Allocator.TempJob);
+            try
+            {
+                foreach (Entity entity in orphans)
+                {
+                    if (!EntityManager.Exists(entity)) continue;
+
+                    Entity prefab = EntityManager.GetComponentData<PrefabRef>(entity).m_Prefab;
+                    if ((prefab == Entity.Null) || !EntityManager.HasComponent<NetGeometryData>(prefab)) continue;
+
+                    NetGeometryData netGeometry = EntityManager.GetComponentData<NetGeometryData>(prefab);
+                    if ((netGeometry.m_Flags & Game.Net.GeometryFlags.ClipTerrain) == 0) continue;
+
+                    Entity composition = EntityManager.GetComponentData<Game.Net.Orphan>(entity).m_Composition;
+                    if (!TryGetClipBand(composition, netGeometry.m_ElevationLimit * 3f, true,
+                                        out TerrainComposition terrain, out context.CutTop)) continue;
+
+                    float width = EntityManager.GetComponentData<NetCompositionData>(composition).m_Width;
+                    if (!(width > 0f)) continue;
+
+                    StampOrphan(in context, heightData,
+                                EntityManager.GetComponentData<Node>(entity).m_Position, width, terrain);
+                    _cutOrphans++;
+                }
+            }
+            finally
+            {
+                orphans.Dispose();
+            }
+
+            StampClipAreas(in context, heightData);
+        }
+
+        /// <summary>
+        /// Stamp the areas whose prefab carries <c>ClipArea</c> — the terrain job draws their
+        /// triangles into the same stencil (<c>areaClipMesh</c>). The band has no ceiling: an
+        /// authored clip surface hides whatever terrain covers it.
+        /// （蓋印預製模板帶有 <c>ClipArea</c> 的區域——地形作業將其三角形繪入同一模板
+        /// （<c>areaClipMesh</c>）。此帶無頂：作者放置的裁切面會隱藏覆蓋其上的一切地形。）
+        /// </summary>
+        /// <param name="baseContext">The cutout pass's context.（裁切繪次的情境。）</param>
+        /// <param name="heightData">The terrain grid.（地形網格。）</param>
+        private void StampClipAreas(in StampContext baseContext, TerrainHeightData heightData)
+        {
+            int width = heightData.resolution.x;
+            int height = heightData.resolution.z;
+            StampContext context = baseContext;
+            context.CutTop = float.MaxValue;
+
+            var areas = _clipAreaQuery.ToEntityArray(Unity.Collections.Allocator.TempJob);
+            try
+            {
+                foreach (Entity entity in areas)
+                {
+                    if (!EntityManager.Exists(entity)) continue;
+
+                    DynamicBuffer<Game.Areas.Node> nodes = EntityManager.GetBuffer<Game.Areas.Node>(entity, true);
+                    DynamicBuffer<Game.Areas.Triangle> triangles = EntityManager.GetBuffer<Game.Areas.Triangle>(entity, true);
+                    if ((nodes.Length < 3) || (triangles.Length == 0)) continue;
+
+                    for (int i = 0; i < triangles.Length; i++)
+                    {
+                        int3 indices = triangles[i].m_Indices;
+                        if ((math.cmin(indices) < 0) || (math.cmax(indices) >= nodes.Length)) continue;
+
+                        float3 a = nodes[indices.x].m_Position;
+                        float3 b = nodes[indices.y].m_Position;
+                        float3 c = nodes[indices.z].m_Position;
+
+                        // A triangle is a quad with one doubled corner to the scanline fill.
+                        // （對掃描線填色而言，三角形即一角重複的四邊形。）
+                        FillQuad(in context, heightData, width, height,
+                                 ToCell(a, heightData), ToCell(b, heightData),
+                                 ToCell(c, heightData), ToCell(c, heightData),
+                                 (a.y + b.y + c.y) / 3f);
+                    }
+                    _cutAreas++;
+                }
+            }
+            finally
+            {
+                areas.Dispose();
+            }
+        }
+
+        /// <summary>
         /// Stamp one node's strips — the flattened junction interior.
         /// （蓋印單一節點的條帶——壓平的路口內部。）<br/><br/>
         /// The three cases are <c>CullRoadsJob.AddNode</c>'s: a roundabout rides its middle curve
@@ -888,12 +1207,13 @@ namespace Carto.Systems
         /// 涵蓋兩半外加通往中線曲線的兩個楔形——即花瓣；直通節點則自半跨越中線至另一半。
         /// 圓環於高架匝道處的過渡修剪予以省略：其僅於環帶起點削去數公尺，故省略只會多蓋而不少蓋。）
         /// </summary>
-        private void StampNode(byte[] surfaceIndex, TerrainHeightData heightData,
+        /// <returns>Whether the node cleared the draw gate and was stamped.（節點是否通過繪製門檻並被蓋印。）</returns>
+        private bool StampNode(in StampContext context, TerrainHeightData heightData,
                                EdgeNodeGeometry node, TerrainComposition terrain)
         {
             // The game's own draw gate: nodes shorter than 5 cm on both sides draw nothing.
             // （遊戲自身的繪製門檻：兩側皆短於 5 公分的節點不繪製。）
-            if (!(math.any(node.m_Left.m_Length > 0.05f) | math.any(node.m_Right.m_Length > 0.05f))) return;
+            if (!(math.any(node.m_Left.m_Length > 0.05f) | math.any(node.m_Right.m_Length > 0.05f))) return false;
 
             Segment strip;
             if (node.m_MiddleRadius > 0f)
@@ -903,17 +1223,17 @@ namespace Carto.Systems
                 // （圓環：外半至中線曲線、中線曲線至內半；右半再對中線曲線終點重複。）
                 strip = node.m_Left;
                 strip.m_Right = node.m_Middle;
-                StampSegment(surfaceIndex, heightData, strip, terrain, true, false);
+                StampSegment(in context, heightData, strip, terrain, true, false);
                 strip.m_Left = node.m_Middle;
                 strip.m_Right = node.m_Left.m_Right;
-                StampSegment(surfaceIndex, heightData, strip, terrain, false, true);
+                StampSegment(in context, heightData, strip, terrain, false, true);
 
                 strip = node.m_Right;
                 strip.m_Right = new Bezier4x3(node.m_Middle.d, node.m_Middle.d, node.m_Middle.d, node.m_Middle.d);
-                StampSegment(surfaceIndex, heightData, strip, terrain, true, false);
+                StampSegment(in context, heightData, strip, terrain, true, false);
                 strip.m_Left = strip.m_Right;
                 strip.m_Right = node.m_Right.m_Right;
-                StampSegment(surfaceIndex, heightData, strip, terrain, false, true);
+                StampSegment(in context, heightData, strip, terrain, false, true);
             }
             else if (math.lengthsq(node.m_Left.m_Right.d - node.m_Right.m_Left.d) > 0.0001f)
             {
@@ -925,16 +1245,16 @@ namespace Carto.Systems
                 //   條帶相同（其 AddNode 正是如此）。節點網格於其上鋪滿同樣的楔形（審計 §18）；
                 //   此處為其下的地面。）
                 strip = node.m_Left;
-                StampSegment(surfaceIndex, heightData, strip, terrain, true, false);
+                StampSegment(in context, heightData, strip, terrain, true, false);
                 strip.m_Left = strip.m_Right;
                 strip.m_Right = node.m_Middle;
-                StampSegment(surfaceIndex, heightData, strip, terrain, false, false);
+                StampSegment(in context, heightData, strip, terrain, false, false);
 
                 strip = node.m_Right;
-                StampSegment(surfaceIndex, heightData, strip, terrain, false, true);
+                StampSegment(in context, heightData, strip, terrain, false, true);
                 strip.m_Right = strip.m_Left;
                 strip.m_Left = node.m_Middle;
-                StampSegment(surfaceIndex, heightData, strip, terrain, false, false);
+                StampSegment(in context, heightData, strip, terrain, false, false);
             }
             else
             {
@@ -942,13 +1262,13 @@ namespace Carto.Systems
                 // （直通：左半至中線、中線至右半。）
                 strip = node.m_Left;
                 strip.m_Right = node.m_Middle;
-                StampSegment(surfaceIndex, heightData, strip, terrain, true, false);
+                StampSegment(in context, heightData, strip, terrain, true, false);
                 strip.m_Left = node.m_Middle;
                 strip.m_Right = node.m_Right.m_Right;
-                StampSegment(surfaceIndex, heightData, strip, terrain, false, true);
+                StampSegment(in context, heightData, strip, terrain, false, true);
             }
 
-            _nodesStamped++;
+            return true;
         }
 
         /// <summary>
@@ -956,7 +1276,7 @@ namespace Carto.Systems
         /// synthetic construction (<c>CullRoadsJob.AddOrphans</c>, world-axis aligned).
         /// （蓋印孤立節點的蓋：每側兩對四分之一圓區段，即遊戲自身的合成構造，對齊世界座標軸。）
         /// </summary>
-        private void StampOrphan(byte[] surfaceIndex, TerrainHeightData heightData,
+        private void StampOrphan(in StampContext context, TerrainHeightData heightData,
                                  float3 position, float width, TerrainComposition terrain)
         {
             const float kappa = 0.2761424f; // the game's own circle constant（遊戲自身的圓常數）
@@ -973,7 +1293,7 @@ namespace Carto.Systems
                 new float3(position.x, position.y, position.z + half));
             segment.m_Right = centre;
             segment.m_Length = new float2(width * (math.PI / 2f), 0f);
-            StampSegment(surfaceIndex, heightData, segment, terrain, true, false);
+            StampSegment(in context, heightData, segment, terrain, true, false);
 
             // +z half, right quarter — the left curve mirrored about the node.
             // （+z 半，右四分之一——左曲線對節點鏡射。）
@@ -982,7 +1302,7 @@ namespace Carto.Systems
             mirrored.m_Right.a.x += width;
             mirrored.m_Right.b.x += width;
             mirrored.m_Right.c.x = (position.x * 2f) - mirrored.m_Right.c.x;
-            StampSegment(surfaceIndex, heightData, mirrored, terrain, false, true);
+            StampSegment(in context, heightData, mirrored, terrain, false, true);
 
             // -z half, both quarters.（−z 半的兩個四分之一。）
             segment.m_Left = new Bezier4x3(
@@ -991,14 +1311,14 @@ namespace Carto.Systems
                 new float3(position.x + (width * kappa), position.y, position.z - half),
                 new float3(position.x, position.y, position.z - half));
             segment.m_Right = centre;
-            StampSegment(surfaceIndex, heightData, segment, terrain, true, false);
+            StampSegment(in context, heightData, segment, terrain, true, false);
 
             mirrored = segment;
             (mirrored.m_Left, mirrored.m_Right) = (mirrored.m_Right, mirrored.m_Left);
             mirrored.m_Right.a.x -= width;
             mirrored.m_Right.b.x -= width;
             mirrored.m_Right.c.x = (position.x * 2f) - mirrored.m_Right.c.x;
-            StampSegment(surfaceIndex, heightData, mirrored, terrain, false, true);
+            StampSegment(in context, heightData, mirrored, terrain, false, true);
         }
 
         /// <summary>
@@ -1013,13 +1333,13 @@ namespace Carto.Systems
         /// 向對側內插使該側收窄；作為節點條帶共用中線的一側則跳過。平滑邊緣刻意不蓋印：
         /// 其為地形<i>傾斜</i>以銜接道路的過渡帶，並非壓平的路床本身。）
         /// </summary>
-        /// <param name="surfaceIndex">The mask, south-to-north rows.（遮罩，列序由南至北。）</param>
+        /// <param name="context">The target mask and stamp rule.（目標遮罩與蓋印規則。）</param>
         /// <param name="heightData">The terrain grid.（地形網格。）</param>
         /// <param name="segment">The boundary curves.（邊界曲線。）</param>
         /// <param name="terrain">The composition's terrain offsets.（組成的地形偏移。）</param>
         /// <param name="trimLeft">Whether the left side takes its width offset.（左側是否套用寬度偏移。）</param>
         /// <param name="trimRight">Whether the right side takes its width offset.（右側是否套用寬度偏移。）</param>
-        private static void StampSegment(byte[] surfaceIndex, TerrainHeightData heightData,
+        private static void StampSegment(in StampContext context, TerrainHeightData heightData,
                                          Segment segment, TerrainComposition terrain,
                                          bool trimLeft, bool trimRight)
         {
@@ -1054,16 +1374,21 @@ namespace Carto.Systems
             float length = math.max(math.cmax(segment.m_Length), 1f);
             int steps = math.clamp((int)math.ceil(length * heightData.scale.x), 1, 1024);
 
-            float2 previousLeft = ToCell(segment.m_Left.a, heightData);
-            float2 previousRight = ToCell(segment.m_Right.a, heightData);
+            float3 previousLeft = segment.m_Left.a;
+            float3 previousRight = segment.m_Right.a;
 
             for (int i = 1; i <= steps; i++)
             {
                 float t = (float)i / steps;
-                float2 currentLeft = ToCell(Colossal.Mathematics.MathUtils.Position(segment.m_Left, t), heightData);
-                float2 currentRight = ToCell(Colossal.Mathematics.MathUtils.Position(segment.m_Right, t), heightData);
+                float3 currentLeft = Colossal.Mathematics.MathUtils.Position(segment.m_Left, t);
+                float3 currentRight = Colossal.Mathematics.MathUtils.Position(segment.m_Right, t);
 
-                FillQuad(surfaceIndex, width, height, previousLeft, previousRight, currentRight, currentLeft);
+                // The quad spans one cell of arc; its corner mean is the lane height reference
+                // the cut band hangs from.（四邊形僅跨一格弧長；其四角平均即裁切帶所繫的車道高。）
+                float laneY = (previousLeft.y + previousRight.y + currentLeft.y + currentRight.y) * 0.25f;
+                FillQuad(in context, heightData, width, height,
+                         ToCell(previousLeft, heightData), ToCell(previousRight, heightData),
+                         ToCell(currentRight, heightData), ToCell(currentLeft, heightData), laneY);
 
                 previousLeft = currentLeft;
                 previousRight = currentRight;
@@ -1106,8 +1431,9 @@ namespace Carto.Systems
         private static readonly float2[] _quadScratch = new float2[4];
         private static readonly float[] _crossingScratch = new float[4];
 
-        private static void FillQuad(byte[] surfaceIndex, int width, int height,
-                                     float2 a, float2 b, float2 c, float2 d)
+        private static void FillQuad(in StampContext context, TerrainHeightData heightData,
+                                     int width, int height,
+                                     float2 a, float2 b, float2 c, float2 d, float laneY)
         {
             float2[] poly = _quadScratch;
             poly[0] = a; poly[1] = b; poly[2] = c; poly[3] = d;
@@ -1148,7 +1474,17 @@ namespace Carto.Systems
                     int to = math.min(width - 1, (int)math.round(crossings[pair + 1]));
                     for (int x = from; x <= to; x++)
                     {
-                        surfaceIndex[(row * width) + x] = 1;
+                        int cellIndex = (row * width) + x;
+                        if (context.Cut)
+                        {
+                            // The clip band test: only terrain standing over the lane, within
+                            // the composition's band, is cut away.（裁切帶測試：僅裁去高於車道、
+                            // 且落於組成之帶內的地形。）
+                            float terrainY = (heightData.heights[cellIndex] / heightData.scale.y) - heightData.offset.y;
+                            float overLane = terrainY - laneY;
+                            if ((overLane <= context.CutBottom) || (overLane >= context.CutTop)) continue;
+                        }
+                        context.Mask[cellIndex] = context.Value;
                     }
                 }
             }
