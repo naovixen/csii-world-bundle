@@ -265,6 +265,71 @@ class _Log:
 LOG = _Log()
 
 
+def _mesh_from_arrays(name, verts, tris, uv_layers=None, material_runs=None, poly_size=3, smooth=True):
+    """Build a mesh from numpy arrays via foreach_set — the hot-path alternative to
+    per-face `from_pydata` / per-loop attribute assignment.
+
+    `verts` is `(N, 3)` float64 already in Blender frame (X east, Y north, Z up). `tris` is
+    `(M, poly_size)` int, one row per polygon in loop order. `poly_size` defaults to 3
+    (triangles); a caller that already has same-diagonal quads — the terrain grid — passes 4,
+    so its faces tessellate exactly as `from_pydata` quads always did instead of picking a
+    fresh triangulation diagonal that could flip a slope's silhouette under the pixel A/B
+    gate. `uv_layers` is `{layer_name: (M*poly_size, 2)}` in the same loop order.
+    `material_runs` is `[(material, poly_count)]` consumed in polygon order; a `None`
+    material keeps the default slot 0. `smooth` sets `use_smooth` on every polygon — on for
+    the game's continuous heightfields (a flat-shaded quad reads as a brightness tile), off
+    for faceted geometry such as lane decals, so a caller chooses rather than inherits it.
+    """
+    mesh = bpy.data.meshes.new(name)
+    mesh.vertices.add(len(verts))
+    mesh.vertices.foreach_set("co", numpy.ascontiguousarray(verts, dtype=numpy.float32).ravel())
+    poly_count = len(tris)
+    mesh.loops.add(poly_count * poly_size)
+    mesh.loops.foreach_set("vertex_index", numpy.ascontiguousarray(tris, dtype=numpy.int32).ravel())
+    mesh.polygons.add(poly_count)
+    mesh.polygons.foreach_set("loop_start",
+                               numpy.arange(0, poly_count * poly_size, poly_size, dtype=numpy.int32))
+    mesh.polygons.foreach_set("loop_total", numpy.full(poly_count, poly_size, dtype=numpy.int32))
+    if material_runs:
+        indices = numpy.empty(poly_count, dtype=numpy.int32)
+        slots = {}
+        cursor = 0
+        for material, count in material_runs:
+            if material is not None and material.name not in slots:
+                slots[material.name] = len(mesh.materials)
+                mesh.materials.append(material)
+            indices[cursor:cursor + count] = slots[material.name] if material is not None else 0
+            cursor += count
+        mesh.polygons.foreach_set("material_index", indices)
+    for layer_name, uvs in (uv_layers or {}).items():
+        layer = mesh.uv_layers.new(name=layer_name)
+        layer.data.foreach_set("uv", numpy.ascontiguousarray(uvs, dtype=numpy.float32).ravel())
+    mesh.update()
+    mesh.validate()
+    if len(mesh.polygons) != poly_count:
+        # Caution learned building this: validate() silently drops degenerate faces. Callers
+        # guarantee pre-clean arrays (no degenerate index triples), so a disagreement here is
+        # a defect worth surfacing, not something to paper over — and it would otherwise crash
+        # the use_smooth foreach_set below on a size mismatch. Warn and fall back to the
+        # slower but self-healing from_pydata path instead.
+        LOG.warn(f"CONTRACT VIOLATION: {name} lost {poly_count - len(mesh.polygons)} face(s) "
+                 "to mesh.validate() — array input was not pre-clean; rebuilding via from_pydata")
+        mesh = bpy.data.meshes.new(name)
+        mesh.from_pydata([tuple(float(x) for x in v) for v in verts], [],
+                          [tuple(int(i) for i in row) for row in tris])
+        mesh.update()
+        mesh.validate()
+        poly_count = len(mesh.polygons)
+        if material_runs:
+            slots = {}
+            for material, _count in material_runs:
+                if material is not None and material.name not in slots:
+                    slots[material.name] = len(mesh.materials)
+                    mesh.materials.append(material)
+    mesh.polygons.foreach_set("use_smooth", numpy.full(poly_count, smooth, dtype=bool))
+    return mesh
+
+
 def bundle_to_blender_point(pos):
     """Bundle-frame position (X east, Y up, Z north) to Blender (X east, Y north, Z up)."""
     return Vector((pos[0], pos[2], pos[1]))
@@ -1859,10 +1924,29 @@ def build_terrain(bundle_dir, collection, center, radius):
     cols = list(range(col0, col1 + 1, stride))
     rows = list(range(row0, row1 + 1, stride))
 
-    def world_y(row, col):
-        return heights[row * width + col] * elevation_scale + elevation_offset
+    nrows, ncols = len(rows), len(cols)
+    rows_arr = numpy.asarray(rows, dtype=numpy.int64)
+    cols_arr = numpy.asarray(cols, dtype=numpy.int64)
 
-    ncols = len(cols)
+    # Heights: the decoded PNG16 raster as (H, W), windowed to the sampled grid by the same
+    # cols/rows lists everything else uses BEFORE the elevationScale/Offset multiply-add —
+    # a full 4096² city raster is 128 MB once promoted to float64, and only the sampled
+    # window (a few hundred cells on a side, even unstrided) is ever read. sampled_y[r, c] is
+    # exactly what the scalar code's world_y(rows[r], cols[c]) returned.
+    heights_native = numpy.asarray(heights).reshape(height, width)
+    sampled_y = heights_native[numpy.ix_(rows_arr, cols_arr)].astype(numpy.float64)
+    sampled_y = sampled_y * elevation_scale + elevation_offset
+
+    surface_grid = numpy.asarray(surface_ids).reshape(height, width) if surface_ids is not None else None
+    cut_grid = numpy.asarray(cut_ids).reshape(height, width) if cut_ids is not None else None
+    level_grid = numpy.asarray(levels).reshape(height, width) if levels is not None else None
+
+    # Vertex grid: world X/Z (meshgrid) + sampled height, row-major (row outer, col inner) so
+    # the flat vertex index a = r*ncols + c matches every face-winding formula below exactly
+    # as the scalar loop's `index` counter did.
+    world_x = origin_x + cols_arr.astype(numpy.float64) * cell
+    world_z = origin_z - rows_arr.astype(numpy.float64) * cell
+    grid_x, grid_z = numpy.meshgrid(world_x, world_z)  # both (nrows, ncols)
 
     # Roadbed faces sink by a small documented drop (§8 consumer note). The game's road job
     # clamps the ground under a carriageway to the MINIMUM of the road's surface band — below
@@ -1870,80 +1954,74 @@ def build_terrain(bundle_dir, collection, center, radius):
     # stride without a region), so interpolated crests poke through the road meshes above.
     # Sinking in the game's own clamp direction settles it; every vertex touching a roadbed
     # face drops, so the sink bleeds one cell into the smoothing apron rather than tearing a
-    # cliff at the boundary.
-    def face_roadbed(r, c):
-        return surface_ids is not None and surface_ids[rows[r] * width + cols[c]] != 0
+    # cliff at the boundary. A face reads "roadbed" from its single top-left sample (r, c) —
+    # not all four corners — exactly as the scalar face_roadbed did.
+    roadbed_corner = surface_grid[numpy.ix_(rows_arr, cols_arr)] != 0 if surface_grid is not None \
+        else numpy.zeros((nrows, ncols), dtype=bool)
+    face_roadbed = roadbed_corner[:-1, :-1]
 
     sink = _ROADBED_SINK if surface_ids is not None else 0.0
-    vertex_sunk = [False] * (len(rows) * ncols)
-    if sink:
-        for r in range(len(rows) - 1):
-            for c in range(ncols - 1):
-                if face_roadbed(r, c):
-                    for corner in (r * ncols + c, r * ncols + c + 1,
-                                   (r + 1) * ncols + c, (r + 1) * ncols + c + 1):
-                        vertex_sunk[corner] = True
+    vertex_sunk = numpy.zeros((nrows, ncols), dtype=bool)
+    if sink and face_roadbed.size:
+        fr, fc = numpy.nonzero(face_roadbed)
+        vertex_sunk[fr, fc] = True
+        vertex_sunk[fr, fc + 1] = True
+        vertex_sunk[fr + 1, fc] = True
+        vertex_sunk[fr + 1, fc + 1] = True
 
     # -- the ground grid -------------------------------------------------------------------
-    verts = []
-    index = 0
-    for row_number, row in enumerate(rows):
+    grid_y = sampled_y - numpy.where(vertex_sunk, sink, 0.0)
+    verts = numpy.stack((grid_x, grid_z, grid_y), axis=-1).reshape(-1, 3)  # Blender: X east, Y north, Z up
+
+    for row_number in range(nrows):
         # "terrain rows" — deliberately not "terrain:" — stays outside every ab_compare.py
         # count marker so this progress line can print at whatever stride the helper picks
         # without ever becoming a gated line the A/B baseline does not have.
-        LOG.progress("terrain rows", row_number + 1, len(rows))
-        z = origin_z - row * cell
-        for col in cols:
-            x = origin_x + col * cell
-            drop = sink if vertex_sunk[index] else 0.0
-            verts.append((x, z, world_y(row, col) - drop))  # Blender: X east, Y north, Z up
-            index += 1
+        LOG.progress("terrain rows", row_number + 1, nrows)
 
     # §8 cutout: cells the game stencil-clips per-frame instead of carving the heightmap —
     # the terrain covering tunnel portals and sunken trenches. Keeping their faces walls off
     # every underground network, so a face is dropped when any of its corner samples is cut;
     # the opening over-reaches by at most half a cell, leaving a rim instead of a wall.
-    def vertex_cut(row, col):
-        return cut_ids is not None and cut_ids[row * width + col] != 0
+    if cut_grid is not None:
+        cut_corner = cut_grid[numpy.ix_(rows_arr, cols_arr)] != 0
+        face_cut = (cut_corner[:-1, :-1] | cut_corner[:-1, 1:] |
+                    cut_corner[1:, :-1] | cut_corner[1:, 1:])
+    else:
+        face_cut = numpy.zeros((max(nrows - 1, 0), max(ncols - 1, 0)), dtype=bool)
+    face_kept = ~face_cut
+    cut_faces = int(face_cut.sum())
 
-    cut_faces = 0
-    faces = []
-    face_rc = []
-    for r in range(len(rows) - 1):
-        for c in range(ncols - 1):
-            if any(vertex_cut(cr, cc)
-                   for cr in (rows[r], rows[r + 1]) for cc in (cols[c], cols[c + 1])):
-                cut_faces += 1
-                continue
-            a = r * ncols + c
-            # Row 0 is the north edge, so winding (a, a+ncols, a+ncols+1, a+1) — south then
-            # east — keeps the face normal pointing up in Blender's right-handed frame.
-            faces.append((a, a + ncols, a + ncols + 1, a + 1))
-            face_rc.append((r, c))
-
-    mesh = bpy.data.meshes.new("bundle_terrain")
-    mesh.from_pydata(verts, [], faces)
+    # Row 0 is the north edge, so winding (a, a+ncols, a+ncols+1, a+1) — south then east —
+    # keeps the face normal pointing up in Blender's right-handed frame. Faces stay QUADS
+    # (poly_size=4) rather than being split into triangles here: a quad's diagonal choice
+    # changes its silhouette under a slope, and the scalar baseline never had to make that
+    # choice, so keeping the same quad topology through _mesh_from_arrays lets Blender
+    # tessellate it exactly as it always has instead of risking a diagonal mismatch under
+    # the pixel A/B gate.
+    r_idx = numpy.arange(max(nrows - 1, 0))
+    c_idx = numpy.arange(max(ncols - 1, 0))
+    a_grid = r_idx[:, None] * ncols + c_idx[None, :]
+    quads_all = numpy.stack((a_grid, a_grid + ncols, a_grid + ncols + 1, a_grid + 1), axis=-1)
+    quads = quads_all[face_kept]
+    face_r, face_c = numpy.nonzero(face_kept)  # same row-major order as `quads`, cutout-skipping
 
     # -- ground classification per face, shared by both texturing paths -------------------
     # 0 = flat natural (grass), 1 = roadbed (surface_index), 2 = steep natural (rock).
-    def face_slope_class(r, c):
-        if surface_ids is not None and surface_ids[rows[r] * width + cols[c]] != 0:
-            return 1
-        # Steep natural ground reads as rock (_ROCK_SLOPE) — the gorge embankments. Sampled
-        # heights, not the sunk vertices, so the roadbed drop cannot flip a boundary face.
-        run_x = max((cols[c + 1] - cols[c]) * cell, 1e-6)
-        run_z = max((rows[r + 1] - rows[r]) * cell, 1e-6)
-        y00 = world_y(rows[r], cols[c])
-        y01 = world_y(rows[r], cols[c + 1])
-        y10 = world_y(rows[r + 1], cols[c])
-        y11 = world_y(rows[r + 1], cols[c + 1])
-        gx = max(abs(y01 - y00), abs(y11 - y10)) / run_x
-        gz = max(abs(y10 - y00), abs(y11 - y01)) / run_z
-        return 2 if math.hypot(gx, gz) > _ROCK_SLOPE else 0
+    # Steep natural ground reads as rock (_ROCK_SLOPE) — the gorge embankments. Sampled
+    # heights, not the sunk vertices, so the roadbed drop cannot flip a boundary face.
+    run_x = numpy.maximum((cols_arr[1:] - cols_arr[:-1]).astype(numpy.float64) * cell, 1e-6)
+    run_z = numpy.maximum((rows_arr[1:] - rows_arr[:-1]).astype(numpy.float64) * cell, 1e-6)
+    y00, y01 = sampled_y[:-1, :-1], sampled_y[:-1, 1:]
+    y10, y11 = sampled_y[1:, :-1], sampled_y[1:, 1:]
+    gx = numpy.maximum(numpy.abs(y01 - y00), numpy.abs(y11 - y10)) / run_x[None, :]
+    gz = numpy.maximum(numpy.abs(y10 - y00), numpy.abs(y11 - y01)) / run_z[:, None]
+    face_class_all = numpy.where(numpy.hypot(gx, gz) > _ROCK_SLOPE, 2, 0)
+    face_class_all = numpy.where(face_roadbed, 1, face_class_all)  # roadbed wins over slope
 
-    face_class = [face_slope_class(r, c) for (r, c) in face_rc]
-    roadbed_faces = face_class.count(1)
-    rock_faces = face_class.count(2)
+    face_class = face_class_all[face_kept]  # same order as `quads` and `face_r`/`face_c`
+    roadbed_faces = int((face_class == 1).sum())
+    rock_faces = int((face_class == 2).sum())
 
     # -- the game's own ground blend, when the bundle carries it --------------------------
     # terrain/splatmap.png is the 4096² weight map the terrain shader samples per pixel
@@ -1965,18 +2043,28 @@ def build_terrain(bundle_dir, collection, center, radius):
             LOG.warn(f"splatmap unreadable ({error}); falling back to per-face ground painting")
             splat = None
     if splat is not None:
+        # Sample by INDEX into the kept (post-cutout), row-major face list — same stride,
+        # same order, same starting offset as the scalar `for index in range(0, len(face_rc),
+        # stride_faces)` walk — so the subsample (and therefore the printed calibration
+        # numbers) comes out identical, not just similarly distributed.
+        stride_faces = max(1, len(face_r) // 60000)
+        sel = numpy.arange(0, len(face_r), stride_faces)
+        sel_r, sel_c, sel_cls = face_r[sel], face_c[sel], face_class[sel]
+        sample_x = origin_x + (cols_arr[sel_c] + cols_arr[sel_c + 1]).astype(numpy.float64) * 0.5 * cell
+        sample_z = origin_z - (rows_arr[sel_r] + rows_arr[sel_r + 1]).astype(numpy.float64) * 0.5 * cell
+
+        splat_pixels = numpy.frombuffer(splat.pixels, dtype=numpy.uint8).reshape(splat.height, splat.width, 4)
+        texel_col = numpy.clip(((sample_x - splat.min_x) / splat.cell_x).astype(numpy.int64), 0, splat.width - 1)
+        texel_row = numpy.clip(((splat.max_z - sample_z) / splat.cell_z).astype(numpy.int64), 0, splat.height - 1)
+        texels = splat_pixels[texel_row, texel_col].astype(numpy.float64)  # (S, 4), nearest-texel RGBA
+
         sums = [[0.0] * 4 for _ in range(3)]
         counts = [0, 0, 0]
-        stride_faces = max(1, len(face_rc) // 60000)
-        for index in range(0, len(face_rc), stride_faces):
-            r, c = face_rc[index]
-            cls = face_class[index]
-            world_x = origin_x + (cols[c] + cols[c + 1]) * 0.5 * cell
-            world_z = origin_z - (rows[r] + rows[r + 1]) * 0.5 * cell
-            texel = splat.sample(world_x, world_z)
-            for k in range(4):
-                sums[cls][k] += texel[k]
-            counts[cls] += 1
+        for cls in range(3):
+            in_class = sel_cls == cls
+            counts[cls] = int(in_class.sum())
+            if counts[cls]:
+                sums[cls] = texels[in_class].sum(axis=0).tolist()
 
         def winner(cls):
             means = [sums[cls][k] / max(1, counts[cls]) for k in range(4)]
@@ -2014,14 +2102,27 @@ def build_terrain(bundle_dir, collection, center, radius):
             LOG.warn(f"splatmap calibration short of samples (flat {counts[0]}); "
                      "falling back to per-face ground painting")
 
+    # World-anchored UVs so the ground textures tile at a plausible density without any
+    # per-face unwrap. 8 m per repeat reads roughly like the game's near tiling. Per-LOOP,
+    # in the same loop order as `quads.ravel()` (each kept face's 4 corners, in face order).
+    loop_verts = quads.ravel()
+    loop_x, loop_z = verts[loop_verts, 0], verts[loop_verts, 1]
+    uv_layers = {"UVMap": numpy.stack((loop_x / 8.0, loop_z / 8.0), axis=-1)}
+
     if splat_mapping is not None:
-        mesh.materials.append(_splat_ground_material(surfaces_dir, splat, splat_mapping, gain=_GROUND_GAIN))
+        material_runs = [(_splat_ground_material(surfaces_dir, splat, splat_mapping, gain=_GROUND_GAIN),
+                           len(quads))]
         # No face overrides on the blend. Roadbed stays grass, as in game: the measured
         # splat paints it 251/255 on the grass channel, and the roadbed LOOK is carried by
         # the ~13%-alpha wear decals and surface areas drawn on top (the sink still
         # applies). Cliffs need no slope override either: unpainted texels ARE the rock
         # weight (the residual in _splat_ground_material), which is what keeps gorge walls
         # smooth instead of the per-face checkerboard.
+
+        # The splat blend samples in its own geo-referenced UV space.
+        uv_layers["SplatUV"] = numpy.stack(
+            ((loop_x - splat.min_x) / splat.area_x,
+             (loop_z - (splat.max_z - splat.area_z)) / splat.area_z), axis=-1)
     else:
         grass = _ground_material("terrain_natural", os.path.join(surfaces_dir, "grass.png"),
                                  (0.20, 0.30, 0.12, 1.0), gain=_GROUND_GAIN)
@@ -2029,31 +2130,25 @@ def build_terrain(bundle_dir, collection, center, radius):
                                 (0.35, 0.28, 0.20, 1.0), gain=_GROUND_GAIN)
         rock = _ground_material("terrain_rock", os.path.join(surfaces_dir, "rock.png"),
                                 (0.30, 0.28, 0.26, 1.0), gain=_GROUND_GAIN)
-        mesh.materials.append(grass)
-        mesh.materials.append(dirt)
-        mesh.materials.append(rock)
-        for face, cls in zip(mesh.polygons, face_class):
-            face.material_index = (0, 1, 2)[cls]
+        by_class = (grass, dirt, rock)
+        # Run-length encode face_class into (material, run) pairs — the array is already
+        # spatially coherent (grass/dirt/rock form contiguous runs along each sampled row),
+        # so this stays a handful of runs, not one per face, while giving every face the same
+        # material assignment the scalar `face.material_index = (0, 1, 2)[cls]` walk did.
+        if len(face_class):
+            change = numpy.nonzero(numpy.diff(face_class) != 0)[0] + 1
+            run_starts = numpy.concatenate(([0], change))
+            run_ends = numpy.concatenate((change, [len(face_class)]))
+            material_runs = [(by_class[int(face_class[start])], int(end - start))
+                              for start, end in zip(run_starts, run_ends)]
+        else:
+            material_runs = []
 
-    # World-anchored UVs so the ground textures tile at a plausible density without any
-    # per-face unwrap. 8 m per repeat reads roughly like the game's near tiling.
-    uv_layer = mesh.uv_layers.new(name="UVMap")
-    for loop in mesh.loops:
-        x, y, _ = mesh.vertices[loop.vertex_index].co
-        uv_layer.data[loop.index].uv = (x / 8.0, y / 8.0)
-
-    # The splat blend samples in its own geo-referenced UV space.
-    if splat_mapping is not None:
-        splat_uv = mesh.uv_layers.new(name="SplatUV")
-        for loop in mesh.loops:
-            x, y, _ = mesh.vertices[loop.vertex_index].co
-            splat_uv.data[loop.index].uv = splat.uv(x, y)
-
-    mesh.validate()
+    mesh = _mesh_from_arrays("bundle_terrain", verts, quads, uv_layers=uv_layers,
+                              material_runs=material_runs, poly_size=4, smooth=True)
     # Smooth-shade the grid: the game's terrain is a continuous heightfield, and a
     # flat-shaded quad is uniformly lit — at the full-city stride (17.5 m faces) that reads
     # as a brightness checkerboard over every slope, squares no texture blend can hide.
-    mesh.polygons.foreach_set("use_smooth", [True] * len(mesh.polygons))
     terrain_object = bpy.data.objects.new("bundle_terrain", mesh)
     collection.objects.link(terrain_object)
     placed = 1
@@ -2064,46 +2159,43 @@ def build_terrain(bundle_dir, collection, center, radius):
     # extends one sim cell past the shoreline (producer dilation), so the surface runs flat
     # into the bank and the ground cuts the shoreline where the game's own shoreline is.
     wet_faces = 0
-    if levels is not None:
-        water_verts = {}
-        water_faces = []
+    if level_grid is not None:
+        level_corner_raw = level_grid[numpy.ix_(rows_arr, cols_arr)]
+        has_level = level_corner_raw != 0  # 0 = no data, same truthiness test as the scalar code
+        level_value = level_corner_raw * elevation_scale + elevation_offset
+        is_wet_corner = has_level & (level_value > sampled_y)
 
-        def water_level(row, col):
-            value = levels[row * width + col]
-            return value * elevation_scale + elevation_offset if value else None
+        face_wet = (is_wet_corner[:-1, :-1] | is_wet_corner[:-1, 1:] |
+                    is_wet_corner[1:, :-1] | is_wet_corner[1:, 1:])
+        wet_faces = int(face_wet.sum())
 
-        def water_vertex(row, col):
-            key = (row, col)
-            if key not in water_verts:
-                level = water_level(row, col)
-                # A corner past the dilated ring carries no level; seat it on the ground so
-                # the surface closes instead of tearing.
-                surface_y = world_y(row, col) if level is None else level
-                x = origin_x + col * cell
-                z = origin_z - row * cell
-                water_verts[key] = (len(water_verts), (x, z, surface_y))
-            return water_verts[key][0]
+        if wet_faces:
+            # Every grid point that is a corner of at least one wet face gets a vertex;
+            # points never touched by a wet face are never allocated — same sparse vertex
+            # set the scalar code's `water_verts` dict built, just addressed by grid position
+            # instead of insertion order (invisible to the render: only the resulting
+            # geometry and per-face winding matter, not the vertex numbering).
+            referenced = numpy.zeros((nrows, ncols), dtype=bool)
+            referenced[:-1, :-1] |= face_wet
+            referenced[:-1, 1:] |= face_wet
+            referenced[1:, :-1] |= face_wet
+            referenced[1:, 1:] |= face_wet
 
-        def is_wet(row, col):
-            level = water_level(row, col)
-            return level is not None and level > world_y(row, col)
+            # A corner past the dilated ring carries no level; seat it on the ground so the
+            # surface closes instead of tearing.
+            surface_y = numpy.where(has_level, level_value, sampled_y)
 
-        for r in range(len(rows) - 1):
-            for c in range(ncols - 1):
-                corner_rows = (rows[r], rows[r + 1])
-                corner_cols = (cols[c], cols[c + 1])
-                if any(is_wet(cr, cc) for cr in corner_rows for cc in corner_cols):
-                    water_faces.append((water_vertex(corner_rows[0], corner_cols[0]),
-                                        water_vertex(corner_rows[1], corner_cols[0]),
-                                        water_vertex(corner_rows[1], corner_cols[1]),
-                                        water_vertex(corner_rows[0], corner_cols[1])))
+            flat_ref = referenced.ravel()
+            vertex_id = numpy.where(flat_ref, numpy.cumsum(flat_ref) - 1, -1).reshape(nrows, ncols)
+            water_all = numpy.stack((grid_x, grid_z, surface_y), axis=-1).reshape(-1, 3)
+            water_verts = water_all[flat_ref]
 
-        if water_faces:
-            ordered = [None] * len(water_verts)
-            for index, position in water_verts.values():
-                ordered[index] = position
-            water_mesh = bpy.data.meshes.new("bundle_water")
-            water_mesh.from_pydata(ordered, [], water_faces)
+            # Same winding as the ground grid: (v00, v10, v11, v01) — south then east.
+            water_quads_all = numpy.stack(
+                (vertex_id[:-1, :-1], vertex_id[1:, :-1], vertex_id[1:, 1:], vertex_id[:-1, 1:]),
+                axis=-1)
+            water_quads = water_quads_all[face_wet]
+
             water_material = bpy.data.materials.new("terrain_water")
             water_material.use_nodes = True
             water_bsdf = water_material.node_tree.nodes.get("Principled BSDF")
@@ -2113,12 +2205,13 @@ def build_terrain(bundle_dir, collection, center, radius):
                 water_bsdf.inputs["Alpha"].default_value = 0.8
             if hasattr(water_material, "blend_method"):
                 water_material.blend_method = "BLEND"
-            water_mesh.materials.append(water_material)
-            water_mesh.validate()
+
+            water_mesh = _mesh_from_arrays("bundle_water", water_verts, water_quads,
+                                            material_runs=[(water_material, len(water_quads))],
+                                            poly_size=4, smooth=False)
             water_object = bpy.data.objects.new("bundle_water", water_mesh)
             collection.objects.link(water_object)
             placed += 1
-            wet_faces = len(water_faces)
 
     LOG.done(f"terrain:   {len(rows)}x{ncols} sample window of {width}x{height} at {cell:g} m"
              + (f", stride {stride}" if stride > 1 else ""))
