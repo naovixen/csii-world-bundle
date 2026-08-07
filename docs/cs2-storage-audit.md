@@ -2026,7 +2026,7 @@ lzma over the packed binary: 18,738,148 B (17.87 MiB, 48.30% of packed), round-t
 `f32` control-point set at the producer's own `t = i/8` grid, re-rounds to 3 decimal places
 (`LaneWriter.Round`'s own rule), and compares to the shipped, already-rounded path — worst
 diff **exactly one rounding unit (1 mm)**, i.e. the candidate reproduces the shipped precision
-losslessly, not approximately.
+losslessly, not merely to within a tolerance.
 
 **The fixed-core candidate alone already beats `lzma`-over-JSON, uncompressed:**
 
@@ -2146,6 +2146,15 @@ marking is a single instanced projector, while the reference consumer's cost for
 is a real, measured, disproportionate CPU expense — and that expense is a rip/import-time fact,
 not a disk-space one. Following this task's brief, the two are kept apart rather than folded
 into one "markings cost X" sentence.
+
+**Where this section's headings answer the front matter's four questions**, since they are named
+for this domain's findings rather than for the questions: question 2 (what we ship) is §6.1;
+question 1 (what the game stores) is §6.3's first paragraph — one instanced projector box per
+marking, positioned by a curve matrix, zero per-vertex CPU work at draw time; question 3
+(information or representation) is §6.2 — the 29.4 MiB shipped is already bend parameters plus
+71 deduped source meshes, the parametric form itself, so there is no baked-versus-derived delta
+left to classify; question 4 (smallest lossless encoding) is §6.2's closure — there is nothing
+to project onto a smaller encoding, which is why this domain contributes no candidate row to §9.
 
 ### 6.1 What we ship, and how much of it is markings
 
@@ -2302,6 +2311,17 @@ Current total: **70,208,400 B (66.96 MiB), 41 files** — down from the census's
 4,894,194,530-byte census total this domain moves from 1.472% to 1.435% — the kind of change
 that does not alter this document's ranking of anything, but is stated exactly rather than
 waved at.
+
+**Where this section answers the front matter's four questions**, since it carries no separate
+"information or representation?" heading: question 2 is §7.1, question 1 is §7.2, and question 4
+is §7.3. Question 3 is answered inside §7.2 and §7.4 — the heightmap is representation (§22 row
+15: it ships verbatim, a match with no runtime component), while the splatmap is not a pure
+function of static terrain state at all: its own shipped `rasters.json` semantics string names a
+**noise** input, and §7.4 measures two non-code deltas (9,828,541 vs 9,828,621 wet cells;
+27,422 vs 27,421 surface areas) showing two captures of the same save are not identical
+simulation moments. That makes the splatmap a *render*, not a re-encoding of something smaller —
+which is why §7 proposes only an encoding candidate (TERRAIN-1) and no deriving-instead-of-baking
+one.
 
 ### 7.1 What we ship
 
@@ -2546,6 +2566,42 @@ remain independently checkable after `$SCRATCH` is discarded. This is a delibera
 exception to this task's own "only `docs/cs2-storage-audit.md` is committed" rule — no other
 non-Markdown file is committed by this task.
 
+### Phase shares, and which candidates move which phase
+
+The denominator for every "est. rip-time saved" cell in §9. Shares are each row's seconds over
+the 1,981.122 s total above; they sum to 100.000%.
+
+| # | phase | seconds | share of the rip | type | candidates that would move it |
+|---|---|---:|---:|---|---|
+| 1 | Instances | 331.617 | 16.739% | bracket | INST-1 (compress at write time), INST-2 (a binary writer replaces JSON serialisation), INST-3/INST-4 (inside INST-2) |
+| 2 | Meshes (+ concurrent mesh-prefab texture/material readback) | 1177.106 | 59.416% | bracket | MESH-1 (compress each `.glb` at write time), MESH-2 (fewer attribute bytes to serialise), MESH-3 (1,436 skirt files never built or written), TEX-1/TEX-2/TEX-3/TEX-4/TEX-6 (PNG encode runs on the same single serial writer thread as mesh writing, §1's Rip time) |
+| 3 | Lanes + Networks | 465.361 | 23.490% | bracket | NET-1 (replaces the 65.8 s segment bake with ~45 geometry writes), LANE-1 (compress at write time), LANE-2 (reads `curve.m_Bezier` directly instead of tessellating it) |
+| 4 | Terrain | 7.038 | 0.355% | bracket | TERRAIN-1 |
+| — | **TOTAL** | **1981.122** | **100.000%** | bracket | — |
+
+The four instrumented sub-steps, as shares of the same denominator (they are sub-steps of their
+rows, two of them concurrent with other work in the same row, so they are not additive with each
+other or with the bracket rows above):
+
+| instrumented sub-step | seconds | share of the rip | inside |
+|---|---:|---:|---|
+| Mesh writing (`Wrote 4198 .glb … in 1178.3 s`) | 1178.3 | 59.477% | row 2 |
+| Mesh-pass texture readback (`readback held the main thread 347.1 s`) | 347.1 | 17.520% | row 2, concurrent with mesh writing |
+| Network segment mesh baking (`Wrote 8259 segment(s) … in 65.8 s`) | 65.8 | 3.321% | row 3 |
+| Network-pass texture readback (`readback held the main thread 9.5 s`) | 9.5 | 0.480% | row 3, concurrent |
+| Row 3's undivided remainder (lane collect, lane write, network edge topology, everything else) | 390.061 | 19.689% | row 3 |
+
+**Every candidate's rip-time effect is `unmeasured`, and for the compression family the *sign* is
+unmeasured too.** No candidate in §9 has been built, so none has been timed; what this table
+supplies is the denominator and the ceiling. A candidate cannot save more rip time than its
+phase's share (MESH-1/MESH-3/TEX-* are bounded by row 2's 59.416%; NET-1's own baking sub-step is
+3.321%; INST-* by row 1's 16.739%; LANE-* by row 3's 23.490%; TERRAIN-1 by row 4's 0.355%), and
+three candidates — MESH-1, INST-1 and LANE-1, i.e. every member of §9's COMP-1 family — add
+encode CPU at write time inside rows 1–3 (99.645% of the rip combined) rather than removing it.
+Deciding whether that added cost is material needs a C#-side timed re-rip, which Phase A's
+measurement-only mandate excludes; §1 and §2 both record why this document declines to estimate
+it from Python/Pillow or Python `zlib`/`lzma` timings.
+
 ### Consumer import time — markings (§6)
 
 Not a rip-time number (the rip never builds per-vertex marking geometry — §6.3) but the
@@ -2568,3 +2624,195 @@ geometry Blender needs, which the game itself never pays because it draws a mark
 instanced projector box (§6.3, `docs/cs2-api-audit.md` §19).
 
 ## 9. Ranked candidates
+
+Every candidate row from §1–§7, made comparable and ranked. **The sort key is absolute bytes
+saved against §0's 4,894,194,530-byte baseline**, not the share of its own domain: §3's networks
+win is 99.19% of `networks/` but 8.60% of the bundle, and a table sorted on domain-percentage
+would put it above candidates worth five times more. Domain share is carried as a secondary
+figure inside each row's byte cell.
+
+**Provenance caveat — the bundle this table ranks is not one rip, and no single current-code
+bundle exists.** §0's provenance note establishes it in full; restated here once, plainly,
+because the table must not be read as measured against one homogeneous artifact: `terrain/` was
+re-ripped in isolation at 21:34:25–21:36:17 with code at or after commit `8985b73`, while every
+other layer is from the 11:50:23–12:23:24 rip that preceded that commit; the census total the
+percentages divide by (4,894,194,530 B) is the bundle as censused at the end of that main rip,
+and `terrain/` has since shrunk by 1,842,147 B, which would make a re-assembled bundle
+4,892,352,383 B today. §7 measures the 21:36 state (the earlier bytes of the three changed files
+no longer exist to measure); §1–§6 measure the 11:50–12:23 state. The rip log every §8 number
+comes from survives only as the committed copy `docs/cs2-storage-audit-riplog-2026-08-07.txt`,
+because the live `Carto.log` was truncated by the 21:34 relaunch. A future full re-rip under
+post-`8985b73` code could move §2's, §3's and §6's byte counts; §4's and §5's would not move
+(that commit touches no file in their producer paths, §0). No row below is a measurement of a
+single current-code bundle, and none should be quoted as one.
+
+### 9.1 How not to double-count these rows
+
+Four overlap families exist. Adding rows across a family double-counts bytes; this already
+happened once inside §1, where the naive TEX-3 + TEX-4 sum claimed 440.2 MiB against a joint
+single-pass measurement of 377.1 MiB.
+
+1. **The compression family — one policy, not three wins.** MESH-1, INST-1 and LANE-1 are the
+   *same technique* (generic compression at rest) applied to the three layers that currently
+   ship uncompressed. They touch disjoint files, so their bytes do add — but they are one
+   decision, not three, and are presented as the single policy row **COMP-1** with the three
+   named as its components. Cite COMP-1 or its components, never both.
+2. **The texture ladder is nested, not additive.** TEX-1 ⊂ TEX-2 ⊂ TEX-3 ⊂ TEX-3+4 joint: TEX-2
+   is TEX-1 plus zlib-9, TEX-3 is TEX-2 plus the safe channel reduction, and the joint row is the
+   deepest form each file qualifies for (§1.4, §1's candidate block). Only the deepest row a
+   programme actually adopts counts.
+3. **A structural candidate and a compression candidate on the same layer are alternatives.**
+   INST-1 versus INST-2 on `instances.jsonl`; LANE-1 versus LANE-2 on `lanes.jsonl`; MESH-1
+   versus MESH-2 on `meshes/`. Their joint values are `arithmetic` bounds, not measurements,
+   except where a section actually built and compressed the structural form:
+   - `lanes.jsonl`: **measured** at the fixed-core level — Bézier fixed core + `lzma` is 17.87
+     MiB, saving 213.06 MiB, 2.26× smaller than `lzma`-over-JSON (§5.4). The *full* candidate
+     plus `lzma` (≈20.4 MiB, ≈210.5 MiB saved) is an **unmeasured extrapolation** using the
+     fixed core's own measured ratio. Compressing a Bézier payload does not save what
+     compressing the JSON saves, and §9.2's LANE-2 row sorts on the complete-candidate,
+     uncompressed figure (188.6 MiB) rather than on either compressed figure, so the sort key is
+     never an unmeasured number.
+   - `instances.jsonl`: **no joint measurement.** Bound, `arithmetic`: a columnar-then-compressed
+     form saves more than the larger of INST-1 (272.1 MiB) and INST-2 (199.0 MiB) and less than
+     the whole file (309.2 MiB).
+   - `meshes/`: **no joint measurement**, and §2.4 states explicitly that quantized data
+     compresses differently from raw f32. Bound, `arithmetic`: more than MESH-1's 1,581.5 MiB,
+     less than the whole directory (1,716.8 MiB). MESH-2 is lossy in any case and appears only
+     in §9.3.
+4. **NET-1 versus a compression policy extended to `networks/`.** COMP-1 as measured covers
+   `meshes/`, `instances.jsonl` and `lanes.jsonl` only. `networks/`'s 7,248 `.glb` files also
+   ship with raw BIN chunks, but **no compression ratio was measured on that directory** — the
+   `meshes/` ratio is not transferable without measuring it, so no number is claimed and NET-1's
+   marginal value after a compression policy is `unmeasured`. `textures/` is outside the policy
+   by construction: §1.1 established its PNGs already run through `Deflater`, unlike mesh BIN
+   chunks (§2.4), so the texture rows keep their full value under COMP-1.
+
+### 9.2 Lossless candidates, ranked by absolute bytes saved
+
+| id | domain | change | est. bytes saved | provenance | est. rip-time saved | consumer cost | risk | lossless? | additive-layer shape |
+|---|---|---|---|---|---|---|---|---|---|
+| COMP-1 | bundle-wide (`meshes/`, `instances.jsonl`, `lanes.jsonl`) | One at-rest compression policy (`lzma`) over the three layers that currently ship uncompressed — MESH-1 + INST-1 + LANE-1 as a single decision | **2,044.1 MiB (43.80% of the bundle)** = 1,581.5 + 272.1 + 190.5; the three layers are 2,256.9 MiB today and 212.8 MiB after. `zlib -9` variant: 1,879.1 MiB (40.26%) | measured — three independent bit-exact round-trips; `meshes/` by 200-file sample extrapolated on a stated rule (§2.4), both JSONLs full-file exact (§4.4, §5.4) | unmeasured, sign included — adds encode CPU inside rows 1–3 (99.645% of the rip, §8) rather than removing it | 1 line: one standard-library decompress call per layer | low — ubiquitous codecs, bit-exact by construction, verified on real bytes in all three layers | YES | **new layer**: compressed at-rest encodings beside the canonical bytes (`.glb.gz`/`.xz` or one archive per directory, using the already-bundled `ICSharpCode.SharpZipLib`), declared by a `compression` field amendment under §12.1; **retires**: nothing — the canonical bytes are recovered exactly |
+| MESH-1 | `meshes/` | Compress `.glb` binary buffers at rest (BIN chunks are written raw today) | 1,581.5 MiB `lzma` (33.89% of bundle, 92.1% of `meshes/`); 1,457.8 MiB `zlib -9` (31.23%, 84.9%). **Component of COMP-1 — do not add to it** | measured (200-file sample, actually compressed, bit-exact round-trip asserted, stated linear extrapolation) | unmeasured; bounded by row 2's 59.416% share, and expected to add write-time CPU | 1 line: one decompress call before parsing | medium — a container-format change, not an in-place one; the codec risk itself is near-zero | YES, round-trip asserted on the sample | **new layer**: compressed encoding of the unchanged `.glb` bytes, `compression` field under §12.1; **retires**: nothing |
+| NET-1 | `networks/` | Composition layer: per-segment composition id(s) + curve instead of a baked per-segment `.glb`, mirroring the shipped `lanemeshes.jsonl`/`lanemeshes/` v2 precedent | 401.5 MiB (8.60% of bundle, 99.19% of `networks/`); still 390.1 MiB under a joint 5× record-cost and 4× geometry-count correction | arithmetic — projected from the precedent's two measured per-unit costs; no composition-layer file was built or round-tripped | unmeasured; its target is row 3's instrumented 65.8 s segment bake, 3.321% of the rip | 664 lines: most of `Systems/NetworkRipSystem.GameMesh.cs` (§8's 17 rules + §21's 12 refinements) — the largest port this audit sizes | high — correctness-critical junction/vertex-sync/roundabout geometry; the reference implementation exists and is proven faithful | YES — every rule checked in §8/§21 is `match` or `fixed`; the two shader-only gaps are already in today's baked mesh | **new layer**: composition geometry set + per-segment curve records; **retires**: `networks/*.glb` and the segment-baking path, only after an A/B gate — until then both ship, making the transitional bundle 408.1 MiB for this domain instead of 404.8 MiB |
+| TEX-3+4 joint | `textures/` | One representation per file: 2-channel `normal2` where a file is alpha==255 and normal-derivable, RGB/L where only alpha==255, adaptive-filtered RGBA otherwise | 377.1 MiB (8.08% of bundle, 19.98% of `textures/`) — measured jointly in one pass, **not** the 440.2 MiB naive TEX-3 + TEX-4 sum | measured (500-file sample, every file decoded and reconstructed bit-exact, stated 7.1702× extrapolation) | unmeasured; PNG encode is serialised into row 2's 59.416% share (§1's Rip time) | 31 lines for the `normal2` subset (`Systems/MaterialRipSystem.cs:1488-1518` is the same reconstruction in reverse); 0 for every other file | medium — inherits TEX-4's schema-change risk for the 840 files it touches | YES, all 500 sampled files bit-exact | **new layer**: `normal2`, a colour-type-4 convention beside the existing `normal`; in-place re-encode (no new layer) for every other file; **retires**: the 4-channel `normal` PNG once consumers adopt it |
+| INST-1 | `instances.jsonl` | Compress the file at rest (`lzma` or `zlib -9`) | 272.1 MiB `lzma` (5.83% of bundle, 88.01% of the file); 251.8 MiB `zlib -9` (5.39%, 81.43%). **Component of COMP-1 — do not add to it** | measured, full file, bit-exact round-trip asserted | unmeasured; bounded by row 1's 16.739% share, and expected to add write-time CPU | 1 line: one decompress call | low | YES | **new layer**: `instances.jsonl.xz` beside the canonical JSON, `compression` field under §12.1; **retires**: nothing |
+| TEX-4 | `textures/` | Normal-map 2-channel repack (colour type 4; drop B, reconstruct via `round(sqrt(1−x²−y²)×127.5+127.5)` at load) | 229.5 MiB (4.92% of bundle, 12.2% of `textures/`, 30.4% of its own 754.3 MiB candidate subset). **Nested inside the TEX-3+4 joint row — do not add** | measured — exact on the full 840-file population, plus a 120-file re-encode round-trip | unmeasured; inside row 2's 59.416% share | 31 lines (the reconstruction step at load) plus a §7.1 schema amendment | medium — schema change, covers 840 of 3,510 files | YES, 840 of 840 reconstruct to the exact original byte | **new layer**: `normal2` colour-type-4 map; **retires**: the 4-channel `normal` PNG after adoption |
+| TEX-3 | `textures/` | Safe channel reduction (drop alpha only when constant at exactly 255, collapse to greyscale when R=G=B) on top of TEX-2 | 210.7 MiB (4.51% of bundle, 11.2% of `textures/`). **Nested inside the TEX-3+4 joint row — do not add** | measured (120-file sample, all 120 assertions passed, stated 26.4159× extrapolation) | unmeasured; inside row 2's 59.416% share | 0 lines — verified against this bundle's reference consumer, `tools/blender_import_bundle.py:2165`, which expands `L`/`RGB` to RGBA automatically | low | YES | not applicable — in-place re-encode at the same path; the PNG colour type changes, the contract slot does not; nothing new, nothing retired |
+| INST-2 | `instances.jsonl` | Columnar binary: 41 B/record fixed core plus sparse typed `attrs` side-columns | 199.0 MiB (4.26% of bundle, 64.36% of the file) — **2.97× worse on bytes than INST-1**, stated plainly; its case is import time, not size | arithmetic (real per-field counts × individually round-trip-verified widths); the fixed core was actually built and read back | unmeasured; bounded by row 1's 16.739% share | 59 lines (the reference build-and-read implementation, `$SCRATCH/audit/instances_packed_read_bench.py`) — against which it removes ≈14.2 s of `json.loads` from the reference importer's default two-pass run and ≈21.3 s from its full-city three-pass run, a measured 696× per-pass speedup on the fixed core | medium — new container and schema surface; every width individually verified lossless against real data | YES | **new layer**: `instances.bin` + a small `assetId` catalogue beside `instances.jsonl`, opt-in; **retires**: nothing until an A/B gate — transitional bundle 419.4 MiB for this domain |
+| LANE-1 | `lanes.jsonl` | Compress the file at rest (`lzma` or `zlib -9`) | 190.5 MiB `lzma` (4.08% of bundle, 82.49% of the file); 169.5 MiB `zlib -9` (3.63%, 73.41%). **Component of COMP-1 — do not add to it** | measured, full file, bit-exact round-trip asserted | unmeasured; bounded by row 3's 23.490% share, and expected to add write-time CPU | 1 line: one decompress call | low | YES | **new layer**: `lanes.jsonl.xz`, `compression` field under §12.1; **retires**: nothing |
+| LANE-2 | `lanes.jsonl` | Ship `curve.m_Bezier`'s 4 control points instead of the 9-point tessellated `path` | 188.6 MiB (4.04% of bundle, 81.69% of the file) for the complete candidate, uncompressed — the sort key, chosen because it is the only complete-candidate figure that is not an extrapolation. Paired with `lzma`: 213.06 MiB measured at the fixed-core level (2.26× better than `lzma`-over-JSON), ≈210.5 MiB for the full candidate as an unmeasured extrapolation | arithmetic for the sparse columns; the 37.00 MiB fixed core inside it was built, read back and round-tripped for real | unmeasured; bounded by row 3's 23.490% share; the producer already reads the same `Curve` component today | 147 lines (the reference build-and-read implementation, `$SCRATCH/audit/lanes_binary_build.py`); the evaluation itself is the 4-line function §5.2 quotes from the game | low — the evaluation formula was confirmed identical to the game's own, and the round-trip reproduces the shipped path to within its own 1 mm rounding step | YES, proven by full-population refit plus a real packed-binary round-trip | **new layer**: `lanes.bin` (or a `curve` field beside `path`, the same shape `lanemeshes.jsonl` already ships), opt-in; **retires**: `path` only after an A/B gate — transitional bundle 273.2 MiB for this domain |
+| TEX-2 | `textures/` | Adaptive per-row PNG filtering plus zlib level 9 | 151.9 MiB (3.25% of bundle, 8.0% of `textures/`). **Nested inside TEX-3 and the joint row — do not add** | measured (120-file sample, assertion passed, stated extrapolation) | unmeasured; encode CPU rises, inside row 2's 59.416% share | 0 lines — any standard PNG decoder | low | YES | not applicable — in-place re-encode; nothing new, nothing retired |
+| TEX-1 | `textures/` | Adaptive per-row PNG filtering alone (replace the fixed filter 0), same zlib level | 64.5 MiB (1.38% of bundle, 3.4% of `textures/`). **Nested inside TEX-2 — do not add** | measured (120-file sample, assertion passed, stated extrapolation) | unmeasured; inside row 2's 59.416% share | 0 lines | low | YES | not applicable — in-place re-encode; nothing new, nothing retired |
+| MESH-3 | `meshes/` | Derive the 1,436 `__base.glb` skirts at consumer load time instead of baking them | 27.9 MiB (0.60% of bundle, 1.6% of `meshes/`) as shipped today; ≈2.2 MiB marginal if COMP-1 ships first (`arithmetic`, the removed files' own compressed size at `meshes/`'s measured 7.88% `lzma` ratio) | measured (file-class census, full population) | unmeasured; 1,436 fewer files to build and write inside row 2's 59.416% share | 366 lines (`IO/BaseSkirtBuilder.cs`, proven faithful to the game in §27) | medium — the port must reproduce the algorithm exactly to avoid visible gaps; a proven reference exists | YES — every fact in `__base.glb` is derivable from data already shipped plus a verified deterministic algorithm | **removes** a file class rather than adding one; the per-prefab base-material reference must move into `materials.json`/`bundle.json` — negligible bytes, a small schema touch |
+| TERRAIN-1 | `terrain/` | Selective adaptive filtering + zlib-9 on the 11 of 39 files where it measurably wins (dominated by `heightmap.png`'s 30.8%) | 4.33 MiB (0.09% of bundle, 6.47% of `terrain/`); a blanket policy across all 39 files is a 2.82% **loss** | measured, full population, every round-trip bit-exact | unmeasured; bounded by row 4's 0.355% share | 0 lines — in-place re-encode at unchanged paths | low | YES | not applicable — in-place re-encode; nothing new, nothing retired |
+| TEX-5 | `textures/` | Delete orphan textures | 0 — 0 orphans and 0 duplicate pixel-groups found in the full population | measured (closed, negative result) | 0 | 0 lines | none | not applicable | not applicable — no files to touch, nothing to retire |
+| MESH-4 | `meshes/` | Delete unreferenced or dead meshes | 0 — all 1,444 unreferenced-by-`assetId` files resolve to a documented contract mechanism | measured (closed, negative result) | 0 | 0 lines | none | not applicable | not applicable — no files to touch, nothing to retire |
+
+**§6 (markings and decals) contributes no row, by closure rather than omission.**
+`lanemeshes.jsonl` + `lanemeshes/` are 29.4 MiB, 0.629% of the bundle, and already the
+parametric form every other geometry domain above is being projected toward (§6.2). Its real
+cost is consumer import time — 2,240,914 vertices and ray-casts before the landed sagitta rule,
+~1.06M after, with the lane-geometry import phase measured at 374.9 s before and 381.8 s after
+(§6.3, §8) — which belongs in §8's import-time subsection and never in a bytes column.
+
+### 9.3 Lossy candidates — separate, and none recommended
+
+Kept apart from §9.2 per constraint 3. **No candidate below appears in §9.5's recommendation**,
+and none may be adopted without its own decision and its own A/B evidence.
+
+| id | domain | change | est. bytes saved | provenance | est. rip-time saved | consumer cost | risk | lossless? | error bound | additive-layer shape |
+|---|---|---|---|---|---|---|---|---|---|---|
+| MESH-2 | `meshes/` | `KHR_mesh_quantization`-style re-encode: `POSITION` → `i16`, `NORMAL`/`TANGENT` → `i8`, `TEXCOORD_0` → `u16` | 952.3 MiB (20.40% of bundle, 55.5% of `meshes/`) — smaller than MESH-1's lossless 1,581.5 MiB from the same directory | arithmetic (format widths over the full population) | unmeasured; fewer bytes to serialise inside row 2's 59.416% share | consumer must dequantize per the extension or silently misread the geometry | high — breaks every consumer that does not implement the extension | **NO** | ≤ 20.505 mm (the full quantization step over the worst mesh's largest extent; a round-to-nearest quantizer's true worst case is at most half that, ≤ 10.253 mm) | either a **new layer** (a parallel quantized geometry form, opt-in) or a breaking major-version replacement — not designed here |
+| INST-3 | `instances.jsonl` | `colorSet` channels as `u8` (1/255 step) inside INST-2's side-column layout | 41.4 MiB (0.89% of bundle) off INST-2's 55.28 MiB `colorSet` column | measured (full-population round-trip failure rate) | unmeasured | none beyond INST-2's own reader | medium — visible banding on exactly the highest-instance-count assets, where §4.3 measured the entropy to be real | **NO** | 65.21% of 14,491,656 `colorSet` channel values fail to round-trip through a `u8` step against the shipped 4 dp text | replaces the `colorSet` side-column inside INST-2's own new layer, not a separate file |
+| INST-4 | `instances.jsonl` | `rot` smallest-three quaternion compression (16 B → ~7 B) inside INST-2's fixed core | unmeasured — Phase A did not build or encode it | unmeasured | unmeasured | consumer reconstructs the dropped component and de-quantizes | medium — well-understood technique, unverified here | **NO** | `unmeasured`; the brief's own "always drop `w`" variant is invalid, since §4.3 measured `rot.x`/`rot.z` nonzero on 24.80% of records | replaces the `rot` fixed column inside INST-2's own new layer |
+| TEX-6 | `textures/` | Lossy re-encode (WebP/AVIF at a quality setting) of whatever remains after the lossless texture rows | unmeasured — Phase A did not encode or measure it | unmeasured | unmeasured | high — a new-format decoder | high | **NO** | `unmeasured`; note BC7, the game's own format, is **not** a smaller candidate at these dimensions (§1.2: our PNGs are 0.544× the BC7 footprint) | would replace `textures/*.png` outright for the files it touches — not expressible as an opt-in layer without a codec-selector field |
+
+### 9.4 The second ranking: bytes saved per unit of consumer cost
+
+**Consumer cost is measured as lines of new consumer-side code**, anchored to a real
+implementation wherever one exists — `Systems/NetworkRipSystem.GameMesh.cs` (664),
+`IO/BaseSkirtBuilder.cs` (366), `Systems/MaterialRipSystem.cs:1488-1518`'s normal reconstruction
+(31), and the two reference build-and-read scripts this audit actually wrote and ran,
+`$SCRATCH/audit/lanes_binary_build.py` (147) and `$SCRATCH/audit/instances_packed_read_bench.py`
+(59). A decompress call is 1 line. An in-place re-encode is 0. The ratio below is MiB saved
+divided by `1 + lines`, so a zero-line candidate scores its full byte value rather than dividing
+by zero. Lossy rows are excluded, per constraint 3.
+
+| rank | id | MiB saved | new consumer lines | MiB per cost unit | rank by bytes (§9.2) |
+|---:|---|---:|---:|---:|---:|
+| 1 | COMP-1 | 2,044.1 | 1 | 1,022.1 | 1 |
+| 2 | MESH-1 | 1,581.5 | 1 | 790.8 | 2 |
+| 3 | TEX-3 | 210.7 | 0 | 210.7 | 7 |
+| 4 | TEX-2 | 151.9 | 0 | 151.9 | 11 |
+| 5 | INST-1 | 272.1 | 1 | 136.1 | 5 |
+| 6 | LANE-1 | 190.5 | 1 | 95.3 | 9 |
+| 7 | TEX-1 | 64.5 | 0 | 64.5 | 12 |
+| 8 | TEX-3+4 | 377.1 | 31 | 11.8 | 4 |
+| 9 | TEX-4 | 229.5 | 31 | 7.2 | 6 |
+| 10 | TERRAIN-1 | 4.3 | 0 | 4.3 | 14 |
+| 11 | INST-2 | 199.0 | 59 | 3.3 | 8 |
+| 12 | LANE-2 | 188.6 | 147 | 1.3 | 10 |
+| 13 | NET-1 | 401.5 | 664 | 0.6 | 3 |
+| 14 | MESH-3 | 27.9 | 366 | 0.1 | 13 |
+
+**The two rankings disagree, and the disagreement is the finding.** NET-1 falls from 3rd by
+bytes to 13th of 14 by cost-efficiency — it is the third-largest win in the bundle and the
+second-worst byte-per-line deal in it, because 401.5 MiB of it is bought with a 664-line port of
+the most rule-dense algorithm this codebase has had to reproduce. TEX-3 rises from 7th to 3rd
+for the mirror-image reason: 210.7 MiB with no consumer code at all, verified against the
+reference importer's stock PNG loader. MESH-3 is last on both counts. Only the top two rows agree
+between the rankings, and they agree because generic compression is simultaneously the largest
+win in the bundle and the cheapest thing a consumer can be asked to do.
+
+### 9.5 Sequencing recommendation
+
+**Phase B should be COMP-1: one bundle-wide at-rest compression policy over `meshes/`,
+`instances.jsonl` and `lanes.jsonl`.** It saves 2,044.1 MiB — 43.80% of the whole bundle, and
+5.09× the largest candidate that is not one of its own components (NET-1, 401.5 MiB) — for one
+decompress call and a `compression` field amendment under
+§12.1, and it ranks first on *both* orderings, which nothing else in §9.4 does. It renegotiates
+no semantics, retires no layer, and every one of its three components was verified by a bit-exact
+round-trip on real bytes. Two facts make it the sequencing decision rather than just the biggest
+number. First, it is the only candidate that is unambiguously good to do first: because it
+touches only the encoding of bytes, running it before or after any structural change costs
+nothing either way. Second, it changes the case for almost everything below it — after COMP-1,
+`lanes.jsonl` is 40.4 MiB and `instances.jsonl` is 37.1 MiB, so LANE-2's marginal byte value
+falls from 188.6 MiB to about 20 MiB (unmeasured extrapolation, §9.1) and INST-2's byte case
+disappears entirely, since its 110.2 MiB columnar output is 2.97× *larger* than the compressed
+JSON it would replace. MESH-3's 27.9 MiB likewise becomes ≈2.2 MiB. Measuring that collapse
+before committing engineering to it is exactly what Phase A existed to do.
+
+**This overturns the spec's sketched order in three places, and confirms it in two.** The sketch
+put B as "lossless re-encoding of `instances.jsonl` and `lanes.jsonl`" and D as mesh payload
+work: the measurements move the mesh domain's compression row *into* B and make it the dominant
+term (1,581.5 MiB of the 2,044.1 MiB), because the largest single candidate in the bundle turned
+out to be a compression row in the mesh domain, not a JSONL re-encode. The sketch also treated
+the two JSONL layers as one job; they want opposite treatments — the structural candidate loses
+to `lzma` by 2.97× on `instances.jsonl` and beats it by 2.26× on `lanes.jsonl`, so LANE-2 is
+worth building on its bytes and INST-2 is not. And the sketch put networks (C) second, ahead of
+meshes and textures: NET-1 should instead run **last** of the structural work. Its 401.5 MiB is
+`arithmetic`, not measured; it is the single most expensive port in the table at 664 lines; it
+makes the bundle *larger* (408.1 MiB for the domain) for as long as the additive layer ships
+beside `networks/`; and its marginal value after a compression policy is `unmeasured`, because no
+compression ratio was measured on `networks/` at all. What the sketch got right: a
+representation-only change with no consumer semantics belongs first (B's *principle* holds even
+though its content changes), and import-time work belongs last — §6/§8's measured result, a
+~2.1× cut in marking vertices and ray-casts producing 374.9 s → 381.8 s of wall clock, is the
+standing evidence that import-time work must be measured before it is built, not modelled.
+
+**After B, the order the table implies is C = textures, D = `lanes.jsonl`, E =
+`instances.jsonl`, F = networks, with terrain and skirts folded in opportunistically.** Textures
+come second because they are the only domain whose candidate values survive COMP-1 intact —
+§1.1's PNGs already run through `Deflater`, so the compression policy does not touch them — and
+because 210.7 MiB of the 377.1 MiB joint win costs the consumer literally nothing (TEX-3, 0 new
+lines, verified against the reference importer). TERRAIN-1's 4.33 MiB is the same producer-only
+shape and should ride along with it rather than getting a phase. `lanes.jsonl` comes third: it is
+the one structural candidate that beat generic compression on its own measured merits, at low
+risk, with a 4-line evaluation function taken verbatim from the game and a real packed-binary
+round-trip behind it. `instances.jsonl` comes fourth and must be justified on import time rather
+than bytes — 696× measured on the fixed core, ≈14.2 s → ≈0.2 s for the reference importer's
+default run — which is a genuine win but a different kind of win, and pretending otherwise is how
+the 2026-08-07 harness work spent effort on the wrong layer. Networks comes last for the reasons
+above. **No lossy candidate is recommended at any position**: MESH-2's 952.3 MiB is real but is
+both lossy and smaller than MESH-1's lossless 1,581.5 MiB from the same directory, which settles
+it, and INST-3 targets exactly the field §4.3 measured to be predominantly information.
