@@ -10,7 +10,13 @@ import numpy
 from PIL import Image
 
 COUNT_MARKERS = ("lanes:", "draped", "splatmap calibrated", "terrain:", "face(s)",
-                 "networks:", "category ", "record(s)", "object(s)")
+                 "networks:", "category ", "record(s)", "object(s)",
+                 "instance(s)", "prefab(s)", "tinted:", "skipped:")
+
+# Elapsed-time numbers (e.g. "placed 101 instance(s) from 58 prefab(s) in 21.2 s")
+# are run-to-run noise, not a count worth gating on. Strip them before extracting
+# digits so timing jitter never fails an otherwise-identical comparison.
+_TIMING_RE = re.compile(r"\bin\s+\d+(?:\.\d+)?\s*s\b")
 
 
 def compare_pixels(path_a, path_b):
@@ -32,12 +38,18 @@ def count_lines(path):
     with open(path, encoding="utf-8", errors="replace") as handle:
         for line in handle:
             if any(marker in line for marker in COUNT_MARKERS):
-                keep.append(re.findall(r"-?\d+(?:\.\d+)?", line))
+                cleaned = _TIMING_RE.sub("in TIME s", line)
+                keep.append(re.findall(r"-?\d+(?:\.\d+)?", cleaned))
     return keep
 
 
 def compare_counts(path_a, path_b):
     a, b = count_lines(path_a), count_lines(path_b)
+    if not a and not b:
+        # An empty match on both sides is never evidence of equality -- it means
+        # COUNT_MARKERS found nothing to gate on, which is a coverage bug, not a pass.
+        print("FAIL no count lines matched in either log")
+        return 1
     if a == b:
         print(f"PASS {len(a)} count line(s) identical")
         return 0

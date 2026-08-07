@@ -109,13 +109,23 @@ sun.rotation_euler = (0.5, 0.3, 0.0)
 
 scene = bpy.context.scene
 scene.camera = cam
-scene.render.engine = "BLENDER_EEVEE_NEXT"
+# Blender renamed the EEVEE-Next engine id back to "BLENDER_EEVEE" once legacy
+# EEVEE was removed (Blender 5.x); fall back for older builds that still use
+# the "_NEXT" suffix.
+_available_engines = bpy.types.RenderSettings.bl_rna.properties["engine"].enum_items.keys()
+scene.render.engine = "BLENDER_EEVEE_NEXT" if "BLENDER_EEVEE_NEXT" in _available_engines else "BLENDER_EEVEE"
 scene.render.resolution_x = scene.render.resolution_y = 1600
 scene.render.filepath = out
 scene.view_settings.view_transform = "Standard"
 bpy.ops.render.render(write_still=True)
 print("ab_render wrote", out)
 ```
+
+(Verbatim brief text set `scene.render.engine = "BLENDER_EEVEE_NEXT"` unconditionally. The
+installed Blender is 5.2.0 LTS, where that enum value no longer exists — the hardcoded id
+crashes with `TypeError: enum "BLENDER_EEVEE_NEXT" not found in ('BLENDER_EEVEE',
+'BLENDER_WORKBENCH', 'CYCLES')`. This probe is what was actually shipped; keep it here so a
+future re-run of this plan doesn't reintroduce the crash.)
 
 - [ ] **Step 2: Write `tools/ab_compare.py`**
 
