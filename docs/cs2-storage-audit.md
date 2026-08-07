@@ -110,12 +110,36 @@ matches for `splat` in every ancestor commit, checked directly:
 | grep -i splat` → no output). The only consistent reading: the splatmap-capture code was
 **already built and running** for the 11:50–12:23 rip, and `8985b73`'s commit — landed
 afterward — is a normal build-then-commit gap, not a boundary the terrain data itself crossed.
-Directly confirmed byte-for-byte: **38 of `terrain/`'s 41 files are unchanged between the two
-rips**; only `splatmap.png` (11,881,840 → 10,042,179 B, −1,839,661 B), `water_level.png`
-(783,040 → 780,555 B, −2,485 B) and `heightmap.png` (−1 B) differ, summing to exactly
-72,050,547 − 70,208,400 = **1,842,147 B**, the whole of the drop — no code diff exists between
-the two rips that touches `CaptureSplatmap`, so this residual delta is examined as session
-variance, not a format change, in §7.
+**Which files changed — confirmed by checksum, not by an unreproducible byte comparison.** A
+SHA-256 manifest of `terrain/`'s pre-rerip state exists at
+`E:\carto-out\spike-baseline-2026-08-08\terrain.sha256` (its own file mtime 21:32 — after
+`8985b73` landed, before the 21:34–21:36 rerip: exactly the pre-overwrite snapshot this claim
+needs). Verified directly against the bundle as it stands now:
+
+```
+cd "$BUNDLE" && sha256sum -c "/e/carto-out/spike-baseline-2026-08-08/terrain.sha256"
+```
+
+→ 38 lines `OK`, 3 lines `FAILED` — `terrain/heightmap.png`, `terrain/splatmap.png` and
+`terrain/water_level.png`, and no others, out of all 41 files the manifest covers. `measured`,
+full population, reproducible by anyone with access to both the manifest and the current
+bundle. This **confirms** the "38 of 41 unchanged, exactly these 3 differ" claim from a
+checkable artifact, independent of the byte-count comparison below.
+
+**The pre-rerip byte counts themselves are `unmeasured` by this task and are not
+independently re-derivable from this repository.** `splatmap.png` (11,881,840 B before) and
+`water_level.png` (783,040 B before) were observed by the audit controller via `ls -la` on
+`spike/terrain/` earlier in this session, before the 21:36 rerip overwrote them, and recorded in
+`.superpowers/sdd/2026-08-08-bundle-representation-audit/progress.md` — an uncommitted,
+untracked coordination ledger, not a script output or a committed file this task produced or can
+point a verifier at. They are reported here as **inherited** figures, not measured ones: the
+three deltas they imply — `splatmap.png` −1,839,661 B, `water_level.png` −2,485 B, `heightmap.png`
+−1 B — sum to exactly 72,050,547 − 70,208,400 = **1,842,147 B**, the whole of the census-to-
+current drop, which is internally consistent but does not make the inputs independently
+checkable. No code diff exists between the two rips that touches `CaptureSplatmap` (established
+above), so this residual delta is examined as session variance, not a format change, in §7 —
+using the checksum-confirmed file-identity claim as the checkable half of the finding and the
+inherited byte deltas as the clearly-labelled, unmeasured half.
 
 **Net effect on this document's numbers:** the `terrain/` row in the census table above no
 longer reproduces from a fresh rip — it is **4,894,194,530 B as censused, with `terrain/` since
@@ -2232,7 +2256,7 @@ either of the two more aggressive cuts the plan originally proposed.
 **The wall-clock result is the honest, load-bearing number, and it is disappointing — reported
 plainly, the same way §4 reported INST-1 beating INST-2 outright.** The same design doc's own
 measured "Outcome" table, full-city run, before/after the sagitta change landed
-(`docs/superpowers/plans/2026-08-07-import-performance-refactor.md:151-156`):
+(`docs/superpowers/specs/2026-08-07-import-performance-refactor-design.md:147-156`):
 
 | Phase | Before | After |
 |---|---:|---:|
@@ -2249,8 +2273,10 @@ recorded, not done here").
 
 **Closed for this task's purposes**, per the brief's own pass criterion: the marking import-time
 cost is stated in the units it was measured in (vertices: 2.24M → 1.06M; ray-casts: 2.24M →
-1.06M; wall-clock: 374.9 s → 381.8 s for the whole lane-geometry phase) and lives here, in §6/§8,
-never in a bytes column. No new measurement was performed in this task beyond the cross-checked
+1.06M; wall-clock: 374.9 s → 381.8 s for the whole lane-geometry phase, per the "Outcome" table
+above, `docs/superpowers/specs/2026-08-07-import-performance-refactor-design.md:147-156`) and
+lives here, in §6/§8, never in a bytes column. No new measurement was performed in this task
+beyond the cross-checked
 census in §6.1 — the import-time figures above are cited from the already-landed, already-A/B-
 tested perf-refactor work, not re-derived, per this task's own scope (measurement-only, no
 producer or harness code changes).
@@ -2262,8 +2288,10 @@ not the 11:50–12:23 rip §0's census table rows for every other domain.** §0'
 (read first) establishes why: `terrain/` was re-ripped in isolation after this bundle's main
 rip, and the pre-rerip bytes of the three files that changed no longer exist to measure. File
 count is unchanged (41, matching §0's census exactly) and 38 of the 41 files are confirmed
-byte-identical to the original rip; only `splatmap.png`, `water_level.png` and `heightmap.png`
-differ, and by exactly enough to account for the whole size delta (§0). Command:
+identical to the original rip by SHA-256 (§0's provenance note, checked against the
+`spike-baseline-2026-08-08` manifest); only `splatmap.png`, `water_level.png` and
+`heightmap.png` differ — by exactly enough to account for the whole size delta, per the
+inherited (unmeasured by this task) byte counts §0 labels as such. Command:
 
 ```
 ls -la "$BUNDLE/terrain" && cat "$BUNDLE/terrain/rasters.json"
@@ -2407,12 +2435,17 @@ above already do for this domain.
 
 ### 7.4 The splatmap shrink: what changed between the two captures, and what did not
 
-**The premise, stated precisely.** `splatmap.png` is 1,839,661 B smaller in the current
-(21:36) capture than in the original (12:23) one — 11,881,840 → 10,042,179 B, a 15.5% drop, by
-far the largest of the three files §0's provenance note found changed. `water_level.png`
-(−2,485 B, 0.3%) and `heightmap.png` (−1 B, ~0%) barely moved in comparison. This subsection
-asks why, per this task's own instruction: determine it from evidence if determinable, and say
-plainly what was ruled out if it is not.
+**The premise, stated precisely, and with its provenance carried forward rather than
+re-asserted.** `splatmap.png` is reported 1,839,661 B smaller in the current (21:36) capture
+than in the original (12:23) one — 11,881,840 → 10,042,179 B, a 15.5% drop, by far the largest
+of the three files the SHA-256 manifest (§0's provenance note) confirms changed. `water_level.png`
+(−2,485 B, 0.3%) and `heightmap.png` (−1 B, ~0%) barely moved in comparison. **The *which-files-
+changed* fact is checksum-confirmed; the specific *before* byte counts feeding this 15.5% figure
+are the `unmeasured`, inherited numbers §0 labels as such** (observed via `ls -la` before the
+overwrite, recorded only in an uncommitted ledger) — carried here rather than re-derived, since
+the source bytes no longer exist to re-measure. This subsection asks why the drop happened, per
+this task's own instruction: determine it from evidence if determinable, and say plainly what
+was ruled out if it is not.
 
 **Ruled out with certainty: the "splatmap semantics string" wording.** Commit `8985b73`'s own
 message names a "splatmap semantics string" change. That string is the `semantics` key inside
@@ -2524,10 +2557,12 @@ curvature-based subdivision rule (`_DRAPE_SAGITTA_TOLERANCE`, `tools/blender_imp
 cut both to **~1.06M** (measured, ~2.1×), while a second, larger-looking cut (one ray-cast per
 marking instead of per vertex, a further 17×) was designed, tried, and **dropped** after its own
 A/B measurement found errors up to 657 mm against the game's actual road surface (§6.3, quoted
-in full). The wall-clock result of the landed optimization, full-city, **measured**: the
-lane-geometry import phase (119,302 records, markings plus fence/cable geometry) went from
-**374.9 s to 381.8 s** — no measured speedup despite the ~2.1× reduction in vertex/ray-cast
-count. None of this is a rip-time cost — the producer ships bend parameters, not baked meshes,
+in full). The wall-clock result of the landed optimization, full-city, **measured**
+(`docs/superpowers/specs/2026-08-07-import-performance-refactor-design.md:147-156`, the same
+"Outcome" table §6.3 quotes): the lane-geometry import phase (119,302 records, markings plus
+fence/cable geometry) went from **374.9 s to 381.8 s** — no measured speedup despite the ~2.1×
+reduction in vertex/ray-cast count. None of this is a rip-time cost — the producer ships bend
+parameters, not baked meshes,
 in either state — it is the cost a *consumer* pays to turn those parameters into the per-vertex
 geometry Blender needs, which the game itself never pays because it draws a marking as one
 instanced projector box (§6.3, `docs/cs2-api-audit.md` §19).
