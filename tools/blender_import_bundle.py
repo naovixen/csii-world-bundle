@@ -1446,6 +1446,77 @@ def build_lanes(lanes_path, catalogue_path, lane_mesh_dir, collection,
 # colour-management transform can touch the samples — the decoder below is also deliberately a
 # reference implementation of §8's file format for any consumer to lift.
 
+
+def _unfilter_slow(kind, line, previous, bpp):
+    """Reference per-byte reconstruction for Average(3) and Paeth(4).
+
+    Both predict from bytes of the CURRENT row that this same loop has already reconstructed
+    (`line[i - bpp]`), so — unlike None/Up/Sub — they cannot be vectorised across the row and
+    keep the original sequential algorithm. `line` is mutated in place and returned.
+    Average(3) 和 Paeth(4) 都要用本行中【已经被本循环重建过】的字节做预测（`line[i - bpp]`），
+    和 None/Up/Sub 不同，无法整行向量化，因此保留原始的逐字节顺序算法。`line` 原地修改并返回。
+    """
+    stride = len(line)
+    if kind == 3:      # Average
+        for i in range(stride):
+            left = line[i - bpp] if i >= bpp else 0
+            line[i] = (line[i] + ((left + previous[i]) >> 1)) & 0xFF
+    elif kind == 4:    # Paeth
+        for i in range(stride):
+            left = line[i - bpp] if i >= bpp else 0
+            up = previous[i]
+            corner = previous[i - bpp] if i >= bpp else 0
+            estimate = left + up - corner
+            distances = (abs(estimate - left), abs(estimate - up), abs(estimate - corner))
+            predictor = (left, up, corner)[distances.index(min(distances))]
+            line[i] = (line[i] + predictor) & 0xFF
+    else:
+        raise ValueError(f"_unfilter_slow: unsupported filter type {kind}")
+    return line
+
+
+def _unfilter_scanlines(raw, width, height, bpp):
+    """Undo the PNG scanline filters (contract §8) with numpy where the filter allows it.
+
+    None(0) and Up(2) vectorise across the whole row (a straight copy / a row-wide add).
+    Sub(1) is a running sum per interleaved byte lane — reshaping the row to (pixel, channel)
+    and taking a cumulative sum down the pixel axis reproduces `recon[i] = filt[i] +
+    recon[i - bpp]` for every channel at once; the sum is widened to uint32 before truncating
+    back to uint8 because numpy's uint8 cumsum overflows silently instead of wrapping mod 256,
+    and the truncation *is* the mod-256 the format requires. Average(3) and Paeth(4) predict
+    from the current row's own already-reconstructed bytes and are genuinely sequential, so
+    they fall back to `_unfilter_slow`, paid only on the rows that actually use them (the
+    producer only ever writes filter 0, so in practice that fallback is cold).
+    在 numpy 允许的范围内还原 PNG 的逐行滤波：None(0) 和 Up(2) 可以整行向量化（直接拷贝 /
+    整行相加）；Sub(1) 是按交织字节通道的累加和——把整行重塑为 (像素, 通道) 后沿像素轴做累加和，
+    等价于对每个通道并行计算 `recon[i] = filt[i] + recon[i - bpp]`；先加宽到 uint32 再截断回
+    uint8，是因为 numpy 的 uint8 累加和会静默溢出而不是按 mod 256 回绕，这里的截断本身就是格式
+    要求的 mod 256。Average(3) 和 Paeth(4) 依赖本行自身已重建的字节做预测，本质上是顺序算法，
+    回退到 `_unfilter_slow`，只有实际用到这两种滤波的行才付出这个代价（生产者只写 filter 0，
+    所以这条回退路径在实践中是冷路径）。
+    """
+    stride = width * bpp
+    out = numpy.zeros((height, stride), dtype=numpy.uint8)
+    previous = numpy.zeros(stride, dtype=numpy.uint8)
+    for y in range(height):
+        offset = y * (stride + 1)
+        kind = raw[offset]
+        line = numpy.frombuffer(raw, dtype=numpy.uint8, count=stride, offset=offset + 1).copy()
+        if kind == 0:      # None
+            pass
+        elif kind == 2:    # Up
+            line += previous
+        elif kind == 1:    # Sub
+            lanes = line.reshape(-1, bpp).astype(numpy.uint32)
+            line = numpy.cumsum(lanes, axis=0, dtype=numpy.uint32).astype(numpy.uint8).reshape(-1)
+        else:              # Average(3) / Paeth(4)
+            slow = _unfilter_slow(kind, bytearray(line.tobytes()), bytes(previous.tobytes()), bpp)
+            line = numpy.frombuffer(bytes(slow), dtype=numpy.uint8)
+        out[y] = line
+        previous = out[y]
+    return bytearray(out.tobytes())
+
+
 def _decode_png_gray(path):
     """Decode a single-channel PNG (§8) to (width, height, samples).
 
@@ -1483,35 +1554,7 @@ def _decode_png_gray(path):
 
     raw = zlib.decompress(b"".join(idat))
     bpp = depth // 8
-    stride = width * bpp
-    out = bytearray(width * height * bpp)
-    previous = bytearray(stride)
-
-    for y in range(height):
-        offset = y * (stride + 1)
-        filter_type = raw[offset]
-        line = bytearray(raw[offset + 1:offset + 1 + stride])
-        if filter_type == 1:    # Sub
-            for i in range(bpp, stride):
-                line[i] = (line[i] + line[i - bpp]) & 0xFF
-        elif filter_type == 2:  # Up
-            for i in range(stride):
-                line[i] = (line[i] + previous[i]) & 0xFF
-        elif filter_type == 3:  # Average
-            for i in range(stride):
-                left = line[i - bpp] if i >= bpp else 0
-                line[i] = (line[i] + ((left + previous[i]) >> 1)) & 0xFF
-        elif filter_type == 4:  # Paeth
-            for i in range(stride):
-                left = line[i - bpp] if i >= bpp else 0
-                up = previous[i]
-                corner = previous[i - bpp] if i >= bpp else 0
-                estimate = left + up - corner
-                distances = (abs(estimate - left), abs(estimate - up), abs(estimate - corner))
-                predictor = (left, up, corner)[distances.index(min(distances))]
-                line[i] = (line[i] + predictor) & 0xFF
-        out[y * stride:(y + 1) * stride] = line
-        previous = line
+    out = _unfilter_scanlines(raw, width, height, bpp)
 
     if depth == 16:
         samples = array("H", bytes(out))
@@ -1556,35 +1599,7 @@ def _decode_png_rgba(path):
         raise ValueError(f"{path}: the splatmap is RGBA8, got colour type {colour_type} at depth {depth}")
 
     raw = zlib.decompress(b"".join(idat))
-    stride = width * 4
-    out = bytearray(width * height * 4)
-    previous = bytearray(stride)
-
-    for y in range(height):
-        offset = y * (stride + 1)
-        filter_type = raw[offset]
-        line = bytearray(raw[offset + 1:offset + 1 + stride])
-        if filter_type == 1:    # Sub
-            for i in range(4, stride):
-                line[i] = (line[i] + line[i - 4]) & 0xFF
-        elif filter_type == 2:  # Up
-            for i in range(stride):
-                line[i] = (line[i] + previous[i]) & 0xFF
-        elif filter_type == 3:  # Average
-            for i in range(stride):
-                left = line[i - 4] if i >= 4 else 0
-                line[i] = (line[i] + ((left + previous[i]) >> 1)) & 0xFF
-        elif filter_type == 4:  # Paeth
-            for i in range(stride):
-                left = line[i - 4] if i >= 4 else 0
-                up = previous[i]
-                corner = previous[i - 4] if i >= 4 else 0
-                estimate = left + up - corner
-                distances = (abs(estimate - left), abs(estimate - up), abs(estimate - corner))
-                predictor = (left, up, corner)[distances.index(min(distances))]
-                line[i] = (line[i] + predictor) & 0xFF
-        out[y * stride:(y + 1) * stride] = line
-        previous = line
+    out = _unfilter_scanlines(raw, width, height, 4)
 
     return width, height, bytes(out)
 
