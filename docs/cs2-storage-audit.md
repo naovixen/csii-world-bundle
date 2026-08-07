@@ -1485,16 +1485,33 @@ raw line iteration, no parse: 1,283,183 lines in 0.66 s
 ```
 
 `tools/blender_import_bundle.py`, this bundle's reference consumer, does not read
-`instances.jsonl` once per run. `survey()` (`:558-595`) runs a full `read_jsonl` pass to report
-bounds/centroid before placing anything (`:3432`, "Always survey before placing... Knowing where
-the selection is turns 'nothing appeared' from a mystery into an arithmetic error"); with the
-default `--center downtown` it runs **again** for the buildings-only skyline scan (`:3456-3462`,
-`survey(instances_path, {"building"}, weight=skyline_weight)`); then the placement loop itself
-(`:3517`, `for record in (read_jsonl(instances_path) if kinds else ())`) reads it a **third**
-time to actually place objects. **Three full `json.loads` passes over 1.28M lines in one default
-import run** — measured at 7.09 s each, **≈21.3 s of parse cost alone**, of which
-`3 × 0.66 s ≈ 2.0 s` is unavoidable file I/O and the remaining **≈19.3 s is `json.loads`
-overhead this producer's own text encoding imposes on every import.**
+`instances.jsonl` once per run, and how many times it does read it depends on the invocation —
+checked directly against the argument parser rather than assumed. `center` is initialised to
+`None` (`:3310`) and stays `None` unless set by `--center` (`:3365-3371`) or defaulted by
+`--everything` (`:3399-3400`, `if center is None: center = "downtown"`, itself gated on
+`everything is not None`). A **bare invocation** (`blender --python
+tools/blender_import_bundle.py -- <bundle>`, no flags) therefore keeps `kinds = {"building"}`
+(`:3404-3405`) and `center = None`: `survey()` (`:558-595`) runs once to report bounds/centroid
+before placing anything (`:3432`, "Always survey before placing... Knowing where the selection
+is turns 'nothing appeared' from a mystery into an arithmetic error"), the `if center ==
+"downtown":` skyline scan at `:3456` never fires because `center` is `None`, and the placement
+loop itself (`:3517`, `for record in (read_jsonl(instances_path) if kinds else ())`) reads it a
+second time to place objects — **two full `json.loads` passes**, not three. The tool's own
+docstring states plainly that this bare, cheap invocation is the intended default (`:83`,
+"Placing all 1.3M instances of a full city is deliberately not the default").
+
+**A third pass is real, but belongs to a different, explicitly-requested invocation.** Passing
+`--everything <radius>` (the tool's documented full-city invocation, `:76` of its own docstring)
+or an explicit `--center downtown` sets `center = "downtown"`, which *does* trigger the
+buildings-only skyline scan (`:3456-3462`, `survey(instances_path, {"building"},
+weight=skyline_weight)`) in addition to the two passes above — **three full `json.loads` passes**
+for that invocation specifically. Both figures, correctly attached to the invocation that
+produces them, measured at 7.09 s/pass:
+
+| invocation | passes | parse cost | I/O floor (`0.66 s`/pass) | `json.loads` overhead beyond I/O |
+|---|---:|---:|---:|---:|
+| bare run (no flags) — the tool's actual default (`:83`) | 2 | ≈14.2 s | ≈1.3 s | ≈12.9 s |
+| `--everything <R>` or explicit `--center downtown` — the documented full-city invocation | 3 | ≈21.3 s | ≈2.0 s | ≈19.3 s |
 
 A packed binary pays this once, and reads fast. Built and read back for real
 (`$SCRATCH/audit/instances_packed_read_bench.py` — writes the actual `id`/`kind`/`pos`/`rot`
@@ -1510,14 +1527,16 @@ speedup vs building the same columns from JSON: 696x
 
 `measured`, real bytes, real round-trip (`id` array assertion passed). Even generously assuming
 `survey()` and the placement loop would each still need an extra 0.1 s of Python-side
-bookkeeping atop the raw `numpy` read, three passes over a packed columnar form cost well under
-a second, not 21.3 s — a 696× measured speedup on the fixed core is two orders of magnitude
-larger than INST-2's 64.36% byte saving, exactly what constraint 5 predicted: this candidate's
-import-time value exceeds its byte value. This is not measured for
-`attrs`' variable side-columns (only the fixed core was benchmarked), so the real end-to-end
-speedup for a full-record read (including `colorSet` etc.) is somewhat lower than 696× but is
-`unmeasured` beyond the fixed-core figure above — building and timing that reader is out of
-scope for Phase A's measurement-only mandate.
+bookkeeping atop the raw `numpy` read, either invocation's passes over a packed columnar form
+cost well under a second — ≈0.2 s for the bare run's two passes, ≈0.3 s for the full-city
+invocation's three — not the ≈14.2 s or ≈21.3 s the table above measured for JSON text. A 696×
+measured speedup on the fixed core is two orders of magnitude larger than INST-2's 64.36% byte
+saving, exactly what constraint 5 predicted: this candidate's import-time value exceeds its byte
+value **under either invocation**, not only the full-city one. This is not measured for `attrs`'
+variable side-columns (only the fixed core was benchmarked), so the real end-to-end speedup for
+a full-record read (including `colorSet` etc.) is somewhat lower than 696× but is `unmeasured`
+beyond the fixed-core figure above — building and timing that reader is out of scope for Phase
+A's measurement-only mandate.
 
 ### Rip time
 
@@ -1529,9 +1548,13 @@ cost of any candidate below is `unmeasured` at finer grain than the whole 331.61
 ### Consumer import time
 
 Covered above as part of §4.4, per constraint 5 — repeated here only as a pointer, not
-duplicated: **≈21.3 s of `json.loads` cost across three passes in the reference importer's
-default run, of which ≈19.3 s is parse overhead beyond raw file I/O; a packed binary reader
-reads the same fixed columns back in 0.0122 s, a 696× measured speedup.**
+duplicated. Two figures, attached to the invocation each belongs to (the reference importer's
+actual default is a bare, two-pass run per its own docstring, `:83`; a third pass is real but
+only for `--everything`/explicit `--center downtown`, its documented full-city invocation):
+**≈14.2 s of `json.loads` cost across two passes for a bare run (≈12.9 s of that is parse
+overhead beyond raw file I/O); ≈21.3 s across three passes for the full-city invocation
+(≈19.3 s overhead). A packed binary reader reads the same fixed columns back in 0.0122 s per
+pass, a 696× measured speedup, under either invocation.**
 
 ### Candidate rows
 
@@ -1540,7 +1563,7 @@ reads the same fixed columns back in 0.0122 s, a 696× measured speedup.**
 | id | change | est. bytes saved | est. rip-time saved | consumer cost | risk | lossless? | additive layer |
 |---|---|---|---|---|---|---|---|
 | INST-1 | Compress `instances.jsonl` at rest (`lzma` or `zlib -9`) | measured, full file, `lzma` **272.1 MiB (88.01% of the file, 5.83% of bundle)**; `zlib -9` **251.8 MiB (81.43%, 5.39%)** | unmeasured (producer-side compress cost at write time; not timed) | one decompress call before parsing — every mainstream language ships `lzma`/`zlib` in its standard library or a trivial dependency | low — ubiquitous, well-tested codecs, bit-exact by construction, verified on the full file | YES, full-file bit-exact round-trip asserted | **new layer**: a compressed at-rest/transport encoding of the unchanged JSON bytes (e.g. `instances.jsonl.xz`), needs a `compression` field amendment under §12.1 (same shape as MESH-1, §2); **retires**: nothing, the canonical JSON bytes are recovered exactly on decompress |
-| INST-2 | Columnar binary: fixed 41 B/record core (`id`/`assetId`/`kind`/`pos`/`rot`/`parent`/presence-bitmask) + sparse typed `attrs` side-columns, full detail above | arithmetic (real per-field counts × individually-verified-lossless widths; fixed-core subset actually built and read back), **199.0 MiB (64.36% of the file, 4.26% of bundle)** — **2.97× larger than INST-1's `lzma` result, reported plainly per constraint 2: the cheap answer wins on bytes** | unmeasured (needs a C#-side writer; not timed) | real: a new binary reader, an `assetId` catalogue, a presence-bitmask decoder and typed side-column parsing, replacing `json.loads` entirely — but see the import-time result: **measured 696× faster than building the same fields from JSON** for the fixed core alone | medium — new container format and schema surface, but every component width was individually verified lossless against this bundle's real data (§4.3/§4.4), not guessed | YES — every numeric column proven f32-lossless by full-population round-trip; enums/bitmasks are lossless replacements of already-closed, already-documented string sets | **new layer**: `instances.bin` + a small `assetId` catalogue alongside `instances.jsonl`, opt-in; **retires**: nothing until an A/B gate proves the reader matches the JSON form record-for-record (same transitional-bundle caveat as NET-1, §3) — until then the transitional bundle is 324,202,611 + 115,545,657 = 439,748,268 B (419.4 MiB) for this domain, larger than today's `instances.jsonl` alone, for as long as both ship together |
+| INST-2 | Columnar binary: fixed 41 B/record core (`id`/`assetId`/`kind`/`pos`/`rot`/`parent`/presence-bitmask) + sparse typed `attrs` side-columns, full detail above | arithmetic (real per-field counts × individually-verified-lossless widths; fixed-core subset actually built and read back), **199.0 MiB (64.36% of the file, 4.26% of bundle)** — **2.97× larger than INST-1's `lzma` result, reported plainly per constraint 2: the cheap answer wins on bytes** | unmeasured (needs a C#-side writer; not timed) | real: a new binary reader, an `assetId` catalogue, a presence-bitmask decoder and typed side-column parsing, replacing `json.loads` entirely — but see the import-time result: for the reference importer's actual default (a bare, two-pass run, `tools/blender_import_bundle.py:83`), measured **≈14.2 s of `json.loads` cost → ≈0.2 s** with a packed reader (696× per-pass speedup on the fixed core); for its `--everything`/explicit `--center downtown` full-city invocation (three passes), **≈21.3 s → ≈0.3 s** | medium — new container format and schema surface, but every component width was individually verified lossless against this bundle's real data (§4.3/§4.4), not guessed | YES — every numeric column proven f32-lossless by full-population round-trip; enums/bitmasks are lossless replacements of already-closed, already-documented string sets | **new layer**: `instances.bin` + a small `assetId` catalogue alongside `instances.jsonl`, opt-in; **retires**: nothing until an A/B gate proves the reader matches the JSON form record-for-record (same transitional-bundle caveat as NET-1, §3) — until then the transitional bundle is 324,202,611 + 115,545,657 = 439,748,268 B (419.4 MiB) for this domain, larger than today's `instances.jsonl` alone, for as long as both ship together |
 
 **Lossy candidates** (named and measured or explicitly left unmeasured per constraint 6 —
 investigate lossless first, which both rows above already do exhaustively for this domain):
