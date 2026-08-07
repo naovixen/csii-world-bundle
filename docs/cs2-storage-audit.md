@@ -509,6 +509,331 @@ their savings):
 
 ## 2. Meshes
 
+`meshes/` is 1,800,230,540 bytes (1716.8 MiB, 36.8% of the 4,894,194,530-byte total, §0), 5,634
+files — the second-largest share.
+
+### 2.1 What we ship
+
+Command (brief's own script, run first, exactly as given):
+
+```
+python "$SCRATCH/audit/mesh_inventory.py" "$BUNDLE"
+```
+
+**This failed the section's own pass criterion.** The brief's script sums attribute bytes
+per-primitive; the sum (`TANGENT` 1122.0 + `POSITION` 841.5 + `NORMAL` 841.5 + `TEXCOORD_0`
+561.0 + `INDICES` 230.4 = 3596.4 MiB) is **2.1× the 1716.8 MiB on-disk total** — the opposite of
+the "gap is JSON overhead" framing the brief's own comment predicts. Root cause, found by
+reading `IO/GltfWriter.cs:300-424` (read in full for this section): `AppendMesh` creates the
+`POSITION`/`NORMAL`/`TEXCOORD_0`/`TANGENT` accessors **once per glTF mesh** (one mesh = one
+LOD/state), then attaches the **same** accessor index to every per-material primitive's
+`attributes` object (`:421-424`, inside the `foreach (string materialId in materialOrder)`
+loop) — a mesh with *N* materials has *N* primitives all pointing at one shared vertex/normal/
+UV/tangent accessor. Summing per-primitive, as the brief's script does, counts a shared
+accessor's bytes once per material referencing it, not once. Confirmed directly rather than
+just reasoned from source: **35,813 per-primitive attribute references, 23,089 unique accessor
+indices — a 1.551× dedup ratio**, the exact shape of the discrepancy.
+
+Corrected script (`$SCRATCH/audit/mesh_inventory_v2.py`, dedupes by `(file, accessor index)`
+before summing — the fix is a four-line change: track a per-file `seen` set of accessor
+indices and skip a semantic's byte count on a repeat):
+
+```
+python "$SCRATCH/audit/mesh_inventory_v2.py" "$BUNDLE"
+```
+
+`measured`, full population (5,634 of 5,634 files):
+
+| | |
+|---|---:|
+| files | 5,634 |
+| bytes | 1,800,230,540 (1716.8 MiB) — matches §0's census exactly |
+| unique vertices (deduped) | 32,210,211 |
+| triangles | 20,135,918 |
+| `POSITION` (f32) | 368.6 MiB (21.5% of files) |
+| `NORMAL` (f32) | 368.6 MiB (21.5% of files) |
+| `TANGENT` (f32) | 491.5 MiB (28.6% of files) — the single largest attribute, larger than `POSITION` |
+| `TEXCOORD_0` (f32) | 245.7 MiB (14.3% of files) |
+| `INDICES` (u32) | 230.4 MiB (13.4% of files) |
+| sum of attribute + index bytes | 1,704.9 MiB |
+| JSON + padding overhead | 11.9 MiB (0.7% of files) |
+
+1,704.9 + 11.9 = 1,716.8 MiB, matching the on-disk total exactly — the corrected script passes
+the section's own check that the brief's original script failed. `TANGENT` being the largest
+attribute (not `POSITION`) is worth flagging for a later task: tangents are in principle
+reconstructible from `POSITION`/`NORMAL`/`TEXCOORD_0` via a standard MikkTSpace-style
+per-triangle computation, but whether that reconstruction would match the game-authored tangent
+bit-for-bit (it affects normal-map shading at seams) is **unmeasured** here — naming it without
+verifying it would repeat the exact mistake this section just found in the brief's own script,
+so it is recorded as an open observation, not a candidate row.
+
+### 2.2 What the game stores — the `_L` verdict
+
+**Verdict: `_L<n>` is a CS2 zoning *level* — a distinct, independently-placed building — never
+a level-of-detail alternate of one placement.** Both sources agree; there is nothing to report
+as a conflict.
+
+**Source.** The brief's guessed type name, `Game.Prefabs.ZoneBuildingData`, does not exist in
+the decompiled assembly:
+
+```
+./tools/decomp/bin/Release/net8.0/decomp.exe list Game 'Game\.Prefabs\.(ZoneBuildingData|BuildingPrefab|ObjectSubObject|LodData|MeshData)'
+```
+
+— returns `BuildingPrefab`, `ObjectSubObjectInfo`, `ObjectSubObjects`, `MeshData`, no
+`ZoneBuildingData`. Broadening the search to `Game\.Prefabs\..*Building.*` and
+`Game\.Prefabs\..*Level.*` finds the real type:
+
+```
+./tools/decomp/bin/Release/net8.0/decomp.exe type Game Game.Prefabs.SpawnableBuildingData
+./tools/decomp/bin/Release/net8.0/decomp.exe type Game Game.Prefabs.BuildingData
+./tools/decomp/bin/Release/net8.0/decomp.exe type Game Game.Prefabs.MeshData
+```
+
+`Game.Prefabs.SpawnableBuildingData` (`$SCRATCH/audit/SpawnableBuildingData.cs`):
+
+```csharp
+public struct SpawnableBuildingData : IComponentData, IQueryTypeParameter, ISerializable
+{
+    public Entity m_ZonePrefab;
+    public byte m_Level;
+    …
+}
+```
+
+— the game's own field is named `m_Level`, a `byte`, on a component attached to a **whole
+prefab entity**. `Game.Prefabs.BuildingData` (`$SCRATCH/audit/BuildingData.cs`) carries `public
+int2 m_LotSize` on the same prefab — the `<w>x<h>` filename suffix. Both are per-prefab data:
+properties of a distinct, independently-spawnable building, not of a sub-mesh or a draw-time
+LOD selector.
+
+By contrast, `Game.Prefabs.MeshData` (`$SCRATCH/audit/MeshData.cs`) — the game's actual LOD
+mechanism — carries `public byte m_MinLod`, `public byte m_ShadowLod`, `public float
+m_LodBias`: per-*rendering* fields on the render prefab's own mesh data, and per
+`docs/cs2-api-audit.md` §9 row 2 (cited, not re-derived), "LODs are separate render prefabs
+behind `LodProperties`" — the renderer chooses one at draw time for *one placement*.
+`grep -n 'm_LodBias\|m_MinLod\|lod\|Lod' "$SCRATCH/audit/MeshData.cs"` confirms these three are
+`MeshData`'s only LOD-shaped fields, structurally unrelated to `SpawnableBuildingData.m_Level`.
+
+The bundle's own contract already encodes true LOD with a different, non-conflicting
+convention (`docs/bundle-schema.md:718-719`, §6, cited): *"LOD n > 0 is a scene node named
+`<assetId>_LOD<n>`; LOD 0 is the root node with no suffix"* — LOD alternates of one prefab are
+**nodes inside one `.glb`**, never separate top-level files. `_L<n>_<w>x<h>` names are ordinary
+separate top-level `.glb` files (`assetId` = sanitised prefab name, `Systems/MeshRipSystem.cs`
+`BuildAssetIds`/`GetPrefabName`), so by construction they cannot be the producer's own LOD
+mechanism.
+
+**The decisive data test**, run on this bundle:
+
+```
+python "$SCRATCH/audit/l_question.py" "$BUNDLE"
+```
+
+`measured`: **123 `_L` families are placed in this city; 99 of them (80.5%) place MORE THAN ONE
+level simultaneously.** Example — `NA_CommercialLow02` at lot size `5x6`: `_L1` 29 placements,
+`_L2` 11, `_L3` 4, `_L4` 1, `_L5` 52 — **97 placements of five differently-numbered variants of
+the same base name and lot size, at 97 distinct world positions, in one city, at one instant.**
+LODs are alternates of a single placement and are never co-resident. Five variants of the exact
+same base+lot-size independently and simultaneously placed at dozens of locations can only be
+distinct buildings — CS2's zoning-level growth stages (a lot regrows to a higher `_L<n>` prefab
+as its land value rises; the earlier stage's prefab is a different, still-extant asset, not
+discarded, and both go on being placed on different lots across the city).
+
+File-count context, measured directly rather than assumed from the brief's quoted figure:
+
+```
+python -c "import re; from pathlib import Path; root = Path(r'$BUNDLE/meshes'); print(len([p for p in root.glob('*.glb') if re.search(r'_L\d+_\d+x\d+', p.stem)]))"
+```
+
+→ **2,065** of 5,634 filenames contain the `_L<n>_<w>x<h>` pattern in this bundle — close to,
+but not exactly, the brief's quoted 2,080 (this bundle is one specific rip; the brief's number
+came from a description written before this rip). The 15-file difference does not affect the
+verdict, which rests on the source and co-residency evidence above, not on the count. Of those
+2,065, **1,034** are the plain `<name>_L<n>_<w>x<h>.glb` form with no `__base`/`__stack` suffix
+— each of those 1,034 is confirmed to be its own genuinely separate `.glb` file on disk, not a
+node inside a shared container.
+
+### 2.3 Information or representation?
+
+**The variant/unreferenced question** (Step 4) — is every shipped mesh actually referenced?
+
+```
+python "$SCRATCH/audit/mesh_unreferenced.py" "$BUNDLE"
+```
+
+`measured`: 5,634 meshes on disk, 4,310 distinct `assetId`s placed by `instances.jsonl`,
+**1,444 meshes (25.6%, 29.7 MiB) never appear as an `assetId` on any instance line.** Per this
+task's own warning and `docs/bundle-schema.md` §4.1/§6.1 (read before writing this), that is
+**not** the same as "unused" — the script classifies each of the 1,444 against the contract's
+own documented resolution mechanisms rather than assuming dead weight:
+
+| class | files | bytes | resolved how |
+|---|---:|---:|---|
+| `__base` skirts | 1,436 | 27.9 MiB | §4.1: *"No instance record references `__base` explicitly; its presence beside `<assetId>.glb` is the signal."* Never expected to appear as an `assetId`. |
+| plain undivided `<assetId>` of a stackable prefab | 6 | 1.6 MiB | §4.1: *"The undivided `<assetId>` is also present for completeness, though every placed instance of a stackable prefab carries a stack in CS2 … instance records normally reference only the section files."* Explicitly documented as expected-unreferenced. Confirmed by name: `2LaneWoodenCoveredBridgePillar`, `ConstructionCrane01`, `Pier01Pillar01`, `Train_Vertical_Pillar`, `TrussArchBridge01NetPillar`, `Vertical_Pillar` — exactly the six prefabs that also have `__stack_*` files on disk. |
+| `__stack_mid` | 2 | 0.2 MiB | §4.1's per-instance stack-section mechanism: `Pier01Pillar01__stack_mid` and `TrussArchBridge01NetPillar__stack_mid` have zero placements *in this specific city* — checked directly, every other `__stack_*` file for those two prefabs (`_first`/`_last`) **is** referenced (61 and 4 times respectively). No placed instance of either prefab was long enough to need a repeated middle section this rip. Data-dependent (a taller instance elsewhere would reference it), not a schema defect. |
+| **total classified** | **1,444** | **29.7 MiB** | **100% resolved by a documented contract mechanism** |
+
+**Zero genuinely-dead meshes found.** Every one of the 1,444 unreferenced-by-`assetId` files is
+accounted for by a mechanism `docs/bundle-schema.md` §4.1 already documents. This closes Step
+4 as a negative result — **no mesh-deletion candidate is proposed**, matching this task's
+constraint that no mesh class may be proposed for deletion without proving it is unreferenced
+by *both* the `assetId` join and the contract's other resolution paths.
+
+**The `__base.glb` skirts** (constraint 4) — 1,436 files, **27.9 MiB, 1.6% of `meshes/`, 0.6%
+of the whole 4,894,194,530-byte bundle.** Are they derivable from the parent mesh plus terrain,
+rather than baked?
+
+**Yes — validated by a prior pass, cited rather than re-derived.** `docs/cs2-api-audit.md` §27
+(read in full) is a line-by-line comparison of `IO/BaseSkirtBuilder.cs` against the game's own
+`BatchMeshHelpers.GenerateObjectMesh` → `AddBaseLines`/`AddBaseVertices`: gate (row 1), exclusion
+pass (row 2), keep pass (row 3) and the band itself (row 5) are all **"match"**; the
+distance-resolution traversal (row 4) is **"match (outcome-equivalent)"**; row 6 — the v=0 ring
+being dropped to terrain — is a **documented deliberate deviation**, already the consumer rule
+this bundle's contract states (§4.1: *"moves every `v = 0` vertex down to the terrain surface at
+its world X/Z"*); row 7 is **benign** (a linear scan replacing the game's BVH, perf-only). So
+the entire skirt geometry is a **pure, already-verified-faithful, deterministic function of**:
+the parent mesh's own silhouette at its base level (already shipped — the parent `.glb`'s own
+vertex positions and bounds), a fixed 1 m band algorithm (`IO/BaseSkirtBuilder.cs`, 366 lines,
+proven to match source), the base material (a small string, already present as the skirt file's
+own glTF material name — see the sample below), whether the instance rests on the ground
+(`attrs.elevationFlags`, already shipped per instance, §4.1), and the terrain surface itself
+(already shipped, `terrain/elevation.tif`). Sample skirt file confirms the material reference is
+tiny and already join-key-shaped:
+
+```
+2LaneWoodenCoveredBridgePillar__base.glb: 3,136 bytes, 26 vertices, 48 indices
+  materials: [{"name": "Default_Base_5bafa4f37f02ba699434b2189507eb8c", …}]
+```
+
+No byte in `__base.glb` encodes a fact absent from data the bundle already ships elsewhere plus
+a fixed, already-ported-and-verified algorithm — this is the textbook deriving-instead-of-baking
+case. The cost is real, though: a consumer must port `IO/BaseSkirtBuilder.cs`'s 366 lines
+(silhouette edge-exclusion pass, keep pass, perimeter-distance chain resolution with loop-seam
+handling), not just skip a file — unlike a free in-place re-encode, this is genuine consumer
+engineering, mitigated by the fact that the reference implementation to port already exists and
+is independently proven faithful (§27).
+
+### 2.4 Smallest lossless encoding
+
+**Quantization is not lossless — measured arithmetically, per constraint 3, with its error
+bound in millimetres, per this bundle's own physical scale (not a unit-cube guess).**
+
+```
+python "$SCRATCH/audit/mesh_quantize.py" "$BUNDLE"
+```
+
+(Position → `i16` normalized over each mesh's own bounding box; `NORMAL`/`TANGENT` → `i8`;
+`TEXCOORD_0` → `u16`; indices unchanged — the brief's own rule, `KHR_mesh_quantization`-shaped.
+Deduped by `(file, accessor index)` for the same reason §2.1's census needed the fix.)
+`arithmetic`, full population:
+
+```
+attribute bytes before:    1,474.5 MiB
+attribute bytes after:       522.2 MiB  (35.4%)
+worst-case position error over all meshes: 20.505 mm
+```
+
+Combined with the unchanged `INDICES` (230.4 MiB) and JSON/padding overhead (11.9 MiB, §2.1):
+new total = 522.2 + 230.4 + 11.9 = **764.5 MiB**, versus the as-shipped 1,716.8 MiB — **952.3
+MiB saved (55.5% of `meshes/`; 20.4% of the whole bundle)**, `arithmetic`. The 20.505 mm figure
+is the brief's own formula (`extent / 65534`, the full quantization step over the worst
+single mesh's largest bounding-box extent) — a conservative upper bound: a round-to-nearest
+quantizer's true worst-case error is at most **half** a step (≤ 10.253 mm), but the stated
+figure is what the formula as given computes, and is reported as-is rather than halved without
+re-deriving the brief's own rule.
+
+**Generic compressibility** — neither `gltfpack` nor Draco is installed (checked:
+`where gltfpack` → not found, no install performed per this task's resolution). Measured
+zlib/lzma on the same 200-file sample the brief specifies, as an upper-bound proxy for what a
+real container/mesh-compression tool could achieve — labelled `arithmetic` per this task's
+resolution (not `measured` in the stricter TEX-row sense of a verified production re-encode
+path), even though the bytes below come from an actual run, with an actual bit-exact
+decompression assertion:
+
+```
+python -c "
+import lzma, zlib, random
+from pathlib import Path
+root = Path(r'$BUNDLE/meshes')
+files = sorted(root.glob('*.glb')); random.Random(0).shuffle(files)
+sample = files[:200]
+raw = b''.join(p.read_bytes() for p in sample)
+z = zlib.compress(raw, 9); l = lzma.compress(raw)
+assert zlib.decompress(z) == raw and lzma.decompress(l) == raw
+per_file = sum(len(zlib.compress(p.read_bytes(), 9)) for p in sample)
+print(len(raw), len(z), len(l), per_file)
+"
+```
+
+```
+sample 200 files: 60,003,752 bytes (57.2 MiB)
+  zlib -9 (concatenated) : 9,053,409 bytes (15.09%), round-trip bit-exact
+  lzma    (concatenated) : 4,727,024 bytes ( 7.88%), round-trip bit-exact
+  zlib -9 (per-file, independent, no cross-file redundancy): 9,073,697 bytes (15.12%)
+```
+
+The concatenated and per-file zlib figures differ by only 0.03 percentage points — **almost all
+of the win is within-file redundancy in the raw f32 vertex data, not cross-file redundancy
+between different meshes.** A single combined container buys essentially nothing over
+compressing each `.glb` independently for this domain (contrast §1's texture case, where the
+brief's own JSON-overhead framing expected a one-container win — meshes don't have that
+shape). Extrapolation rule: `total meshes/ bytes (1,800,230,540) × (compressed sample bytes ÷
+60,003,752)`:
+
+- **zlib -9: 259.0 MiB (15.1%), saved 1,457.8 MiB — 84.9% of `meshes/`, 31.2% of the whole
+  bundle.**
+- **lzma: 135.3 MiB (7.9%), saved 1,581.5 MiB — 92.1% of `meshes/`, 33.9% of the whole
+  bundle.**
+
+This is lossless by construction (DEFLATE/LZMA decompression reproduces the input exactly; the
+assertion above confirms it on the sample rather than taking that as given) and is the single
+largest number measured in this section — far larger than the lossy quantization candidate
+above. **`meshes/`'s `.glb` files currently ship with zero compression applied to their binary
+buffers** (`IO/GltfWriter.cs` writes the BIN chunk raw), unlike `textures/`'s PNGs, which
+already run through `Deflater` (§1). **Not measured jointly with quantization, and the two must
+not be summed**: quantized (already denser, less redundant) data compresses differently than the
+raw f32 form measured here, and a joint number would need an actual quantized re-encode, not an
+arithmetic byte estimate — out of scope for Phase A.
+
+### Rip time
+
+`meshes/` is written inside §8's row 2 (Meshes, 1177.106 s bracket) — cited, not re-derived; the
+same bracket §1 already established is dominated by one serial writer thread doing mesh
+`.glb` serialisation *and* texture PNG encoding together (§1's Rip time subsection, not
+repeated here). The instrumented sub-step within that row, "Mesh writing: `Wrote 4198 .glb,
+skipped 120, failed 0, in 1178.3 s`" (§8), is the direct mesh-write figure — `instrumented`, per
+§8's own labelling, agreeing with the 1177.106 s bracket to within 1.2 s. Whether compressing
+`.glb` output at write time (MESH-1 below) would add to or shrink that time is `unmeasured` — it
+would need a C#-side timed re-rip, the same caveat §1 records for texture re-encoding, and is
+not estimated from this section's Python zlib/lzma timings for the same cross-language reason.
+
+**Note on the source log**: the live `Carto.log` at the path `$LOG` resolves to has since been
+overwritten by a later, unrelated, much shorter mod-load session (observed directly: the file
+is now 1,182 bytes, timestamped after the rip that produced this bundle) — the rip log's
+content this section and §0/§1/§8 rely on is only available from the cached excerpts already
+saved under `$SCRATCH/audit/` by earlier tasks (`full-log-repr.txt`, `log-timeline.txt`), not
+from a fresh `grep` against `$LOG` itself. This task did not need to re-query the live log for
+anything beyond what §8 already records, so it caused no gap here — flagged for whichever later
+task next needs `$LOG` directly.
+
+### Candidate rows
+
+**Lossless candidates:**
+
+| id | change | est. bytes saved | est. rip-time saved | consumer cost | risk | lossless? | additive layer |
+|---|---|---|---|---|---|---|---|
+| MESH-1 | Compress `.glb` binary buffers at rest (zlib -9 or lzma; currently unlike `textures/`'s PNGs, mesh BIN chunks are written raw) | arithmetic (measured zlib/lzma run, extrapolated), zlib **1,457.8 MiB (84.9% of `meshes/`, 31.2% of bundle)**; lzma **1,581.5 MiB (92.1%, 33.9%)** | unmeasured (needs a C#-side timed re-rip; compression itself costs CPU at write time) | one decompress call before parsing — zlib/lzma decoders are standard-library or trivial to add in every mainstream consumer language, but this is not literally free like an in-place re-encode | medium — algorithm risk is near-zero (ubiquitous, well-tested codecs, bit-exact by construction, verified on-sample), but it is a container-format change, not an in-place one | YES, bit-exact round-trip assertion passed on the 200-file sample | **new layer**: a compressed at-rest/transport encoding of the unchanged `.glb` bytes (e.g. per-file `.glb.gz`, or one archive per directory using the already-bundled `ICSharpCode.SharpZipLib`) — needs a `compression` field amendment under §12.1; **retires**: nothing, the canonical uncompressed `.glb` bytes are recovered exactly on decompress |
+| MESH-3 | Derive `__base.glb` skirts at consumer load time instead of baking them (§2.3): port `IO/BaseSkirtBuilder.cs`'s algorithm, given the parent mesh + `attrs.elevationFlags` + `terrain/elevation.tif`, all already shipped | measured, **27.9 MiB (1.6% of `meshes/`, 0.6% of bundle)** | unmeasured | real: port ~366 lines of silhouette-scan geometry (edge exclusion, keep pass, perimeter-distance chain with loop-seam handling) — nontrivial, but the reference implementation is already proven faithful to the game (§27), lowering the porting risk | medium — the port must reproduce the game's algorithm exactly to avoid visible gaps/seams; a proven-faithful reference exists to copy | YES — every fact in `__base.glb` is already derivable from data the bundle ships elsewhere plus an already-verified deterministic algorithm | **removes** a file class rather than adding one; the tiny per-prefab base-material reference (currently the skirt file's own glTF material name, e.g. `Default_Base_5bafa4f37…`) would need to move into `materials.json`/`bundle.json` for prefabs whose skirt file is dropped — negligible bytes, a real (small) schema touch |
+| MESH-4 | Delete unreferenced/dead meshes | 0 — none found (§2.3: all 1,444 unreferenced-by-`assetId` files resolve to a documented contract mechanism) | n/a | n/a | n/a | n/a (closed, negative result) | not applicable — no files to touch, nothing to retire |
+
+**Lossy candidates** (named and measured per constraint 6's "investigate lossless first," but
+not recommended — MESH-1 above already gives a far larger lossless win from the same domain):
+
+| id | change | est. bytes saved | est. rip-time saved | consumer cost | risk | lossless? | error bound | additive layer |
+|---|---|---|---|---|---|---|---|---|
+| MESH-2 | `KHR_mesh_quantization`-style re-encode: `POSITION` → normalized `i16`, `NORMAL`/`TANGENT` → `i8`, `TEXCOORD_0` → `u16`, indices unchanged | arithmetic, **952.3 MiB (55.5% of `meshes/`, 20.4% of bundle)** | unmeasured | consumer must dequantize per the `KHR_mesh_quantization` extension (or an equivalent scale/offset it reads from `accessor.min`/`max`) — every existing consumer that doesn't apply this extension silently misreads the geometry | high — not a drop-in re-encode; shipping it in place would break every consumer that doesn't already handle the extension, so it can only ship as either a genuinely separate opt-in file (doubling storage until adopted) or a breaking major-version schema change | **NO — ≤ 20.505 mm** (brief's own formula: the full quantization step over the worst single mesh's bounding-box extent; a round-to-nearest quantizer's true worst case is at most half that, ≤ 10.253 mm, not re-derived here) | either a **new layer** (a parallel quantized geometry form, opt-in via `KHR_mesh_quantization`, current f32 form untouched) or a **breaking replacement** requiring a major schema version bump (§12) — not designed here, named for §9 to weigh against MESH-1's much larger, genuinely lossless win from the same 1.7 GB |
+
 ## 3. Networks
 
 ## 4. `instances.jsonl`
