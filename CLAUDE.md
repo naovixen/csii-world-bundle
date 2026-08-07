@@ -85,6 +85,12 @@ seam everything depends on.
   - **Check staleness before trusting it, every time:** compare the bundle's mtime against
     `git log --format='%h %ad %s' --date=format:'%Y-%m-%d %H:%M' --since='<mtime>' -- Systems IO Domain`.
     Name any commit it lists when stating what the bundle can and cannot answer.
+  - **That check tells you where to look, not what to conclude — it gives false positives.**
+    The mod deploys on `dotnet build` (via `Mod.targets`), not on commit, so the running mod can
+    hold uncommitted work and a commit dated *after* a rip may already have been live during it.
+    Confirm against something the rip itself emitted — a log line, or a field's presence in the
+    output — before calling a layer stale. (2026-08-07: `8985b73` looked like it post-dated the
+    rip, but the rip's own log already printed that commit's `CaptureSplatmap` lines.)
   - It is still the right source for *what shape the entities in a real city have* — a fact about
     the save, not about the code. It is the wrong source for *did my change work*.
 - **Prove GPU mesh readback FIRST** (PLAN Phase 1 spike). Reading real vertex/index buffers at
