@@ -178,16 +178,22 @@ maps of the first two prefabs the mesh pass touched). These are debug-sample lin
 `[1]`–`[4]`, not a per-texture log of all 3,510) but every one of the 12 that exist agrees, and
 the second source below confirms the mechanism, not just the count.
 
-The same 8 `header WxH` lines also show two assets whose **source resolution exceeds what we
-ship**: `header 2048x2048, loaded 2048x2048 RGBA_BC7_SRGB, written 1024x1024` (`$LOG:195-198`,
-asset `FenceIndustrialPieceHigh02_...`). This is `Settings.cs:537`'s `RipTextureSize` default
-(1024) acting as `MeshRipSystem.BeginRip`'s/`NetworkRipSystem.BeginRip`'s `textureSizeCap`
-parameter (`Systems/MeshRipSystem.cs:432`, `Systems/NetworkRipSystem.cs:420`) — a **producer
-setting for this run**, not a game-storage fact, and it means some of what we ship is already a
-downsample of a larger game-native asset, separate from the lossless-encoding question §1.4
-answers. Only 2 of the 8 sampled `header` lines show this (the other 6 are already ≤1024 at
-source), so this is `unmeasured` for the full 3,510 — the log samples too few textures to say
-what fraction of the whole set was downsampled.
+The same 8 `header WxH` lines also show **one asset** whose source resolution exceeds what we
+ship. Re-checked directly (`grep -n 'header [0-9]\+x[0-9]\+' "$LOG"`, full output): the 8 lines
+are all four maps of exactly two prefabs, `PD-GrassLong01-TreeAdult_...` (`$LOG:108-111`, all
+four maps `header 1024x1024, ... written 1024x1024` — no downsample) and
+`FenceIndustrialPieceHigh02_...` (`$LOG:195-198`, all four maps `header 2048x2048, loaded
+2048x2048 RGBA_BC7_SRGB/UNorm, written 1024x1024` — downsampled). So it is **one asset**,
+across **4 of the 8** sampled `header` lines, not two assets or 2 of 8 as an earlier draft of
+this section stated. This is `Settings.cs:537`'s `RipTextureSize` default (1024) acting as
+`MeshRipSystem.BeginRip`'s/`NetworkRipSystem.BeginRip`'s `textureSizeCap` parameter
+(`Systems/MeshRipSystem.cs:432`, `Systems/NetworkRipSystem.cs:420`) — a **producer setting for
+this run**, not a game-storage fact, and it means some of what we ship is already a downsample
+of a larger game-native asset, separate from the lossless-encoding question §1.4 answers. The
+log samples only 2 of the run's thousands of textures at this granularity (indices `[1]`–`[4]`
+of the first prefab each phase touches), so whether other textures anywhere in the 3,510 were
+also downsampled remains `unmeasured` — this pair of examples establishes only that the
+mechanism exists and fires at least once, not its overall frequency.
 
 Second, source, confirming the format story rather than inferring it from map names:
 
@@ -439,21 +445,67 @@ cross-language guess.
 
 ### Candidate rows
 
-| id | change | est. bytes saved | est. rip-time saved | consumer cost | risk | lossless? |
-|---|---|---|---|---|---|---|
-| TEX-1 | Adaptive per-row PNG filtering (replace fixed filter 0), same zlib level | measured, 64.5 MiB (3.4%) | unmeasured | none | low | YES |
-| TEX-2 | Adaptive filtering + raise zlib level to 9 | measured, 151.9 MiB (8.0%) | unmeasured (encode CPU cost rises; needs a C#-side timed re-rip, not a Python proxy) | none | low | YES |
-| TEX-3 | Safe channel reduction (drop alpha only when constant at exactly 255; collapse to greyscale when R=G=B too) + TEX-2, replacing the brief's own unsafe rule | measured, 210.7 MiB (11.2%) | unmeasured | none (verified against the reference Blender PNG loader) | low | YES |
-| TEX-4 | Normal-map 2-channel repack (colour type 4; drop B, reconstruct via `round(sqrt(1−x²−y²)×127.5+127.5)` at load, same formula the producer already applies in reverse) — additive: a new `normal2`/colour-type-4 convention, current 4-channel `normal` untouched | measured, 229.5 MiB (12.2% of `textures/`; 30.4% of the 754.3 MiB candidate subset) | unmeasured | schema addition (§7.1 amendment) + one reconstruction step at load; not free like TEX-3 | medium — schema change, and only covers producer-detected packed normals (840 of 3,510 files) | YES, verified exact on full population (840/840) plus a 120-file re-encode round-trip |
-| TEX-5 | Delete orphan textures | 0 — none found | n/a | n/a | n/a | n/a (closed, negative result) |
-| TEX-6 | Lossy re-encode (e.g. WebP/AVIF) of whatever remains after TEX-1…4 | unmeasured | unmeasured | high — consumer needs a new-format decoder | high | **NO** — named for §9 only, not recommended here; BC7 itself is *not* a smaller candidate (§1.2: 0.544× the other way) |
+**TEX-3 and TEX-4 overlap and are not additive.** Both claim the same alpha-channel saving on
+the same files: TEX-3's safe rule drops alpha whenever it is constant at 255 (keeping B);
+TEX-4's repack, on the *same* alpha==255-and-normal-derivable files, drops alpha too (folding
+it into a 2-channel form that also drops B). Checked directly, full population (not sampled):
 
-TEX-1/2/3 stack (TEX-3 already includes TEX-2's adaptive-zlib-9 baseline); TEX-4 is additive and
-independent of TEX-1–3's PNG-encoding parameters. Summing TEX-3 and TEX-4's independently
-measured savings: 1887.3 − 210.7 − 229.5 = **1447.1 MiB**, `arithmetic` (a sum of two
-separately-measured figures, not itself measured end-to-end on one sample — TEX-3 and TEX-4
-were each sampled on their own 120 files, not jointly) — a later task should re-run them
-together on one sample before this combined figure is treated as `measured`.
+```
+normal-B-derivable candidates: 840
+  alpha constant == 255: 840
+  alpha constant, != 255: 0
+  alpha not constant: 0
+```
+
+`measured`, exact — **all 840 of the 840 files TEX-4 targets also have alpha constant at 255**,
+i.e. TEX-4's whole candidate set is a strict subset of TEX-3's (every TEX-4 file also qualifies
+for TEX-3's "drop alpha" rule alone). Summing TEX-3's 210.7 MiB and TEX-4's 229.5 MiB therefore
+double-subtracts the alpha channel on exactly those 840 files, confirmed by full-population
+count rather than estimated — the correct combined figure is smaller than the sum, measured
+directly below rather than summed. (A 500-file
+joint sample independently corroborates the overlap at run time: of the 127 sampled files
+qualifying for either row, 122 — 96.1% — hit the deeper TEX-4 branch, consistent with the exact
+840/840 full-population figure above within sampling noise.)
+
+**Lossless candidates:**
+
+| id | change | est. bytes saved | est. rip-time saved | consumer cost | risk | lossless? | additive layer |
+|---|---|---|---|---|---|---|---|
+| TEX-1 | Adaptive per-row PNG filtering (replace fixed filter 0), same zlib level | measured, 64.5 MiB (3.4%) | unmeasured | none | low | YES | not applicable — in-place re-encode of the same file at the same path; no new layer, nothing retired |
+| TEX-2 | Adaptive filtering + raise zlib level to 9 | measured, 151.9 MiB (8.0%) | unmeasured (encode CPU cost rises; needs a C#-side timed re-rip, not a Python proxy) | none | low | YES | not applicable — same as TEX-1, in-place re-encode |
+| TEX-3 | Safe channel reduction (drop alpha only when constant at exactly 255; collapse to greyscale when R=G=B too) + TEX-2, replacing the brief's own unsafe rule | measured, 210.7 MiB (11.2%) *alone* — see the joint row below, this is not additive with TEX-4 | unmeasured | none (verified against the reference Blender PNG loader) | low | YES | not applicable — in-place re-encode; PNG colour type changes but the file's path/contract slot is unchanged, nothing new to retire |
+| TEX-4 | Normal-map 2-channel repack (colour type 4; drop B, reconstruct via `round(sqrt(1−x²−y²)×127.5+127.5)` at load, same formula the producer already applies in reverse) | measured, 229.5 MiB (12.2% of `textures/`; 30.4% of the 754.3 MiB candidate subset) *alone* — see the joint row below, this is not additive with TEX-3 | unmeasured | schema addition (§7.1 amendment) + one reconstruction step at load; not free like TEX-3 | medium — schema change, and only covers producer-detected packed normals (840 of 3,510 files) | YES, verified exact on full population (840/840) plus a 120-file re-encode round-trip | **new layer**: `normal2`, a colour-type-4 (grey+alpha) convention alongside the existing `normal` map; **retires**: the 4-channel `normal` PNG, once consumers adopt it — until then `normal` stays and this ships alongside it |
+| TEX-3+4 joint | One representation per file — the deepest each file qualifies for (TEX-4's 2-channel form where a file is both alpha==255 and normal-derivable; otherwise TEX-3's RGB/L form where only alpha==255; otherwise adaptive-filtered RGBA) — replaces citing TEX-3 and TEX-4 as separately additive | measured, **377.1 MiB (19.98%)**, see method below | unmeasured | union of TEX-3's (none) and TEX-4's (schema addition + reconstruction step) — whichever applies per file | medium (inherits TEX-4's schema-change risk for the subset it touches) | YES, all 500 sampled files decoded and reconstructed bit-exact | same as TEX-4 for the files it touches (`normal2`); in-place re-encode (no new layer) for the rest |
+| TEX-5 | Delete orphan textures | 0 — none found | n/a | n/a | n/a | n/a (closed, negative result) | not applicable — no files to touch, nothing to retire |
+
+**TEX-3+4 joint, method:** measured directly rather than summed, on a 500-file sample (raised
+from 120 because the branching logic needed enough files in each branch to be meaningful — the
+120-file TEX-3/TEX-4 samples individually had too few normal-and-alpha-255 files to branch-test
+reliably together):
+
+```
+sample 500 of 3,510 files
+raw as-shipped: 276,005,696 bytes (263.2 MiB)
+joint (one representation per file): 220,863,237 bytes (210.6 MiB), 80.0% of as-shipped
+saved: 55,142,459 bytes (20.0%), all 500 files verified bit-exact
+branch counts: baseline (RGBA) 373, TEX-4 (2-channel) 122, TEX-3 (L) 2, TEX-3 (RGB) 3
+```
+
+Extrapolation rule, stated explicitly: `total shipped bytes (1,979,015,958, §0) ÷ this sample's
+bytes (276,005,696) = 7.1702×`, applied to the joint total. `measured`: **1510.3 MiB shipped,
+−377.1 MiB (−19.98%) vs. as-shipped** — this is the correct combined lossless figure for
+TEX-3+TEX-4 together, smaller than the erroneous naive sum (1887.3 − 210.7 − 229.5 = 1447.1 MiB,
+i.e. a claimed 440.2 MiB saved) by 63.1 MiB, exactly because that sum double-subtracted the
+overlapping alpha channel. **Do not cite TEX-3's and TEX-4's individual savings as additive; cite
+this row instead when a single combined number is needed.**
+
+**Lossy candidates** (named for §9 to rank; not recommended here — constraint 6 requires
+lossless to be investigated first, and none of the rows above needed a lossy fallback to reach
+their savings):
+
+| id | change | est. bytes saved | est. rip-time saved | consumer cost | risk | lossless? | error bound | additive layer |
+|---|---|---|---|---|---|---|---|---|
+| TEX-6 | Lossy re-encode (e.g. WebP/AVIF at a quality setting) of whatever remains after TEX-1…4/joint | unmeasured | unmeasured | high — consumer needs a new-format decoder | high | **NO** | `unmeasured` — Phase A does not encode or measure it; BC7 itself is *not* a smaller candidate at these dimensions (§1.2: 0.544× the other way), so it is not the lossy option named here | would replace `textures/*.png` outright for the files it touches — a bigger change than any lossless row above, not expressible as an opt-in additive layer without also adding a codec-selector field to the schema (not designed here) |
 
 ## 2. Meshes
 
