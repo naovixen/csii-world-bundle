@@ -147,7 +147,7 @@ _DECAL_LIFT = 0.015
 # beats path+_DECAL_LIFT on 42% of samples, which is why bent markings vanish into the
 # asphalt. The game never sees the problem because a decal is a projector volume, painted
 # onto whatever surface it meets. The harness equivalent is a drape: sample the road surface
-# under the marking and snap onto it (see _DRAPE_SAGITTA_TOLERANCE / Tier 1b-1c near
+# under the marking and snap onto it (see _decal_rows / Tier 1b-1c near
 # _bend_lane_part — the old fixed-step subdivide-every-vertex approach was the single
 # biggest driver of a full-city import's memory and ray-cast cost, and is gone). Markings
 # ride a hair higher than the ~12%-alpha wear tint so the two never z-fight where a
@@ -1073,8 +1073,28 @@ _LANE_MAX_TILES = 256
 # curvature demands, measured against the arc-table samples the bend already computes (free
 # reuse, no extra bézier evaluation). A flat run needs one row (its two end stations); a
 # tight curve keeps subdividing until the worst deviation between the true curve and a
-# straight sub-chord falls under tolerance. Measured effect: 2.24M -> ~1.06M verts.
-_DRAPE_SAGITTA_TOLERANCE = 0.02  # metres
+# straight sub-chord falls under tolerance.
+#
+# Two tolerances, because the rows serve two different jobs and only one of them can bury a
+# marking (2026-08-08 fix — the single 3D tolerance below shipped for both and put 13.0% of
+# the city's decal spans under the asphalt, against 3.6% for the fixed 3 m step it replaced):
+#
+#  * _DECAL_SHAPE_TOLERANCE governs how faithfully the flat lattice follows the bézier in
+#    plan. Cutting a corner by 2 cm is invisible, and it cannot bury anything: the drape puts
+#    every vertex on the surface at the vertex's OWN (x, z), wherever the chord placed it.
+#  * _DECAL_DIP_FRACTION governs the axis that does bury: between two draped stations the
+#    mesh is a straight edge, and a road crest RISES above that edge. The tolerance for that
+#    rise cannot be picked independently of the lift — it has to be a fraction of the
+#    marking's own _DECAL_DRAPE_* lift, or the rule permits exactly the burial the lift
+#    exists to prevent. Half leaves the marking clear by at least its remaining half.
+#
+# Measured over the full city's 83,110 decal spans (tools/test_decal_rows.py): spans buried
+# under their own road 3.6% with the 3 m step, 13.0% with the single 3D tolerance, 2 spans
+# (0.002%) now — both pathological vertical curves pinned at the row cap. Vertices
+# 2.24M -> 876k (buried) -> 1.14M, so the drape still costs half what the 3 m step did.
+_DECAL_SHAPE_TOLERANCE = 0.02  # metres of plan-shape deviation from the true curve
+_DECAL_DIP_FRACTION = 0.5      # of the part's own lift, for the vertical rise over a chord
+_DECAL_MAX_ROWS = 64           # same ceiling the old fixed-step code used
 
 
 def _bezier_point_vec(c, t):
@@ -1130,15 +1150,15 @@ def _curve_length(curve):
     return float(_arc_table_vec(curve)[1][-1])
 
 
-def _sagitta_rows(points):
-    """Fewest lattice rows whose chords stay within `_DRAPE_SAGITTA_TOLERANCE` of the curve.
+def _shape_rows(points):
+    """Fewest lattice rows whose chords stay within `_DECAL_SHAPE_TOLERANCE` of the curve.
 
     `points` are the `_LANE_ARC_SAMPLES+1` bézier samples the arc table already computed for
     this span — reused here so curvature costs nothing extra. A flat run (the curve's own
     worst deviation from its straight end-to-end chord already under tolerance) gets 1 row
     = 2 stations; a curved one keeps subdividing, using that a smooth arc's sagitta falls off
-    roughly as the square of the subdivision count. Capped at 64 rows, the same ceiling the
-    old fixed-step code used.
+    roughly as the square of the subdivision count. Plan fidelity only — burial is
+    `_decal_rows`'s job, on a different axis and a different tolerance.
     """
     chord = points[-1] - points[0]
     chord_len = float(numpy.linalg.norm(chord))
@@ -1148,9 +1168,53 @@ def _sagitta_rows(points):
     rel = points - points[0]
     perp = rel - numpy.outer(rel @ direction, direction)
     max_sagitta = float(numpy.linalg.norm(perp, axis=1).max())
-    if max_sagitta <= _DRAPE_SAGITTA_TOLERANCE:
+    if max_sagitta <= _DECAL_SHAPE_TOLERANCE:
         return 1
-    return max(1, min(64, int(math.ceil(math.sqrt(max_sagitta / _DRAPE_SAGITTA_TOLERANCE)))))
+    return max(1, min(_DECAL_MAX_ROWS,
+                      int(math.ceil(math.sqrt(max_sagitta / _DECAL_SHAPE_TOLERANCE)))))
+
+
+def _chord_dip(arc_table, height, rows):
+    """How far the span's vertical profile rises above the chord polyline of `rows` rows.
+
+    This is the quantity that buries a marking: the drape pins each station onto the road
+    surface, the mesh between two stations is a straight edge, and anywhere the surface
+    crests above that edge by more than the lift, the asphalt wins the depth test. Measured
+    on the arc table's own samples, arc-parameterised exactly as `_bend_lane_part` places
+    stations (`arc_pos = stations * total_arc`), so it costs two interpolations over
+    `_LANE_ARC_SAMPLES+1` values and no bézier evaluation at all.
+
+    `height` is the bundle-frame up axis of those samples. The lane curve is the proxy for
+    the surface profile here — the carriageway is built along the same curve — so this sees
+    grade changes, not the crown, which the per-vertex drape handles on its own.
+    """
+    total = float(arc_table[-1])
+    station_arc = numpy.linspace(0.0, total, rows + 1)
+    station_height = numpy.interp(station_arc, arc_table, height)
+    return float((height - numpy.interp(arc_table, station_arc, station_height)).max())
+
+
+def _decal_rows(points, arc_table, drape_eps):
+    """Lattice rows for one decal span: plan fidelity, then refined until it cannot bury.
+
+    The shape rule alone measures deviation from the 3D chord, which on a road is dominated
+    by the horizontal bend — the axis that cannot bury a marking. So it both over-subdivides
+    flat bends and, worse, leaves a long straight run over a crest at a single row: a 19 mm
+    crest is inside a 20 mm tolerance and outside a 14 mm lift. The refinement below doubles
+    the rows until the measured rise over a chord is at most `_DECAL_DIP_FRACTION` of the
+    part's own lift — a measured bound, not the `1/rows²` extrapolation the shape rule
+    assumes, which a bézier with concentrated curvature does not obey.
+
+    `drape_eps` is None for a part that will not be draped, which needs plan fidelity only.
+    """
+    rows = _shape_rows(points)
+    if drape_eps is None or float(arc_table[-1]) < 1e-6:
+        return rows
+    target = drape_eps * _DECAL_DIP_FRACTION
+    height = points[:, 1]
+    while rows < _DECAL_MAX_ROWS and _chord_dip(arc_table, height, rows) > target:
+        rows = min(_DECAL_MAX_ROWS, rows * 2)
+    return rows
 
 
 def _lane_tile_count(span_length, mesh_length, tiling_count, geometry_tiling):
@@ -1400,16 +1464,18 @@ def _bend_lane_part(part, source, curve, spans, curve_length, width_scale, hang,
             continue
 
         drape_eps = None
+        if is_decal:
+            drape_eps = (_DECAL_DRAPE_MARKING if ("Line" in asset_id or "Crosswalk" in asset_id)
+                         else _DECAL_DRAPE_TINT)
         if is_decal and quad is not None:
             # Tier 1c: rows from THIS span's own curvature (reusing its arc-table samples),
             # not a fixed 3 m step. The lattice is generated directly — no static mesh to
             # subdivide, and no memo needed since this is already O(rows), not O(mesh size).
+            # The row count needs the part's lift, so `drape_eps` is settled above it.
             curve_points_full = _bezier_point_vec(bezier, t_table)
-            rows = _sagitta_rows(curve_points_full)
+            rows = _decal_rows(curve_points_full, arc_table, drape_eps)
             raw_verts, tris_local, uv_local = _decal_lattice(quad, rows)
             material_groups = [(quad["material"], numpy.arange(len(tris_local)))]
-            drape_eps = (_DECAL_DRAPE_MARKING if ("Line" in asset_id or "Crosswalk" in asset_id)
-                         else _DECAL_DRAPE_TINT)
         elif is_decal:
             # Not a simple rectangle (rare) — general path, unsubdivided, same guard the old
             # _subdivide_decal_quad's `return source` gave it.
@@ -1417,8 +1483,6 @@ def _bend_lane_part(part, source, curve, spans, curve_length, width_scale, hang,
             tri_mat = source["tri_material"]
             material_groups = [(source["materials"][m], numpy.nonzero(tri_mat == m)[0])
                                for m in numpy.unique(tri_mat)]
-            drape_eps = (_DECAL_DRAPE_MARKING if ("Line" in asset_id or "Crosswalk" in asset_id)
-                         else _DECAL_DRAPE_TINT)
         else:
             raw_verts, tris_local, uv_local = source["verts"], source["tris"], source["uvs"]
             tri_mat = source["tri_material"]
