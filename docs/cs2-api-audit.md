@@ -1234,3 +1234,143 @@ unknown, which is the sweep's job.
 
 Every fix is unvalidated in-game until the next rip: the user validates with a full-city rip
 plus the Blender harness, then accepts.
+
+---
+
+## 30. Surface areas are projections, not planes (2026-08-08)
+
+Raised by a reported defect: *"terrain clips through areas (parking lot, driveways etc) and
+decals do not map directly on them"*, with the hypothesis that areas lack the terrain
+lowering roads get. Validated against source; the hypothesis is wrong in an instructive way,
+and the defect is real and older than the §8b layer's last change.
+
+### The game's rule
+
+| Game | Source | Producer / harness before | Verdict |
+|---|---|---|---|
+| An area triangle is rendered as a **prism**, not a surface: a 6-vertex, 8-face volume literally named `"Area triangle volume"` | `AreaRenderSystem.CreateMesh`, drawn via `Graphics.RenderMeshIndirect` per triangle instance | harness drew the flat triangle at node heights | **divergence — fixed harness-side** |
+| The prism spans `Triangle.m_HeightRange`, the min/max of the heightmap over the triangle's footprint **relative to its own plane**, walked cell by cell, water included | `Areas.GeometrySystem.UpdateHeightRange` → `GetHeightRange`; `AreaBatchSystem` line 1328 scales the volume to it ± `RenderedAreaData.m_HeightOffset` | not carried at all | **divergence — now shipped as `heightRanges`** |
+| The material is a **decal**: `m_DecalLayerMask = DecalLayers.Terrain`. The paint lands on the terrain's own surface, so conformance is free in-game | `Prefabs.RenderedArea` | — | match (explains why the game has no such defect) |
+| Texture is world-planar at the authored `m_UVScale` (default 0.2 → one repeat / 5 m), handed to the shader as `colossal_UVScale` | `RenderedArea.m_UVScale`; `AreaBatchSystem` line 2109 | harness guessed `world / 4.0`; contract told consumers to "pick a plausible metres-per-repeat" | **hack — now shipped as `uvScale`** |
+| Terrain **is** levelled under areas — but only for `TerrainArea`, a `LotPrefab` component (`m_HeightOffset` 20 m, `m_SlopeWidth`, `m_NoiseScale`, `m_AbsoluteHeight`), applied by `TerrainSystem`'s `CullAreasJob` into the same height buffer as the road flattening | `Prefabs.TerrainArea`, `Simulation.TerrainSystem` line 1775 | already baked into §8's heightmap, which is read from `GetHeightData` (§17.1) | match — **nothing to add** |
+| A `SurfacePrefab` area (every §8b record: pavement, grass, tiles, sand) has no `TerrainArea`, so the ground under it is never touched | archetype: `RenderedArea` without `TerrainArea` | contract §8b claimed "the game grades terrain under areas" | **contract was wrong — corrected** |
+| `Node.m_Elevation` per area node | `Areas.Node` | not carried | open, unmeasured — no consumer need identified; revisit if elevated (`Space`) areas ever ship |
+
+### Measured on the shipped full-city bundle
+
+The game's own `GetHeightRange`, recomputed offline against `terrain/heightmap.png` over all
+27,422 areas / 175,783 triangles:
+
+- terrain rises **through** the flat triangle on **26.6%** of triangles and **61.4%** of
+  areas — p95 11 cm, p99 55 cm, worst 28.7 m.
+- worst classes are exactly the reported ones: `Pavement_Surface_01` 77.2% of its areas,
+  `Pavement_Surface_02` 73.1%, `Tiles_Surface_02` 67.6%.
+
+The second symptom is a separate, one-constant bug found on the way: the harness lifted areas
+**2 cm** and §4.2a decal instances **1.5 cm**, so the pavement painted over the bay markings
+standing on it. Of the 11,171 decal instances landing on an area, 15.3% sat below its plane
+and 9.7% floated more than 5 cm above it.
+
+### What changed
+
+- **Producer** — `areas.jsonl` carries `heightRanges` (free: the `Triangle` buffer is already
+  read); `areaprefabs.json` carries `uvScale` and `heightOffset`. Contract §8b rewritten: the
+  triangle is a footprint, the consumer must drape it, and the terrain is not graded flat.
+- **Harness** — `_conform_area_triangle` splits each triangle until the ground under its edge
+  midpoints *and centroid* is within half the area's own lift, ray-casting the built terrain
+  through the shared `_ProjectionSurface` (renamed from `_RoadSurface`: lane decals and areas
+  project onto a surface for the same reason). Tolerance from the lift is the same rule the
+  lane rows use (§29a/`_decal_rows`) — how far the ground may rise through a piece cannot be
+  chosen independently of how far the piece is lifted clear of it. Bilinear sampling of the
+  heightmap is **not** a substitute for the ray-cast: the terrain is built as quads and
+  Blender picks the diagonal, worth p95 9.4 cm at 3.5 m cells and 41 cm at a full-city
+  import's strided 14 m. The lift ladder is documented and ordered: terrain 0 → lane tint
+  8 mm → lane marking 14 mm → area 20 mm → decal instance 30 mm.
+
+### Three stopping rules, each of which had to be measured rather than reasoned
+
+Every one of them was wrong on the first attempt, and each was caught by its own counter
+rather than by eye:
+
+1. **The size floor.** First cut stopped at a quarter of a terrain cell, on the argument that
+   a smaller piece cannot straddle a kink. It can — the kinks are the quads' own diagonals
+   (anywhere inside a cell) and the 15 cm roadbed-sink boundary every driveway crosses — and
+   14.6% of pieces stopped with up to 2.1 cm still above them. Now 2% of a cell, min 10 cm.
+2. **The depth cap.** At the full-city stride a big triangle needs ~10 halvings just to reach
+   that floor, so a cap of 9 silently *became* the stopping rule: 810k pieces stopped with up
+   to 4 m of ground above them. Raised to 12, with the budget as the real guard.
+3. **The piece budget.** A flat 4096 per triangle is backwards at both ends — far too much for
+   a driveway triangle inside one cell, far too little for a 25-hectare field over a gorge. Now
+   scaled by the ground the triangle covers (`_AREA_PIECES_PER_CELL`), which also bounds the
+   whole layer at so-many pieces per cell of painted ground.
+
+And the deviation test itself only sampled the three edge midpoints, so a rise in the middle of
+a piece — a knoll inside one cell, the peak of a quad's diagonal — went through it unseen; the
+centroid is now sampled too.
+
+The counter reports **square metres of painted ground left unconformed**, not pieces: a piece
+is an arbitrary unit (a budget stop leaves a few big ones, a floor stop many small ones) and
+only the area says how much of the city still shows the defect.
+
+### Where it landed
+
+| Import | Pieces | Unconformed ground | Worst residual | Areas layer |
+|---|---|---|---|---|
+| suburb region, 3.5 m terrain cells | 5,134 | **0.00%** | 1 cm | 0.6 s |
+| full city, strided 14 m terrain cells | 2,710,054 | **1.05%** | 7.0 m | 81 s |
+
+The full-city remainder is a **counted, deliberate approximation**, not an open defect: it is
+the giant field and concrete surfaces draped over real relief — 11.16% of painted ground sits
+on triangles whose own three corners differ by more than 2 m of terrain height
+(`Concrete_Surface_01` 45.4% of its area, the Haristess farm overlays 32–48%) — resolved
+against a terrain grid that is itself a 14 m subsample at that scale. A region import, which
+is where anything is looked at closely, conforms completely. The tuning is worth recording
+because the naive reading of the counters points the wrong way: the run that produced the
+*fewest* pieces (1.82M, 62 s) had **five times** the unconformed ground of the one that
+produced more (2.71M, 81 s), because its budget was starving exactly the triangles that
+needed the work.
+
+One more trap, worth the line because the ladder invites it: `_DECAL_LIFT` looks like a member
+of the ladder and is not. It is the lane bend's **pre-drape** offset, and `_drape_block`
+centres each marking's ±projector-half-height search window on the height it produces, so
+raising it with the rest of the ladder pushed 8 of the crosswalk region's 4,694 decal vertices
+out of the top of their own window. Nothing was visibly wrong; only the A/B count gate caught
+it (`draped` 4049→4041). Split into `_DECAL_LIFT` (lane pre-drape, 15 mm, unchanged) and
+`_INSTANCE_DECAL_LIFT` (§4.2a placement, 30 mm), after which the lane layer is pixel- and
+count-identical again.
+
+### Validated against a rip (2026-08-08, same day)
+
+Terrain re-ripped; only the terrain button was needed, since both changed methods hang off
+`RipTerrain`. Results:
+
+- **`uvScale` earned its place.** The authored values are nothing like the constant they
+  replaced: 0.2 on 11 of 20 prefabs, but also 0.3, 0.175, 0.1, 0.0715, 0.06, 0.03, **0.01**
+  (one repeat per 100 m) and 1.0. `Forestry_Surface_01` is 0.06 — one repeat per 16.7 m where
+  the harness drew one per 4 m. Confirmed applied by probing UV rates in the built scene.
+  `heightOffset` came out 1.5 m on all 20.
+- **Nothing was lost to the widened catalogue guard**: 41 prefabs before and after, all 19
+  colours and all 19 textures intact, with the new keys added.
+- **`heightRanges`** on 91.4% of areas, 132,502 triangles with a non-zero band. Against an
+  independent Python recomputation of `GetHeightRange`: the game's band contains the
+  recomputed one on 83.3% with ~11 mm median slack in the widening direction (its scanline is
+  conservative; a building-owned area also widens by `heightOffset`), and 0.52% are *narrower*
+  than a direct heightmap walk — the field can lag a terrain edit, since the game recomputes
+  it only when the area changes. Written into §8b so no consumer treats it as authoritative
+  ground.
+
+Two process notes from the same pass, both mine to fix:
+
+1. The baseline snapshot **hashed** `terrain/` instead of copying it, so when three rasters
+   came back different (`heightmap`, `splatmap`, `water_level`) there was nothing to diff and
+   the magnitude was unanswerable. The cause was benign — every area entity id changed between
+   the two rips, i.e. the save had been reloaded into a different sim state — but that was
+   inferred, not measured. Copy the small rasters next time.
+2. An A/B set up to show `uvScale`'s effect was malformed: the authored value takes precedence
+   over the fallback, so toggling the fallback changed nothing and both renders were identical.
+   The real check is reading the UV rate back off the built mesh, which is what settled it.
+
+The harness change is verified against the bundle — the suburb, parking-lot and forestry
+regions reconstruct with continuous pavement and their bay markings on top of it, and the
+lane, network and terrain layers are unchanged (`ab_compare.py`: `PASS 18 count line(s)
+identical`, `PASS frac=1.00000 max=0`).

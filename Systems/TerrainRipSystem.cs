@@ -681,12 +681,33 @@ namespace Carto.Systems
                     record["nodes"] = nodeArray;
 
                     int[][] triangleArray = new int[triangles.Length][];
+                    double[][] rangeArray = new double[triangles.Length][];
+                    bool anyRange = false;
                     for (int i = 0; i < triangles.Length; i++)
                     {
-                        int3 indices = triangles[i].m_Indices;
+                        Game.Areas.Triangle triangle = triangles[i];
+                        int3 indices = triangle.m_Indices;
                         triangleArray[i] = new[] { indices.x, indices.y, indices.z };
+
+                        // The game's own answer to "how far does the ground depart from this
+                        // flat triangle": GeometrySystem.GetHeightRange walks every heightmap
+                        // cell the triangle covers and takes min/max RELATIVE TO ITS PLANE,
+                        // water included. AreaRenderSystem then draws the triangle as a prism
+                        // spanning it and projects the surface material onto the terrain
+                        // inside — the area is paint, not a plane (contract §8b, audit §30).
+                        // Free to carry: the buffer is already in hand.
+                        // （遊戲對「地面偏離此平面三角形多遠」的答案：相對於三角形平面的
+                        //   最小/最大值，區域據此以稜柱投影上色——區域是塗料，而非平面。）
+                        Bounds1 range = triangle.m_HeightRange;
+                        rangeArray[i] = new[]
+                        {
+                            Math.Round((double)range.min, 3),
+                            Math.Round((double)range.max, 3)
+                        };
+                        anyRange |= (range.min != 0f) || (range.max != 0f);
                     }
                     record["triangles"] = triangleArray;
+                    if (anyRange) record["heightRanges"] = rangeArray;
 
                     writer.WriteLine(JsonConvert.SerializeObject(record));
                     written++;
@@ -752,9 +773,25 @@ namespace Carto.Systems
                                                     out PrefabBase prefabBase)
                     && (prefabBase != null)
                     && prefabBase.TryGet(out RenderedArea rendered)
-                    && (rendered != null) && (rendered.m_Material != null))
+                    && (rendered != null))
                 {
+                    // The two authored numbers a consumer otherwise has to invent. `m_UVScale`
+                    // goes straight to the shader as `colossal_UVScale` (AreaBatchSystem) and
+                    // multiplies the WORLD position — the area's texture is world-planar, not
+                    // UV-mapped, so without it every consumer guesses a metres-per-repeat.
+                    // `RenderedAreaData.m_HeightOffset` expands the projection prism beyond the
+                    // terrain's own departure from the triangle (contract §8b, audit §30).
+                    // （消費端否則必須自行臆測的兩個作者設定值：UV 比例為世界平面貼圖比例，
+                    //   高度偏移則為投影稜柱在地形起伏之外的擴張量。）
+                    entry["uvScale"] = Math.Round((double)rendered.m_UVScale, 5);
+                    if (EntityManager.HasComponent<RenderedAreaData>(prefab))
+                    {
+                        entry["heightOffset"] = Math.Round(
+                            (double)EntityManager.GetComponentData<RenderedAreaData>(prefab).m_HeightOffset, 4);
+                    }
+
                     Material material = rendered.m_Material;
+                    if (material == null) return key;
 
                     if (material.HasProperty("_BaseColor"))
                     {
