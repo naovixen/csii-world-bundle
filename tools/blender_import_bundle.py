@@ -296,15 +296,25 @@ def _mesh_from_arrays(name, verts, tris, uv_layers=None, material_runs=None, pol
     count after this pre-clean, that means it rejected something this check does not know
     about — raises rather than silently building a mis-aligned mesh.
 
-    By default a drop is reported as `CONTRACT VIOLATION` — the wording is deliberately
+    By default every drop is reported as `CONTRACT VIOLATION` — the wording is deliberately
     alarming, because for most callers (terrain, water) a degenerate face means the producer
-    handed over bad geometry. Lane geometry has one well-understood, non-defect source of
-    degenerate faces instead: a heavily tiled part's last tile can clip a whole cross-section
-    to a single arc position (see `build_lanes`), producing a zero-area strip that is neither
-    a bundle defect nor specific to any one instance. A caller that has already established
-    its drops are of that kind can pass `degenerate_report(name, dropped_count)` to receive
-    the count instead of a per-call `CONTRACT VIOLATION` line, and aggregate/report it its
-    own way; passing nothing keeps the default alarming behaviour.
+    handed over bad geometry. The two ways a face can be degenerate are NOT equally
+    diagnostic, and are always reported separately:
+
+    - A **repeated vertex index** within one polygon's row is the classic sign of bad data
+      (a genuinely zero-length edge, most often a broken concatenation at a part seam) and
+      ALWAYS gets the loud `CONTRACT VIOLATION` line, from every caller, unconditionally —
+      `degenerate_report` has no say over this class.
+    - **Geometrically zero-area with distinct indices** (three different vertices that
+      happen to be collinear or coincident) has one well-understood, non-defect source in
+      lane geometry: a heavily tiled part's last tile can clip a whole cross-section to a
+      single arc position (see `build_lanes`), producing a zero-area strip that is neither a
+      bundle defect nor specific to any one instance. A caller that has already established
+      its drops are of that kind can pass `degenerate_report(name, zero_area_count)` to
+      receive JUST this count instead of a per-call `CONTRACT VIOLATION` line, and
+      aggregate/report it its own way; passing nothing (the default) keeps the alarming
+      wording for this class too. A future regression that produces repeated-index faces
+      cannot be swallowed by a caller's soft aggregate, by construction.
     """
     verts = numpy.asarray(verts, dtype=numpy.float64)
     if verts.size == 0:
@@ -323,10 +333,10 @@ def _mesh_from_arrays(name, verts, tris, uv_layers=None, material_runs=None, pol
     if poly_count:
         # A repeated vertex index within one polygon's row — the classic cause of a face
         # mesh.validate() drops (a zero-length edge, most often at a concatenated part seam).
-        degenerate = numpy.zeros(poly_count, dtype=bool)
+        repeated = numpy.zeros(poly_count, dtype=bool)
         for i in range(poly_size):
             for j in range(i + 1, poly_size):
-                degenerate |= tris[:, i] == tris[:, j]
+                repeated |= tris[:, i] == tris[:, j]
         # Geometrically zero-area: distinct indices that still collapse to a line or point.
         # Fan-triangulated from vertex 0 (v0, v[i], v[i+1]) so it covers any poly_size.
         v0 = verts[tris[:, 0]]
@@ -335,16 +345,25 @@ def _mesh_from_arrays(name, verts, tris, uv_layers=None, material_runs=None, pol
             edge_a = verts[tris[:, i]] - v0
             edge_b = verts[tris[:, i + 1]] - v0
             area2 += numpy.linalg.norm(numpy.cross(edge_a, edge_b), axis=1)
-        degenerate |= area2 < 1e-12
+        zero_area = (~repeated) & (area2 < 1e-12)
+        degenerate = repeated | zero_area
 
         if degenerate.any():
-            dropped = int(degenerate.sum())
-            if degenerate_report is not None:
-                degenerate_report(name, dropped)
-            else:
-                LOG.warn(f"CONTRACT VIOLATION: {name} array input had {dropped} degenerate "
-                         "face(s) (repeated vertex index or zero area); dropping before build so "
+            repeated_count = int(repeated.sum())
+            zero_area_count = int(zero_area.sum())
+            if repeated_count:
+                # Never downgradable: this is the class that historically means real bad data.
+                LOG.warn(f"CONTRACT VIOLATION: {name} array input had {repeated_count} "
+                         "face(s) with a repeated vertex index; dropping before build so "
                          "materials/UVs stay aligned to the surviving polygons")
+            if zero_area_count:
+                if degenerate_report is not None:
+                    degenerate_report(name, zero_area_count)
+                else:
+                    LOG.warn(f"CONTRACT VIOLATION: {name} array input had {zero_area_count} "
+                             "geometrically zero-area face(s) (distinct indices collapsed to "
+                             "a line or point); dropping before build so materials/UVs stay "
+                             "aligned to the surviving polygons")
             keep = ~degenerate
             if material_runs:
                 expanded = []
@@ -1385,6 +1404,15 @@ def _bend_lane_part(part, source, curve, spans, curve_length, width_scale, hang,
         station_of_vert = station_of_vert.reshape(-1)  # numpy>=2.0 may keep input's ndim
         local_x = local[:, 0]
         local_y = local[:, 1]
+        # A part with >1 material (rare — every decal source is one material; only a general
+        # fence/cable mesh can mix them) gets a full `world.copy()` per extra material group
+        # below, i.e. (#materials - 1) x #verts wasted rather than indexing just the subset
+        # each group's tris reference. Deliberately not fixed: it would need renumbering each
+        # group's tri indices into its own compact range, real code for a case this bundle's
+        # lane sources essentially never hit (every multi-material part measured is a small,
+        # non-tiled mesh — a handful of verts, not the million-vertex tiled parts Tier 1a/1c
+        # target), so the complexity isn't worth it unless a future catalogue entry makes
+        # multi-material tiled parts common.
         share_verts = len(material_groups) == 1
 
         for tile in range(tiles):
@@ -1423,14 +1451,6 @@ def _bend_lane_part(part, source, curve, spans, curve_length, width_scale, hang,
                     + right[station_of_vert] * (local_x * width[station_of_vert])[:, None])
             world[:, 1] += local_y + lift - drop[station_of_vert]
 
-            expected = None
-            if drape_eps is not None:
-                # The pre-drape height each station's row actually sits at. Decal quads are
-                # flat (local_y == 0 for every lattice vertex), so this equals world[:, 1]
-                # for every vertex at that station — one array serves the whole row.
-                expected = points.copy()
-                expected[:, 1] += lift - drop
-
             for material, tri_rows in material_groups:
                 if len(tri_rows) == 0:
                     continue
@@ -1442,8 +1462,9 @@ def _bend_lane_part(part, source, curve, spans, curve_length, width_scale, hang,
                     "drape_eps": drape_eps,
                 }
                 if drape_eps is not None:
-                    block["curve_points"] = expected
-                    block["station_of_vert"] = station_of_vert
+                    # Drape samples the vertex's OWN (x, z) — including its lateral offset —
+                    # not the bézier centerline. `_drape_block` reads straight off
+                    # `block["verts"]`, so no extra per-station bookkeeping is stored here.
                     block["half_height"] = half_height
                 sink["blocks"].append(block)
 
@@ -1519,47 +1540,56 @@ def _load_lane_source(asset_id, lane_mesh_dir, cache):
     return source
 
 
+_DRAPE_DEDUP_MM = 1.0  # quantise world (x, z) to this many millimetres before deduping ray-casts
+
+
 def _drape_block(block, road_surface, counters):
-    """Sample the road surface once per unique STATION instead of once per vertex.
+    """Sample the road surface at each vertex's own (x, z) — including its lateral offset —
+    deduping ray-casts on rounded world position, not on curve station.
 
-    A decal quad's left and right edge share the same height at a given arc position — every
-    lattice vertex has `local_y == 0` (§Tier 1c / `_decal_lattice`), so `world[:, 1]` never
-    varies across a row before draping. That makes per-station sampling an EXACT match for
-    the old per-vertex drape's accuracy (not an approximation of it), for a free ~2x cut in
-    ray-casts from dropping the redundant duplicate query on each row's other edge. A miss
-    (no surface within the marking's own reach) keeps that station's bent height, exactly
-    like the old per-vertex miss path — no fill-in borrowed from a neighbouring station.
+    (2026-08-07, fix round 1: an earlier version of this function sampled the bézier
+    CENTERLINE per station and broadcast the result to every vertex at that station,
+    including ones offset sideways by the part's own width. That is only exact for a
+    zero-width part; for anything wider (crosswalks, multi-lane decals) it reintroduced a
+    milder version of the exact kerb/crown error Tier 0 was built to remove — the left and
+    right edge of a cambered carriageway were both draped to a THIRD point's height, neither
+    edge's own. Caught in review, not by the original Tier 1b measurement, because that
+    measurement also only ever varied arc position, never width — see task-6-report.md
+    "Fix round 1" for the corrected measurement.)
 
-    This is deliberately NOT the more aggressive Tier 1b originally planned — one or two
-    ray-casts for a whole marking, with the road height interpolated across every station in
-    between. That was measured against the fully imported crosswalk region (task-6-report.md)
-    and falsified: near junctions the true road height jumps by more than half a metre within
-    a few metres of arc length (stacked levels, kerb ramps, lane merges), so interpolating
-    between two distant samples invents a height no real point on the surface ever had — up
-    to 657 mm off in the worst measured case, 47x past the ~14 mm budget, even at the
-    brief's fallback 16 m sampling interval. Per-station sampling has no such failure mode:
-    Tier 1c already puts MORE stations exactly where curvature (and so real height change) is
-    highest, which is precisely where interpolation would have been least safe.
+    Deduping on rounded (x, z) instead of on station is what makes this exact rather than a
+    weaker approximation: two DIFFERENT stations that clip to the same arc position (the
+    tiling-clip case in §5c) or two literal duplicate source vertices still cost one cast,
+    but a station's left and right edge — different x — are never merged. For a plain
+    2-vertex-per-station quad this gives up most of the old ~2x L/R dedup (every row's two
+    edges are now almost always distinct casts); what remains is Tier 1c's station-count
+    reduction. A miss (no surface within the marking's own reach) keeps that vertex's bent
+    height, exactly like the old per-vertex miss path — no fill-in borrowed from a neighbour.
     """
-    points = block["curve_points"]
-    station_of_vert = block["station_of_vert"]
+    verts = block["verts"]
     half = block["half_height"]
     eps = block["drape_eps"]
 
-    new_y = block["verts"][:, 1].copy()
-    draped = missed = 0
-    for i in range(len(points)):
-        x, y_pre, z = points[i]
-        counters["queries"] += 1
-        top = road_surface.drop(float(x), float(z), float(y_pre), half, half)
-        at_station = station_of_vert == i
-        if top is None:
-            missed += int(at_station.sum())
-            continue
-        new_y[at_station] = top + eps
-        draped += int(at_station.sum())
+    x, y_pre, z = verts[:, 0], verts[:, 1], verts[:, 2]
+    scale = 1000.0 / _DRAPE_DEDUP_MM
+    keys = numpy.stack((numpy.round(x * scale).astype(numpy.int64),
+                        numpy.round(z * scale).astype(numpy.int64)), axis=1)
+    _, first_index, inverse = numpy.unique(keys, axis=0, return_index=True, return_inverse=True)
+    inverse = inverse.reshape(-1)
 
-    block["verts"][:, 1] = new_y
+    new_y = y_pre.copy()
+    draped = missed = 0
+    for u, idx in enumerate(first_index):
+        counters["queries"] += 1
+        top = road_surface.drop(float(x[idx]), float(z[idx]), float(y_pre[idx]), half, half)
+        at_key = inverse == u
+        if top is None:
+            missed += int(at_key.sum())
+            continue
+        new_y[at_key] = top + eps
+        draped += int(at_key.sum())
+
+    verts[:, 1] = new_y
     counters["draped"] += draped
     counters["missed"] += missed
 
@@ -1650,18 +1680,24 @@ def build_lanes(lanes_path, catalogue_path, lane_mesh_dir, collection,
     # full-city run — announce it so a long silence reads as work, not a hang.
     drape_blocks = [block for sink in builders.values() for block in sink["blocks"]
                     if block["drape_eps"] is not None]
-    to_drape = sum(len(block["station_of_vert"]) for block in drape_blocks)
+    to_drape = sum(len(block["verts"]) for block in drape_blocks)
     if road_surface is not None and to_drape:
         LOG.step(f"bending done; draping {len(drape_blocks)} marking(s) "
                  f"({to_drape} decal vertex(es)) onto the road surface and "
                  f"building {len(builders)} object(s)")
 
-    # One ray-cast per unique STATION, not per vertex (see _drape_block) — a verified-exact
-    # ~2x cut from dropping each row's redundant duplicate query, compounding with Tier 1c's
-    # curvature-driven station count. Progress strides in markings (blocks), not vertices or
-    # queries: there are two orders of magnitude fewer of them, and the "draped" count on the
-    # summary line below is the one tools/ab_compare.py's COUNT_MARKERS is expected to move
-    # (Tier 1c changed how many decal vertices exist at all) — quote old vs new there.
+    # One ray-cast per unique WORLD (x, z), not per vertex (see _drape_block) — exact
+    # because it samples each vertex's own laterally-offset position (fix round 1: an
+    # earlier version deduped per curve STATION and broadcast one centerline sample to a
+    # whole row, which was wrong for any part with width). The remaining cut versus the old
+    # per-vertex drape is genuinely-coincident positions (tiling-clip stations, duplicate
+    # source verts) plus Tier 1c's fewer stations overall — NOT the ~2x L/R dedup a
+    # station-keyed version would get, since a wide part's left and right edge now almost
+    # always cast separately, as they must. Progress strides in markings (blocks), not
+    # vertices or queries: there are two orders of magnitude fewer of them, and the "draped"
+    # count on the summary line below is the one tools/ab_compare.py's COUNT_MARKERS is
+    # expected to move (Tier 1c changed how many decal vertices exist at all) — quote old vs
+    # new there.
     counters = {"draped": 0, "missed": 0, "queries": 0}
     if road_surface is not None:
         for seen, block in enumerate(drape_blocks, 1):
@@ -1669,25 +1705,32 @@ def build_lanes(lanes_path, catalogue_path, lane_mesh_dir, collection,
             if seen % 5000 == 0:
                 LOG.step(f"{seen}/{len(drape_blocks)} marking(s) draped")
     draped, drape_missed = counters["draped"], counters["missed"]
+    if counters["queries"]:
+        LOG.step(f"{counters['queries']} drape ray-cast(s) issued for "
+                 f"{to_drape} decal vertex(es)")
 
     # A heavily tiled non-decal part (train sleepers/rails, catenary cable — a repeated
     # section stamped along the whole curve) can have its LAST tile's clip window fall short
     # of a full section: every station past the clip boundary gets clamped to the same arc
     # position (see the `numpy.clip` in the tile loop above), so the vertices between them
-    # collapse onto one point-and-width axis — geometrically zero area, but not a hint of bad
-    # data, just where a fixed-size repeating section doesn't divide the span evenly. This is
-    # NOT specific to the array rewrite: the previous `mesh.from_pydata` pipeline built the
-    # identical degenerate triangles from the identical bend math, it just never noticed (an
-    # invisible, zero-area face costs nothing to leave in a mesh, so nothing ever caught it).
-    # `_mesh_from_arrays` now does — correctly — and would otherwise print a `CONTRACT
-    # VIOLATION` per object, which on a full city is ~2,000 lines about a phenomenon that is
-    # not a violation. One aggregated line at the end of the phase instead; the exact wording
-    # is reserved for a caller (like this one, by default) that has NOT set this up and so
-    # genuinely doesn't know why a face was degenerate.
+    # collapse onto one point-and-width axis — geometrically zero area (distinct indices),
+    # but not a hint of bad data, just where a fixed-size repeating section doesn't divide
+    # the span evenly. This is NOT specific to the array rewrite: the previous
+    # `mesh.from_pydata` pipeline built the identical degenerate triangles from the identical
+    # bend math, it just never noticed (an invisible, zero-area face costs nothing to leave
+    # in a mesh, so nothing ever caught it) — proven by direct old-vs-new classification, see
+    # task-6-report.md §5c. `_mesh_from_arrays` now does notice, and would otherwise print a
+    # `CONTRACT VIOLATION` per object for this ONE class — zero-area, distinct indices — which
+    # on a full city is ~2,000 lines about a phenomenon that is not a violation. One
+    # aggregated line at the end of the phase instead. This does NOT cover a repeated-vertex-
+    # index face: `_mesh_from_arrays` reports that class with the loud wording unconditionally,
+    # from every caller including this one — `degenerate_report` is never consulted for it, so
+    # a genuine future regression in the bend (not this known, benign tiling-clip artifact)
+    # still surfaces loudly instead of being swallowed by this aggregate.
     degenerate_totals = {"faces": 0, "objects": 0}
 
-    def _report_lane_degenerate(_name, dropped):
-        degenerate_totals["faces"] += dropped
+    def _report_lane_degenerate(_name, zero_area_count):
+        degenerate_totals["faces"] += zero_area_count
         degenerate_totals["objects"] += 1
 
     built = 0
@@ -1710,7 +1753,14 @@ def build_lanes(lanes_path, catalogue_path, lane_mesh_dir, collection,
     LOG.done(f"lanes:     {bent} record(s) bent into {built} object(s), "
              f"{len(sources)} part mesh(es) loaded")
     if degenerate_totals["faces"]:
-        LOG.step(f"{degenerate_totals['faces']} degenerate face(s) dropped across "
+        # tools/ab_compare.py's COUNT_MARKERS ("face(s)", "object(s)") match this line, so any
+        # two logs being diffed with --counts must have the identical number of degenerate
+        # faces/objects to compare equal — a run-to-run change here is a real signal, but note
+        # for lane-region regression scripts: this line did not exist before this task, so an
+        # otherwise-unchanged lane import will now always show ONE extra matched line versus a
+        # pre-this-task baseline (see task-6-report.md "Fix round 1" for how that was handled
+        # in this task's own A/B gate).
+        LOG.step(f"{degenerate_totals['faces']} zero-area degenerate face(s) dropped across "
                  f"{degenerate_totals['objects']} object(s) — a heavily tiled part's last "
                  "tile clipping short of a full section, not a bundle defect")
     if draped or drape_missed:
