@@ -267,7 +267,7 @@ LOG = _Log()
 
 
 def _mesh_from_arrays(name, verts, tris, uv_layers=None, material_runs=None, poly_size=3,
-                      smooth=True, degenerate_report=None):
+                      smooth=True, degenerate_report=None, source_geometry=False):
     """Build a mesh from numpy arrays via foreach_set — the hot-path alternative to
     per-face `from_pydata` / per-loop attribute assignment.
 
@@ -297,24 +297,35 @@ def _mesh_from_arrays(name, verts, tris, uv_layers=None, material_runs=None, pol
     about — raises rather than silently building a mis-aligned mesh.
 
     By default every drop is reported as `CONTRACT VIOLATION` — the wording is deliberately
-    alarming, because for most callers (terrain, water) a degenerate face means the producer
-    handed over bad geometry. The two ways a face can be degenerate are NOT equally
-    diagnostic, and are always reported separately:
+    alarming, because for most callers (terrain, water, lanes) a degenerate face means the
+    producer's MATH handed over bad geometry: `verts`/`tris` are numbers this harness just
+    computed (a bend, a grid, a drape), so a zero-length edge means that computation broke.
+    `source_geometry=True` says the opposite: `verts`/`tris` were read verbatim off a file on
+    disk (the direct .glb fast path) — a degenerate triangle there is a faithful rip of
+    whatever the game's own mesh already contained, not something this harness introduced,
+    and the stock glTF importer builds the identical triangle from the identical file without
+    complaint (`mesh.validate()` either drops the same repeated-index polygon or keeps the
+    same zero-area one — either way the fast path isn't what put it there). The two ways a
+    face can be degenerate are NOT equally diagnostic, and are always reported separately:
 
-    - A **repeated vertex index** within one polygon's row is the classic sign of bad data
-      (a genuinely zero-length edge, most often a broken concatenation at a part seam) and
-      ALWAYS gets the loud `CONTRACT VIOLATION` line, from every caller, unconditionally —
-      `degenerate_report` has no say over this class.
     - **Geometrically zero-area with distinct indices** (three different vertices that
       happen to be collinear or coincident) has one well-understood, non-defect source in
-      lane geometry: a heavily tiled part's last tile can clip a whole cross-section to a
-      single arc position (see `build_lanes`), producing a zero-area strip that is neither a
-      bundle defect nor specific to any one instance. A caller that has already established
-      its drops are of that kind can pass `degenerate_report(name, zero_area_count)` to
-      receive JUST this count instead of a per-call `CONTRACT VIOLATION` line, and
-      aggregate/report it its own way; passing nothing (the default) keeps the alarming
-      wording for this class too. A future regression that produces repeated-index faces
-      cannot be swallowed by a caller's soft aggregate, by construction.
+      COMPUTED lane geometry: a heavily tiled part's last tile can clip a whole cross-section
+      to a single arc position (see `build_lanes`), producing a zero-area strip that is
+      neither a bundle defect nor specific to any one instance. Any caller — computed or
+      source — that has already established its drops are of that kind can pass
+      `degenerate_report(name, zero_area_count, False)` to receive JUST this count instead of
+      a per-call `CONTRACT VIOLATION` line, and aggregate/report it its own way; passing
+      nothing (the default) keeps the alarming wording for this class too.
+    - A **repeated vertex index** within one polygon's row is the classic sign of bad DATA
+      (a genuinely zero-length edge). For a COMPUTED caller (`source_geometry=False`, the
+      default — terrain, water, lanes) this means the bend/grid/drape math itself broke, so
+      it ALWAYS gets the loud `CONTRACT VIOLATION` line, unconditionally — `degenerate_report`
+      has no say over this class, by construction, so a future regression in computed geometry
+      can never be swallowed by a caller's soft aggregate. Only a `source_geometry=True`
+      caller with a `degenerate_report` may downgrade this class too, via
+      `degenerate_report(name, repeated_count, True)` — because for that caller the defect (if
+      any) is in the ripped file, not in anything this run computed.
     """
     verts = numpy.asarray(verts, dtype=numpy.float64)
     if verts.size == 0:
@@ -352,13 +363,19 @@ def _mesh_from_arrays(name, verts, tris, uv_layers=None, material_runs=None, pol
             repeated_count = int(repeated.sum())
             zero_area_count = int(zero_area.sum())
             if repeated_count:
-                # Never downgradable: this is the class that historically means real bad data.
-                LOG.warn(f"CONTRACT VIOLATION: {name} array input had {repeated_count} "
-                         "face(s) with a repeated vertex index; dropping before build so "
-                         "materials/UVs stay aligned to the surviving polygons")
+                # Downgradable ONLY for a source-geometry caller with its own aggregate
+                # report — every computed caller (default) gets the unconditional loud line,
+                # by construction: a repeated index in COMPUTED math is historically real bad
+                # data, and no caller can opt that class out of the alarm for itself.
+                if source_geometry and degenerate_report is not None:
+                    degenerate_report(name, repeated_count, True)
+                else:
+                    LOG.warn(f"CONTRACT VIOLATION: {name} array input had {repeated_count} "
+                             "face(s) with a repeated vertex index; dropping before build so "
+                             "materials/UVs stay aligned to the surviving polygons")
             if zero_area_count:
                 if degenerate_report is not None:
-                    degenerate_report(name, zero_area_count)
+                    degenerate_report(name, zero_area_count, False)
                 else:
                     LOG.warn(f"CONTRACT VIOLATION: {name} array input had {zero_area_count} "
                              "geometrically zero-area face(s) (distinct indices collapsed to "
@@ -413,10 +430,17 @@ def _mesh_from_arrays(name, verts, tris, uv_layers=None, material_runs=None, pol
     if len(mesh.polygons) != poly_count:
         # The pre-clean above is supposed to make this unreachable. Surfacing it as a hard
         # error rather than silently building a mesh whose materials/UVs no longer line up
-        # with whatever validate() decided to keep.
+        # with whatever validate() decided to keep. Remove the mesh datablock before raising —
+        # it was never returned to the caller, so nothing else can hold or clean up a
+        # reference to it, and leaving it in `bpy.data.meshes` would both leak memory and,
+        # for a caller re-trying under this same `name` (the stock-importer fallback after a
+        # fast-path failure), steal the name out from under the retry's own datablock,
+        # forcing it into a `.001` suffix — object/mesh naming is a frozen bundle contract.
+        dropped_extra = poly_count - len(mesh.polygons)
+        bpy.data.meshes.remove(mesh)
         raise RuntimeError(
             f"_mesh_from_arrays({name!r}): mesh.validate() dropped "
-            f"{poly_count - len(mesh.polygons)} more face(s) after the degenerate-face "
+            f"{dropped_extra} more face(s) after the degenerate-face "
             "pre-clean — it rejected something this check does not detect")
     mesh.polygons.foreach_set("use_smooth", numpy.full(poly_count, smooth, dtype=bool))
     return mesh
@@ -1732,7 +1756,13 @@ def build_lanes(lanes_path, catalogue_path, lane_mesh_dir, collection,
     # still surfaces loudly instead of being swallowed by this aggregate.
     degenerate_totals = {"faces": 0, "objects": 0}
 
-    def _report_lane_degenerate(_name, zero_area_count):
+    def _report_lane_degenerate(_name, zero_area_count, repeated):
+        # `repeated` is always False here: lanes are COMPUTED geometry (source_geometry
+        # defaults to False on this call), so `_mesh_from_arrays` never routes a
+        # repeated-vertex-index count through this callback — only the zero-area class is
+        # ever downgradable for a computed caller. Asserting it costs nothing and pins the
+        # invariant in place if that ever changes.
+        assert not repeated
         degenerate_totals["faces"] += zero_area_count
         degenerate_totals["objects"] += 1
 
@@ -2695,36 +2725,59 @@ _FAST_GLB_COUNT = 0
 _STOCK_GLB_COUNT = 0
 
 # A degenerate polygon `_mesh_from_arrays` drops on the fast path is not a new defect: the
-# stock importer builds the exact same source triangle and has always tolerated it silently
-# (Blender's `mesh.validate()` does not flag geometric zero-area, only structurally invalid
-# data). Surfacing it as a per-file CONTRACT VIOLATION here would be reporting on the source
-# .glb, not on anything this path did — and would make a run's log diverge from a
-# stock-importer-only baseline that never saw this line, for a fact that was already true
-# before this path existed. Counted quietly instead (see `_record_fast_degenerate` below) and
-# folded into the same summary as the fast/stock split.
-_FAST_DEGENERATE_POLYS = 0
+# stock importer builds the exact same source triangle from the exact same file and never
+# complains either — `mesh.validate()` silently drops a repeated-index polygon (the same one
+# this path's pre-clean removes) and silently keeps a distinct-index zero-area one as
+# invisible geometry (verified against Address_Beach_Resort_Dubai.glb and seg_106037.glb, see
+# task-7-report.md). Surfacing either class as a per-file CONTRACT VIOLATION here would be
+# reporting on the source .glb, not on anything this path did — and, because which file first
+# reaches the fast path depends on material-discovery order (a file only takes this path once
+# every material it needs has been seen by an earlier stock import), the *set* of files that
+# would shout is nondeterministic across --center/--radius/--limit even for the identical
+# bundle. Both classes are counted quietly instead (`_record_fast_degenerate`, passed as this
+# call's `degenerate_report` with `source_geometry=True`) and folded into one aggregate line
+# per phase — deliberately worded without any tools/ab_compare.py COUNT_MARKERS substring
+# ("polygon(s)", not "face(s)") so the line stays invisible to `--counts` and a live run's log
+# stays comparable to a baseline captured before this path existed, and stays IDENTICAL text
+# in shape across different --radius (only the two numbers move, and the gate never reads
+# them). Fast/stock split itself is likewise kept off the marker list for the same reason.
+_FAST_DEGENERATE_ZERO_AREA_POLYS = 0
+_FAST_DEGENERATE_REPEATED_POLYS = 0
 
 
 def _glb_fast_path_counts_reset():
-    global _FAST_GLB_COUNT, _STOCK_GLB_COUNT, _FAST_DEGENERATE_POLYS
+    global _FAST_GLB_COUNT, _STOCK_GLB_COUNT
+    global _FAST_DEGENERATE_ZERO_AREA_POLYS, _FAST_DEGENERATE_REPEATED_POLYS
     _FAST_GLB_COUNT = 0
     _STOCK_GLB_COUNT = 0
-    _FAST_DEGENERATE_POLYS = 0
+    _FAST_DEGENERATE_ZERO_AREA_POLYS = 0
+    _FAST_DEGENERATE_REPEATED_POLYS = 0
 
 
 def _glb_fast_path_counts_log():
     """`LOG.step` the fast/stock split since the last reset — kept off the count-gate markers
-    (no "record(s)"/"object(s)"/… substring) so a live run can call this and stay comparable
-    against a baseline log captured before this path existed."""
+    (no "record(s)"/"object(s)"/"face(s)"/… substring) so a live run can call this and stay
+    comparable against a baseline log captured before this path existed."""
     LOG.step(f"{_FAST_GLB_COUNT} glb fast-path, {_STOCK_GLB_COUNT} glb via glTF importer")
-    if _FAST_DEGENERATE_POLYS:
-        LOG.step(f"{_FAST_DEGENERATE_POLYS} degenerate polygon(s) among them, dropped quietly — "
-                 "zero-area source triangles the stock importer already tolerated silently")
+    total = _FAST_DEGENERATE_ZERO_AREA_POLYS + _FAST_DEGENERATE_REPEATED_POLYS
+    if total:
+        detail = []
+        if _FAST_DEGENERATE_ZERO_AREA_POLYS:
+            detail.append(f"{_FAST_DEGENERATE_ZERO_AREA_POLYS} zero-area")
+        if _FAST_DEGENERATE_REPEATED_POLYS:
+            detail.append(f"{_FAST_DEGENERATE_REPEATED_POLYS} repeated-index")
+        LOG.step(f"{total} degenerate polygon(s) among them ({', '.join(detail)}), dropped "
+                 "quietly — source .glb artifacts the stock importer tolerates identically "
+                 "(silently drops the repeated-index kind, silently keeps the zero-area kind "
+                 "invisible), not a defect this path introduced")
 
 
-def _record_fast_degenerate(_name, dropped):
-    global _FAST_DEGENERATE_POLYS
-    _FAST_DEGENERATE_POLYS += dropped
+def _record_fast_degenerate(_name, dropped, repeated):
+    global _FAST_DEGENERATE_ZERO_AREA_POLYS, _FAST_DEGENERATE_REPEATED_POLYS
+    if repeated:
+        _FAST_DEGENERATE_REPEATED_POLYS += dropped
+    else:
+        _FAST_DEGENERATE_ZERO_AREA_POLYS += dropped
 
 
 def _gltf_node_local_matrix(node):
@@ -2961,8 +3014,23 @@ def _fast_import_glb(path):
     constructs one, which is what makes it unable to regress rendering. Returns `None` to mean
     "use the stock importer", the same as every guard inside `_parse_glb_arrays`.
     """
+    # The stock glTF importer scales every imported position/translation by
+    # `1 / scene.unit_settings.scale_length`; this path applies glTF coordinates directly with
+    # no such factor. Always 1.0 under `blender -b` with the default scene (unreachable today),
+    # but a non-default scale would silently mix scaled stock-imported geometry with unscaled
+    # fast-path geometry in the same city. Refuse rather than get it quietly wrong.
+    if bpy.context.scene.unit_settings.scale_length != 1.0:
+        return None
     nodes = _parse_glb_arrays(path)
-    if nodes is None:
+    if not nodes:
+        # `None` means a guard bailed; `[]` means the parse completed but found no
+        # mesh-bearing node — a shape this path has never validated against the stock
+        # importer (untested edge case, not one of the guarded-and-proven ones above).
+        # Treat both the same: defer to the stock importer rather than have this path
+        # confidently claim "zero objects is correct" for a file it cannot vouch for. This
+        # also keeps `import_glb` — which treats *any* non-`None` return as "handled" — from
+        # ever seeing a same-shaped `[]` for a reason other than "the stock importer tried
+        # and failed", which is the only `[]` `load_prefab_collection` should read as missing.
         return None
     for node in nodes:
         for material_name, _count in node["material_runs"]:
@@ -2970,6 +3038,13 @@ def _fast_import_glb(path):
                 return None
 
     axis_flip = numpy.array([1.0, -1.0, 1.0])
+    # Tracks both bare meshes (built, not yet wrapped in an object) and finished objects, in
+    # creation order, so the except handler below can tear down whichever partial state this
+    # attempt reached — including a mesh that built successfully but failed before
+    # `bpy.data.objects.new` ever ran (e.g. `normals_split_custom_set_from_vertices` raising
+    # on a shape this parser did not anticipate). A mesh left dangling in `bpy.data.meshes`
+    # would leak and, worse, hold `node["name"]`, forcing the stock-importer retry that
+    # follows a fast-path failure into a `.001` name — object naming is a frozen contract.
     created = []
     try:
         for node in nodes:
@@ -2989,22 +3064,27 @@ def _fast_import_glb(path):
             # by setting those same custom normals, so `smooth` only has to be "not flat".
             mesh = _mesh_from_arrays(node["name"], verts, node["tris"], uv_layers=uv_layers,
                                      material_runs=material_runs, smooth=True,
-                                     degenerate_report=_record_fast_degenerate)
+                                     degenerate_report=_record_fast_degenerate,
+                                     source_geometry=True)
+            created.append(mesh)
             mesh.normals_split_custom_set_from_vertices(
                 numpy.ascontiguousarray(normals, dtype=numpy.float32))
 
             obj = bpy.data.objects.new(node["name"], mesh)
             obj.matrix_world = _gltf_node_matrix_to_blender(node["matrix"])
-            created.append(obj)
+            created[-1] = obj
     except Exception:                                            # noqa: BLE001 - fall back, quietly
         # A guard above missed something about this file's shape. Undo whatever partial mesh
         # data this attempt already allocated and let the stock importer have it instead of
         # returning half-built geometry or propagating a crash out of a per-file fast path.
-        for obj in created:
-            mesh = obj.data
-            bpy.data.objects.remove(obj)
-            if mesh is not None:
-                bpy.data.meshes.remove(mesh)
+        for item in created:
+            if isinstance(item, bpy.types.Object):
+                mesh = item.data
+                bpy.data.objects.remove(item)
+                if mesh is not None:
+                    bpy.data.meshes.remove(mesh)
+            else:
+                bpy.data.meshes.remove(item)
         return None
 
     global _FAST_GLB_COUNT
