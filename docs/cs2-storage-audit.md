@@ -698,7 +698,7 @@ vertex positions and bounds), a fixed 1 m band algorithm (`IO/BaseSkirtBuilder.c
 proven to match source), the base material (a small string, already present as the skirt file's
 own glTF material name — see the sample below), whether the instance rests on the ground
 (`attrs.elevationFlags`, already shipped per instance, §4.1), and the terrain surface itself
-(already shipped, `terrain/elevation.tif`). Sample skirt file confirms the material reference is
+(already shipped, `terrain/heightmap.png`, 16-bit grayscale, `docs/bundle-schema.md:912`). Sample skirt file confirms the material reference is
 tiny and already join-key-shaped:
 
 ```
@@ -743,13 +743,17 @@ quantizer's true worst-case error is at most **half** a step (≤ 10.253 mm), bu
 figure is what the formula as given computes, and is reported as-is rather than halved without
 re-deriving the brief's own rule.
 
-**Generic compressibility** — neither `gltfpack` nor Draco is installed (checked:
-`where gltfpack` → not found, no install performed per this task's resolution). Measured
-zlib/lzma on the same 200-file sample the brief specifies, as an upper-bound proxy for what a
-real container/mesh-compression tool could achieve — labelled `arithmetic` per this task's
-resolution (not `measured` in the stricter TEX-row sense of a verified production re-encode
-path), even though the bytes below come from an actual run, with an actual bit-exact
-decompression assertion:
+**Generic compressibility — this IS the MESH-1 candidate, not a proxy for a different one.**
+`gltfpack`/Draco (a distinct, mesh-topology-aware technique) are checked and confirmed absent
+(`where gltfpack` → not found, no install performed per this task's resolution) and are simply
+untested — no number is claimed for them anywhere in this section. The candidate this
+subsection actually measures is "compress the `.glb` bytes with zlib -9 or lzma," and that is
+measured exactly as the front matter defines the term (`:20`, *"a sample was actually
+re-encoded and extrapolated by a stated rule"*): 200 real files, actually compressed, with an
+explicit bit-exact round-trip assertion, extrapolated by a stated linear rule — the same
+sample-and-extrapolate shape §1 labels `measured` for TEX-1 through TEX-4. Labelling it
+`arithmetic` in an earlier draft of this section conflated it with the untested gltfpack/Draco
+candidate; that framing has been removed.
 
 ```
 python -c "
@@ -787,9 +791,9 @@ shape). Extrapolation rule: `total meshes/ bytes (1,800,230,540) × (compressed 
   bundle.**
 
 This is lossless by construction (DEFLATE/LZMA decompression reproduces the input exactly; the
-assertion above confirms it on the sample rather than taking that as given) and is the single
-largest number measured in this section — far larger than the lossy quantization candidate
-above. **`meshes/`'s `.glb` files currently ship with zero compression applied to their binary
+assertion above confirms it on the sample rather than taking that as given), `measured`, and is
+the single largest number measured in this section — far larger than the lossy quantization
+candidate above. **`meshes/`'s `.glb` files currently ship with zero compression applied to their binary
 buffers** (`IO/GltfWriter.cs` writes the BIN chunk raw), unlike `textures/`'s PNGs, which
 already run through `Deflater` (§1). **Not measured jointly with quantization, and the two must
 not be summed**: quantized (already denser, less redundant) data compresses differently than the
@@ -823,8 +827,8 @@ task next needs `$LOG` directly.
 
 | id | change | est. bytes saved | est. rip-time saved | consumer cost | risk | lossless? | additive layer |
 |---|---|---|---|---|---|---|---|
-| MESH-1 | Compress `.glb` binary buffers at rest (zlib -9 or lzma; currently unlike `textures/`'s PNGs, mesh BIN chunks are written raw) | arithmetic (measured zlib/lzma run, extrapolated), zlib **1,457.8 MiB (84.9% of `meshes/`, 31.2% of bundle)**; lzma **1,581.5 MiB (92.1%, 33.9%)** | unmeasured (needs a C#-side timed re-rip; compression itself costs CPU at write time) | one decompress call before parsing — zlib/lzma decoders are standard-library or trivial to add in every mainstream consumer language, but this is not literally free like an in-place re-encode | medium — algorithm risk is near-zero (ubiquitous, well-tested codecs, bit-exact by construction, verified on-sample), but it is a container-format change, not an in-place one | YES, bit-exact round-trip assertion passed on the 200-file sample | **new layer**: a compressed at-rest/transport encoding of the unchanged `.glb` bytes (e.g. per-file `.glb.gz`, or one archive per directory using the already-bundled `ICSharpCode.SharpZipLib`) — needs a `compression` field amendment under §12.1; **retires**: nothing, the canonical uncompressed `.glb` bytes are recovered exactly on decompress |
-| MESH-3 | Derive `__base.glb` skirts at consumer load time instead of baking them (§2.3): port `IO/BaseSkirtBuilder.cs`'s algorithm, given the parent mesh + `attrs.elevationFlags` + `terrain/elevation.tif`, all already shipped | measured, **27.9 MiB (1.6% of `meshes/`, 0.6% of bundle)** | unmeasured | real: port ~366 lines of silhouette-scan geometry (edge exclusion, keep pass, perimeter-distance chain with loop-seam handling) — nontrivial, but the reference implementation is already proven faithful to the game (§27), lowering the porting risk | medium — the port must reproduce the game's algorithm exactly to avoid visible gaps/seams; a proven-faithful reference exists to copy | YES — every fact in `__base.glb` is already derivable from data the bundle ships elsewhere plus an already-verified deterministic algorithm | **removes** a file class rather than adding one; the tiny per-prefab base-material reference (currently the skirt file's own glTF material name, e.g. `Default_Base_5bafa4f37…`) would need to move into `materials.json`/`bundle.json` for prefabs whose skirt file is dropped — negligible bytes, a real (small) schema touch |
+| MESH-1 | Compress `.glb` binary buffers at rest (zlib -9 or lzma; currently unlike `textures/`'s PNGs, mesh BIN chunks are written raw) | measured (200-file sample, actually compressed, bit-exact round-trip asserted, extrapolated by a stated linear rule), zlib **1,457.8 MiB (84.9% of `meshes/`, 31.2% of bundle)**; lzma **1,581.5 MiB (92.1%, 33.9%)** | unmeasured (needs a C#-side timed re-rip; compression itself costs CPU at write time) | one decompress call before parsing — zlib/lzma decoders are standard-library or trivial to add in every mainstream consumer language, but this is not literally free like an in-place re-encode | medium — algorithm risk is near-zero (ubiquitous, well-tested codecs, bit-exact by construction, verified on-sample), but it is a container-format change, not an in-place one | YES, bit-exact round-trip assertion passed on the 200-file sample | **new layer**: a compressed at-rest/transport encoding of the unchanged `.glb` bytes (e.g. per-file `.glb.gz`, or one archive per directory using the already-bundled `ICSharpCode.SharpZipLib`) — needs a `compression` field amendment under §12.1; **retires**: nothing, the canonical uncompressed `.glb` bytes are recovered exactly on decompress |
+| MESH-3 | Derive `__base.glb` skirts at consumer load time instead of baking them (§2.3): port `IO/BaseSkirtBuilder.cs`'s algorithm, given the parent mesh + `attrs.elevationFlags` + `terrain/heightmap.png`, all already shipped | measured, **27.9 MiB (1.6% of `meshes/`, 0.6% of bundle)** | unmeasured | real: port ~366 lines of silhouette-scan geometry (edge exclusion, keep pass, perimeter-distance chain with loop-seam handling) — nontrivial, but the reference implementation is already proven faithful to the game (§27), lowering the porting risk | medium — the port must reproduce the game's algorithm exactly to avoid visible gaps/seams; a proven-faithful reference exists to copy | YES — every fact in `__base.glb` is already derivable from data the bundle ships elsewhere plus an already-verified deterministic algorithm | **removes** a file class rather than adding one; the tiny per-prefab base-material reference (currently the skirt file's own glTF material name, e.g. `Default_Base_5bafa4f37…`) would need to move into `materials.json`/`bundle.json` for prefabs whose skirt file is dropped — negligible bytes, a real (small) schema touch |
 | MESH-4 | Delete unreferenced/dead meshes | 0 — none found (§2.3: all 1,444 unreferenced-by-`assetId` files resolve to a documented contract mechanism) | n/a | n/a | n/a | n/a (closed, negative result) | not applicable — no files to touch, nothing to retire |
 
 **Lossy candidates** (named and measured per constraint 6's "investigate lossless first," but
@@ -832,7 +836,7 @@ not recommended — MESH-1 above already gives a far larger lossless win from th
 
 | id | change | est. bytes saved | est. rip-time saved | consumer cost | risk | lossless? | error bound | additive layer |
 |---|---|---|---|---|---|---|---|---|
-| MESH-2 | `KHR_mesh_quantization`-style re-encode: `POSITION` → normalized `i16`, `NORMAL`/`TANGENT` → `i8`, `TEXCOORD_0` → `u16`, indices unchanged | arithmetic, **952.3 MiB (55.5% of `meshes/`, 20.4% of bundle)** | unmeasured | consumer must dequantize per the `KHR_mesh_quantization` extension (or an equivalent scale/offset it reads from `accessor.min`/`max`) — every existing consumer that doesn't apply this extension silently misreads the geometry | high — not a drop-in re-encode; shipping it in place would break every consumer that doesn't already handle the extension, so it can only ship as either a genuinely separate opt-in file (doubling storage until adopted) or a breaking major-version schema change | **NO — ≤ 20.505 mm** (brief's own formula: the full quantization step over the worst single mesh's bounding-box extent; a round-to-nearest quantizer's true worst case is at most half that, ≤ 10.253 mm, not re-derived here) | either a **new layer** (a parallel quantized geometry form, opt-in via `KHR_mesh_quantization`, current f32 form untouched) or a **breaking replacement** requiring a major schema version bump (§12) — not designed here, named for §9 to weigh against MESH-1's much larger, genuinely lossless win from the same 1.7 GB |
+| MESH-2 | `KHR_mesh_quantization`-style re-encode: `POSITION` → normalized `i16`, `NORMAL`/`TANGENT` → `i8`, `TEXCOORD_0` → `u16`, indices unchanged | arithmetic, **952.3 MiB (55.5% of `meshes/`, 20.4% of bundle)** | unmeasured | consumer must dequantize per the `KHR_mesh_quantization` extension (or an equivalent scale/offset it reads from `accessor.min`/`max`) — every existing consumer that doesn't apply this extension silently misreads the geometry | high — not a drop-in re-encode; shipping it in place would break every consumer that doesn't already handle the extension, so it can only ship as either a genuinely separate opt-in file (doubling storage until adopted) or a breaking major-version schema change | **NO — ≤ 20.505 mm** | brief's own formula: the full quantization step over the worst single mesh's bounding-box extent; a round-to-nearest quantizer's true worst case is at most half that, ≤ 10.253 mm, not re-derived here | either a **new layer** (a parallel quantized geometry form, opt-in via `KHR_mesh_quantization`, current f32 form untouched) or a **breaking replacement** requiring a major schema version bump (§12) — not designed here, named for §9 to weigh against MESH-1's much larger, genuinely lossless win from the same 1.7 GB |
 
 ## 3. Networks
 
