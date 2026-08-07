@@ -911,13 +911,27 @@ What is cached, and for how long: `m_PieceGeometry` (`Systems/NetworkRipSystem.G
 unique cross-section *piece* — the raw `MeshVertex`/`MeshUV0`/`MeshIndex`/`MeshMaterial` ECS
 buffers read once (`GetPieceGeometry`, `:598-662`; the memo check is `:601`, `if
 (m_PieceGeometry.TryGetValue(piece, out PieceGeometry cached)) return cached;`; the fill is `:660`,
-`m_PieceGeometry[piece] = result;`). It is cleared exactly once per rip
-(`Systems/NetworkRipSystem.cs:437`, `m_PieceGeometry.Clear();`, inside `BeginRip`, commented "the
-cache is per-rip") and never again — so it persists across all 8,259 segments. The rip's own report
-line states its real size on this bundle: **`Distinct cross-section pieces read: 160`**
-(`$SCRATCH/audit/full-log-repr.txt:213`) — 160 ECS buffer reads standing in for what would
-otherwise be at least 7,248 (one per mesh-form segment, more once shared pieces across compositions
-are counted individually).
+`m_PieceGeometry[piece] = result;`, unconditional — it runs for every piece `GetPieceGeometry` is
+ever asked about, including one whose buffers are missing or empty, where `result` stays `null`).
+It is cleared exactly once per rip (`Systems/NetworkRipSystem.cs:437`, `m_PieceGeometry.Clear();`,
+inside `BeginRip`, commented "the cache is per-rip") and never again — so it persists across all
+8,259 segments.
+
+The rip's own report line, **`Distinct cross-section pieces read: 160`**
+(`$SCRATCH/audit/full-log-repr.txt:213`), is printed from `run.PieceCache.Count`
+(`Systems/NetworkRipSystem.cs:860`) — a *different* `Dictionary<Entity, MeshAsset>`
+(declared `Systems/NetworkRipSystem.cs:256`) that memoizes material-id resolution, not
+`m_PieceGeometry` itself. Both dictionaries are populated from the same call — `GetPieceGeometry`
+fills `PieceCache` at `:638-643` (`if (!cache.TryGetValue(piece, out MeshAsset read)) { … cache[piece]
+= read; }`) — but only inside the branch gated on `vertexBuffer.Length > 0 && indexBuffer.Length > 0
+&& materialBuffer.Length > 0` (`:605-614`), whereas `m_PieceGeometry[piece] = result` at `:660` runs
+unconditionally. So `PieceCache.Count` is a **lower bound** on `m_PieceGeometry.Count`, equal only
+if every piece `GetPieceGeometry` saw in this rip had valid, non-empty mesh buffers — a condition
+not separately checked here. 160 is therefore the measured count of pieces that contributed a
+usable material read, and a conservative (possibly strict) lower bound on the true number of
+distinct pieces `m_PieceGeometry` cached; either way it stands in for what would otherwise be at
+least 7,248 ECS buffer reads (one per mesh-form segment, more once shared pieces across
+compositions are counted individually).
 
 What is **not** cached: the *assembled, bent* composition mesh — the thing that would actually let
 one composition serve many segments. `AssembleNetwork` (`Systems/NetworkRipSystem.cs:1427-1485`)
@@ -927,8 +941,11 @@ allocates a fresh `List<float3> vertices = new();` (`:1432`) for every segment e
 — vertex filter/remap, front/back cut, V-density, Bernstein bend — for that one segment's own curve,
 every time. `Finish` (`:1672`) packages the result into a `MeshAsset`, which is handed straight to
 the writer (`:646-656`, `run.Queue.Add(new NetworkItem { Mesh = assembled });`) and appears nowhere
-keyed by composition — there is no `Dictionary<Entity, MeshAsset>` (or similar) mapping a
-composition entity to its assembled-but-unbent geometry anywhere in either file. Concretely: the
+keyed by composition — there is no dictionary keyed by *composition* entity anywhere in either
+file. (`PieceCache`, a `Dictionary<Entity, MeshAsset>`, and `m_PieceGeometry`, a
+`Dictionary<Entity, PieceGeometry>`, both exist, per the paragraph above — but both are keyed by
+*piece* entity, for the material-resolution and raw-geometry purposes already described, not by
+composition entity for assembled geometry.) Concretely: the
 "Small Road" composition, used by 1,955 different segments (§3.1), has its full per-piece loop and
 per-vertex bend recomputed 1,955 times over — the only thing that does *not* get re-read 1,955
 times is each piece's raw ECS geometry, via `m_PieceGeometry`.
