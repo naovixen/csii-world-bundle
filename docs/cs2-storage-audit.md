@@ -1830,33 +1830,59 @@ producer's own sampling grid and the refit's Bézier basis are the identical for
 **The 45 non-9-point records — a failure-mode check, per constraint 3, not a discard.**
 
 ```
-points<4 (untestable): 36 records, all `parking`/`other`, length 0.004–0.006 m
-4<=points<9 (testable): 9 records
+points<4 (untestable): 36 records — kinds `other` 13, `parking` 8, `pedestrian` 8, `car` 7; length range 0.003-0.006 m
+4<=points<9 (testable): 9 records — 5 with exactly 4 points, 4 with 5-8 points
 ```
 
-`measured`, full population of the 45: the 36 records with fewer than 4 points are not a
-polyline-vs-Bézier question at all — every one of them has `length` between 4 and 6
-**millimetres**. These are degenerate, near-zero-length lanes (parking-stall connectors) where
-the 1 mm dedup gate (§5.2) collapses most of the 9 samples into 2–3 surviving points because the
-*entire curve* spans only a few dedup radii. A cubic Bézier still represents this exactly — the
-four control points are simply near-coincident — this is a polyline-side artefact of
-too-few-surviving-samples, not evidence against the Bézier hypothesis, and it needs no separate
-fallback in a Bézier-based encoding (unlike a fixed-sample-count polyline encoding, which
-*would* need to handle a variable point count here).
+`measured`, full population of the 45, re-derived directly rather than restated from an earlier
+draft (`$SCRATCH/audit/lanes_edge_fix.py`, full re-scan): the 36 records with fewer than 4
+points span **all four** of the kinds present in this bucket — `other` 13, `parking` 8,
+`pedestrian` 8, `car` 7, not only `parking`/`other` as an earlier pass of this section
+mis-stated — and their `length` values range **0.003–0.006 m** (three records at exactly 3 mm,
+twenty at 4 mm, ten at 5 mm, six at 6 mm), not the narrower 4–6 mm range that earlier pass
+claimed. Both corrections are real re-derivations, not rounding: the earlier figures did not
+reproduce against the live file and are replaced here. The substance is unchanged — these are
+still degenerate, near-zero-length lanes (parking-stall connectors and similarly short
+pedestrian/car/other segments) where the 1 mm dedup gate (§5.2) collapses most of the 9 samples
+into 2–3 surviving points because the *entire curve* spans only a few dedup radii. A cubic
+Bézier still represents this exactly — the four control points are simply near-coincident — this
+is a polyline-side artefact of too-few-surviving-samples, not evidence against the Bézier
+hypothesis, and it needs no separate fallback in a Bézier-based encoding (unlike a
+fixed-sample-count polyline encoding, which *would* need to handle a variable point count here).
 
-The 9 records with 4–8 points were refit under a **chord-length** parameterisation — testing
-constraint 3's specific concern, that uniform-`t` is an assumption and a curve using a different
-true parameterisation might refit badly under the wrong one:
+**The 9 records with 4–8 points split into two populations with different evidential weight, and
+they must not be pooled.** Of the 9, **5 have exactly 4 points.** A cubic Bézier has 4 unknown
+control points; fitting it through exactly 4 constraint points is not a test of anything — it is
+guaranteed to fit to floating-point-noise precision regardless of whether the underlying curve is
+a Bézier at all. Measured directly (`$SCRATCH/audit/lanes_edge_fix.py`, chord-length refit on
+each of the 5 exactly-4-point records individually):
 
 ```
-chord-length refit, 9 lanes: p50 0.000 mm, p90 0.539 mm, p99 0.900 mm, p100 0.940 mm
+exactly-4-point records (n=5): errors of 2.7e-12, 4.5e-12, 3.6e-12, 1.8e-12, 1.4e-12 m
 ```
 
-`measured`: still sub-millimetre at every percentile. **Verdict: no genuine polyline and no
-parameterisation failure was found anywhere in the population.** Both failure modes constraint 3
-asks to distinguish were tested and both came back negative — the 0.0066% of records that don't
-fit the clean 9-point case are short lanes whose sample count shrank under the producer's own
-dedup gate, not lanes whose underlying geometry is not a Bézier.
+`measured`: errors at the 10⁻¹² m scale — floating-point solver noise, not curve-fit residual.
+**These 5 records carry no evidential weight for or against the Bézier hypothesis and are
+excluded from the verdict below**, exactly as constraint 3's warning about trivial fits
+predicts. The remaining **4 records (5, 7, 7, and 8 points respectively) are genuinely
+overdetermined** — more constraint points than unknowns — and are the only members of this
+bucket a chord-length refit actually tests:
+
+```
+overdetermined chord-length refit (n=4 records, point counts 5/7/7/8): p50 0.378 mm, p90 0.790 mm, p99 0.925 mm, p100 0.940 mm
+individual errors (sorted, not positionally paired with the point-count list above): 0.000, 0.317, 0.439, 0.940 mm
+  by point count: 5-point record 0.000 mm; the two 7-point records 0.317 mm and 0.940 mm; the 8-point record 0.439 mm
+```
+
+`measured`: still sub-millimetre at every percentile, on the only 4 records in this whole
+45-record edge case actually capable of falsifying the hypothesis. **Verdict: no genuine
+polyline and no parameterisation failure was found anywhere in the population — stated on the
+evidence that supports it, not on the 5 trivial fits.** Both failure modes constraint 3 asks to
+distinguish were tested and both came back negative on the overdetermined subset; the 0.0066% of
+records that don't fit the clean 9-point case are short lanes whose sample count shrank under the
+producer's own dedup gate, not lanes whose underlying geometry is not a Bézier — and the
+headline evidence for that claim is the 4-record, 0.940 mm-p100 overdetermined result, not the
+9-record aggregate an earlier pass of this section reported.
 
 **Bonus finding: `length` is also fully derivable, not just `path`.** §5.2 already showed the
 game's own `Curve.Serialize` writes only `m_Bezier`, never `m_Length` — the game recomputes
