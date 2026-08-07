@@ -1132,6 +1132,424 @@ resolution.
 
 ## 4. `instances.jsonl`
 
+`instances.jsonl` is 324,202,611 bytes (309.2 MiB, 6.6% of the 4,894,194,530-byte total, §0),
+1 file, 1,283,183 records — the fourth-largest share. Unlike §1–§3 there is no format-choice or
+semantics question to open: every field a record carries is already documented and required or
+optional exactly as shipped (`docs/bundle-schema.md` §4, §4.1, §4.2, §4.2a, read in full for
+this section). This is the purest representation-versus-information case in the bundle — the
+question is encoding, not what to keep.
+
+### 4.1 What we ship
+
+Command (brief's own script, run first, exactly as given):
+
+```
+python "$SCRATCH/audit/instances_census.py" "$BUNDLE"
+```
+
+**This failed the section's own pass criterion**, the same way §2.1's brief script did. The
+per-field shares it prints sum to only 249.8 MiB of the file's 309.2 MiB (80.9%), not "~100%".
+Root cause: the script isolates each field's value bytes by building a one-key mini-object
+(`json.dumps({key: value})`) and subtracting `len(key) + 4`, which leaves `len(value) + 1` — one
+stray byte per field instance, not zero — and, more importantly, the subtraction discards the
+*real* per-record structure (`"key":value,` costs `len(key) + 4` bytes in the actual line, not
+the 0 the subtraction assumes) entirely. The missing bytes are real JSON structural overhead
+(key names, quotes, colons, commas, the record's own braces, the line's newline), not a
+measurement gap. Measured directly instead (`$SCRATCH/audit/instances_fields_exact.py`, exact
+per-field value bytes via `json.dumps(value)` with no subtraction, plus the overhead computed as
+`raw_total − Σ value_bytes` so the table sums to exactly 100% by construction):
+
+| field | bytes | MiB | % of file |
+|---|---:|---:|---:|
+| `attrs` | 137,356,398 | 130.99 | 42.37% |
+| `rot` | 38,485,462 | 36.70 | 11.87% |
+| `pos` | 34,773,868 | 33.16 | 10.73% |
+| `assetId` | 22,677,168 | 21.63 | 6.99% |
+| `id` | 8,390,653 | 8.00 | 2.59% |
+| `kind` | 7,753,161 | 7.39 | 2.39% |
+| `parent` | 4,134,125 | 3.94 | 1.28% |
+| `scale` | 104,341 | 0.10 | 0.03% |
+| *(JSON structural overhead)* | 70,527,435 | 67.26 | 21.75% |
+| **TOTAL** | **324,202,611** | **309.18** | **100.00%** |
+
+`measured`, full population (1,283,183 of 1,283,183 records). `4,310` distinct `assetId`s, `4`
+kinds present (`tree` 697,163, `prop` 558,645, `decal` 18,479, `building` 8,896) — the
+`4,310`-distinct-`assetId` figure matches §2.3's own count exactly ("4,310 distinct `assetId`s
+placed by `instances.jsonl`"), the same measurement taken from two different domains' scripts.
+
+`attrs` breaks down further (`$SCRATCH/audit/instances_attrs_exact.py`, same exact-value method,
+run on the `attrs` object's own contents so its rows are directly comparable to the table
+above rather than the brief's own per-attr method, which counts each attr's full
+`{"key":value}` mini-object and is not directly additive with the top-level table):
+
+| attrs key | bytes | MiB | % of file | % of `attrs` |
+|---|---:|---:|---:|---:|
+| `colorSet` | 94,447,057 | 90.07 | 29.13% | 68.76% |
+| `elevation` | 2,284,166 | 2.18 | 0.70% | 1.66% |
+| `treeState` | 2,001,411 | 1.91 | 0.62% | 1.46% |
+| `growthScale` | 1,676,065 | 1.60 | 0.52% | 1.22% |
+| `growth` | 1,463,194 | 1.40 | 0.45% | 1.07% |
+| `decalLayers` | 572,849 | 0.55 | 0.18% | 0.42% |
+| `elevationFlags` | 375,887 | 0.36 | 0.12% | 0.27% |
+| `unresolved` | 98,920 | 0.09 | 0.03% | 0.07% |
+| `state` | 71,168 | 0.07 | 0.02% | 0.05% |
+| `decalHeight` | 55,460 | 0.05 | 0.02% | 0.04% |
+| `colorCustom` | 956 | 0.00 | 0.00% | 0.00% |
+| *(attrs-internal overhead)* | 34,309,265 | 32.72 | 10.58% | 24.98% |
+| **`attrs` total** | **137,356,398** | **130.99** | **42.37%** | **100.00%** |
+
+`colorSet` is, by a wide margin, the single largest field in the file — 90.07 MiB on its own,
+29.13% of the whole 309.2 MiB, larger than `pos` and `rot` combined. This is exactly the
+surprise constraint 4 predicted, and it gets its own analysis below rather than being folded
+into a generic "attrs" candidate. One key present in the data, `unresolved`, is **not** in
+`docs/bundle-schema.md` §4.2's documented `attrs` key list; it marks instances of unresolved
+prefabs (sample: `assetId: "unresolved_2151360"`, matching the `unresolved_<id>` naming this
+project's own memory of unresolved-prefab handling describes) and is schema-legal regardless —
+§4.2 requires a consumer to ignore attrs keys it does not recognise — but is flagged here for
+whichever later task next touches the schema text.
+
+### 4.2 What the game stores
+
+Two sources. First, the game's own component, not our producer's reading of it:
+
+```
+./tools/decomp/bin/Release/net8.0/decomp.exe type Game Game.Objects.Transform
+```
+
+`Game.Objects.Transform` (`$SCRATCH/audit/ObjectsTransform.cs`):
+
+```csharp
+public struct Transform : IComponentData, IQueryTypeParameter, IEquatable<Transform>, ISerializable
+{
+    public float3 m_Position;
+    public quaternion m_Rotation;
+    …
+    public void Deserialize<TReader>(TReader reader) where TReader : IReader
+    {
+        reader.Read(out m_Position);
+        reader.Read(out m_Rotation);
+        if (!math.all(m_Position >= -100000f) || !math.all(m_Position <= 100000f)
+            || !math.all(math.isfinite(m_Rotation.value)) || math.all(m_Rotation.value == 0f))
+        { m_Position = default(float3); m_Rotation = quaternion.identity; }
+    }
+}
+```
+
+The game's own placement authority is a raw `float3`/`quaternion` — **f32, unrounded**, with a
+range/finite sanity clamp on load but no precision reduction anywhere in this struct. Second,
+`Game.Rendering.MeshColor` (`$SCRATCH/audit/MeshColor.cs`, same tool): `public struct MeshColor :
+IBufferElementData, IEmptySerializable { public ColorSet m_ColorSet; }` — confirming
+`docs/bundle-schema.md` §7.2's own description of where `attrs.colorSet` comes from, and
+matching `Systems/InstanceRipSystem.cs:977-994`'s own reading of that exact buffer (cited, not
+re-derived — the surrounding comment there, `:952-967`, already records the game-side story:
+`MeshColorSystem` resolves `PseudoRandomSeed`, the palette's probabilities and the season
+filters into this buffer once, and the rip reads the resolved answer rather than recomputing
+it).
+
+What our own producer does to that raw data is not a mystery needing a decompile — it is in this
+repo. `IO/InstanceWriter.cs:107-125`:
+
+```csharp
+private static double[] Round(float3 value) => new[] {
+    Math.Round((double)value.x, 3), Math.Round((double)value.y, 3), Math.Round((double)value.z, 3) };
+private static double[] Round(quaternion value) => new[] {
+    Math.Round((double)value.value.x, 6), … Math.Round((double)value.value.w, 6) };
+```
+
+— `pos` is rounded to 3 decimal places (millimetres, at this bundle's metre units), `rot` to 6.
+`Systems/InstanceRipSystem.cs:1069-1072` rounds `colorSet` channels to 4 decimal places. None of
+this rounding exists in the game's own `Transform`/`MeshColor` data — it is entirely a producer
+choice, made once, at write time.
+
+### 4.3 Information or representation?
+
+**The core placement fields are pure representation.** `id`, `assetId`, `kind`, `pos`, `rot`,
+`parent` and `scale` are a direct, lossless-modulo-rounding re-encoding of `Transform` plus the
+prefab/owner/kind lookups §4.2 already documents as the game's own components — no new fact is
+added by shipping them as JSON text; the only question is how many bytes that re-encoding costs,
+answered in §4.4.
+
+**`colorSet` — measured, not assumed, against the "small palette, referenced not restated"
+hypothesis constraint 4 raises.** `colors.json` ships 3,619 per-sub-mesh palettes (§0's census;
+cross-checked here: `python -c "import json,os; print(len(json.load(open(os.environ['BUNDLE']
++ '/colors.json'))))"` → `3619`). Whether an instance's resolved `attrs.colorSet` is simply one
+of those palette entries, referenceable by a small index instead of twelve floats, was checked
+directly (`$SCRATCH/audit/instances_colorset.py`, full population, excluding the 239
+player-painted records `attrs.colorCustom == true` since those are genuinely one-off by
+definition):
+
+```
+non-custom colorSet records: 1,207,399
+distinct (assetId, colorSet) pairs: 492,085
+dedup ratio (non-custom records / distinct pairs): 2.45x
+```
+
+**Mostly killed as a general hypothesis** — 2.45× is a real but modest ratio, nowhere near the
+"handful of palette entries repeated across thousands of placements" shape `colors.json`'s own
+3,619-entry catalogue would suggest. Broken down by asset, the picture is sharply bimodal and
+the dominant byte contributors are the *worst* case for this hypothesis:
+
+| assetId | instances | distinct `colorSet` values | distinct/instances |
+|---|---:|---:|---:|
+| `pd_Long_Grass` | 314,222 | 64,976 | 20.68% |
+| `OakTree01` | 122,654 | 55,448 | 45.21% |
+| `VFP_LiveOakTree` | 63,521 | 40,609 | 63.94% |
+| `WallLightShortRange01` | 37,593 | 2,791 | 7.42% |
+| `VentilationDuct04` | 20,203 | 1,658 | 8.21% |
+
+The two largest instance counts (`pd_Long_Grass`, `OakTree01`) are also two of the *least*
+redundant — a fifth to almost half of every placement's resolved colour is numerically unique.
+This is consistent with `Systems/InstanceRipSystem.cs`'s own comment (§4.2): the resolved value
+is not just a discrete palette pick, it is that pick further modulated by *season filters*,
+which is a continuous adjustment, not a selection among `colors.json`'s finitely many `channels`
+entries — so the shipped value is close to, but generally not equal to, any single
+`colors.json` row, and a palette-index reference would not reproduce it losslessly. Smaller,
+lower-instance-count assets (`WallLightShortRange01`, `VentilationDuct04`, ~7-8% distinct) *are*
+genuinely redundant, but they are a small share of the 90.07 MiB `colorSet` total, not the
+majority of it. **Verdict: `colorSet` is predominantly information (real per-instance,
+season-modulated variation), not representation** — the opposite of what a naive reading of
+`colors.json`'s existence would suggest, and this is reported plainly rather than forcing the
+result the brief's framing hinted at.
+
+**`decalLayers` — a genuine, if narrow, representation finding.** Every one of the 18,479
+`decal` records carries a non-empty `decalLayers`; broken down by member
+(`$SCRATCH/audit/instances_rot_kind.py`-adjacent check, full population): `Terrain` 18,479,
+`Roads` 18,479, `Buildings` 18,479 — **every single decal record's list is the identical
+three-element `["Terrain","Roads","Buildings"]`, with no exceptions**, in this city. That is
+representation with zero information content *in this specific rip* (the schema permits other
+subsets in principle, so this is a data fact about this city, not a contract defect) — too small
+to be worth a dedicated candidate row (0.55 MiB, 0.18% of the file) but recorded because
+constraint 4 asks to follow the bytes wherever they lead, not only to the largest one.
+
+**The rotation-about-Y-only hypothesis — checked against the full population, and false.** The
+brief's own sample suggested every `rot` looks like `[0, y, 0, w]`. Checked directly
+(`$SCRATCH/audit/instances_columns.py`, full population, all 1,283,183 records):
+
+```
+records with rot.x != 0 or rot.z != 0: 318,225 of 1,283,183 (24.80%)
+```
+
+Broken down by `kind` (`$SCRATCH/audit/instances_rot_kind.py`):
+
+| kind | total | tilted (x/z ≠ 0) | % |
+|---|---:|---:|---:|
+| `tree` | 697,163 | 246,280 | 35.33% |
+| `prop` | 558,645 | 60,096 | 10.76% |
+| `decal` | 18,479 | 11,845 | 64.10% |
+| `building` | 8,896 | 4 | 0.04% |
+
+**Killed as a whole-file hypothesis, confirmed as a near-exact one for `building` alone.**
+Buildings are almost always Y-axis-only rotation (0.04% exceptions — architecture standing
+upright on flat lots), which is what the brief's sample happened to catch, but trees lean with
+terrain slope and growth variation, decals are oriented to whatever surface they are projected
+onto (§4.2a, cited: decals are projector volumes, not flat placements), and even props tilt a
+tenth of the time. A columnar encoding cannot assume `rot.x == rot.z == 0` and drop them
+file-wide; §4.4 ships the full quaternion instead.
+
+**id/parent range**, checked directly rather than assumed (`$SCRATCH/audit/instances_columns.py`):
+`id` range `[50,769, 2,595,164]`, `parent` range identical — both comfortably fit an unsigned
+32-bit column, and `0` never appears as a real `id` in this bundle, which §4.4 uses as a free
+"no parent" sentinel.
+
+### 4.4 Smallest lossless encoding
+
+**The losslessness claim, stated against the baseline it is actually true for.** Per constraint
+3: a binary `f32` column is lossless *relative to what this bundle currently ships* if the
+shipped text already carries fewer significant digits than `f32`'s 24-bit mantissa resolves at
+that magnitude — **not** relative to the game's own internal values, which §4.2 just showed are
+full, unrounded `f32` with no clamping beyond a ±100,000 m sanity range. This bundle's text is
+already rounded (`IO/InstanceWriter.cs`, §4.2): 3 dp for `pos`, 6 dp for `rot`, 4 dp for
+`colorSet`. Confirmed directly, first the decimal places actually present (200k-record sample,
+`$SCRATCH/audit/instances_precision.py`):
+
+```
+pos: decimal places {1: 5,536, 2: 47,800, 3: 546,664}   -- never more than 3
+rot: decimal places {0: 1,004, 1: 353,054, 2: 34, 3: 456, 4: 3,606, 5: 41,276, 6: 400,570}  -- never more than 6
+```
+
+— then an actual round-trip, full population, not a plausibility argument
+(`$SCRATCH/audit/instances_columns.py`): pack each shipped decimal value as an IEEE-754 `f32`,
+unpack it, re-round to the shipped precision, and compare to the original text's own rounded
+value:
+
+```
+pos f32 round-trip: 3,849,549 values checked, 0 failed (0.000000%)
+rot f32 round-trip: 5,132,732 values checked, 0 failed (0.000000%)
+```
+
+`measured`, exact, full population, zero failures. The same check run on `colorSet`
+(`$SCRATCH/audit/instances_colorset_precision.py`, 4 dp, full population):
+
+```
+colorSet f32 round-trip: 14,491,656 values checked, 0 failed (0.000000%)
+```
+
+**So: `f32` is proven bit-losslessly sufficient for every numeric field this bundle currently
+ships, against the precision this bundle currently ships it at — stated in exactly those terms,
+not as a claim about the game's own precision, which is finer (unrounded) and which this
+producer already deliberately discards at write time, a decision this task does not revisit.**
+The same full-population method applied to `elevation`, `growth`, `growthScale` and
+`decalHeight` (`$SCRATCH/audit/instances_attrs_precision.py`) also found **zero** round-trip
+failures across all four fields. A cheaper `u8` (1/255 step) quantization of `colorSet` was also
+tested and is **not** lossless against shipped precision — `65.21%` of the 14,491,656 sampled
+channel values fail to round-trip (`$SCRATCH/audit/instances_colorset_precision.py`) — so it is
+reported separately as a lossy candidate, not folded into the lossless row below.
+
+**Compressibility floor — full file, not sampled** (309.2 MiB fits comfortably in memory, so
+this is exact rather than extrapolated, unlike §1/§2's sampled figures):
+
+```
+python "$SCRATCH/audit/instances_compress_full.py"   # zlib.compress(raw, 9), lzma.compress(raw), full file, bit-exact round-trip asserted
+```
+
+```
+full file: 324,202,611 B (309.2 MiB)
+  zlib -9: 60,210,607 B (57.4 MiB, 18.57%), round-trip bit-exact, 25.8 s
+  lzma   : 38,867,676 B (37.1 MiB, 11.99%), round-trip bit-exact, 135.5 s
+```
+
+`measured`, exact, full population. `lzma` saves 285,334,935 B (272.1 MiB, **88.01%** of
+`instances.jsonl`, 5.83% of the whole bundle); `zlib -9` saves 263,992,004 B (251.8 MiB,
+**81.43%**, 5.39% of the bundle).
+
+**The columnar candidate — every column named, every width checked against the real data (not
+adopted from the brief's sketch unmodified).** The brief's own sketch (`id` u32, `assetId` u16
+catalogue index, `kind` u8, `pos` 3×f32, `rot` 3×i16 dropping `w`, `parent` u32, `attrs` in typed
+side-columns) is corrected in one place before being sized: §4.3 already showed the
+rotation-about-Y-only assumption behind "`rot` 3×i16, `w` from sign" is false for 24.80% of
+records, so the row below keeps the **full 4-component `f32` quaternion** (16 B) rather than the
+brief's 3×i16 (6 B) — a real, deliberate departure from the brief, not an oversight; a lossy
+alternative that still drops a component is named, unmeasured, as INST-4 below. Every other
+width was checked against this bundle's own measured ranges/precision (§4.1, §4.3, above), not
+assumed:
+
+Fixed columns (every record), `$SCRATCH/audit/instances_columnar_total.py`:
+
+| column | width | basis |
+|---|---:|---|
+| `id` | u32 (4 B) | range `[50,769, 2,595,164]` fits (§4.3) |
+| `assetId` | u16 catalogue index (2 B) | 4,310 distinct fits u16 (§4.1, matches §2.3) |
+| `kind` | u8 (1 B) | 4 used, 6 documented (§4.1) |
+| `pos` | 3×f32 (12 B) | lossless vs. shipped 3 dp text, proven above |
+| `rot` | 4×f32 (16 B) | full quaternion — lossless; the brief's 3×i16 does not hold (§4.3) |
+| `parent` | u32, sentinel `0` = none (4 B) | `0` never a real `id` (§4.3), so no separate presence bit needed |
+| `attrsPresent`/`scalePresent` | u16 bitmask (2 B) | up to 16 optional columns, see below |
+| **fixed total** | **41 B/record** | **52,610,503 B (50.17 MiB)** |
+
+Sparse typed side columns, ordered implicitly by the presence bitmask (no `id` repeated per
+entry):
+
+| attrs/optional field | records | width | basis | bytes |
+|---|---:|---:|---|---:|
+| `colorSet` | 1,207,638 | 12×f32 (48 B) | f32-lossless, proven above | 57,966,624 B (55.28 MiB) |
+| `elevation` | 483,130 | f32 (4 B) | f32-lossless, proven above | 1,932,520 B (1.84 MiB) |
+| `growth` | 311,999 | f32 (4 B) | f32-lossless, proven above | 1,247,996 B (1.19 MiB) |
+| `growthScale` | 299,879 | f32 (4 B) | f32-lossless, proven above | 1,199,516 B (1.14 MiB) |
+| `treeState` | 256,813 | u8 enum (1 B) | 4 values: Adult/Teen/Elderly/Dead (§4.3-adjacent) | 256,813 B (0.24 MiB) |
+| `unresolved` | 24,730 | u8 bool (1 B) | — | 24,730 B (0.02 MiB) |
+| `decalLayers` | 18,479 | u8 bitmask (1 B) | ≤6 documented layers | 18,479 B (0.02 MiB) |
+| `decalHeight` | 18,479 | f32 (4 B) | f32-lossless, proven above | 73,916 B (0.07 MiB) |
+| `elevationFlags` | 18,021 | u8 bitmask (1 B) | ≤4 documented flags | 18,021 B (0.02 MiB) |
+| `state` | 8,896 | u8 enum (1 B) | ≤5 documented states | 8,896 B (0.01 MiB) |
+| `colorCustom` | 239 | u8 bool (1 B) | — | 239 B (0.00 MiB) |
+| `scale` | 6,997 | 3×f32 (12 B) | present on 0.545% of records (§4.1) | 83,964 B (0.08 MiB) |
+| **side total** | | | | **62,831,714 B (59.92 MiB)** |
+
+Plus an `assetId` catalogue (4,310 sanitised prefab-name strings, ~0.10 MiB, negligible).
+**Grand total: 115,545,657 B (110.2 MiB)** — `arithmetic` (real, exact per-field record counts
+from this bundle, times widths individually verified lossless by full-population round-trip
+above; not a single actual re-encode-and-decode of the whole combined file). The **fixed 41
+B/record core** (`id`/`kind`/`pos`/`rot`) *was* actually built and read back as real bytes,
+below. Saved versus as-shipped: **208,656,954 B (199.0 MiB, 64.36% of `instances.jsonl`, 4.26%
+of the whole bundle).**
+
+**The cheap alternative wins outright here — reported plainly, per constraint 2.** `lzma`
+(37.1 MiB) is **2.97× smaller** than the columnar candidate (110.2 MiB), for a fraction of the
+engineering cost: one standard-library decompress call versus a new binary format, an `assetId`
+catalogue, a presence-bitmask decoder and a typed side-column reader. This is not "close, and
+worth noting" — it is a decisive win for the cheap answer, the same shape of result MESH-1 found
+for `meshes/` (§2), and it is reported as such rather than talked around. **If the only goal is
+bytes at rest, `instances.jsonl.xz` beats a columnar redesign and costs almost nothing to ship.**
+
+**But bytes are not the whole value of this candidate — import time is the other half
+(constraint 5), and here the columnar form wins by a much larger margin than it loses on
+bytes.** `json.loads` cost, measured directly on the real file, full population:
+
+```
+python "$SCRATCH/audit/instances_parse_time.py"
+```
+
+```
+one full json.loads pass: 1,283,183 records in 7.09 s (0.0055 ms/record)
+raw line iteration, no parse: 1,283,183 lines in 0.66 s
+```
+
+`tools/blender_import_bundle.py`, this bundle's reference consumer, does not read
+`instances.jsonl` once per run. `survey()` (`:558-595`) runs a full `read_jsonl` pass to report
+bounds/centroid before placing anything (`:3432`, "Always survey before placing... Knowing where
+the selection is turns 'nothing appeared' from a mystery into an arithmetic error"); with the
+default `--center downtown` it runs **again** for the buildings-only skyline scan (`:3456-3462`,
+`survey(instances_path, {"building"}, weight=skyline_weight)`); then the placement loop itself
+(`:3517`, `for record in (read_jsonl(instances_path) if kinds else ())`) reads it a **third**
+time to actually place objects. **Three full `json.loads` passes over 1.28M lines in one default
+import run** — measured at 7.09 s each, **≈21.3 s of parse cost alone**, of which
+`3 × 0.66 s ≈ 2.0 s` is unavoidable file I/O and the remaining **≈19.3 s is `json.loads`
+overhead this producer's own text encoding imposes on every import.**
+
+A packed binary pays this once, and reads fast. Built and read back for real
+(`$SCRATCH/audit/instances_packed_read_bench.py` — writes the actual `id`/`kind`/`pos`/`rot`
+fixed columns above to a real file, then reads them back with `numpy.frombuffer`, asserting the
+`id` array round-trips exactly):
+
+```
+built columns from 1,283,183 records in 8.52s (parsing + building four Python lists)
+packed fixed columns (id u32, kind u8, pos 3xf32, rot 4xf32): 42,345,039 B (40.4 MiB), 33.00 B/record
+numpy read-back of the packed fixed columns: 0.0122s for 1,283,183 records
+speedup vs building the same columns from JSON: 696x
+```
+
+`measured`, real bytes, real round-trip (`id` array assertion passed). Even generously assuming
+`survey()` and the placement loop would each still need an extra 0.1 s of Python-side
+bookkeeping atop the raw `numpy` read, three passes over a packed columnar form cost well under
+a second, not 21.3 s — a 696× measured speedup on the fixed core is two orders of magnitude
+larger than INST-2's 64.36% byte saving, exactly what constraint 5 predicted: this candidate's
+import-time value exceeds its byte value. This is not measured for
+`attrs`' variable side-columns (only the fixed core was benchmarked), so the real end-to-end
+speedup for a full-record read (including `colorSet` etc.) is somewhat lower than 696× but is
+`unmeasured` beyond the fixed-core figure above — building and timing that reader is out of
+scope for Phase A's measurement-only mandate.
+
+### Rip time
+
+`instances.jsonl` is written inside §8's row 1 (Instances bracket, 11:50:23.206–11:55:54.823,
+331.617 s) — cited, not re-derived. No sub-step of that bracket is separately instrumented for
+`instances.jsonl` alone (§8's instrumented sub-steps all fall in rows 2–3), so the write-time
+cost of any candidate below is `unmeasured` at finer grain than the whole 331.617 s bracket.
+
+### Consumer import time
+
+Covered above as part of §4.4, per constraint 5 — repeated here only as a pointer, not
+duplicated: **≈21.3 s of `json.loads` cost across three passes in the reference importer's
+default run, of which ≈19.3 s is parse overhead beyond raw file I/O; a packed binary reader
+reads the same fixed columns back in 0.0122 s, a 696× measured speedup.**
+
+### Candidate rows
+
+**Lossless candidates:**
+
+| id | change | est. bytes saved | est. rip-time saved | consumer cost | risk | lossless? | additive layer |
+|---|---|---|---|---|---|---|---|
+| INST-1 | Compress `instances.jsonl` at rest (`lzma` or `zlib -9`) | measured, full file, `lzma` **272.1 MiB (88.01% of the file, 5.83% of bundle)**; `zlib -9` **251.8 MiB (81.43%, 5.39%)** | unmeasured (producer-side compress cost at write time; not timed) | one decompress call before parsing — every mainstream language ships `lzma`/`zlib` in its standard library or a trivial dependency | low — ubiquitous, well-tested codecs, bit-exact by construction, verified on the full file | YES, full-file bit-exact round-trip asserted | **new layer**: a compressed at-rest/transport encoding of the unchanged JSON bytes (e.g. `instances.jsonl.xz`), needs a `compression` field amendment under §12.1 (same shape as MESH-1, §2); **retires**: nothing, the canonical JSON bytes are recovered exactly on decompress |
+| INST-2 | Columnar binary: fixed 41 B/record core (`id`/`assetId`/`kind`/`pos`/`rot`/`parent`/presence-bitmask) + sparse typed `attrs` side-columns, full detail above | arithmetic (real per-field counts × individually-verified-lossless widths; fixed-core subset actually built and read back), **199.0 MiB (64.36% of the file, 4.26% of bundle)** — **2.97× larger than INST-1's `lzma` result, reported plainly per constraint 2: the cheap answer wins on bytes** | unmeasured (needs a C#-side writer; not timed) | real: a new binary reader, an `assetId` catalogue, a presence-bitmask decoder and typed side-column parsing, replacing `json.loads` entirely — but see the import-time result: **measured 696× faster than building the same fields from JSON** for the fixed core alone | medium — new container format and schema surface, but every component width was individually verified lossless against this bundle's real data (§4.3/§4.4), not guessed | YES — every numeric column proven f32-lossless by full-population round-trip; enums/bitmasks are lossless replacements of already-closed, already-documented string sets | **new layer**: `instances.bin` + a small `assetId` catalogue alongside `instances.jsonl`, opt-in; **retires**: nothing until an A/B gate proves the reader matches the JSON form record-for-record (same transitional-bundle caveat as NET-1, §3) — until then the transitional bundle is 324,202,611 + 115,545,657 = 439,748,268 B (419.4 MiB) for this domain, larger than today's `instances.jsonl` alone, for as long as both ship together |
+
+**Lossy candidates** (named and measured or explicitly left unmeasured per constraint 6 —
+investigate lossless first, which both rows above already do exhaustively for this domain):
+
+| id | change | est. bytes saved | est. rip-time saved | consumer cost | risk | lossless? | error bound | additive layer |
+|---|---|---|---|---|---|---|---|---|
+| INST-3 | `colorSet` channel quantization to `u8` (1/255 step) instead of `f32`, inside INST-2's side-column layout | measured, would shrink the `colorSet` side-column from 48 B to 12 B/record (4×), saving up to ~41.4 MiB of INST-2's 55.28 MiB `colorSet` column — **not recommended**: §4.3 found `colorSet` predominantly *information* (season-modulated, near-unique per instance for the dominant tree/grass assets), so lossy banding here is a real visible-quality risk, not a free win the way §1's channel-drop rows were | unmeasured | none beyond INST-2's own reader | medium — visible colour banding on the highest-instance-count assets specifically (`OakTree01`, `pd_Long_Grass`), where the entropy is real | **NO** | measured: `65.21%` of 14,491,656 sampled `colorSet` channel values fail to round-trip through a `u8` (1/255) step against the shipped 4 dp text (`$SCRATCH/audit/instances_colorset_precision.py`, full population) | would replace the `colorSet` side-column inside INST-2's own new layer, not a separate file |
+| INST-4 | `rot` smallest-three quaternion compression (drop whichever of the 4 components has the largest magnitude, store the other 3 quantized, canonicalize sign via the unit-norm constraint — q and −q are the same rotation) instead of the full 4×f32 | unmeasured — Phase A does not build or measure it | unmeasured | consumer must reconstruct the dropped component and de-quantize per component | medium — well-understood technique, but not built or verified here | **NO** | `unmeasured` — no re-encode attempted; note the brief's own specific scheme ("`rot` 3×i16, `w` from sign", i.e. always drop `w`) is **not valid file-wide**, since §4.3 measured `rot.x`/`rot.z` nonzero on 24.80% of records — a valid version of this technique must drop the *largest-magnitude* component per record, not always `w` | would replace the `rot` fixed column inside INST-2's own new layer (16 B → ~7 B with a 2-bit selector + 3×i16), not a separate file |
+
 ## 5. `lanes.jsonl`
 
 ## 6. Markings and decals
