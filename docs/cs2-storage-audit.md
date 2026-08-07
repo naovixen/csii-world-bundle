@@ -840,6 +840,279 @@ not recommended — MESH-1 above already gives a far larger lossless win from th
 
 ## 3. Networks
 
+`networks/` is 424,469,220 bytes (404.8 MiB, 8.7% of the 4,894,194,530-byte total, §0), 7,248
+files — third-largest share, but an order of magnitude behind `textures/` and `meshes/`. §0
+already reconciled the record counts this section reuses without re-deriving: `networks.jsonl`
+holds 8,259 segment records, of which 7,248 are **mesh form** (`assetId":"seg_<id>"`, a matching
+`networks/seg_<id>.glb`) and 1,011 are **centerline form** (no baked mesh). This section does not
+re-open that reconciliation.
+
+### 3.1 What we ship
+
+Command:
+
+```
+python "$SCRATCH/audit/net_dedup.py" "$BUNDLE"
+```
+
+(`net_dedup.py`: counts `networks.jsonl` records by `kind`/`assetId` shape, matching §0's split;
+tallies `attrs.asset` over the mesh-form records; sums `networks/*.glb` bytes.) `measured`, full
+population (8,259 of 8,259 records, 7,248 of 7,248 files):
+
+| | |
+|---|---:|
+| total records | 8,259 |
+| mesh-form segment records | 7,248 |
+| baked meshes on disk | 7,248, 424,469,220 B (404.8 MiB) — matches §0's census exactly |
+| distinct `attrs.asset` values among mesh-form segments | **45** |
+| mean baked mesh | 57.2 KiB |
+| dedup ratio (mesh-form records ÷ distinct prefabs) | **161.07×** |
+
+The twelve most common prefabs account for 5,955 of the 7,248 mesh-form segments (82.2%): Small
+Road 1,955, Alley 1,915, Medium Road 776, Highway Oneway – 2 lanes 426, Gravel Road 387, Highway
+Oneway – 3 lanes 210, Double Train Track 209, Pavement Path 135, Pedestrian Street 105, Twoway
+Train Track 100, Highway Oneway – 1 lane 100, Small Road Asymmetric 90 (full 45-row breakdown in
+`$SCRATCH/audit/net_dedup.txt`). **This dedup ratio — 7,248 baked, unique-per-segment meshes
+standing for 45 distinct road cross-sections — is itself the size of the win question 4 answers
+below; it is not a separate finding to re-derive, per the brief's Step 1.**
+
+`networks/` meshes are **not** deduped by design (`docs/bundle-schema.md:538`, cited: "every
+segment is bent onto its own curve, so each `.glb` is unique"), unlike `meshes/`'s one-file-per-
+prefab convention (§2, `docs/bundle-schema.md` §6). That is the entire shape of this domain's
+question 3 below.
+
+### 3.2 What the game stores
+
+**Cited, not re-derived, per this task's brief.** `docs/cs2-api-audit.md` §8 ("Network assembly
+versus the game, rule by rule") and §21 ("The GameMesh port versus the generator, line by line")
+already establish, rule by rule against the decompiled game, that **CS2 keeps no per-segment road
+mesh at all**: a *composition* names a reusable cross-section (a list of shared pieces — carriageway,
+kerb, sidewalk, median — each an ordinary prefab), and the renderer bends that composition onto a
+segment's own curve in the vertex shader from eight matrices that are themselves nothing but the
+segment's `EdgeGeometry`/`EdgeNodeGeometry` boundary bézier control points
+(`docs/bundle-schema.md:418-425`, cited). `Systems/NetworkRipSystem.GameMesh.cs` is a full CPU-side
+port of that pipeline (`CalculateEdgeParameters`/`CalculateNodeParameters`/
+`GenerateCompositionMesh`/vertex sync), and §8's 17-row and §21's 12-row rule tables record it as
+`match` or `divergence — fixed` on every rule checked, not `unmeasured` or `approximated` except
+for two shader-only refinements (roundabout blend feathering, §8 row 13; normals, §8 row 14) that
+do not bear on this section's sizing question. **What the bundle currently ships (§3.1) is
+therefore the baked *output* of a representation the game itself never bakes**, and that our own
+producer already builds internally before discarding it — confirmed directly in our own source
+below, per the brief's Step 2.
+
+**The cache-then-discard claim, anchored in code:**
+
+```
+grep -n 'cache\|Cache\|Dispose\|composition' Systems/NetworkRipSystem.GameMesh.cs | head -40
+```
+
+What is cached, and for how long: `m_PieceGeometry` (`Systems/NetworkRipSystem.GameMesh.cs:72`,
+`private readonly Dictionary<Entity, PieceGeometry> m_PieceGeometry = new();`) holds one entry per
+unique cross-section *piece* — the raw `MeshVertex`/`MeshUV0`/`MeshIndex`/`MeshMaterial` ECS
+buffers read once (`GetPieceGeometry`, `:598-662`; the memo check is `:601`, `if
+(m_PieceGeometry.TryGetValue(piece, out PieceGeometry cached)) return cached;`; the fill is `:660`,
+`m_PieceGeometry[piece] = result;`). It is cleared exactly once per rip
+(`Systems/NetworkRipSystem.cs:437`, `m_PieceGeometry.Clear();`, inside `BeginRip`, commented "the
+cache is per-rip") and never again — so it persists across all 8,259 segments. The rip's own report
+line states its real size on this bundle: **`Distinct cross-section pieces read: 160`**
+(`$SCRATCH/audit/full-log-repr.txt:213`) — 160 ECS buffer reads standing in for what would
+otherwise be at least 7,248 (one per mesh-form segment, more once shared pieces across compositions
+are counted individually).
+
+What is **not** cached: the *assembled, bent* composition mesh — the thing that would actually let
+one composition serve many segments. `AssembleNetwork` (`Systems/NetworkRipSystem.cs:1427-1485`)
+allocates a fresh `List<float3> vertices = new();` (`:1432`) for every segment entity and calls
+`BuildNodeSide`/`BuildGameComposition` (`:1450`, `:1462`, `:1471` →
+`Systems/NetworkRipSystem.GameMesh.cs:251-420`) to loop over that composition's pieces from scratch
+— vertex filter/remap, front/back cut, V-density, Bernstein bend — for that one segment's own curve,
+every time. `Finish` (`:1672`) packages the result into a `MeshAsset`, which is handed straight to
+the writer (`:646-656`, `run.Queue.Add(new NetworkItem { Mesh = assembled });`) and appears nowhere
+keyed by composition — there is no `Dictionary<Entity, MeshAsset>` (or similar) mapping a
+composition entity to its assembled-but-unbent geometry anywhere in either file. Concretely: the
+"Small Road" composition, used by 1,955 different segments (§3.1), has its full per-piece loop and
+per-vertex bend recomputed 1,955 times over — the only thing that does *not* get re-read 1,955
+times is each piece's raw ECS geometry, via `m_PieceGeometry`.
+
+### 3.3 Information or representation?
+
+**Pure representation.** §3.2's citations already establish that the 424.5 MB in `networks/` is a
+deterministic, already-verified-faithful function of two things the bundle ships in far fewer
+bytes: which of 45 compositions a segment uses, and that segment's own curve (already implicit in
+`EdgeGeometry`, the very data `Systems/NetworkRipSystem.GameMesh.cs` reads to build the baked mesh
+in the first place). No new fact is encoded by baking — every triangle in `seg_1794912.glb` is
+reconstructible, bit-for-bit modulo the two shader-only approximations §3.2 names, from a
+composition id plus a handful of curve control points. This is the textbook case the front matter's
+question 3 is asking about, and it is a stronger case than any of §1/§2's representation findings:
+those saved bytes by re-encoding the *same* per-file data more efficiently; this domain ships
+7,248 independent files that are each a full re-derivation of the *same 45-item* catalogue, over
+and over, onto a curve the bundle already has.
+
+There is no orphan/dedup question to run here the way §1.3/§2.3 did: §0 already showed
+`networks/`'s 7,248 files match `"assetId":"seg_` 1:1, exactly (§0, "those three are the same
+measurement taken three ways and agree exactly") — nothing is shipped unreferenced, and nothing
+here is duplicate-by-content in the way §1.3 checked textures (every `.glb` is bent onto its own
+unique curve, so byte-identical duplicates across different segments would not be expected and
+were not checked separately from that reconciliation).
+
+### 3.4 Smallest lossless encoding
+
+**The composition layer is the win, sized against the shipped precedent for exactly this shape of
+representation** — `lanemeshes.jsonl` + `lanemeshes/` (§5B v2 of `docs/bundle-schema.md`, cited):
+28,063,057 B of per-lane matrix/curve/reference records plus 2,738,524 B of
+deduped straight-part geometry, covering all 119,302 drawn lanes (of which ~83k, the `lane`
+category, are markings) from just 71 unique source meshes. That layer already proved the shape
+works and already shipped it — §3's job, per the brief, is to size the same move for networks,
+not to re-argue that it works.
+
+Per-unit costs, measured directly from that shipped precedent (§0's byte-exact census, divided by
+the corresponding record/file counts):
+
+```
+lanemeshes.jsonl:  28,063,057 B ÷ 119,302 records = 235.23 B/record   (wc -l "$BUNDLE/lanemeshes.jsonl")
+lanemeshes/:         2,738,524 B ÷ 71 files        = 38,570.8 B/file
+```
+
+Applied to this domain's own measured counts (§3.1: 45 distinct compositions as the geometry-count
+ceiling per the brief's own framing — "the number of distinct prefabs above is the ceiling on the
+geometry count"; 7,248 mesh-form segments as the record count):
+
+```
+geometry layer:  45 compositions      × 38,570.8 B/file   = 1,735,684 B  (1.66 MiB)
+record layer:    7,248 segments       × 235.23 B/record   = 1,704,926 B  (1.63 MiB)
+projected composition layer total:                           3,440,610 B  (3.28 MiB)
+
+saved  = 424,469,220 − 3,440,610 = 421,028,610 B (401.5 MiB)
+       = 99.19% of networks/, 8.60% of the whole 4,894,194,530-byte bundle
+```
+
+`arithmetic` — computed from two real, measured per-unit costs (not a fresh re-encode of network
+geometry: no composition-layer file has actually been built or round-trip-tested here, unlike
+§1/§2's `measured` rows). The projection assumes a network composition-layer record is comparable
+in richness to a `lanemeshes.jsonl` record — both need to carry a curve descriptor (a
+`lanemeshes` record ships one cubic bézier, 4×3 floats; a network segment record would need the
+edge's left/right boundary curves plus each node-side flare, a small integer multiple of that,
+§3.2) plus a handful of scalar/reference fields most of which (`category`, `form`, `asset`, …)
+`networks.jsonl`'s mesh-form records already carry today and would not need to duplicate. The
+true per-record cost could run a few times higher than 235 B without changing the order of
+magnitude of the result — even at 5× (1,176 B/record, 8.13 MiB record layer, 9.78 MiB total
+projected layer with the geometry term unchanged) the saving is still 395.0 MiB, 97.58% of
+`networks/`. **45 is a ceiling, not an exact composition-entity count**
+(the brief's own qualification, repeated here rather than silently dropped): a single named
+prefab like "Small Road" can in principle resolve to more than one distinct `NetCompositionData`
+entity — an edge composition plus separate node-side compositions, and a roundabout composition is
+a structurally different mapping again (§8 row 13, cited) — so the true geometry count the layer
+would need to store could exceed 45. Even a generous 4× correction (180 geometries) only grows the
+geometry-layer term to 6.62 MiB, leaving the total projected layer at 8.25 MiB and the saving at
+396.6 MiB (97.96% of `networks/`) — the result is insensitive to this uncertainty.
+
+**Consumer cost — concrete, not hand-waved (Step 3).** Today a consumer opens one `.glb` per
+segment and gets triangles for free. Under a composition layer, a consumer must instead: (1) load
+the 45 shared composition geometries once (§3.4's ceiling), each already fully assembled in composition-local
+parameter space (the pre-bend cross-section CS2 itself never materialises as a mesh, per §3.2); (2)
+for every segment, resolve its composition id(s) and read its curve (edge boundary béziers plus
+start/end node flare geometry) from the new per-segment record; (3) run the same CPU-side bend
+`Systems/NetworkRipSystem.GameMesh.cs` already implements — the Bernstein blend of up to eight
+curve matrices, the vertex-sync remap, the front/back cut gates, the median/roundabout node
+mapping (§3.2, §8's 17 rules, §21's 12 refinements) — to produce world-space triangles; (4) merge
+per-material primitives into a renderable mesh, in-memory or cached to disk on first load. This is
+categorically more consumer engineering than any other candidate in this document: `lanemeshes/`'s
+bend algorithm is normatively documented in ~30 lines of pseudocode in
+`docs/bundle-schema.md` §5B and already has a reference port in
+`tools/blender_import_bundle.py`; MESH-3's `__base.glb` skirt algorithm is 366 lines with one
+documented deviation (§2.3, §27). A network composition-layer consumer would need to port most of
+`Systems/NetworkRipSystem.GameMesh.cs` itself — the file this task's own brief describes as
+"the game's own composition-mesh generation, ported" — which is the single largest and most
+rule-dense algorithm this whole codebase has needed to reproduce faithfully (§8/§21's combined 29
+rule-verification rows). **Per this audit's constraint 5, a composition layer ships *alongside*
+`networks/`, not instead of it, until an A/B gate proves the consumer's port matches the baked
+geometry — so the transitional bundle is 424,469,220 + 3,440,610 = 427,909,830 B (408.1 MiB, 8.74%
+of the current bundle total), larger than today's `networks/` alone, not smaller, for as long as
+both ship together.** That is a real, first-class cost of this candidate, not a footnote.
+
+**Import time.** §8 records the networks phase's own instrumented sub-step: "Network segment mesh
+baking: `Wrote 8259 segment(s) to networks.jsonl in 65.8 s`" (§8, cited, not re-derived) — that is
+rip-time cost for the producer to *write* 7,248 files, not consumer import time, but the same
+7,248-file-opens-versus-one-composition-set shape applies on the read side: a consumer importing
+this bundle today opens 7,248 separate `.glb` files for `networks/` alone; under the composition
+layer it would open the 45 geometry files (§3.1's ceiling) once, plus one JSON record per segment
+already being read from `networks.jsonl` regardless. Whether that changes measured consumer import
+wall-clock time is `unmeasured` — no consumer-side composition-layer importer exists to time, the
+same caveat §1/§2 record for every rip-time question this phase of the audit cannot answer without
+building the candidate first.
+
+### Candidate rows
+
+**Lossless candidates:**
+
+| id | change | est. bytes saved | est. rip-time saved | consumer cost | risk | lossless? | additive layer |
+|---|---|---|---|---|---|---|---|
+| NET-1 | Composition layer: ship each segment's composition id(s) + curve instead of baking a per-segment `.glb`, mirroring the already-shipped `lanemeshes.jsonl`/`lanemeshes/` v2 precedent (§5B) | arithmetic, projected from the precedent's measured per-unit costs, **401.5 MiB (99.19% of `networks/`, 8.60% of the whole bundle)** — see method above; even under a joint 5× record-cost / 4× geometry-count correction the saving is still 390.1 MiB (96.36% of `networks/`) | unmeasured (rip-time cost moves from writing 7,248 `.glb` files to writing ~45 geometry files + one record per segment; not timed, no candidate built) | real and large: consumer must port most of `Systems/NetworkRipSystem.GameMesh.cs` (§8's 17 rules + §21's 12 refinements) — the single largest algorithm this audit has needed to size a port for | high — correctness-critical geometry algorithm (junction interiors, vertex sync, roundabout mapping) with two already-known shader-only approximations (§3.2); a faithful port is achievable (the reference exists and is proven, §8/§21) but is not a small lift like MESH-3 | YES — every rule checked in §8/§21 is `match` or `fixed`; the two shader-only gaps (roundabout blend feathering, rebuilt normals) are pre-existing approximations already in today's baked mesh too, not new loss this candidate introduces | **new layer**: composition geometry set + per-segment matrix/curve records, replacing `networks/*.glb`; **retires**: `networks/` and the per-segment mesh-form baking path, but only after an A/B gate (constraint 5) — until then it ships *alongside* `networks/`, making the transitional bundle 408.1 MiB for this domain (8.74% of the bundle) instead of today's 404.8 MiB (8.60%) |
+
+**Lossy candidates:** none proposed for this domain. A lossy geometry reduction (e.g. `MESH-2`-style
+quantization of the baked `.glb` vertex data) is conceptually available but not measured here:
+NET-1's lossless win (401.5 MiB) is already two orders of magnitude larger than anything a
+format-level tweak to the remaining bytes could add, so investigating a lossy variant would not be
+a use of this task's time, and constraint 6 requires lossless to be investigated first in any case
+— which NET-1 already does, exhaustively, for this domain.
+
+### The pier question
+
+**Left `unmeasured`, per the brief's instruction not to guess — but with three specific causes
+ruled out by direct measurement, not just asserted.** §0 already ruled out category, form, asset
+name and segment length as the driver of `LeisurePier01Small01`'s 11-meshed/41-not split. This
+task checked three more candidates directly:
+
+**1. `attrs.elevation` presence, and 2. entity-id clustering — both ruled out.**
+
+```
+python "$SCRATCH/audit/net_pier.py" "$BUNDLE"
+```
+
+(`net_pier.py`: splits `LeisurePier01Small01` segments into meshed/mesh-less by the same
+`assetId`-prefix test as `net_dedup.py`, then reports `attrs.elevation` presence and an `id`-value
+cluster split at 1,700,000.) `measured`, full population (all 52 `LeisurePier01Small01` segments):
+
+```
+meshed 11, unmeshed 41
+MESHED:   n=11, has elevation field: 10/11    id<1.7M: 1,  id>=1.7M: 10
+UNMESHED: n=41, has elevation field: 33/41    id<1.7M: 8,  id>=1.7M: 33
+```
+
+Both groups are overwhelmingly elevation-tagged (10/11 vs 33/41) — presence of the field does not
+separate them. The 52 segments' `id` values do fall into two numeric neighbourhoods suggestive of
+two physically distinct piers in the city, not one, but both clusters mix meshed and mesh-less
+segments in almost the same ~1:10 and ~1:4 ratio — the two-piers hypothesis may well be true, but
+it does not predict the mesh/no-mesh split either.
+
+**3. The "no world-view layer" composition skip — ruled out by the rip's own report.**
+`BuildGameComposition` (`Systems/NetworkRipSystem.GameMesh.cs:292-301`) skips a composition and
+increments `_pipelineCompositions` when its mesh's `NetCompositionMeshData.m_DefaultLayers` names
+no world-view bit (Pipeline/SubPipeline/Waterway-only compositions — underground utility runs).
+`Systems/NetworkRipSystem.cs:895-896` prints "Skipped N composition part(s) with no world-view
+layer" **only when that counter is nonzero**; it does not appear anywhere in
+`$SCRATCH/audit/full-log-repr.txt` (`grep -c 'no world-view layer'` → the only hit is the unrelated
+lane-catalogue exclusion line, §3.4/§5B's separate mechanism). `measured`: this specific gate fired
+**zero times in the whole rip** — it cannot be the pier cause.
+
+**What remains genuinely unresolved.** `AssembleNetwork` (`Systems/NetworkRipSystem.cs:1427-1485`)
+falls back to centerline form whenever its three geometry contributions — start-node flare
+(`:1445-1453`), edge run (`:1455-1464`), end-node flare (`:1466-1474`) — all produce zero
+vertices, which can happen per-instance if a segment's resolved `Composition.m_Edge`/`m_StartNode`/
+`m_EndNode` entity is `Entity.Null`, or that entity's mesh lacks a `NetCompositionPiece` buffer, or
+either node's flare/edge run length is below the game's own 0.05 m/0.1 m draw gates (§3.2, cited
+from §8 row 9). All of these test the **specific composition entity CS2's simulation resolved for
+that instance** — a per-instance runtime assignment, not a static property of the
+`LeisurePier01Small01` prefab (a fixed prefab has one authored composition table; if instance
+resolution were uniform, all 52 placements would go the same way, and they do not). None of these
+resolved entity ids, buffer states, or authored flare/run lengths is exposed in `networks.jsonl`'s
+own `attrs`, and no rip-report counter (checked: `_pipelineCompositions`, `SkippedNoWidth`,
+`SkippedDegenerate` — none fire differently for these two groups per the log) distinguishes them
+either. Settling this needs either new rip-time instrumentation logging which specific gate
+returned zero vertices per segment (a production-code change, out of scope for Phase A per this
+task's constraints) or a live in-game ECS inspection session (unavailable offline). Recorded here
+as `unmeasured`, for whichever later task next touches piers or per-segment composition
+resolution.
+
 ## 4. `instances.jsonl`
 
 ## 5. `lanes.jsonl`
