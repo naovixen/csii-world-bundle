@@ -1,0 +1,11 @@
+{
+  "example_concrete_pad": {
+    "name": "Example Concrete Pad",
+    "color": [
+      0.42,
+      0.4,
+      0.38,
+      1.0
+    ]
+  }
+}

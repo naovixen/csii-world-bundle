@@ -57,18 +57,22 @@ namespace Carto.Systems
         static readonly ILog _log = Instance.Log;
 
         /// <summary>
-        /// Depth metres per stored unit of <c>water_depth.png</c>. 1/32 m keeps 3 cm precision to
-        /// a 2,048 m ceiling — above the game's own <c>kMaxSeaLevel</c> of 2,000.
-        /// （<c>water_depth.png</c> 每儲存單位的水深公尺數。1/32 公尺在 2,048 公尺上限內保有
-        /// 3 公分精度——高於遊戲自身 2,000 的 <c>kMaxSeaLevel</c>。）
+        /// The no-data sentinel of the sim-grid water level scratch array. A dry cell carries no
+        /// surface elevation at all — <c>0f</c> would be a real height on maps whose terrain
+        /// crosses zero metres.
+        /// （模擬網格水面高程暫存陣列的無資料哨兵值。乾格全無水面高程——在地形跨越零公尺的地圖上，
+        /// <c>0f</c> 會是真實高度。）
         /// </summary>
-        public const float DepthScale = 0.03125f;
+        const float NoLevel = float.MinValue;
 
         /// <summary>The query for placed network edges.（已放置路網邊的查詢。）</summary>
         EntityQuery _edgeQuery;
 
         /// <summary>The query for orphan nodes.（孤立節點的查詢。）</summary>
         EntityQuery _orphanQuery;
+
+        /// <summary>The query for rendered surface areas.（已繪製地表區域的查詢。）</summary>
+        EntityQuery _surfaceAreaQuery;
 
         // Stamp tallies for the report.（供報告使用的蓋印統計。）
         int _edgesStamped, _nodesStamped, _orphansStamped, _skippedForm, _skippedNoFlatten;
@@ -111,6 +115,22 @@ namespace Carto.Systems
                 }
             });
 
+            _surfaceAreaQuery = GetEntityQuery(new EntityQueryDesc()
+            {
+                All = new ComponentType[]
+                {
+                    ComponentType.ReadOnly<Game.Areas.Surface>(),
+                    ComponentType.ReadOnly<Game.Areas.Node>(),
+                    ComponentType.ReadOnly<Game.Areas.Triangle>(),
+                    ComponentType.ReadOnly<PrefabRef>()
+                },
+                None = new ComponentType[]
+                {
+                    ComponentType.ReadOnly<Game.Common.Deleted>(),
+                    ComponentType.ReadOnly<Game.Tools.Temp>()
+                }
+            });
+
             base.OnCreate();
             _log.Debug("TerrainRipSystem instance created. 地形擷取系統實例創造完成。");
         }
@@ -129,9 +149,9 @@ namespace Carto.Systems
 
         /// <summary>
         /// Rip the terrain layers into <c>terrain/</c>: the final (road-flattened) heightmap, the
-        /// roadbed surface index, the water depth grid, the theme's ground textures and the
-        /// geo-referencing sidecar. Contract §8 of <c>docs/bundle-schema.md</c>.
-        /// （將地形層擷取至 <c>terrain/</c>：最終（道路壓平後）高度圖、路床地表索引、水深網格、
+        /// roadbed surface index, the water surface level grid, the theme's ground textures and
+        /// the geo-referencing sidecar. Contract §8 of <c>docs/bundle-schema.md</c>.
+        /// （將地形層擷取至 <c>terrain/</c>：最終（道路壓平後）高度圖、路床地表索引、水面高程網格、
         /// 主題的地面貼圖與地理參照附檔。契約見 <c>docs/bundle-schema.md</c> §8。）
         /// </summary>
         /// <param name="outputDirectory">The bundle root to write into.（要寫入的束根目錄。）</param>
@@ -172,16 +192,28 @@ namespace Carto.Systems
             report.AppendLine($"  skipped {_skippedNoFlatten} edge(s) whose prefab does not flatten terrain, "
                             + $"{_skippedForm} elevated/tunnel composition(s) (their ground is not pulled to the road)");
 
-            // ---- 3. Water depth, resampled onto the terrain grid so every raster shares one frame.
-            // （水深：重採樣至地形網格，使所有網格共用同一參照框架。）
-            ushort[] waterDepth = ResampleWaterDepth(heightData, out int wetCells, out float maxDepth);
-            report.AppendLine((waterDepth != null)
-                ? $"Water: {wetCells} wet cell(s), max depth {maxDepth:F1} m (stored at {DepthScale} m/unit)"
+            // ---- 3. Water surface LEVEL, built on the sim grid and resampled onto the terrain
+            // grid. Depth was resampled directly once, and the river climbed its gorge: bilinear
+            // depth from the ~28 m sim grid, added to the much finer ground, reads a mid-channel
+            // depth halfway up a cliff face. Level (ground at the sim cell + depth) is what the
+            // water surface actually is, and it is smooth across the shoreline in the way depth
+            // is not.
+            // （水面「高程」：於模擬網格建立，再重採樣至地形網格。曾直接重採樣水深，結果河水爬上峽谷：
+            //   自約 28 公尺的模擬網格雙線性取得的水深，加到精細得多的地面上，會把河道中央的深度
+            //   讀到崖面半腰。高程（模擬格處的地面加水深）才是水面本身，且其於岸線兩側平滑，
+            //   水深則否。）
+            ushort[] waterLevel = BuildWaterLevel(heightData, out int wetCells, out float maxDepth);
+            report.AppendLine((waterLevel != null)
+                ? $"Water: {wetCells} wet cell(s), max depth {maxDepth:F1} m (surface level grid, heightmap encoding)"
                 : "Water: no simulation data resident; layer omitted");
 
             // ---- 4. The theme's ground textures, read off the live global bindings.
             // （主題的地面貼圖：讀取現行的全域繫結。）
             Dictionary<string, string> surfaceTextures = CaptureSurfaceTextures(terrainDirectory, report);
+
+            // ---- 4b. Surface areas — the pavement patches nothing else carries.
+            // （地表區域——其餘各層皆未攜帶的鋪面區塊。）
+            RipSurfaceAreas(outputDirectory, terrainDirectory, report);
 
             // ---- 5. Encode and write everything off the main thread.
             // （於主執行緒之外編碼並寫出。）
@@ -202,8 +234,7 @@ namespace Carto.Systems
                 },
                 ["elevationUnits"] = "m",
                 ["elevationScale"] = 1.0 / scale.y,
-                ["elevationOffset"] = (double)(-offset.y),
-                ["depthScale"] = (double)DepthScale
+                ["elevationOffset"] = (double)(-offset.y)
             };
 
             try
@@ -214,10 +245,10 @@ namespace Carto.Systems
                                        Png.EncodeGray16(FlipRows(heights, width, height), width, height));
                     File.WriteAllBytes(IOUtils.CombinePath(terrainDirectory, "surface_index.png"),
                                        Png.EncodeGray8(FlipRows(surfaceIndex, width, height), width, height));
-                    if (waterDepth != null)
+                    if (waterLevel != null)
                     {
-                        File.WriteAllBytes(IOUtils.CombinePath(terrainDirectory, "water_depth.png"),
-                                           Png.EncodeGray16(FlipRows(waterDepth, width, height), width, height));
+                        File.WriteAllBytes(IOUtils.CombinePath(terrainDirectory, "water_level.png"),
+                                           Png.EncodeGray16(FlipRows(waterLevel, width, height), width, height));
                     }
 
                     File.WriteAllText(IOUtils.CombinePath(terrainDirectory, "rasters.json"),
@@ -277,21 +308,34 @@ namespace Carto.Systems
         }
 
         /// <summary>
-        /// Resample the water simulation's depth grid onto the terrain grid, bilinearly.
-        /// （將水體模擬的水深網格雙線性重採樣至地形網格。）<br/><br/>
-        /// The two grids cover the same playable area at different resolutions, and the manifest's
-        /// <c>rasters</c> block geo-references all raster layers with one frame — so the coarser
-        /// simulation grid is lifted onto the terrain grid rather than shipped in a second frame.
-        /// Depth is smooth by construction (it is a fluid), so bilinear is faithful.<br/>
-        /// （兩個網格以不同解析度涵蓋同一可遊玩區域，而宣告檔的 <c>rasters</c> 區塊以單一框架
-        /// 地理參照所有網格層——故將較粗的模擬網格提升至地形網格，而非另立第二框架。
-        /// 水深依其構成即為平滑（流體），故雙線性為忠實之法。）
+        /// Build the water <i>surface level</i> grid: per wet sim cell, terrain height at that
+        /// cell plus depth; dilated one sim cell; resampled bilinearly onto the terrain grid.
+        /// （建立水面<i>高程</i>網格：每個含水模擬格取該格地面高度加水深，向外擴張一格，
+        /// 再雙線性重採樣至地形網格。）<br/><br/>
+        /// <b>Why level and not depth.</b> Depth lives on the ~28 m simulation grid; the ground it
+        /// was measured against is that same coarse grid. Adding coarse depth to the ~3.5 m
+        /// terrain grid's fine ground re-bases every sample onto ground the simulation never saw —
+        /// against a gorge wall, mid-channel depth lands halfway up the cliff and the river floods
+        /// its gorge. The surface level is the physical quantity that is actually smooth across a
+        /// shoreline, so it is the one that survives bilinear resampling.<br/>
+        /// （<b>為何取高程而非水深。</b>水深屬於約 28 公尺的模擬網格，其所對照的地面亦為該粗網格。
+        /// 將粗水深加到約 3.5 公尺地形網格的精細地面上，等於把每個樣本重新架在模擬未曾見過的
+        /// 地面上——貼著峽谷壁，河道中央的水深會落在崖面半腰，河水便淹沒峽谷。水面高程才是
+        /// 真正跨越岸線仍然平滑的物理量，故唯有它經得起雙線性重採樣。）<br/><br/>
+        /// <b>The one-cell dilation</b> keeps the shoreline honest: without it, a terrain cell
+        /// between a wet sim cell and a dry one would lerp level against the dry cell's "no data"
+        /// and drag the surface down right where the consumer needs it to cross the ground. The
+        /// dilated ring copies its highest wet neighbour, so the surface extends flat past the
+        /// shoreline and the ground plane cuts it where the game's own shoreline is.
+        /// （<b>向外擴張一格</b>使岸線誠實：若無此步，介於含水與乾燥模擬格之間的地形格會把高程與
+        /// 乾格的「無資料」內插，恰在消費端需要水面與地面相交之處將其拉低。擴張環帶取其最高
+        /// 含水鄰格之值，水面因而平直延伸越過岸線，由地面於遊戲自身的岸線處將其切開。）
         /// </summary>
-        /// <param name="heightData">The terrain grid to resample onto.（作為目標的地形網格。）</param>
-        /// <param name="wetCells">Receives how many cells hold water.（接收含水的格數。）</param>
-        /// <param name="maxDepth">Receives the deepest sample.（接收最深的樣本。）</param>
-        /// <returns>The depth grid at <see cref="DepthScale"/> m/unit, or <c>null</c> without data.（以 <see cref="DepthScale"/> 公尺／單位計的水深網格；無資料則為 <c>null</c>。）</returns>
-        private ushort[] ResampleWaterDepth(TerrainHeightData heightData, out int wetCells, out float maxDepth)
+        /// <param name="heightData">The terrain grid to sample ground from and resample onto.（供取樣地面並作為重採樣目標的地形網格。）</param>
+        /// <param name="wetCells">Receives how many terrain cells the level exceeds the ground in.（接收高程高於地面的地形格數。）</param>
+        /// <param name="maxDepth">Receives the deepest level-over-ground.（接收高程超出地面的最大值。）</param>
+        /// <returns>The level grid in the heightmap's encoding (0 = dry), or <c>null</c> without data.（以高度圖編碼表示的高程網格（0 為乾）；無資料則為 <c>null</c>。）</returns>
+        private ushort[] BuildWaterLevel(TerrainHeightData heightData, out int wetCells, out float maxDepth)
         {
             wetCells = 0;
             maxDepth = 0f;
@@ -300,45 +344,334 @@ namespace Carto.Systems
             deps.Complete();
             if (!water.depths.IsCreated || (water.resolution.x <= 0)) return null;
 
+            int simWidth = water.resolution.x;
+            int simHeight = water.resolution.z;
+
+            // ---- Level per wet sim cell, on the ground the simulation itself sits on.
+            // （每個含水模擬格的高程，架於模擬自身所處的地面。）
+            float[] level = new float[simWidth * simHeight];
+            for (int i = 0; i < level.Length; i++) level[i] = NoLevel;
+
+            for (int z = 0; z < simHeight; z++)
+            {
+                // Sim cell -> world, the inverse of the sampling map below
+                // (world = cell / scale - offset).
+                // （模擬格 → 世界，即下方取樣映射之逆。）
+                float worldZ = (z / water.scale.z) - water.offset.z;
+                for (int x = 0; x < simWidth; x++)
+                {
+                    float depth = water.depths[(z * simWidth) + x].m_Depth;
+                    if (!(depth > 0f)) continue;
+
+                    float worldX = (x / water.scale.x) - water.offset.x;
+                    level[(z * simWidth) + x] = SampleTerrainHeight(heightData, worldX, worldZ) + depth;
+                }
+            }
+
+            // ---- Dilate one sim cell: each dry cell bordering water takes its highest wet
+            // neighbour.（向外擴張一格：鄰接水體的乾格取其最高含水鄰格之值。）
+            float[] dilated = (float[])level.Clone();
+            for (int z = 0; z < simHeight; z++)
+            {
+                for (int x = 0; x < simWidth; x++)
+                {
+                    if (level[(z * simWidth) + x] != NoLevel) continue;
+
+                    float best = NoLevel;
+                    for (int dz = -1; dz <= 1; dz++)
+                    {
+                        int nz = z + dz;
+                        if ((nz < 0) || (nz >= simHeight)) continue;
+                        for (int dx = -1; dx <= 1; dx++)
+                        {
+                            int nx = x + dx;
+                            if ((nx < 0) || (nx >= simWidth)) continue;
+                            best = math.max(best, level[(nz * simWidth) + nx]);
+                        }
+                    }
+                    if (best != NoLevel) dilated[(z * simWidth) + x] = best;
+                }
+            }
+
+            // ---- Resample onto the terrain grid. Corners without data drop out of the lerp by
+            // weight, rather than dragging the surface toward a sentinel.
+            // （重採樣至地形網格。無資料的角以權重剔除，而非將水面拉向哨兵值。）
             int width = heightData.resolution.x;
             int height = heightData.resolution.z;
             ushort[] grid = new ushort[width * height];
 
             for (int z = 0; z < height; z++)
             {
-                // Terrain cell -> world -> water grid, by each grid's own mapping
-                // (world = cell / scale - offset; TerrainUtils.ToWorldSpace and its water twin).
-                // （地形格 → 世界 → 水體網格，各依其自身映射。）
                 float worldZ = (z / heightData.scale.z) - heightData.offset.z;
                 float waterZ = (worldZ + water.offset.z) * water.scale.z;
-                int z0 = math.clamp((int)math.floor(waterZ), 0, water.resolution.z - 1);
-                int z1 = math.min(z0 + 1, water.resolution.z - 1);
+                int z0 = math.clamp((int)math.floor(waterZ), 0, simHeight - 1);
+                int z1 = math.min(z0 + 1, simHeight - 1);
                 float tz = math.saturate(waterZ - z0);
 
                 for (int x = 0; x < width; x++)
                 {
                     float worldX = (x / heightData.scale.x) - heightData.offset.x;
                     float waterX = (worldX + water.offset.x) * water.scale.x;
-                    int x0 = math.clamp((int)math.floor(waterX), 0, water.resolution.x - 1);
-                    int x1 = math.min(x0 + 1, water.resolution.x - 1);
+                    int x0 = math.clamp((int)math.floor(waterX), 0, simWidth - 1);
+                    int x1 = math.min(x0 + 1, simWidth - 1);
                     float tx = math.saturate(waterX - x0);
 
-                    float depth = math.lerp(
-                        math.lerp(water.depths[(z0 * water.resolution.x) + x0].m_Depth,
-                                  water.depths[(z0 * water.resolution.x) + x1].m_Depth, tx),
-                        math.lerp(water.depths[(z1 * water.resolution.x) + x0].m_Depth,
-                                  water.depths[(z1 * water.resolution.x) + x1].m_Depth, tx), tz);
+                    float sum = 0f, weightSum = 0f;
+                    AddCorner(dilated[(z0 * simWidth) + x0], (1f - tx) * (1f - tz), ref sum, ref weightSum);
+                    AddCorner(dilated[(z0 * simWidth) + x1], tx * (1f - tz), ref sum, ref weightSum);
+                    AddCorner(dilated[(z1 * simWidth) + x0], (1f - tx) * tz, ref sum, ref weightSum);
+                    AddCorner(dilated[(z1 * simWidth) + x1], tx * tz, ref sum, ref weightSum);
+                    if (!(weightSum > 0f)) continue;
 
-                    if (depth > 0f)
+                    float cellLevel = sum / weightSum;
+
+                    // The heightmap's own encoding, with 0 reserved for dry — a real level that
+                    // would encode to 0 sits at the map's absolute height floor and cannot hold
+                    // water anyway.
+                    // （高度圖自身的編碼，0 保留給乾格——會編碼為 0 的真實高程位於地圖的絕對高度
+                    //   下限，本就無法蓄水。）
+                    grid[(z * width) + x] = (ushort)math.clamp(
+                        math.round((cellLevel + heightData.offset.y) * heightData.scale.y), 1f, 65535f);
+
+                    float ground = heightData.heights[(z * width) + x] / heightData.scale.y - heightData.offset.y;
+                    if (cellLevel > ground)
                     {
                         wetCells++;
-                        maxDepth = math.max(maxDepth, depth);
-                        grid[(z * width) + x] = (ushort)math.clamp(math.round(depth / DepthScale), 0f, 65535f);
+                        maxDepth = math.max(maxDepth, cellLevel - ground);
                     }
                 }
             }
 
             return grid;
+        }
+
+        /// <summary>
+        /// Accumulate one bilinear corner into the weighted sum, unless it carries no data.
+        /// （將單一雙線性角累加入加權和，無資料者除外。）
+        /// </summary>
+        private static void AddCorner(float value, float weight, ref float sum, ref float weightSum)
+        {
+            if (value == NoLevel) return;
+            sum += value * weight;
+            weightSum += weight;
+        }
+
+        /// <summary>
+        /// Terrain height in metres at a world position, bilinear over the height samples —
+        /// <c>TerrainUtils.SampleHeight</c>'s mapping.
+        /// （世界座標處的地形高度（公尺），於高度樣本上雙線性取樣——即
+        /// <c>TerrainUtils.SampleHeight</c> 的映射。）
+        /// </summary>
+        private static float SampleTerrainHeight(TerrainHeightData heightData, float worldX, float worldZ)
+        {
+            float cellX = (worldX + heightData.offset.x) * heightData.scale.x;
+            float cellZ = (worldZ + heightData.offset.z) * heightData.scale.z;
+
+            int x0 = math.clamp((int)math.floor(cellX), 0, heightData.resolution.x - 1);
+            int x1 = math.min(x0 + 1, heightData.resolution.x - 1);
+            float tx = math.saturate(cellX - x0);
+            int z0 = math.clamp((int)math.floor(cellZ), 0, heightData.resolution.z - 1);
+            int z1 = math.min(z0 + 1, heightData.resolution.z - 1);
+            float tz = math.saturate(cellZ - z0);
+
+            float raw = math.lerp(
+                math.lerp(heightData.heights[(z0 * heightData.resolution.x) + x0],
+                          heightData.heights[(z0 * heightData.resolution.x) + x1], tx),
+                math.lerp(heightData.heights[(z1 * heightData.resolution.x) + x0],
+                          heightData.heights[(z1 * heightData.resolution.x) + x1], tx), tz);
+
+            return (raw / heightData.scale.y) - heightData.offset.y;
+        }
+
+        /// <summary>
+        /// Rip every rendered surface area — driveways, parking-lot pavement, park paths, the
+        /// painted patches under meshless service buildings — into <c>areas.jsonl</c> +
+        /// <c>areaprefabs.json</c>. Contract §8b.
+        /// （擷取每個已繪製的地表區域——車道口、停車場鋪面、公園步道、無網格服務建築下的
+        /// 鋪繪區塊——寫入 <c>areas.jsonl</c> 與 <c>areaprefabs.json</c>。契約 §8b。）<br/><br/>
+        /// <b>Why this layer exists.</b> A parking lot is a <i>meshless</i> building prefab: its
+        /// instance record places nothing visible, its markings are §4.2a decal instances, and the
+        /// pavement itself is a <c>SurfacePrefab</c> area the building spawns as a sub-area —
+        /// triangulated on the area grid (<c>Game.Areas.Node</c>/<c>Triangle</c> buffers) and drawn
+        /// by <c>AreaBatchSystem</c> with the prefab's <c>RenderedArea.m_Material</c> (falling back
+        /// to the global <c>AreasConfigurationPrefab.m_RenderedAreaMaterial</c>). House driveways
+        /// are the same mechanism. Without this layer those surfaces simply do not exist in the
+        /// bundle, which is why every reconstruction showed grass where the game shows pavement.
+        /// （<b>此層為何存在。</b>停車場是<i>無網格</i>的建築預製模板：其實例紀錄不放置任何可見物，
+        /// 其標線為 §4.2a 的貼花實例，鋪面本身則是建築以子區域生成的 <c>SurfacePrefab</c> 區域——
+        /// 於區域網格上三角化，由 <c>AreaBatchSystem</c> 以模板的 <c>RenderedArea.m_Material</c>
+        /// 繪製。住宅車道口同屬此機制。缺少此層，這些表面於束中根本不存在，
+        /// 此即歷次重建於遊戲顯示鋪面之處盡呈草地的原因。）
+        /// </summary>
+        /// <param name="outputDirectory">The bundle root.（束根目錄。）</param>
+        /// <param name="terrainDirectory">The absolute <c>terrain/</c> directory, for textures.（<c>terrain/</c> 的絕對路徑，供貼圖使用。）</param>
+        /// <param name="report">The report to note results in.（用以記錄結果的報告。）</param>
+        private void RipSurfaceAreas(string outputDirectory, string terrainDirectory, StringBuilder report)
+        {
+            var areas = _surfaceAreaQuery.ToEntityArray(Unity.Collections.Allocator.TempJob);
+            int written = 0, skippedEmpty = 0;
+            Dictionary<Entity, string> prefabKeys = new();
+            HashSet<string> usedKeys = new();
+            Dictionary<string, object> catalogue = new();
+
+            try
+            {
+                using StreamWriter writer = new(IOUtils.CombinePath(outputDirectory, "areas.jsonl"),
+                                                append: false, new UTF8Encoding(false));
+
+                foreach (Entity entity in areas)
+                {
+                    DynamicBuffer<Game.Areas.Node> nodes = EntityManager.GetBuffer<Game.Areas.Node>(entity, true);
+                    DynamicBuffer<Game.Areas.Triangle> triangles = EntityManager.GetBuffer<Game.Areas.Triangle>(entity, true);
+                    if ((nodes.Length < 3) || (triangles.Length == 0))
+                    {
+                        skippedEmpty++;
+                        continue;
+                    }
+
+                    Entity prefab = EntityManager.GetComponentData<PrefabRef>(entity).m_Prefab;
+                    if (!prefabKeys.TryGetValue(prefab, out string key))
+                    {
+                        key = CatalogueAreaPrefab(prefab, terrainDirectory, usedKeys, catalogue);
+                        prefabKeys[prefab] = key;
+                    }
+
+                    var record = new Dictionary<string, object>
+                    {
+                        ["id"] = entity.Index,
+                        ["prefab"] = key
+                    };
+
+                    if (EntityManager.HasComponent<Game.Common.Owner>(entity))
+                    {
+                        Entity owner = EntityManager.GetComponentData<Game.Common.Owner>(entity).m_Owner;
+                        if (owner != Entity.Null) record["owner"] = owner.Index;
+                    }
+
+                    double[][] nodeArray = new double[nodes.Length][];
+                    for (int i = 0; i < nodes.Length; i++)
+                    {
+                        float3 position = nodes[i].m_Position;
+                        nodeArray[i] = new[]
+                        {
+                            Math.Round((double)position.x, 3),
+                            Math.Round((double)position.y, 3),
+                            Math.Round((double)position.z, 3)
+                        };
+                    }
+                    record["nodes"] = nodeArray;
+
+                    int[][] triangleArray = new int[triangles.Length][];
+                    for (int i = 0; i < triangles.Length; i++)
+                    {
+                        int3 indices = triangles[i].m_Indices;
+                        triangleArray[i] = new[] { indices.x, indices.y, indices.z };
+                    }
+                    record["triangles"] = triangleArray;
+
+                    writer.WriteLine(JsonConvert.SerializeObject(record));
+                    written++;
+                }
+            }
+            catch (Exception ex)
+            {
+                _log.Error(ex);
+                report.AppendLine($"Surface areas failed: {ex.Message}");
+                return;
+            }
+            finally
+            {
+                areas.Dispose();
+            }
+
+            try
+            {
+                File.WriteAllText(IOUtils.CombinePath(outputDirectory, "areaprefabs.json"),
+                                  JsonConvert.SerializeObject(catalogue, Formatting.Indented));
+            }
+            catch (Exception ex)
+            {
+                _log.Error(ex);
+                report.AppendLine($"Could not write areaprefabs.json: {ex.Message}");
+            }
+
+            report.AppendLine($"Surface areas: {written} area(s) over {catalogue.Count} prefab(s)"
+                            + ((skippedEmpty > 0) ? $"; {skippedEmpty} empty skipped" : ""));
+        }
+
+        /// <summary>
+        /// Add one area prefab to the catalogue: its name, its material's base colour, and its
+        /// base texture captured into <c>terrain/surfaces/</c> when it has one.
+        /// （將單一區域預製模板加入目錄：其名稱、材質底色，及其底圖——若有——擷取至
+        /// <c>terrain/surfaces/</c>。）
+        /// </summary>
+        /// <param name="prefab">The area prefab entity.（區域預製模板實體。）</param>
+        /// <param name="terrainDirectory">The absolute <c>terrain/</c> directory.（<c>terrain/</c> 的絕對路徑。）</param>
+        /// <param name="usedKeys">Keys taken so far, for uniqueness over the run.（既用之鍵，維持整次擷取內唯一。）</param>
+        /// <param name="catalogue">The catalogue to add the entry to.（要加入項目的目錄。）</param>
+        /// <returns>The catalogue key the records reference.（紀錄所引用的目錄鍵。）</returns>
+        private string CatalogueAreaPrefab(Entity prefab, string terrainDirectory,
+                                           HashSet<string> usedKeys, Dictionary<string, object> catalogue)
+        {
+            string name = Instance.Name.GetPrefabName(prefab);
+            if (string.IsNullOrEmpty(name)) name = $"area_{prefab.Index}";
+
+            string key = MeshRipSystem.SanitizeAssetId(name);
+            if (!usedKeys.Add(key))
+            {
+                key = $"{key}_{prefab.Index}";
+                usedKeys.Add(key);
+            }
+
+            var entry = new Dictionary<string, object> { ["name"] = name };
+            catalogue[key] = entry;
+
+            try
+            {
+                if (EntityManager.HasComponent<PrefabData>(prefab)
+                    && Instance.Prefab.TryGetPrefab(EntityManager.GetComponentData<PrefabData>(prefab),
+                                                    out PrefabBase prefabBase)
+                    && (prefabBase != null)
+                    && prefabBase.TryGet(out RenderedArea rendered)
+                    && (rendered != null) && (rendered.m_Material != null))
+                {
+                    Material material = rendered.m_Material;
+
+                    if (material.HasProperty("_BaseColor"))
+                    {
+                        Color color = material.GetColor("_BaseColor");
+                        entry["color"] = new[]
+                        {
+                            Math.Round((double)color.r, 4), Math.Round((double)color.g, 4),
+                            Math.Round((double)color.b, 4), Math.Round((double)color.a, 4)
+                        };
+                    }
+
+                    Texture texture = material.mainTexture;
+                    if ((texture == null) && material.HasProperty("_BaseColorMap"))
+                        texture = material.GetTexture("_BaseColorMap");
+
+                    if (texture != null)
+                    {
+                        PendingTexture captured = MaterialRipSystem.Capture(texture, key, name, 1024);
+                        if (captured?.Pixels != null)
+                        {
+                            byte[] png = Png.EncodeRgba(captured.Pixels, captured.Width, captured.Height);
+                            string fileName = $"area_{key}.png";
+                            string surfacesDirectory = IOUtils.CombinePath(terrainDirectory, "surfaces");
+                            if (!Directory.Exists(surfacesDirectory)) Directory.CreateDirectory(surfacesDirectory);
+                            File.WriteAllBytes(IOUtils.CombinePath(surfacesDirectory, fileName), png);
+                            entry["texture"] = $"terrain/surfaces/{fileName}";
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _log.Warn($"Area prefab `{name}` material did not rip: {ex.Message}");
+            }
+
+            return key;
         }
 
         /// <summary>

@@ -47,10 +47,14 @@ Options (after the `--`):
                                  v=0 ring is the consumer rule in contract §4.1)
     --terrain                    also place the §8 terrain under everything: the road-flattened
                                  heightmap as a ground grid (roadbed faces textured from
-                                 surface_index.png) and the water surface at ground + depth
-                                 (same region filter as everything else). The ground, not the
-                                 junction floors — junction interiors are the arms' own node
-                                 meshes (audit §18)
+                                 surface_index.png and sunk slightly, steep faces textured
+                                 rock) and the water surface where water_level.png rises above
+                                 the ground (same region filter as everything else). The
+                                 ground, not the junction floors — junction interiors are the
+                                 arms' own node meshes (audit §18)
+    --areas                      also place the §8b surface areas from areas.jsonl — house
+                                 driveways, parking-lot pavement, park paths: the painted
+                                 ground of every meshless prefab
     --keep-existing              don't wipe the scene first
     --save out.blend             write a .blend and exit, so the import is paid for once
 
@@ -132,6 +136,24 @@ _UNMIRROR_UNIMPORT = Matrix(((-1, 0, 0, 0),
 # beat depth precision at city scale, small enough that nothing downstream can care: a 1.5 cm
 # kerb-height error is already inside the tolerance of the road surface it sits on.
 _DECAL_LIFT = 0.015
+
+# How far terrain faces marked roadbed (§8 surface id 1) sink below their sampled height —
+# the game's own clamp direction: its road job pulls ground under a carriageway to the
+# MINIMUM of the road's surface band, below the asphalt top, while a consumer's linearly
+# interpolated (and possibly stride-subsampled) grid crests through it.
+_ROADBED_SINK = 0.15
+
+# Linear-space gain on the ground and surface-area textures. The theme diffuse is authored
+# dark (the ripped grass averages sRGB (66, 72, 53) — a faithful rip, verified) and reads as
+# it does in-game only under the game's exposure and sky light, neither of which a bare
+# Blender scene has. Presentation only: the ripped pixels are untouched on disk.
+_GROUND_GAIN = 2.8
+
+# Ground steeper than this (rise over run) is textured rock instead of grass — the gorge
+# embankments. The game classifies grass/dirt/rock per pixel on the GPU by slope, height and
+# noise (§8: the bundle deliberately does not reproduce that); a plain slope threshold at
+# ~40 degrees is the presentation-side stand-in.
+_ROCK_SLOPE = 0.84
 
 
 def bundle_to_blender_point(pos):
@@ -1193,7 +1215,7 @@ def _terrain_paths(bundle_dir):
 
     heightmap = os.path.join(bundle_dir, layers.get("terrain", "terrain/heightmap.png"))
     surface = os.path.join(bundle_dir, layers.get("surfaceIndex", "terrain/surface_index.png"))
-    water = os.path.join(bundle_dir, layers.get("water", "terrain/water_depth.png"))
+    water = os.path.join(bundle_dir, layers.get("water", "terrain/water_level.png"))
     surfaces_dir = os.path.join(bundle_dir, layers.get("surfaces", "terrain/surfaces/"))
 
     if rasters is None:
@@ -1205,7 +1227,7 @@ def _terrain_paths(bundle_dir):
     return heightmap, surface, water, surfaces_dir, rasters
 
 
-def _ground_material(name, texture_path, fallback_colour):
+def _ground_material(name, texture_path, fallback_colour, gain=1.0):
     material = bpy.data.materials.new(name)
     material.use_nodes = True
     bsdf = material.node_tree.nodes.get("Principled BSDF")
@@ -1213,7 +1235,18 @@ def _ground_material(name, texture_path, fallback_colour):
     if texture_path and os.path.isfile(texture_path):
         image_node = material.node_tree.nodes.new("ShaderNodeTexImage")
         image_node.image = bpy.data.images.load(texture_path)
-        material.node_tree.links.new(image_node.outputs["Color"], bsdf.inputs["Base Color"])
+        upstream = image_node.outputs["Color"]
+        if gain != 1.0:
+            # Presentation gain (_GROUND_GAIN): the authored theme diffuse is dark and only
+            # reads right under the game's own exposure. Multiply node, so the texture on
+            # disk stays the faithful rip.
+            mix = material.node_tree.nodes.new("ShaderNodeMixRGB")
+            mix.blend_type = "MULTIPLY"
+            mix.inputs["Fac"].default_value = 1.0
+            mix.inputs["Color2"].default_value = (gain, gain, gain, 1.0)
+            material.node_tree.links.new(upstream, mix.inputs["Color1"])
+            upstream = mix.outputs["Color"]
+        material.node_tree.links.new(upstream, bsdf.inputs["Base Color"])
     else:
         bsdf.inputs["Base Color"].default_value = fallback_colour
     return material
@@ -1240,7 +1273,6 @@ def build_terrain(bundle_dir, collection, center, radius):
     origin_x, _, origin_z = rasters["originWorld"]
     elevation_scale = float(rasters.get("elevationScale", 1.0))
     elevation_offset = float(rasters.get("elevationOffset", 0.0))
-    depth_scale = float(rasters.get("depthScale", 1.0))
 
     surface_ids = None
     if os.path.isfile(surface_path):
@@ -1249,12 +1281,12 @@ def build_terrain(bundle_dir, collection, center, radius):
             print(f"CONTRACT VIOLATION: surface_index is {sw}x{sh}, heightmap {width}x{height}")
             surface_ids = None
 
-    depths = None
+    levels = None
     if os.path.isfile(water_path):
-        ww, wh, depths = _decode_png_gray(water_path)
+        ww, wh, levels = _decode_png_gray(water_path)
         if (ww, wh) != (width, height):
-            print(f"CONTRACT VIOLATION: water_depth is {ww}x{wh}, heightmap {width}x{height}")
-            depths = None
+            print(f"CONTRACT VIOLATION: water_level is {ww}x{wh}, heightmap {width}x{height}")
+            levels = None
 
     # The crop window, in raster indices. Row 0 is the northernmost (§3: rows toward -Z).
     if center is not None and radius is not None:
@@ -1278,41 +1310,82 @@ def build_terrain(bundle_dir, collection, center, radius):
     def world_y(row, col):
         return heights[row * width + col] * elevation_scale + elevation_offset
 
+    ncols = len(cols)
+
+    # Roadbed faces sink by a small documented drop (§8 consumer note). The game's road job
+    # clamps the ground under a carriageway to the MINIMUM of the road's surface band — below
+    # the asphalt top — but this grid linearly interpolates 3.5 m samples (and subsamples by
+    # stride without a region), so interpolated crests poke through the road meshes above.
+    # Sinking in the game's own clamp direction settles it; every vertex touching a roadbed
+    # face drops, so the sink bleeds one cell into the smoothing apron rather than tearing a
+    # cliff at the boundary.
+    def face_roadbed(r, c):
+        return surface_ids is not None and surface_ids[rows[r] * width + cols[c]] != 0
+
+    sink = _ROADBED_SINK if surface_ids is not None else 0.0
+    vertex_sunk = [False] * (len(rows) * ncols)
+    if sink:
+        for r in range(len(rows) - 1):
+            for c in range(ncols - 1):
+                if face_roadbed(r, c):
+                    for corner in (r * ncols + c, r * ncols + c + 1,
+                                   (r + 1) * ncols + c, (r + 1) * ncols + c + 1):
+                        vertex_sunk[corner] = True
+
     # -- the ground grid -------------------------------------------------------------------
     verts = []
+    index = 0
     for row in rows:
         z = origin_z - row * cell
         for col in cols:
             x = origin_x + col * cell
-            verts.append((x, z, world_y(row, col)))     # Blender: X east, Y north, Z up
+            drop = sink if vertex_sunk[index] else 0.0
+            verts.append((x, z, world_y(row, col) - drop))  # Blender: X east, Y north, Z up
+            index += 1
 
-    ncols = len(cols)
     faces = []
-    face_cell = []
+    face_rc = []
     for r in range(len(rows) - 1):
         for c in range(ncols - 1):
             a = r * ncols + c
             # Row 0 is the north edge, so winding (a, a+ncols, a+ncols+1, a+1) — south then
             # east — keeps the face normal pointing up in Blender's right-handed frame.
             faces.append((a, a + ncols, a + ncols + 1, a + 1))
-            face_cell.append((rows[r], cols[c]))
+            face_rc.append((r, c))
 
     mesh = bpy.data.meshes.new("bundle_terrain")
     mesh.from_pydata(verts, [], faces)
 
     grass = _ground_material("terrain_natural", os.path.join(surfaces_dir, "grass.png"),
-                             (0.20, 0.30, 0.12, 1.0))
+                             (0.20, 0.30, 0.12, 1.0), gain=_GROUND_GAIN)
     dirt = _ground_material("terrain_roadbed", os.path.join(surfaces_dir, "dirt.png"),
-                            (0.35, 0.28, 0.20, 1.0))
+                            (0.35, 0.28, 0.20, 1.0), gain=_GROUND_GAIN)
+    rock = _ground_material("terrain_rock", os.path.join(surfaces_dir, "rock.png"),
+                            (0.30, 0.28, 0.26, 1.0), gain=_GROUND_GAIN)
     mesh.materials.append(grass)
     mesh.materials.append(dirt)
+    mesh.materials.append(rock)
 
     roadbed_faces = 0
-    if surface_ids is not None:
-        for face, (row, col) in zip(mesh.polygons, face_cell):
-            if surface_ids[row * width + col] != 0:
-                face.material_index = 1
-                roadbed_faces += 1
+    rock_faces = 0
+    for face, (r, c) in zip(mesh.polygons, face_rc):
+        if surface_ids is not None and surface_ids[rows[r] * width + cols[c]] != 0:
+            face.material_index = 1
+            roadbed_faces += 1
+            continue
+        # Steep natural ground reads as rock (_ROCK_SLOPE) — the gorge embankments. Sampled
+        # heights, not the sunk vertices, so the roadbed drop cannot flip a boundary face.
+        run_x = max((cols[c + 1] - cols[c]) * cell, 1e-6)
+        run_z = max((rows[r + 1] - rows[r]) * cell, 1e-6)
+        y00 = world_y(rows[r], cols[c])
+        y01 = world_y(rows[r], cols[c + 1])
+        y10 = world_y(rows[r + 1], cols[c])
+        y11 = world_y(rows[r + 1], cols[c + 1])
+        gx = max(abs(y01 - y00), abs(y11 - y10)) / run_x
+        gz = max(abs(y10 - y00), abs(y11 - y01)) / run_z
+        if math.hypot(gx, gz) > _ROCK_SLOPE:
+            face.material_index = 2
+            rock_faces += 1
 
     # World-anchored UVs so the ground textures tile at a plausible density without any
     # per-face unwrap. 8 m per repeat reads roughly like the game's near tiling.
@@ -1327,27 +1400,40 @@ def build_terrain(bundle_dir, collection, center, radius):
     placed = 1
 
     # -- the water surface -----------------------------------------------------------------
-    # Per-vertex surface height is ground + depth, so a face is placed wherever any corner is
-    # wet and its dry corners sit exactly on the ground — the shoreline closes itself.
+    # The water raster is the SURFACE LEVEL in the heightmap's encoding (§8, 0 = dry): water
+    # exists where level > ground. A face is placed wherever any corner is wet; the level
+    # extends one sim cell past the shoreline (producer dilation), so the surface runs flat
+    # into the bank and the ground cuts the shoreline where the game's own shoreline is.
     wet_faces = 0
-    if depths is not None:
+    if levels is not None:
         water_verts = {}
         water_faces = []
+
+        def water_level(row, col):
+            value = levels[row * width + col]
+            return value * elevation_scale + elevation_offset if value else None
 
         def water_vertex(row, col):
             key = (row, col)
             if key not in water_verts:
-                depth = depths[row * width + col] * depth_scale
+                level = water_level(row, col)
+                # A corner past the dilated ring carries no level; seat it on the ground so
+                # the surface closes instead of tearing.
+                surface_y = world_y(row, col) if level is None else level
                 x = origin_x + col * cell
                 z = origin_z - row * cell
-                water_verts[key] = (len(water_verts), (x, z, world_y(row, col) + depth))
+                water_verts[key] = (len(water_verts), (x, z, surface_y))
             return water_verts[key][0]
+
+        def is_wet(row, col):
+            level = water_level(row, col)
+            return level is not None and level > world_y(row, col)
 
         for r in range(len(rows) - 1):
             for c in range(ncols - 1):
                 corner_rows = (rows[r], rows[r + 1])
                 corner_cols = (cols[c], cols[c + 1])
-                if any(depths[cr * width + cc] for cr in corner_rows for cc in corner_cols):
+                if any(is_wet(cr, cc) for cr in corner_rows for cc in corner_cols):
                     water_faces.append((water_vertex(corner_rows[0], corner_cols[0]),
                                         water_vertex(corner_rows[1], corner_cols[0]),
                                         water_vertex(corner_rows[1], corner_cols[1]),
@@ -1378,8 +1464,97 @@ def build_terrain(bundle_dir, collection, center, radius):
     print()
     print(f"terrain:   {len(rows)}x{ncols} sample window of {width}x{height} at {cell:g} m"
           + (f", stride {stride}" if stride > 1 else ""))
-    print(f"           {roadbed_faces} roadbed face(s), {wet_faces} water face(s)")
+    print(f"           {roadbed_faces} roadbed face(s) (sunk {_ROADBED_SINK:g} m), "
+          f"{rock_faces} rock face(s), {wet_faces} water face(s)")
     return placed
+
+
+# Lift for surface areas above the terrain grid, below everything that stands on them. The
+# game draws them as terrain-layer decals; here they are thin geometry riding the ground.
+_AREA_LIFT = 0.02
+
+
+def build_areas(bundle_dir, collection, center, radius):
+    """Place the §8b surface areas: driveways, parking-lot pavement, park paths.
+
+    These are the painted patches `AreaBatchSystem` draws from area triangles — the visible
+    ground of every meshless prefab (parking lots, sports courts, campsites) and of house
+    driveways. One object per area prefab, world-anchored UVs, catalogue texture or colour.
+    """
+    path = os.path.join(bundle_dir, "areas.jsonl")
+    if not os.path.isfile(path):
+        print("no areas.jsonl — skipping surface areas (bundle predates §8b)")
+        return 0
+
+    catalogue = {}
+    catalogue_path = os.path.join(bundle_dir, "areaprefabs.json")
+    if os.path.isfile(catalogue_path):
+        with open(catalogue_path, encoding="utf-8") as handle:
+            catalogue = json.load(handle)
+
+    materials = {}
+
+    def area_material(prefab):
+        if prefab not in materials:
+            entry = catalogue.get(prefab) or {}
+            texture = entry.get("texture")
+            colour = entry.get("color") or (0.42, 0.40, 0.38, 1.0)
+            materials[prefab] = _ground_material(
+                f"area_{prefab}",
+                os.path.join(bundle_dir, texture) if texture else None,
+                (colour[0], colour[1], colour[2], 1.0), gain=_GROUND_GAIN)
+        return materials[prefab]
+
+    builders = {}
+    placed = skipped_region = dropped_bad = 0
+    for record in read_jsonl(path):
+        nodes = record.get("nodes") or []
+        triangles = record.get("triangles") or []
+        if len(nodes) < 3 or not triangles:
+            continue
+
+        if radius is not None and center is not None:
+            cx = sum(n[0] for n in nodes) / len(nodes)
+            cz = sum(n[2] for n in nodes) / len(nodes)
+            if math.hypot(cx - center[0], cz - center[1]) > radius:
+                skipped_region += 1
+                continue
+
+        sink = builders.setdefault(record.get("prefab"), {"verts": [], "faces": []})
+        base = len(sink["verts"])
+        sink["verts"].extend((n[0], n[2], n[1] + _AREA_LIFT) for n in nodes)
+        for tri in triangles:
+            if max(tri) >= len(nodes) or min(tri) < 0:
+                dropped_bad += 1
+                continue
+            # Bundle → Blender flips handedness (§2.2), so faces reverse to keep facing up —
+            # the same compensation the lane bend applies.
+            sink["faces"].append(tuple(base + i for i in reversed(tri)))
+        placed += 1
+
+    built = 0
+    for prefab, sink in builders.items():
+        if not sink["faces"]:
+            continue
+        mesh = bpy.data.meshes.new(f"area_{prefab}")
+        mesh.from_pydata(sink["verts"], [], sink["faces"])
+        mesh.materials.append(area_material(prefab))
+        uv_layer = mesh.uv_layers.new(name="UVMap")
+        for loop in mesh.loops:
+            x, y, _ = mesh.vertices[loop.vertex_index].co
+            uv_layer.data[loop.index].uv = (x / 4.0, y / 4.0)
+        mesh.validate()
+        obj = bpy.data.objects.new(f"area_{prefab}", mesh)
+        collection.objects.link(obj)
+        built += 1
+
+    print()
+    print(f"areas:     {placed} surface area(s) into {built} object(s) "
+          f"over {len(builders)} prefab(s)"
+          + (f", {skipped_region} outside the region" if skipped_region else ""))
+    if dropped_bad:
+        print(f"           CONTRACT VIOLATION: {dropped_bad} triangle(s) index out of range")
+    return built
 
 
 # -- scene building -------------------------------------------------------------------------
@@ -1583,6 +1758,7 @@ def main():
     do_lanes = False
     do_skirts = False
     do_terrain = False
+    do_areas = False
     net_categories = _UNSET
     net_limit = None
     assets = None
@@ -1607,6 +1783,9 @@ def main():
             i += 1
         elif arg == "--terrain":
             do_terrain = True
+            i += 1
+        elif arg == "--areas":
+            do_areas = True
             i += 1
         elif arg == "--net-limit":
             do_networks = True
@@ -1653,6 +1832,7 @@ def main():
         do_lanes = True
         do_skirts = True
         do_terrain = True
+        do_areas = True
         if kinds is _UNSET:
             kinds = set(_ALL_KINDS)
         if net_categories is _UNSET:
@@ -1893,6 +2073,12 @@ def main():
         bpy.context.scene.collection.children.link(terrain_collection)
         terrain_objects = build_terrain(bundle_dir, terrain_collection, center, radius)
 
+    area_objects = 0
+    if do_areas:
+        area_collection = bpy.data.collections.new("bundle_areas")
+        bpy.context.scene.collection.children.link(area_collection)
+        area_objects = build_areas(bundle_dir, area_collection, center, radius)
+
     # Everything is imported, so the placed instances can come back into the view layer. This is
     # deliberately after the networks: an instance parked here is an instance the segment imports
     # do not have to deselect, and there are two orders of magnitude more of them than there are
@@ -1937,6 +2123,8 @@ def main():
               f"the terrain drop is the consumer rule, contract §4.1)")
     if do_terrain:
         print(f"placed {terrain_objects} terrain object(s) (ground grid + water; §8)")
+    if do_areas:
+        print(f"placed {area_objects} surface-area object(s) (driveways, lots, paths; §8b)")
     print(f"skipped: {skipped_kind} by kind, {skipped_asset} by --assets, {skipped_region} outside the region")
 
     # An empty-looking scene is nearly always the region filter, not the bundle. Say so, with the

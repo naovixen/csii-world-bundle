@@ -853,3 +853,34 @@ outline to see true per-arm coverage (sectors to the centre), (3) a top-down ras
 the ripped glbs to shape the hole exactly (three-cusped darts), and (4) an 8-composition
 piece-table dump from a live rip to name the paver. Screenshots were evidence, not
 decoration — the user's overlap outlines carried the decisive shape.
+
+## 19. Lane marking decals: the atlas rect lives on the prefab, not in the mesh (2026-08-07)
+
+The screenshot comparison showed no crosswalks, centre lines or lane lines in Blender, while
+all of them are visibly in the bundle: 81,000 of 114,249 `lanemeshes.jsonl` records reference
+a `decal` catalogue part (2,952 crosswalk records alone), the part `.glb`s exist, their
+materials resolve with `alphaMode: "blend"` and white base factor, and the harness bends and
+lifts them. The defect was in the UVs the quads shipped with.
+
+**Measurement (offline, shipped bundle only):** `Crosswalk_Line_2_Mesh`,
+`Yellow_Solid_Line_Mesh` and `White_Solid_Line_Mesh` — three different markings — carry
+**byte-identical corner UVs** `[0.625, 0.25]–[0.875, 0.5]`. Sampling the LaneLine atlas over
+that rect: mean α 27/255, i.e. a mostly-transparent generic slab with a few thin stripes (the
+first opaque pixel is (181,144,55) — yellow) at the wrong positions. Three distinct markings
+cannot share one crop; bent with those UVs they render as ~90 % nothing.
+
+**Mechanism (decompiled):** a decal's mesh UVs are never sampled by the shader. The game hands
+it `_TextureArea` from the managed `DecalProperties.m_TextureArea` on the mesh's RenderPrefab
+(`ManagedBatchSystem.CreateBatch`, both the decalProperties and the `component6` paths), and
+the projector footprint is mapped into that rect. For DefaultDecal object imports,
+`AssetImportPipeline.SetupDecalComponent` *derives* the area from the authored up-facing UVs —
+which is why the flattened object decals (road text, arrows) rendered correctly from authored
+UVs alone. The lane-line meshes are not that case: their authored box UVs are generic, and
+only their prefabs' `m_TextureArea` selects the true marking band.
+
+**Fix (producer, `MeshRipSystem.TryFlattenDecal`):** keep the authored corner pairing (the
+§16-round-2 mirroring lesson — orientation is never guessed) and affinely rescale the authored
+up-facing UV rect into `m_TextureArea`. Identity for object decals whose area was derived from
+the same UVs; the correct band for lane parts. Contract §4.2a / §5B note it; no schema change
+— the quads simply now carry the UVs §4.2a always promised. Needs a mesh + network re-rip to
+land in `meshes/` and `lanemeshes/`.

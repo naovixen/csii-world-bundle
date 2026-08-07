@@ -90,7 +90,7 @@
     "terrain": "terrain/heightmap.png",
     "surfaceIndex": "terrain/surface_index.png",
     "surfaces": "terrain/surfaces/",
-    "water": "terrain/water_depth.png"
+    "water": "terrain/water_level.png"
   },
   "rasters": {
     "resolution": 4.0,
@@ -105,8 +105,7 @@
     ],
     "elevationUnits": "m",
     "elevationScale": 0.001,
-    "elevationOffset": 0.0,
-    "depthScale": 0.03125
+    "elevationOffset": 0.0
   },
   "ripOptions": {
     "meshSource": "runtime",

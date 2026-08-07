@@ -492,7 +492,7 @@ namespace Carto.Systems
             try
             {
                 placedObjects = entities.Length;
-                int utilityNodes = 0;
+                int utilityNodes = 0, vehicleCargo = 0;
 
                 foreach (Entity entity in entities)
                 {
@@ -506,6 +506,12 @@ namespace Carto.Systems
                         continue;
                     }
 
+                    if (IsVehicleCargoSubObject(EntityManager, entity))
+                    {
+                        vehicleCargo++;
+                        continue;
+                    }
+
                     Entity prefabEntity = EntityManager.GetComponentData<PrefabRef>(entity).m_Prefab;
                     if (prefabEntity == Entity.Null) continue;
 
@@ -514,6 +520,7 @@ namespace Carto.Systems
                 }
 
                 if (utilityNodes > 0) report.AppendLine($"Skipped {utilityNodes} buried utility-network node object(s).");
+                if (vehicleCargo > 0) report.AppendLine($"Skipped {vehicleCargo} cargo prop(s) riding vehicles.");
             }
             finally
             {
@@ -1792,24 +1799,21 @@ namespace Carto.Systems
                 new float3(max.x, y, max.z), new float3(min.x, y, max.z)
             };
 
-            // The UVs are taken from the authored mesh, not rebuilt from `m_TextureArea`. The
-            // game does the reverse — `AssetImportPipeline` *derives* `m_TextureArea` as the
-            // min/max of the authored mesh's UVs over its up-facing vertices — so the authored
-            // pairing of position to UV is the ground truth, and any reconstruction from the
-            // bounds alone has to guess which way `u` and `v` run across the quad. An earlier
-            // version guessed `+x → +u` and pre-flipped `v`; the guess was mirrored, and every
-            // road-marking text in the city read backwards ("TAXI" as "IXAT", a backwards S in
-            // "BUS"), while the pre-flip cancelled the writer's Unity→glTF flip and cropped
-            // some markings to the wrong band of their atlas outright. Sampling each corner's
-            // nearest up-facing authored vertex keeps orientation and crop exactly as the game
-            // renders them, and the writer's usual flip applies as it does to every other mesh.
-            // （UV 取自製作原始網格，而非依 `m_TextureArea` 重建。遊戲的方向恰好相反——
-            //   `AssetImportPipeline` 以朝上頂點的 UV 最小／最大值*推導出* `m_TextureArea`——
-            //   故位置與 UV 的製作配對才是基準，僅憑邊界重建必然要猜測 `u`、`v` 於四邊形上的走向。
-            //   舊版猜測 `+x → +u` 並預先翻轉 `v`：該猜測為鏡像，全城的路面文字因而反讀
-            //   （「TAXI」成「IXAT」、「BUS」的 S 反向），預翻轉又抵銷了寫出端的 Unity→glTF
-            //   翻轉，使部分標線裁切至圖集的錯誤色帶。對每個角取最近的朝上製作頂點，
-            //   可使方向與裁切與遊戲的繪製完全一致，寫出端的例行翻轉亦如其他網格般照常適用。）
+            // The UV PAIRING is taken from the authored mesh, never rebuilt from `m_TextureArea`
+            // alone: reconstruction from the bounds has to guess which way `u` and `v` run
+            // across the quad. An earlier version guessed `+x → +u` and pre-flipped `v`; the
+            // guess was mirrored, and every road-marking text in the city read backwards
+            // ("TAXI" as "IXAT", a backwards S in "BUS"), while the pre-flip cancelled the
+            // writer's Unity→glTF flip and cropped some markings to the wrong band of their
+            // atlas outright. Sampling each corner's nearest up-facing authored vertex keeps
+            // orientation exactly as the game renders it, and the writer's usual flip applies
+            // as it does to every other mesh. (The RECT is a different matter — see below.)
+            // （UV「配對」取自製作原始網格，絕不僅憑 `m_TextureArea` 重建：僅憑邊界重建必然要
+            //   猜測 `u`、`v` 於四邊形上的走向。舊版猜測 `+x → +u` 並預先翻轉 `v`：該猜測為鏡像，
+            //   全城的路面文字因而反讀（「TAXI」成「IXAT」、「BUS」的 S 反向），預翻轉又抵銷了
+            //   寫出端的 Unity→glTF 翻轉，使部分標線裁切至圖集的錯誤色帶。對每個角取最近的
+            //   朝上製作頂點，可使方向與遊戲的繪製完全一致，寫出端的例行翻轉亦照常適用。
+            //   （「矩形」則另當別論——見下方。））
             // The same up-facing selection the game's derivation uses; a projector volume whose
             // top face carries no upward normal (none measured, but authored content varies)
             // falls back to every vertex rather than shipping an unmapped quad.
@@ -1835,6 +1839,54 @@ namespace Carto.Systems
                         }
                     }
                 }
+            }
+
+            // The authored pairing gives the ORIENTATION; `m_TextureArea` gives the RECT. The
+            // shader never samples the mesh UVs of a decal — it is handed `_TextureArea`
+            // (ManagedBatchSystem.CreateBatch) and maps the projector footprint into that rect.
+            // For DefaultDecal imports the pipeline derives the area from these same UVs, so the
+            // rescale below is the identity and the road-marking text keeps rendering exactly as
+            // validated. But the LANE decal parts — centre lines, crosswalks, lane lines — ship
+            // authored box UVs that all crop one generic, mostly-transparent slab of the LaneLine
+            // atlas ([0.625, 0.25]–[0.875, 0.5], measured: mean α 27/255), while their prefabs'
+            // `m_TextureArea` selects the actual opaque marking band. Keeping the authored rect
+            // is why every crosswalk and centre line in the first full import was invisible.
+            // Rescaling the authored rect into the area keeps the pairing (the mirrored-text
+            // lesson above) and takes the crop from where the game actually takes it.
+            // （製作配對給出「方向」；`m_TextureArea` 給出「矩形」。著色器從不取樣貼花的網格 UV——
+            //   它拿到的是 `_TextureArea`，並將投影足跡映射入該矩形。DefaultDecal 匯入的面積
+            //   正是由這些 UV 推導，故下方的縮放為恆等變換，路面文字維持既驗證的樣貌。
+            //   但車道貼花部件——中線、行穿線、車道線——的製作方盒 UV 全都裁向 LaneLine 圖集中
+            //   同一塊近乎透明的泛用區域，其模板的 `m_TextureArea` 才選中實際不透明的標線色帶。
+            //   保留製作矩形正是首次全城匯入中所有行穿線與中線隱形的原因。將製作矩形縮放入
+            //   面積矩形，既保留配對（前述鏡像教訓），又自遊戲實際取用之處取得裁切。）
+            float2 rectMin = new(float.MaxValue), rectMax = new(float.MinValue);
+            for (int pass = 0; (pass < 2) && (rectMin.x == float.MaxValue); pass++)
+            {
+                for (int i = 0; i < mesh.Vertices.Length; i++)
+                {
+                    if ((pass == 0) && (mesh.Normals != null) && (i < mesh.Normals.Length)
+                        && (mesh.Normals[i].y < 0.9f)) continue;
+                    if ((mesh.Uvs == null) || (i >= mesh.Uvs.Length)) continue;
+
+                    rectMin = math.min(rectMin, mesh.Uvs[i]);
+                    rectMax = math.max(rectMax, mesh.Uvs[i]);
+                }
+            }
+
+            float2 rectSize = rectMax - rectMin;
+            float2 areaMin = decal.m_TextureArea.min;
+            float2 areaSize = decal.m_TextureArea.max - decal.m_TextureArea.min;
+            bool remapped = false;
+            if (math.all(rectSize > 1e-6f) && math.all(areaSize > 0f)
+                && (math.any(math.abs(rectMin - areaMin) > 1e-4f)
+                    || math.any(math.abs(rectSize - areaSize) > 1e-4f)))
+            {
+                for (int c = 0; c < 4; c++)
+                {
+                    cornerUvs[c] = areaMin + (((cornerUvs[c] - rectMin) / rectSize) * areaSize);
+                }
+                remapped = true;
             }
 
             mesh.Vertices = corners;
@@ -1870,7 +1922,9 @@ namespace Carto.Systems
             mesh.BoundsMax = new float3(max.x, y, max.z);
 
             trace?.Add($"decal: flattened to a {max.x - min.x:F2} × {max.z - min.z:F2} m quad at y {y:F2}, "
-                     + $"corner uvs [{cornerUvs[0].x:F4}, {cornerUvs[0].y:F4}]–[{cornerUvs[2].x:F4}, {cornerUvs[2].y:F4}]");
+                     + $"corner uvs [{cornerUvs[0].x:F4}, {cornerUvs[0].y:F4}]–[{cornerUvs[2].x:F4}, {cornerUvs[2].y:F4}]"
+                     + (remapped ? $" (authored rect rescaled into textureArea [{areaMin.x:F4}, {areaMin.y:F4}]+"
+                                 + $"[{areaSize.x:F4}, {areaSize.y:F4}])" : ""));
             return true;
         }
 
@@ -2090,6 +2144,47 @@ namespace Carto.Systems
             // Drawn, despite being a marker net. The only such case the game has.
             // （雖為標記網路卻確實會被繪製。此為遊戲中唯一的此類情形。）
             return !entityManager.HasComponent<TaxiwayData>(ownerPrefab);
+        }
+
+        /// <summary>
+        /// Whether an object is cargo riding a vehicle — a log pile on a truck trailer, crates on
+        /// a flatbed — rather than scenery standing in the world.
+        /// （物件是否為載於車輛上的貨物——貨車拖車上的原木堆、平板車上的木箱——而非立於世界中的場景物。）<br/><br/>
+        /// The queries already exclude vehicles and creatures themselves, but cargo props are
+        /// separate <i>sub-object</i> entities owned by the vehicle, and nothing about the prop
+        /// itself says "agent": it is an ordinary object with a transform and a prefab. The tell is
+        /// its <c>Owner</c> — the same one-level link the utility-marker test reads. A full-city rip
+        /// carried ~590 such records (<c>TruckTrailer03_LogPile01</c>, <c>CarTrailer01_Props01</c>, …)
+        /// as world scenery before this test existed.
+        /// （查詢本已排除車輛與生物本身，但貨物道具是由車輛所擁有的獨立<i>子物件</i>實體，
+        /// 道具自身毫無「行為者」的跡象：它只是帶有變換與預製模板的普通物件。判準在其
+        /// <c>Owner</c>——與公用設施標記判斷所讀的同一層連結。此判斷存在之前，
+        /// 全城擷取曾將約 590 筆此類記錄當作世界場景寫出。）<br/><br/>
+        /// Every vehicle archetype carries <c>Game.Vehicles.Vehicle</c>
+        /// (<c>VehiclePrefab.GetArchetypeComponents</c> adds it unconditionally, and
+        /// <c>CarTrailerPrefab</c> derives from it through <c>CarBasePrefab</c>), so the single
+        /// component test covers trailers too; <c>CarTrailer</c> is tested as well only so the rule
+        /// reads as what it means and survives an archetype reshuffle.
+        /// （每個車輛原型皆帶 <c>Game.Vehicles.Vehicle</c>——<c>VehiclePrefab.GetArchetypeComponents</c>
+        /// 無條件加入，<c>CarTrailerPrefab</c> 經 <c>CarBasePrefab</c> 繼承之——故單一元件測試已涵蓋拖車；
+        /// 另測 <c>CarTrailer</c> 僅為使規則如實可讀，並在原型調整後依然成立。）<br/><br/>
+        /// <b>Both rip systems must apply this identically</b>, for the same asset-id join reason as
+        /// <see cref="IsUtilityMarkerSubObject"/>.
+        /// （<b>兩個擷取系統必須以完全相同的方式套用此判斷</b>，理由與
+        /// <see cref="IsUtilityMarkerSubObject"/> 的資產 ID 連結相同。）
+        /// </summary>
+        /// <param name="entityManager">The entity manager to ask.（用以查詢的實體管理器。）</param>
+        /// <param name="entity">The placed object.（已放置的物件。）</param>
+        /// <returns>Whether to leave it out of the bundle.（是否將其排除於束之外。）</returns>
+        public static bool IsVehicleCargoSubObject(EntityManager entityManager, Entity entity)
+        {
+            if (!entityManager.HasComponent<Game.Common.Owner>(entity)) return false;
+
+            Entity owner = entityManager.GetComponentData<Game.Common.Owner>(entity).m_Owner;
+            if (owner == Entity.Null) return false;
+
+            return entityManager.HasComponent<Game.Vehicles.Vehicle>(owner)
+                || entityManager.HasComponent<Game.Vehicles.CarTrailer>(owner);
         }
 
         /// <summary>

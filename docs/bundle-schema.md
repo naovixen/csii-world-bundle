@@ -314,6 +314,15 @@ box unwrap across six unrelated atlas rects. What distinguishes them is
 `DecalProperties.m_TextureArea`, which the game hands the shader as `_TextureArea` alongside
 `_MeshSize` and `_DecalLayerMask`. A consumer given the box has no way to recover the arrow.
 
+The flattened quad's UVs are therefore the authored pairing (which way `u`/`v` run — the
+producer never guesses this; a guessed orientation once mirrored every road text in the city)
+**affinely rescaled into `m_TextureArea`** — the rect the shader actually samples. For most
+object decals the two coincide, because the game derives the area from these same UVs at asset
+import; for the lane decal parts of §5B they do not — the authored box UVs all crop one
+generic, mostly-transparent slab of the LaneLine atlas, and shipping them unscaled is what
+made every crosswalk and centre line invisible in the first full import. *(Producer fix
+2026-08-07; the promise above is unchanged — it is now actually kept.)*
+
 A consumer **must not** treat a decal as ordinary geometry:
 
 - **Never generate collision from it.** A city holds thousands of road arrows and lane markings.
@@ -624,9 +633,12 @@ Three pieces:
    crosswalks, centre lines, stop lines (α ≈ 254 where painted). A consumer that skips
    `decal` parts loses the markings and the wear shading, not the asphalt; the reference
    importer bends them like any part and lifts them slightly (`_DECAL_LIFT`) so they sit on
-   the surface the way the projection does. *(Corrected 2026-08-07 — an earlier version of
-   this note claimed the decals stood in for a mesh-less junction interior; audit §18 records
-   why that was wrong.)*
+   the surface the way the projection does. Like every flattened decal (§4.2a), a `decal`
+   part's `.glb` ships with its UVs already rescaled into `DecalProperties.m_TextureArea` —
+   the authored box UVs of the lane-line meshes all crop one generic transparent slab of
+   their atlas, and only the area rect selects the actual marking band. *(Corrected
+   2026-08-07 — an earlier version of this note claimed the decals stood in for a mesh-less
+   junction interior; audit §18 records why that was wrong.)*
 
 3. **`lanemeshes.jsonl`** — one line per lane that draws:
 
@@ -890,10 +902,17 @@ toward +X (east).
   is the flattened ground *beneath* them, not the visible junction surface; skipping the
   heightmap costs the ground everywhere, not the junction floors. *(Corrected 2026-08-07,
   audit §18.)*
-- **`terrain/water_depth.png`** (`layers.water`) — 16-bit grayscale. Water depth in metres is
-  `value * rasters.depthScale`; 0 means dry. The water *surface* elevation at a cell is ground
-  height + depth. The simulation's coarser grid is resampled bilinearly onto the terrain grid
-  so every raster shares one geo-reference.
+- **`terrain/water_level.png`** (`layers.water`) — 16-bit grayscale. The water **surface
+  level** — an elevation, in the heightmap's own encoding: level in metres is
+  `value * rasters.elevationScale + rasters.elevationOffset`; the stored value `0` means dry
+  (no water data). **Water exists at a cell where level > ground height**; its depth there is
+  `level − ground`. The level is computed per simulation cell (ground at the sim cell + depth,
+  both on the simulation's own ~28 m grid), dilated one sim cell outward, and resampled
+  bilinearly onto the terrain grid — so the surface extends flat a little past the shoreline
+  and the heightmap cuts it exactly where the game's shoreline is. Consumers must NOT treat
+  the value as depth and add it to ground: depth is not smooth across a shoreline, and
+  resampling it against the finer terrain grid re-bases mid-channel depths onto gorge walls.
+  *(Replaces `terrain/water_depth.png`, 2026-08-07; see §12.1.)*
 - **`terrain/surface_index.png`** (`layers.surfaceIndex`) — 8-bit grayscale, the value being a
   surface id, **not** a colour (nearest-neighbour only; never resample ids bilinearly).
   - `0` — natural ground. The game classifies it per-pixel on the GPU (grass/dirt/rock by
@@ -905,7 +924,12 @@ toward +X (east).
     shifted *away* from the road, not onto it). The smoothing apron where terrain slopes to
     meet the road is not included. In-game this ground reads as dirt tinted by the drive
     lanes' ~13%-alpha wear decals (§5B `decal`); consumers texture it as roadbed and give it
-    road physics.
+    road physics. **Consumer rule — sink roadbed faces slightly (~0.15 m).** The game clamps
+    the ground under a carriageway to the *minimum* of the road's surface band, below the
+    asphalt top; a consumer rebuilding ground from these 3.5 m samples by linear interpolation
+    will crest through the road meshes between samples. Dropping the faces marked `1` by a
+    small constant is the same clamp direction and keeps ground and carriageway from
+    z-fighting; the reference importer does this (`_ROADBED_SINK`). *(Added 2026-08-07.)*
 - **`terrain/surfaces/index.json`** (`layers.surfaces`) — maps each id to a name and a
   representative texture:
   ```jsonc
@@ -915,14 +939,51 @@ toward +X (east).
   `texture` may be `null` when the theme texture could not be read. The referenced
   `terrain/surfaces/*.png` are the loaded map theme's ground textures, ripped as bound.
 
-The `rasters` block gains three keys for this (`elevationScale`, `elevationOffset`,
-`depthScale` — see the schema); they are v1-compatible optional manifest additions, required by
-the validator when the corresponding layer is declared. `worldTerrain`/`worldWater` (the 4×
-backdrop) keep the same value semantics at their own size when present.
+The `rasters` block gains two keys for this (`elevationScale`, `elevationOffset` — see the
+schema); they are v1-compatible optional manifest additions, required by the validator when a
+terrain or water layer is declared. `worldTerrain`/`worldWater` (the 4× backdrop) keep the
+same value semantics at their own size when present.
 
 **Until the producer assembles `bundle.json` (Phase 7)**, the identical `rasters` object is
 written at `terrain/rasters.json`, and Phase 7 lifts it into the manifest verbatim. A consumer
 of a *complete* bundle reads the manifest only.
+
+### 8b. Surface areas — `areas.jsonl` + `areaprefabs.json` *(added 2026-08-07, see §12.1)*
+
+The painted ground patches the game draws through its area system: **house driveways,
+parking-lot pavement, park paths, sports courts, campsite clearings**. These surfaces belong
+to no other layer. A parking lot is a *meshless* building prefab — its instance record places
+nothing visible, its bay markings are §4.2a decal instances — and the pavement itself is a
+`SurfacePrefab` area the building spawns as a sub-area, triangulated on the area grid and
+rendered by `AreaBatchSystem` with the prefab's `RenderedArea` material. A consumer without
+this layer shows grass wherever the game shows pavement.
+
+- **`areas.jsonl`** — one JSON object per rendered surface area:
+
+  ```jsonc
+  { "id": 482113, "prefab": "concrete_surface_01", "owner": 173512,
+    "nodes": [[x,y,z], …],            // bundle-frame world positions (§2.2), NOT mirrored
+    "triangles": [[a,b,c], …] }       // indices into nodes, the game's own triangulation
+  ```
+
+  `owner`, when present, is the instance `id` of the building/object that spawned the area.
+  Node heights follow the ground (the game grades terrain under areas; §8 heightmap has it).
+
+- **`areaprefabs.json`** — one entry per referenced `prefab` key:
+
+  ```jsonc
+  { "concrete_surface_01": { "name": "Concrete Surface 01",
+      "color": [r,g,b,a],                              // material _BaseColor, optional
+      "texture": "terrain/surfaces/area_concrete_surface_01.png" } }  // optional
+  ```
+
+  The texture is the area material's base map, captured as bound; tiling is world-planar
+  (the game maps these in world space — a consumer picks a plausible metres-per-repeat).
+  Both keys are optional; a consumer falls back `texture` → `color` → its own neutral.
+
+Areas are ground paint, like decals (§4.2a): never generate collision from them, and draw
+them just above the terrain to avoid z-fighting. The reference importer places them under
+`--areas` (implied by `--everything`).
 
 ---
 
@@ -1012,7 +1073,7 @@ validator rather than quietly rendering a wrong city.
 
 ### 12.1 Amendments to schema 1
 
-One change has been made to `schema: 1` after the freeze, recorded here rather than folded in
+Changes made to `schema: 1` after the freeze are recorded here rather than folded in
 silently.
 
 **`colorMask` added to the material object (2026-08-05).** The material object is closed, so by
@@ -1043,6 +1104,30 @@ contradicts — every vegetation mask is all-black in A, which would have meant 
 snowed foliage. A is now documented as "white = snow may accumulate", advisory. A consumer
 built on the pre-correction description of A renders inverted snow if it implemented weather;
 nothing else it could have built is affected.
+
+**Surface areas added as §8b (2026-08-07, Phase 6).** An ordinary v1-compatible addition: two
+new optional files (`areas.jsonl`, `areaprefabs.json`) and no change to any existing object.
+Added because the screenshot acceptance showed grass where the game shows pavement, and the
+inventory of placed-but-meshless assetIds (ParkingLot*, courts, campsites — 118 assetIds,
+~25k records) plus house driveways all resolve to the same missing mechanism: `SurfacePrefab`
+areas drawn by `AreaBatchSystem`, a domain no existing layer carried. A consumer built before
+this addition ignores both files and simply keeps showing grass there.
+
+**Water layer changed from depth to surface level (2026-08-07, Phase 6).** §8's
+`terrain/water_depth.png` (`value * depthScale` metres of depth) is replaced by
+`terrain/water_level.png` (surface elevation in the heightmap's encoding, 0 = dry), and the
+`rasters.depthScale` key is retired — the closed `rasters` object now rejects it, loudly.
+Grounds: the frozen depth layer was **unusable as specified**. Depth lives on the simulation's
+~28 m grid, measured against that grid's own coarse ground; §8 told consumers to reconstruct
+the surface as fine-grid ground + resampled depth, which re-bases every sample onto ground the
+simulation never saw — against a gorge wall, mid-channel depth lands halfway up the cliff, and
+the first real import flooded the river's gorge. The surface *level* is the quantity that is
+actually smooth across a shoreline, so it is what survives resampling; depth is recoverable at
+any cell as `level − ground` while the reverse reconstruction is not faithful. The layer was
+frozen 2026-08-06 and no consumer besides this repo's own harness ever read it; the harness
+moves in the same commit. A consumer written against the depth reading fails loudly at its
+validator (`depthScale` is gone; pre-amendment validators required it), which is the closure
+working as promised.
 
 **Terrain rasters frozen as 16-bit PNG, not GeoTIFF (2026-08-06, Phase 6).** The original §8
 placeholder said elevation and water would be "GeoTIFFs written by Carto's existing raster

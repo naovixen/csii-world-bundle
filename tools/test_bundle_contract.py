@@ -270,10 +270,26 @@ class BundleContractTest(unittest.TestCase):
         self.patch_manifest(bundle, lambda m: m["rasters"].pop("elevationScale"))
         self.assertRejected(bundle, "rasters.elevationScale is missing")
 
-    def test_water_without_depth_scale_rejected(self):
+    def test_water_carrying_retired_depth_scale_rejected(self):
+        # depthScale died with the depth layer (§12.1, 2026-08-07): the water raster is a
+        # surface LEVEL in the elevation encoding, and the closed rasters object rejects
+        # the stale key loudly rather than letting a consumer misread level as depth.
         bundle = self.fresh()
-        self.patch_manifest(bundle, lambda m: m["rasters"].pop("depthScale"))
-        self.assertRejected(bundle, "rasters.depthScale is missing")
+        self.patch_manifest(bundle, lambda m: m["rasters"].update({"depthScale": 0.03125}))
+        self.assertRejected(bundle, "depthScale")
+
+    def test_area_triangle_out_of_range_rejected(self):
+        bundle = self.fresh()
+        path = bundle / "areas.jsonl"
+        record = json.loads(path.read_text(encoding="utf-8"))
+        record["triangles"][0] = [0, 1, 99]
+        path.write_text(json.dumps(record) + "\n", encoding="utf-8")
+        self.assertRejected(bundle, "does not index")
+
+    def test_area_prefab_missing_from_catalogue_rejected(self):
+        bundle = self.fresh()
+        (bundle / "areaprefabs.json").write_text("{}\n", encoding="utf-8")
+        self.assertRejected(bundle, "not in areaprefabs.json")
 
     def test_surfaces_without_index_rejected(self):
         bundle = self.fresh()

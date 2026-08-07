@@ -165,8 +165,9 @@ namespace Carto.Systems
             string path = IOUtils.CombinePath(outputDirectory, "instances.jsonl");
             StringBuilder report = new();
             Dictionary<string, int> byKind = new();
-            int skippedNoPrefab = 0, withParent = 0, skippedUtilityNodes = 0;
+            int skippedNoPrefab = 0, withParent = 0, skippedUtilityNodes = 0, skippedVehicleCargo = 0;
             Dictionary<Entity, int> utilityNodesByPrefab = new();
+            Dictionary<Entity, int> vehicleCargoByPrefab = new();
             int stackExpanded = 0, stackRecords = 0;
             _colorSets = 0; _customColors = 0; _divergentColorSets = 0; _growthScales = 0;
             List<string> skipSamples = new();
@@ -193,6 +194,7 @@ namespace Carto.Systems
                 foreach (Entity entity in entities)
                 {
                     if (MeshRipSystem.IsUtilityMarkerSubObject(EntityManager, entity)) continue;
+                    if (MeshRipSystem.IsVehicleCargoSubObject(EntityManager, entity)) continue;
 
                     Entity prefabEntity = EntityManager.GetComponentData<PrefabRef>(entity).m_Prefab;
                     if (prefabEntity != Entity.Null)
@@ -237,6 +239,27 @@ namespace Carto.Systems
                         {
                             utilityNodesByPrefab.TryGetValue(nodePrefab, out int seen);
                             utilityNodesByPrefab[nodePrefab] = seen + 1;
+                        }
+
+                        continue;
+                    }
+
+                    // Cargo riding a vehicle — a log pile on a trailer — is part of the agent it
+                    // rides, not of the built environment, and the vehicle it belongs to is itself
+                    // excluded. Same treatment as the utility nodes: dropped in both rip systems
+                    // alike, tallied by prefab, and named in the report.
+                    // （載於車輛上的貨物——拖車上的原木堆——屬於其所乘的行為者而非建成環境，
+                    //   且其所屬車輛本身已被排除。處理方式與公用設施節點相同：
+                    //   兩個擷取系統一併丟棄，依預製模板統計，並於報告中具名。）
+                    if (MeshRipSystem.IsVehicleCargoSubObject(EntityManager, entity))
+                    {
+                        skippedVehicleCargo++;
+
+                        Entity cargoPrefab = EntityManager.GetComponentData<PrefabRef>(entity).m_Prefab;
+                        if (cargoPrefab != Entity.Null)
+                        {
+                            vehicleCargoByPrefab.TryGetValue(cargoPrefab, out int seen);
+                            vehicleCargoByPrefab[cargoPrefab] = seen + 1;
                         }
 
                         continue;
@@ -381,6 +404,22 @@ namespace Carto.Systems
                 }
 
                 if (nodes.Count > 12) report.AppendLine($"  … and {nodes.Count - 12} more");
+            }
+            if (skippedVehicleCargo > 0)
+            {
+                report.AppendLine($"Skipped {skippedVehicleCargo} cargo prop(s) riding vehicles, "
+                                + $"{vehicleCargoByPrefab.Count} distinct prefab(s):");
+
+                List<KeyValuePair<Entity, int>> cargo = new(vehicleCargoByPrefab);
+                cargo.Sort((a, b) => b.Value.CompareTo(a.Value));
+
+                for (int i = 0; (i < 12) && (i < cargo.Count); i++)
+                {
+                    string name = Instance.Name.GetPrefabName(cargo[i].Key);
+                    report.AppendLine($"  {(string.IsNullOrEmpty(name) ? $"prefab {cargo[i].Key.Index}" : name),-40} {cargo[i].Value,8}");
+                }
+
+                if (cargo.Count > 12) report.AppendLine($"  … and {cargo.Count - 12} more");
             }
             report.AppendLine($"Distinct assetIds referenced: {assetIds.Count}");
             if (skippedNoPrefab > 0)

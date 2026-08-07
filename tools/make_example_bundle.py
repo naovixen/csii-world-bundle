@@ -376,11 +376,10 @@ def build(out_dir: Path) -> None:
     cell_m = 4.0
     origin = (80.0, 0.0, -300.0)  # top-left cell centre
     elevation_scale = 0.001       # worldY = value * 0.001 m
-    depth_scale = 0.03125         # depth = value / 32 m
 
     heights: list[int] = []
     surface: list[int] = []
-    depths: list[int] = []
+    levels: list[int] = []
     for row in range(grid):
         z = origin[2] - row * cell_m
         for col in range(grid):
@@ -394,15 +393,18 @@ def build(out_dir: Path) -> None:
                 world_y = 12.0
             heights.append(round(world_y / elevation_scale))
             surface.append(1 if on_road else 0)
-            # A pond in the north-east corner, 2 m at its deepest.
-            pond = max(0.0, 2.0 - 0.1 * (abs(x - 196.0) + abs(z - -308.0)))
-            depths.append(round(pond / depth_scale))
+            # A pond in the north-east corner. The water layer stores the SURFACE LEVEL
+            # in the heightmap's own encoding (0 = dry): a still pond is one constant
+            # level wherever there is water, and the ground plane cuts the shoreline.
+            # 15.32 m is the pond-centre ground (13.32 m) plus its 2 m depth.
+            in_pond = (abs(x - 196.0) + abs(z - -308.0)) < 20.0
+            levels.append(round(15.32 / elevation_scale) if in_pond else 0)
 
     terrain_dir = out_dir / "terrain"
     (terrain_dir / "surfaces").mkdir(parents=True, exist_ok=True)
     (terrain_dir / "heightmap.png").write_bytes(make_gray_png(heights, grid, grid, 16))
     (terrain_dir / "surface_index.png").write_bytes(make_gray_png(surface, grid, grid, 8))
-    (terrain_dir / "water_depth.png").write_bytes(make_gray_png(depths, grid, grid, 16))
+    (terrain_dir / "water_level.png").write_bytes(make_gray_png(levels, grid, grid, 16))
 
     grass_png = make_checker_png(16, 4, (96, 132, 72, 255), (84, 118, 64, 255))
     dirt_png = make_checker_png(16, 4, (128, 108, 88, 255), (112, 94, 76, 255))
@@ -416,6 +418,25 @@ def build(out_dir: Path) -> None:
         json.dumps(surfaces_index, indent=2) + "\n", encoding="utf-8"
     )
 
+    # -- surface areas (contract §8b): a concrete pad beside the road ------------------
+    # The painted ground of meshless prefabs (parking lots, driveways). One quad, two
+    # triangles, indices into its own nodes; the prefab key resolves in areaprefabs.json.
+    area_record = {
+        "id": 9001,
+        "prefab": "example_concrete_pad",
+        "owner": instances[0]["id"],
+        "nodes": [[100.0, 12.0, -344.0], [112.0, 12.0, -344.0],
+                  [112.0, 12.0, -336.0], [100.0, 12.0, -336.0]],
+        "triangles": [[0, 1, 2], [0, 2, 3]],
+    }
+    (out_dir / "areas.jsonl").write_text(
+        json.dumps(area_record, separators=(",", ":")) + "\n", encoding="utf-8")
+    (out_dir / "areaprefabs.json").write_text(
+        json.dumps({"example_concrete_pad": {
+            "name": "Example Concrete Pad",
+            "color": [0.42, 0.4, 0.38, 1.0],
+        }}, indent=2) + "\n", encoding="utf-8")
+
     rasters = {
         "resolution": cell_m,
         "size": [grid, grid],
@@ -423,7 +444,6 @@ def build(out_dir: Path) -> None:
         "elevationUnits": "m",
         "elevationScale": elevation_scale,
         "elevationOffset": 0.0,
-        "depthScale": depth_scale,
     }
 
     # Bounds must enclose every placed mesh. The cube reaches HALF*sqrt(2) horizontally
@@ -509,7 +529,7 @@ def build(out_dir: Path) -> None:
             "terrain": "terrain/heightmap.png",
             "surfaceIndex": "terrain/surface_index.png",
             "surfaces": "terrain/surfaces/",
-            "water": "terrain/water_depth.png",
+            "water": "terrain/water_level.png",
         },
         "rasters": rasters,
         "ripOptions": {

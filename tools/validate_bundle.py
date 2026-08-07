@@ -588,6 +588,9 @@ def validate_bundle(bundle_dir: Path, schema_dir: Path) -> Report:
     elif raster_layers:
         _check_raster_layers(bundle_dir, manifest, layers, report)
 
+    # -- surface areas (§8b, optional) -------------------------------------------------
+    _check_areas(bundle_dir, report)
+
     report.note(f"schema {manifest['schema']}, generator {manifest['generator']!r}")
     report.note(f"{len(instances)} instances, {len(networks)} network records")
     report.note(f"{len(mesh_files)} meshes, {len(materials)} materials, {len(texture_files)} textures")
@@ -611,10 +614,11 @@ def _check_raster_layers(bundle_dir: Path, manifest: Dict[str, Any],
     """The terrain-layer invariants of contract §8.
 
     Every raster is a single-channel PNG on the one grid the manifest's `rasters` block
-    geo-references: elevation and water depth at bit depth 16 (the game's native sample
-    width, value * scale + offset = metres), the surface index at bit depth 8 (ids, not
-    colours). The world rasters (`worldTerrain`/`worldWater`) cover a larger area at their
-    own size, so only the playable-area rasters are held to `rasters.size`.
+    geo-references: elevation and the water surface level at bit depth 16 (the game's
+    native sample width, value * scale + offset = metres; the water level shares the
+    elevation encoding, 0 = dry), the surface index at bit depth 8 (ids, not colours).
+    The world rasters (`worldTerrain`/`worldWater`) cover a larger area at their own
+    size, so only the playable-area rasters are held to `rasters.size`.
     """
     rasters = manifest.get("rasters", {})
     size = rasters.get("size")
@@ -622,9 +626,9 @@ def _check_raster_layers(bundle_dir: Path, manifest: Dict[str, Any],
     expectations = (
         ("terrain", 16, True, ("elevationScale", "elevationOffset")),
         ("surfaceIndex", 8, True, ()),
-        ("water", 16, True, ("depthScale",)),
+        ("water", 16, True, ("elevationScale", "elevationOffset")),
         ("worldTerrain", 16, False, ("elevationScale", "elevationOffset")),
-        ("worldWater", 16, False, ("depthScale",)),
+        ("worldWater", 16, False, ("elevationScale", "elevationOffset")),
     )
     for key, depth, playable_grid, needed_keys in expectations:
         rel = layers.get(key)
@@ -669,6 +673,64 @@ def _check_raster_layers(bundle_dir: Path, manifest: Dict[str, Any],
                 texture = entry.get("texture")
                 if texture is not None and not (bundle_dir / texture).is_file():
                     report.error(f"{label}: texture {texture!r} does not exist")
+
+
+def _check_areas(bundle_dir: Path, report: Report) -> None:
+    """The surface-area invariants of contract §8b, when the optional layer is present.
+
+    Every record's triangles index into its own nodes; every `prefab` key resolves in
+    `areaprefabs.json`; a catalogue `texture`, when named, exists on disk.
+    """
+    areas_path = bundle_dir / "areas.jsonl"
+    if not areas_path.is_file():
+        return
+
+    catalogue: Dict[str, Any] = {}
+    catalogue_path = bundle_dir / "areaprefabs.json"
+    if catalogue_path.is_file():
+        try:
+            catalogue = json.loads(catalogue_path.read_text(encoding="utf-8"))
+        except ValueError as exc:
+            report.error(f"areaprefabs.json: not valid JSON ({exc})")
+
+    for key, entry in catalogue.items():
+        texture = entry.get("texture") if isinstance(entry, dict) else None
+        if texture is not None and not (bundle_dir / texture).is_file():
+            report.error(f"areaprefabs.json[{key}]: texture {texture!r} does not exist")
+
+    records = 0
+    with areas_path.open(encoding="utf-8") as handle:
+        for line_no, line in enumerate(handle, start=1):
+            line = line.strip()
+            if not line:
+                continue
+            label = f"areas.jsonl line {line_no}"
+            try:
+                record = json.loads(line)
+            except ValueError as exc:
+                report.error(f"{label}: not valid JSON ({exc})")
+                continue
+            records += 1
+            nodes = record.get("nodes")
+            triangles = record.get("triangles")
+            if not isinstance(nodes, list) or len(nodes) < 3:
+                report.error(f"{label}: 'nodes' must be a list of at least 3 positions")
+                continue
+            if not isinstance(triangles, list) or not triangles:
+                report.error(f"{label}: 'triangles' must be a non-empty list")
+                continue
+            for tri in triangles:
+                if (not isinstance(tri, list) or len(tri) != 3
+                        or any(not isinstance(i, int) or i < 0 or i >= len(nodes) for i in tri)):
+                    report.error(f"{label}: triangle {tri!r} does not index its {len(nodes)} nodes")
+                    break
+            prefab = record.get("prefab")
+            if not isinstance(prefab, str) or not prefab:
+                report.error(f"{label}: 'prefab' must be a non-empty string")
+            elif prefab not in catalogue:
+                report.error(f"{label}: prefab {prefab!r} is not in areaprefabs.json")
+
+    report.note(f"{records} surface areas over {len(catalogue)} area prefabs (§8b)")
 
 
 def _check_quat(rot: Any, label: str, report: Report) -> None:
