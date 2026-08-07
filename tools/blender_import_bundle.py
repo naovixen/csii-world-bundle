@@ -93,7 +93,9 @@ import sys
 import time
 
 import bpy
+import numpy
 from mathutils import Matrix, Quaternion, Vector
+from mathutils.bvhtree import BVHTree
 
 
 # -- the frame conversion, contract §2 ------------------------------------------------------
@@ -138,6 +140,19 @@ _UNMIRROR_UNIMPORT = Matrix(((-1, 0, 0, 0),
 # beat depth precision at city scale, small enough that nothing downstream can care: a 1.5 cm
 # kerb-height error is already inside the tolerance of the road surface it sits on.
 _DECAL_LIFT = 0.015
+
+# Lane decal parts (§5B `decal`) cannot use a fixed lift: the game stores lane curves at the
+# base plane of the carriageway, and the rendered surface crowns ABOVE them — measured on a
+# full-city rip, the road top near centre lines is a median 7 mm above the lane path and
+# beats path+_DECAL_LIFT on 42% of samples, which is why bent markings vanish into the
+# asphalt. The game never sees the problem because a decal is a projector volume, painted
+# onto whatever surface it meets. The harness equivalent is a drape: subdivide the marking
+# quad every _DECAL_DRAPE_STEP metres and snap each vertex onto the road surface below.
+# Markings ride a hair higher than the ~12%-alpha wear tint so the two never z-fight where
+# a crosswalk crosses a drive lane.
+_DECAL_DRAPE_STEP = 3.0
+_DECAL_DRAPE_MARKING = 0.014
+_DECAL_DRAPE_TINT = 0.008
 
 # How far terrain faces marked roadbed (§8 surface id 1) sink below their sampled height —
 # the game's own clamp direction: its road job pulls ground under a carriageway to the
@@ -864,6 +879,133 @@ def _quat_apply(q, v):
             v[2] + w * tz + x * ty - y * tx)
 
 
+class _RoadSurface:
+    """Ray-cast access to the imported road surfaces, for draping lane decals.
+
+    One BVH over every network mesh would hold ~10M triangles for a full city, most of it
+    never queried. Instead the network objects are binned into a 128 m grid by bounding box
+    and each object's BVH (world space, Blender frame) is built lazily on first query —
+    a neighbourhood import builds only the handful it touches.
+    """
+
+    CELL = 128.0
+    _DOWN = Vector((0.0, 0.0, -1.0))
+
+    def __init__(self, collection):
+        self._objects = []
+        self._grid = {}
+        self._trees = {}
+        for obj in collection.objects:
+            if obj.type != "MESH":
+                continue
+            index = len(self._objects)
+            self._objects.append(obj)
+            matrix = obj.matrix_world
+            corners = [matrix @ Vector(corner) for corner in obj.bound_box]
+            xs = [c.x for c in corners]
+            ys = [c.y for c in corners]
+            for cx in range(int(min(xs) // self.CELL), int(max(xs) // self.CELL) + 1):
+                for cy in range(int(min(ys) // self.CELL), int(max(ys) // self.CELL) + 1):
+                    self._grid.setdefault((cx, cy), []).append(index)
+
+    def _tree(self, index):
+        if index not in self._trees:
+            obj = self._objects[index]
+            mesh = obj.data
+            if len(mesh.polygons) == 0:
+                self._trees[index] = None
+                return None
+            # foreach_get + one matmul instead of a Python matrix apply per vertex —
+            # a full city holds ~19M network vertices and this path builds most of them.
+            count = len(mesh.vertices)
+            co = numpy.empty(count * 3, dtype=numpy.float64)
+            mesh.vertices.foreach_get("co", co)
+            matrix = numpy.array(obj.matrix_world, dtype=numpy.float64)
+            world = co.reshape(-1, 3) @ matrix[:3, :3].T + matrix[:3, 3]
+            mesh.calc_loop_triangles()
+            tris = numpy.empty(len(mesh.loop_triangles) * 3, dtype=numpy.int64)
+            mesh.loop_triangles.foreach_get("vertices", tris)
+            self._trees[index] = BVHTree.FromPolygons(
+                world.tolist(), tris.reshape(-1, 3).tolist())
+        return self._trees[index]
+
+    def drop(self, x, y, z, probe=3.0, depth=8.0):
+        """Highest road surface hit under (x, y, z+probe), Blender frame, or None.
+
+        `probe` clears kerbs and crown above the queried point without reaching the deck of
+        an overpass; `depth` limits how far below a stray point may snap.
+        """
+        origin = Vector((x, y, z + probe))
+        best = None
+        for index in self._grid.get((int(x // self.CELL), int(y // self.CELL)), ()):
+            tree = self._tree(index)
+            if tree is None:
+                continue
+            location = tree.ray_cast(origin, self._DOWN, depth)[0]
+            if location is not None and (best is None or location.z > best):
+                best = location.z
+        return best
+
+
+# Subdivided decal quads, keyed by (id(source), rows) — sources live for the whole
+# build_lanes call, and a city re-requests the same handful of (mesh, row-count) pairs
+# tens of thousands of times.
+_SUBDIVIDED_QUADS = {}
+
+
+def _subdivide_decal_quad(source, rows):
+    """Cut a flat 4-vert decal quad into `rows` bands along its length (part-local z).
+
+    A decal part in-game is a projector volume that hugs the surface per pixel; the harness
+    flattens it to a quad, and a quad only has corners to drape. Extra rows give the drape
+    enough vertices to follow the carriageway's crown and grade. Anything that is not the
+    simple two-triangle quad every vanilla marking mesh is comes back untouched.
+    """
+    verts, tris = source["verts"], source["tris"]
+    if rows <= 1 or len(verts) != 4 or len(tris) != 2 or tris[0][0] is not tris[1][0]:
+        return source
+
+    uvs = {}
+    for _, indices, corner_uvs in tris:
+        for vertex, uv in zip(indices, corner_uvs):
+            uvs.setdefault(vertex, uv)
+    z_values = sorted(v[2] for v in verts)
+    if abs(z_values[0] - z_values[1]) > 1e-4 or abs(z_values[2] - z_values[3]) > 1e-4:
+        return source
+    near = sorted((i for i, v in enumerate(verts) if abs(v[2] - z_values[0]) <= 1e-4),
+                  key=lambda i: verts[i][0])
+    far = sorted((i for i, v in enumerate(verts) if abs(v[2] - z_values[2]) <= 1e-4),
+                 key=lambda i: verts[i][0])
+    if len(near) != 2 or len(far) != 2:
+        return source
+
+    def lerp(a, b, t):
+        return tuple(a[k] + (b[k] - a[k]) * t for k in range(len(a)))
+
+    new_verts, new_uvs = [], []
+    for row in range(rows + 1):
+        t = row / rows
+        for pair in ((near[0], far[0]), (near[1], far[1])):
+            new_verts.append(lerp(verts[pair[0]], verts[pair[1]], t))
+            new_uvs.append(lerp(uvs[pair[0]], uvs[pair[1]], t))
+
+    def tri_up(a, b, c):
+        # y-component of the cross product: the winding as seen from above (part local space)
+        return ((b[0] - a[0]) * (c[2] - a[2]) - (b[2] - a[2]) * (c[0] - a[0]))
+
+    material = tris[0][0]
+    v0, v1, v2 = (verts[i] for i in tris[0][1])
+    flip = tri_up(v0, v1, v2) * tri_up(new_verts[0], new_verts[1], new_verts[3]) < 0
+    new_tris = []
+    for row in range(rows):
+        l0, r0, l1, r1 = row * 2, row * 2 + 1, row * 2 + 2, row * 2 + 3
+        for tri in ((l0, r0, r1), (l0, r1, l1)):
+            if flip:
+                tri = tuple(reversed(tri))
+            new_tris.append((material, tri, tuple(new_uvs[i] for i in tri)))
+    return {"verts": new_verts, "tris": new_tris}
+
+
 def _bend_lane_part(part, source, curve, spans, curve_length, width_scale, hang, sink):
     """Bend one catalogue part along one lane record's curve into `sink`.
 
@@ -907,6 +1049,28 @@ def _bend_lane_part(part, source, curve, spans, curve_length, width_scale, hang,
         if decal_stretch:
             tiles, clip, tiling_count = 1, 0, 0
 
+        # Decal parts get subdivided along their length and tagged for the road-surface
+        # drape (see _DECAL_DRAPE_STEP): the flat quad approximates a projection, and only
+        # extra vertices let it follow the crown that otherwise buries it.
+        bend_source = source
+        drape_eps = None
+        if part.get("decal"):
+            asset_id = part.get("assetId", "")
+            drape_eps = (_DECAL_DRAPE_MARKING if ("Line" in asset_id or "Crosswalk" in asset_id)
+                         else _DECAL_DRAPE_TINT)
+            if tiling_count > 0:
+                band = total_arc * tiling_count / clip
+            elif decal_stretch:
+                band = total_arc
+            else:
+                band = mesh_length
+            rows = max(1, min(64, int(math.ceil(band / _DECAL_DRAPE_STEP))))
+            key = (id(source), rows)
+            bend_source = _SUBDIVIDED_QUADS.get(key)
+            if bend_source is None:
+                bend_source = _subdivide_decal_quad(source, rows)
+                _SUBDIVIDED_QUADS[key] = bend_source
+
         for tile in range(tiles):
             if tiling_count > 0:
                 clip0 = tile * clip // tiles
@@ -926,41 +1090,55 @@ def _bend_lane_part(part, source, curve, spans, curve_length, width_scale, hang,
                 arc_limit = total_arc
 
             base = len(sink["verts"])
-            for v in source["verts"]:
+            # Vertices sharing a z (the two sides of every quad row) share the whole curve
+            # frame — memoise it per arc position instead of re-evaluating the bezier,
+            # tangent and width for each vertex.
+            frames = {}
+            for v in bend_source["verts"]:
                 local = _quat_apply(rot, v)
                 local = (local[0] + pos[0], local[1] + pos[1], local[2] + pos[2])
                 z_fraction = (local[2] - bmin[2]) / mesh_length
                 arc_position = min(max(arc_start + z_fraction * arc_per_z, 0.0), arc_limit)
-                t = _param_at_arc(arc, arc_position)
-                t_global = (span[1] - (span[1] - span[0]) * t) if inverted \
-                    else (span[0] + (span[1] - span[0]) * t)
+                frame = frames.get(arc_position)
+                if frame is None:
+                    t = _param_at_arc(arc, arc_position)
+                    t_global = (span[1] - (span[1] - span[0]) * t) if inverted \
+                        else (span[0] + (span[1] - span[0]) * t)
 
-                point = _bezier_point(bezier, t)
-                forward = _bezier_tangent(bezier, t)
-                length = math.sqrt(sum(f * f for f in forward)) or 1.0
-                forward = tuple(f / length for f in forward)
-                # right = normalize(cross(up, forward)) with up = +y (bundle frame)
-                right = (forward[2], 0.0, -forward[0])
-                length = math.hypot(right[0], right[2]) or 1.0
-                right = (right[0] / length, 0.0, right[2] / length)
+                    point = _bezier_point(bezier, t)
+                    forward = _bezier_tangent(bezier, t)
+                    length = math.sqrt(sum(f * f for f in forward)) or 1.0
+                    forward = tuple(f / length for f in forward)
+                    # right = normalize(cross(up, forward)) with up = +y (bundle frame)
+                    right = (forward[2], 0.0, -forward[0])
+                    length = math.hypot(right[0], right[2]) or 1.0
+                    right = (right[0] / length, 0.0, right[2] / length)
 
-                width = width_scale[0] + (width_scale[1] - width_scale[0]) * t_global
-                world = (point[0] + right[0] * local[0] * width,
-                         point[1] + local[1] + lift,
-                         point[2] + right[2] * local[0] * width)
-                if hang is not None:
-                    world = (world[0], world[1] - _hang_drop(hang, t_global), world[2])
-                sink["verts"].append(world)
+                    width = width_scale[0] + (width_scale[1] - width_scale[0]) * t_global
+                    drop = _hang_drop(hang, t_global) if hang is not None else 0.0
+                    frame = (point, right, width, drop)
+                    frames[arc_position] = frame
+                point, right, width, drop = frame
+                sink["verts"].append((point[0] + right[0] * local[0] * width,
+                                      point[1] + local[1] + lift - drop,
+                                      point[2] + right[2] * local[0] * width))
 
-            for material, tri, uvs in source["tris"]:
+            for material, tri, uvs in bend_source["tris"]:
                 sink["loops"].append((material, tuple(base + i for i in tri), uvs))
+            if drape_eps is not None:
+                sink["drape"].extend(
+                    (base + i, drape_eps) for i in range(len(bend_source["verts"])))
 
 
 def _load_lane_source(asset_id, lane_mesh_dir, cache):
     """Import one part .glb once and reduce it to bundle-frame arrays plus its materials.
 
     The importer hands back Blender-local coordinates (glTF x, -z, y); the bundle frame is
-    recovered as (-x, z, -y) of those — the writer's X mirror undone, axes restored.
+    recovered as (-x, z, -y) of those — the writer's X mirror undone, axes restored. That
+    map has determinant -1, so triangles are emitted reversed here: together with the
+    second reversal at from_pydata (compensating P, also det -1) the facing survives both
+    mirrors. Fences and cables never showed the difference — road markings, draped onto the
+    carriageway and lit from above, render black when their normals point down.
     """
     if asset_id in cache:
         return cache[asset_id]
@@ -984,8 +1162,8 @@ def _load_lane_source(asset_id, lane_mesh_dir, cache):
                 # fan-triangulate the rare n-gon; glb import normally hands triangles
                 for k in range(1, len(indices) - 1):
                     tris.append((material,
-                                 (indices[0], indices[k], indices[k + 1]),
-                                 (uvs[0], uvs[k], uvs[k + 1])))
+                                 (indices[0], indices[k + 1], indices[k]),
+                                 (uvs[0], uvs[k + 1], uvs[k])))
             source = {"verts": verts, "tris": tris}
         for obj in imported:
             bpy.data.objects.remove(obj, do_unlink=True)
@@ -995,7 +1173,7 @@ def _load_lane_source(asset_id, lane_mesh_dir, cache):
 
 
 def build_lanes(lanes_path, catalogue_path, lane_mesh_dir, collection,
-                center=None, radius=None, limit=None):
+                center=None, radius=None, limit=None, road_surface=None):
     """Bend every lane record's parts along its curve, merged into one object per prefab."""
     if not os.path.isfile(lanes_path):
         print(f"no lanemeshes.jsonl at {lanes_path} — skipping lane geometry")
@@ -1008,6 +1186,7 @@ def build_lanes(lanes_path, catalogue_path, lane_mesh_dir, collection,
         catalogue = json.load(handle)
 
     sources = {}
+    _SUBDIVIDED_QUADS.clear()  # keyed by id(source); stale ids from a prior call could alias
     builders = {}
     counts = {}
     bent = missing_prefab = missing_mesh = skipped_region = skipped_limit = 0
@@ -1045,7 +1224,8 @@ def build_lanes(lanes_path, catalogue_path, lane_mesh_dir, collection,
         # (§7.2), and the distinct paints per prefab are few — the variation table is small.
         color_set = record.get("colorSet")
         key = (record["prefab"], json.dumps(color_set, sort_keys=True) if color_set else "")
-        sink = builders.setdefault(key, {"verts": [], "loops": [], "colorSet": color_set})
+        sink = builders.setdefault(key, {"verts": [], "loops": [], "colorSet": color_set,
+                                         "drape": []})
 
         for index in record.get("parts", []):
             parts = entry.get("parts", [])
@@ -1064,10 +1244,37 @@ def build_lanes(lanes_path, catalogue_path, lane_mesh_dir, collection,
         if bent % 5000 == 0:
             print(f"  … {bent} lane(s) bent")
 
+    # The bend loop above prints its progress; everything below (drape ray-casts, lazy
+    # road-surface BVH builds, object construction) is the quiet expensive part of a
+    # full-city run — announce it so a long silence reads as work, not a hang.
+    to_drape = sum(len(sink["drape"]) for sink in builders.values())
+    if road_surface is not None and to_drape:
+        print(f"  … bending done; draping {to_drape} decal vertex(es) onto the road "
+              f"surface and building {len(builders)} object(s)")
+
     built = 0
+    draped = drape_missed = 0
+    drape_seen = 0
     for (prefab_key, _), sink in builders.items():
         if not sink["loops"]:
             continue
+
+        # Drape: snap decal vertices onto the road surface actually built (bundle frame
+        # (x, y, z) is Blender (x, z, y)). A miss — a marking past the imported region's
+        # road cut, or a lane the networks layer skipped — keeps its bent height + lift.
+        if road_surface is not None and sink["drape"]:
+            verts = sink["verts"]
+            for index, epsilon in sink["drape"]:
+                x, y, z = verts[index]
+                top = road_surface.drop(x, z, y)
+                if top is None:
+                    drape_missed += 1
+                else:
+                    verts[index] = (x, top + epsilon, z)
+                    draped += 1
+                drape_seen += 1
+                if drape_seen % 250000 == 0:
+                    print(f"  … {drape_seen}/{to_drape} decal vertex(es) draped")
 
         mesh = bpy.data.meshes.new(f"lane_{prefab_key}")
         # Bundle → Blender is P·(bend), det -1, so faces are emitted reversed to keep their
@@ -1082,13 +1289,24 @@ def build_lanes(lanes_path, catalogue_path, lane_mesh_dir, collection,
                 mesh.materials.append(material)
 
         uv_layer = mesh.uv_layers.new()
-        loop_cursor = 0
-        for polygon, (material, _, uvs) in zip(mesh.polygons, sink["loops"]):
-            if material is not None:
-                polygon.material_index = slots[material.name]
-            for uv in reversed(uvs):
-                uv_layer.data[loop_cursor].uv = uv
-                loop_cursor += 1
+        if len(mesh.polygons) == len(sink["loops"]):
+            # Bulk-assign via foreach_set — per-loop Python assignment dominates object
+            # build time on a full city's multi-million-loop merged lane meshes.
+            mesh.polygons.foreach_set(
+                "material_index",
+                [slots[material.name] if material is not None else 0
+                 for material, _, _ in sink["loops"]])
+            flat_uvs = [c for _, _, uvs in sink["loops"] for uv in reversed(uvs) for c in uv]
+            uv_layer.data.foreach_set("uv", flat_uvs)
+        else:
+            # from_pydata dropped an invalid face; fall back to the positional walk
+            loop_cursor = 0
+            for polygon, (material, _, uvs) in zip(mesh.polygons, sink["loops"]):
+                if material is not None:
+                    polygon.material_index = slots[material.name]
+                for uv in reversed(uvs):
+                    uv_layer.data[loop_cursor].uv = uv
+                    loop_cursor += 1
 
         mesh.validate()
         obj = bpy.data.objects.new(f"lane_{prefab_key}", mesh)
@@ -1100,6 +1318,12 @@ def build_lanes(lanes_path, catalogue_path, lane_mesh_dir, collection,
     print()
     print(f"lanes:     {bent} record(s) bent into {built} object(s), "
           f"{len(sources)} part mesh(es) loaded")
+    if draped or drape_missed:
+        print(f"           {draped} decal vertex(es) draped onto the road surface"
+              + (f", {drape_missed} kept the fixed lift (no surface hit)" if drape_missed else ""))
+    elif road_surface is None:
+        print("           networks layer not built — decals keep the fixed lift, expect "
+              "markings to z-fight or sink into the crown")
     for category, count in sorted(counts.items()):
         print(f"           category {category}: {count}")
     if skipped_region:
@@ -1200,6 +1424,108 @@ def _decode_png_gray(path):
     return width, height, samples
 
 
+def _decode_png_rgba(path):
+    """Decode an RGBA8 PNG (the §8 splatmap) to (width, height, bytes).
+
+    Same chunk walk and filter handling as _decode_png_gray at four bytes per pixel; the
+    producer writes filter 0 (None) rows, which is the fast path.
+    """
+    import struct
+    import zlib
+
+    data = open(path, "rb").read()
+    if not data.startswith(b"\x89PNG\r\n\x1a\n"):
+        raise ValueError(f"{path} is not a PNG")
+
+    pos = 8
+    width = height = depth = None
+    colour_type = None
+    idat = []
+    while pos + 8 <= len(data):
+        (length,) = struct.unpack(">I", data[pos:pos + 4])
+        tag = data[pos + 4:pos + 8]
+        payload = data[pos + 8:pos + 8 + length]
+        pos += 12 + length
+        if tag == b"IHDR":
+            width, height = struct.unpack(">II", payload[:8])
+            depth, colour_type = payload[8], payload[9]
+        elif tag == b"IDAT":
+            idat.append(payload)
+        elif tag == b"IEND":
+            break
+
+    if colour_type != 6 or depth != 8:
+        raise ValueError(f"{path}: the splatmap is RGBA8, got colour type {colour_type} at depth {depth}")
+
+    raw = zlib.decompress(b"".join(idat))
+    stride = width * 4
+    out = bytearray(width * height * 4)
+    previous = bytearray(stride)
+
+    for y in range(height):
+        offset = y * (stride + 1)
+        filter_type = raw[offset]
+        line = bytearray(raw[offset + 1:offset + 1 + stride])
+        if filter_type == 1:    # Sub
+            for i in range(4, stride):
+                line[i] = (line[i] + line[i - 4]) & 0xFF
+        elif filter_type == 2:  # Up
+            for i in range(stride):
+                line[i] = (line[i] + previous[i]) & 0xFF
+        elif filter_type == 3:  # Average
+            for i in range(stride):
+                left = line[i - 4] if i >= 4 else 0
+                line[i] = (line[i] + ((left + previous[i]) >> 1)) & 0xFF
+        elif filter_type == 4:  # Paeth
+            for i in range(stride):
+                left = line[i - 4] if i >= 4 else 0
+                up = previous[i]
+                corner = previous[i - 4] if i >= 4 else 0
+                estimate = left + up - corner
+                distances = (abs(estimate - left), abs(estimate - up), abs(estimate - corner))
+                predictor = (left, up, corner)[distances.index(min(distances))]
+                line[i] = (line[i] + predictor) & 0xFF
+        out[y * stride:(y + 1) * stride] = line
+        previous = line
+
+    return width, height, bytes(out)
+
+
+class _Splat:
+    """The ripped splat weight map with its geo-reference — the game's own per-pixel ground
+    blend (rasters.json "splatmap" block), sampled here only to calibrate which channel is
+    which ground; the actual blending happens in the shader nodes."""
+
+    def __init__(self, path, block):
+        self.path = path
+        self.width, self.height, self.pixels = _decode_png_rgba(path)
+        size = block.get("size", [self.width, self.height])
+        if [self.width, self.height] != list(size):
+            raise ValueError(f"splatmap is {self.width}x{self.height}, block says {size}")
+        cx, cz = block["resolution"]
+        ox, _, oz = block["originWorld"]           # top-left texel CENTRE, row 0 north
+        self.min_x = ox - cx * 0.5
+        self.max_z = oz + cz * 0.5
+        self.cell_x = cx
+        self.cell_z = cz
+        self.area_x = cx * self.width
+        self.area_z = cz * self.height
+
+    def sample(self, world_x, world_z):
+        """Nearest-texel RGBA at a world position, 0..255 each."""
+        col = int((world_x - self.min_x) / self.cell_x)
+        row = int((self.max_z - world_z) / self.cell_z)
+        col = min(max(col, 0), self.width - 1)
+        row = min(max(row, 0), self.height - 1)
+        offset = (row * self.width + col) * 4
+        return self.pixels[offset:offset + 4]
+
+    def uv(self, world_x, world_z):
+        """Image UV (V = 0 at the south edge, matching row 0 = north) for the shader."""
+        return ((world_x - self.min_x) / self.area_x,
+                (world_z - (self.max_z - self.area_z)) / self.area_z)
+
+
 def _terrain_paths(bundle_dir):
     """The §8 layer paths and the `rasters` geo-reference block.
 
@@ -1220,6 +1546,7 @@ def _terrain_paths(bundle_dir):
     cutout = os.path.join(bundle_dir, layers.get("cutout", "terrain/cutout.png"))
     water = os.path.join(bundle_dir, layers.get("water", "terrain/water_level.png"))
     surfaces_dir = os.path.join(bundle_dir, layers.get("surfaces", "terrain/surfaces/"))
+    splatmap = os.path.join(bundle_dir, layers.get("splatmap", "terrain/splatmap.png"))
 
     if rasters is None:
         sidecar = os.path.join(bundle_dir, "terrain", "rasters.json")
@@ -1227,7 +1554,109 @@ def _terrain_paths(bundle_dir):
             with open(sidecar, encoding="utf-8") as handle:
                 rasters = json.load(handle)
 
-    return heightmap, surface, cutout, water, surfaces_dir, rasters
+    return heightmap, surface, cutout, water, surfaces_dir, splatmap, rasters
+
+
+def _splat_ground_material(surfaces_dir, splat, mapping, gain=1.0):
+    """One ground material mixing grass/dirt/rock by the game's splat weights.
+
+    The splatmap image is sampled with linear interpolation in its own UV layer (SplatUV),
+    so the blend is per-pixel smooth — the game's look — instead of per-face. The ground
+    textures keep the world-anchored 8 m tiling of the legacy path. `mapping` names the
+    calibrated channel index for grass and, when calibrated, dirt and a painted-rock
+    variant — either may be None (the game's own blend has no dirt response under
+    roadbeds). Rock always blends regardless: the channels are PAINTED-ground weights and
+    cliffs are simply unpainted — measured, very steep faces carry ≈0 in all four channels
+    while rendering rock in-game — so the base ground is the residual
+    max(0, 1 − (R+G+B+A)), textured rock here, plus the painted variant when named.
+    """
+    material = bpy.data.materials.new("terrain_ground")
+    material.use_nodes = True
+    tree = material.node_tree
+    bsdf = tree.nodes.get("Principled BSDF")
+    bsdf.inputs["Roughness"].default_value = 0.95
+
+    world_uv = tree.nodes.new("ShaderNodeUVMap")
+    world_uv.uv_map = "UVMap"
+
+    def ground_texture(name, fallback_colour):
+        path = os.path.join(surfaces_dir, name)
+        if os.path.isfile(path):
+            node = tree.nodes.new("ShaderNodeTexImage")
+            node.image = bpy.data.images.load(path)
+            tree.links.new(world_uv.outputs["UV"], node.inputs["Vector"])
+            return node.outputs["Color"]
+        rgb = tree.nodes.new("ShaderNodeRGB")
+        rgb.outputs[0].default_value = fallback_colour
+        return rgb.outputs[0]
+
+    grass = ground_texture("grass.png", (0.20, 0.30, 0.12, 1.0))
+    dirt = ground_texture("dirt.png", (0.35, 0.28, 0.20, 1.0)) if mapping.get("dirt") is not None else None
+    rock = ground_texture("rock.png", (0.30, 0.28, 0.26, 1.0))
+
+    splat_uv = tree.nodes.new("ShaderNodeUVMap")
+    splat_uv.uv_map = "SplatUV"
+    splat_node = tree.nodes.new("ShaderNodeTexImage")
+    splat_node.image = bpy.data.images.load(splat.path)
+    splat_node.image.colorspace_settings.name = "Non-Color"
+    splat_node.interpolation = "Linear"
+    splat_node.extension = "EXTEND"
+    tree.links.new(splat_uv.outputs["UV"], splat_node.inputs["Vector"])
+
+    separate = tree.nodes.new("ShaderNodeSeparateColor")
+    tree.links.new(splat_node.outputs["Color"], separate.inputs["Color"])
+    channels = {0: separate.outputs["Red"], 1: separate.outputs["Green"],
+                2: separate.outputs["Blue"], 3: splat_node.outputs["Alpha"]}
+
+    def math(op, a, b):
+        node = tree.nodes.new("ShaderNodeMath")
+        node.operation = op
+        for socket, value in zip((node.inputs[0], node.inputs[1]), (a, b)):
+            if hasattr(value, "is_linked"):
+                tree.links.new(value, socket)
+            else:
+                socket.default_value = value
+        return node.outputs[0]
+
+    def mix(colour_a, colour_b, fac):
+        node = tree.nodes.new("ShaderNodeMixRGB")
+        node.blend_type = "MIX"
+        tree.links.new(fac, node.inputs["Fac"])
+        tree.links.new(colour_a, node.inputs["Color1"])
+        tree.links.new(colour_b, node.inputs["Color2"])
+        return node.outputs["Color"]
+
+    # The rock weight is the unpainted residual — max(0, 1 − ΣRGBA) — plus the painted
+    # rock-variant channel when calibration named one.
+    channel_sum = channels[0]
+    for k in (1, 2, 3):
+        channel_sum = math("ADD", channel_sum, channels[k])
+    rock_weight = math("MAXIMUM", math("SUBTRACT", 1.0, channel_sum), 0.0)
+    if mapping.get("rock") is not None:
+        rock_weight = math("ADD", rock_weight, channels[mapping["rock"]])
+
+    # Normalised chained lerp over the grounds: at each step
+    # mix(so_far, next, w_next/(sum_so_far + w_next)) — exactly weights/sum, with an
+    # epsilon so a zero-weight texel cannot divide by zero.
+    blended = grass
+    total = channels[mapping["grass"]]
+    for weight, colour in ((channels[mapping["dirt"]] if dirt is not None else None, dirt),
+                           (rock_weight, rock)):
+        if colour is None:
+            continue
+        total = math("ADD", total, weight)
+        blended = mix(blended, colour, math("DIVIDE", weight, math("ADD", total, 1e-4)))
+
+    if gain != 1.0:
+        gain_node = tree.nodes.new("ShaderNodeMixRGB")
+        gain_node.blend_type = "MULTIPLY"
+        gain_node.inputs["Fac"].default_value = 1.0
+        gain_node.inputs["Color2"].default_value = (gain, gain, gain, 1.0)
+        tree.links.new(blended, gain_node.inputs["Color1"])
+        blended = gain_node.outputs["Color"]
+
+    tree.links.new(blended, bsdf.inputs["Base Color"])
+    return material
 
 
 def _ground_material(name, texture_path, fallback_colour, gain=1.0):
@@ -1262,7 +1691,7 @@ def build_terrain(bundle_dir, collection, center, radius):
     the grid to the same window as everything else; without one, the grid is subsampled to at
     most ~1024 cells per axis so a full 4096² map stays viewable.
     """
-    heightmap_path, surface_path, cutout_path, water_path, surfaces_dir, rasters = _terrain_paths(bundle_dir)
+    heightmap_path, surface_path, cutout_path, water_path, surfaces_dir, splat_path, rasters = _terrain_paths(bundle_dir)
     if not os.path.isfile(heightmap_path):
         print(f"no terrain layer at {heightmap_path} — skipping terrain")
         return 0
@@ -1378,23 +1807,11 @@ def build_terrain(bundle_dir, collection, center, radius):
     mesh = bpy.data.meshes.new("bundle_terrain")
     mesh.from_pydata(verts, [], faces)
 
-    grass = _ground_material("terrain_natural", os.path.join(surfaces_dir, "grass.png"),
-                             (0.20, 0.30, 0.12, 1.0), gain=_GROUND_GAIN)
-    dirt = _ground_material("terrain_roadbed", os.path.join(surfaces_dir, "dirt.png"),
-                            (0.35, 0.28, 0.20, 1.0), gain=_GROUND_GAIN)
-    rock = _ground_material("terrain_rock", os.path.join(surfaces_dir, "rock.png"),
-                            (0.30, 0.28, 0.26, 1.0), gain=_GROUND_GAIN)
-    mesh.materials.append(grass)
-    mesh.materials.append(dirt)
-    mesh.materials.append(rock)
-
-    roadbed_faces = 0
-    rock_faces = 0
-    for face, (r, c) in zip(mesh.polygons, face_rc):
+    # -- ground classification per face, shared by both texturing paths -------------------
+    # 0 = flat natural (grass), 1 = roadbed (surface_index), 2 = steep natural (rock).
+    def face_slope_class(r, c):
         if surface_ids is not None and surface_ids[rows[r] * width + cols[c]] != 0:
-            face.material_index = 1
-            roadbed_faces += 1
-            continue
+            return 1
         # Steep natural ground reads as rock (_ROCK_SLOPE) — the gorge embankments. Sampled
         # heights, not the sunk vertices, so the roadbed drop cannot flip a boundary face.
         run_x = max((cols[c + 1] - cols[c]) * cell, 1e-6)
@@ -1405,9 +1822,101 @@ def build_terrain(bundle_dir, collection, center, radius):
         y11 = world_y(rows[r + 1], cols[c + 1])
         gx = max(abs(y01 - y00), abs(y11 - y10)) / run_x
         gz = max(abs(y10 - y00), abs(y11 - y01)) / run_z
-        if math.hypot(gx, gz) > _ROCK_SLOPE:
-            face.material_index = 2
-            rock_faces += 1
+        return 2 if math.hypot(gx, gz) > _ROCK_SLOPE else 0
+
+    face_class = [face_slope_class(r, c) for (r, c) in face_rc]
+    roadbed_faces = face_class.count(1)
+    rock_faces = face_class.count(2)
+
+    # -- the game's own ground blend, when the bundle carries it --------------------------
+    # terrain/splatmap.png is the 4096² weight map the terrain shader samples per pixel
+    # (rasters "splatmap" block). Which RGBA channel is which ground is not stated anywhere
+    # in managed game code, so it is CALIBRATED here against signals this importer already
+    # trusts: mean channel weight over flat natural faces names grass, over steep faces
+    # names rock. Dirt is OPTIONAL: measured on a full-city rip, the game's blend weights
+    # the grass channel as heavily under roadbeds (mean 251/255) as under lawns (243) —
+    # the dirt look beside roads comes from wear decals and surface areas, not this map —
+    # so a roadbed winner equal to grass means "no dirt channel", not a failed calibration.
+    # Only a grass channel that cannot be named at all falls back to per-face painting.
+    splat = None
+    splat_mapping = None
+    splat_block = rasters.get("splatmap") if isinstance(rasters, dict) else None
+    if splat_block and os.path.isfile(splat_path):
+        try:
+            splat = _Splat(splat_path, splat_block)
+        except Exception as error:  # noqa: BLE001 - any decode failure just means fallback
+            print(f"splatmap unreadable ({error}); falling back to per-face ground painting")
+            splat = None
+    if splat is not None:
+        sums = [[0.0] * 4 for _ in range(3)]
+        counts = [0, 0, 0]
+        stride_faces = max(1, len(face_rc) // 60000)
+        for index in range(0, len(face_rc), stride_faces):
+            r, c = face_rc[index]
+            cls = face_class[index]
+            world_x = origin_x + (cols[c] + cols[c + 1]) * 0.5 * cell
+            world_z = origin_z - (rows[r] + rows[r + 1]) * 0.5 * cell
+            texel = splat.sample(world_x, world_z)
+            for k in range(4):
+                sums[cls][k] += texel[k]
+            counts[cls] += 1
+
+        def winner(cls):
+            means = [sums[cls][k] / max(1, counts[cls]) for k in range(4)]
+            best = max(range(4), key=means.__getitem__)
+            return best, means
+
+        if counts[0] >= 200:
+            grass_channel, grass_means = winner(0)
+            dirt_channel = None
+            if counts[1] >= 200:
+                dirt_channel, dirt_means = winner(1)
+                if dirt_channel == grass_channel:
+                    dirt_channel = None  # the game's blend carries no roadbed response
+            # Rock is named by CONTRAST (steep mean − flat mean), not by the steep winner:
+            # on grassy mountainsides the grass channel can still dominate steep faces in
+            # absolute weight, but the rock channel is the one that GAINS on them (measured
+            # full-map: B +14 flat→steep while R drops 243). A winner-based pick fails
+            # region-locally and drops whole gorges to the square per-face override.
+            rock_channel = None
+            if counts[2] >= 200:
+                flat_means = [sums[0][k] / max(1, counts[0]) for k in range(4)]
+                steep_means = [sums[2][k] / max(1, counts[2]) for k in range(4)]
+                contrast = [steep_means[k] - flat_means[k] for k in range(4)]
+                best = max(range(4), key=contrast.__getitem__)
+                if contrast[best] >= 8.0 and best not in (grass_channel, dirt_channel):
+                    rock_channel = best
+            splat_mapping = {"grass": grass_channel, "dirt": dirt_channel, "rock": rock_channel}
+            names = "RGBA"
+            print(f"splatmap calibrated over {sum(counts)} samples: "
+                  f"grass={names[grass_channel]} (mean {grass_means[grass_channel]:.0f}), "
+                  f"dirt={'none (wear decals and areas carry the dirt look)' if dirt_channel is None else names[dirt_channel]}, "
+                  f"rock=unpainted residual"
+                  + (f" + painted variant {names[rock_channel]}" if rock_channel is not None else ""))
+        else:
+            print(f"splatmap calibration short of samples (flat {counts[0]}); "
+                  "falling back to per-face ground painting")
+
+    if splat_mapping is not None:
+        mesh.materials.append(_splat_ground_material(surfaces_dir, splat, splat_mapping, gain=_GROUND_GAIN))
+        # No face overrides on the blend. Roadbed stays grass, as in game: the measured
+        # splat paints it 251/255 on the grass channel, and the roadbed LOOK is carried by
+        # the ~13%-alpha wear decals and surface areas drawn on top (the sink still
+        # applies). Cliffs need no slope override either: unpainted texels ARE the rock
+        # weight (the residual in _splat_ground_material), which is what keeps gorge walls
+        # smooth instead of the per-face checkerboard.
+    else:
+        grass = _ground_material("terrain_natural", os.path.join(surfaces_dir, "grass.png"),
+                                 (0.20, 0.30, 0.12, 1.0), gain=_GROUND_GAIN)
+        dirt = _ground_material("terrain_roadbed", os.path.join(surfaces_dir, "dirt.png"),
+                                (0.35, 0.28, 0.20, 1.0), gain=_GROUND_GAIN)
+        rock = _ground_material("terrain_rock", os.path.join(surfaces_dir, "rock.png"),
+                                (0.30, 0.28, 0.26, 1.0), gain=_GROUND_GAIN)
+        mesh.materials.append(grass)
+        mesh.materials.append(dirt)
+        mesh.materials.append(rock)
+        for face, cls in zip(mesh.polygons, face_class):
+            face.material_index = (0, 1, 2)[cls]
 
     # World-anchored UVs so the ground textures tile at a plausible density without any
     # per-face unwrap. 8 m per repeat reads roughly like the game's near tiling.
@@ -1416,7 +1925,18 @@ def build_terrain(bundle_dir, collection, center, radius):
         x, y, _ = mesh.vertices[loop.vertex_index].co
         uv_layer.data[loop.index].uv = (x / 8.0, y / 8.0)
 
+    # The splat blend samples in its own geo-referenced UV space.
+    if splat_mapping is not None:
+        splat_uv = mesh.uv_layers.new(name="SplatUV")
+        for loop in mesh.loops:
+            x, y, _ = mesh.vertices[loop.vertex_index].co
+            splat_uv.data[loop.index].uv = splat.uv(x, y)
+
     mesh.validate()
+    # Smooth-shade the grid: the game's terrain is a continuous heightfield, and a
+    # flat-shaded quad is uniformly lit — at the full-city stride (17.5 m faces) that reads
+    # as a brightness checkerboard over every slope, squares no texture blend can hide.
+    mesh.polygons.foreach_set("use_smooth", [True] * len(mesh.polygons))
     terrain_object = bpy.data.objects.new("bundle_terrain", mesh)
     collection.objects.link(terrain_object)
     placed = 1
@@ -2065,6 +2585,7 @@ def main():
             print(f"  … {placed} placed, {len(prefabs)} prefabs loaded")
 
     networks = 0
+    network_collection = None
     if do_networks:
         network_collection = bpy.data.collections.new("bundle_networks")
         bpy.context.scene.collection.children.link(network_collection)
@@ -2083,10 +2604,11 @@ def main():
             bpy.context.scene.collection.children.link(lane_collection)
             print()
             print("lane geometry (lanemeshes.jsonl):")
+            road_surface = _RoadSurface(network_collection) if networks else None
             with parked_out_of_view_layer(lane_collection):
                 lanes = build_lanes(lanes_path, lane_prefabs_path, lane_mesh_dir,
                                     lane_collection, center=center, radius=radius,
-                                    limit=net_limit)
+                                    limit=net_limit, road_surface=road_surface)
         else:
             print(f"no lanemeshes.jsonl at {lanes_path} — skipping lane geometry")
 

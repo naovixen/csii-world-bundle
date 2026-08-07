@@ -514,7 +514,7 @@ matrix selection, baked into vertex colour), `Game.Rendering.BatchInstanceSystem
 | # | Game rule | Producer | Verdict |
 |---|---|---|---|
 | 1 | Edge: matrices 0–3 = start/end Segment boundary curves; halves along the length; across = lerp left→right | Same curves, same halves, geometric bend | **match** |
-| 2 | Node: matrices 0/2 and 1/3 = the two across-width halves; sync remap `m_CompositionSync0..3` | Same, incl. piecewise-linear sync | **match** |
+| 2 | Node: matrices 0/2 and 1/3 = the two across-width halves; sync remap `m_CompositionSync0..3` | Same, incl. piecewise-linear sync | **match** *(§21 row 12 later falsified the remap's coordinate handling — right-half knots were flipped and end regions translated instead of scaling; fixed there)* |
 | 3 | Median piece at a node: centre column (`\|x−offset.x\|<0.01`, **`dx` computed before the zero-width pin**) rides `m_Middle`×0.99; other vertices proportional in their half's frame; `size.x==0` pins only the lerp coordinate, so a zero-width `* Intersection Piece 0` becomes a three-rail surface paving the centre wedge (§18) | Same mapping since f7cba22. The earlier port — and an earlier revision of this very row — read the pin as "all vertices are centre column" and collapsed the piece to a zero-area ribbon, opening a three-cusped hole at every junction of every road class; the "stretch fallback" it also claimed never survived into the GameMesh port | **match** (was the §18 divergence; this row itself was the misreading that cost the round-6 hunt) |
 | 4 | Winding reverses on `Invert` XOR `FlipMesh`; `Invert` mirrors x, `FlipMesh` mirrors z | Same | **match** |
 | 5 | Node one-off pieces draw only triangles whose vertices all sit at authored `z ≥ −0.01` | `GetFrontHalf`, same rule | **match** |
@@ -537,6 +537,14 @@ pieces, halved `SkipBottomHalf` pieces, roundabout parts and rotated node parts,
 how often each rule fired. Rotated *node* parts remain counted-only: the game routes them through
 the edge parameters, which cannot be meant literally for a flare, and no measured city has
 produced one yet.
+
+> **§21 annotation (2026-08-07):** the "Producer" column above describes the pre-rewrite
+> assembly; the network layer has since been replaced by the wholesale port of the game's
+> generator (`NetworkRipSystem.GameMesh.cs`), re-audited line-by-line in §21. Every *game rule*
+> row above re-verified against the port; rows 5/7's producer descriptions are superseded by the
+> port's exact mapping. The "rotated node parts" counter is gone: `NetCompositionMeshRefSystem.
+> TryFindComposition` only attempts the mirrored mesh match when the Node general flag is absent,
+> so a rotated node composition is impossible by construction, not merely unobserved.
 
 **Tooling**: this validation is what retired the mdump IL walker — hand-reading the IL of
 `CalculateNodeParameters` produced two wrong readings that decompiled source settled in minutes.
@@ -924,3 +932,305 @@ unbounded top. One deliberate divergence: the game's band starts 0.3 m below the
 clips the roadbed itself (its road meshes hide the hole); the bundle keeps ground at or below
 the lane, so ordinary surface roads mark nothing. Schema note and amendment: bundle-schema §8,
 §12.1.
+
+## 21. The GameMesh port versus the generator, line by line (2026-08-07)
+
+The delta audit's re-verification of the ported network pipeline
+(`NetworkRipSystem.GameMesh.cs`, landed 661a441–f7cba22) against
+`Game.Rendering.BatchDataHelpers` (curve matrices), `BatchMeshHelpers+GenerateBatchMeshJob.
+GenerateCompositionMesh` (the vertex path), `BatchInstanceSystem.UpdateNetInstances` (draw
+gates and layer replacement) and `Game.Prefabs.NetCompositionMeshRefSystem` (mesh dedup and
+`m_Rotate`). Every §8 game-rule row re-verified against the port; the table below records only
+what the line-by-line pass added or changed.
+
+| # | Game rule (decompiled source) | Port behaviour | Verdict |
+|---|---|---|---|
+| 1 | **V density is measured over surviving triangles only** — the `\|ΔV\|/\|Δz\|` accumulation and the untiled rebase ceiling sit inside the `math.all(int7 >= 0)` block, after the front/back cut | Was measured over *all* triangles including the cut-away half; a front-cut piece with non-uniform authored V would tile at the wrong density | **divergence — fixed** (remap built first, density accumulated only over triangles whose three corners survive) |
+| 2 | Roundabout median **centre column has no z rebase** — its branch has no `vertex.z -=` line, unlike both side-column branches; the final `saturate` pins the front half at the middle curve's end (`m_Middle` splits 0.99/0.01, so matrix 5 spans the last 1 %) | Subtracted 1 for the front half, spreading those vertices across matrix 5's ~1 % span (sub-centimetre difference on a real ring) | **divergence — fixed** (subtraction removed; saturate now pins exactly as the game does) |
+| 3 | `UpdateNetInstances` **replaces the Default layer with `NetCompositionMeshData.m_DefaultLayers`** when non-zero (and the entity is not already Marker) — and then still draws the mesh on those layers. `CommonUtils.GetBoundsMask` names the world-view set (`NormalLayers = Default\|Moving\|Tunnel\|Marker`); only Pipeline/SubPipeline/Waterway select the utility-cutaway/overlay cameras. A composition whose layers hold **no world bit** never draws in the world; a **Tunnel** composition (union of pieces flagged `UndergroundMesh.m_IsTunnel`, `MeshSystem`) is the tunnel walls and deck, drawn on the Tunnel layer | First fix skipped every Default-less composition — which silenced **all tunnel compositions**: every underground road/track lost its walls, deck and textures (regression caught same day) | **divergence — fixed, then re-fixed** (`BuildGameComposition` skips only compositions with no `NormalLayers` bit, counted in the report; Tunnel compositions build as world geometry) |
+| 4 | `TryFindComposition` attempts the rotated (mirrored) mesh match **only when `CompositionFlags.General.Node` is absent** — node compositions are never rotate-shared | Carried a "rotated node part" counter and a NOT-REPRODUCED report line for a case the game cannot produce | **hack removed** (dead counter deleted; §8's "no measured city has produced one" is now "impossible by construction") |
+| 5 | `LowerBottomToTerrain` / `RaiseTopToTerrain` mark vertices for shader-side terrain conforming (`int8.z` = 1/2 against the piece's height-bounds table) | Deliberate deviation (consumer rule against `terrain/heightmap.png`) — but previously uncounted, against the method rule | **deviation now counted** (report states how many pieces carried each flag) |
+| 6 | Generator reads `NetCompositionMeshData` (mesh entity: `m_Width`, `m_MiddleOffset`, `m_Flags`) — for a rotate-shared mesh these are the *creator twin's* values | Port reads `NetCompositionData` from the composition entity. Only edges rotate-share; edge vertex paths consume `m_Width` alone, and twins agree on width; `Node\|Roundabout` flags are hash-preserved across shares | **benign** (equal wherever reachable) |
+| 7 | Orphan matrix 5 = `float4x4.identity` (an unused slot; only Roundabout branches route to it) | Port fills slot 5 with the degenerate centre curve instead | **benign** (unreachable for orphans; the port's value is the saner one if ever hit) |
+| 8 | Non-roundabout median centre column writes `int8.x = 4` and leaves `int8.y = 0` — pair (4, 0) at lerp weight 0 | Pair (4, 4) at weight 0 | **benign** (identical result at x = 0) |
+| 9 | Untiled density `trueValue = ΔV/Δz` divides unguarded (0/0 → NaN stored in the half4) | Guarded to 0 when no triangle qualifies | **benign** (protective; the game tolerates the NaN because such vertices take the rebase path) |
+| 10 | Triangle indices assumed in-range for their material's vertex window | Port bounds-checks and drops out-of-window triangles silently | **benign** (protective; never observed firing — left unchanged) |
+| 11 | Sync knots: right-half offsets are the left's mirrored `1 − wzyx` (`GeometrySystem` line 2603 builds them exactly so) | `VertexSync.Apply` flipped the right half through `1 − s` before the knot remap | ~~match~~ → **divergence — fixed** (see row 12; the first draft of this row accepted the flip on §8's authority, and an in-game curb report falsified it the same day) |
+| 12 | **Vertex sync coordinates and anchors** — `CalculateVertexSyncTarget`'s right branch anchors on `1 − a.w` (the outer-right margin) and returns targets ascending in the right half's own xParam coordinate (0 = middle, 1 = outer edge); both branches *physically move* the flare boundary curves (`m_Left/m_Right.c/d` mutation), so the shader's knot map must pin 0 → 0 and 1 → 1, scaling the end regions | The port flipped right-half knots through `1 − s` (mirroring every right-side curb knot at active-sync flares) and translated the end regions by `t.x − o.x` (shearing the outer curb strip off the boundary curve the game keeps it on). Symptom in the shipped bundle: **kerbs jutting into the roadway and not lining up at junction flares** — reported from a drive-through, confirmed against source | **divergence — fixed** (right half applies directly in its own coordinate; end regions scale with pinned endpoints; needs a re-rip to land) |
+
+Draw gates (edge > 0.1 m, flare halves > 0.05 m, orphan gating incl. the outside-connection
+exclusion), the marker skip, winding reversal under `Invert XOR FlipMesh`, both cut planes at
+±0.01, `HalfLength` doubling, `PreserveShape` rails, and the zero-width three-rail wedge (§18)
+all re-verified as exact matches in the new code path. Normals remain the §8 row-14 deliberate
+deviation, **re-affirmed with the machinery now assessed**: object meshes transport authored
+normals (`GeometryAssetReader`), and the port *could* do the same — rotate each authored normal
+by the local frame the shader builds (the Bernstein-blended curve tangents, evaluable on CPU as
+derivatives of the same cubics). Declined: it roughly doubles the per-vertex curve math on the
+main-thread rip for a shading-only refinement, and the rebuilt normals are visually validated.
+Revisit only if a consumer demonstrates a crease/kerb artefact the rebuild causes. (The in-game
+"curbs jutting into the road" report that arrived during this pass was NOT a normals artefact —
+normals cannot move geometry; it was the row-12 sync divergence, and re-deriving the sync from
+`GeometrySystem` rather than accepting §8's verdict is what found it.)
+
+## 22. TerrainRipSystem versus the terrain jobs, rule by rule (2026-08-07)
+
+The delta audit of the Phase 6 system (never independently audited; §17/§20 were written beside
+its code) against `Game.Simulation.TerrainSystem.CullRoadsJob` (`GetFlags`/`AddEdge`/`AddNode`/
+`AddOrphans`/`AddSegment`), `GenerateClipDataJob`, `CullAreasJob`, `TerrainUtils` and
+`WaterUtils`.
+
+| # | Game rule (decompiled source) | Producer | Verdict |
+|---|---|---|---|
+| 1 | **Water depth decodes through `WaterUtils.ToWorldSpace(float)`**: metres = `raw / scale.y − offset.y`; every game sampler (`SampleDepth`) converts before use | `BuildWaterLevel` read `m_Depth` raw as metres and tested wetness on the raw value | **divergence — fixed** (decode applied; wet = decoded > 0. Correct water levels on any map where `scale.y ≠ 1` or `offset.y ≠ 0`) |
+| 2 | `AddNode`'s roundabout branch evaluates its second strip pair (`node.m_Right` against the middle end point) with **`isStart: false`** — the end-half edge heights feed that band | All node strips used the start-half band | **divergence — fixed** (`StampNode` takes an end-band context; the roundabout right pair rides it; all other strips are `isStart: true` in the game too) |
+| 3 | `AddNode` sheds elevated/tunnel + transition state (and `MoveTowards`-trims the ring ends by the sync offsets) before building the roundabout right pair's sections | Raw composition flags used; ring trims omitted (§17.3's documented simplification) | **approximated — now counted** (can only widen the cut band or over-stamp the ring start, never narrow/under; report states how often it fired) |
+| 4 | `GetFlags`: `ClipTerrain`/`FlattenTerrain` are prefab `NetGeometryData.m_Flags`, evaluated once per net | Same gate per prefab | **match** |
+| 5 | Draw gates: edge `any(start+end length > 0.1)`, node `any(half length > 0.05)`, orphans via the `Orphan` component with outside connections excluded | Same gates, same query shape | **match** |
+| 6 | `AddSegment` width trim: `m_WidthOffset` lerps each boundary toward the other per control point (`Bezier4x1` over inverse widths), suppressed on `MiddleLeft`/`MiddleRight` sides | `StampSegment`'s trim flags reproduce every call site's Middle flags (edge: both trims; junction/straight/roundabout/orphan strips: exactly the game's assignments) | **match** |
+| 7 | Junction vs straight-through: `lengthsq(m_Left.m_Right.d − m_Right.m_Left.d) > 0.0001` | Same test | **match** |
+| 8 | Orphan caps: κ = 0.2761424 quarter-circle béziers, world-axis aligned, `MiddleRight`/`MiddleLeft` per quarter | Same construction, same trim sides | **match** |
+| 9 | Clip band: base = start/end edge-height extremes + `m_ClipHeightOffset`; raised to `ElevationLimit·3` for Tunnel-with-transition and Lowered-not-elevated-not-tunnel; `GenerateClipDataJob` expands ±0.3 m | Same, with the documented deliberate divergence: band floor = lane + 0.5 m instead of the game's lane − 0.3 m (the game clips the roadbed its road meshes hide; the bundle keeps the drivable bed) | **match** (floor deviation documented, §20) |
+| 10 | Deep tube sections keep the small band (their cover sits far above it — never cut from above); elevated compositions never raise the band | Same | **match** |
+| 11 | `ClipArea` areas stamp through the same stencil (`areaClipMesh`) | Triangles stamped with an unbounded top | **match** (top bound: the game's area clip mesh is authored geometry with its own extent; unbounded top can only over-cut terrain *above* an authored clip surface, which is the intent) |
+| 12 | Terrain sampling: `ToHeightmapSpace` = `(world + offset) × scale`; bilinear at integer grid coords; metres = `raw / scale.y − offset.y` | `ToCell`/`SampleTerrainHeight` identical | **match** |
+| 13 | Water grid mapping: `ToSurfaceSpace`/`ToWorldSpace` mirror the terrain forms | Same in both directions | **match** |
+| 14 | The game resamples nothing — depth lives on the sim grid; the renderer works there | Producer builds *level* (ground-at-sim-cell + depth), dilates one sim cell, resamples bilinearly with weight-dropped no-data corners | **deliberate deviation** (documented in the system header: coarse depth on fine ground floods gorges; level is the smooth physical quantity) |
+| 15 | `TerrainSystem` flattens building lots and lane/area height adjustments into the cascade before readback (§17.1) | Ships in the heightmap verbatim via `GetHeightData(waitForPending: true)` | **match** |
+| 16 | The elevated/tunnel-without-transition ground shift (away from the road) marks no roadbed | `TryGetGroundComposition` skips those compositions for the roadbed stamp, keeps transitions (portals are ground) | **match** (§17.3) |
+| 17 | The transition-side 3 m `ClampLengthInverse` cut section (`float4` second `LaneSection`) narrows where a portal's ground is pulled to lane height | Whole transition composition stamped as roadbed | **approximated** (documented via §17.3's apron/portal wording; over-stamps the transition run's bed — the in-game rip + Blender pass judges whether it matters) |
+
+Also re-verified: the surface-area layer reads the same `Game.Areas.Node`/`Triangle` buffers
+`CullAreasJob` consumes, and the clip-area query keys on `Game.Areas.Clip` exactly as the
+job's chunk filter does (it *skips* Clip chunks for terrain-area draws — clip areas are
+stencil-only, which is what `terrain/cutout.png` encodes).
+
+### §22a addendum (2026-08-07, late): the splatmap was readable all along
+
+A user report — square splotches of ground texture where the game blends smoothly — exposed a
+**completeness gap this pass had missed**: `TerrainMaterialSystem` exposes the splat weight
+map itself (`public Texture splatmap`, the 4096² RGBA8 render target bound as
+`colossal_Splatmap`), spanning exactly the playable area (`world.xz = playableOffset + uv ×
+playableArea`, its own `UpdateSplatmap` viewport math). §17.2's "there is nothing to read
+back" was true of the *roadbed mask* but was silently over-generalised into the layer design:
+the ground *blend* — the thing that makes in-game terrain smooth — has a first-class readable
+artifact, and the bundle shipped a per-cell index instead.
+
+**Why the audit missed it:** the delta pass validated the *fidelity of code that exists*
+against the rules it claims to implement, deferred to §17's settled conclusions per the
+don't-re-litigate rule, and never re-ran the original audit's "reachable and unread" sweep
+(§5) for the terrain domain — a scope hole, now closed in the command's method (an unread-data
+sweep and an appearance comparison are part of every domain's checklist).
+
+**Fix (landed):** `TerrainRipSystem.CaptureSplatmap` reads the target back through the
+standard blit path (linear — the RT is `R8G8B8A8_UNorm`; rows come back top-first = north-first,
+already the rasters convention) and ships `terrain/splatmap.png` + a `rasters.splatmap`
+geo-block with `SplatMultiplier`/`SplatPower`. The channel-to-ground assignment lives only in
+shaders, so the producer declares rather than guesses; the Blender harness calibrates it
+against slope, the roadbed mask and flat ground, prints the result, and blends grass/dirt/rock
+per-pixel in the shader — falling back to the per-face painting when calibration is ambiguous.
+Contract §8 documents the layer (additive, optional). Awaiting the same re-rip as everything
+else in this pass.
+
+**§22a.1 correction (2026-08-07, post-rip): the roadbed class carries no signal.** The first
+full rip with the layer landed and the harness *still* painted per-face squares, because its
+calibration demanded a distinct dirt channel and treated "roadbed winner == grass winner" as
+ambiguity. Measured on that rip, that equality is the real answer: the splat weights the grass
+channel 251/255 under roadbed vs 243 on lawns (grass channel R; rock separates on steep ground,
+B at 23 vs R at 10; corr(R, slope) = −0.87). The game's blend simply has no roadbed response —
+the dirt look beside roads is the §5B wear decals and §8b areas. And rock is mostly NOT a
+channel either: on very steep ground *all four* channels read ≈0 while the game renders rock —
+the channels are painted-ground weights and the base (rock) is the unpainted residual
+`max(0, 1 − ΣRGBA)`; a painted rock-variant channel exists but is minor (+14/255 flat→steep
+where present) and unstable to name region-locally. Harness now calibrates grass (flat), dirt
+optional, and always blends rock as the residual (no per-face slope override on the splat
+path — that override was itself a source of squares); terrain faces are also smooth-shaded
+(flat-shaded 17.5 m cells at full-city stride read as a lighting checkerboard no texture can
+hide). Contract §8 warns consumers off both assumptions.
+
+**§22a.2 (same rip): why the ripped markings stayed invisible in Blender — two harness bugs,
+no producer fault.** The §19 marking data was verified correct on disk (opaque bands inside
+each part's UV rect). (1) A fixed `_DECAL_LIFT` over the *lane path* cannot clear the
+carriageway: the rendered road top near centre lines measures a median 7 mm above the lane
+curve and beats path + 15 mm on 42% of samples — the game projects decals, it never coplanes
+them. The harness now drapes decal-part vertices (subdivided ~3 m) onto the §5 network meshes
+by ray-cast. (2) The lane-part loader's Blender→bundle map `(-x, z, -y)` is det −1 and its
+mirror was never winding-compensated (only the second mirror, P, was) — every lane part
+rendered with normals down; invisible for double-sided fences, black-lit for the markings the
+drape had just surfaced. Both fixes are consumer-side: existing bundles render correctly with
+a re-import, no re-rip needed.
+
+## 23. GeometryAssetReader and the mesh delta versus the game (2026-08-07)
+
+The delta audit of `IO/GeometryAssetReader.cs` (new) and `MeshRipSystem`'s changed paths
+against `RenderPrefab.ObtainMesh`, the `Game.Prefabs.Mesh*` unpack helpers,
+`ManagedBatchSystem.CreateBatch` and `AssetImportPipeline.SetupDecalComponent`.
+
+| # | Game rule (decompiled source) | Producer | Verdict |
+|---|---|---|---|
+| 1 | `RenderPrefab.ObtainMesh(materialIndex)` walks the asset's meshes in order, subtracting each `subMeshCount` — surface *i* binds the *i*-th flat (mesh, sub-mesh) pair | `ReadAll`/`ReadUnityMeshes` assign exactly that ordinal (rebased per mesh, carried through `Merge`) | **match** |
+| 2 | Vertex attribute decode: `MeshVertex/MeshNormal/MeshUV0/MeshTangent/MeshIndex.Unpack(src, dst, count, format, dimension)` handle float32/float16/normalised formats | The reader calls the game's own `Unpack` overloads — no reimplementation to diverge | **match by construction** |
+| 3 | Sub-mesh `baseVertex` handling: the game unpacks with a vertex offset per sub-mesh | Reader folds `SubMeshDescriptor.baseVertex` into the descriptor's index range after a whole-buffer unpack — same absolute indices | **match** (equivalent form; glTF needs absolute indices anyway) |
+| 4 | `ObtainMeshes` loads CPU data only when `m_Instances == null`; `keepReadable` is dead in this build; live-instance prefabs must be read via the Unity meshes (§17.4) | `TryReadGeometryAsset` gates the native path on `asset.data.IsValid`, falls back to `ReadUnityMeshes`, always releases | **match** (as §17.4 recorded; confirmed as landed) |
+| 5 | `SetupDecalComponent` derives `m_TextureArea` from vertices with `SqrMagnitude > 0.01` **and `Angle(up, n) < 0.01°`** — exactly-up, not merely upward | `TryFlattenDecal` used `n.y ≥ 0.9` for both the corner pairing and the authored-rect derivation, so the §19 rescale was only *approximately* an identity for DefaultDecal objects | **divergence — fixed** (three-pass selection: the pipeline's exact-up test first, the validated ≥ 0.9 tolerance second, all vertices last; the rescale is now an identity by construction where the game derived the area from the same UVs) |
+| 6 | `CreateBatch` binds `_TextureArea` from two sources: `DecalProperties` and `OverlayProperties` (`component6`) | Only `DecalProperties` is flattened; `OverlayProperties` are tool overlays, not built environment | **benign** (out of bundle scope) |
+| 7 | The asset file header's `meshCount` is what `CreateMeshes` iterates; the prefab's serialized count is a duplicate | Header preferred once resident, prefab count as fallback | **match** |
+| 8 | No game counterpart merges an asset's meshes into one buffer (the game keeps them as separate draws) | `Merge` drops an attribute unless every part carries it, rather than fabricating values | **benign** (producer form; primitives keep per-part surface ordinals) |
+
+## 24. MaterialRipSystem delta versus the VT decoder and template semantics (2026-08-07)
+
+The delta audit of the crash fence, the two-channel normal rebuild, and the template fallback
+chain, against `Colossal.IO.AssetDatabase.VTSurfaceAsset`/`VTSurfaceDataHandler`/`SurfaceAsset`
+(decompiled from the Colossal assembly — first time this pass reached outside Game.dll).
+
+| # | Game fact (decompiled source) | Producer | Verdict |
+|---|---|---|---|
+| 1 | `VTSurfaceAsset.Load()` is **fully synchronous**: `ReadHeader` → template `new Material(template)` → `FillDebugMaterial` all inside the call | The in-flight marker brackets exactly `Load()` — the whole decode happens inside the fence window | **match** (the fence cannot miss the crash, and nothing else runs in the window to be mis-convicted) |
+| 2 | `FillDebugMaterial` slices with header-derived sizes into fixed `NativeArray`s — e.g. `NativeArray<byte>.Copy(src, 0, dst, dst.Length − src.Length, …)`, negative offset on a header/stream mismatch, **no bounds checks in release** → native crash | The fence's premise, confirmed line-by-line; every native-risk operation of the decode (copies, decompression) is inside `Load()` | **match** (the fenced call is genuinely the decode's whole native-crash surface; other readback routes are managed-guarded Unity API) |
+| 3 | Marker protocol: written before `Load()`, deleted in `finally` — reached on success and managed failure alike | Only a native crash leaves the marker; conviction appends to `vt_crash_guard.txt`, skips are counted and declared in warnings | **match** (sound; a wrong conviction would need an unrelated crash inside a milliseconds window, and is recoverable by deleting the guard file) |
+| 4 | Unity DXT5nm/BC3n packing: X in **alpha**, Y in green, red pinned 1, blue mirrors green; the shader reconstructs Z from `wy·2−1` | `ReconstructTwoChannelNormal` rebuilds `(x, y, z, 1)` exactly so, gated on the normal-map *slot* with the packing signature as confirmation (≥ 90 % red ≥ 250, alpha non-constant — thresholds measured on a full city: 784 packed normals caught, 5 metallic mask maps correctly left alone) | **match** (the detection is a producer heuristic — the game knows from the texture format — but slot-gated and measured; a false positive requires a normal-slot texture that is not a normal map) |
+| 5 | `SurfaceAsset.SyncToUnityMaterial` walks `m_Textures` directly (line 603) — a non-VT surface binds whatever its texture dictionary holds | The texture census now includes `surface.textures` keys alongside the VT stack names | **match** (closes the §4.2 failure shape for non-VT maps) |
+| 6 | The runtime material is `new Material(template)` with surface properties overlaid (seen verbatim in `VTSurfaceAsset.Load`); HDRP re-derives keywords from serialized floats on validate | `AlphaMode`'s chain — surface keywords → surface floats (`_SurfaceType`/`_AlphaCutoffEnable`, overriding in both directions) → template keywords/floats — and the `_AlphaCutoff`/`_DoubleSidedEnable` template fallbacks mirror that construction | **match** |
+
+## 25. Instance exclusions versus the game's archetypes (2026-08-07)
+
+The delta audit of the utility-marker and vehicle-cargo exclusions
+(`MeshRipSystem.IsUtilityMarkerSubObject`/`IsUndergroundOnlyPrefab`/`IsVehicleCargoSubObject`,
+applied identically by both rip queries) against the prefab archetype sources.
+
+| # | Game fact (decompiled source) | Producer | Verdict |
+|---|---|---|---|
+| 1 | `Game.Net.Marker` on net entities comes **only** from `MarkerNet.GetArchetypeComponents` (node and edge archetypes alike; `MarkerObjectPrefab` adds the distinct `Game.Objects` marker) | Marker-owner test with no extra prefab-class narrowing | **match** (the §17.5 removal of the `PipelineData`/`PowerLineData` condition re-verified) |
+| 2 | `TaxiwayData`'s only source is `TaxiwayPrefab.GetPrefabComponents` | The taxiway exception keys on `TaxiwayData` directly | **match** |
+| 3 | `VehiclePrefab.GetArchetypeComponents` adds `Game.Vehicles.Vehicle` unconditionally; `CarTrailerPrefab : CarBasePrefab : VehiclePrefab` | `IsVehicleCargoSubObject` tests `Vehicle` on the owner (`CarTrailer` redundantly, for readability) | **match** — the exclusion itself is the documented deliberate deviation (cargo riding an agent is agent, not built environment; the bundle already excludes vehicles) |
+| 4 | `UpdateObjectInstances` replaces a sub-mesh's batch layer with `MeshData.m_DefaultLayers` **per part** — a Pipeline-only part inside an otherwise visible prefab never draws in the world view | `SelectSubMeshes` filtered by state flags only; a mixed prefab would have shipped its underground hookup furniture inside its `.glb` | **divergence — fixed** (per-part skip with the conservative Pipeline/SubPipeline-only test, counted in the report; the whole-instance §17.5 rule unchanged) |
+| 5 | `OutlineOnly` parts keep only the Outline layer (`layers &= ~Outline; if (OutlineOnly) layers &= Outline`) | Skipped in selection and in the no-unconditional-parts fallback | **match** (re-verified in the new code path) |
+
+## 26. The lane geometry layer versus `UpdateLaneInstances` (2026-08-07)
+
+The delta audit of the `lanemeshes/` parameter records (`RipLaneGeometry`,
+`Domain/LaneGeometryRecord`, `IO/NetworkWriter`) and the lane census against
+`BatchInstanceSystem.UpdateLaneInstances`/`IsNetOwnerTunnel` and
+`BatchDataHelpers.BuildCurveScale`.
+
+| # | Game rule (decompiled source) | Producer | Verdict |
+|---|---|---|---|
+| 1 | Draw gate `curve.m_Length > 0.1f` | Same | **match** |
+| 2 | Sub-mesh exclusion mask: `RequireEditor` (markers hidden), the off-hand traffic bit, `RequireSafe` on Unsafe pedestrian/car lanes, `RequireLevelCrossing` when not crossing, `RequireTrack` vs `RequireClear` on Switch/DiamondCrossing — a set bit *excludes* (§12's inverted semantics) | Identical mask construction, re-verified line-by-line | **match** |
+| 3 | **`IsNetOwnerTunnel` walks two links**: the owner's own `Elevation`, and — for node owners, which carry no elevation — every `ConnectedEdge` of the node (any edge with `cmin(elevation) < 0` makes the node's lanes Tunnel-layer). The game *relayers* these lanes (Default → Tunnel) and still draws them | Only tested the owner's own `Elevation`; node-owned lane furniture at tunnel junctions was mis-classified as surface. The result now **tags** the lane record (`tunnel: true`, contract §5B) rather than skipping it — tunnels ship fully rendered, mirroring the game's relayer-not-hide behaviour | **divergence — fixed** (full two-branch port, used for tagging) |
+| 4 | Each uncut `CutRange` span is **re-gated on the 0.1 m threshold** (`curve3.m_Length > 0.1f` on the span's arc); a fully-cut lane draws nothing | Spans were recorded regardless of length, and a lane whose every span failed would have shipped with empty `spans` — which the contract reads as "whole curve" | **divergence — fixed** (per-span gate; all-spans-failed lanes skipped and counted with the degenerate gate) |
+| 5 | `BuildCurveScale(NodeLane, NetLaneData)`: width scale = `1 + m_WidthOffset / m_Width`, identity when width is 0 | Same, start/end pair | **match** |
+| 6 | Hanging: `HangingLane.m_Distances` end drops + prefab `UtilityLaneData.m_Hanging`; the cubic lift documented in contract §5B v2 | Per-lane distances in the record, factor in the catalogue | **match** (§12's verdict re-verified; formula unchanged) |
+| 7 | Per-part layer replacement: `GetLayers` returns `m_DefaultLayers` **verbatim** except the exact `Pipeline\|SubPipeline` pair (owner-resolved) — a Tunnel-defaulting part draws on the Tunnel layer, a Waterway part only in the overlay view | First reading excluded every part with `m_DefaultLayers != 0` and no Default bit, which also dropped Tunnel-layer parts — world geometry inside tunnels. Catalogue now excludes only parts with no `NormalLayers` bit (Pipeline/SubPipeline/Waterway) | ~~match~~ → **divergence — fixed** (the first draft's verdict was wrong for Tunnel parts) |
+| 8 | No game counterpart for the lane census (`LaneRipSystem` delta) — it is a producer cross-check that drawn-lane counts track the baked layer plus counted skips | Diagnostic only, no bundle output changed | **benign** |
+
+## 27. BaseSkirtBuilder versus `GenerateObjectMesh`'s base path (2026-08-07)
+
+`IO/BaseSkirtBuilder.cs` claims to be a faithful port of the game's foundation-skirt generator
+(`BatchMeshHelpers.GenerateObjectMesh` → `AddBaseLines`/`AddBaseVertices`); this section is the
+line-by-line comparison against the decompiled generator read in §21's pass.
+
+| # | Game rule | Producer | Verdict |
+|---|---|---|---|
+| 1 | Gate: `MeshFlags.Base`; base level = `select(0, bounds.min.y, MinBounds)` | Same gate and offset at the call site | **match** |
+| 2 | Exclusion pass: edges whose third vertex is *not above* the ±0.01 band (`(y < band.y) & inBand.yzx & inBand.zxy`) mark interior seams | Identical predicate, identical edge keys (both orders checked) | **match** |
+| 3 | Keep pass: edges whose third vertex is at/above the band top; per-case point pairs (b,c)/(c,a)/(a,b) with the vertex normals' xz as direction | Identical, incl. the direction-mismatch point split and the `-1 − index` arrived-marker encoding | **match** |
+| 4 | Distance resolution: backward `m_PrevPos` walk per line, arbitrary seam on closed loops, end split when the arriving distance disagrees | Forward chains-from-heads + loop cut + seam split — different traversal, same outcome; both choose the loop seam arbitrarily (iteration-order-dependent in the game too), so the only possible difference is the u-origin phase along a closed loop | **match** (outcome-equivalent; phase is arbitrary in the game as well) |
+| 5 | Band: top ring at base (v=1), bottom ring 1 m below (v=0), u = perimeter metres, quad strip winding `(s, s+1, e)(e, s+1, e+1)`, normals horizontal from the silhouette direction | Verbatim, `BandDepth = 1`, normals normalised (the game feeds raw xz into the octahedral encode — normalising is the safer equivalent) | **match** |
+| 6 | The v=0 ring is dropped to the terrain by the vertex shader at draw time | Shipped at −1 m with the drop as a consumer rule against `terrain/heightmap.png` (contract §5.x documents it) | **deliberate deviation** (documented; the terrain layer the drop needs now exists in the bundle) |
+| 7 | The game rebuilds this batch per LOD/batch rebuild via a BVH walk | Linear scan once per prefab on the writer task, off the main thread | **benign** (perf rule satisfied; no main-thread cost) |
+
+## 28. The writer deltas versus their specs, and the delta pass close-out (2026-08-07)
+
+**`IO/Png.cs`** (`EncodeGray8`/`EncodeGray16`/`Assemble`): IHDR colour type 0 is valid at bit
+depths 8 and 16; 16-bit samples are written big-endian as the spec requires; every scanline
+carries its filter byte (type 0/None); the deflate path is the §14-validated one, shared.
+Verdict: **match (spec)**. Perf note: filter None compresses heightmaps worse than Sub/Up
+would, but encoding runs on the writer task off the main thread and the files land once per
+rip — not worth complexity until a measured need (prefer-simple rule).
+
+**`IO/GltfWriter.cs`**: material pooling by id per file (several parts sharing a surface now
+share one glTF material entry — the §6 name join unchanged, files honest about material
+count); node `scale` emitted as per-axis positive magnitudes (mirroring stays in
+position/rotation/winding, so no negative-determinant nodes — glTF-valid); the
+single-part-at-root collapse now correctly refuses when a scale is present. Verdict:
+**match (spec)**.
+
+**Close-out.** The hack hunt over the delta files finds only counted, documented
+approximations (roundabout blend weights §8/§21, roundabout cut bands §22, terrain-conform
+flags §21, orphan ring trims §17.3) — no uncounted guesses. One stale doc comment describing
+the removed rotated-node approximation was deleted. The shipped bundle's `warnings.jsonl`
+categories (88 unresolved managed prefabs = the known unowned asset packs; 118 mesh-gap
+warnings) all predate the geometry-asset `ReadAll`/`IsValid` fixes this pass verified — the
+next full rip re-measures them. Perf: no new main-thread cost was added anywhere in this pass
+(the sub-mesh layer test and tunnel edge-walk are per-prefab/per-lane component reads of the
+kind the game itself performs per instance per frame); the V-density restructure moved work,
+it did not add any.
+
+## 29. The completeness sweep — reachable and unread, all domains (2026-08-07)
+
+The step-4b sweep run retroactively over every audited domain (this pass's and the previous
+ones'), triggered by the §22a lesson. Method: census every `colossal_*` global shader binding
+in Game.dll, probe the public properties of the systems each domain reads, and re-status the
+original audit's §5 items.
+
+**Closed by this sweep** (all additive, all landed and compiling):
+
+| Find | What the game exposes | Now shipped as |
+|---|---|---|
+| Ground **normal maps** | `colossal_TerrainGrass/Dirt/RockNormal` global bindings — the theme lights its ground with these; the bundle shipped only the three diffuse maps, so consumer ground was flat-lit | `terrain/surfaces/*_normal.png`, decoded through the §24.4 two-channel rebuild |
+| **Paintable extras** | `colossal_TerrainExtra1..4Diffuse/Normal` — the surfaces a player paints | `terrain/surfaces/extra*.png` when bound (4×4 fallback placeholders skipped) |
+| **User splatmap** | `TerrainMaterialSystem.UserSplatmap` (public, R8G8, playable extent) — the painted-surface weights | `terrain/user_splatmap.png` + `rasters.userSplatmap`, written only when any texel is non-zero |
+| **Backdrop terrain** | `TerrainSystem.worldHeightmap` (public, R16, `worldOffset…+worldSize`) — the horizon terrain beyond the playable border; the contract reserved `worldTerrain` and the producer never wrote it | `terrain/world_heightmap.png` (lossless `AsyncGPUReadback`) + `rasters.worldTerrain`; playable-border continuity is the importer's self-check |
+
+**Examined and deliberately not shipped** (out of the bundle's built-environment scope, or
+simulation state):
+
+- Water flow/velocity and sea propagation (`colossal_FlowTexture*`, `colossal_Sea*`) — motion
+  state, not shape. The **backdrop water** grid *is* reachable
+  (`WaterSystem.GetSurfacesData().downscaledDepths` + `hasBackdrop`) and is the one open
+  candidate left in the terrain domain: a `worldWater` layer would need its own grid and
+  resample, deferred until a consumer wants horizon sea that is not flat.
+- Weather/season state (`colossal_SnowScale`, wetness/snow per instance) — §2's standing rule:
+  the bundle is the dry, built world.
+- Per-batch runtime buffers (`colossal_BuildingState`, `ColorMask0..2`, `LodFade`,
+  `VisibleIndices`) — render-frame state; the persistent equivalents already ship
+  (`colors.json`, §7.2 colorSet).
+- Tool overlays and route UI (`colossal_Overlay*`, `colossal_Route*`) — not world content
+  (routes exist as the parent Carto vector export).
+
+**§5 of the original audit, re-statused:** 5.1 (unproduced documented attrs) and 5.4 (lane
+graph) closed by the §9–§15 pass and Phase 5B; 5.2 closed by Phase 6; 5.3 is Phase 7's planned
+manifest work, not a miss; 5.5 (per-
+channel colour-variation detail beyond `colors.json`) still open, unchanged priority; 5.6
+half-closed (surface areas §8b shipped; **districts/zones still have no layer** — the data is
+plain ECS and schema-1-compatible, the remaining candidate from the earliest audit); 5.7
+(semantic attrs: unit counts, placement flags, pollution) still open, low value for a
+geometry consumer, additive whenever wanted.
+
+The sweep found **no further silent reconstruction** of the splatmap's kind: everywhere else
+the producer either ships the game's own data or documents the deviation with a counter. The
+two remaining unshipped candidates (worldWater, districts) are now *named* rather than
+unknown, which is the sweep's job.
+
+**What this pass changed, in one list** (all schema-compatible; geometry corrections only):
+1. §21: V-density measured over surviving triangles; roundabout centre-column rebase removed;
+   composition-level no-world-layer gate (first drafted as "Default-less", which silenced
+   every tunnel composition — corrected same day to the `GetBoundsMask` `NormalLayers` test;
+   Tunnel compositions are world geometry); dead rotated-node counter removed; terrain-conform
+   counters added.
+2. §21 row 12: **the vertex-sync coordinate fix** — right-half knots applied in their own
+   coordinate, end regions scale with pinned endpoints. This is the "curbs jutting into the
+   road" defect reported from in-game comparison; needs a re-rip to land.
+3. §22: water depth decoded through `ToWorldSpace` (`raw / scale.y − offset.y`); the
+   roundabout ring's right pair takes the end-half clip band; roundabout cut approximation
+   counted.
+4. §23: decal rect/pairing derived exact-up-first, matching `SetupDecalComponent`'s vertex
+   test.
+5. §25: per-part Pipeline-layer skip inside mixed prefabs, counted.
+6. §26: `IsNetOwnerTunnel`'s connected-edge branch ported and its result now *tags* lane
+   records (`tunnel: true`) instead of skipping them — tunnel lanes ship, mirroring the
+   game's relayer-not-hide behaviour (contract §5B change, same-day follow-up); cut spans
+   re-gated on 0.1 m with fully-cut lanes skipped.
+
+Every fix is unvalidated in-game until the next rip: the user validates with a full-city rip
+plus the Blender harness, then accepts.

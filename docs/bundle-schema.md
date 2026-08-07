@@ -632,9 +632,15 @@ Three pieces:
    surface: a ~12%-opacity near-black wear tint on the drive lanes (measured: texture
    ~(18,18,18) at α ≤ 113 × 0.5 material tint) and the fully opaque road markings —
    crosswalks, centre lines, stop lines (α ≈ 254 where painted). A consumer that skips
-   `decal` parts loses the markings and the wear shading, not the asphalt; the reference
-   importer bends them like any part and lifts them slightly (`_DECAL_LIFT`) so they sit on
-   the surface the way the projection does. Like every flattened decal (§4.2a), a `decal`
+   `decal` parts loses the markings and the wear shading, not the asphalt. **A fixed lift is
+   not enough to place them:** the lane curves sit at the carriageway's base plane and the
+   rendered road surface crowns above them — measured on a full-city rip, the road top near
+   centre lines is a median 7 mm above the lane path and clears path + 15 mm on 42% of
+   samples, so bent-and-lifted quads sink into the asphalt exactly where the game shows
+   paint. The game wins because a decal is a projector volume; the flattened-quad equivalent
+   is a drape — subdivide the quad along its length (~3 m) and snap each vertex to the road
+   surface below (the reference importer ray-casts the §5 network meshes and adds ~1 cm,
+   markings a hair above the wear tint so the two never z-fight). Like every flattened decal (§4.2a), a `decal`
    part's `.glb` ships with its UVs already rescaled into `DecalProperties.m_TextureArea` —
    the authored box UVs of the lane-line meshes all crop one generic transparent slab of
    their atlas, and only the area rect selects the actual marking band. *(Corrected
@@ -652,7 +658,9 @@ Three pieces:
                                        // driveway through a fence). Omitted = whole curve.
      "widthScale": [1.0,1.1],          // NodeLane width scale at curve start/end. Omitted = 1.
      "hang": [0.0,0.0],                // HangingLane.m_Distances end drops. Omitted = none.
-     "colorSet": [[…],[…],[…]] }       // resolved paint, §7.2 shape. Omitted when absent.
+     "colorSet": [[…],[…],[…]],        // resolved paint, §7.2 shape. Omitted when absent.
+     "tunnel": true }                  // owning network runs below ground (the game draws the
+                                       // lane on its Tunnel cutaway layer). Omitted = surface.
    ```
 
 **The bend algorithm** (normative; reference implementation in
@@ -678,11 +686,17 @@ Three pieces:
   game's quadratic-to-cubic lift of the sag parabola, at calm air; the game additionally sways
   these with sampled wind in the shader, which a static bundle does not carry.
 
-**What is deliberately not here**, each counted in the rip report: tunnel-owned lanes (whole
-lanes), and — excluded at the catalogue, since it is a property of the part —
-`Pipeline`-layer parts (underground pipes and cables the game draws only in the utility
-cutaway views). Decal-flagged parts are **included** and tagged (see above) — an earlier
-revision excluded them as "projected markings", which is what opened every junction centre.
+**What is deliberately not here**, each counted in the rip report — excluded at the
+catalogue, since it is a property of the part: parts whose `MeshData.m_DefaultLayers` holds
+no world-view layer (`Pipeline`/`SubPipeline`/`Waterway` — underground pipes, cables and
+waterway overlays the game draws only in its utility cutaway and overlay views; the game's
+`GetBoundsMask` names `Default|Moving|Tunnel|Marker` as the world set). **Tunnel-owned lanes
+are included** and tagged `tunnel: true` — the game draws them on its Tunnel cutaway layer;
+the bundle renders tunnels in full (the §8 terrain cutout opens their portals), and a
+consumer wanting the surface world only filters on the tag. *(Pre-2026-08-07 bundles
+excluded them as "cutaway view only".)* Decal-flagged parts are **included** and tagged (see
+above) — an earlier revision excluded them as "projected markings", which is what opened
+every junction centre.
 Editor-only and wrong-traffic-side sub-meshes are excluded per lane by the game's own
 (inverted) lane sub-mesh test (audit §12), already resolved into each record's `parts`.
 
@@ -959,6 +973,49 @@ toward +X (east).
   ```
   `texture` may be `null` when the theme texture could not be read. The referenced
   `terrain/surfaces/*.png` are the loaded map theme's ground textures, ripped as bound.
+- **`terrain/splatmap.png`** (`layers.splatmap`, optional) — RGBA8, **the game's own ground
+  blend**: the 4096² per-pixel weight map the terrain shader mixes grass/dirt/rock (and
+  painted surfaces) with, read back verbatim from `TerrainMaterialSystem`'s splat render
+  target (`colossal_Splatmap`). *(Added 2026-08-07.)* It is generated on the GPU from height
+  variance, the theme's rock/grass limits, noise and the user's surface brush, and it is what
+  makes in-game ground transitions smooth. Geo-referenced by its own `rasters.splatmap`
+  sub-block (`file`, `size`, per-axis `resolution`, texel-centre `originWorld`, row 0 toward
+  −Z like every raster, plus the shader shaping constants `splatMultiplier`/`splatPower`); its
+  grid is the playable area, not the heightmap grid — sizes differ. **The channel-to-ground
+  assignment is not stated in the game's managed code** (generator and consumer are both
+  shaders), so consumers must calibrate it against signals they already trust; the reference
+  importer derives grass from flat natural ground and prints the result. Two measured facts
+  a consumer must not get wrong (both produced square-splotch terrain when they were):
+  **(1) Do not require a dirt channel** — the blend weights the grass channel as heavily
+  under roadbeds (mean 251/255) as under lawns (243); the game's splat carries no roadbed
+  response, and the dirt look beside roads is the §5B wear decals and §8b surface areas.
+  **(2) The channels are PAINTED-ground weights and rock is the unpainted residual** —
+  very steep faces carry ≈0 in *all four* channels while rendering rock in-game, so the
+  base/rock weight is `max(0, 1 − (R+G+B+A))` (after the shaping constants), optionally
+  plus a minor painted rock-variant channel (it gains ~14/255 from flat to steep where
+  present). Calibrating rock as "the winning channel on steep ground" fails region-locally
+  and must not fall back to per-face classification. Consumers should sample it bilinearly (it is weights, not ids) and prefer
+  it over per-cell classification from `surface_index.png` wherever it is present;
+  `surface_index.png` remains the *semantic* roadbed mask (physics, the sink rule), not the
+  visual one. When the file or its `rasters.splatmap` block is absent, the pre-2026-08-07
+  behaviour (per-cell classification) is the documented fallback.
+- **`terrain/user_splatmap.png`** (optional) — RGBA8 (R/G meaningful): the player's painted
+  surface weights for the paintable extra grounds, read back from
+  `TerrainMaterialSystem.UserSplatmap`. *(Added 2026-08-07.)* Written only when any texel is
+  non-zero; geo-referenced by `rasters.userSplatmap` (same conventions as `rasters.splatmap`).
+- **`terrain/world_heightmap.png`** (optional) — 16-bit grayscale, the **backdrop terrain**
+  beyond the playable border (`TerrainSystem.worldHeightmap`, read losslessly via GPU
+  readback). *(Added 2026-08-07.)* Geo-referenced by `rasters.worldTerrain` (texel-centre
+  origin over `worldOffset…worldOffset + worldSize`); the playable area is a sub-rect of it,
+  and where they overlap the main heightmap's samples are authoritative. Same elevation decode
+  as the main heightmap — the game's height cascade blits both into one seamless surface, so a
+  consumer can (and the reference importer should) verify continuity across the playable
+  border as a self-check.
+- The theme's ground textures under `terrain/surfaces/` now include tangent **normal maps**
+  (`grass_normal.png`, `dirt_normal.png`, `rock_normal.png`) and, when the theme binds them,
+  the four paintable extras (`extra1..4.png` + `extra1..4_normal.png`). *(Added 2026-08-07;
+  all optional.)* Normal maps are decoded from the game's two-channel packing where present,
+  like every material normal (§7.1).
 
 The `rasters` block gains two keys for this (`elevationScale`, `elevationOffset` — see the
 schema); they are v1-compatible optional manifest additions, required by the validator when a
