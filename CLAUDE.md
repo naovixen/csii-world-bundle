@@ -43,6 +43,8 @@ seam everything depends on.
   trigger the export (add a "Rip World" toggle/button in the Feature/General UI — see PLAN
   §fork points). Bundle lands under
   `…\AppData\LocalLow\Colossal Order\Cities Skylines II\ModsData\Carto\<name>\`.
+- **Only the user can produce a bundle.** Ripping needs the game running with a city loaded;
+  you cannot do it. See the staleness non-negotiable below before using one.
 
 ## Layout (parent Carto + ripper additions)
 - `Systems/` — one `GameSystemBase` per domain (`BuildingSystem`, `NetworkSystem`,
@@ -70,6 +72,21 @@ seam everything depends on.
   clear message; show the diff.
 
 ## Non-negotiables
+- **The bundle on disk goes stale the moment producer code changes.**
+  `…\ModsData\Carto\spike\` is the output of *one* rip at *one* point in time, not a live view of
+  what the producer would emit today. Any change under `Systems/`, `IO/` or `Domain/` makes those
+  bytes a description of the **old** code, and only the user can refresh them by ripping in-game.
+  Therefore:
+  - **Never import the stale bundle and reason about the result as if it reflected your change.**
+    The import will succeed and look plausible; every conclusion about the new code is fiction.
+  - **Never call a producer change validated** because the harness ran clean — it ran on old bytes.
+    Say "built, awaiting in-game re-rip", the convention the audit notes already use.
+  - **Ask for a rip and wait.** Do not substitute the nearest available artifact.
+  - **Check staleness before trusting it, every time:** compare the bundle's mtime against
+    `git log --format='%h %ad %s' --date=format:'%Y-%m-%d %H:%M' --since='<mtime>' -- Systems IO Domain`.
+    Name any commit it lists when stating what the bundle can and cannot answer.
+  - It is still the right source for *what shape the entities in a real city have* — a fact about
+    the save, not about the code. It is the wrong source for *did my change work*.
 - **Prove GPU mesh readback FIRST** (PLAN Phase 1 spike). Reading real vertex/index buffers at
   runtime is the single highest risk; if it's infeasible, the fallback is offline
   `.assets`/asset-DB extraction keyed by prefab name — decide before building everything else.
