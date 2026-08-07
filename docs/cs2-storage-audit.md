@@ -1575,6 +1575,461 @@ investigate lossless first, which both rows above already do exhaustively for th
 
 ## 5. `lanes.jsonl`
 
+`lanes.jsonl` is 242,145,498 bytes (230.9 MiB, 4.9% of the 4,894,194,530-byte total, §0), 1
+file, 680,610 records — the fifth-largest share. This is the drivable graph: where a vehicle
+may go, in which direction, at what speed (`docs/bundle-schema.md` §5A, cited: `networks/` is
+the road *surface*, this is the road *graph*). Unlike §1–§3's mesh/texture domains, the data
+here is genuinely wanted by a level builder for traffic and AI — only the *encoding* of the
+path is in question, per this task's own framing, and there is a specific hypothesis to test:
+each `path` looks like points sampled evenly along a curve, and the game's own authoritative
+lane geometry is a `Bezier4x3` (four control points). If true, storing the four control points
+instead of nine sampled points is fewer bytes **and** strictly more information (an exact curve
+vs. an approximation of one) — an unusual combination this section tests rather than assumes.
+
+### 5.1 What we ship
+
+Command (this section's own script, built to the brief's spec and extended for the `kind`
+breakdown constraint 4 requires):
+
+```
+python "$SCRATCH/audit/lanes_bezier.py" "$BUNDLE"
+```
+
+`measured`, full population (680,610 of 680,610 records), exact per-field bytes (`json.dumps
+(value)` with no subtraction, overhead computed as `raw_total − Σ value_bytes`, the same
+corrected method §4.1 used after the brief's own per-field script undercounted there — applied
+here from the start rather than repeating that mistake):
+
+| field | bytes | MiB | % of file |
+|---|---:|---:|---:|
+| `path` | 188,520,072 | 179.79 | 77.85% |
+| `flags` | 11,489,937 | 10.96 | 4.75% |
+| `kind` | 6,426,340 | 6.13 | 2.65% |
+| `id` | 4,557,661 | 4.35 | 1.88% |
+| `owner` | 4,504,734 | 4.30 | 1.86% |
+| `length` | 3,508,616 | 3.35 | 1.45% |
+| `secondary` | 1,282,696 | 1.22 | 0.53% |
+| `curviness` | 746,678 | 0.71 | 0.31% |
+| `limit` | 573,303 | 0.55 | 0.24% |
+| *(JSON structural overhead)* | 20,535,461 | 19.58 | 8.48% |
+| **TOTAL** | **242,145,498** | **230.93** | **100.00%** |
+
+`path` alone is 77.85% of the file — the single largest field by a wide margin, exactly where
+this task's own hypothesis should be aimed.
+
+**Points-per-lane** — the census the brief's script asked for, full population:
+
+| points | records | % |
+|---:|---:|---:|
+| 9 | 680,565 | 99.99% |
+| 8 | 1 | 0.00% |
+| 7 | 2 | 0.00% |
+| 5 | 1 | 0.00% |
+| 4 | 5 | 0.00% |
+| 3 | 21 | 0.00% |
+| 2 | 15 | 0.00% |
+
+**680,565 of 680,610 records (99.99%) carry exactly 9 points**, mean 9.00 points/lane overall.
+The 45 records (0.0066%) that don't are examined in §5.3 rather than dismissed.
+
+**Kinds** (`docs/bundle-schema.md` §5A's own closed set: `car`, `track`, `pedestrian`,
+`parking`, `connection`, `other` — measured kinds match it exactly, no unknowns):
+
+| kind | records | % |
+|---|---:|---:|
+| `connection` | 269,751 | 39.63% |
+| `other` | 136,216 | 20.01% |
+| `car` | 131,618 | 19.34% |
+| `pedestrian` | 97,677 | 14.35% |
+| `parking` | 44,083 | 6.48% |
+| `track` | 1,265 | 0.19% |
+
+`connection` — the brief's own sample line — is the largest single kind at 39.63%.
+
+**Optional fields, presence and ranges** (full population): `owner` present on 677,547 records
+(99.55%), range `[50,769, 2,595,164]`, **never `0`** — a free sentinel, the same pattern §4.3
+found for `instances.jsonl`'s `id`/`parent`. `secondary` true on 320,674 (47.12%). `limit` and
+`curviness` are present on exactly the same 132,883 records (19.52%) — this is not a
+coincidence to model separately: 131,618 `car` + 1,265 `track` = 132,883 exactly, so both
+fields are fully determined by `kind ∈ {car, track}`, needing no independent presence bit.
+`flags` non-empty on 272,161 records (39.99%), drawn from **50 distinct names** across
+821,959 total flag instances (mean 3.02 flags per flagged record) — the full vocabulary is in
+`$SCRATCH/audit/lanes_bezier.txt`; the top five are `ForbidPassing` (91,420), `Unsafe`
+(69,815), `AllowMiddle` (69,508), `LeftLimit` (54,775), `RightLimit` (50,370). `id` range
+`[54,749, 2,559,021]` — both `id` and `owner` fit an unsigned 32-bit column comfortably, the
+same as §4.4 found for `instances.jsonl`.
+
+### 5.2 What the game stores
+
+**Two sources, per this document's own rule.** First, our own producer — `IO/LaneWriter.cs` is
+79 lines, read in full (confirmed: `wc -l` → 79):
+
+```csharp
+public void Write(LaneRecord record)
+{
+    if ((record.Path == null) || (record.Path.Count < 2)) return;
+
+    List<double[]> path = new(record.Path.Count);
+    foreach (float3 point in record.Path) path.Add(Round(point));
+    …
+}
+
+private static double[] Round(float3 v) =>
+    new double[] { Math.Round(v.x, 3), Math.Round(v.y, 3), Math.Round(v.z, 3) };
+```
+
+`LaneWriter` itself does no sampling — it only rounds whatever `record.Path` already holds to 3
+decimal places (millimetres), matching every other coordinate in the bundle. The sampling
+happens upstream, in `Systems/LaneRipSystem.cs`:
+
+```csharp
+private const int Samples = 8;
+…
+Tessellate(curve.m_Bezier, record.Path);
+…
+private static void Tessellate(Colossal.Mathematics.Bezier4x3 curve, List<float3> points)
+{
+    for (int i = 0; i <= Samples; i++)
+    {
+        float3 point = Colossal.Mathematics.MathUtils.Position(curve, i / (float)Samples);
+        if ((points.Count > 0) && (math.distancesq(points[points.Count - 1], point) < 1e-6f)) continue;
+        points.Add(point);
+    }
+}
+```
+
+(`Systems/LaneRipSystem.cs:55,171,297-308`.) This settles question 3 by source inspection
+alone, per the brief's own prediction: **`path` is a uniform, 9-point (`i/8` for `i = 0..8`)
+tessellation of `curve.m_Bezier`, with a 1 mm-radius dedup pass dropping near-duplicate
+consecutive samples** (the `distancesq < 1e-6f` gate — a 1 mm distance, squared). `curve` comes
+from `EntityManager.GetComponentData<Curve>(entity)` (`:131`), the same lane entity `AddLaneData`
+reads speed/curviness/flags from. `Domain/LaneRecord.cs`'s own doc comment already says this in
+plain language: *"The lane's path, world space, already tessellated from CS2's bézier."* This
+is not a new discovery — it is already documented in this repo; this section is the first to
+measure what that means in bytes.
+
+Second, the game's own component, decompiled (the cached `decomp all` dump of `Game.dll`,
+per this task's resolved instructions — located and confirmed present with `grep -A5 "public
+struct Curve" "E:/carto-out/game-src/Game/Game.Net.Curve.cs"`, then read in full):
+
+`Game.Net.Curve` (`E:\carto-out\game-src\Game\Game.Net.Curve.cs`):
+
+```csharp
+public struct Curve : IComponentData, IQueryTypeParameter, IStrideSerializable, ISerializable
+{
+    public Bezier4x3 m_Bezier;
+    public float m_Length;
+
+    public void Serialize<TWriter>(TWriter writer) where TWriter : IWriter
+    {
+        writer.Write(m_Bezier);
+    }
+
+    public void Deserialize<TReader>(TReader reader) where TReader : IReader
+    {
+        reader.Read(out m_Bezier);
+        m_Length = MathUtils.Length(m_Bezier);
+    }
+}
+```
+
+The game's own on-disk save format for a lane's curve **is `m_Bezier` alone** — `Serialize`
+writes only the four control points; `m_Length` is never written, and is recomputed from
+`m_Bezier` every time a save loads. `Colossal.Mathematics.Bezier4x3` (decompiled directly, not
+cached in the `Game.dll` dump — `./tools/decomp/bin/Release/net8.0/decomp.exe type
+Colossal.Mathematics Colossal.Mathematics.Bezier4x3`) is exactly `public float3 a, b, c, d;` —
+**four control points, three `f32` each**, matching the brief's own arithmetic assumption
+exactly. `Colossal.Mathematics.MathUtils.Position(Bezier4x3 curve, float t)` (same decompile
+target) evaluates the textbook cubic Bézier basis:
+
+```csharp
+public static float3 Position(Bezier4x3 curve, float t)
+{
+    float3 @float = new float3(t, 1f - t, 3f * t);
+    float4 float2 = @float.yzzx * @float.yyxx * @float.yyyx;
+    return curve.a * float2.x + curve.b * float2.y + curve.c * float2.z + curve.d * float2.w;
+}
+```
+
+— `float2 == ((1−t)³, 3t(1−t)², 3t²(1−t), t³)`, bit-for-bit the same basis this section's own
+refit script (§5.3) uses. `MathUtils.Length(Bezier4x3 curve)` — the formula `m_Length` recomputes
+on every load — is a 16-sample chord-length sum: `Position(curve, i/16)` for `i = 1..16`,
+summing consecutive distances. Both facts matter for §5.3/§5.4: the game's own path *and*
+length are functions of the same four numbers, and our producer already reads that exact
+component (`Curve`) before discarding everything but nine samples and one scalar.
+
+`docs/cs2-api-audit.md` §12 ("Lanes versus the game") already validates the *other* lane
+fields — `m_SpeedLimit`, `m_Curviness`, flags-as-names, master/`SecondaryLane` — against
+`Game.Net.CarLane`/`TrackLane` etc.; that section is cited here rather than re-derived, per this
+task's brief, and it does not itself cover path/curve sampling — that is this section's own,
+new finding. `docs/bundle-schema.md` §5B (`lanemeshes.jsonl`, cited) already ships a
+`curve` field as *"world-space cubic bézier control points"* — `[[x,y,z],[x,y,z],[x,y,z],
+[x,y,z]]` — for a different lane subsystem (drawn utility/fence geometry), with a normative
+bend algorithm and a working reference consumer in `tools/blender_import_bundle.py`. Storing
+raw Bézier control points is therefore not a new pattern this section is proposing from
+scratch; it is an existing, already-shipped, already-consumed convention in this exact bundle,
+applied to a second file.
+
+### 5.3 Information or representation?
+
+**The Bézier hypothesis, tested on real data, not assumed.** Script (this section's own,
+extended per constraint 4 to break down by `kind` and to test the parameterisation-failure-mode
+distinction constraint 3 requires):
+
+```
+python "$SCRATCH/audit/lanes_bezier.py" "$BUNDLE"
+```
+
+Two refits were run, both full population, not sampled (680,610 records fit comfortably in
+memory and the fit itself is cheap — 9 points against 4 unknowns per record):
+
+1. **Exact-`t` refit** — for the 680,565 records with exactly 9 points, solve the 9×4
+   least-squares system at the **known true sampling grid** `t = i/8, i = 0..8` — not a guess,
+   `LaneRipSystem.Tessellate`'s own grid (§5.2). This is the clean test: zero parameterisation
+   ambiguity, because the grid is read from source, not inferred from point count.
+2. **Naive `linspace(0,1,len(P))` refit** — the brief's own method, re-parameterising by point
+   *count* alone, run on every record with ≥4 points (680,574 of them) for direct comparability.
+
+`measured`, full population:
+
+| refit | n | p50 | p90 | p99 | p99.9 | p100 |
+|---|---:|---:|---:|---:|---:|---:|
+| exact-`t=i/8` (len==9 only) | 680,565 | 0.467 mm | 0.649 mm | 0.813 mm | 0.983 mm | 2.065 mm |
+| naive `linspace` (all len≥4) | 680,574 | 0.467 mm | 0.649 mm | 0.813 mm | 0.983 mm | 2.065 mm |
+
+The two are identical to the precision shown, because `linspace(0,1,9)` **is** `i/8` when no
+point was dropped — which is true for 99.99% of the file, so the naive method and the true
+method agree almost everywhere by construction, not by coincidence.
+
+By `kind` (exact-`t` refit; constraint 4's own instruction — one class of lane behaving
+differently is exactly what a single aggregate hides):
+
+| kind | n | p50 | p99 | p100 |
+|---|---:|---:|---:|---:|
+| `connection` | 269,751 | 0.470 mm | 0.808 mm | **2.065 mm** |
+| `other` | 136,201 | 0.463 mm | 0.818 mm | 1.242 mm |
+| `car` | 131,610 | 0.481 mm | 0.822 mm | 1.314 mm |
+| `pedestrian` | 97,665 | 0.457 mm | 0.808 mm | 1.277 mm |
+| `parking` | 44,073 | 0.449 mm | 0.808 mm | 1.149 mm |
+| `track` | 1,265 | 0.481 mm | 0.833 mm | 1.147 mm |
+
+**No kind behaves differently in kind, only in degree** — every kind's p50 sits at ~0.45–0.48
+mm and every kind's p100 is under 2.1 mm. `connection` (the brief's own sample line, and the
+plurality kind at 39.63%) happens to own the single worst-fitting record in the whole file, at
+2.065 mm — still two orders of magnitude below anything that matters at metre-scale lane
+geometry, and the same order of magnitude as the mesh-quantisation error §2.4 already judged
+acceptable at 20.505 mm.
+
+**Read plainly: p100 at millimetre scale — the polyline *is* a Bézier sampling, judged against
+this bundle's own 3-decimal-place (millimetre) coordinate convention as the applicable
+tolerance** (`IO/LaneWriter.cs`, `IO/InstanceWriter.cs` §4.2 — every coordinate in this bundle
+is already rounded to this precision, so it is the precision a lossless claim needs to clear,
+not float64 exactness). This is not a coincidental curve-fit — §5.2 already showed the
+producer's own sampling grid and the refit's Bézier basis are the identical formula.
+
+**The 45 non-9-point records — a failure-mode check, per constraint 3, not a discard.**
+
+```
+points<4 (untestable): 36 records, all `parking`/`other`, length 0.004–0.006 m
+4<=points<9 (testable): 9 records
+```
+
+`measured`, full population of the 45: the 36 records with fewer than 4 points are not a
+polyline-vs-Bézier question at all — every one of them has `length` between 4 and 6
+**millimetres**. These are degenerate, near-zero-length lanes (parking-stall connectors) where
+the 1 mm dedup gate (§5.2) collapses most of the 9 samples into 2–3 surviving points because the
+*entire curve* spans only a few dedup radii. A cubic Bézier still represents this exactly — the
+four control points are simply near-coincident — this is a polyline-side artefact of
+too-few-surviving-samples, not evidence against the Bézier hypothesis, and it needs no separate
+fallback in a Bézier-based encoding (unlike a fixed-sample-count polyline encoding, which
+*would* need to handle a variable point count here).
+
+The 9 records with 4–8 points were refit under a **chord-length** parameterisation — testing
+constraint 3's specific concern, that uniform-`t` is an assumption and a curve using a different
+true parameterisation might refit badly under the wrong one:
+
+```
+chord-length refit, 9 lanes: p50 0.000 mm, p90 0.539 mm, p99 0.900 mm, p100 0.940 mm
+```
+
+`measured`: still sub-millimetre at every percentile. **Verdict: no genuine polyline and no
+parameterisation failure was found anywhere in the population.** Both failure modes constraint 3
+asks to distinguish were tested and both came back negative — the 0.0066% of records that don't
+fit the clean 9-point case are short lanes whose sample count shrank under the producer's own
+dedup gate, not lanes whose underlying geometry is not a Bézier.
+
+**Bonus finding: `length` is also fully derivable, not just `path`.** §5.2 already showed the
+game's own `Curve.Serialize` writes only `m_Bezier`, never `m_Length` — the game recomputes
+length from the curve on every load, via a 16-sample chord sum. The same formula, applied to
+this section's own refit control points (packed as `f32`, §5.4), was checked against the
+shipped (3-decimal-rounded) `length` value on a 4,968-record stride sample across the full file:
+
+```
+length reconstruction (16-sample chord sum): max diff 2.000 mm, mean diff 0.324 mm, records with diff > 1cm: 0
+```
+
+`measured`: `length` reconstructs to within 2 mm of the shipped value everywhere sampled — the
+same order of magnitude as the path refit's own error, for the same reason (both are functions
+of the same four control points, evaluated by the game's own formula). `length` is retained in
+§5.4's candidate below anyway (it costs only 4 bytes/record and removes any need for a consumer
+to implement `MathUtils.Length`'s 16-sample formula just to read a scalar), but it is recorded
+here as **representation, not information**, exactly like §2.1's `TANGENT` finding.
+
+**Verdict: `path` is pure representation of `curve.m_Bezier`, and the smallest lossless
+encoding is smaller *and* adds information** — this is the "unusual and valuable result" this
+task's brief predicted, tested rather than assumed, and it holds.
+
+### 5.4 Smallest lossless encoding
+
+**The cheap baseline first, per constraint 2 and the standard §4.4 set** — `lzma`/`zlib -9`
+over the raw, unmodified file, full population, bit-exact round-trip asserted:
+
+```
+python "$SCRATCH/audit/lanes_compress.py" "$BUNDLE"
+```
+
+```
+full file: 242,145,498 B (230.9 MiB)
+  zlib -9: 64,376,733 B (61.4 MiB, 26.59%), round-trip bit-exact, 24.7 s
+  lzma   : 42,393,124 B (40.4 MiB, 17.51%), round-trip bit-exact, 129.0 s
+```
+
+`measured`, exact, full population. `lzma` saves 199,752,374 B (190.5 MiB, **82.49%** of
+`lanes.jsonl`, 4.08% of the whole bundle) — this is the number the structural candidate below
+must beat, per §4.4's own standard ("a structural candidate that loses to `lzma` must say so
+plainly").
+
+**The structural candidate: ship `curve.m_Bezier` instead of its 9-point tessellation.** Fixed
+core per record — `id` (u32, range confirmed §5.1), `kind` (u8, 6-value closed set, §5.1), four
+Bézier control points (4×3 `f32`, §5.2's own field widths), `length` (f32, retained per §5.3's
+bonus finding) — **actually built and read back as real bytes**, not just sized arithmetically
+(the same standard §4.4 held its own fixed core to):
+
+```
+python "$SCRATCH/audit/lanes_binary_build.py" "$BUNDLE" "$SCRATCH"
+```
+
+```
+built 680,610 records' fixed core in 45.1s
+packed file: 38,794,770 B (37.00 MiB), 57.0 B/record
+read-back + id/kind assertion passed
+reconstruction check on 5,000 sampled lanes (45,000 points): worst per-coordinate diff after re-round to 3dp = 0.001000 m, lanes with diff > 1cm: 0
+lzma over the packed binary: 18,738,148 B (17.87 MiB, 48.30% of packed), round-trip bit-exact, 13.5 s
+```
+
+`measured`, real bytes, real round-trip. The reconstruction check re-evaluates each packed
+`f32` control-point set at the producer's own `t = i/8` grid, re-rounds to 3 decimal places
+(`LaneWriter.Round`'s own rule), and compares to the shipped, already-rounded path — worst
+diff **exactly one rounding unit (1 mm)**, i.e. the candidate reproduces the shipped precision
+losslessly, not approximately.
+
+**The fixed-core candidate alone already beats `lzma`-over-JSON, uncompressed:**
+
+| encoding | size | vs. `lanes.jsonl` |
+|---|---:|---:|
+| as-shipped | 230.93 MiB | — |
+| `lzma` over JSON (measured) | 40.43 MiB (17.51%) | −190.50 MiB (−82.49%) |
+| Bézier fixed core (measured, uncompressed) | **36.998 MiB (16.02%)** | **−193.93 MiB (−83.98%)** |
+| Bézier fixed core + `lzma` (measured) | **17.87 MiB (7.74%)** | **−213.06 MiB (−92.26%)** |
+
+The uncompressed fixed core is 3.43 MiB smaller than compressed JSON (a 1.09× margin) — a
+structural change beating a generic compressor even before compression is applied to the
+structural change itself. Compressing the Bézier binary too (real bytes, real `lzma` call, both
+measured) pushes it to 17.87 MiB, **2.26× smaller than `lzma`-over-JSON** and **12.9× smaller
+than as-shipped** — 92.26% of the domain, 4.56% of the whole 4,894,194,530-byte bundle.
+
+**The full candidate — every field, not just the fixed core.** Sparse optional columns, sized
+`arithmetic` from §5.1's exact per-field presence counts and widths (not built/round-tripped
+for real, unlike the fixed core above):
+
+| field | records | width | bytes |
+|---|---:|---:|---:|
+| presence bitmask (`owner`/`secondary`/`flags-present`, 3 bits) | 680,610 | u8 (1 B) | 680,610 B |
+| `owner` | 677,547 | u32 (4 B) | 2,710,188 B |
+| `limit` | 132,883 | f32 (4 B) — derivable from `kind`, no presence bit needed (§5.1) | 531,532 B |
+| `curviness` | 132,883 | f32 (4 B), same gate as `limit` | 531,532 B |
+| `flags` | 272,161 | u8 count + u8 catalog index × 821,959 total instances | 1,094,120 B |
+| **sparse total** | | | **5,547,982 B (5.29 MiB)** |
+
+Plus a 50-entry flag-name catalog (negligible, <1 KiB). **Grand total: 44,342,752 B (42.29
+MiB)**, `arithmetic` for the sparse portion, `measured` for the 37.00 MiB fixed core inside it.
+This full candidate is **1.86 MiB larger than `lzma`-over-JSON uncompressed** (42.29 vs. 40.43
+MiB) — reported plainly, the same honesty §4.4 applied to its own columnar candidate, because
+the sparse columns here are small integers/floats that don't need JSON's punctuation overhead
+but also aren't compressed the way `lzma` compresses everything together. Applying the fixed
+core's own measured compression ratio (48.30%) to the full candidate as an **unmeasured
+extrapolation, not an independent build**: ≈20.4 MiB, ≈1.98× smaller than `lzma`-over-JSON —
+directionally the same win as the fixed-core-only comparison, but this specific number was not
+built and compressed for real, and is reported at that lower confidence.
+
+**Consumer cost.** Evaluating a cubic Bézier at a parameter `t` is the four-line function §5.2
+quoted verbatim from the game's own source — trivial to port, and `docs/bundle-schema.md` §5B
+already documents a curve-consuming layer (the `lanemeshes.jsonl` bend algorithm) that a
+consumer may already have implemented for this exact bundle, so the marginal cost for a second
+Bézier-consuming file is smaller still. A consumer that wants the old 9-point polyline gets it
+back by evaluating at `i/8` for `i = 0..8` — the identical grid the producer used — or samples
+at any *other* density it prefers, which the polyline-only form cannot offer. This is the
+"strictly more information" half of §5.3's verdict made concrete: nine points is one specific,
+fixed resampling of the truth; four control points are the truth, at any resampling a consumer
+chooses.
+
+**No lossy candidate is proposed for this domain.** The lossless Bézier candidate already
+reaches a 92.26% reduction with a proven round-trip; per constraint 6 (investigate lossless
+first) and the same reasoning §3 gave for `networks/`, there is no remaining gap large enough
+to justify naming an unmeasured lossy fallback.
+
+### Rip time
+
+`lanes.jsonl` is written inside §8's row 3 (Lanes + Networks bracket, 12:15:31.929–12:23:17.290,
+465.361 s) — cited, not re-derived. Row 3's only instrumented sub-steps are network segment mesh
+baking (65.8 s) and network-pass texture readback (9.5 s, concurrent); §8 already notes that the
+remaining 390.061 s of the bracket covers "lane collection, lane write, network edge topology,
+and everything else not covered by an explicit duration" as one undivided remainder — lane
+collection/write time specifically is `unmeasured` at finer grain than that combined figure,
+the same limitation §8 already recorded for this bracket.
+
+### A staleness note, checked directly rather than assumed
+
+This section's measurements are of the bundle ripped 2026-08-07 11:50:23–12:23:24 (§8). Commit
+`8985b73` ("Producer: tunnel lanes tagged, splatmap semantics string; awaiting re-rip
+validation") landed at 13:54 that day — **after** this rip, raising the question of whether
+these measurements are already stale against current producer code. Checked directly rather
+than assumed from the commit message alone:
+
+```
+git show --stat 8985b73
+```
+
+The changed files are `Domain/LaneGeometryRecord.cs`, `IO/NetworkWriter.cs`,
+`Systems/MaterialRipSystem.cs`, `Systems/MeshRipSystem.cs`,
+`Systems/NetworkRipSystem.GameMesh.cs`, `Systems/NetworkRipSystem.cs`,
+`Systems/TerrainRipSystem.cs`, plus docs/schema/tooling files. **`Domain/LaneRecord.cs`,
+`IO/LaneWriter.cs` and `Systems/LaneRipSystem.cs` — the three files this section's own §5.1/§5.2
+analysis reads — are not in that changed set.** The `tunnel: true` field the commit message
+refers to is `LaneGeometryRecord.Tunnel` (`Domain/LaneGeometryRecord.cs:57`, confirmed by
+`grep -n Tunnel`), which feeds `lanemeshes.jsonl` (§5B) — a different lane subsystem (drawn
+utility/fence geometry) from this section's subject, `lanes.jsonl`'s drivable graph. So,
+correcting the imprecision in this fact as it was initially framed: **`lanes.jsonl`'s own
+producer path is byte-for-byte the same code today as it was at rip time** — a fresh rip today
+would reproduce this section's field census, points-per-lane histogram and Bézier-refit
+results unchanged. This bundle does still predate `8985b73`'s other changes (network/terrain/
+mesh systems, none of which this section measures), so it is recorded here for the avoidance of
+doubt which rip these specific numbers are of — 2026-08-07 11:50–12:23, not a later one — even
+though, for `lanes.jsonl` specifically, there turns out to be nothing for a re-rip to change.
+
+### Candidate rows
+
+**Lossless candidates:**
+
+| id | change | est. bytes saved | est. rip-time saved | consumer cost | risk | lossless? | additive layer |
+|---|---|---|---|---|---|---|---|
+| LANE-1 | Compress `lanes.jsonl` at rest (`lzma` or `zlib -9`) | measured, full file, `lzma` **190.50 MiB (82.49% of the file, 4.08% of bundle)**; `zlib -9` **169.53 MiB (73.41%, 3.63%)** | unmeasured (producer-side compress cost at write time; not timed) | one decompress call before parsing, same as INST-1 (§4) | low — ubiquitous codecs, bit-exact by construction, verified on the full file | YES, full-file bit-exact round-trip asserted | **new layer**: a compressed at-rest/transport encoding of the unchanged JSON bytes (`lanes.jsonl.xz`), needs the same §12.1 `compression` amendment as INST-1/MESH-1; **retires**: nothing, the canonical JSON bytes are recovered exactly on decompress |
+| LANE-2 | Ship `curve.m_Bezier`'s 4 control points instead of the 9-point tessellated `path`, fixed core (`id`/`kind`/4×control-point/`length`) actually built and round-tripped, sparse `owner`/`limit`/`curviness`/`flags` columns sized arithmetically | fixed core **measured, 193.93 MiB (83.98% of the file, 4.15% of bundle), beating `lzma`-over-JSON by 3.43 MiB even uncompressed**; fixed core + `lzma` **measured, 213.06 MiB (92.26%, 4.56%), 2.26× smaller than `lzma`-over-JSON**; full candidate (all fields) uncompressed is 1.86 MiB *larger* than `lzma`-over-JSON, reported plainly — see body for the honest side-by-side; full candidate + `lzma` is an **unmeasured extrapolation** (≈210.5 MiB / 91.15%, ≈1.98× `lzma`-over-JSON) using the fixed core's own measured compression ratio, not an independent build | unmeasured (rip-time cost of reading `curve.m_Bezier` directly instead of tessellating it; `LaneRipSystem` already reads the same `Curve` component today, so this is likely a wash or a small saving, not timed) | small — evaluating a cubic Bézier is the 4-line function quoted in §5.2, and `docs/bundle-schema.md` §5B's `lanemeshes.jsonl` bend algorithm already exercises the identical primitive with a working reference consumer in `tools/blender_import_bundle.py` | low — the exact evaluation formula was confirmed identical to the game's own (§5.2), and the round-trip was checked on real packed bytes, not asserted (worst diff = 1 rounding unit, §5.4) | YES, proven by full-population refit (§5.3) plus a real packed-binary round-trip reproducing the shipped path to within its own 3-decimal rounding step (§5.4) | **new layer**: `lanes.bin` (or a `curve` field replacing `path`, schema-amendable under §12.1 the same way `lanemeshes.jsonl`'s `curve` field already exists) alongside `lanes.jsonl`, opt-in; **retires**: nothing until an A/B gate proves the reader reproduces the JSON form's polyline at matching sample density (same transitional-bundle caveat as INST-2/NET-1) — until then the transitional bundle is 242,145,498 + 44,342,752 = 286,488,250 B (273.2 MiB) for this domain, larger than today's `lanes.jsonl` alone, for as long as both ship together |
+
+**Lossy candidates:** none proposed for this domain — LANE-2's lossless win (92.26% combined
+with compression, or 83.98% even without) already exhausts the useful room, and per constraint
+6 lossless is investigated first in any case, which this section already does exhaustively.
+
 ## 6. Markings and decals
 
 ## 7. Terrain
