@@ -14,6 +14,9 @@
 - No new runtime dependencies beyond `numpy` (bundled with Blender). The harness itself must never import PIL.
 - CLI flags, defaults, collection structure, object naming, and all reported **numbers** are frozen. Log formatting may change; counts may not.
 - Pixel gate per region: ≥ 99.9% of pixels within 2/255 per channel, no pixel beyond 16/255.
+  **One amended exception (2026-08-07, user-approved):** Task 6's Tier 0/1c corrections change
+  lane geometry deliberately, so lane-bearing renders use the bounded-difference gate defined in
+  Task 6 Step 4. Every other layer, and every other task, keeps the strict gate.
 - Keep the reference-implementation character: bilingual comment style where it exists, `CONTRACT VIOLATION` wording, no dead code left behind.
 - Blender: `G:\SteamLibrary\steamapps\common\Blender\blender.exe` (not on PATH).
 - Bundle: `$env:USERPROFILE\AppData\LocalLow\Colossal Order\Cities Skylines II\ModsData\Carto\spike`.
@@ -596,11 +599,60 @@ world[:, 1] += local_y + lift - hang_drop_vec
 
 - [ ] **Step 3: Drape + object build on blocks**
 
-In `build_lanes`: after bending, per builder key concatenate blocks (`numpy.concatenate` verts/tris-with-offsets/uvs; material runs from block order). Drape: for blocks with `drape_eps`, iterate the block's verts calling `road_surface.drop` (still per-vertex — the BVH call is C), collecting results into an array; apply `verts[hit_mask, 1] = tops[hit_mask] + eps`. Progress via `LOG.progress("decal verts draped", drape_seen, to_drape)`. Convert to Blender frame with one array op (`verts[:, [0, 2, 1]]` — X stays, Y↔Z swap; NO sign flips, same as `bundle_to_blender_point`), then `_mesh_from_arrays(f"lane_{prefab_key}", …, uv_layers={"UVMap": uvs}, material_runs=runs)`. Keep `set_paint` and the miss/`drape_missed` counters and every summary line.
+In `build_lanes`: after bending, per builder key concatenate blocks (`numpy.concatenate` verts/tris-with-offsets/uvs; material runs from block order). Drape as amended in Step 3a below. Convert to Blender frame with one array op (`verts[:, [0, 2, 1]]` — X stays, Y↔Z swap; NO sign flips, same as `bundle_to_blender_point`), then `_mesh_from_arrays(f"lane_{prefab_key}", …, uv_layers={"UVMap": uvs}, material_runs=runs)`. Keep `set_paint` and the miss/`drape_missed` counters and every summary line.
 
-- [ ] **Step 4: A/B all three full-stack regions**
+- [ ] **Step 3a: Tier 0 + Tier 1 — the drape defect and its cost**
 
-`suburb`, `gorge`, `crosswalk` — pixel PASS + counts PASS each. The crosswalk region is the drape stress test; compare its `draped`/`kept the fixed lift` numbers digit-for-digit.
+*(Amendment 2026-08-07, user-approved, supersedes "the drape keeps its logic". Evidence:
+decompiled `BatchDataSystem.UpdateLaneData` / `BatchDataHelpers.BuildTransformMatrix`; measured
+on the full-city bundle. The 2026-08-07 full-city `--lanes` import died before saving — this is
+the cause, so these are corrections, not optimisations.)*
+
+The game never bakes marking geometry: it draws one instanced projector box per marking and
+projects it onto the depth buffer. Our baked-and-draped equivalent costs 2,240,914 verts,
+~1.7 GB of Python lists and 2,240,914 BVH ray-casts for 83,110 markings. Three changes, all
+within this task and none touching the bundle contract:
+
+- **Tier 0 — clamp the drape window to the part's own projector half-height.** `_RoadSurface.drop`
+  currently probes 3 m up / 8 m down and takes the **highest** hit, which snaps ~2.5% of samples
+  onto kerb tops, median walls and bridge railings (measured, 3,300 points / 300 lanes). The game's
+  projector reaches **±0.5 m** (bundle median box height 1.00 m). Derive the window per part from
+  its own `boundsMin/boundsMax` y-extent in `laneprefabs.json` — half-height up, half-height down,
+  no floor below the authored volume. This **deletes** the tuned `probe=3.0, depth=8.0` constants
+  rather than retuning them. Where no surface falls inside the window, keep the bent height + lift
+  (the existing miss path).
+- **Tier 1a — arrays end to end.** The block sinks of Steps 1-3 already do this: ~1.53 GB → ~125 MB.
+- **Tier 1b — drape per marking, not per vertex.** Sample the road top a small number of times per
+  marking and interpolate along the part, instead of ray-casting every vertex (2,244,534 → ~132,395).
+  **Verify before relying on it:** the offline estimate found 45% of sample points had no surface in
+  the owner segment's own glb (lanes run on into node meshes), which offline sampling cannot see but
+  the full imported surface can. Measure inside Blender on the `crosswalk` region: compare per-vertex
+  vs per-marking drape heights over the same lanes and report the distribution of the difference.
+  If the one-sample-per-marking error exceeds the marking's own lift (~14 mm) anywhere, fall back to
+  a fixed ~16 m sampling interval (~6× fewer casts) rather than per-vertex. Report which you shipped.
+- **Tier 1c — subdivide by sagitta, not a fixed 3 m.** Replace `_DECAL_DRAPE_STEP = 3.0` with a
+  curvature-driven station count (flat runs get 2 stations, tight curves keep their density):
+  2.24M → ~1.06M verts. Keep the 64-station cap.
+
+- [ ] **Step 4: A/B — amended gate for this task**
+
+Tier 0 and Tier 1c change lane geometry **by design**, so lanes cannot be pixel-identical here.
+The gate splits:
+
+- **Non-lane layers keep the strict gate.** Run the `buildings` region (`--kinds building`) and a
+  terrain+networks-only run of `suburb` (`--kinds none --networks --terrain`, no `--lanes`):
+  both must PASS pixel and `--counts` exactly. Any change there is a regression, not a design change.
+- **Lane layers get a bounded-difference gate.** For `suburb`, `gorge` and `crosswalk` (full flags),
+  the run must complete, `--counts` must match on every non-drape line (`lanes: N record(s) bent
+  into M object(s)`, network counts, terrain face counts, calibration line), and the pixel diff
+  must be **localised**: ≤ 5% of pixels differing by more than 2/255. Save the baseline and new
+  renders side by side and state in the report what moved and why.
+- **Every difference must be explainable as Tier 0 or Tier 1c.** A marking that moves onto a kerb,
+  disappears, or flips dark is a bug — investigate, do not rationalise. The `draped` count itself
+  is expected to change (that is Tier 1b); quote old vs new.
+- **Full-city smoke test** — the point of the amendment. Run
+  `--kinds none --terrain --networks --lanes` over the whole city and confirm it completes and
+  saves. Report wall time, peak RSS, and the final counts.
 
 - [ ] **Step 5: Commit**
 
@@ -767,3 +819,27 @@ Refactor wrap-up: spec marked implemented, full-city A/B numbers recorded
 Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
 '@
 ```
+
+---
+
+## Follow-up specs (out of scope here, recorded 2026-08-07)
+
+Tiers 2 and 3 of the lane/network analysis are real wins but are not this plan's business —
+Tier 3 in particular is a **bundle-contract decision**, which this repo owns and a consumer
+(BeamNG level builder, Blender importer) feels directly. Each needs its own brainstorm → spec →
+plan cycle:
+
+- **Tier 2 — borrow the game's structure for markings.** 47.7% of lane records are chord-straight
+  to 5 cm, so their bend is a rigid transform: a linked duplicate of one 4-vert quad plus the
+  game's own `isDecal` TRS. Honest end state is Geometry Nodes (instance + raycast in C, no Python
+  lists at all). Harness-side only; no contract change.
+- **Tier 3 — stop baking `networks/`.** 423 MB of per-instance world-space meshes for 57 distinct
+  prefabs, where the game stores one composition mesh + eight matrices. `NetworkRipSystem.GameMesh.cs`
+  already ports that pipeline and already caches piece geometry per composition entity, then throws
+  it away to bake `seg_<id>.glb`. Emitting a composition catalogue + per-segment bend parameters —
+  exactly the `lanemeshes/` + `lanemeshes.jsonl` shape of contract §5B v2 — takes it to single-digit
+  MB and ~100 imports instead of 7,080. **Recommendation:** ship it as a NEW layer alongside
+  `networks/`, retire the baked layer only once `ab_compare.py` passes against it. This is the
+  change most visible to a downstream consumer, and the one with a real contract cost.
+
+See auto-memory `cs2-lane-decals-are-projectors` for the decompiled evidence and measurements.
