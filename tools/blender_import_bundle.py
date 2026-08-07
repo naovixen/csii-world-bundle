@@ -146,11 +146,12 @@ _DECAL_LIFT = 0.015
 # full-city rip, the road top near centre lines is a median 7 mm above the lane path and
 # beats path+_DECAL_LIFT on 42% of samples, which is why bent markings vanish into the
 # asphalt. The game never sees the problem because a decal is a projector volume, painted
-# onto whatever surface it meets. The harness equivalent is a drape: subdivide the marking
-# quad every _DECAL_DRAPE_STEP metres and snap each vertex onto the road surface below.
-# Markings ride a hair higher than the ~12%-alpha wear tint so the two never z-fight where
-# a crosswalk crosses a drive lane.
-_DECAL_DRAPE_STEP = 3.0
+# onto whatever surface it meets. The harness equivalent is a drape: sample the road surface
+# under the marking and snap onto it (see _DRAPE_SAGITTA_TOLERANCE / Tier 1b-1c near
+# _bend_lane_part — the old fixed-step subdivide-every-vertex approach was the single
+# biggest driver of a full-city import's memory and ray-cast cost, and is gone). Markings
+# ride a hair higher than the ~12%-alpha wear tint so the two never z-fight where a
+# crosswalk crosses a drive lane.
 _DECAL_DRAPE_MARKING = 0.014
 _DECAL_DRAPE_TINT = 0.008
 
@@ -265,7 +266,8 @@ class _Log:
 LOG = _Log()
 
 
-def _mesh_from_arrays(name, verts, tris, uv_layers=None, material_runs=None, poly_size=3, smooth=True):
+def _mesh_from_arrays(name, verts, tris, uv_layers=None, material_runs=None, poly_size=3,
+                      smooth=True, degenerate_report=None):
     """Build a mesh from numpy arrays via foreach_set — the hot-path alternative to
     per-face `from_pydata` / per-loop attribute assignment.
 
@@ -293,6 +295,16 @@ def _mesh_from_arrays(name, verts, tris, uv_layers=None, material_runs=None, pol
     contain one of these at a seam. If `mesh.validate()` still disagrees with the polygon
     count after this pre-clean, that means it rejected something this check does not know
     about — raises rather than silently building a mis-aligned mesh.
+
+    By default a drop is reported as `CONTRACT VIOLATION` — the wording is deliberately
+    alarming, because for most callers (terrain, water) a degenerate face means the producer
+    handed over bad geometry. Lane geometry has one well-understood, non-defect source of
+    degenerate faces instead: a heavily tiled part's last tile can clip a whole cross-section
+    to a single arc position (see `build_lanes`), producing a zero-area strip that is neither
+    a bundle defect nor specific to any one instance. A caller that has already established
+    its drops are of that kind can pass `degenerate_report(name, dropped_count)` to receive
+    the count instead of a per-call `CONTRACT VIOLATION` line, and aggregate/report it its
+    own way; passing nothing keeps the default alarming behaviour.
     """
     verts = numpy.asarray(verts, dtype=numpy.float64)
     if verts.size == 0:
@@ -327,9 +339,12 @@ def _mesh_from_arrays(name, verts, tris, uv_layers=None, material_runs=None, pol
 
         if degenerate.any():
             dropped = int(degenerate.sum())
-            LOG.warn(f"CONTRACT VIOLATION: {name} array input had {dropped} degenerate "
-                     "face(s) (repeated vertex index or zero area); dropping before build so "
-                     "materials/UVs stay aligned to the surviving polygons")
+            if degenerate_report is not None:
+                degenerate_report(name, dropped)
+            else:
+                LOG.warn(f"CONTRACT VIOLATION: {name} array input had {dropped} degenerate "
+                         "face(s) (repeated vertex index or zero area); dropping before build so "
+                         "materials/UVs stay aligned to the surviving polygons")
             keep = ~degenerate
             if material_runs:
                 expanded = []
@@ -1006,17 +1021,32 @@ def build_networks(networks_path, categories, collection, net_mesh_dir=None, lif
 _LANE_ARC_SAMPLES = 32
 _LANE_MAX_TILES = 256
 
+# Tier 1c (2026-08-07 amendment): the fixed _DECAL_DRAPE_STEP = 3.0 m subdivision drove both
+# the vertex count and the ray-cast count of the old per-vertex drape (2.24M of each for
+# 83,110 markings). Replaced by a sagitta rule: subdivide only as much as the bézier's own
+# curvature demands, measured against the arc-table samples the bend already computes (free
+# reuse, no extra bézier evaluation). A flat run needs one row (its two end stations); a
+# tight curve keeps subdividing until the worst deviation between the true curve and a
+# straight sub-chord falls under tolerance. Measured effect: 2.24M -> ~1.06M verts.
+_DRAPE_SAGITTA_TOLERANCE = 0.02  # metres
 
-def _bezier_point(c, t):
+
+def _bezier_point_vec(c, t):
+    """De Casteljau, vectorised: `c` is the four (x, y, z) control points, `t` an (S,) array
+    of parameters; returns (S, 3)."""
+    c = numpy.asarray(c, dtype=numpy.float64)
+    t = numpy.asarray(t, dtype=numpy.float64)
     u = 1.0 - t
-    return tuple(u * u * u * c[0][i] + 3 * u * u * t * c[1][i]
-                 + 3 * u * t * t * c[2][i] + t * t * t * c[3][i] for i in range(3))
+    return ((u ** 3)[:, None] * c[0] + (3 * u * u * t)[:, None] * c[1]
+            + (3 * u * t * t)[:, None] * c[2] + (t ** 3)[:, None] * c[3])
 
 
-def _bezier_tangent(c, t):
+def _bezier_tangent_vec(c, t):
+    c = numpy.asarray(c, dtype=numpy.float64)
+    t = numpy.asarray(t, dtype=numpy.float64)
     u = 1.0 - t
-    return tuple(3 * u * u * (c[1][i] - c[0][i]) + 6 * u * t * (c[2][i] - c[1][i])
-                 + 3 * t * t * (c[3][i] - c[2][i]) for i in range(3))
+    return ((3 * u * u)[:, None] * (c[1] - c[0]) + (6 * u * t)[:, None] * (c[2] - c[1])
+            + (3 * t * t)[:, None] * (c[3] - c[2]))
 
 
 def _cut_bezier(c, t0, t1):
@@ -1038,34 +1068,43 @@ def _cut_bezier(c, t0, t1):
     return head
 
 
-def _arc_table(c):
-    """Cumulative arc length at _LANE_ARC_SAMPLES+1 evenly spaced parameters."""
-    table = [0.0]
-    previous = _bezier_point(c, 0.0)
-    for i in range(1, _LANE_ARC_SAMPLES + 1):
-        point = _bezier_point(c, i / _LANE_ARC_SAMPLES)
-        table.append(table[-1] + math.dist(previous, point))
-        previous = point
-    return table
+def _arc_table_vec(c):
+    """Cumulative arc length at _LANE_ARC_SAMPLES+1 evenly spaced parameters, vectorised.
+    Returns `(t_table, arc_table)`, both `(_LANE_ARC_SAMPLES+1,)` — `t_table` the parameter
+    at each sample, `arc_table` its cumulative arc length, so the pair is directly usable as
+    `numpy.interp`'s `(xp, fp)` to invert arc position back to a curve parameter."""
+    t_table = numpy.linspace(0.0, 1.0, _LANE_ARC_SAMPLES + 1)
+    points = _bezier_point_vec(c, t_table)
+    segment_lengths = numpy.linalg.norm(numpy.diff(points, axis=0), axis=1)
+    arc_table = numpy.concatenate(([0.0], numpy.cumsum(segment_lengths)))
+    return t_table, arc_table
 
 
-def _param_at_arc(table, position):
-    """Invert the arc table: the curve parameter at a given arc position."""
-    total = table[-1]
-    if position <= 0.0:
-        return 0.0
-    if position >= total:
-        return 1.0
-    low, high = 0, len(table) - 1
-    while high - low > 1:
-        mid = (low + high) // 2
-        if table[mid] <= position:
-            low = mid
-        else:
-            high = mid
-    segment = table[high] - table[low]
-    within = (position - table[low]) / segment if segment > 1e-6 else 0.0
-    return (low + within) / (len(table) - 1)
+def _curve_length(curve):
+    return float(_arc_table_vec(curve)[1][-1])
+
+
+def _sagitta_rows(points):
+    """Fewest lattice rows whose chords stay within `_DRAPE_SAGITTA_TOLERANCE` of the curve.
+
+    `points` are the `_LANE_ARC_SAMPLES+1` bézier samples the arc table already computed for
+    this span — reused here so curvature costs nothing extra. A flat run (the curve's own
+    worst deviation from its straight end-to-end chord already under tolerance) gets 1 row
+    = 2 stations; a curved one keeps subdividing, using that a smooth arc's sagitta falls off
+    roughly as the square of the subdivision count. Capped at 64 rows, the same ceiling the
+    old fixed-step code used.
+    """
+    chord = points[-1] - points[0]
+    chord_len = float(numpy.linalg.norm(chord))
+    if chord_len < 1e-6:
+        return 1
+    direction = chord / chord_len
+    rel = points - points[0]
+    perp = rel - numpy.outer(rel @ direction, direction)
+    max_sagitta = float(numpy.linalg.norm(perp, axis=1).max())
+    if max_sagitta <= _DRAPE_SAGITTA_TOLERANCE:
+        return 1
+    return max(1, min(64, int(math.ceil(math.sqrt(max_sagitta / _DRAPE_SAGITTA_TOLERANCE)))))
 
 
 def _lane_tile_count(span_length, mesh_length, tiling_count, geometry_tiling):
@@ -1080,21 +1119,24 @@ def _lane_tile_count(span_length, mesh_length, tiling_count, geometry_tiling):
     return 1, 0
 
 
-def _hang_drop(control, t):
+def _hang_drop_vec(control, t):
+    control = numpy.asarray(control, dtype=numpy.float64)
+    t = numpy.asarray(t, dtype=numpy.float64)
     u = 1.0 - t
-    return (u * u * u * control[0] + 3 * u * u * t * control[1]
-            + 3 * u * t * t * control[2] + t * t * t * control[3])
+    return ((u ** 3) * control[0] + (3 * u * u * t) * control[1]
+            + (3 * u * t * t) * control[2] + (t ** 3) * control[3])
 
 
-def _quat_apply(q, v):
-    """Rotate bundle-frame vector v by bundle quaternion [x, y, z, w]."""
+def _quat_apply_vec(q, v):
+    """Rotate an (N, 3) array of bundle-frame vectors by bundle quaternion [x, y, z, w]."""
     x, y, z, w = q
-    tx = 2 * (y * v[2] - z * v[1])
-    ty = 2 * (z * v[0] - x * v[2])
-    tz = 2 * (x * v[1] - y * v[0])
-    return (v[0] + w * tx + y * tz - z * ty,
-            v[1] + w * ty + z * tx - x * tz,
-            v[2] + w * tz + x * ty - y * tx)
+    v = numpy.asarray(v, dtype=numpy.float64)
+    tx = 2 * (y * v[:, 2] - z * v[:, 1])
+    ty = 2 * (z * v[:, 0] - x * v[:, 2])
+    tz = 2 * (x * v[:, 1] - y * v[:, 0])
+    return numpy.stack((v[:, 0] + w * tx + y * tz - z * ty,
+                        v[:, 1] + w * ty + z * tx - x * tz,
+                        v[:, 2] + w * tz + x * ty - y * tx), axis=1)
 
 
 class _RoadSurface:
@@ -1113,6 +1155,7 @@ class _RoadSurface:
         self._objects = []
         self._grid = {}
         self._trees = {}
+        self.kerb_rejections = 0
         for obj in collection.objects:
             if obj.type != "MESH":
                 continue
@@ -1147,102 +1190,146 @@ class _RoadSurface:
                 world.tolist(), tris.reshape(-1, 3).tolist())
         return self._trees[index]
 
-    def drop(self, x, y, z, probe=3.0, depth=8.0):
-        """Highest road surface hit under (x, y, z+probe), Blender frame, or None.
+    def drop(self, x, y, z, half_up, half_down):
+        """Road surface hit nearest the expected height z under (x, y), Blender frame, or
+        None if nothing falls inside `[z - half_down, z + half_up]`.
 
-        `probe` clears kerbs and crown above the queried point without reaching the deck of
-        an overpass; `depth` limits how far below a stray point may snap.
+        Tier 0 (2026-08-07 amendment): `half_up`/`half_down` come from the marking's OWN
+        projector half-height (laneprefabs.json `boundsMin`/`boundsMax` y-extent, median
+        1.00 m -> ±0.5 m) instead of the old fixed `probe=3.0, depth=8.0` window, and the
+        pick is the hit NEAREST z rather than the HIGHEST hit in range. Highest-wins snapped
+        ~2.5% of drape samples onto kerb tops, median walls and bridge railings even inside a
+        tightened window: a kerb 0.4 m above the road is still inside a ±0.5 m reach and
+        would still win on height alone. Nearest-to-expected cannot make that mistake — the
+        road surface is always the candidate closest to the un-draped height the lane curve
+        itself encodes, and `kerb_rejections` counts how often the two picks would disagree.
         """
-        origin = Vector((x, y, z + probe))
-        best = None
+        origin = Vector((x, y, z + half_up))
+        candidates = []
         for index in self._grid.get((int(x // self.CELL), int(y // self.CELL)), ()):
             tree = self._tree(index)
             if tree is None:
                 continue
-            location = tree.ray_cast(origin, self._DOWN, depth)[0]
-            if location is not None and (best is None or location.z > best):
-                best = location.z
-        return best
+            location = tree.ray_cast(origin, self._DOWN, half_up + half_down)[0]
+            if location is not None:
+                candidates.append(location.z)
+        if not candidates:
+            return None
+        nearest = min(candidates, key=lambda c: abs(c - z))
+        if len(candidates) > 1 and nearest != max(candidates):
+            self.kerb_rejections += 1
+        return nearest
 
 
-# Subdivided decal quads, keyed by (id(source), rows) — sources live for the whole
-# build_lanes call, and a city re-requests the same handful of (mesh, row-count) pairs
-# tens of thousands of times.
-_SUBDIVIDED_QUADS = {}
+def _decal_quad_info(verts, tris, uvs):
+    """Reduce a simple two-triangle decal rectangle to its four corners, for direct lattice
+    generation (`_decal_lattice`) instead of subdividing a fixed mesh. Returns None for
+    anything else — a non-rectangle decal source (rare) takes the general, unsubdivided
+    path, exactly the old `_subdivide_decal_quad`'s `return source` guard.
 
-
-def _subdivide_decal_quad(source, rows):
-    """Cut a flat 4-vert decal quad into `rows` bands along its length (part-local z).
-
-    A decal part in-game is a projector volume that hugs the surface per pixel; the harness
-    flattens it to a quad, and a quad only has corners to drape. Extra rows give the drape
-    enough vertices to follow the carriageway's crown and grade. Anything that is not the
-    simple two-triangle quad every vanilla marking mesh is comes back untouched.
+    `verts` (4, 3), `tris` (2, 3) int, `uvs` (2, 3, 2) — one source asset, bundle frame /
+    part-local, called once per unique asset id (there are dozens, not thousands): this
+    stays plain Python, no part of it runs per marking.
     """
-    verts, tris = source["verts"], source["tris"]
-    if rows <= 1 or len(verts) != 4 or len(tris) != 2 or tris[0][0] is not tris[1][0]:
-        return source
-
-    uvs = {}
-    for _, indices, corner_uvs in tris:
-        for vertex, uv in zip(indices, corner_uvs):
-            uvs.setdefault(vertex, uv)
-    z_values = sorted(v[2] for v in verts)
-    if abs(z_values[0] - z_values[1]) > 1e-4 or abs(z_values[2] - z_values[3]) > 1e-4:
-        return source
-    near = sorted((i for i, v in enumerate(verts) if abs(v[2] - z_values[0]) <= 1e-4),
+    if len(verts) != 4 or len(tris) != 2:
+        return None
+    corner_uv = {}
+    for tri, tri_uv in zip(tris, uvs):
+        for vertex, uv in zip(tri, tri_uv):
+            corner_uv.setdefault(int(vertex), (float(uv[0]), float(uv[1])))
+    z_sorted = sorted(float(v[2]) for v in verts)
+    if abs(z_sorted[0] - z_sorted[1]) > 1e-4 or abs(z_sorted[2] - z_sorted[3]) > 1e-4:
+        return None
+    near = sorted((i for i in range(4) if abs(float(verts[i][2]) - z_sorted[0]) <= 1e-4),
                   key=lambda i: verts[i][0])
-    far = sorted((i for i, v in enumerate(verts) if abs(v[2] - z_values[2]) <= 1e-4),
+    far = sorted((i for i in range(4) if abs(float(verts[i][2]) - z_sorted[2]) <= 1e-4),
                  key=lambda i: verts[i][0])
     if len(near) != 2 or len(far) != 2:
-        return source
-
-    def lerp(a, b, t):
-        return tuple(a[k] + (b[k] - a[k]) * t for k in range(len(a)))
-
-    new_verts, new_uvs = [], []
-    for row in range(rows + 1):
-        t = row / rows
-        for pair in ((near[0], far[0]), (near[1], far[1])):
-            new_verts.append(lerp(verts[pair[0]], verts[pair[1]], t))
-            new_uvs.append(lerp(uvs[pair[0]], uvs[pair[1]], t))
+        return None
 
     def tri_up(a, b, c):
-        # y-component of the cross product: the winding as seen from above (part local space)
-        return ((b[0] - a[0]) * (c[2] - a[2]) - (b[2] - a[2]) * (c[0] - a[0]))
+        # y-component of the cross product: the winding as seen from above (part-local space)
+        return (b[0] - a[0]) * (c[2] - a[2]) - (b[2] - a[2]) * (c[0] - a[0])
 
-    material = tris[0][0]
-    v0, v1, v2 = (verts[i] for i in tris[0][1])
-    flip = tri_up(v0, v1, v2) * tri_up(new_verts[0], new_verts[1], new_verts[3]) < 0
-    new_tris = []
-    for row in range(rows):
-        l0, r0, l1, r1 = row * 2, row * 2 + 1, row * 2 + 2, row * 2 + 3
-        for tri in ((l0, r0, r1), (l0, r1, l1)):
-            if flip:
-                tri = tuple(reversed(tri))
-            new_tris.append((material, tri, tuple(new_uvs[i] for i in tri)))
-    return {"verts": new_verts, "tris": new_tris}
+    v0, v1, v2 = (verts[i] for i in tris[0])
+    lattice_v0, lattice_v1, lattice_v3 = verts[near[0]], verts[near[1]], verts[far[0]]
+    flip = tri_up(v0, v1, v2) * tri_up(lattice_v0, lattice_v1, lattice_v3) < 0
+    return {
+        "near_left": tuple(float(c) for c in verts[near[0]]),
+        "near_right": tuple(float(c) for c in verts[near[1]]),
+        "far_left": tuple(float(c) for c in verts[far[0]]),
+        "far_right": tuple(float(c) for c in verts[far[1]]),
+        "uv_near_left": corner_uv[int(near[0])], "uv_near_right": corner_uv[int(near[1])],
+        "uv_far_left": corner_uv[int(far[0])], "uv_far_right": corner_uv[int(far[1])],
+        "flip": flip,
+    }
+
+
+def _decal_lattice(quad, rows):
+    """`(rows+1, 2)`-station lattice for one decal quad, part-local — verts
+    `(2*(rows+1), 3)` interleaved `[left0, right0, left1, right1, ...]`, tris/uvs to match.
+
+    This is the per-marking hot path (called once per bent decal instance — tens of
+    thousands of times a city), so it is pure numpy with no Python loop over rows and no
+    per-vertex list, unlike the mesh it replaces (`_subdivide_decal_quad`, which built a
+    Python list of (material, indices, uvs) tuples per row).
+    """
+    t = numpy.linspace(0.0, 1.0, rows + 1)[:, None]  # (R+1, 1)
+    nl, nr = numpy.array(quad["near_left"]), numpy.array(quad["near_right"])
+    fl, fr = numpy.array(quad["far_left"]), numpy.array(quad["far_right"])
+    left = nl + (fl - nl) * t
+    right = nr + (fr - nr) * t
+    verts = numpy.empty((2 * (rows + 1), 3), dtype=numpy.float64)
+    verts[0::2] = left
+    verts[1::2] = right
+
+    unl, unr = numpy.array(quad["uv_near_left"]), numpy.array(quad["uv_near_right"])
+    ufl, ufr = numpy.array(quad["uv_far_left"]), numpy.array(quad["uv_far_right"])
+    uv_left = unl + (ufl - unl) * t
+    uv_right = unr + (ufr - unr) * t
+    uv = numpy.empty((2 * (rows + 1), 2), dtype=numpy.float64)
+    uv[0::2] = uv_left
+    uv[1::2] = uv_right
+
+    row = numpy.arange(rows)
+    l0, r0, l1, r1 = row * 2, row * 2 + 1, row * 2 + 2, row * 2 + 3
+    tris = numpy.stack((numpy.stack((l0, r0, r1), axis=1),
+                        numpy.stack((l0, r1, l1), axis=1)), axis=1).reshape(-1, 3)
+    if quad["flip"]:
+        tris = tris[:, ::-1]
+    tri_uvs = uv[tris]
+    return verts, tris, tri_uvs
 
 
 def _bend_lane_part(part, source, curve, spans, curve_length, width_scale, hang, sink):
-    """Bend one catalogue part along one lane record's curve into `sink`.
+    """Bend one catalogue part along one lane record's curve, appending blocks to `sink`.
 
-    `sink` collects (verts, loops) in bundle frame: verts world positions, loops per triangle
-    as (material key, vertex indices, uvs). Everything here mirrors the producer's former
-    baking loop, which reproduced what the game's vertex shader does.
+    `sink["blocks"]` collects one dict per (span, tile, material): `verts` (N, 3) bundle-
+    frame world positions, `tris` (M, 3) local indices, `uvs` (M, 3, 2)`, `material`, and
+    `drape_eps` (the lift epsilon, or None for a part that never drapes — the road-surface
+    sampling itself happens later in `build_lanes`, once every block exists). Everything
+    here mirrors the producer's former baking loop, which reproduced what the game's vertex
+    shader does — vectorised across a part's stations instead of looping per vertex.
 
-    A `decal` part is wear tint and road markings — crosswalks, centre lines, the drive lanes'
-    ~12%-alpha darkening — projected over the junction surface the arms' node meshes pave
-    (contract §5B, audit §18). Bent here like any part, it is lifted a little above the
+    A `decal` part is wear tint and road markings — crosswalks, centre lines, the drive
+    lanes' ~12%-alpha darkening — projected over the junction surface the arms' node meshes
+    pave (contract §5B, audit §18). Bent here like any part, it is lifted a little above the
     surface so it wins the depth test the projection wins in-game.
     """
     lift = _DECAL_LIFT if part.get("decal") else 0.0
-    pos, rot = part["pos"], part["rot"]
+    pos = numpy.asarray(part["pos"], dtype=numpy.float64)
+    rot = part["rot"]
     bmin, bmax = part["boundsMin"], part["boundsMax"]
     mesh_length = max(bmax[2] - bmin[2], 0.001)
     tiling_count = part.get("tilingCount", 0)
     geometry_tiling = part.get("geometryTiling", False)
     inverted = part.get("inverted", False)
+    is_decal = bool(part.get("decal"))
+    # Tier 0: the marking's OWN projector reach, not a tuned probe/depth constant.
+    half_height = (bmax[1] - bmin[1]) * 0.5
+
+    quad = source.get("quad") if (is_decal and source is not None) else None
+    asset_id = part.get("assetId", "") if is_decal else None
 
     for span in spans:
         span_length = curve_length * (span[1] - span[0])
@@ -1253,41 +1340,52 @@ def _bend_lane_part(part, source, curve, spans, curve_length, width_scale, hang,
         if inverted:
             bezier = (bezier[3], bezier[2], bezier[1], bezier[0])
 
-        tiles, clip = _lane_tile_count(span_length, mesh_length, tiling_count, geometry_tiling)
-        if tiles < 1 or (tiling_count > 0 and clip < 1):
-            continue
-
-        arc = _arc_table(bezier)
-        total_arc = max(arc[-1], 0.001)
+        t_table, arc_table = _arc_table_vec(bezier)
+        total_arc = max(float(arc_table[-1]), 0.001)
 
         # A decal part is a projector box the game stretches chord-to-chord along the lane
         # (BuildTransformMatrix's isDecal path) — it never tiles. Mapped by its authored
         # length, a 64 m box left the tail of longer connector lanes unpainted.
-        decal_stretch = bool(part.get("decal"))
-        if decal_stretch:
+        if is_decal:
             tiles, clip, tiling_count = 1, 0, 0
+        else:
+            tiles, clip = _lane_tile_count(span_length, mesh_length, tiling_count, geometry_tiling)
+        if tiles < 1 or (tiling_count > 0 and clip < 1):
+            continue
 
-        # Decal parts get subdivided along their length and tagged for the road-surface
-        # drape (see _DECAL_DRAPE_STEP): the flat quad approximates a projection, and only
-        # extra vertices let it follow the crown that otherwise buries it.
-        bend_source = source
         drape_eps = None
-        if part.get("decal"):
-            asset_id = part.get("assetId", "")
+        if is_decal and quad is not None:
+            # Tier 1c: rows from THIS span's own curvature (reusing its arc-table samples),
+            # not a fixed 3 m step. The lattice is generated directly — no static mesh to
+            # subdivide, and no memo needed since this is already O(rows), not O(mesh size).
+            curve_points_full = _bezier_point_vec(bezier, t_table)
+            rows = _sagitta_rows(curve_points_full)
+            raw_verts, tris_local, uv_local = _decal_lattice(quad, rows)
+            material_groups = [(quad["material"], numpy.arange(len(tris_local)))]
             drape_eps = (_DECAL_DRAPE_MARKING if ("Line" in asset_id or "Crosswalk" in asset_id)
                          else _DECAL_DRAPE_TINT)
-            if tiling_count > 0:
-                band = total_arc * tiling_count / clip
-            elif decal_stretch:
-                band = total_arc
-            else:
-                band = mesh_length
-            rows = max(1, min(64, int(math.ceil(band / _DECAL_DRAPE_STEP))))
-            key = (id(source), rows)
-            bend_source = _SUBDIVIDED_QUADS.get(key)
-            if bend_source is None:
-                bend_source = _subdivide_decal_quad(source, rows)
-                _SUBDIVIDED_QUADS[key] = bend_source
+        elif is_decal:
+            # Not a simple rectangle (rare) — general path, unsubdivided, same guard the old
+            # _subdivide_decal_quad's `return source` gave it.
+            raw_verts, tris_local, uv_local = source["verts"], source["tris"], source["uvs"]
+            tri_mat = source["tri_material"]
+            material_groups = [(source["materials"][m], numpy.nonzero(tri_mat == m)[0])
+                               for m in numpy.unique(tri_mat)]
+            drape_eps = (_DECAL_DRAPE_MARKING if ("Line" in asset_id or "Crosswalk" in asset_id)
+                         else _DECAL_DRAPE_TINT)
+        else:
+            raw_verts, tris_local, uv_local = source["verts"], source["tris"], source["uvs"]
+            tri_mat = source["tri_material"]
+            material_groups = [(source["materials"][m], numpy.nonzero(tri_mat == m)[0])
+                               for m in numpy.unique(tri_mat)]
+
+        local = _quat_apply_vec(rot, raw_verts) + pos
+        z_fraction = (local[:, 2] - bmin[2]) / mesh_length
+        stations, station_of_vert = numpy.unique(z_fraction, return_inverse=True)
+        station_of_vert = station_of_vert.reshape(-1)  # numpy>=2.0 may keep input's ndim
+        local_x = local[:, 0]
+        local_y = local[:, 1]
+        share_verts = len(material_groups) == 1
 
         for tile in range(tiles):
             if tiling_count > 0:
@@ -1298,65 +1396,73 @@ def _bend_lane_part(part, source, curve, spans, curve_length, width_scale, hang,
                 arc_start = total_arc * clip0 / clip
                 arc_per_z = total_arc * tiling_count / clip
                 arc_limit = total_arc * clip1 / clip
-            elif decal_stretch:
-                arc_start = 0.0
-                arc_per_z = total_arc
-                arc_limit = total_arc
+            elif is_decal:
+                arc_start, arc_per_z, arc_limit = 0.0, total_arc, total_arc
             else:
                 arc_start = tile * mesh_length
                 arc_per_z = mesh_length
                 arc_limit = total_arc
 
-            base = len(sink["verts"])
-            # Vertices sharing a z (the two sides of every quad row) share the whole curve
-            # frame — memoise it per arc position instead of re-evaluating the bezier,
-            # tangent and width for each vertex.
-            frames = {}
-            for v in bend_source["verts"]:
-                local = _quat_apply(rot, v)
-                local = (local[0] + pos[0], local[1] + pos[1], local[2] + pos[2])
-                z_fraction = (local[2] - bmin[2]) / mesh_length
-                arc_position = min(max(arc_start + z_fraction * arc_per_z, 0.0), arc_limit)
-                frame = frames.get(arc_position)
-                if frame is None:
-                    t = _param_at_arc(arc, arc_position)
-                    t_global = (span[1] - (span[1] - span[0]) * t) if inverted \
-                        else (span[0] + (span[1] - span[0]) * t)
+            arc_pos = numpy.clip(arc_start + stations * arc_per_z, 0.0, arc_limit)
+            t = numpy.interp(arc_pos, arc_table, t_table)
+            points = _bezier_point_vec(bezier, t)
+            forward = _bezier_tangent_vec(bezier, t)
+            flen = numpy.linalg.norm(forward, axis=1, keepdims=True)
+            forward = forward / numpy.where(flen == 0, 1.0, flen)
+            # right = normalize(cross(up, forward)) with up = +y (bundle frame)
+            right = numpy.stack((forward[:, 2], numpy.zeros(len(t)), -forward[:, 0]), axis=1)
+            rlen = numpy.linalg.norm(right[:, (0, 2)], axis=1, keepdims=True)
+            right = right / numpy.clip(rlen, 1e-9, None)
 
-                    point = _bezier_point(bezier, t)
-                    forward = _bezier_tangent(bezier, t)
-                    length = math.sqrt(sum(f * f for f in forward)) or 1.0
-                    forward = tuple(f / length for f in forward)
-                    # right = normalize(cross(up, forward)) with up = +y (bundle frame)
-                    right = (forward[2], 0.0, -forward[0])
-                    length = math.hypot(right[0], right[2]) or 1.0
-                    right = (right[0] / length, 0.0, right[2] / length)
+            t_global = numpy.where(inverted, span[1] - (span[1] - span[0]) * t,
+                                   span[0] + (span[1] - span[0]) * t)
+            width = width_scale[0] + (width_scale[1] - width_scale[0]) * t_global
+            drop = _hang_drop_vec(hang, t_global) if hang is not None else numpy.zeros_like(t_global)
 
-                    width = width_scale[0] + (width_scale[1] - width_scale[0]) * t_global
-                    drop = _hang_drop(hang, t_global) if hang is not None else 0.0
-                    frame = (point, right, width, drop)
-                    frames[arc_position] = frame
-                point, right, width, drop = frame
-                sink["verts"].append((point[0] + right[0] * local[0] * width,
-                                      point[1] + local[1] + lift - drop,
-                                      point[2] + right[2] * local[0] * width))
+            world = (points[station_of_vert]
+                    + right[station_of_vert] * (local_x * width[station_of_vert])[:, None])
+            world[:, 1] += local_y + lift - drop[station_of_vert]
 
-            for material, tri, uvs in bend_source["tris"]:
-                sink["loops"].append((material, tuple(base + i for i in tri), uvs))
+            expected = None
             if drape_eps is not None:
-                sink["drape"].extend(
-                    (base + i, drape_eps) for i in range(len(bend_source["verts"])))
+                # The pre-drape height each station's row actually sits at. Decal quads are
+                # flat (local_y == 0 for every lattice vertex), so this equals world[:, 1]
+                # for every vertex at that station — one array serves the whole row.
+                expected = points.copy()
+                expected[:, 1] += lift - drop
+
+            for material, tri_rows in material_groups:
+                if len(tri_rows) == 0:
+                    continue
+                block = {
+                    "verts": world if share_verts else world.copy(),
+                    "tris": tris_local[tri_rows],
+                    "uvs": uv_local[tri_rows],
+                    "material": material,
+                    "drape_eps": drape_eps,
+                }
+                if drape_eps is not None:
+                    block["curve_points"] = expected
+                    block["station_of_vert"] = station_of_vert
+                    block["half_height"] = half_height
+                sink["blocks"].append(block)
 
 
 def _load_lane_source(asset_id, lane_mesh_dir, cache):
     """Import one part .glb once and reduce it to bundle-frame arrays plus its materials.
 
     The importer hands back Blender-local coordinates (glTF x, -z, y); the bundle frame is
-    recovered as (-x, z, -y) of those — the writer's X mirror undone, axes restored. That
-    map has determinant -1, so triangles are emitted reversed here: together with the
-    second reversal at from_pydata (compensating P, also det -1) the facing survives both
-    mirrors. Fences and cables never showed the difference — road markings, draped onto the
-    carriageway and lit from above, render black when their normals point down.
+    recovered as (-x, z, -y) of those — the writer's X mirror undone, axes restored. That map
+    reverses the triangle's apparent winding (an odd number of axis negations/swaps,
+    determinant -1). `build_lanes` applies the SAME determinant-(-1) map again later
+    (`verts[:, [0, 2, 1]]`, converting the bent bundle-frame verts to Blender frame), so the
+    two cancel: net effect is a proper rotation (a 180° turn about the vertical axis — see
+    the frame comment at the top of this file). The triangle winding read straight off the
+    glTF mesh here, with NO reversal, already matches what the old load-then-from_pydata
+    double reversal produced (each reversal undid the other — checked directly against the
+    old pipeline's final loop order, not just the determinant argument). Road markings,
+    draped and lit from above, render black the moment this is wrong — the gorge/suburb A/B
+    renders catch it immediately.
     """
     if asset_id in cache:
         return cache[asset_id]
@@ -1369,25 +1475,106 @@ def _load_lane_source(asset_id, lane_mesh_dir, cache):
             if obj.type != "MESH" or source is not None:
                 continue
             mesh = obj.data
+            count = len(mesh.vertices)
+            co = numpy.empty(count * 3, dtype=numpy.float64)
+            mesh.vertices.foreach_get("co", co)
+            co = co.reshape(-1, 3)
+            verts = numpy.stack((-co[:, 0], co[:, 2], -co[:, 1]), axis=1)
+
+            mesh.calc_loop_triangles()
+            tri_count = len(mesh.loop_triangles)
+            tri_verts = numpy.empty(tri_count * 3, dtype=numpy.int64)
+            mesh.loop_triangles.foreach_get("vertices", tri_verts)
+            tris = tri_verts.reshape(-1, 3)
+
+            materials = list(mesh.materials) if mesh.materials else [None]
+            if mesh.materials:
+                tri_poly = numpy.empty(tri_count, dtype=numpy.int64)
+                mesh.loop_triangles.foreach_get("polygon_index", tri_poly)
+                poly_material = numpy.empty(len(mesh.polygons), dtype=numpy.int64)
+                mesh.polygons.foreach_get("material_index", poly_material)
+                tri_material = poly_material[tri_poly]
+            else:
+                tri_material = numpy.zeros(tri_count, dtype=numpy.int64)
+
             uv_layer = mesh.uv_layers.active
-            verts = [(-v.co.x, v.co.z, -v.co.y) for v in mesh.vertices]
-            tris = []
-            for poly in mesh.polygons:
-                indices = list(poly.vertices)
-                uvs = [tuple(uv_layer.data[i].uv) if uv_layer else (0.0, 0.0)
-                       for i in poly.loop_indices]
-                material = mesh.materials[poly.material_index] if mesh.materials else None
-                # fan-triangulate the rare n-gon; glb import normally hands triangles
-                for k in range(1, len(indices) - 1):
-                    tris.append((material,
-                                 (indices[0], indices[k + 1], indices[k]),
-                                 (uvs[0], uvs[k + 1], uvs[k])))
-            source = {"verts": verts, "tris": tris}
+            if uv_layer is not None and tri_count:
+                tri_loops = numpy.empty(tri_count * 3, dtype=numpy.int64)
+                mesh.loop_triangles.foreach_get("loops", tri_loops)
+                all_uv = numpy.empty(len(mesh.loops) * 2, dtype=numpy.float64)
+                uv_layer.data.foreach_get("uv", all_uv)
+                uvs = all_uv.reshape(-1, 2)[tri_loops].reshape(-1, 3, 2)
+            else:
+                uvs = numpy.zeros((tri_count, 3, 2), dtype=numpy.float64)
+
+            quad = _decal_quad_info(verts, tris, uvs)
+            if quad is not None:
+                quad["material"] = materials[int(tri_material[0])] if tri_count else None
+            source = {"verts": verts, "tris": tris, "uvs": uvs,
+                     "tri_material": tri_material, "materials": materials, "quad": quad}
         for obj in imported:
             bpy.data.objects.remove(obj, do_unlink=True)
 
     cache[asset_id] = source
     return source
+
+
+def _drape_block(block, road_surface, counters):
+    """Sample the road surface once per unique STATION instead of once per vertex.
+
+    A decal quad's left and right edge share the same height at a given arc position — every
+    lattice vertex has `local_y == 0` (§Tier 1c / `_decal_lattice`), so `world[:, 1]` never
+    varies across a row before draping. That makes per-station sampling an EXACT match for
+    the old per-vertex drape's accuracy (not an approximation of it), for a free ~2x cut in
+    ray-casts from dropping the redundant duplicate query on each row's other edge. A miss
+    (no surface within the marking's own reach) keeps that station's bent height, exactly
+    like the old per-vertex miss path — no fill-in borrowed from a neighbouring station.
+
+    This is deliberately NOT the more aggressive Tier 1b originally planned — one or two
+    ray-casts for a whole marking, with the road height interpolated across every station in
+    between. That was measured against the fully imported crosswalk region (task-6-report.md)
+    and falsified: near junctions the true road height jumps by more than half a metre within
+    a few metres of arc length (stacked levels, kerb ramps, lane merges), so interpolating
+    between two distant samples invents a height no real point on the surface ever had — up
+    to 657 mm off in the worst measured case, 47x past the ~14 mm budget, even at the
+    brief's fallback 16 m sampling interval. Per-station sampling has no such failure mode:
+    Tier 1c already puts MORE stations exactly where curvature (and so real height change) is
+    highest, which is precisely where interpolation would have been least safe.
+    """
+    points = block["curve_points"]
+    station_of_vert = block["station_of_vert"]
+    half = block["half_height"]
+    eps = block["drape_eps"]
+
+    new_y = block["verts"][:, 1].copy()
+    draped = missed = 0
+    for i in range(len(points)):
+        x, y_pre, z = points[i]
+        counters["queries"] += 1
+        top = road_surface.drop(float(x), float(z), float(y_pre), half, half)
+        at_station = station_of_vert == i
+        if top is None:
+            missed += int(at_station.sum())
+            continue
+        new_y[at_station] = top + eps
+        draped += int(at_station.sum())
+
+    block["verts"][:, 1] = new_y
+    counters["draped"] += draped
+    counters["missed"] += missed
+
+
+def _lane_object_arrays(blocks):
+    """Concatenate one prefab's blocks into a single verts/tris/uvs/material_runs set, still
+    in bundle frame, ready for the one Blender-frame axis swap and `_mesh_from_arrays`."""
+    counts = [len(block["verts"]) for block in blocks]
+    offsets = numpy.concatenate(([0], numpy.cumsum(counts)))[:-1]
+    verts = numpy.concatenate([block["verts"] for block in blocks], axis=0)
+    tris = numpy.concatenate(
+        [block["tris"] + offset for block, offset in zip(blocks, offsets)], axis=0)
+    uvs = numpy.concatenate([block["uvs"].reshape(-1, 2) for block in blocks], axis=0)
+    material_runs = [(block["material"], len(block["tris"])) for block in blocks]
+    return verts, tris, uvs, material_runs
 
 
 def build_lanes(lanes_path, catalogue_path, lane_mesh_dir, collection,
@@ -1404,7 +1591,6 @@ def build_lanes(lanes_path, catalogue_path, lane_mesh_dir, collection,
         catalogue = json.load(handle)
 
     sources = {}
-    _SUBDIVIDED_QUADS.clear()  # keyed by id(source); stale ids from a prior call could alias
     builders = {}
     counts = {}
     bent = missing_prefab = missing_mesh = skipped_region = skipped_limit = 0
@@ -1424,8 +1610,7 @@ def build_lanes(lanes_path, catalogue_path, lane_mesh_dir, collection,
             skipped_limit += 1
             continue
 
-        table = _arc_table(curve)
-        curve_length = table[-1]
+        curve_length = _curve_length(curve)
         spans = record.get("spans") or [[0.0, 1.0]]
         width_scale = record.get("widthScale", [1.0, 1.0])
 
@@ -1442,8 +1627,7 @@ def build_lanes(lanes_path, catalogue_path, lane_mesh_dir, collection,
         # (§7.2), and the distinct paints per prefab are few — the variation table is small.
         color_set = record.get("colorSet")
         key = (record["prefab"], json.dumps(color_set, sort_keys=True) if color_set else "")
-        sink = builders.setdefault(key, {"verts": [], "loops": [], "colorSet": color_set,
-                                         "drape": []})
+        sink = builders.setdefault(key, {"blocks": [], "colorSet": color_set})
 
         for index in record.get("parts", []):
             parts = entry.get("parts", [])
@@ -1464,73 +1648,59 @@ def build_lanes(lanes_path, catalogue_path, lane_mesh_dir, collection,
     # The bend loop above prints its progress; everything below (drape ray-casts, lazy
     # road-surface BVH builds, object construction) is the quiet expensive part of a
     # full-city run — announce it so a long silence reads as work, not a hang.
-    to_drape = sum(len(sink["drape"]) for sink in builders.values())
+    drape_blocks = [block for sink in builders.values() for block in sink["blocks"]
+                    if block["drape_eps"] is not None]
+    to_drape = sum(len(block["station_of_vert"]) for block in drape_blocks)
     if road_surface is not None and to_drape:
-        LOG.step(f"bending done; draping {to_drape} decal vertex(es) onto the road "
-                 f"surface and building {len(builders)} object(s)")
+        LOG.step(f"bending done; draping {len(drape_blocks)} marking(s) "
+                 f"({to_drape} decal vertex(es)) onto the road surface and "
+                 f"building {len(builders)} object(s)")
+
+    # One ray-cast per unique STATION, not per vertex (see _drape_block) — a verified-exact
+    # ~2x cut from dropping each row's redundant duplicate query, compounding with Tier 1c's
+    # curvature-driven station count. Progress strides in markings (blocks), not vertices or
+    # queries: there are two orders of magnitude fewer of them, and the "draped" count on the
+    # summary line below is the one tools/ab_compare.py's COUNT_MARKERS is expected to move
+    # (Tier 1c changed how many decal vertices exist at all) — quote old vs new there.
+    counters = {"draped": 0, "missed": 0, "queries": 0}
+    if road_surface is not None:
+        for seen, block in enumerate(drape_blocks, 1):
+            _drape_block(block, road_surface, counters)
+            if seen % 5000 == 0:
+                LOG.step(f"{seen}/{len(drape_blocks)} marking(s) draped")
+    draped, drape_missed = counters["draped"], counters["missed"]
+
+    # A heavily tiled non-decal part (train sleepers/rails, catenary cable — a repeated
+    # section stamped along the whole curve) can have its LAST tile's clip window fall short
+    # of a full section: every station past the clip boundary gets clamped to the same arc
+    # position (see the `numpy.clip` in the tile loop above), so the vertices between them
+    # collapse onto one point-and-width axis — geometrically zero area, but not a hint of bad
+    # data, just where a fixed-size repeating section doesn't divide the span evenly. This is
+    # NOT specific to the array rewrite: the previous `mesh.from_pydata` pipeline built the
+    # identical degenerate triangles from the identical bend math, it just never noticed (an
+    # invisible, zero-area face costs nothing to leave in a mesh, so nothing ever caught it).
+    # `_mesh_from_arrays` now does — correctly — and would otherwise print a `CONTRACT
+    # VIOLATION` per object, which on a full city is ~2,000 lines about a phenomenon that is
+    # not a violation. One aggregated line at the end of the phase instead; the exact wording
+    # is reserved for a caller (like this one, by default) that has NOT set this up and so
+    # genuinely doesn't know why a face was degenerate.
+    degenerate_totals = {"faces": 0, "objects": 0}
+
+    def _report_lane_degenerate(_name, dropped):
+        degenerate_totals["faces"] += dropped
+        degenerate_totals["objects"] += 1
 
     built = 0
-    draped = drape_missed = 0
-    drape_seen = 0
     for (prefab_key, _), sink in builders.items():
-        if not sink["loops"]:
+        blocks = [block for block in sink["blocks"] if len(block["tris"])]
+        if not blocks:
             continue
 
-        # Drape: snap decal vertices onto the road surface actually built (bundle frame
-        # (x, y, z) is Blender (x, z, y)). A miss — a marking past the imported region's
-        # road cut, or a lane the networks layer skipped — keeps its bent height + lift.
-        if road_surface is not None and sink["drape"]:
-            verts = sink["verts"]
-            for index, epsilon in sink["drape"]:
-                x, y, z = verts[index]
-                top = road_surface.drop(x, z, y)
-                if top is None:
-                    drape_missed += 1
-                else:
-                    verts[index] = (x, top + epsilon, z)
-                    draped += 1
-                drape_seen += 1
-                # Not LOG.progress(): its non-TTY stride is 5% of `to_drape`, but this
-                # line's own text matches the "draped" count marker (tools/ab_compare.py),
-                # so any stride other than the exact one the A/B baseline was captured
-                # with would add or drop gated lines. The fixed 250,000 stride keeps this
-                # identical to the pre-_Log behaviour; only the styling call changed.
-                if drape_seen % 250000 == 0:
-                    LOG.step(f"{drape_seen}/{to_drape} decal vertex(es) draped")
-
-        mesh = bpy.data.meshes.new(f"lane_{prefab_key}")
-        # Bundle → Blender is P·(bend), det -1, so faces are emitted reversed to keep their
-        # facing — the same compensation the writer applies for its X mirror.
-        mesh.from_pydata([bundle_to_blender_point(v) for v in sink["verts"]], [],
-                         [tuple(reversed(loop[1])) for loop in sink["loops"]])
-
-        slots = {}
-        for material, _, _ in sink["loops"]:
-            if material is not None and material.name not in slots:
-                slots[material.name] = len(mesh.materials)
-                mesh.materials.append(material)
-
-        uv_layer = mesh.uv_layers.new()
-        if len(mesh.polygons) == len(sink["loops"]):
-            # Bulk-assign via foreach_set — per-loop Python assignment dominates object
-            # build time on a full city's multi-million-loop merged lane meshes.
-            mesh.polygons.foreach_set(
-                "material_index",
-                [slots[material.name] if material is not None else 0
-                 for material, _, _ in sink["loops"]])
-            flat_uvs = [c for _, _, uvs in sink["loops"] for uv in reversed(uvs) for c in uv]
-            uv_layer.data.foreach_set("uv", flat_uvs)
-        else:
-            # from_pydata dropped an invalid face; fall back to the positional walk
-            loop_cursor = 0
-            for polygon, (material, _, uvs) in zip(mesh.polygons, sink["loops"]):
-                if material is not None:
-                    polygon.material_index = slots[material.name]
-                for uv in reversed(uvs):
-                    uv_layer.data[loop_cursor].uv = uv
-                    loop_cursor += 1
-
-        mesh.validate()
+        verts, tris, uvs, material_runs = _lane_object_arrays(blocks)
+        verts = verts[:, [0, 2, 1]]  # bundle -> Blender: X stays, Y<->Z swap, no sign flip
+        mesh = _mesh_from_arrays(f"lane_{prefab_key}", verts, tris,
+                                 uv_layers={"UVMap": uvs}, material_runs=material_runs,
+                                 poly_size=3, smooth=False, degenerate_report=_report_lane_degenerate)
         obj = bpy.data.objects.new(f"lane_{prefab_key}", mesh)
         collection.objects.link(obj)
         if sink["colorSet"] is not None:
@@ -1539,12 +1709,19 @@ def build_lanes(lanes_path, catalogue_path, lane_mesh_dir, collection,
 
     LOG.done(f"lanes:     {bent} record(s) bent into {built} object(s), "
              f"{len(sources)} part mesh(es) loaded")
+    if degenerate_totals["faces"]:
+        LOG.step(f"{degenerate_totals['faces']} degenerate face(s) dropped across "
+                 f"{degenerate_totals['objects']} object(s) — a heavily tiled part's last "
+                 "tile clipping short of a full section, not a bundle defect")
     if draped or drape_missed:
         LOG.step(f"{draped} decal vertex(es) draped onto the road surface"
                  + (f", {drape_missed} kept the fixed lift (no surface hit)" if drape_missed else ""))
     elif road_surface is None:
         LOG.warn("networks layer not built — decals keep the fixed lift, expect "
                  "markings to z-fight or sink into the crown")
+    if road_surface is not None and road_surface.kerb_rejections:
+        LOG.step(f"{road_surface.kerb_rejections} drape sample(s) where the nearest-surface "
+                 "pick differed from the highest hit in range (Tier 0: kerb/wall snap avoided)")
     for category, count in sorted(counts.items()):
         LOG.step(f"category {category}: {count}")
     if skipped_region:
