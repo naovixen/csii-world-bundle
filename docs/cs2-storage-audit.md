@@ -72,6 +72,61 @@ python "$SCRATCH/audit/baseline.py" "$BUNDLE"
 `4,894,194,530` bytes is the number every later "share of total" percentage in this document
 divides by.
 
+### Provenance note: the bundle is not one rip, and `terrain/` has already moved
+
+The census above is of the bundle as it stood at the end of the main rip, **2026-08-07
+11:50:23–12:23:24** (`head -1 "$LOG"`, §8's own bracket table). Commit `8985b73` ("Producer:
+tunnel lanes tagged, splatmap semantics string; awaiting re-rip validation") has a **git commit
+timestamp of 13:54 that day — after this rip finished.** Its file list, confirmed directly:
+
+```
+git show --stat 8985b73
+```
+
+→ `Domain/LaneGeometryRecord.cs` (+3), `IO/NetworkWriter.cs` (+2), `Systems/MaterialRipSystem.cs`
+(1 line, a `private`→`internal` visibility change only — no behavioural effect on §1's texture
+bytes), `Systems/MeshRipSystem.cs` (+68), `Systems/NetworkRipSystem.GameMesh.cs` (+109),
+`Systems/NetworkRipSystem.cs` (+155), `Systems/TerrainRipSystem.cs` (+392), plus schema/tooling
+files. Mapped onto this document's sections: **§2 (meshes), §3 (networks), §6 (markings, via the
+new tunnel-lane tag) and §7 (terrain) touch files this commit changed; §4 (`instances.jsonl`) and
+§5 (`lanes.jsonl`) do not** — `IO/LaneWriter.cs`, `Domain/LaneRecord.cs` and
+`Systems/LaneRipSystem.cs` are absent from the changed-file list, the same correction §5's own
+staleness note already made and verified independently here.
+
+**But "changed after the rip" is not the same as "not yet in the rip," and `terrain/` is the
+proof.** `terrain/` was re-ripped in isolation at **21:34:25–21:36:17** (the current live
+`Carto.log`, 14 lines, `head -1`/`tail -1` timestamps) and file mtimes on disk confirm it: every
+other top-level entry in `$BUNDLE` still carries an 11:50–12:23 mtime; every file under
+`terrain/` (all 41) carries a 21:36 mtime. That much matches the obvious reading — a later rip,
+of `terrain/` only, after the commit landed. What does **not** match the obvious reading:
+`full-log-repr.txt` — the preserved copy of the *original* 257-line rip log, §8's own source
+(now also `docs/cs2-storage-audit-riplog-2026-08-07.txt`, see §8) — already contains, inside the
+original rip's own 12:23:17–12:23:24 terrain bracket, the lines `Splatmap: 4096x4096
+ground-blend weights captured (multiplier 2.00, power 1.00)`, `User splatmap: painted surfaces
+present, 4096x4096 captured` and `World terrain: no backdrop heightmap resident; layer omitted`
+— text that exists nowhere in git history before `8985b73` (`TerrainRipSystem.cs` has zero
+matches for `splat` in every ancestor commit, checked directly:
+`git log --all --oneline -- Systems/TerrainRipSystem.cs` then `git show <parent>:Systems/TerrainRipSystem.cs
+| grep -i splat` → no output). The only consistent reading: the splatmap-capture code was
+**already built and running** for the 11:50–12:23 rip, and `8985b73`'s commit — landed
+afterward — is a normal build-then-commit gap, not a boundary the terrain data itself crossed.
+Directly confirmed byte-for-byte: **38 of `terrain/`'s 41 files are unchanged between the two
+rips**; only `splatmap.png` (11,881,840 → 10,042,179 B, −1,839,661 B), `water_level.png`
+(783,040 → 780,555 B, −2,485 B) and `heightmap.png` (−1 B) differ, summing to exactly
+72,050,547 − 70,208,400 = **1,842,147 B**, the whole of the drop — no code diff exists between
+the two rips that touches `CaptureSplatmap`, so this residual delta is examined as session
+variance, not a format change, in §7.
+
+**Net effect on this document's numbers:** the `terrain/` row in the census table above no
+longer reproduces from a fresh rip — it is **4,894,194,530 B as censused, with `terrain/` since
+reduced by 1,842,147 B (72,050,547 → 70,208,400 B), i.e. 4,892,352,383 B if the bundle were
+re-assembled today from the two rips as they currently stand on disk.** §7 measures the current,
+21:36 state of `terrain/` (necessarily — the 11:50–12:23 version of `splatmap.png`/
+`water_level.png` no longer exists to measure) and says so at its head. A future full re-rip,
+run entirely under code at or after `8985b73`, could additionally move the §1 (negligibly), §2,
+§3 and §6 byte counts, none of which have been re-measured against post-`8985b73` code in this
+task; §4 and §5 would not move, per the file list above.
+
 ### Networks count reconciliation
 
 Three numbers were reported for `networks/` before this task: 7,248 (files on disk), 8,259
@@ -2058,7 +2113,363 @@ with compression, or 83.98% even without) already exhausts the useful room, and 
 
 ## 6. Markings and decals
 
+Road markings are not a byte question in this bundle — they are already the parametric layer
+§3.4/§5.4 hold up as the *target* shape for `networks/`/`lanes.jsonl`. `lanemeshes.jsonl` +
+`lanemeshes/` (§5B v2 of `docs/bundle-schema.md`, cited, not re-derived) already ship bend
+parameters plus 71 deduped straight-part meshes, not baked-per-instance geometry. What this
+section adds is the number the earlier sections only referenced: the game's own draw cost for a
+marking is a single instanced projector, while the reference consumer's cost for the *same* data
+is a real, measured, disproportionate CPU expense — and that expense is a rip/import-time fact,
+not a disk-space one. Following this task's brief, the two are kept apart rather than folded
+into one "markings cost X" sentence.
+
+### 6.1 What we ship, and how much of it is markings
+
+Command:
+
+```
+python - <<'PY'
+import json, os, collections
+from pathlib import Path
+root = Path(os.environ["BUNDLE"])
+laneprefabs = json.load(open(root / "laneprefabs.json", encoding="utf-8"))
+decal_parts_by_prefab = {name: {i for i, p in enumerate(e.get("parts", [])) if p.get("decal")}
+                          for name, e in laneprefabs.items()}
+total = decal_records = tunnel_count = 0
+total_by_category = collections.Counter(); decal_by_category = collections.Counter()
+with open(root / "lanemeshes.jsonl", encoding="utf-8") as handle:
+    for line in handle:
+        rec = json.loads(line); total += 1
+        total_by_category[rec.get("category", "?")] += 1
+        if rec.get("tunnel"): tunnel_count += 1
+        if any(p in decal_parts_by_prefab.get(rec.get("prefab"), set()) for p in rec.get("parts", [])):
+            decal_records += 1; decal_by_category[rec.get("category", "?")] += 1
+print(total, decal_records, dict(total_by_category), dict(decal_by_category), tunnel_count)
+PY
+```
+
+`measured`, full population (119,302 of 119,302 records, cross-referencing every `parts` index
+against `laneprefabs.json`'s own `decal` flag rather than trusting the `category` field alone):
+
+| | |
+|---|---:|
+| `lanemeshes.jsonl` | 28,063,057 B (26.8 MiB) — matches §0's census exactly |
+| `lanemeshes/` | 2,738,524 B (2.6 MiB), 71 deduped part meshes — matches §0's census exactly |
+| **combined** | **30,801,581 B (29.4 MiB), 0.629% of the whole 4,894,194,530-byte bundle** |
+| total records | 119,302 |
+| records carrying ≥1 `decal`-flagged part (road markings) | **82,908 (69.5%)** |
+| by category | `lane` 82,908, `fence` 26,240, `cable` 10,154 (no `pipe` in this city) |
+| decal records by category | `lane` 82,908 — **exactly** the whole `lane` category, in both directions | 
+| records tagged `tunnel: true` | 3,214 |
+
+The `category: "lane"` field and "carries a decal part" turn out to be the same 82,908 records
+in this bundle, checked directly rather than assumed — every `lane`-category record has ≥1
+decal part and no `fence`/`cable` record does. This is the exact figure the brief's own framing
+rounds to "~83k markings," and it is close to (not identical to — a different rip) the
+83,110 the perf-refactor design doc measured on its own full-city run
+(`docs/superpowers/plans/2026-08-07-import-performance-refactor.md:612-613`, cited below).
+
+`tunnel: true` (3,214 records) is `Domain/LaneGeometryRecord.cs`'s new field, the change commit
+`8985b73` names in its own message. It is already present in **this** bundle despite
+`lanemeshes.jsonl`'s file mtime (12:22, inside the original 11:50–12:23 rip) predating the
+commit's git timestamp (13:54) — the same build-predates-commit pattern §0's provenance note
+documents for `terrain/`'s splatmap capture, confirmed here a second time on an independent
+file. No re-rip is needed to pick this field up; it is already in the numbers above.
+
+### 6.2 Byte cost: closed
+
+**No candidate is proposed for this domain's bytes.** 29.4 MiB total, 0.629% of the bundle, is
+already the smallest-representation form this document has been measuring toward for every
+other geometry-heavy domain (§3.4's `networks/` projection, §5.4's `lanes.jsonl` Bézier): bend
+parameters plus deduped source meshes, not per-instance baked geometry. There is nothing left to
+project onto a smaller encoding — this closes the byte side of the brief's own framing.
+
+### 6.3 Import-time cost: real, disproportionate, and filed here — not resolved by the obvious fix
+
+**The game's own cost, for comparison.** `docs/cs2-api-audit.md` §19 (cited, not re-derived):
+a lane marking's mesh UVs are never sampled by the shader at all — the game hands
+`DecalProperties.m_TextureArea` from the prefab straight to `ManagedBatchSystem.CreateBatch`,
+and the decal is drawn as **one instanced projector box per marking, positioned by a curve
+matrix**, with zero per-vertex CPU work at draw time. §5B's bend algorithm (§ above) is already
+this bundle's own reference implementation of the *matrix*, not the projector — a consumer that
+wants the game's own draw cost implements an instanced-box decal shader, not a mesh.
+
+**The reference consumer's cost is not that.** `tools/blender_import_bundle.py` builds and
+drapes real per-vertex geometry for every marking instead, and the cost was measured, not
+guessed, before this task (`docs/superpowers/plans/2026-08-07-import-performance-refactor.md:611-613`,
+quoted verbatim): *"The game never bakes marking geometry: it draws one instanced projector box
+per marking and projects it onto the depth buffer. Our baked-and-draped equivalent costs
+2,240,914 verts, ~1.7 GB of Python lists and 2,240,914 BVH ray-casts for 83,110 markings."*
+`measured`, from a full-city run of the tool, cited rather than re-run (re-running a full-city
+Blender import is out of scope for this measurement-only task).
+
+**That number is already stale — one optimization landed, one was tried and killed by
+measurement.** `tools/blender_import_bundle.py:1070-1077` (current code, read in full):
+
+```python
+# Tier 1c (2026-08-07 amendment): the fixed _DECAL_DRAPE_STEP = 3.0 m subdivision drove both
+# the vertex count and the ray-cast count of the old per-vertex drape (2.24M of each for
+# 83,110 markings). Replaced by a sagitta rule: subdivide only as much as the bézier's own
+# curvature demands, measured against the arc-table samples the bend already computes (free
+# reuse, no extra bézier evaluation). ... Measured effect: 2.24M -> ~1.06M verts.
+_DRAPE_SAGITTA_TOLERANCE = 0.02  # metres
+```
+
+A second, larger-looking optimization — one ray-cast per *marking* instead of per vertex, a
+further 17× cut to ~132,395 ray-casts — was designed, implemented, and then **falsified by its
+own A/B measurement and dropped**
+(`docs/superpowers/specs/2026-08-07-import-performance-refactor-design.md:163-172`, quoted): *"One
+drape sample per marking (17x fewer ray-casts). Measured inside Blender against the full imported
+surface: errors up to 657 mm, 42/1092 samples beyond a marking's own lift. The road crown is not
+the smooth profile the estimate assumed."* And the ray-cast **dedup** that made the per-vertex
+form look 2× cheaper than it really was turned out to be unsound too — it was only exact because
+the drape sampled the lane centreline rather than each vertex's own laterally-offset position, a
+defect worth up to 205 mm on crosswalks; fixing it (sampling per vertex, as correctness requires)
+removed the dedup, "leaving ~2.1x (sagitta subdivision alone)." **Current, landed state: ~1.06M
+vertices and ~1.06M ray-casts** — both figures down from 2.24M by the sagitta rule alone, not by
+either of the two more aggressive cuts the plan originally proposed.
+
+**The wall-clock result is the honest, load-bearing number, and it is disappointing — reported
+plainly, the same way §4 reported INST-1 beating INST-2 outright.** The same design doc's own
+measured "Outcome" table, full-city run, before/after the sagitta change landed
+(`docs/superpowers/plans/2026-08-07-import-performance-refactor.md:151-156`):
+
+| Phase | Before | After |
+|---|---:|---:|
+| Lane geometry (119,302 records — cable + fence + the 82,908 markings, not markings alone) | 374.9 s | **381.8 s** |
+
+`measured`. A **~2.1× cut in vertex and ray-cast count produced no wall-clock win** — the phase
+is 6.9 s *slower* after the optimization landed, within the noise of a full-city Blender run but
+certainly not the speedup a naive "half the ray-casts, half the time" model predicts. Two
+follow-up techniques that might actually close the gap — instancing one shared quad per marking
+(borrowing the game's own structure, named "Tier 2" in the design doc) and a bundle-contract
+change to stop baking `networks/` the way NET-1 (§3.4) already sizes — are **named, not built**
+(`docs/superpowers/specs/2026-08-07-import-performance-refactor-design.md:182-184`, "Follow-ups
+recorded, not done here").
+
+**Closed for this task's purposes**, per the brief's own pass criterion: the marking import-time
+cost is stated in the units it was measured in (vertices: 2.24M → 1.06M; ray-casts: 2.24M →
+1.06M; wall-clock: 374.9 s → 381.8 s for the whole lane-geometry phase) and lives here, in §6/§8,
+never in a bytes column. No new measurement was performed in this task beyond the cross-checked
+census in §6.1 — the import-time figures above are cited from the already-landed, already-A/B-
+tested perf-refactor work, not re-derived, per this task's own scope (measurement-only, no
+producer or harness code changes).
+
 ## 7. Terrain
+
+**This section measures the current, on-disk state of `terrain/` — the 21:34:25–21:36:17 rerip,
+not the 11:50–12:23 rip §0's census table rows for every other domain.** §0's provenance note
+(read first) establishes why: `terrain/` was re-ripped in isolation after this bundle's main
+rip, and the pre-rerip bytes of the three files that changed no longer exist to measure. File
+count is unchanged (41, matching §0's census exactly) and 38 of the 41 files are confirmed
+byte-identical to the original rip; only `splatmap.png`, `water_level.png` and `heightmap.png`
+differ, and by exactly enough to account for the whole size delta (§0). Command:
+
+```
+ls -la "$BUNDLE/terrain" && cat "$BUNDLE/terrain/rasters.json"
+```
+
+Current total: **70,208,400 B (66.96 MiB), 41 files** — down from the census's 72,050,547 B
+(68.7 MiB), a **2.56% reduction**, all of it in the three files above. As a share of the
+4,894,194,530-byte census total this domain moves from 1.472% to 1.435% — the kind of change
+that does not alter this document's ranking of anything, but is stated exactly rather than
+waved at.
+
+### 7.1 What we ship
+
+Six top-level rasters (`heightmap.png`, `water_level.png`, `splatmap.png`, `user_splatmap.png`,
+`surface_index.png`, `cutout.png`) plus `rasters.json` (geo-referencing and semantics for each)
+and `terrain/surfaces/` (33 ground-texture PNGs — diffuse + tangent-normal per core ground,
+diffuse + normal per painted "extra" ground — plus an `index.json` catalogue; 6 + 1 + 33 + 1 =
+41, matching §0's file count exactly). This is a materially richer layer than the
+brief's own opening description ("69 MB of rasters") anticipated — the splatmap/user-splatmap/
+world-heightmap capture and the normal-map/extra-ground surfaces are all new since Phase 6 was
+last measured, landed the same day as this bundle's rip (§0's provenance note; `docs/cs2-api-audit.md`
+§22a). None of that is re-litigated here — §17/§20/§22/§22a already validate the roadbed,
+cutout, water-level decode and splatmap mechanisms rule-by-rule against decompiled source,
+cited rather than re-derived.
+
+### 7.2 What the game stores
+
+Not re-derived — `docs/cs2-api-audit.md` §17, §20, §22 and §22a already did this rule-by-rule
+against `Game.Simulation.TerrainSystem`/`WaterUtils`/`TerrainMaterialSystem`, and this task's
+brief scopes terrain as a confirm-and-close domain, not a re-audit. The one fact worth repeating
+because §7.3 depends on it: §22a's own semantics block (verbatim in `terrain/rasters.json`,
+§7.1) states the splatmap is *"GPU-generated ground-blend weights (height variance, rock/grass
+limits, noise, user brush)"* — a per-pixel render with a **noise input**, not a pure function of
+static terrain state the way the heightmap is (§22 row 15: heightmap "ships... verbatim", a
+**match** with no runtime component named).
+
+### 7.3 Smallest lossless encoding
+
+**Pure zlib-9 floor (filter unchanged, compression level only) — already closed, by a wide
+margin.** Command:
+
+```
+python - <<'PY'
+import os, zlib
+from pathlib import Path
+import numpy
+from PIL import Image
+root = Path(os.environ["BUNDLE"]) / "terrain"
+for path in sorted(root.glob("*.png")):
+    with Image.open(path) as image:
+        pixels = numpy.asarray(image)
+    raw = pixels.tobytes()
+    z9 = len(zlib.compress(raw, 9))
+    print(path.name, path.stat().st_size, z9, f"{z9/path.stat().st_size*100:.1f}%")
+PY
+```
+
+`measured`, full population (39 PNGs — 6 top-level, `rasters.json`/`index.json` are not PNGs and
+are excluded, plus the 33 `surfaces/` PNGs; this rip carries no `world_heightmap.png`, §7.1):
+
+| | shipped | zlib-9 (filter unchanged) | ratio |
+|---|---:|---:|---:|
+| 6 top-level rasters | 16.03 MiB | 15.56 MiB | 97.1% |
+| `surfaces/` (33 PNGs) | 50.93 MiB | 50.05 MiB | 98.3% |
+| **`terrain/` total** | **66.95 MiB** | **65.60 MiB** | **98.0%** |
+
+**Closed: 2.0% headroom, the same order of magnitude as §1's
+textures at the same compression-level-only step (textures: 8.0% at adaptive+zlib-9 combined;
+terrain, filter-unchanged alone: 2.0%) and far below anything worth a candidate row on its
+own.**
+
+**Adaptive per-row filtering — the brief's other half of the question, and the answer is not
+the one §1 found.** §1.1 established the house PNG encoder (`IO/Png.cs`) writes filter "None"
+on every scanline with `Deflater.DEFAULT_COMPRESSION`, and §1.4 measured that switching to
+per-row adaptive filtering (still lossless — every variant below decodes bit-identically, or
+does not count) saved textures/ 8.0% at zlib-9. Terrain rasters are a different kind of image
+(large smooth gradients and near-flat blends rather than photographic detail) — tested directly
+rather than assumed to behave the same way:
+
+```
+# per file: encode with PIL's adaptive per-row filter heuristic at zlib 6 and zlib 9,
+# assert numpy.array_equal(decoded, original) for every file before counting it
+```
+
+`measured`, full population (39 files, all round-trips bit-exact):
+
+```
+TOTAL as-shipped:   66.95 MiB (70,207,101 B)
+TOTAL adaptive+z6:  69.72 MiB (73,107,969 B)  104.1% of shipped  -- WORSE
+TOTAL adaptive+z9:  68.84 MiB (72,188,894 B)  102.8% of shipped  -- WORSE
+```
+
+**A blanket "adaptive filter everything" policy is a net loss for this domain** — the opposite
+of §1's result. Cause, visible directly in the per-file breakdown: 27 of the 33 `surfaces/`
+files (ordinary ground-texture atlases — grass, sand, tile, concrete) get *larger* under
+adaptive filtering, several by 30–45% (`area_Pavement_Surface_01.png`: 0.58 → 0.79 MiB, +36%),
+because PIL's per-row filter heuristic (minimum sum of absolute differences) is not the same
+thing as minimum *compressed* bytes, and these textures' high-frequency natural detail defeats
+the decorrelation filters try to exploit — filter "None" plus a good deflate pass is already
+close to optimal for this specific content, the reverse of the photographic-texture case §1
+measured.
+
+**But 11 of the 39 files genuinely do benefit, `heightmap.png` by a wide margin** — checked
+per-file rather than accepting the blanket-policy loss as the final word (a per-file `min(as-
+shipped, adaptive+zlib-9)` choice, the same "ship whichever representation is smallest, per
+file" logic §1's TEX-3+4 joint row already used):
+
+| file | shipped | adaptive+zlib-9 | saved |
+|---|---:|---:|---:|
+| `heightmap.png` | 4.44 MiB | 3.07 MiB | **30.8%** |
+| `surfaces/rock.png` | 2.22 MiB | 1.81 MiB | 18.7% |
+| `user_splatmap.png` | 1.02 MiB | 0.84 MiB | 18.3% |
+| `surfaces/extra4_normal.png` | 1.95 MiB | 1.61 MiB | 17.3% |
+| `surfaces/rock_normal.png` | 3.07 MiB | 2.70 MiB | 12.0% |
+| `water_level.png` | 0.74 MiB | 0.66 MiB | 11.7% |
+| `splatmap.png` | 9.58 MiB | 8.68 MiB | 9.4% |
+| `surfaces/extra3_normal.png` | 2.75 MiB | 2.48 MiB | 9.6% |
+| `surfaces/dirt_normal.png` | 2.99 MiB | 2.76 MiB | 7.5% |
+| `surface_index.png` | 0.22 MiB | 0.17 MiB | 23.0% |
+| `surfaces/dirt.png` | 2.29 MiB | 2.16 MiB | 5.6% |
+
+`measured`, exact, full population, every round-trip bit-exact. Selective total: **62.62 MiB,
+saved 4.33 MiB (6.47% of `terrain/`, 0.09% of the whole bundle)** — real, lossless, and small in
+absolute terms, exactly the shape the brief anticipated ("expected to yield nothing"), except
+that it is not quite nothing: `heightmap.png`'s 16-bit grayscale gradient is genuinely
+filter-friendly (a smooth, mostly-monotonic elevation field is close to ideal input for the Up/
+Paeth predictors), unlike the photographic `surfaces/` textures beside it in the same directory.
+
+### Candidate rows
+
+**Lossless candidates:**
+
+| id | change | est. bytes saved | est. rip-time saved | consumer cost | risk | lossless? | additive layer |
+|---|---|---|---|---|---|---|---|
+| TERRAIN-1 | Selective adaptive per-row filtering + zlib-9, applied only to the 11 of 39 files where it measurably wins (dominated by `heightmap.png`'s 30.8%); leave the other 28 (mostly `surfaces/` ground textures) at filter-None as shipped | measured, full population, **4.33 MiB (6.47% of `terrain/`, 0.09% of the whole bundle)** — a blanket policy across all 39 files is a **loss** (−2.82%), reported plainly rather than rounded up to a bigger, wrong number | unmeasured (needs a C#-side timed re-rip, same caveat as TEX-1/TEX-2, MESH-1) | none — in-place re-encode of unchanged files at unchanged paths, decodes with any standard PNG reader, same shape as TEX-1/TEX-2 | low | YES, every file's round-trip individually asserted bit-exact | not applicable — in-place re-encode; no new layer, nothing retired |
+
+**Lossy candidates:** none proposed. TERRAIN-1's ceiling (6.47% of a domain that is already
+1.4% of the bundle) does not justify investigating a lossy fallback, and constraint 6 requires
+lossless to be exhausted first in any case — which the zlib-9-floor and adaptive-filter tests
+above already do for this domain.
+
+### 7.4 The splatmap shrink: what changed between the two captures, and what did not
+
+**The premise, stated precisely.** `splatmap.png` is 1,839,661 B smaller in the current
+(21:36) capture than in the original (12:23) one — 11,881,840 → 10,042,179 B, a 15.5% drop, by
+far the largest of the three files §0's provenance note found changed. `water_level.png`
+(−2,485 B, 0.3%) and `heightmap.png` (−1 B, ~0%) barely moved in comparison. This subsection
+asks why, per this task's own instruction: determine it from evidence if determinable, and say
+plainly what was ruled out if it is not.
+
+**Ruled out with certainty: the "splatmap semantics string" wording.** Commit `8985b73`'s own
+message names a "splatmap semantics string" change. That string is the `semantics` key inside
+`terrain/rasters.json`'s `splatmap` block (§7.1's sample, quoted in full in §7.2) — plain JSON
+text in a file that is not `splatmap.png`. A wording edit to a JSON string in one file cannot
+change the byte count of a different, binary PNG file. This is not measured, because it does
+not need to be — it is ruled out by inspection of what the two files *are*.
+
+**Ruled out by the visible commit history: any other tracked producer code change.** Checked
+directly:
+
+```
+git log --all --oneline -- Systems/TerrainRipSystem.cs
+```
+
+→ `0ad936b` (21:48:30), `8985b73` (13:54:36), and three earlier commits, all before the rip.
+`0ad936b` also touches `Systems/TerrainRipSystem.cs`, but (1) its diff is entirely about
+`areas.jsonl`'s `heightRanges`/`uvScale` fields, not splatmap capture — confirmed by reading the
+diff, no `Capture*`/`splat` line appears in it; (2) its own commit message states outright
+*"Lane, network and terrain layers unchanged: PASS 18 count line(s) identical, PASS frac=1.00000
+max=0"* — an explicit, self-reported A/B pass claiming zero pixel difference on the terrain
+layers it did not touch; and (3) it is timestamped 21:48:30, **twelve minutes after** the
+21:34–21:36 terrain-only rerip finished, so it is causally incapable of having affected that
+capture's output regardless of its content. `8985b73` is the only remaining candidate, and
+§0's provenance note already established that its `CaptureSplatmap`/`CaptureUserSplatmap` code
+was already running during the *original* 11:50–12:23 rip — before the commit landed — so no
+code change visible in git separates the two captures.
+
+**Corroborating, not conclusive: both rips' own terrain report text is near-identical, with two
+small numeric exceptions that are not code-shaped.** The original rip's terrain report
+(`docs/cs2-storage-audit-riplog-2026-08-07.txt`, the preserved copy, lines 246–255) and the
+rerip's own log (`log-timeline.txt`, cited in §0) both print the same nine-line report structure
+— `Roadbed:`, `Cutout:`, `Water:`, `Surfaces:`, `Splatmap:`, `User splatmap:`, `World terrain:`,
+`Surface areas:`, `Output:` — with the same `splatMultiplier`/`splatPower` (2.00/1.00) and the
+same `4096x4096` dimensions in both. Two counts differ by a small margin: `Water: 9828541` (original)
+vs `9828621` wet cells (rerip), and `Surface areas: 27422` vs `27421`. Both are simulation-derived
+counts, not producer-code outputs, and both differing by a handful out of millions/tens-of-
+thousands is exactly what "the same save, reloaded at a different real-world moment, with the
+simulation having ticked forward some amount in between" would produce — the `Roadbed:` and
+`Cutout:` lines, which depend only on static network/composition geometry rather than live
+simulation state, are **byte-for-byte identical** between the two rips (6096/10805/0/1774270 and
+7900/165/252/0/266 respectively, both runs).
+
+**Verdict: `unmeasured`, with the search space narrowed to a specific, named cause rather than
+left open.** The semantics-string hypothesis is ruled out with certainty; every producer-code
+hypothesis visible in git is ruled out by the diff evidence and timing above. What remains is
+that the splatmap is documented, in its own shipped `rasters.json` semantics string, as
+depending on a **noise** input the heightmap's own "match, ships verbatim" status (§22 row 15)
+does not carry — and the two small non-code deltas above (water cell count, area count) are
+direct, measured evidence that the two capture sessions are not bit-identical simulation
+moments, even reloading what is presumably the same save. Whether the noise term (or some other
+runtime-only input the splat shader consumes) is the actual mechanism behind a 15.5% pixel-
+content difference on a 4096×4096 render was not, and could not be, verified further: the
+original 11,881,840-byte `splatmap.png` no longer exists on disk to diff pixel-by-pixel against
+the current one (§0's provenance note), and reproducing it would require a fresh rip this task's
+scope does not include. Recorded here, not guessed at, for whichever later task next touches
+splatmap semantics or attempts a byte-reproducible terrain rip.
 
 ## 8. Rip time, by phase
 
@@ -2092,5 +2503,33 @@ they do not replace the bracket and are not additive with each other:
 | Mesh-pass texture readback: `Texture bytes: 1853.6 MiB; readback held the main thread 347.1 s` | 347.1 | instrumented | row 2, concurrent with the 1178.3 s above, not sequential |
 | Network segment mesh baking: `Wrote 8259 segment(s) to networks.jsonl in 65.8 s` | 65.8 | instrumented | row 3 (465.361 s bracket; 465.361 − 65.8 − 9.5 = 390.061 s of row 3 is lane collection, lane write, network edge topology, and everything else not covered by an explicit duration) |
 | Network-pass texture readback: `Texture bytes: 54.9 MiB; readback held the main thread 9.5 s` | 9.5 | instrumented | row 3, concurrent with other row-3 work |
+
+**Preserved evidence.** The live `Carto.log` this table is built from was truncated by a game
+relaunch at 21:34 (§0's provenance note) — it now holds only the 21:34–21:36 terrain-only
+rerip's 14 lines, not the 257-line log every number above comes from. A full copy of that
+original log survives as `docs/cs2-storage-audit-riplog-2026-08-07.txt`, committed alongside
+this document specifically so the numbers in this section (and §0/§1/§2's citations of it)
+remain independently checkable after `$SCRATCH` is discarded. This is a deliberate, one-time
+exception to this task's own "only `docs/cs2-storage-audit.md` is committed" rule — no other
+non-Markdown file is committed by this task.
+
+### Consumer import time — markings (§6)
+
+Not a rip-time number (the rip never builds per-vertex marking geometry — §6.3) but the
+*consumer* import-time analogue, filed here per this task's brief rather than in §6's bytes
+column. Measured by the perf-refactor work, cited in full in §6.3: the reference Blender
+importer's baked-and-draped equivalent of the 82,908 shipped markings cost **2,240,914
+vertices and 2,240,914 BVH ray-casts** before 2026-08-07's optimization pass; a landed
+curvature-based subdivision rule (`_DRAPE_SAGITTA_TOLERANCE`, `tools/blender_import_bundle.py:1077`)
+cut both to **~1.06M** (measured, ~2.1×), while a second, larger-looking cut (one ray-cast per
+marking instead of per vertex, a further 17×) was designed, tried, and **dropped** after its own
+A/B measurement found errors up to 657 mm against the game's actual road surface (§6.3, quoted
+in full). The wall-clock result of the landed optimization, full-city, **measured**: the
+lane-geometry import phase (119,302 records, markings plus fence/cable geometry) went from
+**374.9 s to 381.8 s** — no measured speedup despite the ~2.1× reduction in vertex/ray-cast
+count. None of this is a rip-time cost — the producer ships bend parameters, not baked meshes,
+in either state — it is the cost a *consumer* pays to turn those parameters into the per-vertex
+geometry Blender needs, which the game itself never pays because it draws a marking as one
+instanced projector box (§6.3, `docs/cs2-api-audit.md` §19).
 
 ## 9. Ranked candidates

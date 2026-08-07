@@ -1,0 +1,258 @@
+257
+1	[2026-08-07 11:50:23,206] [INFO]  Mod instance loaded. 模組實例載入完成。
+2	[2026-08-07 11:55:40,904] [INFO]  Placed static objects: 1310360
+3	Flag census over 4303 referenced prefab(s) — what else might need separating:
+4	  color:palette@submesh      3876 prefab(s)   1207421 instance(s)
+5	  light:procedural@submesh   1176 prefab(s)    168311 instance(s)
+6	  light:street                 53 prefab(s)    131111 instance(s)
+7	  sub:defaultMissingMesh       90 prefab(s)     24730 instance(s)
+8	  mesh:base                  1476 prefab(s)     24374 instance(s)
+9	  mesh:decal                   75 prefab(s)     18479 instance(s)
+10	  mesh:skeleton                22 prefab(s)     14836 instance(s)
+11	  light:traffic                12 prefab(s)      2710 instance(s)
+12	  mesh:stackY                   6 prefab(s)      1396 instance(s)
+13	  sub:stackStart                6 prefab(s)      1396 instance(s)
+14	  sub:stackMiddle               6 prefab(s)      1396 instance(s)
+15	  sub:stackEnd                  3 prefab(s)        63 instance(s)
+16	What the 12 most-placed prefab(s) are made of — the component names a filter can test:
+17	  pd Long Grass × 314222
+18	    instance: CullingInfo, CustomMeshColor, MeshBatch, MeshColor, Object, ObjectGeometry, Overridden, Plant, PrefabRef, PseudoRandomSeed, Simulate, Static, Surface, Transform, UpdateFrame
+19	    prefab:   LoadedIndex, Locked, ModPrerequisiteData, ObjectData, ObjectGeometryData, PlaceableInfoviewItem, PlaceableObjectData, PlantData, PrefabData, ServiceObjectData, Simulate, StaticObjectData, SubMesh, UIObjectData, UnlockRequirement
+20	  OakTree01 × 122654
+21	    instance: Color, CullingInfo, CustomMeshColor, Decoration, EnabledEffect, MeshBatch, MeshColor, Object, ObjectGeometry, Overridden, Owner, Plant, PrefabRef, PseudoRandomSeed, Simulate, Static, Transform, Tree, UpdateFrame
+22	    prefab:   Effect, GrowthScaleData, LoadedIndex, Locked, ObjectData, ObjectGeometryData, PlaceableInfoviewItem, PlaceableObjectData, PlantData, PrefabData, ServiceObjectData, Simulate, SpawnableObjectData, StaticObjectData, SubMesh, TreeData, UIObjectData, UnlockRequirement
+23	    owner:    DiseaseControlCenter01 [Building, BuildingModifier, CitizenPresence, CityEffectProvider, CityServiceUpkeep, Color, CrimeProducer, CullingInfo, CurrentDistrict, CurrentTrading, CustomMeshColor, Efficiency, ElectricityConsumer, Employee, EnabledEffect, GarbageProducer, GuestVehicle, Hospital, Lot, MailProducer, MeshBatch, MeshColor, Object, ObjectGeometry, OwnedVehicle, Patient, Policy, PollutionEmitModifier, PrefabRef, PseudoRandomSeed, ResourceConsumer, Resources, ServiceDispatch, ServiceFeeCollector, ServiceUsage, Simulate, SpawnLocationElement, Static, SubArea, SubLane, SubNet, SubObject, Surface, Target, Transform, TripNeeded, UniqueObject, UpdateFrame, WaterConsumer, WorkProvider]
+24	  VFP LiveOakTree × 63521
+25	    instance: Color, CullingInfo, CustomMeshColor, Decoration, EnabledEffect, MeshBatch, MeshColor, Object, ObjectGeometry, Plant, PrefabRef, PseudoRandomSeed, Simulate, Static, Surface, Transform, Tree, UpdateFrame
+26	    prefab:   AssetPackElement, EditorAssetCategoryOverrideData, Effect, GrowthScaleData, LoadedIndex, Locked, ModPrerequisiteData, ObjectData, ObjectGeometryData, PlaceableInfoviewItem, PlaceableObjectData, PlantData, PrefabData, ServiceObjectData, Simulate, StaticObjectData, SubMesh, TreeData, UIObjectData, UnlockRequirement
+27	  WallLightShortRange01 × 37593
+28	    instance: CullingInfo, CustomMeshColor, Elevation, Emissive, EnabledEffect, LightState, MeshBatch, MeshColor, Native, Object, ObjectGeometry, Overridden, Owner, PrefabRef, PseudoRandomSeed, Simulate, Static, StreetLight, Transform
+29	    prefab:   EditorAssetCategoryOverrideData, Effect, LoadedIndex, ObjectData, ObjectGeometryData, PlaceableObjectData, PrefabData, Simulate, SpawnableObjectData, StaticObjectData, StreetLightData, SubMesh
+30	    owner:    CargoHarbor01 Cargo Cranes [Bone, BoneHistory, CargoTransportStation, Color, CullingInfo, CustomMeshColor, ElectricityConsumer, EnabledEffect, Extension, MeshBatch, MeshColor, Native, Object, ObjectGeometry, PrefabRef, PseudoRandomSeed, ServiceUpgrade, Simulate, Skeleton, SpawnLocationElement, Static, SubObject, Surface, Transform, TransportStation, WorkProvider]
+31	  CoconutPalmTree01 × 34246
+32	    instance: Color, CullingInfo, CustomMeshColor, Decoration, EnabledEffect, MeshBatch, MeshColor, Object, ObjectGeometry, Overridden, Owner, Plant, PrefabRef, PseudoRandomSeed, Simulate, Static, Transform, Tree, UpdateFrame
+33	    prefab:   Effect, GrowthScaleData, LoadedIndex, Locked, ObjectData, ObjectGeometryData, PlaceableInfoviewItem, PlaceableObjectData, PlantData, PrefabData, ServiceObjectData, Simulate, StaticObjectData, SubMesh, TreeData, UIObjectData, UnlockRequirement
+34	    owner:    Kinsman Plaza [Building, BuildingCondition, BuildingModifier, BuildingNotifications, CitizenPresence, Color, CrimeProducer, CullingInfo, CurrentDistrict, Efficiency, ElectricityConsumer, Emissive, EnabledEffect, GarbageProducer, GuestVehicle, IndustrialProperty, LightState, Lot, MailProducer, MeshBatch, Object, ObjectGeometry, OfficeProperty, Policy, PrefabRef, PropertyOnMarket, PseudoRandomSeed, Renter, ResidentialProperty, Signature, Simulate, SpawnLocationElement, Static, SubArea, SubLane, SubNet, SubObject, Surface, Transform, UniqueObject, UpdateFrame, WaterConsumer]
+35	  VFP CoconutPalmTree01-Illuminated × 21641
+36	    instance: Color, CullingInfo, CustomMeshColor, Decoration, Emissive, EnabledEffect, LightState, MeshBatch, MeshColor, Native, Object, ObjectGeometry, Overridden, Plant, PrefabRef, PseudoRandomSeed, Simulate, Static, Surface, Transform, Tree, UpdateFrame
+37	    prefab:   AssetPackElement, EditorAssetCategoryOverrideData, Effect, GrowthScaleData, LoadedIndex, Locked, ModPrerequisiteData, ObjectData, ObjectGeometryData, PlaceableInfoviewItem, PlaceableObjectData, PlantData, PrefabData, ServiceObjectData, Simulate, StaticObjectData, SubMesh, TreeData, UIObjectData, UnlockRequirement
+38	  VentilationDuct04 × 20203
+39	    instance: CullingInfo, CustomMeshColor, Elevation, MeshBatch, MeshColor, Object, ObjectGeometry, Overridden, Owner, PrefabRef, PseudoRandomSeed, Simulate, Static, Transform
+40	    prefab:   EditorAssetCategoryOverrideData, LoadedIndex, ObjectData, ObjectGeometryData, PlaceableObjectData, PrefabData, Simulate, SpawnableObjectData, StaticObjectData, SubMesh
+41	    owner:    NA_CommercialLowSignature03 [AttractivenessProvider, Building, BuildingCondition, BuildingModifier, CitizenPresence, CityEffectProvider, Color, CommercialProperty, CrimeProducer, CullingInfo, CurrentDistrict, CustomMeshColor, Efficiency, ElectricityConsumer, Emissive, EnabledEffect, GarbageProducer, GuestVehicle, LightState, LocalEffectProvider, Lot, MailProducer, MeshBatch, MeshColor, Object, ObjectGeometry, Policy, PollutionEmitModifier, PrefabRef, PropertyOnMarket, PseudoRandomSeed, Renter, Signature, Simulate, SpawnLocationElement, Static, SubArea, SubLane, SubNet, SubObject, Surface, TelecomConsumer, Transform, UniqueObject, UpdateFrame, WaterConsumer]
+42	  ACVentRoof04 × 17468
+43	    instance: CullingInfo, CustomMeshColor, Elevation, MeshBatch, MeshColor, Object, ObjectGeometry, Overridden, Owner, PrefabRef, PseudoRandomSeed, Simulate, Static, Transform
+44	    prefab:   EditorAssetCategoryOverrideData, LoadedIndex, ObjectData, ObjectGeometryData, PlaceableObjectData, PrefabData, Simulate, SpawnableObjectData, StaticObjectData, SubMesh
+45	    owner:    IndustrialManufacturingSignature08 [Building, BuildingCondition, BuildingModifier, CitizenPresence, CityEffectProvider, Color, CrimeProducer, CullingInfo, CurrentDistrict, CustomMeshColor, Efficiency, ElectricityConsumer, EnabledEffect, GarbageProducer, GuestVehicle, IndustrialProperty, Lot, MailProducer, MeshBatch, MeshColor, Object, ObjectGeometry, Policy, PollutionEmitModifier, PrefabRef, PropertyOnMarket, PseudoRandomSeed, Renter, Signature, Simulate, SpawnLocationElement, Static, SubArea, SubLane, SubNet, SubObject, Surface, TelecomConsumer, Transform, UniqueObject, UpdateFrame, WaterConsumer]
+46	  RealVision Decals Ground Texture39 - Foliage Decal × 14522
+47	    instance: CullingInfo, MeshBatch, Object, ObjectGeometry, PrefabRef, PseudoRandomSeed, Simulate, Static, Transform
+48	    prefab:   LoadedIndex, ObjectData, ObjectGeometryData, PrefabData, Simulate, StaticObjectData, SubMesh
+49	  Mangr0be Tree × 11183
+50	    instance: Color, CullingInfo, CustomMeshColor, Decoration, EnabledEffect, MeshBatch, MeshColor, Object, ObjectGeometry, Plant, PrefabRef, PseudoRandomSeed, Simulate, Static, Surface, Transform, Tree, UpdateFrame
+51	    prefab:   Effect, GrowthScaleData, LoadedIndex, Locked, ModPrerequisiteData, ObjectData, ObjectGeometryData, PlaceableInfoviewItem, PlaceableObjectData, PlantData, PrefabData, ServiceObjectData, Simulate, StaticObjectData, SubMesh, TreeData, UIObjectData, UnlockRequirement
+52	  PlantPot02 × 10671
+53	    instance: CullingInfo, CustomMeshColor, MeshBatch, MeshColor, Native, Object, ObjectGeometry, Owner, Plant, PrefabRef, PseudoRandomSeed, Simulate, Static, Transform, UpdateFrame
+54	    prefab:   EditorAssetCategoryOverrideData, LoadedIndex, Locked, ObjectData, ObjectGeometryData, PlaceableObjectData, PlantData, PrefabData, Simulate, SpawnableObjectData, StaticObjectData, SubMesh, UIObjectData, UnlockRequirement
+55	    owner:    EU_MixedSignature02 [AttractivenessProvider, Building, BuildingCondition, BuildingModifier, BuildingNotifications, CitizenPresence, CityEffectProvider, Color, CommercialProperty, CrimeProducer, CullingInfo, CurrentDistrict, CustomMeshColor, Efficiency, ElectricityConsumer, Emissive, GarbageProducer, GuestVehicle, IconElement, LightState, LocalEffectProvider, Lot, MailProducer, MeshBatch, MeshColor, Native, Object, ObjectGeometry, Policy, PollutionEmitModifier, PrefabRef, PropertyOnMarket, PseudoRandomSeed, Renter, ResidentialProperty, Signature, Simulate, SpawnLocationElement, Static, SubArea, SubLane, SubNet, SubObject, Surface, Transform, UniqueObject, UpdateFrame, WaterConsumer]
+56	  VFP EvergreenBushWildLarge × 8806
+57	    instance: Color, CullingInfo, CustomMeshColor, Decoration, EnabledEffect, MeshBatch, MeshColor, Object, ObjectGeometry, Plant, PrefabRef, PseudoRandomSeed, Simulate, Static, Surface, Transform, Tree, UpdateFrame
+58	    prefab:   AssetPackElement, EditorAssetCategoryOverrideData, Effect, GrowthScaleData, LoadedIndex, Locked, ModPrerequisiteData, ObjectData, ObjectGeometryData, PlaceableInfoviewItem, PlaceableObjectData, PlantData, PrefabData, ServiceObjectData, Simulate, StaticObjectData, SubMesh, TreeData, UIObjectData, UnlockRequirement
+59	Disambiguated 4 prefab(s) sharing a name.
+60	Wrote 1283183 instance(s) to instances.jsonl
+61	  1207635 instance(s) carry the game's resolved paint (attrs.colorSet), 239 of them player-painted; 318226 had per-part sets that differ (first part exported)
+62	  299879 tree(s) carry the game's growth scale (attrs.growthScale)
+63	Expanded 1396 stacked object(s) into 8359 section record(s) — pillars, walls and fences reach their full height
+64	Normalised 5030 non-unit rotation(s)
+65	  tree: 697163
+66	  building: 8896
+67	  prop: 558645
+68	  decal: 18479
+69	Sub-objects with a parent link: 628608
+70	Skipped 33367 buried utility-network node object(s), 10 distinct prefab(s):
+71	  Ground Cable Node 1                          8791
+72	  Sewage Pipe Node 1.5                         8711
+73	  Water Pipe Node 1                            8711
+74	  Ground Cable Node 1.5                        2348
+75	  Sewage Pipe Node 2                           2228
+76	  Water Pipe Node 1.5                          2227
+77	  Ground Cable Node 2                           162
+78	  Water Pipe Node 2                             116
+79	  Sewage Pipe Node 3                             50
+80	  Ground Cable Node 10                           23
+81	Skipped 773 cargo prop(s) riding vehicles, 28 distinct prefab(s):
+82	  TruckTrailer02_Container01                    318
+83	  CarTrailer01_Props03                          104
+84	  CarTrailer01_Props01                           94
+85	  CarTrailer01_Props02                           89
+86	  ShipPassengerDeckChair01                       30
+87	  ShipPassengerTable01                           19
+88	  CoalTruck01_StonePile01                        16
+89	  ShipPassengerParasol01                         14
+90	  FlowerPot01                                    12
+91	  ShipPassengerHalfWall01                        12
+92	  CoalTruck01_OrePile01                          10
+93	  ShipPassengerSofa01                            10
+94	  … and 16 more
+95	Distinct assetIds referenced: 4310
+96	Unresolved prefabs: 90 distinct, 24730 instance(s) kept under synthetic ids
+97	Wrote warnings.jsonl (92 entries: 90 unresolved, 2 without geometry), keeping 0 from the mesh pass
+98	  e.g. entity 2032257 prefab 2151360 hasPrefabData=True [ActivityLocation, CullingInfo, CustomMeshColor, Emissive, LightState, MeshBatch, MeshColor, Object, ObjectGeometry, Owner, PrefabRef, PseudoRandomSeed, Simulate, SpawnLocation, Static, Transform]
+99	  e.g. entity 2032258 prefab 2151360 hasPrefabData=True [ActivityLocation, CullingInfo, CustomMeshColor, Emissive, LightState, MeshBatch, MeshColor, Object, ObjectGeometry, Owner, PrefabRef, PseudoRandomSeed, Simulate, SpawnLocation, Static, Transform]
+100	  e.g. entity 2032259 prefab 2151360 hasPrefabData=True [ActivityLocation, CullingInfo, CustomMeshColor, Emissive, LightState, MeshBatch, MeshColor, Object, ObjectGeometry, Owner, PrefabRef, PseudoRandomSeed, Simulate, SpawnLocation, Static, Transform]
+101	  e.g. entity 2032260 prefab 2151360 hasPrefabData=True [ActivityLocation, CullingInfo, CustomMeshColor, Emissive, LightState, MeshBatch, MeshColor, Object, ObjectGeometry, Owner, PrefabRef, PseudoRandomSeed, Simulate, SpawnLocation, Static, Transform]
+102	  e.g. entity 2032261 prefab 2151360 hasPrefabData=True [ActivityLocation, CullingInfo, CustomMeshColor, Emissive, LightState, MeshBatch, MeshColor, Object, ObjectGeometry, Owner, PrefabRef, PseudoRandomSeed, Simulate, SpawnLocation, Static, Transform]
+103	Output: C:\Users\naomi\AppData\LocalLow\Colossal Order\Cities Skylines II\ModsData\Carto\spike\instances.jsonl
+104	
+105	[2026-08-07 11:55:41,442] [INFO]  Wrote colors.json (3619 palette(s)) and lights.json (968 emitter set(s))
+106	
+107	[2026-08-07 11:55:54,823] [INFO]  Background-process indicator updated with `Carto.PROGRESS[Meshes.0]`; translated = `Carto: ripping meshes 0%`. 已更新背景程序指示器。
+108	[2026-08-07 11:55:54,868] [INFO]  VT recovery [1] `PD-GrassLong01-TreeAdult_61d61253651b1ca479a3de9da6ee981e` _BaseColorMap: header 1024x1024, loaded 1024x1024 RGBA_BC7_SRGB, written 1024x1024
+109	[2026-08-07 11:55:54,908] [INFO]  VT recovery [2] `PD-GrassLong01-TreeAdult_61d61253651b1ca479a3de9da6ee981e` _NormalMap: header 1024x1024, loaded 1024x1024 RGBA_BC7_UNorm, written 1024x1024
+110	[2026-08-07 11:55:54,986] [INFO]  VT recovery [3] `PD-GrassLong01-TreeAdult_61d61253651b1ca479a3de9da6ee981e` _MaskMap: header 1024x1024, loaded 1024x1024 RGBA_BC7_UNorm, written 1024x1024
+111	[2026-08-07 11:55:55,000] [INFO]  VT recovery [4] `PD-GrassLong01-TreeAdult_61d61253651b1ca479a3de9da6ee981e` _ControlMask: header 1024x1024, loaded 1024x1024 RGBA_BC7_UNorm, written 1024x1024
+112	[2026-08-07 11:56:00,428] [INFO]  VT surface recovery [1] `ACVentRoof04_bfc886e610a9113408e3b7982a5c95b7` _BaseColorMap: 1024x1024 RGBA_BC7_SRGB
+113	[2026-08-07 11:56:00,439] [INFO]  VT surface recovery [2] `ACVentRoof04_bfc886e610a9113408e3b7982a5c95b7` _NormalMap: 1024x1024 RGBA_BC7_UNorm
+114	[2026-08-07 11:56:00,512] [INFO]  VT surface recovery [3] `ACVentRoof04_bfc886e610a9113408e3b7982a5c95b7` _MaskMap: 1024x1024 RGBA_BC7_UNorm
+115	[2026-08-07 11:56:00,519] [INFO]  VT surface recovery [4] `ACVentRoof04_bfc886e610a9113408e3b7982a5c95b7` _ControlMask: 1024x1024 RGBA_BC7_UNorm
+116	[2026-08-07 12:15:31,929] [INFO]  Skipped 33367 buried utility-network node object(s).
+117	Skipped 773 cargo prop(s) riding vehicles.
+118	Disambiguated 4 prefab(s) sharing a name.
+119	Placed objects: 1310360, distinct prefabs: 4303, queued: 4303
+120	  - unresolved_2402250: none of 1 sub-mesh(es) yielded geometry
+121	  - unresolved_2402251: none of 1 sub-mesh(es) yielded geometry
+122	  - unresolved_2402264: none of 1 sub-mesh(es) yielded geometry
+123	  - unresolved_2402275: none of 1 sub-mesh(es) yielded geometry
+124	  - unresolved_2402258: none of 1 sub-mesh(es) yielded geometry
+125	  - unresolved_2402262: none of 1 sub-mesh(es) yielded geometry
+126	  - unresolved_2402267: none of 1 sub-mesh(es) yielded geometry
+127	  - unresolved_2402248: none of 1 sub-mesh(es) yielded geometry
+128	  - unresolved_2402230: none of 1 sub-mesh(es) yielded geometry
+129	  - unresolved_2304667: none of 1 sub-mesh(es) yielded geometry
+130	  - unresolved_2402270: none of 1 sub-mesh(es) yielded geometry
+131	  - unresolved_2402315: none of 1 sub-mesh(es) yielded geometry
+132	  - unresolved_2402278: none of 1 sub-mesh(es) yielded geometry
+133	  - unresolved_2151360: none of 1 sub-mesh(es) yielded geometry
+134	  - unresolved_2151361: none of 1 sub-mesh(es) yielded geometry
+135	  - unresolved_2402233: none of 1 sub-mesh(es) yielded geometry
+136	  - ParkingLot06: empty SubMesh buffer
+137	  - unresolved_2402316: none of 1 sub-mesh(es) yielded geometry
+138	  - unresolved_2402268: none of 1 sub-mesh(es) yielded geometry
+139	  - ParkingLot02: empty SubMesh buffer
+140	
+141	Materials: 4567 entries in materials.json from 4567 surface(s), failed 0, disambiguated 0.
+142	Textures: 3890 read back, 3442 file(s), 448 duplicate(s) by content hash, failed 0.
+143	Texture bytes: 1853.6 MiB; readback held the main thread 347.1 s.
+144	Texture references: 3885 distinct — 103 loadable as given, 0 rebound by guid, 3782 virtual-textured (1525 recovered from a shared stack, 2262 from the surface's own VT data), 0 with nothing behind them; 0 taken off a live material as a last resort.
+145	Surface VT data: 548 file(s) opened, 0 failed to decode.
+146	Colour masks: 3645 of 4567 material(s) carry one (the texture colors.json needs to be applicable at all).
+147	Surface template properties declared by the material library (6): _BaseColorMap, _ControlMask, _EmissiveColorMap, _InteriorAtlas, _MaskMap, _NormalMap
+148	  not exported by the contract's five: _InteriorAtlas
+149	Recorded 120 gap(s) in warnings.jsonl, keeping 92 from the instance pass
+150	
+151	Wrote 4198 .glb, skipped 120, failed 0, in 1178.3 s.
+152	Merged multi-mesh geometry assets: 2949 prefab(s).
+153	Foundation skirts (__base): 1436 file(s); 40 Base-flagged prefab(s) presented no silhouette at the base level.
+154	Total 1716.8 MiB, mean 419 KiB per prefab.
+155	Largest:
+156	  20532 KiB  MedicalUniversity01
+157	  20428 KiB  InternationalAirport01
+158	  19791 KiB  asset_aae7632a
+159	  18434 KiB  Kinsman_Plaza
+160	  18434 KiB  USSW_Hospital_16x14
+161	  18290 KiB  OfficeHighSignature02
+162	  18101 KiB  Five_Luxe_JBR_
+163	  17308 KiB  NA_ResidentialHighSignature03
+164	  15695 KiB  NA_ResidentialHighSignature02
+165	  15085 KiB  NuclearPowerPlant01
+166	  14045 KiB  Oracle_Park_by_Dmscopio
+167	  13559 KiB  IndustrialManufacturingSignature04
+168	  12717 KiB  CargoHarbor01
+169	  12182 KiB  OfficeHighSignature03
+170	  12000 KiB  asset_49c34b1d
+171	Output: C:\Users\naomi\AppData\LocalLow\Colossal Order\Cities Skylines II\ModsData\Carto\spike\meshes
+172	
+173	[2026-08-07 12:21:21,947] [INFO]  Lanes: 680753
+174	Wrote 680610 lane(s) to lanes.jsonl
+175	  connection: 269751
+176	  other: 136216
+177	  car: 131618
+178	  pedestrian: 97677
+179	  parking: 44083
+180	  track: 1265
+181	  320674 derived from a master lane
+182	Skipped 143 lane(s) with no usable curve
+183	Lane geometry cross-check: 333597 lane(s) over 113 prefab(s) draw a mesh along their curve (baked by the network rip into lanemeshes/, minus its counted skips). Largest:
+184	  Invisible Pedestrian Lane 0.5               44694
+185	  Car Drive Lane 3                            42726
+186	  Invisible Car Twoway Lane 3                 29646
+187	  Invisible Car Oneway Lane 3                 26732
+188	  Ground Cable Lane 1                         14687
+189	  Sewage Pipe Lane 1.5                        14576
+190	  Water Pipe Lane 1                           14576
+191	  Alley Drive Lane 3                          13825
+192	  Invisible Pedestrian Lane 2                 13619
+193	  Ground Cable Lane 0.5                        8790
+194	
+195	[2026-08-07 12:22:01,267] [INFO]  VT recovery [1] `FenceIndustrialPieceHigh02_0a9ef06cffe5e779436a8434abdf9b20` _BaseColorMap: header 2048x2048, loaded 2048x2048 RGBA_BC7_SRGB, written 1024x1024
+196	[2026-08-07 12:22:01,294] [INFO]  VT recovery [2] `FenceIndustrialPieceHigh02_0a9ef06cffe5e779436a8434abdf9b20` _NormalMap: header 2048x2048, loaded 2048x2048 RGBA_BC7_UNorm, written 1024x1024
+197	[2026-08-07 12:22:01,383] [INFO]  VT recovery [3] `FenceIndustrialPieceHigh02_0a9ef06cffe5e779436a8434abdf9b20` _MaskMap: header 2048x2048, loaded 2048x2048 RGBA_BC7_UNorm, written 1024x1024
+198	[2026-08-07 12:22:01,417] [INFO]  VT recovery [4] `FenceIndustrialPieceHigh02_0a9ef06cffe5e779436a8434abdf9b20` _ControlMask: header 2048x2048, loaded 2048x2048 RGBA_BC7_UNorm, written 1024x1024
+199	[2026-08-07 12:22:27,931] [INFO]  Network edges: 27161
+200	
+201	Materials: 4635 entries in materials.json from 68 surface(s), failed 0, disambiguated 0.
+202	Textures: 96 read back, 95 file(s), 1 duplicate(s) by content hash, failed 0.
+203	Texture bytes: 54.9 MiB; readback held the main thread 9.5 s.
+204	Texture references: 96 distinct — 52 loadable as given, 0 rebound by guid, 44 virtual-textured (44 recovered from a shared stack, 0 from the surface's own VT data), 0 with nothing behind them; 0 taken off a live material as a last resort.
+205	Surface VT data: 0 file(s) opened, 0 failed to decode.
+206	Colour masks: 34 of 4635 material(s) carry one (the texture colors.json needs to be applicable at all).
+207	Surface template properties declared by the material library (9): _BaseColorMap, _ControlMask, _EmissiveColorMap, _MainTex, _MaskMap, _NormalMap, _WorldspaceAlbedo, _WorldspaceMaskMap, _WorldspaceNormalMap
+208	  not exported by the contract's five: _MainTex, _WorldspaceAlbedo, _WorldspaceMaskMap, _WorldspaceNormalMap
+209	Wrote 8259 segment(s) to networks.jsonl in 65.8 s
+210	  mesh form: 7248 (8591923 triangles, 404.8 MiB of glTF in networks/)
+211	  centerline form: 1011 (4026 point(s))
+212	Distinct cross-section pieces read: 160
+213	Junction interiors are the arms' own node meshes, tiled to the centre (zero-width intersection pieces as three-rail wedges; audit §18)
+214	Rotated edges assembled: 55
+215	Lane geometry: 119302 lane record(s) over 85 prefab(s) in laneprefabs.json, 71 part mesh(es) written once into lanemeshes/ (2.6 MiB)
+216	  cable: 10154
+217	  lane: 82908
+218	  fence: 26240
+219	  hanging (calm-air drop; the consumer builds the cubic): 10154
+220	  included 3214 tunnel lane(s), tagged "tunnel" (the game draws them on its Tunnel cutaway layer)
+221	  excluded 12 part(s) with no world-view layer from the catalogue (Pipeline/SubPipeline/Waterway)
+222	  43 decal part(s) in the catalogue — wear tint and road markings, lifted by the consumer (§5B)
+223	  skipped 142268 lane(s) whose parts its flags all exclude (drawn nowhere in-game either)
+224	  skipped 265 lane(s) under the game's 0.1 m draw gate
+225	APPROXIMATED: 41 roundabout part(s) — halves + wedge cover outer/inner/island; blend weights are shader-side
+226	Corner-rail (PreserveShape) pieces placed: 2252
+227	APPROXIMATED: 35412 LowerBottomToTerrain / 639 RaiseTopToTerrain piece(s) shipped unconformed — terrain conforming is a consumer rule against terrain/heightmap.png (contract §5.1)
+228	  highway: 943
+229	  road: 5725
+230	  waterway: 81
+231	  cable: 693
+232	  pathway: 248
+233	  train: 313
+234	  pipe: 105
+235	  taxiway: 91
+236	  tram: 60
+237	By form:
+238	  normal: 6707
+239	  elevated: 1243
+240	  tunnel: 309
+241	Skipped 18982 marker network(s)
+242	Materials: 4635 material(s), 95 texture(s), 54.9 MiB.
+243	Output: C:\Users\naomi\AppData\LocalLow\Colossal Order\Cities Skylines II\ModsData\Carto\spike
+244	
+245	[2026-08-07 12:23:17,290] [INFO]  Terrain: 4096x4096 height samples, cell 3.500 m, height range 0.0..4096.0 m
+246	Roadbed: 6096 edge(s), 10805 node strip(s), 0 orphan cap(s) stamped; 1774270 cell(s) = 10.6% of the map
+247	  skipped 18985 edge(s) whose prefab does not flatten terrain, 3336 elevated/tunnel composition(s) (their ground is not pulled to the road)
+248	Cutout: 7900 cell(s) opened over tunnel portals and sunken roads; 165 edge(s), 252 node strip(s), 0 orphan cap(s), 266 clip area(s) stamped
+249	Water: 9828541 wet cell(s), max depth 35.6 m (surface level grid, heightmap encoding)
+250	Surfaces: 14 ground texture(s) written
+251	Splatmap: 4096x4096 ground-blend weights captured (multiplier 2.00, power 1.00)
+252	User splatmap: painted surfaces present, 4096x4096 captured
+253	World terrain: no backdrop heightmap resident; layer omitted
+254	Surface areas: 27422 area(s) over 41 prefab(s); 2 empty skipped
+255	Output: C:\Users\naomi\AppData\LocalLow\Colossal Order\Cities Skylines II\ModsData\Carto\spike\terrain
+256	
+257	[2026-08-07 12:23:24,328] [INFO]  Mod instance had been disposed of. 模組實例已被銷毀。
