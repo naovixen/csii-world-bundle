@@ -87,7 +87,6 @@ trees and props are the ones that need one.
 """
 
 import json
-import logging
 import math
 import os
 import sys
@@ -213,6 +212,20 @@ class _Log:
         elapsed = f" in {time.time() - self._phase_started:.1f} s" if self._phase_started else ""
         self._phase_started = None
         print(self._c("32", f"    {summary}{elapsed}"))
+
+    def end_phase(self):
+        """Force a phase closed without printing anything, in case its own body never did.
+
+        A phase's build_* function can early-return (a missing layer file) without ever
+        reaching its own `done()` call, leaving `_phase_started` stale. Left alone, that
+        stale timestamp is invisible until some LATER, unrelated `done()` call inherits it
+        — printing a second `in N.N s` suffix on a line that may already have its own (the
+        final "placed N instance(s) …" recap is exactly such a line). Called once at the
+        natural end of each phase's owning block in `main()`, regardless of whether the
+        phase's body already closed itself; harmless (a no-op) when it did.
+        """
+        self.progress_end()
+        self._phase_started = None
 
     def step(self, msg):
         self.progress_end()
@@ -2266,11 +2279,8 @@ def _scratch_layer_collection():
     return None
 
 
-_GLTF_IMPORTER_SILENCED = False
-
-
-def _silence_gltf_importer():
-    """Stop io_scene_gltf2 printing an INFO banner + a per-node line for every .glb.
+class _quiet_gltf_import:                                        # noqa: N801 - used as a context
+    """Silence io_scene_gltf2's per-.glb INFO banner, for exactly the span of one operator call.
 
     `logging.getLogger("glTFImporter").setLevel(logging.WARNING)` looks like the fix and is
     not one: ImportGLTF2.import_gltf2 (io_scene_gltf2/__init__.py) runs
@@ -2286,11 +2296,23 @@ def _silence_gltf_importer():
     fight after the fact. Only import-time INFO chatter is affected: `glTFImporter_errors`
     is always pinned to ERROR regardless, so a real warning or error from a malformed glb
     still surfaces.
+
+    `bpy.app.debug_value` is Blender's, not this addon's — general-purpose, and read by
+    whatever else happens to check it. Pinning it for the whole session would leave it at 1
+    through terrain building, tinting and the final save, for no reason those steps need.
+    Scoped to just the `bpy.ops.import_scene.gltf(...)` call instead: saved on entry,
+    restored on exit (success, failure, or exception alike), so every other stage of the
+    import sees whatever value it would have without this script ever having run.
     """
-    global _GLTF_IMPORTER_SILENCED
-    if not _GLTF_IMPORTER_SILENCED:
+
+    def __enter__(self):
+        self._previous = bpy.app.debug_value
         bpy.app.debug_value = 1
-        _GLTF_IMPORTER_SILENCED = True
+        return self
+
+    def __exit__(self, *exc):
+        bpy.app.debug_value = self._previous
+        return False
 
 
 def import_glb(path):
@@ -2299,8 +2321,6 @@ def import_glb(path):
     The caller links them wherever they belong. Returns [] if the import failed, having already
     said why — one unreadable file should not end a city-sized import.
     """
-    _silence_gltf_importer()
-
     layer = _scratch_layer_collection()
     if layer is None:
         return []
@@ -2309,7 +2329,8 @@ def import_glb(path):
     previous = view_layer.active_layer_collection
     view_layer.active_layer_collection = layer
     try:
-        bpy.ops.import_scene.gltf(filepath=path)
+        with _quiet_gltf_import():
+            bpy.ops.import_scene.gltf(filepath=path)
     except Exception as exc:                                    # noqa: BLE001 - report and go on
         LOG.warn(f"! {os.path.basename(path)}: import failed — {exc}")
         return []
@@ -2717,6 +2738,7 @@ def main():
             networks = build_networks(networks_path, net_categories, network_collection,
                                       net_mesh_dir, center=center, radius=radius,
                                       limit=net_limit)
+        LOG.end_phase()  # build_networks() may have early-returned before its own done()
 
     lanes = 0
     if do_lanes:
@@ -2732,6 +2754,7 @@ def main():
                 lanes = build_lanes(lanes_path, lane_prefabs_path, lane_mesh_dir,
                                     lane_collection, center=center, radius=radius,
                                     limit=net_limit, road_surface=road_surface)
+            LOG.end_phase()  # build_lanes() may have early-returned before its own done()
         else:
             LOG.warn(f"no lanemeshes.jsonl at {lanes_path} — skipping lane geometry")
 
@@ -2741,6 +2764,7 @@ def main():
         terrain_collection = bpy.data.collections.new("bundle_terrain")
         bpy.context.scene.collection.children.link(terrain_collection)
         terrain_objects = build_terrain(bundle_dir, terrain_collection, center, radius)
+        LOG.end_phase()  # build_terrain() may have early-returned before its own done()
 
     area_objects = 0
     if do_areas:
@@ -2748,6 +2772,7 @@ def main():
         area_collection = bpy.data.collections.new("bundle_areas")
         bpy.context.scene.collection.children.link(area_collection)
         area_objects = build_areas(bundle_dir, area_collection, center, radius)
+        LOG.end_phase()  # build_areas() may have early-returned before its own done()
 
     # Everything is imported, so the placed instances can come back into the view layer. This is
     # deliberately after the networks: an instance parked here is an instance the segment imports
