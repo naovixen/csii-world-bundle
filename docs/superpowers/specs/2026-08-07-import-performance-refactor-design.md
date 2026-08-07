@@ -1,7 +1,7 @@
 # Performance refactor of `tools/blender_import_bundle.py` — design
 
 **Date:** 2026-08-07
-**Status:** approved (user), pending implementation plan
+**Status:** implemented 2026-08-07 on branch `perf-refactor`, A/B-verified (see the plan and the SDD ledger for measured results)
 
 ## Goal
 
@@ -141,3 +141,44 @@ contract-reference role (fail loudly with `CONTRACT VIOLATION` on undeclared gap
 Commit the currently validated harness + docs state first (markings drape/winding,
 splat residual-rock calibration, smooth shading, progress lines), so the refactor lands
 as its own reviewable diff.
+
+---
+
+## Outcome (2026-08-07, measured)
+
+Full-city `--kinds none --terrain --networks --lanes`, which **died before this work**:
+
+| Phase | Before | After |
+|---|---|---|
+| Networks (7,380 glbs) | 1,541.1 s | **45.8 s** |
+| Lane geometry (119,302 records) | 374.9 s | 381.8 s |
+| Terrain | per-face Python | 4.2 s |
+| **Total wall** | died / 2,000 s | **499 s** |
+
+Full-city `--kinds building` (the instance path): 8,730 instances from 1,220 prefabs in
+**104.7 s** (~9 min before). glb fast path claimed 7,233/7,248 files for networks but only
+517/1,170 for buildings — each new building prefab introduces unregistered materials, and the
+safety contract sends first-sightings to the stock importer, so the buildings win is ~5x, not ~47x.
+
+Two design assumptions from the plan were **falsified by measurement and dropped**:
+
+- *One drape sample per marking (17x fewer ray-casts).* Measured inside Blender against the full
+  imported surface: errors up to 657 mm, 42/1092 samples beyond a marking's own lift. The road
+  crown is not the smooth profile the estimate assumed. Shipped an exact per-station reduction
+  instead.
+- *Left/right ray-cast dedup is exact.* It was only "exact" because the drape was sampling the
+  lane centreline rather than each vertex's own laterally-offset position — a defect worth up to
+  205 mm on crosswalks, with 40% of vertices past the 14 mm budget. Fixed to sample per vertex;
+  the dedup evaporated with it, leaving ~2.1x (sagitta subdivision alone).
+
+The lesson worth keeping: the Tier 1b verification was rigorous but measured only the arc-length
+axis, while the defect lived on the width axis. A test can be thorough and still be aimed the
+wrong way.
+
+The terrain-grid triangulation the plan mandated was **not** done: the implementer kept quads via
+a `poly_size` parameter, because choosing a diagonal can flip a slope's silhouette under the
+pixel gate. Good call; the plan was wrong.
+
+Follow-ups recorded, not done here: Tier 2 (instance one shared quad per marking, the game's own
+approach) and Tier 3 (stop baking `networks/`; emit a composition catalogue + per-segment
+parameters — a bundle-contract change, and the one most visible to a downstream consumer).
