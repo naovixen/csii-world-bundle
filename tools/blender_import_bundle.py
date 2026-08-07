@@ -87,6 +87,7 @@ trees and props are the ones that need one.
 """
 
 import json
+import logging
 import math
 import os
 import sys
@@ -171,6 +172,84 @@ _GROUND_GAIN = 2.8
 # noise (§8: the bundle deliberately does not reproduce that); a plain slope threshold at
 # ~40 degrees is the presentation-side stand-in.
 _ROCK_SLOPE = 0.84
+
+
+class _Log:
+    """Styled console narration: phase headers, timings, progress, colours.
+
+    Colours and in-place progress bars only when stdout is a real console and NO_COLOR
+    is unset; piped output (Select-String workflows) gets plain, line-oriented text.
+    All counts stay in the text — the A/B gate diffs the numbers, not the styling.
+
+    `done()` appends its elapsed time as `in N.N s` rather than `(N.N s)`: the A/B gate
+    (tools/ab_compare.py --counts) strips exactly that `in <N> s` suffix before comparing
+    the numbers on a line, so a phase-closing summary that also matches one of its count
+    markers (`lanes:`, `networks:`, `terrain:`, `instance(s)`, …) still gates cleanly. The
+    parenthesised form the gate does not know about would inject a run-to-run-varying
+    number into every such line and fail the comparison on jitter alone. Calling `done()`
+    with no phase open (self._phase_started is None — the phase already closed itself, or
+    was never opened) appends nothing, which is how a final recap line that already spells
+    out its own `in N.N s` avoids getting a second, redundant timing suffix.
+    """
+
+    def __init__(self):
+        self.tty = sys.stdout.isatty() and "NO_COLOR" not in os.environ
+        if self.tty and os.name == "nt":
+            os.system("")  # enable VT processing in classic consoles
+        self._phase_started = None
+        self._bar_open = False
+        self._last_draw = 0.0
+
+    def _c(self, code, text):
+        return f"\x1b[{code}m{text}\x1b[0m" if self.tty else text
+
+    def phase(self, title):
+        self.progress_end()
+        self._phase_started = time.time()
+        print(self._c("1;36", f"==> {title}"))
+
+    def done(self, summary):
+        self.progress_end()
+        elapsed = f" in {time.time() - self._phase_started:.1f} s" if self._phase_started else ""
+        self._phase_started = None
+        print(self._c("32", f"    {summary}{elapsed}"))
+
+    def step(self, msg):
+        self.progress_end()
+        print(f"  {msg}")
+
+    def warn(self, msg):
+        self.progress_end()
+        print(self._c("31" if "CONTRACT VIOLATION" in msg else "33", f"  {msg}"))
+
+    def progress(self, label, done, total):
+        now = time.time()
+        if self.tty:
+            if now - self._last_draw < 0.1 and done != total:
+                return
+            self._last_draw = now
+            if total:
+                width = 28
+                fill = int(width * done / max(total, 1))
+                bar = "#" * fill + "-" * (width - fill)
+                sys.stdout.write(f"\r  [{bar}] {label} {done}/{total}   ")
+            else:
+                sys.stdout.write(f"\r  … {label} {done}   ")
+            sys.stdout.flush()
+            self._bar_open = True
+        else:
+            stride = max(1, (total // 20) if total else 5000)
+            if done % stride == 0 or done == total:
+                print(f"  … {label} {done}" + (f"/{total}" if total else ""))
+
+    def progress_end(self):
+        if self._bar_open:
+            sys.stdout.write("\r" + " " * 78 + "\r")
+            sys.stdout.flush()
+            self._bar_open = False
+
+
+LOG = _Log()
 
 
 def bundle_to_blender_point(pos):
@@ -330,7 +409,7 @@ def report_materials(bundle_dir):
     """
     path = os.path.join(bundle_dir, "materials.json")
     if not os.path.isfile(path):
-        print("materials: no materials.json — meshes will import untextured")
+        LOG.warn("materials: no materials.json — meshes will import untextured")
         return
 
     with open(path, encoding="utf-8") as handle:
@@ -349,16 +428,16 @@ def report_materials(bundle_dir):
             if not os.path.isfile(os.path.join(bundle_dir, rel)):
                 dangling.append(f"{mat_id}.{rel}")
 
-    print(f"materials: {len(materials)} ({mapless} with no maps), {len(referenced)} distinct textures")
+    LOG.step(f"materials: {len(materials)} ({mapless} with no maps), {len(referenced)} distinct textures")
 
     # colors.json is a palette; colorMask is what says where each channel of it lands. Counting
     # them here is how "did the colour layer actually come out?" gets answered by the harness
     # rather than by opening a texture folder and squinting.
-    print(f"materials: {masked} with a colorMask (the map colors.json needs to be applicable)")
+    LOG.step(f"materials: {masked} with a colorMask (the map colors.json needs to be applicable)")
     if dangling:
         # A path in the table with no file behind it is a producer bug: §7 lets a map be absent,
         # but not present-and-broken.
-        print(f"CONTRACT VIOLATION: {len(dangling)} texture reference(s) do not resolve: {dangling[:5]}")
+        LOG.warn(f"CONTRACT VIOLATION: {len(dangling)} texture reference(s) do not resolve: {dangling[:5]}")
 
 
 def show_materials():
@@ -630,7 +709,7 @@ def build_networks(networks_path, categories, collection, net_mesh_dir=None, lif
     Blender's depsgraph is the thing that struggles with object count, not with polygons.
     """
     if not os.path.isfile(networks_path):
-        print(f"no networks.jsonl at {networks_path} — skipping networks")
+        LOG.warn(f"no networks.jsonl at {networks_path} — skipping networks")
         return 0
 
     groups = {}
@@ -646,6 +725,10 @@ def build_networks(networks_path, categories, collection, net_mesh_dir=None, lif
 
     for record in read_jsonl(networks_path):
         total += 1
+        # Label deliberately avoids every ab_compare.py count marker ("networks:",
+        # "record(s)", …) — a live counter must never accidentally add a gated line the
+        # baseline log does not have, whatever stride the helper throttles it to.
+        LOG.progress("networks read", total, None)
         attrs = record.get("attrs", {})
         category = attrs.get("category", "other")
         form = attrs.get("form", "normal")
@@ -727,8 +810,8 @@ def build_networks(networks_path, categories, collection, net_mesh_dir=None, lif
             if mat.users == 0:
                 bpy.data.materials.remove(mat)
         if merged:
-            print(f"           merged {merged} duplicate material slot(s) onto "
-                  f"{len(bpy.data.materials)} material(s)")
+            LOG.step(f"merged {merged} duplicate material slot(s) onto "
+                     f"{len(bpy.data.materials)} material(s)")
 
     placed = 0
     for (category, form), (verts, faces) in sorted(groups.items()):
@@ -750,27 +833,26 @@ def build_networks(networks_path, categories, collection, net_mesh_dir=None, lif
         collection.objects.link(obj)
         placed += len(faces)
 
-    print()
-    print(f"networks:  {total} record(s) read, {sum(counts['category'].values())} extruded "
-          f"into {len(groups)} mesh(es), {placed} quad(s)")
+    LOG.done(f"networks:  {total} record(s) read, {sum(counts['category'].values())} extruded "
+             f"into {len(groups)} mesh(es), {placed} quad(s)")
     for form, count in sorted(counts["form"].items()):
-        print(f"           form {form}: {count}")
+        LOG.step(f"form {form}: {count}")
     for category, count in sorted(counts["category"].items()):
-        print(f"           category {category}: {count}")
+        LOG.step(f"category {category}: {count}")
     if skipped_category:
-        print(f"           {skipped_category} skipped by --net-categories")
+        LOG.step(f"{skipped_category} skipped by --net-categories")
     if skipped_region:
-        print(f"           {skipped_region} skipped outside the region")
+        LOG.step(f"{skipped_region} skipped outside the region")
     if skipped_limit:
-        print(f"           {skipped_limit} skipped by --net-limit")
+        LOG.step(f"{skipped_limit} skipped by --net-limit")
     if degenerate:
-        print(f"           {degenerate} centerline(s) collapsed to a point")
+        LOG.warn(f"{degenerate} centerline(s) collapsed to a point")
     if mesh_form:
-        print(f"           {mesh_form} record(s) use the mesh form")
+        LOG.step(f"{mesh_form} record(s) use the mesh form")
     if missing_mesh:
         # A referenced mesh that is not on disk is a broken reference, not a style choice.
-        print(f"           CONTRACT VIOLATION: {missing_mesh} mesh-form record(s) reference a "
-              f"missing .glb under {net_mesh_dir}")
+        LOG.warn(f"CONTRACT VIOLATION: {missing_mesh} mesh-form record(s) reference a "
+                 f"missing .glb under {net_mesh_dir}")
 
     return sum(counts["category"].values())
 
@@ -1176,10 +1258,10 @@ def build_lanes(lanes_path, catalogue_path, lane_mesh_dir, collection,
                 center=None, radius=None, limit=None, road_surface=None):
     """Bend every lane record's parts along its curve, merged into one object per prefab."""
     if not os.path.isfile(lanes_path):
-        print(f"no lanemeshes.jsonl at {lanes_path} — skipping lane geometry")
+        LOG.warn(f"no lanemeshes.jsonl at {lanes_path} — skipping lane geometry")
         return 0
     if not os.path.isfile(catalogue_path):
-        print(f"CONTRACT VIOLATION: lanemeshes.jsonl without {catalogue_path}")
+        LOG.warn(f"CONTRACT VIOLATION: lanemeshes.jsonl without {catalogue_path}")
         return 0
 
     with open(catalogue_path, encoding="utf-8") as handle:
@@ -1241,16 +1323,15 @@ def build_lanes(lanes_path, catalogue_path, lane_mesh_dir, collection,
         bent += 1
         category = record.get("category", "lane")
         counts[category] = counts.get(category, 0) + 1
-        if bent % 5000 == 0:
-            print(f"  … {bent} lane(s) bent")
+        LOG.progress("lanes bent", bent, None)
 
     # The bend loop above prints its progress; everything below (drape ray-casts, lazy
     # road-surface BVH builds, object construction) is the quiet expensive part of a
     # full-city run — announce it so a long silence reads as work, not a hang.
     to_drape = sum(len(sink["drape"]) for sink in builders.values())
     if road_surface is not None and to_drape:
-        print(f"  … bending done; draping {to_drape} decal vertex(es) onto the road "
-              f"surface and building {len(builders)} object(s)")
+        LOG.step(f"bending done; draping {to_drape} decal vertex(es) onto the road "
+                 f"surface and building {len(builders)} object(s)")
 
     built = 0
     draped = drape_missed = 0
@@ -1273,8 +1354,13 @@ def build_lanes(lanes_path, catalogue_path, lane_mesh_dir, collection,
                     verts[index] = (x, top + epsilon, z)
                     draped += 1
                 drape_seen += 1
+                # Not LOG.progress(): its non-TTY stride is 5% of `to_drape`, but this
+                # line's own text matches the "draped" count marker (tools/ab_compare.py),
+                # so any stride other than the exact one the A/B baseline was captured
+                # with would add or drop gated lines. The fixed 250,000 stride keeps this
+                # identical to the pre-_Log behaviour; only the styling call changed.
                 if drape_seen % 250000 == 0:
-                    print(f"  … {drape_seen}/{to_drape} decal vertex(es) draped")
+                    LOG.step(f"{drape_seen}/{to_drape} decal vertex(es) draped")
 
         mesh = bpy.data.meshes.new(f"lane_{prefab_key}")
         # Bundle → Blender is P·(bend), det -1, so faces are emitted reversed to keep their
@@ -1315,27 +1401,26 @@ def build_lanes(lanes_path, catalogue_path, lane_mesh_dir, collection,
             set_paint(obj, {"colorSet": sink["colorSet"]})
         built += 1
 
-    print()
-    print(f"lanes:     {bent} record(s) bent into {built} object(s), "
-          f"{len(sources)} part mesh(es) loaded")
+    LOG.done(f"lanes:     {bent} record(s) bent into {built} object(s), "
+             f"{len(sources)} part mesh(es) loaded")
     if draped or drape_missed:
-        print(f"           {draped} decal vertex(es) draped onto the road surface"
-              + (f", {drape_missed} kept the fixed lift (no surface hit)" if drape_missed else ""))
+        LOG.step(f"{draped} decal vertex(es) draped onto the road surface"
+                 + (f", {drape_missed} kept the fixed lift (no surface hit)" if drape_missed else ""))
     elif road_surface is None:
-        print("           networks layer not built — decals keep the fixed lift, expect "
-              "markings to z-fight or sink into the crown")
+        LOG.warn("networks layer not built — decals keep the fixed lift, expect "
+                 "markings to z-fight or sink into the crown")
     for category, count in sorted(counts.items()):
-        print(f"           category {category}: {count}")
+        LOG.step(f"category {category}: {count}")
     if skipped_region:
-        print(f"           {skipped_region} skipped outside the region")
+        LOG.step(f"{skipped_region} skipped outside the region")
     if skipped_limit:
-        print(f"           {skipped_limit} skipped by --net-limit")
+        LOG.step(f"{skipped_limit} skipped by --net-limit")
     if missing_prefab:
-        print(f"           CONTRACT VIOLATION: {missing_prefab} record(s) name a prefab "
-              f"missing from laneprefabs.json")
+        LOG.warn(f"CONTRACT VIOLATION: {missing_prefab} record(s) name a prefab "
+                 f"missing from laneprefabs.json")
     if missing_mesh:
-        print(f"           CONTRACT VIOLATION: {missing_mesh} part reference(s) missing "
-              f"their .glb under {lane_mesh_dir}")
+        LOG.warn(f"CONTRACT VIOLATION: {missing_mesh} part reference(s) missing "
+                 f"their .glb under {lane_mesh_dir}")
     return bent
 
 
@@ -1693,11 +1778,11 @@ def build_terrain(bundle_dir, collection, center, radius):
     """
     heightmap_path, surface_path, cutout_path, water_path, surfaces_dir, splat_path, rasters = _terrain_paths(bundle_dir)
     if not os.path.isfile(heightmap_path):
-        print(f"no terrain layer at {heightmap_path} — skipping terrain")
+        LOG.warn(f"no terrain layer at {heightmap_path} — skipping terrain")
         return 0
     if rasters is None:
-        print("terrain rasters present but no geo-reference (bundle.json rasters or "
-              "terrain/rasters.json) — skipping terrain")
+        LOG.warn("terrain rasters present but no geo-reference (bundle.json rasters or "
+                 "terrain/rasters.json) — skipping terrain")
         return 0
 
     width, height, heights = _decode_png_gray(heightmap_path)
@@ -1710,21 +1795,21 @@ def build_terrain(bundle_dir, collection, center, radius):
     if os.path.isfile(surface_path):
         sw, sh, surface_ids = _decode_png_gray(surface_path)
         if (sw, sh) != (width, height):
-            print(f"CONTRACT VIOLATION: surface_index is {sw}x{sh}, heightmap {width}x{height}")
+            LOG.warn(f"CONTRACT VIOLATION: surface_index is {sw}x{sh}, heightmap {width}x{height}")
             surface_ids = None
 
     cut_ids = None
     if os.path.isfile(cutout_path):
         cw, ch, cut_ids = _decode_png_gray(cutout_path)
         if (cw, ch) != (width, height):
-            print(f"CONTRACT VIOLATION: cutout is {cw}x{ch}, heightmap {width}x{height}")
+            LOG.warn(f"CONTRACT VIOLATION: cutout is {cw}x{ch}, heightmap {width}x{height}")
             cut_ids = None
 
     levels = None
     if os.path.isfile(water_path):
         ww, wh, levels = _decode_png_gray(water_path)
         if (ww, wh) != (width, height):
-            print(f"CONTRACT VIOLATION: water_level is {ww}x{wh}, heightmap {width}x{height}")
+            LOG.warn(f"CONTRACT VIOLATION: water_level is {ww}x{wh}, heightmap {width}x{height}")
             levels = None
 
     # The crop window, in raster indices. Row 0 is the northernmost (§3: rows toward -Z).
@@ -1740,7 +1825,7 @@ def build_terrain(bundle_dir, collection, center, radius):
         stride = max(1, (max(width, height) + 1023) // 1024)
 
     if col0 >= col1 or row0 >= row1:
-        print("terrain: the region window misses the raster entirely — skipping terrain")
+        LOG.warn("terrain: the region window misses the raster entirely — skipping terrain")
         return 0
 
     cols = list(range(col0, col1 + 1, stride))
@@ -1774,7 +1859,11 @@ def build_terrain(bundle_dir, collection, center, radius):
     # -- the ground grid -------------------------------------------------------------------
     verts = []
     index = 0
-    for row in rows:
+    for row_number, row in enumerate(rows):
+        # "terrain rows" — deliberately not "terrain:" — stays outside every ab_compare.py
+        # count marker so this progress line can print at whatever stride the helper picks
+        # without ever becoming a gated line the A/B baseline does not have.
+        LOG.progress("terrain rows", row_number + 1, len(rows))
         z = origin_z - row * cell
         for col in cols:
             x = origin_x + col * cell
@@ -1845,7 +1934,7 @@ def build_terrain(bundle_dir, collection, center, radius):
         try:
             splat = _Splat(splat_path, splat_block)
         except Exception as error:  # noqa: BLE001 - any decode failure just means fallback
-            print(f"splatmap unreadable ({error}); falling back to per-face ground painting")
+            LOG.warn(f"splatmap unreadable ({error}); falling back to per-face ground painting")
             splat = None
     if splat is not None:
         sums = [[0.0] * 4 for _ in range(3)]
@@ -1888,14 +1977,14 @@ def build_terrain(bundle_dir, collection, center, radius):
                     rock_channel = best
             splat_mapping = {"grass": grass_channel, "dirt": dirt_channel, "rock": rock_channel}
             names = "RGBA"
-            print(f"splatmap calibrated over {sum(counts)} samples: "
-                  f"grass={names[grass_channel]} (mean {grass_means[grass_channel]:.0f}), "
-                  f"dirt={'none (wear decals and areas carry the dirt look)' if dirt_channel is None else names[dirt_channel]}, "
-                  f"rock=unpainted residual"
-                  + (f" + painted variant {names[rock_channel]}" if rock_channel is not None else ""))
+            LOG.step(f"splatmap calibrated over {sum(counts)} samples: "
+                     f"grass={names[grass_channel]} (mean {grass_means[grass_channel]:.0f}), "
+                     f"dirt={'none (wear decals and areas carry the dirt look)' if dirt_channel is None else names[dirt_channel]}, "
+                     f"rock=unpainted residual"
+                     + (f" + painted variant {names[rock_channel]}" if rock_channel is not None else ""))
         else:
-            print(f"splatmap calibration short of samples (flat {counts[0]}); "
-                  "falling back to per-face ground painting")
+            LOG.warn(f"splatmap calibration short of samples (flat {counts[0]}); "
+                     "falling back to per-face ground painting")
 
     if splat_mapping is not None:
         mesh.materials.append(_splat_ground_material(surfaces_dir, splat, splat_mapping, gain=_GROUND_GAIN))
@@ -2003,12 +2092,11 @@ def build_terrain(bundle_dir, collection, center, radius):
             placed += 1
             wet_faces = len(water_faces)
 
-    print()
-    print(f"terrain:   {len(rows)}x{ncols} sample window of {width}x{height} at {cell:g} m"
-          + (f", stride {stride}" if stride > 1 else ""))
-    print(f"           {roadbed_faces} roadbed face(s) (sunk {_ROADBED_SINK:g} m), "
-          f"{rock_faces} rock face(s), {wet_faces} water face(s), "
-          f"{cut_faces} face(s) cut (tunnel portals / trenches)")
+    LOG.done(f"terrain:   {len(rows)}x{ncols} sample window of {width}x{height} at {cell:g} m"
+             + (f", stride {stride}" if stride > 1 else ""))
+    LOG.step(f"{roadbed_faces} roadbed face(s) (sunk {_ROADBED_SINK:g} m), "
+             f"{rock_faces} rock face(s), {wet_faces} water face(s), "
+             f"{cut_faces} face(s) cut (tunnel portals / trenches)")
     return placed
 
 
@@ -2026,7 +2114,7 @@ def build_areas(bundle_dir, collection, center, radius):
     """
     path = os.path.join(bundle_dir, "areas.jsonl")
     if not os.path.isfile(path):
-        print("no areas.jsonl — skipping surface areas (bundle predates §8b)")
+        LOG.warn("no areas.jsonl — skipping surface areas (bundle predates §8b)")
         return 0
 
     catalogue = {}
@@ -2091,12 +2179,11 @@ def build_areas(bundle_dir, collection, center, radius):
         collection.objects.link(obj)
         built += 1
 
-    print()
-    print(f"areas:     {placed} surface area(s) into {built} object(s) "
-          f"over {len(builders)} prefab(s)"
-          + (f", {skipped_region} outside the region" if skipped_region else ""))
+    LOG.done(f"areas:     {placed} surface area(s) into {built} object(s) "
+             f"over {len(builders)} prefab(s)"
+             + (f", {skipped_region} outside the region" if skipped_region else ""))
     if dropped_bad:
-        print(f"           CONTRACT VIOLATION: {dropped_bad} triangle(s) index out of range")
+        LOG.warn(f"CONTRACT VIOLATION: {dropped_bad} triangle(s) index out of range")
     return built
 
 
@@ -2179,12 +2266,41 @@ def _scratch_layer_collection():
     return None
 
 
+_GLTF_IMPORTER_SILENCED = False
+
+
+def _silence_gltf_importer():
+    """Stop io_scene_gltf2 printing an INFO banner + a per-node line for every .glb.
+
+    `logging.getLogger("glTFImporter").setLevel(logging.WARNING)` looks like the fix and is
+    not one: ImportGLTF2.import_gltf2 (io_scene_gltf2/__init__.py) runs
+    `self.loglevel = set_debug_log()` on *every* call, and `set_debug_log()` maps
+    `bpy.app.debug_value == 0` to `logging.INFO` — so the addon's own `Log` object
+    (io/com/debug.py) resets the logger's level right back to INFO before the next import's
+    first line, silently undoing whatever this script set beforehand. Confirmed by import —
+    the getLogger/setLevel call left the "Data are loaded" / "glTF import finished" banner
+    printing on the very next import.
+
+    `set_debug_log()` reads `bpy.app.debug_value` itself, and returns `logging.WARNING` at
+    debug_value 1 — a knob the addon re-reads every call rather than one this script has to
+    fight after the fact. Only import-time INFO chatter is affected: `glTFImporter_errors`
+    is always pinned to ERROR regardless, so a real warning or error from a malformed glb
+    still surfaces.
+    """
+    global _GLTF_IMPORTER_SILENCED
+    if not _GLTF_IMPORTER_SILENCED:
+        bpy.app.debug_value = 1
+        _GLTF_IMPORTER_SILENCED = True
+
+
 def import_glb(path):
     """Import one .glb and return the objects it created, unlinked from every collection.
 
     The caller links them wherever they belong. Returns [] if the import failed, having already
     said why — one unreadable file should not end a city-sized import.
     """
+    _silence_gltf_importer()
+
     layer = _scratch_layer_collection()
     if layer is None:
         return []
@@ -2195,7 +2311,7 @@ def import_glb(path):
     try:
         bpy.ops.import_scene.gltf(filepath=path)
     except Exception as exc:                                    # noqa: BLE001 - report and go on
-        print(f"  ! {os.path.basename(path)}: import failed — {exc}")
+        LOG.warn(f"! {os.path.basename(path)}: import failed — {exc}")
         return []
     finally:
         view_layer.active_layer_collection = previous
@@ -2280,8 +2396,8 @@ def aim_viewports(collection):
                 aimed += 1
 
     if aimed:
-        print(f"aimed {aimed} viewport(s) at X {centre.x:.0f} Y {centre.y:.0f} Z {centre.z:.0f}, "
-              f"clip end 100000")
+        LOG.step(f"aimed {aimed} viewport(s) at X {centre.x:.0f} Y {centre.y:.0f} Z {centre.z:.0f}, "
+                 f"clip end 100000")
 
 
 def main():
@@ -2365,7 +2481,7 @@ def main():
             save_path = os.path.abspath(argv[i + 1])
             i += 2
         else:
-            print(f"unknown option {arg!r}")
+            LOG.warn(f"unknown option {arg!r}")
             return 2
 
     # `--everything R` is a base, not an override: anything named explicitly still wins, so
@@ -2397,39 +2513,41 @@ def main():
     (mesh_dir, instances_path, networks_path, net_mesh_dir,
      lanes_path, lane_mesh_dir, lane_prefabs_path) = resolve_layers(bundle_dir)
     if kinds and not os.path.isfile(instances_path):
-        print(f"no instances.jsonl at {instances_path}")
+        LOG.warn(f"no instances.jsonl at {instances_path}")
         return 2
 
     declared_gaps = read_declared_gaps(bundle_dir)
-    print(f"bundle:    {bundle_dir}")
-    print(f"meshes:    {mesh_dir}")
-    print(f"kinds:     {sorted(kinds) or 'none'}   limit: {'none' if limit is None else limit}")
+    LOG.step(f"bundle:    {bundle_dir}")
+    LOG.step(f"meshes:    {mesh_dir}")
+    LOG.step(f"kinds:     {sorted(kinds) or 'none'}   limit: {'none' if limit is None else limit}")
     if assets is not None:
-        print(f"assets:    matching {assets}")
+        LOG.step(f"assets:    matching {assets}")
     if do_networks:
-        print(f"networks:  {networks_path}")
-        print(f"           categories: {'all' if net_categories is None else sorted(net_categories)}")
+        LOG.step(f"networks:  {networks_path}")
+        LOG.step(f"           categories: {'all' if net_categories is None else sorted(net_categories)}")
+
+    LOG.phase("Instances")
 
     # Always survey before placing. Knowing where the selection is turns "nothing appeared" from
     # a mystery into an arithmetic error the user can see.
     where = survey(instances_path, kinds) if kinds else None
     if kinds and where is None:
-        print(f"no instances of kinds {sorted(kinds)} in this bundle")
+        LOG.warn(f"no instances of kinds {sorted(kinds)} in this bundle")
         return 2
 
     if where is not None:
         min_x, max_x, min_z, max_z = where["bounds"]
-        print(f"selected:  {where['count']} instance(s)")
-        print(f"           X {min_x:.0f} .. {max_x:.0f}   Z {min_z:.0f} .. {max_z:.0f}")
-        print(f"           centroid X {where['centroid'][0]:.0f} Z {where['centroid'][1]:.0f}"
-              f"   densest 250 m cell X {where['densest'][0]:.0f} Z {where['densest'][1]:.0f}"
-              f" ({where['densest_count']} there)")
+        LOG.step(f"selected:  {where['count']} instance(s)")
+        LOG.step(f"           X {min_x:.0f} .. {max_x:.0f}   Z {min_z:.0f} .. {max_z:.0f}")
+        LOG.step(f"           centroid X {where['centroid'][0]:.0f} Z {where['centroid'][1]:.0f}"
+                 f"   densest 250 m cell X {where['densest'][0]:.0f} Z {where['densest'][1]:.0f}"
+                 f" ({where['densest_count']} there)")
 
         if center == "auto":
             center = where["densest"]
-            print(f"           --center auto resolved to X {center[0]:.0f} Z {center[1]:.0f}")
+            LOG.step(f"           --center auto resolved to X {center[0]:.0f} Z {center[1]:.0f}")
     elif center == "auto":
-        print("--center auto needs instances to survey; drop it or add --kinds")
+        LOG.warn("--center auto needs instances to survey; drop it or add --kinds")
         return 2
 
     # Downtown is decided by buildings whatever is being placed. Centring on the densest cell of
@@ -2439,30 +2557,30 @@ def main():
     if center == "downtown":
         skyline = survey(instances_path, {"building"}, weight=skyline_weight)
         if skyline is None:
-            print("--center downtown needs buildings in the bundle; "
-                  "use --center auto, or give explicit X Z")
+            LOG.warn("--center downtown needs buildings in the bundle; "
+                     "use --center auto, or give explicit X Z")
             return 2
         center = skyline["densest"]
-        print(f"           --center downtown resolved to X {center[0]:.0f} Z {center[1]:.0f}"
-              f"   (tallest 250 m cell of {skyline['count']} building(s))")
+        LOG.step(f"           --center downtown resolved to X {center[0]:.0f} Z {center[1]:.0f}"
+                 f"   (tallest 250 m cell of {skyline['count']} building(s))")
 
     if center == "interchange":
         found = survey_interchange(instances_path, networks_path)
         if found is None:
-            print("--center interchange needs highway or elevated network records with buildings "
-                  "near them; use --center downtown, or give explicit X Z")
+            LOG.warn("--center interchange needs highway or elevated network records with buildings "
+                     "near them; use --center downtown, or give explicit X Z")
             return 2
         center = found
-        print(f"           --center interchange resolved to X {center[0]:.0f} Z {center[1]:.0f}"
-              f"   (tallest skyline with a highway junction in it)")
+        LOG.step(f"           --center interchange resolved to X {center[0]:.0f} Z {center[1]:.0f}"
+                 f"   (tallest skyline with a highway junction in it)")
 
     if radius is not None:
         if center is None:
-            print("--radius needs --center (or --center auto)")
+            LOG.warn("--radius needs --center (or --center auto)")
             return 2
-        print(f"region:    within {radius} m of X {center[0]:.0f} Z {center[1]:.0f}")
+        LOG.step(f"region:    within {radius} m of X {center[0]:.0f} Z {center[1]:.0f}")
 
-    print(f"declared gaps in warnings.jsonl: {len(declared_gaps)}")
+    LOG.step(f"declared gaps in warnings.jsonl: {len(declared_gaps)}")
     report_materials(bundle_dir)
 
     if not keep:
@@ -2581,12 +2699,18 @@ def main():
             placed_collection.objects.link(empty)
         placed += 1
 
-        if placed % 500 == 0:
-            print(f"  … {placed} placed, {len(prefabs)} prefabs loaded")
+        LOG.progress("placed", placed, limit)
+
+    # Not a gate-marked line (no "instance(s)"/"prefab(s)"): the closing summary the count
+    # gate actually checks is the "placed N instance(s) …" line at the very end of main,
+    # which already existed before _Log and must stay exactly where it was, after every
+    # other phase's own summary — see the comment above it.
+    LOG.done(f"{placed} placed, {len(prefabs)} mesh source(s) loaded")
 
     networks = 0
     network_collection = None
     if do_networks:
+        LOG.phase("Networks")
         network_collection = bpy.data.collections.new("bundle_networks")
         bpy.context.scene.collection.children.link(network_collection)
         with parked_out_of_view_layer(network_collection):
@@ -2602,24 +2726,25 @@ def main():
         if os.path.isfile(lanes_path):
             lane_collection = bpy.data.collections.new("bundle_lanemeshes")
             bpy.context.scene.collection.children.link(lane_collection)
-            print()
-            print("lane geometry (lanemeshes.jsonl):")
+            LOG.phase("Lane geometry (lanemeshes.jsonl)")
             road_surface = _RoadSurface(network_collection) if networks else None
             with parked_out_of_view_layer(lane_collection):
                 lanes = build_lanes(lanes_path, lane_prefabs_path, lane_mesh_dir,
                                     lane_collection, center=center, radius=radius,
                                     limit=net_limit, road_surface=road_surface)
         else:
-            print(f"no lanemeshes.jsonl at {lanes_path} — skipping lane geometry")
+            LOG.warn(f"no lanemeshes.jsonl at {lanes_path} — skipping lane geometry")
 
     terrain_objects = 0
     if do_terrain:
+        LOG.phase("Terrain & water")
         terrain_collection = bpy.data.collections.new("bundle_terrain")
         bpy.context.scene.collection.children.link(terrain_collection)
         terrain_objects = build_terrain(bundle_dir, terrain_collection, center, radius)
 
     area_objects = 0
     if do_areas:
+        LOG.phase("Surface areas")
         area_collection = bpy.data.collections.new("bundle_areas")
         bpy.context.scene.collection.children.link(area_collection)
         area_objects = build_areas(bundle_dir, area_collection, center, radius)
@@ -2636,7 +2761,7 @@ def main():
     # Every .glb is in, so every material exists: apply the per-instance paint rule (§7.2).
     tinted = apply_color_tints(bundle_dir)
     if tinted:
-        print(f"tinted:    {tinted} material(s) wired to per-instance colorSet via their colorMask")
+        LOG.step(f"tinted:    {tinted} material(s) wired to per-instance colorSet via their colorMask")
 
     # The scratch collection is empty by construction — every import unlinks what it produced —
     # so drop it rather than leave an empty entry in the outliner.
@@ -2661,16 +2786,20 @@ def main():
                    (lane_collection if lanes else placed_collection)))
 
     elapsed = time.time() - started
-    print()
-    print(f"placed {placed} instance(s) from {len(prefabs)} prefab(s) in {elapsed:.1f} s")
+    # No phase is open at this point — Instances closed right after its loop, and whichever
+    # of Networks/Lanes/Terrain/Areas ran last closed itself too — so LOG.done() adds no
+    # elapsed suffix of its own here; `elapsed` above (measured from before the instance
+    # loop, across the whole pipeline) is the only timing this line carries, exactly as
+    # before _Log.
+    LOG.done(f"placed {placed} instance(s) from {len(prefabs)} prefab(s) in {elapsed:.1f} s")
     if do_skirts:
-        print(f"placed {skirts_placed} foundation skirt(s) (__base, as-authored 1 m bands — "
-              f"the terrain drop is the consumer rule, contract §4.1)")
+        LOG.step(f"placed {skirts_placed} foundation skirt(s) (__base, as-authored 1 m bands — "
+                 f"the terrain drop is the consumer rule, contract §4.1)")
     if do_terrain:
-        print(f"placed {terrain_objects} terrain object(s) (ground grid + water; §8)")
+        LOG.step(f"placed {terrain_objects} terrain object(s) (ground grid + water; §8)")
     if do_areas:
-        print(f"placed {area_objects} surface-area object(s) (driveways, lots, paths; §8b)")
-    print(f"skipped: {skipped_kind} by kind, {skipped_asset} by --assets, {skipped_region} outside the region")
+        LOG.step(f"placed {area_objects} surface-area object(s) (driveways, lots, paths; §8b)")
+    LOG.step(f"skipped: {skipped_kind} by kind, {skipped_asset} by --assets, {skipped_region} outside the region")
 
     # An empty-looking scene is nearly always the region filter, not the bundle. Say so, with the
     # coordinates that would have worked. The absolute floor matters as much as the ratio: a
@@ -2679,19 +2808,19 @@ def main():
     # would have moved it from downtown to whichever field has the most trees.
     if (radius is not None and where is not None
             and placed < where["count"] / 20 and placed < 500):
-        print(f"NOTE: the region kept {placed} of {where['count']} selected instance(s). "
-              f"The densest 250 m cell is at X {where['densest'][0]:.0f} Z {where['densest'][1]:.0f} — "
-              f"try --center auto, --center downtown, a larger --radius, or drop them.")
+        LOG.warn(f"NOTE: the region kept {placed} of {where['count']} selected instance(s). "
+                 f"The densest 250 m cell is at X {where['densest'][0]:.0f} Z {where['densest'][1]:.0f} — "
+                 f"try --center auto, --center downtown, a larger --radius, or drop them.")
 
     if missing:
         undeclared = [a for a, r in missing.items() if r == "NOT DECLARED in warnings.jsonl"]
-        print(f"{len(missing)} assetId(s) had no mesh ({len(undeclared)} of them undeclared):")
+        LOG.warn(f"{len(missing)} assetId(s) had no mesh ({len(undeclared)} of them undeclared):")
         for asset_id, reason in list(missing.items())[:15]:
-            print(f"  - {asset_id}: {reason}")
+            LOG.step(f"- {asset_id}: {reason}")
         if undeclared:
             # A gap the producer did not declare is a contract violation, not a missing file:
             # the consumer had no way to know the asset was coming up short.
-            print(f"CONTRACT VIOLATION: {len(undeclared)} undeclared: {undeclared[:10]}")
+            LOG.warn(f"CONTRACT VIOLATION: {len(undeclared)} undeclared: {undeclared[:10]}")
 
     if save_path:
         # relative_remap=False because the textures stay where the rip put them, under
@@ -2700,7 +2829,7 @@ def main():
         # "cannot be made relative" for every one of a few thousand textures, which buries the
         # import's own output. The paths are absolute either way; only the noise differs.
         bpy.ops.wm.save_as_mainfile(filepath=save_path, relative_remap=False)
-        print(f"saved {save_path}")
+        LOG.step(f"saved {save_path}")
 
     return 0
 
