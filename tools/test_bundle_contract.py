@@ -101,6 +101,24 @@ class BundleContractTest(unittest.TestCase):
         path.write_text(json.dumps(record, separators=(",", ":")) + "\n", encoding="utf-8")
         self.assertRejected(bundle, "out of range")
 
+    def test_lane_tunnel_tag_accepted(self):
+        bundle = self.fresh()
+        path = bundle / "lanemeshes.jsonl"
+        record = json.loads(path.read_text(encoding="utf-8").splitlines()[0])
+        record["tunnel"] = True
+        path.write_text(json.dumps(record, separators=(",", ":")) + "\n", encoding="utf-8")
+        report = validate_bundle(bundle, DEFAULT_SCHEMA_DIR)
+        self.assertEqual(report.errors, [])
+
+    def test_lane_tunnel_false_rejected(self):
+        # The writer omits the key for surface lanes; an explicit false is a producer bug.
+        bundle = self.fresh()
+        path = bundle / "lanemeshes.jsonl"
+        record = json.loads(path.read_text(encoding="utf-8").splitlines()[0])
+        record["tunnel"] = False
+        path.write_text(json.dumps(record, separators=(",", ":")) + "\n", encoding="utf-8")
+        self.assertRejected(bundle, "expected const True")
+
     def test_lane_part_mesh_missing_rejected(self):
         bundle = self.fresh()
         for path in (bundle / "lanemeshes").glob("*.glb"):

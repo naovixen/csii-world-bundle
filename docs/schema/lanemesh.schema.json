@@ -63,6 +63,10 @@
       "maxItems": 2,
       "items": { "type": "number" }
     },
+    "tunnel": {
+      "description": "True when the owning network runs below ground - the game draws this lane on its Tunnel cutaway layer. The bundle ships tunnels fully rendered (the terrain cutout opens their portals); a consumer wanting only the surface world filters on this. Absent means surface.",
+      "const": true
+    },
     "colorSet": {
       "description": "The lane's resolved paint - three linear RGBA channels, same shape and meaning as the instance attrs.colorSet (contract section 7.2). Hedges are the visible case.",
       "type": "array",

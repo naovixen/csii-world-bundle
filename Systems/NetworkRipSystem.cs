@@ -136,11 +136,13 @@ namespace Carto.Systems
         /// 旋轉的邊已重現；其餘計數之，使缺口成為報告中的數字，而非消費端的意外。）
         /// </summary>
         private int _rotatedEdges;
-        private int _rotatedNodeParts;
         private int _roundaboutParts;
         private int _skipBottomPieces;
         private int _railPieces;
         private int _orphanCaps;
+        private int _pipelineCompositions;
+        private int _lowerBottomPieces;
+        private int _raiseTopPieces;
 
         /// <summary>
         /// The event triggered when the system instance is created.
@@ -285,8 +287,8 @@ namespace Carto.Systems
 
             /// <summary>Lane-stage counters, in report order.（車道階段的計數器，依報告順序。）</summary>
             public long LaneBytes;
-            public int SkippedLaneTunnel, SkippedLanePipeline, SkippedLaneDecal, SkippedLaneStale, SkippedLaneDegenerate;
-            public int SkippedLaneExcluded, LaneHanging;
+            public int SkippedLanePipeline, SkippedLaneDecal, SkippedLaneStale, SkippedLaneDegenerate;
+            public int SkippedLaneExcluded, LaneHanging, LaneTunnel;
             public Dictionary<string, int> LanesByCategory = new();
 
             /// <summary>
@@ -434,11 +436,13 @@ namespace Carto.Systems
             // （以部件實體為鍵；實體可能於多次擷取間重用，故快取以單次擷取為限。）
             m_PieceGeometry.Clear();
             _rotatedEdges = 0;
-            _rotatedNodeParts = 0;
             _roundaboutParts = 0;
             _skipBottomPieces = 0;
             _railPieces = 0;
             _orphanCaps = 0;
+            _pipelineCompositions = 0;
+            _lowerBottomPieces = 0;
+            _raiseTopPieces = 0;
 
             NativeArray<Entity> entities = _edgeQuery.ToEntityArray(Allocator.TempJob);
             Entity[] edges;
@@ -862,7 +866,7 @@ namespace Carto.Systems
             // The lane-geometry stage: parameter records referencing part meshes stored once
             // (contract §5B v2); the consumer bends.
             // （車道幾何階段：引用僅存一次之部件網格的參數紀錄（契約 §5B v2）；彎折由消費端執行。）
-            if ((run.LaneWriter.Count > 0) || (run.SkippedLaneTunnel + run.SkippedLanePipeline + run.SkippedLaneDecal > 0))
+            if ((run.LaneWriter.Count > 0) || (run.SkippedLanePipeline + run.SkippedLaneDecal > 0))
             {
                 report.AppendLine($"Lane geometry: {run.LaneWriter.Count} lane record(s) over "
                                 + $"{run.LaneCatalogue.Count} prefab(s) in laneprefabs.json, "
@@ -870,8 +874,8 @@ namespace Carto.Systems
                                 + $"({run.LaneBytes / 1048576d:F1} MiB)");
                 foreach (KeyValuePair<string, int> kvp in run.LanesByCategory) report.AppendLine($"  {kvp.Key}: {kvp.Value}");
                 if (run.LaneHanging > 0) report.AppendLine($"  hanging (calm-air drop; the consumer builds the cubic): {run.LaneHanging}");
-                if (run.SkippedLaneTunnel > 0) report.AppendLine($"  skipped {run.SkippedLaneTunnel} tunnel lane(s) (cutaway view only)");
-                if (run.SkippedLanePipeline > 0) report.AppendLine($"  excluded {run.SkippedLanePipeline} underground utility part(s) from the catalogue (Pipeline layer)");
+                if (run.LaneTunnel > 0) report.AppendLine($"  included {run.LaneTunnel} tunnel lane(s), tagged \"tunnel\" (the game draws them on its Tunnel cutaway layer)");
+                if (run.SkippedLanePipeline > 0) report.AppendLine($"  excluded {run.SkippedLanePipeline} part(s) with no world-view layer from the catalogue (Pipeline/SubPipeline/Waterway)");
                 if (run.SkippedLaneDecal > 0) report.AppendLine($"  {run.SkippedLaneDecal} decal part(s) in the catalogue — wear tint and road markings, lifted by the consumer (§5B)");
                 if (run.SkippedLaneExcluded > 0) report.AppendLine($"  skipped {run.SkippedLaneExcluded} lane(s) whose parts its flags all exclude (drawn nowhere in-game either)");
                 if (run.SkippedLaneStale > 0) report.AppendLine($"  skipped {run.SkippedLaneStale} lane(s) the simulation removed mid-rip");
@@ -884,7 +888,14 @@ namespace Carto.Systems
                                                       + "halves + wedge cover outer/inner/island; blend weights are shader-side");
             if (_railPieces > 0) report.AppendLine($"Corner-rail (PreserveShape) pieces placed: {_railPieces}");
             if (_skipBottomPieces > 0) report.AppendLine($"SkipBottomHalf pieces halved: {_skipBottomPieces}");
-            if (_rotatedNodeParts > 0) report.AppendLine($"NOT REPRODUCED: {_rotatedNodeParts} rotated node composition part(s)");
+            if (_lowerBottomPieces + _raiseTopPieces > 0)
+                report.AppendLine($"APPROXIMATED: {_lowerBottomPieces} LowerBottomToTerrain / {_raiseTopPieces} "
+                                + "RaiseTopToTerrain piece(s) shipped unconformed — terrain conforming is a "
+                                + "consumer rule against terrain/heightmap.png (contract §5.1)");
+            if (_pipelineCompositions > 0)
+                report.AppendLine($"Skipped {_pipelineCompositions} composition part(s) with no world-view layer "
+                                + "(Pipeline/SubPipeline/Waterway — utility cutaway and overlay views only; "
+                                + "Tunnel compositions are world geometry and included)");
 
             foreach (KeyValuePair<string, int> kvp in run.ByCategory) report.AppendLine($"  {kvp.Key}: {kvp.Value}");
             report.AppendLine("By form:");
@@ -942,6 +953,34 @@ namespace Carto.Systems
         /// （刻意排除且皆計數：隧道所屬車道於此處；<c>Pipeline</c> 層與貼花旗標部件於目錄
         /// （其為部件而非車道的屬性）。）
         /// </summary>
+        /// <summary>
+        /// Whether a lane's owning net entity is underground — the game's
+        /// <c>BatchInstanceSystem.IsNetOwnerTunnel</c>: the owner's own <c>Elevation</c>, or, for
+        /// node owners (which carry none), the elevation of any edge connected to the node.
+        /// （車道所屬路網實體是否位於地下——即遊戲的 <c>IsNetOwnerTunnel</c>：所有者自身的
+        /// <c>Elevation</c>，或節點所有者（自身不帶）所連接任一邊的高程。）
+        /// </summary>
+        private bool IsNetOwnerTunnel(Entity owner)
+        {
+            if (EntityManager.HasComponent<Game.Net.Elevation>(owner)
+                && (math.cmin(EntityManager.GetComponentData<Game.Net.Elevation>(owner).m_Elevation) < 0f))
+                return true;
+
+            if (EntityManager.HasBuffer<Game.Net.ConnectedEdge>(owner))
+            {
+                DynamicBuffer<Game.Net.ConnectedEdge> edges = EntityManager.GetBuffer<Game.Net.ConnectedEdge>(owner, true);
+                for (int i = 0; i < edges.Length; i++)
+                {
+                    Entity edge = edges[i].m_Edge;
+                    if (EntityManager.HasComponent<Game.Net.Elevation>(edge)
+                        && (math.cmin(EntityManager.GetComponentData<Game.Net.Elevation>(edge).m_Elevation) < 0f))
+                        return true;
+                }
+            }
+
+            return false;
+        }
+
         /// <param name="run">The rip in flight.（進行中的擷取。）</param>
         /// <param name="entity">The lane to record.（待記錄的車道。）</param>
         private void RipLaneGeometry(NetworkRun run, Entity entity)
@@ -971,15 +1010,18 @@ namespace Carto.Systems
             if (EntityManager.HasComponent<Game.Common.Owner>(entity))
                 owner = EntityManager.GetComponentData<Game.Common.Owner>(entity).m_Owner;
 
-            // A lane whose owning network runs below ground renders on the Tunnel layer — the
-            // cutaway view — so it is not part of the visible built environment.
-            // （所屬路網於地下者繪製於隧道層（剖視圖），不屬可見的建成環境。）
-            if ((owner != Entity.Null) && EntityManager.HasComponent<Game.Net.Elevation>(owner)
-                && (math.cmin(EntityManager.GetComponentData<Game.Net.Elevation>(owner).m_Elevation) < 0f))
-            {
-                run.SkippedLaneTunnel++;
-                return;
-            }
+            // A lane whose owning network runs below ground is drawn by the game on its Tunnel
+            // layer — real geometry, visible whenever the cutaway shows it. The bundle renders
+            // tunnels in full (the terrain cutout opens their portals), so these lanes are
+            // included and tagged rather than skipped; a consumer that wants the surface world
+            // only filters on the tag. The test is the game's `IsNetOwnerTunnel` in full: the
+            // owner's own elevation, and — for node owners, which carry no elevation of their
+            // own — every edge connected to the node.
+            // （所屬路網於地下者由遊戲繪製於其隧道層——真實幾何，剖視時可見。束完整呈現隧道
+            //   （地形裁切開啟其洞口），故此等車道加註標記而非跳過；僅欲地表世界的消費端
+            //   依標記過濾即可。測試為遊戲的 `IsNetOwnerTunnel` 全文：所有者自身的高程，
+            //   及節點所有者（自身不帶高程）所連接的每條邊。）
+            bool tunnel = (owner != Entity.Null) && IsNetOwnerTunnel(owner);
 
             SubMeshFlags excluded = SubMeshFlags.RequireEditor
                 | (Instance.City.leftHandTraffic ? SubMeshFlags.RequireRightHandTraffic
@@ -1030,12 +1072,19 @@ namespace Carto.Systems
                     widthScale = 1f + (EntityManager.GetComponentData<NodeLane>(entity).m_WidthOffset / laneData.m_Width);
             }
 
-            // The uncut spans of the curve, walked the way `UpdateLaneData` walks `CutRange`s:
-            // a driveway through a fence, or a junction through a hedge, is a hole, not an end.
-            // （曲線未被切除的區間，走訪方式與 `UpdateLaneData` 對 `CutRange` 相同：
-            //   穿過圍籬的車道口或穿過樹籬的路口是孔洞，而非端點。）
+            // The uncut spans of the curve, walked the way `UpdateLaneInstances` walks
+            // `CutRange`s: a driveway through a fence, or a junction through a hedge, is a hole,
+            // not an end. The game re-gates every span on the same 0.1 m draw threshold
+            // (`curve3.m_Length > 0.1f` on the span's arc length), so sub-decimetre fragments
+            // between two cuts draw nothing and are not recorded. A lane whose every span fails
+            // draws nothing at all.
+            // （曲線未被切除的區間，走訪方式與 `UpdateLaneInstances` 對 `CutRange` 相同：
+            //   穿過圍籬的車道口或穿過樹籬的路口是孔洞，而非端點。遊戲對每個區間重施同一
+            //   0.1 公尺繪製門檻，兩切口之間不足一分米的碎段不繪亦不記錄。
+            //   所有區間皆不及格的車道完全不繪。）
             List<float2> spans = new();
-            if (EntityManager.HasBuffer<CutRange>(entity))
+            bool hasCuts = EntityManager.HasBuffer<CutRange>(entity);
+            if (hasCuts)
             {
                 DynamicBuffer<CutRange> cuts = EntityManager.GetBuffer<CutRange>(entity, true);
                 float previous = 0f;
@@ -1043,8 +1092,15 @@ namespace Carto.Systems
                 {
                     float min = (j < cuts.Length) ? cuts[j].m_CurveDelta.min : 1f;
                     float max = (j < cuts.Length) ? cuts[j].m_CurveDelta.max : 1f;
-                    if (min >= previous) spans.Add(new float2(previous, min));
+                    if ((min >= previous) && ((curve.m_Length * (min - previous)) > 0.1f))
+                        spans.Add(new float2(previous, min));
                     previous = max;
+                }
+
+                if (spans.Count == 0)
+                {
+                    run.SkippedLaneDegenerate++;
+                    return;
                 }
             }
 
@@ -1078,6 +1134,12 @@ namespace Carto.Systems
             }
 
             if (owner != Entity.Null) record.Owner = owner.Index;
+
+            if (tunnel)
+            {
+                record.Tunnel = true;
+                run.LaneTunnel++;
+            }
 
             if (hasHang)
             {
@@ -1155,8 +1217,13 @@ namespace Carto.Systems
 
                     MeshData meshData = EntityManager.GetComponentData<MeshData>(meshEntity);
 
-                    // Pipeline-layer parts are never drawn in the world view (the underground
-                    // cutaway rendering of pipes and cables) and stay excluded. Decal-state
+                    // Parts whose default layers hold no world-view bit are never drawn in the
+                    // world (`SearchSystem.GetLayers` hands `m_DefaultLayers` back verbatim
+                    // except the exact Pipeline|SubPipeline pair, and `GetBoundsMask` counts
+                    // only Default/Moving/Tunnel/Marker as `NormalLayers`) — underground pipes,
+                    // cables and waterway overlays stay excluded. Tunnel-layer parts are world
+                    // geometry — the game draws them on its Tunnel cutaway layer — and are
+                    // kept, as the bundle renders tunnels in full. Decal-state
                     // parts are NOT excluded — they are how the game paints its junction
                     // interiors: `TerrainSystem` flattens the ground under a junction
                     // (`ShiftTerrain`/`ClipTerrain`) and the drive lanes crossing it carry
@@ -1165,7 +1232,8 @@ namespace Carto.Systems
                     // corner sweeps that three rounds of junction "fill" tried to invent
                     // geometry for. They join the catalogue tagged `decal`, and the consumer
                     // bends them like any part and lifts them off the surface.
-                    // （管線層部件於世界視圖絕不繪製（管纜的地下剖視呈現），維持排除。
+                    // （預設層不含任何世界視圖位元的部件於世界絕不繪製（管纜與航道疊加的
+                    //   剖視呈現），維持排除；隧道層部件屬世界幾何，予以保留。
                     //   貼花部件則<b>不</b>排除——其正是遊戲鋪繪路口內部的方式：`TerrainSystem`
                     //   將路口下方的地面攤平，橫越其中的車道以貼花子網格將柏油與標線投影其上。
                     //   缺少它們的束，恰於轉角弧面之間顯出花瓣狀破洞——三輪路口「填補」
@@ -1174,7 +1242,8 @@ namespace Carto.Systems
                     bool decal = (meshData.m_State & MeshFlags.Decal) != 0;
                     if (decal) run.SkippedLaneDecal++;
 
-                    if ((meshData.m_DefaultLayers != 0) && ((meshData.m_DefaultLayers & MeshLayer.Default) == 0))
+                    const MeshLayer world = MeshLayer.Default | MeshLayer.Moving | MeshLayer.Tunnel | MeshLayer.Marker;
+                    if ((meshData.m_DefaultLayers != 0) && ((meshData.m_DefaultLayers & world) == 0))
                     {
                         run.SkippedLanePipeline++;
                         continue;
@@ -1539,10 +1608,24 @@ namespace Carto.Systems
 
             /// <summary>
             /// Move one across-half position from where the cross-section authored it to where this
-            /// junction needs it.（將某橫向位置自橫斷面所製作之處，移至此路口所需之處。）
+            /// junction needs it.（將某橫向位置自橫斷面所製作之處，移至此路口所需之處。）<br/><br/>
+            /// Each half's knots live in that half's own <c>xParam</c> coordinate — left: 0 at the
+            /// outer edge, 1 at the middle; right: 0 at the middle, 1 at the outer edge. That is
+            /// the coordinate `GeometrySystem` builds them in: the twin conversion is
+            /// `offsetsRight = 1 − offsetsLeft.wzyx` (line 2603) and
+            /// `CalculateVertexSyncTarget`'s right branch anchors on `1 − a.w` (the outer-right
+            /// margin), returning targets ascending toward the outer edge. No flip is applied
+            /// here — an earlier revision flipped the right half through <c>1 − s</c>, which
+            /// dragged every right-side curb knot to a mirrored position and jutted kerbs into
+            /// the roadway at junction flares.
+            /// （各半幅的節點值位於該半幅自身的 <c>xParam</c> 座標——左：外緣為 0、中線為 1；
+            ///   右：中線為 0、外緣為 1。此即 `GeometrySystem` 建立它們的座標：雙生換算為
+            ///   `offsetsRight = 1 − offsetsLeft.wzyx`，而 `CalculateVertexSyncTarget` 右分支
+            ///   以 `1 − a.w`（右外緣邊距）為錨。此處不施翻轉——先前版本以 <c>1 − s</c> 翻轉
+            ///   右半幅，使右側每個路緣節點被拖至鏡像位置，路緣於路口擴張部突入車道。）
             /// </summary>
-            /// <param name="s">The position across this half, 0 at the outer edge.
-            /// （於此半幅的橫向位置，0 為外緣。）</param>
+            /// <param name="s">The position across this half, in the half's own coordinate.
+            /// （於此半幅的橫向位置，取該半幅自身座標。）</param>
             /// <param name="leftHalf">Whether this is the left half.（是否為左半幅。）</param>
             /// <returns>The remapped position.（重映射後的位置。）</returns>
             public float Apply(float s, bool leftHalf)
@@ -1552,13 +1635,21 @@ namespace Carto.Systems
                                 : Remap(s, m_OffsetsRight, m_TargetsRight);
             }
 
+            // The end regions scale with pinned endpoints (0 → 0, 1 → 1) rather than translate:
+            // the flare's boundary curves were already moved to their targets when
+            // `CalculateVertexSyncTarget` mutated the node geometry (`m_Left/m_Right.c/d`), so
+            // the vertex riding the boundary at s = 0 must stay on it; a translation shears the
+            // outer strip — the curb row — off the boundary the game keeps it on.
+            // （端段以端點釘住（0 → 0、1 → 1）縮放而非平移：`CalculateVertexSyncTarget` 變異節點
+            //   幾何時已將擴張部邊界曲線移至目標，s = 0 之頂點必須留在其上；平移會使外側條帶
+            //   ——路緣列——剪離遊戲使其貼附的邊界。）
             private static float Remap(float s, float4 o, float4 t)
             {
-                if (s <= o.x) return s + (t.x - o.x);
+                if (s <= o.x) return Between(s, 0f, o.x, 0f, t.x);
                 if (s <= o.y) return Between(s, o.x, o.y, t.x, t.y);
                 if (s <= o.z) return Between(s, o.y, o.z, t.y, t.z);
                 if (s <= o.w) return Between(s, o.z, o.w, t.z, t.w);
-                return s + (t.w - o.w);
+                return Between(s, o.w, 1f, t.w, 1f);
             }
 
             // Two knots at the same offset are a collapsed interval, not a slope; snapping to the

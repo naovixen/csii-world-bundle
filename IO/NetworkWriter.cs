@@ -146,6 +146,8 @@ namespace Carto.IO
 
             if (record.ColorSet != null) line["colorSet"] = record.ColorSet;
 
+            if (record.Tunnel) line["tunnel"] = true;
+
             _writer.WriteLine(JsonConvert.SerializeObject(line, Formatting.None));
             Count++;
         }

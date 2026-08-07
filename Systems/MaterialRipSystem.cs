@@ -1485,7 +1485,7 @@ namespace Carto.Systems
         /// 故於所有回讀路徑匯聚之處偵測並重建為 <c>(x, y, z, 1)</c>，與著色器一致。）
         /// </summary>
         /// <param name="pixels">RGBA8 pixels, rebuilt in place.（RGBA8 像素，就地重建。）</param>
-        private static void ReconstructTwoChannelNormal(byte[] pixels)
+        internal static void ReconstructTwoChannelNormal(byte[] pixels)
         {
             // The fraction test rather than a strict minimum: block compression dents a few
             // texels of the constant-white red channel (247–249, and one map to 191), and a

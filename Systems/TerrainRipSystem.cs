@@ -104,7 +104,7 @@ namespace Carto.Systems
 
         // Stamp tallies for the report.（供報告使用的蓋印統計。）
         int _edgesStamped, _nodesStamped, _orphansStamped, _skippedForm, _skippedNoFlatten;
-        int _cutEdges, _cutNodes, _cutOrphans, _cutAreas;
+        int _cutEdges, _cutNodes, _cutOrphans, _cutAreas, _cutRoundaboutApprox;
 
         /// <summary>
         /// The event triggered when the system instance is created.
@@ -253,13 +253,16 @@ namespace Carto.Systems
             //   擋住它們的地面。此遮罩即該繪次的俯視投影——凡裁切區段的帶狀範圍經過、且地形
             //   高於車道並落於該區段裁切帶內的格，皆被裁去。）
             byte[] cutout = new byte[width * height];
-            _cutEdges = _cutNodes = _cutOrphans = _cutAreas = 0;
+            _cutEdges = _cutNodes = _cutOrphans = _cutAreas = _cutRoundaboutApprox = 0;
             StampCutout(cutout, heightData);
 
             int cutCells = 0;
             foreach (byte cell in cutout) if (cell != 0) cutCells++;
             report.AppendLine($"Cutout: {cutCells} cell(s) opened over tunnel portals and sunken roads; "
                             + $"{_cutEdges} edge(s), {_cutNodes} node strip(s), {_cutOrphans} orphan cap(s), {_cutAreas} clip area(s) stamped");
+            if (_cutRoundaboutApprox > 0)
+                report.AppendLine($"  APPROXIMATED: {_cutRoundaboutApprox} roundabout node(s) cut with raw composition "
+                                + "flags (the game's AddNode state-shedding and ring trims omitted — can over-cut, never under)");
 
             // ---- 3. Water surface LEVEL, built on the sim grid and resampled onto the terrain
             // grid. Depth was resampled directly once, and the river climbed its gorge: bilinear
@@ -279,6 +282,22 @@ namespace Carto.Systems
             // ---- 4. The theme's ground textures, read off the live global bindings.
             // （主題的地面貼圖：讀取現行的全域繫結。）
             Dictionary<string, string> surfaceTextures = CaptureSurfaceTextures(terrainDirectory, report);
+
+            // ---- 4a. The game's own ground blend: the splat weight map the terrain shader
+            // samples per pixel. Ripping it replaces the consumer's per-cell classification —
+            // the "square splotches" — with the game's smooth per-pixel mix, painted surfaces
+            // and noise included. GPU readback happens here on the main thread; the PNG encode
+            // joins the writer task below.
+            // （遊戲自身的地面混合：地形著色器逐像素取樣的權重貼圖。擷取之即以遊戲平滑的
+            //   逐像素混合（含手繪地表與雜訊）取代消費端的逐格分類——「方形色塊」。
+            //   GPU 回讀於主執行緒此處進行；PNG 編碼併入下方的寫出工作。）
+            PendingTexture splatPixels = CaptureSplatmap(out Dictionary<string, object> splatBlock, report);
+            PendingTexture userSplatPixels = CaptureUserSplatmap(out Dictionary<string, object> userSplatBlock, report);
+
+            // ---- 4b. The backdrop terrain that fills the horizon beyond the playable border.
+            // （4b. 可遊玩邊界之外、構成地平線的背景地形。）
+            ushort[] worldHeights = CaptureWorldHeightmap(out Dictionary<string, object> worldBlock,
+                                                          out int worldWidth, out int worldHeight, report);
 
             // ---- 4b. Surface areas — the pavement patches nothing else carries.
             // （地表區域——其餘各層皆未攜帶的鋪面區塊。）
@@ -305,6 +324,9 @@ namespace Carto.Systems
                 ["elevationScale"] = 1.0 / scale.y,
                 ["elevationOffset"] = (double)(-offset.y)
             };
+            if (splatBlock != null) rasters["splatmap"] = splatBlock;
+            if (userSplatBlock != null) rasters["userSplatmap"] = userSplatBlock;
+            if (worldBlock != null) rasters["worldTerrain"] = worldBlock;
 
             try
             {
@@ -320,6 +342,29 @@ namespace Carto.Systems
                     {
                         File.WriteAllBytes(IOUtils.CombinePath(terrainDirectory, "water_level.png"),
                                            Png.EncodeGray16(FlipRows(waterLevel, width, height), width, height));
+                    }
+                    if (splatPixels != null)
+                    {
+                        // Capture already returns rows top-first, and the splat's V axis runs
+                        // south→north, so row 0 is the north edge — the rasters convention —
+                        // with no further flip.
+                        // （Capture 回傳的列已由上而下，而 splat 的 V 軸由南向北，
+                        //   故列 0 即北緣——正是 rasters 慣例——無需再翻轉。）
+                        File.WriteAllBytes(IOUtils.CombinePath(terrainDirectory, "splatmap.png"),
+                                           Png.EncodeRgba(splatPixels.Pixels, splatPixels.Width, splatPixels.Height));
+                    }
+                    if (userSplatPixels != null)
+                    {
+                        File.WriteAllBytes(IOUtils.CombinePath(terrainDirectory, "user_splatmap.png"),
+                                           Png.EncodeRgba(userSplatPixels.Pixels, userSplatPixels.Width, userSplatPixels.Height));
+                    }
+                    if (worldHeights != null)
+                    {
+                        // The GPU readback hands rows V=0-first (south), like the stamp arrays.
+                        // （GPU 讀回的列以 V=0（南）為先，一如蓋印陣列。）
+                        File.WriteAllBytes(IOUtils.CombinePath(terrainDirectory, "world_heightmap.png"),
+                                           Png.EncodeGray16(FlipRows(worldHeights, worldWidth, worldHeight),
+                                                            worldWidth, worldHeight));
                     }
 
                     File.WriteAllText(IOUtils.CombinePath(terrainDirectory, "rasters.json"),
@@ -431,7 +476,10 @@ namespace Carto.Systems
                 float worldZ = (z / water.scale.z) - water.offset.z;
                 for (int x = 0; x < simWidth; x++)
                 {
-                    float depth = water.depths[(z * simWidth) + x].m_Depth;
+                    // The game's own decode (`WaterUtils.ToWorldSpace(float surfaceDepth)`):
+                    // metres = raw / scale.y − offset.y. The raw grid value is not metres.
+                    // （遊戲自身的解碼：公尺 = 原始值 / scale.y − offset.y。網格原始值並非公尺。）
+                    float depth = (water.depths[(z * simWidth) + x].m_Depth / water.scale.y) - water.offset.y;
                     if (!(depth > 0f)) continue;
 
                     float worldX = (x / water.scale.x) - water.offset.x;
@@ -764,22 +812,48 @@ namespace Carto.Systems
             string surfacesDirectory = IOUtils.CombinePath(terrainDirectory, "surfaces");
             if (!Directory.Exists(surfacesDirectory)) Directory.CreateDirectory(surfacesDirectory);
 
-            foreach (string[] pair in new[]
+            // The theme binds a diffuse AND a tangent normal per ground, plus up to four
+            // paintable extras (`colossal_TerrainExtra*`) most themes leave unbound — those
+            // skip silently. Normal maps go through the same two-channel-packing rebuild the
+            // material rip applies (§24.4); the extras carry the surfaces a player paints,
+            // weighted by the user splatmap.
+            // （主題為每種地面繫結漫反射與切線法線各一，另有至多四個可繪製額外層——多數主題
+            //   未繫結者靜默略過。法線貼圖經材質擷取相同的雙通道封裝重建；額外層即玩家
+            //   手繪的地表，由使用者 splat 加權。）
+            foreach (string[] entry in new[]
             {
-                new[] { "grass", "colossal_TerrainGrassDiffuse" },
-                new[] { "dirt", "colossal_TerrainDirtDiffuse" },
-                new[] { "rock", "colossal_TerrainRockDiffuse" }
+                new[] { "grass", "colossal_TerrainGrassDiffuse", "core" },
+                new[] { "grass_normal", "colossal_TerrainGrassNormal", "core" },
+                new[] { "dirt", "colossal_TerrainDirtDiffuse", "core" },
+                new[] { "dirt_normal", "colossal_TerrainDirtNormal", "core" },
+                new[] { "rock", "colossal_TerrainRockDiffuse", "core" },
+                new[] { "rock_normal", "colossal_TerrainRockNormal", "core" },
+                new[] { "extra1", "colossal_TerrainExtra1Diffuse", "extra" },
+                new[] { "extra1_normal", "colossal_TerrainExtra1Normal", "extra" },
+                new[] { "extra2", "colossal_TerrainExtra2Diffuse", "extra" },
+                new[] { "extra2_normal", "colossal_TerrainExtra2Normal", "extra" },
+                new[] { "extra3", "colossal_TerrainExtra3Diffuse", "extra" },
+                new[] { "extra3_normal", "colossal_TerrainExtra3Normal", "extra" },
+                new[] { "extra4", "colossal_TerrainExtra4Diffuse", "extra" },
+                new[] { "extra4_normal", "colossal_TerrainExtra4Normal", "extra" }
             })
             {
-                string name = pair[0];
+                string name = entry[0];
+                bool core = entry[2] == "core";
                 try
                 {
-                    Texture texture = Shader.GetGlobalTexture(pair[1]);
+                    Texture texture = Shader.GetGlobalTexture(entry[1]);
                     if (texture == null)
                     {
-                        report.AppendLine($"Surface texture '{name}': not bound; skipped");
+                        if (core) report.AppendLine($"Surface texture '{name}': not bound; skipped");
                         continue;
                     }
+
+                    // Unbound slots are filled with Unity's built-in 4×4 placeholders
+                    // (`ApplyRenderSettings` falls back to `Texture2D.grayTexture`); a real
+                    // ground texture is never that small.（未繫結的槽位以 Unity 內建的 4×4
+                    // 佔位貼圖填充；真實地面貼圖絕無此尺寸。）
+                    if (!core && ((texture.width <= 8) || (texture.height <= 8))) continue;
 
                     PendingTexture captured = MaterialRipSystem.Capture(texture, name, name, 1024);
                     if (captured?.Pixels == null)
@@ -787,6 +861,9 @@ namespace Carto.Systems
                         report.AppendLine($"Surface texture '{name}': readback failed; skipped");
                         continue;
                     }
+
+                    if (name.EndsWith("_normal", StringComparison.Ordinal))
+                        MaterialRipSystem.ReconstructTwoChannelNormal(captured.Pixels);
 
                     byte[] png = Png.EncodeRgba(captured.Pixels, captured.Width, captured.Height);
                     File.WriteAllBytes(IOUtils.CombinePath(surfacesDirectory, $"{name}.png"), png);
@@ -801,6 +878,239 @@ namespace Carto.Systems
 
             report.AppendLine($"Surfaces: {written.Count} ground texture(s) written");
             return written;
+        }
+
+        /// <summary>
+        /// Read back the game's splat weight map — the per-pixel ground classification the
+        /// terrain shader blends grass/dirt/rock (and the painted surfaces) with.
+        /// （回讀遊戲的 splat 權重貼圖——地形著色器據以逐像素混合草／土／岩及手繪地表者。）<br/><br/>
+        /// <c>TerrainMaterialSystem.UpdateSplatmap</c> renders it on the GPU from the modified
+        /// height cascade, water, noise and the user brush (<c>_SplatHeightVariance</c>,
+        /// <c>_SplatRockLimit</c>, <c>_SplatGrassLimit</c>), into a 4096² RGBA8 render texture
+        /// bound globally as <c>colossal_Splatmap</c> and exposed as the public
+        /// <c>splatmap</c> property. It spans exactly the playable area:
+        /// <c>world.xz = playableOffset + uv × playableArea</c> (its own <c>UpdateSplatmap</c>
+        /// viewport math). Shipping it verbatim replaces the consumer-side per-cell ground
+        /// classification with the game's own smooth per-pixel rule.<br/>
+        /// （<c>UpdateSplatmap</c> 於 GPU 上自修改後的高度串接、水體、雜訊與使用者筆刷繪成，
+        /// 為 4096² RGBA8 繪製目標，全域繫結為 <c>colossal_Splatmap</c>，並以公開的
+        /// <c>splatmap</c> 屬性暴露。其恰好覆蓋可遊玩區域。原樣出貨即以遊戲自身的平滑
+        /// 逐像素規則取代消費端的逐格分類。）<br/><br/>
+        /// The channel-to-ground assignment is not stated in managed code (the generator and
+        /// consumer are both shaders), so the block declares the generator inputs and the
+        /// shaping constants and leaves the assignment to the consumer's calibration — the
+        /// Blender harness derives it from the heightmap's slopes and the roadbed mask and
+        /// prints what it found, so nothing here guesses.
+        /// （通道與地面的對應未見於受管程式碼（產生與取用皆為著色器），故區塊宣告產生輸入與
+        /// 成形常數，將對應留給消費端校準——Blender 匯入器由高度圖坡度與路床遮罩推得並
+        /// 印出結果，此處不作任何猜測。）
+        /// </summary>
+        /// <param name="block">Receives the <c>rasters.json</c> "splatmap" block, or <c>null</c>.（接收 <c>rasters.json</c> 的 "splatmap" 區塊，或 <c>null</c>。）</param>
+        /// <param name="report">The report to note results in.（用以記錄結果的報告。）</param>
+        /// <returns>The captured pixels for the writer task, or <c>null</c>.（供寫出工作使用的已擷取像素，或 <c>null</c>。）</returns>
+        private PendingTexture CaptureSplatmap(out Dictionary<string, object> block, StringBuilder report)
+        {
+            block = null;
+            try
+            {
+                Game.Rendering.TerrainMaterialSystem materials =
+                    World.GetOrCreateSystemManaged<Game.Rendering.TerrainMaterialSystem>();
+                Texture splat = materials?.splatmap;
+                if (splat == null)
+                {
+                    report.AppendLine("Splatmap: not resident; consumers fall back to per-cell classification");
+                    return null;
+                }
+
+                PendingTexture captured = MaterialRipSystem.Capture(splat, "splatmap", "terrain splatmap", 0);
+                if (captured?.Pixels == null)
+                {
+                    report.AppendLine("Splatmap: readback failed; consumers fall back to per-cell classification");
+                    return null;
+                }
+
+                float2 area = Instance.Terrain.playableArea;
+                float2 origin = Instance.Terrain.playableOffset;
+                double cellX = area.x / captured.Width;
+                double cellZ = area.y / captured.Height;
+
+                // Texel-centre geo-referencing, same convention as the terrain grid: top-left
+                // texel centre, rows toward −Z.（texel 中心的地理參照，慣例與地形網格相同：
+                // 左上 texel 中心，列朝 −Z。）
+                block = new Dictionary<string, object>
+                {
+                    ["file"] = "terrain/splatmap.png",
+                    ["size"] = new[] { captured.Width, captured.Height },
+                    ["resolution"] = new[] { Math.Round(cellX, 6), Math.Round(cellZ, 6) },
+                    ["originWorld"] = new[]
+                    {
+                        Math.Round(origin.x + (cellX * 0.5), 3), 0.0,
+                        Math.Round(origin.y + area.y - (cellZ * 0.5), 3)
+                    },
+                    ["semantics"] = "GPU-generated ground-blend weights (height variance, rock/grass "
+                                  + "limits, noise, user brush); channel-to-ground assignment is "
+                                  + "calibrated by the consumer against slope and flat ground — the "
+                                  + "blend has no roadbed response (schema §8)",
+                    ["splatMultiplier"] = Math.Round((double)materials.SplatMultiplier, 4),
+                    ["splatPower"] = Math.Round((double)materials.SplatPower, 4)
+                };
+
+                report.AppendLine($"Splatmap: {captured.Width}x{captured.Height} ground-blend weights "
+                                + $"captured (multiplier {materials.SplatMultiplier:F2}, power {materials.SplatPower:F2})");
+                return captured;
+            }
+            catch (Exception ex)
+            {
+                _log.Warn($"Splatmap capture failed: {ex.Message}");
+                report.AppendLine($"Splatmap: {ex.Message}; consumers fall back to per-cell classification");
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// Read back the user's painted-surface weights — the brush strokes that weight the
+        /// paintable extra grounds (<c>terrain/surfaces/extra*.png</c>).
+        /// （回讀使用者手繪地表的權重——為可繪製額外地面加權的筆刷筆跡。）<br/><br/>
+        /// <c>TerrainMaterialSystem.UserSplatmap</c> (public; R8G8, playable extent, same
+        /// mapping as the splatmap). Captured only when it exists and any texel is non-zero —
+        /// a city with no painted surfaces ships nothing.
+        /// （<c>UserSplatmap</c>（公開；R8G8，可遊玩範圍，映射同 splatmap）。僅於存在且任一
+        /// texel 非零時擷取——未手繪的城市不出貨此檔。）
+        /// </summary>
+        /// <param name="block">Receives the <c>rasters.json</c> "userSplatmap" block, or <c>null</c>.（接收 "userSplatmap" 區塊，或 <c>null</c>。）</param>
+        /// <param name="report">The report.（報告。）</param>
+        /// <returns>The captured pixels, or <c>null</c>.（已擷取像素，或 <c>null</c>。）</returns>
+        private PendingTexture CaptureUserSplatmap(out Dictionary<string, object> block, StringBuilder report)
+        {
+            block = null;
+            try
+            {
+                Game.Rendering.TerrainMaterialSystem materials =
+                    World.GetOrCreateSystemManaged<Game.Rendering.TerrainMaterialSystem>();
+                Texture user = materials?.UserSplatmap;
+                if (user == null) return null;
+
+                PendingTexture captured = MaterialRipSystem.Capture(user, "user_splatmap", "user splatmap", 0);
+                if (captured?.Pixels == null) return null;
+
+                bool painted = false;
+                for (int i = 0; (i < captured.Pixels.Length) && !painted; i += 4)
+                {
+                    painted = (captured.Pixels[i] != 0) || (captured.Pixels[i + 1] != 0);
+                }
+                if (!painted) return null;
+
+                float2 area = Instance.Terrain.playableArea;
+                float2 origin = Instance.Terrain.playableOffset;
+                double cellX = area.x / captured.Width;
+                double cellZ = area.y / captured.Height;
+                block = new Dictionary<string, object>
+                {
+                    ["file"] = "terrain/user_splatmap.png",
+                    ["size"] = new[] { captured.Width, captured.Height },
+                    ["resolution"] = new[] { Math.Round(cellX, 6), Math.Round(cellZ, 6) },
+                    ["originWorld"] = new[]
+                    {
+                        Math.Round(origin.x + (cellX * 0.5), 3), 0.0,
+                        Math.Round(origin.y + area.y - (cellZ * 0.5), 3)
+                    },
+                    ["semantics"] = "player-painted surface weights (R/G channels) for the "
+                                  + "paintable extra grounds in terrain/surfaces/"
+                };
+
+                report.AppendLine($"User splatmap: painted surfaces present, {captured.Width}x{captured.Height} captured");
+                return captured;
+            }
+            catch (Exception ex)
+            {
+                _log.Warn($"User splatmap capture failed: {ex.Message}");
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// Read back the backdrop (world) heightmap — the terrain beyond the playable border
+        /// that fills the horizon.（回讀背景（世界）高度圖——可遊玩邊界之外、構成地平線的地形。）<br/><br/>
+        /// <c>TerrainSystem.worldHeightmap</c> is a public <c>R16_UNorm</c> texture spanning
+        /// <c>worldOffset … worldOffset + worldSize</c> (the playable area is a sub-rect of it).
+        /// The height cascade blits this map and the playable map into one seamless surface, so
+        /// they share the height encoding — the same <c>elevationScale</c>/<c>Offset</c> decode,
+        /// which the importer can verify by continuity across the playable border. Read through
+        /// <c>AsyncGPUReadback</c> (the game's own readback route for these maps), which returns
+        /// the 16-bit samples losslessly where an 8-bit blit would quantise them.
+        /// （<c>worldHeightmap</c> 為公開的 <c>R16_UNorm</c> 貼圖，涵蓋世界範圍（可遊玩區域為其
+        /// 子矩形）。高度串接將其與可遊玩圖拼成無縫表面，故兩者共享高度編碼——匯入端可藉
+        /// 邊界連續性驗證。經 <c>AsyncGPUReadback</c> 讀回，16 位元樣本無損。）
+        /// </summary>
+        /// <param name="block">Receives the <c>rasters.json</c> "worldTerrain" block, or <c>null</c>.（接收 "worldTerrain" 區塊，或 <c>null</c>。）</param>
+        /// <param name="width">Receives the map width.（接收圖寬。）</param>
+        /// <param name="height">Receives the map height.（接收圖高。）</param>
+        /// <param name="report">The report.（報告。）</param>
+        /// <returns>South-to-north rows of 16-bit samples, or <c>null</c>.（由南至北的 16 位元樣本列，或 <c>null</c>。）</returns>
+        private ushort[] CaptureWorldHeightmap(out Dictionary<string, object> block,
+                                               out int width, out int height, StringBuilder report)
+        {
+            block = null;
+            width = height = 0;
+            try
+            {
+                Texture world = Instance.Terrain.worldHeightmap;
+                if (world == null)
+                {
+                    report.AppendLine("World terrain: no backdrop heightmap resident; layer omitted");
+                    return null;
+                }
+
+                UnityEngine.Rendering.AsyncGPUReadbackRequest request =
+                    UnityEngine.Rendering.AsyncGPUReadback.Request(world, 0);
+                request.WaitForCompletion();
+                if (request.hasError)
+                {
+                    report.AppendLine("World terrain: GPU readback failed; layer omitted");
+                    return null;
+                }
+
+                Unity.Collections.NativeArray<ushort> data = request.GetData<ushort>();
+                width = world.width;
+                height = world.height;
+                if (data.Length < width * height)
+                {
+                    report.AppendLine($"World terrain: readback returned {data.Length} of {width * height} samples; layer omitted");
+                    return null;
+                }
+
+                ushort[] samples = new ushort[width * height];
+                Unity.Collections.NativeArray<ushort>.Copy(data, samples, samples.Length);
+
+                float2 size = Instance.Terrain.worldSize;
+                float2 origin = Instance.Terrain.worldOffset;
+                double cellX = size.x / width;
+                double cellZ = size.y / height;
+                block = new Dictionary<string, object>
+                {
+                    ["file"] = "terrain/world_heightmap.png",
+                    ["size"] = new[] { width, height },
+                    ["resolution"] = new[] { Math.Round(cellX, 6), Math.Round(cellZ, 6) },
+                    ["originWorld"] = new[]
+                    {
+                        Math.Round(origin.x + (cellX * 0.5), 3), 0.0,
+                        Math.Round(origin.y + size.y - (cellZ * 0.5), 3)
+                    },
+                    ["semantics"] = "backdrop terrain; same elevation decode as the main heightmap "
+                                  + "(the cascade blits both into one seamless surface); the playable "
+                                  + "area is a sub-rect and its samples are authoritative there"
+                };
+
+                report.AppendLine($"World terrain: {width}x{height} backdrop heightmap captured "
+                                + $"({size.x:F0}x{size.y:F0} m)");
+                return samples;
+            }
+            catch (Exception ex)
+            {
+                _log.Warn($"World heightmap capture failed: {ex.Message}");
+                report.AppendLine($"World terrain: {ex.Message}; layer omitted");
+                return null;
+            }
         }
 
         // ------------------------------------------------------------------------------------
@@ -859,7 +1169,7 @@ namespace Carto.Systems
 
                     if (EntityManager.HasComponent<StartNodeGeometry>(entity)
                         && TryGetGroundComposition(composition.m_StartNode, out TerrainComposition startTerrain)
-                        && StampNode(in context, heightData,
+                        && StampNode(in context, in context, heightData,
                                      EntityManager.GetComponentData<StartNodeGeometry>(entity).m_Geometry, startTerrain))
                     {
                         _nodesStamped++;
@@ -867,7 +1177,7 @@ namespace Carto.Systems
 
                     if (EntityManager.HasComponent<EndNodeGeometry>(entity)
                         && TryGetGroundComposition(composition.m_EndNode, out TerrainComposition endTerrain)
-                        && StampNode(in context, heightData,
+                        && StampNode(in context, in context, heightData,
                                      EntityManager.GetComponentData<EndNodeGeometry>(entity).m_Geometry, endTerrain))
                     {
                         _nodesStamped++;
@@ -1087,20 +1397,34 @@ namespace Carto.Systems
                     }
                     if (stamped) _cutEdges++;
 
+                    // The roundabout right pair rides the end-half band (`AddNode` passes
+                    // isStart: false there); a band that cannot cut gets a zero top, which the
+                    // band test rejects everywhere.（圓環右對取訖半帶；不可裁之帶取零頂，
+                    // 帶測試將其全數拒絕。）
                     if (EntityManager.HasComponent<StartNodeGeometry>(entity)
-                        && TryGetClipBand(composition.m_StartNode, raisedTop, true, out TerrainComposition startTerrain, out context.CutTop)
-                        && StampNode(in context, heightData,
-                                     EntityManager.GetComponentData<StartNodeGeometry>(entity).m_Geometry, startTerrain))
+                        && TryGetClipBand(composition.m_StartNode, raisedTop, true, out TerrainComposition startTerrain, out context.CutTop))
                     {
-                        _cutNodes++;
+                        StampContext endContext = context;
+                        if (!TryGetClipBand(composition.m_StartNode, raisedTop, false, out _, out endContext.CutTop))
+                            endContext.CutTop = 0f;
+                        if (StampNode(in context, in endContext, heightData,
+                                      EntityManager.GetComponentData<StartNodeGeometry>(entity).m_Geometry, startTerrain))
+                        {
+                            _cutNodes++;
+                        }
                     }
 
                     if (EntityManager.HasComponent<EndNodeGeometry>(entity)
-                        && TryGetClipBand(composition.m_EndNode, raisedTop, true, out TerrainComposition endTerrain, out context.CutTop)
-                        && StampNode(in context, heightData,
-                                     EntityManager.GetComponentData<EndNodeGeometry>(entity).m_Geometry, endTerrain))
+                        && TryGetClipBand(composition.m_EndNode, raisedTop, true, out TerrainComposition endTerrain, out context.CutTop))
                     {
-                        _cutNodes++;
+                        StampContext endContext = context;
+                        if (!TryGetClipBand(composition.m_EndNode, raisedTop, false, out _, out endContext.CutTop))
+                            endContext.CutTop = 0f;
+                        if (StampNode(in context, in endContext, heightData,
+                                      EntityManager.GetComponentData<EndNodeGeometry>(entity).m_Geometry, endTerrain))
+                        {
+                            _cutNodes++;
+                        }
                     }
                 }
             }
@@ -1208,7 +1532,18 @@ namespace Carto.Systems
         /// 圓環於高架匝道處的過渡修剪予以省略：其僅於環帶起點削去數公尺，故省略只會多蓋而不少蓋。）
         /// </summary>
         /// <returns>Whether the node cleared the draw gate and was stamped.（節點是否通過繪製門檻並被蓋印。）</returns>
-        private bool StampNode(in StampContext context, TerrainHeightData heightData,
+        /// <remarks>
+        /// The roundabout's second strip pair is the one place the game evaluates a section with
+        /// <c>isStart: false</c> (its <c>AddNode</c> passes it for both <c>node.m_Right</c>
+        /// segments), so those two strips take <paramref name="contextEnd"/> — the band built
+        /// from the composition's end-half edge heights. Every other strip, and both halves of
+        /// every other node kind, is <c>isStart: true</c> and takes <paramref name="context"/>.
+        /// （圓環的第二對條帶是遊戲唯一以 <c>isStart: false</c> 求值區段之處，故該兩條帶取
+        /// <paramref name="contextEnd"/>——以組成訖半緣高建立的帶。其餘皆取
+        /// <paramref name="context"/>。）
+        /// </remarks>
+        private bool StampNode(in StampContext context, in StampContext contextEnd,
+                               TerrainHeightData heightData,
                                EdgeNodeGeometry node, TerrainComposition terrain)
         {
             // The game's own draw gate: nodes shorter than 5 cm on both sides draw nothing.
@@ -1220,7 +1555,16 @@ namespace Carto.Systems
             {
                 // Roundabout: outer half to the middle curve, middle curve to the inner half,
                 // then the same for the right half against the middle curve's end point.
-                // （圓環：外半至中線曲線、中線曲線至內半；右半再對中線曲線終點重複。）
+                // Approximation, counted for cut passes: the game's AddNode sheds the
+                // elevated/tunnel + transition state (and MoveTowards-trims the ring ends) for
+                // this second pair before building its band; the port keeps the raw flags, which
+                // can only widen the band (over-cut), never narrow it.
+                // （圓環：外半至中線曲線、中線曲線至內半；右半再對中線曲線終點重複。
+                //   近似並於裁切繪次計數：遊戲的 AddNode 於第二對條帶前卸除高架／隧道與過渡狀態
+                //   （並以 MoveTowards 修剪環帶端點）再建其帶；移植保留原始旗標，僅會使帶變寬
+                //   （多裁）而不會變窄。）
+                if (context.Cut) _cutRoundaboutApprox++;
+
                 strip = node.m_Left;
                 strip.m_Right = node.m_Middle;
                 StampSegment(in context, heightData, strip, terrain, true, false);
@@ -1230,10 +1574,10 @@ namespace Carto.Systems
 
                 strip = node.m_Right;
                 strip.m_Right = new Bezier4x3(node.m_Middle.d, node.m_Middle.d, node.m_Middle.d, node.m_Middle.d);
-                StampSegment(in context, heightData, strip, terrain, true, false);
+                StampSegment(in contextEnd, heightData, strip, terrain, true, false);
                 strip.m_Left = strip.m_Right;
                 strip.m_Right = node.m_Right.m_Right;
-                StampSegment(in context, heightData, strip, terrain, false, true);
+                StampSegment(in contextEnd, heightData, strip, terrain, false, true);
             }
             else if (math.lengthsq(node.m_Left.m_Right.d - node.m_Right.m_Left.d) > 0.0001f)
             {

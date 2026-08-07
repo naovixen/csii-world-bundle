@@ -246,19 +246,19 @@ namespace Carto.Systems
         /// </summary>
         /// <summary>
         /// One node side of an edge: parameters from its own geometry, mesh from its composition.
-        /// A rotated node composition points at its mirror twin's mesh; it is assembled with this
-        /// node's parameters and counted, an approximation on asymmetric roads.
-        /// （邊的單側節點：參數取自其自身幾何，網格取自其組成。旋轉的節點組成指向其鏡像雙生的
-        /// 網格；以本節點的參數組裝並計數，於不對稱道路屬近似。）
+        /// （邊的單側節點：參數取自其自身幾何，網格取自其組成。）
         /// </summary>
         private void BuildNodeSide(Entity composition, EdgeNodeGeometry geometry, float3 center,
                                    string label, Dictionary<Entity, MeshAsset> cache,
                                    List<float3> vertices, List<float2> uvs, List<int> indices,
                                    List<MeshPrimitive> primitives, System.Text.StringBuilder report)
         {
+            // Node compositions are never rotate-shared: `NetCompositionMeshRefSystem.
+            // TryFindComposition` only attempts the mirrored match when the Node general flag is
+            // absent, so a node's `m_Rotate` is always false and needs no handling here.
+            // （節點組成絕不以旋轉共用：`TryFindComposition` 僅於一般旗標無 Node 時嘗試鏡像匹配，
+            //   故節點的 `m_Rotate` 恆為 false，此處無需處理。）
             if ((composition == Entity.Null) || !EntityManager.HasComponent<NetCompositionData>(composition)) return;
-            if (EntityManager.HasComponent<NetCompositionMeshRef>(composition)
-                && EntityManager.GetComponentData<NetCompositionMeshRef>(composition).m_Rotate) _rotatedNodeParts++;
 
             NetCompositionData data = EntityManager.GetComponentData<NetCompositionData>(composition);
             CompositionCurves curves = NodeCurves(geometry, data);
@@ -275,6 +275,30 @@ namespace Carto.Systems
             Entity meshEntity = EntityManager.GetComponentData<NetCompositionMeshRef>(composition).m_Mesh;
             if ((meshEntity == Entity.Null) || !EntityManager.HasBuffer<NetCompositionPiece>(meshEntity)) return;
             if (!EntityManager.HasComponent<NetCompositionData>(composition)) return;
+
+            // The game replaces the Default batch layer with the mesh's own default layers when
+            // they name any (`UpdateNetInstances`) — and then still draws the mesh on those
+            // layers. `CommonUtils.GetBoundsMask` names the world-view set: Default, Moving,
+            // Tunnel and Marker are `NormalLayers`; only Pipeline/SubPipeline/Waterway select
+            // the utility-cutaway and overlay cameras. So the skip is for compositions whose
+            // layers hold no world bit — underground pipe and cable runs — and NOT for Tunnel
+            // compositions, which are the tunnel walls and decks themselves. (An earlier
+            // revision skipped every Default-less composition, which silenced all tunnels.)
+            // （遊戲於網格自身的預設層有值時將 Default 批次層替換為之（`UpdateNetInstances`），
+            //   其後仍於該等層繪製。`GetBoundsMask` 列明世界視圖層集：Default、Moving、Tunnel、
+            //   Marker 為 `NormalLayers`；僅 Pipeline/SubPipeline/Waterway 屬剖視與疊加視圖。
+            //   故此處僅跳過不含任何世界層位元的組成——地下管纜——而<b>非</b>隧道組成，
+            //   後者正是隧道壁與路床本身。（先前版本跳過所有無 Default 的組成，使隧道全數消失。））
+            if (EntityManager.HasComponent<NetCompositionMeshData>(meshEntity))
+            {
+                const MeshLayer world = MeshLayer.Default | MeshLayer.Moving | MeshLayer.Tunnel | MeshLayer.Marker;
+                MeshLayer defaultLayers = EntityManager.GetComponentData<NetCompositionMeshData>(meshEntity).m_DefaultLayers;
+                if ((defaultLayers != 0) && ((defaultLayers & world) == 0))
+                {
+                    _pipelineCompositions++;
+                    return;
+                }
+            }
 
             NetCompositionData data = EntityManager.GetComponentData<NetCompositionData>(composition);
             bool isNode = (data.m_Flags.m_General & CompositionFlags.General.Node) != 0;
@@ -306,6 +330,8 @@ namespace Carto.Systems
                 bool zeroWidth = piece.m_Size.x == 0f;
                 if (preserveShape) _railPieces++;
                 if (backCut) _skipBottomPieces++;
+                if ((piece.m_PieceFlags & NetPieceFlags.LowerBottomToTerrain) != 0) _lowerBottomPieces++;
+                if ((piece.m_PieceFlags & NetPieceFlags.RaiseTopToTerrain) != 0) _raiseTopPieces++;
 
                 // The game's flip select — `select(float4(-1,1,-1,1), float4(1,1,1,-1),
                 // bool4(Invert, false, FlipMesh, Invert != FlipMesh))`: authored pieces are
@@ -352,10 +378,27 @@ namespace Carto.Systems
                     int startIndex = source.RangeStartIndex[r];
                     int indexCount = source.RangeIndexCount[r];
 
-                    // The game's per-range V density: |ΔV| over |Δz| across triangles whose V is
-                    // wholly non-negative; negative-V triangles instead record the rebase ceiling.
-                    // （遊戲的逐範圍 V 密度：於 V 全為非負的三角形上取 |ΔV|/|Δz|；
-                    //   含負 V 者改記錄重定基準的上限。）
+                    // Vertex filter and remap, as the generator's `nativeArray4` — built before
+                    // the V density because the game measures that density only over triangles
+                    // that survive the cut (its accumulation sits inside `math.all(int7 >= 0)`).
+                    // （頂點過濾與重映射，即產生器的 `nativeArray4`——先於 V 密度建立，
+                    //   因遊戲僅在通過裁切的三角形上量測該密度。）
+                    int[] remap = new int[vertexCount];
+                    int baseVertex = vertices.Count;
+                    int kept = 0;
+                    for (int i = 0; i < vertexCount; i++)
+                    {
+                        float rawZ = source.Vertices[startVertex + i].z;
+                        remap[i] = ((frontCut && (rawZ < -0.01f)) || (backCut && (rawZ > 0.01f)))
+                            ? -1
+                            : baseVertex + kept++;
+                    }
+
+                    // The game's per-range V density: |ΔV| over |Δz| across surviving triangles
+                    // whose V is wholly non-negative; the others instead record the rebase
+                    // ceiling. A front-cut piece's removed half must not weigh the ratio.
+                    // （遊戲的逐範圍 V 密度：於存活且 V 全為非負的三角形上取 |ΔV|/|Δz|；
+                    //   其餘記錄重定基準的上限。前向裁切所移除的一半不得計入比值。）
                     bool tiledV = !disableTiling;
                     float2 accum = default;
                     float rebase = 0f;
@@ -365,6 +408,11 @@ namespace Carto.Systems
                         int ia = source.Indices[startIndex + t + order.x];
                         int ib = source.Indices[startIndex + t + order.y];
                         int ic = source.Indices[startIndex + t + order.z];
+                        int la = ia - startVertex, lb = ib - startVertex, lc = ic - startVertex;
+                        if ((la < 0) || (lb < 0) || (lc < 0)
+                            || (la >= vertexCount) || (lb >= vertexCount) || (lc >= vertexCount)) continue;
+                        if ((remap[la] < 0) || (remap[lb] < 0) || (remap[lc] < 0)) continue;
+
                         float3 v = new(source.Uvs[ia].y, source.Uvs[ib].y, source.Uvs[ic].y);
                         if (tiledV && math.all(v >= 0f))
                         {
@@ -379,20 +427,9 @@ namespace Carto.Systems
                     float density = (accum.y > 1e-6f) ? (accum.x / accum.y) : 0f;
                     rebase = tiledV ? 0f : math.ceil(rebase);
 
-                    // Vertex filter and remap, as the generator's `nativeArray4`.
-                    // （頂點過濾與重映射，即產生器的 `nativeArray4`。）
-                    int[] remap = new int[vertexCount];
-                    int baseVertex = vertices.Count;
-                    int kept = 0;
                     for (int i = 0; i < vertexCount; i++)
                     {
-                        float rawZ = source.Vertices[startVertex + i].z;
-                        if ((frontCut && (rawZ < -0.01f)) || (backCut && (rawZ > 0.01f)))
-                        {
-                            remap[i] = -1;
-                            continue;
-                        }
-                        remap[i] = baseVertex + kept++;
+                        if (remap[i] < 0) continue;
 
                         float3 vertex = source.Vertices[startVertex + i] * new float3(sx, 1f, sz) + offset;
                         float2 uv = source.Uvs[startVertex + i];
@@ -431,11 +468,16 @@ namespace Carto.Systems
                                 if (zeroWidth) vertex.x = piece.m_Offset.x;
                                 if (math.abs(dx) < 0.01f)
                                 {
+                                    // The game does NOT rebase the centre column's front half
+                                    // (its roundabout side branches subtract `int8 - base`, this
+                                    // one has no subtraction): the final saturate pins those
+                                    // vertices at the middle curve's end. Matched exactly.
+                                    // （遊戲不重定中央列前半的基準——環島側分支有減法，此分支沒有：
+                                    //   最終的 saturate 將這些頂點釘於中線曲線末端。完全一致。）
                                     pair = roundabout ? math.select(new int2(4, 2), new int2(5, 3), vertex.z >= 0f)
                                                       : new int2(4, 4);
                                     xParam = 0f;
                                     zParam = (vertex.z * scale4.y) + bias7.y;
-                                    if (roundabout && (vertex.z >= 0f)) zParam -= 1f;
                                 }
                                 else if (dx > 0f)
                                 {
@@ -486,18 +528,19 @@ namespace Carto.Systems
                         xParam = math.saturate(xParam);
                         zParam = math.saturate(zParam);
 
-                        // The across-width sync the game hands the shader (§5.1); measured per
-                        // half from the outer edge, which is the coordinate xParam runs in for
-                        // the halved branches. The left half runs outer→inner as xParam grows;
-                        // the right half runs inner→outer, so it is flipped through the remap.
-                        // （遊戲交予著色器的橫向同步（§5.1）；以半幅為單位自外緣量測，
-                        //   與 halved 分支的 xParam 座標一致。左半幅隨 xParam 增大由外而內；
-                        //   右半幅由內而外，故經翻轉後重映射。）
+                        // The across-width sync the game hands the shader (§5.1). Each half's
+                        // knots are stored in that half's own xParam coordinate (left: 0 at the
+                        // outer edge; right: 0 at the middle — `GeometrySystem`'s
+                        // `1 − offsetsLeft.wzyx` twin conversion and `CalculateVertexSyncTarget`'s
+                        // right-branch anchoring both say so), so both halves apply directly.
+                        // The earlier `1 − Apply(1 − xParam)` right-half flip mirrored every
+                        // right-side curb knot — kerbs jutted into the roadway at flares (§21).
+                        // （遊戲交予著色器的橫向同步（§5.1）。各半幅的節點值即以該半幅自身的
+                        //   xParam 座標儲存，故兩半皆直接套用。先前右半幅的翻轉使右側路緣節點
+                        //   鏡像錯位——路緣於擴張部突入車道（§21）。）
                         if (halved && isNode)
                         {
-                            xParam = leftHalf
-                                ? p.Sync.Apply(xParam, true)
-                                : 1f - p.Sync.Apply(1f - xParam, false);
+                            xParam = p.Sync.Apply(xParam, leftHalf);
                         }
 
                         float3 a = MathUtils.Position(p.Curves[pair.x], zParam);

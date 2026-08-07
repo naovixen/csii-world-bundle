@@ -379,6 +379,15 @@ namespace Carto.Systems
         public int PartialMeshPrefabs { get; private set; }
 
         /// <summary>
+        /// Sub-mesh entries skipped because every layer they default to is an underground cutaway
+        /// layer — the per-part form of the §17.5 prefab rule, for prefabs that mix visible parts
+        /// with utility furniture.
+        /// （因其預設圖層全屬地下剖視層而略過的子網格條目——§17.5 預製模板規則的逐部件形式，
+        /// 用於可見部件與公用設施配件混雜的預製模板。）
+        /// </summary>
+        public int PipelinePartsSkipped { get; private set; }
+
+        /// <summary>
         /// How many sub-mesh entries were the obsolete-content placeholder, stretched to the
         /// prefab's bounds the way the renderer stretches it.
         /// （屬於過時內容佔位網格、並依繪製器方式拉伸至預製模板邊界的子網格條目數量。）
@@ -426,6 +435,7 @@ namespace Carto.Systems
 
             MultiMeshPrefabs = 0;
             PartialMeshPrefabs = 0;
+            PipelinePartsSkipped = 0;
             PlaceholderParts = 0;
             StackRestParts = 0;
 
@@ -1052,7 +1062,28 @@ namespace Carto.Systems
                 // Unconditional entries are always drawn; conditional ones only when everything
                 // they ask for holds in the exported state.
                 // （無條件的條目一律繪製；有條件者僅在其所要求的一切於輸出狀態下皆成立時繪製。）
-                if (ExportsSubMesh(subMeshes[i].m_Flags)) selected.Add(i);
+                if (!ExportsSubMesh(subMeshes[i].m_Flags)) continue;
+
+                // The game replaces a part's batch layer with its `m_DefaultLayers` when set
+                // (`UpdateObjectInstances`), so a part defaulting only to Pipeline/SubPipeline —
+                // utility hookup furniture inside an otherwise visible prefab — never draws in
+                // the world view. The per-part form of the §17.5 rule, which drops whole
+                // instances when *every* part is such.
+                // （遊戲於部件設有 `m_DefaultLayers` 時以之取代其批次圖層，故僅預設至
+                //   Pipeline／SubPipeline 的部件——可見預製模板內的公用設施接點配件——
+                //   絕不在世界視圖繪製。此為 §17.5 規則的逐部件形式。）
+                if (EntityManager.HasComponent<MeshData>(subMeshes[i].m_SubMesh))
+                {
+                    const MeshLayer underground = MeshLayer.Pipeline | MeshLayer.SubPipeline;
+                    MeshLayer layers = EntityManager.GetComponentData<MeshData>(subMeshes[i].m_SubMesh).m_DefaultLayers;
+                    if ((layers != 0) && ((layers & ~underground) == 0))
+                    {
+                        PipelinePartsSkipped++;
+                        continue;
+                    }
+                }
+
+                selected.Add(i);
             }
 
             // A prefab whose every entry is conditional — some props exist only as state variants —
@@ -1220,6 +1251,7 @@ namespace Carto.Systems
             // （遊戲適用、但原版城市未必觸發的規則——予以計數，使擷取據實陳述其觸發次數。）
             if (MultiMeshPrefabs > 0) run.Report.AppendLine($"Merged multi-mesh geometry assets: {MultiMeshPrefabs} prefab(s).");
             if (PartialMeshPrefabs > 0) run.Report.AppendLine($"Prefabs that lost meshes their geometry asset holds: {PartialMeshPrefabs} — see the log.");
+            if (PipelinePartsSkipped > 0) run.Report.AppendLine($"Skipped {PipelinePartsSkipped} underground-only sub-mesh entr(ies) inside otherwise visible prefabs (Pipeline layers).");
             if (PlaceholderParts > 0) run.Report.AppendLine($"Missing-asset placeholder parts stretched to prefab bounds: {PlaceholderParts}.");
             if (StackRestParts > 0) run.Report.AppendLine($"Stacked prefabs with untiled rest parts (__stack_rest): {StackRestParts}.");
             if ((run.SkirtsWritten > 0) || (run.SkirtsEmpty > 0))
@@ -1762,6 +1794,19 @@ namespace Carto.Systems
         /// <param name="renderPrefab">The render prefab that may carry decal properties.（可能帶有貼花屬性的繪製預製模板。）</param>
         /// <param name="trace">Optional sink recording the decision.（可選的決策紀錄。）</param>
         /// <returns>Whether the mesh was replaced.（網格是否已被取代。）</returns>
+        /// <summary>
+        /// The import pipeline's own up-facing vertex test (`AssetImportPipeline.
+        /// SetupDecalComponent`): a real normal (`SqrMagnitude > 0.01`) within 0.01° of straight
+        /// up. cos(0.01°) ≈ 0.99999998.
+        /// （匯入管線自身的朝上頂點測試：真實法線且與正上方夾角小於 0.01°。）
+        /// </summary>
+        private static bool IsExactlyUp(float3 normal)
+        {
+            float lengthSq = math.lengthsq(normal);
+            if (lengthSq <= 0.01f) return false;
+            return (normal.y / math.sqrt(lengthSq)) >= 0.99999998f;
+        }
+
         private bool TryFlattenDecal(MeshAsset mesh, RenderPrefab renderPrefab, List<string> trace)
         {
             if ((mesh == null) || (renderPrefab == null)) return false;
@@ -1819,16 +1864,25 @@ namespace Carto.Systems
             // falls back to every vertex rather than shipping an unmapped quad.
             // （與遊戲推導所用相同的朝上頂點選擇；若投影體頂面無朝上法線（實測未見，
             //   惟製作內容各異），則退回全部頂點，而非輸出未映射的四邊形。）
+            // Pass 0 is the import pipeline's own vertex test (`SetupDecalComponent`:
+            // `SqrMagnitude > 0.01` and `Angle(up, n) < 0.01°` — exactly-up, not merely upward),
+            // so that for DefaultDecal objects the rect below reproduces `m_TextureArea` by
+            // construction and the rescale is a true identity. Pass 1 keeps the previously
+            // validated ≥ 0.9 tolerance for authored content the strict test misses; pass 2
+            // takes everything rather than shipping an unmapped quad.
+            // （第 0 遍即匯入管線自身的頂點測試——「恰好朝上」而非僅「向上」——使 DefaultDecal
+            //   物件的矩形依構造重現 `m_TextureArea`，縮放成為真正的恆等變換。第 1 遍保留既驗證
+            //   的 ≥ 0.9 容差；第 2 遍全取，而非輸出未映射的四邊形。）
             float2[] cornerUvs = new float2[4];
             for (int c = 0; c < 4; c++)
             {
                 float best = float.MaxValue;
-                for (int pass = 0; (pass < 2) && (best == float.MaxValue); pass++)
+                for (int pass = 0; (pass < 3) && (best == float.MaxValue); pass++)
                 {
                     for (int i = 0; i < mesh.Vertices.Length; i++)
                     {
-                        if ((pass == 0) && (mesh.Normals != null) && (i < mesh.Normals.Length)
-                            && (mesh.Normals[i].y < 0.9f)) continue;
+                        if ((pass < 2) && (mesh.Normals != null) && (i < mesh.Normals.Length)
+                            && ((pass == 0) ? !IsExactlyUp(mesh.Normals[i]) : (mesh.Normals[i].y < 0.9f))) continue;
 
                         float2 offset = mesh.Vertices[i].xz - corners[c].xz;
                         float distance = math.lengthsq(offset);
@@ -1861,12 +1915,12 @@ namespace Carto.Systems
             //   保留製作矩形正是首次全城匯入中所有行穿線與中線隱形的原因。將製作矩形縮放入
             //   面積矩形，既保留配對（前述鏡像教訓），又自遊戲實際取用之處取得裁切。）
             float2 rectMin = new(float.MaxValue), rectMax = new(float.MinValue);
-            for (int pass = 0; (pass < 2) && (rectMin.x == float.MaxValue); pass++)
+            for (int pass = 0; (pass < 3) && (rectMin.x == float.MaxValue); pass++)
             {
                 for (int i = 0; i < mesh.Vertices.Length; i++)
                 {
-                    if ((pass == 0) && (mesh.Normals != null) && (i < mesh.Normals.Length)
-                        && (mesh.Normals[i].y < 0.9f)) continue;
+                    if ((pass < 2) && (mesh.Normals != null) && (i < mesh.Normals.Length)
+                        && ((pass == 0) ? !IsExactlyUp(mesh.Normals[i]) : (mesh.Normals[i].y < 0.9f))) continue;
                     if ((mesh.Uvs == null) || (i >= mesh.Uvs.Length)) continue;
 
                     rectMin = math.min(rectMin, mesh.Uvs[i]);

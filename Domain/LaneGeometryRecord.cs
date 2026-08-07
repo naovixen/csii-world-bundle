@@ -52,5 +52,8 @@ namespace Carto.Domain
 
         /// <summary>The resolved paint, as instances carry it (contract §7.2), or <c>null</c>.（解析後的塗裝，與實例相同（契約 §7.2），或 <c>null</c>。）</summary>
         public object ColorSet;
+
+        /// <summary>Whether the owning network runs below ground — the game draws the lane on its Tunnel cutaway layer.（所屬路網是否位於地下——遊戲將該車道繪製於其隧道剖視層。）</summary>
+        public bool Tunnel;
     }
 }
