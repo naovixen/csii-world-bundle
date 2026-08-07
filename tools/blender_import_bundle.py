@@ -276,14 +276,84 @@ def _mesh_from_arrays(name, verts, tris, uv_layers=None, material_runs=None, pol
     fresh triangulation diagonal that could flip a slope's silhouette under the pixel A/B
     gate. `uv_layers` is `{layer_name: (M*poly_size, 2)}` in the same loop order.
     `material_runs` is `[(material, poly_count)]` consumed in polygon order; a `None`
-    material keeps the default slot 0. `smooth` sets `use_smooth` on every polygon — on for
-    the game's continuous heightfields (a flat-shaded quad reads as a brightness tile), off
-    for faceted geometry such as lane decals, so a caller chooses rather than inherits it.
+    material keeps the default slot 0. `smooth` sets `use_smooth` on every polygon — there is
+    no safe default across callers (the game's continuous heightfields want it on; faceted
+    geometry such as lane decals must pass `smooth=False` explicitly), so every call site
+    states its own choice rather than relying on this default.
+
+    A row in `tris` with a repeated vertex index, or one that is geometrically zero-area
+    (distinct indices that still collapse to a line or point — e.g. two part-seam vertices
+    authored at the same position), is dropped BEFORE the mesh is built, with a matching
+    trim of `material_runs` and `uv_layers` so the survivors keep the material/UV they were
+    given. This is deliberately not left to `mesh.validate()`: validate() drops bad polygons
+    positionally, and a caller has no way to tell afterward which of ITS polygons a run or a
+    UV block was meant for, so re-zipping runs/UVs onto whatever validate() kept would
+    silently mis-assign materials and UVs rather than fail loudly. Concatenated per-part
+    arrays (lane meshes built from bent segments) are exactly the shape most likely to
+    contain one of these at a seam. If `mesh.validate()` still disagrees with the polygon
+    count after this pre-clean, that means it rejected something this check does not know
+    about — raises rather than silently building a mis-aligned mesh.
     """
+    verts = numpy.asarray(verts, dtype=numpy.float64)
+    if verts.size == 0:
+        verts = verts.reshape(0, 3)
+    if verts.ndim != 2 or verts.shape[1] != 3:
+        raise ValueError(f"_mesh_from_arrays({name!r}): verts must be (N, 3), got shape {verts.shape}")
+
+    tris = numpy.asarray(tris, dtype=numpy.int64)
+    if tris.size == 0:
+        tris = tris.reshape(0, poly_size)
+    if tris.ndim != 2 or tris.shape[1] != poly_size:
+        raise ValueError(f"_mesh_from_arrays({name!r}): tris must be (M, {poly_size}), "
+                         f"got shape {tris.shape}")
+
+    poly_count = len(tris)
+    if poly_count:
+        # A repeated vertex index within one polygon's row — the classic cause of a face
+        # mesh.validate() drops (a zero-length edge, most often at a concatenated part seam).
+        degenerate = numpy.zeros(poly_count, dtype=bool)
+        for i in range(poly_size):
+            for j in range(i + 1, poly_size):
+                degenerate |= tris[:, i] == tris[:, j]
+        # Geometrically zero-area: distinct indices that still collapse to a line or point.
+        # Fan-triangulated from vertex 0 (v0, v[i], v[i+1]) so it covers any poly_size.
+        v0 = verts[tris[:, 0]]
+        area2 = numpy.zeros(poly_count)
+        for i in range(1, poly_size - 1):
+            edge_a = verts[tris[:, i]] - v0
+            edge_b = verts[tris[:, i + 1]] - v0
+            area2 += numpy.linalg.norm(numpy.cross(edge_a, edge_b), axis=1)
+        degenerate |= area2 < 1e-12
+
+        if degenerate.any():
+            dropped = int(degenerate.sum())
+            LOG.warn(f"CONTRACT VIOLATION: {name} array input had {dropped} degenerate "
+                     "face(s) (repeated vertex index or zero area); dropping before build so "
+                     "materials/UVs stay aligned to the surviving polygons")
+            keep = ~degenerate
+            if material_runs:
+                expanded = []
+                for material, count in material_runs:
+                    expanded.extend([material] * count)
+                trimmed = []
+                for material, kept in zip(expanded, keep):
+                    if not kept:
+                        continue
+                    if trimmed and trimmed[-1][0] is material:
+                        trimmed[-1] = (material, trimmed[-1][1] + 1)
+                    else:
+                        trimmed.append((material, 1))
+                material_runs = trimmed
+            if uv_layers:
+                loop_keep = numpy.repeat(keep, poly_size)
+                uv_layers = {layer_name: numpy.asarray(uvs)[loop_keep]
+                             for layer_name, uvs in uv_layers.items()}
+            tris = tris[keep]
+            poly_count = len(tris)
+
     mesh = bpy.data.meshes.new(name)
     mesh.vertices.add(len(verts))
     mesh.vertices.foreach_set("co", numpy.ascontiguousarray(verts, dtype=numpy.float32).ravel())
-    poly_count = len(tris)
     mesh.loops.add(poly_count * poly_size)
     mesh.loops.foreach_set("vertex_index", numpy.ascontiguousarray(tris, dtype=numpy.int32).ravel())
     mesh.polygons.add(poly_count)
@@ -307,25 +377,13 @@ def _mesh_from_arrays(name, verts, tris, uv_layers=None, material_runs=None, pol
     mesh.update()
     mesh.validate()
     if len(mesh.polygons) != poly_count:
-        # Caution learned building this: validate() silently drops degenerate faces. Callers
-        # guarantee pre-clean arrays (no degenerate index triples), so a disagreement here is
-        # a defect worth surfacing, not something to paper over — and it would otherwise crash
-        # the use_smooth foreach_set below on a size mismatch. Warn and fall back to the
-        # slower but self-healing from_pydata path instead.
-        LOG.warn(f"CONTRACT VIOLATION: {name} lost {poly_count - len(mesh.polygons)} face(s) "
-                 "to mesh.validate() — array input was not pre-clean; rebuilding via from_pydata")
-        mesh = bpy.data.meshes.new(name)
-        mesh.from_pydata([tuple(float(x) for x in v) for v in verts], [],
-                          [tuple(int(i) for i in row) for row in tris])
-        mesh.update()
-        mesh.validate()
-        poly_count = len(mesh.polygons)
-        if material_runs:
-            slots = {}
-            for material, _count in material_runs:
-                if material is not None and material.name not in slots:
-                    slots[material.name] = len(mesh.materials)
-                    mesh.materials.append(material)
+        # The pre-clean above is supposed to make this unreachable. Surfacing it as a hard
+        # error rather than silently building a mesh whose materials/UVs no longer line up
+        # with whatever validate() decided to keep.
+        raise RuntimeError(
+            f"_mesh_from_arrays({name!r}): mesh.validate() dropped "
+            f"{poly_count - len(mesh.polygons)} more face(s) after the degenerate-face "
+            "pre-clean — it rejected something this check does not detect")
     mesh.polygons.foreach_set("use_smooth", numpy.full(poly_count, smooth, dtype=bool))
     return mesh
 
