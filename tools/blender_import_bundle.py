@@ -882,6 +882,7 @@ def build_networks(networks_path, categories, collection, net_mesh_dir=None, lif
         LOG.warn(f"no networks.jsonl at {networks_path} — skipping networks")
         return 0
 
+    _glb_fast_path_counts_reset()
     groups = {}
     counts = {"form": {}, "category": {}}
     mesh_form = 0
@@ -1005,6 +1006,8 @@ def build_networks(networks_path, categories, collection, net_mesh_dir=None, lif
 
     LOG.done(f"networks:  {total} record(s) read, {sum(counts['category'].values())} extruded "
              f"into {len(groups)} mesh(es), {placed} quad(s)")
+    if net_mesh_dir is not None and mesh_form:
+        _glb_fast_path_counts_log()
     for form, count in sorted(counts["form"].items()):
         LOG.step(f"form {form}: {count}")
     for category, count in sorted(counts["category"].items()):
@@ -2648,6 +2651,393 @@ class parked_out_of_view_layer:                                 # noqa: N801 - u
         return False
 
 
+# -- the direct .glb fast path ---------------------------------------------------------------
+#
+# The stock `bpy.ops.import_scene.gltf` call costs roughly 200 ms per file almost independent
+# of its size (measured: 1541 s for 7,380 network segment .glb over a full-city run, ~209
+# ms/file) — the operator/undo-stack/dependency-graph machinery Blender wraps around every
+# import, not the parsing itself. A city ripped from CS2 imports thousands of these, and most
+# of them reference materials Blender has already built from an earlier file in the same run
+# (contract §4/§5: materials are shared across meshes, dedup'd by the producer). This path
+# parses the handful of .glb it can prove are simple enough to build directly and reuses those
+# already-built materials — it never constructs one, so it can never be the thing that makes a
+# building render wrong.
+#
+# Every guard below exists to make one specific Blender feature the stock importer would apply
+# fall through to the stock importer instead of being silently skipped: morph targets, skins,
+# animations, non-float32 or sparse accessors, an unsupported primitive mode, an attribute this
+# path does not carry through (vertex colours), or a material this run has not built yet. A
+# file that trips none of them is one this path has fully accounted for.
+#
+# glTF is Y-up, right-handed; the bundle producer writes right-handed meshes for exactly this
+# reason (§2.2). Blender's importer maps that to its own Z-up, right-handed frame via
+# (x, y, z) -> (x, -z, y) — call it G, same letter the frame comment at the top of this file
+# already uses for it. That map is a proper rotation (determinant +1, checked: the 3x3 has a
+# single -1 off the diagonal and a matching +1, so two row swaps' worth of sign, not one) —
+# which is what licenses using the glTF triangle winding as-is below: a rotation preserves
+# which face is "front", a reflection would not.
+_GLTF_TO_BLENDER = Matrix(((1, 0, 0, 0),
+                           (0, 0, -1, 0),
+                           (0, 1, 0, 0),
+                           (0, 0, 0, 1)))
+
+# Base material name -> the bpy.data.materials datablock a stock import first built for it.
+# Populated by `import_glb`'s stock-import branch after every glTF import, consulted by
+# `_fast_import_glb` before it will claim a file. Never written to by the fast path itself —
+# that is what makes "every material this path uses already exists" a true statement rather
+# than something the fast path could accidentally falsify for a later file.
+_KNOWN_MATERIALS = {}
+
+# How many .glb this run has built directly vs. handed to the stock importer, reset per phase
+# by `_glb_fast_path_counts_reset()` and reported by `_glb_fast_path_counts_log()` — the
+# headline number for this path (see module docstring above).
+_FAST_GLB_COUNT = 0
+_STOCK_GLB_COUNT = 0
+
+# A degenerate polygon `_mesh_from_arrays` drops on the fast path is not a new defect: the
+# stock importer builds the exact same source triangle and has always tolerated it silently
+# (Blender's `mesh.validate()` does not flag geometric zero-area, only structurally invalid
+# data). Surfacing it as a per-file CONTRACT VIOLATION here would be reporting on the source
+# .glb, not on anything this path did — and would make a run's log diverge from a
+# stock-importer-only baseline that never saw this line, for a fact that was already true
+# before this path existed. Counted quietly instead (see `_record_fast_degenerate` below) and
+# folded into the same summary as the fast/stock split.
+_FAST_DEGENERATE_POLYS = 0
+
+
+def _glb_fast_path_counts_reset():
+    global _FAST_GLB_COUNT, _STOCK_GLB_COUNT, _FAST_DEGENERATE_POLYS
+    _FAST_GLB_COUNT = 0
+    _STOCK_GLB_COUNT = 0
+    _FAST_DEGENERATE_POLYS = 0
+
+
+def _glb_fast_path_counts_log():
+    """`LOG.step` the fast/stock split since the last reset — kept off the count-gate markers
+    (no "record(s)"/"object(s)"/… substring) so a live run can call this and stay comparable
+    against a baseline log captured before this path existed."""
+    LOG.step(f"{_FAST_GLB_COUNT} glb fast-path, {_STOCK_GLB_COUNT} glb via glTF importer")
+    if _FAST_DEGENERATE_POLYS:
+        LOG.step(f"{_FAST_DEGENERATE_POLYS} degenerate polygon(s) among them, dropped quietly — "
+                 "zero-area source triangles the stock importer already tolerated silently")
+
+
+def _record_fast_degenerate(_name, dropped):
+    global _FAST_DEGENERATE_POLYS
+    _FAST_DEGENERATE_POLYS += dropped
+
+
+def _gltf_node_local_matrix(node):
+    """One glTF node's local TRS (or explicit `matrix`) as a `mathutils.Matrix`, glTF-space."""
+    if "matrix" in node:
+        m = node["matrix"]                                  # column-major, per the glTF spec
+        return Matrix((m[0:4], m[4:8], m[8:12], m[12:16])).transposed()
+    t = node.get("translation", (0.0, 0.0, 0.0))
+    r = node.get("rotation", (0.0, 0.0, 0.0, 1.0))           # glTF stores quaternions [x,y,z,w]
+    s = node.get("scale", (1.0, 1.0, 1.0))
+    translation = Matrix.Translation(Vector(t))
+    rotation = Quaternion((r[3], r[0], r[1], r[2])).to_matrix().to_4x4()
+    scale = Matrix.Diagonal((s[0], s[1], s[2], 1.0))
+    return translation @ rotation @ scale
+
+
+def _gltf_node_matrix_to_blender(matrix):
+    """Conjugate a glTF-space node matrix by G so it lands in Blender's Z-up frame.
+
+    `C @ M @ C.inverted()` with `C` = `_GLTF_TO_BLENDER`. Verified against a stock import of
+    Address_Beach_Resort_Dubai.glb (root empty + one translated, multi-material child node):
+    `matrix_world` of the matching mesh object came out identical to the float ULP.
+    """
+    return _GLTF_TO_BLENDER @ matrix @ _GLTF_TO_BLENDER.inverted()
+
+
+def _parse_glb_arrays(path):
+    """Parse one .glb into per-node arrays, or `None` the moment anything is unproven-safe.
+
+    Returns a list of dicts, one per mesh-bearing node (a node whose glTF mesh has more than
+    one primitive — trunk + leaves, a building's wall + window materials — is one dict with
+    several material runs, exactly mirroring the single Blender object with several material
+    slots the stock importer builds for it; verified against AppleTree01.glb and
+    Address_Beach_Resort_Dubai.glb, both real bundle files with multi-primitive meshes)::
+
+        {"name": str, "matrix": Matrix (glTF-space world), "verts": (N,3) f32,
+         "normals": (N,3) f32, "uvs": (N,2) f32 | None,
+         "tris": (M,3) int, "material_runs": [(name, tri_count), ...]}
+
+    Every `return None` below is a deliberate refusal, not an oversight — the caller's answer
+    to "can't tell" is always the stock importer, never a guess. The guards enumerate every
+    documented way a glTF can be exotic; the try/except around the whole body is the same
+    answer for an undocumented one — a shape this parser did not anticipate must fall back to
+    the stock importer, not raise and take the whole city-sized import down with it.
+    """
+    try:
+        return _parse_glb_arrays_unguarded(path)
+    except Exception:                                            # noqa: BLE001 - fall back, quietly
+        return None
+
+
+def _parse_glb_arrays_unguarded(path):
+    import struct
+
+    with open(path, "rb") as handle:
+        data = handle.read()
+    if len(data) < 12 or data[:4] != b"glTF":
+        return None
+    _magic, version, total_length = struct.unpack_from("<III", data, 0)
+    if version != 2:
+        return None
+
+    json_chunk = None
+    bin_chunk = None
+    pos = 12
+    while pos + 8 <= total_length:
+        chunk_length, chunk_type = struct.unpack_from("<II", data, pos)
+        payload = data[pos + 8:pos + 8 + chunk_length]
+        if chunk_type == 0x4E4F534A:                          # 'JSON'
+            json_chunk = payload
+        elif chunk_type == 0x004E4942:                         # 'BIN\0'
+            bin_chunk = payload
+        pos += 8 + chunk_length
+    if json_chunk is None:
+        return None
+    doc = json.loads(json_chunk)
+
+    if doc.get("extensionsRequired") or doc.get("skins") or doc.get("animations"):
+        return None
+
+    meshes = doc.get("meshes", [])
+    for mesh in meshes:
+        for prim in mesh.get("primitives", []):
+            if prim.get("mode", 4) != 4 or prim.get("targets"):
+                return None
+            attrs = prim.get("attributes", {})
+            if not {"POSITION", "NORMAL"} <= set(attrs):
+                return None
+            if set(attrs) - {"POSITION", "NORMAL", "TEXCOORD_0", "TANGENT"}:
+                return None                                    # COLOR_0 or anything exotic
+            if "indices" not in prim or "material" not in prim:
+                return None
+
+    accessors = doc.get("accessors", [])
+    for accessor in accessors:
+        if accessor.get("sparse"):
+            return None
+
+    buffers = doc.get("buffers", [])
+    if len(buffers) != 1 or "uri" in buffers[0]:
+        return None                                            # embedded BIN chunk only
+    if bin_chunk is None or len(bin_chunk) < buffers[0].get("byteLength", 0):
+        return None
+    buffer_views = doc.get("bufferViews", [])
+
+    def read_accessor(index, gltf_type, component_type, np_dtype, components):
+        accessor = accessors[index]
+        if accessor.get("normalized") or accessor.get("type") != gltf_type:
+            return None
+        if accessor["componentType"] != component_type:
+            return None
+        view = buffer_views[accessor["bufferView"]]
+        if view.get("byteStride"):
+            return None                                        # interleaved, not this path
+        offset = view.get("byteOffset", 0) + accessor.get("byteOffset", 0)
+        count = accessor["count"] * components
+        if offset + count * numpy.dtype(np_dtype).itemsize > len(bin_chunk):
+            return None
+        flat = numpy.frombuffer(bin_chunk, dtype=np_dtype, count=count, offset=offset)
+        return flat.reshape(accessor["count"], components) if components > 1 else flat
+
+    def read_indices(index):
+        accessor = accessors[index]
+        if accessor.get("normalized") or accessor.get("type") != "SCALAR":
+            return None
+        component_type = accessor["componentType"]
+        np_dtype = {5123: numpy.uint16, 5125: numpy.uint32}.get(component_type)
+        if np_dtype is None:
+            return None
+        return read_accessor(index, "SCALAR", component_type, np_dtype, 1)
+
+    materials = doc.get("materials", [])
+
+    scenes = doc.get("scenes", [])
+    scene_index = doc.get("scene", 0)
+    if not scenes or scene_index >= len(scenes):
+        return None
+    nodes = doc.get("nodes", [])
+
+    mesh_nodes = []                                             # (name, world matrix, mesh index)
+
+    def walk(node_index, parent_matrix):
+        node = nodes[node_index]
+        world = parent_matrix @ _gltf_node_local_matrix(node)
+        mesh_index = node.get("mesh")
+        if mesh_index is not None:
+            if mesh_index >= len(meshes) or not meshes[mesh_index].get("primitives"):
+                raise ValueError(f"node {node_index} references an empty/missing mesh")
+            name = node.get("name") or meshes[mesh_index].get("name") or f"mesh{mesh_index}"
+            mesh_nodes.append((name, world, mesh_index))
+        for child_index in node.get("children", ()):
+            walk(child_index, world)
+
+    for root_index in scenes[scene_index].get("nodes", ()):
+        walk(root_index, Matrix.Identity(4))
+
+    result = []
+    for name, world, mesh_index in mesh_nodes:
+        prims = meshes[mesh_index]["primitives"]
+
+        # A mesh's primitives can share ONE vertex-attribute buffer — every primitive pointing
+        # at the very same POSITION/NORMAL/TEXCOORD_0 accessors and differing only in which
+        # face range its `indices` selects — rather than each owning independent geometry.
+        # Verified against two real bundle files: AppleTree01.glb (trunk + leaves) and
+        # NA_CommercialHigh01_L4_3x4.glb (wall + windows) both do this. Reading the attribute
+        # accessors once per unique POSITION accessor, keyed by its index, handles both that
+        # case and the "each primitive has its own buffer" case uniformly — the latter is just
+        # every POSITION accessor index happening to be unique.
+        blocks = {}                                              # POSITION accessor index -> …
+        block_order = []
+        for prim in prims:
+            attrs = prim["attributes"]
+            pos_index = attrs["POSITION"]
+            pairing = (attrs.get("NORMAL"), attrs.get("TEXCOORD_0"))
+            if pos_index in blocks:
+                if blocks[pos_index][3] != pairing:
+                    return None                                  # same POSITION, different NORMAL/UV
+                continue
+            verts = read_accessor(pos_index, "VEC3", 5126, numpy.float32, 3)
+            normals = read_accessor(attrs["NORMAL"], "VEC3", 5126, numpy.float32, 3)
+            if verts is None or normals is None or len(verts) != len(normals):
+                return None
+            uvs = None
+            if "TEXCOORD_0" in attrs:
+                uvs = read_accessor(attrs["TEXCOORD_0"], "VEC2", 5126, numpy.float32, 2)
+                if uvs is None or len(uvs) != len(verts):
+                    return None
+            blocks[pos_index] = (verts, normals, uvs, pairing)
+            block_order.append(pos_index)
+
+        has_uv = blocks[block_order[0]][2] is not None
+        if any((blocks[i][2] is not None) != has_uv for i in block_order):
+            return None                                          # mixed UV presence in one mesh
+
+        offsets, cursor = {}, 0
+        for pos_index in block_order:
+            offsets[pos_index] = cursor
+            cursor += len(blocks[pos_index][0])
+
+        tri_parts, runs = [], []
+        for prim in prims:
+            indices = read_indices(prim["indices"])
+            if indices is None or len(indices) % 3 != 0:
+                return None
+            material_index = prim["material"]
+            if material_index >= len(materials):
+                return None
+            material_name = materials[material_index].get("name")
+            if not material_name:
+                return None
+
+            offset = offsets[prim["attributes"]["POSITION"]]
+            tri_parts.append(indices.astype(numpy.int64).reshape(-1, 3) + offset)
+            runs.append((material_name, len(indices) // 3))
+
+        result.append({
+            "name": name,
+            "matrix": world,
+            "verts": numpy.concatenate([blocks[i][0] for i in block_order]),
+            "normals": numpy.concatenate([blocks[i][1] for i in block_order]),
+            "uvs": numpy.concatenate([blocks[i][2] for i in block_order]) if has_uv else None,
+            "tris": numpy.concatenate(tri_parts),
+            "material_runs": runs,
+        })
+
+    return result
+
+
+def _fast_import_glb(path):
+    """Build `import_glb`'s result without the stock importer, when provably safe.
+
+    Only files whose every material name is already registered qualify (`_KNOWN_MATERIALS`,
+    populated from earlier stock imports in this run) — this path reuses materials and never
+    constructs one, which is what makes it unable to regress rendering. Returns `None` to mean
+    "use the stock importer", the same as every guard inside `_parse_glb_arrays`.
+    """
+    nodes = _parse_glb_arrays(path)
+    if nodes is None:
+        return None
+    for node in nodes:
+        for material_name, _count in node["material_runs"]:
+            if material_name not in _KNOWN_MATERIALS:
+                return None
+
+    axis_flip = numpy.array([1.0, -1.0, 1.0])
+    created = []
+    try:
+        for node in nodes:
+            # glTF -> Blender axis convention, exactly G: (x, y, z) -> (x, -z, y).
+            verts = node["verts"][:, (0, 2, 1)] * axis_flip
+            normals = node["normals"][:, (0, 2, 1)] * axis_flip
+            uv_layers = None
+            if node["uvs"] is not None:
+                loop_uv = node["uvs"][node["tris"].ravel()]
+                loop_uv = numpy.stack([loop_uv[:, 0], 1.0 - loop_uv[:, 1]], axis=1)  # glTF v-flip
+                uv_layers = {"UVMap": loop_uv}
+            material_runs = [(_KNOWN_MATERIALS[name], count)
+                             for name, count in node["material_runs"]]
+
+            # `smooth=True`: the stock importer's shading comes from the custom split normals
+            # it sets on the mesh, not from the per-polygon flat/smooth flag — matched below
+            # by setting those same custom normals, so `smooth` only has to be "not flat".
+            mesh = _mesh_from_arrays(node["name"], verts, node["tris"], uv_layers=uv_layers,
+                                     material_runs=material_runs, smooth=True,
+                                     degenerate_report=_record_fast_degenerate)
+            mesh.normals_split_custom_set_from_vertices(
+                numpy.ascontiguousarray(normals, dtype=numpy.float32))
+
+            obj = bpy.data.objects.new(node["name"], mesh)
+            obj.matrix_world = _gltf_node_matrix_to_blender(node["matrix"])
+            created.append(obj)
+    except Exception:                                            # noqa: BLE001 - fall back, quietly
+        # A guard above missed something about this file's shape. Undo whatever partial mesh
+        # data this attempt already allocated and let the stock importer have it instead of
+        # returning half-built geometry or propagating a crash out of a per-file fast path.
+        for obj in created:
+            mesh = obj.data
+            bpy.data.objects.remove(obj)
+            if mesh is not None:
+                bpy.data.meshes.remove(mesh)
+        return None
+
+    global _FAST_GLB_COUNT
+    _FAST_GLB_COUNT += 1
+    return created
+
+
+def _register_known_materials(imported):
+    """After a stock import, canonicalise its materials by base name and remember them.
+
+    Blender suffixes a duplicate material name (`.001`, `.002`, …) on every import that
+    re-declares one glTF already built earlier in this run — the same material, a fresh
+    datablock. The first copy of each base name becomes canonical; every later slot pointing
+    at a `.NNN` twin is repointed at it. That is what lets `_fast_import_glb` treat "the
+    material is already registered" as a stable fact — the pool of canonical materials only
+    grows, never forks — and it is also what keeps `build_networks`' own dedup pass (it runs
+    later, over the whole scene) a near no-op: most of the duplication it used to clean up
+    never gets created in the first place.
+    """
+    for obj in imported:
+        if obj.type != "MESH":
+            continue
+        for slot in obj.material_slots:
+            material = slot.material
+            if material is None:
+                continue
+            suffix = material.name.rsplit(".", 1)[-1]
+            base = material.name.rsplit(".", 1)[0] if suffix.isdigit() else material.name
+            canonical = _KNOWN_MATERIALS.setdefault(base, material)
+            if canonical is not material:
+                slot.material = canonical
+
+
 def _scratch_layer_collection():
     """A collection the glTF importer drops its objects into, so they can be found in O(1).
 
@@ -2713,7 +3103,18 @@ def import_glb(path):
 
     The caller links them wherever they belong. Returns [] if the import failed, having already
     said why — one unreadable file should not end a city-sized import.
+
+    Tries the direct-parse fast path first (see the block above `_scratch_layer_collection`):
+    a file every one of whose materials this run has already built via a stock import can be
+    built directly, skipping the ~200 ms/file stock-importer overhead that otherwise dominates
+    a city-sized import. Any file the fast path is not provably safe for — first sight of a
+    material, or any guard in `_parse_glb_arrays` — falls through to the stock importer
+    unchanged, which is also where new materials get built and registered for next time.
     """
+    fast = _fast_import_glb(path)
+    if fast is not None:
+        return fast
+
     layer = _scratch_layer_collection()
     if layer is None:
         return []
@@ -2733,6 +3134,9 @@ def import_glb(path):
     imported = list(layer.collection.objects)
     for obj in imported:
         layer.collection.objects.unlink(obj)
+    _register_known_materials(imported)
+    global _STOCK_GLB_COUNT
+    _STOCK_GLB_COUNT += 1
     return imported
 
 
@@ -2941,6 +3345,7 @@ def main():
         LOG.step(f"           categories: {'all' if net_categories is None else sorted(net_categories)}")
 
     LOG.phase("Instances")
+    _glb_fast_path_counts_reset()
 
     # Always survey before placing. Knowing where the selection is turns "nothing appeared" from
     # a mystery into an arithmetic error the user can see.
@@ -3120,6 +3525,7 @@ def main():
     # which already existed before _Log and must stay exactly where it was, after every
     # other phase's own summary — see the comment above it.
     LOG.done(f"{placed} placed, {len(prefabs)} mesh source(s) loaded")
+    _glb_fast_path_counts_log()
 
     networks = 0
     network_collection = None
