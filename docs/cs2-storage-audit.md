@@ -1151,6 +1151,71 @@ format-level tweak to the remaining bytes could add, so investigating a lossy va
 a use of this task's time, and constraint 6 requires lossless to be investigated first in any case
 — which NET-1 already does, exhaustively, for this domain.
 
+### 3.5 Compression at rest — measured for §9's COMP-1 scope
+
+**Added 2026-08-08, after §9's first draft, because this was the one domain where the
+compression-at-rest candidate class had not been measured.** `networks/` is 404.8 MiB of `.glb`
+whose BIN chunks are written raw — the same file type in the same condition as `meshes/` (§2.4),
+which is COMP-1's largest component. Leaving it unmeasured understated COMP-1's scope and left
+NET-1's decision-relevant number (its saving *net of* compression) unknown. The same script §2.4
+used for `meshes/`, unchanged except for the directory and the totals:
+
+```
+python -c "
+import lzma, zlib, random, os
+from pathlib import Path
+root = Path(os.environ['BUNDLE']) / 'networks'
+files = sorted(root.glob('*.glb')); random.Random(0).shuffle(files)
+sample = files[:200]
+raw = b''.join(p.read_bytes() for p in sample)
+z = zlib.compress(raw, 9); l = lzma.compress(raw)
+assert zlib.decompress(z) == raw and lzma.decompress(l) == raw
+per_file = sum(len(zlib.compress(p.read_bytes(), 9)) for p in sample)
+print(len(raw), len(z), len(l), per_file)
+"
+```
+
+```
+7,248 files on disk; sample 200 files: 10,190,604 bytes (9.72 MiB, 2.40% of the directory)
+  zlib -9 (concatenated) : 4,186,360 bytes (41.08%), round-trip bit-exact
+  lzma    (concatenated) : 2,628,828 bytes (25.80%), round-trip bit-exact
+  zlib -9 (per-file, independent, no cross-file redundancy): 4,253,012 bytes (41.73%)
+```
+
+Extrapolation rule, stated explicitly and identical to §2.4's: `total networks/ bytes
+(424,469,220) × (compressed sample bytes ÷ 10,190,604)`. `measured` (a sample was actually
+re-encoded, with a bit-exact round-trip assertion, and extrapolated by a stated rule — the
+front matter's own definition, `:20`):
+
+- **`lzma`: 104.4 MiB (25.80%), saved 300.4 MiB — 74.20% of `networks/`, 6.44% of the whole
+  bundle.**
+- **`zlib -9`: 166.3 MiB (41.08%), saved 238.5 MiB — 58.92% of `networks/`, 5.11% of the whole
+  bundle.**
+
+Two differences from `meshes/` are worth stating rather than assuming the domains behave alike.
+First, baked segment meshes compress **less** well than prefab meshes — 25.80% versus `meshes/`'s
+7.88% under the same `lzma` call — which is what a directory of 7,248 individually bent,
+non-repeating curves should do next to 5,634 prefab meshes with heavy within-file structure.
+Second, the concatenated and per-file `zlib` figures differ by 0.65 percentage points here
+against `meshes/`'s 0.03 — still small, so a single combined container again buys almost nothing
+over compressing each file independently, but the cross-file redundancy is measurably larger in
+this domain than in `meshes/`.
+
+**Consequence for NET-1, computed here rather than left to §9.** NET-1 replaces 424,469,220 B of
+baked `.glb` with a projected 3,440,610 B composition layer (§3.4). Against a *compressed*
+`networks/` (109,498,571 B projected above) its marginal saving is 109,498,571 − 3,440,610 =
+**106,057,961 B (101.1 MiB, 2.17% of the whole bundle)**, `arithmetic` — a measured compression
+projection minus §3.4's own arithmetic layer projection. That is **3.97× smaller than NET-1's
+401.5 MiB standalone figure**, and it is the number that decides whether the 664-line consumer
+port is worth building.
+
+**Lossless candidates (addition to this section's candidate block above — no row there is
+changed):**
+
+| id | change | est. bytes saved | est. rip-time saved | consumer cost | risk | lossless? | additive layer |
+|---|---|---|---|---|---|---|---|
+| NET-2 | Compress `networks/*.glb` binary buffers at rest (`lzma` or `zlib -9`), exactly as MESH-1 proposes for `meshes/` — the same technique on the same file type in the same raw-BIN condition | measured (200-file sample, actually compressed, bit-exact round-trip asserted, stated linear extrapolation), `lzma` **300.4 MiB (74.20% of `networks/`, 6.44% of bundle)**; `zlib -9` **238.5 MiB (58.92%, 5.11%)** | unmeasured (adds encode CPU inside §8's row 3, 23.490% of the rip) | one decompress call before parsing, identical to MESH-1/INST-1/LANE-1 | low — ubiquitous codecs, bit-exact by construction, verified on the sample | YES, round-trip asserted on the sample | **new layer**: compressed at-rest encoding of the unchanged `seg_<id>.glb` bytes, `compression` field amendment under §12.1, the same shape as MESH-1; **retires**: nothing — the canonical bytes are recovered exactly. **NET-1 and NET-2 are alternatives on the same 404.8 MiB and must not be summed**: NET-2 is the fourth component of §9's COMP-1 policy, and NET-1's saving *after* NET-2 is the 101.1 MiB computed above, not 401.5 MiB |
+
 ### The pier question
 
 **Left `unmeasured`, per the brief's instruction not to guess — but with three specific causes
@@ -2575,7 +2640,7 @@ the 1,981.122 s total above; they sum to 100.000%.
 |---|---|---:|---:|---|---|
 | 1 | Instances | 331.617 | 16.739% | bracket | INST-1 (compress at write time), INST-2 (a binary writer replaces JSON serialisation), INST-3/INST-4 (inside INST-2) |
 | 2 | Meshes (+ concurrent mesh-prefab texture/material readback) | 1177.106 | 59.416% | bracket | MESH-1 (compress each `.glb` at write time), MESH-2 (fewer attribute bytes to serialise), MESH-3 (1,436 skirt files never built or written), TEX-1/TEX-2/TEX-3/TEX-4/TEX-6 (PNG encode runs on the same single serial writer thread as mesh writing, §1's Rip time) |
-| 3 | Lanes + Networks | 465.361 | 23.490% | bracket | NET-1 (replaces the 65.8 s segment bake with ~45 geometry writes), LANE-1 (compress at write time), LANE-2 (reads `curve.m_Bezier` directly instead of tessellating it) |
+| 3 | Lanes + Networks | 465.361 | 23.490% | bracket | NET-1 (replaces the 65.8 s segment bake with ~45 geometry writes), NET-2 and LANE-1 (compress at write time), LANE-2 (reads `curve.m_Bezier` directly instead of tessellating it) |
 | 4 | Terrain | 7.038 | 0.355% | bracket | TERRAIN-1 |
 | — | **TOTAL** | **1981.122** | **100.000%** | bracket | — |
 
@@ -2596,7 +2661,7 @@ unmeasured too.** No candidate in §9 has been built, so none has been timed; wh
 supplies is the denominator and the ceiling. A candidate cannot save more rip time than its
 phase's share (MESH-1/MESH-3/TEX-* are bounded by row 2's 59.416%; NET-1's own baking sub-step is
 3.321%; INST-* by row 1's 16.739%; LANE-* by row 3's 23.490%; TERRAIN-1 by row 4's 0.355%), and
-three candidates — MESH-1, INST-1 and LANE-1, i.e. every member of §9's COMP-1 family — add
+four candidates — MESH-1, NET-2, INST-1 and LANE-1, i.e. every member of §9's COMP-1 family — add
 encode CPU at write time inside rows 1–3 (99.645% of the rip combined) rather than removing it.
 Deciding whether that added cost is material needs a C#-side timed re-rip, which Phase A's
 measurement-only mandate excludes; §1 and §2 both record why this document declines to estimate
@@ -2652,10 +2717,11 @@ Four overlap families exist. Adding rows across a family double-counts bytes; th
 happened once inside §1, where the naive TEX-3 + TEX-4 sum claimed 440.2 MiB against a joint
 single-pass measurement of 377.1 MiB.
 
-1. **The compression family — one policy, not three wins.** MESH-1, INST-1 and LANE-1 are the
-   *same technique* (generic compression at rest) applied to the three layers that currently
-   ship uncompressed. They touch disjoint files, so their bytes do add — but they are one
-   decision, not three, and are presented as the single policy row **COMP-1** with the three
+1. **The compression family — one policy, not four wins.** MESH-1, NET-2, INST-1 and LANE-1
+   are the *same technique* (generic compression at rest) applied to the four layers that
+   currently ship uncompressed (`meshes/` §2.4, `networks/` §3.5, `instances.jsonl` §4.4,
+   `lanes.jsonl` §5.4). They touch disjoint files, so their bytes do add — but they are one
+   decision, not four, and are presented as the single policy row **COMP-1** with the four
    named as its components. Cite COMP-1 or its components, never both.
 2. **The texture ladder is nested, not additive.** TEX-1 ⊂ TEX-2 ⊂ TEX-3 ⊂ TEX-3+4 joint: TEX-2
    is TEX-1 plus zlib-9, TEX-3 is TEX-2 plus the safe channel reduction, and the joint row is the
@@ -2679,22 +2745,26 @@ single-pass measurement of 377.1 MiB.
      compresses differently from raw f32. Bound, `arithmetic`: more than MESH-1's 1,581.5 MiB,
      less than the whole directory (1,716.8 MiB). MESH-2 is lossy in any case and appears only
      in §9.3.
-4. **NET-1 versus a compression policy extended to `networks/`.** COMP-1 as measured covers
-   `meshes/`, `instances.jsonl` and `lanes.jsonl` only. `networks/`'s 7,248 `.glb` files also
-   ship with raw BIN chunks, but **no compression ratio was measured on that directory** — the
-   `meshes/` ratio is not transferable without measuring it, so no number is claimed and NET-1's
-   marginal value after a compression policy is `unmeasured`. `textures/` is outside the policy
-   by construction: §1.1 established its PNGs already run through `Deflater`, unlike mesh BIN
-   chunks (§2.4), so the texture rows keep their full value under COMP-1.
+4. **NET-1 versus NET-2 on the same 404.8 MiB.** `networks/`'s 7,248 `.glb` files ship with raw
+   BIN chunks exactly as `meshes/` does, and §3.5 now measures them: `lzma` 300.4 MiB (74.20% of
+   the directory), `zlib -9` 238.5 MiB (58.92%), 200-file sample, bit-exact round-trip asserted,
+   stated extrapolation rule. **NET-2 is therefore COMP-1's fourth component, and NET-1 and NET-2
+   are alternatives on the same bytes — never a sum.** NET-1's decision-relevant figure is its
+   saving *net of* NET-2: 101.1 MiB, `arithmetic` (§3.5), 3.97× smaller than its 401.5 MiB
+   standalone headline. Both figures appear in NET-1's row below. `textures/` remains outside the
+   policy by construction: §1.1 established its PNGs already run through `Deflater`, unlike the
+   `.glb` BIN chunks of `meshes/` (§2.4) and `networks/` (§3.5), so the texture rows keep their
+   full value under COMP-1.
 
 ### 9.2 Lossless candidates, ranked by absolute bytes saved
 
 | id | domain | change | est. bytes saved | provenance | est. rip-time saved | consumer cost | risk | lossless? | additive-layer shape |
 |---|---|---|---|---|---|---|---|---|---|
-| COMP-1 | bundle-wide (`meshes/`, `instances.jsonl`, `lanes.jsonl`) | One at-rest compression policy (`lzma`) over the three layers that currently ship uncompressed — MESH-1 + INST-1 + LANE-1 as a single decision | **2,044.1 MiB (43.80% of the bundle)** = 1,581.5 + 272.1 + 190.5; the three layers are 2,256.9 MiB today and 212.8 MiB after. `zlib -9` variant: 1,879.1 MiB (40.26%) | measured — three independent bit-exact round-trips; `meshes/` by 200-file sample extrapolated on a stated rule (§2.4), both JSONLs full-file exact (§4.4, §5.4) | unmeasured, sign included — adds encode CPU inside rows 1–3 (99.645% of the rip, §8) rather than removing it | 1 line: one standard-library decompress call per layer | low — ubiquitous codecs, bit-exact by construction, verified on real bytes in all three layers | YES | **new layer**: compressed at-rest encodings beside the canonical bytes (`.glb.gz`/`.xz` or one archive per directory, using the already-bundled `ICSharpCode.SharpZipLib`), declared by a `compression` field amendment under §12.1; **retires**: nothing — the canonical bytes are recovered exactly |
+| COMP-1 | bundle-wide (`meshes/`, `networks/`, `instances.jsonl`, `lanes.jsonl`) | One at-rest compression policy (`lzma`) over the four layers that currently ship uncompressed — MESH-1 + NET-2 + INST-1 + LANE-1 as a single decision | **2,344.5 MiB (50.23% of the bundle)** = 1,581.5 + 300.4 + 272.1 + 190.5; the four layers are 2,661.8 MiB today (57.03% of the bundle) and 317.2 MiB after. `zlib -9` variant: 2,117.6 MiB (45.37%). **Supersedes this row's first-draft scope of 2,044.1 MiB / 43.80% over three layers, which omitted `networks/` because §3 had not measured it — kept visible here so the change is traceable; §3.5 supplies the missing 300.4 MiB** | measured — four independent bit-exact round-trips; `meshes/` and `networks/` by 200-file samples extrapolated on stated rules (§2.4, §3.5), both JSONLs full-file exact (§4.4, §5.4) | unmeasured, sign included — adds encode CPU inside rows 1–3 (99.645% of the rip, §8) rather than removing it | 1 line: one standard-library decompress call (repeated per layer, not four distinct implementations) | low — ubiquitous codecs, bit-exact by construction, verified on real bytes in all four layers | YES | **new layer**: compressed at-rest encodings beside the canonical bytes (`.glb.gz`/`.xz` or one archive per directory, using the already-bundled `ICSharpCode.SharpZipLib`), declared by a `compression` field amendment under §12.1; **retires**: nothing — the canonical bytes are recovered exactly |
 | MESH-1 | `meshes/` | Compress `.glb` binary buffers at rest (BIN chunks are written raw today) | 1,581.5 MiB `lzma` (33.89% of bundle, 92.1% of `meshes/`); 1,457.8 MiB `zlib -9` (31.23%, 84.9%). **Component of COMP-1 — do not add to it** | measured (200-file sample, actually compressed, bit-exact round-trip asserted, stated linear extrapolation) | unmeasured; bounded by row 2's 59.416% share, and expected to add write-time CPU | 1 line: one decompress call before parsing | medium — a container-format change, not an in-place one; the codec risk itself is near-zero | YES, round-trip asserted on the sample | **new layer**: compressed encoding of the unchanged `.glb` bytes, `compression` field under §12.1; **retires**: nothing |
-| NET-1 | `networks/` | Composition layer: per-segment composition id(s) + curve instead of a baked per-segment `.glb`, mirroring the shipped `lanemeshes.jsonl`/`lanemeshes/` v2 precedent | 401.5 MiB (8.60% of bundle, 99.19% of `networks/`); still 390.1 MiB under a joint 5× record-cost and 4× geometry-count correction | arithmetic — projected from the precedent's two measured per-unit costs; no composition-layer file was built or round-tripped | unmeasured; its target is row 3's instrumented 65.8 s segment bake, 3.321% of the rip | 664 lines: most of `Systems/NetworkRipSystem.GameMesh.cs` (§8's 17 rules + §21's 12 refinements) — the largest port this audit sizes | high — correctness-critical junction/vertex-sync/roundabout geometry; the reference implementation exists and is proven faithful | YES — every rule checked in §8/§21 is `match` or `fixed`; the two shader-only gaps are already in today's baked mesh | **new layer**: composition geometry set + per-segment curve records; **retires**: `networks/*.glb` and the segment-baking path, only after an A/B gate — until then both ship, making the transitional bundle 408.1 MiB for this domain instead of 404.8 MiB |
+| NET-1 | `networks/` | Composition layer: per-segment composition id(s) + curve instead of a baked per-segment `.glb`, mirroring the shipped `lanemeshes.jsonl`/`lanemeshes/` v2 precedent | 401.5 MiB (8.60% of bundle, 99.19% of `networks/`) **standalone, against today's uncompressed `networks/`**; still 390.1 MiB under a joint 5× record-cost and 4× geometry-count correction. **Net of COMP-1's NET-2 component, which captures 300.4 MiB of the same directory for one decompress call, its marginal saving is 101.1 MiB (2.17% of the bundle), `arithmetic` (§3.5) — 3.97× smaller, and this is the figure that decides the 664-line port** | arithmetic — projected from the precedent's two measured per-unit costs; no composition-layer file was built or round-tripped | unmeasured; its target is row 3's instrumented 65.8 s segment bake, 3.321% of the rip | 664 lines: most of `Systems/NetworkRipSystem.GameMesh.cs` (§8's 17 rules + §21's 12 refinements) — the largest port this audit sizes | high — correctness-critical junction/vertex-sync/roundabout geometry; the reference implementation exists and is proven faithful | YES — every rule checked in §8/§21 is `match` or `fixed`; the two shader-only gaps are already in today's baked mesh | **new layer**: composition geometry set + per-segment curve records; **retires**: `networks/*.glb` and the segment-baking path, only after an A/B gate — until then both ship, making the transitional bundle 408.1 MiB for this domain instead of 404.8 MiB |
 | TEX-3+4 joint | `textures/` | One representation per file: 2-channel `normal2` where a file is alpha==255 and normal-derivable, RGB/L where only alpha==255, adaptive-filtered RGBA otherwise | 377.1 MiB (8.08% of bundle, 19.98% of `textures/`) — measured jointly in one pass, **not** the 440.2 MiB naive TEX-3 + TEX-4 sum | measured (500-file sample, every file decoded and reconstructed bit-exact, stated 7.1702× extrapolation) | unmeasured; PNG encode is serialised into row 2's 59.416% share (§1's Rip time) | 31 lines for the `normal2` subset (`Systems/MaterialRipSystem.cs:1488-1518` is the same reconstruction in reverse); 0 for every other file | medium — inherits TEX-4's schema-change risk for the 840 files it touches | YES, all 500 sampled files bit-exact | **new layer**: `normal2`, a colour-type-4 convention beside the existing `normal`; in-place re-encode (no new layer) for every other file; **retires**: the 4-channel `normal` PNG once consumers adopt it |
+| NET-2 | `networks/` | Compress the 7,248 baked segment `.glb` binary buffers at rest — the same technique as MESH-1 on the same file type in the same raw-BIN condition | 300.4 MiB `lzma` (6.44% of bundle, 74.20% of `networks/`); 238.5 MiB `zlib -9` (5.11%, 58.92%). **Component of COMP-1 — do not add to it; and an alternative to NET-1 on the same bytes, never a sum** | measured (200-file sample, actually compressed, bit-exact round-trip asserted, stated linear extrapolation, §3.5) | unmeasured; bounded by row 3's 23.490% share, and expected to add write-time CPU | 1 line: one decompress call | low | YES, round-trip asserted on the sample | **new layer**: compressed encoding of the unchanged `seg_<id>.glb` bytes, `compression` field under §12.1; **retires**: nothing |
 | INST-1 | `instances.jsonl` | Compress the file at rest (`lzma` or `zlib -9`) | 272.1 MiB `lzma` (5.83% of bundle, 88.01% of the file); 251.8 MiB `zlib -9` (5.39%, 81.43%). **Component of COMP-1 — do not add to it** | measured, full file, bit-exact round-trip asserted | unmeasured; bounded by row 1's 16.739% share, and expected to add write-time CPU | 1 line: one decompress call | low | YES | **new layer**: `instances.jsonl.xz` beside the canonical JSON, `compression` field under §12.1; **retires**: nothing |
 | TEX-4 | `textures/` | Normal-map 2-channel repack (colour type 4; drop B, reconstruct via `round(sqrt(1−x²−y²)×127.5+127.5)` at load) | 229.5 MiB (4.92% of bundle, 12.2% of `textures/`, 30.4% of its own 754.3 MiB candidate subset). **Nested inside the TEX-3+4 joint row — do not add** | measured — exact on the full 840-file population, plus a 120-file re-encode round-trip | unmeasured; inside row 2's 59.416% share | 31 lines (the reconstruction step at load) plus a §7.1 schema amendment | medium — schema change, covers 840 of 3,510 files | YES, 840 of 840 reconstruct to the exact original byte | **new layer**: `normal2` colour-type-4 map; **retires**: the 4-channel `normal` PNG after adoption |
 | TEX-3 | `textures/` | Safe channel reduction (drop alpha only when constant at exactly 255, collapse to greyscale when R=G=B) on top of TEX-2 | 210.7 MiB (4.51% of bundle, 11.2% of `textures/`). **Nested inside the TEX-3+4 joint row — do not add** | measured (120-file sample, all 120 assertions passed, stated 26.4159× extrapolation) | unmeasured; inside row 2's 59.416% share | 0 lines — verified against this bundle's reference consumer, `tools/blender_import_bundle.py:2165`, which expands `L`/`RGB` to RGBA automatically | low | YES | not applicable — in-place re-encode at the same path; the PNG colour type changes, the contract slot does not; nothing new, nothing retired |
@@ -2740,52 +2810,59 @@ by zero. Lossy rows are excluded, per constraint 3.
 
 | rank | id | MiB saved | new consumer lines | MiB per cost unit | rank by bytes (§9.2) |
 |---:|---|---:|---:|---:|---:|
-| 1 | COMP-1 | 2,044.1 | 1 | 1,022.1 | 1 |
+| 1 | COMP-1 | 2,344.5 | 1 | 1,172.2 | 1 |
 | 2 | MESH-1 | 1,581.5 | 1 | 790.8 | 2 |
-| 3 | TEX-3 | 210.7 | 0 | 210.7 | 7 |
-| 4 | TEX-2 | 151.9 | 0 | 151.9 | 11 |
-| 5 | INST-1 | 272.1 | 1 | 136.1 | 5 |
-| 6 | LANE-1 | 190.5 | 1 | 95.3 | 9 |
-| 7 | TEX-1 | 64.5 | 0 | 64.5 | 12 |
-| 8 | TEX-3+4 | 377.1 | 31 | 11.8 | 4 |
-| 9 | TEX-4 | 229.5 | 31 | 7.2 | 6 |
-| 10 | TERRAIN-1 | 4.3 | 0 | 4.3 | 14 |
-| 11 | INST-2 | 199.0 | 59 | 3.3 | 8 |
-| 12 | LANE-2 | 188.6 | 147 | 1.3 | 10 |
-| 13 | NET-1 | 401.5 | 664 | 0.6 | 3 |
-| 14 | MESH-3 | 27.9 | 366 | 0.1 | 13 |
+| 3 | TEX-3 | 210.7 | 0 | 210.7 | 8 |
+| 4 | TEX-2 | 151.9 | 0 | 151.9 | 12 |
+| 5 | NET-2 | 300.4 | 1 | 150.2 | 5 |
+| 6 | INST-1 | 272.1 | 1 | 136.1 | 6 |
+| 7 | LANE-1 | 190.5 | 1 | 95.3 | 10 |
+| 8 | TEX-1 | 64.5 | 0 | 64.5 | 13 |
+| 9 | TEX-3+4 | 377.1 | 31 | 11.8 | 4 |
+| 10 | TEX-4 | 229.5 | 31 | 7.2 | 7 |
+| 11 | TERRAIN-1 | 4.3 | 0 | 4.3 | 15 |
+| 12 | INST-2 | 199.0 | 59 | 3.3 | 9 |
+| 13 | LANE-2 | 188.6 | 147 | 1.3 | 11 |
+| 14 | NET-1 | 401.5 | 664 | 0.6 | 3 |
+| 15 | MESH-3 | 27.9 | 366 | 0.1 | 14 |
 
 **The two rankings disagree, and the disagreement is the finding.** NET-1 falls from 3rd by
-bytes to 13th of 14 by cost-efficiency — it is the third-largest win in the bundle and the
+bytes to 14th of 15 by cost-efficiency — it is the third-largest win in the bundle and the
 second-worst byte-per-line deal in it, because 401.5 MiB of it is bought with a 664-line port of
-the most rule-dense algorithm this codebase has had to reproduce. TEX-3 rises from 7th to 3rd
-for the mirror-image reason: 210.7 MiB with no consumer code at all, verified against the
-reference importer's stock PNG loader. MESH-3 is last on both counts. Only the top two rows agree
-between the rankings, and they agree because generic compression is simultaneously the largest
-win in the bundle and the cheapest thing a consumer can be asked to do.
+the most rule-dense algorithm this codebase has had to reproduce. §3.5 sharpens that: at NET-1's
+*marginal* 101.1 MiB — its saving once NET-2 has compressed the same directory — the ratio falls
+from 0.6 to **0.152 MiB per cost unit**, still 14th of 15, while NET-2 buys 300.4 MiB of the same
+404.8 MiB at 150.2. TEX-3 rises from 8th to 3rd for the mirror-image reason: 210.7 MiB with no
+consumer code at all, verified against the reference importer's stock PNG loader. MESH-3 is last
+on both counts. Only the top two rows agree between the rankings, and they agree because generic
+compression is simultaneously the largest win in the bundle and the cheapest thing a consumer can
+be asked to do.
 
 ### 9.5 Sequencing recommendation
 
 **Phase B should be COMP-1: one bundle-wide at-rest compression policy over `meshes/`,
-`instances.jsonl` and `lanes.jsonl`.** It saves 2,044.1 MiB — 43.80% of the whole bundle, and
-5.09× the largest candidate that is not one of its own components (NET-1, 401.5 MiB) — for one
-decompress call and a `compression` field amendment under
+`networks/`, `instances.jsonl` and `lanes.jsonl`.** It saves 2,344.5 MiB — 50.23% of the whole
+bundle, and 5.84× the largest candidate that is not one of its own components (NET-1, 401.5 MiB)
+— for one decompress call and a `compression` field amendment under
 §12.1, and it ranks first on *both* orderings, which nothing else in §9.4 does. It renegotiates
-no semantics, retires no layer, and every one of its three components was verified by a bit-exact
+no semantics, retires no layer, and every one of its four components was verified by a bit-exact
 round-trip on real bytes. Two facts make it the sequencing decision rather than just the biggest
 number. First, it is the only candidate that is unambiguously good to do first: because it
 touches only the encoding of bytes, running it before or after any structural change costs
 nothing either way. Second, it changes the case for almost everything below it — after COMP-1,
-`lanes.jsonl` is 40.4 MiB and `instances.jsonl` is 37.1 MiB, so LANE-2's marginal byte value
-falls from 188.6 MiB to about 20 MiB (unmeasured extrapolation, §9.1) and INST-2's byte case
-disappears entirely, since its 110.2 MiB columnar output is 2.97× *larger* than the compressed
-JSON it would replace. MESH-3's 27.9 MiB likewise becomes ≈2.2 MiB. Measuring that collapse
-before committing engineering to it is exactly what Phase A existed to do.
+`networks/` is 104.4 MiB, `lanes.jsonl` is 40.4 MiB and `instances.jsonl` is 37.1 MiB, so NET-1's
+marginal byte value falls from 401.5 MiB to 101.1 MiB (`arithmetic`, §3.5), LANE-2's falls from
+188.6 MiB to about 20 MiB (unmeasured extrapolation, §9.1) and INST-2's byte case disappears
+entirely, since its 110.2 MiB columnar output is 2.97× *larger* than the compressed JSON it would
+replace. MESH-3's 27.9 MiB likewise becomes ≈2.2 MiB. Measuring that collapse before committing
+engineering to it is exactly what Phase A existed to do — and `networks/`'s own share of it was
+the last unmeasured thing in this audit, measured in §3.5 only after this section's first draft
+had already recommended the phase order below.
 
-**This overturns the spec's sketched order in three places, and confirms it in two.** The sketch
+**This overturns the spec's sketched order in four places, and confirms it in two.** The sketch
 put B as "lossless re-encoding of `instances.jsonl` and `lanes.jsonl`" and D as mesh payload
 work: the measurements move the mesh domain's compression row *into* B and make it the dominant
-term (1,581.5 MiB of the 2,044.1 MiB), because the largest single candidate in the bundle turned
+term (1,581.5 MiB of the 2,344.5 MiB), because the largest single candidate in the bundle turned
 out to be a compression row in the mesh domain, not a JSONL re-encode. The sketch also treated
 the two JSONL layers as one job; they want opposite treatments — the structural candidate loses
 to `lzma` by 2.97× on `instances.jsonl` and beats it by 2.26× on `lanes.jsonl`, so LANE-2 is
@@ -2793,8 +2870,16 @@ worth building on its bytes and INST-2 is not. And the sketch put networks (C) s
 meshes and textures: NET-1 should instead run **last** of the structural work. Its 401.5 MiB is
 `arithmetic`, not measured; it is the single most expensive port in the table at 664 lines; it
 makes the bundle *larger* (408.1 MiB for the domain) for as long as the additive layer ships
-beside `networks/`; and its marginal value after a compression policy is `unmeasured`, because no
-compression ratio was measured on `networks/` at all. What the sketch got right: a
+beside `networks/`; and §3.5's measurement is decisive — NET-2 captures 300.4 MiB of that same
+404.8 MiB for one decompress call, leaving NET-1 a marginal 101.1 MiB for its 664 lines. **On
+bytes, the composition layer does not earn its consumer cost once the baked meshes are
+compressed**, and if it is ever built the justification has to be something the byte column does
+not hold: that a consumer opens 45 geometry files instead of 7,248, and that the producer stops
+baking 7,248 meshes in the first place (row 3's instrumented 65.8 s, 3.321% of the rip). A third
+thing the measurements overturn: **textures turned out largely already-efficient** — our lossless
+PNGs are 0.544× the game's own BC7 footprint at the same dimensions (§1.2), and the entire
+lossless ceiling on 1,887.3 MiB is 19.98%, so the sketch's expectation that textures were the
+place a format choice would pay is not what the domain contains. What the sketch got right: a
 representation-only change with no consumer semantics belongs first (B's *principle* holds even
 though its content changes), and import-time work belongs last — §6/§8's measured result, a
 ~2.1× cut in marking vertices and ray-casts producing 374.9 s → 381.8 s of wall clock, is the
@@ -2816,3 +2901,15 @@ the 2026-08-07 harness work spent effort on the wrong layer. Networks comes last
 above. **No lossy candidate is recommended at any position**: MESH-2's 952.3 MiB is real but is
 both lossy and smaller than MESH-1's lossless 1,581.5 MiB from the same directory, which settles
 it, and INST-3 targets exactly the field §4.3 measured to be predominantly information.
+
+**§3.5's measurement was taken after this order was first written, and the order does not
+move — confirmed against the new numbers rather than asserted.** B stays first and gets larger
+(2,044.1 → 2,344.5 MiB, 43.80% → 50.23%), because NET-2 is a component of it, not a competitor.
+C stays textures: they are still the only domain COMP-1 does not touch, so their 377.1 MiB is
+unaffected by the rescope, and no candidate that moved outranks TEX-3's 210.7-MiB-for-zero-lines
+position in §9.4. D and E are untouched — §3.5 changes nothing about `lanes.jsonl` or
+`instances.jsonl`. F stays networks and its case weakens rather than strengthens: NET-1 keeps its
+#3 rank by standalone bytes and its 14th-of-15 rank by cost-efficiency, and its marginal figure
+falls to 101.1 MiB. The only ordering *inside* the table that moved is §9.4's, where NET-2 enters
+at 5th (150.2 MiB per cost unit) and pushes INST-1, LANE-1, TEX-1 and everything below them down
+one place; no candidate crossed another in the bytes ordering except by NET-2's insertion at 5th.
