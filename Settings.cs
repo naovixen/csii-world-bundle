@@ -189,6 +189,7 @@ namespace Carto
             PropertyThemeAssetPack = true;
             PropertyWageTaxable = false;
             PropertyZoningDisplayMode = IO.Display.All;
+            RipVectorExport = false;
         }
 
         // The tab and group names.（分頁與群組名稱。）
@@ -400,11 +401,54 @@ namespace Carto
             set { IO.RipProgress.RunDeferred(IO.RipProgress.Phase.Export, IO.IO.Export); }
         }
         /// <summary>
+        /// The one-button rip (PLAN Phase 8): every stage in order, asynchronously, the manifest
+        /// always last, one dialog at the end.
+        /// （一鍵擷取（PLAN 第八階段）：所有階段依序非同步執行，宣告檔恆為最後，結束時單一對話框。）
+        /// </summary>
+        [SettingsUISection(GeneralTab, GeneralGeneralGroup)]
+        [SettingsUIButton]
+        [SettingsUIDisableByCondition(typeof(Settings), nameof(IsInGameOrEditor), invert: true)]
+        public bool RipWorldButton
+        {
+            set
+            {
+                string summary;
+                try
+                {
+                    summary = Instance.RipOrchestrator.BeginRip(new Systems.RipOrchestratorSystem.RipPlan
+                    {
+                        OutputDirectory = Instance.BundlePath,
+                        Vector = RipVectorExport,
+                        MeshLimit = RipMeshLimit,
+                        TextureSizeCap = RipTextureSize
+                    });
+                }
+                catch (System.Exception ex)
+                {
+                    Instance.Log.Error(ex.ToString());
+                    IO.RipProgress.Clear();
+                    summary = $"World rip failed to start:\n{ex.Message}";
+                }
+
+                Game.UI.MessageDialog dialog = new("Options.SECTION[Carto.Carto.Mod]", summary, "Common.OK");
+                Instance.UI.appBindings.ShowMessageDialog(dialog, null);
+            }
+        }
+
+        /// <summary>
+        /// Whether the one-button rip also runs the vanilla vector/raster export.
+        /// （一鍵擷取是否一併執行原版向量／網格輸出。）
+        /// </summary>
+        [SettingsUISection(GeneralTab, GeneralGeneralGroup)]
+        public bool RipVectorExport { get; set; } = false;
+
+        /// <summary>
         /// The button that enumerates every placed object into <c>instances.jsonl</c> (PLAN Phase 2).
         /// （將所有已放置物件列舉至 <c>instances.jsonl</c> 的按鈕（PLAN 第二階段）。）
         /// </summary>
         [SettingsUISection(GeneralTab, GeneralGeneralGroup)]
         [SettingsUIButton]
+        [SettingsUIDeveloper]
         [SettingsUIDisableByCondition(typeof(Settings), nameof(IsInGameOrEditor), invert: true)]
         public bool RipInstancesButton
         {
@@ -413,7 +457,7 @@ namespace Carto
                 string summary;
                 try
                 {
-                    string directory = Utils.IOUtils.CombinePath(Instance.CartoDataPath, "spike");
+                    string directory = Instance.BundlePath;
                     System.Collections.Generic.HashSet<string> assetIds = new();
                     Instance.InstanceRip.RipInstances(directory, assetIds);
 
@@ -442,6 +486,7 @@ namespace Carto
         /// </summary>
         [SettingsUISection(GeneralTab, GeneralGeneralGroup)]
         [SettingsUIButton]
+        [SettingsUIDeveloper]
         [SettingsUIDisableByCondition(typeof(Settings), nameof(IsInGameOrEditor), invert: true)]
         public bool RipNetworksButton
         {
@@ -450,7 +495,7 @@ namespace Carto
                 string summary;
                 try
                 {
-                    string directory = Utils.IOUtils.CombinePath(Instance.CartoDataPath, "spike");
+                    string directory = Instance.BundlePath;
 
                     // The lane graph rides with the networks: it is the same domain seen as a
                     // graph rather than a surface, and it is plain ECS data, so it finishes in one
@@ -556,6 +601,7 @@ namespace Carto
         /// </summary>
         [SettingsUISection(GeneralTab, GeneralGeneralGroup)]
         [SettingsUIButton]
+        [SettingsUIDeveloper]
         [SettingsUIDisableByCondition(typeof(Settings), nameof(IsInGameOrEditor), invert: true)]
         public bool RipTerrainButton
         {
@@ -564,7 +610,7 @@ namespace Carto
                 string summary;
                 try
                 {
-                    string directory = Utils.IOUtils.CombinePath(Instance.CartoDataPath, "spike");
+                    string directory = Instance.BundlePath;
                     summary = Instance.TerrainRip.RipTerrain(directory);
                 }
                 catch (System.Exception ex)
@@ -587,6 +633,7 @@ namespace Carto
         /// </summary>
         [SettingsUISection(GeneralTab, GeneralGeneralGroup)]
         [SettingsUIButton]
+        [SettingsUIDeveloper]
         [SettingsUIDisableByCondition(typeof(Settings), nameof(IsInGameOrEditor), invert: true)]
         public bool RipMeshesButton
         {
@@ -595,7 +642,7 @@ namespace Carto
                 string summary;
                 try
                 {
-                    string directory = Utils.IOUtils.CombinePath(Instance.CartoDataPath, "spike");
+                    string directory = Instance.BundlePath;
                     summary = Instance.MeshRip.BeginRip(directory, RipMeshLimit, RipTextureSize);
                 }
                 catch (System.Exception ex)
@@ -621,12 +668,13 @@ namespace Carto
         /// </summary>
         [SettingsUISection(GeneralTab, GeneralGeneralGroup)]
         [SettingsUIButton]
+        [SettingsUIDeveloper]
         [SettingsUIDisableByCondition(typeof(Settings), nameof(IsInGameOrEditor), invert: true)]
         public bool WriteManifestButton
         {
             set
             {
-                string directory = Utils.IOUtils.CombinePath(Instance.CartoDataPath, "spike");
+                string directory = Instance.BundlePath;
                 IO.RipProgress.RunDeferred(IO.RipProgress.Phase.Manifest, () =>
                 {
                     string summary;

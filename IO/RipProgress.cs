@@ -48,6 +48,15 @@ namespace Carto.IO
             /// <summary>Enumerating the world to build the work list.（列舉世界以建立工作清單。）</summary>
             Scan,
 
+            /// <summary>Enumerating placed objects and their appearance.（列舉已放置物件及其外觀。）</summary>
+            Instances,
+
+            /// <summary>Walking the lane graph.（走訪車道圖。）</summary>
+            Lanes,
+
+            /// <summary>Reading the terrain, water and surface rasters.（讀取地形、水體與地表網格。）</summary>
+            Terrain,
+
             /// <summary>Reading prefab geometry.（讀取預製模板幾何。）</summary>
             Meshes,
 

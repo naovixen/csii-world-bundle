@@ -267,6 +267,13 @@ namespace Carto.Systems
             public Task Encoder;
             public List<RipWarning> Skipped = new();
 
+            /// <summary>
+            /// Where the finish summary goes when a pipeline drives this rip; <c>null</c> means the
+            /// run was started by hand and reports through its own dialog.
+            /// （由管線驅動時完成摘要的去處；<c>null</c> 代表手動啟動，經自身對話框回報。）
+            /// </summary>
+            public Action<string> Completed;
+
             // ---- The lane-geometry stage (bundle layer `lanemeshes/`). ----
             // （車道幾何階段（束層 `lanemeshes/`）。）
             /// <summary>The lane entities to consider, and how far the stage has got.（待考慮的車道實體及此階段的進度。）</summary>
@@ -418,8 +425,9 @@ namespace Carto.Systems
         /// </summary>
         /// <param name="outputDirectory">The bundle root to write into.（要寫入的束根目錄。）</param>
         /// <param name="textureSizeCap">The longest edge a written texture may have, or <c>0</c> for no cap.（寫出貼圖的最長邊上限，<c>0</c> 為不限。）</param>
+        /// <param name="completed">Receives the finish summary instead of a dialog when a pipeline drives the rip.（由管線驅動時接收完成摘要以取代對話框。）</param>
         /// <returns>What the caller should tell the user.（呼叫端應告知使用者的訊息。）</returns>
-        public string BeginRip(string outputDirectory, int textureSizeCap = 2048)
+        public string BeginRip(string outputDirectory, int textureSizeCap = 2048, Action<string> completed = null)
         {
             if (_run != null) return "A network rip is already running.";
 
@@ -491,7 +499,8 @@ namespace Carto.Systems
                 LaneMeshDirectory = IOUtils.CombinePath(outputDirectory, "lanemeshes"),
                 Writer = new NetworkWriter(IOUtils.CombinePath(outputDirectory, "networks.jsonl")),
                 LaneWriter = new NetworkWriter(IOUtils.CombinePath(outputDirectory, "lanemeshes.jsonl")),
-                Materials = Instance.MaterialRip
+                Materials = Instance.MaterialRip,
+                Completed = completed
             };
 
             run.Report.AppendLine($"Network edges: {edges.Length}");
@@ -920,6 +929,18 @@ namespace Carto.Systems
             m_PieceHeightBounds.Clear();
 
             _log.Info(report.ToString());
+
+            // A pipeline-driven run reports a short summary into the pipeline's combined dialog;
+            // the full report is in the log either way.（管線驅動的擷取以簡短摘要回報至管線的
+            //   合併對話框；完整報告無論如何都在記錄檔中。）
+            if (run.Completed != null)
+            {
+                string summary = $"Wrote {run.Writer.Count} segment(s) and {run.LaneWriter.Count} lane record(s), "
+                               + $"{(run.Bytes + run.LaneBytes) / 1048576d:F1} MiB of glTF, in {run.Clock.Elapsed.TotalSeconds:F0} s.";
+                try { run.Completed(summary); }
+                catch (Exception ex) { _log.Warn($"Network rip completion callback failed: {ex}"); }
+                return;
+            }
 
             try
             {

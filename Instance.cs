@@ -134,6 +134,17 @@ namespace Carto
         public static string CartoDataPath => Utils.IOUtils.CombinePath(UserDataPath, "ModsData", nameof(Carto));
 
         /// <summary>
+        /// The bundle root every rip writes into — Carto's data directory itself (decided
+        /// 2026-08-09; the development-era <c>spike/</c> subfolder is retired). The vector exports'
+        /// own subfolders (<c>GeoJSON/</c>, <c>Shapefile/</c>, …) live safely alongside: the
+        /// manifest scan is allowlist-based and ignores them.
+        /// （每次擷取寫入的束根目錄——即 Carto 的資料目錄本身（2026-08-09 決定；開發期的
+        /// <c>spike/</c> 子資料夾退役）。向量輸出的子資料夾（<c>GeoJSON/</c>、<c>Shapefile/</c>⋯）
+        /// 可安然並存：宣告檔掃描採允許清單，會忽略它們。）
+        /// </summary>
+        public static string BundlePath => CartoDataPath;
+
+        /// <summary>
         /// The dedicated logger documenting the information, warnings, and errors.
         /// （記錄執行時資訊、警告或錯誤的記錄器。）
         /// </summary>
@@ -198,6 +209,12 @@ namespace Carto
         /// （擷取地形、水體與地表層的系統。）
         /// </summary>
         public static TerrainRipSystem TerrainRip => World.DefaultGameObjectInjectionWorld.GetOrCreateSystemManaged<TerrainRipSystem>();
+
+        /// <summary>
+        /// The system that runs the whole rip pipeline behind the one Rip World button.
+        /// （於單一「擷取世界」按鈕背後執行整條擷取管線的系統。）
+        /// </summary>
+        public static RipOrchestratorSystem RipOrchestrator => World.DefaultGameObjectInjectionWorld.GetOrCreateSystemManaged<RipOrchestratorSystem>();
 
         /// <summary>
         /// The system that searches point of interests (POIs).

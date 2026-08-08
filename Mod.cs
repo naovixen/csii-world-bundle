@@ -54,6 +54,12 @@ namespace Carto
             // simulation - so a simulation-phase system would sit frozen exactly while the user
             // is watching its progress bar.
             updateSystem.UpdateAt<NetworkRipSystem>(SystemUpdatePhase.MainLoop);
+            // The pipeline behind the one-button rip advances between stages from OnUpdate, and it
+            // too is started from the (simulation-pausing) options page — MainLoop for the same
+            // reason as the mesh and network rips.
+            // （一鍵擷取背後的管線於 OnUpdate 中在階段間推進，且同樣由（暫停模擬的）選項頁面啟動——
+            //   與網格及路網擷取相同，故用 MainLoop。）
+            updateSystem.UpdateAt<RipOrchestratorSystem>(SystemUpdatePhase.MainLoop);
             updateSystem.UpdateBefore<POISystem>(SystemUpdatePhase.GameSimulation);
             updateSystem.UpdateBefore<RasterSystem>(SystemUpdatePhase.GameSimulation);
             updateSystem.UpdateBefore<RouteSystem>(SystemUpdatePhase.GameSimulation);

@@ -328,6 +328,13 @@ namespace Carto.Systems
 
             /// <summary>Wall-clock duration of the whole run.（整體工作的實際經過時間。）</summary>
             public Stopwatch Clock = Stopwatch.StartNew();
+
+            /// <summary>
+            /// Where the finish summary goes when a pipeline drives this rip; <c>null</c> means the
+            /// run was started by hand and reports through its own dialog.
+            /// （由管線驅動時完成摘要的去處；<c>null</c> 代表手動啟動，經自身對話框回報。）
+            /// </summary>
+            public Action<string> Completed;
         }
 
         /// <summary>
@@ -428,8 +435,9 @@ namespace Carto.Systems
         /// <param name="outputDirectory">The bundle root to write <c>meshes/</c> under.（要在其下寫入 <c>meshes/</c> 的束根目錄。）</param>
         /// <param name="maxPrefabs">The most prefabs to rip, or <c>0</c> for all of them.（最多擷取的預製模板數量，<c>0</c> 為全部。）</param>
         /// <param name="textureSizeCap">The longest edge a written texture may have, or <c>0</c> for no cap.（寫出貼圖的最長邊上限，<c>0</c> 為不限。）</param>
+        /// <param name="completed">Receives the finish summary instead of a dialog when a pipeline drives the rip.（由管線驅動時接收完成摘要以取代對話框。）</param>
         /// <returns>A short description of what was queued.（已排入工作的簡短說明。）</returns>
-        public string BeginRip(string outputDirectory, int maxPrefabs = 0, int textureSizeCap = 2048)
+        public string BeginRip(string outputDirectory, int maxPrefabs = 0, int textureSizeCap = 2048, Action<string> completed = null)
         {
             if (_run != null) return "A mesh rip is already running.";
 
@@ -445,7 +453,8 @@ namespace Carto.Systems
             {
                 OutputDirectory = IOUtils.CombinePath(outputDirectory, "meshes"),
                 Queue = new BlockingCollection<RipItem>(QueueCapacity),
-                Materials = Instance.MaterialRip
+                Materials = Instance.MaterialRip,
+                Completed = completed
             };
 
             run.Items = CollectWorkItems(run.Report, maxPrefabs, out int distinctPrefabs, out int placedObjects);
@@ -1271,6 +1280,16 @@ namespace Carto.Systems
             if (!string.IsNullOrEmpty(materials)) summary.AppendLine(materials);
             summary.AppendLine();
             summary.Append("Full report: Logs/Carto.log");
+
+            // A pipeline-driven run reports into the pipeline's combined summary; only a run the
+            // user started by hand gets its own dialog.（管線驅動的擷取回報至管線的合併摘要；
+            //   唯有使用者手動啟動的擷取才有自身的對話框。）
+            if (run.Completed != null)
+            {
+                try { run.Completed(summary.ToString()); }
+                catch (Exception ex) { _log.Warn($"Mesh rip completion callback failed: {ex}"); }
+                return;
+            }
 
             try
             {
