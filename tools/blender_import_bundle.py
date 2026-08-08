@@ -42,6 +42,10 @@ Options (after the `--`):
     --lanes                      also bend lanemeshes.jsonl — cables, fences, hedges assembled
                                  from laneprefabs.json + lanemeshes/ (contract §5B v2; same
                                  region filter as networks)
+    --lane-markings              like --lanes but ONLY the decal parts — road markings, wear
+                                 tint, crosswalks — skipping the heavy roadside furniture
+                                 (fences, hedges, sleepers, cables). The light companion to
+                                 --terrain --networks; ignored when --lanes is also given
     --skirts                     also place each building's <assetId>__base.glb foundation
                                  skirt, as authored (the 1 m band; the terrain drop of its
                                  v=0 ring is the consumer rule in contract §4.1)
@@ -54,6 +58,10 @@ Options (after the `--`):
                                  (same region filter as everything else). The ground, not the
                                  junction floors — junction interiors are the arms' own node
                                  meshes (audit §18)
+    --clip-floor V               diagnostic: override every clip strip's `bottom` with V
+                                 metres (relative to the lane surface) when rasterising
+                                 clipvolumes.jsonl — previews a producer band-floor change
+                                 against an existing bundle (implies --terrain)
     --areas                      also place the §8b surface areas from areas.jsonl — house
                                  driveways, parking-lot pavement, park paths: the painted
                                  ground of every meshless prefab
@@ -183,11 +191,24 @@ _DECAL_DRAPE_TINT = 0.008
 # interpolated (and possibly stride-subsampled) grid crests through it.
 _ROADBED_SINK = 0.15
 
-# Linear-space gain on the ground and surface-area textures. The theme diffuse is authored
-# dark (the ripped grass averages sRGB (66, 72, 53) — a faithful rip, verified) and reads as
-# it does in-game only under the game's exposure and sky light, neither of which a bare
-# Blender scene has. Presentation only: the ripped pixels are untouched on disk.
-_GROUND_GAIN = 2.8
+# Linear-space gain on the terrain ground textures. The theme diffuse is authored dark (the
+# ripped grass averages sRGB (66, 72, 53) — a faithful rip, verified) and reads as it does
+# in-game only under the game's HDR exposure and grading, neither of which a bare Blender
+# scene has. Presentation only: the ripped pixels are untouched on disk.
+#
+# History note: an earlier gain of 2.8—3.4 was applied through a MixRGB colour socket, whose
+# RGBA default_value clamps to [0, 1] — the gain had silently been a no-op since the splat
+# material landed, which is why the ground rendered as the raw dark albedo ("greyscale
+# terrain"). It now rides the HSV node's float Value input and was recalibrated by A/B
+# renders against the in-game screenshots. Terrain grounds only; area surfaces come from
+# ordinary prefab materials at normal albedo brightness and get no gain.
+_GROUND_GAIN = 8.0
+
+# Saturation companion to the gain, applied by the same HSV node. The game's grading pushes
+# the muted authored albedo toward the vivid in-game palette — green grass, sandy shores; a
+# flat-lit Blender scene shows the albedo as authored, which reads grey-brown. Same status
+# as the gain: presentation only, tuned side-by-side against in-game screenshots.
+_GROUND_SATURATION = 2.0
 
 # Ground steeper than this (rise over run) is textured rock instead of grass — the gorge
 # embankments. The game classifies grass/dirt/rock per pixel on the GPU by slope, height and
@@ -289,7 +310,8 @@ LOG = _Log()
 
 
 def _mesh_from_arrays(name, verts, tris, uv_layers=None, material_runs=None, poly_size=3,
-                      smooth=True, degenerate_report=None, source_geometry=False):
+                      smooth=True, degenerate_report=None, source_geometry=False,
+                      poly_sizes=None):
     """Build a mesh from numpy arrays via foreach_set — the hot-path alternative to
     per-face `from_pydata` / per-loop attribute assignment.
 
@@ -299,6 +321,12 @@ def _mesh_from_arrays(name, verts, tris, uv_layers=None, material_runs=None, pol
     so its faces tessellate exactly as `from_pydata` quads always did instead of picking a
     fresh triangulation diagonal that could flip a slope's silhouette under the pixel A/B
     gate. `uv_layers` is `{layer_name: (M*poly_size, 2)}` in the same loop order.
+
+    `poly_sizes`, when given, replaces the uniform `poly_size`: `tris` is then a FLAT 1-D
+    array of loop vertex indices and `poly_sizes` is `(M,)` per-polygon loop counts (their sum
+    must equal `len(tris)`). This is how the terrain grid mixes 14 m quads, native 3.5 m
+    quads and transition-fan triangles in one mesh. All degenerate-face semantics below apply
+    unchanged; UV layers are per-loop in the same flat order.
     `material_runs` is `[(material, poly_count)]` consumed in polygon order; a `None`
     material keeps the default slot 0. `smooth` sets `use_smooth` on every polygon — there is
     no safe default across callers (the game's continuous heightfields want it on; faceted
@@ -355,29 +383,47 @@ def _mesh_from_arrays(name, verts, tris, uv_layers=None, material_runs=None, pol
     if verts.ndim != 2 or verts.shape[1] != 3:
         raise ValueError(f"_mesh_from_arrays({name!r}): verts must be (N, 3), got shape {verts.shape}")
 
-    tris = numpy.asarray(tris, dtype=numpy.int64)
-    if tris.size == 0:
-        tris = tris.reshape(0, poly_size)
-    if tris.ndim != 2 or tris.shape[1] != poly_size:
-        raise ValueError(f"_mesh_from_arrays({name!r}): tris must be (M, {poly_size}), "
-                         f"got shape {tris.shape}")
+    if poly_sizes is None:
+        tris = numpy.asarray(tris, dtype=numpy.int64)
+        if tris.size == 0:
+            tris = tris.reshape(0, poly_size)
+        if tris.ndim != 2 or tris.shape[1] != poly_size:
+            raise ValueError(f"_mesh_from_arrays({name!r}): tris must be (M, {poly_size}), "
+                             f"got shape {tris.shape}")
+        loops_flat = tris.ravel()
+        sizes = numpy.full(len(tris), poly_size, dtype=numpy.int64)
+    else:
+        loops_flat = numpy.asarray(tris, dtype=numpy.int64).ravel()
+        sizes = numpy.asarray(poly_sizes, dtype=numpy.int64)
+        if int(sizes.sum()) != len(loops_flat):
+            raise ValueError(f"_mesh_from_arrays({name!r}): poly_sizes sum "
+                             f"{int(sizes.sum())} != {len(loops_flat)} flat loop indices")
 
-    poly_count = len(tris)
+    poly_count = len(sizes)
     if poly_count:
+        offsets = numpy.concatenate(([0], numpy.cumsum(sizes)))
         # A repeated vertex index within one polygon's row — the classic cause of a face
         # mesh.validate() drops (a zero-length edge, most often at a concatenated part seam).
-        repeated = numpy.zeros(poly_count, dtype=bool)
-        for i in range(poly_size):
-            for j in range(i + 1, poly_size):
-                repeated |= tris[:, i] == tris[:, j]
         # Geometrically zero-area: distinct indices that still collapse to a line or point.
-        # Fan-triangulated from vertex 0 (v0, v[i], v[i+1]) so it covers any poly_size.
-        v0 = verts[tris[:, 0]]
+        # Fan-triangulated from vertex 0 (v0, v[i], v[i+1]) so it covers any size. Sizes are
+        # processed group-wise so the mixed-size path shares the uniform path's arithmetic.
+        repeated = numpy.zeros(poly_count, dtype=bool)
         area2 = numpy.zeros(poly_count)
-        for i in range(1, poly_size - 1):
-            edge_a = verts[tris[:, i]] - v0
-            edge_b = verts[tris[:, i + 1]] - v0
-            area2 += numpy.linalg.norm(numpy.cross(edge_a, edge_b), axis=1)
+        for size in numpy.unique(sizes):
+            group = numpy.nonzero(sizes == size)[0]
+            rows = loops_flat[offsets[group][:, None] + numpy.arange(size)[None, :]]
+            rep = numpy.zeros(len(group), dtype=bool)
+            for i in range(size):
+                for j in range(i + 1, size):
+                    rep |= rows[:, i] == rows[:, j]
+            v0 = verts[rows[:, 0]]
+            a2 = numpy.zeros(len(group))
+            for i in range(1, size - 1):
+                edge_a = verts[rows[:, i]] - v0
+                edge_b = verts[rows[:, i + 1]] - v0
+                a2 += numpy.linalg.norm(numpy.cross(edge_a, edge_b), axis=1)
+            repeated[group] = rep
+            area2[group] = a2
         zero_area = (~repeated) & (area2 < 1e-12)
         degenerate = repeated | zero_area
 
@@ -417,22 +463,24 @@ def _mesh_from_arrays(name, verts, tris, uv_layers=None, material_runs=None, pol
                     else:
                         trimmed.append((material, 1))
                 material_runs = trimmed
+            loop_keep = numpy.repeat(keep, sizes)
             if uv_layers:
-                loop_keep = numpy.repeat(keep, poly_size)
                 uv_layers = {layer_name: numpy.asarray(uvs)[loop_keep]
                              for layer_name, uvs in uv_layers.items()}
-            tris = tris[keep]
-            poly_count = len(tris)
+            loops_flat = loops_flat[loop_keep]
+            sizes = sizes[keep]
+            poly_count = len(sizes)
 
     mesh = bpy.data.meshes.new(name)
     mesh.vertices.add(len(verts))
     mesh.vertices.foreach_set("co", numpy.ascontiguousarray(verts, dtype=numpy.float32).ravel())
-    mesh.loops.add(poly_count * poly_size)
-    mesh.loops.foreach_set("vertex_index", numpy.ascontiguousarray(tris, dtype=numpy.int32).ravel())
+    mesh.loops.add(len(loops_flat))
+    mesh.loops.foreach_set("vertex_index", numpy.ascontiguousarray(loops_flat, dtype=numpy.int32))
     mesh.polygons.add(poly_count)
-    mesh.polygons.foreach_set("loop_start",
-                               numpy.arange(0, poly_count * poly_size, poly_size, dtype=numpy.int32))
-    mesh.polygons.foreach_set("loop_total", numpy.full(poly_count, poly_size, dtype=numpy.int32))
+    loop_start = numpy.concatenate(([0], numpy.cumsum(sizes)[:-1])).astype(numpy.int32) \
+        if poly_count else numpy.zeros(0, dtype=numpy.int32)
+    mesh.polygons.foreach_set("loop_start", loop_start)
+    mesh.polygons.foreach_set("loop_total", numpy.ascontiguousarray(sizes, dtype=numpy.int32))
     if material_runs:
         indices = numpy.empty(poly_count, dtype=numpy.int32)
         slots = {}
@@ -1089,6 +1137,17 @@ def build_networks(networks_path, categories, collection, net_mesh_dir=None, lif
 _LANE_ARC_SAMPLES = 32
 _LANE_MAX_TILES = 256
 
+# Rigid-tile instancing (2026-08-08): the game stamps a tiled part (fence, hedge, sleepers)
+# per tile with its vertex shader; on a straight span that bend IS a rigid transform, so the
+# tile can be an instance of one shared mesh instead of baked vertices — measured on the full
+# city, 85% of all lane vertices were fence/hedge tiles and most fence footage runs straight
+# along lot edges. A tile is instanced only when doing so is exact to these tolerances;
+# everything else (curved tiles, width-tapered spans, hanging cables, the clipped last tile,
+# every decal) bakes exactly as before, so instancing is fidelity-neutral where it applies
+# and absent where it is not.
+_TILE_CHORD_TOL = 0.02   # m: max deviation of the tile's curve window from its 3D chord
+_TILE_WIDTH_TOL = 0.01   # fraction: max widthScale variation across the tile
+
 # Tier 1c (2026-08-07 amendment): the fixed _DECAL_DRAPE_STEP = 3.0 m subdivision drove both
 # the vertex count and the ray-cast count of the old per-vertex drape (2.24M of each for
 # 83,110 markings). Replaced by a sagitta rule: subdivide only as much as the bézier's own
@@ -1455,6 +1514,74 @@ def _decal_lattice(quad, rows):
     return verts, tris, tri_uvs
 
 
+def _quat_to_mat3(q):
+    """Bundle quaternion [x, y, z, w] as a 3×3 rotation matrix (columns = rotated axes)."""
+    x, y, z, w = q
+    return numpy.array([
+        [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+        [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+        [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)],
+    ], dtype=numpy.float64)
+
+
+def _rigid_tile_matrix(bezier, t_table, arc_table, arc_start, arc_per_z,
+                       span, inverted, width_scale, pos, rot, bmin_z, mesh_length):
+    """The Blender-frame 4×4 that places one straight tile rigidly, or None if the bend is
+    not rigid over this tile's window.
+
+    The bend maps a source vertex `v` as `world = P(arc(z)) + right·(local_x·width) +
+    ŷ·local_y` with `local = R_part·v + pos` and `arc(z) = arc_start + z_fraction·arc_per_z`.
+    When the curve window is straight (within `_TILE_CHORD_TOL`, 3D — so grade curvature
+    counts too) and width is constant (within `_TILE_WIDTH_TOL`), `P(arc)` is linear in `z`
+    and the whole map is one affine transform: columns `right·width`, `ŷ`, `chord/mesh_length`
+    (the chord carries the grade, so a fence on a straight climb shears exactly as the bend
+    sheared it). Composed with the part's own (rot, pos) and conjugated by the bundle→Blender
+    axis swap, it applies verbatim to the shared part mesh datablock — which already carries
+    that swap — so an instanced tile and a baked tile are bit-equal in world space.
+    """
+    arc_end = arc_start + arc_per_z
+    arcs = numpy.array([arc_start, arc_start + 0.25 * arc_per_z, arc_start + 0.5 * arc_per_z,
+                        arc_start + 0.75 * arc_per_z, arc_end])
+    t = numpy.interp(arcs, arc_table, t_table)
+    points = _bezier_point_vec(bezier, t)
+    chord = points[-1] - points[0]
+    chord_len = float(numpy.linalg.norm(chord))
+    if chord_len < 1e-6:
+        return None
+
+    deviation = numpy.linalg.norm(numpy.cross(points[1:4] - points[0], chord), axis=1) / chord_len
+    if float(deviation.max()) > _TILE_CHORD_TOL:
+        return None
+
+    t_global = numpy.where(inverted, span[1] - (span[1] - span[0]) * t[[0, -1]],
+                           span[0] + (span[1] - span[0]) * t[[0, -1]])
+    w0, w1 = (width_scale[0] + (width_scale[1] - width_scale[0]) * t_global)
+    if abs(w1 - w0) > _TILE_WIDTH_TOL * max(abs(w0), abs(w1), 1e-6):
+        return None
+    width = (w0 + w1) * 0.5
+
+    # right = normalize(cross(up, forward)), horizontal — exactly the bend's frame.
+    flat = math.hypot(chord[0], chord[2])
+    if flat < 1e-6:
+        return None
+    right = numpy.array([chord[2] / flat, 0.0, -chord[0] / flat])
+
+    outer = numpy.empty((3, 3), dtype=numpy.float64)
+    outer[:, 0] = right * width
+    outer[:, 1] = (0.0, 1.0, 0.0)
+    outer[:, 2] = chord / mesh_length
+    m3 = outer @ _quat_to_mat3(rot)
+    translation = points[0] - outer[:, 2] * bmin_z + outer @ numpy.asarray(pos, dtype=numpy.float64)
+
+    # Conjugate by the bundle→Blender frame map (the [0, 2, 1] axis swap the baked path
+    # applies to world vertices; the shared part datablock carries the same swap at rest).
+    swap = (0, 2, 1)
+    matrix = numpy.eye(4)
+    matrix[:3, :3] = m3[swap, :][:, swap]
+    matrix[:3, 3] = translation[list(swap)]
+    return matrix
+
+
 def _bend_lane_part(part, source, curve, spans, curve_length, width_scale, hang, sink):
     """Bend one catalogue part along one lane record's curve, appending blocks to `sink`.
 
@@ -1559,12 +1686,29 @@ def _bend_lane_part(part, source, curve, spans, curve_length, width_scale, hang,
                 arc_start = total_arc * clip0 / clip
                 arc_per_z = total_arc * tiling_count / clip
                 arc_limit = total_arc * clip1 / clip
+                full_tile = (clip0 + tiling_count) <= clip1
             elif is_decal:
                 arc_start, arc_per_z, arc_limit = 0.0, total_arc, total_arc
+                full_tile = False
             else:
                 arc_start = tile * mesh_length
                 arc_per_z = mesh_length
                 arc_limit = total_arc
+                full_tile = arc_start + mesh_length <= total_arc + 1e-6
+
+            # Rigid-tile gate: a full, un-hung tile whose curve window is straight and whose
+            # width is constant bends into exactly one affine transform — record an instance
+            # and skip the per-vertex bake. Everything failing the gate bakes as before.
+            if full_tile and not is_decal and hang is None and lift == 0.0:
+                matrix = _rigid_tile_matrix(bezier, t_table, arc_table, arc_start, arc_per_z,
+                                            span, inverted, width_scale, pos, rot,
+                                            bmin[2], mesh_length)
+                if matrix is not None:
+                    sink["instances"].append((part["assetId"], matrix))
+                    sink["tiles_instanced"] = sink.get("tiles_instanced", 0) + 1
+                    continue
+            if not is_decal:
+                sink["tiles_baked"] = sink.get("tiles_baked", 0) + 1
 
             arc_pos = numpy.clip(arc_start + stations * arc_per_z, 0.0, arc_limit)
             t = numpy.interp(arc_pos, arc_table, t_table)
@@ -1742,9 +1886,97 @@ def _lane_object_arrays(blocks):
     return verts, tris, uvs, material_runs
 
 
+def _lane_part_object(asset_id, source, cache, parts_collection, degenerate_report):
+    """One shared Blender object per part mesh, at rest in the Blender frame, for instancing.
+
+    Built from the same bundle-frame arrays the baked path bends, through the same axis swap
+    (`[:, [0, 2, 1]]`), so a rigid instance of this datablock and a baked tile of the same
+    part are the same triangles in the same winding. Lives in an excluded collection: the
+    depsgraph still evaluates it for the instancers' Object Info, but it never draws itself.
+    """
+    if asset_id in cache:
+        return cache[asset_id]
+
+    verts = source["verts"][:, [0, 2, 1]]
+    tri_mat = source["tri_material"]
+    order = numpy.argsort(tri_mat, kind="stable")
+    tris = source["tris"][order]
+    uvs = source["uvs"][order].reshape(-1, 2)
+    material_runs = [(source["materials"][m], int((tri_mat == m).sum()))
+                     for m in numpy.unique(tri_mat)]
+    mesh = _mesh_from_arrays(f"lanepart_{asset_id[:16]}", verts, tris,
+                             uv_layers={"UVMap": uvs}, material_runs=material_runs,
+                             poly_size=3, smooth=False, source_geometry=True,
+                             degenerate_report=degenerate_report)
+    obj = bpy.data.objects.new(f"lanepart_{asset_id[:16]}", mesh)
+    parts_collection.objects.link(obj)
+    cache[asset_id] = obj
+    return obj
+
+
+def _tile_instance_group(part_obj, cache):
+    """One Geometry Nodes group per shared part object: Instance on Points of that part,
+    each instance's full 4×4 taken from the point's `tile_matrix` attribute. The part is the
+    Object Info node's own target (not a modifier input — object-socket modifier inputs are
+    not assignable from Python on every Blender build), so all instancers of one part share
+    one group and there are at most as many groups as part meshes."""
+    if part_obj.name in cache:
+        return cache[part_obj.name]
+    group = bpy.data.node_groups.new(f"carto_tiles_{part_obj.name}", "GeometryNodeTree")
+    group.interface.new_socket("Geometry", in_out="INPUT", socket_type="NodeSocketGeometry")
+    group.interface.new_socket("Geometry", in_out="OUTPUT", socket_type="NodeSocketGeometry")
+
+    n_in = group.nodes.new("NodeGroupInput")
+    n_out = group.nodes.new("NodeGroupOutput")
+    info = group.nodes.new("GeometryNodeObjectInfo")
+    info.inputs["Object"].default_value = part_obj
+    info.inputs["As Instance"].default_value = True
+    points = group.nodes.new("GeometryNodeInstanceOnPoints")
+    attr = group.nodes.new("GeometryNodeInputNamedAttribute")
+    attr.data_type = "FLOAT4X4"
+    attr.inputs["Name"].default_value = "tile_matrix"
+    setm = group.nodes.new("GeometryNodeSetInstanceTransform")
+
+    links = group.links
+    links.new(n_in.outputs["Geometry"], points.inputs["Points"])
+    links.new(info.outputs["Geometry"], points.inputs["Instance"])
+    links.new(points.outputs["Instances"], setm.inputs["Instances"])
+    links.new(attr.outputs["Attribute"], setm.inputs["Transform"])
+    links.new(setm.outputs["Instances"], n_out.inputs["Geometry"])
+    cache[part_obj.name] = group
+    return group
+
+
+def _tile_instancer_object(name, part_obj, matrices, group_cache):
+    """A point-cloud mesh (one vertex per tile) carrying each tile's 4×4, instancing the
+    shared part object through `_tile_instance_group`. Point positions duplicate the matrix
+    translations only so the object has sensible bounds; the transform node replaces the
+    instance matrix wholesale."""
+    mats = numpy.asarray(matrices, dtype=numpy.float64)
+    mesh = bpy.data.meshes.new(name)
+    mesh.vertices.add(len(mats))
+    mesh.vertices.foreach_set(
+        "co", numpy.ascontiguousarray(mats[:, :3, 3], dtype=numpy.float32).ravel())
+    attr = mesh.attributes.new("tile_matrix", "FLOAT4X4", "POINT")
+    for i, mat in enumerate(mats):
+        attr.data[i].value = Matrix(mat.tolist())
+    mesh.update()
+
+    obj = bpy.data.objects.new(name, mesh)
+    modifier = obj.modifiers.new("tiles", "NODES")
+    modifier.node_group = _tile_instance_group(part_obj, group_cache)
+    return obj
+
+
 def build_lanes(lanes_path, catalogue_path, lane_mesh_dir, collection,
-                center=None, radius=None, limit=None, road_surface=None):
-    """Bend every lane record's parts along its curve, merged into one object per prefab."""
+                center=None, radius=None, limit=None, road_surface=None,
+                markings_only=False):
+    """Bend every lane record's parts along its curve, merged into one object per prefab.
+
+    `markings_only` bends just the decal parts (road markings, wear tint) and skips the
+    roadside furniture — the light import for looking at carriageways without the fence,
+    hedge and sleeper geometry that dominates a full `--lanes` build.
+    """
     if not os.path.isfile(lanes_path):
         LOG.warn(f"no lanemeshes.jsonl at {lanes_path} — skipping lane geometry")
         return 0
@@ -1792,11 +2024,13 @@ def build_lanes(lanes_path, catalogue_path, lane_mesh_dir, collection,
         # (§7.2), and the distinct paints per prefab are few — the variation table is small.
         color_set = record.get("colorSet")
         key = (record["prefab"], json.dumps(color_set, sort_keys=True) if color_set else "")
-        sink = builders.setdefault(key, {"blocks": [], "colorSet": color_set})
+        sink = builders.setdefault(key, {"blocks": [], "instances": [], "colorSet": color_set})
 
         for index in record.get("parts", []):
             parts = entry.get("parts", [])
             if not 0 <= index < len(parts):
+                continue
+            if markings_only and not parts[index].get("decal"):
                 continue
             source = _load_lane_source(parts[index]["assetId"], lane_mesh_dir, sources)
             if source is None:
@@ -1891,8 +2125,57 @@ def build_lanes(lanes_path, catalogue_path, lane_mesh_dir, collection,
             set_paint(obj, {"colorSet": sink["colorSet"]})
         built += 1
 
+    # -- rigid tiles as instances ----------------------------------------------------------
+    # One instancer object per (prefab, paint, part): a point cloud of tile matrices,
+    # Geometry Nodes instancing one shared part mesh. set_paint lands on the instancer, where
+    # the materials' per-instance attribute reads pick it up exactly as they do for the
+    # collection-instance empties the prop layer uses.
+    part_degenerates = {"faces": 0}
+
+    def _report_part_degenerate(_name, count, _repeated):
+        part_degenerates["faces"] += count
+
+    instanced_tiles = 0
+    instancers = 0
+    part_cache = {}
+    group_cache = {}
+    parts_collection = None
+    for (prefab_key, _), sink in builders.items():
+        if not sink["instances"]:
+            continue
+        by_part = {}
+        for asset_id, matrix in sink["instances"]:
+            by_part.setdefault(asset_id, []).append(matrix)
+        for asset_id, matrices in by_part.items():
+            if parts_collection is None:
+                parts_collection = bpy.data.collections.new("bundle_laneparts")
+                bpy.context.scene.collection.children.link(parts_collection)
+            part_obj = _lane_part_object(asset_id, sources[asset_id], part_cache,
+                                         parts_collection, _report_part_degenerate)
+            instancer = _tile_instancer_object(
+                f"lanetiles_{prefab_key}_{asset_id[:12]}", part_obj, matrices, group_cache)
+            collection.objects.link(instancer)
+            if sink["colorSet"] is not None:
+                set_paint(instancer, {"colorSet": sink["colorSet"]})
+            instanced_tiles += len(matrices)
+            instancers += 1
+    if parts_collection is not None:
+        # The shared part meshes must never draw on their own — the instancers' Object Info
+        # still evaluates them from an excluded collection.
+        layer = find_layer_collection(parts_collection)
+        if layer is not None:
+            layer.exclude = True
+
     LOG.done(f"lanes:     {bent} record(s) bent into {built} object(s), "
              f"{len(sources)} part mesh(es) loaded")
+    if instanced_tiles:
+        baked_tiles = sum(sink.get("tiles_baked", 0) for sink in builders.values())
+        LOG.step(f"{instanced_tiles} straight tile(s) instanced across {instancers} "
+                 f"instancer(s) ({len(part_cache)} shared part mesh(es)); "
+                 f"{baked_tiles} tile(s) baked (curved, tapered, hung or clipped)")
+    if part_degenerates["faces"]:
+        LOG.step(f"{part_degenerates['faces']} degenerate face(s) dropped from shared part "
+                 "meshes (authored in the source .glb)")
     if degenerate_totals["faces"]:
         # tools/ab_compare.py's COUNT_MARKERS ("face(s)", "object(s)") match this line, so any
         # two logs being diffed with --counts must have the identical number of degenerate
@@ -2102,6 +2385,8 @@ class _Splat:
 
     def __init__(self, path, block):
         self.path = path
+        self.multiplier = float(block.get("splatMultiplier", 1.0))
+        self.power = float(block.get("splatPower", 1.0))
         self.width, self.height, self.pixels = _decode_png_rgba(path)
         size = block.get("size", [self.width, self.height])
         if [self.width, self.height] != list(size):
@@ -2197,12 +2482,17 @@ def _bezier_points(control, t):
     return (u * u * u) * a + (3.0 * u * u * t) * b + (3.0 * u * t * t) * c + (t * t * t) * d
 
 
-def _fill_clip_quad(mask, terrain_y, width, height, quad, lane_y, bottom, top):
-    """Mark the cells one strip quad clips — the producer's even-odd scanline, exactly.
+def _fill_clip_quad(mask, terrain_y, width, height, quad, lane_y, bottom, top,
+                    refs=None, ref_value=-1):
+    """Mark the cells one strip quad clips — even-odd scanline over cell centres.
 
     `quad` is four (x, y) points in cell space, where cell (row, col) spans [col, col+1) ×
-    [row, row+1) and is sampled at its centre. A cell is clipped only where the terrain stands
-    *strictly* inside (lane + bottom, lane + top); both ends open, as the producer has them.
+    [row, row+1) and is sampled at its centre (col + 0.5, row + 0.5) on BOTH axes. A cell is
+    clipped only where the terrain stands *strictly* inside (lane + bottom, lane + top); both
+    ends open, as the producer has them.
+
+    When `refs` is given, every cell this quad cuts also records `ref_value` — the packed
+    (strip, station) reference the hole-boundary snap reads back.
     """
     ys = [p[1] for p in quad]
     row_lo = max(0, int(math.floor(max(0.0, min(ys)))))
@@ -2222,24 +2512,21 @@ def _fill_clip_quad(mask, terrain_y, width, height, quad, lane_y, bottom, top):
         crossings.sort()
 
         for pair in range(0, len(crossings) - 1, 2):
-            lo = max(0, int(round(crossings[pair])))
-            hi = min(width - 1, int(round(crossings[pair + 1])))
+            # Centre-coverage on the column axis: cell k's centre sits at k + 0.5 (same
+            # convention the row sample at `row + 0.5` above already uses), so the span
+            # [x0, x1] covers exactly the cells with x0 ≤ k + 0.5 ≤ x1. The previous
+            # `round()` implicitly put centres at integers — a systematic half-cell bias on
+            # this one axis that serrated every near-diagonal cut boundary.
+            lo = max(0, int(math.ceil(crossings[pair] - 0.5)))
+            hi = min(width - 1, int(math.floor(crossings[pair + 1] - 0.5)))
             if hi < lo:
                 continue
             over = terrain_y[row, lo:hi + 1] - lane_y
-            mask[row, lo:hi + 1] |= (over > bottom) & (over < top)
-
-
-def _block_view(native, row0, col0, nfr, nfc, stride):
-    """The native texels under each coarse face, as (nfr, stride, nfc, stride).
-
-    Coarse face (r, c) spans native rows `row0 + r*stride` to `+stride` and the same in
-    columns, so this is a pure reshape — no copy — and `.any(axis=(1, 3))` / `.all(...)` over it
-    are the block reductions. At stride 1 it is the identity, which is what keeps region
-    imports bit-identical.
-    """
-    block = native[row0:row0 + nfr * stride, col0:col0 + nfc * stride]
-    return block.reshape(nfr, stride, nfc, stride)
+            inside = (over > bottom) & (over < top)
+            mask[row, lo:hi + 1] |= inside
+            if refs is not None and ref_value >= 0:
+                span = refs[row, lo:hi + 1]
+                span[inside] = ref_value
 
 
 def _face_footprint_reduce(native, row0, col0, nfr, nfc, stride):
@@ -2266,122 +2553,117 @@ def _face_footprint_reduce(native, row0, col0, nfr, nfc, stride):
     return any_, all_
 
 
-def _refine_blocks(blocks_r, blocks_c, rows_arr, cols_arr, stride, native_y, corner_y,
-                   origin_x, origin_z, cell, keep_native):
-    """Re-emit a set of coarse faces at native resolution.
+def _dilate(mask, iterations):
+    """4-neighbour binary dilation by `iterations` cells, as numpy shifted-slice ORs.
 
-    This is the answer to the one place the harness couples two things the game keeps apart:
-    how dense the ground mesh is, and how finely a per-cell decision (cut, wet) is resolved.
-    The game tessellates by distance and discards clipped ground per *pixel*; the harness
-    decides whole 14 m faces from the corners of a 4:1 subsample. Rather than mesh the whole
-    map natively (measured at 60 s / 12.1 GB), only the blocks a decision boundary actually
-    crosses are rebuilt — a few thousand of a million.
-
-    Returns `(verts, quads)` in the same (x_east, y_north, z_up) Blender layout the caller
-    uses, with `quads` indexing into `verts` locally (the caller offsets them).
-
-    **Outer-edge heights are snapped onto the coarse edge**, not taken from the native raster.
-    A refined block sits beside unrefined ones that only have the two coarse corners along the
-    shared edge, so a native height there would tear a crack. Snapping puts every boundary
-    vertex exactly on the segment its coarse neighbour draws, and two adjacent refined blocks
-    snap to the same segment, so the seam closes either way.
+    Blender's Python has no scipy; at `iterations` = 3 this is 12 whole-array ORs, cheap even
+    on a 4096² raster.
     """
-    count = len(blocks_r)
-    sub = stride + 1
-    step = numpy.arange(sub, dtype=numpy.int64)
-
-    native_rows = rows_arr[blocks_r][:, None, None] + step[None, :, None]     # (B, sub, 1)
-    native_cols = cols_arr[blocks_c][:, None, None] + step[None, None, :]     # (B, 1, sub)
-    rr = numpy.broadcast_to(native_rows, (count, sub, sub))
-    cc = numpy.broadcast_to(native_cols, (count, sub, sub))
-
-    y = native_y[rr, cc].astype(numpy.float64)
-
-    # Bilinear snap on the four edges, from the coarse face's own corner heights.
-    u = (step / float(stride))[None, :]
-    y00 = corner_y[blocks_r, blocks_c][:, None]
-    y01 = corner_y[blocks_r, blocks_c + 1][:, None]
-    y10 = corner_y[blocks_r + 1, blocks_c][:, None]
-    y11 = corner_y[blocks_r + 1, blocks_c + 1][:, None]
-    y[:, 0, :] = y00 * (1.0 - u) + y01 * u
-    y[:, -1, :] = y10 * (1.0 - u) + y11 * u
-    y[:, :, 0] = y00 * (1.0 - u) + y10 * u
-    y[:, :, -1] = y01 * (1.0 - u) + y11 * u
-
-    x = origin_x + cc.astype(numpy.float64) * cell
-    z = origin_z - rr.astype(numpy.float64) * cell
-    verts = numpy.stack((x, z, y), axis=-1).reshape(-1, 3)
-
-    # Local quad indices within each block, then offset by the block's vertex base. Winding
-    # matches the coarse grid's (a, a+row, a+row+1, a+1) — south then east — so refined faces
-    # light the same way as the ones around them.
-    a = (numpy.arange(stride)[:, None] * sub + numpy.arange(stride)[None, :])
-    local = numpy.stack((a, a + sub, a + sub + 1, a + 1), axis=-1).reshape(-1, 4)
-    base = (numpy.arange(count) * sub * sub)[:, None, None]
-    quads = (local[None, :, :] + base).reshape(-1, 4)
-
-    # Each sub-face is one native cell, so the decision it was refined for is now taken at
-    # native resolution — which is the whole point.
-    span = numpy.arange(stride, dtype=numpy.int64)
-    cell_rr = rows_arr[blocks_r][:, None, None] + span[None, :, None]
-    cell_cc = cols_arr[blocks_c][:, None, None] + span[None, None, :]
-    keep = keep_native[numpy.broadcast_to(cell_rr, (count, stride, stride)),
-                       numpy.broadcast_to(cell_cc, (count, stride, stride))].reshape(-1)
-
-    # Which block each surviving sub-face came from, so the caller can give it whatever
-    # per-face data (material class, and so on) its coarse parent had.
-    parent = numpy.repeat(numpy.arange(count), stride * stride)[keep]
-    return verts, quads[keep], parent
+    out = mask.copy()
+    for _ in range(iterations):
+        grown = out.copy()
+        grown[1:, :] |= out[:-1, :]
+        grown[:-1, :] |= out[1:, :]
+        grown[:, 1:] |= out[:, :-1]
+        grown[:, :-1] |= out[:, 1:]
+        out = grown
+    return out
 
 
-def _legacy_cutout_grid(bundle_dir, width, height):
-    """Read a pre-§8c bundle's `terrain/cutout.png`, the retired precomputed clip mask.
+def _mask_boundary(mask):
+    """Cells on either side of a mask's 4-neighbour boundary — the shoreline of `wet`."""
+    edge = numpy.zeros_like(mask)
+    edge[1:, :] |= mask[1:, :] != mask[:-1, :]
+    edge[:-1, :] |= mask[:-1, :] != mask[1:, :]
+    edge[:, 1:] |= mask[:, 1:] != mask[:, :-1]
+    edge[:, :-1] |= mask[:, :-1] != mask[:, 1:]
+    return edge
 
-    Kept as a READ path only, and only as a fallback: the producer stopped writing this file on
-    2026-08-08 (contract §12.1), but bundles ripped before then are still on disk and would
-    otherwise import with every tunnel walled off — silently, since an absent layer is not an
-    error. Reading a legacy layer when it happens to be there is the consumer's own business;
-    nothing here puts it back in the contract.
 
-    The mask is the producer's own intersection at 3.5 m, so it cannot benefit from the
-    refinement below — it is already flattened. Re-rip to get the volumes.
+def _transition_fans(block_refined, block_transition, stride, lattice_w):
+    """Triangle fans that join coarse blocks to refined ones without cracks.
+
+    A transition block is a coarse block 4-adjacent to at least one refined block. Its face
+    is emitted as a fan from the block's centre lattice point to an ordered perimeter loop:
+    on a side shared with a REFINED block the perimeter includes every native lattice point
+    of that edge (so the refined neighbour's true edge is part of this face — no T-junction,
+    no crack, no pinning); on a side shared with a coarse/transition block only the two
+    corners (that neighbour draws a straight segment there, and adding interior points would
+    tear it). All indices are into the shared native lattice, flat (`row * lattice_w + col`).
+
+    Returns `(loops, block_ids)`: `loops` a flat int array of fan-triangle loop indices
+    (3 per triangle, CCW from above — same up-normal as the quad winding), `block_ids` one
+    entry per triangle naming the (row-major) transition-block it belongs to, for per-face
+    class lookup.
     """
-    path = os.path.join(bundle_dir, "terrain", "cutout.png")
-    if not os.path.isfile(path):
-        return None
-    try:
-        cw, ch, ids = _decode_png_gray(path)
-    except Exception as error:  # noqa: BLE001 - a legacy path is best-effort by definition
-        LOG.warn(f"legacy cutout.png unreadable ({error}); tunnels will stay walled off")
-        return None
-    if (cw, ch) != (width, height):
-        LOG.warn(f"legacy cutout.png is {cw}x{ch}, heightmap {width}x{height} — ignoring it")
-        return None
+    nfr, nfc = block_refined.shape
+    half = stride // 2
+    loops = []
+    block_ids = []
+    tr, tc = numpy.nonzero(block_transition)
+    for bR, bC in zip(tr.tolist(), tc.tolist()):
+        r0, c0 = bR * stride, bC * stride
 
-    LOG.warn("no clipvolumes.jsonl — falling back to this bundle's retired cutout.png. "
-             "It is the producer's own 3.5 m intersection, so portal edges stay as coarse as "
-             "it made them; re-rip for contract §8c clip volumes.")
-    return numpy.asarray(ids).reshape(height, width) != 0
+        def edge_points(refined, points):
+            # Each side contributes its starting corner plus, when the neighbour is refined,
+            # the interior lattice points; the closing corner belongs to the next side.
+            return points if refined else points[:1]
+
+        west = 0 <= bC - 1 and block_refined[bR, bC - 1]
+        south = bR + 1 < nfr and block_refined[bR + 1, bC]
+        east = bC + 1 < nfc and block_refined[bR, bC + 1]
+        north = 0 <= bR - 1 and block_refined[bR - 1, bC]
+
+        perimeter = (
+            edge_points(west, [(r0 + k, c0) for k in range(stride)]) +
+            edge_points(south, [(r0 + stride, c0 + k) for k in range(stride)]) +
+            edge_points(east, [(r0 + stride - k, c0 + stride) for k in range(stride)]) +
+            edge_points(north, [(r0, c0 + stride - k) for k in range(stride)])
+        )
+        centre = (r0 + half) * lattice_w + (c0 + half)
+        count = len(perimeter)
+        for i in range(count):
+            pr, pc = perimeter[i]
+            qr, qc = perimeter[(i + 1) % count]
+            loops.extend((centre, pr * lattice_w + pc, qr * lattice_w + qc))
+            block_ids.append(bR * nfc + bC)
+
+    return (numpy.asarray(loops, dtype=numpy.int64),
+            numpy.asarray(block_ids, dtype=numpy.int64))
+
+
+_CLIP_REF_STATION_BITS = 11  # stations per strip cap at 1024 (< 2^11)
 
 
 def _clip_grid(bundle_dir, width, height, heights, cell, origin_x, origin_z,
-               elevation_scale, elevation_offset):
+               elevation_scale, elevation_offset, floor_override=None):
     """Rasterise `clipvolumes.jsonl` onto the heightmap grid — contract §8c.
 
-    This replaces the `terrain/cutout.png` mask, which was retired 2026-08-08. The mask was an
-    intersection the producer had already taken against one heightmap at 3.5 m from directly
-    above; the volumes are what it intersected, so a consumer meshing at its own resolution
-    does the intersection itself and is not stuck with the producer's.
+    The volumes are what the producer intersects against the heightmap; a consumer meshing at
+    its own resolution does the intersection itself. The layer is mandatory (contract §8c): a
+    bundle with terrain but no clip volumes would silently wall off every tunnel, so its
+    absence is an error, not a fallback.
 
-    Returns a (height, width) bool array, or None when the bundle carries no clip layer.
+    `floor_override`, when not None, replaces every strip's `bottom` — a diagnostic knob
+    (`--clip-floor`) for previewing a producer band-floor change against an existing bundle.
+
+    Returns `(mask, refs, strip_geo)`: the (height, width) bool cut mask; an int32 raster of
+    packed (strip << _CLIP_REF_STATION_BITS | station) references for every cut cell (−1
+    where uncut or cut only by an `area` record, which has no curves to snap to); and
+    `strip_geo[strip] = (left_pts, right_pts, lane, bottom, top)` — the evaluated boundary
+    polylines the hole-boundary snap projects onto.
     """
     path = os.path.join(bundle_dir, "clipvolumes.jsonl")
     if not os.path.isfile(path):
-        return _legacy_cutout_grid(bundle_dir, width, height)
+        raise RuntimeError(
+            "CONTRACT VIOLATION: terrain layer present but no clipvolumes.jsonl — "
+            "the producer always writes the §8c clip layer; re-rip the bundle")
 
     strips = [record for record in read_jsonl(path)]
+    refs = numpy.full((height, width), -1, dtype=numpy.int32)
+    strip_geo = []
     if not strips:
-        return None
+        return numpy.zeros((height, width), dtype=bool), refs, strip_geo
 
     terrain_y = (numpy.asarray(heights, dtype=numpy.float64).reshape(height, width)
                  * elevation_scale + elevation_offset)
@@ -2403,7 +2685,7 @@ def _clip_grid(bundle_dir, width, height, heights, cell, origin_x, origin_z,
 
     unbounded = float("inf")
     for strip in strips:
-        bottom = float(strip.get("bottom", 0.5))
+        bottom = float(strip["bottom"]) if floor_override is None else float(floor_override)
         top = float(strip["top"]) if strip.get("top") is not None else unbounded
 
         if strip.get("kind") == "area":
@@ -2414,7 +2696,8 @@ def _clip_grid(bundle_dir, width, height, heights, cell, origin_x, origin_z,
                 pts = numpy.asarray([nodes[i] for i in tri], dtype=numpy.float64)
                 cells = to_cell(pts)
                 # A triangle reaches the scanline as a quad with one doubled corner, and its
-                # lane reference is the corner mean — both as the producer has them.
+                # lane reference is the corner mean — both as the producer has them. No ref:
+                # an area cut has no boundary curves for the snap to project onto.
                 _fill_clip_quad(mask, terrain_y, width, height,
                                 [tuple(cells[0]), tuple(cells[1]), tuple(cells[2]), tuple(cells[2])],
                                 float(pts[:, 1].mean()), bottom, top)
@@ -2437,13 +2720,135 @@ def _clip_grid(bundle_dir, width, height, heights, cell, origin_x, origin_z,
         right_cells = to_cell(right_pts)
         lane = (left_pts[:, 1] + right_pts[:, 1]) * 0.5
 
+        strip_index = len(strip_geo)
+        strip_geo.append((left_pts, right_pts, lane, bottom, top))
         for i in range(1, steps + 1):
             _fill_clip_quad(mask, terrain_y, width, height,
                             [tuple(left_cells[i - 1]), tuple(right_cells[i - 1]),
                              tuple(right_cells[i]), tuple(left_cells[i])],
-                            float((lane[i - 1] + lane[i]) * 0.5), bottom, top)
+                            float((lane[i - 1] + lane[i]) * 0.5), bottom, top,
+                            refs=refs, ref_value=(strip_index << _CLIP_REF_STATION_BITS) | i)
 
-    return mask
+    return mask, refs, strip_geo
+
+
+def _snap_hole_boundary(verts, vid, used_grid, cut_face_grid, refs_w, strip_geo, ground_y,
+                        origin_x, origin_z, row0, col0, cell):
+    """Move every cut-hole boundary vertex onto the clip prism's own surface.
+
+    The game clips terrain per pixel against smooth swept prisms; this grid deletes whole
+    3.5 m cells, so the hole is up to a cell wider than the prism everywhere — a sawtooth
+    see-through rim beside every road once the everyday ±0.3 m shell ships, and open gaps
+    around portal mouths. Snapping closes it exactly: a boundary vertex laterally outside
+    the strip moves onto the nearest point of the strip's side polyline (the prism wall),
+    with its height resampled from the ground there; a vertex over the strip whose height is
+    above the band ceiling drops to `lane + top` (the portal-roof iso-edge), below the floor
+    rises to `lane + bottom`. Kept faces then stretch to the exact clip boundary, the way
+    the game's surviving pixels end at it. Verts cut only by `area` records (ref −1) stay —
+    an authored clip surface has no curves to project onto.
+
+    Everything is in the window lattice: `used_grid`/`cut_face_grid` are (lat_h, lat_w),
+    `refs_w` the windowed reference raster, `verts` the built vertex array `vid` indexes.
+    Returns the number of vertices moved.
+    """
+    lat_h, lat_w = used_grid.shape
+    cut_corner = numpy.zeros((lat_h, lat_w), dtype=bool)
+    fr, fc = numpy.nonzero(cut_face_grid)
+    for dr, dc in ((0, 0), (0, 1), (1, 0), (1, 1)):
+        cut_corner[fr + dr, fc + dc] = True
+    br, bc = numpy.nonzero(cut_corner & used_grid)
+    if not len(br):
+        return 0
+
+    # Each boundary vertex takes the reference of any cut cell in its 3×3 neighbourhood.
+    ref = numpy.full(len(br), -1, dtype=numpy.int64)
+    for dr in (-1, 0, 1):
+        for dc in (-1, 0, 1):
+            rr = numpy.clip(br + dr, 0, lat_h - 1)
+            cc = numpy.clip(bc + dc, 0, lat_w - 1)
+            cand = refs_w[rr, cc]
+            ref = numpy.where((ref < 0) & (cand >= 0), cand.astype(numpy.int64), ref)
+    keep = ref >= 0
+    if not keep.any():
+        return 0
+    br, bc, ref = br[keep], bc[keep], ref[keep]
+
+    x = origin_x + (col0 + bc).astype(numpy.float64) * cell
+    z = origin_z - (row0 + br).astype(numpy.float64) * cell
+    ids = vid[br * lat_w + bc]
+    y = verts[ids, 2].copy()
+
+    station_mask = (1 << _CLIP_REF_STATION_BITS) - 1
+    strip_of = (ref >> _CLIP_REF_STATION_BITS).astype(numpy.int64)
+    station_of = (ref & station_mask).astype(numpy.int64)
+
+    def bilinear_ground(px, pz):
+        gc = numpy.clip((px - origin_x) / cell - col0, 0.0, lat_w - 1.001)
+        gr = numpy.clip((origin_z - pz) / cell - row0, 0.0, lat_h - 1.001)
+        c0 = gc.astype(numpy.int64)
+        r0g = gr.astype(numpy.int64)
+        fu = gc - c0
+        fv = gr - r0g
+        g = ground_y
+        return ((g[r0g, c0] * (1 - fu) + g[r0g, c0 + 1] * fu) * (1 - fv)
+                + (g[r0g + 1, c0] * (1 - fu) + g[r0g + 1, c0 + 1] * fu) * fv)
+
+    moved = 0
+    order = numpy.argsort(strip_of, kind="stable")
+    bounds = numpy.searchsorted(strip_of[order], numpy.arange(len(strip_geo) + 1))
+    for s in numpy.unique(strip_of):
+        sel = order[bounds[s]:bounds[s + 1]]
+        left_pts, right_pts, lane, bottom, top = strip_geo[s]
+        i = numpy.clip(station_of[sel], 1, len(lane) - 1)
+        l0 = left_pts[i - 1]
+        l1 = left_pts[i]
+        r0 = right_pts[i - 1]
+        r1 = right_pts[i]
+        lane_y = (lane[i - 1] + lane[i]) * 0.5
+        px, pz, py = x[sel], z[sel], y[sel]
+
+        def closest(a, b):
+            ax, az = a[:, 0], a[:, 2]
+            dx, dz = b[:, 0] - ax, b[:, 2] - az
+            denom = numpy.maximum(dx * dx + dz * dz, 1e-9)
+            t = numpy.clip(((px - ax) * dx + (pz - az) * dz) / denom, 0.0, 1.0)
+            cxp = ax + t * dx
+            czp = az + t * dz
+            return cxp, czp, numpy.hypot(px - cxp, pz - czp)
+
+        lxp, lzp, ld = closest(l0, l1)
+        rxp, rzp, rd = closest(r0, r1)
+        side_l = (l1[:, 0] - l0[:, 0]) * (pz - l0[:, 2]) - (l1[:, 2] - l0[:, 2]) * (px - l0[:, 0])
+        side_r = (r1[:, 0] - r0[:, 0]) * (pz - r0[:, 2]) - (r1[:, 2] - r0[:, 2]) * (px - r0[:, 0])
+        between = numpy.sign(side_l) != numpy.sign(side_r)
+
+        new_x, new_z, new_y = px.copy(), pz.copy(), py.copy()
+        # Over the strip: clamp to the band's iso surfaces (roof for portals, floor rarely).
+        roof = between & numpy.isfinite(numpy.full_like(py, top)) & (py > lane_y + top)
+        new_y[roof] = (lane_y + top)[roof]
+        floor_hit = between & (py < lane_y + bottom)
+        new_y[floor_hit] = (lane_y + bottom)[floor_hit]
+        # Outside: onto the nearer side polyline, height from the ground there.
+        outside = ~between
+        use_left = outside & (ld <= rd)
+        use_right = outside & ~use_left
+        new_x[use_left] = lxp[use_left]
+        new_z[use_left] = lzp[use_left]
+        new_x[use_right] = rxp[use_right]
+        new_z[use_right] = rzp[use_right]
+        if outside.any():
+            gy = bilinear_ground(new_x[outside], new_z[outside])
+            lo = (lane_y + bottom)[outside]
+            hi = (lane_y + top)[outside] if numpy.isfinite(top) else numpy.full_like(gy, numpy.inf)
+            new_y[outside] = numpy.clip(gy, lo, hi)
+
+        changed = (new_x != px) | (new_z != pz) | (new_y != py)
+        idx = ids[sel][changed]
+        verts[idx, 0] = new_x[changed]
+        verts[idx, 1] = new_z[changed]
+        verts[idx, 2] = new_y[changed]
+        moved += int(changed.sum())
+    return moved
 
 
 def _splat_mapping(block):
@@ -2473,9 +2878,11 @@ def _splat_ground_material(surfaces_dir, splat, mapping, gain=1.0):
 
     `mapping` names the ground each of R, G, B, A weights, plus the `base` ground. The base
     is not a channel: the four weights are PAINTED-ground weights and a cliff is simply
-    unpainted — measured, very steep faces carry ≈0 in all four while rendering rock in-game —
-    so the base weight is the residual max(0, 1 − (R+G+B+A)). A consumer that normalises the
-    four channels into a partition loses rock entirely.
+    unpainted — measured, very steep faces carry ≈0 in all four while rendering rock in-game.
+    The weights are OPACITIES composited in channel order over the base, scaled by the
+    block's `splatMultiplier`/`splatPower` — a consumer that normalises them into a
+    partition loses rock entirely *and* washes out the player-painted grounds, because the
+    procedural grass weight stays high underneath the paint.
     """
     material = bpy.data.materials.new("terrain_ground")
     material.use_nodes = True
@@ -2529,46 +2936,51 @@ def _splat_ground_material(surfaces_dir, splat, mapping, gain=1.0):
         tree.links.new(colour_b, node.inputs["Color2"])
         return node.outputs["Color"]
 
-    # The base ground's weight is the unpainted residual — max(0, 1 − ΣRGBA). It is not one of
-    # the four channels; see the docstring.
-    channel_sum = channels[0]
-    for k in (1, 2, 3):
-        channel_sum = math("ADD", channel_sum, channels[k])
-    base_weight = math("MAXIMUM", math("SUBTRACT", 1.0, channel_sum), 0.0)
-
-    # Every named channel blends, in RGBA order, then the base last. A channel the producer
-    # could not name is skipped — its weight still counts against the residual, which is
-    # correct: the ground is there, we just cannot say which it is.
-    named = [(index, mapping[key]) for index, key in enumerate("RGBA") if mapping.get(key)]
+    # Ordered COMPOSITING, base first — not a weights/sum partition. The channels are
+    # opacities: the game writes the player's paint into B/A while the ground underneath
+    # KEEPS its procedural grass weight (measured on a painted city: texels with paint
+    # ≥ 128 still carry grass ≈ 240/255), so normalising the channels into a partition let
+    # grass outvote the paint and washed every player-painted ground to a faint tint —
+    # "the user painted colours are lost". Composite instead: start from the base ground
+    # (the unpainted residual — rock shows wherever every channel is ~0, cliff faces and
+    # shorelines), then lay the named channels over the result in priority order
+    # **G (dirt), R (grass), B, A** — dirt UNDER grass, paint on top — at opacity
+    # saturate(weight · splatMultiplier)^splatPower, the block's own published constants
+    # (2.0 / 1.0: half-weight paint already covers fully, which is how it reads in-game).
+    # The dirt-under-grass order is measured, not guessed: on the shipped city no texel is
+    # dirt-dominant (of 6.1M texels with dirt > 128, 99.5% carry grass > 200 and NONE carry
+    # grass < 64), so dirt-over-grass composites the entire map brown while the game shows
+    # green — the dirt weight is an undercoat the grass weight then covers.
+    # A channel the producer could not name is skipped — that ground is present but
+    # unnameable, and painting it as a guess would be worse than leaving the ground below.
+    named = [(index, mapping[key])
+             for index, key in ((1, "G"), (0, "R"), (2, "B"), (3, "A")) if mapping.get(key)]
     if not named:
         named = [(0, _SPLAT_CHANNELS_DEFAULT["R"])]
 
-    # Normalised chained lerp over the grounds: at each step
-    # mix(so_far, next, w_next/(sum_so_far + w_next)) — exactly weights/sum, with an
-    # epsilon so a zero-weight texel cannot divide by zero.
-    first_index, first_ground = named[0]
-    blended = ground_texture(first_ground)
-    total = channels[first_index]
-    rest = [(channels[index], ground_texture(ground)) for index, ground in named[1:]]
-    if mapping.get("base"):
-        rest.append((base_weight, ground_texture(mapping["base"])))
-    for weight, colour in rest:
-        total = math("ADD", total, weight)
-        blended = mix(blended, colour, math("DIVIDE", weight, math("ADD", total, 1e-4)))
+    blended = ground_texture(mapping["base"] if mapping.get("base") else named[0][1])
+    for index, ground in named:
+        opacity = math("MINIMUM", math("MULTIPLY", channels[index], splat.multiplier), 1.0)
+        if splat.power != 1.0:
+            opacity = math("POWER", opacity, splat.power)
+        blended = mix(blended, ground_texture(ground), opacity)
 
-    if gain != 1.0:
-        gain_node = tree.nodes.new("ShaderNodeMixRGB")
-        gain_node.blend_type = "MULTIPLY"
-        gain_node.inputs["Fac"].default_value = 1.0
-        gain_node.inputs["Color2"].default_value = (gain, gain, gain, 1.0)
-        tree.links.new(blended, gain_node.inputs["Color1"])
-        blended = gain_node.outputs["Color"]
+    if (gain != 1.0) or (_GROUND_SATURATION != 1.0):
+        # One HSV node carries both presentation knobs. Gain goes through its Value input —
+        # a FLOAT socket, so it survives >1 — never through a MixRGB colour socket, whose
+        # RGBA default_value clamps to [0,1] and silently turns any gain into a no-op
+        # (which is exactly what it had been doing).
+        hsv = tree.nodes.new("ShaderNodeHueSaturation")
+        hsv.inputs["Saturation"].default_value = _GROUND_SATURATION
+        hsv.inputs["Value"].default_value = gain
+        tree.links.new(blended, hsv.inputs["Color"])
+        blended = hsv.outputs["Color"]
 
     tree.links.new(blended, bsdf.inputs["Base Color"])
     return material
 
 
-def _ground_material(name, texture_path, fallback_colour, gain=1.0):
+def _ground_material(name, texture_path, fallback_colour, gain=1.0, saturation=1.0):
     material = bpy.data.materials.new(name)
     material.use_nodes = True
     bsdf = material.node_tree.nodes.get("Principled BSDF")
@@ -2577,30 +2989,33 @@ def _ground_material(name, texture_path, fallback_colour, gain=1.0):
         image_node = material.node_tree.nodes.new("ShaderNodeTexImage")
         image_node.image = bpy.data.images.load(texture_path)
         upstream = image_node.outputs["Color"]
-        if gain != 1.0:
-            # Presentation gain (_GROUND_GAIN): the authored theme diffuse is dark and only
-            # reads right under the game's own exposure. Multiply node, so the texture on
-            # disk stays the faithful rip.
-            mix = material.node_tree.nodes.new("ShaderNodeMixRGB")
-            mix.blend_type = "MULTIPLY"
-            mix.inputs["Fac"].default_value = 1.0
-            mix.inputs["Color2"].default_value = (gain, gain, gain, 1.0)
-            material.node_tree.links.new(upstream, mix.inputs["Color1"])
-            upstream = mix.outputs["Color"]
+        if (gain != 1.0) or (saturation != 1.0):
+            # Presentation gain + saturation: the authored theme diffuse is dark and only
+            # reads right under the game's own exposure. The gain rides the HSV node's Value
+            # input — a float socket, unclamped — because a MixRGB colour socket clamps its
+            # default_value to [0,1] and silently ate it. The texture on disk stays the
+            # faithful rip.
+            hsv = material.node_tree.nodes.new("ShaderNodeHueSaturation")
+            hsv.inputs["Saturation"].default_value = saturation
+            hsv.inputs["Value"].default_value = gain
+            material.node_tree.links.new(upstream, hsv.inputs["Color"])
+            upstream = hsv.outputs["Color"]
         material.node_tree.links.new(upstream, bsdf.inputs["Base Color"])
     else:
         bsdf.inputs["Base Color"].default_value = fallback_colour
     return material
 
 
-def build_terrain(bundle_dir, collection, center, radius):
+def build_terrain(bundle_dir, collection, center, radius, clip_floor=None):
     """Place the §8 terrain under everything: ground grid, roadbed split, water surface.
 
     Returns `(placed, ground)` — the number of objects placed (0 when the layer is absent)
     and the ground grid itself as `(object, cell_size)` for the layers painted onto it
     (`build_areas`), or None when no grid was built. The region filter crops the grid to the
-    same window as everything else; without one, the grid is subsampled to at most ~1024
-    cells per axis so a full 4096² map stays viewable.
+    same window as everything else; without one, the coarse grid keeps at most ~1024 blocks
+    per axis and the decision corridors (roadbed, clip, shoreline) are meshed at native
+    resolution inside it. `clip_floor` overrides every clip strip's `bottom` (diagnostic,
+    `--clip-floor`).
     """
     heightmap_path, surface_path, water_path, surfaces_dir, splat_path, rasters = _terrain_paths(bundle_dir)
     if not os.path.isfile(heightmap_path):
@@ -2626,13 +3041,11 @@ def build_terrain(bundle_dir, collection, center, radius):
 
     # Contract §8c. The terrain covering tunnel portals and sunken trenches is never carved out
     # of the heightmap — the game hides it per-frame with a stencil pass — so the clip volumes
-    # are rasterised here against this heightmap. Until 2026-08-08 the bundle shipped that
-    # intersection precomputed as terrain/cutout.png; it was retired because a top-down 3.5 m
-    # mask cannot express a volume open at one height and closed at another.
-    cut_grid = _clip_grid(bundle_dir, width, height, heights, cell, origin_x, origin_z,
-                          elevation_scale, elevation_offset)
-    if cut_grid is None:
-        LOG.warn("no clip layer at all — tunnel portals and trenches will stay walled off")
+    # are rasterised here against this heightmap. The layer is mandatory; _clip_grid raises on
+    # a bundle without it.
+    cut_grid, cut_refs, strip_geo = _clip_grid(bundle_dir, width, height, heights, cell,
+                                               origin_x, origin_z, elevation_scale,
+                                               elevation_offset, floor_override=clip_floor)
 
     levels = None
     if os.path.isfile(water_path):
@@ -2657,175 +3070,176 @@ def build_terrain(bundle_dir, collection, center, radius):
         LOG.warn("terrain: the region window misses the raster entirely — skipping terrain")
         return 0, None
 
-    cols = list(range(col0, col1 + 1, stride))
-    rows = list(range(row0, row1 + 1, stride))
+    # -- the shared native lattice ---------------------------------------------------------
+    # The window is nfr×nfc blocks of stride² native cells; the vertex lattice is the native
+    # texel grid itself (a vertex sits at a cell centre, contract §3). Every face family
+    # below — coarse block quads, native cells inside the refined corridors, and the
+    # transition fans that join the two — indexes this ONE lattice, so the mesh is welded by
+    # construction: no duplicated positions, no edges pinned to a subsample, shared smooth
+    # normals across every seam. The game keeps mesh density and per-pixel decisions
+    # (clip, flatten) independent; the corridors are how this grid stops coupling them.
+    nfr = (row1 - row0) // stride
+    nfc = (col1 - col0) // stride
+    if nfr < 1 or nfc < 1:
+        LOG.warn("terrain: the region window is smaller than one face — skipping terrain")
+        return 0, None
+    lat_h = nfr * stride + 1
+    lat_w = nfc * stride + 1
 
-    nrows, ncols = len(rows), len(cols)
-    rows_arr = numpy.asarray(rows, dtype=numpy.int64)
-    cols_arr = numpy.asarray(cols, dtype=numpy.int64)
-
-    # Heights: the decoded PNG16 raster as (H, W), windowed to the sampled grid by the same
-    # cols/rows lists everything else uses BEFORE the elevationScale/Offset multiply-add —
-    # a full 4096² city raster is 128 MB once promoted to float64, and only the sampled
-    # window (a few hundred cells on a side, even unstrided) is ever read. sampled_y[r, c] is
-    # exactly what the scalar code's world_y(rows[r], cols[c]) returned.
     heights_native = numpy.asarray(heights).reshape(height, width)
-    sampled_y = heights_native[numpy.ix_(rows_arr, cols_arr)].astype(numpy.float64)
-    sampled_y = sampled_y * elevation_scale + elevation_offset
+    native_y = heights_native[row0:row0 + lat_h, col0:col0 + lat_w].astype(numpy.float32) \
+        * numpy.float32(elevation_scale) + numpy.float32(elevation_offset)
 
-    surface_grid = numpy.asarray(surface_ids).reshape(height, width) if surface_ids is not None else None
-    level_grid = numpy.asarray(levels).reshape(height, width) if levels is not None else None
+    roadbed = (numpy.asarray(surface_ids).reshape(height, width)
+               [row0:row0 + lat_h, col0:col0 + lat_w] != 0) if surface_ids is not None \
+        else numpy.zeros((lat_h, lat_w), dtype=bool)
+    cut = cut_grid[row0:row0 + lat_h, col0:col0 + lat_w]
 
-    # Vertex grid: world X/Z (meshgrid) + sampled height, row-major (row outer, col inner) so
-    # the flat vertex index a = r*ncols + c matches every face-winding formula below exactly
-    # as the scalar loop's `index` counter did.
-    world_x = origin_x + cols_arr.astype(numpy.float64) * cell
-    world_z = origin_z - rows_arr.astype(numpy.float64) * cell
-    grid_x, grid_z = numpy.meshgrid(world_x, world_z)  # both (nrows, ncols)
-
-    # Roadbed faces sink by a small documented drop (§8 consumer note). The game's road job
-    # clamps the ground under a carriageway to the MINIMUM of the road's surface band — below
-    # the asphalt top — but this grid linearly interpolates 3.5 m samples (and subsamples by
-    # stride without a region), so interpolated crests poke through the road meshes above.
-    # Sinking in the game's own clamp direction settles it; every vertex touching a roadbed
-    # face drops, so the sink bleeds one cell into the smoothing apron rather than tearing a
-    # cliff at the boundary. A face reads "roadbed" from its single top-left sample (r, c) —
-    # not all four corners — exactly as the scalar face_roadbed did.
-    roadbed_corner = surface_grid[numpy.ix_(rows_arr, cols_arr)] != 0 if surface_grid is not None \
-        else numpy.zeros((nrows, ncols), dtype=bool)
-    face_roadbed = roadbed_corner[:-1, :-1]
-
-    # Terrain clipping through roads is the second full-map-only artefact, and it is a height
-    # problem rather than a classification one — so it is fixed here without touching which
-    # faces read as roadbed above.
-    #
-    # The game's road job clamps ground under a carriageway DOWN into the road's surface band.
-    # This grid keeps every 4th texel, so whichever of the 16 texels under a face happened to
-    # land on the sample point sets the height, and when that one is a crest the interpolated
-    # ground rises through the road mesh above it. Pulling those vertices down to the block
-    # MINIMUM is the game's own clamp direction, costs one reduction, and cannot raise ground
-    # anywhere. The trigger is `any` texel rather than the sampled corner: a road crossing a
-    # block whose corner happens to miss it still needs the clamp.
-    if stride > 1 and surface_grid is not None:
-        nfr_road, nfc_road = max(nrows - 1, 0), max(ncols - 1, 0)
-        road_any, _ = _face_footprint_reduce(surface_grid != 0, row0, col0,
-                                             nfr_road, nfc_road, stride)
-        if road_any.any():
-            block_min = _block_view(heights_native, row0, col0, nfr_road, nfc_road, stride) \
-                .min(axis=(1, 3)).astype(numpy.float64) * elevation_scale + elevation_offset
-            pulled = numpy.full((nrows, ncols), numpy.inf)
-            fr, fc = numpy.nonzero(road_any)
-            for dr, dc in ((0, 0), (0, 1), (1, 0), (1, 1)):
-                numpy.minimum.at(pulled, (fr + dr, fc + dc), block_min[fr, fc])
-            sampled_y = numpy.minimum(sampled_y, pulled)
-
-    sink = _ROADBED_SINK if surface_ids is not None else 0.0
-    vertex_sunk = numpy.zeros((nrows, ncols), dtype=bool)
-    if sink and face_roadbed.size:
-        fr, fc = numpy.nonzero(face_roadbed)
-        vertex_sunk[fr, fc] = True
-        vertex_sunk[fr, fc + 1] = True
-        vertex_sunk[fr + 1, fc] = True
-        vertex_sunk[fr + 1, fc + 1] = True
-
-    # -- the ground grid -------------------------------------------------------------------
-    grid_y = sampled_y - numpy.where(vertex_sunk, sink, 0.0)
-    verts = numpy.stack((grid_x, grid_z, grid_y), axis=-1).reshape(-1, 3)  # Blender: X east, Y north, Z up
-
-    for row_number in range(nrows):
-        # "terrain rows" — deliberately not "terrain:" — stays outside every ab_compare.py
-        # count marker so this progress line can print at whatever stride the helper picks
-        # without ever becoming a gated line the A/B baseline does not have.
-        LOG.progress("terrain rows", row_number + 1, nrows)
-
-    # §8c clip volumes, rasterised above: the terrain covering tunnel portals and sunken
-    # trenches. Keeping their faces walls off every underground network.
-    #
-    # The decision is taken over EVERY native texel a face covers, not from its four corner
-    # samples. At stride 4 the corner rule read 4 of the 16 texels under a face and cut the
-    # whole 14 m face if any of them was set — measured on a full city, that dropped 1,123
-    # faces = 220,108 m² where the mask marks 96,775 m², over-cutting by 2.3×. A face is now
-    # cut only when *all* its texels are, and a face whose block is mixed is rebuilt at native
-    # resolution below instead of being decided either way.
-    nfr, nfc = max(nrows - 1, 0), max(ncols - 1, 0)
-    cut_mixed = numpy.zeros((nfr, nfc), dtype=bool)
-    if cut_grid is not None and nfr and nfc:
-        cut_any, cut_all = _face_footprint_reduce(cut_grid, row0, col0, nfr, nfc, stride)
-        if stride > 1:
-            # Coarse faces go only where the whole footprint agrees; the boundary blocks are
-            # rebuilt natively below, so neither the over-cut nor the under-cut answer is
-            # forced on them.
-            face_cut = cut_all
-            cut_mixed = cut_any & ~cut_all
-        else:
-            # At native resolution there is nothing to refine and the face genuinely straddles
-            # its four cells, so the any-corner rule stands — unchanged, which is what keeps a
-            # region import bit-identical to its baseline.
-            face_cut = cut_any
+    if levels is not None:
+        level_raw = numpy.asarray(levels).reshape(height, width)[row0:row0 + lat_h,
+                                                                 col0:col0 + lat_w]
+        has_level = level_raw != 0  # 0 = no data, same truthiness test as ever (§8)
+        level_value = level_raw.astype(numpy.float32) * numpy.float32(elevation_scale) \
+            + numpy.float32(elevation_offset)
+        wet = has_level & (level_value > native_y)
     else:
-        face_cut = numpy.zeros((nfr, nfc), dtype=bool)
-    face_kept = ~face_cut & ~cut_mixed          # mixed blocks leave the coarse grid entirely
+        has_level = numpy.zeros((lat_h, lat_w), dtype=bool)
+        level_value = None
+        wet = has_level
+
+    # -- corridors: where the mesh goes native ---------------------------------------------
+    # Every decision boundary — clip volumes, roadbed, shoreline — gets native-resolution
+    # cells; the rest of the map keeps the coarse grid. The 3-cell (~10.5 m at 3.5 m) dilation
+    # covers the game's 8 m terrain smoothing apron, which the roadbed mask deliberately
+    # excludes — the meld gradients down to a portal live inside it.
+    refine_cells = _dilate(roadbed | cut | _mask_boundary(wet), 3)
+
+    if stride == 1:
+        # A region import is already native everywhere; the whole window is one corridor and
+        # the transition machinery has nothing to join.
+        block_refined = numpy.ones((nfr, nfc), dtype=bool)
+        block_transition = numpy.zeros((nfr, nfc), dtype=bool)
+    else:
+        block_refined, _ = _face_footprint_reduce(refine_cells, 0, 0, nfr, nfc, stride)
+        block_transition = _dilate(block_refined, 1) & ~block_refined
+    block_coarse = ~block_refined & ~block_transition
+
+    # Safety net: every cut cell must sit inside a refined block (the corridor contains the
+    # cut mask by construction). A stray one would mean a coarse face silently kept over a
+    # tunnel.
+    if stride > 1 and cut.any():
+        s_rr, s_cc = numpy.nonzero(cut)
+        stray = ~block_refined[numpy.minimum(s_rr // stride, nfr - 1),
+                               numpy.minimum(s_cc // stride, nfc - 1)]
+        if stray.any():
+            LOG.warn(f"terrain: {int(stray.sum())} cut cell(s) escaped the refine corridor — "
+                     "coarse faces may wall off part of a tunnel")
+
+    # -- heights, with the anti-poke sink --------------------------------------------------
+    # The game clamps ground under a carriageway down into the road's surface band; this
+    # lattice linearly interpolates 3.5 m samples, so an interpolated crest can still rise
+    # through the road mesh above. Every vertex whose cell touches roadbed — dilated one
+    # cell, so the sink bleeds into the smoothing apron instead of tearing a step — drops by
+    # the documented sink, applied to the lattice ONCE before any face family is built, so
+    # coarse, refined and transition faces all read identical heights. The refine corridor is
+    # the roadbed dilated 3 cells, so a sunk vertex only ever sits inside a refined block:
+    # the sink cannot move a coarse corner or a fan edge.
+    sink = _ROADBED_SINK if surface_ids is not None else 0.0
+    sunk = _dilate(roadbed, 1) if sink else numpy.zeros((lat_h, lat_w), dtype=bool)
+    ground_y = native_y - numpy.where(sunk, numpy.float32(sink), numpy.float32(0.0))
+
+    for row_number in range(lat_h):
+        # "terrain rows" — deliberately not "terrain:" — stays outside every ab_compare.py
+        # count marker so this progress line can print at whatever resolution the lattice
+        # has without ever becoming a gated line the A/B baseline does not have.
+        LOG.progress("terrain rows", row_number + 1, lat_h)
+
+    # -- block-level ground class (0 grass / 2 rock), from the coarse corners --------------
+    # Sampled (unsunk) heights, so the roadbed drop cannot flip a boundary face. Coarse and
+    # transition blocks can never be roadbed: a block containing any roadbed cell is refined
+    # by construction.
+    corner_ys = native_y[::stride, ::stride]  # (nfr+1, nfc+1), exact by lattice construction
+    run = float(stride) * cell
+    gx = numpy.maximum(numpy.abs(corner_ys[:-1, 1:] - corner_ys[:-1, :-1]),
+                       numpy.abs(corner_ys[1:, 1:] - corner_ys[1:, :-1])) / run
+    gz = numpy.maximum(numpy.abs(corner_ys[1:, :-1] - corner_ys[:-1, :-1]),
+                       numpy.abs(corner_ys[1:, 1:] - corner_ys[:-1, 1:])) / run
+    block_class = numpy.where(numpy.hypot(gx, gz) > _ROCK_SLOPE, 2, 0)
+
+    # -- coarse quads ----------------------------------------------------------------------
+    # Winding (NW, SW, SE, NE) — south then east — keeps the normal up in Blender's frame,
+    # and faces stay QUADS so Blender tessellates them exactly as the scalar baseline did.
+    lattice_flat = numpy.arange(lat_h * lat_w, dtype=numpy.int64).reshape(lat_h, lat_w)
+    corner_flat = lattice_flat[::stride, ::stride]  # (nfr+1, nfc+1)
+    cbr, cbc = numpy.nonzero(block_coarse)
+    coarse_loops = numpy.stack((corner_flat[cbr, cbc], corner_flat[cbr + 1, cbc],
+                                corner_flat[cbr + 1, cbc + 1], corner_flat[cbr, cbc + 1]),
+                               axis=-1)
+    coarse_class = block_class[cbr, cbc]
+
+    # -- native cells inside refined blocks, cut per cell ----------------------------------
+    # A native face straddles its four cells, so it is cut by the any-of-four rule — the
+    # stride-1 rule region imports have always used, now applied uniformly wherever a cut
+    # can occur. §8c: keeping these faces would wall off every underground network.
+    rbr, rbc = numpy.nonzero(block_refined)
+    span = numpy.arange(stride, dtype=numpy.int64)
+    cell_rr = numpy.broadcast_to(rbr[:, None, None] * stride + span[None, :, None],
+                                 (len(rbr), stride, stride)).reshape(-1)
+    cell_cc = numpy.broadcast_to(rbc[:, None, None] * stride + span[None, None, :],
+                                 (len(rbr), stride, stride)).reshape(-1)
+    a = cell_rr * lat_w + cell_cc
+    refined_loops_all = numpy.stack((a, a + lat_w, a + lat_w + 1, a + 1), axis=-1)
+    face_cut = (cut[cell_rr, cell_cc] | cut[cell_rr, cell_cc + 1] |
+                cut[cell_rr + 1, cell_cc] | cut[cell_rr + 1, cell_cc + 1])
+    refined_loops = refined_loops_all[~face_cut]
     cut_faces = int(face_cut.sum())
 
-    # Row 0 is the north edge, so winding (a, a+ncols, a+ncols+1, a+1) — south then east —
-    # keeps the face normal pointing up in Blender's right-handed frame. Faces stay QUADS
-    # (poly_size=4) rather than being split into triangles here: a quad's diagonal choice
-    # changes its silhouette under a slope, and the scalar baseline never had to make that
-    # choice, so keeping the same quad topology through _mesh_from_arrays lets Blender
-    # tessellate it exactly as it always has instead of risking a diagonal mismatch under
-    # the pixel A/B gate.
-    r_idx = numpy.arange(max(nrows - 1, 0))
-    c_idx = numpy.arange(max(ncols - 1, 0))
-    a_grid = r_idx[:, None] * ncols + c_idx[None, :]
-    quads_all = numpy.stack((a_grid, a_grid + ncols, a_grid + ncols + 1, a_grid + 1), axis=-1)
-    quads = quads_all[face_kept]
-    face_r, face_c = numpy.nonzero(face_kept)  # same row-major order as `quads`, cutout-skipping
+    # Refined faces classify from their OWN corners at native resolution; roadbed reads the
+    # face's top-left cell sample, the rule the scalar face_roadbed always used.
+    y00 = native_y[cell_rr, cell_cc]
+    y01 = native_y[cell_rr, cell_cc + 1]
+    y10 = native_y[cell_rr + 1, cell_cc]
+    y11 = native_y[cell_rr + 1, cell_cc + 1]
+    ngx = numpy.maximum(numpy.abs(y01 - y00), numpy.abs(y11 - y10)) / cell
+    ngz = numpy.maximum(numpy.abs(y10 - y00), numpy.abs(y11 - y01)) / cell
+    refined_class = numpy.where(numpy.hypot(ngx, ngz) > _ROCK_SLOPE, 2, 0)
+    refined_class = numpy.where(roadbed[cell_rr, cell_cc], 1, refined_class)[~face_cut]
 
-    # -- ground classification per face, shared by both texturing paths -------------------
-    # 0 = flat natural (grass), 1 = roadbed (surface_index), 2 = steep natural (rock).
-    # Steep natural ground reads as rock (_ROCK_SLOPE) — the gorge embankments. Sampled
-    # heights, not the sunk vertices, so the roadbed drop cannot flip a boundary face.
-    run_x = numpy.maximum((cols_arr[1:] - cols_arr[:-1]).astype(numpy.float64) * cell, 1e-6)
-    run_z = numpy.maximum((rows_arr[1:] - rows_arr[:-1]).astype(numpy.float64) * cell, 1e-6)
-    y00, y01 = sampled_y[:-1, :-1], sampled_y[:-1, 1:]
-    y10, y11 = sampled_y[1:, :-1], sampled_y[1:, 1:]
-    gx = numpy.maximum(numpy.abs(y01 - y00), numpy.abs(y11 - y10)) / run_x[None, :]
-    gz = numpy.maximum(numpy.abs(y10 - y00), numpy.abs(y11 - y01)) / run_z[:, None]
-    face_class_all = numpy.where(numpy.hypot(gx, gz) > _ROCK_SLOPE, 2, 0)
-    face_class_all = numpy.where(face_roadbed, 1, face_class_all)  # roadbed wins over slope
+    # -- transition fans -------------------------------------------------------------------
+    fan_loops, fan_blocks = _transition_fans(block_refined, block_transition, stride, lat_w)
+    fan_class = block_class.reshape(-1)[fan_blocks]
 
-    face_class = face_class_all[face_kept]  # same order as `quads` and `face_r`/`face_c`
+    # -- one shared vertex set over the lattice --------------------------------------------
+    all_loops = numpy.concatenate((coarse_loops.reshape(-1), refined_loops.reshape(-1),
+                                   fan_loops))
+    sizes = numpy.concatenate((numpy.full(len(coarse_loops), 4, dtype=numpy.int64),
+                               numpy.full(len(refined_loops), 4, dtype=numpy.int64),
+                               numpy.full(len(fan_loops) // 3, 3, dtype=numpy.int64)))
+    face_class = numpy.concatenate((coarse_class, refined_class, fan_class))
 
-    # -- refine the blocks a cut boundary crosses -------------------------------------------
-    # Done HERE, before anything per-loop or per-face is derived, and that ordering is the
-    # load-bearing part: refined faces join `quads` and `face_class` as ordinary members, so
-    # the UV arrays and material runs below are built from the final geometry. Building them
-    # from the coarse arrays and appending refined faces afterwards leaves the loop and
-    # material arrays shorter than the face list — which renders as dark rectangles with
-    # holes, the failure that stopped a previous attempt at this.
-    refined_faces = 0
-    if stride > 1 and cut_grid is not None and cut_mixed.any():
-        block_r, block_c = numpy.nonzero(cut_mixed)
-        native_y = heights_native.astype(numpy.float64) * elevation_scale + elevation_offset
+    used = numpy.zeros(lat_h * lat_w, dtype=bool)
+    used[all_loops] = True
+    used_idx = numpy.nonzero(used)[0]
+    vid = numpy.full(lat_h * lat_w, -1, dtype=numpy.int64)
+    vid[used_idx] = numpy.arange(len(used_idx))
+    ur, uc = numpy.divmod(used_idx, lat_w)
+    verts = numpy.stack((origin_x + (col0 + uc).astype(numpy.float64) * cell,
+                         origin_z - (row0 + ur).astype(numpy.float64) * cell,
+                         ground_y[ur, uc].astype(numpy.float64)), axis=-1)
+    loops = vid[all_loops]
 
-        # A sub-face straddles its four native cells exactly as a stride-1 face does, so it is
-        # cut by the same any-of-four rule — the refinement changes the resolution of the
-        # decision, not the decision.
-        cut_native_face = (cut_grid[:-1, :-1] | cut_grid[:-1, 1:] |
-                           cut_grid[1:, :-1] | cut_grid[1:, 1:])
+    # Close the cut holes onto the clip prisms exactly (before UVs — they read final verts).
+    snapped = 0
+    if cut_faces and strip_geo:
+        cut_face_grid = numpy.zeros((lat_h, lat_w), dtype=bool)
+        cut_face_grid[cell_rr[face_cut], cell_cc[face_cut]] = True
+        snapped = _snap_hole_boundary(
+            verts, vid, used.reshape(lat_h, lat_w), cut_face_grid,
+            cut_refs[row0:row0 + lat_h, col0:col0 + lat_w], strip_geo,
+            ground_y, origin_x, origin_z, row0, col0, cell)
 
-        extra_verts, extra_quads, parent = _refine_blocks(
-            block_r, block_c, rows_arr, cols_arr, stride, native_y, sampled_y,
-            origin_x, origin_z, cell, ~cut_native_face)
-        refined_faces = len(extra_quads)
-
-        quads = numpy.concatenate((quads, extra_quads + len(verts)))
-        verts = numpy.concatenate((verts, extra_verts))
-        # A refined face inherits its coarse parent's class: the block was rebuilt to place the
-        # cut boundary, not to re-classify ground, and re-deriving slope per native cell here
-        # would make a refined block read differently from the unrefined ones around it.
-        face_class = numpy.concatenate((face_class, face_class_all[block_r, block_c][parent]))
-
+    refined_faces = len(refined_loops)
+    fan_faces = len(fan_blocks)
     roadbed_faces = int((face_class == 1).sum())
     rock_faces = int((face_class == 2).sum())
 
@@ -2855,14 +3269,13 @@ def build_terrain(bundle_dir, collection, center, radius):
 
     # World-anchored UVs so the ground textures tile at a plausible density without any
     # per-face unwrap. 8 m per repeat reads roughly like the game's near tiling. Per-LOOP,
-    # in the same loop order as `quads.ravel()` (each kept face's 4 corners, in face order).
-    loop_verts = quads.ravel()
-    loop_x, loop_z = verts[loop_verts, 0], verts[loop_verts, 1]
+    # in the same flat loop order as `loops` (coarse quads, refined quads, fan triangles).
+    loop_x, loop_z = verts[loops, 0], verts[loops, 1]
     uv_layers = {"UVMap": numpy.stack((loop_x / 8.0, loop_z / 8.0), axis=-1)}
 
     if splat_mapping is not None:
         material_runs = [(_splat_ground_material(surfaces_dir, splat, splat_mapping, gain=_GROUND_GAIN),
-                           len(quads))]
+                           len(sizes))]
         # No face overrides on the blend. Roadbed stays grass, as in game: the measured
         # splat paints it 251/255 on the grass channel, and the roadbed LOOK is carried by
         # the ~13%-alpha wear decals and surface areas drawn on top (the sink still
@@ -2876,11 +3289,14 @@ def build_terrain(bundle_dir, collection, center, radius):
              (loop_z - (splat.max_z - splat.area_z)) / splat.area_z), axis=-1)
     else:
         grass = _ground_material("terrain_natural", os.path.join(surfaces_dir, "grass.png"),
-                                 (0.20, 0.30, 0.12, 1.0), gain=_GROUND_GAIN)
+                                 (0.20, 0.30, 0.12, 1.0), gain=_GROUND_GAIN,
+                                 saturation=_GROUND_SATURATION)
         dirt = _ground_material("terrain_roadbed", os.path.join(surfaces_dir, "dirt.png"),
-                                (0.35, 0.28, 0.20, 1.0), gain=_GROUND_GAIN)
+                                (0.35, 0.28, 0.20, 1.0), gain=_GROUND_GAIN,
+                                saturation=_GROUND_SATURATION)
         rock = _ground_material("terrain_rock", os.path.join(surfaces_dir, "rock.png"),
-                                (0.30, 0.28, 0.26, 1.0), gain=_GROUND_GAIN)
+                                (0.30, 0.28, 0.26, 1.0), gain=_GROUND_GAIN,
+                                saturation=_GROUND_SATURATION)
         by_class = (grass, dirt, rock)
         # Run-length encode face_class into (material, run) pairs — the array is already
         # spatially coherent (grass/dirt/rock form contiguous runs along each sampled row),
@@ -2895,57 +3311,83 @@ def build_terrain(bundle_dir, collection, center, radius):
         else:
             material_runs = []
 
-    mesh = _mesh_from_arrays("bundle_terrain", verts, quads, uv_layers=uv_layers,
-                              material_runs=material_runs, poly_size=4, smooth=True)
+    # Snapping two neighbouring boundary vertices onto the same point of a prism side
+    # collapses their shared sliver face to zero area — a legitimate consequence of closing
+    # the hole exactly, not broken math, so it gets a calm aggregate rather than the
+    # CONTRACT VIOLATION wording (repeated-index faces still alarm loudly, by design).
+    terrain_degenerates = {"faces": 0}
+
+    def _report_terrain_degenerate(_name, count, repeated):
+        assert not repeated
+        terrain_degenerates["faces"] += count
+
+    mesh = _mesh_from_arrays("bundle_terrain", verts, loops, uv_layers=uv_layers,
+                              material_runs=material_runs, poly_sizes=sizes, smooth=True,
+                              degenerate_report=_report_terrain_degenerate)
+    if terrain_degenerates["faces"]:
+        LOG.step(f"{terrain_degenerates['faces']} sliver face(s) collapsed by the "
+                 "hole-boundary snap and dropped")
     # Smooth-shade the grid: the game's terrain is a continuous heightfield, and a
-    # flat-shaded quad is uniformly lit — at the full-city stride (17.5 m faces) that reads
-    # as a brightness checkerboard over every slope, squares no texture blend can hide.
+    # flat-shaded quad is uniformly lit — at the full-city coarse blocks that reads as a
+    # brightness checkerboard over every slope, squares no texture blend can hide. The
+    # shared lattice makes the smoothing correct: every seam's normal averages both sides.
     terrain_object = bpy.data.objects.new("bundle_terrain", mesh)
     collection.objects.link(terrain_object)
     placed = 1
 
     # -- the water surface -----------------------------------------------------------------
     # The water raster is the SURFACE LEVEL in the heightmap's encoding (§8, 0 = dry): water
-    # exists where level > ground. A face is placed wherever any corner is wet; the level
-    # extends one sim cell past the shoreline (producer dilation), so the surface runs flat
-    # into the bank and the ground cuts the shoreline where the game's own shoreline is.
+    # exists where level > ground. A face is placed wherever any corner is wet, decided per
+    # face family on the same lattice as the ground — native cells inside refined blocks
+    # (the shoreline is a corridor, so the water boundary steps at native resolution, not at
+    # the coarse block size), fans in transition blocks, coarse quads in the open water. The
+    # level extends one sim cell past the shoreline (producer dilation), so the surface runs
+    # flat into the bank and the ground cuts the shoreline where the game's own shoreline is.
     wet_faces = 0
-    if level_grid is not None:
-        level_corner_raw = level_grid[numpy.ix_(rows_arr, cols_arr)]
-        has_level = level_corner_raw != 0  # 0 = no data, same truthiness test as the scalar code
-        level_value = level_corner_raw * elevation_scale + elevation_offset
-        is_wet_corner = has_level & (level_value > sampled_y)
+    if level_value is not None and wet.any():
+        coarse_wet = (wet[cbr * stride, cbc * stride] |
+                      wet[(cbr + 1) * stride, cbc * stride] |
+                      wet[(cbr + 1) * stride, (cbc + 1) * stride] |
+                      wet[cbr * stride, (cbc + 1) * stride])
+        water_coarse = coarse_loops[coarse_wet]
 
-        face_wet = (is_wet_corner[:-1, :-1] | is_wet_corner[:-1, 1:] |
-                    is_wet_corner[1:, :-1] | is_wet_corner[1:, 1:])
-        wet_faces = int(face_wet.sum())
+        refined_wet = (wet[cell_rr, cell_cc] | wet[cell_rr, cell_cc + 1] |
+                       wet[cell_rr + 1, cell_cc] | wet[cell_rr + 1, cell_cc + 1])
+        # NOT filtered by the cut: a clipped trench under a lake still has water over it,
+        # exactly as the coarse rule always kept it.
+        water_refined = refined_loops_all[refined_wet]
 
+        if len(fan_loops):
+            fan_tris = fan_loops.reshape(-1, 3)
+            fan_wet = wet.reshape(-1)[fan_tris].any(axis=1)
+            water_fans = fan_tris[fan_wet]
+        else:
+            water_fans = numpy.zeros((0, 3), dtype=numpy.int64)
+
+        wet_faces = len(water_coarse) + len(water_refined) + len(water_fans)
         if wet_faces:
-            # Every grid point that is a corner of at least one wet face gets a vertex;
-            # points never touched by a wet face are never allocated — same sparse vertex
-            # set the scalar code's `water_verts` dict built, just addressed by grid position
-            # instead of insertion order (invisible to the render: only the resulting
-            # geometry and per-face winding matter, not the vertex numbering).
-            referenced = numpy.zeros((nrows, ncols), dtype=bool)
-            referenced[:-1, :-1] |= face_wet
-            referenced[:-1, 1:] |= face_wet
-            referenced[1:, :-1] |= face_wet
-            referenced[1:, 1:] |= face_wet
+            water_loops_all = numpy.concatenate((water_coarse.reshape(-1),
+                                                 water_refined.reshape(-1),
+                                                 water_fans.reshape(-1)))
+            water_sizes = numpy.concatenate((
+                numpy.full(len(water_coarse), 4, dtype=numpy.int64),
+                numpy.full(len(water_refined), 4, dtype=numpy.int64),
+                numpy.full(len(water_fans), 3, dtype=numpy.int64)))
 
             # A corner past the dilated ring carries no level; seat it on the ground so the
             # surface closes instead of tearing.
-            surface_y = numpy.where(has_level, level_value, sampled_y)
+            surface_y = numpy.where(has_level, level_value, native_y)
 
-            flat_ref = referenced.ravel()
-            vertex_id = numpy.where(flat_ref, numpy.cumsum(flat_ref) - 1, -1).reshape(nrows, ncols)
-            water_all = numpy.stack((grid_x, grid_z, surface_y), axis=-1).reshape(-1, 3)
-            water_verts = water_all[flat_ref]
-
-            # Same winding as the ground grid: (v00, v10, v11, v01) — south then east.
-            water_quads_all = numpy.stack(
-                (vertex_id[:-1, :-1], vertex_id[1:, :-1], vertex_id[1:, 1:], vertex_id[:-1, 1:]),
-                axis=-1)
-            water_quads = water_quads_all[face_wet]
+            wused = numpy.zeros(lat_h * lat_w, dtype=bool)
+            wused[water_loops_all] = True
+            wused_idx = numpy.nonzero(wused)[0]
+            wvid = numpy.full(lat_h * lat_w, -1, dtype=numpy.int64)
+            wvid[wused_idx] = numpy.arange(len(wused_idx))
+            wur, wuc = numpy.divmod(wused_idx, lat_w)
+            water_verts = numpy.stack(
+                (origin_x + (col0 + wuc).astype(numpy.float64) * cell,
+                 origin_z - (row0 + wur).astype(numpy.float64) * cell,
+                 surface_y[wur, wuc].astype(numpy.float64)), axis=-1)
 
             water_material = bpy.data.materials.new("terrain_water")
             water_material.use_nodes = True
@@ -2957,21 +3399,25 @@ def build_terrain(bundle_dir, collection, center, radius):
             if hasattr(water_material, "blend_method"):
                 water_material.blend_method = "BLEND"
 
-            water_mesh = _mesh_from_arrays("bundle_water", water_verts, water_quads,
-                                            material_runs=[(water_material, len(water_quads))],
-                                            poly_size=4, smooth=False)
+            water_mesh = _mesh_from_arrays("bundle_water", water_verts,
+                                            wvid[water_loops_all],
+                                            material_runs=[(water_material, wet_faces)],
+                                            poly_sizes=water_sizes, smooth=False)
             water_object = bpy.data.objects.new("bundle_water", water_mesh)
             collection.objects.link(water_object)
             placed += 1
 
-    LOG.done(f"terrain:   {len(rows)}x{ncols} sample window of {width}x{height} at {cell:g} m"
+    LOG.done(f"terrain:   {nfr}x{nfc} block window of {width}x{height} at {cell:g} m"
              + (f", stride {stride}" if stride > 1 else ""))
     LOG.step(f"{roadbed_faces} roadbed face(s) (sunk {_ROADBED_SINK:g} m), "
              f"{rock_faces} rock face(s), {wet_faces} water face(s), "
              f"{cut_faces} face(s) cut (tunnel portals / trenches)")
-    if refined_faces:
-        LOG.step(f"{refined_faces} face(s) rebuilt at native {cell:g} m where the cut boundary "
-                 f"crosses a {cell * stride:g} m block")
+    if snapped:
+        LOG.step(f"{snapped} hole-boundary vertex(es) snapped onto the clip prisms")
+    if stride > 1:
+        LOG.step(f"{refined_faces} native face(s) in {int(block_refined.sum())} corridor "
+                 f"block(s), {fan_faces} transition fan face(s), "
+                 f"{len(coarse_loops)} coarse {cell * stride:g} m face(s)")
     return placed, (terrain_object, cell * stride)
 
 
@@ -3116,10 +3562,14 @@ def build_areas(bundle_dir, collection, center, radius, ground=None, cell=3.5):
             entry = catalogue.get(prefab) or {}
             texture = entry.get("texture")
             colour = entry.get("color") or (0.42, 0.40, 0.38, 1.0)
+            # No gain: area textures come from ordinary prefab materials at normal albedo
+            # brightness, unlike the dark-authored theme grounds. (The old _GROUND_GAIN here
+            # was a silent no-op through the clamped MixRGB socket — this preserves the look
+            # the layer was accepted with.)
             materials[prefab] = _ground_material(
                 f"area_{prefab}",
                 os.path.join(bundle_dir, texture) if texture else None,
-                (colour[0], colour[1], colour[2], 1.0), gain=_GROUND_GAIN)
+                (colour[0], colour[1], colour[2], 1.0))
         return materials[prefab]
 
     # The ground each area is painted onto (audit §30). Without the terrain layer there is
@@ -3906,6 +4356,7 @@ def main():
     save_path = None
     do_networks = False
     do_lanes = False
+    do_lane_markings = False
     do_skirts = False
     do_terrain = False
     do_areas = False
@@ -3913,6 +4364,7 @@ def main():
     net_limit = None
     assets = None
     everything = None
+    clip_floor = None
 
     i = 1
     while i < len(argv):
@@ -3928,12 +4380,19 @@ def main():
         elif arg == "--lanes":
             do_lanes = True
             i += 1
+        elif arg == "--lane-markings":
+            do_lane_markings = True
+            i += 1
         elif arg == "--skirts":
             do_skirts = True
             i += 1
         elif arg == "--terrain":
             do_terrain = True
             i += 1
+        elif arg == "--clip-floor":
+            do_terrain = True
+            clip_floor = float(argv[i + 1])
+            i += 2
         elif arg == "--areas":
             do_areas = True
             i += 1
@@ -4213,19 +4672,22 @@ def main():
         LOG.end_phase()  # build_networks() may have early-returned before its own done()
 
     lanes = 0
-    if do_lanes:
+    if do_lanes or do_lane_markings:
         # Contract §5B v2: lanemeshes.jsonl carries bend parameters, laneprefabs.json the part
         # catalogue, lanemeshes/ the straight part meshes stored once. The bend runs here —
-        # this importer is the contract's reference implementation of it.
+        # this importer is the contract's reference implementation of it. --lane-markings
+        # bends the decal parts only; a full --lanes wins when both are given.
         if os.path.isfile(lanes_path):
             lane_collection = bpy.data.collections.new("bundle_lanemeshes")
             bpy.context.scene.collection.children.link(lane_collection)
-            LOG.phase("Lane geometry (lanemeshes.jsonl)")
+            LOG.phase("Lane markings (lanemeshes.jsonl, decal parts)" if not do_lanes
+                      else "Lane geometry (lanemeshes.jsonl)")
             road_surface = _ProjectionSurface(network_collection.objects) if networks else None
             with parked_out_of_view_layer(lane_collection):
                 lanes = build_lanes(lanes_path, lane_prefabs_path, lane_mesh_dir,
                                     lane_collection, center=center, radius=radius,
-                                    limit=net_limit, road_surface=road_surface)
+                                    limit=net_limit, road_surface=road_surface,
+                                    markings_only=not do_lanes)
             LOG.end_phase()  # build_lanes() may have early-returned before its own done()
         else:
             LOG.warn(f"no lanemeshes.jsonl at {lanes_path} — skipping lane geometry")
@@ -4237,7 +4699,7 @@ def main():
         terrain_collection = bpy.data.collections.new("bundle_terrain")
         bpy.context.scene.collection.children.link(terrain_collection)
         terrain_objects, terrain_ground = build_terrain(bundle_dir, terrain_collection,
-                                                        center, radius)
+                                                        center, radius, clip_floor=clip_floor)
         LOG.end_phase()  # build_terrain() may have early-returned before its own done()
 
     area_objects = 0
