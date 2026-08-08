@@ -311,7 +311,13 @@ everything correctly; validator passes on a real city end-to-end.
 
 **Phase 8 — Scale & robustness.** Big city (dense, many trees): dedup ratios, memory, export
 time; stream `instances.jsonl`, cap LODs/texture sizes via options; don't stall the game.
-*Accept:* a large save exports without OOM or lockup; counts and dedup ratios sane.
+Extended (2026-08-09) with the UX consolidation: one asynchronous **Rip World** button
+orchestrating every stage with the manifest always last, a dedicated ripper tab with coarse
+layer selection, and progress through the game's notification system — see
+`docs/plans/2026-08-09-phase-8-scale-and-ux.md` for the full scope and the texture-cap
+decision (single-choice cap stays; multi-size shipping rejected as redundant — mip chains).
+*Accept:* a large save exports from the one button without OOM or lockup; counts and dedup
+ratios sane; validator passes end-to-end.
 
 Phases 0 and 1 are the gate. Everything after can iterate.
 
