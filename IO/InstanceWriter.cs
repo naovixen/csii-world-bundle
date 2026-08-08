@@ -4,7 +4,6 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
-using System.Text;
 using Unity.Mathematics;
 
 namespace Carto.IO
@@ -40,16 +39,13 @@ namespace Carto.IO
         /// Open a JSON Lines file for writing.
         /// （開啟 JSON Lines 檔案以供寫入。）
         /// </summary>
-        /// <param name="path">The destination path.（目標路徑。）</param>
+        /// <param name="path">The destination path, before <see cref="BundleFile"/>'s suffix.（目標路徑，未含 <see cref="BundleFile"/> 的後綴。）</param>
         public InstanceWriter(string path)
         {
-            string directory = Path.GetDirectoryName(path);
-            if (!string.IsNullOrEmpty(directory) && !Directory.Exists(directory)) Directory.CreateDirectory(directory);
-
-            // The contract requires LF line endings and UTF-8 without a BOM: a BOM would corrupt
-            // the first record for any consumer that reads the file line by line.
-            // （契約要求使用 LF 換行與無 BOM 的 UTF-8：BOM 會使逐行讀取的消費端無法解析第一筆紀錄。）
-            _writer = new StreamWriter(path, false, new UTF8Encoding(false)) { NewLine = "\n" };
+            // Compressed, and named for it — see BundleFile. This is the single largest text layer
+            // in the bundle, so it is also the one that gains most from being compressed at rest.
+            // （壓縮並如實命名——見 BundleFile。此為束中最大的文字層，因此也是壓縮儲存獲益最大者。）
+            _writer = BundleFile.CreateText(path);
         }
 
         /// <summary>

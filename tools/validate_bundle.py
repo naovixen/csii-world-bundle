@@ -22,6 +22,7 @@ Exit:   0 = valid (warnings allowed), 1 = invalid, 2 = could not run.
 from __future__ import annotations
 
 import argparse
+import gzip
 import hashlib
 import json
 import math
@@ -36,6 +37,60 @@ DEFAULT_SCHEMA_DIR = REPO_ROOT / "docs" / "schema"
 
 QUAT_TOLERANCE = 1e-3
 BOUNDS_TOLERANCE = 1e-6
+
+
+# ======================================================================================
+# At-rest compression (contract §12.1)
+# ======================================================================================
+#
+# A bulk layer may ship compressed, and when it does the suffix says so: `instances.jsonl.gz`,
+# `meshes/<assetId>.glb.gz`. Both forms are valid schema-1 bundles, so every path this
+# validator opens goes through `bundle_file` and is read through the two helpers below rather
+# than with a bare `open`. Textures and terrain rasters are excluded on purpose — PNG is
+# already deflate-compressed, and re-wrapping it gains nothing.
+
+COMPRESSED_SUFFIX = ".gz"
+
+
+def bundle_file(path: Path) -> Optional[Path]:
+    """The file actually on disk for a layer's logical path, compressed or not, or None."""
+    if path.is_file():
+        return path
+    packed = path.with_name(path.name + COMPRESSED_SUFFIX)
+    return packed if packed.is_file() else None
+
+
+def read_bundle_bytes(path: Path) -> bytes:
+    """Read a layer whole, decompressing if it is stored compressed."""
+    if path.name.endswith(COMPRESSED_SUFFIX):
+        with gzip.open(path, "rb") as handle:
+            return handle.read()
+    return path.read_bytes()
+
+
+def open_bundle_text(path: Path):
+    """Open a layer as UTF-8 text, decompressing if it is stored compressed."""
+    if path.name.endswith(COMPRESSED_SUFFIX):
+        return gzip.open(path, "rt", encoding="utf-8")
+    return path.open("r", encoding="utf-8")
+
+
+def layer_stem(path: Path) -> str:
+    """The assetId a mesh file names, with the compression suffix stripped first.
+
+    `Path.stem` alone answers `AppleTree01.glb` for `AppleTree01.glb.gz`, which would break
+    every join between a file on disk and the assetId that references it.
+    """
+    name = path.name
+    if name.endswith(COMPRESSED_SUFFIX):
+        name = name[: -len(COMPRESSED_SUFFIX)]
+    return name.rsplit(".", 1)[0]
+
+
+def glob_layer(directory: Path, extension: str) -> List[Path]:
+    """Every file of one extension in a layer directory, in either storage form."""
+    return sorted(list(directory.glob(f"*{extension}"))
+                  + list(directory.glob(f"*{extension}{COMPRESSED_SUFFIX}")))
 
 
 # ======================================================================================
@@ -259,7 +314,7 @@ def _kind(value: Any) -> str:
 
 def read_glb(path: Path) -> Tuple[Dict[str, Any], int]:
     """Return (glTF JSON, BIN chunk length). Raises ValueError on a malformed container."""
-    data = path.read_bytes()
+    data = read_bundle_bytes(path)
     if len(data) < 12:
         raise ValueError("shorter than a GLB header")
     magic, version, length = struct.unpack_from("<4sII", data, 0)
@@ -314,7 +369,7 @@ class Report:
 
 def _load_jsonl(path: Path, validator: Validator, label: str, report: Report) -> List[Dict[str, Any]]:
     records: List[Dict[str, Any]] = []
-    with path.open("r", encoding="utf-8") as fh:
+    with open_bundle_text(path) as fh:
         for lineno, line in enumerate(fh, start=1):
             if not line.strip():
                 report.error(f"{label}:{lineno}: blank line (JSON Lines allows no blank lines)")
@@ -340,13 +395,13 @@ def _load_declared_missing(bundle_dir: Path) -> Dict[str, str]:
     malformed file simply declares nothing, which leaves every gap an error rather than silently
     excusing it.
     """
-    path = bundle_dir / "warnings.jsonl"
+    path = bundle_file(bundle_dir / "warnings.jsonl")
     declared: Dict[str, str] = {}
-    if not path.is_file():
+    if path is None:
         return declared
 
     try:
-        with path.open(encoding="utf-8") as handle:
+        with open_bundle_text(path) as handle:
             for line in handle:
                 line = line.strip()
                 if not line:
@@ -391,12 +446,16 @@ def validate_bundle(bundle_dir: Path, schema_dir: Path) -> Report:
     layers: Dict[str, str] = manifest["layers"]
 
     # -- every declared layer must exist, as the right kind of thing -------------------
+    # A compressed layer is named for it, so `layers` names the file that is really there —
+    # `instances.jsonl.gz`, not `instances.jsonl` with the compression left implicit. The
+    # fallback below still accepts a manifest that names the logical path, because that is what
+    # a bundle produced before §12.1's amendment does.
     for key, rel in layers.items():
         target = bundle_dir / rel
         if rel.endswith("/"):
             if not target.is_dir():
                 report.error(f"layers.{key}: directory {rel!r} does not exist")
-        elif not target.is_file():
+        elif bundle_file(target) is None:
             report.error(f"layers.{key}: file {rel!r} does not exist")
 
     mesh_dir = _resolve_layer(bundle_dir, layers, "meshes")
@@ -428,7 +487,8 @@ def validate_bundle(bundle_dir: Path, schema_dir: Path) -> Report:
     # -- instances.jsonl ---------------------------------------------------------------
     instances: List[Dict[str, Any]] = []
     instances_path = _resolve_layer(bundle_dir, layers, "instances")
-    if instances_path and instances_path.is_file():
+    instances_path = bundle_file(instances_path) if instances_path else None
+    if instances_path:
         instances = _load_jsonl(instances_path, schemas["instance"], layers["instances"], report)
 
     # A producer may declare, in warnings.jsonl, an asset it could not deliver (§10). That is the
@@ -448,7 +508,7 @@ def validate_bundle(bundle_dir: Path, schema_dir: Path) -> Report:
         asset_id = record["assetId"]
         if mesh_dir is None:
             report.error(f"instances.jsonl line {i + 1}: assetId {asset_id!r} but no 'meshes' layer is declared")
-        elif not (mesh_dir / f"{asset_id}.glb").is_file():
+        elif bundle_file(mesh_dir / f"{asset_id}.glb") is None:
             # Aggregated by assetId: one broken prefab can be referenced by tens of thousands of
             # instances, and a line-per-instance report buries every other finding.
             missing_meshes[asset_id] = missing_meshes.get(asset_id, 0) + 1
@@ -472,7 +532,8 @@ def validate_bundle(bundle_dir: Path, schema_dir: Path) -> Report:
     # -- networks.jsonl ----------------------------------------------------------------
     networks: List[Dict[str, Any]] = []
     networks_path = _resolve_layer(bundle_dir, layers, "networks")
-    if networks_path and networks_path.is_file():
+    networks_path = bundle_file(networks_path) if networks_path else None
+    if networks_path:
         networks = _load_jsonl(networks_path, schemas["network"], layers["networks"], report)
 
     net_ids = {r["id"] for r in networks if "id" in r}
@@ -484,7 +545,7 @@ def validate_bundle(bundle_dir: Path, schema_dir: Path) -> Report:
         if asset_id is not None:
             if net_mesh_dir is None:
                 report.error(f"{label}: assetId {asset_id!r} but no 'networkMeshes' layer is declared")
-            elif not (net_mesh_dir / f"{asset_id}.glb").is_file():
+            elif bundle_file(net_mesh_dir / f"{asset_id}.glb") is None:
                 report.error(f"{label}: assetId {asset_id!r} has no mesh in {layers['networkMeshes']}")
         for key in ("startNode", "endNode"):
             if key in record and record[key] not in net_ids:
@@ -494,10 +555,10 @@ def validate_bundle(bundle_dir: Path, schema_dir: Path) -> Report:
     # Not part of the manifest's layer map yet (that lands with the Phase 7 manifest), so the
     # conventional paths are checked when present: parameter records against their schema, the
     # prefab join against the catalogue, and every part's assetId against lanemeshes/.
-    lanes_path = bundle_dir / "lanemeshes.jsonl"
+    lanes_path = bundle_file(bundle_dir / "lanemeshes.jsonl")
     catalogue_path = bundle_dir / "laneprefabs.json"
     lane_mesh_dir = bundle_dir / "lanemeshes"
-    if lanes_path.is_file():
+    if lanes_path is not None:
         lane_schema_path = schema_dir / "lanemesh.schema.json"
         lane_schema = Validator(json.loads(lane_schema_path.read_text(encoding="utf-8")),
                                 lane_schema_path.name)
@@ -517,7 +578,7 @@ def validate_bundle(bundle_dir: Path, schema_dir: Path) -> Report:
                     report.error(f"laneprefabs.json[{entry_key}].parts[{j}]: no assetId")
                 elif asset_id not in checked_parts:
                     checked_parts.add(asset_id)
-                    if not (lane_mesh_dir / f"{asset_id}.glb").is_file():
+                    if bundle_file(lane_mesh_dir / f"{asset_id}.glb") is None:
                         report.error(f"laneprefabs.json[{entry_key}].parts[{j}]: "
                                      f"assetId {asset_id!r} has no mesh in lanemeshes/")
 
@@ -534,18 +595,20 @@ def validate_bundle(bundle_dir: Path, schema_dir: Path) -> Report:
                                  f"(catalogue entry has {part_count})")
 
     # -- meshes ------------------------------------------------------------------------
-    mesh_files: List[Path] = sorted(mesh_dir.glob("*.glb")) if mesh_dir and mesh_dir.is_dir() else []
-    net_mesh_files: List[Path] = sorted(net_mesh_dir.glob("*.glb")) if net_mesh_dir and net_mesh_dir.is_dir() else []
-    lane_mesh_files: List[Path] = sorted(lane_mesh_dir.glob("*.glb")) if lane_mesh_dir.is_dir() else []
+    mesh_files: List[Path] = glob_layer(mesh_dir, ".glb") if mesh_dir and mesh_dir.is_dir() else []
+    net_mesh_files: List[Path] = glob_layer(net_mesh_dir, ".glb") if net_mesh_dir and net_mesh_dir.is_dir() else []
+    lane_mesh_files: List[Path] = glob_layer(lane_mesh_dir, ".glb") if lane_mesh_dir.is_dir() else []
     for path in mesh_files + net_mesh_files + lane_mesh_files:
         _check_mesh(path, bundle_dir, materials, materials_path is not None, referenced_textures, report)
 
     used_assets = {r["assetId"] for r in instances}
     for path in mesh_files:
-        if path.stem not in used_assets:
+        if layer_stem(path) not in used_assets:
             report.warn(f"{path.name}: mesh is not referenced by any instance")
 
     # -- textures ----------------------------------------------------------------------
+    # Not glob_layer: a texture is a PNG, which is already deflate-compressed, and §12.1
+    # deliberately leaves the raster layers alone.
     texture_files: List[Path] = sorted(tex_dir.glob("*.png")) if tex_dir and tex_dir.is_dir() else []
     for path in texture_files:
         if path.resolve() not in referenced_textures:
@@ -683,8 +746,8 @@ def _check_areas(bundle_dir: Path, report: Report) -> None:
     Every record's triangles index into its own nodes; every `prefab` key resolves in
     `areaprefabs.json`; a catalogue `texture`, when named, exists on disk.
     """
-    areas_path = bundle_dir / "areas.jsonl"
-    if not areas_path.is_file():
+    areas_path = bundle_file(bundle_dir / "areas.jsonl")
+    if areas_path is None:
         return
 
     catalogue: Dict[str, Any] = {}
@@ -701,7 +764,7 @@ def _check_areas(bundle_dir: Path, report: Report) -> None:
             report.error(f"areaprefabs.json[{key}]: texture {texture!r} does not exist")
 
     records = 0
-    with areas_path.open(encoding="utf-8") as handle:
+    with open_bundle_text(areas_path) as handle:
         for line_no, line in enumerate(handle, start=1):
             line = line.strip()
             if not line:
@@ -764,7 +827,7 @@ def _check_mesh(
     referenced_textures: set,
     report: Report,
 ) -> None:
-    if not re.match(r"^[A-Za-z0-9][A-Za-z0-9._-]*$", path.stem):
+    if not re.match(r"^[A-Za-z0-9][A-Za-z0-9._-]*$", layer_stem(path)):
         report.error(f"{path.name}: filename stem is not a valid assetId")
     try:
         gltf, _ = read_glb(path)

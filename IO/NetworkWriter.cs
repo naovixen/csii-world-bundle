@@ -3,7 +3,6 @@ using Newtonsoft.Json;
 using System;
 using System.Collections.Generic;
 using System.IO;
-using System.Text;
 using Unity.Mathematics;
 
 namespace Carto.IO
@@ -32,15 +31,10 @@ namespace Carto.IO
         /// Open a JSON Lines file for writing.
         /// （開啟 JSON Lines 檔案以供寫入。）
         /// </summary>
-        /// <param name="path">The destination path.（目標路徑。）</param>
+        /// <param name="path">The destination path, before <see cref="BundleFile"/>'s suffix.（目標路徑，未含 <see cref="BundleFile"/> 的後綴。）</param>
         public NetworkWriter(string path)
         {
-            string directory = Path.GetDirectoryName(path);
-            if (!string.IsNullOrEmpty(directory) && !Directory.Exists(directory)) Directory.CreateDirectory(directory);
-
-            // LF and UTF-8 without a BOM, as the contract requires of every JSON Lines layer.
-            // （依契約要求，所有 JSON Lines 層皆使用 LF 換行與無 BOM 的 UTF-8。）
-            _writer = new StreamWriter(path, false, new UTF8Encoding(false)) { NewLine = "\n" };
+            _writer = BundleFile.CreateText(path);
         }
 
         /// <summary>

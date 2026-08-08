@@ -3,7 +3,6 @@ using Newtonsoft.Json;
 using System;
 using System.Collections.Generic;
 using System.IO;
-using System.Text;
 using Unity.Mathematics;
 
 namespace Carto.IO
@@ -27,12 +26,10 @@ namespace Carto.IO
         /// <summary>
         /// Open a JSON Lines file for writing.（開啟 JSON Lines 檔案以供寫入。）
         /// </summary>
-        /// <param name="path">The destination path.（目標路徑。）</param>
+        /// <param name="path">The destination path, before <see cref="BundleFile"/>'s suffix.（目標路徑，未含 <see cref="BundleFile"/> 的後綴。）</param>
         public LaneWriter(string path)
         {
-            string directory = Path.GetDirectoryName(path);
-            if (!string.IsNullOrEmpty(directory) && !Directory.Exists(directory)) Directory.CreateDirectory(directory);
-            _writer = new StreamWriter(path, false, new UTF8Encoding(false)) { NewLine = "\n" };
+            _writer = BundleFile.CreateText(path);
         }
 
         /// <summary>

@@ -635,8 +635,8 @@ namespace Carto.Systems
 
             try
             {
-                using StreamWriter writer = new(IOUtils.CombinePath(outputDirectory, "areas.jsonl"),
-                                                append: false, new UTF8Encoding(false));
+                using StreamWriter writer = Carto.IO.BundleFile.CreateText(
+                    IOUtils.CombinePath(outputDirectory, "areas.jsonl"));
 
                 foreach (Entity entity in areas)
                 {

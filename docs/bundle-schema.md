@@ -60,6 +60,10 @@ Path rules for every value in `layers` and every path inside `materials.json`:
 enclosing array, no blank lines, no trailing commas. This is what makes a 200,000-tree city
 streamable on both sides.
 
+A bulk layer may additionally be **stored gzip-compressed**, in which case its name says so
+(`instances.jsonl.gz`, `meshes/<assetId>.glb.gz`) and its contents are unchanged once
+decompressed. Both forms are valid; see §12.1 for the three rules a consumer needs.
+
 ---
 
 ## 2. The coordinate frame
@@ -1220,6 +1224,35 @@ under the lane is kept). It also settles the splat question the same inspection 
 cell's `surface_index` value is declared void rather than re-stamped. A consumer built before
 this addition ignores the file and keeps the walls; one that honours it must delete the marked
 cells.
+
+**Bulk layers may be stored compressed (2026-08-08).** An ordinary v1-compatible addition: a
+layer file may be gzip-compressed at rest, in which case its name carries `.gz` —
+`instances.jsonl.gz`, `meshes/<assetId>.glb.gz`. **Both storage forms are valid schema 1, and a
+consumer must handle both, resolved per file rather than per bundle.** Nothing about a layer's
+*contents* changes: decompress and you have byte-for-byte the JSON Lines or GLB this document
+already specifies.
+
+Three rules make this safe to add without a version bump:
+
+- **The suffix is the declaration.** A compressed layer is never stored under its bare name. A
+  consumer that has not implemented this fails to *find* `instances.jsonl` — the loud failure —
+  rather than succeeding in parsing gzip bytes as JSON.
+- **`layers` names the file that is really there,** suffix included, since §1 already requires a
+  consumer to read paths from the manifest rather than hard-code them. For robustness a consumer
+  should also accept a manifest naming the logical path (`instances.jsonl`) when only
+  `instances.jsonl.gz` exists; bundles produced before this amendment do that.
+- **An `assetId` is joined on the logical name.** `meshes/AppleTree01.glb.gz` backs assetId
+  `AppleTree01`, not `AppleTree01.glb`. Strip `.gz` before taking the stem.
+
+Which layers this applies to is a producer choice, not part of the contract. This producer
+compresses every `.glb` and every `.jsonl` except `warnings.jsonl`, which it reads back between
+passes and leaves as text. It does **not** compress `textures/`, `terrain/`, or the `.json`
+catalogues: PNG is already deflate-compressed, so re-wrapping it costs decode time and returns
+nothing, and the catalogues are too small to matter.
+
+gzip specifically, rather than zstd or lzma, because every consumer language decompresses it
+from its standard library. The producer writes it deterministically — MTIME zero, no filename
+field — so two rips of the same city still produce identical bytes.
 
 **Terrain rasters frozen as 16-bit PNG, not GeoTIFF (2026-08-06, Phase 6).** The original §8
 placeholder said elevation and water would be "GeoTIFFs written by Carto's existing raster

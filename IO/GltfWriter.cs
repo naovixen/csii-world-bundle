@@ -52,18 +52,20 @@ namespace Carto.IO
         /// Write an assembled prefab to <paramref name="path"/> as a <c>.glb</c>.
         /// （將已組裝的預製模板以 <c>.glb</c> 格式寫至 <paramref name="path"/>。）
         /// </summary>
-        /// <param name="path">The destination file path.（目標檔案路徑。）</param>
+        /// <param name="path">The destination file path, before <see cref="BundleFile"/>'s suffix.（目標檔案路徑，未含 <see cref="BundleFile"/> 的後綴。）</param>
         /// <param name="prefab">The prefab to write.（待寫出的預製模板。）</param>
         /// <param name="describe">Resolves a material id to its maps and factors, or <c>null</c> to write neutral placeholders.（將材質 ID 解析為其貼圖與係數，若為 <c>null</c> 則寫出中性佔位值。）</param>
-        /// <returns>The number of bytes written.（寫出的位元組數。）</returns>
+        /// <returns>The number of bytes written to disk, i.e. after compression.（寫至磁碟的位元組數，即壓縮後的大小。）</returns>
         public static long Write(string path, PrefabMesh prefab, Func<string, MaterialDescription> describe = null)
         {
-            byte[] glb = Build(prefab, describe);
-
-            string directory = Path.GetDirectoryName(path);
-            if (!string.IsNullOrEmpty(directory) && !Directory.Exists(directory)) Directory.CreateDirectory(directory);
-            File.WriteAllBytes(path, glb);
-            return glb.LongLength;
+            // A GLB is a JSON chunk beside a tightly packed float buffer, and both halves deflate
+            // well; `meshes/` and `networks/` together are the largest uncompressed thing the
+            // bundle used to ship. Everything about the container is unchanged — the file is the
+            // same GLB, gzipped, and named `.glb.gz` so no consumer can read one by accident.
+            // （GLB 由 JSON 區塊與緊密排列的浮點緩衝區組成，兩者皆易於 deflate；
+            //   `meshes/` 與 `networks/` 合計為束中最大的未壓縮部分。容器本身完全未變——
+            //   檔案仍是同一份 GLB，只是經 gzip 壓縮並命名為 `.glb.gz`，使消費端無從誤讀。）
+            return BundleFile.WriteAllBytes(path, Build(prefab, describe));
         }
 
         /// <summary>
