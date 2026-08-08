@@ -915,9 +915,13 @@ re-drawn every frame:
 - The band (`AddSegment`): base = the composition's edge-height extremes
   (`m_EdgeHeights` start/end half by `isStart`, with `m_SurfaceHeight.min`) plus
   `TerrainComposition.m_ClipHeightOffset`. Raised to `NetGeometryData.m_ElevationLimit * 3`
-  (30 m for roads) when the composition is **Tunnel with a transition side** (the portal) or
-  has a **Lowered side and is not elevated** (the open trench). The extra ShiftTerrain-only
-  sections (`float4/float5/float6` caps) all clear `ClipTerrain`.
+  ~~(30 m for roads)~~ *(§31 correction: `m_ElevationLimit` is **4 m** for every net and 2 m
+  for pathways — `NetInitializeSystem` lines 872/2067 — so the raise is **12 m** roads / 6 m
+  paths; the shipped bundle's own `top` histogram {6.3, 7.3, 12.3} confirms the producer,
+  which reads the field live, was never wrong — only this section's prose was)* when the
+  composition is **Tunnel with a transition side** (the portal) or has a **Lowered side and
+  is not elevated** (the open trench). The extra ShiftTerrain-only sections
+  (`float4/float5/float6` caps) all clear `ClipTerrain`.
 - Correspondingly, the *height* clamp for a Lowered composition keeps terrain anywhere in
   `[lane, lane + ElevationLimit·3]` — a trench's covering bulge stays in the height cascade
   and is only ever hidden by the clip pass — and a shallow tunnel's cover is shifted **up** to
@@ -928,10 +932,11 @@ re-drawn every frame:
 roadbed walk re-runs with `GenerateClipDataJob`'s gate (prefab `ClipTerrain`; tunnels and
 trenches now included) and marks a cell where the section ribbon covers it and the terrain
 stands within `(lane + 0.5 m, lane + band top]`. `ClipArea` area triangles stamp with an
-unbounded top. One deliberate divergence: the game's band starts 0.3 m below the lane and so
+unbounded top. ~~One deliberate divergence: the game's band starts 0.3 m below the lane and so
 clips the roadbed itself (its road meshes hide the hole); the bundle keeps ground at or below
-the lane, so ordinary surface roads mark nothing. Schema note and amendment: bundle-schema §8,
-§12.1.
+the lane, so ordinary surface roads mark nothing.~~ *(§31: the +0.5 lip is retired — the band
+floor is now the game's own `cmin(edgeHeights) + m_ClipHeightOffset.x − 0.3`.)* Schema note
+and amendment: bundle-schema §8, §12.1.
 
 ## 21. The GameMesh port versus the generator, line by line (2026-08-07)
 
@@ -1329,6 +1334,213 @@ because the naive reading of the counters points the wrong way: the run that pro
 *fewest* pieces (1.82M, 62 s) had **five times** the unconformed ground of the one that
 produced more (2.71M, 81 s), because its budget was starving exactly the triangles that
 needed the work.
+
+## 31. Tunnel entrances end-to-end: the welded terrain lattice and the game-true clip band (2026-08-08)
+
+Raised by screenshot comparison (`E:\carto-out\shots`): tall vertical spike/fin artifacts
+around tunnel portals, chevron sawtooth along trench walls, terrain never melding down to the
+mouth, and terrain poking through roads on full-map imports. Re-derived from decompiled source
+without leaning on earlier sections' conclusions; two of those conclusions fell (the §20
+"30 m" figure and the deliberate `+0.5` band floor).
+
+### The game's mechanism, verified end-to-end
+
+| Game | Source | Producer / harness before | Verdict |
+|---|---|---|---|
+| Heightmap 4096², 3.5 m/texel, 6.25 cm quantum; road/lot/area flattening rasterised into it per cascade slice; **never carved** for tunnels | `TerrainSystem.FinalizeTerrainData`, `RenderCascade`/`DrawHeightAdjustments` | shipped as-is (correct) | match |
+| Rendered terrain = GPU CBT adaptive subdivision (target 12–24 px triangles) over camera-centred cascade slices at 3.5 / 1.75 / **0.875 m**/texel | `UpdateCascades`, `TerrainQualitySettings`, HDRP `CBTSubdivisionTerrainEngine` | harness meshed the whole map at stride 4 = **14 m faces** — 16× coarser than the shipped raster, and the block-refinement patch pinned its edges to that subsample | **divergence — fixed: corridor-refined welded lattice** |
+| Tunnel/trench cut = per-pixel clip by smooth swept prisms (2 cubic béziers + band), `RoadClip` shader; edges have no relation to the terrain grid | `GenerateClipDataJob`, `TerrainSurface.RenderClipAreas`, `CreateRoadMeshes` (`m_ClipMesh`: 36-vert closed prism) | §8c clip volumes (correct shape); consumer rasterised with a half-cell column bias | **divergence — bias fixed (consumer), mirror row bias fixed (producer `FillQuad`)** |
+| Band floor = `cmin(edgeHeights) + m_ClipHeightOffset.x − 0.3` — the clip **includes the roadbed shell**, on every ClipTerrain net, everywhere | `AddSegment` lines 1419-1423, `GenerateClipDataJob` lines 1704-1705 | producer invented `+0.5` "drivable lip" (`CutoutFloor`) | **hack removed — game-true floor shipped per record** |
+| Band top raise = `ElevationLimit·3` = **12 m** roads / 6 m paths (`m_ElevationLimit` = 4/2, `NetInitializeSystem` 872/2067) | `AddSegment` 1467-1495 | producer read the field live (already correct); §20's prose said 30 m | **doc corrected; live log line added (`clip band class …`)** |
+| The rock/concrete cut faces at a portal are **NetPiece meshes** (`NetPieceRequirements.Tunnel/Lowered/Low+HighTransition`), not terrain | `NetCompositionHelpers`; zero hits for cliff/wall/skirt in any terrain path (4,393-file dump) | bundle already ships and places them | match — nothing to synthesize |
+| Melding = FlattenTerrain sections pull the heightmap down with an 8 m smoothing apron (roads; 20 m waterway, 100 m taxiway) | `NetUtils.GetTerrainSmoothingWidth`, `CullRoadsJob` | baked into the shipped heightmap; stride-4 sampling threw it away between samples | **fixed by native-res corridors (the 3-cell dilation covers the apron)** |
+| Areas never z-fight: area surfaces are `DecalLayers.Terrain` projectors onto the terrain's own pixels | `Prefabs.RenderedArea` (§30) | §30's conform machinery | match (unchanged) |
+
+### The defects, each with its mechanism (all consumer-side)
+
+- **Spikes/fins**: `_refine_blocks` pinned refined-block outer rings bilinearly to the 4:1
+  coarse edge while interiors took native heights (up-to-30 m vertical quads, 3.5 m wide);
+  the stride-4 block-min pull-down dropped all four corners of a 14 m block to its deepest
+  bed texel (funnels); refined blocks bypassed the 0.15 m sink (tears). All three mechanisms
+  deleted, not patched.
+- **Chevrons**: 14 m per-block tent pleating + unwelded refined patches (split normals) +
+  the half-cell column bias in `_fill_clip_quad` (`round()` against half-integer centres).
+- **No meld**: the `+0.5` floor lip + stride-4 missing the apron + `cut_all` keeping the
+  coarse envelope at block boundaries.
+- **Poke-through**: 1 of 16 texels set a 14 m face's height; the sink keyed on a single
+  corner sample; the pull-down triggered on a 25-cell footprint but valued a 16-cell block.
+
+### What replaced it (harness `build_terrain`, rewritten)
+
+One shared vertex lattice over the native texel grid; three face families indexing it —
+native 3.5 m quads inside `dilate3(roadbed | cut | shoreline)` corridors, coarse 14 m quads
+elsewhere, centre-fan triangles in the one-block transition ring (the fan's perimeter includes
+the refined side's edge vertices, closing T-junctions without pinning). Sink applied
+per-vertex (`dilate1(roadbed)`) to the lattice once, before any face family; block-min
+pull-down deleted; cut decided per native cell by the stride-1 any-of-four rule everywhere a
+cut can occur. Region imports (stride 1) degenerate to all-refined — the correctness anchor.
+`_mesh_from_arrays` grew a `poly_sizes` array parameter to mix quads and fans in one mesh.
+`clipvolumes.jsonl` is now mandatory (`_legacy_cutout_grid` deleted; strict `bottom` read),
+and `--clip-floor` previews floor values against an existing bundle.
+
+### Measured against the fresh spike bundle (rip 2026-08-08 13:44, HEAD producer)
+
+- Full map: 22 s terrain phase; 4.17M native faces in 261k corridor blocks (25% of blocks),
+  529k transition fans, 723k coarse quads; 9,428 faces cut (14,779 with the −0.3 floor
+  preview — the extra 5.4k are the everyday shell along surface roads).
+- **Weld: 0** coincident vertex pairs (was: every refined-block ring). **Heights: 0** of
+  5.17M vertices at a height not in the raster ± the documented sink — synthesized heights,
+  and with them the spike class, are structurally impossible.
+- **Poke-through: 3 of 2,469** sampled surface-road car-lane stations with terrain above the
+  lane, worst +0.28 m (stations from `lanes.jsonl`, tunnel/elevated/garage/waterway lanes
+  excluded — the first metric draft counted seaway sandbanks and garage ramps as defects).
+- Portal/trench/shoreline renders at a river-tunnel site: full-map output now visually
+  indistinguishable from the stride-1 region import; shoreline steps at 3.5 m (the 14 m
+  square shoreline fell out of the same corridor mechanism).
+
+**Awaiting in-game re-rip** (producer side only): the game-true `bottom` values and the
+`clip band class` log lines (which assert `L·3` = 12/6 live). Every harness-side result above
+is validated against the existing bundle now.
+
+### Still open / deferred
+
+- The cut boundary is a native-res staircase, not the game's smooth per-pixel curve; the
+  planned boundary-vertex snap (project kept boundary vertices onto the prism side polylines)
+  is deferred until acceptance flags it — at 3.5 m, mostly hidden behind the NetPiece walls.
+- The 3 residual poke stations (≤0.28 m) are unexplained junction-apron cases; re-measure
+  after the re-rip.
+
+## 32. Lane tile instancing: the fence layer was 85% of --lanes (2026-08-08)
+
+`--lanes` full-city measured 185.3M stored vertices (~10.2 GB .blend): fences+hedges 157.3M
+(85%), train sleepers 25.5M, markings 1.14M (0.6% — already optimised by §29a; the projector
+rework would have chased 0.6% of the problem). Root cause: the harness baked and merged every
+tile of every tiled part; the game stamps one shared mesh per tile in its vertex shader, and
+on a straight span that stamp is a rigid transform.
+
+Fix (consumer): a rigidity gate in `_bend_lane_part` — a full, un-hung tile whose curve
+window deviates < 2 cm from its 3D chord and whose width varies < 1% emits one 4×4 instead of
+baked vertices (exact where it applies: the affine is the bend's own closed form, chord shear
+included); `build_lanes` assembles per-(prefab, paint, part) point-cloud instancers carrying
+`tile_matrix` FLOAT4X4 point attributes through one Geometry Nodes group per shared part
+mesh (Instance on Points → Set Instance Transform). `set_paint` lands on the instancer, as it
+does on prop empties. Curved/tapered/hung/clipped tiles and every decal bake exactly as
+before. Downtown region: 5,543 of 5,623 tiles instanced (98.6%).
+
+Full city, measured: **112,592 of 137,906 tiles instanced (81.6%)** across 6,946 instancers
+sharing 36 part meshes; stored lane vertices **185.3M → 43.7M (−76%)**; `--lanes --networks`
+.blend **~10.2 GB → 0.97 GB**. The residual 43.5M baked vertices are the tiles that
+genuinely bend — train sleepers are a 32 m tile, so almost any rail curvature exceeds the
+2 cm chord gate, and bending them is the game's own behaviour (a rigid 32 m tile on a curve
+would visibly shear off the rails); a counted, deliberate remainder, not a missed case.
+Visual A/B on the downtown region: instanced fences/hedges upright, oriented and on their
+lot lines; markings drape unchanged (1.08M decal verts). `FLOAT4X4` point attributes accept
+`mathutils.Matrix` per element; object-socket **modifier inputs are not assignable from
+Python** on this build — the shared part is baked into each part's node group instead.
+
+## 33. The re-rip round: hole-boundary snap, and the splat channels are opacities (2026-08-08, evening)
+
+The §31 re-rip shipped the game-true clip layer in full — **49,730 strips** (was 1,134): the
+`+0.5` floor had been silently discarding every everyday-shell strip at record time, because
+`TryGetClipBand`'s gate compared the top against it. With the shell present, the cell-quantised
+cut exposed its over-cut rim **along every road** (sawtooth see-through slits beside
+carriageways, open gaps ringing portal mouths) — the §31 "deferred" boundary snap stopped
+being optional.
+
+- **Hole-boundary snap (built, validated):** `_clip_grid` now also emits a packed
+  (strip, station) reference raster for every cut cell plus each strip's evaluated boundary
+  polylines; after face deletion, every hole-boundary vertex moves onto the prism surface —
+  laterally outside the strip → nearest point of the side polyline with ground resampled
+  there (the prism wall); over the strip above the band ceiling → down to `lane + top` (the
+  portal-roof iso-edge). Kept faces stretch to the exact clip boundary, the way the game's
+  surviving pixels end at it. Full city: 743,109 shell/portal faces cut, **300,400 vertices
+  snapped**, terrain phase 38 s; region renders show roads seated cleanly and portal arches
+  flush. Two counted, benign residues: neighbouring verts snapped to one curve point
+  coincide (21,489 pairs, zero-length edges), and a few slivers collapse to zero area
+  (33 full-map; dropped with a calm aggregate line, not the CONTRACT VIOLATION wording).
+- **Splat weights are OPACITIES, not a partition** — the reported "user painted colours are
+  lost". Measured on the painted city: texels with paint weight ≥ 128 still carry grass
+  ≈ 240/255, so the harness's weights/sum normalisation let grass outvote the paint and
+  washed every player-painted ground to a faint tint. The game composites: paint channels
+  are written over ground that keeps its procedural weights, and the block's own published
+  `splatMultiplier` (2.0) / `splatPower` (1.0) are the opacity transfer —
+  `saturate(w · 2)^1`, half-weight paint covers fully. `_splat_ground_material` now
+  composites base → R → G → B → A in ascending priority (paint channels last, matching
+  `ApplyToSplatmap`'s write targets). Painted grounds render again; rock still shows as the
+  all-channels-≈0 residual on cliffs.
+- **Airport z-fighting at distance is a viewer artifact, not a data defect**: area surfaces
+  ride 2 cm above the terrain (the documented lift ladder), and a kilometres-deep Blender
+  viewport depth buffer cannot separate 2 cm — in-game the areas are terrain-layer decals
+  (§30), so the situation cannot arise, and a game-engine consumer reproduces them as
+  decals/material layers, not coplanar geometry. Raising the lift would trade a real
+  close-up float for a viewport-only artifact; declined.
+
+## 34. The portal face is a RaiseTopToTerrain piece; terrain conforming implemented (2026-08-08, night)
+
+Reported: in-game a wall above the tunnel mouth closes the trench; the import shows the
+mouth open above the arch. Traced end-to-end: the wing walls and retaining walls arrive
+(the tall geometry is in the bundle — `seg_2333057` measures 28.7 m), but the **portal face
+panel** does not, because it is authored as a short strip whose top edge the game raises to
+the terrain surface at render time — the §31 header's "terrain-conform flags" deviation,
+which stopped being benign the moment anyone looked at a portal.
+
+The game's mechanism (`BatchMeshHelpers.InitializeCompositionMesh`, decompiled): a piece
+flagged `LowerBottomToTerrain`/`RaiseTopToTerrain` gets per-z-slice height bounds (257
+slices over the piece's authored geometry, `InitializeHeightBounds`); every vertex at its
+slice's min/max (±0.01) is classed 1/2 in the vertex **colour**, and the vertex shader
+moves classed vertices to the terrain height sampled at their world position
+(`TerrainUtils.SampleHeight` semantics against the flattened cascade). One short facade
+asset thereby closes a trench of any depth, and wall skirts bury their bottom edge into any
+ground.
+
+**Validated by re-rip (2026-08-08, late): the portal face ships closed — the mouth gap is
+gone.** One counted approximation remains, visible as a slightly different meet line where
+the facade top meets the terrain: the game's shader conforms those vertices per frame
+against the camera-adaptive cascade (down to 0.875 m/texel) and discards terrain per pixel,
+while the rip conforms against the 3.5 m base slice and the harness meshes that same slice
+with its own triangulation — between lattice points the two surfaces can disagree by the
+diagonal error (p95 ≈ 9 cm, more on steep rock), so the seam sits within roughly a texel of
+the game's. Exact per-pixel agreement is not reachable from a 3.5 m raster; a consumer-side
+ray-snap of facade top verts onto the built terrain could hide even that, but it would move
+producer geometry in the consumer and is deliberately not built.
+
+**Producer change (as landed):** `NetworkRipSystem.GameMesh` now ports
+the classification verbatim (per-piece slice bounds, cached; classification on the authored
+vertex before flip/offset) and applies the shader's move at rip time — classified vertices'
+world `y` is set to the bilinear heightmap sample at their world position, using the same
+`GetHeightData` readback the terrain layer ships, captured lazily once per rip and freed
+with the run. The old "shipped unconformed — a consumer rule" report line is retired; the
+rip now reports how many bottom/top vertices were conformed. Consumers get closed portal
+faces and seated wall skirts with no new contract surface — the meshes simply arrive in
+their rendered shape, which is also what a BeamNG-class consumer wants.
+
+## 35. "Greyscale terrain": two consumer bugs under one symptom (2026-08-08, late)
+
+Reported: in-game the splat shows green grass and sand beaches; Blender shows grey-brown,
+darker at the shore. The rip is faithful — `terrain/surfaces/grass.png` is a real green
+grass texture, authored dark like every theme ground — and the defect was two independent
+consumer bugs stacking:
+
+1. **Dirt composited over grass.** §33's ascending R→G→B→A priority put the G (dirt)
+   channel above grass; measured on the shipped city, dirt is **never** the dominant signal
+   (6.1M texels carry dirt > 128; 99.5% of them also carry grass > 200, none carry
+   grass < 64), so dirt-over-grass painted the entire land surface brown while the game
+   shows green. The dirt weight is an undercoat. Order is now **base → G → R → B → A**
+   (dirt under grass, player paint still on top) — probed directly: the grass hill at
+   (1348, −462) carries splat (R 255, G 227) and renders green in-game.
+2. **The presentation gain had never worked.** `_GROUND_GAIN` (2.8, later 3.4) was applied
+   through a MixRGB colour socket whose RGBA `default_value` clamps to [0, 1] — the gain
+   multiplied by white, a silent no-op since the day it landed, for the terrain grounds AND
+   the §30 area materials alike. It now rides the HSV node's float `Value` input
+   (unclamped), recalibrated by A/B renders against the in-game shots to
+   `_GROUND_GAIN = 8.0`, `_GROUND_SATURATION = 2.0` — presentation only, pixels on disk
+   untouched. Area materials get **no** gain: their textures come from ordinary prefab
+   materials at normal albedo brightness, and gain-1 is the look the §30 layer was
+   accepted with (the clamp bug means that is also the look it always actually had).
+
+The beach reading also resolves: shoreline texels carry near-zero weights in every channel,
+so the base ground (the pebbly beige `rock.png`) shows — under the working gain it reads as
+light sand-pebble ground, matching the in-game shore rather than the old dark grey.
 
 One more trap, worth the line because the ladder invites it: `_DECAL_LIFT` looks like a member
 of the ladder and is not. It is the lane bend's **pre-drape** offset, and `_drape_block`

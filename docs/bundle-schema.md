@@ -1139,9 +1139,9 @@ and a strip is the unit the game actually clips with.
 {"id": 106037, "kind": "edge",
  "left":  [[x,y,z],[x,y,z],[x,y,z],[x,y,z]],   // cubic Bézier control points, bundle frame
  "right": [[x,y,z],[x,y,z],[x,y,z],[x,y,z]],
- "bottom": 0.5, "top": 30.3}
+ "bottom": -0.267, "top": 12.3}
 
-{"id": 220481, "kind": "area", "area": 220481, "bottom": 0.5}
+{"id": 220481, "kind": "area", "area": 220481, "bottom": -0.3}
 ```
 
 - **`id`** — the net entity (`kind` `edge`/`node`/`orphan`) or area this strip belongs to; joins
@@ -1157,12 +1157,26 @@ and a strip is the unit the game actually clips with.
 - **`kind: "area"`** records carry no geometry: the triangles are already in `areas.jsonl` under
   the same id (§8b). The record exists to say *that* area clips, and with what band.
 
-One deliberate divergence from the game: its band starts 0.3 m *below* the lane and so clips the
-roadbed itself, which its road meshes hide. This producer's `bottom` is `+0.5`, keeping the
-drivable bed, so ordinary surface roads clip nothing — a volume may span a whole road and open
-only the covered part of it. **The band test is what decides, not the strip's extent.**
+The band is the game's own, verbatim (`CullRoadsJob.AddSegment` + `GenerateClipDataJob`): base =
+the composition's edge-height extremes plus `TerrainComposition.m_ClipHeightOffset`; the top
+raised to `ElevationLimit·3` (12 m roads, 6 m pathways) for tunnel portals and open trenches;
+both ends then expanded 0.3 m outward. **The floor therefore reaches ~0.3 m *below* the lane and
+clips the roadbed shell itself** — exactly as in-game, where the road/tunnel meshes cover that
+hole; consumers get those same meshes from `networks.jsonl`, and driving-sim consumers take
+collision from them, not from terrain. This also means every ordinary surface road clips the
+thin shell around its own lane surface — that is the game's everyday guarantee that no terrain
+crest pokes through a carriageway, and a consumer inherits it by honouring the band. A volume
+may span a whole road and open only the covered part of it. **The band test is what decides,
+not the strip's extent.** *(Bundles ripped before 2026-08-08 carried a producer-invented
+`bottom` of `+0.5`; that lip is retired, and consumers must honour the record as shipped.)*
 
 A cut cell's `surface_index.png` id is meaningless — the cell is not drawn at all.
+
+**Heightmap-native consumers** (BeamNG-class engines with their own terrain system): do not
+replicate a mesh pipeline. Feed `terrain/heightmap.png` to the engine's terrain directly — it is
+the game's own final, road-flattened ground — and punch terrain holes where these volumes
+intersect it (BeamNG supports per-cell terrain holes); the network meshes then floor and wall
+every portal, trench and tunnel exactly as they do in-game.
 
 ---
 
@@ -1346,6 +1360,17 @@ treats an absent layer as an absent feature. Be clear about what that degradatio
 here, though: a consumer that only implemented the mask will find `layers.cutout` gone and build
 terrain with **every tunnel walled off**, silently and plausibly. That is the loudest failure
 available for a removal, and it is not very loud. Implement §8c.
+
+**Clip band floor made game-true; the `+0.5` lip retired (2026-08-08).** A value change inside
+an existing §8c field, not a shape change: `bottom` now carries the game's own
+`cmin(edgeHeights) + m_ClipHeightOffset.x − 0.3` instead of a producer-invented constant
+`+0.5`. The lip was meant to keep a "drivable bed" under the cut; in practice it left a ring of
+terrain proud of the lane at every portal mouth and disabled the everyday ±0.3 m shell clip
+that keeps crests out of surface carriageways — and the bed it preserved serves no consumer,
+because road/tunnel meshes cover the hole (and provide the collision) everywhere, exactly as
+in-game. In the same change the reference harness dropped its `cutout.png` reading path and its
+`bottom` default entirely: `clipvolumes.jsonl` is mandatory and the record value is honoured as
+shipped. Bundles ripped before this date still carry `bottom: 0.5` and simply keep their lip.
 
 **Terrain rasters frozen as 16-bit PNG, not GeoTIFF (2026-08-06, Phase 6).** The original §8
 placeholder said elevation and water would be "GeoTIFFs written by Carto's existing raster
