@@ -306,6 +306,48 @@ namespace Carto.IO
             File.WriteAllText(manifestPath, JsonConvert.SerializeObject(manifest, Formatting.Indented));
 
             // ---- 6. Report.（報告。）
+            // Size by layer and the dedup ratios — the Phase 8 acceptance numbers. Cheap here:
+            // this half already runs off the main thread and has read every layer back anyway.
+            // （逐層大小與去重比率——第八階段驗收數字。此處廉價：此半部本就於主執行緒外執行，
+            //   且已讀回每一層。）
+            List<KeyValuePair<string, long>> layerSizes = new();
+            long totalBytes = 0;
+            foreach (LayerDef layer in Layers)
+            {
+                if (!layers.ContainsKey(layer.Key)) continue;
+
+                string path = Utils.IOUtils.CombinePath(outputDirectory, layer.Path.TrimEnd('/'));
+                long bytes = 0;
+                try
+                {
+                    if (layer.IsDirectory)
+                    {
+                        foreach (string file in Directory.GetFiles(path, "*", SearchOption.AllDirectories))
+                            bytes += new FileInfo(file).Length;
+                    }
+                    else
+                    {
+                        bytes = new FileInfo(path).Length;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Instance.Log.Warn($"Could not size layer `{layer.Key}`: {ex.Message}");
+                }
+
+                layerSizes.Add(new KeyValuePair<string, long>(layer.Key, bytes));
+                totalBytes += bytes;
+            }
+
+            layerSizes.Sort((a, b) => b.Value.CompareTo(a.Value));
+            report.AppendLine($"Size by layer ({totalBytes / (1024d * 1024d):F1} MiB total):");
+            foreach (KeyValuePair<string, long> layer in layerSizes)
+                report.AppendLine($"  {layer.Key,-14} {layer.Value / (1024d * 1024d),8:F1} MiB");
+
+            if (meshFileCount > 0)
+                report.AppendLine($"Dedup: {instanceCount} instance(s) over {meshFileCount} mesh file(s) "
+                                + $"— {instanceCount / (double)meshFileCount:F1} placements per mesh; "
+                                + $"{materialCount} material(s) share {textureFileCount} texture file(s).");
             report.Insert(0, $"Wrote bundle.json — {layers.Count} layers.\n"
                            + $"{instanceCount} instances, {networkCount} network records, {laneCount} lanes,\n"
                            + $"{meshFileCount} meshes, {materialCount} materials, {textureFileCount} textures,\n"
