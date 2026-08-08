@@ -3135,13 +3135,23 @@ single-pass measurement of 377.1 MiB.
    both **forfeits 630,076 B of TERRAIN-1** — a file that is never written cannot be re-encoded.
    TERRAIN-3 re-encodes `user_splatmap.png`, on which TERRAIN-1 already counts 196,146 B, so its
    **incremental** value over TERRAIN-1 is **166,027 B**, not its 362,173 B gross; §9.2 sorts on
-   the incremental figure and names the gross beside it. Adding the three rows at full value gives
-   13,592,420 B. The correct combined figure is **12,766,198 B** — `arithmetic`,
-   4,540,334 − 630,076 + 8,689,913 + 166,027 — which is **826,222 B less** (the 630,076 B forfeit
-   plus the 196,146 B already counted). TERRAIN-1's 4.33 MiB is 4,540,334 B at 1 MiB =
-   1,048,576 B, the same conversion §7's own TERRAIN-1 + TERRAIN-2 combined figure
-   (≈12,600,171 B) uses. **TERRAIN-4 and TERRAIN-5 belong to no sum at all** — TERRAIN-4 saves
-   0 B and TERRAIN-5 costs bytes; see the note under §9.2's table.
+   the incremental figure and names the gross beside it. **The over-count is therefore exactly
+   826,222 B** — 630,076 forfeited plus 196,146 already counted — and that figure needs no
+   estimate of TERRAIN-1's own total, because both of its terms are exact measurements (§7.4,
+   §7.3.2). It is the load-bearing claim of this family: whatever TERRAIN-1's true saving is,
+   adding the three rows at face value overstates the result by 826,222 B.
+   **The absolute combined total is an interval, not a byte-exact figure, and the reason is
+   stated rather than hidden.** §7 reports TERRAIN-1 only as **4.33 MiB**; no exact byte total for
+   it appears in §7 or in a retained measurement, so any byte figure that includes TERRAIN-1 is a
+   back-derivation from a three-significant-figure display. That display spans
+   4,535,091–4,545,577 B (4.325–4.335 MiB × 1,048,576), a ±5,243 B window. Carrying it through:
+   TERRAIN-1 net of TERRAIN-2 is **3.72–3.73 MiB**, the TERRAIN-1 + TERRAIN-2 pair is
+   **12.01–12.02 MiB**, and all three combined are **12,760,955–12,771,441 B = 12.17–12.18 MiB**
+   (`arithmetic`). **The window changes no conclusion in §9.5**: both ends give 0.261% of the
+   bundle and 0.52% of COMP-1, so the phase order is insensitive to it. TERRAIN-2's own
+   8,689,913 B, TERRAIN-3's 166,027 B and the 826,222 B over-count are exact and carry no such
+   caveat. **TERRAIN-4 and TERRAIN-5 belong to no sum at all** — TERRAIN-4 saves 0 B and
+   TERRAIN-5 costs bytes; see the note under §9.2's table.
 
 ### 9.2 Lossless candidates, ranked by absolute bytes saved
 
@@ -3161,8 +3171,8 @@ single-pass measurement of 377.1 MiB.
 | TEX-2 | `textures/` | Adaptive per-row PNG filtering plus zlib level 9 | 151.9 MiB (3.25% of bundle, 8.0% of `textures/`). **Nested inside TEX-3 and the joint row — do not add** | measured (120-file sample, assertion passed, stated extrapolation) | unmeasured; encode CPU rises, inside row 2's 59.416% share | 0 lines — any standard PNG decoder | low | YES | not applicable — in-place re-encode; nothing new, nothing retired |
 | TEX-1 | `textures/` | Adaptive per-row PNG filtering alone (replace the fixed filter 0), same zlib level | 64.5 MiB (1.38% of bundle, 3.4% of `textures/`). **Nested inside TEX-2 — do not add** | measured (120-file sample, assertion passed, stated extrapolation) | unmeasured; inside row 2's 59.416% share | 0 lines | low | YES | not applicable — in-place re-encode; nothing new, nothing retired |
 | MESH-3 | `meshes/` | Derive the 1,436 `__base.glb` skirts at consumer load time instead of baking them | 27.9 MiB (0.60% of bundle, 1.6% of `meshes/`) as shipped today; ≈2.2 MiB marginal if COMP-1 ships first (`arithmetic`, the removed files' own compressed size at `meshes/`'s measured 7.88% `lzma` ratio) | measured (file-class census, full population) | unmeasured; 1,436 fewer files to build and write inside row 2's 59.416% share | 366 lines (`IO/BaseSkirtBuilder.cs`, proven faithful to the game in §27) | medium — the port must reproduce the algorithm exactly to avoid visible gaps; a proven reference exists | YES — every fact in `__base.glb` is derivable from data already shipped plus a verified deterministic algorithm | **removes** a file class rather than adding one; the per-prefab base-material reference must move into `materials.json`/`bundle.json` — negligible bytes, a small schema touch |
-| TERRAIN-2 | `terrain/` | Stop capturing `surfaces/extra3.png`, `extra3_normal.png`, `extra4.png`, `extra4_normal.png` — `m_UserSplatmap` is `R8G8_UNorm`, so `ApplyToSplatmap`'s `Extra3 → z` / `Extra4 → w` writes land in channels the texture does not have, and no pixel this game version produces can carry their weight (§7.3.2) | 8,689,913 B = **8.29 MiB (0.178% of bundle, 12.38% of `terrain/`)**. **Overlaps TERRAIN-1**: it deletes two files TERRAIN-1 re-encodes, so the pair is 12,600,171 B (12.02 MiB) rather than 13,230,247 B — §9.1 item 5 | measured, exact, full population; the dead-channel premise carries two sources — decompile (`Game.Rendering.TerrainMaterialSystem.cs:758`) and data (`user_splatmap.png`'s B channel max is 0 over all 16,777,216 pixels) | unmeasured — four fewer 1024² readbacks and PNG encodes; bounded by row 4's 0.355% share | 0 lines — four fewer files under a directory the consumer already enumerates through `index.json` | low, with one named gate: re-check `m_UserSplatmap`'s `GraphicsFormat` after any game patch that widens it; the producer already reads that texture and can assert on it | YES with respect to every weight the game can assign — the bytes are discarded, so this is a capture gate, not a re-encode | **retires**: `terrain/surfaces/extra3.png`, `extra3_normal.png`, `extra4.png`, `extra4_normal.png` and their `index.json` entries; **new layer**: none |
-| TERRAIN-1 | `terrain/` | Selective adaptive filtering + zlib-9 on the 11 of 39 files where it measurably wins (dominated by `heightmap.png`'s 30.8%) | 4.33 MiB (0.09% of bundle, 6.47% of `terrain/`); a blanket policy across all 39 files is a 2.82% **loss**. **Overlaps TERRAIN-2**, which retires 2 of the 11 files: 3.73 MiB if both land (`arithmetic`, §9.1 item 5) | measured, full population, every round-trip bit-exact | unmeasured; bounded by row 4's 0.355% share | 0 lines — in-place re-encode at unchanged paths | low | YES | not applicable — in-place re-encode; nothing new, nothing retired |
+| TERRAIN-2 | `terrain/` | Stop capturing `surfaces/extra3.png`, `extra3_normal.png`, `extra4.png`, `extra4_normal.png` — `m_UserSplatmap` is `R8G8_UNorm`, so `ApplyToSplatmap`'s `Extra3 → z` / `Extra4 → w` writes land in channels the texture does not have, and no pixel this game version produces can carry their weight (§7.3.2) | 8,689,913 B = **8.29 MiB (0.178% of bundle, 12.38% of `terrain/`)**. **Overlaps TERRAIN-1**, which re-encodes two of these four files: adopting both forfeits 630,076 B of TERRAIN-1's saving (exact), leaving the pair at 12.01–12.02 MiB — an interval because §7 states TERRAIN-1 only to three significant figures, §9.1 item 5 | measured, exact, full population; the dead-channel premise carries two sources — decompile (`Game.Rendering.TerrainMaterialSystem.cs:758`) and data (`user_splatmap.png`'s B channel max is 0 over all 16,777,216 pixels) | unmeasured — four fewer 1024² readbacks and PNG encodes; bounded by row 4's 0.355% share | 0 lines — four fewer files under a directory the consumer already enumerates through `index.json` | low, with one named gate: re-check `m_UserSplatmap`'s `GraphicsFormat` after any game patch that widens it; the producer already reads that texture and can assert on it | YES with respect to every weight the game can assign — the bytes are discarded, so this is a capture gate, not a re-encode | **retires**: `terrain/surfaces/extra3.png`, `extra3_normal.png`, `extra4.png`, `extra4_normal.png` and their `index.json` entries; **new layer**: none |
+| TERRAIN-1 | `terrain/` | Selective adaptive filtering + zlib-9 on the 11 of 39 files where it measurably wins (dominated by `heightmap.png`'s 30.8%) | 4.33 MiB (0.09% of bundle, 6.47% of `terrain/`); a blanket policy across all 39 files is a 2.82% **loss**. **Overlaps TERRAIN-2**, which retires 2 of the 11 files, forfeiting 630,076 B of this row: 3.72–3.73 MiB if both land (`arithmetic`, §9.1 item 5) | measured, full population, every round-trip bit-exact | unmeasured; bounded by row 4's 0.355% share | 0 lines — in-place re-encode at unchanged paths | low | YES | not applicable — in-place re-encode; nothing new, nothing retired |
 | TERRAIN-3 | `terrain/` | Encode `user_splatmap.png` as colour type 4 (grey+alpha: R→L, G→A) instead of RGBA — its B channel is identically 0 and its A channel identically 255, pure padding from `Png.EncodeRgba` (§7.3.2) | **166,027 B = 0.158 MiB (0.0034% of bundle) incremental over TERRAIN-1**, which already counts 196,146 B on this one file — that is the sort key, per §9.1 item 5; **362,173 B = 0.35 MiB (0.0074% of bundle, 0.52% of `terrain/`) gross** if TERRAIN-1 does not land | measured, exact, full file, round-trip bit-exact on both live channels | unmeasured; bounded by row 4's 0.355% share | 1 line — read L and A instead of R and G; the `userSplatmap` semantics string must name the new channel order | low | YES, round-trip asserted bit-exact on both live channels | not applicable — same path, same filename, narrower colour type; a §12.1 note that `user_splatmap.png` is colour type 4 |
 | TEX-5 | `textures/` | Delete orphan textures | 0 — 0 orphans and 0 duplicate pixel-groups found in the full population | measured (closed, negative result) | 0 | 0 lines | none | not applicable | not applicable — no files to touch, nothing to retire |
 | MESH-4 | `meshes/` | Delete unreferenced or dead meshes | 0 — all 1,444 unreferenced-by-`assetId` files resolve to a documented contract mechanism | measured (closed, negative result) | 0 | 0 lines | none | not applicable | not applicable — no files to touch, nothing to retire |
@@ -3358,11 +3368,13 @@ one place; no candidate crossed another in the bytes ordering except by NET-2's 
 
 **§7's re-audit was also taken after this order was written, and the order does not move here
 either — confirmed against the new rows rather than asserted.** TERRAIN-2 (8.29 MiB),
-TERRAIN-3 (0.158 MiB incremental) and TERRAIN-4 (0 B) join TERRAIN-1 in the terrain group;
-combined, the byte-saving three are **12,766,198 B = 12.17 MiB, 0.261% of the bundle**
-(`arithmetic`, §9.1 item 5). That is 0.52% of COMP-1's 2,344.5 MiB and smaller than every
-phase-level figure in the order above, so no phase boundary moves: B stays COMP-1, C stays
-textures, and terrain still rides along with C as a producer-only re-encode — 12.17 MiB of
+TERRAIN-3 (0.158 MiB incremental) and TERRAIN-4 (0 B) join TERRAIN-1 in the terrain group. Three
+of those four save bytes — **TERRAIN-1 + TERRAIN-2 + TERRAIN-3, net of their overlaps, are
+12,760,955–12,771,441 B = 12.17–12.18 MiB, 0.261% of the bundle** (`arithmetic`, §9.1 item 5,
+which states why this is an interval); TERRAIN-4 contributes 0 B to it. That is 0.52% of COMP-1's
+2,344.5 MiB at either end of the interval, and smaller than every phase-level figure in the order
+above, so no phase boundary moves: B stays COMP-1, C stays
+textures, and terrain still rides along with C as a producer-only re-encode — 12.17–12.18 MiB of
 ride-along instead of 4.33 MiB — rather than earning a phase. TERRAIN-2's insertion at 15th by
 bytes and 10th by cost-efficiency crosses no candidate that any phase boundary sits between.
 TERRAIN-5 is in no phase: it costs 86,736–5,153,616 B rather than saving them, and its case is
