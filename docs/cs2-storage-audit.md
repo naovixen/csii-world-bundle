@@ -1,6 +1,6 @@
 # CS2 storage audit — what the game stores, what we ship, and what the delta is
 
-**Phase A of** `docs/superpowers/specs/2026-08-08-bundle-representation-audit-design.md`.
+**Phase A of** `docs/specs/2026-08-08-bundle-representation-audit-design.md`.
 **Subject:** the full-city bundle ripped 2026-08-07, at
 `…/ModsData/Carto/spike/`, and the `Carto.log` of the rip that produced it.
 **Status:** measurement only. Nothing here changes the producer or the contract; the ranked
@@ -203,7 +203,7 @@ run 10.3–52.1 m, mesh-less lengths run 8.4–70.7 m, fully overlapping) — so
 mesh/no-mesh split is not explained by category, form, prefab name, or length alone; it is
 recorded here as `unmeasured` and left for whichever later task inspects piers.
 
-7,380 (the design spec's estimate table, `docs/superpowers/specs/2026-08-08-bundle-representation-audit-design.md:21`)
+7,380 (the design spec's estimate table, `docs/specs/2026-08-08-bundle-representation-audit-design.md:21`)
 matches none of the three measured values (7,248 files; 8,259 records; 7,248 records with a
 `seg_` `assetId`) and is superseded by this section's measured figures.
 
@@ -2265,7 +2265,7 @@ in this bundle, checked directly rather than assumed — every `lane`-category r
 decal part and no `fence`/`cable` record does. This is the exact figure the brief's own framing
 rounds to "~83k markings," and it is close to (not identical to — a different rip) the
 83,110 the perf-refactor design doc measured on its own full-city run
-(`docs/superpowers/plans/2026-08-07-import-performance-refactor.md:612-613`, cited below).
+(`docs/plans/2026-08-07-import-performance-refactor.md:612-613`, cited below).
 
 `tunnel: true` (3,214 records) is `Domain/LaneGeometryRecord.cs`'s new field, the change commit
 `8985b73` names in its own message. It is already present in **this** bundle despite
@@ -2294,7 +2294,7 @@ wants the game's own draw cost implements an instanced-box decal shader, not a m
 
 **The reference consumer's cost is not that.** `tools/blender_import_bundle.py` builds and
 drapes real per-vertex geometry for every marking instead, and the cost was measured, not
-guessed, before this task (`docs/superpowers/plans/2026-08-07-import-performance-refactor.md:611-613`,
+guessed, before this task (`docs/plans/2026-08-07-import-performance-refactor.md:611-613`,
 quoted verbatim): *"The game never bakes marking geometry: it draws one instanced projector box
 per marking and projects it onto the depth buffer. Our baked-and-draped equivalent costs
 2,240,914 verts, ~1.7 GB of Python lists and 2,240,914 BVH ray-casts for 83,110 markings."*
@@ -2316,7 +2316,7 @@ _DRAPE_SAGITTA_TOLERANCE = 0.02  # metres
 A second, larger-looking optimization — one ray-cast per *marking* instead of per vertex, a
 further 17× cut to ~132,395 ray-casts — was designed, implemented, and then **falsified by its
 own A/B measurement and dropped**
-(`docs/superpowers/specs/2026-08-07-import-performance-refactor-design.md:163-172`, quoted): *"One
+(`docs/specs/2026-08-07-import-performance-refactor-design.md:163-172`, quoted): *"One
 drape sample per marking (17x fewer ray-casts). Measured inside Blender against the full imported
 surface: errors up to 657 mm, 42/1092 samples beyond a marking's own lift. The road crown is not
 the smooth profile the estimate assumed."* And the ray-cast **dedup** that made the per-vertex
@@ -2330,7 +2330,7 @@ either of the two more aggressive cuts the plan originally proposed.
 **The wall-clock result is the honest, load-bearing number, and it is disappointing — reported
 plainly, the same way §4 reported INST-1 beating INST-2 outright.** The same design doc's own
 measured "Outcome" table, full-city run, before/after the sagitta change landed
-(`docs/superpowers/specs/2026-08-07-import-performance-refactor-design.md:147-156`):
+(`docs/specs/2026-08-07-import-performance-refactor-design.md:147-156`):
 
 | Phase | Before | After |
 |---|---:|---:|
@@ -2342,13 +2342,13 @@ certainly not the speedup a naive "half the ray-casts, half the time" model pred
 follow-up techniques that might actually close the gap — instancing one shared quad per marking
 (borrowing the game's own structure, named "Tier 2" in the design doc) and a bundle-contract
 change to stop baking `networks/` the way NET-1 (§3.4) already sizes — are **named, not built**
-(`docs/superpowers/specs/2026-08-07-import-performance-refactor-design.md:182-184`, "Follow-ups
+(`docs/specs/2026-08-07-import-performance-refactor-design.md:182-184`, "Follow-ups
 recorded, not done here").
 
 **Closed for this task's purposes**, per the brief's own pass criterion: the marking import-time
 cost is stated in the units it was measured in (vertices: 2.24M → 1.06M; ray-casts: 2.24M →
 1.06M; wall-clock: 374.9 s → 381.8 s for the whole lane-geometry phase, per the "Outcome" table
-above, `docs/superpowers/specs/2026-08-07-import-performance-refactor-design.md:147-156`) and
+above, `docs/specs/2026-08-07-import-performance-refactor-design.md:147-156`) and
 lives here, in §6/§8, never in a bytes column. No new measurement was performed in this task
 beyond the cross-checked
 census in §6.1 — the import-time figures above are cited from the already-landed, already-A/B-
@@ -3036,7 +3036,7 @@ cut both to **~1.06M** (measured, ~2.1×), while a second, larger-looking cut (o
 marking instead of per vertex, a further 17×) was designed, tried, and **dropped** after its own
 A/B measurement found errors up to 657 mm against the game's actual road surface (§6.3, quoted
 in full). The wall-clock result of the landed optimization, full-city, **measured**
-(`docs/superpowers/specs/2026-08-07-import-performance-refactor-design.md:147-156`, the same
+(`docs/specs/2026-08-07-import-performance-refactor-design.md:147-156`, the same
 "Outcome" table §6.3 quotes): the lane-geometry import phase (119,302 records, markings plus
 fence/cable geometry) went from **374.9 s to 381.8 s** — no measured speedup despite the ~2.1×
 reduction in vertex/ray-cast count. None of this is a rip-time cost — the producer ships bend

@@ -786,7 +786,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
 ### Task 8: full-city verification, docs, wrap-up
 
 **Files:**
-- Modify: `docs/superpowers/specs/2026-08-07-import-performance-refactor-design.md` (status line), auto-memory `blender-acceptance-harness.md`
+- Modify: `docs/specs/2026-08-07-import-performance-refactor-design.md` (status line), auto-memory `blender-acceptance-harness.md`
 
 **Interfaces:**
 - Consumes: everything.
@@ -812,7 +812,7 @@ Spec: `**Status:** implemented 2026-08-07, A/B-verified`. Memory `blender-accept
 - [ ] **Step 4: Final commit**
 
 ```powershell
-git add docs/superpowers/specs/2026-08-07-import-performance-refactor-design.md
+git add docs/specs/2026-08-07-import-performance-refactor-design.md
 git commit -m @'
 Refactor wrap-up: spec marked implemented, full-city A/B numbers recorded
 

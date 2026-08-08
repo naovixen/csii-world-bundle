@@ -10,7 +10,7 @@
 
 ## Global Constraints
 
-Copied from the approved spec (`docs/superpowers/specs/2026-08-08-bundle-representation-audit-design.md`). Every task's requirements implicitly include this section.
+Copied from the approved spec (`docs/specs/2026-08-08-bundle-representation-audit-design.md`). Every task's requirements implicitly include this section.
 
 1. **Phase A changes no production code.** No edits under `Systems/`, `IO/`, `Domain/`, `Geodata/`, `tools/*.py`, or the bundle contract. The only committed artifact of this whole plan is `docs/cs2-storage-audit.md` (plus a one-line index entry where the repo already indexes docs).
 2. **Measurement scripts are throwaway.** They live in your session scratchpad (`$SCRATCH`, defined in Task 0), are never committed, and are never imported by anything. Reproducibility comes from pasting the command into the doc next to its number, not from shipping a tool.
@@ -132,7 +132,7 @@ Every later task fills in exactly this shape. Do not let sections drift apart �
 cat > docs/cs2-storage-audit.md <<'MD'
 # CS2 storage audit — what the game stores, what we ship, and what the delta is
 
-**Phase A of** `docs/superpowers/specs/2026-08-08-bundle-representation-audit-design.md`.
+**Phase A of** `docs/specs/2026-08-08-bundle-representation-audit-design.md`.
 **Subject:** the full-city bundle ripped 2026-08-07, at
 `…/ModsData/Carto/spike/`, and the `Carto.log` of the rip that produced it.
 **Status:** measurement only. Nothing here changes the producer or the contract; the ranked
@@ -1013,7 +1013,7 @@ This is the task the whole plan exists for. Everything before it produced per-do
 
 **Files:**
 - Modify: `docs/cs2-storage-audit.md` (§8, §9)
-- Read: every prior section of the doc; `docs/superpowers/specs/2026-08-08-bundle-representation-audit-design.md`
+- Read: every prior section of the doc; `docs/specs/2026-08-08-bundle-representation-audit-design.md`
 
 **Interfaces:**
 - Consumes: the candidate tables from §1–§7 and the rip-time attribution from §0.
@@ -1044,7 +1044,7 @@ Two or three paragraphs: which phase should run first and why, according to the 
 Not a subagent dispatch — read the spec and the doc side by side and check:
 
 ```bash
-sed -n '47,86p' docs/superpowers/specs/2026-08-08-bundle-representation-audit-design.md   # Phase A section
+sed -n '47,86p' docs/specs/2026-08-08-bundle-representation-audit-design.md   # Phase A section
 grep -nE '^#{2,3} ' docs/cs2-storage-audit.md
 ```
 
