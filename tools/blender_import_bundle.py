@@ -137,10 +137,32 @@ _UNMIRROR_UNIMPORT = Matrix(((-1, 0, 0, 0),
                              (0, -1, 0, 0),
                              (0, 0, 0, 1)))
 
-# How far a road marking is lifted off the carriageway, in metres of Blender world Z. Enough to
-# beat depth precision at city scale, small enough that nothing downstream can care: a 1.5 cm
-# kerb-height error is already inside the tolerance of the road surface it sits on.
+# The ground-paint ladder, in metres of Blender world Z. Everything the game draws by
+# PROJECTION lands on one and the same ground in-game and cannot z-fight; reconstructed as
+# geometry it can, so each layer is lifted clear of the one it paints over, in the order the
+# game composites them:
+#
+#   0.000  terrain / road surface           the thing being painted on
+#   0.008  _DECAL_DRAPE_TINT                lane wear tint          ) on the ROAD, draped
+#   0.014  _DECAL_DRAPE_MARKING             lane markings, crosswalks )  onto it per vertex
+#   0.020  _AREA_LIFT                       §8b surface areas — pavement, driveways, paths
+#   0.030  _INSTANCE_DECAL_LIFT             §4.2a decal instances — bay markings, arrows
+#
+# The order matters, not the values: they are all far below the tolerance of anything
+# downstream (a 3 cm error is already inside the tolerance of the ground they sit on). Getting
+# it wrong is visible — an area lifted ABOVE the decal instances standing on it paints the
+# parking bays out of a parking lot, which is exactly what 0.02 vs 0.015 did before
+# 2026-08-08. The two lane values sit lower only because they are draped onto the road surface
+# per vertex rather than conformed piecewise, so they need less clearance; an area and a lane
+# marking never paint the same surface.
+#
+# `_DECAL_LIFT` below is NOT part of that ladder and must not be tuned with it: it is the lane
+# bend's pre-drape offset, and `_drape_block` centres each marking's ±half-height search
+# window on the height it produces. Raising it to 0.030 along with the ladder pushed 8 of one
+# region's 4,694 decal vertices out of the top of their own projector window — a silent
+# accuracy loss, caught only by the A/B count gate.
 _DECAL_LIFT = 0.015
+_INSTANCE_DECAL_LIFT = 0.030
 
 # Lane decal parts (§5B `decal`) cannot use a fixed lift: the game stores lane curves at the
 # base plane of the carriageway, and the rendered surface crowns ABOVE them — measured on a
@@ -148,7 +170,7 @@ _DECAL_LIFT = 0.015
 # beats path+_DECAL_LIFT on 42% of samples, which is why bent markings vanish into the
 # asphalt. The game never sees the problem because a decal is a projector volume, painted
 # onto whatever surface it meets. The harness equivalent is a drape: sample the road surface
-# under the marking and snap onto it (see _DRAPE_SAGITTA_TOLERANCE / Tier 1b-1c near
+# under the marking and snap onto it (see _decal_rows / Tier 1b-1c near
 # _bend_lane_part — the old fixed-step subdivide-every-vertex approach was the single
 # biggest driver of a full-city import's memory and ray-cast cost, and is gone). Markings
 # ride a hair higher than the ~12%-alpha wear tint so the two never z-fight where a
@@ -1116,8 +1138,28 @@ _LANE_MAX_TILES = 256
 # curvature demands, measured against the arc-table samples the bend already computes (free
 # reuse, no extra bézier evaluation). A flat run needs one row (its two end stations); a
 # tight curve keeps subdividing until the worst deviation between the true curve and a
-# straight sub-chord falls under tolerance. Measured effect: 2.24M -> ~1.06M verts.
-_DRAPE_SAGITTA_TOLERANCE = 0.02  # metres
+# straight sub-chord falls under tolerance.
+#
+# Two tolerances, because the rows serve two different jobs and only one of them can bury a
+# marking (2026-08-08 fix — the single 3D tolerance below shipped for both and put 13.0% of
+# the city's decal spans under the asphalt, against 3.6% for the fixed 3 m step it replaced):
+#
+#  * _DECAL_SHAPE_TOLERANCE governs how faithfully the flat lattice follows the bézier in
+#    plan. Cutting a corner by 2 cm is invisible, and it cannot bury anything: the drape puts
+#    every vertex on the surface at the vertex's OWN (x, z), wherever the chord placed it.
+#  * _DECAL_DIP_FRACTION governs the axis that does bury: between two draped stations the
+#    mesh is a straight edge, and a road crest RISES above that edge. The tolerance for that
+#    rise cannot be picked independently of the lift — it has to be a fraction of the
+#    marking's own _DECAL_DRAPE_* lift, or the rule permits exactly the burial the lift
+#    exists to prevent. Half leaves the marking clear by at least its remaining half.
+#
+# Measured over the full city's 83,110 decal spans (tools/test_decal_rows.py): spans buried
+# under their own road 3.6% with the 3 m step, 13.0% with the single 3D tolerance, 2 spans
+# (0.002%) now — both pathological vertical curves pinned at the row cap. Vertices
+# 2.24M -> 876k (buried) -> 1.14M, so the drape still costs half what the 3 m step did.
+_DECAL_SHAPE_TOLERANCE = 0.02  # metres of plan-shape deviation from the true curve
+_DECAL_DIP_FRACTION = 0.5      # of the part's own lift, for the vertical rise over a chord
+_DECAL_MAX_ROWS = 64           # same ceiling the old fixed-step code used
 
 
 def _bezier_point_vec(c, t):
@@ -1173,15 +1215,15 @@ def _curve_length(curve):
     return float(_arc_table_vec(curve)[1][-1])
 
 
-def _sagitta_rows(points):
-    """Fewest lattice rows whose chords stay within `_DRAPE_SAGITTA_TOLERANCE` of the curve.
+def _shape_rows(points):
+    """Fewest lattice rows whose chords stay within `_DECAL_SHAPE_TOLERANCE` of the curve.
 
     `points` are the `_LANE_ARC_SAMPLES+1` bézier samples the arc table already computed for
     this span — reused here so curvature costs nothing extra. A flat run (the curve's own
     worst deviation from its straight end-to-end chord already under tolerance) gets 1 row
     = 2 stations; a curved one keeps subdividing, using that a smooth arc's sagitta falls off
-    roughly as the square of the subdivision count. Capped at 64 rows, the same ceiling the
-    old fixed-step code used.
+    roughly as the square of the subdivision count. Plan fidelity only — burial is
+    `_decal_rows`'s job, on a different axis and a different tolerance.
     """
     chord = points[-1] - points[0]
     chord_len = float(numpy.linalg.norm(chord))
@@ -1191,9 +1233,53 @@ def _sagitta_rows(points):
     rel = points - points[0]
     perp = rel - numpy.outer(rel @ direction, direction)
     max_sagitta = float(numpy.linalg.norm(perp, axis=1).max())
-    if max_sagitta <= _DRAPE_SAGITTA_TOLERANCE:
+    if max_sagitta <= _DECAL_SHAPE_TOLERANCE:
         return 1
-    return max(1, min(64, int(math.ceil(math.sqrt(max_sagitta / _DRAPE_SAGITTA_TOLERANCE)))))
+    return max(1, min(_DECAL_MAX_ROWS,
+                      int(math.ceil(math.sqrt(max_sagitta / _DECAL_SHAPE_TOLERANCE)))))
+
+
+def _chord_dip(arc_table, height, rows):
+    """How far the span's vertical profile rises above the chord polyline of `rows` rows.
+
+    This is the quantity that buries a marking: the drape pins each station onto the road
+    surface, the mesh between two stations is a straight edge, and anywhere the surface
+    crests above that edge by more than the lift, the asphalt wins the depth test. Measured
+    on the arc table's own samples, arc-parameterised exactly as `_bend_lane_part` places
+    stations (`arc_pos = stations * total_arc`), so it costs two interpolations over
+    `_LANE_ARC_SAMPLES+1` values and no bézier evaluation at all.
+
+    `height` is the bundle-frame up axis of those samples. The lane curve is the proxy for
+    the surface profile here — the carriageway is built along the same curve — so this sees
+    grade changes, not the crown, which the per-vertex drape handles on its own.
+    """
+    total = float(arc_table[-1])
+    station_arc = numpy.linspace(0.0, total, rows + 1)
+    station_height = numpy.interp(station_arc, arc_table, height)
+    return float((height - numpy.interp(arc_table, station_arc, station_height)).max())
+
+
+def _decal_rows(points, arc_table, drape_eps):
+    """Lattice rows for one decal span: plan fidelity, then refined until it cannot bury.
+
+    The shape rule alone measures deviation from the 3D chord, which on a road is dominated
+    by the horizontal bend — the axis that cannot bury a marking. So it both over-subdivides
+    flat bends and, worse, leaves a long straight run over a crest at a single row: a 19 mm
+    crest is inside a 20 mm tolerance and outside a 14 mm lift. The refinement below doubles
+    the rows until the measured rise over a chord is at most `_DECAL_DIP_FRACTION` of the
+    part's own lift — a measured bound, not the `1/rows²` extrapolation the shape rule
+    assumes, which a bézier with concentrated curvature does not obey.
+
+    `drape_eps` is None for a part that will not be draped, which needs plan fidelity only.
+    """
+    rows = _shape_rows(points)
+    if drape_eps is None or float(arc_table[-1]) < 1e-6:
+        return rows
+    target = drape_eps * _DECAL_DIP_FRACTION
+    height = points[:, 1]
+    while rows < _DECAL_MAX_ROWS and _chord_dip(arc_table, height, rows) > target:
+        rows = min(_DECAL_MAX_ROWS, rows * 2)
+    return rows
 
 
 def _lane_tile_count(span_length, mesh_length, tiling_count, geometry_tiling):
@@ -1228,24 +1314,29 @@ def _quat_apply_vec(q, v):
                         v[:, 2] + w * tz + x * ty - y * tx), axis=1)
 
 
-class _RoadSurface:
-    """Ray-cast access to the imported road surfaces, for draping lane decals.
+class _ProjectionSurface:
+    """Ray-cast access to an imported surface, for the layers the game paints ONTO one.
+
+    Two layers need this and they need the same thing: lane decals project onto the road
+    (`build_lanes`), surface areas project onto the terrain (`build_areas`). Both are
+    projector volumes in the game (audit §19, §30) and both are reconstructed here as
+    geometry that has to be conformed to whatever it paints.
 
     One BVH over every network mesh would hold ~10M triangles for a full city, most of it
-    never queried. Instead the network objects are binned into a 128 m grid by bounding box
-    and each object's BVH (world space, Blender frame) is built lazily on first query —
-    a neighbourhood import builds only the handful it touches.
+    never queried. Instead the objects are binned into a 128 m grid by bounding box and each
+    object's BVH (world space, Blender frame) is built lazily on first query — a
+    neighbourhood import builds only the handful it touches.
     """
 
     CELL = 128.0
     _DOWN = Vector((0.0, 0.0, -1.0))
 
-    def __init__(self, collection):
+    def __init__(self, objects):
         self._objects = []
         self._grid = {}
         self._trees = {}
         self.kerb_rejections = 0
-        for obj in collection.objects:
+        for obj in objects:
             if obj.type != "MESH":
                 continue
             index = len(self._objects)
@@ -1308,6 +1399,23 @@ class _RoadSurface:
         if len(candidates) > 1 and nearest != max(candidates):
             self.kerb_rejections += 1
         return nearest
+
+    def height(self, x, y, ceiling=4000.0):
+        """Topmost hit under (x, y) from far above, or None — the plain "what is the ground
+        here" query. `drop`'s nearest-to-expected pick exists to keep a lane marking off a
+        kerb it happens to pass; an area has no expected height to be near, only the surface
+        it is painted on, so this takes the highest hit in a window tall enough to clear any
+        terrain in the map."""
+        origin = Vector((x, y, ceiling))
+        best = None
+        for index in self._grid.get((int(x // self.CELL), int(y // self.CELL)), ()):
+            tree = self._tree(index)
+            if tree is None:
+                continue
+            location = tree.ray_cast(origin, self._DOWN, 2.0 * ceiling)[0]
+            if location is not None and (best is None or location.z > best):
+                best = location.z
+        return best
 
 
 def _decal_quad_info(verts, tris, uvs):
@@ -1443,16 +1551,18 @@ def _bend_lane_part(part, source, curve, spans, curve_length, width_scale, hang,
             continue
 
         drape_eps = None
+        if is_decal:
+            drape_eps = (_DECAL_DRAPE_MARKING if ("Line" in asset_id or "Crosswalk" in asset_id)
+                         else _DECAL_DRAPE_TINT)
         if is_decal and quad is not None:
             # Tier 1c: rows from THIS span's own curvature (reusing its arc-table samples),
             # not a fixed 3 m step. The lattice is generated directly — no static mesh to
             # subdivide, and no memo needed since this is already O(rows), not O(mesh size).
+            # The row count needs the part's lift, so `drape_eps` is settled above it.
             curve_points_full = _bezier_point_vec(bezier, t_table)
-            rows = _sagitta_rows(curve_points_full)
+            rows = _decal_rows(curve_points_full, arc_table, drape_eps)
             raw_verts, tris_local, uv_local = _decal_lattice(quad, rows)
             material_groups = [(quad["material"], numpy.arange(len(tris_local)))]
-            drape_eps = (_DECAL_DRAPE_MARKING if ("Line" in asset_id or "Crosswalk" in asset_id)
-                         else _DECAL_DRAPE_TINT)
         elif is_decal:
             # Not a simple rectangle (rare) — general path, unsubdivided, same guard the old
             # _subdivide_decal_quad's `return source` gave it.
@@ -1460,8 +1570,6 @@ def _bend_lane_part(part, source, curve, spans, curve_length, width_scale, hang,
             tri_mat = source["tri_material"]
             material_groups = [(source["materials"][m], numpy.nonzero(tri_mat == m)[0])
                                for m in numpy.unique(tri_mat)]
-            drape_eps = (_DECAL_DRAPE_MARKING if ("Line" in asset_id or "Crosswalk" in asset_id)
-                         else _DECAL_DRAPE_TINT)
         else:
             raw_verts, tris_local, uv_local = source["verts"], source["tris"], source["uvs"]
             tri_mat = source["tri_material"]
@@ -2272,18 +2380,20 @@ def _ground_material(name, texture_path, fallback_colour, gain=1.0):
 def build_terrain(bundle_dir, collection, center, radius):
     """Place the §8 terrain under everything: ground grid, roadbed split, water surface.
 
-    Returns the number of objects placed (0 when the layer is absent). The region filter crops
-    the grid to the same window as everything else; without one, the grid is subsampled to at
-    most ~1024 cells per axis so a full 4096² map stays viewable.
+    Returns `(placed, ground)` — the number of objects placed (0 when the layer is absent)
+    and the ground grid itself as `(object, cell_size)` for the layers painted onto it
+    (`build_areas`), or None when no grid was built. The region filter crops the grid to the
+    same window as everything else; without one, the grid is subsampled to at most ~1024
+    cells per axis so a full 4096² map stays viewable.
     """
     heightmap_path, surface_path, cutout_path, water_path, surfaces_dir, splat_path, rasters = _terrain_paths(bundle_dir)
     if not os.path.isfile(heightmap_path):
         LOG.warn(f"no terrain layer at {heightmap_path} — skipping terrain")
-        return 0
+        return 0, None
     if rasters is None:
         LOG.warn("terrain rasters present but no geo-reference (bundle.json rasters or "
                  "terrain/rasters.json) — skipping terrain")
-        return 0
+        return 0, None
 
     width, height, heights = _decode_png_gray(heightmap_path)
     cell = float(rasters["resolution"])
@@ -2326,7 +2436,7 @@ def build_terrain(bundle_dir, collection, center, radius):
 
     if col0 >= col1 or row0 >= row1:
         LOG.warn("terrain: the region window misses the raster entirely — skipping terrain")
-        return 0
+        return 0, None
 
     cols = list(range(col0, col1 + 1, stride))
     rows = list(range(row0, row1 + 1, stride))
@@ -2570,20 +2680,131 @@ def build_terrain(bundle_dir, collection, center, radius):
     LOG.step(f"{roadbed_faces} roadbed face(s) (sunk {_ROADBED_SINK:g} m), "
              f"{rock_faces} rock face(s), {wet_faces} water face(s), "
              f"{cut_faces} face(s) cut (tunnel portals / trenches)")
-    return placed
+    return placed, (terrain_object, cell * stride)
 
 
-# Lift for surface areas above the terrain grid, below everything that stands on them. The
-# game draws them as terrain-layer decals; here they are thin geometry riding the ground.
-_AREA_LIFT = 0.02
+# Lift for surface areas above the terrain grid, below everything that stands on them — see
+# the ground-paint ladder at the top of this file. The game draws them as terrain-layer
+# decals; here they are thin geometry riding the ground.
+_AREA_LIFT = 0.020
+
+# An area triangle is NOT a plane the ground follows — audit §30. The game renders each one
+# as a prism ("Area triangle volume", `AreaRenderSystem.CreateMesh`) spanning
+# `Triangle.m_HeightRange`, the min/max of the heightmap over that triangle's own footprint
+# measured RELATIVE TO ITS PLANE (`GeometrySystem.GetHeightRange` walks every cell it
+# covers), and paints the material onto the terrain inside it — a decal, per
+# `RenderedArea.m_DecalLayerMask = DecalLayers.Terrain`. Nothing grades the terrain flat
+# underneath: the one thing that does, `TerrainArea`/`CullAreasJob`, belongs to LotPrefab and
+# is already baked into §8's heightmap.
+#
+# So the flat triangle has to be conformed here instead. Measured on the shipped full-city
+# bundle, drawing it flat put the ground through the pavement on 26.6% of the 175,783 area
+# triangles and 61.4% of the 27,422 areas (p95 11 cm, p99 55 cm).
+#
+# Conformance is adaptive and MEASURED, like the lane-decal rows: split a piece only while
+# the ground under its edge midpoints departs from the flat piece by more than the tolerance.
+# Bilinear sampling of the heightmap cannot substitute for the ray-cast — the terrain is
+# built as QUADS and Blender picks their diagonal, a choice worth a p95 of 9.4 cm at 3.5 m
+# cells and 41 cm at the strided 14 m of a full-city import.
+# Half the area's own lift, the same rule the lane decals' subdivision uses: the tolerance
+# for how far the ground may rise through a piece cannot be chosen independently of how far
+# the piece is lifted clear of it. Both are far below the tolerance of anything downstream,
+# and their RATIO is what has to hold.
+_AREA_CONFORM_TOLERANCE = _AREA_LIFT * 0.5
+# A big triangle at the full-city stride needs ~10 halvings to reach the floor, so the depth
+# cap has to clear that or the cap silently becomes the stopping rule (it did: 810k pieces
+# stopped with up to 4 m of ground above them). The runaway guard is the piece BUDGET below,
+# not the depth — a budget bounds the work whatever the triangle's size, and reports itself.
+_AREA_MAX_DEPTH = 12
+# Pieces one source triangle may spend, scaled by the ground it actually covers: a driveway
+# triangle inside one terrain cell has nothing to resolve, a 25-hectare grass sheet over a
+# gorge has plenty. A flat budget gets this backwards at both ends. The constant is pieces
+# per terrain cell covered, so the whole layer costs ~this many pieces per cell of ground it
+# paints, whatever the triangulation happens to look like.
+_AREA_PIECES_PER_CELL = 256
+_AREA_PIECE_BUDGET = (64, 65536)  # (floor, ceiling) on that scaling
+_AREA_DEDUP_MM = 1.0              # quantise world (x, y) to this before reusing a ray-cast
+
+# `RenderedArea.m_UVScale`'s own field default, used only when the bundle predates §8b
+# carrying the per-prefab value. World position times this is the UV.
+_AREA_UV_SCALE_FALLBACK = 0.2
 
 
-def build_areas(bundle_dir, collection, center, radius):
+def _conform_area_triangle(tri, cell, sample, counters):
+    """Split one area triangle until every piece follows the ground, and emit the pieces.
+
+    `tri` is three (x, y, z) Blender-frame corners already dropped onto the ground; `sample`
+    is the memoised ground lookup; `cell` the terrain grid's own spacing. Returns the list of
+    (a, b, c) conformed corner triples.
+
+    The floor is deliberately far below the grid cell. A first cut stopped at a quarter cell,
+    reasoning that a smaller piece cannot straddle a kink — wrong, and measurably so: the
+    kinks are the quads' own diagonals (Blender's choice, anywhere inside a cell) and the
+    15 cm roadbed sink boundary that every driveway crosses, so 14.6% of pieces stopped with
+    up to 2.1 cm of ground still above them. A plane kink's error shrinks linearly with piece
+    size, so the floor only has to be small; what it really guards is a true discontinuity
+    (a cut-face rim, a gorge wall), where no amount of splitting converges.
+    """
+    floor = max(cell * 0.02, 0.10)
+    (ax, ay, _), (bx, by, _), (cx, cy, _) = tri
+    plan = abs((bx - ax) * (cy - ay) - (by - ay) * (cx - ax)) * 0.5
+    budget = min(_AREA_PIECE_BUDGET[1],
+                 max(_AREA_PIECE_BUDGET[0],
+                     int(_AREA_PIECES_PER_CELL * plan / (cell * cell))))
+    work = [(tri, 0)]
+    out = []
+    while work:
+        (a, b, c), depth = work.pop()
+        mids = []
+        worst = 0.0
+        for p, q in ((a, b), (b, c), (c, a)):
+            mx, my = (p[0] + q[0]) * 0.5, (p[1] + q[1]) * 0.5
+            flat = (p[2] + q[2]) * 0.5
+            got = sample(mx, my)
+            mids.append((mx, my, flat if got is None else got))
+            if got is not None:
+                worst = max(worst, got - flat)
+        # The centroid too: three edge midpoints can all sit on the ground while a rise in
+        # the middle of the piece — a knoll inside one cell, the peak of a quad's diagonal —
+        # goes straight through it unseen.
+        gx, gy = (a[0] + b[0] + c[0]) / 3.0, (a[1] + b[1] + c[1]) / 3.0
+        centre = sample(gx, gy)
+        if centre is not None:
+            worst = max(worst, centre - (a[2] + b[2] + c[2]) / 3.0)
+        longest = max(math.dist(p[:2], q[:2]) for p, q in ((a, b), (b, c), (c, a)))
+        spent = len(out) + len(work)
+        if (worst <= _AREA_CONFORM_TOLERANCE or depth >= _AREA_MAX_DEPTH
+                or longest <= floor or spent >= budget):
+            if worst > _AREA_CONFORM_TOLERANCE:
+                # Report the GROUND left unconformed, not the piece count: a piece is an
+                # arbitrary unit (a budget stop leaves few big ones, a floor stop many small
+                # ones) and only the square metres say how much of the city still shows it.
+                counters["unconformed"] += 1
+                counters["unconformed_area"] += abs(
+                    (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])) * 0.5
+                counters["worst"] = max(counters["worst"], worst)
+            out.append((a, b, c))
+            continue
+        ab, bc, ca = mids
+        work.append(((a, ab, ca), depth + 1))
+        work.append(((ab, b, bc), depth + 1))
+        work.append(((ca, bc, c), depth + 1))
+        work.append(((ab, bc, ca), depth + 1))
+    return out
+
+
+def build_areas(bundle_dir, collection, center, radius, ground=None, cell=3.5):
     """Place the §8b surface areas: driveways, parking-lot pavement, park paths.
 
     These are the painted patches `AreaBatchSystem` draws from area triangles — the visible
     ground of every meshless prefab (parking lots, sports courts, campsites) and of house
     driveways. One object per area prefab, world-anchored UVs, catalogue texture or colour.
+
+    `ground` is a `_ProjectionSurface` over the terrain grid and `cell` its spacing. The game
+    paints an area onto the terrain rather than laying a plane on it (audit §30), so with a
+    ground to conform to, each triangle is split until it follows — see
+    `_conform_area_triangle`. Without one (`--areas` and no `--terrain`) the flat triangles
+    are all there is, and the ground will cut through them wherever it is not level.
     """
     path = bundle_file(os.path.join(bundle_dir, "areas.jsonl"))
     if path is None:
@@ -2609,8 +2830,22 @@ def build_areas(bundle_dir, collection, center, radius):
                 (colour[0], colour[1], colour[2], 1.0), gain=_GROUND_GAIN)
         return materials[prefab]
 
+    # The ground each area is painted onto (audit §30). Without the terrain layer there is
+    # nothing to conform to, and the flat triangles are all this can draw.
+    sample_cache = {}
+    scale = 1000.0 / _AREA_DEDUP_MM
+
+    def ground_at(x, y):
+        """Terrain height under Blender-frame (x, y), memoised on the rounded position."""
+        key = (round(x * scale), round(y * scale))
+        if key not in sample_cache:
+            sample_cache[key] = ground.height(x, y) if ground is not None else None
+        return sample_cache[key]
+
     builders = {}
-    placed = skipped_region = dropped_bad = 0
+    placed = skipped_region = dropped_bad = missed = 0
+    counters = {"unconformed": 0, "unconformed_area": 0.0, "worst": 0.0}
+    source_tris = painted_area = 0.0
     for record in read_jsonl(path):
         nodes = record.get("nodes") or []
         triangles = record.get("triangles") or []
@@ -2625,16 +2860,28 @@ def build_areas(bundle_dir, collection, center, radius):
                 continue
 
         sink = builders.setdefault(record.get("prefab"), {"verts": [], "faces": []})
-        base = len(sink["verts"])
-        sink["verts"].extend((n[0], n[2], n[1] + _AREA_LIFT) for n in nodes)
+        # Bundle → Blender: (x, y, z) → (x, z, y), and that flips handedness (§2.2), so every
+        # face reverses to keep facing up — the same compensation the lane bend applies.
+        corners = []
+        for n in nodes:
+            hit = ground_at(n[0], n[2])
+            if hit is None:
+                missed += 1
+            corners.append((n[0], n[2], (n[1] if hit is None else hit)))
         for tri in triangles:
             if max(tri) >= len(nodes) or min(tri) < 0:
                 dropped_bad += 1
                 continue
-            # Bundle → Blender flips handedness (§2.2), so faces reverse to keep facing up —
-            # the same compensation the lane bend applies.
-            sink["faces"].append(tuple(base + i for i in reversed(tri)))
+            source_tris += 1
+            a, b, c = (corners[i] for i in reversed(tri))
+            painted_area += abs((b[0] - a[0]) * (c[1] - a[1])
+                                - (b[1] - a[1]) * (c[0] - a[0])) * 0.5
+            for piece in _conform_area_triangle((a, b, c), cell, ground_at, counters):
+                base = len(sink["verts"])
+                sink["verts"].extend((p[0], p[1], p[2] + _AREA_LIFT) for p in piece)
+                sink["faces"].append((base, base + 1, base + 2))
         placed += 1
+        LOG.progress("areas conformed", placed, None)
 
     built = 0
     for prefab, sink in builders.items():
@@ -2644,9 +2891,15 @@ def build_areas(bundle_dir, collection, center, radius):
         mesh.from_pydata(sink["verts"], [], sink["faces"])
         mesh.materials.append(area_material(prefab))
         uv_layer = mesh.uv_layers.new(name="UVMap")
+        # World-planar, at the prefab's own authored rate: `colossal_UVScale` is set straight
+        # from `RenderedArea.m_UVScale` (AreaBatchSystem line 2109) and multiplies the world
+        # position. `_AREA_UV_SCALE_FALLBACK` is the game's own field default, for a bundle
+        # ripped before §8b carried the value.
+        uv_scale = float((catalogue.get(prefab) or {}).get("uvScale")
+                         or _AREA_UV_SCALE_FALLBACK)
         for loop in mesh.loops:
             x, y, _ = mesh.vertices[loop.vertex_index].co
-            uv_layer.data[loop.index].uv = (x / 4.0, y / 4.0)
+            uv_layer.data[loop.index].uv = (x * uv_scale, y * uv_scale)
         mesh.validate()
         obj = bpy.data.objects.new(f"area_{prefab}", mesh)
         collection.objects.link(obj)
@@ -2655,6 +2908,20 @@ def build_areas(bundle_dir, collection, center, radius):
     LOG.done(f"areas:     {placed} surface area(s) into {built} object(s) "
              f"over {len(builders)} prefab(s)"
              + (f", {skipped_region} outside the region" if skipped_region else ""))
+    if ground is None:
+        LOG.warn("terrain layer not built — surface areas stay flat, expect the ground to "
+                 "cut through pavement on any slope (audit §30)")
+    else:
+        total = sum(len(sink["faces"]) for sink in builders.values())
+        LOG.step(f"{int(source_tris)} area triangle(s) conformed to the terrain as "
+                 f"{total} piece(s)"
+                 + (f", {missed} node(s) found no ground" if missed else ""))
+        if counters["unconformed"]:
+            share = 100.0 * counters["unconformed_area"] / max(painted_area, 1e-9)
+            LOG.step(f"{counters['unconformed_area']:.0f} m2 of {painted_area:.0f} m2 painted "
+                     f"({share:.2f}%) stayed unconformed — ground up to "
+                     f"{counters['worst']*100:.0f} cm above it, over "
+                     f"{counters['unconformed']} piece(s)")
     if dropped_bad:
         LOG.warn(f"CONTRACT VIOLATION: {dropped_bad} triangle(s) index out of range")
     return built
@@ -3664,7 +3931,7 @@ def main():
             # tolerance of anything downstream costs nothing and settles it.
             # （與其所在車道共面的塗料會產生深度衝突，於視埠中看似標線在路面上忽隱忽現。
             #   遠低於下游任何容差的微小抬升毫無代價，即可解決此問題。）
-            empty.matrix_world = Matrix.Translation((0.0, 0.0, _DECAL_LIFT)) @ empty.matrix_world
+            empty.matrix_world = Matrix.Translation((0.0, 0.0, _INSTANCE_DECAL_LIFT)) @ empty.matrix_world
             decal_collection.objects.link(empty)
         else:
             placed_collection.objects.link(empty)
@@ -3700,7 +3967,7 @@ def main():
             lane_collection = bpy.data.collections.new("bundle_lanemeshes")
             bpy.context.scene.collection.children.link(lane_collection)
             LOG.phase("Lane geometry (lanemeshes.jsonl)")
-            road_surface = _RoadSurface(network_collection) if networks else None
+            road_surface = _ProjectionSurface(network_collection.objects) if networks else None
             with parked_out_of_view_layer(lane_collection):
                 lanes = build_lanes(lanes_path, lane_prefabs_path, lane_mesh_dir,
                                     lane_collection, center=center, radius=radius,
@@ -3710,11 +3977,13 @@ def main():
             LOG.warn(f"no lanemeshes.jsonl at {lanes_path} — skipping lane geometry")
 
     terrain_objects = 0
+    terrain_ground = None
     if do_terrain:
         LOG.phase("Terrain & water")
         terrain_collection = bpy.data.collections.new("bundle_terrain")
         bpy.context.scene.collection.children.link(terrain_collection)
-        terrain_objects = build_terrain(bundle_dir, terrain_collection, center, radius)
+        terrain_objects, terrain_ground = build_terrain(bundle_dir, terrain_collection,
+                                                        center, radius)
         LOG.end_phase()  # build_terrain() may have early-returned before its own done()
 
     area_objects = 0
@@ -3722,7 +3991,13 @@ def main():
         LOG.phase("Surface areas")
         area_collection = bpy.data.collections.new("bundle_areas")
         bpy.context.scene.collection.children.link(area_collection)
-        area_objects = build_areas(bundle_dir, area_collection, center, radius)
+        # Areas are painted onto the terrain, so they need it built first — it is, above.
+        ground_surface, ground_cell = (None, 3.5)
+        if terrain_ground is not None:
+            ground_surface = _ProjectionSurface([terrain_ground[0]])
+            ground_cell = terrain_ground[1]
+        area_objects = build_areas(bundle_dir, area_collection, center, radius,
+                                   ground=ground_surface, cell=ground_cell)
         LOG.end_phase()  # build_areas() may have early-returned before its own done()
 
     # Everything is imported, so the placed instances can come back into the view layer. This is

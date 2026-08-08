@@ -420,6 +420,5 @@ Library/ilpp.pid
 # Claude Code local (per-user) permissions; the shared commands in .claude/commands are tracked.
 .claude/settings.local.json
 
-# Isolated worktrees and subagent-driven-development scratch (never committed)
+# Isolated worktrees for branch work (never committed)
 .worktrees/
-.superpowers/

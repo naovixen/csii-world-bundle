@@ -1064,27 +1064,71 @@ this layer shows grass wherever the game shows pavement.
   ```jsonc
   { "id": 482113, "prefab": "concrete_surface_01", "owner": 173512,
     "nodes": [[x,y,z], …],            // bundle-frame world positions (§2.2), NOT mirrored
-    "triangles": [[a,b,c], …] }       // indices into nodes, the game's own triangulation
+    "triangles": [[a,b,c], …],        // indices into nodes, the game's own triangulation
+    "heightRanges": [[min,max], …] }  // optional, per triangle — see below
   ```
 
   `owner`, when present, is the instance `id` of the building/object that spawned the area.
-  Node heights follow the ground (the game grades terrain under areas; §8 heightmap has it).
+
+  **A triangle is a footprint, not a surface — conform it to the terrain.** *(Corrected
+  2026-08-08; this section previously said the game grades terrain under areas, and it does
+  not. See audit §30.)* The game never draws these triangles: it draws a **prism** per
+  triangle (`AreaRenderSystem.CreateMesh`, literally named "Area triangle volume") and
+  projects the surface material onto whatever ground is inside it, as a decal
+  (`RenderedArea.m_DecalLayerMask = DecalLayers.Terrain`). Node heights are the polygon's own
+  corner heights and the ground between them goes its own way — on a full-city rip the
+  terrain rises through the flat triangle on 26.6% of triangles and 61.4% of areas, by 11 cm
+  at p95 and 55 cm at p99. **A consumer must drape the triangle onto the §8 heightmap**
+  (subdivide until it follows) rather than drawing the plane. Nothing flattens the ground
+  underneath: the one mechanism that does — `TerrainArea`/`CullAreasJob` — belongs to
+  `LotPrefab`, not to these surfaces, and whatever it did is already baked into §8's
+  heightmap.
+
+  `heightRanges`, when present, is the game's own `Triangle.m_HeightRange` per triangle, in
+  the same order as `triangles`: the min and max of the terrain (and water) height over that
+  triangle's footprint **relative to the triangle's own plane**, in metres. It is the vertical
+  band the game's prism spans, so it states how far a drape has to reach. Omitted when every
+  range on that area is zero (all its ground is flat); on a full-city rip 91.4% of areas carry
+  one.
+
+  **It is a guide, not a substitute for the heightmap.** Checked against an independent
+  recomputation of `GetHeightRange` over `terrain/heightmap.png` (86,233 triangles): the game's
+  band *contains* the recomputed one on 83.3%, with a median slack of ~11 mm in the widening
+  direction — as the rule predicts, because the game's scanline conservatively covers cells
+  just outside the triangle and a building-owned area widens the band to include its own plane
+  ± the prefab's `heightOffset`. But 0.52% come out **narrower** than a direct walk of the
+  heightmap, most plausibly because the game recomputes the range only when the area changes,
+  so it can lag a later terrain edit. A consumer that needs the surface to sit on the ground
+  must sample the ground.
 
 - **`areaprefabs.json`** — one entry per referenced `prefab` key:
 
   ```jsonc
   { "concrete_surface_01": { "name": "Concrete Surface 01",
       "color": [r,g,b,a],                              // material _BaseColor, optional
+      "uvScale": 0.2,                                  // optional, see below
+      "heightOffset": 0.0,                             // optional, metres
       "texture": "terrain/surfaces/area_concrete_surface_01.png" } }  // optional
   ```
 
-  The texture is the area material's base map, captured as bound; tiling is world-planar
-  (the game maps these in world space — a consumer picks a plausible metres-per-repeat).
-  Both keys are optional; a consumer falls back `texture` → `color` → its own neutral.
+  The texture is the area material's base map, captured as bound; tiling is world-planar.
+  `uvScale` is the authored rate: **uv = world position × `uvScale`** — it is
+  `RenderedArea.m_UVScale`, which the game hands the shader as `colossal_UVScale`, so 0.2
+  means one repeat every 5 m. *(Added 2026-08-08; before that a consumer had to guess a
+  metres-per-repeat. Absent in older bundles — fall back to the game's own field default,
+  0.2.)* `heightOffset` is `RenderedAreaData.m_HeightOffset`, how far the projection prism
+  reaches beyond the terrain's own departure from the triangle (§8b `heightRanges`); a
+  consumer draping the surface as geometry does not need it, one building a real decal
+  projector does. All keys are optional; a consumer falls back `texture` → `color` → its own
+  neutral.
 
 Areas are ground paint, like decals (§4.2a): never generate collision from them, and draw
-them just above the terrain to avoid z-fighting. The reference importer places them under
-`--areas` (implied by `--everything`).
+them just above the terrain to avoid z-fighting. **They go UNDER the §4.2a decal instances
+standing on them** — a parking lot's bay markings are decal instances, and an area lifted
+above them paints the bays out of the lot. The reference importer's ladder is terrain 0 →
+area 6 mm → lane tint 8 mm → lane marking 14 mm → decal instance 20 mm; the order is what
+matters, not the values. It places areas under `--areas` (implied by `--everything`), and
+conforms them to `--terrain` when that layer is also built.
 
 ---
 

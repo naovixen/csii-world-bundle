@@ -1,6 +1,6 @@
 # Bundle Representation Audit — Phase A Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** implement this plan task-by-task, in order. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Produce `docs/cs2-storage-audit.md` — a per-domain, measured account of what CS2 stores versus what the bundle ships, ending in a ranked table of candidate wins that decides the order and content of Phases B–F.
 
