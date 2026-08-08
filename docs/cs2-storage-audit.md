@@ -2474,8 +2474,9 @@ python "$SCRATCH/water_downsample.py"
 
 A 526 m maximum error is the sentinel, not the terrain: a coastal sample that lands on a dry cell
 reads `0` and the upsample drags the whole neighbourhood to sea floor. A mask-aware coarse
-encoding would avoid that, and is **not proposed**: `water_level.png` is 780,555 B, so the entire
-ceiling for that design work is 1.112% of `terrain/` and 0.0159% of the bundle (§7.1).
+encoding would avoid that. It is carried below as **TERRAIN-6** and **not recommended**:
+`water_level.png` is 780,555 B, so the entire ceiling for that design work is 1.112% of
+`terrain/` and 0.0159% of the bundle (§7.1).
 
 **The splatmap's noise input, restated because §7.3.2 and §7.5 both lean on it.** §22a's semantics
 block, shipped verbatim in `terrain/rasters.json` and quoted in full in §7.3.2, states the
@@ -2857,16 +2858,22 @@ Paeth predictors), unlike the photographic `surfaces/` textures beside it in the
 | TERRAIN-4 | Write the measured splatmap channel map into the `splatmap.semantics` block `CaptureSplatmap` already builds — `R = grass, G = dirt, B = extra1, A = extra2, rock = unpainted residual` — replacing the sentence that tells the consumer to calibrate. Same for `userSplatmap`: `R = extra1, G = extra2`, matching `TerrainMaterialType`'s own ordering | **0 B** — a constant string in a 1,127-byte JSON file. This row is a correctness row and is listed here, not omitted, because it is the direct answer to §7.3.2 | 0 | **negative** — deletes `tools/blender_import_bundle.py:2378-2412` (35 lines of calibration) and the sampling pass that feeds it | low — the map is a compile-time constant from `TerrainMaterialType`, corroborated by an exact biconditional over 16,777,216 pixels (§7.3.2) | YES — adds a statement, removes nothing | **new layer**: none. **Fixes**: the reference consumer currently resolves 1 of 4 channels correctly on this bundle (measured, §7.3.2) — it discards the live dirt channel and mislabels the Extra1 paint channel as a rock variant |
 | TERRAIN-5 | Ship the game's own clip volumes as a layer — per `ClipTerrain` section, the left/right béziers with the band base in their y column plus the band height (`ClipMapDraw`, `docs/cs2-api-audit.md` §20) — alongside `cutout.png`, so a consumer can intersect them against the heightmap at its own mesh resolution instead of consuming a 3.5 m top-down threshold of one heightmap | **costs bytes: −86,736 B minimum, −5,153,616 B at the terrain-independent upper bound** (`arithmetic`, §7.3.1's sizing table). Listed because question 3 asked what the delta *is*, and here the smaller representation is the less faithful one | unmeasured — reads `EdgeGeometry`/`EdgeNodeGeometry`/`TerrainComposition` the cutout walk already touches; likely a wash | moderate — evaluate a cubic bézier and test a height band, both of which `StampCutout` already does in 60 lines | medium — a new layer and a §12.1 schema amendment, for a fidelity gain with no byte payoff | YES — strictly more information than the mask, which stays | **new layer**: `clipvolumes.jsonl` (or a `clip` block); **retires**: nothing — `cutout.png` is 19,659 B and stays as the cheap path |
 
-**Lossy candidates:** none proposed, now on a measured basis rather than an argued one.
+**Lossy candidates** (named and measured per constraint 6's "investigate lossless first" — both
+rows below are **not recommended**, and both are given real IDs and the full row schema so §9 can
+cite the rejection rather than restate it):
 
-| id | change | est. bytes saved | error bound | why not proposed |
-|---|---|---:|---|---|
-| — | Coarse re-encoding of `water_level.png` on the water-sim grid it was upsampled from (§7.2) | 43,539 B at 512² = 5.6% of the file, i.e. 737,016 B saved (1.05% of `terrain/`, 0.0151% of the bundle) | `measured`, full population (10,219,596 wet cells): mean 7.265 m, p99 289.63 m, **max 526.32 m** — the dry-cell `0` sentinel blends across every shoreline. At 2048² the max is still 231.13 m | A mask-aware coarse encoding would avoid the sentinel, but the entire ceiling for that design work is 780,555 B — 1.112% of `terrain/`, 0.0159% of the bundle (§7.1) |
-| — | Any lossy re-encode of the `surfaces/` ground textures (76.062% of the domain) | not measured | — | Constraint 6 requires lossless first, and §7.4's zlib-9 floor and per-file adaptive test already exhaust it for this domain; the residual ceiling is 2.0% |
+| id | change | est. bytes saved | est. rip-time saved | consumer cost | risk | lossless? | error bound | additive layer |
+|---|---|---|---|---|---|---|---|---|
+| TERRAIN-6 | Re-encode `water_level.png` on the coarse water-sim grid it was bilinearly upsampled from (§7.2), leaving the consumer to resample — the game's own storage shape, since `Systems/TerrainRipSystem.cs:459-545` builds one level per sim cell and only then resamples to 4096² | measured, exact, full file: 43,539 B at 512² = 5.6% of the file, i.e. **737,016 B saved (1.05% of `terrain/`, 0.0151% of the whole bundle)**; 299,965 B at 2048² saves 480,590 B (0.68%, 0.0098%) | unmeasured — the producer already holds the coarse field and currently spends the resample; this would remove that pass, not add one. Not timed | moderate — the consumer must bilinearly resample a second raster at a second resolution, and must be handed the wet mask separately to avoid the sentinel (see error bound) | high — the naive form is unusable, and the mask-aware form is a design that does not exist yet and would need its own A/B gate | **NO** | `measured`, full population (all 10,219,596 wet cells of `water_level.png`, error in metres via `rasters.json`'s own `elevationScale`): at 512² mean **7.265 m**, p99 **289.63 m**, max **526.32 m**; at 2048² mean 1.232 m, p99 32.50 m, max **231.13 m**. The maximum is the dry-cell `0` sentinel, not the terrain — a coastal sample landing on a dry cell reads `0` and the upsample drags its neighbourhood to sea floor | **not applicable — rejected, no layer proposed.** Had it been recommended it would have been a replacement raster at the same path plus a new `waterMask` raster (the sentinel fix), with a §12.1 amendment to `rasters.json`'s water block; the ceiling that would have to justify that work is the whole file, **780,555 B — 1.112% of `terrain/`, 0.0159% of the bundle** (§7.1) |
+| TERRAIN-7 | Lossy re-encode (e.g. WebP/AVIF at a quality setting) of the `surfaces/` ground textures — 53,401,903 B, **76.062% of this domain** (§7.1), by far its largest block | unmeasured — Phase A does not encode or measure it. Same position as §1's TEX-6, and subordinate to it: these are ordinary colour and normal textures, so whatever §1 concludes for `textures/` governs here | unmeasured | high — the consumer needs a new-format decoder, the same objection TEX-6 carries | high | **NO** | `unmeasured` — nothing was encoded, so no bound is claimed. The lossless work that must precede it is done: §7.4's zlib-9 floor leaves 2.0% and the per-file adaptive test leaves 6.47%, both measured on the full 39-file population | **not applicable — rejected, no layer proposed.** It would replace the PNG bytes in place at unchanged paths (no new layer, nothing retired), exactly as TEX-6 would for `textures/`; it is named here so §9 does not treat this domain's largest block as unexamined |
 
 **TERRAIN-2 was considered for this table and is in the lossless one instead**, because the
 weight channel that would reference those four textures does not exist in the game — proven by
 two sources, not argued (§7.3.2). It is a capture gate, not a quality trade.
+
+**Neither lossy row is recommended.** TERRAIN-6's ceiling is 780,555 B and its measured error is
+a 526.32 m shoreline artefact; TERRAIN-7 is unmeasured and inherits §1's TEX-6 objection. The
+recommended set for this domain stays lossless: TERRAIN-1 through TERRAIN-4.
 
 ### 7.5 The splatmap shrink: what changed between the two captures, and what did not
 
