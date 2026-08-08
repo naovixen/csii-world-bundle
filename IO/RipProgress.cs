@@ -164,7 +164,10 @@ namespace Carto.IO
             {
                 _pushed = key;
                 TryPush(key);
+                PushToast();
             }
+
+            TickToastLinger();
 
             if (_deferred == null) return;
 
@@ -189,6 +192,114 @@ namespace Carto.IO
             finally
             {
                 Clear();
+            }
+        }
+
+        // ====================================================================================
+        // The notification toast — the game's own progress-bearing notification stack
+        // (Game.PSI.NotificationSystem, public API; audit §37). The background-process caption
+        // above stays as the second sink: the two cost one binding update each and fail
+        // independently.
+        // （通知橫幅——遊戲自身可承載進度的通知堆疊（公開 API；審計 §37）。上方的背景程序
+        //   說明文字保留為第二個輸出端：兩者各僅一次繫結更新，且互不牽連地失效。）
+        // ====================================================================================
+
+        /// <summary>
+        /// The one notification a rip drives. A stable id makes every push an in-place update of
+        /// the same toast rather than a growing stack.
+        /// （一次擷取驅動的單一通知。固定的識別碼使每次推送皆為同一橫幅的就地更新，而非不斷增長的堆疊。）
+        /// </summary>
+        private const string NotificationId = "Carto.RipWorld";
+
+        /// <summary>Whether the toast is currently showing.（橫幅目前是否顯示中。）</summary>
+        private static bool _toastShown;
+
+        /// <summary>Consecutive <see cref="Pump"/> calls with no phase, for the linger window.（連續無階段的 <see cref="Pump"/> 次數，供停留視窗使用。）</summary>
+        private static int _idlePumps;
+
+        /// <summary>Whether a toast failure has been logged.（橫幅失敗是否已記錄。）</summary>
+        private static bool _toastFailedLogged;
+
+        /// <summary>
+        /// How many idle pumps the toast survives before it is completed and dismissed.
+        /// （橫幅於完成並消退前可經歷的閒置次數。）<br/><br/>
+        /// The pipeline passes through <see cref="Phase.None"/> for a frame or two between
+        /// stages (each stage clears the indicator as it finishes); popping and re-pushing across
+        /// that gap would make the toast flicker once per stage. Pump runs a couple of times per
+        /// frame, so this is roughly a second of real idleness.
+        /// （管線於階段之間會經過一兩幀的 <see cref="Phase.None"/>（各階段完成時清除指示器）；
+        /// 若在該間隙彈出再重推，橫幅將每階段閃爍一次。Pump 每幀執行數次，故此值約為一秒的實際閒置。）
+        /// </summary>
+        private const int ToastLingerPumps = 120;
+
+        /// <summary>
+        /// Create or update the rip's toast for the current phase and percentage.
+        /// （為目前的階段與百分比建立或更新擷取橫幅。）<br/><br/>
+        /// The text is the same per-phase locale key the caption uses — the progress bar carries
+        /// the percentage, so the pre-expanded percent keys are not needed here. Only called when
+        /// the built key changed, so an unchanged percentage costs nothing.
+        /// （文字沿用說明文字的逐階段語系鍵——百分比由進度條呈現，故此處無須預先展開的百分比鍵。
+        /// 僅於建構的鍵改變時呼叫，百分比未變即無成本。）
+        /// </summary>
+        private static void PushToast()
+        {
+            Phase phase = _phase;
+            if (phase == Phase.None) return;
+
+            try
+            {
+                int total = Volatile.Read(ref _total);
+                int percent = 0;
+                if (total > 0)
+                {
+                    percent = (int)((Volatile.Read(ref _current) * 100L) / total);
+                    percent = (percent < 0) ? 0 : ((percent > 100) ? 100 : percent);
+                }
+
+                Game.PSI.NotificationSystem.Push(NotificationId,
+                    title: Game.UI.Localization.LocalizedString.Id("Options.SECTION[Carto.Carto.Mod]"),
+                    text: Game.UI.Localization.LocalizedString.Id($"{LocalePrefix}[{phase}]"),
+                    progressState: (total > 0) ? Colossal.PSI.Common.ProgressState.Progressing
+                                               : Colossal.PSI.Common.ProgressState.Indeterminate,
+                    progress: percent);
+
+                _toastShown = true;
+                _idlePumps = 0;
+            }
+            catch (Exception ex)
+            {
+                if (!_toastFailedLogged)
+                {
+                    _toastFailedLogged = true;
+                    _log.Warn($"Could not drive the notification toast; the caption still works: {ex.Message}");
+                }
+            }
+        }
+
+        /// <summary>
+        /// Complete and dismiss the toast once no phase has reported for the linger window.
+        /// （於停留視窗內無任何階段回報後，將橫幅標記完成並消退。）
+        /// </summary>
+        private static void TickToastLinger()
+        {
+            if (!_toastShown || (_phase != Phase.None)) return;
+            if (++_idlePumps < ToastLingerPumps) return;
+
+            _toastShown = false;
+            _idlePumps = 0;
+
+            try
+            {
+                Game.PSI.NotificationSystem.Pop(NotificationId, delay: 2f,
+                    progressState: Colossal.PSI.Common.ProgressState.Complete, progress: 100);
+            }
+            catch (Exception ex)
+            {
+                if (!_toastFailedLogged)
+                {
+                    _toastFailedLogged = true;
+                    _log.Warn($"Could not dismiss the notification toast: {ex.Message}");
+                }
             }
         }
 
