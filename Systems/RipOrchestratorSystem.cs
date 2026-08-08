@@ -179,7 +179,9 @@ namespace Carto.Systems
         public string BeginRip(RipPlan plan)
         {
             if (IsRipping) return "A world rip is already running.";
+            if (Instance.InstanceRip.IsRipping) return "An instance rip is already running — wait for it to finish.";
             if (Instance.MeshRip.IsRipping) return "A mesh rip is already running — wait for it to finish.";
+            if (Instance.LaneRip.IsRipping) return "A lane rip is already running — wait for it to finish.";
             if (Instance.NetworkRip.IsRipping) return "A network rip is already running — wait for it to finish.";
 
             List<Stage> stages = BuildStages(plan);
@@ -218,15 +220,20 @@ namespace Carto.Systems
             {
                 stages.Add(new Stage
                 {
-                    Title = "Instances & appearance",
+                    Title = "Instances",
+                    Begin = completed => Instance.InstanceRip.BeginRip(directory, completed),
+                    Running = () => Instance.InstanceRip.IsRipping
+                });
+
+                // Colours and lights are per-render-prefab tables resolved from the same prefab
+                // set the instances reference; a quick synchronous pass.
+                // （顏色與燈光為逐繪製預製模板的表格，解析自實例參照的同一組預製模板；
+                //   為快速的同步走訪。）
+                stages.Add(new Stage
+                {
+                    Title = "Appearance",
                     Phase = RipProgress.Phase.Instances,
-                    Work = () =>
-                    {
-                        HashSet<string> assetIds = new();
-                        string instances = Instance.InstanceRip.RipInstances(directory, assetIds);
-                        string appearance = Instance.AppearanceRip.RipAppearance(directory);
-                        return $"{assetIds.Count} distinct assetId(s) referenced.\n{instances}\n{appearance}";
-                    }
+                    Work = () => Instance.AppearanceRip.RipAppearance(directory)
                 });
 
                 stages.Add(new Stage
@@ -242,8 +249,8 @@ namespace Carto.Systems
                 stages.Add(new Stage
                 {
                     Title = "Lane graph",
-                    Phase = RipProgress.Phase.Lanes,
-                    Work = () => Instance.LaneRip.RipLanes(directory)
+                    Begin = completed => Instance.LaneRip.BeginRip(directory, completed),
+                    Running = () => Instance.LaneRip.IsRipping
                 });
 
                 stages.Add(new Stage
@@ -275,14 +282,40 @@ namespace Carto.Systems
             }
 
             // Always last, unconditionally: the manifest describes whatever the run left on disk,
-            // including the layers earlier runs left there and this one did not touch.
-            // （恆為最後且無條件執行：宣告檔描述本次執行留於磁碟的內容，
-            //   包括先前執行留下而本次未觸及的層。）
+            // including the layers earlier runs left there and this one did not touch. The
+            // game-state snapshot is captured on the main thread (cheap); the directory scan —
+            // reading every record layer back — runs on a worker, and the pipeline waits on the
+            // completion callback before reporting (PLAN Phase 8).
+            // （恆為最後且無條件執行：宣告檔描述本次執行留於磁碟的內容，包括先前執行留下而本次
+            //   未觸及的層。遊戲狀態快照於主執行緒擷取（廉價）；目錄掃描——讀回每個紀錄層——
+            //   於工作執行緒進行，管線於回報前等待完成回呼（PLAN 第八階段）。）
             stages.Add(new Stage
             {
                 Title = "Manifest",
-                Phase = RipProgress.Phase.Manifest,
-                Work = () => BundleWriter.WriteManifest(directory)
+                Begin = completed =>
+                {
+                    RipProgress.Report(RipProgress.Phase.Manifest);
+                    BundleManifest snapshot = BundleManifest.Capture();
+
+                    System.Threading.Tasks.Task.Run(() =>
+                    {
+                        string summary;
+                        try
+                        {
+                            summary = BundleWriter.WriteManifest(directory, snapshot);
+                        }
+                        catch (Exception ex)
+                        {
+                            Instance.Log.Error($"World rip stage `Manifest` failed: {ex}");
+                            summary = $"FAILED: {ex.Message}";
+                        }
+
+                        completed(summary);
+                    });
+
+                    return "Scanning the bundle on a background thread.";
+                },
+                Running = () => true
             });
 
             return stages;
@@ -324,7 +357,6 @@ namespace Carto.Systems
                     catch (Exception ex)
                     {
                         _log.Error($"World rip stage `{stage.Title}` failed: {ex}");
-                        _stagesFailed++;
                         summary = $"FAILED: {ex.Message}";
                     }
 
@@ -342,7 +374,6 @@ namespace Carto.Systems
             catch (Exception ex)
             {
                 _log.Error($"World rip stage `{stage.Title}` failed to start: {ex}");
-                _stagesFailed++;
                 Done($"FAILED to start: {ex.Message}");
                 return;
             }
@@ -363,6 +394,12 @@ namespace Carto.Systems
         /// <param name="seconds">How long it took.（其耗時。）</param>
         private void RecordStage(Stage stage, string summary, double seconds)
         {
+            // Failures reach here as a summary prefix whichever thread they happened on — the
+            // sync catch, the failed-to-start path and the manifest worker all speak it.
+            // （無論失敗發生於哪個執行緒，皆以摘要前綴到達此處——同步 catch、啟動失敗路徑
+            //   與宣告檔工作執行緒皆用此語。）
+            if ((summary != null) && summary.StartsWith("FAILED", StringComparison.Ordinal)) _stagesFailed++;
+
             _summary.AppendLine($"{stage.Title} — {seconds:F1} s");
 
             if (!string.IsNullOrEmpty(summary))

@@ -36,7 +36,16 @@ namespace Carto
             // （將系統實例註冊在遊戲中。）
             updateSystem.UpdateBefore<AreaSystem>(SystemUpdatePhase.GameSimulation);
             updateSystem.UpdateBefore<BuildingSystem>(SystemUpdatePhase.GameSimulation);
-            updateSystem.UpdateBefore<InstanceRipSystem>(SystemUpdatePhase.GameSimulation);
+            // The instance and lane walks advance a slice per frame from OnUpdate and are started
+            // from the (simulation-pausing) options page — MainLoop, like the other rip systems.
+            // InstanceRipSystem used to sit at GameSimulation, which was fine while its work was a
+            // single blocking call; a frame-budgeted pass there would freeze whenever the
+            // simulation pauses.
+            // （實例與車道走訪於 OnUpdate 中每幀推進一段，且由（暫停模擬的）選項頁面啟動——
+            //   與其他擷取系統相同，故用 MainLoop。InstanceRipSystem 過去位於 GameSimulation，
+            //   當其工作為單一阻塞呼叫時尚無妨；分幀走訪在該處會於模擬暫停時凍結。）
+            updateSystem.UpdateAt<InstanceRipSystem>(SystemUpdatePhase.MainLoop);
+            updateSystem.UpdateAt<LaneRipSystem>(SystemUpdatePhase.MainLoop);
             // MainLoop, not the simulation: a rip is driven a slice per frame from OnUpdate, and it
             // is started from the options page — which pauses the simulation, so a simulation-phase
             // system would sit frozen exactly while the user is watching it.

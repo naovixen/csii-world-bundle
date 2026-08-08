@@ -139,59 +139,143 @@ namespace Carto.Systems
 
         /// <summary>
         /// The event triggered when the system instance is destroyed.
-        /// （當系統實例被銷毀時所觸發的事件。）
+        /// （當系統實例被銷毀時所觸發的事件。）<br/><br/>
+        /// A run in flight holds a persistent native array and an open file — both must be
+        /// released when the world unloads mid-rip.<br/>
+        /// （進行中的執行持有常駐原生陣列與開啟中的檔案——世界於擷取途中卸載時兩者皆須釋放。）
         /// </summary>
-        protected override void OnDestroy() { base.OnDestroy(); }
+        protected override void OnDestroy()
+        {
+            InstanceRun run = _run;
+            _run = null;
+
+            if (run != null)
+            {
+                _log.Info($"Instance rip abandoned at {run.Index}/{run.Entities.Length} object(s); the world was unloaded. 實例擷取於世界卸載時中止。");
+                Abandon(run);
+                RipProgress.Clear();
+            }
+
+            base.OnDestroy();
+        }
 
         /// <summary>
-        /// The event triggered when the system instance is updated.
-        /// （當系統實例被更新時觸發的事件。）
+        /// Advance any rip in progress by one frame's worth of work.
+        /// （將進行中的擷取推進一幀份的工作。）
         /// </summary>
-        protected override void OnUpdate() { }
+        protected override void OnUpdate()
+        {
+            InstanceRun run = _run;
+            if (run != null) Advance(run);
+        }
 
         /// <summary>
-        /// Enumerate every placed object into <c>instances.jsonl</c>, recording the set of prefabs
-        /// referenced so the mesh rip knows exactly what it must produce.<br/>
-        /// （將所有已放置物件列舉至 <c>instances.jsonl</c>，並記錄所參照的預製模板集合，
-        /// 使網格擷取確知必須產出哪些內容。）
+        /// One instance rip in flight.（一次進行中的實例擷取。）
+        /// </summary>
+        private class InstanceRun
+        {
+            /// <summary>The bundle root, and the record file being written.（束根目錄與寫入中的紀錄檔。）</summary>
+            public string OutputDirectory, Path;
+
+            /// <summary>The placed objects to walk, held across frames (persistent allocator).（跨幀持有的待走訪已放置物件（常駐配置器）。）</summary>
+            public NativeArray<Entity> Entities;
+
+            /// <summary>How far the walk has got.（走訪進度。）</summary>
+            public int Index;
+
+            /// <summary>The record writer, open for the whole run.（整次執行保持開啟的紀錄寫出器。）</summary>
+            public InstanceWriter Writer;
+
+            /// <summary>The shared asset-id assignment (see <see cref="BeginRip"/>).（共用的資產 ID 指派。）</summary>
+            public Dictionary<Entity, MeshRipSystem.AssetIdEntry> AssetIdTable;
+
+            /// <summary>The distinct asset ids referenced.（被參照的相異資產 ID。）</summary>
+            public HashSet<string> AssetIds = new();
+
+            // The tallies the walk keeps.（走訪期間維護的統計。）
+            public Dictionary<string, int> ByKind = new();
+            public int SkippedNoPrefab, WithParent, SkippedUtilityNodes, SkippedVehicleCargo;
+            public Dictionary<Entity, int> UtilityNodesByPrefab = new();
+            public Dictionary<Entity, int> VehicleCargoByPrefab = new();
+            public int StackExpanded, StackRecords;
+            public int ProcessFailed;
+            public List<string> SkipSamples = new();
+            public HashSet<int> UnresolvedPrefabs = new();
+            public HashSet<string> GeometrylessPrefabs = new();
+
+            /// <summary>The report accumulated as the run goes.（隨執行累積的報告。）</summary>
+            public StringBuilder Report = new();
+
+            /// <summary>Wall-clock duration of the whole run.（整體工作的實際經過時間。）</summary>
+            public System.Diagnostics.Stopwatch Clock = System.Diagnostics.Stopwatch.StartNew();
+
+            /// <summary>
+            /// Where the finish summary goes when a pipeline drives this rip; <c>null</c> means the
+            /// run was started by hand and reports through its own dialog.
+            /// （由管線驅動時完成摘要的去處；<c>null</c> 代表手動啟動，經自身對話框回報。）
+            /// </summary>
+            public Action<string> Completed;
+        }
+
+        /// <summary>The rip in flight, or <c>null</c>.（進行中的擷取，或 <c>null</c>。）</summary>
+        private InstanceRun _run;
+
+        /// <summary>
+        /// Whether a rip is currently running.（目前是否有擷取工作進行中。）
+        /// </summary>
+        public bool IsRipping => _run != null;
+
+        /// <summary>
+        /// How long the walk may hold the main thread each frame. At least one object is always
+        /// processed, so an expensive one cannot stall the run.
+        /// （走訪每幀可佔用主執行緒的時間上限。每幀必定至少處理一個物件，故單一昂貴物件不致使執行停滯。）
+        /// </summary>
+        private const double FrameBudgetMilliseconds = 6d;
+
+        /// <summary>
+        /// Start enumerating every placed object into <c>instances.jsonl</c>, returning as soon as
+        /// the asset-id table is built; the walk itself proceeds a slice per frame in
+        /// <see cref="OnUpdate"/> (PLAN Phase 8 — the pass used to block the main thread whole).
+        /// （開始將所有已放置物件列舉至 <c>instances.jsonl</c>，資產 ID 表建立後隨即返回；
+        /// 走訪本身於 <see cref="OnUpdate"/> 中每幀推進一段（PLAN 第八階段——此趟過去會整段阻塞主執行緒）。）
         /// </summary>
         /// <param name="outputDirectory">The bundle root to write into.（要寫入的束根目錄。）</param>
-        /// <param name="assetIds">Receives the distinct asset ids referenced.（接收所參照的相異資產 ID。）</param>
-        /// <returns>A human-readable report.（可供閱讀的報告。）</returns>
-        public string RipInstances(string outputDirectory, HashSet<string> assetIds = null)
+        /// <param name="completed">Receives the finish summary instead of a dialog when a pipeline drives the rip.（由管線驅動時接收完成摘要以取代對話框。）</param>
+        /// <returns>A short description of what was queued.（已排入工作的簡短說明。）</returns>
+        public string BeginRip(string outputDirectory, Action<string> completed = null)
         {
-            assetIds ??= new HashSet<string>();
+            if (_run != null) return "An instance rip is already running.";
 
-            string path = IOUtils.CombinePath(outputDirectory, "instances.jsonl");
-            StringBuilder report = new();
-            Dictionary<string, int> byKind = new();
-            int skippedNoPrefab = 0, withParent = 0, skippedUtilityNodes = 0, skippedVehicleCargo = 0;
-            Dictionary<Entity, int> utilityNodesByPrefab = new();
-            Dictionary<Entity, int> vehicleCargoByPrefab = new();
-            int stackExpanded = 0, stackRecords = 0;
+            RipProgress.Report(RipProgress.Phase.Scan);
             _colorSets = 0; _customColors = 0; _divergentColorSets = 0; _growthScales = 0;
-            List<string> skipSamples = new();
-            HashSet<int> unresolvedPrefabs = new();
-            HashSet<string> geometrylessPrefabs = new();
             _decalPrefabs.Clear();
 
-            NativeArray<Entity> entities = _objectQuery.ToEntityArray(Allocator.TempJob);
+            InstanceRun run = new()
+            {
+                OutputDirectory = outputDirectory,
+                Path = IOUtils.CombinePath(outputDirectory, "instances.jsonl"),
+                Entities = _objectQuery.ToEntityArray(Allocator.Persistent),
+                Completed = completed
+            };
 
             try
             {
-                report.AppendLine($"Placed static objects: {entities.Length}");
+                run.Report.AppendLine($"Placed static objects: {run.Entities.Length}");
 
                 // Asset ids have to be assigned over the whole prefab set at once: CS2 does not
                 // require prefab names to be unique, and two prefabs sharing an id would have the
                 // mesh layer overwrite one with the other. Collect the distinct prefabs first, then
                 // assign — MeshRipSystem walks the identical query and so derives identical ids.
+                // This pre-pass stays synchronous, like the mesh rip's work-list build: the table
+                // must be whole before the first record is written.
                 // （資產 ID 必須就整個預製模板集合一次指派：CS2 並不要求預製模板名稱唯一，
                 //   而兩個共用 ID 的模板會使網格層以其中之一覆寫另一個。先收集相異模板再行指派——
-                //   MeshRipSystem 走訪完全相同的查詢，因而推導出完全相同的 ID。）
+                //   MeshRipSystem 走訪完全相同的查詢，因而推導出完全相同的 ID。
+                //   此前置走訪與網格擷取的工作清單建立相同，維持同步：表格必須於首筆紀錄寫出前完整。）
                 HashSet<Entity> prefabEntities = new();
                 Dictionary<Entity, int> prefabUse = new();
                 Dictionary<Entity, Entity> prefabSample = new();
-                foreach (Entity entity in entities)
+                foreach (Entity entity in run.Entities)
                 {
                     if (MeshRipSystem.IsUtilityMarkerSubObject(EntityManager, entity)) continue;
                     if (MeshRipSystem.IsVehicleCargoSubObject(EntityManager, entity)) continue;
@@ -206,195 +290,255 @@ namespace Carto.Systems
                     }
                 }
 
-                Census(prefabUse, report);
-                Profile(prefabUse, prefabSample, report);
+                Census(prefabUse, run.Report);
+                Profile(prefabUse, prefabSample, run.Report);
 
-                Dictionary<Entity, MeshRipSystem.AssetIdEntry> assetIdTable =
-                    MeshRipSystem.BuildAssetIds(EntityManager, prefabEntities, out int disambiguated);
-                if (disambiguated > 0) report.AppendLine($"Disambiguated {disambiguated} prefab(s) sharing a name.");
+                run.AssetIdTable = MeshRipSystem.BuildAssetIds(EntityManager, prefabEntities, out int disambiguated);
+                if (disambiguated > 0) run.Report.AppendLine($"Disambiguated {disambiguated} prefab(s) sharing a name.");
 
-                using InstanceWriter writer = new(path);
-
-                foreach (Entity entity in entities)
-                {
-                    // Buried utility-network furniture: excluded here and in the mesh rip alike, so
-                    // neither its placements nor its meshes reach the bundle.
-                    // （埋於地下的管線網路配件：此處與網格擷取一併排除，
-                    //   使其擺放與網格皆不會進入束中。）
-                    if (MeshRipSystem.IsUtilityMarkerSubObject(EntityManager, entity))
-                    {
-                        skippedUtilityNodes++;
-
-                        // Tallied by prefab, and named in the report. A silent count says the
-                        // filter ran; it does not say it caught the right things, and the previous
-                        // version of this filter ran happily while catching none of them. Naming
-                        // what was dropped is what makes both failures visible — the nodes still
-                        // getting through, and anything drawn that should not have been dropped.
-                        // （依預製模板統計並於報告中具名。單純的計數只能說明篩選器執行過，
-                        //   卻無法說明它攔下了正確的東西；而此篩選器的前一版正是一邊順利執行、
-                        //   一邊一個也沒攔到。具名列出被丟棄者，才能使兩種失敗都顯現出來：
-                        //   仍在漏網的節點，以及本不該被丟棄的可見物件。）
-                        Entity nodePrefab = EntityManager.GetComponentData<PrefabRef>(entity).m_Prefab;
-                        if (nodePrefab != Entity.Null)
-                        {
-                            utilityNodesByPrefab.TryGetValue(nodePrefab, out int seen);
-                            utilityNodesByPrefab[nodePrefab] = seen + 1;
-                        }
-
-                        continue;
-                    }
-
-                    // Cargo riding a vehicle — a log pile on a trailer — is part of the agent it
-                    // rides, not of the built environment, and the vehicle it belongs to is itself
-                    // excluded. Same treatment as the utility nodes: dropped in both rip systems
-                    // alike, tallied by prefab, and named in the report.
-                    // （載於車輛上的貨物——拖車上的原木堆——屬於其所乘的行為者而非建成環境，
-                    //   且其所屬車輛本身已被排除。處理方式與公用設施節點相同：
-                    //   兩個擷取系統一併丟棄，依預製模板統計，並於報告中具名。）
-                    if (MeshRipSystem.IsVehicleCargoSubObject(EntityManager, entity))
-                    {
-                        skippedVehicleCargo++;
-
-                        Entity cargoPrefab = EntityManager.GetComponentData<PrefabRef>(entity).m_Prefab;
-                        if (cargoPrefab != Entity.Null)
-                        {
-                            vehicleCargoByPrefab.TryGetValue(cargoPrefab, out int seen);
-                            vehicleCargoByPrefab[cargoPrefab] = seen + 1;
-                        }
-
-                        continue;
-                    }
-
-                    Entity prefabEntity = EntityManager.GetComponentData<PrefabRef>(entity).m_Prefab;
-                    if (prefabEntity == Entity.Null)
-                    {
-                        skippedNoPrefab++;
-                        continue;
-                    }
-
-                    // An object whose managed prefab will not resolve is still a real object
-                    // standing in the city, so keep its placement under a synthetic id rather than
-                    // dropping it. PLAN §3 is explicit that placement must survive even when the
-                    // geometry cannot: a consumer substitutes a stand-in mesh and every instance
-                    // still lands in the right place. Dropping them silently is what breaks the
-                    // contract's 1:1 fidelity requirement.
-                    // （無法解析受管預製模板的物件，仍是城市中真實存在的物件，因此以合成 ID 保留其
-                    //   擺放而非丟棄。PLAN §3 明確要求即使幾何無法取得，擺放仍須保留。）
-                    MeshRipSystem.AssetIdEntry idEntry = assetIdTable[prefabEntity];
-                    string assetId = idEntry.AssetId;
-                    bool unresolved = !idEntry.Resolved;
-
-                    // A prefab with no SubMesh buffer has no geometry to rip, and the mesh rip
-                    // will never say so: its query requires SubMesh, so such a prefab is not
-                    // enumerated at all and cannot be skipped with a reason. This is the only
-                    // place both facts are in hand — the reference is being written here, and the
-                    // prefab entity is right there to ask — so the gap is declared here. Parking
-                    // lots, helipad airspace, area placeholders and intersections are all real
-                    // objects with real placements and no mesh of their own.
-                    // （沒有 SubMesh 緩衝區的預製模板無幾何可擷取，而網格擷取永遠不會言明此事：
-                    //   其查詢要求 SubMesh，故此類預製模板根本不會被列舉，也就無法附帶原因跳過。
-                    //   唯有此處同時掌握兩項事實——參照正於此寫出，而預製模板實體就在手邊——
-                    //   因此於此宣告該缺口。停車場、停機坪空域、區域佔位物與交叉路口
-                    //   皆是具有真實擺放、卻無自身網格的真實物件。）
-                    if (!unresolved && !EntityManager.HasBuffer<SubMesh>(prefabEntity))
-                        geometrylessPrefabs.Add(assetId);
-
-                    if (unresolved)
-                    {
-                        skippedNoPrefab++;
-                        unresolvedPrefabs.Add(prefabEntity.Index);
-
-                        if (skipSamples.Count < 5)
-                        {
-                            skipSamples.Add($"entity {entity.Index} prefab {prefabEntity.Index} "
-                                + $"hasPrefabData={EntityManager.HasComponent<PrefabData>(prefabEntity)} "
-                                + $"[{string.Join(", ", DescribeComponents(entity))}]");
-                        }
-                    }
-
-                    Game.Objects.Transform transform = EntityManager.GetComponentData<Game.Objects.Transform>(entity);
-                    string kind = ClassifyKind(entity, prefabEntity);
-
-                    InstanceRecord record = new()
-                    {
-                        Id = entity.Index,
-                        AssetId = assetId,
-                        Kind = kind,
-                        Position = transform.m_Position,
-                        Rotation = transform.m_Rotation
-                    };
-
-                    // Owner is the sub-object relationship (a prop on a lot, a wing of a building).
-                    // Attached is a different thing — an object bound to a network at a curve
-                    // position — and using it as the parent link found only 98 of 1.4M objects.
-                    // （Owner 才是子物件關係；Attached 表示物件綁定於路網上的某個曲線位置，
-                    //   以其作為父子連結時，140 萬個物件中僅有 98 個成立。）
-                    Entity parent = Entity.Null;
-                    if (EntityManager.HasComponent<Game.Common.Owner>(entity))
-                        parent = EntityManager.GetComponentData<Game.Common.Owner>(entity).m_Owner;
-                    if ((parent == Entity.Null) && EntityManager.HasComponent<Attached>(entity))
-                        parent = EntityManager.GetComponentData<Attached>(entity).m_Parent;
-
-                    if (parent != Entity.Null)
-                    {
-                        record.Parent = parent.Index;
-                        withParent++;
-                    }
-
-                    AddAttributes(entity, prefabEntity, kind, record);
-
-                    // Flag it in the record too, so a consumer can tell a stand-in from a real
-                    // asset without cross-referencing warnings.jsonl.
-                    // （於紀錄中一併標記，使消費端無須交叉比對 warnings.jsonl 即可辨識替代資產。）
-                    if (unresolved) record.Attributes["unresolved"] = true;
-
-                    // A stacked object is not one placement but several, and how many is a property
-                    // of this instance rather than of its prefab.
-                    // （堆疊式物件並非單一擺放而是數個，且其數量取決於此實例而非其預製模板。）
-                    int expanded = ExpandStack(entity, prefabEntity, record, writer, assetIds);
-                    if (expanded > 0)
-                    {
-                        stackExpanded++;
-                        stackRecords += expanded;
-                        byKind.TryGetValue(kind, out int stacked);
-                        byKind[kind] = stacked + expanded;
-                        continue;
-                    }
-
-                    writer.Write(record);
-                    assetIds.Add(assetId);
-                    byKind.TryGetValue(kind, out int count);
-                    byKind[kind] = count + 1;
-                }
-
-                report.AppendLine($"Wrote {writer.Count} instance(s) to instances.jsonl");
-                if (_colorSets > 0)
-                {
-                    report.AppendLine($"  {_colorSets} instance(s) carry the game's resolved paint (attrs.colorSet), "
-                                    + $"{_customColors} of them player-painted; "
-                                    + $"{_divergentColorSets} had per-part sets that differ (first part exported)");
-                }
-                if (_growthScales > 0) report.AppendLine($"  {_growthScales} tree(s) carry the game's growth scale (attrs.growthScale)");
-                if (stackExpanded > 0)
-                {
-                    report.AppendLine($"Expanded {stackExpanded} stacked object(s) into {stackRecords} "
-                                    + "section record(s) — pillars, walls and fences reach their full height");
-                }
-                if (writer.NormalizedRotations > 0) report.AppendLine($"Normalised {writer.NormalizedRotations} non-unit rotation(s)");
+                run.Writer = new InstanceWriter(run.Path);
             }
-            finally
+            catch
             {
-                entities.Dispose();
+                Abandon(run);
+                RipProgress.Clear();
+                throw;
             }
 
-            foreach (KeyValuePair<string, int> kvp in byKind) report.AppendLine($"  {kvp.Key}: {kvp.Value}");
-            report.AppendLine($"Sub-objects with a parent link: {withParent}");
-            if (skippedUtilityNodes > 0)
-            {
-                report.AppendLine($"Skipped {skippedUtilityNodes} buried utility-network node object(s), "
-                                + $"{utilityNodesByPrefab.Count} distinct prefab(s):");
+            _run = run;
+            RipProgress.Report(RipProgress.Phase.Instances, 0, run.Entities.Length);
 
-                List<KeyValuePair<Entity, int>> nodes = new(utilityNodesByPrefab);
+            return $"Enumerating {run.Entities.Length} placed object(s) in the background.\n\n"
+                 + "Close this options page to watch the progress indicator — it appears in the top-right of the game view, not over the menu.";
+        }
+
+        /// <summary>
+        /// Advance a rip by one frame's budget.（以一幀的預算推進擷取。）
+        /// </summary>
+        /// <param name="run">The rip in flight.（進行中的擷取。）</param>
+        private void Advance(InstanceRun run)
+        {
+            System.Diagnostics.Stopwatch budget = System.Diagnostics.Stopwatch.StartNew();
+
+            while (run.Index < run.Entities.Length)
+            {
+                // One bad object must not cost the other million their records.
+                // （一個異常物件不得使其餘百萬物件失去紀錄。）
+                try
+                {
+                    ProcessOne(run, run.Entities[run.Index]);
+                }
+                catch (Exception ex)
+                {
+                    run.ProcessFailed++;
+                    if (run.ProcessFailed <= 5) _log.Warn($"Failed to record object entity {run.Entities[run.Index].Index}: {ex}");
+                }
+
+                run.Index++;
+
+                if (budget.Elapsed.TotalMilliseconds >= FrameBudgetMilliseconds) break;
+            }
+
+            RipProgress.Report(RipProgress.Phase.Instances, run.Index, run.Entities.Length);
+            if (run.Index >= run.Entities.Length) Finish(run);
+        }
+
+        /// <summary>
+        /// Handle one placed object: classify, resolve, record.（處理一個已放置物件：分類、解析、記錄。）
+        /// </summary>
+        /// <param name="run">The rip in flight.（進行中的擷取。）</param>
+        /// <param name="entity">The object entity.（物件實體。）</param>
+        private void ProcessOne(InstanceRun run, Entity entity)
+        {
+            // Buried utility-network furniture: excluded here and in the mesh rip alike, so
+            // neither its placements nor its meshes reach the bundle.
+            // （埋於地下的管線網路配件：此處與網格擷取一併排除，
+            //   使其擺放與網格皆不會進入束中。）
+            if (MeshRipSystem.IsUtilityMarkerSubObject(EntityManager, entity))
+            {
+                run.SkippedUtilityNodes++;
+
+                // Tallied by prefab, and named in the report. A silent count says the
+                // filter ran; it does not say it caught the right things, and the previous
+                // version of this filter ran happily while catching none of them. Naming
+                // what was dropped is what makes both failures visible — the nodes still
+                // getting through, and anything drawn that should not have been dropped.
+                // （依預製模板統計並於報告中具名。單純的計數只能說明篩選器執行過，
+                //   卻無法說明它攔下了正確的東西；而此篩選器的前一版正是一邊順利執行、
+                //   一邊一個也沒攔到。具名列出被丟棄者，才能使兩種失敗都顯現出來：
+                //   仍在漏網的節點，以及本不該被丟棄的可見物件。）
+                Entity nodePrefab = EntityManager.GetComponentData<PrefabRef>(entity).m_Prefab;
+                if (nodePrefab != Entity.Null)
+                {
+                    run.UtilityNodesByPrefab.TryGetValue(nodePrefab, out int seen);
+                    run.UtilityNodesByPrefab[nodePrefab] = seen + 1;
+                }
+
+                return;
+            }
+
+            // Cargo riding a vehicle — a log pile on a trailer — is part of the agent it
+            // rides, not of the built environment, and the vehicle it belongs to is itself
+            // excluded. Same treatment as the utility nodes: dropped in both rip systems
+            // alike, tallied by prefab, and named in the report.
+            // （載於車輛上的貨物——拖車上的原木堆——屬於其所乘的行為者而非建成環境，
+            //   且其所屬車輛本身已被排除。處理方式與公用設施節點相同：
+            //   兩個擷取系統一併丟棄，依預製模板統計，並於報告中具名。）
+            if (MeshRipSystem.IsVehicleCargoSubObject(EntityManager, entity))
+            {
+                run.SkippedVehicleCargo++;
+
+                Entity cargoPrefab = EntityManager.GetComponentData<PrefabRef>(entity).m_Prefab;
+                if (cargoPrefab != Entity.Null)
+                {
+                    run.VehicleCargoByPrefab.TryGetValue(cargoPrefab, out int seen);
+                    run.VehicleCargoByPrefab[cargoPrefab] = seen + 1;
+                }
+
+                return;
+            }
+
+            Entity prefabEntity = EntityManager.GetComponentData<PrefabRef>(entity).m_Prefab;
+            if (prefabEntity == Entity.Null)
+            {
+                run.SkippedNoPrefab++;
+                return;
+            }
+
+            // An object whose managed prefab will not resolve is still a real object
+            // standing in the city, so keep its placement under a synthetic id rather than
+            // dropping it. PLAN §3 is explicit that placement must survive even when the
+            // geometry cannot: a consumer substitutes a stand-in mesh and every instance
+            // still lands in the right place. Dropping them silently is what breaks the
+            // contract's 1:1 fidelity requirement.
+            // （無法解析受管預製模板的物件，仍是城市中真實存在的物件，因此以合成 ID 保留其
+            //   擺放而非丟棄。PLAN §3 明確要求即使幾何無法取得，擺放仍須保留。）
+            MeshRipSystem.AssetIdEntry idEntry = run.AssetIdTable[prefabEntity];
+            string assetId = idEntry.AssetId;
+            bool unresolved = !idEntry.Resolved;
+
+            // A prefab with no SubMesh buffer has no geometry to rip, and the mesh rip
+            // will never say so: its query requires SubMesh, so such a prefab is not
+            // enumerated at all and cannot be skipped with a reason. This is the only
+            // place both facts are in hand — the reference is being written here, and the
+            // prefab entity is right there to ask — so the gap is declared here. Parking
+            // lots, helipad airspace, area placeholders and intersections are all real
+            // objects with real placements and no mesh of their own.
+            // （沒有 SubMesh 緩衝區的預製模板無幾何可擷取，而網格擷取永遠不會言明此事：
+            //   其查詢要求 SubMesh，故此類預製模板根本不會被列舉，也就無法附帶原因跳過。
+            //   唯有此處同時掌握兩項事實——參照正於此寫出，而預製模板實體就在手邊——
+            //   因此於此宣告該缺口。停車場、停機坪空域、區域佔位物與交叉路口
+            //   皆是具有真實擺放、卻無自身網格的真實物件。）
+            if (!unresolved && !EntityManager.HasBuffer<SubMesh>(prefabEntity))
+                run.GeometrylessPrefabs.Add(assetId);
+
+            if (unresolved)
+            {
+                run.SkippedNoPrefab++;
+                run.UnresolvedPrefabs.Add(prefabEntity.Index);
+
+                if (run.SkipSamples.Count < 5)
+                {
+                    run.SkipSamples.Add($"entity {entity.Index} prefab {prefabEntity.Index} "
+                        + $"hasPrefabData={EntityManager.HasComponent<PrefabData>(prefabEntity)} "
+                        + $"[{string.Join(", ", DescribeComponents(entity))}]");
+                }
+            }
+
+            Game.Objects.Transform transform = EntityManager.GetComponentData<Game.Objects.Transform>(entity);
+            string kind = ClassifyKind(entity, prefabEntity);
+
+            InstanceRecord record = new()
+            {
+                Id = entity.Index,
+                AssetId = assetId,
+                Kind = kind,
+                Position = transform.m_Position,
+                Rotation = transform.m_Rotation
+            };
+
+            // Owner is the sub-object relationship (a prop on a lot, a wing of a building).
+            // Attached is a different thing — an object bound to a network at a curve
+            // position — and using it as the parent link found only 98 of 1.4M objects.
+            // （Owner 才是子物件關係；Attached 表示物件綁定於路網上的某個曲線位置，
+            //   以其作為父子連結時，140 萬個物件中僅有 98 個成立。）
+            Entity parent = Entity.Null;
+            if (EntityManager.HasComponent<Game.Common.Owner>(entity))
+                parent = EntityManager.GetComponentData<Game.Common.Owner>(entity).m_Owner;
+            if ((parent == Entity.Null) && EntityManager.HasComponent<Attached>(entity))
+                parent = EntityManager.GetComponentData<Attached>(entity).m_Parent;
+
+            if (parent != Entity.Null)
+            {
+                record.Parent = parent.Index;
+                run.WithParent++;
+            }
+
+            AddAttributes(entity, prefabEntity, kind, record);
+
+            // Flag it in the record too, so a consumer can tell a stand-in from a real
+            // asset without cross-referencing warnings.jsonl.
+            // （於紀錄中一併標記，使消費端無須交叉比對 warnings.jsonl 即可辨識替代資產。）
+            if (unresolved) record.Attributes["unresolved"] = true;
+
+            // A stacked object is not one placement but several, and how many is a property
+            // of this instance rather than of its prefab.
+            // （堆疊式物件並非單一擺放而是數個，且其數量取決於此實例而非其預製模板。）
+            int expanded = ExpandStack(entity, prefabEntity, record, run.Writer, run.AssetIds);
+            if (expanded > 0)
+            {
+                run.StackExpanded++;
+                run.StackRecords += expanded;
+                run.ByKind.TryGetValue(kind, out int stacked);
+                run.ByKind[kind] = stacked + expanded;
+                return;
+            }
+
+            run.Writer.Write(record);
+            run.AssetIds.Add(assetId);
+            run.ByKind.TryGetValue(kind, out int count);
+            run.ByKind[kind] = count + 1;
+        }
+
+        /// <summary>
+        /// Close the file, report, and hand the summary to whoever is listening.
+        /// （關閉檔案、產出報告，並將摘要交予聆聽者。）
+        /// </summary>
+        /// <param name="run">The finished run.（已完成的工作。）</param>
+        private void Finish(InstanceRun run)
+        {
+            _run = null;
+            run.Clock.Stop();
+            RipProgress.Clear();
+
+            StringBuilder report = run.Report;
+            report.AppendLine($"Wrote {run.Writer.Count} instance(s) to instances.jsonl in {run.Clock.Elapsed.TotalSeconds:F1} s");
+            if (_colorSets > 0)
+            {
+                report.AppendLine($"  {_colorSets} instance(s) carry the game's resolved paint (attrs.colorSet), "
+                                + $"{_customColors} of them player-painted; "
+                                + $"{_divergentColorSets} had per-part sets that differ (first part exported)");
+            }
+            if (_growthScales > 0) report.AppendLine($"  {_growthScales} tree(s) carry the game's growth scale (attrs.growthScale)");
+            if (run.StackExpanded > 0)
+            {
+                report.AppendLine($"Expanded {run.StackExpanded} stacked object(s) into {run.StackRecords} "
+                                + "section record(s) — pillars, walls and fences reach their full height");
+            }
+            if (run.Writer.NormalizedRotations > 0) report.AppendLine($"Normalised {run.Writer.NormalizedRotations} non-unit rotation(s)");
+            if (run.ProcessFailed > 0) report.AppendLine($"FAILED to record {run.ProcessFailed} object(s) — see the log");
+
+            int instanceCount = run.Writer.Count;
+            Abandon(run);
+
+            foreach (KeyValuePair<string, int> kvp in run.ByKind) report.AppendLine($"  {kvp.Key}: {kvp.Value}");
+            report.AppendLine($"Sub-objects with a parent link: {run.WithParent}");
+            if (run.SkippedUtilityNodes > 0)
+            {
+                report.AppendLine($"Skipped {run.SkippedUtilityNodes} buried utility-network node object(s), "
+                                + $"{run.UtilityNodesByPrefab.Count} distinct prefab(s):");
+
+                List<KeyValuePair<Entity, int>> nodes = new(run.UtilityNodesByPrefab);
                 nodes.Sort((a, b) => b.Value.CompareTo(a.Value));
 
                 for (int i = 0; (i < 12) && (i < nodes.Count); i++)
@@ -405,12 +549,12 @@ namespace Carto.Systems
 
                 if (nodes.Count > 12) report.AppendLine($"  … and {nodes.Count - 12} more");
             }
-            if (skippedVehicleCargo > 0)
+            if (run.SkippedVehicleCargo > 0)
             {
-                report.AppendLine($"Skipped {skippedVehicleCargo} cargo prop(s) riding vehicles, "
-                                + $"{vehicleCargoByPrefab.Count} distinct prefab(s):");
+                report.AppendLine($"Skipped {run.SkippedVehicleCargo} cargo prop(s) riding vehicles, "
+                                + $"{run.VehicleCargoByPrefab.Count} distinct prefab(s):");
 
-                List<KeyValuePair<Entity, int>> cargo = new(vehicleCargoByPrefab);
+                List<KeyValuePair<Entity, int>> cargo = new(run.VehicleCargoByPrefab);
                 cargo.Sort((a, b) => b.Value.CompareTo(a.Value));
 
                 for (int i = 0; (i < 12) && (i < cargo.Count); i++)
@@ -421,17 +565,47 @@ namespace Carto.Systems
 
                 if (cargo.Count > 12) report.AppendLine($"  … and {cargo.Count - 12} more");
             }
-            report.AppendLine($"Distinct assetIds referenced: {assetIds.Count}");
-            if (skippedNoPrefab > 0)
+            report.AppendLine($"Distinct assetIds referenced: {run.AssetIds.Count}");
+            if (run.SkippedNoPrefab > 0)
             {
-                report.AppendLine($"Unresolved prefabs: {unresolvedPrefabs.Count} distinct, {skippedNoPrefab} instance(s) kept under synthetic ids");
-                WriteWarnings(outputDirectory, unresolvedPrefabs, geometrylessPrefabs, report);
-                foreach (string sample in skipSamples) report.AppendLine($"  e.g. {sample}");
+                report.AppendLine($"Unresolved prefabs: {run.UnresolvedPrefabs.Count} distinct, {run.SkippedNoPrefab} instance(s) kept under synthetic ids");
+                WriteWarnings(run.OutputDirectory, run.UnresolvedPrefabs, run.GeometrylessPrefabs, report);
+                foreach (string sample in run.SkipSamples) report.AppendLine($"  e.g. {sample}");
             }
-            report.AppendLine($"Output: {path}");
+            report.AppendLine($"Output: {run.Path}");
 
             _log.Info(report.ToString());
-            return report.ToString();
+
+            if (run.Completed != null)
+            {
+                try { run.Completed(report.ToString()); }
+                catch (Exception ex) { _log.Warn($"Instance rip completion callback failed: {ex}"); }
+                return;
+            }
+
+            try
+            {
+                string summary = $"Wrote {instanceCount} instance record(s), {run.AssetIds.Count} distinct assetId(s), "
+                               + $"in {run.Clock.Elapsed.TotalSeconds:F1} s.\n\nFull report: Logs/Carto.log";
+                Game.UI.MessageDialog dialog = new("Options.SECTION[Carto.Carto.Mod]", summary, "Common.OK");
+                Instance.UI.appBindings.ShowMessageDialog(dialog, null);
+            }
+            catch (Exception ex)
+            {
+                _log.Warn($"Could not show the instance rip result dialog: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Release what a run holds open — the record file and the entity array.
+        /// （釋放執行所持有的資源——紀錄檔與實體陣列。）
+        /// </summary>
+        /// <param name="run">The run to release.（要釋放的工作。）</param>
+        private static void Abandon(InstanceRun run)
+        {
+            try { run.Writer?.Dispose(); } catch { /* already closed（已關閉） */ }
+            run.Writer = null;
+            if (run.Entities.IsCreated) run.Entities.Dispose();
         }
 
         /// <summary>

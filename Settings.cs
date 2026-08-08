@@ -496,24 +496,23 @@ namespace Carto
                 try
                 {
                     string directory = Instance.BundlePath;
-                    System.Collections.Generic.HashSet<string> assetIds = new();
-                    Instance.InstanceRip.RipInstances(directory, assetIds);
 
                     // Colours and lights are per-render-prefab tables, resolved from the same
-                    // prefab set the instances just referenced, so they belong to this step.
-                    // （顏色與燈光為逐繪製預製模板的表格，且解析自實例方才參照的同一組預製模板，
-                    //   故屬於此步驟。）
+                    // prefab set the instances reference, so they belong to this step. Quick and
+                    // synchronous; the instance walk itself then runs a slice per frame.
+                    // （顏色與燈光為逐繪製預製模板的表格，且解析自實例參照的同一組預製模板，
+                    //   故屬於此步驟。快速且同步；實例走訪本身則每幀推進一段。）
                     string appearance = Instance.AppearanceRip.RipAppearance(directory);
-                    summary = $"Wrote instances.jsonl\n{assetIds.Count} distinct assetIds referenced.\n"
-                            + $"{appearance}\nFull report: Logs/Carto.log";
+                    summary = appearance + "\n" + Instance.InstanceRip.BeginRip(directory);
                 }
                 catch (System.Exception ex)
                 {
                     Instance.Log.Error(ex.ToString());
-                    summary = $"Instance rip failed:\n{ex.Message}";
+                    IO.RipProgress.Clear();
+                    summary = $"Instance rip failed to start:\n{ex.Message}";
                 }
 
-                Game.UI.MessageDialog dialog = new("Options.SECTION[Carto.Carto.Mod]", summary, "Common.OK");
+                Game.UI.MessageDialog dialog = new("Options.SECTION[Carto.Carto.Mod]", Fit(summary), "Common.OK");
                 Instance.UI.appBindings.ShowMessageDialog(dialog, null);
             }
         }
@@ -536,12 +535,31 @@ namespace Carto
                     string directory = Instance.BundlePath;
 
                     // The lane graph rides with the networks: it is the same domain seen as a
-                    // graph rather than a surface, and it is plain ECS data, so it finishes in one
-                    // pass rather than needing the network rip's frame-budgeted queue.
-                    // （車道圖隨路網一併擷取：兩者為同一領域，只是分別以圖與表面呈現；
-                    //   且其為一般 ECS 資料，一次走訪即可完成，無須路網擷取的分幀佇列。）
-                    string lanes = Instance.LaneRip.RipLanes(directory);
-                    summary = lanes + "\n" + Instance.NetworkRip.BeginRip(directory, RipTextureSize);
+                    // graph rather than a surface. Both passes are frame-budgeted now, so they
+                    // are chained — the network rip starts from the lane rip's completion
+                    // callback rather than running concurrently against the same frame budget
+                    // and progress caption.
+                    // （車道圖隨路網一併擷取：兩者為同一領域，只是分別以圖與表面呈現。
+                    //   如今兩趟皆為分幀執行，故予以串接——路網擷取由車道擷取的完成回呼啟動，
+                    //   而非與其爭搶同一幀預算與進度說明文字。）
+                    int textureSize = RipTextureSize;
+                    summary = Instance.LaneRip.BeginRip(directory, lanes =>
+                    {
+                        string networks;
+                        try
+                        {
+                            networks = Instance.NetworkRip.BeginRip(directory, textureSize);
+                        }
+                        catch (System.Exception ex)
+                        {
+                            Instance.Log.Error(ex.ToString());
+                            networks = $"Network rip failed to start:\n{ex.Message}";
+                        }
+
+                        Game.UI.MessageDialog next = new("Options.SECTION[Carto.Carto.Mod]",
+                                                         Fit(lanes + "\n" + networks), "Common.OK");
+                        Instance.UI.appBindings.ShowMessageDialog(next, null);
+                    });
                 }
                 catch (System.Exception ex)
                 {

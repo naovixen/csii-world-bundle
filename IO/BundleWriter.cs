@@ -149,10 +149,26 @@ namespace Carto.IO
         /// <returns>A human-readable report.（供人閱讀的報告。）</returns>
         public static string WriteManifest(string outputDirectory)
         {
+            return WriteManifest(outputDirectory, BundleManifest.Capture());
+        }
+
+        /// <summary>
+        /// The directory-scanning half of <see cref="WriteManifest(string)"/>: everything here is
+        /// file I/O over what the rip left on disk, so it may run on any thread — the pipeline
+        /// captures the <paramref name="snapshot"/> on the main thread (game state is main-thread
+        /// affair) and runs this half under <c>Task.Run</c> (PLAN Phase 8).
+        /// （<see cref="WriteManifest(string)"/> 的目錄掃描半部：此處僅為對擷取留於磁碟內容的檔案
+        /// 讀寫，故可於任何執行緒執行——管線於主執行緒擷取 <paramref name="snapshot"/>
+        /// （遊戲狀態屬主執行緒事務），並以 <c>Task.Run</c> 執行此半部（PLAN 第八階段）。）
+        /// </summary>
+        /// <param name="outputDirectory">The bundle root.（束的根目錄。）</param>
+        /// <param name="snapshot">The game-state metadata, captured on the main thread.（於主執行緒擷取的遊戲狀態後設資料。）</param>
+        /// <returns>A human-readable report.（供人閱讀的報告。）</returns>
+        public static string WriteManifest(string outputDirectory, BundleManifest snapshot)
+        {
             if (!Directory.Exists(outputDirectory))
                 throw new DirectoryNotFoundException($"No bundle at {outputDirectory}. 該處沒有束。");
 
-            BundleManifest snapshot = BundleManifest.Capture();
             StringBuilder report = new();
 
             // ---- 1. Which layers exist.（哪些層存在。）
