@@ -123,6 +123,7 @@ namespace Carto.IO
             public double[] rot { get; set; }
             public double[] scale { get; set; }
             public double[][] centerline { get; set; }
+            public double? width { get; set; }
         }
 
         /// <summary>A surface-area record, as far as bounds care.（就邊界所需而言的地表區域紀錄。）</summary>
@@ -357,17 +358,29 @@ namespace Carto.IO
                 if (reader.TokenType != JsonToken.StartObject) continue;
                 PlacementRow row = serializer.Deserialize<PlacementRow>(reader);
                 count++;
-                if ((row?.pos == null) || (row.pos.Length != 3)) continue;
+                if (row == null) continue;
 
-                bounds.Encapsulate(row.pos[0], row.pos[1], row.pos[2]);
-
+                // A network record carries either a placement or an inline centerline (§5) —
+                // a centerline-only record still bounds real geometry, so never skip it.
+                // （路網紀錄攜帶放置點或內嵌中心線兩者之一（§5）——僅有中心線的紀錄
+                //   仍界定真實幾何，故絕不可略過。）
                 if (row.centerline != null)
                 {
+                    // The centerline form has no mesh; its geometry is the consumer's extrusion,
+                    // so the record's width is what encloses it.（中心線形式沒有網格；其幾何為
+                    // 消費端的擠出結果，故以紀錄的寬度圍住它。）
+                    double half = (row.width ?? 0) * 0.5;
                     foreach (double[] point in row.centerline)
                     {
-                        if ((point != null) && (point.Length == 3)) bounds.Encapsulate(point[0], point[1], point[2]);
+                        if ((point == null) || (point.Length != 3)) continue;
+                        bounds.Encapsulate(point[0] - half, point[1], point[2] - half);
+                        bounds.Encapsulate(point[0] + half, point[1], point[2] + half);
                     }
                 }
+
+                if ((row.pos == null) || (row.pos.Length != 3)) continue;
+
+                bounds.Encapsulate(row.pos[0], row.pos[1], row.pos[2]);
 
                 if ((row.assetId != null) && meshBounds.TryGetValue(row.assetId, out Aabb glb) && glb.Any)
                 {

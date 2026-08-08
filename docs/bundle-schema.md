@@ -236,8 +236,8 @@ line). One line per placed object.
 | `pos` | yes | World position, bundle frame, metres. |
 | `rot` | yes | Unit quaternion `[x,y,z,w]`, bundle frame. Validators check `|q| = 1` to 1e-3. |
 | `scale` | no | Per-axis scale; absent means `[1,1,1]`. |
-| `id` | no | Producer-local unique integer (the ECS entity index). Present so `parent` can point at it. |
-| `parent` | no | The `id` of the owning instance, when this record came from an owner's `SubObject` buffer. |
+| `id` | no | Producer-local integer (the ECS entity index), unique per **logical object**: the one sanctioned repetition is §4.1's stack expansion, where every section record of one stacked instance shares that instance's id. Present so `parent` can point at it. |
+| `parent` | no | The producer-local id of the **owning entity**, when this record came from an owner's `SubObject` buffer. Resolves to an `instances.jsonl` id *or* a `networks.jsonl` id when the owner is itself exported (street furniture is owned by road edges). Owners the bundle does not carry — utility-net edges, net nodes — leave a `parent` that resolves to no record. `parent` is therefore **advisory grouping, never a required join**: records with the same `parent` belong to the same owner even when that owner is absent. |
 | `attrs` | no | Semantic attributes; see below. |
 
 ### 4.1 Sub-objects and multi-part buildings
@@ -261,7 +261,8 @@ high wall or a long fence. It stores a foot, one repeating section and a cap, an
 middle at draw time to span whatever that instance needs — a viaduct pillar's shaft is authored
 two metres tall. A bundle cannot carry that as one mesh, because the repeat count is a property of
 the *instance*, so the producer emits a record per section, each with its world transform baked,
-exactly as it does for sub-objects above. Those records reference `<assetId>__stack_first`,
+exactly as it does for sub-objects above. All section records of one stacked instance share
+that instance's `id` — the only sanctioned repetition of an id in `instances.jsonl`. Those records reference `<assetId>__stack_first`,
 `__stack_mid` and `__stack_last`, which are ordinary meshes under `layers.meshes`; a prefab whose
 sub-meshes include parts with *no* stack role additionally ships them as `<assetId>__stack_rest`,
 referenced once per stacked instance — the game draws such parts untiled at the instance
@@ -1462,3 +1463,17 @@ there is no v1 consumer in the field to break, and a consumer written against th
 pre-amendment schema fails loudly at its validator, which is the promised failure mode. This
 is the last amendment that may lean on "no complete bundle exists"; from the first finalized
 bundle onward, closed-object changes take `schema: 2`.
+
+**`id` and `parent` described correctly (2026-08-08, the Phase 7 acceptance run).** The first
+end-to-end validation of a real city showed §4's field table describing both joins more
+strictly than the producer ever implemented them; the bytes were right and the description
+wrong, so like the earlier `elevation` correction this changes no format. `id` said "unique
+integer" while §4.1's stack expansion has always emitted one record per section, all sharing
+the stacked instance's id — measured, every one of the 1,263 repeated ids in a full city is a
+pure stack-section group. `parent` said "the id of the owning instance" while owners have
+always included road edges (which resolve in `networks.jsonl`, not `instances.jsonl`) and
+entities the bundle deliberately does not carry (utility-net edges, net nodes — 43,911
+references over one city, of which 22,952 resolve to network records and the rest to no record
+at all). The table now states the real invariants; the validator accepts stack-section id
+sharing, resolves `parent` against both record layers, and reports unresolvable parents as one
+aggregated warning rather than an error, since §4 has always made `parent` ignorable.

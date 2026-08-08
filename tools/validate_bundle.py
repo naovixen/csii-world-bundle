@@ -444,14 +444,19 @@ def validate_bundle(bundle_dir: Path, schema_dir: Path) -> Report:
     # so a declared gap is a warning rather than an error. An *undeclared* one stays an error.
     declared_missing = _load_declared_missing(bundle_dir)
 
-    seen_ids: Dict[int, str] = {}
+    # A record id is unique per logical object; the one sanctioned exception is §4.1's stack
+    # expansion, where every section record of one stacked instance shares that instance's id.
+    stack_section = re.compile(r"__stack_(first|mid|last|rest)$")
+    seen_ids: Dict[int, bool] = {}  # id -> every record seen so far is a stack section
     missing_meshes: Dict[str, int] = {}
     for i, record in enumerate(instances):
         rid = record.get("id")
         if rid is not None:
-            if rid in seen_ids:
-                report.error(f"instances.jsonl: duplicate id {rid}")
-            seen_ids[rid] = "instance"
+            is_section = bool(stack_section.search(record.get("assetId", "")))
+            if rid in seen_ids and not (seen_ids[rid] and is_section):
+                report.error(f"instances.jsonl: duplicate id {rid} "
+                             "(only §4.1 stack-section records may share an id)")
+            seen_ids[rid] = seen_ids.get(rid, True) and is_section
         _check_quat(record.get("rot"), f"instances.jsonl line {i + 1}", report)
         asset_id = record["assetId"]
         if mesh_dir is None:
@@ -472,11 +477,6 @@ def validate_bundle(bundle_dir: Path, schema_dir: Path) -> Report:
         else:
             report.error(f"assetId {asset_id!r} ({count} {plural}) has no mesh at {where}")
 
-    for i, record in enumerate(instances):
-        parent = record.get("parent")
-        if parent is not None and parent not in seen_ids:
-            report.error(f"instances.jsonl line {i + 1}: parent {parent} matches no instance id")
-
     # -- networks.jsonl ----------------------------------------------------------------
     networks: List[Dict[str, Any]] = []
     networks_path = _resolve_layer(bundle_dir, layers, "networks")
@@ -484,6 +484,25 @@ def validate_bundle(bundle_dir: Path, schema_dir: Path) -> Report:
         networks = _load_jsonl(networks_path, schemas["network"], layers["networks"], report)
 
     net_ids = {r["id"] for r in networks if "id" in r}
+
+    # `parent` resolves into instances.jsonl or networks.jsonl when the owner is exported
+    # (street furniture is owned by road edges). Owners the bundle does not carry — utility-net
+    # edges, net nodes — leave a parent that resolves to no record; §4 makes parent advisory
+    # grouping, never a required join, so that is a warning, aggregated because one city has
+    # tens of thousands of such owners.
+    unresolved_parents: Dict[int, int] = {}
+    for record in instances:
+        parent = record.get("parent")
+        if parent is not None and parent not in seen_ids and parent not in net_ids:
+            unresolved_parents[parent] = unresolved_parents.get(parent, 0) + 1
+    if unresolved_parents:
+        total = sum(unresolved_parents.values())
+        samples = ", ".join(str(p) for p in list(unresolved_parents)[:5])
+        report.warn(
+            f"{total} instance record(s) carry a parent that resolves to no exported record "
+            f"({len(unresolved_parents)} distinct owners, e.g. {samples}); §4: such owners "
+            "(utility-net edges, net nodes) are not in the bundle and parent is advisory"
+        )
     for i, record in enumerate(networks):
         label = f"networks.jsonl line {i + 1}"
         if "rot" in record:
