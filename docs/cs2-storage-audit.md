@@ -3068,9 +3068,26 @@ post-`8985b73` code could move §2's, §3's and §6's byte counts; §4's and §5
 (that commit touches no file in their producer paths, §0). No row below is a measurement of a
 single current-code bundle, and none should be quoted as one.
 
+**Scope limit — this is a storage-representation audit, and the complementary question was not
+asked.** Every row in this section answers one question: *what do we ship that we needn't?* The
+ranking below is about bytes and rip/import time. It is not a fidelity ranking, and no row in it
+says anything about how completely the bundle describes the city. The opposite question — *what
+does the game have that we drop?* — is inventoried in `docs/cs2-api-audit.md` §5 "Reachable and
+unread": data confirmed readable on the main thread, from entities the rip already walks, that
+the ripper does not export. **That inventory was deliberately left unaudited in this pass.** Its
+concrete families, named here so a reader can size the gap: §5.1, the contract-documented `attrs`
+that are never produced — `name`, `height` (from `ObjectGeometryData.m_Bounds`, the true
+mesh-bounds height), `level`, `zone`, `lotSize`, `season`, construction progress
+(`UnderConstruction.m_Progress`), and the building→road link
+`Buildings.Building.m_RoadEdge`/`m_CurvePosition`; §5.4, lane graph detail; §5.5,
+`ColorVariation`'s hue/saturation/value/alpha ranges; §5.7, `MeshData.m_MinLod`/`m_LodBias` and
+`SubMesh.m_RandomSeed`. Every one of them is **additive information** — adopting any would make
+the bundle larger, not smaller — so none changes a row, an ordering, or the Phase B
+recommendation below.
+
 ### 9.1 How not to double-count these rows
 
-Four overlap families exist. Adding rows across a family double-counts bytes; this already
+Five overlap families exist. Adding rows across a family double-counts bytes; this already
 happened once inside §1, where the naive TEX-3 + TEX-4 sum claimed 440.2 MiB against a joint
 single-pass measurement of 377.1 MiB.
 
@@ -3112,6 +3129,19 @@ single-pass measurement of 377.1 MiB.
    policy by construction: §1.1 established its PNGs already run through `Deflater`, unlike the
    `.glb` BIN chunks of `meshes/` (§2.4) and `networks/` (§3.5), so the texture rows keep their
    full value under COMP-1.
+5. **Terrain: TERRAIN-1, TERRAIN-2 and TERRAIN-3 touch overlapping files, and only TERRAIN-2 is
+   additive at full value.** TERRAIN-1 re-encodes 11 files; TERRAIN-2 **deletes two of them**
+   (`surfaces/extra3_normal.png` 276,530 B + `surfaces/extra4_normal.png` 353,546 B), so adopting
+   both **forfeits 630,076 B of TERRAIN-1** — a file that is never written cannot be re-encoded.
+   TERRAIN-3 re-encodes `user_splatmap.png`, on which TERRAIN-1 already counts 196,146 B, so its
+   **incremental** value over TERRAIN-1 is **166,027 B**, not its 362,173 B gross; §9.2 sorts on
+   the incremental figure and names the gross beside it. Adding the three rows at full value gives
+   13,592,420 B. The correct combined figure is **12,766,198 B** — `arithmetic`,
+   4,540,334 − 630,076 + 8,689,913 + 166,027 — which is **826,222 B less** (the 630,076 B forfeit
+   plus the 196,146 B already counted). TERRAIN-1's 4.33 MiB is 4,540,334 B at 1 MiB =
+   1,048,576 B, the same conversion §7's own TERRAIN-1 + TERRAIN-2 combined figure
+   (≈12,600,171 B) uses. **TERRAIN-4 and TERRAIN-5 belong to no sum at all** — TERRAIN-4 saves
+   0 B and TERRAIN-5 costs bytes; see the note under §9.2's table.
 
 ### 9.2 Lossless candidates, ranked by absolute bytes saved
 
@@ -3131,7 +3161,9 @@ single-pass measurement of 377.1 MiB.
 | TEX-2 | `textures/` | Adaptive per-row PNG filtering plus zlib level 9 | 151.9 MiB (3.25% of bundle, 8.0% of `textures/`). **Nested inside TEX-3 and the joint row — do not add** | measured (120-file sample, assertion passed, stated extrapolation) | unmeasured; encode CPU rises, inside row 2's 59.416% share | 0 lines — any standard PNG decoder | low | YES | not applicable — in-place re-encode; nothing new, nothing retired |
 | TEX-1 | `textures/` | Adaptive per-row PNG filtering alone (replace the fixed filter 0), same zlib level | 64.5 MiB (1.38% of bundle, 3.4% of `textures/`). **Nested inside TEX-2 — do not add** | measured (120-file sample, assertion passed, stated extrapolation) | unmeasured; inside row 2's 59.416% share | 0 lines | low | YES | not applicable — in-place re-encode; nothing new, nothing retired |
 | MESH-3 | `meshes/` | Derive the 1,436 `__base.glb` skirts at consumer load time instead of baking them | 27.9 MiB (0.60% of bundle, 1.6% of `meshes/`) as shipped today; ≈2.2 MiB marginal if COMP-1 ships first (`arithmetic`, the removed files' own compressed size at `meshes/`'s measured 7.88% `lzma` ratio) | measured (file-class census, full population) | unmeasured; 1,436 fewer files to build and write inside row 2's 59.416% share | 366 lines (`IO/BaseSkirtBuilder.cs`, proven faithful to the game in §27) | medium — the port must reproduce the algorithm exactly to avoid visible gaps; a proven reference exists | YES — every fact in `__base.glb` is derivable from data already shipped plus a verified deterministic algorithm | **removes** a file class rather than adding one; the per-prefab base-material reference must move into `materials.json`/`bundle.json` — negligible bytes, a small schema touch |
-| TERRAIN-1 | `terrain/` | Selective adaptive filtering + zlib-9 on the 11 of 39 files where it measurably wins (dominated by `heightmap.png`'s 30.8%) | 4.33 MiB (0.09% of bundle, 6.47% of `terrain/`); a blanket policy across all 39 files is a 2.82% **loss** | measured, full population, every round-trip bit-exact | unmeasured; bounded by row 4's 0.355% share | 0 lines — in-place re-encode at unchanged paths | low | YES | not applicable — in-place re-encode; nothing new, nothing retired |
+| TERRAIN-2 | `terrain/` | Stop capturing `surfaces/extra3.png`, `extra3_normal.png`, `extra4.png`, `extra4_normal.png` — `m_UserSplatmap` is `R8G8_UNorm`, so `ApplyToSplatmap`'s `Extra3 → z` / `Extra4 → w` writes land in channels the texture does not have, and no pixel this game version produces can carry their weight (§7.3.2) | 8,689,913 B = **8.29 MiB (0.178% of bundle, 12.38% of `terrain/`)**. **Overlaps TERRAIN-1**: it deletes two files TERRAIN-1 re-encodes, so the pair is 12,600,171 B (12.02 MiB) rather than 13,230,247 B — §9.1 item 5 | measured, exact, full population; the dead-channel premise carries two sources — decompile (`Game.Rendering.TerrainMaterialSystem.cs:758`) and data (`user_splatmap.png`'s B channel max is 0 over all 16,777,216 pixels) | unmeasured — four fewer 1024² readbacks and PNG encodes; bounded by row 4's 0.355% share | 0 lines — four fewer files under a directory the consumer already enumerates through `index.json` | low, with one named gate: re-check `m_UserSplatmap`'s `GraphicsFormat` after any game patch that widens it; the producer already reads that texture and can assert on it | YES with respect to every weight the game can assign — the bytes are discarded, so this is a capture gate, not a re-encode | **retires**: `terrain/surfaces/extra3.png`, `extra3_normal.png`, `extra4.png`, `extra4_normal.png` and their `index.json` entries; **new layer**: none |
+| TERRAIN-1 | `terrain/` | Selective adaptive filtering + zlib-9 on the 11 of 39 files where it measurably wins (dominated by `heightmap.png`'s 30.8%) | 4.33 MiB (0.09% of bundle, 6.47% of `terrain/`); a blanket policy across all 39 files is a 2.82% **loss**. **Overlaps TERRAIN-2**, which retires 2 of the 11 files: 3.73 MiB if both land (`arithmetic`, §9.1 item 5) | measured, full population, every round-trip bit-exact | unmeasured; bounded by row 4's 0.355% share | 0 lines — in-place re-encode at unchanged paths | low | YES | not applicable — in-place re-encode; nothing new, nothing retired |
+| TERRAIN-3 | `terrain/` | Encode `user_splatmap.png` as colour type 4 (grey+alpha: R→L, G→A) instead of RGBA — its B channel is identically 0 and its A channel identically 255, pure padding from `Png.EncodeRgba` (§7.3.2) | **166,027 B = 0.158 MiB (0.0034% of bundle) incremental over TERRAIN-1**, which already counts 196,146 B on this one file — that is the sort key, per §9.1 item 5; **362,173 B = 0.35 MiB (0.0074% of bundle, 0.52% of `terrain/`) gross** if TERRAIN-1 does not land | measured, exact, full file, round-trip bit-exact on both live channels | unmeasured; bounded by row 4's 0.355% share | 1 line — read L and A instead of R and G; the `userSplatmap` semantics string must name the new channel order | low | YES, round-trip asserted bit-exact on both live channels | not applicable — same path, same filename, narrower colour type; a §12.1 note that `user_splatmap.png` is colour type 4 |
 | TEX-5 | `textures/` | Delete orphan textures | 0 — 0 orphans and 0 duplicate pixel-groups found in the full population | measured (closed, negative result) | 0 | 0 lines | none | not applicable | not applicable — no files to touch, nothing to retire |
 | MESH-4 | `meshes/` | Delete unreferenced or dead meshes | 0 — all 1,444 unreferenced-by-`assetId` files resolve to a documented contract mechanism | measured (closed, negative result) | 0 | 0 lines | none | not applicable | not applicable — no files to touch, nothing to retire |
 
@@ -3142,6 +3174,30 @@ cost is consumer import time — 2,240,914 vertices and ray-casts before the lan
 ~1.06M after, with the lane-geometry import phase measured at 374.9 s before and 381.8 s after
 (§6.3, §8) — which belongs in §8's import-time subsection and never in a bytes column.
 
+**Two of §7's lossless rows are deliberately not in the table above, because a ranking sorted by
+bytes saved cannot hold them.** Neither is dropped; each is carried where its figure is actually
+comparable to something.
+
+- **TERRAIN-4 — publish the measured splatmap channel map — saves 0 B, and is ranked in §9.4
+  instead.** The change is a constant string (`R = grass, G = dirt, B = extra1, A = extra2,
+  rock = unpainted residual`) inside the 1,127-byte `terrain/rasters.json`, replacing the sentence
+  that tells the consumer to calibrate. Its whole value is on §9.4's axis, and it is the only row
+  in this audit whose consumer cost is **negative**: it deletes 35 lines of calibration
+  (`tools/blender_import_bundle.py:2378-2412`) plus the sampling pass that feeds them. What those
+  35 lines currently produce on this bundle was measured, not assumed — 1 of 4 channels resolved
+  correctly: the calibration discards a live dirt channel averaging 71.99 on flat natural ground
+  and names the Extra1 paint channel a painted rock variant (§7.3.2). A zero in the bytes column
+  is this row's price, not its result.
+- **TERRAIN-5 — ship the game's own clip volumes as a layer — costs bytes, so it is not a
+  candidate for a saving ranking at all.** `arithmetic`, from §7.3.1's sizing table:
+  **−86,736 B** for the 834 sections that mark a cell on this terrain, **−5,153,616 B** at the
+  terrain-independent 49,554-section upper bound, against a `cutout.png` of 19,659 B that stays
+  either way. It is a fidelity row: a 3.5 m top-down mask cannot express a clip volume that is
+  open at one height and closed at another, and it is re-derived against one heightmap, so it is
+  stale the moment a consumer edits terrain. It is named here so its absence from the ranking is
+  not read as a rejection — it is neither recommended nor rejected on bytes, because bytes are not
+  what it trades.
+
 ### 9.3 Lossy candidates — separate, and none recommended
 
 Kept apart from §9.2 per constraint 3. **No candidate below appears in §9.5's recommendation**,
@@ -3151,8 +3207,10 @@ and none may be adopted without its own decision and its own A/B evidence.
 |---|---|---|---|---|---|---|---|---|---|---|
 | MESH-2 | `meshes/` | `KHR_mesh_quantization`-style re-encode: `POSITION` → `i16`, `NORMAL`/`TANGENT` → `i8`, `TEXCOORD_0` → `u16` | 952.3 MiB (20.40% of bundle, 55.5% of `meshes/`) — smaller than MESH-1's lossless 1,581.5 MiB from the same directory | arithmetic (format widths over the full population) | unmeasured; fewer bytes to serialise inside row 2's 59.416% share | consumer must dequantize per the extension or silently misread the geometry | high — breaks every consumer that does not implement the extension | **NO** | ≤ 20.505 mm (the full quantization step over the worst mesh's largest extent; a round-to-nearest quantizer's true worst case is at most half that, ≤ 10.253 mm) | either a **new layer** (a parallel quantized geometry form, opt-in) or a breaking major-version replacement — not designed here |
 | INST-3 | `instances.jsonl` | `colorSet` channels as `u8` (1/255 step) inside INST-2's side-column layout | 41.4 MiB (0.89% of bundle) off INST-2's 55.28 MiB `colorSet` column | measured (full-population round-trip failure rate) | unmeasured | none beyond INST-2's own reader | medium — visible banding on exactly the highest-instance-count assets, where §4.3 measured the entropy to be real | **NO** | 65.21% of 14,491,656 `colorSet` channel values fail to round-trip through a `u8` step against the shipped 4 dp text | replaces the `colorSet` side-column inside INST-2's own new layer, not a separate file |
+| TERRAIN-6 | `terrain/` | Re-encode `water_level.png` on the coarse water-sim grid it was bilinearly upsampled from (§7.2) and leave the consumer to resample — the game's own storage shape | 737,016 B = 0.70 MiB (0.0151% of bundle, 1.05% of `terrain/`) at 512²; 480,590 B = 0.46 MiB (0.0098%, 0.68%) at 2048² | measured, exact, full file for the bytes; the error bound is full-population over all 10,219,596 wet cells | unmeasured — removes the producer's existing resample pass rather than adding one; bounded by row 4's 0.355% share | moderate — bilinearly resample a second raster at a second resolution, and take the wet mask separately to avoid the sentinel | high — the naive form is unusable, and the mask-aware form is a design that does not exist yet | **NO** | max wet-cell error **526.32 m** at 512² (mean 7.265 m, p99 289.63 m); at 2048² max 231.13 m (mean 1.232 m, p99 32.50 m). The maximum is the dry-cell `0` sentinel, not the terrain — a coastal sample landing on a dry cell reads `0` and the upsample drags its neighbourhood to sea floor | **rejected, no layer proposed** — it would need a replacement raster plus a new `waterMask` raster and a §12.1 amendment, against a ceiling of the whole file: **780,555 B, 0.0159% of the bundle** |
 | INST-4 | `instances.jsonl` | `rot` smallest-three quaternion compression (16 B → ~7 B) inside INST-2's fixed core | unmeasured — Phase A did not build or encode it | unmeasured | unmeasured | consumer reconstructs the dropped component and de-quantizes | medium — well-understood technique, unverified here | **NO** | `unmeasured`; the brief's own "always drop `w`" variant is invalid, since §4.3 measured `rot.x`/`rot.z` nonzero on 24.80% of records | replaces the `rot` fixed column inside INST-2's own new layer |
 | TEX-6 | `textures/` | Lossy re-encode (WebP/AVIF at a quality setting) of whatever remains after the lossless texture rows | unmeasured — Phase A did not encode or measure it | unmeasured | unmeasured | high — a new-format decoder | high | **NO** | `unmeasured`; note BC7, the game's own format, is **not** a smaller candidate at these dimensions (§1.2: our PNGs are 0.544× the BC7 footprint) | would replace `textures/*.png` outright for the files it touches — not expressible as an opt-in layer without a codec-selector field |
+| TERRAIN-7 | `terrain/` | Lossy re-encode (WebP/AVIF at a quality setting) of the `surfaces/` ground textures — 53,401,903 B, 76.062% of `terrain/` and 1.0911% of the bundle (§7.1), by far that domain's largest block | unmeasured — Phase A did not encode or measure it; the block's own size, 50.93 MiB, is the ceiling, not an estimate of any saving | unmeasured | unmeasured | high — the consumer needs a new-format decoder, the same objection TEX-6 carries | high | **NO** | `unmeasured` — nothing was encoded, so no bound is claimed. The lossless work that must precede it is done: §7.4's zlib-9 floor leaves 2.0% and the per-file adaptive test 6.47%, both on the full 39-file population | **rejected, and subordinate to TEX-6** — these are ordinary colour and normal textures, so whatever §1 concludes for `textures/` governs here; it would replace the PNG bytes in place at unchanged paths, no new layer, nothing retired |
 
 ### 9.4 The second ranking: bytes saved per unit of consumer cost
 
@@ -3163,11 +3221,16 @@ implementation wherever one exists — `Systems/NetworkRipSystem.GameMesh.cs` (6
 `$SCRATCH/audit/lanes_binary_build.py` (147) and `$SCRATCH/audit/instances_packed_read_bench.py`
 (59). A decompress call is 1 line. An in-place re-encode is 0. The ratio below is MiB saved
 divided by `1 + lines`, so a zero-line candidate scores its full byte value rather than dividing
-by zero. Lossy rows are excluded, per constraint 3.
+by zero. Lossy rows are excluded, per constraint 3. A row that *removes* consumer code has a
+negative denominator and cannot go on the ratio at all — TERRAIN-4 is the only one, and is
+carried under the ranked rows rather than given a rank. Ratios are rounded half-up, which is what
+decides the two exact ties in the table (COMP-1's 1,172.25 → 1,172.3, LANE-1's 95.25 → 95.3; this
+corrects COMP-1's cell, which read 1,172.2 while LANE-1's read 95.3 — neither tie changes a
+rank). The tail is printed to three decimals where one decimal cannot separate two rows.
 
 | rank | id | MiB saved | new consumer lines | MiB per cost unit | rank by bytes (§9.2) |
 |---:|---|---:|---:|---:|---:|
-| 1 | COMP-1 | 2,344.5 | 1 | 1,172.2 | 1 |
+| 1 | COMP-1 | 2,344.5 | 1 | 1,172.3 | 1 |
 | 2 | MESH-1 | 1,581.5 | 1 | 790.8 | 2 |
 | 3 | TEX-3 | 210.7 | 0 | 210.7 | 8 |
 | 4 | TEX-2 | 151.9 | 0 | 151.9 | 12 |
@@ -3176,24 +3239,43 @@ by zero. Lossy rows are excluded, per constraint 3.
 | 7 | LANE-1 | 190.5 | 1 | 95.3 | 10 |
 | 8 | TEX-1 | 64.5 | 0 | 64.5 | 13 |
 | 9 | TEX-3+4 | 377.1 | 31 | 11.8 | 4 |
-| 10 | TEX-4 | 229.5 | 31 | 7.2 | 7 |
-| 11 | TERRAIN-1 | 4.3 | 0 | 4.3 | 15 |
-| 12 | INST-2 | 199.0 | 59 | 3.3 | 9 |
-| 13 | LANE-2 | 188.6 | 147 | 1.3 | 11 |
-| 14 | NET-1 | 401.5 | 664 | 0.6 | 3 |
-| 15 | MESH-3 | 27.9 | 366 | 0.1 | 14 |
+| 10 | TERRAIN-2 | 8.3 | 0 | 8.3 | 15 |
+| 11 | TEX-4 | 229.5 | 31 | 7.2 | 7 |
+| 12 | TERRAIN-1 | 4.3 | 0 | 4.3 | 16 |
+| 13 | INST-2 | 199.0 | 59 | 3.3 | 9 |
+| 14 | LANE-2 | 188.6 | 147 | 1.3 | 11 |
+| 15 | NET-1 | 401.5 | 664 | 0.6 | 3 |
+| 16 | TERRAIN-3 | 0.158 | 1 | 0.079 | 17 |
+| 17 | MESH-3 | 27.9 | 366 | 0.076 | 14 |
+| — | TERRAIN-4 | 0.0 | **−35** | not applicable | not ranked — 0 B, §9.2's note |
 
 **The two rankings disagree, and the disagreement is the finding.** NET-1 falls from 3rd by
-bytes to 14th of 15 by cost-efficiency — it is the third-largest win in the bundle and the
-second-worst byte-per-line deal in it, because 401.5 MiB of it is bought with a 664-line port of
+bytes to 15th of 17 by cost-efficiency — it is the third-largest win in the bundle and one of the
+three worst byte-per-line deals in it, because 401.5 MiB of it is bought with a 664-line port of
 the most rule-dense algorithm this codebase has had to reproduce. §3.5 sharpens that: at NET-1's
 *marginal* 101.1 MiB — its saving once NET-2 has compressed the same directory — the ratio falls
-from 0.6 to **0.152 MiB per cost unit**, still 14th of 15, while NET-2 buys 300.4 MiB of the same
+from 0.6 to **0.152 MiB per cost unit**, still 15th of 17, while NET-2 buys 300.4 MiB of the same
 404.8 MiB at 150.2. TEX-3 rises from 8th to 3rd for the mirror-image reason: 210.7 MiB with no
 consumer code at all, verified against the reference importer's stock PNG loader. MESH-3 is last
-on both counts. Only the top two rows agree between the rankings, and they agree because generic
-compression is simultaneously the largest win in the bundle and the cheapest thing a consumer can
-be asked to do.
+of 17 here (0.076) while sitting 14th of 19 by bytes. Only the top two rows agree between the
+rankings, and they agree because generic compression is simultaneously the largest win in the
+bundle and the cheapest thing a consumer can be asked to do.
+
+**§7's three new lossless rows land where their size says they should, and move nothing
+structural.** TERRAIN-2 enters 10th at 8.3 MiB per cost unit — it costs a consumer 0 lines,
+because it only removes files from a directory already enumerated through `index.json` — and its
+insertion pushes TEX-4, TERRAIN-1, INST-2, LANE-2 and NET-1 down one place each. TERRAIN-1 keeps
+its zero-line ratio of 4.3. TERRAIN-3's single line halves an already small figure to 0.079,
+placing it 16th and pushing MESH-3 down one more, to last. No row crossed another except by those
+two insertions.
+
+**TERRAIN-4 is the one row this ranking's arithmetic cannot express, and that is the point of
+listing it here rather than in §9.2.** Its numerator is 0 MiB and its denominator is negative:
+it deletes 35 lines of consumer calibration and adds none. Every other row in this table buys
+bytes *with* consumer code; TERRAIN-4 buys a correctness fix — 3 of the splatmap's 4 channels are
+wrong in the reference consumer today, measured (§7.3.2) — with a constant string, and hands the
+consumer back 35 lines. Giving it a rank would mean inventing a number the formula does not
+produce.
 
 ### 9.5 Sequencing recommendation
 
@@ -3247,8 +3329,10 @@ standing evidence that import-time work must be measured before it is built, not
 come second because they are the only domain whose candidate values survive COMP-1 intact —
 §1.1's PNGs already run through `Deflater`, so the compression policy does not touch them — and
 because 210.7 MiB of the 377.1 MiB joint win costs the consumer literally nothing (TEX-3, 0 new
-lines, verified against the reference importer). TERRAIN-1's 4.33 MiB is the same producer-only
-shape and should ride along with it rather than getting a phase. `lanes.jsonl` comes third: it is
+lines, verified against the reference importer). The terrain group — TERRAIN-1's 4.33 MiB, and
+after §7's re-audit TERRAIN-2's 8.29 MiB and TERRAIN-3's 0.158 MiB with it — is the same
+producer-only shape and should ride along with textures rather than getting a phase (confirmed
+against the new rows in the closing paragraph below). `lanes.jsonl` comes third: it is
 the one structural candidate that beat generic compression on its own measured merits, at low
 risk, with a 4-line evaluation function taken verbatim from the game and a real packed-binary
 round-trip behind it. `instances.jsonl` comes fourth and must be justified on import time rather
@@ -3266,7 +3350,29 @@ C stays textures: they are still the only domain COMP-1 does not touch, so their
 unaffected by the rescope, and no candidate that moved outranks TEX-3's 210.7-MiB-for-zero-lines
 position in §9.4. D and E are untouched — §3.5 changes nothing about `lanes.jsonl` or
 `instances.jsonl`. F stays networks and its case weakens rather than strengthens: NET-1 keeps its
-#3 rank by standalone bytes and its 14th-of-15 rank by cost-efficiency, and its marginal figure
-falls to 101.1 MiB. The only ordering *inside* the table that moved is §9.4's, where NET-2 enters
+#3 rank by standalone bytes and its bottom-three rank by cost-efficiency (14th of 15 when this
+paragraph was written; 15th of 17 after §7's re-audit added three rows, below), and its marginal
+figure falls to 101.1 MiB. The only ordering *inside* the table that moved is §9.4's, where NET-2 enters
 at 5th (150.2 MiB per cost unit) and pushes INST-1, LANE-1, TEX-1 and everything below them down
 one place; no candidate crossed another in the bytes ordering except by NET-2's insertion at 5th.
+
+**§7's re-audit was also taken after this order was written, and the order does not move here
+either — confirmed against the new rows rather than asserted.** TERRAIN-2 (8.29 MiB),
+TERRAIN-3 (0.158 MiB incremental) and TERRAIN-4 (0 B) join TERRAIN-1 in the terrain group;
+combined, the byte-saving three are **12,766,198 B = 12.17 MiB, 0.261% of the bundle**
+(`arithmetic`, §9.1 item 5). That is 0.52% of COMP-1's 2,344.5 MiB and smaller than every
+phase-level figure in the order above, so no phase boundary moves: B stays COMP-1, C stays
+textures, and terrain still rides along with C as a producer-only re-encode — 12.17 MiB of
+ride-along instead of 4.33 MiB — rather than earning a phase. TERRAIN-2's insertion at 15th by
+bytes and 10th by cost-efficiency crosses no candidate that any phase boundary sits between.
+TERRAIN-5 is in no phase: it costs 86,736–5,153,616 B rather than saving them, and its case is
+fidelity (§9.2's note). Neither lossy terrain row is recommended at any position — TERRAIN-6's
+whole ceiling is 780,555 B against a measured 526.32 m shoreline error, and TERRAIN-7 is
+unmeasured and subordinate to TEX-6.
+
+**One exception is worth naming: TERRAIN-4 does not need a phase.** It is a constant string in
+`terrain/rasters.json` — 0 B, no schema version implication, no new layer — and it removes 35
+lines from the reference consumer while fixing 3 of the splatmap's 4 channels (§7.3.2). It can
+land at any point, including before Phase B, independent of the phase order; the only sequencing
+constraint on it is that it should ship in the same bundle version as the consumer change that
+stops calibrating. It is the cheapest fix in this document on both axes at once.
