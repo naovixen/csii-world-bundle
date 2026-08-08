@@ -71,6 +71,137 @@ namespace Carto.Systems
 
         private readonly Dictionary<Entity, PieceGeometry> m_PieceGeometry = new();
 
+        // ---- terrain conforming (LowerBottomToTerrain / RaiseTopToTerrain) ------------------
+        // The game classifies each vertex of a flagged piece against per-z-slice height bounds
+        // (`BatchMeshHelpers.InitializeHeightBounds`, 257 slices) and writes the class into the
+        // vertex colour; its vertex shader then moves classified vertices to the terrain height
+        // at their world position. That is how one portal-face asset closes a trench of any
+        // depth, and how retaining-wall skirts bury their bottom edge. Applied here at rip time
+        // against the same flattened heightmap the bundle ships, so the meshes arrive closed.
+        // （遊戲將帶旗標部件的頂點依逐 z 切片高度界分類，寫入頂點色；頂點著色器再將其移至世界
+        //   位置的地形高度。洞口面板與擋牆裙邊皆賴此閉合。此處於擷取時套用同一攤平高度圖。）
+
+        /// <summary>Per-slice min/max heights of one piece's authored geometry.（部件逐切片高度界。）</summary>
+        private sealed class PieceHeightBounds
+        {
+            public float SizeZ;
+            public float[] Min;
+            public float[] Max;
+        }
+
+        private readonly Dictionary<Entity, PieceHeightBounds> m_PieceHeightBounds = new();
+
+        private ushort[] _conformHeights;
+        private int2 _conformResolution;
+        private float3 _conformScale;
+        private float3 _conformOffset;
+
+        /// <summary>
+        /// Lazily capture the terrain heightmap for conforming — the same readback the terrain
+        /// layer ships.（惰性擷取地形高度圖以供貼合——與地形層出貨者相同的回讀。）
+        /// </summary>
+        private bool EnsureConformTerrain()
+        {
+            if (_conformHeights != null) return _conformHeights.Length > 0;
+            try
+            {
+                Game.Simulation.TerrainHeightData heightData = Instance.Terrain.GetHeightData(true);
+                if (!heightData.isCreated)
+                {
+                    _conformHeights = Array.Empty<ushort>();
+                    return false;
+                }
+                _conformHeights = heightData.heights.ToArray();
+                _conformResolution = new int2(heightData.resolution.x, heightData.resolution.z);
+                _conformScale = heightData.scale;
+                _conformOffset = heightData.offset;
+                return true;
+            }
+            catch (Exception)
+            {
+                _conformHeights = Array.Empty<ushort>();
+                return false;
+            }
+        }
+
+        /// <summary>`TerrainUtils.SampleHeight`'s bilinear read, over the captured copy.
+        /// （`TerrainUtils.SampleHeight` 的雙線性讀取，作用於擷取的副本。）</summary>
+        private float SampleConformHeight(float3 world)
+        {
+            float2 xz = ((world + _conformOffset) * _conformScale).xz;
+            int2 lo = (int2)math.floor(xz);
+            int2 hi = lo + 1;
+            lo = math.clamp(lo, 0, _conformResolution - 1);
+            hi = math.clamp(hi, 0, _conformResolution - 1);
+            float h00 = _conformHeights[(lo.y * _conformResolution.x) + lo.x];
+            float h10 = _conformHeights[(lo.y * _conformResolution.x) + hi.x];
+            float h01 = _conformHeights[(hi.y * _conformResolution.x) + lo.x];
+            float h11 = _conformHeights[(hi.y * _conformResolution.x) + hi.x];
+            float2 f = math.saturate(xz - math.floor(xz));
+            float height = math.lerp(math.lerp(h00, h10, f.x), math.lerp(h01, h11, f.x), f.y);
+            return (height / _conformScale.y) - _conformOffset.y;
+        }
+
+        /// <summary>
+        /// The per-slice height bounds of one piece — `InitializeHeightBounds`/`AddHeightBounds`
+        /// verbatim, cached per piece entity.
+        /// （單一部件的逐切片高度界——`InitializeHeightBounds` 的逐字移植，依部件實體快取。）
+        /// </summary>
+        private PieceHeightBounds GetPieceHeightBounds(Entity piece, PieceGeometry source, float sizeZ)
+        {
+            if (m_PieceHeightBounds.TryGetValue(piece, out PieceHeightBounds cached)
+                && (math.abs(cached.SizeZ - sizeZ) < 1e-3f))
+            {
+                return cached;
+            }
+
+            const int slices = 256;
+            PieceHeightBounds bounds = new()
+            {
+                SizeZ = sizeZ,
+                Min = new float[slices + 1],
+                Max = new float[slices + 1]
+            };
+            for (int i = 0; i <= slices; i++)
+            {
+                bounds.Min[i] = float.MaxValue;
+                bounds.Max[i] = float.MinValue;
+            }
+
+            float scale = slices / math.max(sizeZ, 0.001f);
+            void AddEdge(float3 a, float3 b, int ia, int ib)
+            {
+                if (ia > ib)
+                {
+                    (a, b) = (b, a);
+                    (ia, ib) = (ib, ia);
+                }
+                float step = 1f / (ib - ia + 1);
+                for (int i = ia; i <= ib; i++)
+                {
+                    float y = math.lerp(a.y, b.y, (i - ia) * step);
+                    bounds.Min[i] = math.min(bounds.Min[i], y);
+                    bounds.Max[i] = math.max(bounds.Max[i], y);
+                }
+            }
+
+            for (int t = 0; t + 2 < source.Indices.Length; t += 3)
+            {
+                float3 a = source.Vertices[source.Indices[t]];
+                float3 b = source.Vertices[source.Indices[t + 1]];
+                float3 c = source.Vertices[source.Indices[t + 2]];
+                int ia = math.clamp((int)math.round(a.z * scale) + (slices >> 1), 0, slices);
+                int ib = math.clamp((int)math.round(b.z * scale) + (slices >> 1), 0, slices);
+                int ic = math.clamp((int)math.round(c.z * scale) + (slices >> 1), 0, slices);
+                AddEdge(a, b, ia, ib);
+                AddEdge(b, c, ib, ic);
+                AddEdge(c, a, ic, ia);
+            }
+
+            m_PieceHeightBounds[piece] = bounds;
+            return bounds;
+        }
+
         // ---- CalculateMappingOffsets / Edge / Node / Orphan parameters, ported --------------
         // （CalculateMappingOffsets 與邊／節點／孤立節點參數的移植。）
 
@@ -330,8 +461,25 @@ namespace Carto.Systems
                 bool zeroWidth = piece.m_Size.x == 0f;
                 if (preserveShape) _railPieces++;
                 if (backCut) _skipBottomPieces++;
-                if ((piece.m_PieceFlags & NetPieceFlags.LowerBottomToTerrain) != 0) _lowerBottomPieces++;
-                if ((piece.m_PieceFlags & NetPieceFlags.RaiseTopToTerrain) != 0) _raiseTopPieces++;
+                bool lowerBottom = (piece.m_PieceFlags & NetPieceFlags.LowerBottomToTerrain) != 0;
+                bool raiseTop = (piece.m_PieceFlags & NetPieceFlags.RaiseTopToTerrain) != 0;
+                if (lowerBottom) _lowerBottomPieces++;
+                if (raiseTop) _raiseTopPieces++;
+
+                // Terrain conforming: classify this piece's vertices against its per-slice
+                // height bounds exactly as `BatchMeshHelpers` does, then apply the vertex
+                // shader's terrain move at rip time. The portal face over every tunnel mouth
+                // is a RaiseTopToTerrain piece — without this it ships as its short authored
+                // strip and the mouth stands open above the arch.
+                // （地形貼合：依逐切片高度界分類頂點，於擷取時套用著色器的地形移動。
+                //   每個隧道洞口上方的面板即 RaiseTopToTerrain 部件。）
+                PieceHeightBounds conformBounds = null;
+                float conformScaleZ = 0f;
+                if ((lowerBottom || raiseTop) && EnsureConformTerrain())
+                {
+                    conformBounds = GetPieceHeightBounds(piece.m_Piece, source, piece.m_Size.z);
+                    conformScaleZ = 256f / math.max(piece.m_Size.z, 0.001f);
+                }
 
                 // The game's flip select — `select(float4(-1,1,-1,1), float4(1,1,1,-1),
                 // bool4(Invert, false, FlipMesh, Invert != FlipMesh))`: authored pieces are
@@ -431,7 +579,18 @@ namespace Carto.Systems
                     {
                         if (remap[i] < 0) continue;
 
-                        float3 vertex = source.Vertices[startVertex + i] * new float3(sx, 1f, sz) + offset;
+                        float3 raw = source.Vertices[startVertex + i];
+                        int conform = 0;
+                        if (conformBounds != null)
+                        {
+                            // The game classifies on the AUTHORED vertex, before the flip and
+                            // offset.（遊戲以製作座標分類，先於翻轉與位移。）
+                            int slice = math.clamp((int)math.round(raw.z * conformScaleZ) + 128, 0, 256);
+                            if (lowerBottom && (raw.y <= conformBounds.Min[slice] + 0.01f)) conform = 1;
+                            if (raiseTop && (raw.y >= conformBounds.Max[slice] - 0.01f)) conform = 2;
+                        }
+
+                        float3 vertex = raw * new float3(sx, 1f, sz) + offset;
                         float2 uv = source.Uvs[startVertex + i];
                         int2 pair;
                         float xParam, zParam;
@@ -547,6 +706,14 @@ namespace Carto.Systems
                         float3 b = MathUtils.Position(p.Curves[pair.y], zParam);
                         float3 world = math.lerp(a, b, xParam);
                         world.y += vertex.y;
+                        if (conform != 0)
+                        {
+                            // The vertex shader's move: a classified vertex lands ON the
+                            // terrain surface at its world position.（著色器的移動：受分類的
+                            // 頂點落於其世界位置的地形表面。）
+                            world.y = SampleConformHeight(world);
+                            if (conform == 1) _conformLoweredVerts++; else _conformRaisedVerts++;
+                        }
                         vertices.Add(world - center);
 
                         float metres = math.lerp(EvalMap(p.Maps[pair.x], zParam),

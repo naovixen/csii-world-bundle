@@ -79,16 +79,18 @@ namespace Carto.Systems
         const float NoLevel = float.MinValue;
 
         /// <summary>
-        /// How far above the lane surface terrain must stand before the clip removes it. The
-        /// game's clip band reaches 0.3 m <i>below</i> the lane and so clips the roadbed itself —
-        /// in-game the road mesh hides that hole. The bundle keeps the bed a consumer drives on
-        /// and cuts only terrain that would block the way; 0.5 m clears curb heights and the
-        /// readback's quantisation with room to spare.
-        /// （地形須高出車道面多少才會被裁切。遊戲的裁切帶向下達車道<i>之下</i> 0.3 公尺，連路床
-        /// 一併裁去——遊戲中道路網格遮住該洞。束保留消費端行駛其上的路床，僅裁去會擋路的地形；
-        /// 0.5 公尺足以避開路緣高度與回讀的量化誤差。）
+        /// The clip band's expansion at both ends, matching <c>GenerateClipDataJob</c> exactly:
+        /// the game widens every band by 0.3 m downward and upward, so the floor reaches 0.3 m
+        /// <i>below</i> the lane and clips the roadbed shell itself — the road and tunnel meshes
+        /// cover that hole, in-game and in every consumer (collision comes from the network
+        /// meshes). An earlier +0.5 m "drivable lip" floor was a producer invention; it left a
+        /// ring of terrain proud of the lane at every portal mouth and disabled the everyday
+        /// ±0.3 m shell clip that keeps crests out of surface roads.
+        /// （裁切帶於兩端的擴張，與 <c>GenerateClipDataJob</c> 完全一致：遊戲將每帶向下與向上各
+        /// 擴 0.3 公尺，故帶底達車道之下 0.3 公尺，連路床殼一併裁去——道路與隧道網格遮住該洞，
+        /// 遊戲內外皆然。早先 +0.5 公尺的「可行駛唇緣」為生產端自創，已退場。）
         /// </summary>
-        const float CutoutFloor = 0.5f;
+        const float ClipBandExpansion = 0.3f;
 
         /// <summary>The query for placed network edges.（已放置路網邊的查詢。）</summary>
         EntityQuery _edgeQuery;
@@ -1529,31 +1531,37 @@ namespace Carto.Systems
         }
 
         /// <summary>
-        /// A composition's clip band top, per the game's <c>CullRoadsJob.AddSegment</c>.
-        /// （組成的裁切帶頂，依遊戲的 <c>CullRoadsJob.AddSegment</c>。）<br/><br/>
-        /// The base is the composition's edge-height extreme (the start or end half, like the
-        /// game's <c>isStart</c> select) plus <c>TerrainComposition.m_ClipHeightOffset</c>. Tunnel
-        /// portals (Tunnel with a transition side) and open trenches (a Lowered side, not
-        /// elevated) raise it to <c>ElevationLimit·3</c> — the 30 m open cut. The job's own
-        /// 0.3 m expansion is added last. Deep tube sections keep the small base band: the
-        /// terrain covering them sits far above it, so the band test cuts nothing there, which is
-        /// the game's behaviour too (their cover is never clipped from above).<br/>
-        /// （帶底取組成的緣高極值（依 <c>isStart</c> 選取起訖半段）加上
+        /// A composition's clip band, per the game's <c>CullRoadsJob.AddSegment</c> and
+        /// <c>GenerateClipDataJob</c>.
+        /// （組成的裁切帶，依遊戲的 <c>CullRoadsJob.AddSegment</c> 與 <c>GenerateClipDataJob</c>。）<br/><br/>
+        /// The base band is the composition's edge-height extremes (the start or end half, like
+        /// the game's <c>isStart</c> select) plus <c>TerrainComposition.m_ClipHeightOffset</c>.
+        /// Tunnel portals (Tunnel with a transition side) and open trenches (a Lowered side, not
+        /// elevated) raise the top to <c>ElevationLimit·3</c> — 12 m for roads, 6 m for pathways
+        /// (<c>m_ElevationLimit</c> is 4 m and 2 m respectively; read live, and asserted by the
+        /// rip log's band-class lines). The job's own ±0.3 m expansion is applied last, taking
+        /// the floor 0.3 m <i>below</i> the lane — the everyday shell that keeps crests out of
+        /// surface roads. Deep tube sections keep the small base band: the terrain covering them
+        /// sits far above it, so the band test cuts nothing there, which is the game's behaviour
+        /// too (their cover is never clipped from above).<br/>
+        /// （基帶取組成的緣高極值（依 <c>isStart</c> 選取起訖半段）加上
         /// <c>TerrainComposition.m_ClipHeightOffset</c>；隧道洞口（帶過渡側的 Tunnel）與明挖壕溝
-        /// （帶 Lowered 側且非高架）將其抬升至 <c>ElevationLimit·3</c>——即 30 公尺的明挖範圍；
-        /// 最後加上作業自身的 0.3 公尺擴張。深埋管段維持小帶：其覆土遠高於帶頂，故帶測試於彼處
-        /// 不裁任何格，與遊戲行為一致。）
+        /// （帶 Lowered 側且非高架）將帶頂抬升至 <c>ElevationLimit·3</c>——道路 12 公尺、步道
+        /// 6 公尺；最後套用作業自身的 ±0.3 公尺擴張，帶底達車道之下 0.3 公尺。深埋管段維持小帶：
+        /// 其覆土遠高於帶頂，故帶測試於彼處不裁任何格，與遊戲行為一致。）
         /// </summary>
         /// <param name="composition">The composition entity.（組成實體。）</param>
         /// <param name="raisedTop">The prefab's <c>ElevationLimit * 3</c>.（預製模板的 <c>ElevationLimit * 3</c>。）</param>
         /// <param name="isStart">Which edge-height half applies.（適用哪一半的緣高。）</param>
         /// <param name="terrain">Receives the terrain offsets, or default.（接收地形偏移，或預設值。）</param>
-        /// <param name="cutTop">Receives the band top.（接收帶頂。）</param>
+        /// <param name="cutBottom">Receives the band floor.（接收帶底。）</param>
+        /// <param name="cutTop">Receives the band ceiling.（接收帶頂。）</param>
         /// <returns>Whether the band can cut anything at all.（該帶是否可能裁到任何格。）</returns>
         private bool TryGetClipBand(Entity composition, float raisedTop, bool isStart,
-                                    out TerrainComposition terrain, out float cutTop)
+                                    out TerrainComposition terrain, out float cutBottom, out float cutTop)
         {
             terrain = default;
+            cutBottom = 0f;
             cutTop = 0f;
             if ((composition == Entity.Null) || !EntityManager.HasComponent<NetCompositionData>(composition)) return false;
 
@@ -1566,6 +1574,7 @@ namespace Carto.Systems
             float3 baseHeights = isStart
                 ? new float3(data.m_EdgeHeights.x, data.m_SurfaceHeight.min, data.m_EdgeHeights.y)
                 : new float3(data.m_EdgeHeights.z, data.m_SurfaceHeight.min, data.m_EdgeHeights.w);
+            cutBottom = math.cmin(baseHeights) + terrain.m_ClipHeightOffset.x;
             cutTop = math.cmax(baseHeights) + terrain.m_ClipHeightOffset.y;
 
             bool tunnel = (data.m_Flags.m_General & CompositionFlags.General.Tunnel) != 0;
@@ -1577,11 +1586,36 @@ namespace Carto.Systems
             {
                 cutTop = math.max(cutTop, raisedTop);
             }
-            cutTop += 0.3f;
+            cutBottom -= ClipBandExpansion;
+            cutTop += ClipBandExpansion;
 
-            // A band that never rises above the floor cannot mark a cell; skip the walk.
-            // （帶頂不高於帶底者不可能標記任何格；跳過走訪。）
-            return cutTop > CutoutFloor;
+            LogClipBandClass(terrain, raisedTop, cutBottom, cutTop, tunnel, elevated, transition, lowered);
+
+            // An empty band cannot mark a cell; skip the walk.
+            // （空帶不可能標記任何格；跳過走訪。）
+            return cutTop > cutBottom;
+        }
+
+        /// <summary>
+        /// Distinct clip band classes already logged this rip, keyed by their rounded numbers.
+        /// （本次擷取已記錄過的裁切帶類別，以其捨入後數值為鍵。）
+        /// </summary>
+        readonly HashSet<string> _clipBandClasses = new();
+
+        /// <summary>
+        /// Log each distinct clip band class once per rip — the live assertion that the shipped
+        /// band arithmetic matches the game's (<c>ElevationLimit·3</c>, the per-piece
+        /// <c>TerrainComposition</c> offsets, the ±0.3 m expansion).
+        /// （每次擷取將每個相異的裁切帶類別記錄一次——出貨帶算術與遊戲一致的即時驗證。）
+        /// </summary>
+        private void LogClipBandClass(TerrainComposition terrain, float raisedTop,
+                                      float cutBottom, float cutTop,
+                                      bool tunnel, bool elevated, bool transition, bool lowered)
+        {
+            string shape = tunnel ? (transition ? "portal" : "tube") : lowered ? "trench" : elevated ? "elevated" : "surface";
+            string key = FormattableString.Invariant(
+                $"clip band class {shape}: bottom {cutBottom:0.###} top {cutTop:0.###} (L*3 {raisedTop:0.###}, clipHeightOffset {terrain.m_ClipHeightOffset.x:0.###}/{terrain.m_ClipHeightOffset.y:0.###}, widthOffset {terrain.m_WidthOffset.x:0.###}/{terrain.m_WidthOffset.y:0.###})");
+            if (_clipBandClasses.Add(key)) _log.Info(key);
         }
 
         /// <summary>
@@ -1609,9 +1643,10 @@ namespace Carto.Systems
         {
             StampContext context = new()
             {
-                Mask = cutout, Value = 255, Cut = true, CutBottom = CutoutFloor,
+                Mask = cutout, Value = 255, Cut = true,
                 Volumes = _clipVolumes
             };
+            _clipBandClasses.Clear();
 
             var edges = _edgeQuery.ToEntityArray(Unity.Collections.Allocator.TempJob);
             try
@@ -1636,13 +1671,15 @@ namespace Carto.Systems
                     // The edge halves take the composition's start/end edge heights respectively,
                     // like the game's isStart select.（邊的兩半各取組成起／訖半段的緣高，
                     // 一如遊戲的 isStart 選取。）
-                    if (TryGetClipBand(composition.m_Edge, raisedTop, true, out TerrainComposition edgeTerrain, out context.CutTop))
+                    if (TryGetClipBand(composition.m_Edge, raisedTop, true, out TerrainComposition edgeTerrain,
+                                       out context.CutBottom, out context.CutTop))
                     {
                         StampSegment(in context, heightData,
                                      EntityManager.GetComponentData<EdgeGeometry>(entity).m_Start, edgeTerrain, true, true);
                         stamped = true;
                     }
-                    if (TryGetClipBand(composition.m_Edge, raisedTop, false, out edgeTerrain, out context.CutTop))
+                    if (TryGetClipBand(composition.m_Edge, raisedTop, false, out edgeTerrain,
+                                       out context.CutBottom, out context.CutTop))
                     {
                         StampSegment(in context, heightData,
                                      EntityManager.GetComponentData<EdgeGeometry>(entity).m_End, edgeTerrain, true, true);
@@ -1657,11 +1694,16 @@ namespace Carto.Systems
                     // band test rejects everywhere.（圓環右對取訖半帶；不可裁之帶取零頂，
                     // 帶測試將其全數拒絕。）
                     if (EntityManager.HasComponent<StartNodeGeometry>(entity)
-                        && TryGetClipBand(composition.m_StartNode, raisedTop, true, out TerrainComposition startTerrain, out context.CutTop))
+                        && TryGetClipBand(composition.m_StartNode, raisedTop, true, out TerrainComposition startTerrain,
+                                          out context.CutBottom, out context.CutTop))
                     {
                         StampContext endContext = context;
-                        if (!TryGetClipBand(composition.m_StartNode, raisedTop, false, out _, out endContext.CutTop))
+                        if (!TryGetClipBand(composition.m_StartNode, raisedTop, false, out _,
+                                            out endContext.CutBottom, out endContext.CutTop))
+                        {
+                            endContext.CutBottom = 0f;
                             endContext.CutTop = 0f;
+                        }
                         if (StampNode(in context, in endContext, heightData,
                                       EntityManager.GetComponentData<StartNodeGeometry>(entity).m_Geometry, startTerrain))
                         {
@@ -1670,11 +1712,16 @@ namespace Carto.Systems
                     }
 
                     if (EntityManager.HasComponent<EndNodeGeometry>(entity)
-                        && TryGetClipBand(composition.m_EndNode, raisedTop, true, out TerrainComposition endTerrain, out context.CutTop))
+                        && TryGetClipBand(composition.m_EndNode, raisedTop, true, out TerrainComposition endTerrain,
+                                          out context.CutBottom, out context.CutTop))
                     {
                         StampContext endContext = context;
-                        if (!TryGetClipBand(composition.m_EndNode, raisedTop, false, out _, out endContext.CutTop))
+                        if (!TryGetClipBand(composition.m_EndNode, raisedTop, false, out _,
+                                            out endContext.CutBottom, out endContext.CutTop))
+                        {
+                            endContext.CutBottom = 0f;
                             endContext.CutTop = 0f;
+                        }
                         if (StampNode(in context, in endContext, heightData,
                                       EntityManager.GetComponentData<EndNodeGeometry>(entity).m_Geometry, endTerrain))
                         {
@@ -1703,7 +1750,7 @@ namespace Carto.Systems
 
                     Entity composition = EntityManager.GetComponentData<Game.Net.Orphan>(entity).m_Composition;
                     if (!TryGetClipBand(composition, netGeometry.m_ElevationLimit * 3f, true,
-                                        out TerrainComposition terrain, out context.CutTop)) continue;
+                                        out TerrainComposition terrain, out context.CutBottom, out context.CutTop)) continue;
 
                     float width = EntityManager.GetComponentData<NetCompositionData>(composition).m_Width;
                     if (!(width > 0f)) continue;
@@ -1738,6 +1785,11 @@ namespace Carto.Systems
             int width = heightData.resolution.x;
             int height = heightData.resolution.z;
             StampContext context = baseContext;
+            // The game duplicates the area ring at heightRange.min − 0.3 and caps nothing above
+            // (GenerateAreaClipMeshJob); relative to the surface the floor is the same −0.3 m
+            // expansion every strip band gets.（遊戲於 heightRange.min − 0.3 複製區域環，其上
+            // 無蓋；相對於表面，帶底即每條帶共有的 −0.3 公尺擴張。）
+            context.CutBottom = -ClipBandExpansion;
             context.CutTop = float.MaxValue;
 
             // An area's geometry is triangles, not boundary curves, and it is already in the
@@ -2177,7 +2229,12 @@ namespace Carto.Systems
             for (int row = (int)math.floor(minY); row <= (int)math.ceil(maxY); row++)
             {
                 if ((row < 0) || (row >= height)) continue;
-                float y = row + 0.5f;
+                // ToCell puts a texel's CENTRE at integer coordinates (TerrainUtils
+                // .ToHeightmapSpace), which the column span's round() already assumes; sampling
+                // the scanline at `row + 0.5` was a half-cell southward bias on this one axis.
+                // （ToCell 將紋素中心置於整數座標，行區間的 round() 已如此假設；掃描線取
+                // `row + 0.5` 曾造成此軸半格偏南。）
+                float y = row;
 
                 int count = 0;
                 for (int e = 0; e < 4; e++)

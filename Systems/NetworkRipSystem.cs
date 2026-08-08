@@ -143,6 +143,8 @@ namespace Carto.Systems
         private int _pipelineCompositions;
         private int _lowerBottomPieces;
         private int _raiseTopPieces;
+        private int _conformLoweredVerts;
+        private int _conformRaisedVerts;
 
         /// <summary>
         /// The event triggered when the system instance is created.
@@ -443,6 +445,8 @@ namespace Carto.Systems
             _pipelineCompositions = 0;
             _lowerBottomPieces = 0;
             _raiseTopPieces = 0;
+            _conformLoweredVerts = 0;
+            _conformRaisedVerts = 0;
 
             NativeArray<Entity> entities = _edgeQuery.ToEntityArray(Allocator.TempJob);
             Entity[] edges;
@@ -889,9 +893,11 @@ namespace Carto.Systems
             if (_railPieces > 0) report.AppendLine($"Corner-rail (PreserveShape) pieces placed: {_railPieces}");
             if (_skipBottomPieces > 0) report.AppendLine($"SkipBottomHalf pieces halved: {_skipBottomPieces}");
             if (_lowerBottomPieces + _raiseTopPieces > 0)
-                report.AppendLine($"APPROXIMATED: {_lowerBottomPieces} LowerBottomToTerrain / {_raiseTopPieces} "
-                                + "RaiseTopToTerrain piece(s) shipped unconformed — terrain conforming is a "
-                                + "consumer rule against terrain/heightmap.png (contract §5.1)");
+                report.AppendLine($"{_lowerBottomPieces} LowerBottomToTerrain / {_raiseTopPieces} RaiseTopToTerrain "
+                                + $"piece(s) conformed at rip time: {_conformLoweredVerts} bottom / "
+                                + $"{_conformRaisedVerts} top vertex(es) moved to the terrain surface "
+                                + "(BatchMeshHelpers' per-slice height bounds + the vertex shader's terrain "
+                                + "sample, applied here so portal faces and wall skirts ship closed)");
             if (_pipelineCompositions > 0)
                 report.AppendLine($"Skipped {_pipelineCompositions} composition part(s) with no world-view layer "
                                 + "(Pipeline/SubPipeline/Waterway — utility cutaway and overlay views only; "
@@ -907,6 +913,11 @@ namespace Carto.Systems
             if (run.Skipped.Count > 0) report.AppendLine($"{run.Skipped.Count} surface(s) or texture(s) produced no material entry");
             if (!string.IsNullOrEmpty(materials)) report.AppendLine($"Materials: {materials}");
             report.AppendLine($"Output: {run.OutputDirectory}");
+
+            // The conforming pass's heightmap copy (~33 MB) and per-piece bounds are only
+            // needed while meshes build.（貼合用的高度圖副本與逐部件高度界僅於建網格時需要。）
+            _conformHeights = null;
+            m_PieceHeightBounds.Clear();
 
             _log.Info(report.ToString());
 
