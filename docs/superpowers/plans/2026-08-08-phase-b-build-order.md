@@ -1,0 +1,137 @@
+# Build order after the audit — what to actually write
+
+Derived from `docs/cs2-storage-audit.md` §9. Ordered by value per hour of work, not by section
+number. Every figure below is measured against the 2026-08-07 full-city bundle (4,894,194,530 B).
+
+---
+
+## 1. COMP-1 — compress the four uncompressed layers at rest
+
+**2,344.5 MiB, 50.23% of the bundle.** Biggest win in the audit by 1.5×, and the cheapest
+consumer change in it. Do this first.
+
+`meshes/*.glb` (1,581.5 MiB), `networks/*.glb` (300.4 MiB), `instances.jsonl` (272.1 MiB),
+`lanes.jsonl` (190.5 MiB) all ship with no compression at all. `textures/` and `terrain/` are
+already PNG-compressed — leave them alone.
+
+**Producer:**
+- `IO/BufferManager.cs` — this is where the write path funnels; add an lzma wrapper there rather
+  than in each writer. `ICSharpCode.SharpZipLib` is already referenced (`Carto.csproj`) but is
+  zip/deflate; for lzma either use `System.IO.Compression` + a `.xz`-style container or accept
+  zlib-9 instead (1,879.1 MiB, 40.26% — 465 MiB worse but zero new dependency). **Take zlib-9 if
+  lzma costs a dependency.** The gap is not worth a new lib in a game mod.
+- Writers to touch: `IO/GltfWriter.cs` (both `meshes/` and `networks/` go through it),
+  `IO/InstanceWriter.cs`, `IO/LaneWriter.cs`.
+- Extension convention: `.glb.zst`/`.jsonl.zst` (or `.gz`) — do **not** keep the bare name with
+  hidden compression, it breaks every existing consumer silently.
+
+**Contract:** `docs/bundle-schema.md` §12.1 amendment — a `compression` field naming the codec per
+layer, absent meaning uncompressed. Schema-1 compatible, no version bump.
+
+**Consumer:** `tools/blender_import_bundle.py` and `tools/validate_bundle.py` — one decompress
+call each at the read boundary. `tools/test_bundle_contract.py` gains cases for both forms.
+
+**Gate:** `tools/ab_render.py` + `tools/ab_compare.py` before and after; the render must be
+pixel-identical (`frac >= 0.999`, `peak <= 16`), since this changes no geometry at all.
+
+---
+
+## 2. TERRAIN-4 — publish the splatmap channel map
+
+**0 bytes. Negative consumer cost. Do it in the same session as COMP-1; it is an afternoon.**
+
+`terrain/rasters.json` currently tells the consumer to *calibrate* the splatmap's channels by
+sampling slope and flat ground. The reference importer does that and **gets 3 of 4 channels
+wrong** (`tools/blender_import_bundle.py:2328-2419` — the `dirt` probe runs on the roadbed class;
+rock is named by steep-versus-flat contrast so it can absorb a painted channel).
+
+**Producer:** `Systems/TerrainRipSystem.cs` — write `R=grass, G=dirt, B=extra1, A=extra2,
+rock=residual` into `rasters.json`'s splatmap block. Established from `m_UserSplatmap` being
+`R8G8_UNorm` plus `ApplyToSplatmap`'s writes (`Game.Rendering.TerrainMaterialSystem.cs:758`,
+`:841-852`). Caveat recorded in §7.3.2: **G = dirt is by elimination**, falsified if a theme binds
+fewer than seven grounds — check one theme before shipping.
+
+**Consumer:** delete the ~35-line calibration block in `blender_import_bundle.py` and read the
+map. This is a correctness fix, not an optimisation.
+
+---
+
+## 3. TERRAIN-2 — stop shipping four unusable ground textures
+
+**8,689,913 B.** `m_UserSplatmap` is `R8G8_UNorm` — two channels. Extra3 and Extra4 can carry no
+weight, so `surfaces/extra3.png`, `extra3_normal.png`, `extra4.png`, `extra4_normal.png` are
+unreferenceable by any consumer.
+
+**Producer:** `Systems/TerrainRipSystem.cs` — gate the capture on `m_UserSplatmap`'s
+`GraphicsFormat` rather than deleting by name, so a future format change re-enables them
+automatically.
+
+---
+
+## 4. TEX-3 + TEX-4 — one PNG representation per texture
+
+**377.1 MiB, measured jointly** (not 440.2 — the two overlap on the alpha channel; do not sum
+them). Two rules, applied in one pass per file:
+
+- drop alpha when it is constant **at 255** (constant-at-0 is a different image — the bug that
+  ate 5% of a sample when this was first measured);
+- normal maps: store R,G only and reconstruct B as `sqrt(1 - x² - y²)`. Verified bit-exact on
+  all 840 candidates.
+
+**Producer:** `IO/Png.cs` (colour-type selection), `IO/TextureWriter.cs`, `Systems/MaterialRipSystem.cs`.
+**Contract:** the 2-channel normal form needs a schema amendment — a `normal2` convention or a
+colour-type note in §7.1. The alpha-drop needs none.
+
+Note: adaptive PNG filtering was measured at only **8.0%** and is not worth doing alone. On
+terrain it is actively harmful — a blanket policy makes 27 of 33 ground files *larger*.
+
+---
+
+## 5. LANE-2 — ship the Bézier, not the sampled polyline
+
+**~190 MiB, and strictly more information than what we ship now.** `lanes.jsonl` polylines are
+resamplings of the game's `Bezier4x3`; four control points reconstruct them to sub-millimetre
+(p100 0.940 mm on overdetermined fits). Storing the curve is fewer bytes *and* recovers the true
+geometry.
+
+**Producer:** `Systems/LaneRipSystem.cs` (`Tessellate` is where the sampling happens — stop
+sampling), `IO/LaneWriter.cs`, `Domain/LaneRecord.cs`.
+**Contract:** §5A gains a `curve` field; `docs/bundle-schema.md` §5B already documents a
+curve-consuming layer, so the consumer pattern exists.
+**Order note:** do this *after* COMP-1 and recompute — compressed JSON already takes `lanes.jsonl`
+to ~40 MiB, so LANE-2's marginal win is ~20 MiB, not 190.
+
+---
+
+## 6. Do not build yet
+
+- **INST-2 (columnar `instances.jsonl`)** — loses to plain compression on bytes by 2.97×. Its only
+  remaining case is import time (14.2 s → 0.2 s of parse). Build it when import time is the
+  complaint, not before.
+- **NET-1 (network composition layer)** — 401.5 MiB standalone but **101.1 MiB** net of COMP-1,
+  against a 664-line consumer port. It does not earn that port on bytes. Revisit only if the
+  producer stops baking (65.8 s of rip) or if 7,248 file opens become the bottleneck.
+- **TERRAIN-5 (clip-volume layer)** — *costs* bytes. It fixes square tunnel cutouts, which is a
+  fidelity argument, not a size one. `cutout.png` is 19,659 bytes; measured at 99.87%
+  section-ribbon walk, only 0.13% clip polygons.
+
+---
+
+## Known-bad in the harness, unrelated to the bundle
+
+`tools/blender_import_bundle.py` `build_terrain` uses `stride = 4` on a full map and decides whole
+14 m faces from four corner texels (`:2236`, `:2306-2307`). That is the cause of the square
+shoreline and terrain clipping through roads — **not** a bundle problem; the rasters ship at the
+game's own 3.5 m. A previous attempt is written up in memory `full-map-terrain-stride`: it cost
+13 s / 2.9 GB and was discarded because refined ground blocks rendered as dark rectangles with
+holes. Ground-only renders proved the fault is in ground refinement, not water.
+
+---
+
+## One open defect in the audit itself
+
+§7.4's TERRAIN-1 adaptive-filter result (4.33 MiB, 11 winners) does not reproduce: a re-run gave
+3.75 MiB and 12 winners, because the encoder settings behind it were never recorded and the script
+was an inline heredoc. §9 was made robust to this (its terrain totals are stated as intervals),
+and TERRAIN-1 is 0.09% of the bundle, so nothing downstream depends on it. Either re-measure it
+with the settings written down, or strike the row.
