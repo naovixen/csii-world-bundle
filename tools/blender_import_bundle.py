@@ -2096,18 +2096,62 @@ def _terrain_paths(bundle_dir):
     return heightmap, surface, cutout, water, surfaces_dir, splatmap, rasters
 
 
+# Which ground each splatmap channel weights. The producer publishes this in the rasters
+# "splatmap".channels block (contract §8); this is the fallback for a bundle ripped before it
+# did, and using it there is not a guess — the assignment is a property of the game's own
+# TerrainMaterialType ordering, not of any particular bundle.
+#
+# This replaces a calibration that used to run here, deriving the map from slope and roadbed
+# contrast. Measured on a full-city rip, that calibration got three of four channels wrong: it
+# discarded a live dirt channel averaging 72 on flat natural ground (its dirt probe sampled the
+# roadbed class, where grass wins, so it concluded there was no dirt channel), it named the
+# Extra1 paint weight a "painted rock variant" because painted ground that happens to be steep
+# gives a positive steep-minus-flat contrast, and it never identified A at all.
+_SPLAT_CHANNELS_DEFAULT = {"R": "grass", "G": "dirt", "B": "extra1", "A": "extra2", "base": "rock"}
+
+# Stand-ins for a ground whose texture the bundle does not carry, so a missing file degrades to
+# a plausible colour rather than to nothing.
+_GROUND_FALLBACK_COLOUR = {
+    "grass": (0.20, 0.30, 0.12, 1.0),
+    "dirt": (0.35, 0.28, 0.20, 1.0),
+    "rock": (0.30, 0.28, 0.26, 1.0),
+    "extra1": (0.32, 0.30, 0.27, 1.0),
+    "extra2": (0.32, 0.30, 0.27, 1.0),
+    "extra3": (0.32, 0.30, 0.27, 1.0),
+    "extra4": (0.32, 0.30, 0.27, 1.0),
+}
+
+
+def _splat_mapping(block):
+    """Which ground each splatmap channel weights, and whether the bundle said so itself.
+
+    A channel the producer could not name ships as "unknown" — it does that when the theme
+    binds too few grounds for its elimination argument to hold — and an unnamed channel is
+    dropped from the blend rather than guessed at.
+    """
+    published = (block or {}).get("channels")
+    if not isinstance(published, dict):
+        return dict(_SPLAT_CHANNELS_DEFAULT), False
+
+    mapping = {}
+    for key, default in _SPLAT_CHANNELS_DEFAULT.items():
+        name = published.get(key, default)
+        mapping[key] = None if (not isinstance(name, str) or name == "unknown") else name
+    return mapping, True
+
+
 def _splat_ground_material(surfaces_dir, splat, mapping, gain=1.0):
-    """One ground material mixing grass/dirt/rock by the game's splat weights.
+    """One ground material mixing the game's grounds by its own splat weights.
 
     The splatmap image is sampled with linear interpolation in its own UV layer (SplatUV),
     so the blend is per-pixel smooth — the game's look — instead of per-face. The ground
-    textures keep the world-anchored 8 m tiling of the legacy path. `mapping` names the
-    calibrated channel index for grass and, when calibrated, dirt and a painted-rock
-    variant — either may be None (the game's own blend has no dirt response under
-    roadbeds). Rock always blends regardless: the channels are PAINTED-ground weights and
-    cliffs are simply unpainted — measured, very steep faces carry ≈0 in all four channels
-    while rendering rock in-game — so the base ground is the residual
-    max(0, 1 − (R+G+B+A)), textured rock here, plus the painted variant when named.
+    textures keep the world-anchored 8 m tiling of the legacy path.
+
+    `mapping` names the ground each of R, G, B, A weights, plus the `base` ground. The base
+    is not a channel: the four weights are PAINTED-ground weights and a cliff is simply
+    unpainted — measured, very steep faces carry ≈0 in all four while rendering rock in-game —
+    so the base weight is the residual max(0, 1 − (R+G+B+A)). A consumer that normalises the
+    four channels into a partition loses rock entirely.
     """
     material = bpy.data.materials.new("terrain_ground")
     material.use_nodes = True
@@ -2118,20 +2162,16 @@ def _splat_ground_material(surfaces_dir, splat, mapping, gain=1.0):
     world_uv = tree.nodes.new("ShaderNodeUVMap")
     world_uv.uv_map = "UVMap"
 
-    def ground_texture(name, fallback_colour):
-        path = os.path.join(surfaces_dir, name)
+    def ground_texture(ground):
+        path = os.path.join(surfaces_dir, f"{ground}.png")
         if os.path.isfile(path):
             node = tree.nodes.new("ShaderNodeTexImage")
             node.image = bpy.data.images.load(path)
             tree.links.new(world_uv.outputs["UV"], node.inputs["Vector"])
             return node.outputs["Color"]
         rgb = tree.nodes.new("ShaderNodeRGB")
-        rgb.outputs[0].default_value = fallback_colour
+        rgb.outputs[0].default_value = _GROUND_FALLBACK_COLOUR.get(ground, (0.3, 0.3, 0.3, 1.0))
         return rgb.outputs[0]
-
-    grass = ground_texture("grass.png", (0.20, 0.30, 0.12, 1.0))
-    dirt = ground_texture("dirt.png", (0.35, 0.28, 0.20, 1.0)) if mapping.get("dirt") is not None else None
-    rock = ground_texture("rock.png", (0.30, 0.28, 0.26, 1.0))
 
     splat_uv = tree.nodes.new("ShaderNodeUVMap")
     splat_uv.uv_map = "SplatUV"
@@ -2165,24 +2205,30 @@ def _splat_ground_material(surfaces_dir, splat, mapping, gain=1.0):
         tree.links.new(colour_b, node.inputs["Color2"])
         return node.outputs["Color"]
 
-    # The rock weight is the unpainted residual — max(0, 1 − ΣRGBA) — plus the painted
-    # rock-variant channel when calibration named one.
+    # The base ground's weight is the unpainted residual — max(0, 1 − ΣRGBA). It is not one of
+    # the four channels; see the docstring.
     channel_sum = channels[0]
     for k in (1, 2, 3):
         channel_sum = math("ADD", channel_sum, channels[k])
-    rock_weight = math("MAXIMUM", math("SUBTRACT", 1.0, channel_sum), 0.0)
-    if mapping.get("rock") is not None:
-        rock_weight = math("ADD", rock_weight, channels[mapping["rock"]])
+    base_weight = math("MAXIMUM", math("SUBTRACT", 1.0, channel_sum), 0.0)
+
+    # Every named channel blends, in RGBA order, then the base last. A channel the producer
+    # could not name is skipped — its weight still counts against the residual, which is
+    # correct: the ground is there, we just cannot say which it is.
+    named = [(index, mapping[key]) for index, key in enumerate("RGBA") if mapping.get(key)]
+    if not named:
+        named = [(0, _SPLAT_CHANNELS_DEFAULT["R"])]
 
     # Normalised chained lerp over the grounds: at each step
     # mix(so_far, next, w_next/(sum_so_far + w_next)) — exactly weights/sum, with an
     # epsilon so a zero-weight texel cannot divide by zero.
-    blended = grass
-    total = channels[mapping["grass"]]
-    for weight, colour in ((channels[mapping["dirt"]] if dirt is not None else None, dirt),
-                           (rock_weight, rock)):
-        if colour is None:
-            continue
+    first_index, first_ground = named[0]
+    blended = ground_texture(first_ground)
+    total = channels[first_index]
+    rest = [(channels[index], ground_texture(ground)) for index, ground in named[1:]]
+    if mapping.get("base"):
+        rest.append((base_weight, ground_texture(mapping["base"])))
+    for weight, colour in rest:
         total = math("ADD", total, weight)
         blended = mix(blended, colour, math("DIVIDE", weight, math("ADD", total, 1e-4)))
 
@@ -2385,15 +2431,10 @@ def build_terrain(bundle_dir, collection, center, radius):
     rock_faces = int((face_class == 2).sum())
 
     # -- the game's own ground blend, when the bundle carries it --------------------------
-    # terrain/splatmap.png is the 4096² weight map the terrain shader samples per pixel
-    # (rasters "splatmap" block). Which RGBA channel is which ground is not stated anywhere
-    # in managed game code, so it is CALIBRATED here against signals this importer already
-    # trusts: mean channel weight over flat natural faces names grass, over steep faces
-    # names rock. Dirt is OPTIONAL: measured on a full-city rip, the game's blend weights
-    # the grass channel as heavily under roadbeds (mean 251/255) as under lawns (243) —
-    # the dirt look beside roads comes from wear decals and surface areas, not this map —
-    # so a roadbed winner equal to grass means "no dirt channel", not a failed calibration.
-    # Only a grass channel that cannot be named at all falls back to per-face painting.
+    # terrain/splatmap.png is the 4096² weight map the terrain shader samples per pixel, and
+    # the rasters "splatmap" block names which ground each channel weights (contract §8). It
+    # is read, not calibrated: a calibration used to run here and got three of four channels
+    # wrong — see _SPLAT_CHANNELS_DEFAULT for exactly which and why.
     splat = None
     splat_mapping = None
     splat_block = rasters.get("splatmap") if isinstance(rasters, dict) else None
@@ -2404,64 +2445,14 @@ def build_terrain(bundle_dir, collection, center, radius):
             LOG.warn(f"splatmap unreadable ({error}); falling back to per-face ground painting")
             splat = None
     if splat is not None:
-        # Sample by INDEX into the kept (post-cutout), row-major face list — same stride,
-        # same order, same starting offset as the scalar `for index in range(0, len(face_rc),
-        # stride_faces)` walk — so the subsample (and therefore the printed calibration
-        # numbers) comes out identical, not just similarly distributed.
-        stride_faces = max(1, len(face_r) // 60000)
-        sel = numpy.arange(0, len(face_r), stride_faces)
-        sel_r, sel_c, sel_cls = face_r[sel], face_c[sel], face_class[sel]
-        sample_x = origin_x + (cols_arr[sel_c] + cols_arr[sel_c + 1]).astype(numpy.float64) * 0.5 * cell
-        sample_z = origin_z - (rows_arr[sel_r] + rows_arr[sel_r + 1]).astype(numpy.float64) * 0.5 * cell
-
-        splat_pixels = numpy.frombuffer(splat.pixels, dtype=numpy.uint8).reshape(splat.height, splat.width, 4)
-        texel_col = numpy.clip(((sample_x - splat.min_x) / splat.cell_x).astype(numpy.int64), 0, splat.width - 1)
-        texel_row = numpy.clip(((splat.max_z - sample_z) / splat.cell_z).astype(numpy.int64), 0, splat.height - 1)
-        texels = splat_pixels[texel_row, texel_col].astype(numpy.float64)  # (S, 4), nearest-texel RGBA
-
-        sums = [[0.0] * 4 for _ in range(3)]
-        counts = [0, 0, 0]
-        for cls in range(3):
-            in_class = sel_cls == cls
-            counts[cls] = int(in_class.sum())
-            if counts[cls]:
-                sums[cls] = texels[in_class].sum(axis=0).tolist()
-
-        def winner(cls):
-            means = [sums[cls][k] / max(1, counts[cls]) for k in range(4)]
-            best = max(range(4), key=means.__getitem__)
-            return best, means
-
-        if counts[0] >= 200:
-            grass_channel, grass_means = winner(0)
-            dirt_channel = None
-            if counts[1] >= 200:
-                dirt_channel, dirt_means = winner(1)
-                if dirt_channel == grass_channel:
-                    dirt_channel = None  # the game's blend carries no roadbed response
-            # Rock is named by CONTRAST (steep mean − flat mean), not by the steep winner:
-            # on grassy mountainsides the grass channel can still dominate steep faces in
-            # absolute weight, but the rock channel is the one that GAINS on them (measured
-            # full-map: B +14 flat→steep while R drops 243). A winner-based pick fails
-            # region-locally and drops whole gorges to the square per-face override.
-            rock_channel = None
-            if counts[2] >= 200:
-                flat_means = [sums[0][k] / max(1, counts[0]) for k in range(4)]
-                steep_means = [sums[2][k] / max(1, counts[2]) for k in range(4)]
-                contrast = [steep_means[k] - flat_means[k] for k in range(4)]
-                best = max(range(4), key=contrast.__getitem__)
-                if contrast[best] >= 8.0 and best not in (grass_channel, dirt_channel):
-                    rock_channel = best
-            splat_mapping = {"grass": grass_channel, "dirt": dirt_channel, "rock": rock_channel}
-            names = "RGBA"
-            LOG.step(f"splatmap calibrated over {sum(counts)} samples: "
-                     f"grass={names[grass_channel]} (mean {grass_means[grass_channel]:.0f}), "
-                     f"dirt={'none (wear decals and areas carry the dirt look)' if dirt_channel is None else names[dirt_channel]}, "
-                     f"rock=unpainted residual"
-                     + (f" + painted variant {names[rock_channel]}" if rock_channel is not None else ""))
-        else:
-            LOG.warn(f"splatmap calibration short of samples (flat {counts[0]}); "
-                     "falling back to per-face ground painting")
+        splat_mapping, published = _splat_mapping(splat_block)
+        named = ", ".join(f"{key}={splat_mapping[key] or 'unknown'}" for key in "RGBA")
+        LOG.step(f"splatmap channels {'published by the bundle' if published else 'assumed'}: "
+                 f"{named}, base={splat_mapping.get('base') or 'none'} (the unpainted residual)")
+        if not published:
+            LOG.warn("the bundle predates the published channel map; the game's own "
+                     "TerrainMaterialType ordering is assumed — re-rip to have the producer "
+                     "state it and re-derive the one channel it cannot prove")
 
     # World-anchored UVs so the ground textures tile at a plausible density without any
     # per-face unwrap. 8 m per repeat reads roughly like the game's near tiling. Per-LOOP,

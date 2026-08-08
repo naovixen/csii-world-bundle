@@ -985,28 +985,47 @@ toward +X (east).
   makes in-game ground transitions smooth. Geo-referenced by its own `rasters.splatmap`
   sub-block (`file`, `size`, per-axis `resolution`, texel-centre `originWorld`, row 0 toward
   −Z like every raster, plus the shader shaping constants `splatMultiplier`/`splatPower`); its
-  grid is the playable area, not the heightmap grid — sizes differ. **The channel-to-ground
-  assignment is not stated in the game's managed code** (generator and consumer are both
-  shaders), so consumers must calibrate it against signals they already trust; the reference
-  importer derives grass from flat natural ground and prints the result. Two measured facts
-  a consumer must not get wrong (both produced square-splotch terrain when they were):
-  **(1) Do not require a dirt channel** — the blend weights the grass channel as heavily
-  under roadbeds (mean 251/255) as under lawns (243); the game's splat carries no roadbed
-  response, and the dirt look beside roads is the §5B wear decals and §8b surface areas.
-  **(2) The channels are PAINTED-ground weights and rock is the unpainted residual** —
-  very steep faces carry ≈0 in *all four* channels while rendering rock in-game, so the
-  base/rock weight is `max(0, 1 − (R+G+B+A))` (after the shaping constants), optionally
-  plus a minor painted rock-variant channel (it gains ~14/255 from flat to steep where
-  present). Calibrating rock as "the winning channel on steep ground" fails region-locally
-  and must not fall back to per-face classification. Consumers should sample it bilinearly (it is weights, not ids) and prefer
-  it over per-cell classification from `surface_index.png` wherever it is present;
-  `surface_index.png` remains the *semantic* roadbed mask (physics, the sink rule), not the
-  visual one. When the file or its `rasters.splatmap` block is absent, the pre-2026-08-07
-  behaviour (per-cell classification) is the documented fallback.
+  grid is the playable area, not the heightmap grid — sizes differ.
+
+  **The channel-to-ground assignment is published, in `rasters.splatmap.channels`. Read it;
+  do not calibrate it.** *(Amended 2026-08-08 — this block previously told consumers to derive
+  the map from slope and roadbed contrast, and the reference importer's calibration got three
+  of four channels wrong on a real bundle.)* The block names a ground per channel using
+  `terrain/surfaces/index.json`'s own keys, so each joins straight to a texture:
+
+  ```jsonc
+  "channels": { "R": "grass", "G": "dirt", "B": "extra1", "A": "extra2",
+                "base": "rock", "baseWeight": "max(0, 1 - (R + G + B + A) / 255)" }
+  ```
+
+  A channel the producer cannot name ships as `"unknown"`; drop it from the blend rather than
+  guessing. `channelProvenance` states, per channel, how firmly each is established — `G` is
+  reached by elimination rather than measured, so it is the one to doubt. If the whole
+  `channels` object is absent the bundle predates this amendment; the map above is still the
+  right assumption, since it is a property of the game's `TerrainMaterialType` ordering rather
+  than of any bundle.
+
+  Two things a consumer must still get right (both produced square-splotch terrain when they
+  were not): **(1) `base` is not a channel.** The four weights are *painted*-ground weights and
+  a cliff is simply unpainted — very steep faces carry ≈0 in all four while rendering rock
+  in-game — so the base ground's weight is the residual `max(0, 1 − (R+G+B+A))`. Normalising
+  the four channels into a partition loses rock entirely. **(2) Do not treat a roadbed as
+  dirt.** The blend weights grass as heavily under roadbeds (mean 251/255) as under lawns
+  (243); the dirt look beside roads is the §5B wear decals and §8b surface areas, not this map.
+
+  Consumers should sample it bilinearly (it is weights, not ids) and prefer it over per-cell
+  classification from `surface_index.png` wherever it is present; `surface_index.png` remains
+  the *semantic* roadbed mask (physics, the sink rule), not the visual one. When the file or
+  its `rasters.splatmap` block is absent, the pre-2026-08-07 behaviour (per-cell
+  classification) is the documented fallback.
 - **`terrain/user_splatmap.png`** (optional) — RGBA8 (R/G meaningful): the player's painted
   surface weights for the paintable extra grounds, read back from
   `TerrainMaterialSystem.UserSplatmap`. *(Added 2026-08-07.)* Written only when any texel is
   non-zero; geo-referenced by `rasters.userSplatmap` (same conventions as `rasters.splatmap`).
+  Its channels are published the same way — `"channels": { "R": "extra1", "G": "extra2" }`,
+  straight off the decompiled paint path. The source texture is `R8G8_UNorm`, two channels
+  wide, so `extra3` and `extra4` **can carry no weight anywhere**; the block lists them under
+  `unrepresentable` and `terrain/surfaces/` ships no texture for them.
 - **`terrain/world_heightmap.png`** (optional) — 16-bit grayscale, the **backdrop terrain**
   beyond the playable border (`TerrainSystem.worldHeightmap`, read losslessly via GPU
   readback). *(Added 2026-08-07.)* Geo-referenced by `rasters.worldTerrain` (texel-centre

@@ -291,7 +291,7 @@ namespace Carto.Systems
             // （遊戲自身的地面混合：地形著色器逐像素取樣的權重貼圖。擷取之即以遊戲平滑的
             //   逐像素混合（含手繪地表與雜訊）取代消費端的逐格分類——「方形色塊」。
             //   GPU 回讀於主執行緒此處進行；PNG 編碼併入下方的寫出工作。）
-            PendingTexture splatPixels = CaptureSplatmap(out Dictionary<string, object> splatBlock, report);
+            PendingTexture splatPixels = CaptureSplatmap(surfaceTextures, out Dictionary<string, object> splatBlock, report);
             PendingTexture userSplatPixels = CaptureUserSplatmap(out Dictionary<string, object> userSplatBlock, report);
 
             // ---- 4b. The backdrop terrain that fills the horizon beyond the playable border.
@@ -812,6 +812,21 @@ namespace Carto.Systems
             string surfacesDirectory = IOUtils.CombinePath(terrainDirectory, "surfaces");
             if (!Directory.Exists(surfacesDirectory)) Directory.CreateDirectory(surfacesDirectory);
 
+            // How many paintable extras the user splatmap can actually weight. `ApplyToSplatmap`
+            // maps Extra1..4 onto the x..w components of the brush vector, but the target texture
+            // is what decides how many of those components exist — and it is R8G8_UNorm, two
+            // channels, so the Extra3 and Extra4 writes land nowhere. Their ground textures are
+            // therefore unreferenceable by any consumer, and capturing them cost 8.29 MiB of a
+            // full-city bundle for weights no pixel can carry.
+            //
+            // Gated on the format rather than by name, so a game patch that widens the texture
+            // re-enables them here automatically instead of silently shipping dead files again.
+            // （使用者 splat 實際能加權的可繪製額外層數量。ApplyToSplatmap 將 Extra1..4 對應至
+            //   筆刷向量的 x..w 分量，但目標貼圖決定其中幾個分量真正存在——該貼圖為
+            //   R8G8_UNorm，僅兩個通道，故 Extra3 與 Extra4 的寫入無處可落。改以格式而非名稱
+            //   設閘，日後遊戲若加寬該貼圖即會自動重新啟用。）
+            int paintableExtras = CountPaintableExtras(report);
+
             // The theme binds a diffuse AND a tangent normal per ground, plus up to four
             // paintable extras (`colossal_TerrainExtra*`) most themes leave unbound — those
             // skip silently. Normal maps go through the same two-channel-packing rebuild the
@@ -840,6 +855,12 @@ namespace Carto.Systems
             {
                 string name = entry[0];
                 bool core = entry[2] == "core";
+
+                // An extra whose weight channel does not exist is skipped even when the theme
+                // binds it — the theme is allowed to bind a ground the splatmap cannot select.
+                // （即使主題有繫結，若其權重通道不存在仍予略過。）
+                if (!core && (ExtraIndex(name) > paintableExtras)) continue;
+
                 try
                 {
                     Texture texture = Shader.GetGlobalTexture(entry[1]);
@@ -877,7 +898,59 @@ namespace Carto.Systems
             }
 
             report.AppendLine($"Surfaces: {written.Count} ground texture(s) written");
+            if (paintableExtras < 4)
+            {
+                report.AppendLine($"  extra{paintableExtras + 1}..extra4 skipped: the user splatmap "
+                                + $"has {paintableExtras} channel(s), so no pixel can carry their weight");
+            }
             return written;
+        }
+
+        /// <summary>
+        /// Which of <c>extra1..extra4</c> a surface name refers to, or 0 when it is not an extra.
+        /// （地表名稱所指的 <c>extra1..extra4</c> 序號，若非額外層則為 0。）
+        /// </summary>
+        /// <param name="name">The surface name, e.g. <c>extra3_normal</c>.（地表名稱。）</param>
+        /// <returns>1..4, or 0.（1 至 4，或 0。）</returns>
+        private static int ExtraIndex(string name)
+        {
+            if ((name == null) || !name.StartsWith("extra", StringComparison.Ordinal)) return 0;
+            return ((name.Length > 5) && (name[5] >= '1') && (name[5] <= '4')) ? name[5] - '0' : 0;
+        }
+
+        /// <summary>
+        /// How many paintable extra grounds the user splatmap can actually weight.
+        /// （使用者 splat 實際能加權的可繪製額外地面數量。）<br/><br/>
+        /// One weight per channel, so the answer is the texture's component count — 2 for the
+        /// <c>R8G8_UNorm</c> target this game version creates. Falls back to all four if the
+        /// texture cannot be inspected, since dropping a live ground is the worse error of the
+        /// two: a dead file wastes bytes, a missing one leaves a consumer unable to draw ground
+        /// the player painted.<br/>
+        /// （每通道一個權重，故答案即貼圖的分量數。若無法檢視則保守回退為四個——
+        /// 誤棄真實地面比多出無用檔案嚴重得多。）
+        /// </summary>
+        /// <param name="report">The report to note the finding in.（用以記錄結果的報告。）</param>
+        /// <returns>The number of extras that can carry weight, 0..4.（可承載權重的額外層數，0 至 4。）</returns>
+        private int CountPaintableExtras(StringBuilder report)
+        {
+            try
+            {
+                Game.Rendering.TerrainMaterialSystem materials =
+                    World.GetOrCreateSystemManaged<Game.Rendering.TerrainMaterialSystem>();
+                Texture user = materials?.UserSplatmap;
+                if (user == null) return 4;
+
+                int channels = (int)UnityEngine.Experimental.Rendering.GraphicsFormatUtility
+                                    .GetComponentCount(user.graphicsFormat);
+                return Math.Max(0, Math.Min(4, channels));
+            }
+            catch (Exception ex)
+            {
+                _log.Warn($"Could not read the user splatmap's format: {ex.Message}");
+                report.AppendLine($"Surfaces: user splatmap format unreadable ({ex.Message}); "
+                                + "capturing all four paintable extras");
+                return 4;
+            }
         }
 
         /// <summary>
@@ -896,19 +969,40 @@ namespace Carto.Systems
         /// 為 4096² RGBA8 繪製目標，全域繫結為 <c>colossal_Splatmap</c>，並以公開的
         /// <c>splatmap</c> 屬性暴露。其恰好覆蓋可遊玩區域。原樣出貨即以遊戲自身的平滑
         /// 逐像素規則取代消費端的逐格分類。）<br/><br/>
-        /// The channel-to-ground assignment is not stated in managed code (the generator and
-        /// consumer are both shaders), so the block declares the generator inputs and the
-        /// shaping constants and leaves the assignment to the consumer's calibration — the
-        /// Blender harness derives it from the heightmap's slopes and the roadbed mask and
-        /// prints what it found, so nothing here guesses.
-        /// （通道與地面的對應未見於受管程式碼（產生與取用皆為著色器），故區塊宣告產生輸入與
-        /// 成形常數，將對應留給消費端校準——Blender 匯入器由高度圖坡度與路床遮罩推得並
-        /// 印出結果，此處不作任何猜測。）
+        /// <b>The channel-to-ground assignment is published, not left to the consumer.</b> It used
+        /// to be: this block said "calibrated by the consumer against slope and flat ground", on
+        /// the premise that the assignment is not stated in managed code. That premise was half
+        /// wrong, and the reference consumer's calibration got three of four channels wrong on a
+        /// real bundle — it discarded a live dirt channel averaging 72 on flat ground, named the
+        /// Extra1 paint weight a rock variant, and never identified A at all (audit §7.3.2).<br/>
+        /// （<b>通道與地面的對應由此publish，不再交由消費端推導。</b>先前此區塊要求消費端依坡度
+        /// 自行校準，前提是該對應未見於受管程式碼；該前提只對了一半，而參考消費端在真實束上
+        /// 四個通道錯了三個。）<br/><br/>
+        /// The map is <c>R = grass, G = dirt, B = extra1, A = extra2</c>, with <b>rock as the
+        /// implicit base</b> — the ground that renders where every channel is ~0, which is what a
+        /// cliff face is. Provenance differs per channel and the block says so rather than
+        /// flattening it:<br/>
+        /// （對應為 <c>R = 草, G = 土, B = extra1, A = extra2</c>，岩石為隱含基底。各通道的
+        /// 證據強度不同，區塊如實載明而不予抹平：）
+        /// <list type="bullet">
+        /// <item><c>B</c>, <c>A</c> — measured exactly: non-zero on precisely the pixels the
+        /// player painted with Extra1/Extra2, a biconditional with zero counterexamples over all
+        /// 16,777,216 pixels, and <c>ApplyToSplatmap</c> names the same two channel indices.</item>
+        /// <item><c>R</c>, and rock as the base — measured from the slope response: R falls
+        /// monotonically 254 → 2 from flat to cliff while every other channel is 0 on unpainted
+        /// ground.</item>
+        /// <item><c>G</c> — <b>by elimination</b>, not by direct measurement: seven grounds, four
+        /// channels, two proven extras, one proven grass, rock proven to be the base. That leaves
+        /// dirt as the only ground G can be, and it is falsified by a theme that binds fewer
+        /// grounds — so the check below runs on every rip rather than trusting one bundle.</item>
+        /// </list>
         /// </summary>
+        /// <param name="grounds">The ground textures the theme actually bound, from <see cref="CaptureSurfaceTextures"/>.（主題實際繫結的地面貼圖。）</param>
         /// <param name="block">Receives the <c>rasters.json</c> "splatmap" block, or <c>null</c>.（接收 <c>rasters.json</c> 的 "splatmap" 區塊，或 <c>null</c>。）</param>
         /// <param name="report">The report to note results in.（用以記錄結果的報告。）</param>
         /// <returns>The captured pixels for the writer task, or <c>null</c>.（供寫出工作使用的已擷取像素，或 <c>null</c>。）</returns>
-        private PendingTexture CaptureSplatmap(out Dictionary<string, object> block, StringBuilder report)
+        private PendingTexture CaptureSplatmap(Dictionary<string, string> grounds,
+                                               out Dictionary<string, object> block, StringBuilder report)
         {
             block = null;
             try
@@ -934,6 +1028,16 @@ namespace Carto.Systems
                 double cellX = area.x / captured.Width;
                 double cellZ = area.y / captured.Height;
 
+                // G = dirt holds only while dirt is the one ground left over. Re-derive that here
+                // instead of asserting it: if the theme did not bind dirt, or bound a ground this
+                // rip does not know how to place, the elimination fails and G ships as unknown —
+                // which is honest, and is also the signal that the map needs re-deriving.
+                // （G = 土僅在土為唯一剩餘地面時成立。此處重新推導而非直接斷言：若主題未繫結土，
+                //   則消去法不成立，G 以 unknown 出貨——如實陳述，同時亦是該重新推導的信號。）
+                bool dirtBound = (grounds != null) && grounds.ContainsKey("dirt");
+                bool eliminationHolds = dirtBound
+                                     && (grounds.ContainsKey("grass") && grounds.ContainsKey("rock"));
+
                 // Texel-centre geo-referencing, same convention as the terrain grid: top-left
                 // texel centre, rows toward −Z.（texel 中心的地理參照，慣例與地形網格相同：
                 // 左上 texel 中心，列朝 −Z。）
@@ -948,15 +1052,61 @@ namespace Carto.Systems
                         Math.Round(origin.y + area.y - (cellZ * 0.5), 3)
                     },
                     ["semantics"] = "GPU-generated ground-blend weights (height variance, rock/grass "
-                                  + "limits, noise, user brush); channel-to-ground assignment is "
-                                  + "calibrated by the consumer against slope and flat ground — the "
-                                  + "blend has no roadbed response (schema §8)",
+                                  + "limits, noise, user brush). Channels are named in `channels` "
+                                  + "below — do not calibrate them from slope; the blend has no "
+                                  + "roadbed response, so a slope-and-roadbed calibration "
+                                  + "misidentifies the paint channels (schema §8)",
+
+                    // The names are `terrain/surfaces/index.json` keys, so `channels.R` joins
+                    // straight to a ground texture with no lookup table on the consumer's side.
+                    // （名稱即 `index.json` 的鍵，故 `channels.R` 可直接連結至地面貼圖。）
+                    ["channels"] = new Dictionary<string, object>
+                    {
+                        ["R"] = "grass",
+                        ["G"] = eliminationHolds ? "dirt" : "unknown",
+                        ["B"] = "extra1",
+                        ["A"] = "extra2",
+
+                        // Rock is drawn where every weight falls to ~0 — a cliff face — so it is
+                        // not a channel at all. A consumer that treats the four weights as a
+                        // partition and normalises them loses rock entirely.
+                        // （岩石繪於所有權重趨近 0 之處（崖面），故其本非通道。若消費端將四個
+                        //   權重視為一組分割並予以正規化，岩石將完全消失。）
+                        ["base"] = "rock",
+                        ["baseWeight"] = "max(0, 1 - (R + G + B + A) / 255)"
+                    },
+
+                    // Per-channel, because these four are not equally well established and a
+                    // consumer deserves to know which one to doubt.
+                    // （逐通道載明，因四者證據強度不一，消費端應知何者可疑。）
+                    ["channelProvenance"] = new Dictionary<string, object>
+                    {
+                        ["R"] = "measured — falls monotonically with slope while every other "
+                              + "channel is 0 on unpainted ground",
+                        ["G"] = eliminationHolds
+                              ? "by elimination — the only ground left once grass, rock and the "
+                              + "two paint channels are accounted for; not measured directly"
+                              : "unknown — this theme does not bind the grounds the elimination "
+                              + "argument needs, so G is not named",
+                        ["B"] = "measured — non-zero on exactly the pixels painted with Extra1, "
+                              + "and TerrainMaterialSystem.ApplyToSplatmap writes Extra1 to this "
+                              + "channel index",
+                        ["A"] = "measured — non-zero on exactly the pixels painted with Extra2, "
+                              + "and ApplyToSplatmap writes Extra2 to this channel index",
+                        ["base"] = "measured — every channel falls to ~0 on cliff faces, and the "
+                              + "ground that renders there is rock"
+                    },
+
                     ["splatMultiplier"] = Math.Round((double)materials.SplatMultiplier, 4),
                     ["splatPower"] = Math.Round((double)materials.SplatPower, 4)
                 };
 
                 report.AppendLine($"Splatmap: {captured.Width}x{captured.Height} ground-blend weights "
                                 + $"captured (multiplier {materials.SplatMultiplier:F2}, power {materials.SplatPower:F2})");
+                report.AppendLine(eliminationHolds
+                    ? "  channels: R=grass G=dirt B=extra1 A=extra2, rock as the unpainted residual"
+                    : "  channels: R=grass G=unknown B=extra1 A=extra2, rock as the unpainted residual "
+                    + "(G unnamed: this theme binds no dirt ground, so the elimination does not hold)");
                 return captured;
             }
             catch (Exception ex)
@@ -1014,8 +1164,30 @@ namespace Carto.Systems
                         Math.Round(origin.x + (cellX * 0.5), 3), 0.0,
                         Math.Round(origin.y + area.y - (cellZ * 0.5), 3)
                     },
-                    ["semantics"] = "player-painted surface weights (R/G channels) for the "
-                                  + "paintable extra grounds in terrain/surfaces/"
+                    ["semantics"] = "player-painted surface weights for the paintable extra grounds "
+                                  + "in terrain/surfaces/; channels are named in `channels` below",
+
+                    // Straight off the paint path: ApplyToSplatmap switches on TerrainMaterialType
+                    // and sets one component of the brush vector, and the target is R8G8 — so the
+                    // enum's own ordering *is* the channel map, with no inference involved.
+                    // （直接取自繪製路徑：ApplyToSplatmap 依 TerrainMaterialType 設定筆刷向量的
+                    //   單一分量，而目標為 R8G8，故該枚舉的排序即為通道對應，無需任何推論。）
+                    ["channels"] = new Dictionary<string, object>
+                    {
+                        ["R"] = "extra1",
+                        ["G"] = "extra2"
+                    },
+
+                    // Extra3 and Extra4 exist in the enum and the brush writes them, but the
+                    // target texture is two channels wide, so those writes land nowhere. This is
+                    // why terrain/surfaces/ ships no extra3/extra4 (see CaptureSurfaceTextures).
+                    // （Extra3 與 Extra4 存在於枚舉中且筆刷會寫入，但目標貼圖僅有兩個通道，
+                    //   故該等寫入無處可落。）
+                    ["unrepresentable"] = new[] { "extra3", "extra4" },
+
+                    ["channelProvenance"] = "measured — TerrainMaterialSystem.ApplyToSplatmap maps "
+                                          + "TerrainMaterialType to brush-vector components and the "
+                                          + "target is R8G8_UNorm, so the enum ordering is the map"
                 };
 
                 report.AppendLine($"User splatmap: painted surfaces present, {captured.Width}x{captured.Height} captured");
