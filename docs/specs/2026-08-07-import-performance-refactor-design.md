@@ -1,7 +1,7 @@
 # Performance refactor of `tools/blender_import_bundle.py` — design
 
 **Date:** 2026-08-07
-**Status:** implemented 2026-08-07 on branch `perf-refactor`, A/B-verified (see the plan and the SDD ledger for measured results)
+**Status:** implemented 2026-08-07 on branch `perf-refactor`, A/B-verified (see the plan for measured results)
 
 ## Goal
 
