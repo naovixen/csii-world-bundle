@@ -1,5 +1,6 @@
 using Carto.IO;
 using Carto.Utils;
+using Colossal.IO.AssetDatabase;
 using Colossal.Logging;
 using Colossal.Mathematics;
 using Game;
@@ -642,7 +643,7 @@ namespace Carto.Systems
         private void RipSurfaceAreas(string outputDirectory, string terrainDirectory, StringBuilder report)
         {
             var areas = _surfaceAreaQuery.ToEntityArray(Unity.Collections.Allocator.TempJob);
-            int written = 0, skippedEmpty = 0;
+            int written = 0, skippedEmpty = 0, skippedUnpainted = 0;
             Dictionary<Entity, string> prefabKeys = new();
             HashSet<string> usedKeys = new();
             Dictionary<string, object> catalogue = new();
@@ -667,6 +668,11 @@ namespace Carto.Systems
                     {
                         key = CatalogueAreaPrefab(prefab, terrainDirectory, usedKeys, catalogue);
                         prefabKeys[prefab] = key;
+                    }
+                    if (key == null)
+                    {
+                        skippedUnpainted++;
+                        continue;
                     }
 
                     var record = new Dictionary<string, object>
@@ -749,8 +755,23 @@ namespace Carto.Systems
                 report.AppendLine($"Could not write areaprefabs.json: {ex.Message}");
             }
 
+            int unresolvedPrefabs = 0;
+            foreach (object value in catalogue.Values)
+            {
+                if ((value is Dictionary<string, object> catalogued) && catalogued.ContainsKey("unresolved"))
+                    unresolvedPrefabs++;
+            }
+
             report.AppendLine($"Surface areas: {written} area(s) over {catalogue.Count} prefab(s)"
-                            + ((skippedEmpty > 0) ? $"; {skippedEmpty} empty skipped" : ""));
+                            + ((skippedEmpty > 0) ? $"; {skippedEmpty} empty skipped" : "")
+                            + ((skippedUnpainted > 0)
+                                ? $"; {skippedUnpainted} unpainted area(s) excluded (prefab has no RenderedArea — "
+                                + "the game never draws them; their triangles are in clipvolumes.jsonl)"
+                                : "")
+                            + ((unresolvedPrefabs > 0)
+                                ? $"; {unresolvedPrefabs} prefab(s) UNRESOLVED — asset not loaded this session, "
+                                + "the game drew those areas grey (Missing Area); enable the packs and re-rip"
+                                : ""));
         }
 
         /// <summary>
@@ -763,7 +784,10 @@ namespace Carto.Systems
         /// <param name="terrainDirectory">The absolute <c>terrain/</c> directory.（<c>terrain/</c> 的絕對路徑。）</param>
         /// <param name="usedKeys">Keys taken so far, for uniqueness over the run.（既用之鍵，維持整次擷取內唯一。）</param>
         /// <param name="catalogue">The catalogue to add the entry to.（要加入項目的目錄。）</param>
-        /// <returns>The catalogue key the records reference.（紀錄所引用的目錄鍵。）</returns>
+        /// <returns>The catalogue key the records reference, or <c>null</c> for a prefab the game
+        /// structurally never paints (no <c>RenderedArea</c> — the Clip Surface); the caller skips
+        /// those areas.（紀錄所引用的目錄鍵；若為遊戲結構上永不繪製的預製模板（無
+        /// <c>RenderedArea</c>，即 Clip Surface）則為 <c>null</c>，呼叫端據以略過。）</returns>
         private string CatalogueAreaPrefab(Entity prefab, string terrainDirectory,
                                            HashSet<string> usedKeys, Dictionary<string, object> catalogue)
         {
@@ -782,12 +806,55 @@ namespace Carto.Systems
 
             try
             {
-                if (EntityManager.HasComponent<PrefabData>(prefab)
-                    && Instance.Prefab.TryGetPrefab(EntityManager.GetComponentData<PrefabData>(prefab),
-                                                    out PrefabBase prefabBase)
-                    && (prefabBase != null)
-                    && prefabBase.TryGet(out RenderedArea rendered)
-                    && (rendered != null))
+                // A negative `PrefabData.m_Index` means the save references this surface by
+                // PrefabID but the asset — an asset pack, in every observed case — was not
+                // loaded this session: `PrefabSystem.TryGetPrefab` refuses it, and the game
+                // itself draws those areas with `MeshSettingsData.m_MissingRenderedArea`
+                // (grey paint). Colourless is therefore game-true for the session that ripped,
+                // but flag it so the report and a consumer can tell "pack missing" apart from
+                // "authored colourless" — the cure is enabling the pack and re-ripping.
+                // （`PrefabData.m_Index` 為負代表存檔以 PrefabID 引用此地表，但該資產——
+                //   觀察到的皆為素材包——本次未載入：遊戲以 Missing Area 的灰色材質繪製。
+                //   故無色對本次擷取而言忠於遊戲；標記之，使報告與消費端能分辨
+                //   「素材包缺失」與「作者原意無色」。）
+                if (!EntityManager.HasComponent<PrefabData>(prefab)
+                    || !Instance.Prefab.TryGetPrefab(EntityManager.GetComponentData<PrefabData>(prefab),
+                                                     out PrefabBase prefabBase)
+                    || (prefabBase == null))
+                {
+                    entry["unresolved"] = true;
+
+                    // The game's full identity for the missing asset: `SurfacePrefab:Name (hash)`,
+                    // where the hash is `Hash128.Calculate` over the source mod's PDX platform ID.
+                    // Not reversible, but it convicts a candidate pack: hash its mod ID and compare.
+                    // （遊戲對缺失資產的完整識別：雜湊為來源模組 PDX 平台 ID 的 Hash128，
+                    //   不可逆但可驗證候選——雜湊候選模組 ID 相比即可。）
+                    if (EntityManager.HasComponent<PrefabData>(prefab))
+                    {
+                        PrefabData prefabData = EntityManager.GetComponentData<PrefabData>(prefab);
+                        if (prefabData.m_Index < 0)
+                            entry["prefabId"] = Instance.Prefab.GetObsoleteID(prefabData).ToString();
+                    }
+                    return key;
+                }
+
+                if (!prefabBase.TryGet(out RenderedArea rendered) || (rendered == null))
+                {
+                    // Resolved, but no `RenderedArea`: only that component's archetype hook puts
+                    // `Game.Areas.Batch` on an area entity, and every AreaBatchSystem draw/cull
+                    // query requires `Batch` — the game structurally never paints these. The one
+                    // case in the wild is the map editor's Clip Surface, whose triangles already
+                    // ship through clipvolumes.jsonl (§8c); painting them would draw boxes over
+                    // every tunnel portal that the game does not draw. Return null so the caller
+                    // skips the areas and counts them.
+                    // （已解析但無 `RenderedArea`：僅該元件的原型掛鉤會為區域實體加上 `Batch`，
+                    //   而繪製查詢皆要求 `Batch`——遊戲於結構上永不繪製這些區域。實例即地圖
+                    //   編輯器的 Clip Surface，其三角形已由 clipvolumes.jsonl 承載；若上色，
+                    //   將於每個隧道口繪出遊戲不存在的方塊。回傳 null 使呼叫端略過並計數。）
+                    catalogue.Remove(key);
+                    return null;
+                }
+
                 {
                     // The two authored numbers a consumer otherwise has to invent. `m_UVScale`
                     // goes straight to the shader as `colossal_UVScale` (AreaBatchSystem) and
@@ -804,35 +871,65 @@ namespace Carto.Systems
                             (double)EntityManager.GetComponentData<RenderedAreaData>(prefab).m_HeightOffset, 4);
                     }
 
-                    Material material = rendered.m_Material;
-                    if (material == null) return key;
-
-                    if (material.HasProperty("_BaseColor"))
+                    void WriteAreaTexture(PendingTexture captured)
                     {
-                        Color color = material.GetColor("_BaseColor");
+                        if (captured?.Pixels == null) return;
+                        byte[] png = Png.EncodeRgba(captured.Pixels, captured.Width, captured.Height);
+                        string fileName = $"area_{key}.png";
+                        string surfacesDirectory = IOUtils.CombinePath(terrainDirectory, "surfaces");
+                        if (!Directory.Exists(surfacesDirectory)) Directory.CreateDirectory(surfacesDirectory);
+                        File.WriteAllBytes(IOUtils.CombinePath(surfacesDirectory, fileName), png);
+                        entry["texture"] = $"terrain/surfaces/{fileName}";
+                    }
+
+                    Material material = rendered.m_Material;
+                    if (material != null)
+                    {
+                        // `RenderedArea.Version.Original` — vanilla surfaces: the baked material
+                        // carries colour and base map directly.
+                        // （`Version.Original`——原版地表：烘焙材質直接攜帶底色與底圖。）
+                        if (material.HasProperty("_BaseColor"))
+                        {
+                            Color color = material.GetColor("_BaseColor");
+                            entry["color"] = new[]
+                            {
+                                Math.Round((double)color.r, 4), Math.Round((double)color.g, 4),
+                                Math.Round((double)color.b, 4), Math.Round((double)color.a, 4)
+                            };
+                        }
+
+                        Texture texture = material.mainTexture;
+                        if ((texture == null) && material.HasProperty("_BaseColorMap"))
+                            texture = material.GetTexture("_BaseColorMap");
+
+                        if (texture != null)
+                            WriteAreaTexture(MaterialRipSystem.Capture(texture, key, name, 1024));
+                    }
+                    else
+                    {
+                        // `RenderedArea.Version.OverrideMaterial` — editor-authored surfaces,
+                        // which is every asset-pack surface. The game (`AreaBatchSystem`'s
+                        // batch build) clones the global `AreasConfigurationPrefab.
+                        // m_RenderedAreaMaterial` template and pushes the authored fields onto
+                        // the clone: `_BaseColor` := `m_BaseColor`, `_BaseColorMap` := the
+                        // `m_BaseColorMap` texture asset (a null reference means no texture at
+                        // all, not a template fallback). Reading only `m_Material` left these
+                        // colourless — the grey-fields defect.
+                        // （`Version.OverrideMaterial`——編輯器製作的地表，即所有素材包地表。
+                        //   遊戲複製全域範本材質，再將作者設定值推上去：底色取 `m_BaseColor`，
+                        //   底圖取 `m_BaseColorMap` 貼圖資產（參照為 null 即完全無貼圖，
+                        //   並非退回範本）。先前僅讀 `m_Material` 使這些地表全數無色。）
+                        Color color = rendered.m_BaseColor;
                         entry["color"] = new[]
                         {
                             Math.Round((double)color.r, 4), Math.Round((double)color.g, 4),
                             Math.Round((double)color.b, 4), Math.Round((double)color.a, 4)
                         };
-                    }
 
-                    Texture texture = material.mainTexture;
-                    if ((texture == null) && material.HasProperty("_BaseColorMap"))
-                        texture = material.GetTexture("_BaseColorMap");
-
-                    if (texture != null)
-                    {
-                        PendingTexture captured = MaterialRipSystem.Capture(texture, key, name, 1024);
-                        if (captured?.Pixels != null)
-                        {
-                            byte[] png = Png.EncodeRgba(captured.Pixels, captured.Width, captured.Height);
-                            string fileName = $"area_{key}.png";
-                            string surfacesDirectory = IOUtils.CombinePath(terrainDirectory, "surfaces");
-                            if (!Directory.Exists(surfacesDirectory)) Directory.CreateDirectory(surfacesDirectory);
-                            File.WriteAllBytes(IOUtils.CombinePath(surfacesDirectory, fileName), png);
-                            entry["texture"] = $"terrain/surfaces/{fileName}";
-                        }
+                        TextureAsset baseColorMap = null;
+                        if (rendered.m_BaseColorMap != null) baseColorMap = rendered.m_BaseColorMap;
+                        if (baseColorMap != null)
+                            WriteAreaTexture(MaterialRipSystem.ReadBack(baseColorMap, key, 1024));
                     }
                 }
             }

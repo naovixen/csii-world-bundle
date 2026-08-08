@@ -1586,3 +1586,68 @@ The harness change is verified against the bundle — the suburb, parking-lot an
 regions reconstruct with continuous pavement and their bay markings on top of it, and the
 lane, network and terrain layers are unchanged (`ab_compare.py`: `PASS 18 count line(s)
 identical`, `PASS frac=1.00000 max=0`).
+
+## 36. Grey fields: the OverrideMaterial branch and unresolved asset packs (2026-08-08, night)
+
+Reported: areas the map author painted as crop fields render as grey boxes in Blender. The
+2026-08-08 19:21 rip's `areaprefabs.json` splits cleanly in two: every vanilla surface
+(`Grass_Surface_01`, `Pavement_Surface_02`, …) carries `uvScale`+`color`+`texture`; every
+asset-pack surface with a long composite name (`Farming Surfaces & Decals Ground Haristess -
+2-2 - StrawFlat1 Overlay1 Surface`, the G87 concretes, the gaga terrain surfaces, the water
+mirrors — 18 prefabs) carries only `name`. No `uvScale` at all means the producer never even
+reached `RenderedArea` — the failure is *prefab resolution*, not material reading.
+
+### The game's mechanism (decompiled, `AreaBatchSystem` batch build + `PrefabSystem`)
+
+| # | Game rule | Producer (before) | Verdict |
+|---|---|---|---|
+| 1 | `RenderedArea` has two versions. `Version.Original`: a baked `m_Material` carries everything. `Version.OverrideMaterial` (`m_Material == null` — every editor-authored surface, which is every asset-pack surface): the game clones the global `AreasConfigurationPrefab.m_RenderedAreaMaterial` template and pushes the authored fields onto the clone — `_BaseColor := m_BaseColor`, `_BaseColorMap := m_BaseColorMap` (an `AssetReference<TextureAsset>`, loaded on demand), plus normal/mask maps, metallic, smoothness, UVScale, edge params. | Read only `m_Material`; bailed when null. Any OverrideMaterial surface came out with `uvScale` but no colour and no texture. | **Divergence — fixed.** `CatalogueAreaPrefab` now ports the branch: `color` from `m_BaseColor`, `texture` from `m_BaseColorMap` via the house `Load → Capture → Unload` (`MaterialRipSystem.ReadBack`, now internal). A null reference is game-true "no texture at all", **not** a template fallback — `Initialize` explicitly nulls the sampler. |
+| 2 | `PrefabData.m_Index < 0` marks an *obsolete* prefab: the save references an asset (by `PrefabID` = type+name+hash) that is not loaded this session. `TryGetPrefab` returns false; `GetPrefabName` falls back to `GetObsoleteID().GetName()` — the long composite names are this fallback's signature. `AreaBatchSystem.TryGetRenderedAreaData` then falls back to `MeshSettingsData.m_MissingRenderedArea`: **the game itself drew those areas grey in the rip session.** | Catalogued silently with only `name`; nothing in the report. | **Approximated → counted.** Entry now gets `"unresolved": true` (schema §8b, additive) and the rip report prints the count with the cure ("enable the packs and re-rip"). Nothing better is possible producer-side: there is no material to read. Same root cause as the `unresolved_*` instance ids in the same rip (see `cs2-instance-enumeration` memory — unowned/unloaded asset packs). |
+| 3 | Missing `m_BaseColorMap` with a colour still authored (colour-only surfaces, and the vanilla "Missing Area" prefab itself). | n/a (never reached). | **Match after fix**: colour alone is emitted; the harness's `texture → color → neutral` ladder (§8b) already renders it. |
+
+Deliberately not carried (flagged, not built): OverrideMaterial's `m_NormalMap`/`m_MaskMap`,
+metallic/smoothness scalars, and the edge fade/noise params. The baked-material path doesn't
+carry them either; carrying them on one branch only would be asymmetric, and no consumer reads
+them yet. Candidates for a TEX-follow-up if area relief ever matters.
+
+Harness: `build_areas` now names each grey prefab and the reason — `unresolved` (pack missing
+at rip time; the game showed grey too) vs genuinely colourless — instead of leaving grey boxes
+as a riddle.
+
+**Status: built, awaiting in-game re-rip.** The fields will only gain colour once the packs
+resolve in the rip session (Options → Mods: the packs must be enabled for the playset; a
+version/hash mismatch also lands in rule 2). The 2026-08-08 19:21 bundle *correctly* records
+that session — the game was drawing those fields grey then, whatever the map author's
+screenshots show. Related, same rip: the 15 `empty SubMesh buffer` warnings (parking lots,
+parks, courts) are the documented meshless-building pattern (§8b — their pavement IS the area
+layer, their markings are §4.2a decals), benign; the `unresolved_*` mesh warnings are rule 2
+wearing its instance-layer hat.
+
+### §36 validated against the re-rip (2026-08-08 22:18), plus one more finding
+
+The OverrideMaterial branch works: all 17 previously-grey pack surfaces (11 Farming/Haristess,
+4 G87 Concrete, 2 gaga TTP) resolved this session — the packs were installed all along; the
+19:21 session simply hadn't loaded them — and every one ripped `color` + `texture` + its
+authored `uvScale` (gaga TTP: 0.05, a value the fallback would have gotten 4× wrong).
+`Missing_Area` now carries its authored mid-grey `[0.502, 0.502, 0.502]`, confirming the
+branch against the game's own missing-area look. Still unresolved, correctly: the two
+`[G87] Water Mirror` surfaces (pack genuinely not installed; 24 areas, 239 triangles) — their
+new `prefabId` hashes differ *per asset*, so the identity behind `Hash128.Calculate` is
+per-asset (EAI runtime assets), not the pack's mod ID: hash-matching a candidate mod ID
+cannot convict the pack. The pack title + `G87` asset prefix remain the identification.
+
+**New finding: `Clip_Surface` was double-shipped and painted.** It resolved fine but has no
+`RenderedArea` — the harness's "did not resolve" message was a legacy-sniff misdiagnosis
+(`uvScale` absent ⇒ unresolved held only for the pre-§36 producer; sniff removed per the
+no-legacy-fallbacks rule). Renderer-end proof per rule 4c: only
+`RenderedArea.GetArchetypeComponents` puts `Game.Areas.Batch` on an area entity, and every
+`AreaBatchSystem` draw/cull query requires `Batch` (decomp lines 1523/1533) — the game
+*structurally* never paints an area whose prefab lacks `RenderedArea`. Counted against the
+22:18 bundle: exactly 266 areas, all referencing `Clip_Surface`, all 266 already present in
+`clipvolumes.jsonl` (§8c) — the paint copy drew grey boxes over tunnel portals that the game
+does not draw. The producer now skips them (counted in the rip report as "unpainted area(s)
+excluded"); unresolved-prefab areas are deliberately NOT skipped — the game does draw those
+(grey, Missing Area), and dropping them would hide the packs-missing signal.
+
+**Status: built, awaiting re-rip (terrain button only) for the clip exclusion; the colour
+path is validated and done.**

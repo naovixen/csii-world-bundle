@@ -1291,7 +1291,7 @@ namespace Carto.Systems
         /// <param name="key">Its stable identity.（其穩定識別。）</param>
         /// <param name="cap">The longest edge to write, or <c>0</c> for no cap.（寫出的最長邊上限，<c>0</c> 為不限。）</param>
         /// <returns>The pixels, or <c>null</c> when nothing came back.（像素，若無回讀結果則為 <c>null</c>。）</returns>
-        private static PendingTexture ReadBack(TextureAsset asset, string key, int cap)
+        internal static PendingTexture ReadBack(TextureAsset asset, string key, int cap)
         {
             // Loading a smaller mip is cheaper than loading the full image and shrinking it, so ask
             // for the smallest one that still satisfies the cap and let the blit do the remainder.

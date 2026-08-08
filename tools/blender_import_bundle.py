@@ -3650,6 +3650,27 @@ def build_areas(bundle_dir, collection, center, radius, ground=None, cell=3.5):
     LOG.done(f"areas:     {placed} surface area(s) into {built} object(s) "
              f"over {len(builders)} prefab(s)"
              + (f", {skipped_region} outside the region" if skipped_region else ""))
+
+    # A prefab with neither texture nor colour renders the neutral grey fallback — say why,
+    # per prefab, instead of leaving grey boxes as a riddle. `unresolved` is the producer's
+    # flag for "the save references an asset (pack) that was not loaded in the rip session":
+    # the game itself drew those areas grey (Missing Area fallback), and the cure is enabling
+    # the pack in-game and re-ripping, not anything on this side.
+    grey = [prefab for prefab in builders
+            if not (catalogue.get(prefab) or {}).get("texture")
+            and not (catalogue.get(prefab) or {}).get("color")]
+    if grey:
+        unresolved = [p for p in grey if (catalogue.get(p) or {}).get("unresolved")]
+        for prefab in sorted(unresolved):
+            name = (catalogue.get(prefab) or {}).get("name", prefab)
+            LOG.warn(f"area prefab did not resolve at rip time (asset pack not loaded "
+                     f"or version mismatch): {name}")
+        if unresolved:
+            LOG.warn(f"{len(unresolved)} area prefab(s) render grey because their asset "
+                     "was missing in the rip session — the game drew them grey too "
+                     "(Missing Area); enable the packs, load the save, re-rip")
+        for prefab in sorted(set(grey) - set(unresolved)):
+            LOG.warn(f"area prefab carries no colour and no texture: {prefab}")
     if ground is None:
         LOG.warn("terrain layer not built — surface areas stay flat, expect the ground to "
                  "cut through pavement on any slope (audit §30)")

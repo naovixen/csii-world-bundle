@@ -1108,6 +1108,26 @@ this layer shows grass wherever the game shows pavement.
   projector does. All keys are optional; a consumer falls back `texture` → `color` → its own
   neutral.
 
+  `color`+`texture` come from the surface's baked material when it has one, and otherwise
+  from the authored `RenderedArea` override fields — the game's own two-version rule
+  (`AreaBatchSystem`; audit §36). An entry may instead carry `"unresolved": true` *(added
+  2026-08-08)*: the save references a surface asset — an asset pack, in practice — that was
+  **not loaded in the rip session**, so there was no material to read and the game itself
+  drew those areas with its grey Missing Area fallback. The bundle faithfully records that
+  session; the cure is enabling the pack in-game and re-ripping, not consumer-side invention.
+  A consumer should surface these entries by `name` rather than silently rendering neutral.
+  An unresolved entry may also carry `"prefabId"`: the game's own identity string for the
+  missing asset, `SurfacePrefab:Name (hash)` — the hash is `Hash128.Calculate` over the
+  asset's platform ID (or its GUID). Observed to differ per asset within one pack, so it
+  identifies the asset, not the pack.
+
+  Areas whose prefab resolves but has **no `RenderedArea`** are not written at all *(as of
+  2026-08-08)*: the game structurally never paints them (no `Batch` archetype component, and
+  every `AreaBatchSystem` draw query requires it). The one case in practice is the map
+  editor's Clip Surface, whose triangles ship through `clipvolumes.jsonl` (§8c) instead —
+  older bundles carried those 266 areas here too, and consumers drew grey boxes over tunnel
+  portals the game does not draw (audit §36).
+
 Areas are ground paint, like decals (§4.2a): never generate collision from them, and draw
 them just above the terrain to avoid z-fighting. **They go UNDER the §4.2a decal instances
 standing on them** — a parking lot's bay markings are decal instances, and an area lifted
