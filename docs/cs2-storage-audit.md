@@ -2377,16 +2377,18 @@ Current total: **70,208,400 B (66.96 MiB), 41 files** — down from the census's
 that does not alter this document's ranking of anything, but is stated exactly rather than
 waved at.
 
-**Where this section answers the front matter's four questions**, since it carries no separate
-"information or representation?" heading: question 2 is §7.1, question 1 is §7.2, and question 4
-is §7.3. Question 3 is answered inside §7.2 and §7.4 — the heightmap is representation (§22 row
-15: it ships verbatim, a match with no runtime component), while the splatmap is not a pure
-function of static terrain state at all: its own shipped `rasters.json` semantics string names a
-**noise** input, and §7.4 measures two non-code deltas (9,828,541 vs 9,828,621 wet cells;
-27,422 vs 27,421 surface areas) showing two captures of the same save are not identical
-simulation moments. That makes the splatmap a *render*, not a re-encoding of something smaller —
-which is why §7 proposes only an encoding candidate (TERRAIN-1) and no deriving-instead-of-baking
-one.
+**This section was rewritten on 2026-08-08.** Its first draft was written under a plan that
+prejudged the domain — "already raster; confirm no cheap win and move on" — so it measured
+compression floors (§7.4, preserved unchanged and still correct) and answered question 1 with the
+words *"Not re-derived"*. That was the defect: a compression floor is an answer to question 4
+only. §7.2 and §7.3 below are new and answer questions 1 and 3 from measurement. The byte stakes
+really are small — terrain is 1.435% of the bundle — but the representation and consumer-
+correctness stakes are not, and one of the three findings below is a demonstrated wrong answer in
+the reference consumer today (§7.3.2).
+
+**Where this section answers the front matter's four questions:** question 2 is §7.1, question 1
+is §7.2, question 3 is §7.3, question 4 is §7.4. §7.5 (the splatmap shrink between the two
+captures) is a provenance investigation carried over from the first draft, unchanged.
 
 ### 7.1 What we ship
 
@@ -2402,18 +2404,356 @@ last measured, landed the same day as this bundle's rip (§0's provenance note; 
 cutout, water-level decode and splatmap mechanisms rule-by-rule against decompiled source,
 cited rather than re-derived.
 
+**Where the 70,208,400 bytes actually are.** Command:
+
+```
+python "$SCRATCH/terrain_census.py"
+```
+
+(`terrain_census.py`: `st_size` over every file under `$BUNDLE/terrain`, summed and divided by
+the domain total and by §0's 4,894,194,530-byte bundle total.) `measured`, exact, full
+population (41 of 41 files):
+
+| file | bytes | % of `terrain/` | % of bundle |
+|---|---:|---:|---:|
+| `surfaces/` (34 files) | 53,401,903 | 76.062% | 1.0911% |
+| `splatmap.png` | 10,042,179 | 14.303% | 0.2052% |
+| `heightmap.png` | 4,660,823 | 6.639% | 0.0952% |
+| `user_splatmap.png` | 1,073,326 | 1.529% | 0.0219% |
+| `water_level.png` | 780,555 | 1.112% | 0.0159% |
+| `surface_index.png` | 228,828 | 0.326% | 0.0047% |
+| `cutout.png` | 19,659 | 0.028% | 0.0004% |
+| `rasters.json` | 1,127 | 0.002% | 0.0000% |
+| **TOTAL** | **70,208,400** | **100.000%** | **1.4345%** |
+
+Three quarters of this domain is ground *textures*, not rasters of the city. The six rasters
+together are 16,805,370 B — 23.94% of `terrain/`, 0.343% of the bundle. **`cutout.png` is
+19,659 B**, and every claim §7.3.1 makes about it is a correctness claim, not a byte claim; the
+number is stated here so no later reader mistakes it for one.
+
 ### 7.2 What the game stores
 
-Not re-derived — `docs/cs2-api-audit.md` §17, §20, §22 and §22a already did this rule-by-rule
-against `Game.Simulation.TerrainSystem`/`WaterUtils`/`TerrainMaterialSystem`, and this task's
-brief scopes terrain as a confirm-and-close domain, not a re-audit. The one fact worth repeating
-because §7.3 depends on it: §22a's own semantics block (verbatim in `terrain/rasters.json`,
-§7.1) states the splatmap is *"GPU-generated ground-blend weights (height variance, rock/grass
-limits, noise, user brush)"* — a per-pixel render with a **noise input**, not a pure function of
-static terrain state the way the heightmap is (§22 row 15: heightmap "ships... verbatim", a
-**match** with no runtime component named).
+**Two sources, per this document's own rule** — the decompiled game for what it stores, the
+shipped bundle for what is in it. The decompile is the cached dump at
+`E:\carto-out\game-src\Game`; `docs/cs2-api-audit.md` §17, §20, §22 and §22a already validated
+the roadbed walk, the clip pass, the water-level decode and the splatmap capture rule-by-rule
+against `Game.Simulation.TerrainSystem`/`WaterUtils`/`TerrainMaterialSystem` and are **cited, not
+re-derived**. What follows is the per-raster storage form those audits never had to state,
+because §7's first draft never asked question 1.
 
-### 7.3 Smallest lossless encoding
+| our raster | what the game actually keeps, and where | our form is a… |
+|---|---|---|
+| `heightmap.png` | a raster: `TerrainSystem`'s height cascade, read back at the playable grid's own 4096² / 3.5 m | **re-encoding** — §22 row 15 records it as a match that "ships… verbatim" |
+| `water_level.png` | **not** a raster of this shape: `WaterSurfaceData<SurfaceWater>.depths` on the coarse simulation grid, per cell a *depth*, not a level | **transform + upsample** — see below |
+| `splatmap.png` | **no CPU-side store at all**: a 4096² `R8G8B8A8_UNorm` `RenderTexture` (`Game.Rendering.TerrainMaterialSystem.cs:742`) redrawn by `m_SplatMaterial` from the height cascade, water, a noise texture and the user brush | **render readback** — not a function of any static state we could ship instead |
+| `user_splatmap.png` | a raster, and one the save file itself carries: a 4096² **`R8G8_UNorm`** `RenderTexture` (`:758`) serialized by `TerrainMaterialSystem.Serialize` via `TextureSerializationUtils.SerializeTexture` (`:888`) | **re-encoding, padded from 2 channels to 4** — §7.3.2 |
+| `surface_index.png` | **nothing** — the roadbed footprint is recomputed every frame by `CullRoadsJob`; no persisted raster exists | **projection of a job's output** |
+| `cutout.png` | **nothing, and deliberately so** — `GenerateClipDataJob` builds `ClipMapDraw` volumes per frame and `TerrainSurface.RenderClipAreas` stencil-tests them; §20, cited, establishes the heightmap is *never* carved | **precomputed intersection** — §7.3.1 |
+
+**Water is the one where our raster is larger than its own source.** `Systems/TerrainRipSystem.cs:459-545`
+reads `Instance.Water.GetSurfaceData(...)`, builds one level per **simulation** cell
+(`level[(z * simWidth) + x] = SampleTerrainHeight(…) + depth`, `:486`), dilates it one sim cell
+(`:495-511`), then bilinearly resamples that coarse field onto the 4096² terrain grid
+(`:534-542`). `water_level.png` is therefore a bilinear upsample of a much smaller field, and the
+smaller field is what the game stores. That looks like a free win and is not one, because the dry
+cells carry a `0` sentinel that a resampler blends across every shoreline. Measured, command:
+
+```
+python "$SCRATCH/water_downsample.py"
+```
+
+`measured`, full population (all 10,219,596 wet cells of `water_level.png`), error in metres via
+`rasters.json`'s own `elevationScale`:
+
+| coarse grid | bytes (PNG16, zlib-9) | % of shipped | mean wet-cell error | p99 | max |
+|---|---:|---:|---:|---:|---:|
+| 2048² (stride 2) | 299,965 | 38.4% | 1.232 m | 32.50 m | 231.13 m |
+| 1024² (stride 4) | 114,880 | 14.7% | 3.355 m | 169.19 m | 517.01 m |
+| 512² (stride 8) | 43,539 | 5.6% | 7.265 m | 289.63 m | 526.32 m |
+| 256² (stride 16) | 16,587 | 2.1% | 14.089 m | 403.63 m | 526.45 m |
+
+A 526 m maximum error is the sentinel, not the terrain: a coastal sample that lands on a dry cell
+reads `0` and the upsample drags the whole neighbourhood to sea floor. A mask-aware coarse
+encoding would avoid that, and is **not proposed**: `water_level.png` is 780,555 B, so the entire
+ceiling for that design work is 1.112% of `terrain/` and 0.0159% of the bundle (§7.1).
+
+**The splatmap's noise input, restated because §7.3.2 and §7.5 both lean on it.** §22a's semantics
+block, shipped verbatim in `terrain/rasters.json` and quoted in full in §7.3.2, states the
+splatmap is *"GPU-generated ground-blend weights (height variance, rock/grass limits, noise, user
+brush)"*. `TerrainMaterialSystem` corroborates it directly: `m_SplatMaterial.SetTexture(ShaderID._NoiseTex,
+m_Noise)` (`:774`), and the three shaping globals `_SplatHeightVariance`, `_SplatRockLimit`,
+`_SplatGrassLimit` (`:47`, `:49`, `:51`). It is a per-pixel *render* with a noise term — not a
+pure function of static terrain state the way the heightmap is (§22 row 15). That defence stands
+for `splatmap.png` and is untouched by anything below.
+
+### 7.3 Information or representation?
+
+Three specific questions, each answered from the shipped bundle and the decompiled game rather
+than from the first draft's assumption that a raster domain has no representation questions.
+
+#### 7.3.1 `cutout.png` is a precomputed intersection — and 99.87% of it is not the polygons we already ship
+
+**The hypothesis this test was built to check, and the result, stated before the working.**
+`areas.jsonl` contains **266 `Clip_Surface` records**, each with the game's own `nodes` and
+`triangles`; the preserved rip log (`docs/cs2-storage-audit-riplog-2026-08-07.txt`, the `Cutout:` line) reports
+`266 clip area(s) stamped`. An exact match, so the obvious hypothesis is that `cutout.png` is
+largely a rasterisation of polygons the bundle already carries. **It is not.** Measured, the 266
+polygons account for **10 of the mask's 7,900 set cells — 0.13%.** Command:
+
+```
+python "$SCRATCH/cutout_split.py"
+```
+
+(`cutout_split.py`: re-implements `Systems/TerrainRipSystem.cs`'s `StampClipAreas` offline —
+the same `ToCell` world→grid map inverted from `rasters.json`'s own `originWorld`/`resolution`,
+the same `FillQuad` scanline rule with the triangle passed as a quad with one doubled corner, the
+same `CutoutFloor = 0.5 m` band floor and unbounded band top, terrain height decoded from
+`heightmap.png` by `elevationScale` — then set-differences the result against `cutout.png`.)
+
+`measured`, full population (266 of 266 records, 1,996 triangles, all 16,777,216 cells):
+
+| | cells | % of `cutout.png` |
+|---|---:|---:|
+| `cutout.png` set cells | 7,900 | 100.00% |
+| reproduced from `areas.jsonl`'s 266 `Clip_Surface` polygons | 10 | 0.13% |
+| reproduced but **not** in the shipped mask (reproduction error) | 0 | 0.00% |
+| shipped but not reproduced — **the section-ribbon walk** | 7,890 | 99.87% |
+
+The reproduction is a strict subset with zero false positives, and the 7,900 total matches the
+rip log's own `Cutout: 7900 cell(s)` line exactly — two independent sources for the same number.
+**Why the polygons contribute so little is the band test, not a weak rasteriser:** with the height
+gate disabled the same 266 polygons cover **3,400 cells**, and the band test then rejects 3,390
+of them (99.71%) because a `Clip_Surface` is authored flush with the ground it sits on, so almost
+nowhere does terrain stand more than 0.5 m above it. Command: `python "$SCRATCH/cutout_footprint.py"`
+(the same script with `CUT_BOTTOM` set to −1e30). `measured`, same population.
+
+**So `cutout.png` is a precomputed intersection of two things: the clip volumes, and the
+heightmap.** The heightmap ships (§7.1). The clip volumes do not, and — this is the answer to
+"is the parametric input already in the bundle" — **nothing in the bundle carries them.**
+`networks.jsonl` carries `pos`/`rot`/`attrs` per segment and no curve at all (measured: 8,259
+records, all `kind: "segment"`, `attrs.form` ∈ {`normal` 6,707, `elevated` 1,243, `tunnel` 309};
+the only `curve` field anywhere in `docs/bundle-schema.md` is `lanemeshes.jsonl`'s, line 654).
+`lanes.jsonl` carries tessellated lane polylines, not the composition's boundary béziers, and
+carries no tunnel tag at all in this bundle (measured: 0 occurrences of `tunnel` in
+`lanes.jsonl`, 309 in `networks.jsonl`; the producer-side tunnel-lane tag landed in `8985b73`
+after this rip, §0's provenance note). `networks/`'s 7,248 `.glb` files are baked surface meshes,
+not clip volumes.
+
+**What a consumer would have to implement, and what a new layer would cost.** The game's own
+representation is `ClipMapDraw`: per clipping section, the section's left and right béziers with
+the band base added to their y column, plus the band height, expanded ±0.3 m
+(`docs/cs2-api-audit.md` §20, cited and already validated — not re-derived here). A consumer
+handed that would intersect each volume against the heightmap it already has, which is exactly
+what `StampCutout` does today, only at the consumer's own mesh resolution instead of at 3.5 m.
+Sizing the layer, `arithmetic` (extrapolation rule: one section = left + right `Bezier4x3` =
+8 × `float3` = 24 `float32`, plus band base and band height = 26 `float32` = 104 B; an edge
+contributes 2 half-segments, a node strip contributes its `m_Left` and `m_Right`; the section
+counts are the rip log's own `165 edge(s), 252 node strip(s), 0 orphan cap(s)`, and the upper
+bound assumes every one of the 8,259 segments clips, at 2 edge halves + 4 node sections each):
+
+| layer scope | sections | bytes (`float32`) | vs `cutout.png`'s 19,659 B |
+|---|---:|---:|---:|
+| only the sections that mark a cell on **this** terrain | 834 | 86,736 | 4.41× |
+| every `ClipTerrain` section, terrain-independent (upper bound) | 49,554 | 5,153,616 | 262× |
+
+**This is a correctness candidate, not a byte candidate.** `cutout.png` is 19,659 B — 0.028% of
+`terrain/`, 0.0004% of the bundle (§7.1). Every parametric alternative is larger, the honest one
+by two orders of magnitude. Its value is the opposite: a top-down 3.5 m mask cannot express a
+clip volume that is open at one height and closed at another, so a portal driven into a hillside
+gets a square, terrain-height-thresholded hole where the volume would have cut a clean mouth —
+and the mask is re-derived against *one* heightmap, so it is stale the moment a consumer edits
+terrain. Clip volumes fix both. Nothing in this row is about bytes.
+
+**Scope guard — the two artefacts this audit is not able to fix, said plainly so §9 does not
+appear to promise them.** The square shoreline and the terrain clipping through roads are
+**consumer meshing**, not bundle representation. `build_terrain` in
+`tools/blender_import_bundle.py:2236` picks `stride = max(1, (max(width, height) + 1023) // 1024)`
+— **4** for a 4096² map — then decides whole 14.0 m faces from four corner texels
+(`:2300-2310`, `face_cut = any of the four corners`). Measured, command
+`python "$SCRATCH/terrain_extra.py"`: of the 7,900 cut cells, **499 (6.32%) land on a sampled
+grid node at all**; the harness drops 1,123 faces = 220,108 m² where the shipped mask marks
+96,775 m² at 3.5 m. **The bundle already carries all three rasters at the game's own 3.5 m
+resolution** — the loss is entirely on the consumer's side of the contract, and no change to
+`terrain/` can recover it. Only the tunnel-portal case above is a representation problem.
+
+#### 7.3.2 The splatmap's channel-to-ground assignment is readable at rip time — and the calibration we push onto the consumer gets three of four channels wrong
+
+**What we ship today.** `terrain/rasters.json`'s `splatmap.semantics` says, verbatim:
+
+```
+GPU-generated ground-blend weights (height variance, rock/grass limits, noise, user brush);
+channel-to-ground assignment is calibrated by the consumer against slope and flat ground —
+the blend has no roadbed response (schema §8)
+```
+
+That is 10,042,179 B of weights (§7.1) shipped with an instruction to *infer* what the weights
+mean. `Systems/TerrainRipSystem.cs:899-905` states the reason: "the channel-to-ground assignment
+is not stated in managed code (the generator and consumer are both shaders)". **That premise is
+half right, and the half that is wrong covers half the channels.**
+
+**Source 1 — the decompile.** `Game.Rendering.TerrainMaterialSystem.ApplyToSplatmap`
+(`E:\carto-out\game-src\Game\Game.Rendering.TerrainMaterialSystem.cs:830-856`) is the paint path,
+and it *is* managed code. It switches on `TerrainMaterialType` and writes one channel:
+
+```
+case TerrainMaterialType.Extra1: val.x = 1f; break;
+case TerrainMaterialType.Extra2: val.y = 1f; break;
+case TerrainMaterialType.Extra3: val.z = 1f; break;
+case TerrainMaterialType.Extra4: val.w = 1f; break;
+```
+
+`val` becomes `_BrushChannels` on the `PaintSplatmap` compute shader, whose target is
+`m_UserSplatmap` — created at `:758` as `new RenderTexture(4096, 4096, 0, GraphicsFormat.R8G8_UNorm)`.
+**Two channels.** The `Extra3 → z` and `Extra4 → w` writes go to channels the texture does not
+have. `Game.Prefabs.TerrainMaterialType` (`None 0, Extra1 4 … Extra4 7`) and
+`Game.Prefabs.TerrainMaterialProperties.m_Type` are the enum and the component; note in passing
+that `TerrainMaterialProperties` carries `[ComponentMenu("Tools/", typeof(TerraformingPrefab))]`,
+so it is a *terraforming-tool* component, not the `SurfacePrefab` component
+`docs/cs2-api-audit.md` §5.2 names — §5.2's pointer is off by one class, which is why the
+mapping was never found by following it.
+
+**Source 2 — the shipped rasters, tested for exact implication rather than correlation.** Command:
+
+```
+python "$SCRATCH/splat_channels.py"
+```
+
+(`splat_channels.py`: counts counterexamples to each implication over all 16,777,216 pixels, then
+re-bins the splatmap by slope with painted pixels excluded.) `measured`, full population, exact:
+
+| test | counterexamples out of 16,777,216 |
+|---|---:|
+| `user_splatmap.R == 0` and `splatmap.B != 0` | **0** |
+| `user_splatmap.R != 0` and `splatmap.B == 0` | **0** |
+| `user_splatmap.G == 0` and `splatmap.A != 0` | **0** |
+| `user_splatmap.G != 0` and `splatmap.A == 0` | **0** |
+| *control:* `user_splatmap.R == 0` and `splatmap.A != 0` | 1,303,159 |
+| *control:* `user_splatmap.G == 0` and `splatmap.B != 0` | 1,691,015 |
+
+`splatmap.B` is non-zero on exactly the pixels the player painted with Extra1, and `splatmap.A` on
+exactly those painted with Extra2 — biconditional, zero exceptions, while the two crossed controls
+fail on 1.3M and 1.7M pixels. That fixes two of the four channels from data alone, and the
+decompile says which ground each is. The remaining two follow by elimination, and the slope
+response confirms it — `measured`, restricted to the 12,945,368 unpainted pixels so the paint
+channels cannot contaminate the bins:
+
+| slope | cells | R | G | B | A |
+|---:|---:|---:|---:|---:|---:|
+| 0–5° | 11,915,578 | 254.04 | 58.99 | 0.00 | 0.00 |
+| 5–15° | 632,081 | 226.76 | 121.43 | 0.00 | 0.00 |
+| 15–25° | 208,050 | 172.60 | 75.93 | 0.00 | 0.00 |
+| 25–35° | 77,208 | 99.50 | 23.80 | 0.00 | 0.00 |
+| 35–45° | 34,137 | 36.43 | 1.91 | 0.00 | 0.00 |
+| 45–90° | 78,314 | 2.12 | 0.07 | 0.00 | 0.00 |
+
+The theme binds seven grounds (`CaptureSurfaceTextures`, `Systems/TerrainRipSystem.cs:823-839`:
+grass, dirt, rock, extra1–4) into four channels, two of which are now known to be extra1/extra2.
+On a cliff face all four channels fall to ~0, so the ground that renders there is the **implicit
+base** — and the ground that renders on a cliff is rock. R falls monotonically with slope from
+254.04 to 2.12, matching the `_SplatGrassLimit` global (`:51`); G is what is left. **The
+assignment is: R = grass, G = dirt, B = extra1, A = extra2, rock = the unpainted residual.**
+
+**Provenance, per channel, because these four are not all equally strong.** B → extra1 and
+A → extra2 are `measured` exactly — a biconditional with zero counterexamples over the full
+16,777,216-pixel population, plus the decompiled paint path naming the same two channel indices.
+R → grass and rock → residual are `measured` from the slope response above (R falls 254.04 → 2.12
+across the slope range while every other channel is 0 on unpainted ground, so the cliff ground is
+whatever renders at zero weight). **G → dirt is by elimination**, not by direct measurement: the
+theme binds exactly seven grounds, four channels exist, two are proven extras, one is proven
+grass, and rock is proven to be the base — leaving dirt as the only ground G can be. A producer
+change that publishes the map (TERRAIN-4) should carry that distinction rather than flatten it;
+the elimination is falsifiable by a theme that binds fewer than seven grounds, which this bundle's
+does not: all 14 `colossal_Terrain*` bindings resolved to real textures — measured, the 14
+non-`area_` PNGs among the 33 in `terrain/surfaces/` (`grass`, `dirt`, `rock`, `extra1`–`extra4`,
+each with its `_normal`), the other 19 being the `area_*` surface-prefab textures of §7.3.3.
+
+**Source 3 — what the consumer's own calibration concludes instead, run on this bundle.** Command:
+
+```
+python "$SCRATCH/splat_calibration.py"
+```
+
+(`splat_calibration.py`: reproduces `tools/blender_import_bundle.py:2378-2412` offline — the same
+three face classes at the same `_ROCK_SLOPE = 0.84`, the same full-map stride 4, the same
+`winner()` and steep-minus-flat `contrast()` rules — and prints the verdict it reaches.)
+`measured`, full grid at the harness's own sampling:
+
+| class | faces | R | G | B | A |
+|---|---:|---:|---:|---:|---:|
+| flat natural | 877,030 | 245.26 | 71.99 | 8.88 | 11.26 |
+| roadbed | 151,171 | 248.12 | 98.28 | 6.97 | 2.86 |
+| steep natural | 18,328 | 129.02 | 27.90 | 20.08 | 13.90 |
+| *contrast (steep − flat)* | | −116.25 | −44.09 | **+11.20** | +2.63 |
+
+Verdict reached: `grass=R, dirt=none, rock=unpainted residual + painted variant B`. Against the
+measured assignment: **R is right; G is a live dirt channel averaging 71.99 on flat natural ground
+and the calibration discards it** (its `dirt` probe measures the *roadbed* class, where R wins at
+248.12, so `dirt_channel == grass_channel` and the code sets it to `None`, concluding "the game's
+blend carries no roadbed response"); **B is named a painted rock variant when it is the Extra1
+paint weight** — the `+11.20` contrast that names it is painted ground that happens to be steep,
+and the unpainted table above shows B is identically 0.00 in every slope bin; **A is never
+identified at all.** One of four channels correct. Credit where the calibration earns it: it does
+resolve rock as the unpainted residual, which is right, and it is the reason the gorge walls read
+correctly today. This is not a hypothetical cost of asking the consumer to calibrate; it is the
+reference consumer's current output on this bundle.
+
+**Both facts are producer-side reads with no measurable byte cost**, and one of them retires
+files. The channel map is a constant — `TerrainMaterialType`'s own ordering — that
+`CaptureSplatmap` can write into the `semantics` block it already builds
+(`Systems/TerrainRipSystem.cs:940-956`), replacing a calibration step with a statement. And
+because `m_UserSplatmap` is `R8G8_UNorm`, **Extra3 and Extra4 can carry no weight anywhere**;
+the shipped data agrees (`user_splatmap.png`'s B channel max is **0**, its A channel min is
+**255** — pure padding from `Png.EncodeRgba`), yet `terrain/surfaces/` carries
+`extra3.png`, `extra3_normal.png`, `extra4.png` and `extra4_normal.png` totalling **8,689,913 B**
+— 12.38% of `terrain/`, 0.178% of the bundle. Three candidate rows below carry these findings:
+TERRAIN-2 (retire the four dead textures), TERRAIN-3 (drop the two dead `user_splatmap` channels)
+and TERRAIN-4 (publish the map).
+
+#### 7.3.3 What `user_splatmap.png` and `surface_index.png` carry that `areas.jsonl` does not
+
+`areas.jsonl` is 10,296,261 B (§0) of triangulated surface polygons — measured, full population:
+27,421 records over 41 prefabs, 230,623 nodes, 175,781 triangles, of which 27,155 are surface
+areas and 266 are the `Clip_Surface` records of §7.3.1. `splatmap.png` + `user_splatmap.png` +
+`surface_index.png` are 11,344,333 B together. The overlap question is whether the *painted*
+rasters are the polygons in another form. Command:
+
+```
+python "$SCRATCH/splat_overlap.py"
+```
+
+(`splat_overlap.py`: rasterises all 27,155 non-clip area records onto the terrain grid through the
+same `ToCell`/`FillQuad` path as §7.3.1 with the height gate off, then intersects that footprint
+with each raster's non-zero set.) `measured`, full population:
+
+| footprint | cells | % of the 16,777,216-cell grid | ∩ `areas.jsonl` | as % of it | as % of areas |
+|---|---:|---:|---:|---:|---:|
+| `areas.jsonl` surface polygons | 1,371,016 | 8.172% | — | — | — |
+| `user_splatmap` painted (R or G) | 3,831,848 | 22.840% | 690,869 | 18.03% | 50.39% |
+| `surface_index` roadbed | 1,774,270 | 10.575% | 86,413 | 4.87% | 6.30% |
+
+**Neither raster is derivable from the polygons, and the polygons are not derivable from either.**
+Painted ground covers 2.79× the area the polygons do, and 81.97% of it lies outside every polygon;
+conversely 49.61% of the polygon footprint is unpainted. The two are different systems with
+different persistence: painting is a `Brush` writing into a `RenderTexture` that the save
+serializes as a texture (`TerrainMaterialSystem.Serialize`, §7.2), while a surface area is an ECS
+entity with `Game.Areas.Node`/`Triangle` buffers. `surface_index` is further still — 95.13% of it
+is outside any polygon, because it is `CullRoadsJob`'s roadbed footprint (§22, cited), and its
+1,774,270 cells match the rip log's own `Roadbed: … 1774270 cell(s) = 10.6% of the map` line
+(`docs/cs2-storage-audit-riplog-2026-08-07.txt`) exactly — two sources.
+
+**Where each one *is* redundant is a different axis, and only partly.** `surface_index` is the
+same walk that produced the roadbed, from the same network geometry that §7.3.1 established is
+absent from the bundle — so like `cutout.png` it is a projection whose parametric input does not
+ship, and unlike `cutout.png` it is 228,828 B for 10.575% of the map, which no parametric form
+beats. Whether a consumer could approximate it by projecting `networks/`'s 7,248 baked `.glb`
+meshes top-down is **`unmeasured`**: the two footprints are not the same object (the flattening
+walk covers ground the road mesh does not, §22), and settling it would mean projecting 404.8 MiB
+of geometry to bound a 228,828 B file. Not done, and named as not done.
+
+The one genuine redundancy is inside `user_splatmap.png` itself: 2 of its 4 channels are dead
+(§7.3.2), which is TERRAIN-3.
+
+### 7.4 Smallest lossless encoding
 
 **Pure zlib-9 floor (filter unchanged, compression level only) — already closed, by a wide
 margin.** Command:
@@ -2512,13 +2852,23 @@ Paeth predictors), unlike the photographic `surfaces/` textures beside it in the
 | id | change | est. bytes saved | est. rip-time saved | consumer cost | risk | lossless? | additive layer |
 |---|---|---|---|---|---|---|---|
 | TERRAIN-1 | Selective adaptive per-row filtering + zlib-9, applied only to the 11 of 39 files where it measurably wins (dominated by `heightmap.png`'s 30.8%); leave the other 28 (mostly `surfaces/` ground textures) at filter-None as shipped | measured, full population, **4.33 MiB (6.47% of `terrain/`, 0.09% of the whole bundle)** — a blanket policy across all 39 files is a **loss** (−2.82%), reported plainly rather than rounded up to a bigger, wrong number | unmeasured (needs a C#-side timed re-rip, same caveat as TEX-1/TEX-2, MESH-1) | none — in-place re-encode of unchanged files at unchanged paths, decodes with any standard PNG reader, same shape as TEX-1/TEX-2 | low | YES, every file's round-trip individually asserted bit-exact | not applicable — in-place re-encode; no new layer, nothing retired |
+| TERRAIN-2 | Stop capturing `terrain/surfaces/extra3*.png` and `extra4*.png` — the theme binds them, but `m_UserSplatmap` is `R8G8_UNorm`, so `ApplyToSplatmap`'s `Extra3 → z` / `Extra4 → w` writes land in channels that do not exist and no pixel in any city this game version produces can carry their weight (§7.3.2). Gate the capture on a weight channel existing, the same shape as `CaptureUserSplatmap`'s existing painted-check that already omits its file entirely | measured, exact, full population, **8,689,913 B (8.29 MiB; 12.38% of `terrain/`, 0.178% of the whole bundle)** — `extra3.png` 1,891,040 + `extra3_normal.png` 2,881,902 + `extra4.png` 1,875,872 + `extra4_normal.png` 2,041,099 | unmeasured — four fewer 1024² GPU readbacks and PNG encodes; not timed | none — two files fewer under a directory the consumer already enumerates through `index.json` | low, with one named gate: re-check `m_UserSplatmap`'s `GraphicsFormat` after any game patch that widens it; the producer already reads that texture and can assert on it | YES with respect to every weight the game can assign — proven by two sources (decompile: `Game.Rendering.TerrainMaterialSystem.cs:758`; data: `user_splatmap.png`'s B channel max is 0 over all 16,777,216 pixels). The texture bytes themselves are discarded, so this is a capture gate, not a re-encode | **retires**: `terrain/surfaces/extra3.png`, `extra3_normal.png`, `extra4.png`, `extra4_normal.png` and their `index.json` entries; **new layer**: none. **Overlaps TERRAIN-1**: forfeits 630,076 B of TERRAIN-1's measured saving (`extra3_normal.png` 276,530 B + `extra4_normal.png` 353,546 B); `extra3.png`/`extra4.png` are not in TERRAIN-1's 11-file list, so nothing is forfeited there. Combined ≈12.60 MB — `arithmetic`, TERRAIN-1's 4.33 MiB minus 630,076 B plus this row |
+| TERRAIN-3 | Encode `user_splatmap.png` as a 2-channel PNG (colour type 4, grey+alpha: R→L, G→A) instead of RGBA — its B channel is identically 0 and its A channel is identically 255, both pure padding from `Png.EncodeRgba` (§7.3.2). Same shape as §1's TEX-4 normal-map repack | measured, exact, full file, round-trip bit-exact on both live channels: **711,153 B vs 1,073,326 B as shipped = 362,173 B (0.52% of `terrain/`, 0.0074% of the whole bundle)** | unmeasured (half the pixels to deflate; not timed) | one line — read L and A instead of R and G; the `userSplatmap` semantics string must name the new channel order | low | YES, round-trip asserted bit-exact on both live channels | **new layer**: none — same path, same filename, narrower colour type; a §12.1 note that `user_splatmap.png` is colour type 4. **Overlaps TERRAIN-1**: TERRAIN-1 already counts 196,146 B on this file (1,073,326 → 877,180 B at adaptive+zlib-9, the 18.3% row in §7.4's table), so the **incremental** saving over TERRAIN-1 is **166,027 B** — that is the figure §9 must carry if both rows land |
+| TERRAIN-4 | Write the measured splatmap channel map into the `splatmap.semantics` block `CaptureSplatmap` already builds — `R = grass, G = dirt, B = extra1, A = extra2, rock = unpainted residual` — replacing the sentence that tells the consumer to calibrate. Same for `userSplatmap`: `R = extra1, G = extra2`, matching `TerrainMaterialType`'s own ordering | **0 B** — a constant string in a 1,127-byte JSON file. This row is a correctness row and is listed here, not omitted, because it is the direct answer to §7.3.2 | 0 | **negative** — deletes `tools/blender_import_bundle.py:2378-2412` (35 lines of calibration) and the sampling pass that feeds it | low — the map is a compile-time constant from `TerrainMaterialType`, corroborated by an exact biconditional over 16,777,216 pixels (§7.3.2) | YES — adds a statement, removes nothing | **new layer**: none. **Fixes**: the reference consumer currently resolves 1 of 4 channels correctly on this bundle (measured, §7.3.2) — it discards the live dirt channel and mislabels the Extra1 paint channel as a rock variant |
+| TERRAIN-5 | Ship the game's own clip volumes as a layer — per `ClipTerrain` section, the left/right béziers with the band base in their y column plus the band height (`ClipMapDraw`, `docs/cs2-api-audit.md` §20) — alongside `cutout.png`, so a consumer can intersect them against the heightmap at its own mesh resolution instead of consuming a 3.5 m top-down threshold of one heightmap | **costs bytes: −86,736 B minimum, −5,153,616 B at the terrain-independent upper bound** (`arithmetic`, §7.3.1's sizing table). Listed because question 3 asked what the delta *is*, and here the smaller representation is the less faithful one | unmeasured — reads `EdgeGeometry`/`EdgeNodeGeometry`/`TerrainComposition` the cutout walk already touches; likely a wash | moderate — evaluate a cubic bézier and test a height band, both of which `StampCutout` already does in 60 lines | medium — a new layer and a §12.1 schema amendment, for a fidelity gain with no byte payoff | YES — strictly more information than the mask, which stays | **new layer**: `clipvolumes.jsonl` (or a `clip` block); **retires**: nothing — `cutout.png` is 19,659 B and stays as the cheap path |
 
-**Lossy candidates:** none proposed. TERRAIN-1's ceiling (6.47% of a domain that is already
-1.4% of the bundle) does not justify investigating a lossy fallback, and constraint 6 requires
-lossless to be exhausted first in any case — which the zlib-9-floor and adaptive-filter tests
-above already do for this domain.
+**Lossy candidates:** none proposed, now on a measured basis rather than an argued one.
 
-### 7.4 The splatmap shrink: what changed between the two captures, and what did not
+| id | change | est. bytes saved | error bound | why not proposed |
+|---|---|---:|---|---|
+| — | Coarse re-encoding of `water_level.png` on the water-sim grid it was upsampled from (§7.2) | 43,539 B at 512² = 5.6% of the file, i.e. 737,016 B saved (1.05% of `terrain/`, 0.0151% of the bundle) | `measured`, full population (10,219,596 wet cells): mean 7.265 m, p99 289.63 m, **max 526.32 m** — the dry-cell `0` sentinel blends across every shoreline. At 2048² the max is still 231.13 m | A mask-aware coarse encoding would avoid the sentinel, but the entire ceiling for that design work is 780,555 B — 1.112% of `terrain/`, 0.0159% of the bundle (§7.1) |
+| — | Any lossy re-encode of the `surfaces/` ground textures (76.062% of the domain) | not measured | — | Constraint 6 requires lossless first, and §7.4's zlib-9 floor and per-file adaptive test already exhaust it for this domain; the residual ceiling is 2.0% |
+
+**TERRAIN-2 was considered for this table and is in the lossless one instead**, because the
+weight channel that would reference those four textures does not exist in the game — proven by
+two sources, not argued (§7.3.2). It is a capture gate, not a quality trade.
+
+### 7.5 The splatmap shrink: what changed between the two captures, and what did not
 
 **The premise, stated precisely, and with its provenance carried forward rather than
 re-asserted.** `splatmap.png` is reported 1,839,661 B smaller in the current (21:36) capture
@@ -2534,7 +2884,7 @@ was ruled out if it is not.
 
 **Ruled out with certainty: the "splatmap semantics string" wording.** Commit `8985b73`'s own
 message names a "splatmap semantics string" change. That string is the `semantics` key inside
-`terrain/rasters.json`'s `splatmap` block (§7.1's sample, quoted in full in §7.2) — plain JSON
+`terrain/rasters.json`'s `splatmap` block (quoted in full in §7.3.2) — plain JSON
 text in a file that is not `splatmap.png`. A wording edit to a JSON string in one file cannot
 change the byte count of a different, binary PNG file. This is not measured, because it does
 not need to be — it is ruled out by inspection of what the two files *are*.
