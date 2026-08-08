@@ -131,8 +131,28 @@ class BundleContractTest(unittest.TestCase):
         """A bundle ripped before §8c has no clip layer at all; that is not an error."""
         bundle = self.fresh()
         (bundle / "clipvolumes.jsonl").unlink()
+        self.patch_manifest(bundle, lambda m: (m["layers"].pop("clipVolumes"),
+                                               m["counts"].pop("clipVolumes")))
         report = validate_bundle(bundle, DEFAULT_SCHEMA_DIR)
         self.assertEqual(report.errors, [])
+
+    def test_declared_layer_without_count_rejected(self):
+        """A record layer declared in `layers` must carry its count (§3) — that pairing is
+        what lets a consumer detect a truncated layer added after the freeze."""
+        bundle = self.fresh()
+        self.patch_manifest(bundle, lambda m: m["counts"].pop("areas"))
+        self.assertRejected(bundle, "layers.areas is declared but counts.areas is missing")
+
+    def test_count_without_declared_layer_rejected(self):
+        """A non-zero count for an undeclared layer describes records nobody can find."""
+        bundle = self.fresh()
+
+        def mutate(manifest):
+            manifest["layers"].pop("clipVolumes")
+            manifest["counts"]["clipVolumes"] = 2
+
+        self.patch_manifest(bundle, mutate)
+        self.assertRejected(bundle, "no layers.clipVolumes is declared")
 
     # -- lane geometry, contract §5B v2 ------------------------------------------------
 
@@ -142,7 +162,7 @@ class BundleContractTest(unittest.TestCase):
         record = json.loads(path.read_text(encoding="utf-8").splitlines()[0])
         record["prefab"] = "No_Such_Prefab"
         path.write_text(json.dumps(record, separators=(",", ":")) + "\n", encoding="utf-8")
-        self.assertRejected(bundle, "not in laneprefabs.json")
+        self.assertRejected(bundle, "not in the lanePrefabs catalogue")
 
     def test_lane_part_index_out_of_range_rejected(self):
         bundle = self.fresh()
@@ -179,7 +199,7 @@ class BundleContractTest(unittest.TestCase):
     def test_lanemeshes_without_catalogue_rejected(self):
         bundle = self.fresh()
         (bundle / "laneprefabs.json").unlink()
-        self.assertRejected(bundle, "laneprefabs.json is missing")
+        self.assertRejected(bundle, "no lanePrefabs catalogue resolves")
 
     def test_glb_winding_matches_the_documented_convention(self):
         """frame.meshFrame claims front faces are CCW in the right-handed mesh frame.
@@ -358,7 +378,7 @@ class BundleContractTest(unittest.TestCase):
     def test_area_prefab_missing_from_catalogue_rejected(self):
         bundle = self.fresh()
         (bundle / "areaprefabs.json").write_text("{}\n", encoding="utf-8")
-        self.assertRejected(bundle, "not in areaprefabs.json")
+        self.assertRejected(bundle, "not in the areaPrefabs catalogue")
 
     def test_surfaces_without_index_rejected(self):
         bundle = self.fresh()

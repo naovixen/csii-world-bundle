@@ -610,6 +610,42 @@ namespace Carto
             }
         }
 
+        /// <summary>
+        /// The button that assembles <c>bundle.json</c> from whatever the rip steps left on disk
+        /// (PLAN Phase 7).（自擷取步驟留於磁碟的內容組裝 <c>bundle.json</c> 的按鈕（PLAN 第七階段）。）<br/><br/>
+        /// Run it last, after steps 1–4: the manifest's counts must equal the bytes on disk, so a
+        /// re-run of any rip step calls for a re-run of this one. Synchronous like the vector
+        /// export — it reads every record layer back, up to half a minute on a full city.<br/>
+        /// （於步驟 1–4 之後最後執行：宣告檔的數量必須等於磁碟上的位元組，故任何擷取步驟重跑後
+        /// 皆應重跑此步驟。與向量輸出同為同步執行——其須讀回每個紀錄層，全城最多約半分鐘。）
+        /// </summary>
+        [SettingsUISection(GeneralTab, GeneralGeneralGroup)]
+        [SettingsUIButton]
+        [SettingsUIDisableByCondition(typeof(Settings), nameof(IsInGameOrEditor), invert: true)]
+        public bool WriteManifestButton
+        {
+            set
+            {
+                string directory = Utils.IOUtils.CombinePath(Instance.CartoDataPath, "spike");
+                IO.RipProgress.RunDeferred(IO.RipProgress.Phase.Manifest, () =>
+                {
+                    string summary;
+                    try
+                    {
+                        summary = IO.BundleWriter.WriteManifest(directory);
+                    }
+                    catch (System.Exception ex)
+                    {
+                        Instance.Log.Error(ex.ToString());
+                        summary = $"Manifest write failed:\n{ex.Message}";
+                    }
+
+                    Game.UI.MessageDialog dialog = new("Options.SECTION[Carto.Carto.Mod]", Fit(summary), "Common.OK");
+                    Instance.UI.appBindings.ShowMessageDialog(dialog, null);
+                });
+            }
+        }
+
 # if false
         [SettingsUISection(GeneralTab, GeneralGeneralGroup)]
         [SettingsUIButton]

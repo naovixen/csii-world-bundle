@@ -21,29 +21,32 @@ A bundle is a directory. `bundle.json` at its root is the only file whose name i
 everything else is found through the manifest's `layers` index.
 
 ```
-<bundle root>/
+<bundle root>/                    # (layers key in parentheses)
   bundle.json                     # manifest — frame, geo-referencing, counts, layer index
-  instances.jsonl                 # one line per placed object
-  networks.jsonl                  # one line per network segment / node
-  lanes.jsonl                     # one line per lane — the drivable graph
-  lanemeshes.jsonl                # one line per lane that draws geometry (§5B)
-  laneprefabs.json                # lane prefab catalogue: parts + bend inputs (§5B)
-  materials.json                  # material table, keyed by materialId
-  colors.json                     # per-mesh colour palettes, keyed by sub-mesh assetId
-  lights.json                     # per-mesh light emitters, keyed by sub-mesh assetId
-  meshes/<assetId>.glb            # unique prefab meshes, deduped by prefab
-  networks/<assetId>.glb          # generated per-segment network meshes
-  lanemeshes/<assetId>.glb        # straight lane part meshes, stored once each (§5B)
-  textures/<sha256>.png           # textures, deduped by content hash
-  terrain/elevation.tif           # elevation raster
-  terrain/world_elevation.tif     # optional world-elevation surround
-  terrain/surface_index.png       # per-cell ground-material id
-  clipvolumes.jsonl               # clip volumes: what opens tunnel portals and trenches
-  terrain/surfaces/index.json     # id -> ground texture map
-  terrain/surfaces/*.png          # ground textures
-  water/depth.tif                 # water depth raster
-  vector/                         # unchanged vanilla Carto GeoJSON / Shapefile / GeoTIFF
-  warnings.jsonl                  # advisory: what the producer skipped and why
+  instances.jsonl                 # (instances)    one line per placed object
+  networks.jsonl                  # (networks)     one line per network segment / node
+  lanes.jsonl                     # (lanes)        one line per lane — the drivable graph (§5A)
+  lanemeshes.jsonl                # (laneGeometry) one line per lane that draws geometry (§5B)
+  laneprefabs.json                # (lanePrefabs)  lane prefab catalogue: parts + bend inputs (§5B)
+  materials.json                  # (materials)    material table, keyed by materialId
+  colors.json                     # (colors)       per-mesh colour palettes, keyed by sub-mesh assetId (§7.2)
+  lights.json                     # (lights)       per-mesh light emitters, keyed by sub-mesh assetId (§7.2)
+  meshes/<assetId>.glb            # (meshes)       unique prefab meshes, deduped by prefab
+  networks/<assetId>.glb          # (networkMeshes) generated per-segment network meshes
+  lanemeshes/<assetId>.glb        # (laneMeshes)   straight lane part meshes, stored once each (§5B)
+  textures/<sha256>.png           # (textures)     textures, deduped by content hash
+  terrain/heightmap.png           # (terrain)      elevation raster (§8)
+  terrain/world_heightmap.png     # (worldTerrain) optional backdrop terrain beyond the border (§8)
+  terrain/surface_index.png       # (surfaceIndex) per-cell ground-material id (§8)
+  terrain/splatmap.png            # (splatmap)     optional ground-blend weights (§8)
+  terrain/user_splatmap.png       # (userSplatmap) optional player-painted surface weights (§8)
+  terrain/surfaces/index.json     # (surfaces)     id -> ground texture map, plus *.png textures
+  terrain/water_level.png         # (water)        water surface level raster (§8)
+  areas.jsonl                     # (areas)        rendered surface areas (§8b)
+  areaprefabs.json                # (areaPrefabs)  area prefab catalogue (§8b)
+  clipvolumes.jsonl               # (clipVolumes)  what opens tunnel portals and trenches (§8c)
+  vector/                         # (vector)       unchanged vanilla Carto GeoJSON / Shapefile / GeoTIFF
+  warnings.jsonl                  # (warnings)     advisory: what the producer skipped and why
 ```
 
 Those paths are the producer's defaults, **not** part of the contract. A consumer must read
@@ -158,13 +161,30 @@ something meaningful.
   "mapSize": 14336.0,
 
   "counts": { "meshes": 1, "materials": 1, "textures": 1,
-              "instances": 2, "networkSegments": 1, "warnings": 0 },
+              "instances": 2, "networkSegments": 1, "warnings": 0,
+              "lanes": 4, "laneGeometry": 1, "areas": 1, "clipVolumes": 0 },
 
   "layers": { "instances": "instances.jsonl", "networks": "networks.jsonl",
-              "materials": "materials.json", "meshes": "meshes/", "textures": "textures/" },
+              "lanes": "lanes.jsonl", "laneGeometry": "lanemeshes.jsonl",
+              "lanePrefabs": "laneprefabs.json",
+              "materials": "materials.json", "colors": "colors.json", "lights": "lights.json",
+              "meshes": "meshes/", "networkMeshes": "networks/", "laneMeshes": "lanemeshes/",
+              "textures": "textures/",
+              "terrain": "terrain/heightmap.png", "surfaceIndex": "terrain/surface_index.png",
+              "splatmap": "terrain/splatmap.png", "surfaces": "terrain/surfaces/",
+              "water": "terrain/water_level.png",
+              "areas": "areas.jsonl", "areaPrefabs": "areaprefabs.json",
+              "clipVolumes": "clipvolumes.jsonl", "warnings": "warnings.jsonl" },
 
-  "rasters": { "resolution": 4.0, "size": [4096, 4096],
-               "originWorld": [-8192, 0, 8192], "elevationUnits": "m", "noData": -9999 },
+  "rasters": { "resolution": 3.5, "size": [4096, 4096],
+               "originWorld": [-7166.25, 0, 7166.25], "elevationUnits": "m",
+               "elevationScale": 0.0625, "elevationOffset": 0.0,
+               "splatmap": { "file": "terrain/splatmap.png", "size": [4096, 4096],
+                             "resolution": [3.5, 3.5], "originWorld": [-7166.25, 0, 7166.25],
+                             "channels": { "R": "grass", "G": "dirt", "B": "extra1", "A": "extra2",
+                                           "base": "rock",
+                                           "baseWeight": "max(0, 1 - (R + G + B + A) / 255)" },
+                             "splatMultiplier": 2.0, "splatPower": 1.0 } },
 
   "ripOptions": { "meshSource": "runtime", "lodCap": 0, "textureSizeCap": 2048,
                   "includeSubObjects": true, "includeVector": false }
@@ -174,8 +194,17 @@ something meaningful.
 Notes on individual fields:
 
 - **`counts`** must equal reality. A mismatch is how a consumer detects a bundle truncated by
-  a crash mid-export, so it is a hard validation error, not a warning.
+  a crash mid-export, so it is a hard validation error, not a warning. `meshes`/`textures`
+  count files in their layer directory; `materials` counts keys; the `.jsonl` counts
+  (`instances`, `networkSegments`, `lanes`, `laneGeometry`, `areas`, `clipVolumes`,
+  `warnings`) count records. The four keys beyond the required five are present whenever
+  their layer is declared *(added with the Phase 7 manifest, see §12.1)*.
 - **`bounds`** encloses all exported content in the bundle frame, mesh extents included.
+  Contributors: every instance and network placement expanded by its mesh's extents, every
+  §8b area node, every §8c clip band bottom, and the playable-area raster extents (the
+  world-backdrop rasters are deliberately excluded — including a 4×-map horizon would make
+  `bounds` useless for framing the city). Bounds must *enclose*, not fit tightly; producers
+  may expand conservatively (e.g. rotation-independent mesh radii).
 - **`ripOptions.meshSource`** records how Phase 1's feasibility question actually resolved for
   this export: `runtime` (read from the live game), `offline` (joined from an offline
   `.assets` extraction), `mixed`, or `stub` (placeholder geometry substituted). Instance
@@ -558,9 +587,9 @@ and *are* drawn, so they are the one exception.
 
 ## 5A. `lanes.jsonl` — the drivable graph
 
-`networks.jsonl` and `networks/` are the road *surface*: where the asphalt is and what it is
-made of. `lanes.jsonl` is the road *graph*: where a vehicle may go, in which direction and how
-fast. A level built from the surface alone is scenery; the graph is what makes it drivable, and
+Layer key `lanes`. `networks.jsonl` and `networks/` are the road *surface*: where the asphalt
+is and what it is made of. `lanes.jsonl` is the road *graph*: where a vehicle may go, in which
+direction and how fast. A level built from the surface alone is scenery; the graph is what makes it drivable, and
 CS2 holds it as plain ECS data, so it is one of the cheapest useful things in the bundle.
 
 One JSON object per lane:
@@ -604,7 +633,7 @@ source meshes, in breach of the bundle's dedupe-by-prefab principle (§6). v2 sh
 game itself stores — the straight meshes once, plus per-lane bend parameters — and the
 consumer bends. No v1 bundle was ever accepted, so there is no compatibility path.
 
-Three pieces:
+Three pieces (layer keys `laneMeshes`, `lanePrefabs`, `laneGeometry` respectively):
 
 1. **`lanemeshes/<assetId>.glb`** — one file per unique straight part mesh, standard mesh
    frame (§2.2 / §6), materials joining `materials.json` as everywhere else.
@@ -784,7 +813,7 @@ material name in the bundle has to remain a key here (§6). Where two passes pro
 
 ### 7.2 `colors.json` and `lights.json`
 
-Both are keyed by a **sub-mesh `assetId`** — the glTF node name inside the owning prefab's
+Layer keys `colors` and `lights`. Both are keyed by a **sub-mesh `assetId`** — the glTF node name inside the owning prefab's
 `.glb` (§6) — because that is where CS2 keeps them. Measured over a full city: colour palettes
 sit on 3,984 sub-meshes covering 1,132,295 instances and on no object prefab at all; procedural
 lights likewise, on 1,184 sub-meshes covering 153,548 instances.
@@ -1004,7 +1033,7 @@ toward +X (east).
   the *semantic* roadbed mask (physics, the sink rule), not the visual one. When the file or
   its `rasters.splatmap` block is absent, the pre-2026-08-07 behaviour (per-cell
   classification) is the documented fallback.
-- **`terrain/user_splatmap.png`** (optional) — RGBA8 (R/G meaningful): the player's painted
+- **`terrain/user_splatmap.png`** (`layers.userSplatmap`, optional) — RGBA8 (R/G meaningful): the player's painted
   surface weights for the paintable extra grounds, read back from
   `TerrainMaterialSystem.UserSplatmap`. *(Added 2026-08-07.)* Written only when any texel is
   non-zero; geo-referenced by `rasters.userSplatmap` (same conventions as `rasters.splatmap`).
@@ -1012,7 +1041,7 @@ toward +X (east).
   straight off the decompiled paint path. The source texture is `R8G8_UNorm`, two channels
   wide, so `extra3` and `extra4` **can carry no weight anywhere**; the block lists them under
   `unrepresentable` and `terrain/surfaces/` ships no texture for them.
-- **`terrain/world_heightmap.png`** (optional) — 16-bit grayscale, the **backdrop terrain**
+- **`terrain/world_heightmap.png`** (`layers.worldTerrain`, optional) — 16-bit grayscale, the **backdrop terrain**
   beyond the playable border (`TerrainSystem.worldHeightmap`, read losslessly via GPU
   readback). *(Added 2026-08-07.)* Geo-referenced by `rasters.worldTerrain` (texel-centre
   origin over `worldOffset…worldOffset + worldSize`); the playable area is a sub-rect of it,
@@ -1031,15 +1060,16 @@ schema); they are v1-compatible optional manifest additions, required by the val
 terrain or water layer is declared. `worldTerrain`/`worldWater` (the 4× backdrop) keep the
 same value semantics at their own size when present.
 
-**Until the producer assembles `bundle.json` (Phase 7)**, the identical `rasters` object is
-written at `terrain/rasters.json`, and Phase 7 lifts it into the manifest verbatim. A consumer
-of a *complete* bundle reads the manifest only.
+The producer writes the identical `rasters` object at `terrain/rasters.json` when the terrain
+layers are ripped, and the Phase 7 finalize step lifts it into the manifest verbatim.
+`terrain/rasters.json` is a producer intermediate, not a contract layer: a consumer of a
+complete bundle reads the manifest only.
 
 ### 8b. Surface areas — `areas.jsonl` + `areaprefabs.json` *(added 2026-08-07, see §12.1)*
 
-The painted ground patches the game draws through its area system: **house driveways,
-parking-lot pavement, park paths, sports courts, campsite clearings**. These surfaces belong
-to no other layer. A parking lot is a *meshless* building prefab — its instance record places
+Layer keys `areas` and `areaPrefabs`. The painted ground patches the game draws through its
+area system: **house driveways, parking-lot pavement, park paths, sports courts, campsite
+clearings**. These surfaces belong to no other layer. A parking lot is a *meshless* building prefab — its instance record places
 nothing visible, its bay markings are §4.2a decal instances — and the pavement itself is a
 `SurfacePrefab` area the building spawns as a sub-area, triangulated on the area grid and
 rendered by `AreaBatchSystem` with the prefab's `RenderedArea` material. A consumer without
@@ -1140,8 +1170,9 @@ conforms them to `--terrain` when that layer is also built.
 
 ### 8c. Clip volumes — `clipvolumes.jsonl` *(added 2026-08-08, see §12.1)*
 
-**Read this if you build terrain.** The game hides the ground over tunnel portals and sunken
-trenches with a per-frame stencil pass rather than carving it out of the heightmap (§8), so a
+Layer key `clipVolumes`. **Read this if you build terrain.** The game hides the ground over
+tunnel portals and sunken trenches with a per-frame stencil pass rather than carving it out of
+the heightmap (§8), so a
 consumer that meshes `heightmap.png` alone walls off every underground network. These are the
 volumes that pass clips with; intersect them against your own mesh and delete what falls inside.
 
@@ -1253,9 +1284,9 @@ consumer against it before pointing one at a real city.
 
 ```
 python tools/make_example_bundle.py    # regenerate it (deterministic, byte-identical)
-python tools/test_bundle_contract.py   # 30 checks: the example is valid, its winding really
-                                       # follows §2.2, and each way to break the contract is
-                                       # actually caught
+python tools/test_bundle_contract.py   # the contract suite: the example is valid, its winding
+                                       # really follows §2.2, and each way to break the
+                                       # contract is actually caught
 ```
 
 ---
@@ -1404,3 +1435,30 @@ terrain layer existed before this freeze, so no consumer breaks. The vanilla Geo
 remains available unchanged through `vector/` (§9) for CRS-referenced GIS workflows. The
 `rasters` additions (`elevationScale`, `elevationOffset`, `depthScale`) are ordinary
 v1-compatible optional-key additions.
+
+**The Phase 7 manifest: layer keys, counts and `rasters` sub-blocks catch up with the layers
+(2026-08-08, Phase 7).** The first `bundle.json` a producer actually assembles made the closed
+manifest objects catch up with every layer added since the freeze:
+
+- **`layers` gains** `lanes` (§5A), `laneGeometry` + `lanePrefabs` + `laneMeshes` (§5B),
+  `colors` + `lights` (§7.2), `splatmap` + `userSplatmap` (§8), `areas` + `areaPrefabs` (§8b)
+  and `clipVolumes` (§8c). Every one of these layers was already specified and shipped at a
+  conventional path; the manifest can now declare them, and a consumer must read their paths
+  from `layers` like every other layer.
+- **`layers.cutout` is deleted** from the closed schema. The layer was retired on 2026-08-08
+  (above); no manifest was ever produced while the key existed, so nothing can carry it.
+- **`counts` gains optional** `lanes`, `laneGeometry`, `areas` and `clipVolumes`, present
+  whenever the matching layer is declared, so truncation detection covers the record layers
+  that did not exist at the freeze.
+- **`rasters` gains optional sub-blocks** `splatmap`, `userSplatmap`, `worldTerrain` and
+  `worldWater` — the per-raster geo-referencing §8 already specified prose-first, now given a
+  schema (`file`, `size`, `resolution [x,z]`, texel-centre `originWorld`, plus the
+  channel-map keys).
+
+`counts` and `rasters` are closed objects, so by §12's letter the additions require
+`schema: 2`. They are amended in place on the `colorMask` grounds: no bundle conforming to v1
+had ever been produced end-to-end — the manifest itself did not exist before this change — so
+there is no v1 consumer in the field to break, and a consumer written against the
+pre-amendment schema fails loudly at its validator, which is the promised failure mode. This
+is the last amendment that may lean on "no complete bundle exists"; from the first finalized
+bundle onward, closed-object changes take `schema: 2`.

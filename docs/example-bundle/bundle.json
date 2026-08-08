@@ -63,13 +63,13 @@
   "bounds": {
     "min": [
       92.0,
-      12.0,
+      0.5,
       -368.0
     ],
     "max": [
-      188.0,
-      16.5,
-      -337.171573
+      206.0,
+      30.3,
+      -336.0
     ]
   },
   "mapSize": 14336.0,
@@ -79,18 +79,27 @@
     "textures": 1,
     "instances": 2,
     "networkSegments": 1,
-    "warnings": 0
+    "warnings": 0,
+    "laneGeometry": 1,
+    "areas": 1,
+    "clipVolumes": 2
   },
   "layers": {
     "instances": "instances.jsonl",
     "networks": "networks.jsonl",
+    "laneGeometry": "lanemeshes.jsonl",
+    "lanePrefabs": "laneprefabs.json",
     "materials": "materials.json",
     "meshes": "meshes/",
+    "laneMeshes": "lanemeshes/",
     "textures": "textures/",
     "terrain": "terrain/heightmap.png",
     "surfaceIndex": "terrain/surface_index.png",
     "surfaces": "terrain/surfaces/",
-    "water": "terrain/water_level.png"
+    "water": "terrain/water_level.png",
+    "areas": "areas.jsonl",
+    "areaPrefabs": "areaprefabs.json",
+    "clipVolumes": "clipvolumes.jsonl"
   },
   "rasters": {
     "resolution": 4.0,

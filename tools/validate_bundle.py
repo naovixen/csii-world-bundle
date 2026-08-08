@@ -369,6 +369,14 @@ def _resolve_layer(bundle_dir: Path, layers: Dict[str, str], key: str) -> Option
     return None if rel is None else bundle_dir / rel
 
 
+def _count_records(path: Optional[Path]) -> int:
+    """Record count of a JSON Lines layer — non-blank lines (blank lines are reported elsewhere)."""
+    if path is None or not path.is_file():
+        return 0
+    with path.open("r", encoding="utf-8") as handle:
+        return sum(1 for line in handle if line.strip())
+
+
 def validate_bundle(bundle_dir: Path, schema_dir: Path) -> Report:
     report = Report()
 
@@ -491,23 +499,24 @@ def validate_bundle(bundle_dir: Path, schema_dir: Path) -> Report:
                 report.error(f"{label}: {key} {record[key]} matches no network record id")
 
     # -- lanemeshes.jsonl + laneprefabs.json (contract §5B v2) -------------------------
-    # Not part of the manifest's layer map yet (that lands with the Phase 7 manifest), so the
-    # conventional paths are checked when present: parameter records against their schema, the
-    # prefab join against the catalogue, and every part's assetId against lanemeshes/.
-    lanes_path = bundle_dir / "lanemeshes.jsonl"
-    catalogue_path = bundle_dir / "laneprefabs.json"
-    lane_mesh_dir = bundle_dir / "lanemeshes"
-    if lanes_path.is_file():
+    # Declared by the Phase 7 manifest as layers.laneGeometry / lanePrefabs / laneMeshes:
+    # parameter records against their schema, the prefab join against the catalogue, and every
+    # part's assetId against the lane-mesh directory.
+    lanes: List[Dict[str, Any]] = []
+    lanes_path = _resolve_layer(bundle_dir, layers, "laneGeometry")
+    catalogue_path = _resolve_layer(bundle_dir, layers, "lanePrefabs")
+    lane_mesh_dir = _resolve_layer(bundle_dir, layers, "laneMeshes")
+    if lanes_path and lanes_path.is_file():
         lane_schema_path = schema_dir / "lanemesh.schema.json"
         lane_schema = Validator(json.loads(lane_schema_path.read_text(encoding="utf-8")),
                                 lane_schema_path.name)
-        lanes = _load_jsonl(lanes_path, lane_schema, "lanemeshes.jsonl", report)
+        lanes = _load_jsonl(lanes_path, lane_schema, layers["laneGeometry"], report)
 
         catalogue: Dict[str, Any] = {}
-        if catalogue_path.is_file():
+        if catalogue_path and catalogue_path.is_file():
             catalogue = json.loads(catalogue_path.read_text(encoding="utf-8"))
         elif lanes:
-            report.error("lanemeshes.jsonl is present but laneprefabs.json is missing")
+            report.error("layers.laneGeometry is declared but no lanePrefabs catalogue resolves")
 
         checked_parts: set = set()
         for entry_key, entry in catalogue.items():
@@ -517,15 +526,18 @@ def validate_bundle(bundle_dir: Path, schema_dir: Path) -> Report:
                     report.error(f"laneprefabs.json[{entry_key}].parts[{j}]: no assetId")
                 elif asset_id not in checked_parts:
                     checked_parts.add(asset_id)
-                    if not (lane_mesh_dir / f"{asset_id}.glb").is_file():
+                    if lane_mesh_dir is None:
                         report.error(f"laneprefabs.json[{entry_key}].parts[{j}]: "
-                                     f"assetId {asset_id!r} has no mesh in lanemeshes/")
+                                     f"assetId {asset_id!r} but no 'laneMeshes' layer is declared")
+                    elif not (lane_mesh_dir / f"{asset_id}.glb").is_file():
+                        report.error(f"laneprefabs.json[{entry_key}].parts[{j}]: "
+                                     f"assetId {asset_id!r} has no mesh in {layers['laneMeshes']}")
 
         for i, record in enumerate(lanes):
-            label = f"lanemeshes.jsonl line {i + 1}"
+            label = f"{layers['laneGeometry']} line {i + 1}"
             entry = catalogue.get(record.get("prefab"))
             if entry is None:
-                report.error(f"{label}: prefab {record.get('prefab')!r} is not in laneprefabs.json")
+                report.error(f"{label}: prefab {record.get('prefab')!r} is not in the lanePrefabs catalogue")
                 continue
             part_count = len(entry.get("parts", []))
             for index in record.get("parts", []):
@@ -536,7 +548,7 @@ def validate_bundle(bundle_dir: Path, schema_dir: Path) -> Report:
     # -- meshes ------------------------------------------------------------------------
     mesh_files: List[Path] = sorted(mesh_dir.glob("*.glb")) if mesh_dir and mesh_dir.is_dir() else []
     net_mesh_files: List[Path] = sorted(net_mesh_dir.glob("*.glb")) if net_mesh_dir and net_mesh_dir.is_dir() else []
-    lane_mesh_files: List[Path] = sorted(lane_mesh_dir.glob("*.glb")) if lane_mesh_dir.is_dir() else []
+    lane_mesh_files: List[Path] = sorted(lane_mesh_dir.glob("*.glb")) if lane_mesh_dir and lane_mesh_dir.is_dir() else []
     for path in mesh_files + net_mesh_files + lane_mesh_files:
         _check_mesh(path, bundle_dir, materials, materials_path is not None, referenced_textures, report)
 
@@ -551,6 +563,10 @@ def validate_bundle(bundle_dir: Path, schema_dir: Path) -> Report:
         if path.resolve() not in referenced_textures:
             report.warn(f"{path.name}: texture is not referenced by any material or mesh")
 
+    # -- surface areas and clip volumes (§8b / §8c, optional) --------------------------
+    area_count = _check_areas(bundle_dir, layers, report)
+    clip_count = _check_clip_volumes(bundle_dir, layers, report)
+
     # -- counts ------------------------------------------------------------------------
     counts = manifest["counts"]
     for key, actual in (
@@ -562,6 +578,29 @@ def validate_bundle(bundle_dir: Path, schema_dir: Path) -> Report:
     ):
         if counts[key] != actual:
             report.error(f"bundle.json counts.{key} is {counts[key]}, but the bundle contains {actual}")
+
+    # The record layers added after the freeze carry a count whenever their layer is declared
+    # (§3); a declared layer with no count is itself an error, so truncation detection cannot
+    # silently lapse.
+    for key, layer_key, actual in (
+        ("lanes", "lanes", _count_records(_resolve_layer(bundle_dir, layers, "lanes"))),
+        ("laneGeometry", "laneGeometry", len(lanes)),
+        ("areas", "areas", area_count),
+        ("clipVolumes", "clipVolumes", clip_count),
+    ):
+        if layer_key in layers:
+            if key not in counts:
+                report.error(f"bundle.json: layers.{layer_key} is declared but counts.{key} is missing")
+            elif counts[key] != actual:
+                report.error(f"bundle.json counts.{key} is {counts[key]}, but the bundle contains {actual}")
+        elif key in counts and counts[key] != 0:
+            report.error(f"bundle.json counts.{key} is {counts[key]}, but no layers.{layer_key} is declared")
+
+    # counts.warnings has been optional since the freeze — checked only when stated.
+    if "warnings" in counts:
+        actual = _count_records(_resolve_layer(bundle_dir, layers, "warnings"))
+        if counts["warnings"] != actual:
+            report.error(f"bundle.json counts.warnings is {counts['warnings']}, but the bundle contains {actual}")
 
     # -- bounds ------------------------------------------------------------------------
     lo = manifest["bounds"]["min"]
@@ -582,15 +621,12 @@ def validate_bundle(bundle_dir: Path, schema_dir: Path) -> Report:
                 report.error(f"{label}: axis {axis} value {point[axis]} lies outside bundle.json bounds")
 
     # -- raster layers need raster geo-referencing -------------------------------------
-    raster_layers = [k for k in ("terrain", "worldTerrain", "surfaceIndex", "water", "worldWater") if k in layers]
+    raster_layers = [k for k in ("terrain", "worldTerrain", "surfaceIndex", "splatmap",
+                                 "userSplatmap", "water", "worldWater") if k in layers]
     if raster_layers and "rasters" not in manifest:
         report.error(f"bundle.json declares raster layers {raster_layers} but has no 'rasters' block")
     elif raster_layers:
         _check_raster_layers(bundle_dir, manifest, layers, report)
-
-    # -- surface areas (§8b, optional) -------------------------------------------------
-    _check_areas(bundle_dir, report)
-    _check_clip_volumes(bundle_dir, report)
 
     report.note(f"schema {manifest['schema']}, generator {manifest['generator']!r}")
     report.note(f"{len(instances)} instances, {len(networks)} network records")
@@ -653,6 +689,44 @@ def _check_raster_layers(bundle_dir: Path, manifest: Dict[str, Any],
             if needed not in rasters:
                 report.error(f"layers.{key} is declared but rasters.{needed} is missing")
 
+    # The splat weight maps are RGBA8, not grayscale (§8).
+    for key in ("splatmap", "userSplatmap"):
+        rel = layers.get(key)
+        if rel is None:
+            continue
+        path = bundle_dir / rel
+        if not path.is_file():
+            continue  # the existence pass has already reported it
+        header = _png_header(path)
+        if header is None:
+            report.error(f"layers.{key}: {rel!r} is not a PNG")
+            continue
+        width, height, bit_depth, colour_type = header
+        if colour_type != 6 or bit_depth != 8:
+            report.error(f"layers.{key}: {rel!r} is colour type {colour_type} at depth {bit_depth}, "
+                         "contract §8 requires RGBA8 (colour type 6, depth 8)")
+
+    # Rasters on their own grid carry their own geo-referencing sub-block (§3), whose `file`
+    # and `size` must agree with the layer it describes.
+    for key in ("splatmap", "userSplatmap", "worldTerrain", "worldWater"):
+        rel = layers.get(key)
+        if rel is None:
+            continue
+        block = rasters.get(key)
+        if not isinstance(block, dict):
+            report.error(f"layers.{key} is declared but rasters.{key} is missing")
+            continue
+        if block.get("file") != rel:
+            report.error(f"rasters.{key}.file is {block.get('file')!r}, but layers.{key} is {rel!r}")
+        path = bundle_dir / rel
+        header = _png_header(path) if path.is_file() else None
+        block_size = block.get("size")
+        if header is not None and isinstance(block_size, list) and len(block_size) == 2:
+            width, height = header[0], header[1]
+            if [width, height] != block_size:
+                report.error(f"layers.{key}: {rel!r} is {width}x{height}, "
+                             f"but rasters.{key}.size is {block_size[0]}x{block_size[1]}")
+
     surfaces_dir = layers.get("surfaces")
     if surfaces_dir is not None:
         index_path = bundle_dir / surfaces_dir / "index.json"
@@ -676,19 +750,22 @@ def _check_raster_layers(bundle_dir: Path, manifest: Dict[str, Any],
                     report.error(f"{label}: texture {texture!r} does not exist")
 
 
-def _check_areas(bundle_dir: Path, report: Report) -> None:
-    """The surface-area invariants of contract §8b, when the optional layer is present.
+def _check_areas(bundle_dir: Path, layers: Dict[str, str], report: Report) -> int:
+    """The surface-area invariants of contract §8b, when the optional layer is declared.
 
-    Every record's triangles index into its own nodes; every `prefab` key resolves in
-    `areaprefabs.json`; a catalogue `texture`, when named, exists on disk.
+    Every record's triangles index into its own nodes; every `prefab` key resolves in the
+    areaPrefabs catalogue; a catalogue `texture`, when named, exists on disk. Returns the
+    record count for the counts check.
     """
-    areas_path = bundle_dir / "areas.jsonl"
-    if not areas_path.is_file():
-        return
+    areas_path = _resolve_layer(bundle_dir, layers, "areas")
+    if areas_path is None or not areas_path.is_file():
+        return 0
 
     catalogue: Dict[str, Any] = {}
-    catalogue_path = bundle_dir / "areaprefabs.json"
-    if catalogue_path.is_file():
+    catalogue_path = _resolve_layer(bundle_dir, layers, "areaPrefabs")
+    if catalogue_path is None:
+        report.error("layers.areas is declared but no areaPrefabs catalogue is declared")
+    elif catalogue_path.is_file():
         try:
             catalogue = json.loads(catalogue_path.read_text(encoding="utf-8"))
         except ValueError as exc:
@@ -729,26 +806,27 @@ def _check_areas(bundle_dir: Path, report: Report) -> None:
             if not isinstance(prefab, str) or not prefab:
                 report.error(f"{label}: 'prefab' must be a non-empty string")
             elif prefab not in catalogue:
-                report.error(f"{label}: prefab {prefab!r} is not in areaprefabs.json")
+                report.error(f"{label}: prefab {prefab!r} is not in the areaPrefabs catalogue")
 
     report.note(f"{records} surface areas over {len(catalogue)} area prefabs (§8b)")
+    return records
 
 
-def _check_clip_volumes(bundle_dir: Path, report: Report) -> None:
-    """The clip-volume invariants of contract §8c, when the optional layer is present.
+def _check_clip_volumes(bundle_dir: Path, layers: Dict[str, str], report: Report) -> int:
+    """The clip-volume invariants of contract §8c, when the optional layer is declared.
 
     This layer replaced `terrain/cutout.png` on 2026-08-08 — the precomputed intersection the
     producer used to ship. What is checkable here is the record shape, that a band is ordered,
     and that an `area` record joins to a real area; whether a volume opens the right terrain is
-    a question about the rip, not about the file.
+    a question about the rip, not about the file. Returns the record count for the counts check.
     """
-    path = bundle_dir / "clipvolumes.jsonl"
-    if not path.is_file():
-        return
+    path = _resolve_layer(bundle_dir, layers, "clipVolumes")
+    if path is None or not path.is_file():
+        return 0
 
     area_ids: set = set()
-    areas_path = bundle_dir / "areas.jsonl"
-    if areas_path.is_file():
+    areas_path = _resolve_layer(bundle_dir, layers, "areas")
+    if areas_path is not None and areas_path.is_file():
         with areas_path.open("r", encoding="utf-8") as handle:
             for line in handle:
                 line = line.strip()
@@ -816,6 +894,7 @@ def _check_clip_volumes(bundle_dir: Path, report: Report) -> None:
 
     summary = ", ".join(f"{count} {kind}" for kind, count in sorted(kinds.items()))
     report.note(f"{records} clip volume strips ({summary}) (§8c)")
+    return records
 
 
 def _check_quat(rot: Any, label: str, report: Report) -> None:

@@ -58,7 +58,10 @@ namespace Carto.IO
             Write,
 
             /// <summary>The vanilla vector/raster export.（原版的向量／網格輸出。）</summary>
-            Export
+            Export,
+
+            /// <summary>Assembling the bundle manifest.（組裝束的宣告檔。）</summary>
+            Manifest
         }
 
         /// <summary>

@@ -185,6 +185,88 @@ namespace Carto.IO
         }
 
         /// <summary>
+        /// Decode a 16-bit grayscale PNG this encoder itself produced, returning the samples and
+        /// image size.（解碼本編碼器自身產出的 16 位元灰階 PNG，回傳樣本與影像尺寸。）<br/><br/>
+        /// This is not a general PNG reader, for the same reason the encoder is not a general PNG
+        /// writer: it accepts exactly the files <see cref="EncodeGray16"/> emits — colour type 0,
+        /// bit depth 16, no interlacing, the "None" filter on every scanline — and refuses anything
+        /// else rather than misread it. The manifest's bounds computation reads the bundle's own
+        /// heightmap and water rasters back through this.<br/>
+        /// （此非通用 PNG 讀取器，理由與編碼器相同：僅接受 <see cref="EncodeGray16"/> 產出的檔案——
+        /// 色彩型別 0、位元深度 16、不交錯、每條掃描線皆為「None」濾波器——其餘一律拒絕而非誤讀。
+        /// 宣告檔的邊界計算即經此讀回束自身的高度圖與水體網格。）
+        /// </summary>
+        /// <param name="file">The PNG file's bytes.（PNG 檔案的位元組。）</param>
+        /// <param name="width">Receives the image width.（接收影像寬度。）</param>
+        /// <param name="height">Receives the image height.（接收影像高度。）</param>
+        /// <returns>The 16-bit samples, top row first.（16 位元樣本，由上而下。）</returns>
+        public static ushort[] DecodeGray16(byte[] file, out int width, out int height)
+        {
+            if ((file == null) || (file.Length < Signature.Length + 25)) throw new ArgumentException("Not a PNG file. 並非 PNG 檔案。");
+            for (int i = 0; i < Signature.Length; i++)
+            {
+                if (file[i] != Signature[i]) throw new ArgumentException("Not a PNG file. 並非 PNG 檔案。");
+            }
+
+            width = height = 0;
+            using MemoryStream idat = new();
+            int offset = Signature.Length;
+            while (offset + 8 <= file.Length)
+            {
+                int length = (file[offset] << 24) | (file[offset + 1] << 16) | (file[offset + 2] << 8) | file[offset + 3];
+                string type = Encoding.ASCII.GetString(file, offset + 4, 4);
+                offset += 8;
+                if ((length < 0) || (offset + length > file.Length)) throw new ArgumentException($"Chunk {type} overruns the file. 區塊 {type} 超出檔案範圍。");
+
+                if (type == "IHDR")
+                {
+                    width = (file[offset] << 24) | (file[offset + 1] << 16) | (file[offset + 2] << 8) | file[offset + 3];
+                    height = (file[offset + 4] << 24) | (file[offset + 5] << 16) | (file[offset + 6] << 8) | file[offset + 7];
+                    if ((file[offset + 8] != 16) || (file[offset + 9] != 0) || (file[offset + 12] != 0))
+                        throw new NotSupportedException("Only this encoder's own non-interlaced gray16 PNGs are readable. 僅可讀取本編碼器自身產出的非交錯 gray16 PNG。");
+                }
+                else if (type == "IDAT")
+                {
+                    idat.Write(file, offset, length);
+                }
+                else if (type == "IEND")
+                {
+                    break;
+                }
+
+                offset += length + 4; // Skip the payload and its CRC.（略過內容及其 CRC。）
+            }
+
+            if ((width <= 0) || (height <= 0)) throw new ArgumentException("No IHDR chunk. 缺少 IHDR 區塊。");
+
+            int stride = width * 2;
+            byte[] raw = new byte[(stride + 1) * height];
+            Inflater inflater = new(noHeader: false);
+            inflater.SetInput(idat.ToArray());
+            int total = 0;
+            while ((total < raw.Length) && !inflater.IsFinished)
+            {
+                int count = inflater.Inflate(raw, total, raw.Length - total);
+                if (count <= 0) break;
+                total += count;
+            }
+            if (total != raw.Length) throw new ArgumentException($"IDAT held {total} of {raw.Length} expected bytes. IDAT 僅含 {total} 位元組，預期 {raw.Length}。");
+
+            ushort[] samples = new ushort[width * height];
+            for (int y = 0; y < height; y++)
+            {
+                int row = y * (stride + 1);
+                if (raw[row] != 0) throw new NotSupportedException("Only the \"None\" scanline filter is readable. 僅可讀取「None」掃描線濾波器。");
+                for (int x = 0; x < width; x++)
+                {
+                    samples[y * width + x] = (ushort)((raw[row + 1 + x * 2] << 8) | raw[row + 2 + x * 2]);
+                }
+            }
+
+            return samples;
+        }
+
+        /// <summary>
         /// Write one chunk: length, type, payload, and a CRC-32 over the type and payload.
         /// （寫出一個區塊：長度、型別、內容，以及涵蓋型別與內容的 CRC-32。）
         /// </summary>

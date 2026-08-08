@@ -75,7 +75,11 @@
         "textures": { "type": "integer", "minimum": 0 },
         "instances": { "type": "integer", "minimum": 0 },
         "networkSegments": { "type": "integer", "minimum": 0 },
-        "warnings": { "type": "integer", "minimum": 0 }
+        "warnings": { "type": "integer", "minimum": 0 },
+        "lanes": { "type": "integer", "minimum": 0 },
+        "laneGeometry": { "type": "integer", "minimum": 0 },
+        "areas": { "type": "integer", "minimum": 0 },
+        "clipVolumes": { "type": "integer", "minimum": 0 }
       }
     },
     "layers": {
@@ -85,17 +89,27 @@
       "properties": {
         "instances": { "$ref": "#/$defs/relPath" },
         "networks": { "$ref": "#/$defs/relPath" },
+        "lanes": { "$ref": "#/$defs/relPath" },
+        "laneGeometry": { "$ref": "#/$defs/relPath" },
+        "lanePrefabs": { "$ref": "#/$defs/relPath" },
         "materials": { "$ref": "#/$defs/relPath" },
+        "colors": { "$ref": "#/$defs/relPath" },
+        "lights": { "$ref": "#/$defs/relPath" },
         "meshes": { "$ref": "#/$defs/relDir" },
         "networkMeshes": { "$ref": "#/$defs/relDir" },
+        "laneMeshes": { "$ref": "#/$defs/relDir" },
         "textures": { "$ref": "#/$defs/relDir" },
         "terrain": { "$ref": "#/$defs/relPath" },
         "worldTerrain": { "$ref": "#/$defs/relPath" },
         "surfaceIndex": { "$ref": "#/$defs/relPath" },
-        "cutout": { "$ref": "#/$defs/relPath" },
+        "splatmap": { "$ref": "#/$defs/relPath" },
+        "userSplatmap": { "$ref": "#/$defs/relPath" },
         "surfaces": { "$ref": "#/$defs/relDir" },
         "water": { "$ref": "#/$defs/relPath" },
         "worldWater": { "$ref": "#/$defs/relPath" },
+        "areas": { "$ref": "#/$defs/relPath" },
+        "areaPrefabs": { "$ref": "#/$defs/relPath" },
+        "clipVolumes": { "$ref": "#/$defs/relPath" },
         "vector": { "$ref": "#/$defs/relDir" },
         "warnings": { "$ref": "#/$defs/relPath" }
       }
@@ -134,6 +148,22 @@
         "noData": {
           "description": "Sentinel value for cells with no data.",
           "type": "number"
+        },
+        "splatmap": {
+          "description": "Geo-referencing for the ground-blend weight map (layers.splatmap), on its own grid (§8).",
+          "$ref": "#/$defs/rasterBlock"
+        },
+        "userSplatmap": {
+          "description": "Geo-referencing for the player-painted surface weights (layers.userSplatmap) (§8).",
+          "$ref": "#/$defs/rasterBlock"
+        },
+        "worldTerrain": {
+          "description": "Geo-referencing for the backdrop heightmap beyond the playable border (layers.worldTerrain); same elevation decode as the main heightmap (§8).",
+          "$ref": "#/$defs/rasterBlock"
+        },
+        "worldWater": {
+          "description": "Geo-referencing for the backdrop water raster (layers.worldWater); same value semantics as the main water raster (§8).",
+          "$ref": "#/$defs/rasterBlock"
         }
       }
     },
@@ -167,6 +197,65 @@
       "items": { "type": "number" },
       "minItems": 3,
       "maxItems": 3
+    },
+    "rasterBlock": {
+      "description": "Geo-referencing for a raster that lives on its own grid rather than the main terrain grid. Same conventions: originWorld is the top-left cell centre, row 0 runs toward -Z.",
+      "type": "object",
+      "required": ["file", "size", "resolution", "originWorld"],
+      "additionalProperties": false,
+      "properties": {
+        "file": {
+          "description": "The raster this block geo-references, matching the corresponding layers value.",
+          "$ref": "#/$defs/relPath"
+        },
+        "size": {
+          "description": "Raster dimensions in cells, [width, height].",
+          "type": "array",
+          "items": { "type": "integer", "exclusiveMinimum": 0 },
+          "minItems": 2,
+          "maxItems": 2
+        },
+        "resolution": {
+          "description": "Cell size in metres, [x, z].",
+          "type": "array",
+          "items": { "type": "number", "exclusiveMinimum": 0 },
+          "minItems": 2,
+          "maxItems": 2
+        },
+        "originWorld": {
+          "description": "Bundle-frame world position of the raster's top-left cell centre.",
+          "$ref": "#/$defs/vec3"
+        },
+        "semantics": {
+          "description": "Human-readable statement of what the raster's values mean.",
+          "type": "string"
+        },
+        "channels": {
+          "description": "Channel-to-meaning map, e.g. {\"R\": \"grass\"} plus derived entries like base/baseWeight (§8).",
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        },
+        "channelProvenance": {
+          "description": "How firmly each channel assignment is established: per-channel strings, or one string for the whole map.",
+          "oneOf": [
+            { "type": "string" },
+            { "type": "object", "additionalProperties": { "type": "string" } }
+          ]
+        },
+        "unrepresentable": {
+          "description": "Channel meanings the source texture cannot carry (§8 userSplatmap).",
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "splatMultiplier": {
+          "description": "Shader shaping constant applied to splat weights (§8).",
+          "type": "number"
+        },
+        "splatPower": {
+          "description": "Shader shaping constant applied to splat weights (§8).",
+          "type": "number"
+        }
+      }
     },
     "bounds": {
       "type": "object",

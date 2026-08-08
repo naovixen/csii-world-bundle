@@ -490,6 +490,13 @@ def build(out_dir: Path) -> None:
             half_w = record["width"] * 0.5
             pts.append((x - half_w, y, z - half_w))
             pts.append((x + half_w, y, z + half_w))
+    for node in area_record["nodes"]:
+        pts.append(tuple(node))
+    for volume in clip_volumes:
+        for side in ("left", "right"):
+            for x, _, z in volume.get(side, []):
+                pts.append((x, volume["bottom"], z))
+                pts.append((x, volume.get("top", volume["bottom"]), z))
 
     bounds = {
         "min": [round(min(p[i] for p in pts), 6) for i in range(3)],
@@ -550,17 +557,26 @@ def build(out_dir: Path) -> None:
             "instances": len(instances),
             "networkSegments": len(networks),
             "warnings": 0,
+            "laneGeometry": len(lanes),
+            "areas": 1,
+            "clipVolumes": len(clip_volumes),
         },
         "layers": {
             "instances": "instances.jsonl",
             "networks": "networks.jsonl",
+            "laneGeometry": "lanemeshes.jsonl",
+            "lanePrefabs": "laneprefabs.json",
             "materials": "materials.json",
             "meshes": "meshes/",
+            "laneMeshes": "lanemeshes/",
             "textures": "textures/",
             "terrain": "terrain/heightmap.png",
             "surfaceIndex": "terrain/surface_index.png",
             "surfaces": "terrain/surfaces/",
             "water": "terrain/water_level.png",
+            "areas": "areas.jsonl",
+            "areaPrefabs": "areaprefabs.json",
+            "clipVolumes": "clipvolumes.jsonl",
         },
         "rasters": rasters,
         "ripOptions": {
