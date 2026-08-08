@@ -163,6 +163,57 @@ class BundleContractTest(unittest.TestCase):
         self.assertEqual(layer_stem(Path("meshes/AppleTree01.glb.gz")), "AppleTree01")
         self.assertEqual(layer_stem(Path("meshes/AppleTree01.glb")), "AppleTree01")
 
+    # -- clip volumes, contract §8c ----------------------------------------------------
+
+    @staticmethod
+    def patch_clip_volume(bundle: Path, index: int, mutate) -> None:
+        path = bundle / "clipvolumes.jsonl"
+        lines = path.read_text(encoding="utf-8").splitlines()
+        record = json.loads(lines[index])
+        mutate(record)
+        lines[index] = json.dumps(record, separators=(",", ":"))
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    def test_clip_volume_unknown_kind_rejected(self):
+        bundle = self.fresh()
+        self.patch_clip_volume(bundle, 0, lambda r: r.update(kind="ribbon"))
+        self.assertRejected(bundle, "'kind' must be edge, node, orphan or area")
+
+    def test_clip_volume_inverted_band_rejected(self):
+        bundle = self.fresh()
+        self.patch_clip_volume(bundle, 0, lambda r: r.update(bottom=30.0, top=0.5))
+        self.assertRejected(bundle, "empty or inverted")
+
+    def test_clip_volume_short_curve_rejected(self):
+        """A cubic Bézier is four control points; three is a different curve, silently."""
+        bundle = self.fresh()
+        self.patch_clip_volume(bundle, 0, lambda r: r.update(left=r["left"][:3]))
+        self.assertRejected(bundle, "must be 4 control points")
+
+    def test_clip_volume_dangling_area_rejected(self):
+        bundle = self.fresh()
+        self.patch_clip_volume(bundle, 1, lambda r: r.update(area=999999))
+        self.assertRejected(bundle, "matches no record in areas.jsonl")
+
+    def test_clip_volume_area_carrying_curves_rejected(self):
+        """An area's geometry lives in areas.jsonl; a second copy here could disagree with it."""
+        bundle = self.fresh()
+        self.patch_clip_volume(bundle, 1, lambda r: r.update(left=[[0, 0, 0]] * 4))
+        self.assertRejected(bundle, "carries no curves")
+
+    def test_clip_volume_unbounded_top_accepted(self):
+        """An absent `top` means unbounded, which is how a clip surface says 'however high'."""
+        bundle = self.fresh()
+        self.patch_clip_volume(bundle, 0, lambda r: r.pop("top"))
+        self.assertEqual(self.errors(bundle), [])
+
+    def test_bundle_without_clip_volumes_is_valid(self):
+        """A bundle ripped before §8c has no clip layer at all; that is not an error."""
+        bundle = self.fresh()
+        (bundle / "clipvolumes.jsonl").unlink()
+        report = validate_bundle(bundle, DEFAULT_SCHEMA_DIR)
+        self.assertEqual(report.errors, [])
+
     # -- lane geometry, contract §5B v2 ------------------------------------------------
 
     def test_lane_record_with_unknown_prefab_rejected(self):
@@ -355,16 +406,6 @@ class BundleContractTest(unittest.TestCase):
         flat = [0] * (grid[0] * grid[1])
         (bundle / "terrain" / "heightmap.png").write_bytes(
             make_example_bundle.make_gray_png(flat, grid[0], grid[1], 8))
-        self.assertRejected(bundle, "bit depth")
-
-    def test_cutout_wrong_bit_depth_rejected(self):
-        # The cutout mask is a 0/255 hole mask at 8 bits on the terrain grid (§8); a
-        # 16-bit file would be a different encoding a consumer has no rule for.
-        bundle = self.fresh()
-        grid = json.loads((bundle / "bundle.json").read_text(encoding="utf-8"))["rasters"]["size"]
-        flat = [0] * (grid[0] * grid[1])
-        (bundle / "terrain" / "cutout.png").write_bytes(
-            make_example_bundle.make_gray_png(flat, grid[0], grid[1], 16))
         self.assertRejected(bundle, "bit depth")
 
     def test_raster_not_grayscale_rejected(self):

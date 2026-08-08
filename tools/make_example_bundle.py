@@ -379,7 +379,6 @@ def build(out_dir: Path) -> None:
 
     heights: list[int] = []
     surface: list[int] = []
-    cutout: list[int] = []
     levels: list[int] = []
     for row in range(grid):
         z = origin[2] - row * cell_m
@@ -395,14 +394,13 @@ def build(out_dir: Path) -> None:
             # The road's eastern end dives under a covering bulge — the shape a tunnel
             # portal or sunken trench has in a real rip: the game keeps the covering
             # terrain in the heightmap and hides it per-frame, so the bundle records the
-            # bulge in the heightmap AND marks it cut in cutout.png (§8: cut cells are
-            # void; a consumer deletes them or the road is walled off).
+            # bulge here and ships the clip volume (§8c) that opens it. A consumer that
+            # ignores the clip layer walls the road off.
             cut = on_road and x >= 188.0
             if cut:
                 world_y = 18.0
             heights.append(round(world_y / elevation_scale))
             surface.append(1 if on_road else 0)
-            cutout.append(255 if cut else 0)
             # A pond in the north-east corner. The water layer stores the SURFACE LEVEL
             # in the heightmap's own encoding (0 = dry): a still pond is one constant
             # level wherever there is water, and the ground plane cuts the shoreline.
@@ -414,7 +412,6 @@ def build(out_dir: Path) -> None:
     (terrain_dir / "surfaces").mkdir(parents=True, exist_ok=True)
     (terrain_dir / "heightmap.png").write_bytes(make_gray_png(heights, grid, grid, 16))
     (terrain_dir / "surface_index.png").write_bytes(make_gray_png(surface, grid, grid, 8))
-    (terrain_dir / "cutout.png").write_bytes(make_gray_png(cutout, grid, grid, 8))
     (terrain_dir / "water_level.png").write_bytes(make_gray_png(levels, grid, grid, 16))
 
     grass_png = make_checker_png(16, 4, (96, 132, 72, 255), (84, 118, 64, 255))
@@ -447,6 +444,29 @@ def build(out_dir: Path) -> None:
             "name": "Example Concrete Pad",
             "color": [0.42, 0.4, 0.38, 1.0],
         }}, indent=2) + "\n", encoding="utf-8")
+
+    # -- clip volumes (contract §8c): what opens the tunnel portal -----------------------
+    # One edge strip: the two boundary Béziers straddling the whole road at the lane height,
+    # with the 30 m band a portal gets. It deliberately spans the ENTIRE road, not just the
+    # covered part — the band test is what decides, exactly as in the game. West of x=188 the
+    # terrain sits at the lane, 0 m over it, so nothing is cut; from x=188 east it bulges to
+    # 18 m, 6 m over the lane and inside the band, so those cells open.
+    #
+    # Plus one area record: the concrete pad above also clips. It carries no geometry on
+    # purpose — its triangles are in areas.jsonl under the same id — and `top` is absent
+    # because an authored clip surface hides whatever covers it, however high.
+    clip_volumes = [
+        {"id": networks[0]["id"], "kind": "edge",
+         "left": [[96.0, 12.0, -368.0], [132.0, 12.0, -368.0],
+                  [168.0, 12.0, -368.0], [206.0, 12.0, -368.0]],
+         "right": [[96.0, 12.0, -352.0], [132.0, 12.0, -352.0],
+                   [168.0, 12.0, -352.0], [206.0, 12.0, -352.0]],
+         "bottom": 0.5, "top": 30.3},
+        {"id": area_record["id"], "kind": "area", "area": area_record["id"], "bottom": 0.5},
+    ]
+    (out_dir / "clipvolumes.jsonl").write_text(
+        "".join(json.dumps(v, separators=(",", ":")) + "\n" for v in clip_volumes),
+        encoding="utf-8")
 
     rasters = {
         "resolution": cell_m,
@@ -539,7 +559,6 @@ def build(out_dir: Path) -> None:
             "textures": "textures/",
             "terrain": "terrain/heightmap.png",
             "surfaceIndex": "terrain/surface_index.png",
-            "cutout": "terrain/cutout.png",
             "surfaces": "terrain/surfaces/",
             "water": "terrain/water_level.png",
         },

@@ -38,7 +38,7 @@ everything else is found through the manifest's `layers` index.
   terrain/elevation.tif           # elevation raster
   terrain/world_elevation.tif     # optional world-elevation surround
   terrain/surface_index.png       # per-cell ground-material id
-  terrain/cutout.png              # per-cell terrain cut mask (tunnel portals, trenches)
+  clipvolumes.jsonl               # clip volumes: what opens tunnel portals and trenches
   terrain/surfaces/index.json     # id -> ground texture map
   terrain/surfaces/*.png          # ground textures
   water/depth.tif                 # water depth raster
@@ -696,7 +696,7 @@ no world-view layer (`Pipeline`/`SubPipeline`/`Waterway` — underground pipes, 
 waterway overlays the game draws only in its utility cutaway and overlay views; the game's
 `GetBoundsMask` names `Default|Moving|Tunnel|Marker` as the world set). **Tunnel-owned lanes
 are included** and tagged `tunnel: true` — the game draws them on its Tunnel cutaway layer;
-the bundle renders tunnels in full (the §8 terrain cutout opens their portals), and a
+the bundle renders tunnels in full (the §8c clip volumes open their portals), and a
 consumer wanting the surface world only filters on the tag. *(Pre-2026-08-07 bundles
 excluded them as "cutaway view only".)* Decal-flagged parts are **included** and tagged (see
 above) — an earlier revision excluded them as "projected markings", which is what opened
@@ -949,26 +949,16 @@ toward +X (east).
     will crest through the road meshes between samples. Dropping the faces marked `1` by a
     small constant is the same clamp direction and keeps ground and carriageway from
     z-fighting; the reference importer does this (`_ROADBED_SINK`). *(Added 2026-08-07.)*
-- **`terrain/cutout.png`** (`layers.cutout`) — 8-bit grayscale, `0` = terrain present,
-  `255` = **cut**: the game never shows this cell's ground. *(Added 2026-08-07, see §12.1.)*
-  The game does not carve tunnel portals or sunken trenches out of its heightmap — a trench's
-  ground is merely clamped into `[lane, lane + 30 m]` and a shallow tube's cover is shifted
-  *up*, and every frame a stencil pre-pass (`RoadClip`) discards the covering terrain pixels
-  on screen. The heightmap therefore legitimately contains ground that walls off every tunnel
-  mouth and sunken road. This mask is that stencil pass projected top-down: a cell is marked
-  where a clip section's ribbon (every edge segment, node strip and orphan cap of a net whose
-  prefab carries `ClipTerrain`, plus the triangles of `ClipArea` surfaces) crosses it **and**
-  the terrain stands above the lane surface within the section's clip band — the composition's
-  edge-height band, raised to `ElevationLimit·3` (30 m for roads) at tunnel portals
-  (Tunnel + transition side) and open trenches (Lowered side), expanded by the game's own
-  0.3 m. Terrain above the band (the cover over a deep tube) is kept, exactly as in-game.
-  **Consumer rule — cells marked `255` must be removed** (delete the faces / punch heightfield
-  holes); rendering them walls off the underground network they hide. The mask **overrides
-  `surface_index.png`**: a cut cell's surface id is meaningless. One deliberate divergence
-  from the game: the game's clip band starts 0.3 m *below* the lane and so also discards the
-  roadbed itself (its road meshes hide the hole); the bundle keeps any ground at or below the
-  lane — only terrain that would *block* the way is cut — so the mask is empty over ordinary
-  surface roads.
+- **Terrain that the game hides rather than carves** — the ground covering tunnel portals and
+  sunken trenches — is **not** in these rasters. It cannot be: the game does not carve it out
+  of its heightmap. A trench's ground is merely clamped into `[lane, lane + 30 m]` and a
+  shallow tube's cover is shifted *up*, and every frame a stencil pre-pass (`RoadClip`)
+  discards the covering pixels on screen. `heightmap.png` therefore legitimately contains
+  ground that walls off every tunnel mouth and sunken road, and **`clipvolumes.jsonl` (§8c) is
+  what opens it**. A consumer that builds terrain without reading §8c gets a solid wall across
+  every underground network — that is the single most visible thing to get wrong in this
+  section. *(Until 2026-08-08 this was shipped precomputed as `terrain/cutout.png`; see §12.1
+  for why that was retired.)*
 - **`terrain/surfaces/index.json`** (`layers.surfaces`) — maps each id to a name and a
   representative texture:
   ```jsonc
@@ -1132,6 +1122,54 @@ conforms them to `--terrain` when that layer is also built.
 
 ---
 
+### 8c. Clip volumes — `clipvolumes.jsonl` *(added 2026-08-08, see §12.1)*
+
+**Read this if you build terrain.** The game hides the ground over tunnel portals and sunken
+trenches with a per-frame stencil pass rather than carving it out of the heightmap (§8), so a
+consumer that meshes `heightmap.png` alone walls off every underground network. These are the
+volumes that pass clips with; intersect them against your own mesh and delete what falls inside.
+
+Until 2026-08-08 the bundle shipped that intersection precomputed, as `terrain/cutout.png`. It
+was **retired**: a top-down 3.5 m mask cannot express a volume open at one height and closed at
+another — a portal driven into a hillside got a square, height-thresholded hole instead of a
+clean mouth — and it was taken against the terrain as shipped, so it went stale the moment a
+consumer edited the ground. Shipping the volumes moves the intersection to the side that knows
+its own resolution.
+
+One line per clipping **strip** — not per section: a junction node contributes several strips,
+and a strip is the unit the game actually clips with.
+
+```jsonc
+{"id": 106037, "kind": "edge",
+ "left":  [[x,y,z],[x,y,z],[x,y,z],[x,y,z]],   // cubic Bézier control points, bundle frame
+ "right": [[x,y,z],[x,y,z],[x,y,z],[x,y,z]],
+ "bottom": 0.5, "top": 30.3}
+
+{"id": 220481, "kind": "area", "area": 220481, "bottom": 0.5}
+```
+
+- **`id`** — the net entity (`kind` `edge`/`node`/`orphan`) or area this strip belongs to; joins
+  to `networks.jsonl` and `areas.jsonl` respectively. **Not unique**: several strips share one id.
+- **`left`, `right`** — the strip's two boundary curves, as authored *after* the composition's
+  width trim, so they bound exactly the ribbon the producer's own mask was stamped from.
+- **`bottom`, `top`** — the clip band, in metres **relative to the lane surface**, not absolute.
+  The lane surface is recoverable from the curves: at parameter `t` it is the mean of the two
+  boundaries' `y`. A cell is clipped where the strip covers it *and* the terrain stands within
+  `(lane + bottom, lane + top]`.
+- **`top` absent** means unbounded — an authored clip surface hides whatever covers it, however
+  high. `kind: "area"` records always omit it.
+- **`kind: "area"`** records carry no geometry: the triangles are already in `areas.jsonl` under
+  the same id (§8b). The record exists to say *that* area clips, and with what band.
+
+One deliberate divergence from the game: its band starts 0.3 m *below* the lane and so clips the
+roadbed itself, which its road meshes hide. This producer's `bottom` is `+0.5`, keeping the
+drivable bed, so ordinary surface roads clip nothing — a volume may span a whole road and open
+only the covered part of it. **The band test is what decides, not the strip's extent.**
+
+A cut cell's `surface_index.png` id is meaningless — the cell is not drawn at all.
+
+---
+
 ## 9. `vector/`
 
 The unchanged vanilla Carto export — GeoJSON, Shapefile, GeoTIFF, exactly as Carto has always
@@ -1287,6 +1325,31 @@ under the lane is kept). It also settles the splat question the same inspection 
 cell's `surface_index` value is declared void rather than re-stamped. A consumer built before
 this addition ignores the file and keeps the walls; one that honours it must delete the marked
 cells.
+
+**Clip volumes added as §8c; `terrain/cutout.png` retired (2026-08-08).** The mask was the
+intersection of the game's clip volumes with one heightmap, at 3.5 m, from directly above.
+`clipvolumes.jsonl` ships the volumes instead, and the mask is **no longer written**.
+
+Grounds. A top-down mask cannot express a volume open at one height and closed at another, so a
+portal driven into a hillside got a square, height-thresholded hole; and the intersection was
+taken against the terrain as shipped, so it was stale the moment a consumer edited the ground.
+Measured (audit §7.3.1), **99.87% of the mask's set cells came from the section-ribbon walk,
+whose curves nothing else in the bundle carries** — `networks.jsonl` has no curve field,
+`lanes.jsonl` carries tessellated lane polylines rather than composition boundaries, and
+`networks/` holds baked surface meshes. The remaining 0.13% is the `Clip_Surface` polygons,
+which `areas.jsonl` already has, so those records carry a band and a join key rather than a
+second copy of the geometry.
+
+**Unusually for a change here, it costs bytes** — roughly 4× the 19,659 B mask on a real city,
+and the mask's own bytes are the only thing recovered. It was taken on fidelity, and on there
+being no consumer of `cutout.png` in the field to keep it for; this repo's own importer moves in
+the same commit.
+
+Removing a layer is v1-compatible by §12's own rule — a consumer reads paths from `layers` and
+treats an absent layer as an absent feature. Be clear about what that degradation looks like
+here, though: a consumer that only implemented the mask will find `layers.cutout` gone and build
+terrain with **every tunnel walled off**, silently and plausibly. That is the loudest failure
+available for a removal, and it is not very loud. Implement §8c.
 
 **Bulk layers may be stored compressed (2026-08-08).** An ordinary v1-compatible addition: a
 layer file may be gzip-compressed at rest, in which case its name carries `.gz` —

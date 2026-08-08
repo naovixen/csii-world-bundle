@@ -645,7 +645,7 @@ def validate_bundle(bundle_dir: Path, schema_dir: Path) -> Report:
                 report.error(f"{label}: axis {axis} value {point[axis]} lies outside bundle.json bounds")
 
     # -- raster layers need raster geo-referencing -------------------------------------
-    raster_layers = [k for k in ("terrain", "worldTerrain", "surfaceIndex", "cutout", "water", "worldWater") if k in layers]
+    raster_layers = [k for k in ("terrain", "worldTerrain", "surfaceIndex", "water", "worldWater") if k in layers]
     if raster_layers and "rasters" not in manifest:
         report.error(f"bundle.json declares raster layers {raster_layers} but has no 'rasters' block")
     elif raster_layers:
@@ -653,6 +653,7 @@ def validate_bundle(bundle_dir: Path, schema_dir: Path) -> Report:
 
     # -- surface areas (§8b, optional) -------------------------------------------------
     _check_areas(bundle_dir, report)
+    _check_clip_volumes(bundle_dir, report)
 
     report.note(f"schema {manifest['schema']}, generator {manifest['generator']!r}")
     report.note(f"{len(instances)} instances, {len(networks)} network records")
@@ -679,8 +680,7 @@ def _check_raster_layers(bundle_dir: Path, manifest: Dict[str, Any],
     Every raster is a single-channel PNG on the one grid the manifest's `rasters` block
     geo-references: elevation and the water surface level at bit depth 16 (the game's
     native sample width, value * scale + offset = metres; the water level shares the
-    elevation encoding, 0 = dry), the surface index and the terrain cutout mask at bit
-    depth 8 (ids and a 0/255 mask respectively, not colours).
+    elevation encoding, 0 = dry) and the surface index at bit depth 8 (ids, not colours).
     The world rasters (`worldTerrain`/`worldWater`) cover a larger area at their own
     size, so only the playable-area rasters are held to `rasters.size`.
     """
@@ -690,7 +690,6 @@ def _check_raster_layers(bundle_dir: Path, manifest: Dict[str, Any],
     expectations = (
         ("terrain", 16, True, ("elevationScale", "elevationOffset")),
         ("surfaceIndex", 8, True, ()),
-        ("cutout", 8, True, ()),
         ("water", 16, True, ("elevationScale", "elevationOffset")),
         ("worldTerrain", 16, False, ("elevationScale", "elevationOffset")),
         ("worldWater", 16, False, ("elevationScale", "elevationOffset")),
@@ -796,6 +795,90 @@ def _check_areas(bundle_dir: Path, report: Report) -> None:
                 report.error(f"{label}: prefab {prefab!r} is not in areaprefabs.json")
 
     report.note(f"{records} surface areas over {len(catalogue)} area prefabs (§8b)")
+
+
+def _check_clip_volumes(bundle_dir: Path, report: Report) -> None:
+    """The clip-volume invariants of contract §8c, when the optional layer is present.
+
+    This layer replaced `terrain/cutout.png` on 2026-08-08 — the precomputed intersection the
+    producer used to ship. What is checkable here is the record shape, that a band is ordered,
+    and that an `area` record joins to a real area; whether a volume opens the right terrain is
+    a question about the rip, not about the file.
+    """
+    path = bundle_file(bundle_dir / "clipvolumes.jsonl")
+    if path is None:
+        return
+
+    area_ids: set = set()
+    areas_path = bundle_file(bundle_dir / "areas.jsonl")
+    if areas_path is not None:
+        with open_bundle_text(areas_path) as handle:
+            for line in handle:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    area_ids.add(json.loads(line).get("id"))
+                except ValueError:
+                    continue
+
+    kinds: Dict[str, int] = {}
+    records = 0
+    with open_bundle_text(path) as handle:
+        for line_no, line in enumerate(handle, start=1):
+            line = line.strip()
+            if not line:
+                continue
+            label = f"clipvolumes.jsonl line {line_no}"
+            try:
+                record = json.loads(line)
+            except ValueError as exc:
+                report.error(f"{label}: not valid JSON ({exc})")
+                continue
+            records += 1
+
+            kind = record.get("kind")
+            if kind not in ("edge", "node", "orphan", "area"):
+                report.error(f"{label}: 'kind' must be edge, node, orphan or area, got {kind!r}")
+                continue
+            kinds[kind] = kinds.get(kind, 0) + 1
+
+            bottom = record.get("bottom")
+            if not isinstance(bottom, (int, float)) or isinstance(bottom, bool):
+                report.error(f"{label}: 'bottom' must be a number")
+                continue
+
+            # An absent top means unbounded (§8c), which is not the same as a missing field:
+            # it is how an authored clip surface says "however high the cover is".
+            top = record.get("top")
+            if top is not None:
+                if not isinstance(top, (int, float)) or isinstance(top, bool):
+                    report.error(f"{label}: 'top' must be a number when present")
+                elif top <= bottom:
+                    report.error(f"{label}: band is empty or inverted (bottom {bottom}, top {top})")
+
+            if kind == "area":
+                area = record.get("area")
+                if area is None:
+                    report.error(f"{label}: an 'area' record must name the area it clips")
+                elif area_ids and area not in area_ids:
+                    report.error(f"{label}: area {area} matches no record in areas.jsonl")
+                if "left" in record or "right" in record:
+                    report.error(f"{label}: an 'area' record carries no curves — "
+                                 "its geometry is areas.jsonl's triangles (§8c)")
+                continue
+
+            for side in ("left", "right"):
+                curve = record.get(side)
+                if (not isinstance(curve, list) or len(curve) != 4
+                        or any(not isinstance(p, list) or len(p) != 3
+                               or any(not isinstance(c, (int, float)) or isinstance(c, bool) for c in p)
+                               for p in curve)):
+                    report.error(f"{label}: {side!r} must be 4 control points of 3 numbers each")
+                    break
+
+    summary = ", ".join(f"{count} {kind}" for kind, count in sorted(kinds.items()))
+    report.note(f"{records} clip volume strips ({summary}) (§8c)")
 
 
 def _check_quat(rot: Any, label: str, report: Report) -> None:

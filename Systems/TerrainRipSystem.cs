@@ -48,19 +48,19 @@ namespace Carto.Systems
     /// （加上約 13% 不透明度的車道貼花）。故誠實的遮罩即道路作業所繪的同一足跡：
     /// Flatten／ClipTerrain 路網的每個邊區段、路口節點條帶與孤立節點蓋，
     /// 本系統以相同的 <c>Segment</c> 貝茲曲線於 CPU 上將其光柵化。）<br/><br/>
-    /// <b>Why a cutout mask exists at all.</b> The game never carves tunnel portals or sunken
+    /// <b>Why a clip layer exists at all.</b> The game never carves tunnel portals or sunken
     /// trenches out of the heightmap. A Lowered composition's ground is merely clamped into
     /// <c>[lane, lane + ElevationLimit·3]</c> and a shallow tube's cover is shifted <i>up</i> —
     /// the covering terrain stays in the height cascade, and every frame the <c>RoadClip</c>
     /// stencil pass (<c>GenerateClipDataJob</c> → <c>TerrainSurface.RenderClipAreas</c>) discards
     /// its pixels on screen instead. A consumer that rebuilds the ground from the heightmap alone
-    /// therefore walls off every tunnel mouth and trench; <c>terrain/cutout.png</c> is that
-    /// stencil pass projected top-down, and consumers must delete the cells it marks.<br/>
+    /// therefore walls off every tunnel mouth and trench; <c>clipvolumes.jsonl</c> (§8c) carries
+    /// the volumes that pass clips with, and consumers must delete what falls inside them.<br/>
     /// （<b>為何需要裁切遮罩。</b>遊戲從不將隧道洞口或下沉壕溝自高度圖鑿除：Lowered 組成的地面僅被
     /// 鉗制於 <c>[車道, 車道 + ElevationLimit·3]</c>，淺埋管段的覆土則被向<i>上</i>推移——覆蓋的
     /// 地形留在高度串接紋理中，由 <c>RoadClip</c> 模板繪次每影格於螢幕上捨棄其像素。僅憑高度圖
-    /// 重建地面的消費端因此會封死每個洞口與壕溝；<c>terrain/cutout.png</c> 即該繪次的俯視投影，
-    /// 消費端必須刪除其標記的格。）
+    /// 重建地面的消費端因此會封死每個洞口與壕溝；<c>clipvolumes.jsonl</c>（§8c）攜帶該繪次所用的
+    /// 裁切體積，消費端必須刪除落於其內者。）
     /// </summary>
     public partial class TerrainRipSystem : GameSystemBase
     {
@@ -79,7 +79,7 @@ namespace Carto.Systems
         const float NoLevel = float.MinValue;
 
         /// <summary>
-        /// How far above the lane surface terrain must stand before the cutout removes it. The
+        /// How far above the lane surface terrain must stand before the clip removes it. The
         /// game's clip band reaches 0.3 m <i>below</i> the lane and so clips the roadbed itself —
         /// in-game the road mesh hides that hole. The bundle keeps the bed a consumer drives on
         /// and cuts only terrain that would block the way; 0.5 m clears curb heights and the
@@ -105,6 +105,12 @@ namespace Carto.Systems
         // Stamp tallies for the report.（供報告使用的蓋印統計。）
         int _edgesStamped, _nodesStamped, _orphansStamped, _skippedForm, _skippedNoFlatten;
         int _cutEdges, _cutNodes, _cutOrphans, _cutAreas, _cutRoundaboutApprox;
+
+        /// <summary>
+        /// The clip volumes collected during the clip walk, for <c>clipvolumes.jsonl</c>.
+        /// （裁切走訪期間收集的裁切體積，供 <c>clipvolumes.jsonl</c> 使用。）
+        /// </summary>
+        List<Dictionary<string, object>> _clipVolumes;
 
         /// <summary>
         /// The event triggered when the system instance is created.
@@ -197,11 +203,11 @@ namespace Carto.Systems
 
         /// <summary>
         /// Rip the terrain layers into <c>terrain/</c>: the final (road-flattened) heightmap, the
-        /// roadbed surface index, the cutout mask (the cells the game's clip pass hides — tunnel
+        /// roadbed surface index, the clip volumes (what the game's clip pass hides — tunnel
         /// portals, sunken trenches), the water surface level grid, the theme's ground textures
         /// and the geo-referencing sidecar. Contract §8 of <c>docs/bundle-schema.md</c>.
-        /// （將地形層擷取至 <c>terrain/</c>：最終（道路壓平後）高度圖、路床地表索引、裁切遮罩
-        /// （遊戲裁切繪次隱藏的格——隧道洞口、下沉壕溝）、水面高程網格、
+        /// （將地形層擷取至 <c>terrain/</c>：最終（道路壓平後）高度圖、路床地表索引、裁切體積
+        /// （遊戲裁切繪次所隱藏者——隧道洞口、下沉壕溝）、水面高程網格、
         /// 主題的地面貼圖與地理參照附檔。契約見 <c>docs/bundle-schema.md</c> §8。）
         /// </summary>
         /// <param name="outputDirectory">The bundle root to write into.（要寫入的束根目錄。）</param>
@@ -242,24 +248,32 @@ namespace Carto.Systems
             report.AppendLine($"  skipped {_skippedNoFlatten} edge(s) whose prefab does not flatten terrain, "
                             + $"{_skippedForm} elevated/tunnel composition(s) (their ground is not pulled to the road)");
 
-            // ---- 2b. The terrain cutout, stamped from the game's clip sections. The game never
+            // ---- 2b. The clip volumes, collected from the game's clip sections. The game never
             // carves these holes into the heightmap: every frame the RoadClip stencil pass
             // discards the terrain pixels covering tunnel portals and sunken trenches, so the
-            // readback legitimately contains ground that blocks them. This mask is that pass
-            // projected top-down — a cell is cut where a clip section's ribbon crosses it and the
-            // terrain stands above the lane within the section's clip band.
+            // readback legitimately contains ground that blocks them. These are the volumes that
+            // pass tests against — a consumer intersects them with the heightmap itself.
             // （地形裁切遮罩：自遊戲的裁切區段蓋印。遊戲從不在高度圖上開這些洞——每一影格
             //   RoadClip 模板繪次都會捨棄覆蓋隧道洞口與下沉壕溝的地形像素，故回讀本就含有
             //   擋住它們的地面。此遮罩即該繪次的俯視投影——凡裁切區段的帶狀範圍經過、且地形
             //   高於車道並落於該區段裁切帶內的格，皆被裁去。）
-            byte[] cutout = new byte[width * height];
             _cutEdges = _cutNodes = _cutOrphans = _cutAreas = _cutRoundaboutApprox = 0;
-            StampCutout(cutout, heightData);
 
-            int cutCells = 0;
-            foreach (byte cell in cutout) if (cell != 0) cutCells++;
-            report.AppendLine($"Cutout: {cutCells} cell(s) opened over tunnel portals and sunken roads; "
-                            + $"{_cutEdges} edge(s), {_cutNodes} node strip(s), {_cutOrphans} orphan cap(s), {_cutAreas} clip area(s) stamped");
+            // The walk now *collects* the clip volumes instead of rasterising them (contract §8c).
+            // `cutout.png` used to be written here: the intersection of these volumes with this
+            // one heightmap, at 3.5 m, from directly above. It was retired because that
+            // intersection cannot express a volume open at one height and closed at another, and
+            // is stale the moment a consumer edits terrain — and there was no consumer of it in
+            // the field to keep it for. Passing a null mask skips the rasterisation entirely.
+            // （走訪改為收集裁切體積而非將其光柵化。此處原本寫出 `cutout.png`——即這些體積與
+            //   單一高度圖於 3.5 公尺俯視相交的結果；該相交無法表達「於某高度開、於另一高度閉」
+            //   的體積，且消費端一旦編輯地形即失效。傳入空遮罩即完全略過光柵化。）
+            _clipVolumes = new List<Dictionary<string, object>>();
+            StampCutout(null, heightData);
+
+            report.AppendLine($"Clip: {_cutEdges} edge(s), {_cutNodes} node strip(s), "
+                            + $"{_cutOrphans} orphan cap(s), {_cutAreas} clip area(s) collected");
+            WriteClipVolumes(outputDirectory, report);
             if (_cutRoundaboutApprox > 0)
                 report.AppendLine($"  APPROXIMATED: {_cutRoundaboutApprox} roundabout node(s) cut with raw composition "
                                 + "flags (the game's AddNode state-shedding and ring trims omitted — can over-cut, never under)");
@@ -336,8 +350,6 @@ namespace Carto.Systems
                                        Png.EncodeGray16(FlipRows(heights, width, height), width, height));
                     File.WriteAllBytes(IOUtils.CombinePath(terrainDirectory, "surface_index.png"),
                                        Png.EncodeGray8(FlipRows(surfaceIndex, width, height), width, height));
-                    File.WriteAllBytes(IOUtils.CombinePath(terrainDirectory, "cutout.png"),
-                                       Png.EncodeGray8(FlipRows(cutout, width, height), width, height));
                     if (waterLevel != null)
                     {
                         File.WriteAllBytes(IOUtils.CombinePath(terrainDirectory, "water_level.png"),
@@ -1493,6 +1505,27 @@ namespace Carto.Systems
 
             /// <summary>Band ceiling, metres above the lane surface.（帶頂，高於車道面的公尺數。）</summary>
             public float CutTop;
+
+            /// <summary>
+            /// Where to record each strip's curves and band, or <c>null</c> to record nothing.
+            /// （記錄各條帶曲線與裁切帶之處，若為 <c>null</c> 則不記錄。）<br/><br/>
+            /// The parametric form of the very thing the mask flattens (contract §8c): the mask is
+            /// the intersection of these volumes with <i>one</i> heightmap at 3.5 m, top-down, and
+            /// that intersection cannot express a volume open at one height and closed at another,
+            /// nor survive a consumer editing the terrain. Collected here rather than in a second
+            /// walk because every clipping section in the game already passes through
+            /// <see cref="StampSegment"/> with its trimmed curves and band in hand.<br/>
+            /// （即遮罩所壓平者的參數形式（契約 §8c）：遮罩是這些體積與<i>單一</i>高度圖於 3.5 公尺
+            /// 俯視相交的結果，該相交無法表達「於某高度開、於另一高度閉」的體積，
+            /// 亦無法在消費端編輯地形後續存。）
+            /// </summary>
+            public List<Dictionary<string, object>> Volumes;
+
+            /// <summary>What produced this strip — <c>edge</c>, <c>node</c> or <c>orphan</c>.（產生此條帶者。）</summary>
+            public string Kind;
+
+            /// <summary>The net entity this strip belongs to, joining to <c>networks.jsonl</c>.（此條帶所屬的路網實體。）</summary>
+            public int Owner;
         }
 
         /// <summary>
@@ -1552,9 +1585,13 @@ namespace Carto.Systems
         }
 
         /// <summary>
-        /// Stamp the terrain cutout — the cells the game's <c>RoadClip</c> stencil pass hides
-        /// every frame instead of carving them out of the heightmap.
-        /// （蓋印地形裁切遮罩——遊戲的 <c>RoadClip</c> 模板繪次每影格隱藏、而非自高度圖鑿除的格。）<br/><br/>
+        /// Walk the game's clip sections, collecting each one's volume (contract §8c).
+        /// （走訪遊戲的裁切區段，逐一收集其裁切體積（契約 §8c）。）<br/><br/>
+        /// Called with a null mask, which makes it collect-only: this used to rasterise
+        /// <c>terrain/cutout.png</c>, the intersection of these volumes with one heightmap, and
+        /// that mask was retired on 2026-08-08 in favour of shipping the volumes themselves.<br/>
+        /// （以空遮罩呼叫，故僅收集：此處原本光柵化 <c>terrain/cutout.png</c>，
+        /// 該遮罩已於 2026-08-08 退場，改為直接出貨裁切體積本身。）<br/><br/>
         /// The walk is <c>CullRoadsJob</c>'s once more, but through <c>GenerateClipDataJob</c>'s
         /// gate: every edge segment, node strip and orphan cap of a net whose prefab carries
         /// <c>GeometryFlags.ClipTerrain</c> — tunnels and trenches <i>included</i> this time,
@@ -1566,11 +1603,15 @@ namespace Carto.Systems
         /// <i>包含</i>隧道與壕溝，因為裁切正是開通它們的機制。帶 <c>ClipArea</c> 的區域最後加入
         /// （即該繪次的 <c>areaClipMesh</c>）。各組成的帶見 <see cref="TryGetClipBand"/>。）
         /// </summary>
-        /// <param name="cutout">The mask to stamp into, south-to-north rows.（要蓋印的遮罩，列序由南至北。）</param>
+        /// <param name="cutout">The mask to stamp into, or <c>null</c> to collect only.（要蓋印的遮罩，或 <c>null</c> 表示僅收集。）</param>
         /// <param name="heightData">The terrain grid.（地形網格。）</param>
         private void StampCutout(byte[] cutout, TerrainHeightData heightData)
         {
-            StampContext context = new() { Mask = cutout, Value = 255, Cut = true, CutBottom = CutoutFloor };
+            StampContext context = new()
+            {
+                Mask = cutout, Value = 255, Cut = true, CutBottom = CutoutFloor,
+                Volumes = _clipVolumes
+            };
 
             var edges = _edgeQuery.ToEntityArray(Unity.Collections.Allocator.TempJob);
             try
@@ -1589,6 +1630,9 @@ namespace Carto.Systems
                     Composition composition = EntityManager.GetComponentData<Composition>(entity);
                     bool stamped = false;
 
+                    context.Owner = entity.Index;
+                    context.Kind = "edge";
+
                     // The edge halves take the composition's start/end edge heights respectively,
                     // like the game's isStart select.（邊的兩半各取組成起／訖半段的緣高，
                     // 一如遊戲的 isStart 選取。）
@@ -1605,6 +1649,8 @@ namespace Carto.Systems
                         stamped = true;
                     }
                     if (stamped) _cutEdges++;
+
+                    context.Kind = "node";
 
                     // The roundabout right pair rides the end-half band (`AddNode` passes
                     // isStart: false there); a band that cannot cut gets a zero top, which the
@@ -1662,6 +1708,9 @@ namespace Carto.Systems
                     float width = EntityManager.GetComponentData<NetCompositionData>(composition).m_Width;
                     if (!(width > 0f)) continue;
 
+                    context.Owner = entity.Index;
+                    context.Kind = "orphan";
+
                     StampOrphan(in context, heightData,
                                 EntityManager.GetComponentData<Node>(entity).m_Position, width, terrain);
                     _cutOrphans++;
@@ -1682,7 +1731,7 @@ namespace Carto.Systems
         /// （蓋印預製模板帶有 <c>ClipArea</c> 的區域——地形作業將其三角形繪入同一模板
         /// （<c>areaClipMesh</c>）。此帶無頂：作者放置的裁切面會隱藏覆蓋其上的一切地形。）
         /// </summary>
-        /// <param name="baseContext">The cutout pass's context.（裁切繪次的情境。）</param>
+        /// <param name="baseContext">The clip pass's context.（裁切繪次的情境。）</param>
         /// <param name="heightData">The terrain grid.（地形網格。）</param>
         private void StampClipAreas(in StampContext baseContext, TerrainHeightData heightData)
         {
@@ -1690,6 +1739,14 @@ namespace Carto.Systems
             int height = heightData.resolution.z;
             StampContext context = baseContext;
             context.CutTop = float.MaxValue;
+
+            // An area's geometry is triangles, not boundary curves, and it is already in the
+            // bundle: `areas.jsonl` carries these very records with their nodes and triangles
+            // (audit §7.3.1 counted 266 of them). So the clip layer carries the *band* and a
+            // join key, not a second copy of the polygon.
+            // （區域的幾何為三角形而非邊界曲線，且已在束中：`areas.jsonl` 正帶有這些紀錄。
+            //   故裁切層僅攜帶裁切帶與連結鍵，而非再複製一份多邊形。）
+            context.Volumes = null;
 
             var areas = _clipAreaQuery.ToEntityArray(Unity.Collections.Allocator.TempJob);
             try
@@ -1701,6 +1758,20 @@ namespace Carto.Systems
                     DynamicBuffer<Game.Areas.Node> nodes = EntityManager.GetBuffer<Game.Areas.Node>(entity, true);
                     DynamicBuffer<Game.Areas.Triangle> triangles = EntityManager.GetBuffer<Game.Areas.Triangle>(entity, true);
                     if ((nodes.Length < 3) || (triangles.Length == 0)) continue;
+
+                    // No `top`: an authored clip surface hides whatever terrain covers it, however
+                    // high. Absence rather than a sentinel, so nobody has to know what the
+                    // sentinel was.（無 `top`：作者放置的裁切面隱藏其上一切地形，不論多高。）
+                    _clipVolumes?.Add(new Dictionary<string, object>
+                    {
+                        ["id"] = entity.Index,
+                        ["kind"] = "area",
+                        ["area"] = entity.Index,
+                        ["bottom"] = Math.Round((double)context.CutBottom, 3)
+                    });
+                    _cutAreas++;
+
+                    if (context.Mask == null) continue;
 
                     for (int i = 0; i < triangles.Length; i++)
                     {
@@ -1718,7 +1789,6 @@ namespace Carto.Systems
                                  ToCell(c, heightData), ToCell(c, heightData),
                                  (a.y + b.y + c.y) / 3f);
                     }
-                    _cutAreas++;
                 }
             }
             finally
@@ -1919,6 +1989,17 @@ namespace Carto.Systems
                 }
             }
 
+            // Recorded AFTER the width trim, so the curves published bound exactly the ribbon
+            // this walk covers — a consumer rasterising them gets the same strip, not the
+            // authored one.（於寬度修剪之後記錄，使發布的曲線正好界定本次走訪所涵蓋的帶。）
+            context.Volumes?.Add(ClipVolumeRecord(in context, segment));
+
+            // A null mask means collect-only: the clip pass has no raster to fill since
+            // `cutout.png` was retired, and the scanline below is the expensive half of the walk.
+            // The roadbed pass still passes a real mask.
+            // （空遮罩表示僅收集：裁切繪次已無網格可填，而下方掃描線是走訪中昂貴的一半。）
+            if (context.Mask == null) return;
+
             int width = heightData.resolution.x;
             int height = heightData.resolution.z;
 
@@ -1947,6 +2028,104 @@ namespace Carto.Systems
                 previousRight = currentRight;
             }
         }
+
+        /// <summary>
+        /// Write the collected clip volumes as <c>clipvolumes.jsonl</c> (contract §8c).
+        /// （將收集到的裁切體積寫為 <c>clipvolumes.jsonl</c>（契約 §8c）。）<br/><br/>
+        /// <b>This layer costs bytes rather than saving them</b> — on a full city it is roughly
+        /// 4× the <c>cutout.png</c> it replaces. It is shipped for fidelity: that mask was a 3.5 m
+        /// top-down intersection against <i>one</i> heightmap, so it could not express a volume
+        /// open at one height and closed at another, and it went stale the moment a consumer
+        /// edited terrain. Nothing else in the bundle carries these curves — <c>networks.jsonl</c>
+        /// has no curve field and <c>lanes.jsonl</c> carries lane polylines, not composition
+        /// boundaries.<br/>
+        /// （<b>此層增加而非節省位元組</b>——約為其所取代的 <c>cutout.png</c> 的四倍。
+        /// 其出貨理由為保真度：該遮罩是對<i>單一</i>高度圖的 3.5 公尺俯視相交結果。）
+        /// </summary>
+        /// <param name="outputDirectory">The bundle root.（束根目錄。）</param>
+        /// <param name="report">The report to note the outcome in.（用以記錄結果的報告。）</param>
+        private void WriteClipVolumes(string outputDirectory, StringBuilder report)
+        {
+            if ((_clipVolumes == null) || (_clipVolumes.Count == 0))
+            {
+                report.AppendLine("Clip volumes: none; clipvolumes.jsonl omitted");
+                return;
+            }
+
+            try
+            {
+                using StreamWriter writer = Carto.IO.BundleFile.CreateText(
+                    IOUtils.CombinePath(outputDirectory, "clipvolumes.jsonl"));
+
+                foreach (Dictionary<string, object> record in _clipVolumes)
+                {
+                    writer.WriteLine(JsonConvert.SerializeObject(record, Formatting.None));
+                }
+
+                report.AppendLine($"Clip volumes: {_clipVolumes.Count} strip(s) written to clipvolumes.jsonl "
+                                + "(what the game's RoadClip pass hides; §8c)");
+            }
+            catch (Exception ex)
+            {
+                _log.Warn($"Could not write clipvolumes.jsonl: {ex.Message}");
+                report.AppendLine($"Clip volumes: {ex.Message}; layer omitted");
+            }
+            finally
+            {
+                _clipVolumes = null;
+            }
+        }
+
+        /// <summary>
+        /// One clipping strip as a <c>clipvolumes.jsonl</c> record (contract §8c).
+        /// （單一裁切條帶對應的 <c>clipvolumes.jsonl</c> 紀錄（契約 §8c）。）<br/><br/>
+        /// The two boundary béziers, plus the band as a pair of offsets <b>relative to the lane
+        /// surface</b> — which is not shipped separately because it is recoverable from the curves
+        /// themselves: at parameter <c>t</c> the lane height is the mean of the two boundaries'
+        /// <c>y</c>, exactly as the stamp below takes it from the four corners of each quad.<br/>
+        /// （兩條邊界貝茲曲線，加上<b>相對於車道面</b>的帶底與帶頂。車道面不另行出貨，
+        /// 因其可自曲線本身回復：於參數 <c>t</c> 處，車道高即兩側邊界 <c>y</c> 的平均，
+        /// 與下方蓋印取四角平均的方式相同。）
+        /// </summary>
+        /// <param name="context">The pass in progress, for the band and the strip's provenance.（進行中的繪次。）</param>
+        /// <param name="segment">The trimmed boundary curves.（已修剪的邊界曲線。）</param>
+        /// <returns>The record.（紀錄。）</returns>
+        private static Dictionary<string, object> ClipVolumeRecord(in StampContext context, Segment segment)
+        {
+            return new Dictionary<string, object>
+            {
+                ["id"] = context.Owner,
+                ["kind"] = context.Kind,
+                ["left"] = Curve(segment.m_Left),
+                ["right"] = Curve(segment.m_Right),
+                ["bottom"] = Math.Round((double)context.CutBottom, 3),
+                ["top"] = Math.Round((double)context.CutTop, 3)
+            };
+        }
+
+        /// <summary>
+        /// A boundary bézier as its four control points, millimetre-rounded like every other
+        /// coordinate in the bundle.
+        /// （邊界貝茲曲線的四個控制點，與束中所有座標同樣四捨五入至公釐。）
+        /// </summary>
+        /// <param name="curve">The curve.（曲線。）</param>
+        /// <returns>Four <c>[x, y, z]</c> triples.（四組 <c>[x, y, z]</c>。）</returns>
+        private static double[][] Curve(Bezier4x3 curve)
+        {
+            return new[] { Point(curve.a), Point(curve.b), Point(curve.c), Point(curve.d) };
+        }
+
+        /// <summary>
+        /// One control point, millimetre-rounded.（單一控制點，四捨五入至公釐。）
+        /// </summary>
+        /// <param name="value">The point.（點。）</param>
+        /// <returns>The rounded triple.（四捨五入後的三元組。）</returns>
+        private static double[] Point(float3 value) => new[]
+        {
+            Math.Round((double)value.x, 3),
+            Math.Round((double)value.y, 3),
+            Math.Round((double)value.z, 3)
+        };
 
         /// <summary>
         /// Lerp one boundary bézier toward another by a per-control-point parameter — the game's

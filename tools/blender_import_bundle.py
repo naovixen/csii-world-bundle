@@ -48,7 +48,7 @@ Options (after the `--`):
     --terrain                    also place the §8 terrain under everything: the road-flattened
                                  heightmap as a ground grid (roadbed faces textured from
                                  surface_index.png and sunk slightly, steep faces textured
-                                 rock, faces marked in cutout.png deleted — the terrain the
+                                 rock, faces inside clipvolumes.jsonl deleted — the terrain the
                                  game stencil-clips over tunnel portals and trenches) and the
                                  water surface where water_level.png rises above the ground
                                  (same region filter as everything else). The ground, not the
@@ -2190,7 +2190,6 @@ def _terrain_paths(bundle_dir):
 
     heightmap = os.path.join(bundle_dir, layers.get("terrain", "terrain/heightmap.png"))
     surface = os.path.join(bundle_dir, layers.get("surfaceIndex", "terrain/surface_index.png"))
-    cutout = os.path.join(bundle_dir, layers.get("cutout", "terrain/cutout.png"))
     water = os.path.join(bundle_dir, layers.get("water", "terrain/water_level.png"))
     surfaces_dir = os.path.join(bundle_dir, layers.get("surfaces", "terrain/surfaces/"))
     splatmap = os.path.join(bundle_dir, layers.get("splatmap", "terrain/splatmap.png"))
@@ -2201,7 +2200,7 @@ def _terrain_paths(bundle_dir):
             with open(sidecar, encoding="utf-8") as handle:
                 rasters = json.load(handle)
 
-    return heightmap, surface, cutout, water, surfaces_dir, splatmap, rasters
+    return heightmap, surface, water, surfaces_dir, splatmap, rasters
 
 
 # Which ground each splatmap channel weights. The producer publishes this in the rasters
@@ -2228,6 +2227,132 @@ _GROUND_FALLBACK_COLOUR = {
     "extra3": (0.32, 0.30, 0.27, 1.0),
     "extra4": (0.32, 0.30, 0.27, 1.0),
 }
+
+
+def _bezier_points(control, t):
+    """Evaluate a cubic Bézier at parameters `t` — the game's own MathUtils.Position.
+
+    `control` is (4, 3); `t` is (S,); the result is (S, 3).
+    """
+    a, b, c, d = (numpy.asarray(control[i], dtype=numpy.float64) for i in range(4))
+    t = t[:, None]
+    u = 1.0 - t
+    return (u * u * u) * a + (3.0 * u * u * t) * b + (3.0 * u * t * t) * c + (t * t * t) * d
+
+
+def _fill_clip_quad(mask, terrain_y, width, height, quad, lane_y, bottom, top):
+    """Mark the cells one strip quad clips — the producer's even-odd scanline, exactly.
+
+    `quad` is four (x, y) points in cell space, where cell (row, col) spans [col, col+1) ×
+    [row, row+1) and is sampled at its centre. A cell is clipped only where the terrain stands
+    *strictly* inside (lane + bottom, lane + top); both ends open, as the producer has them.
+    """
+    ys = [p[1] for p in quad]
+    row_lo = max(0, int(math.floor(max(0.0, min(ys)))))
+    row_hi = min(height - 1, int(math.ceil(min(height - 1.0, max(ys)))))
+
+    for row in range(row_lo, row_hi + 1):
+        y = row + 0.5
+        crossings = []
+        for e in range(4):
+            px, py = quad[e]
+            qx, qy = quad[(e + 1) & 3]
+            if (py <= y) == (qy <= y):
+                continue
+            crossings.append(px + (y - py) / (qy - py) * (qx - px))
+        if len(crossings) < 2:
+            continue
+        crossings.sort()
+
+        for pair in range(0, len(crossings) - 1, 2):
+            lo = max(0, int(round(crossings[pair])))
+            hi = min(width - 1, int(round(crossings[pair + 1])))
+            if hi < lo:
+                continue
+            over = terrain_y[row, lo:hi + 1] - lane_y
+            mask[row, lo:hi + 1] |= (over > bottom) & (over < top)
+
+
+def _clip_grid(bundle_dir, width, height, heights, cell, origin_x, origin_z,
+               elevation_scale, elevation_offset):
+    """Rasterise `clipvolumes.jsonl` onto the heightmap grid — contract §8c.
+
+    This replaces the `terrain/cutout.png` mask, which was retired 2026-08-08. The mask was an
+    intersection the producer had already taken against one heightmap at 3.5 m from directly
+    above; the volumes are what it intersected, so a consumer meshing at its own resolution
+    does the intersection itself and is not stuck with the producer's.
+
+    Returns a (height, width) bool array, or None when the bundle carries no clip layer.
+    """
+    path = bundle_file(os.path.join(bundle_dir, "clipvolumes.jsonl"))
+    if path is None:
+        return None
+
+    strips = [record for record in read_jsonl(path)]
+    if not strips:
+        return None
+
+    terrain_y = (numpy.asarray(heights, dtype=numpy.float64).reshape(height, width)
+                 * elevation_scale + elevation_offset)
+    mask = numpy.zeros((height, width), dtype=bool)
+
+    def to_cell(points):
+        """World positions to cell space, cell (row, col) centred on (col + .5, row + .5)."""
+        return numpy.stack(((points[:, 0] - origin_x) / cell + 0.5,
+                            (origin_z - points[:, 2]) / cell + 0.5), axis=-1)
+
+    # An `area` record carries no curves: its triangles are in areas.jsonl under the same id.
+    area_nodes = {}
+    areas_path = bundle_file(os.path.join(bundle_dir, "areas.jsonl"))
+    if areas_path is not None and any(s.get("kind") == "area" for s in strips):
+        wanted = {s.get("area") for s in strips if s.get("kind") == "area"}
+        for record in read_jsonl(areas_path):
+            if record.get("id") in wanted:
+                area_nodes[record["id"]] = (record.get("nodes") or [], record.get("triangles") or [])
+
+    unbounded = float("inf")
+    for strip in strips:
+        bottom = float(strip.get("bottom", 0.5))
+        top = float(strip["top"]) if strip.get("top") is not None else unbounded
+
+        if strip.get("kind") == "area":
+            nodes, triangles = area_nodes.get(strip.get("area"), ([], []))
+            for tri in triangles:
+                if any(not 0 <= i < len(nodes) for i in tri):
+                    continue
+                pts = numpy.asarray([nodes[i] for i in tri], dtype=numpy.float64)
+                cells = to_cell(pts)
+                # A triangle reaches the scanline as a quad with one doubled corner, and its
+                # lane reference is the corner mean — both as the producer has them.
+                _fill_clip_quad(mask, terrain_y, width, height,
+                                [tuple(cells[0]), tuple(cells[1]), tuple(cells[2]), tuple(cells[2])],
+                                float(pts[:, 1].mean()), bottom, top)
+            continue
+
+        left, right = strip.get("left"), strip.get("right")
+        if not left or not right:
+            continue
+
+        # One station per cell of arc keeps the fill within half a cell of the true curve. The
+        # control polygon bounds the arc from above, so this errs toward more stations.
+        polygon = numpy.asarray(left, dtype=numpy.float64)
+        span = float(numpy.linalg.norm(numpy.diff(polygon, axis=0), axis=1).sum())
+        steps = int(min(1024, max(1, math.ceil(max(span, 1.0) / cell))))
+
+        t = numpy.linspace(0.0, 1.0, steps + 1)
+        left_pts = _bezier_points(left, t)
+        right_pts = _bezier_points(right, t)
+        left_cells = to_cell(left_pts)
+        right_cells = to_cell(right_pts)
+        lane = (left_pts[:, 1] + right_pts[:, 1]) * 0.5
+
+        for i in range(1, steps + 1):
+            _fill_clip_quad(mask, terrain_y, width, height,
+                            [tuple(left_cells[i - 1]), tuple(right_cells[i - 1]),
+                             tuple(right_cells[i]), tuple(left_cells[i])],
+                            float((lane[i - 1] + lane[i]) * 0.5), bottom, top)
+
+    return mask
 
 
 def _splat_mapping(block):
@@ -2386,7 +2511,7 @@ def build_terrain(bundle_dir, collection, center, radius):
     same window as everything else; without one, the grid is subsampled to at most ~1024
     cells per axis so a full 4096² map stays viewable.
     """
-    heightmap_path, surface_path, cutout_path, water_path, surfaces_dir, splat_path, rasters = _terrain_paths(bundle_dir)
+    heightmap_path, surface_path, water_path, surfaces_dir, splat_path, rasters = _terrain_paths(bundle_dir)
     if not os.path.isfile(heightmap_path):
         LOG.warn(f"no terrain layer at {heightmap_path} — skipping terrain")
         return 0, None
@@ -2408,12 +2533,16 @@ def build_terrain(bundle_dir, collection, center, radius):
             LOG.warn(f"CONTRACT VIOLATION: surface_index is {sw}x{sh}, heightmap {width}x{height}")
             surface_ids = None
 
-    cut_ids = None
-    if os.path.isfile(cutout_path):
-        cw, ch, cut_ids = _decode_png_gray(cutout_path)
-        if (cw, ch) != (width, height):
-            LOG.warn(f"CONTRACT VIOLATION: cutout is {cw}x{ch}, heightmap {width}x{height}")
-            cut_ids = None
+    # Contract §8c. The terrain covering tunnel portals and sunken trenches is never carved out
+    # of the heightmap — the game hides it per-frame with a stencil pass — so the clip volumes
+    # are rasterised here against this heightmap. Until 2026-08-08 the bundle shipped that
+    # intersection precomputed as terrain/cutout.png; it was retired because a top-down 3.5 m
+    # mask cannot express a volume open at one height and closed at another.
+    cut_grid = _clip_grid(bundle_dir, width, height, heights, cell, origin_x, origin_z,
+                          elevation_scale, elevation_offset)
+    if cut_grid is None:
+        LOG.warn("no clipvolumes.jsonl — tunnel portals and trenches will stay walled off "
+                 "(bundle predates contract §8c)")
 
     levels = None
     if os.path.isfile(water_path):
@@ -2455,7 +2584,6 @@ def build_terrain(bundle_dir, collection, center, radius):
     sampled_y = sampled_y * elevation_scale + elevation_offset
 
     surface_grid = numpy.asarray(surface_ids).reshape(height, width) if surface_ids is not None else None
-    cut_grid = numpy.asarray(cut_ids).reshape(height, width) if cut_ids is not None else None
     level_grid = numpy.asarray(levels).reshape(height, width) if levels is not None else None
 
     # Vertex grid: world X/Z (meshgrid) + sampled height, row-major (row outer, col inner) so
@@ -2496,10 +2624,10 @@ def build_terrain(bundle_dir, collection, center, radius):
         # without ever becoming a gated line the A/B baseline does not have.
         LOG.progress("terrain rows", row_number + 1, nrows)
 
-    # §8 cutout: cells the game stencil-clips per-frame instead of carving the heightmap —
-    # the terrain covering tunnel portals and sunken trenches. Keeping their faces walls off
-    # every underground network, so a face is dropped when any of its corner samples is cut;
-    # the opening over-reaches by at most half a cell, leaving a rim instead of a wall.
+    # §8c clip volumes, rasterised above: the terrain covering tunnel portals and sunken
+    # trenches. Keeping their faces walls off every underground network, so a face is dropped
+    # when any of its corner samples is cut; the opening over-reaches by at most half a cell,
+    # leaving a rim instead of a wall.
     if cut_grid is not None:
         cut_corner = cut_grid[numpy.ix_(rows_arr, cols_arr)] != 0
         face_cut = (cut_corner[:-1, :-1] | cut_corner[:-1, 1:] |

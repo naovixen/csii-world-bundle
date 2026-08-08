@@ -87,7 +87,47 @@ terrain it is actively harmful — a blanket policy makes 27 of 33 ground files 
 
 ---
 
-## 5. LANE-2 — ship the Bézier, not the sampled polyline
+## 5. TERRAIN-5 — ship the game's own clip volumes
+
+**Costs bytes: −86,736 B on this terrain, −5,153,616 B at the terrain-independent upper bound.**
+Promoted into the build list by decision on 2026-08-08; it is placed here because the terrain
+code is already open from items 2 and 3, not because it ranks by value per hour — it cannot, since
+it saves nothing. **Its case is fidelity, and the ranking above is a saving ranking.**
+
+`terrain/cutout.png` is a *precomputed intersection* of the clip volumes with one heightmap, at
+3.5 m, top-down. That representation cannot express a volume that is open at one height and
+closed at another, so a portal driven into a hillside gets a square height-thresholded hole; and
+it is stale the moment a consumer edits terrain. The mask was 19,659 B and every parametric
+alternative is larger — but with no consumer of it in the field, keeping two representations of
+one fact was pure maintenance cost, so it is **retired** rather than kept as a cheap path.
+
+Measured (§7.3.1): the 266 `Clip_Surface` polygons already in `areas.jsonl` account for **10 of
+the mask's 7,900 set cells — 0.13%**. The other 99.87% is the section-ribbon walk, and **nothing
+in the bundle carries those curves**: `networks.jsonl` has no curve field, `lanes.jsonl` has
+tessellated lane polylines rather than composition boundaries, and `networks/` holds baked
+surface meshes.
+
+**Producer:** `Systems/TerrainRipSystem.cs`. Every clipping section already funnels through one
+function — `StampSegment` — with the trimmed left/right béziers and the band in hand, so the
+layer is a collector on that call, not a second walk. `StampClipAreas` contributes the
+`ClipArea` records. Band per `TryGetClipBand`, which is already the game's `AddSegment`.
+
+**Contract:** new `clipvolumes.jsonl` + a §12.1 amendment. `cutout.png` **is** retired — with no
+consumer of it in the field, two representations of one fact was pure maintenance cost.
+
+**Consumer:** `tools/blender_import_bundle.py` rasterises the volumes itself — evaluate a cubic
+bézier per station, band-test the terrain under each quad, delete the faces. Same scanline as the
+producer's, ~110 lines. Worth pairing with the `stride = 4` fix below: at stride 4 the importer
+still decides whole 14 m faces from four corner samples, so it cannot yet express a cut finer
+than the retired mask gave it — the representation is no longer the limit, the meshing is.
+
+**Note:** this fixes the square *tunnel cutout* only. The square shoreline and the terrain
+clipping through roads are consumer meshing (`build_terrain`'s `stride = 4`), not representation
+— see the known-bad section below.
+
+---
+
+## 6. LANE-2 — ship the Bézier, not the sampled polyline
 
 **~190 MiB, and strictly more information than what we ship now.** `lanes.jsonl` polylines are
 resamplings of the game's `Bezier4x3`; four control points reconstruct them to sub-millimetre
@@ -103,7 +143,7 @@ to ~40 MiB, so LANE-2's marginal win is ~20 MiB, not 190.
 
 ---
 
-## 6. Do not build yet
+## 7. Do not build yet
 
 - **INST-2 (columnar `instances.jsonl`)** — loses to plain compression on bytes by 2.97×. Its only
   remaining case is import time (14.2 s → 0.2 s of parse). Build it when import time is the
@@ -111,9 +151,9 @@ to ~40 MiB, so LANE-2's marginal win is ~20 MiB, not 190.
 - **NET-1 (network composition layer)** — 401.5 MiB standalone but **101.1 MiB** net of COMP-1,
   against a 664-line consumer port. It does not earn that port on bytes. Revisit only if the
   producer stops baking (65.8 s of rip) or if 7,248 file opens become the bottleneck.
-- **TERRAIN-5 (clip-volume layer)** — *costs* bytes. It fixes square tunnel cutouts, which is a
-  fidelity argument, not a size one. `cutout.png` is 19,659 bytes; measured at 99.87%
-  section-ribbon walk, only 0.13% clip polygons.
+
+*(TERRAIN-5 was here until 2026-08-08. It still costs bytes; it was promoted to §5 on a fidelity
+argument, by decision rather than by ranking.)*
 
 ---
 
