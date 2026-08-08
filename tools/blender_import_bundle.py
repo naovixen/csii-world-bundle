@@ -89,7 +89,6 @@ trees and props are the ones that need one.
 import json
 import math
 import os
-import shutil
 import sys
 import time
 
@@ -494,44 +493,9 @@ def instance_matrix(record):
 
 
 # -- bundle reading -------------------------------------------------------------------------
-#
-# A bulk layer may be stored compressed, and when it is, its name says so (contract §12.1):
-# `instances.jsonl.gz`, `meshes/<assetId>.glb.gz`. Both forms are valid schema-1 bundles, so
-# nothing below opens a layer path directly — everything goes through `bundle_file` to find
-# which form is on disk and then through `open_bundle_text` / `read_bundle_bytes` to read it.
-# Textures and terrain rasters are PNGs, already deflate-compressed, and are read unchanged.
-
-COMPRESSED_SUFFIX = ".gz"
-
-
-def bundle_file(path):
-    """The file actually on disk for a layer's logical path, compressed or not, or None."""
-    if os.path.isfile(path):
-        return path
-    packed = path + COMPRESSED_SUFFIX
-    return packed if os.path.isfile(packed) else None
-
-
-def open_bundle_text(path):
-    """Open a layer as UTF-8 text, decompressing if it is stored compressed."""
-    if path.endswith(COMPRESSED_SUFFIX):
-        import gzip
-        return gzip.open(path, "rt", encoding="utf-8")
-    return open(path, encoding="utf-8")
-
-
-def read_bundle_bytes(path):
-    """Read a layer whole, decompressing if it is stored compressed."""
-    if path.endswith(COMPRESSED_SUFFIX):
-        import gzip
-        with gzip.open(path, "rb") as handle:
-            return handle.read()
-    with open(path, "rb") as handle:
-        return handle.read()
-
 
 def read_jsonl(path):
-    with open_bundle_text(path) as handle:
+    with open(path, encoding="utf-8") as handle:
         for line in handle:
             line = line.strip()
             if line:
@@ -540,9 +504,9 @@ def read_jsonl(path):
 
 def read_declared_gaps(bundle_dir):
     """assetIds the producer declared it could not deliver (contract §10)."""
-    path = bundle_file(os.path.join(bundle_dir, "warnings.jsonl"))
+    path = os.path.join(bundle_dir, "warnings.jsonl")
     gaps = {}
-    if path is None:
+    if not os.path.isfile(path):
         return gaps
     for record in read_jsonl(path):
         asset_id = record.get("assetId")
@@ -831,18 +795,11 @@ def resolve_layers(bundle_dir):
         networks, net_meshes = "networks.jsonl", "networks/"
         lanes, lane_meshes = "lanemeshes.jsonl", "lanemeshes/"
 
-    # File layers resolve to whichever storage form is really there; a layer that is absent
-    # keeps its logical path, so the `os.path.isfile` guards downstream still report the name
-    # the reader expects to see rather than a compressed one that was never there either.
-    def resolved(rel):
-        path = os.path.join(bundle_dir, rel)
-        return bundle_file(path) or path
-
     return (os.path.join(bundle_dir, meshes),
-            resolved(instances),
-            resolved(networks),
+            os.path.join(bundle_dir, instances),
+            os.path.join(bundle_dir, networks),
             os.path.join(bundle_dir, net_meshes),
-            resolved(lanes),
+            os.path.join(bundle_dir, lanes),
             os.path.join(bundle_dir, lane_meshes),
             os.path.join(bundle_dir, "laneprefabs.json"))
 
@@ -941,8 +898,8 @@ def place_network_mesh(record, mesh_dir, collection):
     Unlike a prefab mesh, a network mesh is unique to its segment, so it is imported once and
     used once — no collection instancing to set up.
     """
-    path = bundle_file(os.path.join(mesh_dir, record["assetId"] + ".glb"))
-    if path is None:
+    path = os.path.join(mesh_dir, record["assetId"] + ".glb")
+    if not os.path.isfile(path):
         return False
 
     imported = import_glb(path)
@@ -1666,9 +1623,9 @@ def _load_lane_source(asset_id, lane_mesh_dir, cache):
     if asset_id in cache:
         return cache[asset_id]
 
-    path = bundle_file(os.path.join(lane_mesh_dir, asset_id + ".glb"))
+    path = os.path.join(lane_mesh_dir, asset_id + ".glb")
     source = None
-    if path is not None:
+    if os.path.isfile(path):
         imported = import_glb(path)
         for obj in imported:
             if obj.type != "MESH" or source is not None:
@@ -2418,8 +2375,8 @@ def _clip_grid(bundle_dir, width, height, heights, cell, origin_x, origin_z,
 
     Returns a (height, width) bool array, or None when the bundle carries no clip layer.
     """
-    path = bundle_file(os.path.join(bundle_dir, "clipvolumes.jsonl"))
-    if path is None:
+    path = os.path.join(bundle_dir, "clipvolumes.jsonl")
+    if not os.path.isfile(path):
         return _legacy_cutout_grid(bundle_dir, width, height)
 
     strips = [record for record in read_jsonl(path)]
@@ -2437,8 +2394,8 @@ def _clip_grid(bundle_dir, width, height, heights, cell, origin_x, origin_z,
 
     # An `area` record carries no curves: its triangles are in areas.jsonl under the same id.
     area_nodes = {}
-    areas_path = bundle_file(os.path.join(bundle_dir, "areas.jsonl"))
-    if areas_path is not None and any(s.get("kind") == "area" for s in strips):
+    areas_path = os.path.join(bundle_dir, "areas.jsonl")
+    if os.path.isfile(areas_path) and any(s.get("kind") == "area" for s in strips):
         wanted = {s.get("area") for s in strips if s.get("kind") == "area"}
         for record in read_jsonl(areas_path):
             if record.get("id") in wanted:
@@ -3141,8 +3098,8 @@ def build_areas(bundle_dir, collection, center, radius, ground=None, cell=3.5):
     `_conform_area_triangle`. Without one (`--areas` and no `--terrain`) the flat triangles
     are all there is, and the ground will cut through them wherever it is not level.
     """
-    path = bundle_file(os.path.join(bundle_dir, "areas.jsonl"))
-    if path is None:
+    path = os.path.join(bundle_dir, "areas.jsonl")
+    if not os.path.isfile(path):
         LOG.warn("no areas.jsonl — skipping surface areas (bundle predates §8b)")
         return 0
 
@@ -3468,7 +3425,8 @@ def _parse_glb_arrays(path):
 def _parse_glb_arrays_unguarded(path):
     import struct
 
-    data = read_bundle_bytes(path)
+    with open(path, "rb") as handle:
+        data = handle.read()
     if len(data) < 12 or data[:4] != b"glTF":
         return None
     _magic, version, total_length = struct.unpack_from("<III", data, 0)
@@ -3813,30 +3771,6 @@ class _quiet_gltf_import:                                        # noqa: N801 - 
         return False
 
 
-def _unpack_glb(path):
-    """Decompress a `.glb.gz` to a real file the stock importer can open, or None.
-
-    Written **beside the original**, not into a temp directory, and that is load-bearing: a
-    bundle `.glb` references its textures as `../textures/<sha256>.png` (contract §6), which the
-    glTF importer resolves against the file's own directory. A copy anywhere else imports with
-    every texture missing — and silently, since a missing image is a warning there, not an error.
-
-    The name carries a marker so a file left behind by a hard crash can never be mistaken for a
-    layer: `bundle_file` looks for `<assetId>.glb` and will not match `<assetId>.gzimport.glb`.
-    """
-    import gzip
-
-    unpacked = path[: -len(COMPRESSED_SUFFIX)]
-    unpacked = unpacked[: -len(".glb")] + ".gzimport.glb"
-    try:
-        with gzip.open(path, "rb") as source, open(unpacked, "wb") as target:
-            shutil.copyfileobj(source, target)
-    except OSError as exc:
-        LOG.warn(f"! {os.path.basename(path)}: could not unpack for import — {exc}")
-        return None
-    return unpacked
-
-
 def import_glb(path):
     """Import one .glb and return the objects it created, unlinked from every collection.
 
@@ -3858,32 +3792,17 @@ def import_glb(path):
     if layer is None:
         return []
 
-    # The stock importer is an operator over a *file path*, so a `.glb.gz` has to become a real
-    # file before it can be handed over. It is unpacked under its own basename rather than a
-    # mktemp name because the operator derives Blender datablock names from the filename, and a
-    # `tmp8fk2a1` in place of `AppleTree01` would break every join that goes by material or
-    # object name. The unpack costs milliseconds against the operator's own ~200 ms, and only
-    # files the fast path already refused reach here.
-    unpacked = _unpack_glb(path) if path.endswith(COMPRESSED_SUFFIX) else path
-    if unpacked is None:
-        return []
-
     view_layer = bpy.context.view_layer
     previous = view_layer.active_layer_collection
     view_layer.active_layer_collection = layer
     try:
         with _quiet_gltf_import():
-            bpy.ops.import_scene.gltf(filepath=unpacked)
+            bpy.ops.import_scene.gltf(filepath=path)
     except Exception as exc:                                    # noqa: BLE001 - report and go on
         LOG.warn(f"! {os.path.basename(path)}: import failed — {exc}")
         return []
     finally:
         view_layer.active_layer_collection = previous
-        if unpacked is not path:
-            try:
-                os.unlink(unpacked)
-            except OSError:
-                pass
 
     imported = list(layer.collection.objects)
     for obj in imported:
@@ -3901,8 +3820,8 @@ def load_prefab_collection(asset_id, mesh_dir, sources):
     per instance in the scene, one copy of the geometry in memory, and multi-part prefabs keep
     their node hierarchy and per-part offsets for free.
     """
-    path = bundle_file(os.path.join(mesh_dir, asset_id + ".glb"))
-    if path is None:
+    path = os.path.join(mesh_dir, asset_id + ".glb")
+    if not os.path.isfile(path):
         return None
 
     imported = import_glb(path)
@@ -4247,9 +4166,9 @@ def main():
             if not flags or flags == ["OnGround"]:
                 base_id = asset_id + "__base"
                 if base_id not in skirt_prefabs:
-                    base_path = bundle_file(os.path.join(mesh_dir, base_id + ".glb"))
+                    base_path = os.path.join(mesh_dir, base_id + ".glb")
                     skirt_prefabs[base_id] = (load_prefab_collection(base_id, mesh_dir, sources)
-                                              if base_path is not None else None)
+                                              if os.path.isfile(base_path) else None)
                 if skirt_prefabs[base_id] is not None:
                     skirt = bpy.data.objects.new(f"{base_id}.{record.get('id', placed)}", None)
                     skirt.instance_type = "COLLECTION"

@@ -33,14 +33,7 @@ ARITY = {"SCALAR": 1, "VEC2": 2, "VEC3": 3, "VEC4": 4, "MAT4": 16}
 
 
 def read_glb(path: Path) -> Tuple[Dict[str, Any], bytes]:
-    # A bundle mesh may be stored gzip-compressed, named `.glb.gz` (contract §12.1); the GLB
-    # inside is unchanged, so decompressing at the read boundary is the whole difference.
-    if path.name.endswith(".gz"):
-        import gzip
-        with gzip.open(path, "rb") as handle:
-            data = handle.read()
-    else:
-        data = path.read_bytes()
+    data = path.read_bytes()
     if len(data) < 12:
         raise ValueError("shorter than a GLB header")
     magic, version, length = struct.unpack_from("<4sII", data, 0)
@@ -194,7 +187,7 @@ def main(argv: List[str]) -> int:
     args = parser.parse_args(argv)
 
     if args.target.is_dir():
-        files = sorted(list(args.target.rglob("*.glb")) + list(args.target.rglob("*.glb.gz")))
+        files = sorted(args.target.rglob("*.glb"))
     elif args.target.is_file():
         files = [args.target]
     else:

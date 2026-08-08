@@ -12,7 +12,6 @@ Usage:  python tools/test_bundle_contract.py
 from __future__ import annotations
 
 import contextlib
-import gzip
 import io
 import json
 import shutil
@@ -25,9 +24,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import make_example_bundle  # noqa: E402
-from validate_bundle import (  # noqa: E402
-    DEFAULT_SCHEMA_DIR, layer_stem, read_glb, validate_bundle,
-)
+from validate_bundle import DEFAULT_SCHEMA_DIR, read_glb, validate_bundle  # noqa: E402
 
 
 class BundleContractTest(unittest.TestCase):
@@ -79,89 +76,12 @@ class BundleContractTest(unittest.TestCase):
         lines[0] = json.dumps(record, separators=(",", ":"))
         path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
-    @staticmethod
-    def compress(path: Path) -> Path:
-        """Store one layer in the compressed form, exactly as the producer writes it."""
-        packed = path.with_name(path.name + ".gz")
-        packed.write_bytes(gzip.compress(path.read_bytes(), 9, mtime=0))
-        path.unlink()
-        return packed
-
-    def compress_layers(self, bundle: Path) -> Path:
-        """Rewrite a bundle into the compressed storage form the producer now emits.
-
-        The bulk layers only — `textures/` and `terrain/` are PNG, already deflate-compressed,
-        and §12.1 leaves them alone. The manifest is updated to name the files that are really
-        there, which is the form §12.1 specifies.
-        """
-        for pattern in ("*.jsonl", "meshes/*.glb", "networks/*.glb", "lanemeshes/*.glb"):
-            for path in sorted(bundle.glob(pattern)):
-                if path.name == "warnings.jsonl":
-                    continue        # read back by the producer between passes; left as text
-                self.compress(path)
-
-        def rename_layers(manifest):
-            for key, rel in list(manifest["layers"].items()):
-                if not rel.endswith("/") and (bundle / (rel + ".gz")).is_file():
-                    manifest["layers"][key] = rel + ".gz"
-
-        self.patch_manifest(bundle, rename_layers)
-        return bundle
-
     # -- positive ---------------------------------------------------------------------
 
     def test_example_bundle_is_valid(self):
         report = validate_bundle(self.pristine, DEFAULT_SCHEMA_DIR)
         self.assertEqual(report.errors, [])
         self.assertEqual(report.warnings, [])
-
-    # -- at-rest compression, contract §12.1 -------------------------------------------
-    #
-    # Both storage forms are valid schema-1 bundles, so the contract owes a consumer author
-    # tests for both. The mixed case is the one that matters most: nothing says a bundle has to
-    # be uniform, and a consumer that resolves the form per file rather than per bundle is the
-    # only one that survives a producer changing its mind about a single layer.
-
-    def test_compressed_bundle_is_valid(self):
-        bundle = self.compress_layers(self.fresh())
-        report = validate_bundle(bundle, DEFAULT_SCHEMA_DIR)
-        self.assertEqual(report.errors, [])
-        self.assertEqual(report.warnings, [])
-
-    def test_compressed_and_uncompressed_layers_may_be_mixed(self):
-        bundle = self.fresh()
-        self.compress(bundle / "instances.jsonl")
-        for path in sorted((bundle / "meshes").glob("*.glb"))[:1]:
-            self.compress(path)
-        self.patch_manifest(bundle, lambda m: m["layers"].update(instances="instances.jsonl.gz"))
-        report = validate_bundle(bundle, DEFAULT_SCHEMA_DIR)
-        self.assertEqual(report.errors, [])
-
-    def test_manifest_may_still_name_the_logical_path(self):
-        """A manifest written before §12.1 names `instances.jsonl` for a file stored `.gz`."""
-        bundle = self.fresh()
-        self.compress(bundle / "instances.jsonl")
-        report = validate_bundle(bundle, DEFAULT_SCHEMA_DIR)
-        self.assertEqual(report.errors, [])
-
-    def test_missing_mesh_still_caught_when_layers_are_compressed(self):
-        """Resolving two storage forms must not turn a dangling reference into a pass."""
-        bundle = self.compress_layers(self.fresh())
-        for path in (bundle / "meshes").glob("*.glb.gz"):
-            path.unlink()
-        self.assertRejected(bundle, "has no mesh at")
-
-    def test_compressed_glb_is_still_checked_as_a_container(self):
-        """A `.glb.gz` is inspected as a GLB, not waved through because it is compressed."""
-        bundle = self.compress_layers(self.fresh())
-        path = sorted((bundle / "meshes").glob("*.glb.gz"))[0]
-        path.write_bytes(gzip.compress(b"not a glTF container at all", 9, mtime=0))
-        self.assertRejected(bundle, "not a valid GLB")
-
-    def test_layer_stem_strips_the_compression_suffix(self):
-        """The assetId join goes by stem, and `Path.stem` alone answers `AppleTree01.glb`."""
-        self.assertEqual(layer_stem(Path("meshes/AppleTree01.glb.gz")), "AppleTree01")
-        self.assertEqual(layer_stem(Path("meshes/AppleTree01.glb")), "AppleTree01")
 
     # -- clip volumes, contract §8c ----------------------------------------------------
 
