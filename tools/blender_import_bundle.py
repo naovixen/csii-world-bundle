@@ -2273,6 +2273,140 @@ def _fill_clip_quad(mask, terrain_y, width, height, quad, lane_y, bottom, top):
             mask[row, lo:hi + 1] |= (over > bottom) & (over < top)
 
 
+def _block_view(native, row0, col0, nfr, nfc, stride):
+    """The native texels under each coarse face, as (nfr, stride, nfc, stride).
+
+    Coarse face (r, c) spans native rows `row0 + r*stride` to `+stride` and the same in
+    columns, so this is a pure reshape — no copy — and `.any(axis=(1, 3))` / `.all(...)` over it
+    are the block reductions. At stride 1 it is the identity, which is what keeps region
+    imports bit-identical.
+    """
+    block = native[row0:row0 + nfr * stride, col0:col0 + nfc * stride]
+    return block.reshape(nfr, stride, nfc, stride)
+
+
+def _face_footprint_reduce(native, row0, col0, nfr, nfc, stride):
+    """`(any, all)` of a native flag over each coarse face's real footprint.
+
+    A grid vertex sits at a cell CENTRE (contract §3), so the quad between four vertices
+    straddles the four cells they name and everything between — `(stride + 1)²` cells, not
+    `stride²`. Reducing over that footprint is what makes the coarse answer mean something, and
+    at stride 1 it collapses to exactly the four corner cells the harness has always used.
+
+    Done as `(stride + 1)²` strided views rather than one fancy-indexed gather: stride is 4 on
+    the largest map, so this is 25 cheap whole-array ops instead of a 26M-element index array.
+    """
+    base = native[row0:row0 + nfr * stride + 1, col0:col0 + nfc * stride + 1]
+    any_ = numpy.zeros((nfr, nfc), dtype=bool)
+    all_ = numpy.ones((nfr, nfc), dtype=bool)
+    for i in range(stride + 1):
+        for j in range(stride + 1):
+            sub = base[i::stride, j::stride][:nfr, :nfc]
+            if sub.shape != (nfr, nfc):          # a partial last block: leave it to `any`
+                continue
+            any_ |= sub
+            all_ &= sub
+    return any_, all_
+
+
+def _refine_blocks(blocks_r, blocks_c, rows_arr, cols_arr, stride, native_y, corner_y,
+                   origin_x, origin_z, cell, keep_native):
+    """Re-emit a set of coarse faces at native resolution.
+
+    This is the answer to the one place the harness couples two things the game keeps apart:
+    how dense the ground mesh is, and how finely a per-cell decision (cut, wet) is resolved.
+    The game tessellates by distance and discards clipped ground per *pixel*; the harness
+    decides whole 14 m faces from the corners of a 4:1 subsample. Rather than mesh the whole
+    map natively (measured at 60 s / 12.1 GB), only the blocks a decision boundary actually
+    crosses are rebuilt — a few thousand of a million.
+
+    Returns `(verts, quads)` in the same (x_east, y_north, z_up) Blender layout the caller
+    uses, with `quads` indexing into `verts` locally (the caller offsets them).
+
+    **Outer-edge heights are snapped onto the coarse edge**, not taken from the native raster.
+    A refined block sits beside unrefined ones that only have the two coarse corners along the
+    shared edge, so a native height there would tear a crack. Snapping puts every boundary
+    vertex exactly on the segment its coarse neighbour draws, and two adjacent refined blocks
+    snap to the same segment, so the seam closes either way.
+    """
+    count = len(blocks_r)
+    sub = stride + 1
+    step = numpy.arange(sub, dtype=numpy.int64)
+
+    native_rows = rows_arr[blocks_r][:, None, None] + step[None, :, None]     # (B, sub, 1)
+    native_cols = cols_arr[blocks_c][:, None, None] + step[None, None, :]     # (B, 1, sub)
+    rr = numpy.broadcast_to(native_rows, (count, sub, sub))
+    cc = numpy.broadcast_to(native_cols, (count, sub, sub))
+
+    y = native_y[rr, cc].astype(numpy.float64)
+
+    # Bilinear snap on the four edges, from the coarse face's own corner heights.
+    u = (step / float(stride))[None, :]
+    y00 = corner_y[blocks_r, blocks_c][:, None]
+    y01 = corner_y[blocks_r, blocks_c + 1][:, None]
+    y10 = corner_y[blocks_r + 1, blocks_c][:, None]
+    y11 = corner_y[blocks_r + 1, blocks_c + 1][:, None]
+    y[:, 0, :] = y00 * (1.0 - u) + y01 * u
+    y[:, -1, :] = y10 * (1.0 - u) + y11 * u
+    y[:, :, 0] = y00 * (1.0 - u) + y10 * u
+    y[:, :, -1] = y01 * (1.0 - u) + y11 * u
+
+    x = origin_x + cc.astype(numpy.float64) * cell
+    z = origin_z - rr.astype(numpy.float64) * cell
+    verts = numpy.stack((x, z, y), axis=-1).reshape(-1, 3)
+
+    # Local quad indices within each block, then offset by the block's vertex base. Winding
+    # matches the coarse grid's (a, a+row, a+row+1, a+1) — south then east — so refined faces
+    # light the same way as the ones around them.
+    a = (numpy.arange(stride)[:, None] * sub + numpy.arange(stride)[None, :])
+    local = numpy.stack((a, a + sub, a + sub + 1, a + 1), axis=-1).reshape(-1, 4)
+    base = (numpy.arange(count) * sub * sub)[:, None, None]
+    quads = (local[None, :, :] + base).reshape(-1, 4)
+
+    # Each sub-face is one native cell, so the decision it was refined for is now taken at
+    # native resolution — which is the whole point.
+    span = numpy.arange(stride, dtype=numpy.int64)
+    cell_rr = rows_arr[blocks_r][:, None, None] + span[None, :, None]
+    cell_cc = cols_arr[blocks_c][:, None, None] + span[None, None, :]
+    keep = keep_native[numpy.broadcast_to(cell_rr, (count, stride, stride)),
+                       numpy.broadcast_to(cell_cc, (count, stride, stride))].reshape(-1)
+
+    # Which block each surviving sub-face came from, so the caller can give it whatever
+    # per-face data (material class, and so on) its coarse parent had.
+    parent = numpy.repeat(numpy.arange(count), stride * stride)[keep]
+    return verts, quads[keep], parent
+
+
+def _legacy_cutout_grid(bundle_dir, width, height):
+    """Read a pre-§8c bundle's `terrain/cutout.png`, the retired precomputed clip mask.
+
+    Kept as a READ path only, and only as a fallback: the producer stopped writing this file on
+    2026-08-08 (contract §12.1), but bundles ripped before then are still on disk and would
+    otherwise import with every tunnel walled off — silently, since an absent layer is not an
+    error. Reading a legacy layer when it happens to be there is the consumer's own business;
+    nothing here puts it back in the contract.
+
+    The mask is the producer's own intersection at 3.5 m, so it cannot benefit from the
+    refinement below — it is already flattened. Re-rip to get the volumes.
+    """
+    path = os.path.join(bundle_dir, "terrain", "cutout.png")
+    if not os.path.isfile(path):
+        return None
+    try:
+        cw, ch, ids = _decode_png_gray(path)
+    except Exception as error:  # noqa: BLE001 - a legacy path is best-effort by definition
+        LOG.warn(f"legacy cutout.png unreadable ({error}); tunnels will stay walled off")
+        return None
+    if (cw, ch) != (width, height):
+        LOG.warn(f"legacy cutout.png is {cw}x{ch}, heightmap {width}x{height} — ignoring it")
+        return None
+
+    LOG.warn("no clipvolumes.jsonl — falling back to this bundle's retired cutout.png. "
+             "It is the producer's own 3.5 m intersection, so portal edges stay as coarse as "
+             "it made them; re-rip for contract §8c clip volumes.")
+    return numpy.asarray(ids).reshape(height, width) != 0
+
+
 def _clip_grid(bundle_dir, width, height, heights, cell, origin_x, origin_z,
                elevation_scale, elevation_offset):
     """Rasterise `clipvolumes.jsonl` onto the heightmap grid — contract §8c.
@@ -2286,7 +2420,7 @@ def _clip_grid(bundle_dir, width, height, heights, cell, origin_x, origin_z,
     """
     path = bundle_file(os.path.join(bundle_dir, "clipvolumes.jsonl"))
     if path is None:
-        return None
+        return _legacy_cutout_grid(bundle_dir, width, height)
 
     strips = [record for record in read_jsonl(path)]
     if not strips:
@@ -2541,8 +2675,7 @@ def build_terrain(bundle_dir, collection, center, radius):
     cut_grid = _clip_grid(bundle_dir, width, height, heights, cell, origin_x, origin_z,
                           elevation_scale, elevation_offset)
     if cut_grid is None:
-        LOG.warn("no clipvolumes.jsonl — tunnel portals and trenches will stay walled off "
-                 "(bundle predates contract §8c)")
+        LOG.warn("no clip layer at all — tunnel portals and trenches will stay walled off")
 
     levels = None
     if os.path.isfile(water_path):
@@ -2605,6 +2738,30 @@ def build_terrain(bundle_dir, collection, center, radius):
         else numpy.zeros((nrows, ncols), dtype=bool)
     face_roadbed = roadbed_corner[:-1, :-1]
 
+    # Terrain clipping through roads is the second full-map-only artefact, and it is a height
+    # problem rather than a classification one — so it is fixed here without touching which
+    # faces read as roadbed above.
+    #
+    # The game's road job clamps ground under a carriageway DOWN into the road's surface band.
+    # This grid keeps every 4th texel, so whichever of the 16 texels under a face happened to
+    # land on the sample point sets the height, and when that one is a crest the interpolated
+    # ground rises through the road mesh above it. Pulling those vertices down to the block
+    # MINIMUM is the game's own clamp direction, costs one reduction, and cannot raise ground
+    # anywhere. The trigger is `any` texel rather than the sampled corner: a road crossing a
+    # block whose corner happens to miss it still needs the clamp.
+    if stride > 1 and surface_grid is not None:
+        nfr_road, nfc_road = max(nrows - 1, 0), max(ncols - 1, 0)
+        road_any, _ = _face_footprint_reduce(surface_grid != 0, row0, col0,
+                                             nfr_road, nfc_road, stride)
+        if road_any.any():
+            block_min = _block_view(heights_native, row0, col0, nfr_road, nfc_road, stride) \
+                .min(axis=(1, 3)).astype(numpy.float64) * elevation_scale + elevation_offset
+            pulled = numpy.full((nrows, ncols), numpy.inf)
+            fr, fc = numpy.nonzero(road_any)
+            for dr, dc in ((0, 0), (0, 1), (1, 0), (1, 1)):
+                numpy.minimum.at(pulled, (fr + dr, fc + dc), block_min[fr, fc])
+            sampled_y = numpy.minimum(sampled_y, pulled)
+
     sink = _ROADBED_SINK if surface_ids is not None else 0.0
     vertex_sunk = numpy.zeros((nrows, ncols), dtype=bool)
     if sink and face_roadbed.size:
@@ -2625,16 +2782,32 @@ def build_terrain(bundle_dir, collection, center, radius):
         LOG.progress("terrain rows", row_number + 1, nrows)
 
     # §8c clip volumes, rasterised above: the terrain covering tunnel portals and sunken
-    # trenches. Keeping their faces walls off every underground network, so a face is dropped
-    # when any of its corner samples is cut; the opening over-reaches by at most half a cell,
-    # leaving a rim instead of a wall.
-    if cut_grid is not None:
-        cut_corner = cut_grid[numpy.ix_(rows_arr, cols_arr)] != 0
-        face_cut = (cut_corner[:-1, :-1] | cut_corner[:-1, 1:] |
-                    cut_corner[1:, :-1] | cut_corner[1:, 1:])
+    # trenches. Keeping their faces walls off every underground network.
+    #
+    # The decision is taken over EVERY native texel a face covers, not from its four corner
+    # samples. At stride 4 the corner rule read 4 of the 16 texels under a face and cut the
+    # whole 14 m face if any of them was set — measured on a full city, that dropped 1,123
+    # faces = 220,108 m² where the mask marks 96,775 m², over-cutting by 2.3×. A face is now
+    # cut only when *all* its texels are, and a face whose block is mixed is rebuilt at native
+    # resolution below instead of being decided either way.
+    nfr, nfc = max(nrows - 1, 0), max(ncols - 1, 0)
+    cut_mixed = numpy.zeros((nfr, nfc), dtype=bool)
+    if cut_grid is not None and nfr and nfc:
+        cut_any, cut_all = _face_footprint_reduce(cut_grid, row0, col0, nfr, nfc, stride)
+        if stride > 1:
+            # Coarse faces go only where the whole footprint agrees; the boundary blocks are
+            # rebuilt natively below, so neither the over-cut nor the under-cut answer is
+            # forced on them.
+            face_cut = cut_all
+            cut_mixed = cut_any & ~cut_all
+        else:
+            # At native resolution there is nothing to refine and the face genuinely straddles
+            # its four cells, so the any-corner rule stands — unchanged, which is what keeps a
+            # region import bit-identical to its baseline.
+            face_cut = cut_any
     else:
-        face_cut = numpy.zeros((max(nrows - 1, 0), max(ncols - 1, 0)), dtype=bool)
-    face_kept = ~face_cut
+        face_cut = numpy.zeros((nfr, nfc), dtype=bool)
+    face_kept = ~face_cut & ~cut_mixed          # mixed blocks leave the coarse grid entirely
     cut_faces = int(face_cut.sum())
 
     # Row 0 is the north edge, so winding (a, a+ncols, a+ncols+1, a+1) — south then east —
@@ -2665,6 +2838,37 @@ def build_terrain(bundle_dir, collection, center, radius):
     face_class_all = numpy.where(face_roadbed, 1, face_class_all)  # roadbed wins over slope
 
     face_class = face_class_all[face_kept]  # same order as `quads` and `face_r`/`face_c`
+
+    # -- refine the blocks a cut boundary crosses -------------------------------------------
+    # Done HERE, before anything per-loop or per-face is derived, and that ordering is the
+    # load-bearing part: refined faces join `quads` and `face_class` as ordinary members, so
+    # the UV arrays and material runs below are built from the final geometry. Building them
+    # from the coarse arrays and appending refined faces afterwards leaves the loop and
+    # material arrays shorter than the face list — which renders as dark rectangles with
+    # holes, the failure that stopped a previous attempt at this.
+    refined_faces = 0
+    if stride > 1 and cut_grid is not None and cut_mixed.any():
+        block_r, block_c = numpy.nonzero(cut_mixed)
+        native_y = heights_native.astype(numpy.float64) * elevation_scale + elevation_offset
+
+        # A sub-face straddles its four native cells exactly as a stride-1 face does, so it is
+        # cut by the same any-of-four rule — the refinement changes the resolution of the
+        # decision, not the decision.
+        cut_native_face = (cut_grid[:-1, :-1] | cut_grid[:-1, 1:] |
+                           cut_grid[1:, :-1] | cut_grid[1:, 1:])
+
+        extra_verts, extra_quads, parent = _refine_blocks(
+            block_r, block_c, rows_arr, cols_arr, stride, native_y, sampled_y,
+            origin_x, origin_z, cell, ~cut_native_face)
+        refined_faces = len(extra_quads)
+
+        quads = numpy.concatenate((quads, extra_quads + len(verts)))
+        verts = numpy.concatenate((verts, extra_verts))
+        # A refined face inherits its coarse parent's class: the block was rebuilt to place the
+        # cut boundary, not to re-classify ground, and re-deriving slope per native cell here
+        # would make a refined block read differently from the unrefined ones around it.
+        face_class = numpy.concatenate((face_class, face_class_all[block_r, block_c][parent]))
+
     roadbed_faces = int((face_class == 1).sum())
     rock_faces = int((face_class == 2).sum())
 
@@ -2808,6 +3012,9 @@ def build_terrain(bundle_dir, collection, center, radius):
     LOG.step(f"{roadbed_faces} roadbed face(s) (sunk {_ROADBED_SINK:g} m), "
              f"{rock_faces} rock face(s), {wet_faces} water face(s), "
              f"{cut_faces} face(s) cut (tunnel portals / trenches)")
+    if refined_faces:
+        LOG.step(f"{refined_faces} face(s) rebuilt at native {cell:g} m where the cut boundary "
+                 f"crosses a {cell * stride:g} m block")
     return placed, (terrain_object, cell * stride)
 
 

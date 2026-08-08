@@ -157,14 +157,39 @@ argument, by decision rather than by ranking.)*
 
 ---
 
-## Known-bad in the harness, unrelated to the bundle
+## Fixed in the harness (2026-08-08): the stride-4 meshing limit
 
-`tools/blender_import_bundle.py` `build_terrain` uses `stride = 4` on a full map and decides whole
-14 m faces from four corner texels (`:2236`, `:2306-2307`). That is the cause of the square
-shoreline and terrain clipping through roads — **not** a bundle problem; the rasters ship at the
-game's own 3.5 m. A previous attempt is written up in memory `full-map-terrain-stride`: it cost
-13 s / 2.9 GB and was discarded because refined ground blocks rendered as dark rectangles with
-holes. Ground-only renders proved the fault is in ground refinement, not water.
+`tools/blender_import_bundle.py` `build_terrain` picks `stride = 4` on a full map and used to
+decide whole 14 m faces from a 4:1 subsample. Two independent artefacts came out of that, and
+both are now fixed without touching the producer:
+
+- **Square tunnel cutouts.** A face was cut if any of its four corner samples was — measured,
+  1,184 faces = 232,064 m², **2.40x** the 96,775 m² the mask actually marks. Now a coarse face
+  is cut only where its whole footprint agrees, and the blocks a boundary crosses are rebuilt at
+  native 3.5 m (`_refine_blocks`). Result: 129,005 m², **1.33x** — and 1.33x is exactly what a
+  fully native mesh gives, since the native any-of-four rule keeps its own deliberate half-cell
+  rim. **The stride penalty is gone entirely.**
+- **Terrain clipping through roads.** A height problem, not a masking one: whichever of the 16
+  texels under a face landed on the sample point set the height, and a crest rose through the
+  road mesh. Vertices touching a roadbed block are now pulled to the block minimum — the game's
+  own clamp direction, one reduction, and it can never raise ground.
+
+Cost, measured on the 4096² full city: **3.8 s -> 4.1 s**, +8,352 ground faces (+0.8%). The
+earlier attempt written up in memory `full-map-terrain-stride` cost 13 s / 2.9 GB and rendered
+refined blocks as dark rectangles with holes; that failure was the per-loop and per-face arrays
+being built from the coarse face list and the refined faces appended afterwards, leaving Blender
+assigning UVs and materials to faces it had never been told about. Refinement now happens before
+anything per-loop or per-face is derived, and the check that proves it is `len(loops) ==
+sum(len(p.vertices))` with 100% of refined normals up.
+
+Region imports are **bit-identical** (same SHA-256 over vertices, loop indices and UVs): every
+new path is gated on `stride > 1`, and at stride 1 the footprint reduction collapses to the four
+corner cells the harness always used.
+
+**Still open: the square shoreline.** `face_wet` is still any-corner at 14 m on the water
+surface, so the water edge stays quantised. The same `_refine_blocks` helper applies — the water
+mesh has one material and no UV layers, so it is the easier of the two — but the wet boundary is
+the whole coastline, so it is the expensive one to refine and was left for its own measurement.
 
 ---
 
