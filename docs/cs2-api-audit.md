@@ -1651,3 +1651,25 @@ excluded"); unresolved-prefab areas are deliberately NOT skipped — the game do
 
 **Status: built, awaiting re-rip (terrain button only) for the clip exclusion; the colour
 path is validated and done.**
+
+## 37. The notification toast stack is a public, mod-usable progress API (2026-08-09)
+
+Phase 8 §5 asked whether the game's top-left toast stack can carry the rip's progress bar, to
+replace the reflection hack on `AppBindings.m_BackgroundProcessMessageBinding`. Decompiled
+`Game.UI.Menu.NotificationUISystem` and its facade `Game.PSI.NotificationSystem`. **It holds,
+with room to spare** — this is the API the base game uses for mod download/install progress,
+and it is fully public:
+
+| Fact (decompiled) | Consequence for the ripper |
+|---|---|
+| `Game.PSI.NotificationSystem.Push(identifier, title, text, titleId, textId, thumbnail, progressState, progress, onClicked)` — **public static**, upserts by `identifier` into `NotificationUISystem.AddOrUpdateNotification` (also public). `Pop(identifier, delay, …)` removes, optionally after a delay with a final state; `Exist(identifier)` queries. | No reflection anywhere. One stable id (`"Carto.RipWorld"`) is pushed repeatedly; the stack shows a single live toast. |
+| `NotificationInfo` carries `progressState` (`Colossal.PSI.Common.ProgressState`: `None, Progressing, Indeterminate, Complete, Failed, Cancelled, Warning`) and `progress` (int, the game always feeds 0–100). | Real progress bar states: `Progressing` + percent during stages, `Indeterminate` for unsized phases (terrain), `Complete`/`Failed` on `Pop` with a 2 s linger, matching the game's own `kDelay = 2f` idiom. |
+| `title`/`text` are `Game.UI.Localization.LocalizedString`, and `LocalizedString.Value(string)` renders **free text** (id = null); `LocalizedString.Id(key)` renders a locale key. | The percent no longer needs to be baked into pre-expanded locale keys — that hack existed only because `app.backgroundProcessMessage` renders a bare key. Title stays a locale key (translated); the stage/percent line is free text. |
+| `AddOrUpdateNotification` mutates plain `Dictionary`s and a `List` behind the binding, sets `m_Dirty`; `OnUpdate` flushes via `TriggerUpdate()`. Nothing is synchronised. | **Main-thread only.** The sink is `RipProgress.Pump()` — already called once per frame on the main thread — so off-thread reporters keep writing fields and never touch the toast directly. |
+| `UpdateNotification` only overwrites `title`/`thumbnail` when currently unset (`text`, `progressState`, `progress` update freely). | Set the title once on the first `Push`; per-frame pushes update text + progress only. A title *change* (new stage) requires text, not title. |
+| `NotificationUISystem` is a `UISystemBase` created unconditionally (`OnCreate` binds the PSI facade; the mod-download handlers run in-game too). | The toast stack works during gameplay, not just in the main menu — consistent with major mods driving live progress bars through it. |
+
+Decision: **`NotificationSystem.Push`/`Pop` is the progress sink for the one-button rip.** The
+background-process caption (`RipProgress` reflection path) stays as the fallback if `Push`
+ever throws, and `RunDeferred`'s show-caption-then-block contract is unchanged — the toast
+cannot paint during a synchronous stage either; nothing paints mid-freeze.
