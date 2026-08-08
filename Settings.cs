@@ -15,15 +15,17 @@ namespace Carto
     /// （管理模組設定的類別。）
     /// </summary>
     [SettingsUIGroupOrder(GeneralGeneralGroup, GeneralDangerGroup,
+                          RipperRipGroup, RipperLayerGroup, RipperCapGroup, RipperDeveloperGroup,
                           FeatureButtonGroup, FeatureVectorGroup, FeatureRasterGroup,
                           PropertiesSelectorGroup, PropertiesGeometryGroup, PropertiesPropertyGroup,
                           ProjectionBasicGroup, ProjectionEllipsoidGroup, ProjectionProjectionGroup, ProjectionUTMGroup,
                           MiscellaneousFileGroup, MiscellaneousGeometryGroup, MiscellaneousPropertyGroup)]
-    [SettingsUIShowGroupName(FeatureVectorGroup, FeatureRasterGroup,
+    [SettingsUIShowGroupName(RipperLayerGroup, RipperCapGroup, RipperDeveloperGroup,
+                             FeatureVectorGroup, FeatureRasterGroup,
                              PropertiesGeometryGroup, PropertiesPropertyGroup,
                              ProjectionBasicGroup, ProjectionEllipsoidGroup, ProjectionProjectionGroup, ProjectionUTMGroup,
                              MiscellaneousFileGroup, MiscellaneousGeometryGroup, MiscellaneousPropertyGroup)]
-    [SettingsUITabOrder(GeneralTab, FeatureTab, PropertiesTab, ProjectionTab, MiscellaneousTab)]
+    [SettingsUITabOrder(GeneralTab, RipperTab, FeatureTab, PropertiesTab, ProjectionTab, MiscellaneousTab)]
     [FileLocation("ModsSettings/" + nameof(Carto) + "/" + nameof(Carto) + "_v1")]
     public class Settings : ModSetting
     {
@@ -189,6 +191,9 @@ namespace Carto
             PropertyThemeAssetPack = true;
             PropertyWageTaxable = false;
             PropertyZoningDisplayMode = IO.Display.All;
+            RipObjects = true;
+            RipNetworks = true;
+            RipTerrain = true;
             RipVectorExport = false;
         }
 
@@ -198,6 +203,11 @@ namespace Carto
         public const string GeneralGeneralGroupButtons = "GeneralGeneralGroupButtons";
         public const string GeneralDangerGroup = "GeneralDangerGroup";
         public const string GeneralDangerGroupButtons = "GeneralDangerGroupButtons";
+        public const string RipperTab = "RipperTab";
+        public const string RipperRipGroup = "RipperRipGroup";
+        public const string RipperLayerGroup = "RipperLayerGroup";
+        public const string RipperCapGroup = "RipperCapGroup";
+        public const string RipperDeveloperGroup = "RipperDeveloperGroup";
         public const string FeatureTab = "FeatureTab";
         public const string FeatureButtonGroup = "FeatureButtonGroup";
         public const string FeatureButtonGroupButtons = "FeatureButtonGroupButtons";
@@ -405,7 +415,7 @@ namespace Carto
         /// always last, one dialog at the end.
         /// （一鍵擷取（PLAN 第八階段）：所有階段依序非同步執行，宣告檔恆為最後，結束時單一對話框。）
         /// </summary>
-        [SettingsUISection(GeneralTab, GeneralGeneralGroup)]
+        [SettingsUISection(RipperTab, RipperRipGroup)]
         [SettingsUIButton]
         [SettingsUIDisableByCondition(typeof(Settings), nameof(IsInGameOrEditor), invert: true)]
         public bool RipWorldButton
@@ -418,6 +428,9 @@ namespace Carto
                     summary = Instance.RipOrchestrator.BeginRip(new Systems.RipOrchestratorSystem.RipPlan
                     {
                         OutputDirectory = Instance.BundlePath,
+                        Objects = RipObjects,
+                        Networks = RipNetworks,
+                        Terrain = RipTerrain,
                         Vector = RipVectorExport,
                         MeshLimit = RipMeshLimit,
                         TextureSizeCap = RipTextureSize
@@ -436,17 +449,42 @@ namespace Carto
         }
 
         /// <summary>
+        /// Whether a world rip covers buildings, props &amp; trees — instances with their
+        /// appearance, and every unique prefab mesh, material and texture they reference.
+        /// （世界擷取是否涵蓋建築、道具與樹木——實例及其外觀，
+        /// 以及其參照的每個唯一預製模板網格、材質與貼圖。）
+        /// </summary>
+        [SettingsUISection(RipperTab, RipperLayerGroup)]
+        public bool RipObjects { get; set; } = true;
+
+        /// <summary>
+        /// Whether a world rip covers roads &amp; lanes — the drivable lane graph, the assembled
+        /// network surfaces and the lane-drawn geometry.
+        /// （世界擷取是否涵蓋道路與車道——可行駛車道圖、組裝的路網表面與車道所繪幾何。）
+        /// </summary>
+        [SettingsUISection(RipperTab, RipperLayerGroup)]
+        public bool RipNetworks { get; set; } = true;
+
+        /// <summary>
+        /// Whether a world rip covers terrain &amp; water — heightmaps, splat, surface areas,
+        /// the water grid and the tunnel clip volumes.
+        /// （世界擷取是否涵蓋地形與水體——高度圖、地表混合、地表區域、水面網格與隧道裁剪體積。）
+        /// </summary>
+        [SettingsUISection(RipperTab, RipperLayerGroup)]
+        public bool RipTerrain { get; set; } = true;
+
+        /// <summary>
         /// Whether the one-button rip also runs the vanilla vector/raster export.
         /// （一鍵擷取是否一併執行原版向量／網格輸出。）
         /// </summary>
-        [SettingsUISection(GeneralTab, GeneralGeneralGroup)]
+        [SettingsUISection(RipperTab, RipperLayerGroup)]
         public bool RipVectorExport { get; set; } = false;
 
         /// <summary>
         /// The button that enumerates every placed object into <c>instances.jsonl</c> (PLAN Phase 2).
         /// （將所有已放置物件列舉至 <c>instances.jsonl</c> 的按鈕（PLAN 第二階段）。）
         /// </summary>
-        [SettingsUISection(GeneralTab, GeneralGeneralGroup)]
+        [SettingsUISection(RipperTab, RipperDeveloperGroup)]
         [SettingsUIButton]
         [SettingsUIDeveloper]
         [SettingsUIDisableByCondition(typeof(Settings), nameof(IsInGameOrEditor), invert: true)]
@@ -484,7 +522,7 @@ namespace Carto
         /// The button that writes every network edge into <c>networks.jsonl</c> (PLAN Phase 5).
         /// （將所有路網邊寫出至 <c>networks.jsonl</c> 的按鈕（PLAN 第五階段）。）
         /// </summary>
-        [SettingsUISection(GeneralTab, GeneralGeneralGroup)]
+        [SettingsUISection(RipperTab, RipperDeveloperGroup)]
         [SettingsUIButton]
         [SettingsUIDeveloper]
         [SettingsUIDisableByCondition(typeof(Settings), nameof(IsInGameOrEditor), invert: true)]
@@ -549,9 +587,8 @@ namespace Carto
         /// 因此未受限的擷取是數 GB 等級的操作。限制為最常用的預製模板，
         /// 能以一小部分的輸出量涵蓋城市的大部分，藉此在付出代價前先量測實際成本。）
         /// </summary>
-        [SettingsUISection(GeneralTab, GeneralGeneralGroup)]
+        [SettingsUISection(RipperTab, RipperCapGroup)]
         [SettingsUIDropdown(typeof(Settings), nameof(GetRipMeshLimits))]
-        [SettingsUIDisableByCondition(typeof(Settings), nameof(IsInGameOrEditor), invert: true)]
         public int RipMeshLimit { get; set; } = 50;
 
         public DropdownItem<int>[] GetRipMeshLimits()
@@ -576,9 +613,8 @@ namespace Carto
         /// 上限減半即像素減為四分之一；由於遊戲本就存有 mip 鏈，受限的擷取是載入較小的影像，
         /// 而非將大影像縮小。）
         /// </summary>
-        [SettingsUISection(GeneralTab, GeneralGeneralGroup)]
+        [SettingsUISection(RipperTab, RipperCapGroup)]
         [SettingsUIDropdown(typeof(Settings), nameof(GetRipTextureSizes))]
-        [SettingsUIDisableByCondition(typeof(Settings), nameof(IsInGameOrEditor), invert: true)]
         public int RipTextureSize { get; set; } = 1024;
 
         public DropdownItem<int>[] GetRipTextureSizes()
@@ -599,7 +635,7 @@ namespace Carto
         /// on a full city — no frame-budgeted queue needed.<br/>
         /// （同步且快速：兩次 GPU 回讀加一次 CPU 光柵化，全城僅需數秒——無須分幀佇列。）
         /// </summary>
-        [SettingsUISection(GeneralTab, GeneralGeneralGroup)]
+        [SettingsUISection(RipperTab, RipperDeveloperGroup)]
         [SettingsUIButton]
         [SettingsUIDeveloper]
         [SettingsUIDisableByCondition(typeof(Settings), nameof(IsInGameOrEditor), invert: true)]
@@ -631,7 +667,7 @@ namespace Carto
         /// corner, and reports its result in a dialog when it finishes.<br/>
         /// （立即返回：擷取每幀推進一段，並於畫面角落顯示進度指示器，完成時以對話框回報結果。）
         /// </summary>
-        [SettingsUISection(GeneralTab, GeneralGeneralGroup)]
+        [SettingsUISection(RipperTab, RipperDeveloperGroup)]
         [SettingsUIButton]
         [SettingsUIDeveloper]
         [SettingsUIDisableByCondition(typeof(Settings), nameof(IsInGameOrEditor), invert: true)]
@@ -666,7 +702,7 @@ namespace Carto
         /// （於步驟 1–4 之後最後執行：宣告檔的數量必須等於磁碟上的位元組，故任何擷取步驟重跑後
         /// 皆應重跑此步驟。與向量輸出同為同步執行——其須讀回每個紀錄層，全城最多約半分鐘。）
         /// </summary>
-        [SettingsUISection(GeneralTab, GeneralGeneralGroup)]
+        [SettingsUISection(RipperTab, RipperDeveloperGroup)]
         [SettingsUIButton]
         [SettingsUIDeveloper]
         [SettingsUIDisableByCondition(typeof(Settings), nameof(IsInGameOrEditor), invert: true)]
@@ -695,7 +731,7 @@ namespace Carto
         }
 
 # if false
-        [SettingsUISection(GeneralTab, GeneralGeneralGroup)]
+        [SettingsUISection(RipperTab, RipperDeveloperGroup)]
         [SettingsUIButton]
         [SettingsUIDeveloper]
         [SettingsUIDisableByCondition(typeof(Settings), nameof(IsInGameOrEditor), invert: true)]
