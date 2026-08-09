@@ -214,9 +214,14 @@ namespace Carto.Systems
         /// 主題的地面貼圖與地理參照附檔。契約見 <c>docs/bundle-schema.md</c> §8。）
         /// </summary>
         /// <param name="outputDirectory">The bundle root to write into.（要寫入的束根目錄。）</param>
-        /// <param name="areas">Whether to rip the painted surface areas (the ripper tab's advanced toggle).（是否擷取繪製的地表區域（擷取器分頁的進階開關）。）</param>
+        /// <param name="heights">Whether to write the heightmaps — playable and backdrop.（是否寫出高度圖——可遊玩區與背景。）</param>
+        /// <param name="water">Whether to write the water surface grid.（是否寫出水面網格。）</param>
+        /// <param name="ground">Whether to write the ground textures — theme images, blend maps and the roadbed mask.（是否寫出地面貼圖——主題影像、混合貼圖與路床遮罩。）</param>
+        /// <param name="clips">Whether to collect the tunnel-opening clip volumes.（是否收集隧道開口裁剪體積。）</param>
+        /// <param name="areas">Whether to rip the painted surface areas.（是否擷取繪製的地表區域。）</param>
         /// <returns>A human-readable report.（可供閱讀的報告。）</returns>
-        public string RipTerrain(string outputDirectory, bool areas = true)
+        public string RipTerrain(string outputDirectory, bool heights = true, bool water = true,
+                                 bool ground = true, bool clips = true, bool areas = true)
         {
             StringBuilder report = new();
             string terrainDirectory = IOUtils.CombinePath(outputDirectory, "terrain");
@@ -232,7 +237,7 @@ namespace Carto.Systems
 
             int width = heightData.resolution.x;
             int height = heightData.resolution.z;
-            ushort[] heights = heightData.heights.ToArray();
+            ushort[] heightSamples = heightData.heights.ToArray();
             float3 scale = heightData.scale;
             float3 offset = heightData.offset;
 
@@ -240,17 +245,23 @@ namespace Carto.Systems
                             + $"height range {-offset.y:F1}..{(65535f / scale.y) - offset.y:F1} m");
 
             // ---- 2. The roadbed mask, stamped from the same net segments the game flattens with.
-            // （路床遮罩：自遊戲用以壓平的同一批路網區段蓋印。）
-            byte[] surfaceIndex = new byte[width * height];
-            _edgesStamped = _nodesStamped = _orphansStamped = _skippedForm = _skippedNoFlatten = 0;
-            StampRoadbed(surfaceIndex, heightData);
+            // Part of the ground-textures selection: the mask exists to tell a consumer which
+            // ground texture to show under roads.（路床遮罩：自遊戲用以壓平的同一批路網區段蓋印。
+            //   屬於地面貼圖選項：此遮罩的用途是告知消費端道路之下該顯示哪種地面貼圖。）
+            byte[] surfaceIndex = null;
+            if (ground)
+            {
+                surfaceIndex = new byte[width * height];
+                _edgesStamped = _nodesStamped = _orphansStamped = _skippedForm = _skippedNoFlatten = 0;
+                StampRoadbed(surfaceIndex, heightData);
 
-            int roadbedCells = 0;
-            foreach (byte cell in surfaceIndex) if (cell != 0) roadbedCells++;
-            report.AppendLine($"Roadbed: {_edgesStamped} edge(s), {_nodesStamped} node strip(s), {_orphansStamped} orphan cap(s) stamped; "
-                            + $"{roadbedCells} cell(s) = {roadbedCells * 100.0 / surfaceIndex.Length:F1}% of the map");
-            report.AppendLine($"  skipped {_skippedNoFlatten} edge(s) whose prefab does not flatten terrain, "
-                            + $"{_skippedForm} elevated/tunnel composition(s) (their ground is not pulled to the road)");
+                int roadbedCells = 0;
+                foreach (byte cell in surfaceIndex) if (cell != 0) roadbedCells++;
+                report.AppendLine($"Roadbed: {_edgesStamped} edge(s), {_nodesStamped} node strip(s), {_orphansStamped} orphan cap(s) stamped; "
+                                + $"{roadbedCells} cell(s) = {roadbedCells * 100.0 / surfaceIndex.Length:F1}% of the map");
+                report.AppendLine($"  skipped {_skippedNoFlatten} edge(s) whose prefab does not flatten terrain, "
+                                + $"{_skippedForm} elevated/tunnel composition(s) (their ground is not pulled to the road)");
+            }
 
             // ---- 2b. The clip volumes, collected from the game's clip sections. The game never
             // carves these holes into the heightmap: every frame the RoadClip stencil pass
@@ -263,24 +274,28 @@ namespace Carto.Systems
             //   高於車道並落於該區段裁切帶內的格，皆被裁去。）
             _cutEdges = _cutNodes = _cutOrphans = _cutAreas = _cutRoundaboutApprox = 0;
 
-            // The walk now *collects* the clip volumes instead of rasterising them (contract §8c).
-            // `cutout.png` used to be written here: the intersection of these volumes with this
-            // one heightmap, at 3.5 m, from directly above. It was retired because that
-            // intersection cannot express a volume open at one height and closed at another, and
-            // is stale the moment a consumer edits terrain — and there was no consumer of it in
-            // the field to keep it for. Passing a null mask skips the rasterisation entirely.
-            // （走訪改為收集裁切體積而非將其光柵化。此處原本寫出 `cutout.png`——即這些體積與
-            //   單一高度圖於 3.5 公尺俯視相交的結果；該相交無法表達「於某高度開、於另一高度閉」
-            //   的體積，且消費端一旦編輯地形即失效。傳入空遮罩即完全略過光柵化。）
-            _clipVolumes = new List<Dictionary<string, object>>();
-            StampCutout(null, heightData);
+            if (clips)
+            {
+                // The walk now *collects* the clip volumes instead of rasterising them (contract
+                // §8c). `cutout.png` used to be written here: the intersection of these volumes
+                // with this one heightmap, at 3.5 m, from directly above. It was retired because
+                // that intersection cannot express a volume open at one height and closed at
+                // another, and is stale the moment a consumer edits terrain — and there was no
+                // consumer of it in the field to keep it for. Passing a null mask skips the
+                // rasterisation entirely.
+                // （走訪改為收集裁切體積而非將其光柵化。此處原本寫出 `cutout.png`——即這些體積與
+                //   單一高度圖於 3.5 公尺俯視相交的結果；該相交無法表達「於某高度開、於另一高度閉」
+                //   的體積，且消費端一旦編輯地形即失效。傳入空遮罩即完全略過光柵化。）
+                _clipVolumes = new List<Dictionary<string, object>>();
+                StampCutout(null, heightData);
 
-            report.AppendLine($"Clip: {_cutEdges} edge(s), {_cutNodes} node strip(s), "
-                            + $"{_cutOrphans} orphan cap(s), {_cutAreas} clip area(s) collected");
-            WriteClipVolumes(outputDirectory, report);
-            if (_cutRoundaboutApprox > 0)
-                report.AppendLine($"  APPROXIMATED: {_cutRoundaboutApprox} roundabout node(s) cut with raw composition "
-                                + "flags (the game's AddNode state-shedding and ring trims omitted — can over-cut, never under)");
+                report.AppendLine($"Clip: {_cutEdges} edge(s), {_cutNodes} node strip(s), "
+                                + $"{_cutOrphans} orphan cap(s), {_cutAreas} clip area(s) collected");
+                WriteClipVolumes(outputDirectory, report);
+                if (_cutRoundaboutApprox > 0)
+                    report.AppendLine($"  APPROXIMATED: {_cutRoundaboutApprox} roundabout node(s) cut with raw composition "
+                                    + "flags (the game's AddNode state-shedding and ring trims omitted — can over-cut, never under)");
+            }
 
             // ---- 3. Water surface LEVEL, built on the sim grid and resampled onto the terrain
             // grid. Depth was resampled directly once, and the river climbed its gorge: bilinear
@@ -292,14 +307,18 @@ namespace Carto.Systems
             //   自約 28 公尺的模擬網格雙線性取得的水深，加到精細得多的地面上，會把河道中央的深度
             //   讀到崖面半腰。高程（模擬格處的地面加水深）才是水面本身，且其於岸線兩側平滑，
             //   水深則否。）
-            ushort[] waterLevel = BuildWaterLevel(heightData, out int wetCells, out float maxDepth);
-            report.AppendLine((waterLevel != null)
-                ? $"Water: {wetCells} wet cell(s), max depth {maxDepth:F1} m (surface level grid, heightmap encoding)"
-                : "Water: no simulation data resident; layer omitted");
+            ushort[] waterLevel = null;
+            if (water)
+            {
+                waterLevel = BuildWaterLevel(heightData, out int wetCells, out float maxDepth);
+                report.AppendLine((waterLevel != null)
+                    ? $"Water: {wetCells} wet cell(s), max depth {maxDepth:F1} m (surface level grid, heightmap encoding)"
+                    : "Water: no simulation data resident; layer omitted");
+            }
 
             // ---- 4. The theme's ground textures, read off the live global bindings.
             // （主題的地面貼圖：讀取現行的全域繫結。）
-            Dictionary<string, string> surfaceTextures = CaptureSurfaceTextures(terrainDirectory, report);
+            Dictionary<string, string> surfaceTextures = ground ? CaptureSurfaceTextures(terrainDirectory, report) : null;
 
             // ---- 4a. The game's own ground blend: the splat weight map the terrain shader
             // samples per pixel. Ripping it replaces the consumer's per-cell classification —
@@ -309,13 +328,23 @@ namespace Carto.Systems
             // （遊戲自身的地面混合：地形著色器逐像素取樣的權重貼圖。擷取之即以遊戲平滑的
             //   逐像素混合（含手繪地表與雜訊）取代消費端的逐格分類——「方形色塊」。
             //   GPU 回讀於主執行緒此處進行；PNG 編碼併入下方的寫出工作。）
-            PendingTexture splatPixels = CaptureSplatmap(surfaceTextures, out Dictionary<string, object> splatBlock, report);
-            PendingTexture userSplatPixels = CaptureUserSplatmap(out Dictionary<string, object> userSplatBlock, report);
+            PendingTexture splatPixels = null, userSplatPixels = null;
+            Dictionary<string, object> splatBlock = null, userSplatBlock = null;
+            if (ground)
+            {
+                splatPixels = CaptureSplatmap(surfaceTextures, out splatBlock, report);
+                userSplatPixels = CaptureUserSplatmap(out userSplatBlock, report);
+            }
 
             // ---- 4b. The backdrop terrain that fills the horizon beyond the playable border.
             // （4b. 可遊玩邊界之外、構成地平線的背景地形。）
-            ushort[] worldHeights = CaptureWorldHeightmap(out Dictionary<string, object> worldBlock,
-                                                          out int worldWidth, out int worldHeight, report);
+            ushort[] worldHeights = null;
+            Dictionary<string, object> worldBlock = null;
+            int worldWidth = 0, worldHeight = 0;
+            if (heights)
+            {
+                worldHeights = CaptureWorldHeightmap(out worldBlock, out worldWidth, out worldHeight, report);
+            }
 
             // ---- 4b. Surface areas — the pavement patches nothing else carries.
             // （地表區域——其餘各層皆未攜帶的鋪面區塊。）
@@ -347,14 +376,45 @@ namespace Carto.Systems
             if (userSplatBlock != null) rasters["userSplatmap"] = userSplatBlock;
             if (worldBlock != null) rasters["worldTerrain"] = worldBlock;
 
+            // The sidecar merges like materials.json: a block for a layer this run did not touch
+            // survives, so a partial terrain re-rip (one sub-toggle) cannot orphan the layers a
+            // previous run left on disk.（側檔如 materials.json 般合併：本次未觸及之層的區塊予以
+            //   保留，使部分地形重擷取（單一子開關）不致使前次留於磁碟的層失去描述。）
+            string rastersPath = IOUtils.CombinePath(terrainDirectory, "rasters.json");
+            if (File.Exists(rastersPath))
+            {
+                try
+                {
+                    var existing = JsonConvert.DeserializeObject<Dictionary<string, object>>(File.ReadAllText(rastersPath));
+                    if (existing != null)
+                    {
+                        foreach (string block in new[] { "splatmap", "userSplatmap", "worldTerrain" })
+                        {
+                            if (!rasters.ContainsKey(block) && existing.TryGetValue(block, out object kept))
+                                rasters[block] = kept;
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _log.Warn($"Could not merge the existing rasters.json; writing fresh: {ex.Message}");
+                }
+            }
+
             try
             {
                 Task writer = Task.Run(() =>
                 {
-                    File.WriteAllBytes(IOUtils.CombinePath(terrainDirectory, "heightmap.png"),
-                                       Png.EncodeGray16(FlipRows(heights, width, height), width, height));
-                    File.WriteAllBytes(IOUtils.CombinePath(terrainDirectory, "surface_index.png"),
-                                       Png.EncodeGray8(FlipRows(surfaceIndex, width, height), width, height));
+                    if (heights)
+                    {
+                        File.WriteAllBytes(IOUtils.CombinePath(terrainDirectory, "heightmap.png"),
+                                           Png.EncodeGray16(FlipRows(heightSamples, width, height), width, height));
+                    }
+                    if (surfaceIndex != null)
+                    {
+                        File.WriteAllBytes(IOUtils.CombinePath(terrainDirectory, "surface_index.png"),
+                                           Png.EncodeGray8(FlipRows(surfaceIndex, width, height), width, height));
+                    }
                     if (waterLevel != null)
                     {
                         File.WriteAllBytes(IOUtils.CombinePath(terrainDirectory, "water_level.png"),
@@ -394,23 +454,26 @@ namespace Carto.Systems
                     // （地表識別碼 → 名稱與貼圖；契約 §8。識別碼 0 為遊戲程序化分類的地面；
                     //   識別碼 1 為道路壓平的地面，於遊戲中呈現為車道貼花磨耗色之下的泥土，
                     //   故以泥土為其代表貼圖。）
-                    var index = new SortedDictionary<string, object>
+                    if (ground)
                     {
-                        ["0"] = new Dictionary<string, string>
+                        var index = new SortedDictionary<string, object>
                         {
-                            ["name"] = "natural",
-                            ["texture"] = surfaceTextures.TryGetValue("grass", out string grass) ? grass : null
-                        },
-                        ["1"] = new Dictionary<string, string>
-                        {
-                            ["name"] = "roadbed",
-                            ["texture"] = surfaceTextures.TryGetValue("dirt", out string dirt) ? dirt : null
-                        }
-                    };
-                    string surfacesDirectory = IOUtils.CombinePath(terrainDirectory, "surfaces");
-                    if (!Directory.Exists(surfacesDirectory)) Directory.CreateDirectory(surfacesDirectory);
-                    File.WriteAllText(IOUtils.CombinePath(surfacesDirectory, "index.json"),
-                                      JsonConvert.SerializeObject(index, Formatting.Indented));
+                            ["0"] = new Dictionary<string, string>
+                            {
+                                ["name"] = "natural",
+                                ["texture"] = surfaceTextures.TryGetValue("grass", out string grass) ? grass : null
+                            },
+                            ["1"] = new Dictionary<string, string>
+                            {
+                                ["name"] = "roadbed",
+                                ["texture"] = surfaceTextures.TryGetValue("dirt", out string dirt) ? dirt : null
+                            }
+                        };
+                        string surfacesDirectory = IOUtils.CombinePath(terrainDirectory, "surfaces");
+                        if (!Directory.Exists(surfacesDirectory)) Directory.CreateDirectory(surfacesDirectory);
+                        File.WriteAllText(IOUtils.CombinePath(surfacesDirectory, "index.json"),
+                                          JsonConvert.SerializeObject(index, Formatting.Indented));
+                    }
                 });
                 writer.Wait();
             }

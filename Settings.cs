@@ -15,12 +15,12 @@ namespace Carto
     /// （管理模組設定的類別。）
     /// </summary>
     [SettingsUIGroupOrder(GeneralGeneralGroup, GeneralDangerGroup,
-                          RipperRipGroup, RipperMeshGroup, RipperNetworkGroup, RipperTerrainGroup, RipperTextureGroup, RipperDeveloperGroup,
+                          RipperRipGroup, RipperMeshGroup, RipperNetworkGroup, RipperTerrainGroup, RipperTextureGroup, RipperVectorGroup, RipperDeveloperGroup,
                           FeatureButtonGroup, FeatureVectorGroup, FeatureRasterGroup,
                           PropertiesSelectorGroup, PropertiesGeometryGroup, PropertiesPropertyGroup,
                           ProjectionBasicGroup, ProjectionEllipsoidGroup, ProjectionProjectionGroup, ProjectionUTMGroup,
                           MiscellaneousFileGroup, MiscellaneousGeometryGroup, MiscellaneousPropertyGroup)]
-    [SettingsUIShowGroupName(RipperMeshGroup, RipperNetworkGroup, RipperTerrainGroup, RipperTextureGroup, RipperDeveloperGroup,
+    [SettingsUIShowGroupName(RipperMeshGroup, RipperNetworkGroup, RipperTerrainGroup, RipperTextureGroup, RipperVectorGroup, RipperDeveloperGroup,
                              FeatureVectorGroup, FeatureRasterGroup,
                              PropertiesGeometryGroup, PropertiesPropertyGroup,
                              ProjectionBasicGroup, ProjectionEllipsoidGroup, ProjectionProjectionGroup, ProjectionUTMGroup,
@@ -204,9 +204,13 @@ namespace Carto
             RipLaneGeometry = true;
             RipLaneDecals = true;
             RipTerrain = true;
+            RipTerrainHeights = true;
+            RipTerrainWater = true;
+            RipTerrainGround = true;
+            RipTerrainClips = true;
             RipTerrainAreas = true;
             RipTextures = true;
-            RipVectorExport = true;
+            RipVectorExport = false;
         }
 
         // The tab and group names.（分頁與群組名稱。）
@@ -221,6 +225,7 @@ namespace Carto
         public const string RipperNetworkGroup = "RipperNetworkGroup";
         public const string RipperTerrainGroup = "RipperTerrainGroup";
         public const string RipperTextureGroup = "RipperTextureGroup";
+        public const string RipperVectorGroup = "RipperVectorGroup";
         public const string RipperDeveloperGroup = "RipperDeveloperGroup";
         public const string FeatureTab = "FeatureTab";
         public const string FeatureButtonGroup = "FeatureButtonGroup";
@@ -452,6 +457,10 @@ namespace Carto
                         LaneGeometry = RipLaneGeometry,
                         LaneDecals = RipLaneDecals,
                         Terrain = RipTerrain,
+                        TerrainHeights = RipTerrainHeights,
+                        TerrainWater = RipTerrainWater,
+                        TerrainGround = RipTerrainGround,
+                        TerrainClips = RipTerrainClips,
                         TerrainAreas = RipTerrainAreas,
                         Vector = RipVectorExport,
                         MeshLimit = RipMeshLimit,
@@ -470,6 +479,33 @@ namespace Carto
             }
         }
 
+        // ================================================================================
+        // The ripper tab's master/sub checkbox contract: a master checkbox is the on/off for
+        // its whole category — turning it on with nothing selected selects everything, and
+        // unchecking every sub-option turns the master off (the subs gray out beneath it, so
+        // the master is the only way back on). Backing fields let the setters keep the two
+        // levels in agreement without the UI ever seeing an inconsistent pair.
+        // （擷取器分頁的主／子核取方塊契約：主方塊即整個類別的開關——在全未選取時開啟主方塊
+        //   會選取全部，而取消所有子選項會關閉主方塊（子選項於其下變灰，主方塊是唯一的回頭路）。
+        //   後備欄位使設定器維持兩層一致，UI 永不見到矛盾的組合。）
+        // ================================================================================
+        private bool _ripObjects = true;
+        private bool _ripObjectsBuildings = true, _ripObjectsProps = true, _ripObjectsTrees = true, _ripObjectsDecals = true;
+        private bool _ripAppearanceColors = true, _ripAppearanceLights = true;
+        private bool _ripNetworks = true;
+        private bool _ripNetworkSurfaces = true, _ripLaneGraph = true, _ripLaneGeometry = true;
+        private bool _ripTerrain = true;
+        private bool _ripTerrainHeights = true, _ripTerrainWater = true, _ripTerrainGround = true, _ripTerrainClips = true, _ripTerrainAreas = true;
+
+        /// <summary>Whether any Meshes sub-option is on.（是否有任何「網格」子選項開啟。）</summary>
+        private bool AnyMeshSub => _ripObjectsBuildings || _ripObjectsProps || _ripObjectsTrees || _ripObjectsDecals || _ripAppearanceColors || _ripAppearanceLights;
+
+        /// <summary>Whether any Network sub-option is on.（是否有任何「路網」子選項開啟。）</summary>
+        private bool AnyNetworkSub => _ripNetworkSurfaces || _ripLaneGraph || _ripLaneGeometry;
+
+        /// <summary>Whether any Terrain sub-option is on.（是否有任何「地形」子選項開啟。）</summary>
+        private bool AnyTerrainSub => _ripTerrainHeights || _ripTerrainWater || _ripTerrainGround || _ripTerrainClips || _ripTerrainAreas;
+
         /// <summary>
         /// Whether a world rip covers buildings, props &amp; trees — instances with their
         /// appearance, and every unique prefab mesh, material and texture they reference.
@@ -477,7 +513,15 @@ namespace Carto
         /// 以及其參照的每個唯一預製模板網格、材質與貼圖。）
         /// </summary>
         [SettingsUISection(RipperTab, RipperMeshGroup)]
-        public bool RipObjects { get; set; } = true;
+        public bool RipObjects
+        {
+            get => _ripObjects;
+            set
+            {
+                _ripObjects = value;
+                if (value && !AnyMeshSub) { _ripObjectsBuildings = _ripObjectsProps = _ripObjectsTrees = _ripObjectsDecals = _ripAppearanceColors = _ripAppearanceLights = true; }
+            }
+        }
 
         /// <summary>
         /// Advanced split of <see cref="RipObjects"/>: buildings (the contract's <c>building</c>
@@ -486,7 +530,11 @@ namespace Carto
         [SettingsUISection(RipperTab, RipperMeshGroup)]
         [SettingsUIAdvanced]
         [SettingsUIDisableByCondition(typeof(Settings), nameof(RipObjects), invert: true)]
-        public bool RipObjectsBuildings { get; set; } = true;
+        public bool RipObjectsBuildings
+        {
+            get => _ripObjectsBuildings;
+            set { _ripObjectsBuildings = value; _ripObjects = AnyMeshSub; }
+        }
 
         /// <summary>
         /// Advanced split of <see cref="RipObjects"/>: props (everything placed that is not a
@@ -495,7 +543,11 @@ namespace Carto
         [SettingsUISection(RipperTab, RipperMeshGroup)]
         [SettingsUIAdvanced]
         [SettingsUIDisableByCondition(typeof(Settings), nameof(RipObjects), invert: true)]
-        public bool RipObjectsProps { get; set; } = true;
+        public bool RipObjectsProps
+        {
+            get => _ripObjectsProps;
+            set { _ripObjectsProps = value; _ripObjects = AnyMeshSub; }
+        }
 
         /// <summary>
         /// Advanced split of <see cref="RipObjects"/>: trees and plants.
@@ -504,7 +556,11 @@ namespace Carto
         [SettingsUISection(RipperTab, RipperMeshGroup)]
         [SettingsUIAdvanced]
         [SettingsUIDisableByCondition(typeof(Settings), nameof(RipObjects), invert: true)]
-        public bool RipObjectsTrees { get; set; } = true;
+        public bool RipObjectsTrees
+        {
+            get => _ripObjectsTrees;
+            set { _ripObjectsTrees = value; _ripObjects = AnyMeshSub; }
+        }
 
         /// <summary>
         /// Advanced split of <see cref="RipObjects"/>: placed decals — road markings, parking
@@ -513,7 +569,11 @@ namespace Carto
         [SettingsUISection(RipperTab, RipperMeshGroup)]
         [SettingsUIAdvanced]
         [SettingsUIDisableByCondition(typeof(Settings), nameof(RipObjects), invert: true)]
-        public bool RipObjectsDecals { get; set; } = true;
+        public bool RipObjectsDecals
+        {
+            get => _ripObjectsDecals;
+            set { _ripObjectsDecals = value; _ripObjects = AnyMeshSub; }
+        }
 
         /// <summary>
         /// Advanced split of <see cref="RipObjects"/>: the colour palettes the game paints
@@ -523,7 +583,11 @@ namespace Carto
         [SettingsUISection(RipperTab, RipperMeshGroup)]
         [SettingsUIAdvanced]
         [SettingsUIDisableByCondition(typeof(Settings), nameof(RipObjects), invert: true)]
-        public bool RipAppearanceColors { get; set; } = true;
+        public bool RipAppearanceColors
+        {
+            get => _ripAppearanceColors;
+            set { _ripAppearanceColors = value; _ripObjects = AnyMeshSub; }
+        }
 
         /// <summary>
         /// Advanced split of <see cref="RipObjects"/>: light emitters — what glows at night
@@ -533,7 +597,11 @@ namespace Carto
         [SettingsUISection(RipperTab, RipperMeshGroup)]
         [SettingsUIAdvanced]
         [SettingsUIDisableByCondition(typeof(Settings), nameof(RipObjects), invert: true)]
-        public bool RipAppearanceLights { get; set; } = true;
+        public bool RipAppearanceLights
+        {
+            get => _ripAppearanceLights;
+            set { _ripAppearanceLights = value; _ripObjects = AnyMeshSub; }
+        }
 
         /// <summary>
         /// Whether a world rip covers roads &amp; lanes — the drivable lane graph, the assembled
@@ -541,7 +609,15 @@ namespace Carto
         /// （世界擷取是否涵蓋道路與車道——可行駛車道圖、組裝的路網表面與車道所繪幾何。）
         /// </summary>
         [SettingsUISection(RipperTab, RipperNetworkGroup)]
-        public bool RipNetworks { get; set; } = true;
+        public bool RipNetworks
+        {
+            get => _ripNetworks;
+            set
+            {
+                _ripNetworks = value;
+                if (value && !AnyNetworkSub) { _ripNetworkSurfaces = _ripLaneGraph = _ripLaneGeometry = true; }
+            }
+        }
 
         /// <summary>
         /// Advanced split of <see cref="RipNetworks"/>: the assembled road/rail/path surfaces
@@ -551,7 +627,11 @@ namespace Carto
         [SettingsUISection(RipperTab, RipperNetworkGroup)]
         [SettingsUIAdvanced]
         [SettingsUIDisableByCondition(typeof(Settings), nameof(RipNetworks), invert: true)]
-        public bool RipNetworkSurfaces { get; set; } = true;
+        public bool RipNetworkSurfaces
+        {
+            get => _ripNetworkSurfaces;
+            set { _ripNetworkSurfaces = value; _ripNetworks = AnyNetworkSub; }
+        }
 
         /// <summary>
         /// Advanced split of <see cref="RipNetworks"/>: the drivable lane graph (<c>lanes.jsonl</c>).
@@ -560,7 +640,11 @@ namespace Carto
         [SettingsUISection(RipperTab, RipperNetworkGroup)]
         [SettingsUIAdvanced]
         [SettingsUIDisableByCondition(typeof(Settings), nameof(RipNetworks), invert: true)]
-        public bool RipLaneGraph { get; set; } = true;
+        public bool RipLaneGraph
+        {
+            get => _ripLaneGraph;
+            set { _ripLaneGraph = value; _ripNetworks = AnyNetworkSub; }
+        }
 
         /// <summary>
         /// Advanced split of <see cref="RipNetworks"/>: lane furniture — fences, hedges, hanging
@@ -570,7 +654,11 @@ namespace Carto
         [SettingsUISection(RipperTab, RipperNetworkGroup)]
         [SettingsUIAdvanced]
         [SettingsUIDisableByCondition(typeof(Settings), nameof(RipNetworks), invert: true)]
-        public bool RipLaneGeometry { get; set; } = true;
+        public bool RipLaneGeometry
+        {
+            get => _ripLaneGeometry;
+            set { _ripLaneGeometry = value; _ripNetworks = AnyNetworkSub; }
+        }
 
         /// <summary>
         /// Advanced split of <see cref="RipNetworks"/>: lane decals — road markings and wear in
@@ -587,7 +675,72 @@ namespace Carto
         /// （世界擷取是否涵蓋地形與水體——高度圖、地表混合、地表區域、水面網格與隧道裁剪體積。）
         /// </summary>
         [SettingsUISection(RipperTab, RipperTerrainGroup)]
-        public bool RipTerrain { get; set; } = true;
+        public bool RipTerrain
+        {
+            get => _ripTerrain;
+            set
+            {
+                _ripTerrain = value;
+                if (value && !AnyTerrainSub) { _ripTerrainHeights = _ripTerrainWater = _ripTerrainGround = _ripTerrainClips = _ripTerrainAreas = true; }
+            }
+        }
+
+        /// <summary>
+        /// Advanced split of <see cref="RipTerrain"/>: the terrain heightmaps — the playable
+        /// area's elevation and the backdrop beyond the border.
+        /// （<see cref="RipTerrain"/> 的進階細分：地形高度圖——可遊玩區域的高程與邊界外的背景。）
+        /// </summary>
+        [SettingsUISection(RipperTab, RipperTerrainGroup)]
+        [SettingsUIAdvanced]
+        [SettingsUIDisableByCondition(typeof(Settings), nameof(RipTerrain), invert: true)]
+        public bool RipTerrainHeights
+        {
+            get => _ripTerrainHeights;
+            set { _ripTerrainHeights = value; _ripTerrain = AnyTerrainSub; }
+        }
+
+        /// <summary>
+        /// Advanced split of <see cref="RipTerrain"/>: the water surface grid.
+        /// （<see cref="RipTerrain"/> 的進階細分：水面網格。）
+        /// </summary>
+        [SettingsUISection(RipperTab, RipperTerrainGroup)]
+        [SettingsUIAdvanced]
+        [SettingsUIDisableByCondition(typeof(Settings), nameof(RipTerrain), invert: true)]
+        public bool RipTerrainWater
+        {
+            get => _ripTerrainWater;
+            set { _ripTerrainWater = value; _ripTerrain = AnyTerrainSub; }
+        }
+
+        /// <summary>
+        /// Advanced split of <see cref="RipTerrain"/>: the ground textures — the theme's
+        /// grass/sand/rock images, the game's blend maps and the roadbed mask.
+        /// （<see cref="RipTerrain"/> 的進階細分：地面貼圖——主題的草地／沙地／岩石影像、
+        /// 遊戲的混合貼圖與路床遮罩。）
+        /// </summary>
+        [SettingsUISection(RipperTab, RipperTerrainGroup)]
+        [SettingsUIAdvanced]
+        [SettingsUIDisableByCondition(typeof(Settings), nameof(RipTerrain), invert: true)]
+        public bool RipTerrainGround
+        {
+            get => _ripTerrainGround;
+            set { _ripTerrainGround = value; _ripTerrain = AnyTerrainSub; }
+        }
+
+        /// <summary>
+        /// Advanced split of <see cref="RipTerrain"/>: the tunnel openings — the volumes the game
+        /// hides terrain inside so tunnel portals and sunken trenches read as holes.
+        /// （<see cref="RipTerrain"/> 的進階細分：隧道開口——遊戲於其內隱藏地形的體積，
+        /// 使隧道洞口與下沉壕溝呈現為孔洞。）
+        /// </summary>
+        [SettingsUISection(RipperTab, RipperTerrainGroup)]
+        [SettingsUIAdvanced]
+        [SettingsUIDisableByCondition(typeof(Settings), nameof(RipTerrain), invert: true)]
+        public bool RipTerrainClips
+        {
+            get => _ripTerrainClips;
+            set { _ripTerrainClips = value; _ripTerrain = AnyTerrainSub; }
+        }
 
         /// <summary>
         /// Advanced split of <see cref="RipTerrain"/>: the painted surface areas — pavement,
@@ -598,14 +751,18 @@ namespace Carto
         [SettingsUISection(RipperTab, RipperTerrainGroup)]
         [SettingsUIAdvanced]
         [SettingsUIDisableByCondition(typeof(Settings), nameof(RipTerrain), invert: true)]
-        public bool RipTerrainAreas { get; set; } = true;
+        public bool RipTerrainAreas
+        {
+            get => _ripTerrainAreas;
+            set { _ripTerrainAreas = value; _ripTerrain = AnyTerrainSub; }
+        }
 
         /// <summary>
         /// Whether the one-button rip also runs the vanilla vector/raster export.
         /// （一鍵擷取是否一併執行原版向量／網格輸出。）
         /// </summary>
-        [SettingsUISection(RipperTab, RipperRipGroup)]
-        public bool RipVectorExport { get; set; } = true;
+        [SettingsUISection(RipperTab, RipperVectorGroup)]
+        public bool RipVectorExport { get; set; } = false;
 
         /// <summary>
         /// The button that enumerates every placed object into <c>instances.jsonl</c> (PLAN Phase 2).

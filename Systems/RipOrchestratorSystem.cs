@@ -71,7 +71,11 @@ namespace Carto.Systems
             /// <summary>Terrain &amp; water: heightmaps, splat, surfaces and clip volumes.（地形與水體：高度圖、地表混合、地表區域與裁剪體積。）</summary>
             public bool Terrain = true;
 
-            /// <summary>The advanced split under <see cref="Terrain"/>: painted surface areas.（<see cref="Terrain"/> 之下的進階細分：繪製的地表區域。）</summary>
+            /// <summary>The advanced splits under <see cref="Terrain"/>.（<see cref="Terrain"/> 之下的進階細分。）</summary>
+            public bool TerrainHeights = true;
+            public bool TerrainWater = true;
+            public bool TerrainGround = true;
+            public bool TerrainClips = true;
             public bool TerrainAreas = true;
 
             /// <summary>The vanilla vector/raster export, alongside.（隨附的原版向量／網格輸出。）</summary>
@@ -88,6 +92,9 @@ namespace Carto.Systems
 
             /// <summary>Whether the network stage runs at all.（路網階段是否執行。）</summary>
             public bool RipsNetworkStage => Networks && (NetworkSurfaces || LaneGeometry);
+
+            /// <summary>Whether the terrain stage runs at all.（地形階段是否執行。）</summary>
+            public bool RipsTerrain => Terrain && (TerrainHeights || TerrainWater || TerrainGround || TerrainClips || TerrainAreas);
         }
 
         /// <summary>
@@ -274,10 +281,29 @@ namespace Carto.Systems
                 staleFiles.AddRange(new[] { "lanemeshes.jsonl", "laneprefabs.json" });
                 staleDirectories.Add("lanemeshes");
             }
-            if (plan.Terrain)
+            // Terrain cleans per sub-toggle: rasters.json is never deleted (it merges), and the
+            // whole terrain/ directory goes only when every sub is selected — a partial terrain
+            // re-rip must not delete the layers it is not rebuilding.
+            // （地形依子開關清理：rasters.json 從不刪除（其會合併），terrain/ 目錄僅於所有子選項
+            //   皆選取時整體刪除——部分地形重擷取不得刪除其不重建的層。）
+            if (plan.Terrain && plan.TerrainHeights && plan.TerrainWater && plan.TerrainGround
+                && plan.TerrainClips && plan.TerrainAreas)
+            {
+                staleDirectories.Add("terrain");
+            }
+            else if (plan.Terrain)
+            {
+                if (plan.TerrainHeights) staleFiles.AddRange(new[] { "terrain/heightmap.png", "terrain/world_heightmap.png" });
+                if (plan.TerrainWater) staleFiles.Add("terrain/water_level.png");
+                if (plan.TerrainGround)
+                {
+                    staleFiles.AddRange(new[] { "terrain/surface_index.png", "terrain/splatmap.png", "terrain/user_splatmap.png" });
+                    staleDirectories.Add("terrain/surfaces");
+                }
+            }
+            if (plan.Terrain && plan.TerrainClips)
             {
                 staleFiles.Add("clipvolumes.jsonl");
-                staleDirectories.Add("terrain");
             }
             if (plan.Terrain && plan.TerrainAreas)
             {
@@ -361,13 +387,14 @@ namespace Carto.Systems
                 });
             }
 
-            if (plan.Terrain)
+            if (plan.RipsTerrain)
             {
                 stages.Add(new Stage
                 {
                     Title = "Terrain & water",
                     Phase = RipProgress.Phase.Terrain,
-                    Work = () => Instance.TerrainRip.RipTerrain(directory, plan.TerrainAreas)
+                    Work = () => Instance.TerrainRip.RipTerrain(directory, plan.TerrainHeights, plan.TerrainWater,
+                                                                plan.TerrainGround, plan.TerrainClips, plan.TerrainAreas)
                 });
             }
 
