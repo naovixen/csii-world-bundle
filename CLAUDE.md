@@ -64,8 +64,9 @@ seam everything depends on.
 - Follow Carto's established patterns: `EntityQuery` + Burst `IJobEntity`/`IJob` collectors,
   `ComponentLookup<T>`/`BufferLookup<T>`, `NativeList`/`NativeArray` with explicit `Dispose`,
   managed writing off the main thread via `Task.Run`. Resolve prefabs with
-  `Instance.Prefab.TryGetPrefab(...)`. Bilingual (EN/中文) XML doc comments are the house style
-  — keep them, English is sufficient for new code if you can't do both.
+  `Instance.Prefab.TryGetPrefab(...)`. Comments in ripper code (fork-added files) are
+  **English-only** — the bilingual EN/中文 style is upstream Carto's; keep it in upstream files,
+  never add it to ours (stripped repo-wide 2026-08-09).
 - **Dedupe by prefab.** Rip each unique mesh/material **once**; instances only reference them
   by `assetId`. A city has thousands of trees but a handful of tree prefabs.
 - Gate each phase on its PLAN acceptance test. **Commit after each passing phase** with a

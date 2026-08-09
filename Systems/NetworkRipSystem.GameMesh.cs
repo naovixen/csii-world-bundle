@@ -11,7 +11,6 @@ namespace Carto.Systems
 {
     /// <summary>
     /// The game's own composition-mesh generation, ported and evaluated on the CPU.
-    /// （遊戲自身的組成網格產生流程，移植後於 CPU 上求值。）<br/><br/>
     /// <b>Why a port and not a reconstruction.</b> Every attempt to re-derive the node mapping
     /// piece-by-piece — half frames, wedge fills, fans — converged on the game's behaviour
     /// asymptotically and never reached it: junction interiors stayed open, and their shading
@@ -25,26 +24,18 @@ namespace Carto.Systems
     /// <c>CalculateOrphanParameters</c> ported for the curves, the generator's vertex path
     /// ported for the mapping, and the shader's evaluation done here — position from the
     /// Bernstein blend, V from the same blend of the arc tables times the piece's measured
-    /// V-per-metre density, exactly the quantity the game stores per vertex.<br/>
-    /// （<b>何以移植而非重建。</b>逐部件重推導節點映射的每次嘗試——半幅座標系、楔形填補、
-    /// 扇形面——皆僅漸近而從未達到遊戲的行為：路口內部依然開洞，其色調亦與各臂不符。
-    /// 遊戲的做法在結構上不同：<c>GenerateCompositionMesh</c> 將每個頂點烘焙至<i>參數空間</i>，
-    /// 頂點著色器再依 <c>BuildEdgeMatrix</c> 交付的兩條三次貝茲曲線混合求出世界位置。
-    /// 本檔案即該管線的移植：曲線、映射與求值皆依遊戲自身的程式碼。）<br/><br/>
+    /// V-per-metre density, exactly the quantity the game stores per vertex.
     /// Known deviations, deliberate and counted where they can fire: wind sway (not shape),
     /// rebuilt normals (contract §5.1), and the roundabout three-matrix blend weights (0x80
     /// colour bits — shader-side, still approximated by the nearer pair). The terrain-conforming
     /// flags (<c>LowerBottomToTerrain</c>/<c>RaiseTopToTerrain</c>) are no longer a deviation:
     /// they are applied at rip time (§34 raise, §38 clamp — see the conforming section below).
-    /// （已知且刻意的偏離：風力搖曳、重建法線，與環形交叉口的三矩陣混合權重。順地形旗標已非
-    /// 偏離：於擷取時套用（§34 上抬、§38 夾制——見下方貼合段落）。）
     /// </summary>
     public partial class NetworkRipSystem
     {
         /// <summary>
         /// The eight curves and arc tables one composition instance is evaluated against — the
         /// CPU form of <c>CompositionParameters</c>' matrices.
-        /// （單一組成實例據以求值的八條曲線與弧長表——<c>CompositionParameters</c> 矩陣的 CPU 形式。）
         /// </summary>
         private struct CompositionCurves
         {
@@ -58,8 +49,6 @@ namespace Carto.Systems
         /// generates from (<c>MeshVertex</c>/<c>MeshUV0</c>/<c>MeshIndex</c>/<c>MeshMaterial</c>),
         /// with each material range's bundle id resolved through the same reader every building
         /// goes through so surfaces land in the material table.
-        /// （單一部件的製作幾何，自遊戲產生網格所讀的同一批 ECS 緩衝區讀取一次；
-        /// 各材質範圍的束識別碼經由與建築相同的讀取器解析，使表面進入材質表。）
         /// </summary>
         private class PieceGeometry
         {
@@ -83,12 +72,9 @@ namespace Carto.Systems
         // is how one portal-face asset closes a trench of any depth (§34). Applied here at rip
         // time against the same flattened heightmap the bundle ships, so the meshes arrive
         // closed.
-        // （遊戲將帶旗標部件的頂點依逐 z 切片高度界分類，寫入頂點色；頂點著色器再依類別套用
-        //   地形移動。兩類移動不同（§38）：類別 1 為向下夾制——地形低於底緣時埋入，否則保持
-        //   路面高度，壕溝擋牆賴此立起；類別 2 為指派——頂緣雙向釘於地形表面，洞口面板賴此
-        //   閉合任意深度的壕溝（§34）。此處於擷取時套用同一攤平高度圖。）
+        //
 
-        /// <summary>Per-slice min/max heights of one piece's authored geometry.（部件逐切片高度界。）</summary>
+        /// <summary>Per-slice min/max heights of one piece's authored geometry.</summary>
         private sealed class PieceHeightBounds
         {
             public float SizeZ;
@@ -102,8 +88,6 @@ namespace Carto.Systems
         /// Per-prefab aggregate of the conforming pass — the §38 probe. One row per flagged
         /// piece in the rip report: how its vertices classified, where the move sent them, and
         /// what the triangle cuts dropped.
-        /// （貼合流程的逐預製聚合——§38 探針。報告中每個帶旗標部件一列：頂點如何分類、
-        /// 移動將其送往何處、三角形裁切丟棄了什麼。）
         /// </summary>
         private sealed class ConformPieceProbe
         {
@@ -124,7 +108,7 @@ namespace Carto.Systems
 
         /// <summary>
         /// Lazily capture the terrain heightmap for conforming — the same readback the terrain
-        /// layer ships.（惰性擷取地形高度圖以供貼合——與地形層出貨者相同的回讀。）
+        /// layer ships.
         /// </summary>
         private bool EnsureConformTerrain()
         {
@@ -151,7 +135,7 @@ namespace Carto.Systems
         }
 
         /// <summary>`TerrainUtils.SampleHeight`'s bilinear read, over the captured copy.
-        /// （`TerrainUtils.SampleHeight` 的雙線性讀取，作用於擷取的副本。）</summary>
+        ///</summary>
         private float SampleConformHeight(float3 world)
         {
             float2 xz = ((world + _conformOffset) * _conformScale).xz;
@@ -171,7 +155,6 @@ namespace Carto.Systems
         /// <summary>
         /// The per-slice height bounds of one piece — `InitializeHeightBounds`/`AddHeightBounds`
         /// verbatim, cached per piece entity.
-        /// （單一部件的逐切片高度界——`InitializeHeightBounds` 的逐字移植，依部件實體快取。）
         /// </summary>
         private PieceHeightBounds GetPieceHeightBounds(Entity piece, PieceGeometry source, float sizeZ)
         {
@@ -229,7 +212,7 @@ namespace Carto.Systems
         }
 
         // ---- CalculateMappingOffsets / Edge / Node / Orphan parameters, ported --------------
-        // （CalculateMappingOffsets 與邊／節點／孤立節點參數的移植。）
+        //
 
         private static void MappingOffsets(Segment segment, out float4 left, out float4 right,
                                            float2 leftMap, float2 rightMap)
@@ -254,7 +237,7 @@ namespace Carto.Systems
                                  start + (direction * length));
         }
 
-        /// <summary>`CalculateEdgeParameters`, curves kept absolute.（`CalculateEdgeParameters`，曲線保持絕對座標。）</summary>
+        /// <summary>`CalculateEdgeParameters`, curves kept absolute.</summary>
         private static CompositionCurves EdgeCurves(EdgeGeometry geometry, bool isRotated)
         {
             float2 total = geometry.m_Start.m_Length + geometry.m_End.m_Length;
@@ -288,7 +271,7 @@ namespace Carto.Systems
             return result;
         }
 
-        /// <summary>`CalculateNodeParameters`, both branches.（`CalculateNodeParameters`，兩個分支皆移植。）</summary>
+        /// <summary>`CalculateNodeParameters`, both branches.</summary>
         private static CompositionCurves NodeCurves(EdgeNodeGeometry geometry, NetCompositionData data)
         {
             float4 corner = new float4(0f, 1f / 3f, 2f / 3f, 1f) * data.m_Width;
@@ -341,7 +324,7 @@ namespace Carto.Systems
             return result;
         }
 
-        /// <summary>`CalculateOrphanParameters`.（`CalculateOrphanParameters` 的移植。）</summary>
+        /// <summary>`CalculateOrphanParameters`.</summary>
         private static CompositionCurves OrphanCurves(float3 position, NetCompositionData data, bool isPrimary)
         {
             float side = isPrimary ? -1f : 1f;
@@ -386,7 +369,7 @@ namespace Carto.Systems
 
         // ---- Evaluation ---------------------------------------------------------------------
 
-        /// <summary>The Bernstein blend of one arc table — the `w` column of `BuildEdgeMatrix`.（單一弧長表的 Bernstein 混合——`BuildEdgeMatrix` 的 `w` 行。）</summary>
+        /// <summary>The Bernstein blend of one arc table — the `w` column of `BuildEdgeMatrix`.</summary>
         private static float EvalMap(float4 map, float t)
         {
             float u = 1f - t;
@@ -398,12 +381,10 @@ namespace Carto.Systems
 
         /// <summary>
         /// Generate one composition instance exactly as `GenerateCompositionMesh` maps it, into
-        /// the shared assembly lists.（將單一組成實例完全依 `GenerateCompositionMesh` 的映射產生，
-        /// 寫入共用的組裝列表。）
+        /// the shared assembly lists.
         /// </summary>
         /// <summary>
         /// One node side of an edge: parameters from its own geometry, mesh from its composition.
-        /// （邊的單側節點：參數取自其自身幾何，網格取自其組成。）
         /// </summary>
         private void BuildNodeSide(Entity composition, EdgeNodeGeometry geometry, float3 center,
                                    string label, Dictionary<Entity, MeshAsset> cache,
@@ -413,8 +394,7 @@ namespace Carto.Systems
             // Node compositions are never rotate-shared: `NetCompositionMeshRefSystem.
             // TryFindComposition` only attempts the mirrored match when the Node general flag is
             // absent, so a node's `m_Rotate` is always false and needs no handling here.
-            // （節點組成絕不以旋轉共用：`TryFindComposition` 僅於一般旗標無 Node 時嘗試鏡像匹配，
-            //   故節點的 `m_Rotate` 恆為 false，此處無需處理。）
+            //
             if ((composition == Entity.Null) || !EntityManager.HasComponent<NetCompositionData>(composition)) return;
 
             NetCompositionData data = EntityManager.GetComponentData<NetCompositionData>(composition);
@@ -441,11 +421,7 @@ namespace Carto.Systems
             // layers hold no world bit — underground pipe and cable runs — and NOT for Tunnel
             // compositions, which are the tunnel walls and decks themselves. (An earlier
             // revision skipped every Default-less composition, which silenced all tunnels.)
-            // （遊戲於網格自身的預設層有值時將 Default 批次層替換為之（`UpdateNetInstances`），
-            //   其後仍於該等層繪製。`GetBoundsMask` 列明世界視圖層集：Default、Moving、Tunnel、
-            //   Marker 為 `NormalLayers`；僅 Pipeline/SubPipeline/Waterway 屬剖視與疊加視圖。
-            //   故此處僅跳過不含任何世界層位元的組成——地下管纜——而<b>非</b>隧道組成，
-            //   後者正是隧道壁與路床本身。（先前版本跳過所有無 Default 的組成，使隧道全數消失。））
+            //
             if (EntityManager.HasComponent<NetCompositionMeshData>(meshEntity))
             {
                 const MeshLayer world = MeshLayer.Default | MeshLayer.Moving | MeshLayer.Tunnel | MeshLayer.Marker;
@@ -497,8 +473,7 @@ namespace Carto.Systems
                 // shader's terrain move at rip time. The portal face over every tunnel mouth
                 // is a RaiseTopToTerrain piece — without this it ships as its short authored
                 // strip and the mouth stands open above the arch.
-                // （地形貼合：依逐切片高度界分類頂點，於擷取時套用著色器的地形移動。
-                //   每個隧道洞口上方的面板即 RaiseTopToTerrain 部件。）
+                //
                 PieceHeightBounds conformBounds = null;
                 float conformScaleZ = 0f;
                 ConformPieceProbe probe = null;
@@ -523,8 +498,7 @@ namespace Carto.Systems
                 // bool4(Invert, false, FlipMesh, Invert != FlipMesh))`: authored pieces are
                 // x- and z-negated by default; Invert restores x, FlipMesh restores z. The `w`
                 // term flips tangent handedness, which the rebuilt normals make moot.
-                // （遊戲的翻轉選擇：製作部件預設 x、z 皆取負；Invert 還原 x，FlipMesh 還原 z。
-                //   `w` 項翻轉切線手性，因法線重建而無關。）
+                //
                 float sx = invert ? 1f : -1f;
                 float sz = flipMesh ? 1f : -1f;
 
@@ -567,8 +541,7 @@ namespace Carto.Systems
                     // Vertex filter and remap, as the generator's `nativeArray4` — built before
                     // the V density because the game measures that density only over triangles
                     // that survive the cut (its accumulation sits inside `math.all(int7 >= 0)`).
-                    // （頂點過濾與重映射，即產生器的 `nativeArray4`——先於 V 密度建立，
-                    //   因遊戲僅在通過裁切的三角形上量測該密度。）
+                    //
                     int[] remap = new int[vertexCount];
                     int baseVertex = vertices.Count;
                     int kept = 0;
@@ -583,8 +556,7 @@ namespace Carto.Systems
                     // The game's per-range V density: |ΔV| over |Δz| across surviving triangles
                     // whose V is wholly non-negative; the others instead record the rebase
                     // ceiling. A front-cut piece's removed half must not weigh the ratio.
-                    // （遊戲的逐範圍 V 密度：於存活且 V 全為非負的三角形上取 |ΔV|/|Δz|；
-                    //   其餘記錄重定基準的上限。前向裁切所移除的一半不得計入比值。）
+                    //
                     bool tiledV = !disableTiling;
                     float2 accum = default;
                     float rebase = 0f;
@@ -622,7 +594,7 @@ namespace Carto.Systems
                         if (conformBounds != null)
                         {
                             // The game classifies on the AUTHORED vertex, before the flip and
-                            // offset.（遊戲以製作座標分類，先於翻轉與位移。）
+                            // offset.
                             int slice = math.clamp((int)math.round(raw.z * conformScaleZ) + 128, 0, 256);
                             if (lowerBottom && (raw.y <= conformBounds.Min[slice] + 0.01f)) conform = 1;
                             if (raiseTop && (raw.y >= conformBounds.Max[slice] - 0.01f)) conform = 2;
@@ -659,12 +631,7 @@ namespace Carto.Systems
                                 // piece to a zero-area ribbon and left every median-less-looking
                                 // junction wedge open (audit §18; the `* Intersection Piece 0`
                                 // sections are exactly these).
-                                // （dx 保留製作時的展幅，零寬部件亦然——遊戲先算 dx 再釘住 x。
-                                //   釘住只移動插值座標，故零寬交叉口部件的側列被導入半幅座標系，
-                                //   釘住的 x 使其恰落於內側邊界曲線上，中央列則沿中線至路口中心：
-                                //   三軌直紋面，鋪滿中央楔形。將零寬視為全中央——本移植先前的解讀，
-                                //   亦即審計 §8 的解讀——使部件塌縮為零面積帶，
-                                //   令所有貌似無分隔帶的路口楔形開洞（審計 §18）。）
+                                //
                                 float dx = vertex.x - piece.m_Offset.x;
                                 if (zeroWidth) vertex.x = piece.m_Offset.x;
                                 if (math.abs(dx) < 0.01f)
@@ -673,8 +640,7 @@ namespace Carto.Systems
                                     // (its roundabout side branches subtract `int8 - base`, this
                                     // one has no subtraction): the final saturate pins those
                                     // vertices at the middle curve's end. Matched exactly.
-                                    // （遊戲不重定中央列前半的基準——環島側分支有減法，此分支沒有：
-                                    //   最終的 saturate 將這些頂點釘於中線曲線末端。完全一致。）
+                                    //
                                     pair = roundabout ? math.select(new int2(4, 2), new int2(5, 3), vertex.z >= 0f)
                                                       : new int2(4, 4);
                                     xParam = 0f;
@@ -736,9 +702,7 @@ namespace Carto.Systems
                         // right-branch anchoring both say so), so both halves apply directly.
                         // The earlier `1 − Apply(1 − xParam)` right-half flip mirrored every
                         // right-side curb knot — kerbs jutted into the roadway at flares (§21).
-                        // （遊戲交予著色器的橫向同步（§5.1）。各半幅的節點值即以該半幅自身的
-                        //   xParam 座標儲存，故兩半皆直接套用。先前右半幅的翻轉使右側路緣節點
-                        //   鏡像錯位——路緣於擴張部突入車道（§21）。）
+                        //
                         if (halved && isNode)
                         {
                             xParam = p.Sync.Apply(xParam, leftHalf);
@@ -756,8 +720,7 @@ namespace Carto.Systems
                                 // LowerBottomToTerrain buries the bottom edge: the shader move
                                 // is a downward clamp, never a lift — a trench wall's base stays
                                 // at road level (§38: assignment collapsed 10 m walls onto the
-                                // terrain lip).（LowerBottomToTerrain 埋入底緣：著色器的移動是
-                                // 向下夾制，絕非抬升——壕溝擋牆的基部保持於路面高度（§38）。）
+                                // terrain lip).
                                 if (terrain < world.y) { world.y = terrain; _conformLoweredVerts++; probe.Lowered++; }
                                 else { _conformKeptVerts++; probe.Kept++; }
                             }
@@ -765,8 +728,7 @@ namespace Carto.Systems
                             {
                                 // RaiseTopToTerrain pins the top edge to the terrain surface in
                                 // both directions — the §34-validated portal stretch, unchanged.
-                                // （RaiseTopToTerrain 將頂緣雙向釘於地形表面——§34 驗證的洞口
-                                //   拉伸分支，原樣保留。）
+                                //
                                 world.y = terrain;
                                 _conformRaisedVerts++;
                                 probe.Raised++;
@@ -782,7 +744,7 @@ namespace Carto.Systems
 
                     // Triangles: the game's reversed read under Invert XOR FlipMesh, then only
                     // those whose three corners survived the cut.
-                    // （三角形：Invert 互斥或 FlipMesh 時反向讀取，僅保留三角皆存活者。）
+                    //
                     int primitiveStart = indices.Count;
                     for (int t = 0; t < indexCount; t += 3)
                     {
@@ -796,9 +758,7 @@ namespace Carto.Systems
                             // ranges self-contained (§38: 0 of 10,414 violate), so a triangle
                             // reaching outside its window is corrupt input, counted so it
                             // surfaces in the report instead of vanishing.
-                            // （資料契約防護：掃描過的 `.Geometry` 資產其範圍皆自足（§38：
-                            //   10,414 個中 0 個違反）；越窗三角形屬損壞輸入，計數使其現於
-                            //   報告而非無聲消失。）
+                            //
                             _conformOutOfWindowTris++;
                             if (probe != null) probe.OutOfWindowTris++;
                             continue;
@@ -838,8 +798,6 @@ namespace Carto.Systems
         /// <summary>
         /// Read one piece's ECS geometry buffers — the exact arrays `GenerateCompositionMesh`
         /// reads — and resolve each material range's bundle id through the cached piece read.
-        /// （讀取單一部件的 ECS 幾何緩衝區——`GenerateCompositionMesh` 所讀的同一批陣列——
-        /// 並經由快取的部件讀取解析各材質範圍的束識別碼。）
         /// </summary>
         private PieceGeometry GetPieceGeometry(Entity piece, Dictionary<Entity, MeshAsset> cache)
         {
@@ -879,8 +837,7 @@ namespace Carto.Systems
                     // The bundle material ids come from the same cached read the previous
                     // assembly used — ordinal k of the MeshMaterial buffer is ordinal k of the
                     // read primitives, both being the surface-slot order (§3.4/§9.2).
-                    // （束材質識別碼取自先前組裝所用的同一份快取讀取——`MeshMaterial` 緩衝區的
-                    //   第 k 項即讀取結果的第 k 個 primitive，兩者皆為表面槽位順序（§3.4/§9.2）。）
+                    //
                     if (!cache.TryGetValue(piece, out MeshAsset read))
                     {
                         string name = Instance.Name.GetPrefabName(piece);

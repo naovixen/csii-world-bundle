@@ -9,29 +9,25 @@ namespace Carto.IO
 {
     /// <summary>
     /// Streams <see cref="NetworkRecord"/>s to a JSON Lines file.
-    /// （將 <see cref="NetworkRecord"/> 串流寫出為 JSON Lines 檔案。）<br/><br/>
     /// The same shape as <see cref="InstanceWriter"/> and for the same reason — the contract picks
-    /// JSON Lines so neither side has to hold a whole city's networks at once.<br/>
-    /// （與 <see cref="InstanceWriter"/> 結構相同，理由亦同：契約選用 JSON Lines，
-    /// 使兩端皆無須一次載入整座城市的路網。）
+    /// JSON Lines so neither side has to hold a whole city's networks at once.
     /// </summary>
     public sealed class NetworkWriter : IDisposable
     {
         /// <summary>
-        /// The underlying writer.（底層的寫出器。）
+        /// The underlying writer.
         /// </summary>
         private readonly StreamWriter _writer;
 
         /// <summary>
-        /// The number of records written so far.（目前已寫出的紀錄數量。）
+        /// The number of records written so far.
         /// </summary>
         public int Count { get; private set; }
 
         /// <summary>
         /// Open a JSON Lines file for writing.
-        /// （開啟 JSON Lines 檔案以供寫入。）
         /// </summary>
-        /// <param name="path">The destination path, before <see cref="BundleFile"/>'s suffix.（目標路徑，未含 <see cref="BundleFile"/> 的後綴。）</param>
+        /// <param name="path">The destination path, before <see cref="BundleFile"/>'s suffix.</param>
         public NetworkWriter(string path)
         {
             _writer = BundleFile.CreateText(path);
@@ -39,18 +35,15 @@ namespace Carto.IO
 
         /// <summary>
         /// Write one record as a single line.
-        /// （將單一紀錄寫為一行。）
         /// </summary>
-        /// <param name="record">The record to write.（待寫出的紀錄。）</param>
+        /// <param name="record">The record to write.</param>
         public void Write(NetworkRecord record)
         {
             // A record is one geometry form or the other and never both, which the schema enforces
             // with a `oneOf`: the mesh form carries `assetId` + `pos` + `rot` and no `centerline`;
             // the centerline form carries `centerline` + `width` and no `assetId`. Branching here
             // is what keeps that guarantee in one place.
-            // （紀錄只能是其中一種幾何形式，絕不並存，此點由結構描述的 `oneOf` 強制：
-            //   網格形式帶有 `assetId`、`pos` 與 `rot` 而無 `centerline`；
-            //   中心線形式帶有 `centerline` 與 `width` 而無 `assetId`。）
+            //
             Dictionary<string, object> line = new()
             {
                 ["id"] = record.Id,
@@ -82,13 +75,10 @@ namespace Carto.IO
 
         /// <summary>
         /// Write one lane-geometry parameter record as a single line (contract §5B v2).
-        /// （將一筆車道幾何參數紀錄寫為一行（契約 §5B v2）。）<br/><br/>
         /// Optional keys are omitted rather than defaulted: a straight, uncut, unhung lane is
         /// the common case, and 300k records of <c>"spans":[[0,1]]</c> would be pure bulk.
-        /// （可省略的鍵直接省略而非填入預設值：未切割、未懸垂的直線車道是常態，
-        /// 三十萬筆 <c>"spans":[[0,1]]</c> 只是徒增體積。）
         /// </summary>
-        /// <param name="record">The record to write.（待寫出的紀錄。）</param>
+        /// <param name="record">The record to write.</param>
         public void Write(LaneGeometryRecord record)
         {
             Dictionary<string, object> line = new()
@@ -147,19 +137,18 @@ namespace Carto.IO
         }
 
         /// <summary>
-        /// How many records were written in the mesh form.（以網格形式寫出的紀錄數。）
+        /// How many records were written in the mesh form.
         /// </summary>
         public int MeshForm { get; private set; }
 
         /// <summary>
-        /// How many records were written in the centerline form.（以中心線形式寫出的紀錄數。）
+        /// How many records were written in the centerline form.
         /// </summary>
         public int CenterlineForm { get; private set; }
 
         /// <summary>
         /// Round a rotation, keeping enough precision that it stays a unit quaternion within the
-        /// tolerance a validator checks.<br/>
-        /// （四捨五入旋轉，並保留足夠精度使其在驗證器容差內仍為單位四元數。）
+        /// tolerance a validator checks.
         /// </summary>
         private static double[] Round(quaternion value) => new[]
         {
@@ -171,7 +160,6 @@ namespace Carto.IO
 
         /// <summary>
         /// Round a position to millimetres, as <see cref="InstanceWriter"/> does.
-        /// （將位置四捨五入至公釐，與 <see cref="InstanceWriter"/> 相同。）
         /// </summary>
         private static double[] Round(float3 value) => new[]
         {
@@ -181,7 +169,7 @@ namespace Carto.IO
         };
 
         /// <summary>
-        /// Flush and close the file.（清空緩衝並關閉檔案。）
+        /// Flush and close the file.
         /// </summary>
         public void Dispose() => _writer?.Dispose();
     }

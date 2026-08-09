@@ -18,12 +18,8 @@ namespace Carto.Systems
     /// Which instance kinds a rip covers — the "show advanced" split of the ripper tab's
     /// <b>Buildings, props &amp; trees</b> toggle. The kinds are the contract's closed
     /// <c>kind</c> vocabulary; the mesh rip filters by the same mask so the two layers stay 1:1.
-    /// （一次擷取涵蓋哪些實例類別——擷取器分頁「建築、道具與樹木」開關的進階細分。
-    /// 類別即契約的封閉 <c>kind</c> 詞彙；網格擷取以同一遮罩過濾，使兩層保持一比一。）<br/><br/>
     /// Asset ids are still assigned over the <i>whole</i> prefab set regardless of the mask, so a
     /// filtered rip's ids match an unfiltered one's and partial re-rips keep joining up.
-    /// （無論遮罩為何，資產 ID 仍就<i>整個</i>預製模板集合指派，故過濾後的擷取與未過濾者 ID 相同，
-    /// 部分重擷取仍能連結。）
     /// </summary>
     public readonly struct RipKindFilter
     {
@@ -37,13 +33,13 @@ namespace Carto.Systems
             Decals = decals;
         }
 
-        /// <summary>Everything — the dev buttons' and the default plan's mask.（全部——開發按鈕與預設計畫的遮罩。）</summary>
+        /// <summary>Everything — the dev buttons' and the default plan's mask.</summary>
         public static RipKindFilter All => new(true, true, true, true);
 
-        /// <summary>Whether any kind is included at all.（是否有任何類別被涵蓋。）</summary>
+        /// <summary>Whether any kind is included at all.</summary>
         public bool Any => Buildings || Props || Trees || Decals;
 
-        /// <summary>Whether records of this contract kind are ripped.（此契約類別的紀錄是否被擷取。）</summary>
+        /// <summary>Whether records of this contract kind are ripped.</summary>
         public bool Allows(string kind) => kind switch
         {
             "building" => Buildings,
@@ -55,56 +51,46 @@ namespace Carto.Systems
 
     /// <summary>
     /// The system that enumerates every placed object in the world into <c>instances.jsonl</c>.
-    /// （將世界中所有已放置物件列舉至 <c>instances.jsonl</c> 的系統。）<br/><br/>
     /// Unlike mesh extraction, this carries no feasibility risk: a transform is plain ECS component
-    /// data. Full placement is therefore guaranteed even where a mesh cannot be read.<br/>
-    /// （不同於網格擷取，此處沒有可行性風險：變換僅是一般的 ECS 元件資料。因此即使網格無法讀取，
-    /// 仍能保證取得完整的擺放資訊。）<br/><br/>
+    /// data. Full placement is therefore guaranteed even where a mesh cannot be read.
     /// <b>Sub-objects need no recursion.</b> <c>Game.Objects.SubObject</c> holds only an
     /// <c>Entity</c>, and that entity carries its own world-space <c>Transform</c> — street trees
     /// on a road and landscaping on a lot are ordinary entities. A single query over
     /// <c>Object + Transform + PrefabRef</c> therefore reaches all of them, and recursing the
     /// buffers as well would double-count. <c>Attached.m_Parent</c> still supplies the contract's
-    /// <c>parent</c> link.<br/>
-    /// （<b>子物件無須遞迴。</b><c>SubObject</c> 僅持有一個 <c>Entity</c>，而該實體帶有自身的世界座標
-    /// <c>Transform</c>。單一查詢即可涵蓋全部，額外遞迴反而會重複計算。）
+    /// <c>parent</c> link.
     /// </summary>
     public partial class InstanceRipSystem : GameSystemBase
     {
         /// <summary>
-        /// Mod's logger.（模組的記錄器。）<br/>
+        /// Mod's logger.
         /// See <see cref="Instance.Log"/> for more information.
         /// </summary>
         static readonly ILog _log = Instance.Log;
 
         /// <summary>
-        /// The query for placed, static objects.（已放置的靜態物件查詢。）
+        /// The query for placed, static objects.
         /// </summary>
         EntityQuery _objectQuery;
 
         /// <summary>
         /// What a prefab's meshes are, as far as decals are concerned.
-        /// （就貼花而言，預製模板的網格屬於何種性質。）
         /// </summary>
         private readonly struct DecalInfo
         {
-            /// <summary>Whether every mesh it draws is a decal.（其繪製的每個網格是否皆為貼花。）</summary>
+            /// <summary>Whether every mesh it draws is a decal.</summary>
             public bool IsDecal { get; }
 
             /// <summary>
             /// Which surfaces the game projects onto, across all of its decal meshes.
-            /// （遊戲將其投影至哪些表面，涵蓋其所有貼花網格。）
             /// </summary>
             public Game.Rendering.DecalLayers Layers { get; }
 
             /// <summary>
             /// How tall the projector volume was before it was flattened to its painted quad.
-            /// （投影體積於被壓平為所繪四邊形之前的高度。）<br/><br/>
             /// The mesh layer ships the quad, which is what anyone wants to draw; this is the one
             /// number that flattening discards, and it is what a consumer needs to re-project the
-            /// marking onto a surface that is not flat.<br/>
-            /// （網格層輸出的是四邊形，那是任何人想繪製的東西；此為壓平時唯一被捨棄的數值，
-            /// 也是消費端若要將標線重新投影至非平坦表面時所需者。）
+            /// marking onto a surface that is not flat.
             /// </summary>
             public float Height { get; }
 
@@ -118,19 +104,16 @@ namespace Carto.Systems
 
         /// <summary>
         /// Which prefabs draw nothing but decals, and onto what, cached for one rip.
-        /// （僅繪製貼花的預製模板及其投影對象，於單次擷取內快取。）
         /// </summary>
         readonly Dictionary<Entity, DecalInfo> _decalPrefabs = new();
 
         /// <summary>
         /// Counters for the resolved-paint and growth-scale attributes, per rip.
-        /// （逐次擷取的已解析塗裝與生長縮放屬性計數。）
         /// </summary>
         int _colorSets, _customColors, _divergentColorSets, _growthScales;
 
         /// <summary>
         /// The event triggered when the system instance is created.
-        /// （當系統實例被創造時觸發的事件。）
         /// </summary>
         protected override void OnCreate()
         {
@@ -146,7 +129,7 @@ namespace Carto.Systems
                 {
                     // Moving things are vehicles and citizens, not world geometry; Deleted and Temp
                     // are mid-edit bookkeeping that must never reach the bundle.
-                    // （會移動者為車輛與市民，並非世界幾何；Deleted 與 Temp 為編輯中的暫存狀態。）
+                    //
                     ComponentType.ReadOnly<Moving>(),
                     ComponentType.ReadOnly<Game.Common.Deleted>(),
                     ComponentType.ReadOnly<Game.Tools.Temp>(),
@@ -155,8 +138,7 @@ namespace Carto.Systems
                     // gizmos the game never draws. They are numerous enough to reach the top of the
                     // prefab usage table, so keeping them would scatter stand-in boxes across the
                     // whole reconstruction in exchange for nothing anyone can see.
-                    // （標記物——生成點、行人出入口、管線與電纜節點——是遊戲從不繪製的編輯器示意物。
-                    //   其數量足以躋身預製模板使用量前列，保留它們只會使重建成果佈滿無人可見的替代方塊。）
+                    //
                     ComponentType.ReadOnly<Marker>(),
 
                     // Agents, not scenery. `Moving` only excludes the ones in motion at the instant
@@ -164,24 +146,20 @@ namespace Carto.Systems
                     // they were being written into the bundle as world geometry. A level is the
                     // built environment; the traffic and pedestrians passing through it at the
                     // moment someone pressed the button are not part of it.
-                    // （這些是行為者而非場景。`Moving` 僅排除輸出當下正在移動者：等車的市民與停放的車輛
-                    //   皆無 `Moving`，因而被當作世界幾何寫入束中。關卡是既有的建成環境，
-                    //   按下按鈕當下恰好經過的車流與行人並不屬於它。）
+                    //
                     ComponentType.ReadOnly<Game.Creatures.Creature>(),
                     ComponentType.ReadOnly<Game.Vehicles.Vehicle>()
                 }
             });
 
             base.OnCreate();
-            _log.Debug("InstanceRipSystem instance created. 實例擷取系統實例創造完成。");
+            _log.Debug("InstanceRipSystem instance created.");
         }
 
         /// <summary>
         /// The event triggered when the system instance is destroyed.
-        /// （當系統實例被銷毀時所觸發的事件。）<br/><br/>
         /// A run in flight holds a persistent native array and an open file — both must be
-        /// released when the world unloads mid-rip.<br/>
-        /// （進行中的執行持有常駐原生陣列與開啟中的檔案——世界於擷取途中卸載時兩者皆須釋放。）
+        /// released when the world unloads mid-rip.
         /// </summary>
         protected override void OnDestroy()
         {
@@ -190,7 +168,7 @@ namespace Carto.Systems
 
             if (run != null)
             {
-                _log.Info($"Instance rip abandoned at {run.Index}/{run.Entities.Length} object(s); the world was unloaded. 實例擷取於世界卸載時中止。");
+                _log.Info($"Instance rip abandoned at {run.Index}/{run.Entities.Length} object(s); the world was unloaded.");
                 Abandon(run);
                 RipProgress.Clear();
             }
@@ -200,7 +178,6 @@ namespace Carto.Systems
 
         /// <summary>
         /// Advance any rip in progress by one frame's worth of work.
-        /// （將進行中的擷取推進一幀份的工作。）
         /// </summary>
         protected override void OnUpdate()
         {
@@ -209,20 +186,20 @@ namespace Carto.Systems
         }
 
         /// <summary>
-        /// One instance rip in flight.（一次進行中的實例擷取。）
+        /// One instance rip in flight.
         /// </summary>
         private class InstanceRun
         {
-            /// <summary>The bundle root, and the record file being written.（束根目錄與寫入中的紀錄檔。）</summary>
+            /// <summary>The bundle root, and the record file being written.</summary>
             public string OutputDirectory, Path;
 
-            /// <summary>The placed objects to walk, held across frames (persistent allocator).（跨幀持有的待走訪已放置物件（常駐配置器）。）</summary>
+            /// <summary>The placed objects to walk, held across frames (persistent allocator).</summary>
             public NativeArray<Entity> Entities;
 
-            /// <summary>How far the walk has got.（走訪進度。）</summary>
+            /// <summary>How far the walk has got.</summary>
             public int Index;
 
-            /// <summary>The record writer, touched only by <see cref="WriterTask"/> once the run starts.（紀錄寫出器，執行開始後僅由 <see cref="WriterTask"/> 觸碰。）</summary>
+            /// <summary>The record writer, touched only by <see cref="WriterTask"/> once the run starts.</summary>
             public InstanceWriter Writer;
 
             /// <summary>
@@ -230,31 +207,29 @@ namespace Carto.Systems
             /// serialisation dominates the pass — several times the cost of the ECS reads — so
             /// keeping it inside the frame budget multiplied the wall time by the frame rate;
             /// off-thread it costs the main thread nothing (the mesh rip's own pattern).
-            /// （等待序列化的紀錄與排空它們的工作。Newtonsoft 序列化主宰此趟成本——數倍於 ECS 讀取——
-            /// 將其留在幀預算內會使實際時間隨幀率倍增；移出主執行緒後其成本歸零（即網格擷取的模式）。）
             /// </summary>
             public System.Collections.Concurrent.BlockingCollection<InstanceRecord> Queue;
             public System.Threading.Tasks.Task WriterTask;
 
-            /// <summary>Hands one record to the writer; held once so the per-entity path allocates no closure.（將一筆紀錄交付寫出端；僅持有一份，使逐實體路徑不配置閉包。）</summary>
+            /// <summary>Hands one record to the writer; held once so the per-entity path allocates no closure.</summary>
             public Action<InstanceRecord> Emit;
 
-            /// <summary>Whether the walk has handed over its last record.（走訪是否已交付最後一筆紀錄。）</summary>
+            /// <summary>Whether the walk has handed over its last record.</summary>
             public bool ReadingDone;
 
-            /// <summary>Which kinds this run covers.（本次執行涵蓋的類別。）</summary>
+            /// <summary>Which kinds this run covers.</summary>
             public RipKindFilter Kinds;
 
-            /// <summary>Records excluded by <see cref="Kinds"/>.（被 <see cref="Kinds"/> 排除的紀錄數。）</summary>
+            /// <summary>Records excluded by <see cref="Kinds"/>.</summary>
             public int SkippedFiltered;
 
-            /// <summary>The shared asset-id assignment (see <see cref="BeginRip"/>).（共用的資產 ID 指派。）</summary>
+            /// <summary>The shared asset-id assignment (see <see cref="BeginRip"/>).</summary>
             public Dictionary<Entity, MeshRipSystem.AssetIdEntry> AssetIdTable;
 
-            /// <summary>The distinct asset ids referenced.（被參照的相異資產 ID。）</summary>
+            /// <summary>The distinct asset ids referenced.</summary>
             public HashSet<string> AssetIds = new();
 
-            // The tallies the walk keeps.（走訪期間維護的統計。）
+            // The tallies the walk keeps.
             public Dictionary<string, int> ByKind = new();
             public int SkippedNoPrefab, WithParent, SkippedUtilityNodes, SkippedVehicleCargo;
             public Dictionary<Entity, int> UtilityNodesByPrefab = new();
@@ -265,25 +240,24 @@ namespace Carto.Systems
             public HashSet<int> UnresolvedPrefabs = new();
             public HashSet<string> GeometrylessPrefabs = new();
 
-            /// <summary>The report accumulated as the run goes.（隨執行累積的報告。）</summary>
+            /// <summary>The report accumulated as the run goes.</summary>
             public StringBuilder Report = new();
 
-            /// <summary>Wall-clock duration of the whole run.（整體工作的實際經過時間。）</summary>
+            /// <summary>Wall-clock duration of the whole run.</summary>
             public System.Diagnostics.Stopwatch Clock = System.Diagnostics.Stopwatch.StartNew();
 
             /// <summary>
             /// Where the finish summary goes when a pipeline drives this rip; <c>null</c> means the
             /// run was started by hand and reports through its own dialog.
-            /// （由管線驅動時完成摘要的去處；<c>null</c> 代表手動啟動，經自身對話框回報。）
             /// </summary>
             public Action<string> Completed;
         }
 
-        /// <summary>The rip in flight, or <c>null</c>.（進行中的擷取，或 <c>null</c>。）</summary>
+        /// <summary>The rip in flight, or <c>null</c>.</summary>
         private InstanceRun _run;
 
         /// <summary>
-        /// Whether a rip is currently running.（目前是否有擷取工作進行中。）
+        /// Whether a rip is currently running.
         /// </summary>
         public bool IsRipping => _run != null;
 
@@ -293,17 +267,12 @@ namespace Carto.Systems
         /// with serialisation off-thread this is pure component reads, and the rip usually runs
         /// behind a paused options page — the smoke test showed 6 ms stretching a seconds-long
         /// pass into minutes.
-        /// （走訪每幀可佔用主執行緒的時間上限。每幀必定至少處理一個物件，故單一昂貴物件不致使
-        /// 執行停滯。高於網格擷取的 6 ms：序列化移出後此處僅剩元件讀取，且擷取通常於暫停的
-        /// 選項頁面後執行——冒煙測試顯示 6 ms 會將數秒的走訪拉長為數分鐘。）
         /// </summary>
         private const double FrameBudgetMilliseconds = 12d;
 
         /// <summary>
         /// How many records may wait for the writer before the walk pauses. Records are small;
         /// this bounds memory without ever making the main thread block on the queue.
-        /// （寫出端前可等待的紀錄數上限，超過即暫停走訪。紀錄很小；此值約束記憶體，
-        /// 且絕不使主執行緒阻塞於佇列。）
         /// </summary>
         private const int QueueBackpressure = 8192;
 
@@ -311,13 +280,11 @@ namespace Carto.Systems
         /// Start enumerating every placed object into <c>instances.jsonl</c>, returning as soon as
         /// the asset-id table is built; the walk itself proceeds a slice per frame in
         /// <see cref="OnUpdate"/> (PLAN Phase 8 — the pass used to block the main thread whole).
-        /// （開始將所有已放置物件列舉至 <c>instances.jsonl</c>，資產 ID 表建立後隨即返回；
-        /// 走訪本身於 <see cref="OnUpdate"/> 中每幀推進一段（PLAN 第八階段——此趟過去會整段阻塞主執行緒）。）
         /// </summary>
-        /// <param name="outputDirectory">The bundle root to write into.（要寫入的束根目錄。）</param>
-        /// <param name="completed">Receives the finish summary instead of a dialog when a pipeline drives the rip.（由管線驅動時接收完成摘要以取代對話框。）</param>
-        /// <param name="kinds">Which kinds to cover; <c>null</c> for all of them.（涵蓋哪些類別；<c>null</c> 為全部。）</param>
-        /// <returns>A short description of what was queued.（已排入工作的簡短說明。）</returns>
+        /// <param name="outputDirectory">The bundle root to write into.</param>
+        /// <param name="completed">Receives the finish summary instead of a dialog when a pipeline drives the rip.</param>
+        /// <param name="kinds">Which kinds to cover; <c>null</c> for all of them.</param>
+        /// <returns>A short description of what was queued.</returns>
         public string BeginRip(string outputDirectory, Action<string> completed = null, RipKindFilter? kinds = null)
         {
             if (_run != null) return "An instance rip is already running.";
@@ -345,10 +312,7 @@ namespace Carto.Systems
                 // assign — MeshRipSystem walks the identical query and so derives identical ids.
                 // This pre-pass stays synchronous, like the mesh rip's work-list build: the table
                 // must be whole before the first record is written.
-                // （資產 ID 必須就整個預製模板集合一次指派：CS2 並不要求預製模板名稱唯一，
-                //   而兩個共用 ID 的模板會使網格層以其中之一覆寫另一個。先收集相異模板再行指派——
-                //   MeshRipSystem 走訪完全相同的查詢，因而推導出完全相同的 ID。
-                //   此前置走訪與網格擷取的工作清單建立相同，維持同步：表格必須於首筆紀錄寫出前完整。）
+                //
                 HashSet<Entity> prefabEntities = new();
                 Dictionary<Entity, int> prefabUse = new();
                 Dictionary<Entity, Entity> prefabSample = new();
@@ -397,9 +361,9 @@ namespace Carto.Systems
         }
 
         /// <summary>
-        /// Advance a rip by one frame's budget.（以一幀的預算推進擷取。）
+        /// Advance a rip by one frame's budget.
         /// </summary>
-        /// <param name="run">The rip in flight.（進行中的擷取。）</param>
+        /// <param name="run">The rip in flight.</param>
         private void Advance(InstanceRun run)
         {
             if (!run.ReadingDone)
@@ -409,11 +373,11 @@ namespace Carto.Systems
                 while (run.Index < run.Entities.Length)
                 {
                     // Back-pressure: pause the walk rather than pile records up faster than the
-                    // writer serialises them.（背壓：暫停走訪，而非讓紀錄堆積得比寫出端序列化更快。）
+                    // writer serialises them.
                     if (run.Queue.Count >= QueueBackpressure) break;
 
                     // One bad object must not cost the other million their records.
-                    // （一個異常物件不得使其餘百萬物件失去紀錄。）
+                    //
                     try
                     {
                         ProcessOne(run, run.Entities[run.Index]);
@@ -444,17 +408,16 @@ namespace Carto.Systems
         }
 
         /// <summary>
-        /// Handle one placed object: classify, resolve, record.（處理一個已放置物件：分類、解析、記錄。）
+        /// Handle one placed object: classify, resolve, record.
         /// </summary>
-        /// <param name="run">The rip in flight.（進行中的擷取。）</param>
-        /// <param name="entity">The object entity.（物件實體。）</param>
+        /// <param name="run">The rip in flight.</param>
+        /// <param name="entity">The object entity.</param>
         private void ProcessOne(InstanceRun run, Entity entity)
         {
             // The walk holds its snapshot across frames while the simulation may run, so an
             // entity can be gone by the time its turn comes — the same mid-rip churn the mesh
             // and network rips already count. The acceptance rip hit 97 of these as raw NREs.
-            // （走訪跨幀持有快照，而模擬可能持續運行，故實體輪到時可能已消失——
-            //   即網格與路網擷取本就計數的擷取中變動。驗收擷取曾以原始 NRE 形式命中 97 例。）
+            //
             if (!EntityManager.Exists(entity))
             {
                 run.SkippedStale++;
@@ -463,8 +426,7 @@ namespace Carto.Systems
 
             // Buried utility-network furniture: excluded here and in the mesh rip alike, so
             // neither its placements nor its meshes reach the bundle.
-            // （埋於地下的管線網路配件：此處與網格擷取一併排除，
-            //   使其擺放與網格皆不會進入束中。）
+            //
             if (MeshRipSystem.IsUtilityMarkerSubObject(EntityManager, entity))
             {
                 run.SkippedUtilityNodes++;
@@ -474,10 +436,7 @@ namespace Carto.Systems
                 // version of this filter ran happily while catching none of them. Naming
                 // what was dropped is what makes both failures visible — the nodes still
                 // getting through, and anything drawn that should not have been dropped.
-                // （依預製模板統計並於報告中具名。單純的計數只能說明篩選器執行過，
-                //   卻無法說明它攔下了正確的東西；而此篩選器的前一版正是一邊順利執行、
-                //   一邊一個也沒攔到。具名列出被丟棄者，才能使兩種失敗都顯現出來：
-                //   仍在漏網的節點，以及本不該被丟棄的可見物件。）
+                //
                 Entity nodePrefab = EntityManager.GetComponentData<PrefabRef>(entity).m_Prefab;
                 if (nodePrefab != Entity.Null)
                 {
@@ -492,9 +451,7 @@ namespace Carto.Systems
             // rides, not of the built environment, and the vehicle it belongs to is itself
             // excluded. Same treatment as the utility nodes: dropped in both rip systems
             // alike, tallied by prefab, and named in the report.
-            // （載於車輛上的貨物——拖車上的原木堆——屬於其所乘的行為者而非建成環境，
-            //   且其所屬車輛本身已被排除。處理方式與公用設施節點相同：
-            //   兩個擷取系統一併丟棄，依預製模板統計，並於報告中具名。）
+            //
             if (MeshRipSystem.IsVehicleCargoSubObject(EntityManager, entity))
             {
                 run.SkippedVehicleCargo++;
@@ -518,8 +475,7 @@ namespace Carto.Systems
 
             // The advanced kind filter, before any bookkeeping: an excluded object contributes
             // no record, no warning and no asset id — the bundle describes the selection.
-            // （進階類別過濾，先於任何簿記：被排除的物件不產生紀錄、警告或資產 ID——
-            //   束描述的是所選內容。）
+            //
             string kind = ClassifyKind(entity, prefabEntity);
             if (!run.Kinds.Allows(kind))
             {
@@ -533,8 +489,7 @@ namespace Carto.Systems
             // geometry cannot: a consumer substitutes a stand-in mesh and every instance
             // still lands in the right place. Dropping them silently is what breaks the
             // contract's 1:1 fidelity requirement.
-            // （無法解析受管預製模板的物件，仍是城市中真實存在的物件，因此以合成 ID 保留其
-            //   擺放而非丟棄。PLAN §3 明確要求即使幾何無法取得，擺放仍須保留。）
+            //
             MeshRipSystem.AssetIdEntry idEntry = run.AssetIdTable[prefabEntity];
             string assetId = idEntry.AssetId;
             bool unresolved = !idEntry.Resolved;
@@ -546,11 +501,7 @@ namespace Carto.Systems
             // prefab entity is right there to ask — so the gap is declared here. Parking
             // lots, helipad airspace, area placeholders and intersections are all real
             // objects with real placements and no mesh of their own.
-            // （沒有 SubMesh 緩衝區的預製模板無幾何可擷取，而網格擷取永遠不會言明此事：
-            //   其查詢要求 SubMesh，故此類預製模板根本不會被列舉，也就無法附帶原因跳過。
-            //   唯有此處同時掌握兩項事實——參照正於此寫出，而預製模板實體就在手邊——
-            //   因此於此宣告該缺口。停車場、停機坪空域、區域佔位物與交叉路口
-            //   皆是具有真實擺放、卻無自身網格的真實物件。）
+            //
             if (!unresolved && !EntityManager.HasBuffer<SubMesh>(prefabEntity))
                 run.GeometrylessPrefabs.Add(assetId);
 
@@ -581,8 +532,7 @@ namespace Carto.Systems
             // Owner is the sub-object relationship (a prop on a lot, a wing of a building).
             // Attached is a different thing — an object bound to a network at a curve
             // position — and using it as the parent link found only 98 of 1.4M objects.
-            // （Owner 才是子物件關係；Attached 表示物件綁定於路網上的某個曲線位置，
-            //   以其作為父子連結時，140 萬個物件中僅有 98 個成立。）
+            //
             Entity parent = Entity.Null;
             if (EntityManager.HasComponent<Game.Common.Owner>(entity))
                 parent = EntityManager.GetComponentData<Game.Common.Owner>(entity).m_Owner;
@@ -599,12 +549,12 @@ namespace Carto.Systems
 
             // Flag it in the record too, so a consumer can tell a stand-in from a real
             // asset without cross-referencing warnings.jsonl.
-            // （於紀錄中一併標記，使消費端無須交叉比對 warnings.jsonl 即可辨識替代資產。）
+            //
             if (unresolved) record.Attributes["unresolved"] = true;
 
             // A stacked object is not one placement but several, and how many is a property
             // of this instance rather than of its prefab.
-            // （堆疊式物件並非單一擺放而是數個，且其數量取決於此實例而非其預製模板。）
+            //
             int expanded = ExpandStack(entity, prefabEntity, record, run.Emit, run.AssetIds);
             if (expanded > 0)
             {
@@ -623,9 +573,8 @@ namespace Carto.Systems
 
         /// <summary>
         /// Close the file, report, and hand the summary to whoever is listening.
-        /// （關閉檔案、產出報告，並將摘要交予聆聽者。）
         /// </summary>
-        /// <param name="run">The finished run.（已完成的工作。）</param>
+        /// <param name="run">The finished run.</param>
         private void Finish(InstanceRun run)
         {
             _run = null;
@@ -730,61 +679,49 @@ namespace Carto.Systems
 
         /// <summary>
         /// Release what a run holds open — the record file and the entity array.
-        /// （釋放執行所持有的資源——紀錄檔與實體陣列。）
         /// </summary>
-        /// <param name="run">The run to release.（要釋放的工作。）</param>
+        /// <param name="run">The run to release.</param>
         private static void Abandon(InstanceRun run)
         {
             // Let the writer drain what it holds before the file is closed under it; a run
             // abandoned mid-walk has at most the back-pressure window in flight.
-            // （先讓寫出端排空其所持，再關閉檔案；走訪中途中止的執行至多有背壓視窗量的紀錄在途。）
-            try { run.Queue?.CompleteAdding(); } catch { /* already completed（已完成） */ }
-            try { run.WriterTask?.Wait(TimeSpan.FromSeconds(10)); } catch { /* logged by Finish paths（由完成路徑記錄） */ }
+            //
+            try { run.Queue?.CompleteAdding(); } catch { /* already completed */ }
+            try { run.WriterTask?.Wait(TimeSpan.FromSeconds(10)); } catch { /* logged by Finish paths */ }
 
-            try { run.Writer?.Dispose(); } catch { /* already closed（已關閉） */ }
+            try { run.Writer?.Dispose(); } catch { /* already closed */ }
             run.Writer = null;
             if (run.Entities.IsCreated) run.Entities.Dispose();
         }
 
         /// <summary>
         /// Classify an entity into one of the contract's closed <c>kind</c> values.
-        /// （將實體歸類為契約中封閉的 <c>kind</c> 值之一。）
         /// </summary>
-        /// <param name="entity">The object entity.（物件實體。）</param>
-        /// <returns>The kind.（分類。）</returns>
+        /// <param name="entity">The object entity.</param>
+        /// <returns>The kind.</returns>
         /// <summary>
         /// Emit one record per section of a stacked object, or <c>0</c> if it is not stacked.
-        /// （為堆疊式物件的每個區段輸出一筆紀錄；若非堆疊式則回傳 <c>0</c>。）<br/><br/>
         /// <b>What was wrong without this.</b> CS2 stores a pillar, a high wall or a long fence as
         /// a foot, one repeating section and a cap, and repeats the middle at draw time to span
         /// whatever the instance needs. <c>Vertical_Pillar</c>'s shaft is authored two metres tall;
         /// a viaduct pillar is ten or more. The bundle previously kept the single authored section,
         /// so every stacked object came out as a stub — visibly, highway pillars did not reach the
-        /// ground.<br/>
-        /// （<b>若無此處理則錯在何處。</b>CS2 將橋墩、高牆或長籬儲存為基座、一段可重複區段與頂蓋，
-        /// 並於繪製時重複中段以填滿該實例所需的跨距。<c>Vertical_Pillar</c> 的柱身製作高度僅兩公尺，
-        /// 而高架橋墩高逾十公尺。束先前只保留了單一製作區段，故所有堆疊式物件都成了殘段——
-        /// 明顯可見的是，高速公路橋墩並未觸及地面。）<br/><br/>
+        /// ground.
         /// <b>The arithmetic is the game's, not a reimplementation.</b>
         /// <c>BatchDataHelpers.CalculateStackSubMeshData</c> is public, so the counts, offsets and
         /// per-section scales come from the same code the renderer uses. Reproducing them from a
         /// reading of the IL would have been a guess at exactly the kind of scaling term that is
-        /// easy to get subtly wrong.<br/>
-        /// （<b>此處的算術取自遊戲本身，而非重新實作。</b>
-        /// <c>BatchDataHelpers.CalculateStackSubMeshData</c> 為公開方法，故數量、偏移與逐區段縮放
-        /// 皆來自繪製器所用的同一段程式。由 IL 推導重寫，正是最容易在縮放項上出現細微錯誤之處。）<br/><br/>
+        /// easy to get subtly wrong.
         /// Each section becomes its own instance record with its world transform baked, which is
         /// what contract §4.1 already does for sub-objects — so this needs no schema change and no
-        /// cooperation from a consumer.<br/>
-        /// （每個區段成為帶有已烘焙世界變換的獨立實例紀錄，此即契約 §4.1 對子物件既有的處理方式，
-        /// 故無須變更綱要，也無須消費端配合。）
+        /// cooperation from a consumer.
         /// </summary>
-        /// <param name="entity">The placed object.（已放置的物件。）</param>
-        /// <param name="prefabEntity">Its prefab.（其預製模板。）</param>
-        /// <param name="template">The record built for it, used as the pattern.（為其建立的紀錄，作為範本。）</param>
-        /// <param name="emit">Where records go.（紀錄的輸出對象。）</param>
-        /// <param name="assetIds">The set of referenced asset ids.（被參照的資產 ID 集合。）</param>
-        /// <returns>How many records were written.（已寫出的紀錄筆數。）</returns>
+        /// <param name="entity">The placed object.</param>
+        /// <param name="prefabEntity">Its prefab.</param>
+        /// <param name="template">The record built for it, used as the pattern.</param>
+        /// <param name="emit">Where records go.</param>
+        /// <param name="assetIds">The set of referenced asset ids.</param>
+        /// <returns>How many records were written.</returns>
         private int ExpandStack(Entity entity, Entity prefabEntity, InstanceRecord template,
                                 Action<InstanceRecord> emit, HashSet<string> assetIds)
         {
@@ -800,7 +737,7 @@ namespace Carto.Systems
 
             // Which sections this prefab actually has, and where each is authored relative to the
             // object's origin. The buffer is copied because reading it is all we need it for.
-            // （此預製模板實際具備哪些區段，以及各區段相對於物件原點的製作位置。）
+            //
             DynamicBuffer<SubMesh> buffer = EntityManager.GetBuffer<SubMesh>(prefabEntity, true);
             List<(StackRole Role, float3 Position, quaternion Rotation)> sections = new();
             for (int i = 0; i < buffer.Length; i++)
@@ -817,9 +754,7 @@ namespace Carto.Systems
             // sub-mesh test passes them regardless of the `IsStack*` bits — and they live in the
             // `__stack_rest` file the mesh pass ships, because the whole-prefab file is never
             // referenced for a stacked prefab and the stack part files must not tile them.
-            // （無堆疊角色的部件於實例變換處繪製一次——遊戲的子網格測試不論 `IsStack*` 位元
-            //   皆使其通過——它們位於網格階段輸出的 `__stack_rest` 檔案中：
-            //   堆疊式預製模板的整體檔案從不被參照，而堆疊部件檔案不得使其隨鋪排重複。）
+            //
             bool hasRest = false;
             for (int i = 0; i < buffer.Length; i++)
             {
@@ -872,7 +807,7 @@ namespace Carto.Systems
 
                     // The section is authored in the object's local frame, so its world placement
                     // is the object's transform applied to it.
-                    // （區段以物件的區域座標製作，故其世界擺放為物件變換作用於其上的結果。）
+                    //
                     string partId = PrefabMesh.StackPartId(template.AssetId, role);
                     InstanceRecord section = new()
                     {
@@ -889,7 +824,7 @@ namespace Carto.Systems
 
                     // Only where the game scales: an unscaled section must not acquire a scale of
                     // exactly one that a consumer then has to trust.
-                    // （僅於遊戲確實縮放時寫出：未經縮放的區段不應被賦予一個消費端還得信任的 1。）
+                    //
                     if (math.any(math.abs(scale - new float3(1f)) > 1e-4f)) section.Scale = scale;
 
                     emit(section);
@@ -903,50 +838,34 @@ namespace Carto.Systems
 
         /// <summary>
         /// Count what the world is made of, by the flags CS2 renders it with.
-        /// （依 CS2 繪製時所用的旗標，統計世界的組成。）<br/><br/>
         /// This exists because "is anything else like the decals?" is a question that should be
         /// answered with numbers rather than by reading names and guessing. A decal's mesh is a
         /// projector volume, not a marking, and nothing in the bundle said so until it was looked
         /// for; the same could be true of impostors, of animated or skinned meshes, or of lights.
         /// Each is one flag, and a census over the prefab set is a few thousand lookups — nothing
-        /// against a rip, and it turns the next question into a table.<br/>
-        /// （此處存在的理由是：「還有沒有其他東西像貼花一樣？」這個問題應以數字回答，
-        /// 而非讀名稱猜測。貼花的網格是投影體積而非標線，而在有人去找之前，束中沒有任何地方說明這點；
-        /// 對於替身廣告板、動畫或蒙皮網格、以及燈光，情況可能相同。
-        /// 每一項都只是一個旗標，而對預製模板集合做普查僅需數千次查詢——相對於一次擷取微不足道，
-        /// 卻能把下一個問題化為一張表。）<br/><br/>
+        /// against a rip, and it turns the next question into a table.
         /// Counted by instance as well as by prefab: a flag on one prefab used 34,000 times is a
-        /// different problem from the same flag on a prefab used twice.<br/>
-        /// （同時依實例與預製模板計數：某旗標出現在一個被使用 34,000 次的預製模板上，
-        /// 與出現在只用兩次的模板上，是不同性質的問題。）
+        /// different problem from the same flag on a prefab used twice.
         /// </summary>
         /// <param name="prefabUse">Each referenced prefab and how many instances use it.
-        /// （每個被參照的預製模板及其實例數。）</param>
-        /// <param name="report">The report to append the table to.（用以附加此表的報告。）</param>
+        ///</param>
+        /// <param name="report">The report to append the table to.</param>
         /// <summary>
         /// Print, for the prefabs the city holds most of, what a placed one and its prefab are
         /// actually made of.
-        /// （針對城市中數量最多的預製模板，印出已放置實例與其預製模板究竟由哪些元件構成。）<br/><br/>
         /// <b>Why this exists.</b> "Stop these things being ripped" is a filter, and a filter needs
         /// a component to test. Three separate attempts to exclude the buried utility hookups
         /// (<c>Water_Pipe_Node_*</c>, <c>Sewage_Pipe_Node_*</c>, <c>Ground_Cable_Node_*</c>) were
         /// written against components those objects turned out not to have — the last one tested
         /// the <i>owner</i> for <c>Game.Net.Marker</c>, and their owner is the building whose lot
         /// they sit under, not a net at all. Each attempt looked plausible, compiled, ran, reported
-        /// a count, and changed nothing.<br/>
-        /// （<b>此處存在的理由。</b>「別再擷取這些東西」是一道篩選，而篩選需要可供測試的元件。
-        /// 為排除埋設的公用設施接點，先後三次嘗試皆針對這些物件其實並不具備的元件而寫——
-        /// 最後一次檢查<i>擁有者</i>是否為 <c>Game.Net.Marker</c>，
-        /// 而其擁有者是它們所在地塊的建築，根本不是路網。
-        /// 每次嘗試都看似合理、能編譯、會執行、也回報了計數，卻毫無作用。）<br/><br/>
+        /// a count, and changed nothing.
         /// The list of component names on one instance and on its prefab is what would have ended
-        /// that on the first attempt, and it costs two lookups per prefab printed.<br/>
-        /// （單一實例與其預製模板的元件名稱清單，本可在第一次嘗試時就終結此事，
-        /// 而每個印出的預製模板僅需兩次查詢。）
+        /// that on the first attempt, and it costs two lookups per prefab printed.
         /// </summary>
-        /// <param name="prefabUse">Each referenced prefab and how many instances use it.（每個被參照的預製模板及其實例數。）</param>
-        /// <param name="prefabSample">One placed instance per prefab.（每個預製模板的一個已放置實例。）</param>
-        /// <param name="report">The report to append the profile to.（用以附加此剖析的報告。）</param>
+        /// <param name="prefabUse">Each referenced prefab and how many instances use it.</param>
+        /// <param name="prefabSample">One placed instance per prefab.</param>
+        /// <param name="report">The report to append the profile to.</param>
         private void Profile(Dictionary<Entity, int> prefabUse, Dictionary<Entity, Entity> prefabSample,
                              StringBuilder report)
         {
@@ -970,7 +889,7 @@ namespace Carto.Systems
                 report.AppendLine($"    prefab:   {string.Join(", ", DescribeComponents(prefab))}");
 
                 // The owner is where the last filter went wrong, so name what it actually is.
-                // （擁有者正是上一道篩選出錯之處，故明確指出它究竟是什麼。）
+                //
                 if (prefabSample.TryGetValue(prefab, out Entity owned)
                     && EntityManager.HasComponent<Game.Common.Owner>(owned))
                 {
@@ -1000,8 +919,7 @@ namespace Carto.Systems
                 // The generated foundation skirt (`BaseProperties`): the game draws one extra
                 // batch past the last sub-mesh for these, which the bundle does not yet carry —
                 // the census is what says how much of the city that omission touches.
-                // （生成的基座裙板（`BaseProperties`）：遊戲為其於最後一個子網格之後多繪一個批次，
-                //   束尚未承載——此普查即說明該省略觸及城市多少範圍。）
+                //
                 ("base", MeshFlags.Base)
             };
 
@@ -1030,18 +948,15 @@ namespace Carto.Systems
                 // Light sources are components on the object prefab, not mesh flags: a lamp's
                 // housing is ordinary geometry and the light it casts is separate data the bundle
                 // does not carry at all.
-                // （光源是物件預製模板上的元件而非網格旗標：燈具外殼為一般幾何，
-                //   而其投射的光是束完全未承載的另一份資料。）
+                //
                 // Per-instance colour: the prefab holds a palette of variations
                 // (colors.json) and the game resolves each placed object's paint into its
                 // `MeshColor` buffer, which `AddAttributes` exports as `attrs.colorSet`.
-                // （逐實例顏色：預製模板持有變化色盤（colors.json），遊戲將各放置物件的塗裝
-                //   解析至其 `MeshColor` 緩衝區，由 `AddAttributes` 輸出為 `attrs.colorSet`。）
+                //
                 // Checked on the object prefab and on its sub-meshes, because which of the two
                 // holds the palette decides where a colour export would read from, and guessing
                 // is how a whole feature gets built against the wrong entity.
-                // （於物件預製模板及其子網格上皆檢查：兩者中何者持有色盤，
-                //   決定顏色輸出應自何處讀取，而臆測正是整個功能建錯對象的成因。）
+                //
                 if (EntityManager.HasBuffer<ColorVariation>(prefab)) Note("color:palette@prefab", instances);
 
                 if (EntityManager.HasBuffer<ProceduralLight>(prefab)) Note("light:procedural", instances);
@@ -1097,7 +1012,7 @@ namespace Carto.Systems
 
             // Trees and plants are both vegetation; the contract's closed enum has no separate
             // value for shrubs, and a consumer treats them the same way.
-            // （樹木與植栽同屬植被；契約的封閉枚舉沒有灌木的獨立值，消費端亦以相同方式處理。）
+            //
             if (EntityManager.HasComponent<Tree>(entity) || EntityManager.HasComponent<Plant>(entity)) return "tree";
 
             if (DecalOf(prefabEntity).IsDecal) return "decal";
@@ -1107,34 +1022,24 @@ namespace Carto.Systems
 
         /// <summary>
         /// Whether a prefab is a decal — a road marking, a parking bay, a patch of grime.
-        /// （預製模板是否為貼花：道路標線、停車格、污漬。）<br/><br/>
         /// <b>Why this matters more than it looks.</b> A decal's mesh is not the marking, it is the
         /// <i>projector volume</i>: a twelve-triangle box, a metre tall, that CS2's shader projects
         /// the texture down onto whatever road surface lies inside it. A road arrow therefore
         /// arrives in a bundle as a transparent box floating over the carriageway. Left as
         /// <c>kind: "prop"</c>, a consumer building a drivable level turns thousands of those boxes
-        /// into collision geometry and the road becomes impassable.<br/>
-        /// （<b>此事的重要性超乎其表。</b>貼花的網格並非標線本身，而是<i>投影體積</i>：
-        /// 一個十二個三角形、高一公尺的方盒，CS2 的著色器將貼圖沿其向下投影至其內的路面。
-        /// 因此道路箭頭在束中呈現為浮於車道上方的透明方盒。若仍標為 <c>kind: "prop"</c>，
-        /// 建構可行駛關卡的消費端會將數千個這樣的方盒轉為碰撞幾何，道路將無法通行。）<br/><br/>
+        /// into collision geometry and the road becomes impassable.
         /// The signal is <c>MeshData.m_State</c>, the same flag the renderer switches on, rather
         /// than the shader-name match the material layer uses. Cached per prefab: a city holds a
-        /// million objects and a few thousand prefabs.<br/>
-        /// （判準取自 <c>MeshData.m_State</c>，即繪製器所依據的同一旗標，而非材質層所用的著色器名稱比對。
-        /// 依預製模板快取：城市有百萬物件，但僅數千種預製模板。）
+        /// million objects and a few thousand prefabs.
         /// </summary>
         /// <b>What it projects onto is the game's own answer, not a guess.</b>
         /// <c>MeshData.m_DecalLayer</c> is a <c>DecalLayers</c> mask — <c>Terrain</c>, <c>Roads</c>,
         /// <c>Buildings</c>, <c>Vehicles</c>, <c>Creatures</c>, <c>Other</c> — naming which surfaces
         /// receive the projection. Without it a consumer projecting "onto whatever is beneath"
-        /// paints a road marking across the car parked on it and the wall behind it.<br/>
-        /// （<b>其投影對象取自遊戲本身的答案，而非臆測。</b><c>MeshData.m_DecalLayer</c> 是一個
-        /// <c>DecalLayers</c> 遮罩，指名哪些表面會接受該投影。若無此項，消費端「投影至下方之物」
-        /// 將把道路標線畫到停在其上的車輛與其後的牆面上。）
+        /// paints a road marking across the car parked on it and the wall behind it.
         /// </summary>
-        /// <param name="prefabEntity">The object prefab.（物件預製模板。）</param>
-        /// <returns>Whether every mesh it draws is a decal, and onto what.（其繪製的每個網格是否皆為貼花，以及投影對象。）</returns>
+        /// <param name="prefabEntity">The object prefab.</param>
+        /// <returns>Whether every mesh it draws is a decal, and onto what.</returns>
         private DecalInfo DecalOf(Entity prefabEntity)
         {
             if (prefabEntity == Entity.Null) return new DecalInfo(false, 0, 0f);
@@ -1171,10 +1076,7 @@ namespace Carto.Systems
                     // `RenderPrefabRenderer.Instance.SetDecalProperties` both set `_DecalLayerMask`
                     // from `DecalProperties.m_LayerMask`. Keep the ECS field as a fallback rather
                     // than replacing it: it costs nothing and a future build may start populating it.
-                    // （`MeshData.m_DecalLayer` 並非繪製器讀取遮罩之處。全城 17,370 個貼花的該欄位
-                    //   皆為零，此即該欄位確有被讀取、稽核亦稱已修正，而每筆紀錄的 `decalLayers`
-                    //   卻仍付之闕如的緣故。著色器實際取得的值來自受管理的 `DecalProperties` 組件。
-                    //   保留 ECS 欄位作為後備而非取而代之：此舉毫無成本，且日後的版本可能開始填入該值。）
+                    //
                     if (EntityManager.HasComponent<PrefabData>(mesh)
                         && Instance.Prefab.TryGetPrefab(EntityManager.GetComponentData<PrefabData>(mesh),
                                                         out PrefabBase meshPrefab)
@@ -1197,7 +1099,7 @@ namespace Carto.Systems
 
                 // Every drawn mesh, not merely one of them: a building with a grime decal on its
                 // wall is still a building, and must keep its collision.
-                // （須為所繪製的每個網格，而非其中之一：牆面帶有污漬貼花的建築仍是建築，必須保留碰撞。）
+                //
                 decal = (meshes > 0) && (decals == meshes);
             }
 
@@ -1208,12 +1110,11 @@ namespace Carto.Systems
 
         /// <summary>
         /// Attach the semantic attributes that are cheap and reliable to read.
-        /// （附加讀取成本低且可靠的語意屬性。）
         /// </summary>
-        /// <param name="entity">The object entity.（物件實體。）</param>
-        /// <param name="prefabEntity">Its prefab.（其預製模板。）</param>
-        /// <param name="kind">The classification already decided for it.（已為其判定的分類。）</param>
-        /// <param name="record">The record to populate.（待填入的紀錄。）</param>
+        /// <param name="entity">The object entity.</param>
+        /// <param name="prefabEntity">Its prefab.</param>
+        /// <param name="kind">The classification already decided for it.</param>
+        /// <param name="record">The record to populate.</param>
         private void AddAttributes(Entity entity, Entity prefabEntity, string kind, InstanceRecord record)
         {
             // How far the object stands *above* the ground, not the ground's own height — the two
@@ -1222,11 +1123,7 @@ namespace Carto.Systems
             // `max(0, transform.y - SampleHeight(terrain, pos))` in
             // `ObjectToolBaseSystem.CreateDefinitionsJob`, so it is zero for anything sitting on
             // the ground and the component is simply absent for most objects.
-            // （此為物件高出地面的距離，而非地面自身的高度；契約措辭曾一度混淆兩者，
-            //   而其差別正是此欄位的全部價值。遊戲於
-            //   `ObjectToolBaseSystem.CreateDefinitionsJob` 中以
-            //   `max(0, transform.y - SampleHeight(terrain, pos))` 計算之，
-            //   故凡置於地面者皆為零，且多數物件根本沒有此元件。）
+            //
             if (EntityManager.HasComponent<Game.Objects.Elevation>(entity))
             {
                 Game.Objects.Elevation elevation = EntityManager.GetComponentData<Game.Objects.Elevation>(entity);
@@ -1236,16 +1133,14 @@ namespace Carto.Systems
                 // negative values (audit §4.1's own correction); only the placement-definition
                 // path clamps. The flags still matter: `Lowered` is how the game marks a
                 // deliberate below-ground placement, which a consumer cutting terrain needs.
-                // （儲存的元件<b>並未</b>以零為下限——完整城市實測有 29,610 筆負值
-                //   （稽核 §4.1 自身的更正）；僅擺放定義路徑會夾住。旗標仍然重要：
-                //   `Lowered` 是遊戲標記刻意置於地下者的方式，開挖地形的消費端需要它。）
+                //
                 string[] flags = FlagNames(elevation.m_Flags.ToString());
                 if (flags.Length > 0) record.Attributes["elevationFlags"] = flags;
             }
 
             // A decal is painted onto something, and which something is not a guess a consumer
             // should have to make — see the contract's §4.2a.
-            // （貼花是被塗繪於某物之上的，而該物為何不應由消費端臆測——參見契約 §4.2a。）
+            //
             if (kind == "decal")
             {
                 DecalInfo info = DecalOf(prefabEntity);
@@ -1255,7 +1150,7 @@ namespace Carto.Systems
 
                 // The mesh is the painted quad, so the volume it was projected through is the one
                 // thing the mesh layer no longer says. See `MeshRipSystem.TryFlattenDecal`.
-                // （網格即所繪出的四邊形，故其投影所經的體積是網格層唯一不再表達之物。）
+                //
                 if (info.Height > 0f) record.Attributes["decalHeight"] = math.round(info.Height * 1000f) / 1000f;
             }
 
@@ -1270,13 +1165,7 @@ namespace Carto.Systems
             // every entity on load, so it is always populated by the time a rip can run.
             // `CustomMeshColor` overrides it wholesale when the player painted the thing
             // (`SetCustomColor` applies entry 0 to every part).
-            // （此特定物件被繪上的塗裝——遊戲自身已解析的答案，而非用以查找的鍵。
-            //   `Game.Objects.Color` 並<b>非</b>該答案：其唯一寫入者是 `ObjectColorSystem`，
-            //   由當前<b>資訊檢視</b>填入——該值是隨最後開啟的資訊模式而變的 UI 疊加狀態，
-            //   而此屬性的前一版將其當作塗裝選擇輸出（一座完整城市中 357,176 筆皆為資訊檢視狀態）。
-            //   真正的選擇由 `MeshColorSystem` 依 `PseudoRandomSeed`、色盤機率與季節篩選計算，
-            //   逐實例存於 `MeshColor` 緩衝區——載入時對所有實體重算，故擷取時必已填妥。
-            //   玩家手動上色時 `CustomMeshColor` 整體覆蓋之。）
+            //
             if (EntityManager.HasBuffer<Game.Rendering.CustomMeshColor>(entity)
                 && (EntityManager.GetBuffer<Game.Rendering.CustomMeshColor>(entity, true).Length > 0))
             {
@@ -1296,8 +1185,7 @@ namespace Carto.Systems
 
                     // Parts of one instance can resolve different sets (per-part random seeds).
                     // The first part's set is exported; count how often that approximates.
-                    // （同一實例的各部件可解析出不同的色組（逐部件的隨機種子）。
-                    //   輸出首個部件的色組，並計數此近似的發生次數。）
+                    //
                     for (int i = 1; i < colors.Length; i++)
                     {
                         if (!colors[i].m_ColorSet.Equals(colors[0].m_ColorSet)) { _divergentColorSets++; break; }
@@ -1310,7 +1198,7 @@ namespace Carto.Systems
                 Tree tree = EntityManager.GetComponentData<Tree>(entity);
 
                 // m_Growth is a byte ramp; the contract defines growth as 0..1.
-                // （m_Growth 為位元組級距，契約定義的 growth 為 0 至 1。）
+                //
                 record.Attributes["growth"] = Math.Round(tree.m_Growth / 255d, 3);
 
                 // The size the game actually draws this tree at. The renderer multiplies the
@@ -1318,9 +1206,7 @@ namespace Carto.Systems
                 // a √-lerp between the prefab's per-stage sizes (`GrowthScaleData`) — and a
                 // consumer cannot reproduce it from `growth` alone because the per-stage sizes are
                 // prefab data the bundle does not carry. Uniform, so one number.
-                // （遊戲實際繪製此樹的尺寸。繪製器以 `CalculateTreeSubMeshData` 所得的縮放
-                //   乘入實例變換——即預製模板各階段尺寸間的 √ 插值——而消費端無法僅憑
-                //   `growth` 重現，因為各階段尺寸是束未承載的預製模板資料。等比縮放，故僅一個數。）
+                //
                 if (EntityManager.HasComponent<GrowthScaleData>(prefabEntity))
                 {
                     GrowthScaleData growthScale = EntityManager.GetComponentData<GrowthScaleData>(prefabEntity);
@@ -1336,8 +1222,7 @@ namespace Carto.Systems
                 // a tree's vocabulary (Teen/Adult/Elderly/Dead/Stump/Collected) is a different one.
                 // A sapling has no flag set at all, where ToString() yields "0" — omit rather than
                 // emit a meaningless value, since `growth` already carries the information.
-                // （不使用 `state`：該鍵在契約中保留給建築生命週期枚舉，樹木的詞彙與之不同。
-                //   幼苗未設任何旗標，ToString() 會得到 "0"，此時略過而非寫出無意義的值。）
+                //
                 string treeState = tree.m_State.ToString();
                 if (!string.IsNullOrEmpty(treeState) && !char.IsDigit(treeState[0]))
                     record.Attributes["treeState"] = treeState;
@@ -1355,23 +1240,18 @@ namespace Carto.Systems
 
         /// <summary>
         /// Split a flags enum's rendered name into the contract's array of names.
-        /// （將旗標列舉的名稱字串拆分為契約所定義的名稱陣列。）<br/><br/>
         /// Names rather than a bit field, for the same reason <c>lanes.jsonl</c> does it: the
         /// numeric values are CS2 internals that can change meaning between game versions, where a
         /// name that disappears is a name a consumer simply stops seeing. An enum with no bits set
-        /// renders as <c>"0"</c>, which is not a name and is dropped.<br/>
-        /// （採用名稱而非位元欄位，理由與 <c>lanes.jsonl</c> 相同：數值為 CS2 的內部值，
-        /// 可能在版本間悄然改變意義；而消失的名稱只會讓消費端不再看到它。
-        /// 未設任何位元的列舉會呈現為 <c>"0"</c>，那不是名稱，故予以捨棄。）
+        /// renders as <c>"0"</c>, which is not a name and is dropped.
         /// </summary>
-        /// <param name="flags">The enum's <c>ToString</c>.（列舉的 <c>ToString</c> 結果。）</param>
-        /// <returns>The names, possibly empty.（各名稱，可能為空。）</returns>
+        /// <param name="flags">The enum's <c>ToString</c>.</param>
+        /// <returns>The names, possibly empty.</returns>
         /// <summary>
         /// A resolved <c>ColorSet</c> as the contract writes colours: three linear RGBA channels.
-        /// （已解析的 <c>ColorSet</c>，依契約的顏色寫法：三個線性 RGBA 通道。）
         /// </summary>
-        /// <param name="set">The set.（色組。）</param>
-        /// <returns>Three RGBA arrays.（三個 RGBA 陣列。）</returns>
+        /// <param name="set">The set.</param>
+        /// <returns>Three RGBA arrays.</returns>
         internal static double[][] ColorSetJson(Game.Rendering.ColorSet set) => new[]
         {
             ChannelJson(set.m_Channel0), ChannelJson(set.m_Channel1), ChannelJson(set.m_Channel2)
@@ -1399,16 +1279,14 @@ namespace Carto.Systems
 
         /// <summary>
         /// Write the bundle's <c>warnings.jsonl</c> layer, one line per thing the producer could
-        /// not fully deliver.<br/>
-        /// （寫出束的 <c>warnings.jsonl</c> 層，生產端每個無法完整產出的項目各佔一行。）<br/><br/>
+        /// not fully deliver.
         /// The contract defines this layer as advisory so a consumer may ignore it — its purpose is
-        /// to make a stand-in asset explicable rather than mysterious.<br/>
-        /// （契約將此層定義為建議性質，消費端可忽略；其用途是讓替代資產有跡可循。）
+        /// to make a stand-in asset explicable rather than mysterious.
         /// </summary>
-        /// <param name="outputDirectory">The bundle root.（束的根目錄。）</param>
-        /// <param name="unresolvedPrefabs">The prefab entity indices that would not resolve.（無法解析的預製模板實體索引。）</param>
-        /// <param name="geometrylessPrefabs">Asset ids referenced here that no mesh will back.（此處參照、但不會有網格支撐的資產 ID。）</param>
-        /// <param name="report">The report to note the outcome in.（用以記錄結果的報告。）</param>
+        /// <param name="outputDirectory">The bundle root.</param>
+        /// <param name="unresolvedPrefabs">The prefab entity indices that would not resolve.</param>
+        /// <param name="geometrylessPrefabs">Asset ids referenced here that no mesh will back.</param>
+        /// <param name="report">The report to note the outcome in.</param>
         private void WriteWarnings(string outputDirectory, HashSet<int> unresolvedPrefabs,
                                    HashSet<string> geometrylessPrefabs, StringBuilder report)
         {
@@ -1425,10 +1303,7 @@ namespace Carto.Systems
                 // meshes-first reported 118 declarations and shipped 87. Every one of those
                 // erased lines became an undeclared gap — a contract violation manufactured by
                 // the writer rather than by anything missing.
-                // （保留所有非本階段所擁有的行，正如網格擷取保留我們的行一樣。
-                //   先前的截斷寫入使該檔案與執行順序相關：網格擷取宣告其缺口後，
-                //   稍後的實例階段將其全數抹除，因此先擷取網格的束回報 118 筆宣告卻只輸出 87 筆。
-                //   每一筆被抹除的行都成為未宣告的缺口——由寫出端而非任何缺失所製造的契約違規。）
+                //
                 List<string> kept = new();
                 if (System.IO.File.Exists(path))
                 {
@@ -1477,16 +1352,12 @@ namespace Carto.Systems
 
         /// <summary>
         /// Whether a <c>warnings.jsonl</c> line is one this pass writes.
-        /// （某 <c>warnings.jsonl</c> 行是否為本階段所寫出者。）<br/><br/>
         /// The instance pass owns <c>prefab</c>; the mesh pass owns <c>mesh</c>, <c>material</c>
         /// and <c>texture</c>. Each rewrites only its own kinds, so the two can run in either
-        /// order, and re-running one does not double or erase the other's declarations.<br/>
-        /// （實例階段擁有 <c>prefab</c>；網格階段擁有 <c>mesh</c>、<c>material</c> 與 <c>texture</c>。
-        /// 各自僅重寫自身類別，故兩者可依任意順序執行，
-        /// 且重跑其一不會使另一者的宣告重複或遭抹除。）
+        /// order, and re-running one does not double or erase the other's declarations.
         /// </summary>
-        /// <param name="line">One line of the file.（檔案中的一行。）</param>
-        /// <returns>Whether this pass owns it.（本階段是否擁有該行。）</returns>
+        /// <param name="line">One line of the file.</param>
+        /// <returns>Whether this pass owns it.</returns>
         private static bool IsOwnedByInstanceRip(string line)
         {
             try
@@ -1501,10 +1372,9 @@ namespace Carto.Systems
 
         /// <summary>
         /// List the component types present on an entity, for diagnostics.
-        /// （列出實體上存在的元件型別，供診斷使用。）
         /// </summary>
-        /// <param name="entity">The entity to describe.（待描述的實體。）</param>
-        /// <returns>The type names.（型別名稱。）</returns>
+        /// <param name="entity">The entity to describe.</param>
+        /// <returns>The type names.</returns>
         private List<string> DescribeComponents(Entity entity)
         {
             List<string> names = new();

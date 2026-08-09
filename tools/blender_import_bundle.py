@@ -2297,8 +2297,6 @@ def _unfilter_slow(kind, line, previous, bpp):
     Both predict from bytes of the CURRENT row that this same loop has already reconstructed
     (`line[i - bpp]`), so — unlike None/Up/Sub — they cannot be vectorised across the row and
     keep the original sequential algorithm. `line` is mutated in place and returned.
-    Average(3) 和 Paeth(4) 都要用本行中【已经被本循环重建过】的字节做预测（`line[i - bpp]`），
-    和 None/Up/Sub 不同，无法整行向量化，因此保留原始的逐字节顺序算法。`line` 原地修改并返回。
     """
     stride = len(line)
     if kind == 3:      # Average
@@ -2331,13 +2329,6 @@ def _unfilter_scanlines(raw, width, height, bpp):
     from the current row's own already-reconstructed bytes and are genuinely sequential, so
     they fall back to `_unfilter_slow`, paid only on the rows that actually use them (the
     producer only ever writes filter 0, so in practice that fallback is cold).
-    在 numpy 允许的范围内还原 PNG 的逐行滤波：None(0) 和 Up(2) 可以整行向量化（直接拷贝 /
-    整行相加）；Sub(1) 是按交织字节通道的累加和——把整行重塑为 (像素, 通道) 后沿像素轴做累加和，
-    等价于对每个通道并行计算 `recon[i] = filt[i] + recon[i - bpp]`；先加宽到 uint32 再截断回
-    uint8，是因为 numpy 的 uint8 累加和会静默溢出而不是按 mod 256 回绕，这里的截断本身就是格式
-    要求的 mod 256。Average(3) 和 Paeth(4) 依赖本行自身已重建的字节做预测，本质上是顺序算法，
-    回退到 `_unfilter_slow`，只有实际用到这两种滤波的行才付出这个代价（生产者只写 filter 0，
-    所以这条回退路径在实践中是冷路径）。
     """
     stride = width * bpp
     out = numpy.zeros((height, stride), dtype=numpy.uint8)
@@ -4708,9 +4699,6 @@ def main():
         # surface, and must never become collision geometry in anything built from this.
         # Separating them keeps that one command away: hide the collection and the markings go,
         # and nothing else moves.
-        # （貼花置於獨立集合。產出端輸出的是貼花所繪出的平面四邊形，而非其藉以投影的體積，
-        #   故它們現已貼合於車道之上，呈現為其所代表的路面標線——但它們仍是塗料而非路面本身，
-        #   在任何據此建構的成果中都絕不可成為碰撞幾何。分開放置使此事僅需一道指令。）
         # Foundation skirts, contract §4.1: <assetId>__base.glb placed at the same transform,
         # for instances resting on the ground. The band is shown as authored (a 1 m plinth);
         # dropping its v=0 ring to the terrain raster is a consumer's job, and this harness has
@@ -4737,8 +4725,6 @@ def main():
             # Coplanar paint z-fights the carriageway it sits on, which in the viewport looks
             # like the marking is flickering in and out of the road. A lift far below the
             # tolerance of anything downstream costs nothing and settles it.
-            # （與其所在車道共面的塗料會產生深度衝突，於視埠中看似標線在路面上忽隱忽現。
-            #   遠低於下游任何容差的微小抬升毫無代價，即可解決此問題。）
             empty.matrix_world = Matrix.Translation((0.0, 0.0, _INSTANCE_DECAL_LIFT)) @ empty.matrix_world
             decal_collection.objects.link(empty)
         else:

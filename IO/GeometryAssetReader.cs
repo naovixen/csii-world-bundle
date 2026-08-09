@@ -12,31 +12,25 @@ namespace Carto.IO
 {
     /// <summary>
     /// Reads full-detail geometry out of a <see cref="GeometryAsset"/>.
-    /// （自 <see cref="GeometryAsset"/> 讀取完整細節的幾何。）<br/><br/>
     /// The ECS <c>MeshVertex</c>/<c>MeshIndex</c> buffers on a prefab entity hold only what the
     /// game needs on the CPU for raycasting and camera collision, which is a heavily reduced LOD —
     /// a building whose <c>MeshData.m_IndexCount</c> reports 194,724 indices exposes just 4,800
     /// through ECS. The authored mesh lives in the geometry asset behind
     /// <see cref="RenderPrefab.geometryAsset"/>, which also carries the sub-mesh descriptors that
-    /// the ECS path lacks entirely.<br/>
-    /// （預製模板實體上的 ECS 緩衝區僅存放遊戲於 CPU 端進行射線與碰撞所需者，屬大幅簡化的 LOD。
-    /// 完整網格位於 <see cref="RenderPrefab.geometryAsset"/> 之後的幾何資產中，該處另有 ECS
-    /// 路徑完全缺少的子網格描述。）<br/><br/>
+    /// the ECS path lacks entirely.
     /// Unpacking is delegated to the game's own <c>Unpack</c> helpers, so vertex attribute formats
     /// (float32, float16, normalised integers, varying dimensions) are decoded exactly as the game
-    /// decodes them rather than reimplemented here.<br/>
-    /// （解包委由遊戲自身的 <c>Unpack</c> 輔助方法處理，使頂點屬性格式的解讀與遊戲完全一致。）
+    /// decodes them rather than reimplemented here.
     /// </summary>
     public static class GeometryAssetReader
     {
         /// <summary>
-        /// Mod's logger.（模組的記錄器。）
+        /// Mod's logger.
         /// </summary>
         static readonly ILog _log = Instance.Log;
 
         /// <summary>
         /// Describe the meshes a geometry asset contains, for diagnostics and for choosing one.
-        /// （描述幾何資產所含的網格，供診斷與選取使用。）
         /// </summary>
         public struct MeshInfo
         {
@@ -49,14 +43,12 @@ namespace Carto.IO
 
         /// <summary>
         /// Enumerate the meshes held by a geometry asset.
-        /// （列舉幾何資產所持有的網格。）<br/><br/>
         /// A geometry asset commonly holds several meshes — the LOD chain — so the caller picks
-        /// rather than assuming index 0.<br/>
-        /// （幾何資產通常持有多個網格（LOD 鏈），故由呼叫端選取而非假定索引 0。）
+        /// rather than assuming index 0.
         /// </summary>
-        /// <param name="asset">The geometry asset.（幾何資產。）</param>
-        /// <param name="meshCount">The number of meshes reported by the render prefab.（繪製預製模板回報的網格數量。）</param>
-        /// <returns>One entry per readable mesh.（每個可讀網格一筆。）</returns>
+        /// <param name="asset">The geometry asset.</param>
+        /// <param name="meshCount">The number of meshes reported by the render prefab.</param>
+        /// <returns>One entry per readable mesh.</returns>
         public static List<MeshInfo> Describe(GeometryAsset asset, int meshCount)
         {
             List<MeshInfo> result = new();
@@ -85,7 +77,7 @@ namespace Carto.IO
                 catch (Exception)
                 {
                     // A mesh index the asset does not actually hold; stop probing upward.
-                    // （資產並未持有的網格索引，停止向上探測。）
+                    //
                     break;
                 }
             }
@@ -96,10 +88,7 @@ namespace Carto.IO
         /// <summary>
         /// Read <b>every</b> mesh a geometry asset holds into one <see cref="MeshAsset"/>, with
         /// each primitive's <see cref="MeshPrimitive.MaterialIndex"/> being the flat
-        /// (mesh, sub-mesh) ordinal across the whole asset.<br/>
-        /// （將幾何資產所持有的<b>每個</b>網格讀入單一 <see cref="MeshAsset"/>，
-        /// 各 primitive 的 <see cref="MeshPrimitive.MaterialIndex"/> 為跨越整個資產的
-        /// （網格、子網格）平坦序數。）<br/><br/>
+        /// (mesh, sub-mesh) ordinal across the whole asset.
         /// <b>Why all of them, and why that ordinal.</b> The meshes of one geometry asset are
         /// simultaneous parts, not an LOD chain — LODs are separate render prefabs behind
         /// <c>LodProperties</c>. The game draws one batch per flattened sub-mesh
@@ -107,19 +96,14 @@ namespace Carto.IO
         /// and <c>RenderPrefab.ObtainMesh(materialIndex)</c> defines the mapping: walk the meshes
         /// in order, subtracting each one's sub-mesh count. Reading only the richest mesh — the
         /// previous behaviour — dropped every sibling part and, when the richest was not the
-        /// first, resolved its surfaces at the wrong offset.<br/>
-        /// （<b>為何全部讀取、為何採用該序數。</b>同一幾何資產中的網格是同時繪製的部件而非 LOD 鏈——
-        /// LOD 是 <c>LodProperties</c> 之後的獨立繪製預製模板。遊戲為每個平坦化子網格各建一個批次，
-        /// 且 <c>RenderPrefab.ObtainMesh(materialIndex)</c> 定義了對應方式：依序走訪各網格並
-        /// 遞減其子網格數。先前「最豐富者為準」的行為會丟棄所有兄弟部件，
-        /// 且當最豐富者非首個時，其表面將以錯誤的偏移解析。）
+        /// first, resolved its surfaces at the wrong offset.
         /// </summary>
-        /// <param name="asset">The geometry asset.（幾何資產。）</param>
-        /// <param name="meshCount">The number of meshes the render prefab reports.（繪製預製模板回報的網格數量。）</param>
-        /// <param name="assetId">The sanitised asset id.（淨化後的資產 ID。）</param>
-        /// <param name="sourceName">The original prefab name.（原始的預製模板名稱。）</param>
-        /// <param name="meshesMerged">Receives how many meshes contributed geometry.（接收貢獻了幾何的網格數量。）</param>
-        /// <returns>The merged mesh, or <c>null</c>.（合併後的網格，或 <c>null</c>。）</returns>
+        /// <param name="asset">The geometry asset.</param>
+        /// <param name="meshCount">The number of meshes the render prefab reports.</param>
+        /// <param name="assetId">The sanitised asset id.</param>
+        /// <param name="sourceName">The original prefab name.</param>
+        /// <param name="meshesMerged">Receives how many meshes contributed geometry.</param>
+        /// <returns>The merged mesh, or <c>null</c>.</returns>
         public static MeshAsset ReadAll(GeometryAsset asset, int meshCount, string assetId, string sourceName, out int meshesMerged)
         {
             meshesMerged = 0;
@@ -145,13 +129,11 @@ namespace Carto.IO
                     // the bundle loses, not an over-probe — say so where the default log shows
                     // it, and keep counting ordinals so the surviving meshes still bind their
                     // surfaces at the right offsets.
-                    // （數量取自資產自身的檔頭，故此處拋出即為束所丟失的幾何而非過度探測——
-                    //   在預設記錄可見處言明，並繼續計數序數使倖存網格仍以正確偏移繫結表面。）
+                    //
                     // The full exception, stack and all: `ArgumentOutOfRangeException` alone
                     // cannot say which accessor mis-sized (Highway_Lane_4_Mesh failed exactly
                     // this way in a full-city rip and the message was not enough to diagnose).
-                    // （完整例外連同堆疊：僅憑 `ArgumentOutOfRangeException` 無法指出何者尺寸有誤
-                    //   （全城擷取中 Highway_Lane_4_Mesh 正是如此失敗，訊息不足以診斷）。）
+                    //
                     _log.Warn($"Mesh {meshIndex} of `{assetId}` unreadable: {ex}");
                 }
 
@@ -159,7 +141,7 @@ namespace Carto.IO
                 {
                     // Rebase this mesh's primitives onto the asset-wide ordinal, which is what
                     // `GetSurfaceAsset` is indexed by.
-                    // （將此網格的 primitive 重定至資產層級的序數，該序數即 `GetSurfaceAsset` 的索引。）
+                    //
                     foreach (MeshPrimitive primitive in part.Primitives)
                     {
                         primitive.MaterialIndex += ordinal;
@@ -180,11 +162,8 @@ namespace Carto.IO
 
         /// <summary>
         /// Concatenate several read meshes into one, offsetting indices and primitive ranges.
-        /// （將數個已讀取的網格串接為一，並平移其索引與 primitive 範圍。）<br/><br/>
         /// An attribute survives the merge only when every part carries it — a mesh without
-        /// normals stitched to one with them would otherwise get fabricated values.<br/>
-        /// （唯有每個部件皆具備的屬性才能在合併後保留——否則缺少法線的網格
-        /// 與具備法線者縫合時將被填入捏造的數值。）
+        /// normals stitched to one with them would otherwise get fabricated values.
         /// </summary>
         private static MeshAsset Merge(List<MeshAsset> parts, string assetId, string sourceName)
         {
@@ -250,15 +229,13 @@ namespace Carto.IO
 
         /// <summary>
         /// Read a mesh straight from a loaded Unity <see cref="UnityEngine.Mesh"/>.
-        /// （直接自已載入的 Unity <see cref="UnityEngine.Mesh"/> 讀取網格。）<br/><br/>
         /// Used when the geometry asset's own accessors stay empty after loading. Slower and more
-        /// allocating than the native path, but it depends only on documented Unity API.<br/>
-        /// （當幾何資產本身的存取器於載入後仍為空時使用。較慢且配置較多，但僅依賴有文件的 Unity API。）
+        /// allocating than the native path, but it depends only on documented Unity API.
         /// </summary>
-        /// <param name="source">The loaded mesh.（已載入的網格。）</param>
-        /// <param name="assetId">The sanitised asset id.（淨化後的資產 ID。）</param>
-        /// <param name="sourceName">The original prefab name.（原始的預製模板名稱。）</param>
-        /// <returns>The mesh, or <c>null</c> when it holds nothing usable.（網格，若無可用內容則為 <c>null</c>。）</returns>
+        /// <param name="source">The loaded mesh.</param>
+        /// <param name="assetId">The sanitised asset id.</param>
+        /// <param name="sourceName">The original prefab name.</param>
+        /// <returns>The mesh, or <c>null</c> when it holds nothing usable.</returns>
         public static MeshAsset ReadUnityMesh(UnityEngine.Mesh source, string assetId, string sourceName)
         {
             if ((source == null) || (source.vertexCount == 0)) return null;
@@ -297,7 +274,7 @@ namespace Carto.IO
 
             // Concatenate the sub-meshes into one index buffer, recording each as a primitive.
             // applyBaseVertex keeps every index absolute, matching the native path.
-            // （將各子網格串接為單一索引緩衝區並記錄為 primitive。applyBaseVertex 使索引維持絕對值。）
+            //
             List<int> indices = new();
             for (int i = 0; i < source.subMeshCount; i++)
             {
@@ -334,15 +311,13 @@ namespace Carto.IO
         /// <summary>
         /// Read and merge <b>every</b> loaded Unity mesh, with the same flat material ordinal as
         /// <see cref="ReadAll"/> — this is the same asset seen through Unity's API, so the same
-        /// mapping applies.<br/>
-        /// （讀取並合併<b>每個</b>已載入的 Unity 網格，材質序數的平坦化方式與
-        /// <see cref="ReadAll"/> 相同——這是同一資產經由 Unity API 的呈現，故適用同一對應。）
+        /// mapping applies.
         /// </summary>
-        /// <param name="loaded">The loaded meshes.（已載入的網格。）</param>
-        /// <param name="assetId">The sanitised asset id.（淨化後的資產 ID。）</param>
-        /// <param name="sourceName">The original prefab name.（原始的預製模板名稱。）</param>
-        /// <param name="meshesMerged">Receives how many meshes contributed geometry.（接收貢獻了幾何的網格數量。）</param>
-        /// <returns>The merged mesh, or <c>null</c>.（合併後的網格，或 <c>null</c>。）</returns>
+        /// <param name="loaded">The loaded meshes.</param>
+        /// <param name="assetId">The sanitised asset id.</param>
+        /// <param name="sourceName">The original prefab name.</param>
+        /// <param name="meshesMerged">Receives how many meshes contributed geometry.</param>
+        /// <returns>The merged mesh, or <c>null</c>.</returns>
         public static MeshAsset ReadUnityMeshes(UnityEngine.Mesh[] loaded, string assetId, string sourceName, out int meshesMerged)
         {
             meshesMerged = 0;
@@ -378,13 +353,12 @@ namespace Carto.IO
 
         /// <summary>
         /// Read one mesh out of a geometry asset into a <see cref="MeshAsset"/>.
-        /// （自幾何資產讀取單一網格至 <see cref="MeshAsset"/>。）
         /// </summary>
-        /// <param name="asset">The geometry asset.（幾何資產。）</param>
-        /// <param name="meshIndex">Which mesh to read.（要讀取的網格。）</param>
-        /// <param name="assetId">The sanitised asset id.（淨化後的資產 ID。）</param>
-        /// <param name="sourceName">The original prefab name.（原始的預製模板名稱。）</param>
-        /// <returns>The mesh, or <c>null</c> when nothing readable was found.（網格，若無可讀資料則為 <c>null</c>。）</returns>
+        /// <param name="asset">The geometry asset.</param>
+        /// <param name="meshIndex">Which mesh to read.</param>
+        /// <param name="assetId">The sanitised asset id.</param>
+        /// <param name="sourceName">The original prefab name.</param>
+        /// <returns>The mesh, or <c>null</c> when nothing readable was found.</returns>
         public static MeshAsset Read(GeometryAsset asset, int meshIndex, string assetId, string sourceName)
         {
             if (asset == null) return null;
@@ -434,7 +408,7 @@ namespace Carto.IO
             // -- sub-meshes -------------------------------------------------------------------
             // These are the drawable ranges the ECS path never exposed, which is why every mesh
             // ripped through it came out as a single primitive covering the whole index buffer.
-            // （這些即 ECS 路徑從未提供的可繪製範圍，也是先前每個網格都成為單一 primitive 的原因。）
+            //
             try
             {
                 int subMeshCount = asset.GetSubMeshCount(meshIndex);
@@ -445,7 +419,7 @@ namespace Carto.IO
 
                     // glTF has no baseVertex, so fold it into the indices now and keep everything
                     // downstream working on plain absolute indices.
-                    // （glTF 沒有 baseVertex，故此處先併入索引，使下游一律使用絕對索引。）
+                    //
                     if (descriptor.baseVertex != 0)
                     {
                         int end = math.min(descriptor.indexStart + descriptor.indexCount, indexCount);
@@ -482,7 +456,6 @@ namespace Carto.IO
 
         /// <summary>
         /// Read a three-component vertex attribute, or <c>null</c> when the mesh lacks it.
-        /// （讀取三分量的頂點屬性，若網格缺少該屬性則回傳 <c>null</c>。）
         /// </summary>
         private static float3[] ReadFloat3(GeometryAsset asset, int meshIndex, VertexAttribute attribute, int count)
         {
