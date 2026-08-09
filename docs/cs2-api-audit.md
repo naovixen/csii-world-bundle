@@ -1686,8 +1686,9 @@ cannot paint during a synchronous stage either; nothing paints mid-freeze.
 
 ## 38. The §34 conforming port flattened retaining walls — the class-1 move is a clamp, not an assignment (2026-08-09)
 
-**Status: offline acceptance PASSED on the 2026-08-09 11:53 network re-rip; visual A/B
-pending.** Diagnosed 2026-08-09 (acceptance run), re-diagnosed from scratch in a fresh session
+**Status: ACCEPTED — offline acceptance PASSED on the 2026-08-09 11:53 network re-rip, and
+the Blender-vs-in-game A/B on the wall cutting confirmed by the user 2026-08-09 (walls
+stand and line up; class-2 assignment stands, no assignment-vs-max revisit needed).** Diagnosed 2026-08-09 (acceptance run), re-diagnosed from scratch in a fresh session
 per the user's decision, fixed and re-ripped the same day. Nothing here is a §34-mechanism
 retraction — the game reading stands; the landed port applied the wrong *move* to class-1
 vertices.
