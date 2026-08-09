@@ -891,6 +891,7 @@ namespace Carto
         /// </summary>
         [SettingsUISection(RipperTab, RipperMeshGroup)]
         [SettingsUIDropdown(typeof(Settings), nameof(GetRipMeshLimits))]
+        [SettingsUIDisableByCondition(typeof(Settings), nameof(RipObjects), invert: true)]
         public int RipMeshLimit { get; set; } = 50;
 
         public DropdownItem<int>[] GetRipMeshLimits()
@@ -903,6 +904,16 @@ namespace Carto
                 new() { value = 0, displayName = "Options.Carto.Carto.Mod.RIPMESHLIMIT[All]" }
             };
         }
+
+        /// <summary>
+        /// Whether a world rip writes textures at all. Off, materials ship their tints and
+        /// scalars only — every consumer still gets colour, just no maps. The group's master,
+        /// so it shows in the basic view like the other masters.
+        /// （世界擷取是否寫出貼圖。關閉時材質僅帶色調與純量——消費端仍有顏色，只是沒有貼圖。
+        /// 此為該群組的主開關，故與其他主開關同樣顯示於基本檢視。）
+        /// </summary>
+        [SettingsUISection(RipperTab, RipperTextureGroup)]
+        public bool RipTextures { get; set; } = true;
 
         /// <summary>
         /// The longest edge a ripped texture may have (PLAN Phase 4).
@@ -919,15 +930,6 @@ namespace Carto
         [SettingsUIDropdown(typeof(Settings), nameof(GetRipTextureSizes))]
         [SettingsUIDisableByCondition(typeof(Settings), nameof(RipTextures), invert: true)]
         public int RipTextureSize { get; set; } = 1024;
-
-        /// <summary>
-        /// Whether a world rip writes textures at all. Off, materials ship their tints and
-        /// scalars only — every consumer still gets colour, just no maps.
-        /// （世界擷取是否寫出貼圖。關閉時材質僅帶色調與純量——消費端仍有顏色，只是沒有貼圖。）
-        /// </summary>
-        [SettingsUISection(RipperTab, RipperTextureGroup)]
-        [SettingsUIAdvanced]
-        public bool RipTextures { get; set; } = true;
 
         public DropdownItem<int>[] GetRipTextureSizes()
         {
