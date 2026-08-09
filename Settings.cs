@@ -666,7 +666,7 @@ namespace Carto
         /// </summary>
         [SettingsUISection(RipperTab, RipperNetworkGroup)]
         [SettingsUIAdvanced]
-        [SettingsUIDisableByCondition(typeof(Settings), nameof(RipLaneGeometry), invert: true)]
+        [SettingsUIDisableByCondition(typeof(Settings), nameof(IsLaneDecalsUnavailable))]
         public bool RipLaneDecals { get; set; } = true;
 
         /// <summary>
@@ -917,6 +917,7 @@ namespace Carto
         /// </summary>
         [SettingsUISection(RipperTab, RipperTextureGroup)]
         [SettingsUIDropdown(typeof(Settings), nameof(GetRipTextureSizes))]
+        [SettingsUIDisableByCondition(typeof(Settings), nameof(RipTextures), invert: true)]
         public int RipTextureSize { get; set; } = 1024;
 
         /// <summary>
@@ -2415,6 +2416,15 @@ namespace Carto
 
         [SettingsUIHidden]
         public bool IsInGameOrEditor => GameMode.GameOrEditor.HasFlag(Instance.GameMode);
+
+        /// <summary>
+        /// Whether the Road Markings sub-option is out of play — its chain runs through both the
+        /// Network master and the Fences, Hedges &amp; Cables option, so it must gray out when
+        /// either is off.（「道路標線」子選項是否不可用——其鏈同時經過「路網」主開關與
+        /// 「圍籬、樹籬與電纜」選項，任一關閉皆須變灰。）
+        /// </summary>
+        [SettingsUIHidden]
+        public bool IsLaneDecalsUnavailable => !RipNetworks || !RipLaneGeometry;
 
         [SettingsUIHidden]
         public bool IsTransverseMercator => SourceCRS == IO.CRS.TransverseMercator;
