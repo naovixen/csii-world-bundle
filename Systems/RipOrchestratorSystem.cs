@@ -52,20 +52,35 @@ namespace Carto.Systems
             /// <summary>Buildings, props &amp; trees: instances + appearance, and the prefab meshes they reference.（建築、道具與樹木：實例與外觀，及其參照的預製模板網格。）</summary>
             public bool Objects = true;
 
+            /// <summary>The advanced kind split under <see cref="Objects"/>.（<see cref="Objects"/> 之下的進階類別細分。）</summary>
+            public RipKindFilter Kinds = RipKindFilter.All;
+
             /// <summary>Roads &amp; lanes: the lane graph, network surfaces and lane-drawn geometry.（道路與車道：車道圖、路網表面與車道所繪幾何。）</summary>
             public bool Networks = true;
+
+            /// <summary>The advanced splits under <see cref="Networks"/>.（<see cref="Networks"/> 之下的進階細分。）</summary>
+            public bool NetworkSurfaces = true;
+            public bool LaneGraph = true;
+            public bool LaneGeometry = true;
+            public bool LaneDecals = true;
 
             /// <summary>Terrain &amp; water: heightmaps, splat, surfaces and clip volumes.（地形與水體：高度圖、地表混合、地表區域與裁剪體積。）</summary>
             public bool Terrain = true;
 
             /// <summary>The vanilla vector/raster export, alongside.（隨附的原版向量／網格輸出。）</summary>
-            public bool Vector = false;
+            public bool Vector = true;
 
             /// <summary>The most prefabs the mesh stage rips, or <c>0</c> for all.（網格階段最多擷取的預製模板數，<c>0</c> 為全部。）</summary>
             public int MeshLimit;
 
-            /// <summary>The longest edge a written texture may have, or <c>0</c> for no cap.（寫出貼圖的最長邊上限，<c>0</c> 為不限。）</summary>
+            /// <summary>The longest edge a written texture may have, <c>0</c> for no cap, or negative to write no textures.（寫出貼圖的最長邊上限，<c>0</c> 為不限，負值代表不寫出貼圖。）</summary>
             public int TextureSizeCap;
+
+            /// <summary>Whether the objects stages run at all.（物件階段是否執行。）</summary>
+            public bool RipsObjects => Objects && Kinds.Any;
+
+            /// <summary>Whether the network stage runs at all.（路網階段是否執行。）</summary>
+            public bool RipsNetworkStage => Networks && (NetworkSurfaces || LaneGeometry);
         }
 
         /// <summary>
@@ -231,22 +246,31 @@ namespace Carto.Systems
             //   而部分擷取必須保留兩者——合併語義正是使另一半材質參照有效的機制。）
             List<string> staleFiles = new();
             List<string> staleDirectories = new();
-            if (plan.Objects)
+            if (plan.RipsObjects)
             {
                 staleFiles.AddRange(new[] { "instances.jsonl", "colors.json", "lights.json" });
                 staleDirectories.Add("meshes");
             }
-            if (plan.Networks)
+            if (plan.Networks && plan.NetworkSurfaces)
             {
-                staleFiles.AddRange(new[] { "networks.jsonl", "lanes.jsonl", "lanemeshes.jsonl", "laneprefabs.json" });
-                staleDirectories.AddRange(new[] { "networks", "lanemeshes" });
+                staleFiles.Add("networks.jsonl");
+                staleDirectories.Add("networks");
+            }
+            if (plan.Networks && plan.LaneGraph)
+            {
+                staleFiles.Add("lanes.jsonl");
+            }
+            if (plan.Networks && plan.LaneGeometry)
+            {
+                staleFiles.AddRange(new[] { "lanemeshes.jsonl", "laneprefabs.json" });
+                staleDirectories.Add("lanemeshes");
             }
             if (plan.Terrain)
             {
                 staleFiles.AddRange(new[] { "areas.jsonl", "areaprefabs.json", "clipvolumes.jsonl" });
                 staleDirectories.Add("terrain");
             }
-            if (plan.Objects && plan.Networks)
+            if (plan.RipsObjects && plan.RipsNetworkStage)
             {
                 staleFiles.Add("materials.json");
                 staleDirectories.Add("textures");
@@ -272,12 +296,12 @@ namespace Carto.Systems
                 });
             }
 
-            if (plan.Objects)
+            if (plan.RipsObjects)
             {
                 stages.Add(new Stage
                 {
                     Title = "Instances",
-                    Begin = completed => Instance.InstanceRip.BeginRip(directory, completed),
+                    Begin = completed => Instance.InstanceRip.BeginRip(directory, completed, plan.Kinds),
                     Running = () => Instance.InstanceRip.IsRipping
                 });
 
@@ -295,12 +319,12 @@ namespace Carto.Systems
                 stages.Add(new Stage
                 {
                     Title = "Meshes, materials & textures",
-                    Begin = completed => Instance.MeshRip.BeginRip(directory, plan.MeshLimit, plan.TextureSizeCap, completed),
+                    Begin = completed => Instance.MeshRip.BeginRip(directory, plan.MeshLimit, plan.TextureSizeCap, completed, plan.Kinds),
                     Running = () => Instance.MeshRip.IsRipping
                 });
             }
 
-            if (plan.Networks)
+            if (plan.Networks && plan.LaneGraph)
             {
                 stages.Add(new Stage
                 {
@@ -308,11 +332,15 @@ namespace Carto.Systems
                     Begin = completed => Instance.LaneRip.BeginRip(directory, completed),
                     Running = () => Instance.LaneRip.IsRipping
                 });
+            }
 
+            if (plan.RipsNetworkStage)
+            {
                 stages.Add(new Stage
                 {
                     Title = "Networks & lane geometry",
-                    Begin = completed => Instance.NetworkRip.BeginRip(directory, plan.TextureSizeCap, completed),
+                    Begin = completed => Instance.NetworkRip.BeginRip(directory, plan.TextureSizeCap, completed,
+                                                                      plan.NetworkSurfaces, plan.LaneGeometry, plan.LaneDecals),
                     Running = () => Instance.NetworkRip.IsRipping
                 });
             }

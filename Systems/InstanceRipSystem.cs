@@ -15,6 +15,45 @@ using Unity.Mathematics;
 namespace Carto.Systems
 {
     /// <summary>
+    /// Which instance kinds a rip covers — the "show advanced" split of the ripper tab's
+    /// <b>Buildings, props &amp; trees</b> toggle. The kinds are the contract's closed
+    /// <c>kind</c> vocabulary; the mesh rip filters by the same mask so the two layers stay 1:1.
+    /// （一次擷取涵蓋哪些實例類別——擷取器分頁「建築、道具與樹木」開關的進階細分。
+    /// 類別即契約的封閉 <c>kind</c> 詞彙；網格擷取以同一遮罩過濾，使兩層保持一比一。）<br/><br/>
+    /// Asset ids are still assigned over the <i>whole</i> prefab set regardless of the mask, so a
+    /// filtered rip's ids match an unfiltered one's and partial re-rips keep joining up.
+    /// （無論遮罩為何，資產 ID 仍就<i>整個</i>預製模板集合指派，故過濾後的擷取與未過濾者 ID 相同，
+    /// 部分重擷取仍能連結。）
+    /// </summary>
+    public readonly struct RipKindFilter
+    {
+        public readonly bool Buildings, Props, Trees, Decals;
+
+        public RipKindFilter(bool buildings, bool props, bool trees, bool decals)
+        {
+            Buildings = buildings;
+            Props = props;
+            Trees = trees;
+            Decals = decals;
+        }
+
+        /// <summary>Everything — the dev buttons' and the default plan's mask.（全部——開發按鈕與預設計畫的遮罩。）</summary>
+        public static RipKindFilter All => new(true, true, true, true);
+
+        /// <summary>Whether any kind is included at all.（是否有任何類別被涵蓋。）</summary>
+        public bool Any => Buildings || Props || Trees || Decals;
+
+        /// <summary>Whether records of this contract kind are ripped.（此契約類別的紀錄是否被擷取。）</summary>
+        public bool Allows(string kind) => kind switch
+        {
+            "building" => Buildings,
+            "tree" => Trees,
+            "decal" => Decals,
+            _ => Props
+        };
+    }
+
+    /// <summary>
     /// The system that enumerates every placed object in the world into <c>instances.jsonl</c>.
     /// （將世界中所有已放置物件列舉至 <c>instances.jsonl</c> 的系統。）<br/><br/>
     /// Unlike mesh extraction, this carries no feasibility risk: a transform is plain ECS component
@@ -183,8 +222,31 @@ namespace Carto.Systems
             /// <summary>How far the walk has got.（走訪進度。）</summary>
             public int Index;
 
-            /// <summary>The record writer, open for the whole run.（整次執行保持開啟的紀錄寫出器。）</summary>
+            /// <summary>The record writer, touched only by <see cref="WriterTask"/> once the run starts.（紀錄寫出器，執行開始後僅由 <see cref="WriterTask"/> 觸碰。）</summary>
             public InstanceWriter Writer;
+
+            /// <summary>
+            /// Records waiting to be serialised, and the task draining them. Newtonsoft
+            /// serialisation dominates the pass — several times the cost of the ECS reads — so
+            /// keeping it inside the frame budget multiplied the wall time by the frame rate;
+            /// off-thread it costs the main thread nothing (the mesh rip's own pattern).
+            /// （等待序列化的紀錄與排空它們的工作。Newtonsoft 序列化主宰此趟成本——數倍於 ECS 讀取——
+            /// 將其留在幀預算內會使實際時間隨幀率倍增；移出主執行緒後其成本歸零（即網格擷取的模式）。）
+            /// </summary>
+            public System.Collections.Concurrent.BlockingCollection<InstanceRecord> Queue;
+            public System.Threading.Tasks.Task WriterTask;
+
+            /// <summary>Hands one record to the writer; held once so the per-entity path allocates no closure.（將一筆紀錄交付寫出端；僅持有一份，使逐實體路徑不配置閉包。）</summary>
+            public Action<InstanceRecord> Emit;
+
+            /// <summary>Whether the walk has handed over its last record.（走訪是否已交付最後一筆紀錄。）</summary>
+            public bool ReadingDone;
+
+            /// <summary>Which kinds this run covers.（本次執行涵蓋的類別。）</summary>
+            public RipKindFilter Kinds;
+
+            /// <summary>Records excluded by <see cref="Kinds"/>.（被 <see cref="Kinds"/> 排除的紀錄數。）</summary>
+            public int SkippedFiltered;
 
             /// <summary>The shared asset-id assignment (see <see cref="BeginRip"/>).（共用的資產 ID 指派。）</summary>
             public Dictionary<Entity, MeshRipSystem.AssetIdEntry> AssetIdTable;
@@ -227,10 +289,23 @@ namespace Carto.Systems
 
         /// <summary>
         /// How long the walk may hold the main thread each frame. At least one object is always
-        /// processed, so an expensive one cannot stall the run.
-        /// （走訪每幀可佔用主執行緒的時間上限。每幀必定至少處理一個物件，故單一昂貴物件不致使執行停滯。）
+        /// processed, so an expensive one cannot stall the run. Higher than the mesh rip's 6 ms:
+        /// with serialisation off-thread this is pure component reads, and the rip usually runs
+        /// behind a paused options page — the smoke test showed 6 ms stretching a seconds-long
+        /// pass into minutes.
+        /// （走訪每幀可佔用主執行緒的時間上限。每幀必定至少處理一個物件，故單一昂貴物件不致使
+        /// 執行停滯。高於網格擷取的 6 ms：序列化移出後此處僅剩元件讀取，且擷取通常於暫停的
+        /// 選項頁面後執行——冒煙測試顯示 6 ms 會將數秒的走訪拉長為數分鐘。）
         /// </summary>
-        private const double FrameBudgetMilliseconds = 6d;
+        private const double FrameBudgetMilliseconds = 12d;
+
+        /// <summary>
+        /// How many records may wait for the writer before the walk pauses. Records are small;
+        /// this bounds memory without ever making the main thread block on the queue.
+        /// （寫出端前可等待的紀錄數上限，超過即暫停走訪。紀錄很小；此值約束記憶體，
+        /// 且絕不使主執行緒阻塞於佇列。）
+        /// </summary>
+        private const int QueueBackpressure = 8192;
 
         /// <summary>
         /// Start enumerating every placed object into <c>instances.jsonl</c>, returning as soon as
@@ -241,8 +316,9 @@ namespace Carto.Systems
         /// </summary>
         /// <param name="outputDirectory">The bundle root to write into.（要寫入的束根目錄。）</param>
         /// <param name="completed">Receives the finish summary instead of a dialog when a pipeline drives the rip.（由管線驅動時接收完成摘要以取代對話框。）</param>
+        /// <param name="kinds">Which kinds to cover; <c>null</c> for all of them.（涵蓋哪些類別；<c>null</c> 為全部。）</param>
         /// <returns>A short description of what was queued.（已排入工作的簡短說明。）</returns>
-        public string BeginRip(string outputDirectory, Action<string> completed = null)
+        public string BeginRip(string outputDirectory, Action<string> completed = null, RipKindFilter? kinds = null)
         {
             if (_run != null) return "An instance rip is already running.";
 
@@ -255,6 +331,7 @@ namespace Carto.Systems
                 OutputDirectory = outputDirectory,
                 Path = IOUtils.CombinePath(outputDirectory, "instances.jsonl"),
                 Entities = _objectQuery.ToEntityArray(Allocator.Persistent),
+                Kinds = kinds ?? RipKindFilter.All,
                 Completed = completed
             };
 
@@ -297,6 +374,13 @@ namespace Carto.Systems
                 if (disambiguated > 0) run.Report.AppendLine($"Disambiguated {disambiguated} prefab(s) sharing a name.");
 
                 run.Writer = new InstanceWriter(run.Path);
+                run.Queue = new System.Collections.Concurrent.BlockingCollection<InstanceRecord>();
+                run.Emit = record => run.Queue.Add(record);
+                run.WriterTask = System.Threading.Tasks.Task.Run(() =>
+                {
+                    foreach (InstanceRecord record in run.Queue.GetConsumingEnumerable())
+                        run.Writer.Write(record);
+                });
             }
             catch
             {
@@ -318,29 +402,45 @@ namespace Carto.Systems
         /// <param name="run">The rip in flight.（進行中的擷取。）</param>
         private void Advance(InstanceRun run)
         {
-            System.Diagnostics.Stopwatch budget = System.Diagnostics.Stopwatch.StartNew();
-
-            while (run.Index < run.Entities.Length)
+            if (!run.ReadingDone)
             {
-                // One bad object must not cost the other million their records.
-                // （一個異常物件不得使其餘百萬物件失去紀錄。）
-                try
+                System.Diagnostics.Stopwatch budget = System.Diagnostics.Stopwatch.StartNew();
+
+                while (run.Index < run.Entities.Length)
                 {
-                    ProcessOne(run, run.Entities[run.Index]);
-                }
-                catch (Exception ex)
-                {
-                    run.ProcessFailed++;
-                    if (run.ProcessFailed <= 5) _log.Warn($"Failed to record object entity {run.Entities[run.Index].Index}: {ex}");
+                    // Back-pressure: pause the walk rather than pile records up faster than the
+                    // writer serialises them.（背壓：暫停走訪，而非讓紀錄堆積得比寫出端序列化更快。）
+                    if (run.Queue.Count >= QueueBackpressure) break;
+
+                    // One bad object must not cost the other million their records.
+                    // （一個異常物件不得使其餘百萬物件失去紀錄。）
+                    try
+                    {
+                        ProcessOne(run, run.Entities[run.Index]);
+                    }
+                    catch (Exception ex)
+                    {
+                        run.ProcessFailed++;
+                        if (run.ProcessFailed <= 5) _log.Warn($"Failed to record object entity {run.Entities[run.Index].Index}: {ex}");
+                    }
+
+                    run.Index++;
+
+                    if (budget.Elapsed.TotalMilliseconds >= FrameBudgetMilliseconds) break;
                 }
 
-                run.Index++;
+                RipProgress.Report(RipProgress.Phase.Instances, run.Index, run.Entities.Length);
 
-                if (budget.Elapsed.TotalMilliseconds >= FrameBudgetMilliseconds) break;
+                if (run.Index >= run.Entities.Length)
+                {
+                    run.ReadingDone = true;
+                    run.Queue.CompleteAdding();
+                }
+
+                return;
             }
 
-            RipProgress.Report(RipProgress.Phase.Instances, run.Index, run.Entities.Length);
-            if (run.Index >= run.Entities.Length) Finish(run);
+            if (run.WriterTask.IsCompleted) Finish(run);
         }
 
         /// <summary>
@@ -405,6 +505,17 @@ namespace Carto.Systems
                 return;
             }
 
+            // The advanced kind filter, before any bookkeeping: an excluded object contributes
+            // no record, no warning and no asset id — the bundle describes the selection.
+            // （進階類別過濾，先於任何簿記：被排除的物件不產生紀錄、警告或資產 ID——
+            //   束描述的是所選內容。）
+            string kind = ClassifyKind(entity, prefabEntity);
+            if (!run.Kinds.Allows(kind))
+            {
+                run.SkippedFiltered++;
+                return;
+            }
+
             // An object whose managed prefab will not resolve is still a real object
             // standing in the city, so keep its placement under a synthetic id rather than
             // dropping it. PLAN §3 is explicit that placement must survive even when the
@@ -446,7 +557,6 @@ namespace Carto.Systems
             }
 
             Game.Objects.Transform transform = EntityManager.GetComponentData<Game.Objects.Transform>(entity);
-            string kind = ClassifyKind(entity, prefabEntity);
 
             InstanceRecord record = new()
             {
@@ -484,7 +594,7 @@ namespace Carto.Systems
             // A stacked object is not one placement but several, and how many is a property
             // of this instance rather than of its prefab.
             // （堆疊式物件並非單一擺放而是數個，且其數量取決於此實例而非其預製模板。）
-            int expanded = ExpandStack(entity, prefabEntity, record, run.Writer, run.AssetIds);
+            int expanded = ExpandStack(entity, prefabEntity, record, run.Emit, run.AssetIds);
             if (expanded > 0)
             {
                 run.StackExpanded++;
@@ -494,7 +604,7 @@ namespace Carto.Systems
                 return;
             }
 
-            run.Writer.Write(record);
+            run.Queue.Add(record);
             run.AssetIds.Add(assetId);
             run.ByKind.TryGetValue(kind, out int count);
             run.ByKind[kind] = count + 1;
@@ -510,6 +620,15 @@ namespace Carto.Systems
             _run = null;
             run.Clock.Stop();
             RipProgress.Clear();
+
+            try
+            {
+                run.WriterTask.Wait();
+            }
+            catch (Exception ex)
+            {
+                _log.Warn($"Instance writer ended with an error: {ex}");
+            }
 
             StringBuilder report = run.Report;
             report.AppendLine($"Wrote {run.Writer.Count} instance(s) to instances.jsonl in {run.Clock.Elapsed.TotalSeconds:F1} s");
@@ -527,6 +646,7 @@ namespace Carto.Systems
             }
             if (run.Writer.NormalizedRotations > 0) report.AppendLine($"Normalised {run.Writer.NormalizedRotations} non-unit rotation(s)");
             if (run.ProcessFailed > 0) report.AppendLine($"FAILED to record {run.ProcessFailed} object(s) — see the log");
+            if (run.SkippedFiltered > 0) report.AppendLine($"Excluded {run.SkippedFiltered} object(s) by the layer selection (advanced kind toggles)");
 
             int instanceCount = run.Writer.Count;
             Abandon(run);
@@ -603,6 +723,12 @@ namespace Carto.Systems
         /// <param name="run">The run to release.（要釋放的工作。）</param>
         private static void Abandon(InstanceRun run)
         {
+            // Let the writer drain what it holds before the file is closed under it; a run
+            // abandoned mid-walk has at most the back-pressure window in flight.
+            // （先讓寫出端排空其所持，再關閉檔案；走訪中途中止的執行至多有背壓視窗量的紀錄在途。）
+            try { run.Queue?.CompleteAdding(); } catch { /* already completed（已完成） */ }
+            try { run.WriterTask?.Wait(TimeSpan.FromSeconds(10)); } catch { /* logged by Finish paths（由完成路徑記錄） */ }
+
             try { run.Writer?.Dispose(); } catch { /* already closed（已關閉） */ }
             run.Writer = null;
             if (run.Entities.IsCreated) run.Entities.Dispose();
@@ -644,11 +770,11 @@ namespace Carto.Systems
         /// <param name="entity">The placed object.（已放置的物件。）</param>
         /// <param name="prefabEntity">Its prefab.（其預製模板。）</param>
         /// <param name="template">The record built for it, used as the pattern.（為其建立的紀錄，作為範本。）</param>
-        /// <param name="writer">Where records go.（紀錄的輸出對象。）</param>
+        /// <param name="emit">Where records go.（紀錄的輸出對象。）</param>
         /// <param name="assetIds">The set of referenced asset ids.（被參照的資產 ID 集合。）</param>
         /// <returns>How many records were written.（已寫出的紀錄筆數。）</returns>
         private int ExpandStack(Entity entity, Entity prefabEntity, InstanceRecord template,
-                                InstanceWriter writer, HashSet<string> assetIds)
+                                Action<InstanceRecord> emit, HashSet<string> assetIds)
         {
             if (!EntityManager.HasComponent<Game.Objects.Stack>(entity)) return 0;
             if (!EntityManager.HasComponent<Game.Prefabs.StackData>(prefabEntity)) return 0;
@@ -705,7 +831,7 @@ namespace Carto.Systems
                 foreach (KeyValuePair<string, object> attribute in template.Attributes)
                     rest.Attributes[attribute.Key] = attribute.Value;
 
-                writer.Write(rest);
+                emit(rest);
                 assetIds.Add(restId);
                 written++;
             }
@@ -754,7 +880,7 @@ namespace Carto.Systems
                     // （僅於遊戲確實縮放時寫出：未經縮放的區段不應被賦予一個消費端還得信任的 1。）
                     if (math.any(math.abs(scale - new float3(1f)) > 1e-4f)) section.Scale = scale;
 
-                    writer.Write(section);
+                    emit(section);
                     assetIds.Add(partId);
                     written++;
                 }
@@ -953,7 +1079,7 @@ namespace Carto.Systems
                 report.AppendLine($"  {row.Key,-24} {row.Value.Prefabs,6} prefab(s) {row.Value.Instances,9} instance(s)");
         }
 
-        private string ClassifyKind(Entity entity, Entity prefabEntity)
+        internal string ClassifyKind(Entity entity, Entity prefabEntity)
         {
             if (EntityManager.HasComponent<Game.Buildings.Building>(entity)) return "building";
 

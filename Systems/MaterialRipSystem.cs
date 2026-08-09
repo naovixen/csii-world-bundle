@@ -608,6 +608,13 @@ namespace Carto.Systems
         private string Take(MaterialRun run, SurfaceAsset surface, string property, RenderPrefab renderPrefab,
                             int materialIndex, SurfaceData own)
         {
+            // A negative cap means textures are deselected outright (the ripper tab's advanced
+            // toggle): materials ship with their tints and scalars only, every map key resolves
+            // to null, and ToJson omits the map — the same degradation a failed readback takes.
+            // （負的上限代表貼圖被整體取消選取（擷取器分頁的進階開關）：材質僅帶其色調與純量，
+            //   所有貼圖鍵解析為 null，ToJson 略去該貼圖——與回讀失敗相同的退化路徑。）
+            if (run.TextureSizeCap < 0) return null;
+
             if (!surface.TryGetTexture(property, out TextureAsset texture) || (texture == null)) return null;
 
             // Locate before claiming. For a virtual-textured map the identity that matters is the

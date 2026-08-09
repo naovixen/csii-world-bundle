@@ -267,6 +267,9 @@ namespace Carto.Systems
             public Task Encoder;
             public List<RipWarning> Skipped = new();
 
+            /// <summary>Whether decal parts — road markings, wear — enter the lane catalogue.（貼花部件——道路標線、磨損——是否進入車道目錄。）</summary>
+            public bool IncludeLaneDecals = true;
+
             /// <summary>
             /// Where the finish summary goes when a pipeline drives this rip; <c>null</c> means the
             /// run was started by hand and reports through its own dialog.
@@ -424,12 +427,17 @@ namespace Carto.Systems
         /// Start a network rip, returning at once.（開始路網擷取並立即返回。）
         /// </summary>
         /// <param name="outputDirectory">The bundle root to write into.（要寫入的束根目錄。）</param>
-        /// <param name="textureSizeCap">The longest edge a written texture may have, or <c>0</c> for no cap.（寫出貼圖的最長邊上限，<c>0</c> 為不限。）</param>
+        /// <param name="textureSizeCap">The longest edge a written texture may have, <c>0</c> for no cap, or negative to write no textures.（寫出貼圖的最長邊上限，<c>0</c> 為不限，負值代表不寫出貼圖。）</param>
         /// <param name="completed">Receives the finish summary instead of a dialog when a pipeline drives the rip.（由管線驅動時接收完成摘要以取代對話框。）</param>
+        /// <param name="surfaces">Whether to assemble the road/rail/path surfaces (networks.jsonl + networks/).（是否組裝道路／軌道／小徑表面。）</param>
+        /// <param name="laneGeometry">Whether to bake lane-drawn furniture (lanemeshes layer).（是否烘焙車道所繪設施（lanemeshes 層）。）</param>
+        /// <param name="laneDecals">Whether the lane catalogue carries decal parts — road markings and wear.（車道目錄是否收錄貼花部件——道路標線與磨損。）</param>
         /// <returns>What the caller should tell the user.（呼叫端應告知使用者的訊息。）</returns>
-        public string BeginRip(string outputDirectory, int textureSizeCap = 2048, Action<string> completed = null)
+        public string BeginRip(string outputDirectory, int textureSizeCap = 2048, Action<string> completed = null,
+                               bool surfaces = true, bool laneGeometry = true, bool laneDecals = true)
         {
             if (_run != null) return "A network rip is already running.";
+            if (!surfaces && !laneGeometry) return "Nothing selected: both the network surfaces and the lane geometry are deselected.";
 
             // The material table has one owner at a time. A cross-section piece reads through the
             // same `MeshRipSystem.ReadMesh` a building does, and that only resolves a material when
@@ -456,37 +464,45 @@ namespace Carto.Systems
             _conformLoweredVerts = 0;
             _conformRaisedVerts = 0;
 
-            NativeArray<Entity> entities = _edgeQuery.ToEntityArray(Allocator.TempJob);
-            Entity[] edges;
-            try
+            // A deselected half simply contributes an empty work list; the pipeline shares the
+            // rest — writers, materials, progress — unchanged.
+            // （被取消選取的一半僅貢獻空的工作清單；其餘管線——寫出器、材質、進度——原樣共用。）
+            Entity[] edges = Array.Empty<Entity>(), orphans = Array.Empty<Entity>(), lanes = Array.Empty<Entity>();
+
+            if (surfaces)
             {
-                edges = entities.ToArray();
-            }
-            finally
-            {
-                entities.Dispose();
+                NativeArray<Entity> entities = _edgeQuery.ToEntityArray(Allocator.TempJob);
+                try
+                {
+                    edges = entities.ToArray();
+                }
+                finally
+                {
+                    entities.Dispose();
+                }
+
+                NativeArray<Entity> orphanEntities = _orphanQuery.ToEntityArray(Allocator.TempJob);
+                try
+                {
+                    orphans = orphanEntities.ToArray();
+                }
+                finally
+                {
+                    orphanEntities.Dispose();
+                }
             }
 
-            NativeArray<Entity> orphanEntities = _orphanQuery.ToEntityArray(Allocator.TempJob);
-            Entity[] orphans;
-            try
+            if (laneGeometry)
             {
-                orphans = orphanEntities.ToArray();
-            }
-            finally
-            {
-                orphanEntities.Dispose();
-            }
-
-            NativeArray<Entity> laneEntities = _laneQuery.ToEntityArray(Allocator.TempJob);
-            Entity[] lanes;
-            try
-            {
-                lanes = laneEntities.ToArray();
-            }
-            finally
-            {
-                laneEntities.Dispose();
+                NativeArray<Entity> laneEntities = _laneQuery.ToEntityArray(Allocator.TempJob);
+                try
+                {
+                    lanes = laneEntities.ToArray();
+                }
+                finally
+                {
+                    laneEntities.Dispose();
+                }
             }
 
             NetworkRun run = new()
@@ -497,9 +513,13 @@ namespace Carto.Systems
                 OutputDirectory = outputDirectory,
                 MeshDirectory = IOUtils.CombinePath(outputDirectory, "networks"),
                 LaneMeshDirectory = IOUtils.CombinePath(outputDirectory, "lanemeshes"),
-                Writer = new NetworkWriter(IOUtils.CombinePath(outputDirectory, "networks.jsonl")),
-                LaneWriter = new NetworkWriter(IOUtils.CombinePath(outputDirectory, "lanemeshes.jsonl")),
+                // A deselected half's writer is never created: constructing it would truncate a
+                // file an earlier rip legitimately left there.（被取消選取那一半的寫出器從不建立：
+                //   建構它會截斷先前擷取正當留下的檔案。）
+                Writer = surfaces ? new NetworkWriter(IOUtils.CombinePath(outputDirectory, "networks.jsonl")) : null,
+                LaneWriter = laneGeometry ? new NetworkWriter(IOUtils.CombinePath(outputDirectory, "lanemeshes.jsonl")) : null,
                 Materials = Instance.MaterialRip,
+                IncludeLaneDecals = laneDecals,
                 Completed = completed
             };
 
@@ -837,8 +857,8 @@ namespace Carto.Systems
             Instance.MeshRip.WarningSink = null;
             run.Clock.Stop();
             RipProgress.Clear();
-            run.Writer.Dispose();
-            run.LaneWriter.Dispose();
+            run.Writer?.Dispose();
+            run.LaneWriter?.Dispose();
 
             // Materials last: the table can only name a texture by the content hash of the file it
             // became, so it is written once the writer has drained. Draining also flushes the last
@@ -866,10 +886,17 @@ namespace Carto.Systems
             }
 
             StringBuilder report = run.Report;
-            report.AppendLine($"Wrote {run.Writer.Count} segment(s) to networks.jsonl in {run.Clock.Elapsed.TotalSeconds:F1} s");
-            report.AppendLine($"  mesh form: {run.Writer.MeshForm} ({run.Triangles} triangles, "
-                            + $"{run.Bytes / 1048576d:F1} MiB of glTF in networks/)");
-            report.AppendLine($"  centerline form: {run.Writer.CenterlineForm} ({run.Points} point(s))");
+            if (run.Writer != null)
+            {
+                report.AppendLine($"Wrote {run.Writer.Count} segment(s) to networks.jsonl in {run.Clock.Elapsed.TotalSeconds:F1} s");
+                report.AppendLine($"  mesh form: {run.Writer.MeshForm} ({run.Triangles} triangles, "
+                                + $"{run.Bytes / 1048576d:F1} MiB of glTF in networks/)");
+                report.AppendLine($"  centerline form: {run.Writer.CenterlineForm} ({run.Points} point(s))");
+            }
+            else
+            {
+                report.AppendLine("Network surfaces deselected — networks.jsonl untouched.");
+            }
             report.AppendLine($"Distinct cross-section pieces read: {run.PieceCache.Count}");
             report.AppendLine("Junction interiors are the arms' own node meshes, tiled to the centre "
                             + "(zero-width intersection pieces as three-rail wedges; audit §18)");
@@ -879,7 +906,7 @@ namespace Carto.Systems
             // The lane-geometry stage: parameter records referencing part meshes stored once
             // (contract §5B v2); the consumer bends.
             // （車道幾何階段：引用僅存一次之部件網格的參數紀錄（契約 §5B v2）；彎折由消費端執行。）
-            if ((run.LaneWriter.Count > 0) || (run.SkippedLanePipeline + run.SkippedLaneDecal > 0))
+            if ((run.LaneWriter != null) && ((run.LaneWriter.Count > 0) || (run.SkippedLanePipeline + run.SkippedLaneDecal > 0)))
             {
                 report.AppendLine($"Lane geometry: {run.LaneWriter.Count} lane record(s) over "
                                 + $"{run.LaneCatalogue.Count} prefab(s) in laneprefabs.json, "
@@ -889,7 +916,9 @@ namespace Carto.Systems
                 if (run.LaneHanging > 0) report.AppendLine($"  hanging (calm-air drop; the consumer builds the cubic): {run.LaneHanging}");
                 if (run.LaneTunnel > 0) report.AppendLine($"  included {run.LaneTunnel} tunnel lane(s), tagged \"tunnel\" (the game draws them on its Tunnel cutaway layer)");
                 if (run.SkippedLanePipeline > 0) report.AppendLine($"  excluded {run.SkippedLanePipeline} part(s) with no world-view layer from the catalogue (Pipeline/SubPipeline/Waterway)");
-                if (run.SkippedLaneDecal > 0) report.AppendLine($"  {run.SkippedLaneDecal} decal part(s) in the catalogue — wear tint and road markings, lifted by the consumer (§5B)");
+                if (run.SkippedLaneDecal > 0) report.AppendLine(run.IncludeLaneDecals
+                    ? $"  {run.SkippedLaneDecal} decal part(s) in the catalogue — wear tint and road markings, lifted by the consumer (§5B)"
+                    : $"  excluded {run.SkippedLaneDecal} decal part(s) by the layer selection (lane decals toggle)");
                 if (run.SkippedLaneExcluded > 0) report.AppendLine($"  skipped {run.SkippedLaneExcluded} lane(s) whose parts its flags all exclude (drawn nowhere in-game either)");
                 if (run.SkippedLaneStale > 0) report.AppendLine($"  skipped {run.SkippedLaneStale} lane(s) the simulation removed mid-rip");
                 if (run.SkippedLaneDegenerate > 0) report.AppendLine($"  skipped {run.SkippedLaneDegenerate} lane(s) under the game's 0.1 m draw gate");
@@ -935,7 +964,7 @@ namespace Carto.Systems
             //   合併對話框；完整報告無論如何都在記錄檔中。）
             if (run.Completed != null)
             {
-                string summary = $"Wrote {run.Writer.Count} segment(s) and {run.LaneWriter.Count} lane record(s), "
+                string summary = $"Wrote {run.Writer?.Count ?? 0} segment(s) and {run.LaneWriter?.Count ?? 0} lane record(s), "
                                + $"{(run.Bytes + run.LaneBytes) / 1048576d:F1} MiB of glTF, in {run.Clock.Elapsed.TotalSeconds:F0} s.";
                 try { run.Completed(summary); }
                 catch (Exception ex) { _log.Warn($"Network rip completion callback failed: {ex}"); }
@@ -1272,7 +1301,16 @@ namespace Carto.Systems
                     //   都在為此憑空造幾何。它們以 `decal` 標記加入目錄，由消費端如常彎折並
                     //   自表面微升。）
                     bool decal = (meshData.m_State & MeshFlags.Decal) != 0;
-                    if (decal) run.SkippedLaneDecal++;
+                    if (decal)
+                    {
+                        run.SkippedLaneDecal++;
+
+                        // The advanced toggle: markings and wear can be deselected outright, in
+                        // which case the part never enters the catalogue — same shape as the
+                        // pipeline-layer exclusion below.（進階開關：標線與磨損可被整體取消選取，
+                        //   該部件即不進入目錄——形式同下方的管線層排除。）
+                        if (!run.IncludeLaneDecals) continue;
+                    }
 
                     const MeshLayer world = MeshLayer.Default | MeshLayer.Moving | MeshLayer.Tunnel | MeshLayer.Marker;
                     if ((meshData.m_DefaultLayers != 0) && ((meshData.m_DefaultLayers & world) == 0))

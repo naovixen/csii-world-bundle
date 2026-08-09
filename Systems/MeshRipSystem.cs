@@ -434,10 +434,11 @@ namespace Carto.Systems
         /// </summary>
         /// <param name="outputDirectory">The bundle root to write <c>meshes/</c> under.（要在其下寫入 <c>meshes/</c> 的束根目錄。）</param>
         /// <param name="maxPrefabs">The most prefabs to rip, or <c>0</c> for all of them.（最多擷取的預製模板數量，<c>0</c> 為全部。）</param>
-        /// <param name="textureSizeCap">The longest edge a written texture may have, or <c>0</c> for no cap.（寫出貼圖的最長邊上限，<c>0</c> 為不限。）</param>
+        /// <param name="textureSizeCap">The longest edge a written texture may have, <c>0</c> for no cap, or negative to write no textures at all.（寫出貼圖的最長邊上限，<c>0</c> 為不限，負值代表完全不寫出貼圖。）</param>
         /// <param name="completed">Receives the finish summary instead of a dialog when a pipeline drives the rip.（由管線驅動時接收完成摘要以取代對話框。）</param>
+        /// <param name="kinds">Which instance kinds' prefabs to rip; <c>null</c> for all — must match the instance pass so the two layers stay 1:1.（要擷取哪些實例類別的預製模板；<c>null</c> 為全部——須與實例階段一致，使兩層保持一比一。）</param>
         /// <returns>A short description of what was queued.（已排入工作的簡短說明。）</returns>
-        public string BeginRip(string outputDirectory, int maxPrefabs = 0, int textureSizeCap = 2048, Action<string> completed = null)
+        public string BeginRip(string outputDirectory, int maxPrefabs = 0, int textureSizeCap = 2048, Action<string> completed = null, RipKindFilter? kinds = null)
         {
             if (_run != null) return "A mesh rip is already running.";
 
@@ -457,7 +458,7 @@ namespace Carto.Systems
                 Completed = completed
             };
 
-            run.Items = CollectWorkItems(run.Report, maxPrefabs, out int distinctPrefabs, out int placedObjects);
+            run.Items = CollectWorkItems(run.Report, maxPrefabs, kinds ?? RipKindFilter.All, out int distinctPrefabs, out int placedObjects);
             run.Report.AppendLine($"Placed objects: {placedObjects}, distinct prefabs: {distinctPrefabs}, queued: {run.Items.Count}");
 
             if (run.Items.Count == 0)
@@ -500,12 +501,14 @@ namespace Carto.Systems
         /// </summary>
         /// <param name="report">The report to note discovery counts in.（用以記錄探索統計的報告。）</param>
         /// <param name="maxPrefabs">The cap, or <c>0</c> for none.（數量上限，<c>0</c> 為不限。）</param>
+        /// <param name="kinds">Which instance kinds' prefabs to keep.（保留哪些實例類別的預製模板。）</param>
         /// <param name="distinctPrefabs">Receives the number of distinct prefabs found.（接收找到的相異預製模板數量。）</param>
         /// <param name="placedObjects">Receives the number of placed objects walked.（接收走訪的已放置物件數量。）</param>
         /// <returns>The work list.（工作清單。）</returns>
-        private List<WorkItem> CollectWorkItems(StringBuilder report, int maxPrefabs, out int distinctPrefabs, out int placedObjects)
+        private List<WorkItem> CollectWorkItems(StringBuilder report, int maxPrefabs, RipKindFilter kinds, out int distinctPrefabs, out int placedObjects)
         {
             Dictionary<Entity, int> counts = new();
+            Dictionary<Entity, Entity> samples = new();
             NativeArray<Entity> entities = _objectQuery.ToEntityArray(Allocator.TempJob);
 
             try
@@ -536,6 +539,7 @@ namespace Carto.Systems
 
                     counts.TryGetValue(prefabEntity, out int count);
                     counts[prefabEntity] = count + 1;
+                    if (count == 0) samples[prefabEntity] = entity;
                 }
 
                 if (utilityNodes > 0) report.AppendLine($"Skipped {utilityNodes} buried utility-network node object(s).");
@@ -549,15 +553,31 @@ namespace Carto.Systems
             distinctPrefabs = counts.Count;
 
             // Ids come from the shared assignment, not from each name in isolation, so that a
-            // duplicated prefab name cannot make two prefabs write to the same file.
-            // （ID 來自共用的指派而非各自獨立的名稱，使重複的預製模板名稱無法讓兩個模板寫入同一檔案。）
+            // duplicated prefab name cannot make two prefabs write to the same file. The
+            // assignment runs over the FULL prefab set even when a kind filter is active —
+            // ids must not depend on the selection, or partial re-rips stop joining up.
+            // （ID 來自共用的指派而非各自獨立的名稱，使重複的預製模板名稱無法讓兩個模板寫入
+            //   同一檔案。即使類別過濾生效，指派仍涵蓋「完整」預製模板集合——
+            //   ID 不得取決於選擇，否則部分重擷取將無法連結。）
             Dictionary<Entity, AssetIdEntry> assetIds = BuildAssetIds(EntityManager, counts.Keys, out int disambiguated);
             if (disambiguated > 0) report.AppendLine($"Disambiguated {disambiguated} prefab(s) sharing a name.");
 
+            int filtered = 0;
             List<WorkItem> items = new(counts.Count);
             foreach (KeyValuePair<Entity, int> kvp in counts)
             {
                 AssetIdEntry entry = assetIds[kvp.Key];
+
+                // The advanced kind filter, judged the same way the instance pass judges its
+                // records — on a placed instance of the prefab — so the two layers exclude the
+                // same things.（進階類別過濾，判準與實例階段對其紀錄的判準相同——
+                //   以該預製模板的一個已放置實例為準——使兩層排除相同的內容。）
+                string kind = Instance.InstanceRip.ClassifyKind(samples[kvp.Key], kvp.Key);
+                if (!kinds.Allows(kind))
+                {
+                    filtered++;
+                    continue;
+                }
 
                 // An unresolvable prefab still gets ripped under the same synthetic id
                 // InstanceRipSystem gives its instances, so the two layers keep joining up.
@@ -571,6 +591,8 @@ namespace Carto.Systems
                     InstanceCount = kvp.Value
                 });
             }
+
+            if (filtered > 0) report.AppendLine($"Excluded {filtered} prefab(s) by the layer selection (advanced kind toggles).");
 
             items.Sort((a, b) => b.InstanceCount.CompareTo(a.InstanceCount));
 

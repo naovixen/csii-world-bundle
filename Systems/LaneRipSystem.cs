@@ -125,8 +125,21 @@ namespace Carto.Systems
             /// <summary>How far the walk has got.（走訪進度。）</summary>
             public int Index;
 
-            /// <summary>The record writer, open for the whole run.（整次執行保持開啟的紀錄寫出器。）</summary>
+            /// <summary>The record writer, touched only by <see cref="WriterTask"/> once the run starts.（紀錄寫出器，執行開始後僅由 <see cref="WriterTask"/> 觸碰。）</summary>
             public LaneWriter Writer;
+
+            /// <summary>
+            /// Records waiting to be serialised, and the task draining them — serialisation
+            /// dominates the pass and costs the main thread nothing off-thread (see
+            /// <see cref="InstanceRipSystem"/>, same reasoning).
+            /// （等待序列化的紀錄與排空它們的工作——序列化主宰此趟成本，移出主執行緒後歸零
+            /// （理由同 <see cref="InstanceRipSystem"/>）。）
+            /// </summary>
+            public System.Collections.Concurrent.BlockingCollection<LaneRecord> Queue;
+            public System.Threading.Tasks.Task WriterTask;
+
+            /// <summary>Whether the walk has handed over its last record.（走訪是否已交付最後一筆紀錄。）</summary>
+            public bool ReadingDone;
 
             // The tallies the walk keeps.（走訪期間維護的統計。）
             public Dictionary<string, int> ByKind = new();
@@ -159,10 +172,18 @@ namespace Carto.Systems
 
         /// <summary>
         /// How long the walk may hold the main thread each frame. At least one lane is always
-        /// processed, so an expensive one cannot stall the run.
-        /// （走訪每幀可佔用主執行緒的時間上限。每幀必定至少處理一條車道，故單一昂貴車道不致使執行停滯。）
+        /// processed, so an expensive one cannot stall the run. 12 ms, not the mesh rip's 6: with
+        /// serialisation off-thread this is pure component reads behind a paused options page.
+        /// （走訪每幀可佔用主執行緒的時間上限。每幀必定至少處理一條車道，故單一昂貴車道不致使
+        /// 執行停滯。取 12 ms 而非網格擷取的 6：序列化移出後此處僅剩元件讀取，且多在暫停的選項頁面後。）
         /// </summary>
-        private const double FrameBudgetMilliseconds = 6d;
+        private const double FrameBudgetMilliseconds = 12d;
+
+        /// <summary>
+        /// How many records may wait for the writer before the walk pauses.
+        /// （寫出端前可等待的紀錄數上限，超過即暫停走訪。）
+        /// </summary>
+        private const int QueueBackpressure = 8192;
 
         /// <summary>
         /// Start writing every lane in the city to <c>lanes.jsonl</c>, returning at once; the walk
@@ -189,6 +210,12 @@ namespace Carto.Systems
             {
                 run.Report.AppendLine($"Lanes: {run.Entities.Length}");
                 run.Writer = new LaneWriter(run.Path);
+                run.Queue = new System.Collections.Concurrent.BlockingCollection<LaneRecord>();
+                run.WriterTask = System.Threading.Tasks.Task.Run(() =>
+                {
+                    foreach (LaneRecord record in run.Queue.GetConsumingEnumerable())
+                        run.Writer.Write(record);
+                });
             }
             catch
             {
@@ -208,29 +235,45 @@ namespace Carto.Systems
         /// <param name="run">The rip in flight.（進行中的擷取。）</param>
         private void Advance(LaneRun run)
         {
-            System.Diagnostics.Stopwatch budget = System.Diagnostics.Stopwatch.StartNew();
-
-            while (run.Index < run.Entities.Length)
+            if (!run.ReadingDone)
             {
-                // One bad lane must not cost the rest of the graph its records.
-                // （一條異常車道不得使圖的其餘部分失去紀錄。）
-                try
+                System.Diagnostics.Stopwatch budget = System.Diagnostics.Stopwatch.StartNew();
+
+                while (run.Index < run.Entities.Length)
                 {
-                    ProcessOne(run, run.Entities[run.Index]);
-                }
-                catch (Exception ex)
-                {
-                    run.ProcessFailed++;
-                    if (run.ProcessFailed <= 5) _log.Warn($"Failed to record lane entity {run.Entities[run.Index].Index}: {ex}");
+                    // Back-pressure: pause the walk rather than pile records up faster than the
+                    // writer serialises them.（背壓：暫停走訪，而非讓紀錄堆積得比寫出端序列化更快。）
+                    if (run.Queue.Count >= QueueBackpressure) break;
+
+                    // One bad lane must not cost the rest of the graph its records.
+                    // （一條異常車道不得使圖的其餘部分失去紀錄。）
+                    try
+                    {
+                        ProcessOne(run, run.Entities[run.Index]);
+                    }
+                    catch (Exception ex)
+                    {
+                        run.ProcessFailed++;
+                        if (run.ProcessFailed <= 5) _log.Warn($"Failed to record lane entity {run.Entities[run.Index].Index}: {ex}");
+                    }
+
+                    run.Index++;
+
+                    if (budget.Elapsed.TotalMilliseconds >= FrameBudgetMilliseconds) break;
                 }
 
-                run.Index++;
+                RipProgress.Report(RipProgress.Phase.Lanes, run.Index, run.Entities.Length);
 
-                if (budget.Elapsed.TotalMilliseconds >= FrameBudgetMilliseconds) break;
+                if (run.Index >= run.Entities.Length)
+                {
+                    run.ReadingDone = true;
+                    run.Queue.CompleteAdding();
+                }
+
+                return;
             }
 
-            RipProgress.Report(RipProgress.Phase.Lanes, run.Index, run.Entities.Length);
-            if (run.Index >= run.Entities.Length) Finish(run);
+            if (run.WriterTask.IsCompleted) Finish(run);
         }
 
         /// <summary>
@@ -296,7 +339,7 @@ namespace Carto.Systems
 
             AddLaneData(entity, record);
 
-            run.Writer.Write(record);
+            run.Queue.Add(record);
             if (record.Secondary) run.Secondary++;
             run.ByKind.TryGetValue(record.Kind, out int count);
             run.ByKind[record.Kind] = count + 1;
@@ -312,6 +355,15 @@ namespace Carto.Systems
             _run = null;
             run.Clock.Stop();
             RipProgress.Clear();
+
+            try
+            {
+                run.WriterTask.Wait();
+            }
+            catch (Exception ex)
+            {
+                _log.Warn($"Lane writer ended with an error: {ex}");
+            }
 
             StringBuilder report = run.Report;
             report.AppendLine($"Wrote {run.Writer.Count} lane(s) to lanes.jsonl in {run.Clock.Elapsed.TotalSeconds:F1} s");
@@ -369,6 +421,11 @@ namespace Carto.Systems
         /// <param name="run">The run to release.（要釋放的工作。）</param>
         private static void Abandon(LaneRun run)
         {
+            // Let the writer drain what it holds before the file is closed under it.
+            // （先讓寫出端排空其所持，再關閉檔案。）
+            try { run.Queue?.CompleteAdding(); } catch { /* already completed（已完成） */ }
+            try { run.WriterTask?.Wait(TimeSpan.FromSeconds(10)); } catch { /* logged by Finish paths（由完成路徑記錄） */ }
+
             try { run.Writer?.Dispose(); } catch { /* already closed（已關閉） */ }
             run.Writer = null;
             if (run.Entities.IsCreated) run.Entities.Dispose();
