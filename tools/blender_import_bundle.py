@@ -18,7 +18,11 @@ live inside a shared `.glb`. Applying `attrs.colorSet` through the material's `c
 documented consumer rule, and the harness implements exactly that rule and nothing more; without
 it every tree and bush renders the grey the atlas actually stores.
 
-    blender --python tools/blender_import_bundle.py -- <bundle_dir> [options]
+    blender --python tools/blender_import_bundle.py -- [bundle_dir] [options]
+
+`bundle_dir` may be omitted: it defaults to the producer's output directory,
+%USERPROFILE%/AppData/LocalLow/Colossal Order/Cities Skylines II/ModsData/Carto
+(the development-era spike/ subfolder is retired as of 2026-08-09).
 
 Options (after the `--`):
     --kinds building,tree,prop   which instance kinds to place        (default: building)
@@ -70,18 +74,18 @@ Options (after the `--`):
 
 Examples:
     # the 1:1 building check — start here, it is fast and the most diagnostic
-    blender --python tools/blender_import_bundle.py -- "…/spike" --kinds building
+    blender --python tools/blender_import_bundle.py -- --kinds building
 
     # a dense neighbourhood with its trees and props, wherever the city actually is
-    blender --python tools/blender_import_bundle.py -- "…/spike" \\
+    blender --python tools/blender_import_bundle.py -- \\
         --kinds building,tree,prop --center auto --radius 300
 
     # the Phase 5 check: the road network alone, coloured by form
-    blender --python tools/blender_import_bundle.py -- "…/spike" --kinds none --networks
+    blender --python tools/blender_import_bundle.py -- --kinds none --networks
 
     # everything at once — buildings, trees, props, every network category, all textured —
     # over 500 m of downtown, which is small enough to import repeatedly
-    blender --python tools/blender_import_bundle.py -- "…/spike" --everything 500
+    blender --python tools/blender_import_bundle.py -- --everything 500
 
 The map origin is not the city. A save's buildings can sit kilometres off (0,0), so a radius
 around a guessed point mostly finds empty ground — which looks exactly like a broken import.
@@ -836,8 +840,11 @@ def resolve_layers(bundle_dir):
         instances = layers.get("instances", "instances.jsonl")
         networks = layers.get("networks", "networks.jsonl")
         net_meshes = layers.get("networkMeshes", "networks/")
-        lanes = layers.get("laneMeshes", "lanemeshes.jsonl")
-        lane_meshes = layers.get("laneMeshDir", "lanemeshes/")
+        # The record layer is `laneGeometry`; `laneMeshes` is the part-mesh DIRECTORY. The old
+        # keys here only ever worked because pre-manifest bundles took the fallback path — a
+        # finalized bundle handed --lanes a directory where it expected a .jsonl.
+        lanes = layers.get("laneGeometry", "lanemeshes.jsonl")
+        lane_meshes = layers.get("laneMeshes", "lanemeshes/")
     else:
         meshes, instances = "meshes/", "instances.jsonl"
         networks, net_meshes = "networks.jsonl", "networks/"
@@ -4358,11 +4365,21 @@ def aim_viewports(collection):
 
 def main():
     argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
-    if not argv:
-        print(__doc__)
-        return 1
 
-    bundle_dir = argv[0]
+    # The bundle directory may be omitted: since 2026-08-09 the producer writes straight into
+    # ModsData/Carto (the development-era spike/ subfolder is retired), so that is the default.
+    # An explicit first argument that is not an option still wins.
+    if argv and not argv[0].startswith("--"):
+        bundle_dir = argv[0]
+        argv = argv[1:]
+    else:
+        bundle_dir = os.path.expanduser(
+            "~/AppData/LocalLow/Colossal Order/Cities Skylines II/ModsData/Carto")
+        if not os.path.isdir(bundle_dir):
+            print(__doc__)
+            print(f"\nNo bundle directory given and the default does not exist:\n  {bundle_dir}")
+            return 1
+        print(f"bundle: {bundle_dir} (default; pass a directory after -- to override)")
     kinds = _UNSET
     limit = _UNSET
     center = None
@@ -4381,7 +4398,7 @@ def main():
     everything = None
     clip_floor = None
 
-    i = 1
+    i = 0
     while i < len(argv):
         arg = argv[i]
         if arg == "--kinds":
