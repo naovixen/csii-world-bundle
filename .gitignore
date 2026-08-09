@@ -422,3 +422,8 @@ Library/ilpp.pid
 
 # Isolated worktrees for branch work (never committed)
 .worktrees/
+
+# MSBuild/NuGet intermediates. Upstream Carto tracked five obj/ artifacts; every local build
+# rewrites them, so the fork untracked them (git rm --cached) and ignores the tree.
+obj/
+bin/
