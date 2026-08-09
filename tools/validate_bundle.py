@@ -573,8 +573,16 @@ def validate_bundle(bundle_dir: Path, schema_dir: Path) -> Report:
 
     used_assets = {r["assetId"] for r in instances}
     for path in mesh_files:
-        if path.stem not in used_assets:
-            report.warn(f"{path.name}: mesh is not referenced by any instance")
+        if path.stem in used_assets:
+            continue
+
+        # A foundation skirt (<assetId>__base.glb) is referenced implicitly by every instance
+        # of its parent prefab — the consumer's terrain skirting places it, not a record.
+        # The first full-city rip with skirts drowned the report in 1,380 of these.
+        if path.stem.endswith("__base") and path.stem[: -len("__base")] in used_assets:
+            continue
+
+        report.warn(f"{path.name}: mesh is not referenced by any instance")
 
     # -- textures ----------------------------------------------------------------------
     texture_files: List[Path] = sorted(tex_dir.glob("*.png")) if tex_dir and tex_dir.is_dir() else []
@@ -843,19 +851,6 @@ def _check_clip_volumes(bundle_dir: Path, layers: Dict[str, str], report: Report
     if path is None or not path.is_file():
         return 0
 
-    area_ids: set = set()
-    areas_path = _resolve_layer(bundle_dir, layers, "areas")
-    if areas_path is not None and areas_path.is_file():
-        with areas_path.open("r", encoding="utf-8") as handle:
-            for line in handle:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    area_ids.add(json.loads(line).get("id"))
-                except ValueError:
-                    continue
-
     kinds: Dict[str, int] = {}
     records = 0
     with path.open("r", encoding="utf-8") as handle:
@@ -892,14 +887,31 @@ def _check_clip_volumes(bundle_dir: Path, layers: Dict[str, str], report: Report
                     report.error(f"{label}: band is empty or inverted (bottom {bottom}, top {top})")
 
             if kind == "area":
+                # Since 2026-08-09 an 'area' record carries its own polygon (schema 2, §8c,
+                # §12.2): the game never paints clip surfaces, so §36 removed them from
+                # areas.jsonl, and the old geometry-by-reference dangled — 229 broken joins
+                # on the first full rip with both changes live. `area` is provenance only.
                 area = record.get("area")
                 if area is None:
-                    report.error(f"{label}: an 'area' record must name the area it clips")
-                elif area_ids and area not in area_ids:
-                    report.error(f"{label}: area {area} matches no record in areas.jsonl")
+                    report.error(f"{label}: an 'area' record must name its source area entity")
+                nodes = record.get("nodes")
+                triangles = record.get("triangles")
+                if (not isinstance(nodes, list) or len(nodes) < 3
+                        or any(not isinstance(p, list) or len(p) != 3
+                               or any(not isinstance(c, (int, float)) or isinstance(c, bool) for c in p)
+                               for p in nodes)):
+                    report.error(f"{label}: an 'area' record must carry 'nodes' — 3+ points of "
+                                 "3 numbers each (its polygon ships inline since 2026-08-09, §8c)")
+                elif (not isinstance(triangles, list) or not triangles
+                        or any(not isinstance(t, list) or len(t) != 3
+                               or any(not isinstance(i, int) or isinstance(i, bool)
+                                      or not 0 <= i < len(nodes) for i in t)
+                               for t in triangles)):
+                    report.error(f"{label}: an 'area' record must carry 'triangles' — "
+                                 "triplets of indices into its own 'nodes' (§8c)")
                 if "left" in record or "right" in record:
                     report.error(f"{label}: an 'area' record carries no curves — "
-                                 "its geometry is areas.jsonl's triangles (§8c)")
+                                 "its geometry is its own 'nodes'/'triangles' (§8c)")
                 continue
 
             for side in ("left", "right"):

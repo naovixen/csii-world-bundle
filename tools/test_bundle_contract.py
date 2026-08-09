@@ -110,13 +110,20 @@ class BundleContractTest(unittest.TestCase):
         self.patch_clip_volume(bundle, 0, lambda r: r.update(left=r["left"][:3]))
         self.assertRejected(bundle, "must be 4 control points")
 
-    def test_clip_volume_dangling_area_rejected(self):
+    def test_clip_volume_area_without_polygon_rejected(self):
+        """Since schema 2 an area record carries its own polygon (S12.2) — the game never
+        paints clip surfaces, so areas.jsonl cannot supply the triangles."""
         bundle = self.fresh()
-        self.patch_clip_volume(bundle, 1, lambda r: r.update(area=999999))
-        self.assertRejected(bundle, "matches no record in areas.jsonl")
+        self.patch_clip_volume(bundle, 1, lambda r: r.pop("nodes"))
+        self.assertRejected(bundle, "must carry 'nodes'")
+
+    def test_clip_volume_area_with_dangling_triangle_index_rejected(self):
+        bundle = self.fresh()
+        self.patch_clip_volume(bundle, 1, lambda r: r.update(triangles=[[0, 1, 999]]))
+        self.assertRejected(bundle, "indices into its own 'nodes'")
 
     def test_clip_volume_area_carrying_curves_rejected(self):
-        """An area's geometry lives in areas.jsonl; a second copy here could disagree with it."""
+        """An area clips with its polygon; boundary curves on it could disagree with it."""
         bundle = self.fresh()
         self.patch_clip_volume(bundle, 1, lambda r: r.update(left=[[0, 0, 0]] * 4))
         self.assertRejected(bundle, "carries no curves")
@@ -263,8 +270,8 @@ class BundleContractTest(unittest.TestCase):
 
     def test_wrong_schema_version_rejected(self):
         bundle = self.fresh()
-        self.patch_manifest(bundle, lambda m: m.update({"schema": 2}))
-        self.assertRejected(bundle, "expected const 1")
+        self.patch_manifest(bundle, lambda m: m.update({"schema": 1}))
+        self.assertRejected(bundle, "expected const 2")
 
     def test_frame_handedness_is_frozen(self):
         bundle = self.fresh()

@@ -452,9 +452,10 @@ def build(out_dir: Path) -> None:
     # terrain sits at the lane, 0 m over it, so nothing is cut; from x=188 east it bulges to
     # 18 m, 6 m over the lane and inside the band, so those cells open.
     #
-    # Plus one area record: the concrete pad above also clips. It carries no geometry on
-    # purpose — its triangles are in areas.jsonl under the same id — and `top` is absent
-    # because an authored clip surface hides whatever covers it, however high.
+    # Plus one area record: an authored clip surface. It carries its own polygon (schema 2 —
+    # the game never *paints* a clip surface, so areas.jsonl does not carry it; the pad here
+    # reuses the same footprint only for the example's economy), and `top` is absent because
+    # an authored clip surface hides whatever covers it, however high.
     clip_volumes = [
         {"id": networks[0]["id"], "kind": "edge",
          "left": [[96.0, 12.0, -368.0], [132.0, 12.0, -368.0],
@@ -462,7 +463,8 @@ def build(out_dir: Path) -> None:
          "right": [[96.0, 12.0, -352.0], [132.0, 12.0, -352.0],
                    [168.0, 12.0, -352.0], [206.0, 12.0, -352.0]],
          "bottom": 0.5, "top": 30.3},
-        {"id": area_record["id"], "kind": "area", "area": area_record["id"], "bottom": 0.5},
+        {"id": area_record["id"], "kind": "area", "area": area_record["id"], "bottom": 0.5,
+         "nodes": area_record["nodes"], "triangles": area_record["triangles"]},
     ]
     (out_dir / "clipvolumes.jsonl").write_text(
         "".join(json.dumps(v, separators=(",", ":")) + "\n" for v in clip_volumes),
@@ -504,7 +506,7 @@ def build(out_dir: Path) -> None:
     }
 
     manifest = {
-        "schema": 1,
+        "schema": 2,
         "generator": "carto-ripper example bundle generator",
         "generatedAt": "2026-01-01T00:00:00Z",
         "game": {"name": "Cities: Skylines II", "version": "1.5.7f1", "mode": "Game"},

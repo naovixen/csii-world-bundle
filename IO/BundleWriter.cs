@@ -271,7 +271,7 @@ namespace Carto.IO
 
             Dictionary<string, object> manifest = new()
             {
-                ["schema"] = 1,
+                ["schema"] = 2,
                 ["generator"] = snapshot.Generator,
                 ["generatedAt"] = snapshot.GeneratedAt,
                 ["game"] = snapshot.Game,

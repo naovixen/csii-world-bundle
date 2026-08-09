@@ -143,7 +143,7 @@ namespace Carto.Systems
 
             // The tallies the walk keeps.（走訪期間維護的統計。）
             public Dictionary<string, int> ByKind = new();
-            public int Secondary, Degenerate, ProcessFailed;
+            public int Secondary, Degenerate, ProcessFailed, SkippedStale;
             public Dictionary<Entity, bool> PrefabHasGeometry = new();
             public Dictionary<Entity, int> DrawnLanesByPrefab = new();
             public int DrawnLanes;
@@ -294,6 +294,16 @@ namespace Carto.Systems
         /// <param name="entity">The lane.（車道。）</param>
         private void ProcessOne(LaneRun run, Entity entity)
         {
+            // The snapshot outlives the frame it was taken in; the simulation may remove lanes
+            // meanwhile (see InstanceRipSystem.ProcessOne — same churn, same counter).
+            // （快照活過其擷取的那一幀；模擬其間可能移除車道（見 InstanceRipSystem.ProcessOne——
+            //   同樣的變動，同樣的計數）。）
+            if (!EntityManager.Exists(entity) || !EntityManager.HasComponent<Curve>(entity))
+            {
+                run.SkippedStale++;
+                return;
+            }
+
             Curve curve = EntityManager.GetComponentData<Curve>(entity);
 
             if (EntityManager.HasComponent<Game.Prefabs.PrefabRef>(entity))
@@ -371,6 +381,7 @@ namespace Carto.Systems
             report.AppendLine($"  {run.Secondary} derived from a master lane");
             if (run.Degenerate > 0) report.AppendLine($"Skipped {run.Degenerate} lane(s) with no usable curve");
             if (run.ProcessFailed > 0) report.AppendLine($"FAILED to record {run.ProcessFailed} lane(s) — see the log");
+            if (run.SkippedStale > 0) report.AppendLine($"Skipped {run.SkippedStale} lane(s) the simulation removed mid-rip");
 
             if (run.DrawnLanes > 0)
             {

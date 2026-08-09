@@ -1954,12 +1954,17 @@ namespace Carto.Systems
             context.CutBottom = -ClipBandExpansion;
             context.CutTop = float.MaxValue;
 
-            // An area's geometry is triangles, not boundary curves, and it is already in the
-            // bundle: `areas.jsonl` carries these very records with their nodes and triangles
-            // (audit §7.3.1 counted 266 of them). So the clip layer carries the *band* and a
-            // join key, not a second copy of the polygon.
-            // （區域的幾何為三角形而非邊界曲線，且已在束中：`areas.jsonl` 正帶有這些紀錄。
-            //   故裁切層僅攜帶裁切帶與連結鍵，而非再複製一份多邊形。）
+            // An area's geometry is triangles, not boundary curves — and since 2026-08-09 the
+            // record carries them itself. It used to hold only a join key into `areas.jsonl`,
+            // but §36 removed clip areas from that layer (the game never paints them — no
+            // `RenderedArea`, no `Batch`), which left every clip-area volume referencing a
+            // record that no longer exists; the first full rip after both changes failed 229
+            // validator joins. The `area` id stays as provenance (schema 2, §12.2).
+            // （區域的幾何為三角形而非邊界曲線——且自 2026-08-09 起由紀錄自行攜帶。
+            //   其原本僅持有連結至 `areas.jsonl` 的鍵，但 §36 已將裁切區域自該層移除
+            //   （遊戲從不繪製它們——無 `RenderedArea` 即無 `Batch`），使每筆裁切區域體積
+            //   參照一筆不復存在的紀錄；兩項變更後的首次完整擷取即有 229 筆驗證連結失敗。
+            //   `area` 識別碼保留作為出處（schema 2，§12.2）。）
             context.Volumes = null;
 
             var areas = _clipAreaQuery.ToEntityArray(Unity.Collections.Allocator.TempJob);
@@ -1976,13 +1981,39 @@ namespace Carto.Systems
                     // No `top`: an authored clip surface hides whatever terrain covers it, however
                     // high. Absence rather than a sentinel, so nobody has to know what the
                     // sentinel was.（無 `top`：作者放置的裁切面隱藏其上一切地形，不論多高。）
-                    _clipVolumes?.Add(new Dictionary<string, object>
+                    if (_clipVolumes != null)
                     {
-                        ["id"] = entity.Index,
-                        ["kind"] = "area",
-                        ["area"] = entity.Index,
-                        ["bottom"] = Math.Round((double)context.CutBottom, 3)
-                    });
+                        // Same encoding as areas.jsonl (§8b): world positions, millimetre-rounded.
+                        // （編碼同 areas.jsonl（§8b）：世界座標，捨入至公釐。）
+                        double[][] nodeArray = new double[nodes.Length][];
+                        for (int i = 0; i < nodes.Length; i++)
+                        {
+                            float3 position = nodes[i].m_Position;
+                            nodeArray[i] = new[]
+                            {
+                                Math.Round((double)position.x, 3),
+                                Math.Round((double)position.y, 3),
+                                Math.Round((double)position.z, 3)
+                            };
+                        }
+
+                        int[][] triangleArray = new int[triangles.Length][];
+                        for (int i = 0; i < triangles.Length; i++)
+                        {
+                            int3 indices = triangles[i].m_Indices;
+                            triangleArray[i] = new[] { indices.x, indices.y, indices.z };
+                        }
+
+                        _clipVolumes.Add(new Dictionary<string, object>
+                        {
+                            ["id"] = entity.Index,
+                            ["kind"] = "area",
+                            ["area"] = entity.Index,
+                            ["bottom"] = Math.Round((double)context.CutBottom, 3),
+                            ["nodes"] = nodeArray,
+                            ["triangles"] = triangleArray
+                        });
+                    }
                     _cutAreas++;
 
                     if (context.Mask == null) continue;

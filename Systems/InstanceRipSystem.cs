@@ -260,7 +260,7 @@ namespace Carto.Systems
             public Dictionary<Entity, int> UtilityNodesByPrefab = new();
             public Dictionary<Entity, int> VehicleCargoByPrefab = new();
             public int StackExpanded, StackRecords;
-            public int ProcessFailed;
+            public int ProcessFailed, SkippedStale;
             public List<string> SkipSamples = new();
             public HashSet<int> UnresolvedPrefabs = new();
             public HashSet<string> GeometrylessPrefabs = new();
@@ -450,6 +450,17 @@ namespace Carto.Systems
         /// <param name="entity">The object entity.（物件實體。）</param>
         private void ProcessOne(InstanceRun run, Entity entity)
         {
+            // The walk holds its snapshot across frames while the simulation may run, so an
+            // entity can be gone by the time its turn comes — the same mid-rip churn the mesh
+            // and network rips already count. The acceptance rip hit 97 of these as raw NREs.
+            // （走訪跨幀持有快照，而模擬可能持續運行，故實體輪到時可能已消失——
+            //   即網格與路網擷取本就計數的擷取中變動。驗收擷取曾以原始 NRE 形式命中 97 例。）
+            if (!EntityManager.Exists(entity))
+            {
+                run.SkippedStale++;
+                return;
+            }
+
             // Buried utility-network furniture: excluded here and in the mesh rip alike, so
             // neither its placements nor its meshes reach the bundle.
             // （埋於地下的管線網路配件：此處與網格擷取一併排除，
@@ -646,6 +657,7 @@ namespace Carto.Systems
             }
             if (run.Writer.NormalizedRotations > 0) report.AppendLine($"Normalised {run.Writer.NormalizedRotations} non-unit rotation(s)");
             if (run.ProcessFailed > 0) report.AppendLine($"FAILED to record {run.ProcessFailed} object(s) — see the log");
+            if (run.SkippedStale > 0) report.AppendLine($"Skipped {run.SkippedStale} object(s) the simulation removed mid-rip");
             if (run.SkippedFiltered > 0) report.AppendLine($"Excluded {run.SkippedFiltered} object(s) by the layer selection (advanced kind toggles)");
 
             int instanceCount = run.Writer.Count;

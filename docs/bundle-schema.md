@@ -1,7 +1,9 @@
-# The CS2 World Bundle — contract v1
+# The CS2 World Bundle — contract v2
 
-**Status: frozen.** `schema: 1` is the seam between the Carto-Ripper mod (the sole producer)
-and every consumer. This document plus `docs/schema/*.schema.json` is the *complete*
+**Status: frozen.** `schema: 2` is the seam between the Carto-Ripper mod (the sole producer)
+and every consumer. *(v2 differs from v1 in exactly one record shape — the §8c clip-area
+records carry their polygon inline; see §12.2. Everything else in this document is unchanged
+from v1.)* This document plus `docs/schema/*.schema.json` is the *complete*
 specification: a consumer can be written against it with no access to the game and no access
 to the producer's source. If this document and the mod ever disagree, this document is right
 and the mod has a bug.
@@ -1193,11 +1195,12 @@ and a strip is the unit the game actually clips with.
  "right": [[x,y,z],[x,y,z],[x,y,z],[x,y,z]],
  "bottom": -0.267, "top": 12.3}
 
-{"id": 220481, "kind": "area", "area": 220481, "bottom": -0.3}
+{"id": 220481, "kind": "area", "area": 220481, "bottom": -0.3,
+ "nodes": [[x,y,z], …], "triangles": [[a,b,c], …]}   // §8b encoding, inline since 2026-08-09
 ```
 
-- **`id`** — the net entity (`kind` `edge`/`node`/`orphan`) or area this strip belongs to; joins
-  to `networks.jsonl` and `areas.jsonl` respectively. **Not unique**: several strips share one id.
+- **`id`** — the net entity (`kind` `edge`/`node`/`orphan`) or area entity this strip belongs
+  to; net kinds join to `networks.jsonl`. **Not unique**: several strips share one id.
 - **`left`, `right`** — the strip's two boundary curves, as authored *after* the composition's
   width trim, so they bound exactly the ribbon the producer's own mask was stamped from.
 - **`bottom`, `top`** — the clip band, in metres **relative to the lane surface**, not absolute.
@@ -1206,8 +1209,11 @@ and a strip is the unit the game actually clips with.
   `(lane + bottom, lane + top]`.
 - **`top` absent** means unbounded — an authored clip surface hides whatever covers it, however
   high. `kind: "area"` records always omit it.
-- **`kind: "area"`** records carry no geometry: the triangles are already in `areas.jsonl` under
-  the same id (§8b). The record exists to say *that* area clips, and with what band.
+- **`kind: "area"`** records carry their own polygon: `nodes` (bundle-frame world positions,
+  §8b's encoding) and `triangles` (index triplets into `nodes`). `area` is the source area
+  entity's id, kept as provenance — it joins to nothing, because the game never *paints* a clip
+  surface and `areas.jsonl` therefore does not carry it (§8b, audit §36). *(Until 2026-08-09
+  these records carried no geometry and referenced `areas.jsonl` instead; see §12.2.)*
 
 The band is the game's own, verbatim (`CullRoadsJob.AddSegment` + `GenerateClipDataJob`): base =
 the composition's edge-height extremes plus `TerrainComposition.m_ClipHeightOffset`; the top
@@ -1477,3 +1483,20 @@ references over one city, of which 22,952 resolve to network records and the res
 at all). The table now states the real invariants; the validator accepts stack-section id
 sharing, resolves `parent` against both record layers, and reports unresolvable parents as one
 aggregated warning rather than an error, since §4 has always made `parent` ignorable.
+
+### 12.2 `schema: 2` (2026-08-09) — clip-area records carry their polygon
+
+The one change: a §8c `kind: "area"` record now carries `nodes` + `triangles` (in §8b's
+encoding), and its `area` field is provenance rather than a join key. Nothing else differs
+from v1.
+
+Why a version and not an amendment: two v1 changes made on 2026-08-08 contradicted each other.
+§36 removed clip-surface areas from `areas.jsonl` (correctly — the game structurally never
+paints them), while §8c defined clip-area records as geometry-by-reference into that same
+layer. The first full rip carrying both changes shipped 229 clip volumes that referenced
+records no longer present — caught by the validator on the Phase 8 acceptance run, exactly the
+loud failure the contract promises. The §12.1 amnesty had already closed ("from the first
+finalized bundle onward, closed-object changes take `schema: 2`"), and clip records are closed
+objects, so the repair takes the version bump. A v1 consumer given v2 data fails at the
+manifest's `schema` const; the only bundles carrying the broken intermediate form were never
+valid under either version.

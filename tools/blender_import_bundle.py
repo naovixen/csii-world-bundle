@@ -2674,22 +2674,16 @@ def _clip_grid(bundle_dir, width, height, heights, cell, origin_x, origin_z,
         return numpy.stack(((points[:, 0] - origin_x) / cell + 0.5,
                             (origin_z - points[:, 2]) / cell + 0.5), axis=-1)
 
-    # An `area` record carries no curves: its triangles are in areas.jsonl under the same id.
-    area_nodes = {}
-    areas_path = os.path.join(bundle_dir, "areas.jsonl")
-    if os.path.isfile(areas_path) and any(s.get("kind") == "area" for s in strips):
-        wanted = {s.get("area") for s in strips if s.get("kind") == "area"}
-        for record in read_jsonl(areas_path):
-            if record.get("id") in wanted:
-                area_nodes[record["id"]] = (record.get("nodes") or [], record.get("triangles") or [])
-
     unbounded = float("inf")
     for strip in strips:
         bottom = float(strip["bottom"]) if floor_override is None else float(floor_override)
         top = float(strip["top"]) if strip.get("top") is not None else unbounded
 
         if strip.get("kind") == "area":
-            nodes, triangles = area_nodes.get(strip.get("area"), ([], []))
+            # An `area` record carries its own polygon since 2026-08-09 (§8c) — the game never
+            # paints clip surfaces, so areas.jsonl stopped carrying them (§36) and the old join
+            # here read geometry that no longer exists.
+            nodes, triangles = strip.get("nodes") or [], strip.get("triangles") or []
             for tri in triangles:
                 if any(not 0 <= i < len(nodes) for i in tri):
                     continue
