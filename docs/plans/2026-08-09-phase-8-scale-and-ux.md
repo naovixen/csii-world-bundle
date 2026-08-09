@@ -1,5 +1,16 @@
 # Phase 8 — Scale, robustness & the one-button rip
 
+> **ACCEPTED 2026-08-09.** The one-button acceptance rip (12:16–12:39, full city) ran all
+> 8 stages in 1,413 s with zero failures and the game playable throughout; summary reports
+> per-stage timings, size by layer (4,685.6 MiB / 22 layers) and dedup (1,266,276 instances
+> over 5,589 meshes = 226.6 placements/mesh; 4,611 materials share 3,477 textures);
+> `tools/validate_bundle.py` → **VALID, 0 errors** (132 warnings, all known classes); the
+> 1024 texture cap demonstrably bounds size (2048² sources written at 1024²). Consumer
+> end-to-end: full-city networks+lanes Blender import and a downtown `--everything 600`
+> all-layers import both clean (0 contract violations); overview artifact at
+> `E:\carto-out\shots\phase8_downtown_overview.png`. The two visual blockers closed the
+> same day: §38 retaining walls and §39 lane-marking texture repeat, both user-accepted.
+
 PLAN.md's Phase 8 ("Scale & robustness") plus the UX consolidation agreed 2026-08-09: the
 five numbered dev buttons collapse into a single asynchronous **Rip World** pipeline with
 layer selection and visible progress. The dev-button flow was scaffolding for building phases
