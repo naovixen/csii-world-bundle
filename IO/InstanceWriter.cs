@@ -42,9 +42,8 @@ namespace Carto.IO
         /// <param name="path">The destination path, before <see cref="BundleFile"/>'s suffix.（目標路徑，未含 <see cref="BundleFile"/> 的後綴。）</param>
         public InstanceWriter(string path)
         {
-            // Compressed, and named for it — see BundleFile. This is the single largest text layer
-            // in the bundle, so it is also the one that gains most from being compressed at rest.
-            // （壓縮並如實命名——見 BundleFile。此為束中最大的文字層，因此也是壓縮儲存獲益最大者。）
+            // Through BundleFile so this layer shares the bundle's one on-disk policy — currently
+            // uncompressed; COMP-1 tried gzip here and was reverted (see BundleFile for why).
             _writer = BundleFile.CreateText(path);
         }
 

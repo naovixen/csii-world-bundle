@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate the hand-authored example CS2 World Bundle (schema 1).
+"""Generate the hand-authored example CS2 World Bundle (schema 2, frozen 2026-08-09).
 
 The example is the executable half of the Phase-0 schema freeze: it is a tiny but
 *complete* bundle (one cube mesh, one texture, one material, two instances, one

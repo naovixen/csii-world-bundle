@@ -131,8 +131,9 @@ the attribute — it's cheap and a consumer can ignore it.
 
 ## 4. The CS2 World Bundle contract (the deliverable)
 
-This section is the seam. Version it (`"schema": 1`) and ship a JSON Schema + example bundle so
-a consumer can be built against it with no access to this code.
+This section is the seam. Version it (frozen at `"schema": 2` since 2026-08-09 — the sketch
+below predates the freeze; `docs/bundle-schema.md` is authoritative where they differ) and ship
+a JSON Schema + example bundle so a consumer can be built against it with no access to this code.
 
 ### Coordinate frame (state it once, precisely)
 - Positions/meshes in **CS2 world metres**. CS2/Unity is **left-handed, Y-up** (X east, Y up,
@@ -145,7 +146,7 @@ a consumer can be built against it with no access to this code.
 ### `bundle.json` (manifest)
 ```jsonc
 {
-  "schema": 1,
+  "schema": 2,
   "generator": "carto-ripper <version>",
   "city": "<name>",
   "frame": { "units": "m", "handedness": "left", "up": "Y",

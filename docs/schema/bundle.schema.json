@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://taipei-native.github.io/carto-ripper/schema/v1/bundle.schema.json",
+  "$id": "https://taipei-native.github.io/carto-ripper/schema/bundle.schema.json",
   "title": "CS2 World Bundle manifest (bundle.json)",
   "description": "The manifest at the root of a CS2 World Bundle. Fully specifies the coordinate frame, geo-referencing and layer index, so a consumer needs no game and no producer code.",
   "type": "object",

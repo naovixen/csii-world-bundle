@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://taipei-native.github.io/carto-ripper/schema/v1/lanemesh.schema.json",
+  "$id": "https://taipei-native.github.io/carto-ripper/schema/lanemesh.schema.json",
   "title": "CS2 World Bundle lane-geometry record (contract section 5B v2)",
   "description": "One line of lanemeshes.jsonl (JSON Lines): the parameters a consumer needs to bend the referenced prefab's straight part meshes (laneprefabs.json + lanemeshes/) along the lane's curve. The bend algorithm is normative in the contract and reference-implemented in tools/blender_import_bundle.py.",
   "type": "object",

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Standalone validator for a CS2 World Bundle (schema 1).
+"""Standalone validator for a CS2 World Bundle (schema 2, frozen 2026-08-09).
 
 Standalone means exactly that: Python 3.8+ and the standard library, no pip installs, no
 game, no Carto source. It is the reference check for the Phase-0 contract, and the thing a
@@ -995,7 +995,7 @@ def _check_mesh(
 # ======================================================================================
 
 def main(argv: List[str]) -> int:
-    parser = argparse.ArgumentParser(description="Validate a CS2 World Bundle (schema 1).")
+    parser = argparse.ArgumentParser(description="Validate a CS2 World Bundle (schema 2, frozen 2026-08-09).")
     parser.add_argument("bundle", type=Path, help="path to the bundle directory (the one holding bundle.json)")
     parser.add_argument("--schema-dir", type=Path, default=DEFAULT_SCHEMA_DIR, help="directory holding *.schema.json")
     parser.add_argument("-q", "--quiet", action="store_true", help="print only errors and the verdict")

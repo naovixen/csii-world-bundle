@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://taipei-native.github.io/carto-ripper/schema/v1/network.schema.json",
+  "$id": "https://taipei-native.github.io/carto-ripper/schema/network.schema.json",
   "title": "CS2 World Bundle network record",
   "description": "One line of networks.jsonl (JSON Lines). A record carries geometry in exactly one of two forms: a ripped mesh (assetId + pos + rot) or a centerline fallback (centerline + width) the consumer extrudes itself.",
   "type": "object",

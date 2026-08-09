@@ -36,8 +36,14 @@ versioned, engine-neutral **CS2 World Bundle**.
   interoperability with software you own. Do not publish, upload or redistribute ripped meshes
   or textures, and never commit them to a repository.
 
-Implementation follows the phased plan in [`PLAN.md`](PLAN.md); the export path is still being
-built out, and vanilla Carto's vector/raster export is unaffected.
+Implementation follows the phased plan in [`PLAN.md`](PLAN.md). The export path is complete: a
+one-button **Rip World** on the Options → Carto ripper tab walks the loaded city (progress
+appears in the game's notification area) and writes the full bundle to
+`…\AppData\LocalLow\Colossal Order\Cities Skylines II\ModsData\Carto\`. Vanilla Carto's
+vector/raster export is unaffected. A reference consumer lives at
+[`tools/blender_import_bundle.py`](tools/blender_import_bundle.py) (Blender import of a full
+bundle); it doubles as the readable reference implementation of the contract's consumer-side
+algorithms.
 
 ## Installation
 
