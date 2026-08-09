@@ -1477,6 +1477,9 @@ being optional.
 
 ## 34. The portal face is a RaiseTopToTerrain piece; terrain conforming implemented (2026-08-08, night)
 
+> **⚠ 2026-08-09, first full-city run: this implementation flattens every retaining wall —
+> see §38 (OPEN).** The section's mechanism reading stands; the landed port does not.
+
 Reported: in-game a wall above the tunnel mouth closes the trench; the import shows the
 mouth open above the arch. Traced end-to-end: the wing walls and retaining walls arrive
 (the tall geometry is in the bundle — `seg_2333057` measures 28.7 m), but the **portal face
@@ -1673,3 +1676,81 @@ Decision: **`NotificationSystem.Push`/`Pop` is the progress sink for the one-but
 background-process caption (`RipProgress` reflection path) stays as the fallback if `Push`
 ever throws, and `RunDeferred`'s show-caption-then-block contract is unchanged — the toast
 cannot paint during a synchronous stage either; nothing paints mid-freeze.
+
+## 38. OPEN — the §34 conforming port flattens retaining walls (2026-08-09, acceptance run)
+
+**Status: OPEN, deliberately unfixed.** Diagnosed this session; the user chose to validate in
+a fresh session before any change lands. The producer still carries the defect; every bundle
+ripped with it does too. Nothing here is a §34-mechanism retraction — the game reading stands;
+the landed port is what fails.
+
+**Symptom** (screenshots `E:\carto-out\shots\`, same cutting in-game vs Blender): the concrete
+retaining walls of sunken roads and tunnel approaches are textured and solid in-game, absent
+in the import — see-through cuttings, a distant wall piece with a spiked top edge. Affects
+every below-grade cutting, tunnel approach and (reportedly) building interiors seen through
+the world.
+
+**What it is NOT**, each eliminated against the acceptance bundle (2026-08-09, ~03:30 rip +
+04:25 terrain re-rip):
+
+- Not §36/clip volumes: `clipvolumes.jsonl` is healthy — 14,578 edge + 34,886 node strips,
+  266 area records all carrying inline polygons (schema 2).
+- Not materials: the segment's two materials are opaque, textured, resolved
+  (`RoadParts_fd2f…`, `Road_0c1d…`).
+- Not winding, not the mesh-frame mirror, not missing pieces: the wall geometry IS in the glb.
+
+**The anatomy** (`networks/seg_50940.glb`, "Highway Oneway - 2 lanes", elevation −7.5…−10,
+prim0 = 360 verts / 192 tris):
+
+| vertex block | state | height |
+|---|---|---|
+| v0–v107 | drawn | every vertex at exactly **+5.10** (flat sheet at natural-ground height) |
+| v108–v251 | **all 144 orphaned** (no triangle references them) | −5.10…−4.25 (trench floor profile) |
+| v252–v359 | drawn | every vertex at exactly **+5.10** |
+
+The 10.2 m "walls" exist only as vertical *pairs* of flattened sheets; the quads that should
+join top to bottom are gone. ±5.10 = natural ground / trench floor relative to the segment
+centre — i.e. **the conforming pass moved entire wall pieces to the sampled terrain height**,
+not just their boundary rows, and the connecting triangles were dropped.
+
+**Verified identical to the game** (decompiled `Game.Rendering.BatchMeshHelpers`, this
+session): `InitializeHeightBounds`/`AddHeightBounds` (257 slices, per-edge lerp fill,
+`round(z·num2)+num»1` slice index) and the classification
+(`y <= min+0.01 → class 1` for LowerBottomToTerrain, `y >= max−0.01 → class 2` for
+RaiseTopToTerrain, class into vertex-colour `z`) — the producer's
+`GetPieceHeightBounds`/classification port matches line for line. `SampleConformHeight`'s
+`(world+offset)*scale` mapping matches the terrain layer's own inverse. The sample happens on
+game-world positions before the glTF mirror.
+
+**Open questions for the next session, in order of suspicion:**
+
+1. **What the game's vertex shader actually does with class 1/2.** The port assigns
+   `world.y = SampleConformHeight(world)` outright. If the shader offsets, clamps, or moves
+   relative to the classified row rather than assigning, a short authored strip stays a wall;
+   under assignment it collapses. The shader is not decompilable with `tools/decomp`; the
+   answer may need RenderDoc or the shader source in the game's bundles.
+2. **Why entire pieces classify.** If wall pieces are authored as short strips (§34's own
+   "short authored strip" note), a strip thinner than ~0.02 m puts *both* rows inside the
+   ±0.01 tolerance and both rows move. Log, in a probe rip: per flagged piece — name, flags,
+   `m_Size`, per-slice bounds min/max histogram, classified-vertex share. If the share is
+   ~100 %, this is confirmed regardless of shader semantics.
+3. **Why the orphan block's triangles drop.** The v108–251 block survived the vertex remap
+   (it is in the buffer) yet no triangle references it — the triangle pass loses exactly the
+   quads whose corners span blocks. Check the per-range `RangeStartVertex/RangeIndexCount`
+   bookkeeping for multi-range flagged pieces against the game's `nativeArray4` remap.
+4. **The sample position.** At a trench lip the 3.5 m heightmap cell straddles an ~8 m cliff;
+   bilinear reads mid-heights (the spiked top edge in the screenshot is plausibly the cliff
+   profile). In-game the same wall renders smoothly, so whatever the shader samples, it is
+   not this value at this position — or not assigned this way.
+
+**Interim options already weighed** (not taken, per the user's decision): disabling the §34
+vertex move ships flagged pieces at authored height — walls return as pre-§34 rips had them,
+portal faces reopen above the arch (the §34 problem comes back, the smaller loss). One-line
+change at the `world.y = SampleConformHeight(world)` site in
+`NetworkRipSystem.GameMesh.cs`, plus a report-line reword; keep the §34 machinery for the
+real port.
+
+**Validation once fixed:** Network-layer re-rip only (Ripper tab → Network master alone),
+then `seg_50940`-class segments must show connected 10 m wall quads
+(the probe script pattern from this session: orphan-run and column-spread scans), then the
+same cutting in Blender vs in-game.
