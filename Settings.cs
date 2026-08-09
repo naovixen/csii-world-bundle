@@ -480,14 +480,15 @@ namespace Carto
         }
 
         // ================================================================================
-        // The ripper tab's master/sub checkbox contract: a master checkbox is the on/off for
-        // its whole category — turning it on with nothing selected selects everything, and
-        // unchecking every sub-option turns the master off (the subs gray out beneath it, so
-        // the master is the only way back on). Backing fields let the setters keep the two
-        // levels in agreement without the UI ever seeing an inconsistent pair.
-        // （擷取器分頁的主／子核取方塊契約：主方塊即整個類別的開關——在全未選取時開啟主方塊
-        //   會選取全部，而取消所有子選項會關閉主方塊（子選項於其下變灰，主方塊是唯一的回頭路）。
-        //   後備欄位使設定器維持兩層一致，UI 永不見到矛盾的組合。）
+        // The ripper tab's master/sub checkbox contract: the master mirrors its subs both
+        // ways. Toggling the master sets every sub to match; unchecking every sub turns the
+        // master off, and re-checking any sub turns it back on — the subs never gray out, so
+        // either level can bring the category back. Backing fields let the setters keep the
+        // two levels in agreement without the UI ever seeing an inconsistent pair.
+        // （擷取器分頁的主／子核取方塊契約：主方塊與子選項雙向鏡射。切換主方塊使所有子選項
+        //   隨之一致；取消所有子選項會關閉主方塊，重新勾選任一子選項則使其重新開啟——
+        //   子選項永不變灰，任一層皆可喚回該類別。後備欄位使設定器維持兩層一致，
+        //   UI 永不見到矛盾的組合。）
         // ================================================================================
         private bool _ripObjects = true;
         private bool _ripObjectsBuildings = true, _ripObjectsProps = true, _ripObjectsTrees = true, _ripObjectsDecals = true;
@@ -519,7 +520,7 @@ namespace Carto
             set
             {
                 _ripObjects = value;
-                if (value && !AnyMeshSub) { _ripObjectsBuildings = _ripObjectsProps = _ripObjectsTrees = _ripObjectsDecals = _ripAppearanceColors = _ripAppearanceLights = true; }
+                _ripObjectsBuildings = _ripObjectsProps = _ripObjectsTrees = _ripObjectsDecals = _ripAppearanceColors = _ripAppearanceLights = value;
             }
         }
 
@@ -529,7 +530,6 @@ namespace Carto
         /// </summary>
         [SettingsUISection(RipperTab, RipperMeshGroup)]
         [SettingsUIAdvanced]
-        [SettingsUIDisableByCondition(typeof(Settings), nameof(RipObjects), invert: true)]
         public bool RipObjectsBuildings
         {
             get => _ripObjectsBuildings;
@@ -542,7 +542,6 @@ namespace Carto
         /// </summary>
         [SettingsUISection(RipperTab, RipperMeshGroup)]
         [SettingsUIAdvanced]
-        [SettingsUIDisableByCondition(typeof(Settings), nameof(RipObjects), invert: true)]
         public bool RipObjectsProps
         {
             get => _ripObjectsProps;
@@ -555,7 +554,6 @@ namespace Carto
         /// </summary>
         [SettingsUISection(RipperTab, RipperMeshGroup)]
         [SettingsUIAdvanced]
-        [SettingsUIDisableByCondition(typeof(Settings), nameof(RipObjects), invert: true)]
         public bool RipObjectsTrees
         {
             get => _ripObjectsTrees;
@@ -568,7 +566,6 @@ namespace Carto
         /// </summary>
         [SettingsUISection(RipperTab, RipperMeshGroup)]
         [SettingsUIAdvanced]
-        [SettingsUIDisableByCondition(typeof(Settings), nameof(RipObjects), invert: true)]
         public bool RipObjectsDecals
         {
             get => _ripObjectsDecals;
@@ -582,7 +579,6 @@ namespace Carto
         /// </summary>
         [SettingsUISection(RipperTab, RipperMeshGroup)]
         [SettingsUIAdvanced]
-        [SettingsUIDisableByCondition(typeof(Settings), nameof(RipObjects), invert: true)]
         public bool RipAppearanceColors
         {
             get => _ripAppearanceColors;
@@ -596,7 +592,6 @@ namespace Carto
         /// </summary>
         [SettingsUISection(RipperTab, RipperMeshGroup)]
         [SettingsUIAdvanced]
-        [SettingsUIDisableByCondition(typeof(Settings), nameof(RipObjects), invert: true)]
         public bool RipAppearanceLights
         {
             get => _ripAppearanceLights;
@@ -615,7 +610,7 @@ namespace Carto
             set
             {
                 _ripNetworks = value;
-                if (value && !AnyNetworkSub) { _ripNetworkSurfaces = _ripLaneGraph = _ripLaneGeometry = true; }
+                _ripNetworkSurfaces = _ripLaneGraph = _ripLaneGeometry = value;
             }
         }
 
@@ -626,7 +621,6 @@ namespace Carto
         /// </summary>
         [SettingsUISection(RipperTab, RipperNetworkGroup)]
         [SettingsUIAdvanced]
-        [SettingsUIDisableByCondition(typeof(Settings), nameof(RipNetworks), invert: true)]
         public bool RipNetworkSurfaces
         {
             get => _ripNetworkSurfaces;
@@ -639,7 +633,6 @@ namespace Carto
         /// </summary>
         [SettingsUISection(RipperTab, RipperNetworkGroup)]
         [SettingsUIAdvanced]
-        [SettingsUIDisableByCondition(typeof(Settings), nameof(RipNetworks), invert: true)]
         public bool RipLaneGraph
         {
             get => _ripLaneGraph;
@@ -653,7 +646,6 @@ namespace Carto
         /// </summary>
         [SettingsUISection(RipperTab, RipperNetworkGroup)]
         [SettingsUIAdvanced]
-        [SettingsUIDisableByCondition(typeof(Settings), nameof(RipNetworks), invert: true)]
         public bool RipLaneGeometry
         {
             get => _ripLaneGeometry;
@@ -666,7 +658,7 @@ namespace Carto
         /// </summary>
         [SettingsUISection(RipperTab, RipperNetworkGroup)]
         [SettingsUIAdvanced]
-        [SettingsUIDisableByCondition(typeof(Settings), nameof(IsLaneDecalsUnavailable))]
+        [SettingsUIDisableByCondition(typeof(Settings), nameof(RipLaneGeometry), invert: true)]
         public bool RipLaneDecals { get; set; } = true;
 
         /// <summary>
@@ -681,7 +673,7 @@ namespace Carto
             set
             {
                 _ripTerrain = value;
-                if (value && !AnyTerrainSub) { _ripTerrainHeights = _ripTerrainWater = _ripTerrainGround = _ripTerrainClips = _ripTerrainAreas = true; }
+                _ripTerrainHeights = _ripTerrainWater = _ripTerrainGround = _ripTerrainClips = _ripTerrainAreas = value;
             }
         }
 
@@ -692,7 +684,6 @@ namespace Carto
         /// </summary>
         [SettingsUISection(RipperTab, RipperTerrainGroup)]
         [SettingsUIAdvanced]
-        [SettingsUIDisableByCondition(typeof(Settings), nameof(RipTerrain), invert: true)]
         public bool RipTerrainHeights
         {
             get => _ripTerrainHeights;
@@ -705,7 +696,6 @@ namespace Carto
         /// </summary>
         [SettingsUISection(RipperTab, RipperTerrainGroup)]
         [SettingsUIAdvanced]
-        [SettingsUIDisableByCondition(typeof(Settings), nameof(RipTerrain), invert: true)]
         public bool RipTerrainWater
         {
             get => _ripTerrainWater;
@@ -720,7 +710,6 @@ namespace Carto
         /// </summary>
         [SettingsUISection(RipperTab, RipperTerrainGroup)]
         [SettingsUIAdvanced]
-        [SettingsUIDisableByCondition(typeof(Settings), nameof(RipTerrain), invert: true)]
         public bool RipTerrainGround
         {
             get => _ripTerrainGround;
@@ -735,7 +724,6 @@ namespace Carto
         /// </summary>
         [SettingsUISection(RipperTab, RipperTerrainGroup)]
         [SettingsUIAdvanced]
-        [SettingsUIDisableByCondition(typeof(Settings), nameof(RipTerrain), invert: true)]
         public bool RipTerrainClips
         {
             get => _ripTerrainClips;
@@ -750,7 +738,6 @@ namespace Carto
         /// </summary>
         [SettingsUISection(RipperTab, RipperTerrainGroup)]
         [SettingsUIAdvanced]
-        [SettingsUIDisableByCondition(typeof(Settings), nameof(RipTerrain), invert: true)]
         public bool RipTerrainAreas
         {
             get => _ripTerrainAreas;
@@ -2418,15 +2405,6 @@ namespace Carto
 
         [SettingsUIHidden]
         public bool IsInGameOrEditor => GameMode.GameOrEditor.HasFlag(Instance.GameMode);
-
-        /// <summary>
-        /// Whether the Road Markings sub-option is out of play — its chain runs through both the
-        /// Network master and the Fences, Hedges &amp; Cables option, so it must gray out when
-        /// either is off.（「道路標線」子選項是否不可用——其鏈同時經過「路網」主開關與
-        /// 「圍籬、樹籬與電纜」選項，任一關閉皆須變灰。）
-        /// </summary>
-        [SettingsUIHidden]
-        public bool IsLaneDecalsUnavailable => !RipNetworks || !RipLaneGeometry;
 
         [SettingsUIHidden]
         public bool IsTransverseMercator => SourceCRS == IO.CRS.TransverseMercator;
