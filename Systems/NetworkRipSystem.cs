@@ -144,7 +144,9 @@ namespace Carto.Systems
         private int _lowerBottomPieces;
         private int _raiseTopPieces;
         private int _conformLoweredVerts;
+        private int _conformKeptVerts;
         private int _conformRaisedVerts;
+        private int _conformOutOfWindowTris;
 
         /// <summary>
         /// The event triggered when the system instance is created.
@@ -462,7 +464,10 @@ namespace Carto.Systems
             _lowerBottomPieces = 0;
             _raiseTopPieces = 0;
             _conformLoweredVerts = 0;
+            _conformKeptVerts = 0;
             _conformRaisedVerts = 0;
+            _conformOutOfWindowTris = 0;
+            m_ConformProbes.Clear();
 
             // A deselected half simply contributes an empty work list; the pipeline shares the
             // rest — writers, materials, progress — unchanged.
@@ -931,11 +936,38 @@ namespace Carto.Systems
             if (_railPieces > 0) report.AppendLine($"Corner-rail (PreserveShape) pieces placed: {_railPieces}");
             if (_skipBottomPieces > 0) report.AppendLine($"SkipBottomHalf pieces halved: {_skipBottomPieces}");
             if (_lowerBottomPieces + _raiseTopPieces > 0)
+            {
                 report.AppendLine($"{_lowerBottomPieces} LowerBottomToTerrain / {_raiseTopPieces} RaiseTopToTerrain "
-                                + $"piece(s) conformed at rip time: {_conformLoweredVerts} bottom / "
-                                + $"{_conformRaisedVerts} top vertex(es) moved to the terrain surface "
-                                + "(BatchMeshHelpers' per-slice height bounds + the vertex shader's terrain "
-                                + "sample, applied here so portal faces and wall skirts ship closed)");
+                                + $"piece(s) conformed at rip time (BatchMeshHelpers' per-slice height bounds "
+                                + "+ the vertex shader's terrain sample, applied here):");
+                report.AppendLine($"  bottom edges (clamp DOWN only — a trench wall's base never lifts, §38): "
+                                + $"{_conformLoweredVerts} vertex(es) buried, {_conformKeptVerts} kept at road level");
+                report.AppendLine($"  top edges (pinned to the terrain both ways — the §34 portal stretch): "
+                                + $"{_conformRaisedVerts} vertex(es)");
+                if (_conformOutOfWindowTris > 0)
+                    report.AppendLine($"  DATA-CONTRACT VIOLATION: {_conformOutOfWindowTris} triangle(s) referenced "
+                                    + "vertices outside their material range and were dropped (expected 0; "
+                                    + "every scanned .Geometry asset keeps its ranges self-contained)");
+
+                // One row per flagged piece — the §38 probe. A piece whose vertices ALL
+                // classify is a two-rail wall: its whole shape is the conform move, so it is
+                // the first suspect when a wall looks wrong.
+                // （每個帶旗標部件一列——§38 探針。頂點全數受分類者為雙軌牆：其整體形狀即
+                //   貼合移動，牆面有異時的頭號嫌疑。）
+                List<KeyValuePair<string, ConformPieceProbe>> probes = new(m_ConformProbes);
+                probes.Sort((a, b) => string.CompareOrdinal(a.Key, b.Key));
+                foreach (KeyValuePair<string, ConformPieceProbe> kvp in probes)
+                {
+                    ConformPieceProbe pr = kvp.Value;
+                    int classified = pr.Class1 + pr.Class2;
+                    string share = (pr.Vertices > 0) ? $"{100f * classified / pr.Vertices:F0}%" : "n/a";
+                    string twoRail = ((pr.Vertices > 0) && (classified == pr.Vertices)) ? " [TWO-RAIL: 100% classified]" : "";
+                    report.AppendLine($"  {kvp.Key}: {pr.Flags}, size {pr.Size.x:F1}x{pr.Size.y:F1}x{pr.Size.z:F1}, "
+                                    + $"{pr.Vertices} vert(s), class-1 {pr.Class1} / class-2 {pr.Class2} ({share}){twoRail}; "
+                                    + $"{pr.Lowered} buried / {pr.Kept} kept / {pr.Raised} raised; "
+                                    + $"dropped tris {pr.FrontCutTris} front / {pr.BackCutTris} back / {pr.OutOfWindowTris} window");
+                }
+            }
             if (_pipelineCompositions > 0)
                 report.AppendLine($"Skipped {_pipelineCompositions} composition part(s) with no world-view layer "
                                 + "(Pipeline/SubPipeline/Waterway — utility cutaway and overlay views only; "

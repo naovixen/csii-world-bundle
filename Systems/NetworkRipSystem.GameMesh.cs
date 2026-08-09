@@ -32,11 +32,12 @@ namespace Carto.Systems
     /// 頂點著色器再依 <c>BuildEdgeMatrix</c> 交付的兩條三次貝茲曲線混合求出世界位置。
     /// 本檔案即該管線的移植：曲線、映射與求值皆依遊戲自身的程式碼。）<br/><br/>
     /// Known deviations, deliberate and counted where they can fire: wind sway (not shape),
-    /// terrain-conforming flags (<c>LowerBottomToTerrain</c>/<c>RaiseTopToTerrain</c> — a
-    /// consumer rule once the terrain layer exists), rebuilt normals (contract §5.1), and the
-    /// roundabout three-matrix blend weights (0x80 colour bits — shader-side, still
-    /// approximated by the nearer pair).
-    /// （已知且刻意的偏離：風力搖曳、順地形旗標、重建法線，與環形交叉口的三矩陣混合權重。）
+    /// rebuilt normals (contract §5.1), and the roundabout three-matrix blend weights (0x80
+    /// colour bits — shader-side, still approximated by the nearer pair). The terrain-conforming
+    /// flags (<c>LowerBottomToTerrain</c>/<c>RaiseTopToTerrain</c>) are no longer a deviation:
+    /// they are applied at rip time (§34 raise, §38 clamp — see the conforming section below).
+    /// （已知且刻意的偏離：風力搖曳、重建法線，與環形交叉口的三矩陣混合權重。順地形旗標已非
+    /// 偏離：於擷取時套用（§34 上抬、§38 夾制——見下方貼合段落）。）
     /// </summary>
     public partial class NetworkRipSystem
     {
@@ -74,12 +75,18 @@ namespace Carto.Systems
         // ---- terrain conforming (LowerBottomToTerrain / RaiseTopToTerrain) ------------------
         // The game classifies each vertex of a flagged piece against per-z-slice height bounds
         // (`BatchMeshHelpers.InitializeHeightBounds`, 257 slices) and writes the class into the
-        // vertex colour; its vertex shader then moves classified vertices to the terrain height
-        // at their world position. That is how one portal-face asset closes a trench of any
-        // depth, and how retaining-wall skirts bury their bottom edge. Applied here at rip time
-        // against the same flattened heightmap the bundle ships, so the meshes arrive closed.
-        // （遊戲將帶旗標部件的頂點依逐 z 切片高度界分類，寫入頂點色；頂點著色器再將其移至世界
-        //   位置的地形高度。洞口面板與擋牆裙邊皆賴此閉合。此處於擷取時套用同一攤平高度圖。）
+        // vertex colour; its vertex shader then applies the terrain move per class. The two
+        // moves differ (§38): class 1 (LowerBottomToTerrain) is a downward CLAMP — the bottom
+        // edge is buried where the terrain is below it and left at road level where it is not,
+        // which is what keeps a trench wall standing; class 2 (RaiseTopToTerrain) is an
+        // ASSIGNMENT — the top edge is pinned to the terrain surface in both directions, which
+        // is how one portal-face asset closes a trench of any depth (§34). Applied here at rip
+        // time against the same flattened heightmap the bundle ships, so the meshes arrive
+        // closed.
+        // （遊戲將帶旗標部件的頂點依逐 z 切片高度界分類，寫入頂點色；頂點著色器再依類別套用
+        //   地形移動。兩類移動不同（§38）：類別 1 為向下夾制——地形低於底緣時埋入，否則保持
+        //   路面高度，壕溝擋牆賴此立起；類別 2 為指派——頂緣雙向釘於地形表面，洞口面板賴此
+        //   閉合任意深度的壕溝（§34）。此處於擷取時套用同一攤平高度圖。）
 
         /// <summary>Per-slice min/max heights of one piece's authored geometry.（部件逐切片高度界。）</summary>
         private sealed class PieceHeightBounds
@@ -90,6 +97,25 @@ namespace Carto.Systems
         }
 
         private readonly Dictionary<Entity, PieceHeightBounds> m_PieceHeightBounds = new();
+
+        /// <summary>
+        /// Per-prefab aggregate of the conforming pass — the §38 probe. One row per flagged
+        /// piece in the rip report: how its vertices classified, where the move sent them, and
+        /// what the triangle cuts dropped.
+        /// （貼合流程的逐預製聚合——§38 探針。報告中每個帶旗標部件一列：頂點如何分類、
+        /// 移動將其送往何處、三角形裁切丟棄了什麼。）
+        /// </summary>
+        private sealed class ConformPieceProbe
+        {
+            public string Flags;
+            public float3 Size;
+            public int Vertices;
+            public int Class1, Class2;
+            public int Lowered, Kept, Raised;
+            public int FrontCutTris, BackCutTris, OutOfWindowTris;
+        }
+
+        private readonly Dictionary<string, ConformPieceProbe> m_ConformProbes = new();
 
         private ushort[] _conformHeights;
         private int2 _conformResolution;
@@ -475,10 +501,22 @@ namespace Carto.Systems
                 //   每個隧道洞口上方的面板即 RaiseTopToTerrain 部件。）
                 PieceHeightBounds conformBounds = null;
                 float conformScaleZ = 0f;
+                ConformPieceProbe probe = null;
                 if ((lowerBottom || raiseTop) && EnsureConformTerrain())
                 {
                     conformBounds = GetPieceHeightBounds(piece.m_Piece, source, piece.m_Size.z);
                     conformScaleZ = 256f / math.max(piece.m_Size.z, 0.001f);
+
+                    string probeName = Instance.Name.GetPrefabName(piece.m_Piece);
+                    if (!m_ConformProbes.TryGetValue(probeName, out probe))
+                    {
+                        m_ConformProbes[probeName] = probe = new ConformPieceProbe
+                        {
+                            Flags = (lowerBottom && raiseTop) ? "LowerBottom+RaiseTop"
+                                  : lowerBottom ? "LowerBottom" : "RaiseTop",
+                            Size = piece.m_Size
+                        };
+                    }
                 }
 
                 // The game's flip select — `select(float4(-1,1,-1,1), float4(1,1,1,-1),
@@ -588,6 +626,10 @@ namespace Carto.Systems
                             int slice = math.clamp((int)math.round(raw.z * conformScaleZ) + 128, 0, 256);
                             if (lowerBottom && (raw.y <= conformBounds.Min[slice] + 0.01f)) conform = 1;
                             if (raiseTop && (raw.y >= conformBounds.Max[slice] - 0.01f)) conform = 2;
+
+                            probe.Vertices++;
+                            if (conform == 1) probe.Class1++;
+                            else if (conform == 2) probe.Class2++;
                         }
 
                         float3 vertex = raw * new float3(sx, 1f, sz) + offset;
@@ -708,11 +750,27 @@ namespace Carto.Systems
                         world.y += vertex.y;
                         if (conform != 0)
                         {
-                            // The vertex shader's move: a classified vertex lands ON the
-                            // terrain surface at its world position.（著色器的移動：受分類的
-                            // 頂點落於其世界位置的地形表面。）
-                            world.y = SampleConformHeight(world);
-                            if (conform == 1) _conformLoweredVerts++; else _conformRaisedVerts++;
+                            float terrain = SampleConformHeight(world);
+                            if (conform == 1)
+                            {
+                                // LowerBottomToTerrain buries the bottom edge: the shader move
+                                // is a downward clamp, never a lift — a trench wall's base stays
+                                // at road level (§38: assignment collapsed 10 m walls onto the
+                                // terrain lip).（LowerBottomToTerrain 埋入底緣：著色器的移動是
+                                // 向下夾制，絕非抬升——壕溝擋牆的基部保持於路面高度（§38）。）
+                                if (terrain < world.y) { world.y = terrain; _conformLoweredVerts++; probe.Lowered++; }
+                                else { _conformKeptVerts++; probe.Kept++; }
+                            }
+                            else
+                            {
+                                // RaiseTopToTerrain pins the top edge to the terrain surface in
+                                // both directions — the §34-validated portal stretch, unchanged.
+                                // （RaiseTopToTerrain 將頂緣雙向釘於地形表面——§34 驗證的洞口
+                                //   拉伸分支，原樣保留。）
+                                world.y = terrain;
+                                _conformRaisedVerts++;
+                                probe.Raised++;
+                            }
                         }
                         vertices.Add(world - center);
 
@@ -732,8 +790,29 @@ namespace Carto.Systems
                         int ib = source.Indices[startIndex + t + order.y] - startVertex;
                         int ic = source.Indices[startIndex + t + order.z] - startVertex;
                         if ((ia < 0) || (ib < 0) || (ic < 0)
-                            || (ia >= vertexCount) || (ib >= vertexCount) || (ic >= vertexCount)) continue;
-                        if ((remap[ia] < 0) || (remap[ib] < 0) || (remap[ic] < 0)) continue;
+                            || (ia >= vertexCount) || (ib >= vertexCount) || (ic >= vertexCount))
+                        {
+                            // Data-contract guard: every scanned `.Geometry` asset keeps its
+                            // ranges self-contained (§38: 0 of 10,414 violate), so a triangle
+                            // reaching outside its window is corrupt input, counted so it
+                            // surfaces in the report instead of vanishing.
+                            // （資料契約防護：掃描過的 `.Geometry` 資產其範圍皆自足（§38：
+                            //   10,414 個中 0 個違反）；越窗三角形屬損壞輸入，計數使其現於
+                            //   報告而非無聲消失。）
+                            _conformOutOfWindowTris++;
+                            if (probe != null) probe.OutOfWindowTris++;
+                            continue;
+                        }
+                        if ((remap[ia] < 0) || (remap[ib] < 0) || (remap[ic] < 0))
+                        {
+                            if (probe != null)
+                            {
+                                int culprit = (remap[ia] < 0) ? ia : ((remap[ib] < 0) ? ib : ic);
+                                if (frontCut && (source.Vertices[startVertex + culprit].z < -0.01f)) probe.FrontCutTris++;
+                                else probe.BackCutTris++;
+                            }
+                            continue;
+                        }
 
                         indices.Add(remap[ia]);
                         indices.Add(remap[ib]);
