@@ -1,5 +1,6 @@
 {
   "Carto.PROGRESS[Scan]": "Carto：正在掃描城市",
+  "Carto.PROGRESS[Clean]": "Carto：正在清除上次擷取",
   "Carto.PROGRESS[Meshes]": "Carto：正在擷取網格",
   "Carto.PROGRESS[Networks]": "Carto：正在擷取路網",
   "Carto.PROGRESS[Write]": "Carto：正在寫入網格",

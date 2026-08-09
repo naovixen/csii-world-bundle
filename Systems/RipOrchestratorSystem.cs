@@ -216,6 +216,62 @@ namespace Carto.Systems
             string directory = plan.OutputDirectory;
             List<Stage> stages = new();
 
+            // A stage's outputs are truncated or overwritten by name when it re-runs — except the
+            // content-hash-named textures/, whose files from an earlier run at a different cap are
+            // orphans no record references, silently inflating the bundle's counts and sizes. So a
+            // rip first deletes the outputs OWNED by its selected stages (a deselected layer's
+            // files stay, by the partial-bundle contract). The shared texture store and material
+            // table are cleared only when BOTH of their producers run: after that pair the rebuilt
+            // table is complete, while a partial rip must keep them — the merge semantics are what
+            // keep the other half's material references valid (MaterialRipSystem.WriteTable).
+            // （階段重跑時其輸出會被截斷或依名稱覆寫——唯獨以內容雜湊命名的 textures/ 例外：
+            //   先前以不同上限擷取的檔案成為無任何紀錄參照的孤兒，默默灌水束的計數與大小。
+            //   因此擷取先刪除其所選階段「擁有」的輸出（未選圖層的檔案依部分束契約保留）。
+            //   共用的貼圖庫與材質表僅於其兩個產生者皆執行時清除：該組合後重建的表是完整的，
+            //   而部分擷取必須保留兩者——合併語義正是使另一半材質參照有效的機制。）
+            List<string> staleFiles = new();
+            List<string> staleDirectories = new();
+            if (plan.Objects)
+            {
+                staleFiles.AddRange(new[] { "instances.jsonl", "colors.json", "lights.json" });
+                staleDirectories.Add("meshes");
+            }
+            if (plan.Networks)
+            {
+                staleFiles.AddRange(new[] { "networks.jsonl", "lanes.jsonl", "lanemeshes.jsonl", "laneprefabs.json" });
+                staleDirectories.AddRange(new[] { "networks", "lanemeshes" });
+            }
+            if (plan.Terrain)
+            {
+                staleFiles.AddRange(new[] { "areas.jsonl", "areaprefabs.json", "clipvolumes.jsonl" });
+                staleDirectories.Add("terrain");
+            }
+            if (plan.Objects && plan.Networks)
+            {
+                staleFiles.Add("materials.json");
+                staleDirectories.Add("textures");
+            }
+
+            if ((staleFiles.Count > 0) || (staleDirectories.Count > 0))
+            {
+                stages.Add(new Stage
+                {
+                    Title = "Clean",
+                    Begin = completed =>
+                    {
+                        RipProgress.Report(RipProgress.Phase.Clean);
+
+                        // Off the main thread: meshes/ and textures/ can be gigabytes, and
+                        // deleting them is pure file I/O.（於主執行緒外：meshes/ 與 textures/
+                        // 可達數 GB，而刪除純屬檔案讀寫。）
+                        System.Threading.Tasks.Task.Run(() => completed(CleanStaleOutputs(directory, staleFiles, staleDirectories)));
+
+                        return "Removing the previous rip's outputs of the selected layers on a background thread.";
+                    },
+                    Running = () => true
+                });
+            }
+
             if (plan.Objects)
             {
                 stages.Add(new Stage
@@ -319,6 +375,62 @@ namespace Carto.Systems
             });
 
             return stages;
+        }
+
+        /// <summary>
+        /// Delete the previous rip's outputs of the selected stages. Runs on a worker thread.
+        /// （刪除所選階段的前次擷取輸出。於工作執行緒執行。）
+        /// </summary>
+        /// <param name="directory">The bundle root.（束根目錄。）</param>
+        /// <param name="files">Layer files to remove, relative to the root.（要移除的層檔案，相對於根目錄。）</param>
+        /// <param name="directories">Layer directories to remove, relative to the root.（要移除的層目錄。）</param>
+        /// <returns>What was removed.（移除了什麼。）</returns>
+        private static string CleanStaleOutputs(string directory, List<string> files, List<string> directories)
+        {
+            List<string> removed = new();
+            List<string> failed = new();
+
+            foreach (string file in files)
+            {
+                string path = Utils.IOUtils.CombinePath(directory, file);
+                try
+                {
+                    if (!System.IO.File.Exists(path)) continue;
+                    System.IO.File.Delete(path);
+                    removed.Add(file);
+                }
+                catch (Exception ex)
+                {
+                    failed.Add(file);
+                    _log.Warn($"Could not remove stale `{file}`: {ex.Message}");
+                }
+            }
+
+            foreach (string dir in directories)
+            {
+                string path = Utils.IOUtils.CombinePath(directory, dir);
+                try
+                {
+                    if (!System.IO.Directory.Exists(path)) continue;
+                    System.IO.Directory.Delete(path, recursive: true);
+                    removed.Add(dir + "/");
+                }
+                catch (Exception ex)
+                {
+                    failed.Add(dir + "/");
+                    _log.Warn($"Could not remove stale `{dir}/`: {ex.Message}");
+                }
+            }
+
+            if ((removed.Count == 0) && (failed.Count == 0)) return "Nothing stale to remove.";
+
+            string summary = (removed.Count > 0)
+                ? $"Removed the previous rip's {string.Join(", ", removed)}."
+                : "";
+            if (failed.Count > 0)
+                summary += $"{(summary.Length > 0 ? "\n" : "")}FAILED to remove {string.Join(", ", failed)} — stale files may inflate the bundle; see the log.";
+
+            return summary;
         }
 
         /// <summary>

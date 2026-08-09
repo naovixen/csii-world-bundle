@@ -48,6 +48,9 @@ namespace Carto.IO
             /// <summary>Enumerating the world to build the work list.（列舉世界以建立工作清單。）</summary>
             Scan,
 
+            /// <summary>Removing the previous rip's outputs of the selected layers.（移除所選圖層的前次擷取輸出。）</summary>
+            Clean,
+
             /// <summary>Enumerating placed objects and their appearance.（列舉已放置物件及其外觀。）</summary>
             Instances,
 

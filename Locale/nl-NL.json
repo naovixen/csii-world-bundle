@@ -1,5 +1,6 @@
 {
   "Carto.PROGRESS[Scan]": "Carto: scanning the city",
+  "Carto.PROGRESS[Clean]": "Carto: clearing the previous rip",
   "Carto.PROGRESS[Meshes]": "Carto: ripping meshes",
   "Carto.PROGRESS[Networks]": "Carto: ripping networks",
   "Carto.PROGRESS[Write]": "Carto: writing meshes",
