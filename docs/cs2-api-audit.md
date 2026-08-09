@@ -1680,10 +1680,28 @@ cannot paint during a synchronous stage either; nothing paints mid-freeze.
 
 ## 38. The §34 conforming port flattened retaining walls — the class-1 move is a clamp, not an assignment (2026-08-09)
 
-**Status: built, awaiting in-game re-rip.** Diagnosed 2026-08-09 (acceptance run), re-diagnosed
-from scratch in a fresh session per the user's decision, fixed the same day. Nothing here is a
-§34-mechanism retraction — the game reading stands; the landed port applied the wrong *move*
-to class-1 vertices.
+**Status: offline acceptance PASSED on the 2026-08-09 11:53 network re-rip; visual A/B
+pending.** Diagnosed 2026-08-09 (acceptance run), re-diagnosed from scratch in a fresh session
+per the user's decision, fixed and re-ripped the same day. Nothing here is a §34-mechanism
+retraction — the game reading stands; the landed port applied the wrong *move* to class-1
+vertices.
+
+Re-rip results (segment ids are per-session — the old `seg_50940` re-ripped as
+`seg_1349140`, identified by its exact anatomy: 360 verts, 192+128 tris):
+
+- `seg_1349140` ("Highway Oneway - 2 lanes", sunken): wall prim drawn y-span **[−5.10,
+  +5.10]** (was flat +5.10), per-column spread **10.20 m** (the authored 10.2 m wall), tri
+  counts unchanged, **0 orphans** on the union of primitives' indices. All 12 sampled sunken
+  road/highway segments show standing walls (column spread 10–30 m); none flat.
+- Portal guard: `TunnelTopEnding` still stretches to y = **63.47** (§34's ~63.5 case) —
+  class-2 output preserved.
+- Probe report: **out-of-window drops = 0** across every piece; the flagged table lists the
+  LoweredSide/TunnelSide/TunnelTop families, with the two-rail walls marked and showing the
+  clamp signature (e.g. `Lowered Side Piece 1`: 6352 bottom verts kept at road level vs 20
+  buried — under assignment all 6372 would have moved).
+- Benign residual: 20–40 unreferenced vertices on some segments — cut-boundary verts whose
+  triangles were front-cut (pre-existing remap behaviour, dead weight only, not the §38
+  block signature).
 
 **Symptom** (screenshots `E:\carto-out\shots\`, same cutting in-game vs Blender): the concrete
 retaining walls of sunken roads and tunnel approaches are textured and solid in-game, but flat
