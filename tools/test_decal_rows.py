@@ -24,19 +24,21 @@ import numpy
 
 SRC = os.path.join(os.path.dirname(__file__), "blender_import_bundle.py")
 BUNDLE = os.path.expandvars(r"%USERPROFILE%\AppData\LocalLow\Colossal Order"
-                            r"\Cities Skylines II\ModsData\Carto\spike")
+                            r"\Cities Skylines II\ModsData\Carto")
 DENSE = 513
 
 source = open(SRC, encoding="utf-8").read()
 H = {"numpy": numpy}
 exec(compile("import math", "<math>", "exec"), H)
-for name in ("_LANE_ARC_SAMPLES", "_DECAL_MAX_ROWS", "_DECAL_SHAPE_TOLERANCE",
-             "_DECAL_DIP_FRACTION", "_DECAL_DRAPE_MARKING", "_DECAL_DRAPE_TINT"):
+for name in ("_LANE_ARC_SAMPLES", "_LANE_MAX_TILES", "_DECAL_MAX_ROWS",
+             "_DECAL_SHAPE_TOLERANCE", "_DECAL_DIP_FRACTION", "_DECAL_DRAPE_MARKING",
+             "_DECAL_DRAPE_TINT"):
     match = re.search(rf"^{name} = .*$", source, re.M)
     assert match, f"{name} not found in harness source"
     exec(compile(match.group(0), f"<{name}>", "exec"), H)
 for name in ("_bezier_point_vec", "_cut_bezier", "_arc_table_vec", "_curve_length",
-             "_shape_rows", "_chord_dip", "_decal_rows"):
+             "_shape_rows", "_chord_dip", "_decal_rows", "_decal_station_rows",
+             "_lane_tile_count", "_decal_lattice"):
     match = re.search(rf"\ndef {name}\(.*?(?=\n\ndef |\n\nclass |\Z)", source, re.S)
     assert match, f"{name} not found in harness source"
     exec(compile(match.group(0), f"<{name}>", "exec"), H)
@@ -104,6 +106,92 @@ flat_bend = ((0.0, 0.0, 0.0), (30.0, 0.0, 8.0), (60.0, 0.0, 8.0), (90.0, 0.0, 0.
 shape_only = rows_for(flat_bend, None)
 check("90 m plan bend, no grade, marking", flat_bend, H["_DECAL_DRAPE_MARKING"],
       expect_rows=shape_only)
+
+print("\n-- texture-period stations: repeated V, seam-split, never smeared (audit §39) --")
+
+
+def check_stations(label, rows, n_total, expect):
+    """`expect` is a dict of named invariant checks; every one must hold."""
+    global failures
+    stations, v_frac = H["_decal_station_rows"](rows, float(n_total))
+    problems = []
+    if numpy.any(numpy.diff(stations) < 0):
+        problems.append("stations not ascending")
+    if stations[0] != 0.0 or stations[-1] != 1.0:
+        problems.append(f"endpoints {stations[0]}..{stations[-1]}")
+    if numpy.any(v_frac < 0.0) or numpy.any(v_frac > 1.0):
+        problems.append("v_frac outside [0, 1]")
+    boundaries = int(numpy.sum(numpy.diff(stations) == 0.0))
+    if boundaries != expect.get("boundaries", boundaries):
+        problems.append(f"{boundaries} duplicated boundary station(s), "
+                        f"expected {expect['boundaries']}")
+    # Each zero-extent gap must be a v=1.0 row followed by a v=0.0 row (end before start).
+    for i in numpy.nonzero(numpy.diff(stations) == 0.0)[0]:
+        if not (v_frac[i] == 1.0 and v_frac[i + 1] == 0.0):
+            problems.append(f"seam at station {stations[i]:.4f} is "
+                            f"v {v_frac[i]:.4f}->{v_frac[i+1]:.4f}, not 1->0")
+    if "last_v" in expect and abs(float(v_frac[-1]) - expect["last_v"]) > 1e-9:
+        problems.append(f"last v_frac {v_frac[-1]:.6f}, expected {expect['last_v']}")
+    # Between seams, n = n_total*station - period must be continuous and rising: v at any
+    # station equals n_total*station minus the count of seams passed.
+    seam_count = numpy.concatenate(([0], numpy.cumsum(numpy.diff(stations) == 0.0)))
+    residual = numpy.abs(v_frac - (float(n_total) * stations - seam_count))
+    if float(residual.max()) > 1e-9:
+        problems.append(f"v_frac drifts from n - period by {residual.max():.2e}")
+    failures += bool(problems)
+    print(f"{'FAIL' if problems else 'ok  '} {label}: {len(stations)} station(s), "
+          f"{boundaries} seam(s)" + ("; " + "; ".join(problems) if problems else ""))
+
+
+check_stations("N=6 integer, 4 curvature rows", 4, 6.0, {"boundaries": 5, "last_v": 1.0})
+check_stations("N=6.5 fractional (74 m highway dash line)", 8, 6.5,
+               {"boundaries": 6, "last_v": 0.5})
+check_stations("N=0.22 sub-period (short yield line)", 4, 0.22,
+               {"boundaries": 0, "last_v": 0.22})
+check_stations("N=1 exactly (span == mesh length)", 4, 1.0, {"boundaries": 0, "last_v": 1.0})
+# Curvature stations landing exactly on boundaries must yield to the seam pair, not stack.
+check_stations("N=4 with rows=4 (every station is a boundary)", 4, 4.0,
+               {"boundaries": 3, "last_v": 1.0})
+
+print("\n-- lattice: seams split UVs, no zero-area faces --")
+QUAD = {"near_left": (-0.25, 0.0, -6.0), "near_right": (0.25, 0.0, -6.0),
+        "far_left": (-0.25, 0.0, 6.0), "far_right": (0.25, 0.0, 6.0),
+        "uv_near_left": (0.125, 1.0), "uv_near_right": (0.1458, 1.0),
+        "uv_far_left": (0.125, 0.0), "uv_far_right": (0.1458, 0.0), "flip": False}
+stations, v_frac = H["_decal_station_rows"](4, 6.5)
+verts, tris, tri_uvs = H["_decal_lattice"](QUAD, stations, v_frac)
+areas = numpy.linalg.norm(numpy.cross(verts[tris[:, 1]] - verts[tris[:, 0]],
+                                      verts[tris[:, 2]] - verts[tris[:, 0]]), axis=1)
+gaps = int(numpy.sum(numpy.diff(stations) > 0.0))
+lattice_bad = (len(tris) != 2 * gaps or float(areas.min()) <= 0.0
+               or len(verts) != 2 * len(stations))
+failures += lattice_bad
+print(f"{'FAIL' if lattice_bad else 'ok  '} N=6.5 lattice: {len(verts)} vert(s), "
+      f"{len(tris)} tri(s) over {gaps} gap(s), min area {areas.min():.3e}")
+# The V written at each seam's two rows must be the quad's far/near V — the full authored span.
+seam_rows = numpy.nonzero(numpy.diff(stations) == 0.0)[0]
+uv_by_vert = numpy.empty((len(verts), 2))
+uv_by_vert[tris.reshape(-1)] = tri_uvs.reshape(-1, 2)
+seam_v = uv_by_vert[seam_rows * 2, 1], uv_by_vert[(seam_rows + 1) * 2, 1]
+seam_bad = (numpy.any(seam_v[0] != QUAD["uv_far_left"][1])
+            or numpy.any(seam_v[1] != QUAD["uv_near_left"][1]))
+failures += bool(seam_bad)
+print(f"{'FAIL' if seam_bad else 'ok  '} seam rows carry far-V then near-V "
+      f"({QUAD['uv_far_left'][1]} / {QUAD['uv_near_left'][1]})")
+
+print("\n-- clip gate: GetTileCount parity — the game draws nothing on a sub-half-period stub --")
+for label, span_len, mesh_len, tiling, want_tiles, want_clip in (
+        ("L=2.9 S=12 T=2 (dash stub)", 2.9, 12.0, 2, 0, 0),
+        ("L=3.1 S=12 T=2 (just long enough)", 3.1, 12.0, 2, 1, 1),
+        ("L=74 S=12 T=1 (highway dash line)", 74.0, 12.0, 1, 1, 6),
+        ("L=74 S=12 T=2 (car dash line)", 74.0, 12.0, 2, 1, 12),
+        ("L=16 S=12 T=16 (crosswalk)", 16.0, 12.0, 16, 1, 21),
+        ("L=40 S=12 T=0 (solid line)", 40.0, 12.0, 0, 1, 0)):
+    tiles, clip = H["_lane_tile_count"](span_len, mesh_len, tiling, False)
+    bad = (tiles, clip) != (want_tiles, want_clip)
+    failures += bad
+    print(f"{'FAIL' if bad else 'ok  '} {label}: tiles={tiles} clip={clip}"
+          + (f" (expected {want_tiles}/{want_clip})" if bad else ""))
 
 print("\n-- full-city sweep over the shipped bundle --")
 catalogue_path = os.path.join(BUNDLE, "laneprefabs.json")

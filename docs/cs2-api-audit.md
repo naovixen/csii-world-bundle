@@ -891,7 +891,9 @@ only their prefabs' `m_TextureArea` selects the true marking band.
 up-facing UV rect into `m_TextureArea`. Identity for object decals whose area was derived from
 the same UVs; the correct band for lane parts. Contract §4.2a / §5B note it; no schema change
 — the quads simply now carry the UVs §4.2a always promised. Needs a mesh + network re-rip to
-land in `meshes/` and `lanemeshes/`.
+land in `meshes/` and `lanemeshes/`. *(Amended by §39: this verdict covers which atlas rect
+the quad carries, not how many times the lane traverses it — the along-curve repeat is
+`BuildCurveMatrix`'s, audited there.)*
 
 ## 20. Terrain cutouts: the game hides tunnel portals per-frame; the heightmap never has holes (2026-08-07)
 
@@ -1127,6 +1129,10 @@ The delta audit of the `lanemeshes/` parameter records (`RipLaneGeometry`,
 | 6 | Hanging: `HangingLane.m_Distances` end drops + prefab `UtilityLaneData.m_Hanging`; the cubic lift documented in contract §5B v2 | Per-lane distances in the record, factor in the catalogue | **match** (§12's verdict re-verified; formula unchanged) |
 | 7 | Per-part layer replacement: `GetLayers` returns `m_DefaultLayers` **verbatim** except the exact `Pipeline\|SubPipeline` pair (owner-resolved) — a Tunnel-defaulting part draws on the Tunnel layer, a Waterway part only in the overlay view | First reading excluded every part with `m_DefaultLayers != 0` and no Default bit, which also dropped Tunnel-layer parts — world geometry inside tunnels. Catalogue now excludes only parts with no `NormalLayers` bit (Pipeline/SubPipeline/Waterway) | ~~match~~ → **divergence — fixed** (the first draft's verdict was wrong for Tunnel parts) |
 | 8 | No game counterpart for the lane census (`LaneRipSystem` delta) — it is a producer cross-check that drawn-lane counts track the baked layer plus counted skips | Diagnostic only, no bundle output changed | **benign** |
+
+*(Amended by §39: this matrix had no `BuildCurveMatrix` row — the along-curve texture scale
+`N = L/max(1, meshLength)` was never audited, and the reference importer stretched every
+marking texture over its whole lane. See §39 for the rule and the fix.)*
 
 ## 27. BaseSkirtBuilder versus `GenerateObjectMesh`'s base path (2026-08-07)
 
@@ -1748,8 +1754,8 @@ without RenderDoc. The semantics that fit every observed case (deep trench, shal
 Fix site: the single conform move in `NetworkRipSystem.GameMesh.cs` (`RipNetworks`' vertex
 loop). Explicitly NOT changed: classification, `GetPieceHeightBounds`, remap/vertex-add/
 triangle emission, primitive indexing, UVs (game-true V density; texture-stretch judgment
-deferred per prefer-simple-over-speculative). The 3.5 m bilinear lip spike stays a known
-residual.
+deferred per prefer-simple-over-speculative — resolved as §39, a lane-decal consumer defect
+unrelated to this network-layer port). The 3.5 m bilinear lip spike stays a known residual.
 
 **Probe added** (rip report): per flagged piece — prefab name, flags, `m_Size`, vertex total,
 class-1/class-2 counts + share (two-rail pieces flagged at 100 %), buried/kept/raised counts,
@@ -1766,3 +1772,52 @@ then offline:
   RoadLoweredSide1/TunnelSide/TunnelTopEnding families.
 - Blender vs in-game on the user's screenshot cutting. If wall tops sit below the game's,
   revisit class-2 assignment-vs-max — that A/B screenshot is the only remaining discriminator.
+
+## 39. Lane-marking decals: the projector stretches, the texture repeats (2026-08-09)
+
+**Symptom** (user report, deferred from §38's session): dashed lane lines, crosswalks and
+stop lines render stretched in Blender but not in-game. Measured on the acceptance bundle:
+**15,704 marking instances** (decal parts with `tilingCount > 0`) were mis-mapped — median
+stretch **5.0×** on `NA_Car_Lane_Line`/`NA_Highway_Lane_Line` (max 18.5× on
+`EU_Car_Lane_Line`), and the inverse on short patterned parts: yield lines at **0.22×** (all
+nine shark teeth crammed into ~3 m), alley crosswalks at 0.5×. Solid lines (`tilingCount`
+0) hid the defect — stretching a uniform stripe is invisible.
+
+**Mechanism (decompiled `BatchDataHelpers.BuildCurveMatrix`):** the projector *box* is
+stretched chord-to-chord (`BuildTransformMatrix`'s isDecal fit), but the box scale is not
+the texture scale. `BuildCurveMatrix` multiplies the per-instance arc table (the
+`CurveMatrix` w-channel) by `num = curve.m_Length / max(1f, size.z)` — the lane's length in
+mesh-lengths — quantised `round(num·tilingCount)/tilingCount` when `m_TilingCount ≠ 0`, so
+the shader's along-curve coordinate runs 0→N and the `m_TextureArea` cell repeats N times.
+`m_TilingCount` is "pattern periods per mesh length" (verified in the shipped texture:
+`White_Dashed_Line_Mesh`, T=2, carries exactly 2 dash cycles per 12 m V span), and its two
+jobs are quantising N to whole periods and gating the draw. There is **no isDecal branch in
+the tile-count path**: `GetTileCount` runs for decals exactly as for tiled geometry, and
+with `T ≠ 0 ∧ ¬geometryTiling` it returns `min(1, ceil(clip/T))` — **zero instances** when
+`clip = round(L/S·T) == 0` (a sub-half-period stub, < 3 m for a standard dash line). Every
+decal part in the shipped catalogue has `geometryTiling == false`, so a marking is always
+one instance whose pattern lives in the texture.
+
+| # | Game rule (decompiled source) | Consumer (reference importer) | Verdict |
+|---|---|---|---|
+| 1 | `BuildCurveMatrix`: along-curve texture parameter scaled by `N = L / max(1, meshLength)`, quantised `clip/T` when `T ≠ 0` — texture repeats N times over the stretched box | Forced `tiles, clip, tiling_count = 1, 0, 0` for every decal and lerped the quad's corner UVs once 0→1 over the whole span ("a decal never tiles" — true of geometry, false of texture) | **divergence — fixed** (`_decal_station_rows` bakes `frac(n)` per lattice row, seam-split with duplicated stations at every integer of n; `tools/test_decal_rows.py` pins the invariants) |
+| 2 | `GetTileCount` for decals: `clip == 0` ⇒ 0 instances, nothing drawn | Zeroing `tiling_count` made the clip gate unreachable — markings drawn on every stub | **divergence — fixed** (the existing `_lane_tile_count` guard, now fed the real T; drops counted on the import summary) |
+| 3 | `BuildTransformMatrix` isDecal: box padded by `m_SmoothingDistance` at both ends, `_SmoothingDistance` end-fade bound per lane | Not shipped; quad runs the unpadded span, no end fade | **approximated** (counted here; producer unchanged) |
+| 4 | `curve.m_Length` is the stored arc length | Re-derived from a 32-sample arc table (sub-0.1 % error → same clip in practice) | **approximated** (counted here; producer unchanged) |
+
+**Fix (harness + contract only, no producer change, no re-rip):** `laneprefabs.json`
+already ships `tilingCount`, `geometryTiling` and `boundsMin/Max` — everything the rule
+needs. `blender_import_bundle.py` now computes `tiles/clip` for decals via
+`_lane_tile_count` on the span's own arc (geometry stays the single chord-to-chord box),
+derives `N = clip/T` (or `L/max(1,S)` when T=0, wear tint included — game-true, visually
+neutral for uniform textures), and bakes the repeat into the lattice V with duplicated
+rows at each period boundary so no triangle spans the wrap seam (a REPEAT sampler cannot
+substitute — the UVs address an atlas rect). Contract §5B carries the normative rule;
+schema (v2), keys and data unchanged.
+
+**Blind-spot note:** §26's delta matrix audited `UpdateLaneInstances` and `BuildCurveScale`
+but had **no `BuildCurveMatrix` row** — the along-curve texture scale was never audited,
+and §19's "fixed" verdict was scoped to *which atlas rect* the quad carries, not *how many
+times* the lane traverses it. Both sections now carry amendment pointers. The lesson
+repeats §22a's: an appearance mismatch against an in-game screenshot is a finding even when
+every implemented rule matches.

@@ -1305,6 +1305,43 @@ def _decal_rows(points, arc_table, drape_eps):
     return rows
 
 
+def _decal_station_rows(rows, n_total):
+    """Lattice stations for one decal span plus each station's within-period V parameter.
+
+    The game repeats a decal's texture `n_total` times along the span (BuildCurveMatrix's
+    `curve.m_Length / max(1, size.z)`, quantised by tilingCount — audit §39). Baking that
+    into vertex UVs needs a seam at every integer of `n = n_total · station`, so this merges
+    the curvature-driven rows (`linspace` over `rows`) with a DUPLICATED station at each
+    interior period boundary: the first copy ends the old period (`v_frac = 1`), the second
+    starts the next (`v_frac = 0`). Authored V per row is `v_near + (v_far − v_near)·v_frac`
+    — the corner-lerp form, because the quad's UV rect is arbitrary after the m_TextureArea
+    rescale (contract §4.2a), never assume [0, 1]. The last period is partial when `n_total`
+    is fractional — game-true (the shader's frac() of the repeated parameter).
+
+    Curvature stations within 1e-6 of a boundary yield to the boundary pair (a third
+    coincident station would add a zero-extent gap for `_decal_lattice` to skip). Boundary
+    rows are correctness-mandatory and therefore NOT capped by `_DECAL_MAX_ROWS` — that cap
+    bounds curvature refinement cost; clamping a period seam would smear the texture across
+    the wrap, the very defect this exists to prevent. Returns `(stations, v_frac)`, both
+    ascending-station `(M,)` float arrays.
+    """
+    base = numpy.linspace(0.0, 1.0, rows + 1)
+    bounds = numpy.arange(1, math.ceil(n_total - 1e-9)) / n_total
+    if len(bounds) == 0:
+        return base, base * n_total
+    keep = base[numpy.abs(base[:, None] - bounds[None, :]).min(axis=1) > 1e-6]
+    tag = numpy.concatenate([numpy.zeros(len(keep)), numpy.ones(len(bounds)),
+                             numpy.full(len(bounds), 2.0)])
+    val = numpy.concatenate([keep, bounds, bounds])
+    order = numpy.lexsort((tag, val))  # by station; period-end copy before period-start copy
+    stations, tag = val[order], tag[order]
+    # Period index per station: `searchsorted(left)` puts an interior station in its own
+    # period and a boundary station in the period it ENDS; the start copy (tag 2) bumps up.
+    period = numpy.searchsorted(bounds, stations, side="left") + (tag == 2.0)
+    v_frac = n_total * stations - period
+    return stations, numpy.clip(v_frac, 0.0, 1.0)
+
+
 def _lane_tile_count(span_length, mesh_length, tiling_count, geometry_tiling):
     """BatchDataHelpers.GetTileCount with the span's length in place of the whole curve's."""
     if tiling_count:
@@ -1485,33 +1522,40 @@ def _decal_quad_info(verts, tris, uvs):
     }
 
 
-def _decal_lattice(quad, rows):
-    """`(rows+1, 2)`-station lattice for one decal quad, part-local — verts
-    `(2*(rows+1), 3)` interleaved `[left0, right0, left1, right1, ...]`, tris/uvs to match.
+def _decal_lattice(quad, stations, v_frac):
+    """`(M, 2)`-station lattice for one decal quad, part-local — verts `(2*M, 3)`
+    interleaved `[left0, right0, left1, right1, ...]`, tris/uvs to match.
+
+    `stations`/`v_frac` come from `_decal_station_rows`: positions lerp by station,
+    UVs by the within-period parameter, so a duplicated boundary station produces two
+    bitwise-identical rows whose UVs differ — the split seam the repeated texture needs.
+    Triangles bridge only gaps with positive station extent, so the duplicate pair emits
+    no zero-area faces.
 
     This is the per-marking hot path (called once per bent decal instance — tens of
     thousands of times a city), so it is pure numpy with no Python loop over rows and no
     per-vertex list, unlike the mesh it replaces (`_subdivide_decal_quad`, which built a
     Python list of (material, indices, uvs) tuples per row).
     """
-    t = numpy.linspace(0.0, 1.0, rows + 1)[:, None]  # (R+1, 1)
+    t = stations[:, None]  # (M, 1)
     nl, nr = numpy.array(quad["near_left"]), numpy.array(quad["near_right"])
     fl, fr = numpy.array(quad["far_left"]), numpy.array(quad["far_right"])
     left = nl + (fl - nl) * t
     right = nr + (fr - nr) * t
-    verts = numpy.empty((2 * (rows + 1), 3), dtype=numpy.float64)
+    verts = numpy.empty((2 * len(stations), 3), dtype=numpy.float64)
     verts[0::2] = left
     verts[1::2] = right
 
+    w = v_frac[:, None]
     unl, unr = numpy.array(quad["uv_near_left"]), numpy.array(quad["uv_near_right"])
     ufl, ufr = numpy.array(quad["uv_far_left"]), numpy.array(quad["uv_far_right"])
-    uv_left = unl + (ufl - unl) * t
-    uv_right = unr + (ufr - unr) * t
-    uv = numpy.empty((2 * (rows + 1), 2), dtype=numpy.float64)
+    uv_left = unl + (ufl - unl) * w
+    uv_right = unr + (ufr - unr) * w
+    uv = numpy.empty((2 * len(stations), 2), dtype=numpy.float64)
     uv[0::2] = uv_left
     uv[1::2] = uv_right
 
-    row = numpy.arange(rows)
+    row = numpy.nonzero(stations[1:] > stations[:-1])[0]
     l0, r0, l1, r1 = row * 2, row * 2 + 1, row * 2 + 2, row * 2 + 3
     tris = numpy.stack((numpy.stack((l0, r0, r1), axis=1),
                         numpy.stack((l0, r1, l1), axis=1)), axis=1).reshape(-1, 3)
@@ -1632,13 +1676,22 @@ def _bend_lane_part(part, source, curve, spans, curve_length, width_scale, hang,
         total_arc = max(float(arc_table[-1]), 0.001)
 
         # A decal part is a projector box the game stretches chord-to-chord along the lane
-        # (BuildTransformMatrix's isDecal path) — it never tiles. Mapped by its authored
-        # length, a 64 m box left the tail of longer connector lanes unpainted.
+        # (BuildTransformMatrix's isDecal path) — but only the GEOMETRY stretches. The
+        # texture repeats: BuildCurveMatrix scales the along-curve parameter by
+        # N = length / max(1, meshLength), quantised to round(N·T)/T when T = tilingCount
+        # is non-zero, so V runs 0→N over the span (audit §39). And GetTileCount is called
+        # for decals exactly as for tiled geometry: T ≠ 0 with clip = round(L/S·T) == 0
+        # means the game draws ZERO instances — a sub-half-period stub carries no marking.
         if is_decal:
-            tiles, clip, tiling_count = 1, 0, 0
+            tiles, clip = _lane_tile_count(total_arc, mesh_length, tiling_count, False)
+            tiles = min(tiles, 1)  # geometry stays the single chord-to-chord box
+            n_total = (clip / tiling_count if tiling_count
+                       else total_arc / max(1.0, mesh_length))
         else:
             tiles, clip = _lane_tile_count(span_length, mesh_length, tiling_count, geometry_tiling)
         if tiles < 1 or (tiling_count > 0 and clip < 1):
+            if is_decal:
+                sink["decal_dropped"] = sink.get("decal_dropped", 0) + 1
             continue
 
         drape_eps = None
@@ -1650,9 +1703,12 @@ def _bend_lane_part(part, source, curve, spans, curve_length, width_scale, hang,
             # not a fixed 3 m step. The lattice is generated directly — no static mesh to
             # subdivide, and no memo needed since this is already O(rows), not O(mesh size).
             # The row count needs the part's lift, so `drape_eps` is settled above it.
+            # Texture-period boundaries (integer n) are merged in as duplicated stations so
+            # the repeated V never smears a triangle across the wrap seam (audit §39).
             curve_points_full = _bezier_point_vec(bezier, t_table)
             rows = _decal_rows(curve_points_full, arc_table, drape_eps)
-            raw_verts, tris_local, uv_local = _decal_lattice(quad, rows)
+            row_stations, v_frac = _decal_station_rows(rows, n_total)
+            raw_verts, tris_local, uv_local = _decal_lattice(quad, row_stations, v_frac)
             material_groups = [(quad["material"], numpy.arange(len(tris_local)))]
         elif is_decal:
             # Not a simple rectangle (rare) — general path, unsubdivided, same guard the old
@@ -1685,7 +1741,12 @@ def _bend_lane_part(part, source, curve, spans, curve_length, width_scale, hang,
         share_verts = len(material_groups) == 1
 
         for tile in range(tiles):
-            if tiling_count > 0:
+            if is_decal:
+                # Geometry is the one stretched box regardless of tilingCount — the repeat
+                # lives in the lattice's V (see the gate above), never in clip windows.
+                arc_start, arc_per_z, arc_limit = 0.0, total_arc, total_arc
+                full_tile = False
+            elif tiling_count > 0:
                 clip0 = tile * clip // tiles
                 clip1 = (tile + 1) * clip // tiles
                 if clip1 <= clip0:
@@ -1694,9 +1755,6 @@ def _bend_lane_part(part, source, curve, spans, curve_length, width_scale, hang,
                 arc_per_z = total_arc * tiling_count / clip
                 arc_limit = total_arc * clip1 / clip
                 full_tile = (clip0 + tiling_count) <= clip1
-            elif is_decal:
-                arc_start, arc_per_z, arc_limit = 0.0, total_arc, total_arc
-                full_tile = False
             else:
                 arc_start = tile * mesh_length
                 arc_per_z = mesh_length
@@ -2183,6 +2241,11 @@ def build_lanes(lanes_path, catalogue_path, lane_mesh_dir, collection,
     if part_degenerates["faces"]:
         LOG.step(f"{part_degenerates['faces']} degenerate face(s) dropped from shared part "
                  "meshes (authored in the source .glb)")
+    dropped_decals = sum(sink.get("decal_dropped", 0) for sink in builders.values())
+    if dropped_decals:
+        # New line vs pre-§39 baselines (cf. the degenerate-face note below for the A/B gate).
+        LOG.step(f"{dropped_decals} decal span(s) dropped (tiling clip 0 — the game draws "
+                 "zero instances on a sub-half-period stub)")
     if degenerate_totals["faces"]:
         # tools/ab_compare.py's COUNT_MARKERS ("face(s)", "object(s)") match this line, so any
         # two logs being diffed with --counts must have the identical number of degenerate

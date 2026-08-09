@@ -672,7 +672,10 @@ Three pieces (layer keys `laneMeshes`, `lanePrefabs`, `laneGeometry` respectivel
    paint. The game wins because a decal is a projector volume; the flattened-quad equivalent
    is a drape — subdivide the quad along its length (~3 m) and snap each vertex to the road
    surface below (the reference importer ray-casts the §5 network meshes and adds ~1 cm,
-   markings a hair above the wear tint so the two never z-fight). Like every flattened decal (§4.2a), a `decal`
+   markings a hair above the wear tint so the two never z-fight). The drape *places* the
+   quad; the texture-repeat rule in the bend algorithm below *paints* it — both are
+   consumer-side, and skipping the repeat stretches every dash and zebra stripe over the
+   whole lane (audit §39). Like every flattened decal (§4.2a), a `decal`
    part's `.glb` ships with its UVs already rescaled into `DecalProperties.m_TextureArea` —
    the authored box UVs of the lane-line meshes all crop one generic transparent slab of
    their atlas, and only the area rect selects the actual marking band. *(Corrected
@@ -707,6 +710,24 @@ Three pieces (layer keys `laneMeshes`, `lanePrefabs`, `laneGeometry` respectivel
   tile `t` covers clips `⌊t·clip/tiles⌋ … ⌊(t+1)·clip/tiles⌋` of the arc;
   with `tilingCount == 0`: `geometryTiling` ? `clamp(ceil(spanLength/meshLength), 1, 256)`
   tiles of `meshLength` metres each : one stretched tile.
+- **`decal` parts** (any `tilingCount`): the tile-count rule above still gates drawing —
+  when `tilingCount > 0` and `clip == 0` (span shorter than half a pattern period) the game
+  draws **zero instances**; emit nothing. Otherwise the *geometry* is always one box
+  stretched chord-to-chord over the span (`arcPerZ = spanArc`) — but the **texture repeats,
+  never stretches** (`BatchDataHelpers.BuildCurveMatrix`, audit §39): the along-lane
+  parameter at arc position `a` is `n = N · a / spanArc` with `N = spanArc /
+  max(1, meshLength)`, quantised `N = round(N·tilingCount)/tilingCount = clip/tilingCount`
+  when `tilingCount ≠ 0`. Authored V at that row is `v_near + (v_far − v_near) · frac(n)`
+  (U unchanged — the quad's UVs are an arbitrary atlas rect after the §4.2a `m_TextureArea`
+  rescale; never assume V spans [0, 1], and a plain REPEAT sampler cannot substitute for the
+  `frac`). A consumer baking UVs must split the mesh at every integer of `n` — duplicate the
+  row, one copy at `frac = 1` closing the period, one at `frac = 0` opening the next — or
+  triangles smear the texture across the wrap seam. The last period is partial when `N` is
+  fractional, exactly as the game's per-pixel mapping produces. *(Corrected 2026-08-09 —
+  this algorithm previously read "one stretched tile" for decals with no UV rule, and the
+  reference importer stretched one texture copy over the whole lane: a median 5.0× stretch
+  on dashed lane lines, 0.22× squeeze on yield lines, 15,704 instances in the acceptance
+  city. Consumer algorithm only — keys, data and schema (v2) unchanged; audit §39.)*
 - Per vertex: `local = rot·v + pos`; `zFraction = (local.z − boundsMin.z) / meshLength`;
   `arcPos = clamp(arcStart + zFraction · arcPerZ, 0, arcLimit)` (the clamp is an
   approximation — the game clips per-pixel at cuts); invert the 32-sample arc-length table
