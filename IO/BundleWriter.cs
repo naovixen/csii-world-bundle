@@ -183,9 +183,20 @@ namespace Carto.IO
             }
             if (layers.Count == 0) throw new InvalidOperationException("The directory holds no bundle layer at all — rip something first. 目錄中沒有任何束層——請先行擷取。");
 
-            // ---- 2. Mesh extents, for bounds.（網格範圍，供邊界使用。）
-            Dictionary<string, Aabb> meshBounds = ReadMeshBounds(Utils.IOUtils.CombinePath(outputDirectory, "meshes"), report);
-            Dictionary<string, Aabb> networkMeshBounds = ReadMeshBounds(Utils.IOUtils.CombinePath(outputDirectory, "networks"), report);
+            // ---- 2. Mesh extents, for bounds. The slowest part of the scan — thousands of glb
+            // headers — so it reports real progress; the record scans after it fall back to the
+            // indeterminate caption. Without this the finalize step read as a hang.
+            // （網格範圍，供邊界使用。掃描中最慢的部分——數千個 glb 檔頭——故回報真實進度；
+            //   其後的紀錄掃描退回不定型說明文字。若無此步，定稿階段看似當機。）
+            string meshDirectory = Utils.IOUtils.CombinePath(outputDirectory, "meshes");
+            string networkDirectory = Utils.IOUtils.CombinePath(outputDirectory, "networks");
+            int scanned = 0;
+            int totalGlbs = CountFiles(meshDirectory, "*.glb") + CountFiles(networkDirectory, "*.glb");
+
+            Dictionary<string, Aabb> meshBounds = ReadMeshBounds(meshDirectory, report, ref scanned, totalGlbs);
+            Dictionary<string, Aabb> networkMeshBounds = ReadMeshBounds(networkDirectory, report, ref scanned, totalGlbs);
+
+            RipProgress.Report(RipProgress.Phase.Manifest);
 
             // ---- 3. Record layers: counts and bounds in one pass each.（紀錄層：一次掃描同時計數與納界。）
             Aabb bounds = Aabb.Empty;
@@ -633,7 +644,7 @@ namespace Carto.IO
         /// （僅讀取 JSON 區塊——產出器在每個 POSITION accessor 上寫出的 <c>min</c>/<c>max</c>，
         /// 並通過各節點的平移／旋轉／縮放。二進位區塊完全不碰，萬餘檔案因此廉價。）
         /// </summary>
-        private static Dictionary<string, Aabb> ReadMeshBounds(string directory, StringBuilder report)
+        private static Dictionary<string, Aabb> ReadMeshBounds(string directory, StringBuilder report, ref int scanned, int total)
         {
             Dictionary<string, Aabb> result = new();
             if (!Directory.Exists(directory)) return result;
@@ -641,6 +652,10 @@ namespace Carto.IO
             int unreadable = 0;
             foreach (string path in Directory.GetFiles(directory, "*.glb"))
             {
+                // Any thread may report — this runs on the manifest worker (RipProgress contract).
+                // （任何執行緒皆可回報——此處於宣告檔工作執行緒上執行。）
+                RipProgress.Report(RipProgress.Phase.Manifest, ++scanned, total);
+
                 try
                 {
                     Aabb glbBounds = ReadGlbBounds(path);

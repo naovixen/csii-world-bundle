@@ -87,9 +87,13 @@ namespace Carto.Systems
         /// （寫出 <c>colors.json</c> 與 <c>lights.json</c>。）
         /// </summary>
         /// <param name="outputDirectory">The bundle root to write into.（要寫入的束根目錄。）</param>
+        /// <param name="colors">Whether <c>colors.json</c> is written (the ripper tab's advanced toggle).（是否寫出 <c>colors.json</c>（擷取器分頁的進階開關）。）</param>
+        /// <param name="lightEmitters">Whether <c>lights.json</c> is written.（是否寫出 <c>lights.json</c>。）</param>
         /// <returns>A human-readable report.（可供閱讀的報告。）</returns>
-        public string RipAppearance(string outputDirectory)
+        public string RipAppearance(string outputDirectory, bool colors = true, bool lightEmitters = true)
         {
+            if (!colors && !lightEmitters) return "Colors and lights both deselected — nothing to rip.";
+
             StringBuilder report = new();
             Dictionary<string, object> palettes = new();
             Dictionary<string, object> lights = new();
@@ -114,13 +118,13 @@ namespace Carto.Systems
                         string id = MeshRipSystem.SanitizeAssetId(Instance.Name.GetPrefabName(mesh));
                         if (string.IsNullOrEmpty(id)) continue;
 
-                        if (EntityManager.HasBuffer<ColorVariation>(mesh) && !palettes.ContainsKey(id))
+                        if (colors && EntityManager.HasBuffer<ColorVariation>(mesh) && !palettes.ContainsKey(id))
                         {
                             List<object> variations = ReadPalette(mesh);
                             if (variations.Count > 0) palettes[id] = variations;
                         }
 
-                        if (EntityManager.HasBuffer<ProceduralLight>(mesh) && !lights.ContainsKey(id))
+                        if (lightEmitters && EntityManager.HasBuffer<ProceduralLight>(mesh) && !lights.ContainsKey(id))
                         {
                             List<object> emitters = ReadLights(mesh);
                             if (emitters.Count > 0) lights[id] = emitters;
@@ -133,11 +137,14 @@ namespace Carto.Systems
                 entities.Dispose();
             }
 
-            Write(IOUtils.CombinePath(outputDirectory, "colors.json"), palettes);
-            Write(IOUtils.CombinePath(outputDirectory, "lights.json"), lights);
+            // A deselected table is never written — an earlier rip's file stays as it was, by the
+            // same rule the network halves follow.（被取消選取的表格從不寫出——先前擷取的檔案原樣
+            //   保留，規則同路網的兩半。）
+            if (colors) Write(IOUtils.CombinePath(outputDirectory, "colors.json"), palettes);
+            if (lightEmitters) Write(IOUtils.CombinePath(outputDirectory, "lights.json"), lights);
 
-            report.AppendLine($"Wrote colors.json ({palettes.Count} palette(s)) "
-                            + $"and lights.json ({lights.Count} emitter set(s))");
+            report.AppendLine($"Wrote {(colors ? $"colors.json ({palettes.Count} palette(s))" : "no colors (deselected)")} "
+                            + $"and {(lightEmitters ? $"lights.json ({lights.Count} emitter set(s))" : "no lights (deselected)")}");
 
             _log.Info(report.ToString());
             return report.ToString();

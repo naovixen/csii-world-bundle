@@ -214,8 +214,9 @@ namespace Carto.Systems
         /// 主題的地面貼圖與地理參照附檔。契約見 <c>docs/bundle-schema.md</c> §8。）
         /// </summary>
         /// <param name="outputDirectory">The bundle root to write into.（要寫入的束根目錄。）</param>
+        /// <param name="areas">Whether to rip the painted surface areas (the ripper tab's advanced toggle).（是否擷取繪製的地表區域（擷取器分頁的進階開關）。）</param>
         /// <returns>A human-readable report.（可供閱讀的報告。）</returns>
-        public string RipTerrain(string outputDirectory)
+        public string RipTerrain(string outputDirectory, bool areas = true)
         {
             StringBuilder report = new();
             string terrainDirectory = IOUtils.CombinePath(outputDirectory, "terrain");
@@ -318,7 +319,8 @@ namespace Carto.Systems
 
             // ---- 4b. Surface areas — the pavement patches nothing else carries.
             // （地表區域——其餘各層皆未攜帶的鋪面區塊。）
-            RipSurfaceAreas(outputDirectory, terrainDirectory, report);
+            if (areas) RipSurfaceAreas(outputDirectory, terrainDirectory, report);
+            else report.AppendLine("Painted surfaces deselected — areas.jsonl and areaprefabs.json untouched.");
 
             // ---- 5. Encode and write everything off the main thread.
             // （於主執行緒之外編碼並寫出。）

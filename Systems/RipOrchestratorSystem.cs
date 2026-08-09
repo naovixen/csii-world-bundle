@@ -55,6 +55,10 @@ namespace Carto.Systems
             /// <summary>The advanced kind split under <see cref="Objects"/>.（<see cref="Objects"/> 之下的進階類別細分。）</summary>
             public RipKindFilter Kinds = RipKindFilter.All;
 
+            /// <summary>The advanced appearance splits under <see cref="Objects"/>: colour palettes and light emitters.（<see cref="Objects"/> 之下的進階外觀細分：色盤與發光體。）</summary>
+            public bool Colors = true;
+            public bool Lights = true;
+
             /// <summary>Roads &amp; lanes: the lane graph, network surfaces and lane-drawn geometry.（道路與車道：車道圖、路網表面與車道所繪幾何。）</summary>
             public bool Networks = true;
 
@@ -66,6 +70,9 @@ namespace Carto.Systems
 
             /// <summary>Terrain &amp; water: heightmaps, splat, surfaces and clip volumes.（地形與水體：高度圖、地表混合、地表區域與裁剪體積。）</summary>
             public bool Terrain = true;
+
+            /// <summary>The advanced split under <see cref="Terrain"/>: painted surface areas.（<see cref="Terrain"/> 之下的進階細分：繪製的地表區域。）</summary>
+            public bool TerrainAreas = true;
 
             /// <summary>The vanilla vector/raster export, alongside.（隨附的原版向量／網格輸出。）</summary>
             public bool Vector = true;
@@ -248,8 +255,10 @@ namespace Carto.Systems
             List<string> staleDirectories = new();
             if (plan.RipsObjects)
             {
-                staleFiles.AddRange(new[] { "instances.jsonl", "colors.json", "lights.json" });
+                staleFiles.Add("instances.jsonl");
                 staleDirectories.Add("meshes");
+                if (plan.Colors) staleFiles.Add("colors.json");
+                if (plan.Lights) staleFiles.Add("lights.json");
             }
             if (plan.Networks && plan.NetworkSurfaces)
             {
@@ -267,8 +276,12 @@ namespace Carto.Systems
             }
             if (plan.Terrain)
             {
-                staleFiles.AddRange(new[] { "areas.jsonl", "areaprefabs.json", "clipvolumes.jsonl" });
+                staleFiles.Add("clipvolumes.jsonl");
                 staleDirectories.Add("terrain");
+            }
+            if (plan.Terrain && plan.TerrainAreas)
+            {
+                staleFiles.AddRange(new[] { "areas.jsonl", "areaprefabs.json" });
             }
             if (plan.RipsObjects && plan.RipsNetworkStage)
             {
@@ -309,12 +322,15 @@ namespace Carto.Systems
                 // set the instances reference; a quick synchronous pass.
                 // （顏色與燈光為逐繪製預製模板的表格，解析自實例參照的同一組預製模板；
                 //   為快速的同步走訪。）
-                stages.Add(new Stage
+                if (plan.Colors || plan.Lights)
                 {
-                    Title = "Appearance",
-                    Phase = RipProgress.Phase.Instances,
-                    Work = () => Instance.AppearanceRip.RipAppearance(directory)
-                });
+                    stages.Add(new Stage
+                    {
+                        Title = "Appearance",
+                        Phase = RipProgress.Phase.Instances,
+                        Work = () => Instance.AppearanceRip.RipAppearance(directory, plan.Colors, plan.Lights)
+                    });
+                }
 
                 stages.Add(new Stage
                 {
@@ -351,7 +367,7 @@ namespace Carto.Systems
                 {
                     Title = "Terrain & water",
                     Phase = RipProgress.Phase.Terrain,
-                    Work = () => Instance.TerrainRip.RipTerrain(directory)
+                    Work = () => Instance.TerrainRip.RipTerrain(directory, plan.TerrainAreas)
                 });
             }
 
