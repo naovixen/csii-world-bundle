@@ -1822,3 +1822,22 @@ and §19's "fixed" verdict was scoped to *which atlas rect* the quad carries, no
 times* the lane traverses it. Both sections now carry amendment pointers. The lesson
 repeats §22a's: an appearance mismatch against an in-game screenshot is a finding even when
 every implemented rule matches.
+
+## 40. The full-coverage pass: five parallel re-audits and the completeness sweep (2026-08-09)
+
+Run at the start of the consumer hand-off effort, on the 12:39 acceptance bundle (which reflects
+HEAD — the last producer commit `3b9494d` landed 11:34, before the rip). Everything changed since
+the §21–§28 delta pass was independently re-audited against a fresh decompile (4,336 Game types),
+the never-audited Phase 7/8 infrastructure got its first pass, and the §29 completeness sweep was
+re-run across all domains from the game side.
+
+**The record lives in `docs/game-fidelity-audit.md`** — master classification (game draw path →
+bundle layer → verdict → visibility rank), the P1–P16 producer work-list, D1–D6 documentation
+list, and §3's re-verified-clean inventory. Headlines: no A-rank content class is missing; the
+network/terrain deltas are game-true everywhere the C# dump can adjudicate; carrying **authored
+normals/tangents through the network bend is feasible** and recommended (retires §8 row 14);
+the real catches were infrastructural — a fresh install's default `RipMeshLimit = 50` produces
+an invalid bundle (P1), clip-**area** volumes are closed prisms in-game but unbounded in the
+bundle (P3), and `lights.json` photometry never ships because `LightEffectData` lives on the
+EffectPrefab, not the sub-mesh entity (P8). §7.2's lights example and §4.2's attrs list both
+document fields the producer has never emitted — contract-honesty items P8/P12.
