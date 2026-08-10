@@ -1,4 +1,4 @@
-# Implementation Plan — Carto-Ripper: the CS2 World Bundle exporter
+# Implementation Plan — csii-world-bundle: the CS2 World Bundle exporter
 
 A build spec for extending **Carto** (a Cities: Skylines II mod that exports vector/raster
 geodata) into a **full world ripper**. Where vanilla Carto walks the loaded city and keeps
@@ -147,7 +147,7 @@ a JSON Schema + example bundle so a consumer can be built against it with no acc
 ```jsonc
 {
   "schema": 2,
-  "generator": "carto-ripper <version>",
+  "generator": "csii-world-bundle <version>",
   "city": "<name>",
   "frame": { "units": "m", "handedness": "left", "up": "Y",
              "axes": "X=east,Y=up,Z=north" },

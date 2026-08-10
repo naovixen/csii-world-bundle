@@ -156,7 +156,7 @@ def make_cube_glb(texture_rel_uri: str) -> bytes:
     zs = [p[2] for p in positions]
 
     gltf = {
-        "asset": {"version": "2.0", "generator": "carto-ripper example bundle generator"},
+        "asset": {"version": "2.0", "generator": "csii-world-bundle example bundle generator"},
         "scene": 0,
         "scenes": [{"nodes": [0]}],
         "nodes": [{"name": ASSET_ID, "mesh": 0}],
@@ -507,7 +507,7 @@ def build(out_dir: Path) -> None:
 
     manifest = {
         "schema": 2,
-        "generator": "carto-ripper example bundle generator",
+        "generator": "csii-world-bundle example bundle generator",
         "generatedAt": "2026-01-01T00:00:00Z",
         "game": {"name": "Cities: Skylines II", "version": "1.5.7f1", "mode": "Game"},
         "city": "Example City",

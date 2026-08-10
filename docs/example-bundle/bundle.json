@@ -1,6 +1,6 @@
 {
   "schema": 2,
-  "generator": "carto-ripper example bundle generator",
+  "generator": "csii-world-bundle example bundle generator",
   "generatedAt": "2026-01-01T00:00:00Z",
   "game": {
     "name": "Cities: Skylines II",

@@ -19,7 +19,7 @@
 -->
 <Project>
 
-  <Target Name="CartoRipperDropPlatformManifests" BeforeTargets="_HandlePackageFileConflicts">
+  <Target Name="DropPlatformManifests" BeforeTargets="_HandlePackageFileConflicts">
     <ItemGroup>
       <PackageConflictPlatformManifests Remove="@(PackageConflictPlatformManifests)" />
     </ItemGroup>

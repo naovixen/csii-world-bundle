@@ -2,7 +2,7 @@
 """Standalone validator for a CS2 World Bundle (schema 2, frozen 2026-08-09).
 
 Standalone means exactly that: Python 3.8+ and the standard library, no pip installs, no
-game, no Carto source. It is the reference check for the Phase-0 contract, and the thing a
+game, no producer source. It is the reference check for the Phase-0 contract, and the thing a
 consumer author runs to confirm a bundle they were handed is well-formed.
 
 It does two jobs:

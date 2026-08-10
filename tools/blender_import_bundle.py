@@ -863,7 +863,7 @@ def resolve_layers(bundle_dir):
 #
 # A network record carries geometry in exactly one of two forms, and §5 is explicit that a
 # consumer must implement both. Only the centerline form is implemented here, because that is
-# the only one the Carto ripper emits (§5.1) — a mesh-form record is counted and reported
+# the only one the ripper emits (§5.1) — a mesh-form record is counted and reported
 # rather than silently dropped, so the day a producer starts emitting them this says so.
 
 # Colour by `form`, which is the whole Phase 5 acceptance question: an elevated run and a
@@ -2932,12 +2932,14 @@ def _splat_ground_material(surfaces_dir, splat, mapping, gain=1.0):
     textures keep the world-anchored 8 m tiling of the legacy path.
 
     `mapping` names the ground each of R, G, B, A weights, plus the `base` ground. The base
-    is not a channel: the four weights are PAINTED-ground weights and a cliff is simply
-    unpainted — measured, very steep faces carry ≈0 in all four while rendering rock in-game.
-    The weights are OPACITIES composited in channel order over the base, scaled by the
-    block's `splatMultiplier`/`splatPower` — a consumer that normalises them into a
-    partition loses rock entirely *and* washes out the player-painted grounds, because the
-    procedural grass weight stays high underneath the paint.
+    is not a channel: it is the residual of the two PROCEDURAL channels (R grass, G dirt),
+    which is why a cliff renders rock — measured, very steep faces carry ≈0 in both.
+
+    The two kinds of channel blend differently, and the difference is the whole point: the
+    procedural pair is a normalised partition of grass/dirt/rock, while the player's paint
+    (B, A) composites OVER that at saturate(weight · splatMultiplier)^splatPower. See the
+    comment on the blend below for the measurements that rule out treating all four the same
+    way in either direction (audit SPLAT-1).
     """
     material = bpy.data.materials.new("terrain_ground")
     material.use_nodes = True
@@ -2991,30 +2993,52 @@ def _splat_ground_material(surfaces_dir, splat, mapping, gain=1.0):
         tree.links.new(colour_b, node.inputs["Color2"])
         return node.outputs["Color"]
 
-    # Ordered COMPOSITING, base first — not a weights/sum partition. The channels are
-    # opacities: the game writes the player's paint into B/A while the ground underneath
-    # KEEPS its procedural grass weight (measured on a painted city: texels with paint
-    # ≥ 128 still carry grass ≈ 240/255), so normalising the channels into a partition let
-    # grass outvote the paint and washed every player-painted ground to a faint tint —
-    # "the user painted colours are lost". Composite instead: start from the base ground
-    # (the unpainted residual — rock shows wherever every channel is ~0, cliff faces and
-    # shorelines), then lay the named channels over the result in priority order
-    # **G (dirt), R (grass), B, A** — dirt UNDER grass, paint on top — at opacity
-    # saturate(weight · splatMultiplier)^splatPower, the block's own published constants
-    # (2.0 / 1.0: half-weight paint already covers fully, which is how it reads in-game).
-    # The dirt-under-grass order is measured, not guessed: on the shipped city no texel is
-    # dirt-dominant (of 6.1M texels with dirt > 128, 99.5% carry grass > 200 and NONE carry
-    # grass < 64), so dirt-over-grass composites the entire map brown while the game shows
-    # green — the dirt weight is an undercoat the grass weight then covers.
+    # Two different kinds of channel, blended two different ways (audit SPLAT-1, 2026-08-10).
+    #
+    # R and G are PROCEDURAL weights the game computes from the terrain itself, and rock is
+    # their residual: R falls monotonically with slope on unpainted ground — measured on a
+    # full city, 254/255 at 0-5 deg down to 5.9 at 40-90 deg — so `lerp(rock, grass, R)` is
+    # what it describes. They are normalised into a partition of grass/dirt/rock.
+    #
+    # B and A are the PLAYER'S PAINT, and they composite OVER that natural ground as
+    # opacities at saturate(weight * splatMultiplier)^splatPower.
+    #
+    # Treating all four as opacities (what shipped until now) is what "the painted colours
+    # are lost" actually was: splatMultiplier 2.0 saturates any channel at or above 128/255,
+    # the grass channel is at or above 128 on 96.99% of texels, and grass composites after
+    # dirt — so the rule rendered 92.31% of the map as grass, the painted extra1 as 0.81%,
+    # and dirt as literally nothing anywhere. The tell is that grass reads 249.6/255 BELOW
+    # the waterline: a channel that is near-saturated underwater is not a grass opacity.
+    # Treating all four as a partition instead is the other failure the old comment records,
+    # and it is also real - it leaves painted texels ~48% paint against ~32% grass. Only the
+    # split above puts paint at 86-100% where the player painted while keeping rock on the
+    # cliffs and dirt visible at all.
+    #
     # A channel the producer could not name is skipped — that ground is present but
     # unnameable, and painting it as a guess would be worse than leaving the ground below.
-    named = [(index, mapping[key])
-             for index, key in ((1, "G"), (0, "R"), (2, "B"), (3, "A")) if mapping.get(key)]
-    if not named:
-        named = [(0, _SPLAT_CHANNELS_DEFAULT["R"])]
+    natural = [(index, mapping[key]) for index, key in ((0, "R"), (1, "G")) if mapping.get(key)]
+    paint = [(index, mapping[key]) for index, key in ((2, "B"), (3, "A")) if mapping.get(key)]
 
-    blended = ground_texture(mapping["base"] if mapping.get("base") else named[0][1])
-    for index, ground in named:
+    if not natural:
+        blended = ground_texture(mapping["base"] if mapping.get("base") else
+                                 _SPLAT_CHANNELS_DEFAULT["R"])
+    else:
+        # rock is the residual of the procedural channels ALONE — the paint channels must not
+        # eat into it, or painting a slope would quietly turn its rock into grass.
+        procedural_sum = channels[natural[0][0]]
+        for index, _ in natural[1:]:
+            procedural_sum = math("ADD", procedural_sum, channels[index])
+        residual = math("MAXIMUM", math("SUBTRACT", 1.0, procedural_sum), 0.0)
+        blended = ground_texture(mapping["base"] if mapping.get("base") else natural[0][1])
+        running = residual
+        for index, ground in natural:
+            # Incremental weighted average: each ground enters at its share of the weight
+            # accumulated so far, which yields the exact normalised partition at the end.
+            running = math("ADD", running, channels[index])
+            share = math("DIVIDE", channels[index], math("ADD", running, 1e-6))
+            blended = mix(blended, ground_texture(ground), share)
+
+    for index, ground in paint:
         opacity = math("MINIMUM", math("MULTIPLY", channels[index], splat.multiplier), 1.0)
         if splat.power != 1.0:
             opacity = math("POWER", opacity, splat.power)

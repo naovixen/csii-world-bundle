@@ -202,7 +202,23 @@ provenance says "by elimination"), so the whole channel semantics need re-derivi
 in-game screenshots before any rule is written into the consumer guide.
 
 This supersedes nothing in §33 — it *reopens* it. §33's rule was fitted from measurement and is
-now falsified by a case it did not cover. The consumer guide must not ship the current rule.
+now falsified by a case it did not cover.
+
+**RESOLVED the same day.** The hypothesis held: `R` falls monotonically with slope on unpainted
+ground (254/255 at 0–5°, 5.9/255 at 40–90°), which is blend-weight behaviour, not opacity. The
+rule that fits every measurement splits the channels by kind — `R`/`G` normalised with rock as
+the residual of *those two alone*, then `B`/`A` composited over as opacities:
+
+| model | painted `extra1` texels | whole map |
+|---|---|---|
+| all-four-as-opacities (shipped until now) | 0.81% paint | 92.31% grass, 0% dirt |
+| all-four-as-partition | 47.7% paint vs 32.1% grass | 77.3% grass |
+| **split by kind (adopted)** | **86% paint** (extra2 texels: 100%) | 71.8% grass, 14.1% dirt, 6.7%+5.3% paint, 2.1% rock |
+
+Implemented in `tools/blender_import_bundle.py` (`_splat_ground_material`) and rewritten into
+contract §8. The node graph was re-simulated offline and reproduces the table exactly. **Still
+unproven against the game**: this fits all offline evidence, but only a visual check against an
+in-game screenshot of a painted area closes it — that check is the phase gate.
 
 ### WATER-2 — `rasters.water.seaLevel` is not the playable water datum (producer, LOW)
 

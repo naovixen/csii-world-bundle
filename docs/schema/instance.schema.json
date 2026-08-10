@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://taipei-native.github.io/carto-ripper/schema/instance.schema.json",
+  "$id": "https://erohs.github.io/csii-world-bundle/schema/instance.schema.json",
   "title": "CS2 World Bundle instance record",
   "description": "One line of instances.jsonl. The file is JSON Lines: one complete JSON object per line, no enclosing array, so a huge city streams. This schema validates a single line.",
   "type": "object",

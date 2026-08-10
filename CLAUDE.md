@@ -1,4 +1,4 @@
-# Carto-Ripper — CS2 World Asset Ripper (fork of Carto)
+# csii-world-bundle — Cities: Skylines II world ripper (fork of Carto)
 
 A fork of the **Carto** Cities: Skylines II mod that extends it from a *vector geodata*
 exporter into a **full world ripper**: it walks the loaded city in-engine and dumps the real

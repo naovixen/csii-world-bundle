@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://taipei-native.github.io/carto-ripper/schema/materials.schema.json",
+  "$id": "https://erohs.github.io/csii-world-bundle/schema/materials.schema.json",
   "title": "CS2 World Bundle material table (materials.json)",
   "description": "A flat object keyed by materialId. A mesh primitive in meshes/*.glb references a material by putting the materialId in the glTF material's 'name'.",
   "type": "object",

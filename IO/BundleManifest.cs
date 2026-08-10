@@ -15,7 +15,7 @@ namespace Carto.IO
     /// </summary>
     public sealed class BundleManifest
     {
-        /// <summary>The producer identification, e.g. <c>carto-ripper 1.0.16</c>.</summary>
+        /// <summary>The producer identification, e.g. <c>csii-world-bundle 1.0.16</c>.</summary>
         public string Generator;
 
         /// <summary>The export wall-clock time, ISO 8601 UTC.</summary>
@@ -60,7 +60,7 @@ namespace Carto.IO
 
             return new BundleManifest
             {
-                Generator = $"carto-ripper {Instance.Version}",
+                Generator = $"csii-world-bundle {Instance.Version}",
                 GeneratedAt = DateTime.UtcNow.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'"),
                 Game = new Dictionary<string, object>
                 {

@@ -201,7 +201,7 @@ namespace Carto.IO
                 ["asset"] = new Dictionary<string, object>
                 {
                     ["version"] = "2.0",
-                    ["generator"] = $"carto-ripper {Instance.Version}"
+                    ["generator"] = $"csii-world-bundle {Instance.Version}"
                 },
                 ["scene"] = 0,
                 ["scenes"] = new object[] { new Dictionary<string, object> { ["nodes"] = new[] { 0 } } },

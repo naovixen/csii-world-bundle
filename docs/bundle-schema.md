@@ -1,6 +1,6 @@
 # The CS2 World Bundle — contract v2
 
-**Status: frozen.** `schema: 2` is the seam between the Carto-Ripper mod (the sole producer)
+**Status: frozen.** `schema: 2` is the seam between the csii-world-bundle mod (the sole producer)
 and every consumer. *(v2 differs from v1 in exactly one record shape — the §8c clip-area
 records carry their polygon inline; see §12.2. Everything else in this document is unchanged
 from v1.)* This document plus `docs/schema/*.schema.json` is the *complete*
@@ -136,7 +136,7 @@ something meaningful.
 ```jsonc
 {
   "schema": 1,
-  "generator": "carto-ripper 1.0.16",
+  "generator": "csii-world-bundle 1.0.16",
   "generatedAt": "2026-01-01T00:00:00Z",
   "game": { "name": "Cities: Skylines II", "version": "1.5.7f1", "mode": "Game" },
   "city": "Example City",
@@ -457,7 +457,7 @@ that a consumer has to bridge or cut terrain for.
 
 ### 5.1 What this producer emits, and why
 
-The schema stays as frozen; this section records which of its options the Carto ripper takes,
+The schema stays as frozen; this section records which of its options the ripper takes,
 so a consumer knows what to expect from a real bundle without reading the mod.
 
 **Both forms, mixed — mesh where there is geometry, centerline where there is not.** A record
@@ -1135,12 +1135,31 @@ toward +X (east).
   right assumption, since it is a property of the game's `TerrainMaterialType` ordering rather
   than of any bundle.
 
-  Two things a consumer must still get right (both produced square-splotch terrain when they
-  were not): **(1) `base` is not a channel.** The four weights are *painted*-ground weights and
-  a cliff is simply unpainted — very steep faces carry ≈0 in all four while rendering rock
-  in-game — so the base ground's weight is the residual `max(0, 1 − (R+G+B+A))`. Normalising
-  the four channels into a partition loses rock entirely. **(2) Do not treat a roadbed as
-  dirt.** The blend weights grass as heavily under roadbeds (mean 251/255) as under lawns
+  **How to blend it (rewritten 2026-08-10, audit SPLAT-1 — the previous rule here was wrong
+  and any consumer following it renders a nearly all-grass map).** The four channels are *two
+  different kinds of thing* and must be blended two different ways:
+
+  - **`R` and `G` are procedural weights** the game derives from the terrain, and the base
+    ground is their residual: normalise `R`, `G` and `max(0, 1 − (R+G))` into a **partition**
+    of grass / dirt / rock. `R` falls monotonically with slope on unpainted ground — measured
+    over a full city, 254/255 at 0–5° down to 5.9/255 at 40–90° — which is what makes cliffs
+    rock.
+  - **`B` and `A` are the player's paint** and composite **over** that natural ground as
+    opacities, `saturate(weight · splatMultiplier)^splatPower`.
+
+  Both single-rule readings are measurably wrong. Treating all four as opacities (what this
+  section said until 2026-08-10) renders **92.31% of the map as grass, painted `extra1` as
+  0.81%, and dirt as 0% — never visible anywhere**, because `splatMultiplier` 2.0 saturates any
+  channel ≥128/255 and `R` is ≥128 on 96.99% of texels. The tell is that `R` reads **249.6/255
+  below the waterline**, where there is no grass: a channel that is near-saturated underwater
+  is not a grass opacity. Treating all four as one partition is the opposite failure and is
+  also real — it leaves painted texels ~48% paint against ~32% grass, the washed-out look the
+  older text warned about. Only the split above puts paint at 86–100% where the player painted
+  while keeping rock on cliffs and dirt visible at all. `baseWeight` in the example below
+  subtracts all four channels for historical reasons; compute rock from `R` and `G` alone, or
+  painting a slope silently turns its rock into grass.
+
+  One more thing a consumer must get right: **do not treat a roadbed as dirt.** The blend weights grass as heavily under roadbeds (mean 251/255) as under lawns
   (243); the dirt look beside roads is the §5B wear decals and §8b surface areas, not this map.
 
   Consumers should sample it bilinearly (it is weights, not ids) and prefer it over per-cell
