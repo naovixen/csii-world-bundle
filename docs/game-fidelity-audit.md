@@ -160,6 +160,61 @@ baseline.
 - The §38 clamp and §21 sync-extrapolation remain shader-side claims resting on the accepted
   in-game A/Bs; nothing reopened.
 
+## 2.5 Post-rip findings (2026-08-10, the Phase 3 validation rip)
+
+The rip that validated Phase 3 also surfaced two things no offline check could have caught.
+
+### SPLAT-1 — the splat compositing rule is wrong, and it is why painted ground reads green (consumer-side, HIGH)
+
+**Symptom** (user, in Blender): terrain painted a yellow sand colour near the map edges renders
+as a lighter green.
+
+**The data is not lost.** The producer ships the paint correctly: `extra1` is non-zero on 15.07%
+of the splatmap and `extra2` on 12.76%, both at full strength, and those masks match
+`user_splatmap.png`'s two channels texel-for-texel. All five ground textures ship
+(`grass`/`dirt`/`rock`/`extra1`/`extra2`, plus normals).
+
+**The consumer rule erases it.** Applying the documented rule (§8: composite base → G → R → B → A,
+each at `opacity = saturate(weight · splatMultiplier)^splatPower`, published as 2.0 / 1.0) to the
+shipped raster gives:
+
+| visible ground | share of map |
+|---|---|
+| grass | **92.31%** |
+| extra2 | 4.07% |
+| rock | 2.82% |
+| extra1 (the painted sand) | **0.81%** |
+| dirt | **0.00% — never visible anywhere** |
+
+The mechanism is arithmetic: `splatMultiplier = 2.0` makes any channel ≥ 128/255 fully opaque,
+and the grass channel is ≥ 128 on **96.99%** of texels (≥ 240 on 88.53%). Since grass composites
+*after* dirt, dirt can never show; the extras, mostly below 30, paint over grass at ~16% opacity
+and vanish into it.
+
+**Why the current reading of R must be wrong.** The grass channel averages 243.6/255 across the
+whole map and sits at **249.6 below the waterline**, where there is certainly no grass. A channel
+that is near-saturated underwater is not a grass *opacity*. Its own recorded provenance — "falls
+monotonically with slope while every other channel is 0 on unpainted ground" — fits a
+**grass-versus-rock blend factor** (`ground = lerp(rock, grass, R)`, rock being `1 − R` rather
+than a residual of all four), which would leave dirt and the paint channels free to composite on
+top. That is a hypothesis, not a verdict: `G` was never measured directly either (§8's own
+provenance says "by elimination"), so the whole channel semantics need re-deriving against
+in-game screenshots before any rule is written into the consumer guide.
+
+This supersedes nothing in §33 — it *reopens* it. §33's rule was fitted from measurement and is
+now falsified by a case it did not cover. The consumer guide must not ship the current rule.
+
+### WATER-2 — `rasters.water.seaLevel` is not the playable water datum (producer, LOW)
+
+The new §P4 block captured `seaLevel: 15.0` while this map's actual water surface measures
+508.6–528.3 m (median 521.0) and the game's own `kDefaultSeaLevel` is 511.7. `WaterSystem.SeaLevel`
+feeds only `ResetBackdropWaterToSeaLevel` — backdrop/ocean water — so the field's semantics string
+("WaterSystem.SeaLevel in world metres", implying the playable datum) is at best misleading and at
+worst reading an uninitialised value. `terrain/water_level.png` remains the authoritative water
+surface and is unaffected. Fix the semantics or drop the key; do not let a consumer seat water on it.
+
+---
+
 ## 3. Re-verified clean this pass (do not re-audit without cause)
 
 Network: conform port verbatim-matches `BatchMeshHelpers` (height bounds, classification order,

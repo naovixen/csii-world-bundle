@@ -576,10 +576,14 @@ def validate_bundle(bundle_dir: Path, schema_dir: Path) -> Report:
         if path.stem in used_assets:
             continue
 
-        # A foundation skirt (<assetId>__base.glb) is referenced implicitly by every instance
-        # of its parent prefab — the consumer's terrain skirting places it, not a record.
-        # The first full-city rip with skirts drowned the report in 1,380 of these.
-        if path.stem.endswith("__base") and path.stem[: -len("__base")] in used_assets:
+        # Derived files are referenced implicitly, never by an assetId of their own: a
+        # foundation skirt (__base) is placed by the consumer's terrain skirting, and a state
+        # variant (__dead, __stump, __partial1/2, __full — contract §6.1) is swapped in from
+        # the instance's own attrs.treeState / attrs.fullness. The first full-city rip with
+        # skirts drowned the report in 1,380 of these; variants added 225 more.
+        derived = ("__base", "__dead", "__stump", "__partial1", "__partial2", "__full")
+        suffix = next((s for s in derived if path.stem.endswith(s)), None)
+        if suffix and path.stem[: -len(suffix)] in used_assets:
             continue
 
         report.warn(f"{path.name}: mesh is not referenced by any instance")
