@@ -242,8 +242,42 @@ neutral, and an 8× gain lands the ground squarely in that rolloff: authored gra
 consumer applying a presentation gain must state the display transform it was calibrated
 against, or the same trap fires in their engine.
 
-**SPLAT-1 itself is still unproven against the game** — the brown masked it. The next import
-tests both at once: painted sand should read as sand *and* the landmass as green.
+**SPLAT-2 was only half the story.** Pinning Standard did not fix it — the user re-imported and
+reported brown land still, with the painted sand now reading greenish. Driving the material
+headlessly settled it (Blender 5.2, `--background`, emission tapped straight off each node so
+lighting is out of the way):
+
+| tap | hue |
+|---|---|
+| grass texture | 80.8° |
+| after the natural partition | 79.4° |
+| after dirt / paint | 58.9° → 61.1° |
+| **material output (what Base Color receives)** | **62.0°** |
+| in-game reference | 63.9° |
+
+The material is right, and always was. What was missing is that **`clear_scene()` deletes
+Blender's default light and the importer never replaced it** — an imported scene had *no lights
+and no world at all*. It only looked lit because the interactive viewport falls back to its own
+studio HDRI, which is warm, and that tint is the brown. `tools/ab_render.py` — where
+`_GROUND_GAIN` was actually calibrated — builds its own sun (energy 4.0) and pins Standard, so
+the A/B gate never saw the problem the user was looking at.
+
+Fixed by giving the imported scene the same rig (`_setup_lighting`): one white sun at the
+ab_render angle, a neutral grey world, and viewports switched to Material Preview with
+`use_scene_lights` / `use_scene_world` so they stop using the studio HDRI. Verified by a lit
+render of the real splatmap under that rig: **hue 60.3°, sat 0.29** against the in-game 63.9° /
+0.38 — the residual is brightness, not colour, and the hue error is now 3.6° instead of 22°.
+
+**Two methodology lessons, both worth carrying into the consumer guide.** First, a presentation
+gain is meaningless without stating the *whole* rig it was calibrated against — display
+transform **and** lighting; the A/B harness had both and the interactive path had neither.
+Second, this took three wrong diagnoses (blend rule, then view transform alone) because each was
+argued from static analysis; the question only closed once the shader was actually executed and
+measured. Prefer driving the real pipeline over reasoning about it.
+
+**SPLAT-1 itself remains unproven against the game** — the brown masked it throughout. The next
+import tests both: the landmass should read green *and* painted areas should read as their
+painted ground.
 
 ### WATER-2 — `rasters.water.seaLevel` is not the playable water datum (producer, LOW)
 

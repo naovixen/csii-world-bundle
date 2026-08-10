@@ -3771,6 +3771,59 @@ def build_areas(bundle_dir, collection, center, radius, ground=None, cell=3.5):
 
 # -- scene building -------------------------------------------------------------------------
 
+def _setup_lighting():
+    """Give the scene the neutral sun and world the ground gain was calibrated against.
+
+    `clear_scene()` deletes Blender's default light along with everything else, and the
+    importer never replaced it — so an imported scene had **no lights and no world at all**.
+    Nothing looked black only because the interactive viewport falls back to its own studio
+    HDRI in Solid/Material Preview, and that HDRI is warm: it tinted the ground toward brown
+    (measured hue 41.6 deg against 63.9 deg in-game) no matter how correct the blend was. The
+    material itself was fine the whole time — tapped straight out of the node tree it reads
+    hue 62.0 deg, essentially the in-game value.
+
+    The rig mirrors `tools/ab_render.py`, which is where `_GROUND_GAIN` was calibrated: one
+    white sun at energy 4.0, same angle. The world is a plain neutral grey so ambient fill
+    adds brightness without adding a colour cast. Viewports are then told to use the scene's
+    own lights and world rather than the studio HDRI, so what the user sees is what the gain
+    was tuned for.
+    """
+    scene = bpy.context.scene
+
+    if not any(ob.type == "LIGHT" for ob in scene.objects):
+        sun_data = bpy.data.lights.new("carto_sun", type="SUN")
+        sun_data.energy = 4.0
+        sun_data.color = (1.0, 1.0, 1.0)
+        sun = bpy.data.objects.new("carto_sun", sun_data)
+        scene.collection.objects.link(sun)
+        sun.rotation_euler = (0.5, 0.3, 0.0)
+
+    world = scene.world
+    if world is None:
+        world = bpy.data.worlds.new("carto_world")
+        scene.world = world
+    world.use_nodes = True
+    background = world.node_tree.nodes.get("Background")
+    if background is not None:
+        background.inputs["Color"].default_value = (0.25, 0.25, 0.25, 1.0)
+        background.inputs["Strength"].default_value = 1.0
+
+    # Make the viewport obey the scene rig instead of its warm studio HDRI. No-ops under -b.
+    for screen in bpy.data.screens:
+        for area in screen.areas:
+            if area.type != "VIEW_3D":
+                continue
+            for space in area.spaces:
+                if space.type != "VIEW_3D":
+                    continue
+                shading = space.shading
+                if shading.type in ("SOLID", "WIREFRAME"):
+                    shading.type = "MATERIAL"
+                if shading.type == "MATERIAL":
+                    shading.use_scene_lights = True
+                    shading.use_scene_world = True
+
+
 def _pin_view_transform():
     """Force the Standard view transform, the one the ground gain is calibrated against.
 
@@ -4674,6 +4727,7 @@ def main():
     # Unconditionally, including under --keep: the ground gain is meaningless under any other
     # view transform, and --keep is exactly the path where a stale AgX scene would survive.
     _pin_view_transform()
+    _setup_lighting()
 
     # Sources live in their own collection, excluded from the view layer, so the templates do
     # not render on top of the instances placed from them.
