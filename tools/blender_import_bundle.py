@@ -3771,6 +3771,30 @@ def build_areas(bundle_dir, collection, center, radius, ground=None, cell=3.5):
 
 # -- scene building -------------------------------------------------------------------------
 
+def _pin_view_transform():
+    """Force the Standard view transform, the one the ground gain is calibrated against.
+
+    `_GROUND_GAIN` (8.0) and `_GROUND_SATURATION` (2.0) were tuned by A/B renders against
+    in-game screenshots, and `tools/ab_render.py` pins "Standard" — so that is the transform
+    they mean. The importer never pinned it, leaving the interactive scene on whatever the
+    user's Blender defaults to, which since 4.0 is **AgX**. AgX rolls bright colour off toward
+    a desaturated warm neutral, and an 8x gain lands the ground squarely in that rolloff: the
+    grass ground (authored sRGB (67,74,53), hue 80 deg) rendered as desaturated brown — hue
+    41.6 deg measured, against 63.9 deg in-game — with the tonal compression reading as
+    "flipped lights and darks". The pixels and the blend were correct the whole time; only the
+    display transform was wrong. Standard is also the honest choice here: these are ripped
+    albedo textures, not scene-referred HDR.
+    """
+    scene = bpy.context.scene
+    try:
+        scene.view_settings.view_transform = "Standard"
+        if hasattr(scene.view_settings, "look"):
+            scene.view_settings.look = "None"
+    except (AttributeError, TypeError) as exc:
+        LOG.warn(f"could not pin the Standard view transform ({exc}); "
+                 f"ground colour will read desaturated under AgX")
+
+
 def clear_scene():
     bpy.ops.object.select_all(action="SELECT")
     bpy.ops.object.delete(use_global=False)
@@ -4646,6 +4670,10 @@ def main():
 
     if not keep:
         clear_scene()
+
+    # Unconditionally, including under --keep: the ground gain is meaningless under any other
+    # view transform, and --keep is exactly the path where a stale AgX scene would survive.
+    _pin_view_transform()
 
     # Sources live in their own collection, excluded from the view layer, so the templates do
     # not render on top of the instances placed from them.

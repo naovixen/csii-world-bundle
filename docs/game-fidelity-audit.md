@@ -216,9 +216,34 @@ the residual of *those two alone*, then `B`/`A` composited over as opacities:
 | **split by kind (adopted)** | **86% paint** (extra2 texels: 100%) | 71.8% grass, 14.1% dirt, 6.7%+5.3% paint, 2.1% rock |
 
 Implemented in `tools/blender_import_bundle.py` (`_splat_ground_material`) and rewritten into
-contract §8. The node graph was re-simulated offline and reproduces the table exactly. **Still
-unproven against the game**: this fits all offline evidence, but only a visual check against an
-in-game screenshot of a painted area closes it — that check is the phase gate.
+contract §8. The node graph was re-simulated offline and reproduces the table exactly.
+
+### SPLAT-2 — the brown terrain was a view transform, not the blend (consumer-side, HIGH)
+
+The visual check (user screenshots, in-game vs Blender, same orientation) showed the whole
+landmass rendering **brown** in Blender against **green with sand beaches** in-game. Measured
+over the land pixels of each: in-game hue **63.9°** sat 0.38 val 0.40; Blender hue **41.6°** sat
+0.23 val 0.31.
+
+That is not the blend rule. Composing the shipped splatmap against the shipped ground textures
+offline predicts hue **75.6°** under the old rule and **70.9°** under the new one — both green,
+both near the in-game 63.9°. Neither predicts 41.6°.
+
+The cause is downstream of every pixel this project ships: `_GROUND_GAIN` (8.0) and
+`_GROUND_SATURATION` (2.0) were calibrated by A/B renders that pin `view_transform = "Standard"`
+(`tools/ab_render.py:33`), but the importer never pinned it, so an interactive session inherits
+Blender's default — **AgX** since 4.0. AgX rolls bright colour off toward a desaturated warm
+neutral, and an 8× gain lands the ground squarely in that rolloff: authored grass (sRGB
+(67,74,53), hue 80°) comes out desaturated brown, and the tonal compression reads as the
+"flipped lights and darks" the report described. Fixed by pinning Standard in the importer
+(`_pin_view_transform`, called unconditionally including under `--keep`).
+
+**Lesson for the consumer guide:** the bundle ships *albedo*, not scene-referred HDR. Any
+consumer applying a presentation gain must state the display transform it was calibrated
+against, or the same trap fires in their engine.
+
+**SPLAT-1 itself is still unproven against the game** — the brown masked it. The next import
+tests both at once: painted sand should read as sand *and* the landmass as green.
 
 ### WATER-2 — `rasters.water.seaLevel` is not the playable water datum (producer, LOW)
 
