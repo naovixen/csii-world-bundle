@@ -137,6 +137,32 @@ namespace Carto.Systems
         Game.UI.NameSystem _nameSystem;
 
         /// <summary>
+        /// The per-entity component reads the walk repeats over the whole city, hoisted into
+        /// lookups the way every other collector in this repo does its per-entity work.
+        /// <b>The instance walk is main-thread component reads and nothing else</b> — the audit
+        /// measured 57.6 s of it on the full spike city with the writer never once the
+        /// bottleneck, ten to twenty <c>EntityManager.HasComponent</c>/<c>GetComponentData</c>
+        /// calls per entity across 1.27 M entities. Each of those resolves the type index and the
+        /// entity's chunk from scratch; a <see cref="ComponentLookup{T}"/> caches the type and
+        /// hands back a typed accessor. Only the probes that fire on <i>every</i> entity are here:
+        /// the semantic attributes added later (level, zone, brand, address, theme, fullness) fire
+        /// on subsets and stay on <c>EntityManager</c>, where they read more plainly.
+        /// Compare the next rip report's instance-stage seconds against that 57.6 s baseline.
+        /// </summary>
+        ComponentLookup<PrefabRef> _prefabRefs;
+        ComponentLookup<Game.Objects.Transform> _transforms;
+        ComponentLookup<Game.Common.Owner> _owners;
+        ComponentLookup<Attached> _attachments;
+        ComponentLookup<Game.Buildings.Building> _buildings;
+        ComponentLookup<Tree> _trees;
+        ComponentLookup<Plant> _plants;
+        ComponentLookup<Game.Objects.Elevation> _elevations;
+        ComponentLookup<Game.Objects.Stack> _stacks;
+        BufferLookup<Game.Rendering.MeshColor> _meshColors;
+        BufferLookup<Game.Rendering.CustomMeshColor> _customMeshColors;
+        BufferLookup<SubMesh> _prefabSubMeshes;
+
+        /// <summary>
         /// The event triggered when the system instance is created.
         /// </summary>
         protected override void OnCreate()
@@ -178,8 +204,50 @@ namespace Carto.Systems
 
             _nameSystem = World.GetOrCreateSystemManaged<Game.UI.NameSystem>();
 
+            _prefabRefs = GetComponentLookup<PrefabRef>(true);
+            _transforms = GetComponentLookup<Game.Objects.Transform>(true);
+            _owners = GetComponentLookup<Game.Common.Owner>(true);
+            _attachments = GetComponentLookup<Attached>(true);
+            _buildings = GetComponentLookup<Game.Buildings.Building>(true);
+            _trees = GetComponentLookup<Tree>(true);
+            _plants = GetComponentLookup<Plant>(true);
+            _elevations = GetComponentLookup<Game.Objects.Elevation>(true);
+            _stacks = GetComponentLookup<Game.Objects.Stack>(true);
+            _meshColors = GetBufferLookup<Game.Rendering.MeshColor>(true);
+            _customMeshColors = GetBufferLookup<Game.Rendering.CustomMeshColor>(true);
+            _prefabSubMeshes = GetBufferLookup<SubMesh>(true);
+
             base.OnCreate();
             _log.Debug("InstanceRipSystem instance created.");
+        }
+
+        /// <summary>
+        /// Refresh every hoisted lookup against the current frame's world state.
+        /// A lookup holds a safety handle and a cached chunk index, both of which go stale once
+        /// structural change happens — which it does constantly while a rip runs beside a live
+        /// simulation — so this is called before each slice, and once more before the synchronous
+        /// pre-pass that runs ahead of the first slice.
+        /// </summary>
+        private void UpdateLookups()
+        {
+            // A lookup read on the main thread is not synchronised for us the way an
+            // `EntityManager` read is, and the walk now reaches its first lookup before it reaches
+            // any `EntityManager` call. Settle the jobs touching these types once per slice.
+            //
+            CompleteDependency();
+
+            _prefabRefs.Update(this);
+            _transforms.Update(this);
+            _owners.Update(this);
+            _attachments.Update(this);
+            _buildings.Update(this);
+            _trees.Update(this);
+            _plants.Update(this);
+            _elevations.Update(this);
+            _stacks.Update(this);
+            _meshColors.Update(this);
+            _customMeshColors.Update(this);
+            _prefabSubMeshes.Update(this);
         }
 
         /// <summary>
@@ -208,7 +276,10 @@ namespace Carto.Systems
         protected override void OnUpdate()
         {
             InstanceRun run = _run;
-            if (run != null) Advance(run);
+            if (run == null) return;
+
+            UpdateLookups();
+            Advance(run);
         }
 
         /// <summary>
@@ -221,6 +292,16 @@ namespace Carto.Systems
 
             /// <summary>The placed objects to walk, held across frames (persistent allocator).</summary>
             public NativeArray<Entity> Entities;
+
+            /// <summary>
+            /// The two exclusion verdicts, decided once in the pre-pass and indexed by position in
+            /// <see cref="Entities"/>.
+            /// The pre-pass has to run both tests over every entity to build the asset-id table,
+            /// and the walk then needed the same two answers again — 2.6 M redundant probes, each
+            /// one an owner read plus a prefab read plus a sub-mesh buffer scan. Caching a bit
+            /// each is the whole fix; the walk's own test order is unchanged.
+            /// </summary>
+            public NativeBitArray ExcludedUtility, ExcludedCargo;
 
             /// <summary>How far the walk has got.</summary>
             public int Index;
@@ -324,6 +405,7 @@ namespace Carto.Systems
             if (_run != null) return "An instance rip is already running.";
 
             RipProgress.Report(RipProgress.Phase.Scan);
+            UpdateLookups();
             _colorSets = 0; _customColors = 0; _divergentColorSets = 0; _growthScales = 0;
             _customNames = 0; _brands = 0; _levels = 0; _zones = 0; _themes = 0; _addresses = 0; _fullness = 0;
             _decalPrefabs.Clear();
@@ -353,10 +435,29 @@ namespace Carto.Systems
                 HashSet<Entity> prefabEntities = new();
                 Dictionary<Entity, int> prefabUse = new();
                 Dictionary<Entity, Entity> prefabSample = new();
-                foreach (Entity entity in run.Entities)
+
+                // The verdicts are kept rather than recomputed: ProcessOne asks the identical two
+                // questions of the identical entity a few seconds later, and the tests are not
+                // cheap ones.
+                //
+                run.ExcludedUtility = new NativeBitArray(run.Entities.Length, Allocator.Persistent, NativeArrayOptions.ClearMemory);
+                run.ExcludedCargo = new NativeBitArray(run.Entities.Length, Allocator.Persistent, NativeArrayOptions.ClearMemory);
+
+                for (int i = 0; i < run.Entities.Length; i++)
                 {
-                    if (MeshRipSystem.IsUtilityMarkerSubObject(EntityManager, entity)) continue;
-                    if (MeshRipSystem.IsVehicleCargoSubObject(EntityManager, entity)) continue;
+                    Entity entity = run.Entities[i];
+
+                    if (MeshRipSystem.IsUtilityMarkerSubObject(EntityManager, entity))
+                    {
+                        run.ExcludedUtility.Set(i, true);
+                        continue;
+                    }
+
+                    if (MeshRipSystem.IsVehicleCargoSubObject(EntityManager, entity))
+                    {
+                        run.ExcludedCargo.Set(i, true);
+                        continue;
+                    }
 
                     Entity prefabEntity = EntityManager.GetComponentData<PrefabRef>(entity).m_Prefab;
                     if (prefabEntity != Entity.Null)
@@ -427,7 +528,7 @@ namespace Carto.Systems
                     //
                     try
                     {
-                        ProcessOne(run, run.Entities[run.Index]);
+                        ProcessOne(run, run.Index, run.Entities[run.Index]);
                     }
                     catch (Exception ex)
                     {
@@ -459,8 +560,9 @@ namespace Carto.Systems
         /// Handle one placed object: classify, resolve, record.
         /// </summary>
         /// <param name="run">The rip in flight.</param>
+        /// <param name="index">Its position in the snapshot, which the pre-pass's cached verdicts are keyed by.</param>
         /// <param name="entity">The object entity.</param>
-        private void ProcessOne(InstanceRun run, Entity entity)
+        private void ProcessOne(InstanceRun run, int index, Entity entity)
         {
             // The walk holds its snapshot across frames while the simulation may run, so an
             // entity can be gone by the time its turn comes — the same mid-rip churn the mesh
@@ -474,9 +576,10 @@ namespace Carto.Systems
             }
 
             // Buried utility-network furniture: excluded here and in the mesh rip alike, so
-            // neither its placements nor its meshes reach the bundle.
+            // neither its placements nor its meshes reach the bundle. The verdict is the
+            // pre-pass's own — the same test on the same entity, decided once.
             //
-            if (MeshRipSystem.IsUtilityMarkerSubObject(EntityManager, entity))
+            if (run.ExcludedUtility.IsSet(index))
             {
                 run.SkippedUtilityNodes++;
 
@@ -486,7 +589,7 @@ namespace Carto.Systems
                 // what was dropped is what makes both failures visible — the nodes still
                 // getting through, and anything drawn that should not have been dropped.
                 //
-                Entity nodePrefab = EntityManager.GetComponentData<PrefabRef>(entity).m_Prefab;
+                Entity nodePrefab = _prefabRefs[entity].m_Prefab;
                 if (nodePrefab != Entity.Null)
                 {
                     run.UtilityNodesByPrefab.TryGetValue(nodePrefab, out int seen);
@@ -501,11 +604,11 @@ namespace Carto.Systems
             // excluded. Same treatment as the utility nodes: dropped in both rip systems
             // alike, tallied by prefab, and named in the report.
             //
-            if (MeshRipSystem.IsVehicleCargoSubObject(EntityManager, entity))
+            if (run.ExcludedCargo.IsSet(index))
             {
                 run.SkippedVehicleCargo++;
 
-                Entity cargoPrefab = EntityManager.GetComponentData<PrefabRef>(entity).m_Prefab;
+                Entity cargoPrefab = _prefabRefs[entity].m_Prefab;
                 if (cargoPrefab != Entity.Null)
                 {
                     run.VehicleCargoByPrefab.TryGetValue(cargoPrefab, out int seen);
@@ -515,7 +618,7 @@ namespace Carto.Systems
                 return;
             }
 
-            Entity prefabEntity = EntityManager.GetComponentData<PrefabRef>(entity).m_Prefab;
+            Entity prefabEntity = _prefabRefs[entity].m_Prefab;
             if (prefabEntity == Entity.Null)
             {
                 run.SkippedNoPrefab++;
@@ -551,7 +654,7 @@ namespace Carto.Systems
             // lots, helipad airspace, area placeholders and intersections are all real
             // objects with real placements and no mesh of their own.
             //
-            if (!unresolved && !EntityManager.HasBuffer<SubMesh>(prefabEntity))
+            if (!unresolved && !_prefabSubMeshes.HasBuffer(prefabEntity))
                 run.GeometrylessPrefabs.Add(assetId);
 
             if (unresolved)
@@ -567,7 +670,7 @@ namespace Carto.Systems
                 }
             }
 
-            Game.Objects.Transform transform = EntityManager.GetComponentData<Game.Objects.Transform>(entity);
+            Game.Objects.Transform transform = _transforms[entity];
 
             InstanceRecord record = new()
             {
@@ -583,10 +686,9 @@ namespace Carto.Systems
             // position — and using it as the parent link found only 98 of 1.4M objects.
             //
             Entity parent = Entity.Null;
-            if (EntityManager.HasComponent<Game.Common.Owner>(entity))
-                parent = EntityManager.GetComponentData<Game.Common.Owner>(entity).m_Owner;
-            if ((parent == Entity.Null) && EntityManager.HasComponent<Attached>(entity))
-                parent = EntityManager.GetComponentData<Attached>(entity).m_Parent;
+            if (_owners.TryGetComponent(entity, out Game.Common.Owner owner)) parent = owner.m_Owner;
+            if ((parent == Entity.Null) && _attachments.TryGetComponent(entity, out Attached attached))
+                parent = attached.m_Parent;
 
             if (parent != Entity.Null)
             {
@@ -648,7 +750,9 @@ namespace Carto.Systems
             // read as a success.
             //
             if (writerFaulted) report.Insert(0, "FAILED: the instance writer ended with an error — instances.jsonl is incomplete; see the log.\n");
-            report.AppendLine($"Wrote {run.Writer.Count} instance(s) to instances.jsonl in {run.Clock.Elapsed.TotalSeconds:F1} s");
+            report.AppendLine($"Wrote {run.Writer.Count} instance(s) to instances.jsonl in {run.Clock.Elapsed.TotalSeconds:F1} s"
+                            + " (audit P16 baseline for the same walk before the lookup hoist and the cached exclusion"
+                            + " verdicts: 57.6 s on the full spike city)");
             if (_colorSets > 0)
             {
                 report.AppendLine($"  {_colorSets} instance(s) carry the game's resolved paint (attrs.colorSet), "
@@ -817,6 +921,8 @@ namespace Carto.Systems
 
             run.Writer = null;
             if (run.Entities.IsCreated) run.Entities.Dispose();
+            if (run.ExcludedUtility.IsCreated) run.ExcludedUtility.Dispose();
+            if (run.ExcludedCargo.IsCreated) run.ExcludedCargo.Dispose();
         }
 
         /// <summary>
@@ -850,11 +956,13 @@ namespace Carto.Systems
         private int ExpandStack(Entity entity, Entity prefabEntity, InstanceRecord template,
                                 Action<InstanceRecord> emit, HashSet<string> assetIds)
         {
-            if (!EntityManager.HasComponent<Game.Objects.Stack>(entity)) return 0;
+            // The first test fires on every object in the city and almost never passes, so it is
+            // the one that has to be cheap.
+            //
+            if (!_stacks.TryGetComponent(entity, out Game.Objects.Stack stack)) return 0;
             if (!EntityManager.HasComponent<Game.Prefabs.StackData>(prefabEntity)) return 0;
-            if (!EntityManager.HasBuffer<SubMesh>(prefabEntity)) return 0;
+            if (!_prefabSubMeshes.HasBuffer(prefabEntity)) return 0;
 
-            Game.Objects.Stack stack = EntityManager.GetComponentData<Game.Objects.Stack>(entity);
             Game.Prefabs.StackData data = EntityManager.GetComponentData<Game.Prefabs.StackData>(prefabEntity);
 
             Game.Rendering.BatchDataHelpers.CalculateStackSubMeshData(
@@ -1133,12 +1241,12 @@ namespace Carto.Systems
 
         internal string ClassifyKind(Entity entity, Entity prefabEntity)
         {
-            if (EntityManager.HasComponent<Game.Buildings.Building>(entity)) return "building";
+            if (_buildings.HasComponent(entity)) return "building";
 
             // Trees and plants are both vegetation; the contract's closed enum has no separate
             // value for shrubs, and a consumer treats them the same way.
             //
-            if (EntityManager.HasComponent<Tree>(entity) || EntityManager.HasComponent<Plant>(entity)) return "tree";
+            if (_trees.HasComponent(entity) || _plants.HasComponent(entity)) return "tree";
 
             if (DecalOf(prefabEntity).IsDecal) return "decal";
 
@@ -1249,9 +1357,8 @@ namespace Carto.Systems
             // `ObjectToolBaseSystem.CreateDefinitionsJob`, so it is zero for anything sitting on
             // the ground and the component is simply absent for most objects.
             //
-            if (EntityManager.HasComponent<Game.Objects.Elevation>(entity))
+            if (_elevations.TryGetComponent(entity, out Game.Objects.Elevation elevation))
             {
-                Game.Objects.Elevation elevation = EntityManager.GetComponentData<Game.Objects.Elevation>(entity);
                 record.Attributes["elevation"] = Math.Round((double)elevation.m_Elevation, 3);
 
                 // The stored component is *not* clamped at zero — a full city measured 29,610
@@ -1291,18 +1398,16 @@ namespace Carto.Systems
             // `CustomMeshColor` overrides it wholesale when the player painted the thing
             // (`SetCustomColor` applies entry 0 to every part).
             //
-            if (EntityManager.HasBuffer<Game.Rendering.CustomMeshColor>(entity)
-                && (EntityManager.GetBuffer<Game.Rendering.CustomMeshColor>(entity, true).Length > 0))
+            if (_customMeshColors.TryGetBuffer(entity, out DynamicBuffer<Game.Rendering.CustomMeshColor> custom)
+                && (custom.Length > 0))
             {
-                DynamicBuffer<Game.Rendering.CustomMeshColor> custom = EntityManager.GetBuffer<Game.Rendering.CustomMeshColor>(entity, true);
                 record.Attributes["colorSet"] = ColorSetJson(custom[0].m_ColorSet);
                 record.Attributes["colorCustom"] = true;
                 _colorSets++;
                 _customColors++;
             }
-            else if (EntityManager.HasBuffer<Game.Rendering.MeshColor>(entity))
+            else if (_meshColors.TryGetBuffer(entity, out DynamicBuffer<Game.Rendering.MeshColor> colors))
             {
-                DynamicBuffer<Game.Rendering.MeshColor> colors = EntityManager.GetBuffer<Game.Rendering.MeshColor>(entity, true);
                 if (colors.Length > 0)
                 {
                     record.Attributes["colorSet"] = ColorSetJson(colors[0].m_ColorSet);
@@ -1318,10 +1423,8 @@ namespace Carto.Systems
                 }
             }
 
-            if (EntityManager.HasComponent<Tree>(entity))
+            if (_trees.TryGetComponent(entity, out Tree tree))
             {
-                Tree tree = EntityManager.GetComponentData<Tree>(entity);
-
                 // m_Growth is a byte ramp; the contract defines growth as 0..1.
                 //
                 record.Attributes["growth"] = Math.Round(tree.m_Growth / 255d, 3);
@@ -1353,7 +1456,7 @@ namespace Carto.Systems
                     record.Attributes["treeState"] = treeState;
             }
 
-            if (EntityManager.HasComponent<Game.Buildings.Building>(entity))
+            if (_buildings.HasComponent(entity))
             {
                 if (EntityManager.HasComponent<Game.Common.Destroyed>(entity)) record.Attributes["state"] = "destroyed";
                 else if (EntityManager.HasComponent<Game.Buildings.Abandoned>(entity)) record.Attributes["state"] = "abandoned";

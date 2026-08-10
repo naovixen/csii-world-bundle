@@ -672,9 +672,18 @@ Three pieces (layer keys `laneMeshes`, `lanePrefabs`, `laneGeometry` respectivel
          "tilingCount": 0,                    // MeshData.m_TilingCount (see bend algorithm)
          "geometryTiling": true,              // MeshFlags.Tiling: real tiling vs single stretch
          "boundsMin": [-0.1,-0.1,-4], "boundsMax": [0.1,0.1,4],  // authored bounds; z span is
-         "decal": true                        //   the tile length. `decal` (optional): the game
-       } ] } }                                //   projects this part onto the ground — see below
+         "decal": true,                       //   the tile length. `decal` (optional): the game
+         "decalRole": "marking"               //   projects this part onto the ground — see below.
+       } ] } }                                //   `decalRole` (optional, 2026-08-09):
+                                              //   "marking" | "wear"; absent = unclassified
    ```
+
+   *(2026-08-09, audit #40.)* **`decalRole` publishes the marking-vs-wear distinction** the
+   paragraph below describes, so a consumer no longer has to string-match asset ids to pick a
+   drape lift (the reference importer matched `"Line"`/`"Crosswalk"`, which fails on mods). The
+   producer classifies from the part material's tint alpha — the wear surfaces (`CarLane`,
+   `GravelLane`, …) carry `tint.a < 1`, every marking surface carries no tint — and omits the
+   key when no material resolves. Treat an absent key as unknown, not as either class.
 
    **`decal` parts are wear tint and markings, not the junction surface.** The junction
    interior itself is composition geometry — the arms' node meshes tile it to the centre
@@ -804,6 +813,16 @@ Conventions, all frozen in v1:
   source has them. `TEXCOORD_0` follows glTF's top-left UV origin, so the producer flips V from
   the game's bottom-left convention (`v_glb = 1 - v_game`). `TANGENT.w` has its sign flipped
   along with the X mirror, since mirroring reverses bitangent handedness.
+
+  *(2026-08-09, audit #40 P6.)* **Network meshes now carry authored normals and tangents too.**
+  Until this date the composition bend rebuilt normals from faces — a documented deviation that
+  bevelled authored creases (kerb edges, barrier rims) and shipped no `TANGENT` for
+  normal-mapped road materials. The producer now transports the pieces' authored
+  `MeshNormal`/`MeshTangent` through the same bend the positions take, rotating each by the
+  curve frame (normal by the inverse-transpose, tangent by the Jacobian, `w` passed through),
+  and implements the game's `SmoothTopNormal` rule. Face rebuilding survives only for pieces
+  that carry no authored buffer, counted per rip. The frame's orthonormalization is a counted
+  approximation: the game's exact choice lives in a compiled shader.
 - **Indices** — always indexed geometry, `UNSIGNED_INT`, one index accessor per primitive.
 
 ### 6.1 One state, not every state
@@ -821,6 +840,23 @@ producing no file, so **every `assetId` referenced by an instance still resolves
 Per-instance state is not lost — it is on the instance, not the mesh. `attrs.growth`,
 `attrs.treeState` and `attrs.state` say what state each object is actually in, and a consumer
 that cares can scale, swap or tint accordingly.
+
+*(2026-08-09, audit #40 P7 + GAP 6.)* **The states a consumer could not previously draw now
+ship as derived files**, joining the `__base` / `__stack_*` family:
+
+| file | join on |
+|---|---|
+| `meshes/<assetId>__dead.glb`, `__stump.glb` | `attrs.treeState` |
+| `meshes/<assetId>__partial1.glb`, `__partial2.glb`, `__full.glb` | `attrs.fullness` |
+
+Each derived file is a **complete replacement** for `<assetId>.glb`, not an overlay: it already
+contains every unconditional part the prefab also draws. **The base state has no suffix** — a
+healthy adult tree and an empty stockpile *are* `<assetId>.glb`. A file exists only where the
+prefab flags that state, so absence means the game has no such variant either and the base file
+is the right answer. Fullness thresholds follow the game's own steps (`>66` full, `>33`
+partial2, `>0` partial1 on a three-step prefab; the step set is per-prefab). Capped-off prefabs
+declare their derived ids in §10 like stack parts do. Until this date 1,173 dead trees in a
+full city had no mesh to swap to and rendered as healthy adults.
 
 ---
 
@@ -1203,7 +1239,13 @@ this layer shows grass wherever the game shows pavement.
       "color": [r,g,b,a],                              // material _BaseColor, optional
       "uvScale": 0.2,                                  // optional, see below
       "heightOffset": 0.0,                             // optional, metres
-      "texture": "terrain/surfaces/area_concrete_surface_01.png" } }  // optional
+      "texture": "terrain/surfaces/area_concrete_surface_01.png",     // optional
+      "roundness": 0.0, "rendererPriority": 0,         // 2026-08-09, always present
+      "expandAmount": 0.5, "decalLayers": ["Terrain"], //   "
+      "normalMap": "terrain/surfaces/area_concrete_surface_01_n.png",  // optional PBR block
+      "maskMap":   "terrain/surfaces/area_concrete_surface_01_m.png",  //   (2026-08-09)
+      "metallic": 0.0, "smoothness": 0.5,
+      "edgeFadeRange": [0,0], "edgeNormalRange": [0,0], "edgeNoise": [0,0] } }
   ```
 
   The texture is the area material's base map, captured as bound; tiling is world-planar.
@@ -1216,6 +1258,21 @@ this layer shows grass wherever the game shows pavement.
   consumer draping the surface as geometry does not need it, one building a real decal
   projector does. All keys are optional; a consumer falls back `texture` → `color` → its own
   neutral.
+
+  *(2026-08-09, audit #40 P11 — the catalogue used to stop at the diffuse, so pavement and
+  plazas rendered flat-lit with guessed specular and overlapping areas z-fought.)* Four keys
+  are **always** present because the game pushes them for both material versions:
+  `roundness`, `rendererPriority` (**the overlap draw order — without it a consumer has no
+  rule for which of two overlapping areas paints on top**), `expandAmount` (metres, already
+  derived by the producer so a consumer needn't know the game's per-area-type node distance)
+  and `decalLayers` (flag names, the same vocabulary an instance's own decal layers use). The
+  **PBR block** — `normalMap`, `maskMap`, `metallic`, `smoothness`, the `*Opacity` /
+  `*AlphaSource` pair and the `edge*` feathering ranges — is present only where the game has
+  the values: read from the authored override fields on an override-version surface, and read
+  back off the baked material otherwise (which is what covers vanilla pavement). An
+  unauthored map on an override surface is a *cleared* slot in the game too, so its key is
+  simply absent. `lodBias` is deliberately **not** shipped: the game never applies it to
+  rendering, only to a per-triangle distance cull the bundle does not reproduce.
 
   `color`+`texture` come from the surface's baked material when it has one, and otherwise
   from the authored `RenderedArea` override fields — the game's own two-version rule
@@ -1359,7 +1416,12 @@ reason. *(Added 2026-08-06.)*
 
 Warning kinds are owned per pass, and each pass rewrites only its own kinds (so stage re-runs
 cannot erase another stage's declarations): the instance pass owns `prefab` and `instance`, the
-mesh pass `mesh`/`material`/`texture`, the lane pass `lane`. *(2026-08-09:)* two additions from
+mesh pass `mesh`/`material`/`texture`, the lane pass `lane`, and the network pass every kind
+**prefixed `network`** (`networkMesh`, `networkMaterial`, `networkTexture`, `networkConform`).
+The network prefix is load-bearing: a network warning names a cross-section piece that is *not*
+an `assetId` in `meshes/`, so filing it as `mesh` would let the next mesh rip delete it.
+*(2026-08-09 — until this date the network stage wrote no warnings at all; unreadable lane-part
+meshes and no-entry materials reached only the rip report.)* Two further additions from
 the frame-sliced passes and the mesh cap:
 
 - `instance` / `lane` lines carry **`id`** (the would-be record's `id`) instead of `assetId` —
@@ -1601,6 +1663,14 @@ the producer read the wrong entity; the procedural example's `range`/`temperatur
 optional `wear` (0..10; tint = wear/10); manifest `bounds` now encloses the lane layers;
 `ripOptions` gains `meshLimit`, may carry a negative `textureSizeCap`, and describes the run
 rather than finalize-time settings; §9's vector relocation is implemented.
+
+**2026-08-09 (audit #40, gap-close wave 3).** The last additive catch-ups: network `.glb`s
+carry **authored** normals and tangents through the composition bend instead of face-rebuilt
+normals (§6); §5B decal catalogue parts gain optional `decalRole` (`marking`|`wear`), retiring
+the asset-id string heuristic a consumer needed for drape lifts; §6.1 state variants ship as
+`__dead`/`__stump`/`__partial1`/`__partial2`/`__full` derived files; §8b `areaprefabs.json`
+gains the always-present `roundness`/`rendererPriority`/`expandAmount`/`decalLayers` and the
+optional PBR + edge-feathering block; §10 gains the network stage's `network*` warning kinds.
 
 ### 12.2 `schema: 2` (2026-08-09) — clip-area records carry their polygon
 

@@ -25,11 +25,20 @@ namespace Carto.Systems
     /// ported for the mapping, and the shader's evaluation done here — position from the
     /// Bernstein blend, V from the same blend of the arc tables times the piece's measured
     /// V-per-metre density, exactly the quantity the game stores per vertex.
-    /// Known deviations, deliberate and counted where they can fire: wind sway (not shape),
-    /// rebuilt normals (contract §5.1), and the roundabout three-matrix blend weights (0x80
-    /// colour bits — shader-side, still approximated by the nearer pair). The terrain-conforming
-    /// flags (<c>LowerBottomToTerrain</c>/<c>RaiseTopToTerrain</c>) are no longer a deviation:
-    /// they are applied at rip time (§34 raise, §38 clamp — see the conforming section below).
+    /// Known deviations, deliberate and counted where they can fire: wind sway (not shape), the
+    /// roundabout three-matrix blend weights (0x80 colour bits — shader-side, still approximated
+    /// by the nearer pair), and the <i>orthonormalization choice</i> in the shading frame below.
+    /// The terrain-conforming flags (<c>LowerBottomToTerrain</c>/<c>RaiseTopToTerrain</c>) are no
+    /// longer a deviation: they are applied at rip time (§34 raise, §38 clamp — see the
+    /// conforming section below). Neither are normals (audit #40 P6): the piece's authored
+    /// <c>MeshNormal</c>/<c>MeshTangent</c> buffers are read, flipped exactly as
+    /// <c>BatchMeshHelpers</c> flips them (<c>n *= float3.xyz</c>, <c>t *= float3</c>, the
+    /// <c>w</c> term flipping tangent handedness), overridden by <c>SmoothTopNormal</c> — a
+    /// distinct piece flag, <c>0x800</c>: the authored normal of every vertex at the piece's top
+    /// height bound (<c>y &gt;= max − 0.01</c>) is replaced by <c>(0,1,0)</c> before the flip, so
+    /// a kerb's or wall's top row shades flat with the surface beside it — and then rotated into
+    /// the bend by the Jacobian of the very map that placed the vertex. Only pieces that carry no
+    /// normal buffer at all fall back to the face rebuild, and both are counted.
     /// </summary>
     public partial class NetworkRipSystem
     {
@@ -55,6 +64,16 @@ namespace Carto.Systems
             public float3[] Vertices;
             public float2[] Uvs;
             public int[] Indices;
+
+            /// <summary>
+            /// The authored shading frame (<c>MeshNormal</c>/<c>MeshTangent</c>), or <c>null</c>
+            /// when the piece carries no such buffer — the game indexes both unconditionally, so
+            /// a piece without them is an asset the game itself could not draw, and its vertices
+            /// fall back to the face rebuild.
+            /// </summary>
+            public float3[] Normals;
+            public float4[] Tangents;
+
             public int[] RangeStartVertex, RangeVertexCount, RangeStartIndex, RangeIndexCount;
             public string[] RangeMaterial;
         }
@@ -377,6 +396,36 @@ namespace Carto.Systems
                  + (3f * u * t * t * map.z) + (t * t * t * map.w);
         }
 
+        /// <summary>
+        /// The derivative of a cubic bezier — the quadratic through its control-point differences.
+        /// The along-curve column of the shading frame: how far the evaluated point moves per unit
+        /// of the curve parameter, which is the same quantity the position blend is built from.
+        /// </summary>
+        /// <param name="curve">The curve.</param>
+        /// <param name="t">Where along it.</param>
+        /// <returns>The derivative, in metres per unit parameter.</returns>
+        private static float3 Derivative(Bezier4x3 curve, float t)
+        {
+            float u = 1f - t;
+            return 3f * ((u * u * (curve.b - curve.a))
+                       + (2f * u * t * (curve.c - curve.b))
+                       + (t * t * (curve.d - curve.c)));
+        }
+
+        /// <summary>
+        /// Normalize, or fall back where the vector has no length to normalize.
+        /// A degenerate frame column is a real state — a collapsed flare, a pinned column — and a
+        /// NaN there would spread through the whole assembled mesh's shading.
+        /// </summary>
+        /// <param name="value">The vector.</param>
+        /// <param name="fallback">What to return when it is too short to normalize.</param>
+        /// <returns>The unit vector.</returns>
+        private static float3 NormalizeOr(float3 value, float3 fallback)
+        {
+            float length = math.length(value);
+            return (length > 1e-9f) ? (value / length) : fallback;
+        }
+
         // ---- The generator's vertex path, ported and evaluated ------------------------------
 
         /// <summary>
@@ -388,8 +437,7 @@ namespace Carto.Systems
         /// </summary>
         private void BuildNodeSide(Entity composition, EdgeNodeGeometry geometry, float3 center,
                                    string label, Dictionary<Entity, MeshAsset> cache,
-                                   List<float3> vertices, List<float2> uvs, List<int> indices,
-                                   List<MeshPrimitive> primitives, System.Text.StringBuilder report)
+                                   MeshAssembly assembly, System.Text.StringBuilder report)
         {
             // Node compositions are never rotate-shared: `NetCompositionMeshRefSystem.
             // TryFindComposition` only attempts the mirrored match when the Node general flag is
@@ -399,14 +447,12 @@ namespace Carto.Systems
 
             NetCompositionData data = EntityManager.GetComponentData<NetCompositionData>(composition);
             CompositionCurves curves = NodeCurves(geometry, data);
-            BuildGameComposition(composition, curves, center, label, cache,
-                                 vertices, uvs, indices, primitives, report);
+            BuildGameComposition(composition, curves, center, label, cache, assembly, report);
         }
 
         private void BuildGameComposition(Entity composition, in CompositionCurves p,
                                           float3 center, string label, Dictionary<Entity, MeshAsset> cache,
-                                          List<float3> vertices, List<float2> uvs, List<int> indices,
-                                          List<MeshPrimitive> primitives, System.Text.StringBuilder report)
+                                          MeshAssembly assembly, System.Text.StringBuilder report)
         {
             if ((composition == Entity.Null) || !EntityManager.HasComponent<NetCompositionMeshRef>(composition)) return;
             Entity meshEntity = EntityManager.GetComponentData<NetCompositionMeshRef>(composition).m_Mesh;
@@ -465,23 +511,48 @@ namespace Carto.Systems
                 if (backCut) _skipBottomPieces++;
                 bool lowerBottom = (piece.m_PieceFlags & NetPieceFlags.LowerBottomToTerrain) != 0;
                 bool raiseTop = (piece.m_PieceFlags & NetPieceFlags.RaiseTopToTerrain) != 0;
+                bool smoothTop = (piece.m_PieceFlags & NetPieceFlags.SmoothTopNormal) != 0;
                 if (lowerBottom) _lowerBottomPieces++;
                 if (raiseTop) _raiseTopPieces++;
+                if (smoothTop) _smoothTopPieces++;
 
-                // Terrain conforming: classify this piece's vertices against its per-slice
-                // height bounds exactly as `BatchMeshHelpers` does, then apply the vertex
-                // shader's terrain move at rip time. The portal face over every tunnel mouth
-                // is a RaiseTopToTerrain piece — without this it ships as its short authored
-                // strip and the mouth stands open above the arch.
+                // Authored shading frame, or the face rebuild for a piece that carries none.
                 //
-                PieceHeightBounds conformBounds = null;
-                float conformScaleZ = 0f;
-                ConformPieceProbe probe = null;
-                if ((lowerBottom || raiseTop) && EnsureConformTerrain())
-                {
-                    conformBounds = GetPieceHeightBounds(piece.m_Piece, source, piece.m_Size.z);
-                    conformScaleZ = 256f / math.max(piece.m_Size.z, 0.001f);
+                float3[] pieceNormals = source.Normals;
+                float4[] pieceTangents = source.Tangents;
+                bool authored = pieceNormals != null;
+                if (authored) _authoredFramePieces++;
+                else _rebuiltFramePieces++;
 
+                // The per-slice height bounds serve two rules, so they are built for either
+                // (`BatchMeshHelpers` line 682: `flag17 || flag18 || flag19`). Terrain conforming
+                // classifies each vertex against them and applies the vertex shader's terrain move
+                // at rip time — the portal face over every tunnel mouth is a RaiseTopToTerrain
+                // piece, and without it the mouth stands open above the arch. SmoothTopNormal
+                // needs no terrain at all: it only replaces the authored normal at the top bound.
+                //
+                PieceHeightBounds heightBounds = null;
+                float boundsScaleZ = 0f;
+                bool conforming = false;
+                ConformPieceProbe probe = null;
+                if (lowerBottom || raiseTop || smoothTop)
+                {
+                    heightBounds = GetPieceHeightBounds(piece.m_Piece, source, piece.m_Size.z);
+                    boundsScaleZ = 256f / math.max(piece.m_Size.z, 0.001f);
+                }
+
+                if (lowerBottom || raiseTop)
+                {
+                    // N-F2: a heightmap that cannot be captured used to leave the piece silently
+                    // unconformed while the report still claimed it was conformed. Counted here,
+                    // declared in warnings.jsonl and stated honestly in the report.
+                    //
+                    conforming = EnsureConformTerrain();
+                    if (!conforming) _unconformedPieces++;
+                }
+
+                if (conforming)
+                {
                     string probeName = Instance.Name.GetPrefabName(piece.m_Piece);
                     if (!m_ConformProbes.TryGetValue(probeName, out probe))
                     {
@@ -497,10 +568,12 @@ namespace Carto.Systems
                 // The game's flip select — `select(float4(-1,1,-1,1), float4(1,1,1,-1),
                 // bool4(Invert, false, FlipMesh, Invert != FlipMesh))`: authored pieces are
                 // x- and z-negated by default; Invert restores x, FlipMesh restores z. The `w`
-                // term flips tangent handedness, which the rebuilt normals make moot.
+                // term flips tangent handedness, and now that the authored frame is shipped it
+                // is applied as the game applies it (`tangent *= float3`, all four components).
                 //
                 float sx = invert ? 1f : -1f;
                 float sz = flipMesh ? 1f : -1f;
+                float sw = (invert != flipMesh) ? -1f : 1f;
 
                 float3 offset = piece.m_Offset;
                 float2 scale4 = new(1f / data.m_Width, 1f / (piece.m_Size.z * 0.5f));
@@ -543,7 +616,7 @@ namespace Carto.Systems
                     // that survive the cut (its accumulation sits inside `math.all(int7 >= 0)`).
                     //
                     int[] remap = new int[vertexCount];
-                    int baseVertex = vertices.Count;
+                    int baseVertex = assembly.Vertices.Count;
                     int kept = 0;
                     for (int i = 0; i < vertexCount; i++)
                     {
@@ -590,24 +663,52 @@ namespace Carto.Systems
                         if (remap[i] < 0) continue;
 
                         float3 raw = source.Vertices[startVertex + i];
+                        float3 normal = authored ? pieceNormals[startVertex + i] : default;
+                        float4 tangent = (pieceTangents != null)
+                            ? pieceTangents[startVertex + i] : new float4(0f, 0f, 0f, 1f);
+
                         int conform = 0;
-                        if (conformBounds != null)
+                        if (heightBounds != null)
                         {
                             // The game classifies on the AUTHORED vertex, before the flip and
                             // offset.
-                            int slice = math.clamp((int)math.round(raw.z * conformScaleZ) + 128, 0, 256);
-                            if (lowerBottom && (raw.y <= conformBounds.Min[slice] + 0.01f)) conform = 1;
-                            if (raiseTop && (raw.y >= conformBounds.Max[slice] - 0.01f)) conform = 2;
+                            int slice = math.clamp((int)math.round(raw.z * boundsScaleZ) + 128, 0, 256);
+                            if (conforming && lowerBottom && (raw.y <= heightBounds.Min[slice] + 0.01f)) conform = 1;
+                            if (conforming && raiseTop && (raw.y >= heightBounds.Max[slice] - 0.01f)) conform = 2;
 
-                            probe.Vertices++;
-                            if (conform == 1) probe.Class1++;
-                            else if (conform == 2) probe.Class2++;
+                            // SmoothTopNormal: the authored normal of the top row is discarded for
+                            // straight up, so a kerb's or a wall's cap shades with the surface
+                            // beside it instead of keeping the crease the tile was authored with.
+                            // Same bound and same epsilon as the RaiseTop test, but a separate
+                            // flag and no terrain involved.
+                            //
+                            if (smoothTop && authored && (raw.y >= heightBounds.Max[slice] - 0.01f))
+                            {
+                                normal = new float3(0f, 1f, 0f);
+                                _smoothTopVerts++;
+                            }
+
+                            if (probe != null)
+                            {
+                                probe.Vertices++;
+                                if (conform == 1) probe.Class1++;
+                                else if (conform == 2) probe.Class2++;
+                            }
                         }
 
                         float3 vertex = raw * new float3(sx, 1f, sz) + offset;
+                        normal *= new float3(sx, 1f, sz);
+                        tangent *= new float4(sx, 1f, sz, sw);
                         float2 uv = source.Uvs[startVertex + i];
                         int2 pair;
                         float xParam, zParam;
+
+                        // How much of the piece's own across/along metre each parameter is worth —
+                        // the diagonal of the map's Jacobian, kept per branch because each half
+                        // frame has its own width. `mapScale.x == 0` marks a pinned column, whose
+                        // across direction the map collapses.
+                        //
+                        float2 mapScale;
                         bool halved = false, leftHalf = false;
 
                         if (isNode)
@@ -617,6 +718,7 @@ namespace Carto.Systems
                                 pair = new int2(6, 7);
                                 xParam = (vertex.x * scale4.x) + bias7.x;
                                 zParam = (vertex.z * scale4.y) + bias7.y;
+                                mapScale = scale4;
                             }
                             else if (median)
                             {
@@ -645,6 +747,7 @@ namespace Carto.Systems
                                                       : new int2(4, 4);
                                     xParam = 0f;
                                     zParam = (vertex.z * scale4.y) + bias7.y;
+                                    mapScale = new float2(0f, scale4.y);
                                 }
                                 else if (dx > 0f)
                                 {
@@ -653,6 +756,7 @@ namespace Carto.Systems
                                     xParam = (vertex.x * scale6.x) + bias9.x;
                                     zParam = (vertex.z * scale6.y) + bias9.y;
                                     if (roundabout && (vertex.z >= 0f)) zParam -= 1f;
+                                    mapScale = scale6;
                                     halved = true; leftHalf = false;
                                 }
                                 else
@@ -662,6 +766,7 @@ namespace Carto.Systems
                                     xParam = (vertex.x * scale5.x) + bias8.x;
                                     zParam = (vertex.z * scale5.y) + bias8.y;
                                     if (roundabout && (vertex.z >= 0f)) zParam -= 1f;
+                                    mapScale = scale5;
                                     halved = true; leftHalf = true;
                                 }
                             }
@@ -672,6 +777,7 @@ namespace Carto.Systems
                                 xParam = (vertex.x * scale6.x) + bias9.x;
                                 zParam = (vertex.z * scale6.y) + bias9.y;
                                 if (roundabout && (vertex.z >= 0f)) zParam -= 1f;
+                                mapScale = scale6;
                                 halved = true; leftHalf = false;
                             }
                             else
@@ -681,6 +787,7 @@ namespace Carto.Systems
                                 xParam = (vertex.x * scale5.x) + bias8.x;
                                 zParam = (vertex.z * scale5.y) + bias8.y;
                                 if (roundabout && (vertex.z >= 0f)) zParam -= 1f;
+                                mapScale = scale5;
                                 halved = true; leftHalf = true;
                             }
                         }
@@ -690,6 +797,7 @@ namespace Carto.Systems
                             xParam = (vertex.x * scale4.x) + bias7.x;
                             zParam = (vertex.z * scale4.y) + bias7.y;
                             if (vertex.z >= 0f) zParam -= 1f;
+                            mapScale = scale4;
                         }
 
                         xParam = math.saturate(xParam);
@@ -734,18 +842,79 @@ namespace Carto.Systems
                                 probe.Raised++;
                             }
                         }
-                        vertices.Add(world - center);
+                        assembly.Vertices.Add(world - center);
+
+                        // The shading frame, rotated by the very map that placed the vertex.
+                        // Position is `lerp(A(z), B(z), x) + (0, y, 0)`, so the Jacobian in the
+                        // piece's own metres is [across, up, along]: across = (B − A) per across-
+                        // metre, up = (0,1,0), along = the two curves' derivatives blended at the
+                        // same x, per along-metre. The normal takes the inverse transpose — the
+                        // cofactor, which is that matrix times a determinant a normalize removes —
+                        // and the tangent takes the plain Jacobian with `w` passed through, which
+                        // is what keeps a stretched kerb's bevel at its authored angle where a
+                        // rotation-only frame would shear it. APPROXIMATION (counted): the game's
+                        // vertex shader is handed only these curves, so it can build no other
+                        // frame, but whether it orthonormalizes before rotating is shader-side and
+                        // unknowable from the C# side; the two coincide wherever the frame is
+                        // orthogonal, which is everywhere the road is not both flared and banked.
+                        //
+                        if (authored)
+                        {
+                            float3 across = (b - a) * mapScale.x;
+                            float3 up = new(0f, 1f, 0f);
+                            float3 along = math.lerp(Derivative(p.Curves[pair.x], zParam),
+                                                     Derivative(p.Curves[pair.y], zParam), xParam) * mapScale.y;
+
+                            float3 rotated = (normal.x * math.cross(up, along))
+                                           + (normal.y * math.cross(along, across))
+                                           + (normal.z * math.cross(across, up));
+                            float3 rotatedTangent = (tangent.x * across) + (tangent.y * up) + (tangent.z * along);
+
+                            // A pinned column (the median centre, and any zero-width piece) maps
+                            // its whole across direction onto one curve, so the frame has no
+                            // across column to take a cofactor of. Fall back to the rotation the
+                            // remaining two columns determine, and count it.
+                            //
+                            if (math.lengthsq(rotated) < 1e-12f)
+                            {
+                                float3 alongDirection = NormalizeOr(along, new float3(0f, 0f, 1f));
+                                float3 acrossDirection = NormalizeOr(math.cross(up, alongDirection), new float3(1f, 0f, 0f));
+                                rotated = (normal.x * acrossDirection) + (normal.y * up) + (normal.z * alongDirection);
+                                rotatedTangent = (tangent.x * acrossDirection) + (tangent.y * up) + (tangent.z * alongDirection);
+                                _pinnedFrameVerts++;
+                            }
+
+                            float3 shaded = NormalizeOr(rotated, new float3(0f, 1f, 0f));
+                            assembly.Normals.Add(shaded);
+
+                            // A piece with normals but no tangent buffer is normal-mapped by
+                            // nothing, so any perpendicular serves — the same one a consumer would
+                            // generate for itself, chosen here so the attribute is never a zero
+                            // vector a renderer would divide by.
+                            //
+                            assembly.Tangents.Add((pieceTangents != null)
+                                ? new float4(NormalizeOr(rotatedTangent, new float3(1f, 0f, 0f)), tangent.w)
+                                : AnyTangent(shaded));
+                        }
+                        else
+                        {
+                            // No authored buffer: leave the zero the finisher rebuilds from faces.
+                            //
+                            assembly.Normals.Add(default);
+                            assembly.Tangents.Add(default);
+                            assembly.Rebuilt++;
+                        }
 
                         float metres = math.lerp(EvalMap(p.Maps[pair.x], zParam),
                                                  EvalMap(p.Maps[pair.y], zParam), xParam);
                         float v2 = (tiledV && (uv.y >= 0f)) ? (density * metres) : (uv.y - rebase);
-                        uvs.Add(new float2(uv.x, v2));
+                        assembly.Uvs.Add(new float2(uv.x, v2));
                     }
 
                     // Triangles: the game's reversed read under Invert XOR FlipMesh, then only
                     // those whose three corners survived the cut.
                     //
-                    int primitiveStart = indices.Count;
+                    int primitiveStart = assembly.Indices.Count;
                     for (int t = 0; t < indexCount; t += 3)
                     {
                         int ia = source.Indices[startIndex + t + order.x] - startVertex;
@@ -774,20 +943,20 @@ namespace Carto.Systems
                             continue;
                         }
 
-                        indices.Add(remap[ia]);
-                        indices.Add(remap[ib]);
-                        indices.Add(remap[ic]);
+                        assembly.Indices.Add(remap[ia]);
+                        assembly.Indices.Add(remap[ib]);
+                        assembly.Indices.Add(remap[ic]);
                     }
 
-                    if (indices.Count > primitiveStart)
+                    if (assembly.Indices.Count > primitiveStart)
                     {
-                        primitives.Add(new MeshPrimitive
+                        assembly.Primitives.Add(new MeshPrimitive
                         {
                             StartIndex = primitiveStart,
-                            IndexCount = indices.Count - primitiveStart,
+                            IndexCount = assembly.Indices.Count - primitiveStart,
                             StartVertex = baseVertex,
                             VertexCount = kept,
-                            MaterialIndex = primitives.Count,
+                            MaterialIndex = assembly.Primitives.Count,
                             MaterialId = source.RangeMaterial[r]
                         });
                     }
@@ -814,6 +983,10 @@ namespace Carto.Systems
                 DynamicBuffer<MeshMaterial> materialBuffer = EntityManager.GetBuffer<MeshMaterial>(piece, true);
                 DynamicBuffer<MeshUV0> uvBuffer = EntityManager.HasBuffer<MeshUV0>(piece)
                     ? EntityManager.GetBuffer<MeshUV0>(piece, true) : default;
+                DynamicBuffer<MeshNormal> normalBuffer = EntityManager.HasBuffer<MeshNormal>(piece)
+                    ? EntityManager.GetBuffer<MeshNormal>(piece, true) : default;
+                DynamicBuffer<MeshTangent> tangentBuffer = EntityManager.HasBuffer<MeshTangent>(piece)
+                    ? EntityManager.GetBuffer<MeshTangent>(piece, true) : default;
 
                 if ((vertexBuffer.Length > 0) && (indexBuffer.Length > 0) && (materialBuffer.Length > 0))
                 {
@@ -833,6 +1006,22 @@ namespace Carto.Systems
                     bool hasUv = uvBuffer.IsCreated && (uvBuffer.Length == vertexBuffer.Length);
                     for (int i = 0; i < vertexBuffer.Length; i++) result.Uvs[i] = hasUv ? uvBuffer[i].m_Uv : default;
                     for (int i = 0; i < indexBuffer.Length; i++) result.Indices[i] = indexBuffer[i].m_Index;
+
+                    // The authored shading frame, read only when it covers every vertex: a short
+                    // buffer would silently shade part of the piece from another vertex's normal,
+                    // which is worse than the face rebuild it would replace.
+                    //
+                    if (normalBuffer.IsCreated && (normalBuffer.Length == vertexBuffer.Length))
+                    {
+                        result.Normals = new float3[vertexBuffer.Length];
+                        for (int i = 0; i < vertexBuffer.Length; i++) result.Normals[i] = normalBuffer[i].m_Normal;
+                    }
+
+                    if (tangentBuffer.IsCreated && (tangentBuffer.Length == vertexBuffer.Length))
+                    {
+                        result.Tangents = new float4[vertexBuffer.Length];
+                        for (int i = 0; i < vertexBuffer.Length; i++) result.Tangents[i] = tangentBuffer[i].m_Tangent;
+                    }
 
                     // The bundle material ids come from the same cached read the previous
                     // assembly used — ordinal k of the MeshMaterial buffer is ordinal k of the

@@ -791,12 +791,19 @@ namespace Carto.Systems
                 report.AppendLine($"Could not write areaprefabs.json: {ex.Message}");
             }
 
-            int unresolvedPrefabs = 0;
+            int unresolvedPrefabs = 0, normalMaps = 0, maskMaps = 0, prioritised = 0;
             foreach (object value in catalogue.Values)
             {
-                if ((value is Dictionary<string, object> catalogued) && catalogued.ContainsKey("unresolved"))
-                    unresolvedPrefabs++;
+                if (!(value is Dictionary<string, object> catalogued)) continue;
+                if (catalogued.ContainsKey("unresolved")) unresolvedPrefabs++;
+                if (catalogued.ContainsKey("normalMap")) normalMaps++;
+                if (catalogued.ContainsKey("maskMap")) maskMaps++;
+                if (catalogued.TryGetValue("rendererPriority", out object priority)
+                    && (priority is int order) && (order != 0)) prioritised++;
             }
+
+            report.AppendLine($"Area materials: {normalMaps} normal map(s), {maskMaps} mask map(s), "
+                            + $"{prioritised} prefab(s) with a non-zero rendererPriority (overlap draw order).");
 
             report.AppendLine($"Surface areas: {written} area(s) over {catalogue.Count} prefab(s); "
                             + $"{_pendingAreaTextures.Count} texture(s) queued for the writer task"
@@ -812,8 +819,18 @@ namespace Carto.Systems
         }
 
         /// <summary>
-        /// Add one area prefab to the catalogue: its name, its material's base colour, and its
-        /// base texture captured into <c>terrain/surfaces/</c> when it has one.
+        /// Add one area prefab to the catalogue: its name, everything <c>AreaBatchSystem</c> pushes
+        /// onto the batch material for it, and each authored map captured into
+        /// <c>terrain/surfaces/</c>.
+        /// <b>Only what the game actually pushes is written.</b> The scalar PBR and edge parameters
+        /// live on <c>RenderedArea</c> but reach the shader only under
+        /// <c>Version.OverrideMaterial</c> (<c>AreaBatchSystem</c> 2103-2113); for an
+        /// <c>Original</c> prefab the baked material already carries them, so they are read back
+        /// off it instead. <c>m_LodBias</c> is deliberately absent: it lands on
+        /// <c>AreaGeometryData</c>, not on the <c>RenderedAreaData.m_LodBias</c> field that looks
+        /// like its home and is never assigned, and all it does there is bias the per-triangle
+        /// <c>m_MinLod</c> distance cull — the bundle ships every triangle, so it changes nothing a
+        /// consumer draws.
         /// </summary>
         /// <param name="prefab">The area prefab entity.</param>
         /// <param name="terrainDirectory">The absolute <c>terrain/</c> directory.</param>
@@ -893,22 +910,56 @@ namespace Carto.Systems
                     entry["uvScale"] = Math.Round((double)rendered.m_UVScale, 5);
                     if (EntityManager.HasComponent<RenderedAreaData>(prefab))
                     {
-                        entry["heightOffset"] = Math.Round(
-                            (double)EntityManager.GetComponentData<RenderedAreaData>(prefab).m_HeightOffset, 4);
+                        RenderedAreaData data = EntityManager.GetComponentData<RenderedAreaData>(prefab);
+                        entry["heightOffset"] = Math.Round((double)data.m_HeightOffset, 4);
+
+                        // The game's own derived edge-rounding radius in metres:
+                        // `clamp(m_Roundness, 0.01, 0.99) * GetMinNodeDistance(type) * 0.5`, set
+                        // beside `m_HeightOffset` in the same batch build. The shader gets twice
+                        // it as `colossal_AreaParameters.x`. Shipping the derived metres saves a
+                        // consumer having to know the per-area-type node distance.
+                        //
+                        entry["expandAmount"] = Math.Round((double)data.m_ExpandAmount, 4);
+                    }
+
+                    // Pushed onto every area batch whatever `m_Version` says
+                    // (`AreaBatchSystem` ~2088-2093): the authored edge roundness the radius above
+                    // derives from, the mask deciding which decal layers project onto this
+                    // surface, and the draw-order tiebreak — without which a consumer z-fights
+                    // every overlap of two painted areas.
+                    //
+                    // The mask ships as flag names rather than as the raw bits, the way
+                    // `instances.jsonl` already ships a decal's own `decalLayers` — one vocabulary
+                    // for the same concept across the bundle.
+                    //
+                    entry["roundness"] = Math.Round((double)rendered.m_Roundness, 4);
+                    entry["rendererPriority"] = rendered.m_RendererPriority;
+
+                    string layers = rendered.m_DecalLayerMask.ToString();
+                    if (!string.IsNullOrEmpty(layers) && !char.IsDigit(layers[0]))
+                    {
+                        List<string> names = new();
+                        foreach (string layer in layers.Split(','))
+                        {
+                            string trimmed = layer.Trim();
+                            if (trimmed.Length > 0) names.Add(trimmed);
+                        }
+
+                        if (names.Count > 0) entry["decalLayers"] = names.ToArray();
                     }
 
                     // The PNG encode is the expensive half; the capture (GPU readback) must stay
                     // on the main thread, so the pixels are queued and the writer task encodes.
                     //
-                    void WriteAreaTexture(PendingTexture captured)
+                    void WriteAreaTexture(PendingTexture captured, string field, string suffix)
                     {
                         if (captured?.Pixels == null) return;
-                        string fileName = $"area_{key}.png";
+                        string fileName = $"area_{key}{suffix}.png";
                         string surfacesDirectory = IOUtils.CombinePath(terrainDirectory, "surfaces");
                         if (!Directory.Exists(surfacesDirectory)) Directory.CreateDirectory(surfacesDirectory);
                         _pendingAreaTextures.Add(new KeyValuePair<string, PendingTexture>(
                             IOUtils.CombinePath(surfacesDirectory, fileName), captured));
-                        entry["texture"] = $"terrain/surfaces/{fileName}";
+                        entry[field] = $"terrain/surfaces/{fileName}";
                     }
 
                     // The branch keys on `m_Version`, as the game's batch build effectively
@@ -942,7 +993,37 @@ namespace Carto.Systems
                             texture = material.GetTexture("_BaseColorMap");
 
                         if (texture != null)
-                            WriteAreaTexture(MaterialRipSystem.Capture(texture, key, name, 1024));
+                            WriteAreaTexture(MaterialRipSystem.Capture(texture, key, name, 1024), "texture", "");
+
+                        // The rest of the surface's PBR, which the batch build never touches for
+                        // an `Original` prefab precisely because the baked material already
+                        // carries it: the clone inherits `_NormalMap`/`_MaskMap` and the four
+                        // scalar weights, and the shader reads them at draw. Only what the
+                        // material actually declares is shipped — `HasProperty` is the authored
+                        // test here, the way `m_Version` is in the override branch below.
+                        //
+                        WriteMaterialTexture("_NormalMap", "normalMap", "_n");
+                        WriteMaterialTexture("_MaskMap", "maskMap", "_m");
+                        WriteMaterialFloat("_Metallic", "metallic");
+                        WriteMaterialFloat("_Smoothness", "smoothness");
+                        WriteMaterialFloat("_NormalOpacity", "normalOpacity");
+                        WriteMaterialFloat("_MetallicOpacity", "metallicOpacity");
+                        WriteMaterialFloat("_NormalAlphaSource", "normalAlphaSource");
+                        WriteMaterialFloat("_MetallicAlphaSource", "metallicAlphaSource");
+
+                        void WriteMaterialFloat(string property, string field)
+                        {
+                            if (material.HasProperty(property))
+                                entry[field] = Math.Round((double)material.GetFloat(property), 4);
+                        }
+
+                        void WriteMaterialTexture(string property, string field, string suffix)
+                        {
+                            if (!material.HasProperty(property)) return;
+                            Texture map = material.GetTexture(property);
+                            if (map != null)
+                                WriteAreaTexture(MaterialRipSystem.Capture(map, $"{key}{suffix}", name, 1024), field, suffix);
+                        }
                     }
                     else
                     {
@@ -961,21 +1042,78 @@ namespace Carto.Systems
                             Math.Round((double)color.b, 4), Math.Round((double)color.a, 4)
                         };
 
+                        // The scalar half of the override push, all of it unconditional inside
+                        // this branch (`AreaBatchSystem` 2103-2113) and all of it read by the
+                        // area shader. The two opacities and the two alpha sources come with the
+                        // maps rather than after them: they are what decides how much of the
+                        // normal map bends the surface and which channel of the mask drives
+                        // metallic, so a consumer given `normalMap` without them is guessing.
+                        //
+                        entry["metallic"] = Math.Round((double)rendered.m_Metallic, 4);
+                        entry["smoothness"] = Math.Round((double)rendered.m_Smoothness, 4);
+                        entry["normalOpacity"] = Math.Round((double)rendered.m_NormalOpacity, 4);
+                        entry["metallicOpacity"] = Math.Round((double)rendered.m_MetallicOpacity, 4);
+                        entry["normalAlphaSource"] = Math.Round((double)rendered.m_NormalAlphaSource, 4);
+                        entry["metallicAlphaSource"] = Math.Round((double)rendered.m_MetallicAlphaSource, 4);
+
+                        // How the paint meets its own boundary: the fade and normal-bend ramps
+                        // across the expanded edge band, the noise breaking that boundary up, and
+                        // the normal strength at it. Without them a consumer draws a hard-edged
+                        // polygon where the game draws a soft, ragged one.
+                        //
+                        entry["edgeNormal"] = Math.Round((double)rendered.m_EdgeNormal, 4);
+                        entry["edgeFadeRange"] = Round2(rendered.m_EdgeFadeRange);
+                        entry["edgeNormalRange"] = Round2(rendered.m_EdgeNormalRange);
+                        entry["edgeNoise"] = Round2(rendered.m_EdgeNoise);
+
                         TextureAsset baseColorMap = null;
                         if (rendered.m_BaseColorMap != null) baseColorMap = rendered.m_BaseColorMap;
+
+                        TextureAsset normalMap = null;
+                        if (rendered.m_NormalMap != null) normalMap = rendered.m_NormalMap;
+
+                        TextureAsset maskMap = null;
+                        if (rendered.m_MaskMap != null) maskMap = rendered.m_MaskMap;
+
+                        // `Initialize` runs for all three maps or for none, so an authored normal
+                        // or mask map ships here on exactly the same gate as the base colour —
+                        // and an unauthored one is a CLEARED slot, not a fallback, so writing no
+                        // field for it is game-true.
+                        //
+                        if (normalMap != null)
+                            WriteAreaTexture(MaterialRipSystem.ReadBack(normalMap, $"{key}_n", 1024), "normalMap", "_n");
+                        if (maskMap != null)
+                            WriteAreaTexture(MaterialRipSystem.ReadBack(maskMap, $"{key}_m", 1024), "maskMap", "_m");
+
                         if (baseColorMap != null)
                         {
-                            WriteAreaTexture(MaterialRipSystem.ReadBack(baseColorMap, key, 1024));
+                            WriteAreaTexture(MaterialRipSystem.ReadBack(baseColorMap, key, 1024), "texture", "");
                         }
-                        else if ((material != null)
-                                 && (rendered.m_NormalMap == null) && (rendered.m_MaskMap == null))
+                        else if ((material != null) && (normalMap == null) && (maskMap == null))
                         {
                             Texture texture = material.mainTexture;
                             if ((texture == null) && material.HasProperty("_BaseColorMap"))
                                 texture = material.GetTexture("_BaseColorMap");
 
                             if (texture != null)
-                                WriteAreaTexture(MaterialRipSystem.Capture(texture, key, name, 1024));
+                                WriteAreaTexture(MaterialRipSystem.Capture(texture, key, name, 1024), "texture", "");
+
+                            // None of the three overrides authored, so the base material keeps its
+                            // own maps too — the same inheritance the base colour above relies on.
+                            //
+                            if (material.HasProperty("_NormalMap"))
+                            {
+                                Texture map = material.GetTexture("_NormalMap");
+                                if (map != null)
+                                    WriteAreaTexture(MaterialRipSystem.Capture(map, $"{key}_n", name, 1024), "normalMap", "_n");
+                            }
+
+                            if (material.HasProperty("_MaskMap"))
+                            {
+                                Texture map = material.GetTexture("_MaskMap");
+                                if (map != null)
+                                    WriteAreaTexture(MaterialRipSystem.Capture(map, $"{key}_m", name, 1024), "maskMap", "_m");
+                            }
                         }
                     }
                 }
@@ -987,6 +1125,16 @@ namespace Carto.Systems
 
             return key;
         }
+
+        /// <summary>
+        /// One of the area shader's <c>float2</c> edge parameters, rounded for the catalogue.
+        /// The game widens each to a <c>float4</c> with two zeroes on the way to the shader; the
+        /// two authored components are the whole of it.
+        /// </summary>
+        /// <param name="value">The authored pair.</param>
+        /// <returns>The rounded pair.</returns>
+        private static double[] Round2(float2 value)
+            => new[] { Math.Round((double)value.x, 4), Math.Round((double)value.y, 4) };
 
         /// <summary>
         /// Read the theme's ground textures off the live global shader bindings and write them

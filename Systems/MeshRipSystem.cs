@@ -354,6 +354,20 @@ namespace Carto.Systems
         public int StackRestParts { get; private set; }
 
         /// <summary>
+        /// How many derived tree-state files (<c>__dead</c>, <c>__stump</c>) were written.
+        /// A tree prefab authors its dead and stump silhouettes as extra <c>SubMesh</c> entries the
+        /// renderer swaps in from <c>Tree.m_State</c>; without them a bundle draws every dead tree
+        /// in full leaf.
+        /// </summary>
+        public int TreeStateVariants { get; private set; }
+
+        /// <summary>
+        /// How many derived stockpile-fullness files (<c>__partial1</c>, <c>__partial2</c>,
+        /// <c>__full</c>) were written. The empty state is the base file, so it has no suffix.
+        /// </summary>
+        public int FullnessVariants { get; private set; }
+
+        /// <summary>
         /// Where a partial-read declaration goes when no mesh rip is in flight.
         /// The network rip reads lane part meshes through <see cref="ReadMesh"/>; a mesh that
         /// comes up short there was declared only when a <i>mesh</i> run existed — a full-city
@@ -383,6 +397,8 @@ namespace Carto.Systems
             PipelinePartsSkipped = 0;
             PlaceholderParts = 0;
             StackRestParts = 0;
+            TreeStateVariants = 0;
+            FullnessVariants = 0;
 
             RipProgress.Report(RipProgress.Phase.Scan);
 
@@ -554,7 +570,9 @@ namespace Carto.Systems
                 // (§10: a missing mesh declared is a warning; undeclared, a validator error).
                 // A capped stacked prefab's instances reference its per-role part files rather
                 // than the whole-prefab file (the derivation ExpandStack mirrors), so those ids
-                // are declared alongside it.
+                // are declared alongside it — as are the alternative-state files an uncapped rip
+                // would have derived, so a consumer looking for `__dead` on a dead tree finds a
+                // declared gap rather than a silent one.
                 //
                 string reason = $"skipped by the mesh cap ({maxPrefabs} most-used prefabs); instances kept with placement only";
                 for (int i = maxPrefabs; i < items.Count; i++)
@@ -562,23 +580,33 @@ namespace Carto.Systems
                     WorkItem item = items[i];
                     skippedAssets.Add(new RipWarning("mesh", item.AssetId, reason));
 
-                    if (EntityManager.HasComponent<StackData>(item.PrefabEntity)
-                        && EntityManager.HasBuffer<SubMesh>(item.PrefabEntity))
+                    if (!EntityManager.HasBuffer<SubMesh>(item.PrefabEntity)) continue;
+
+                    DynamicBuffer<SubMesh> buffer = EntityManager.GetBuffer<SubMesh>(item.PrefabEntity, true);
+                    SubMesh[] subMeshes = new SubMesh[buffer.Length];
+                    for (int j = 0; j < buffer.Length; j++) subMeshes[j] = buffer[j];
+
+                    if (EntityManager.HasComponent<StackData>(item.PrefabEntity))
                     {
-                        DynamicBuffer<SubMesh> buffer = EntityManager.GetBuffer<SubMesh>(item.PrefabEntity, true);
                         HashSet<StackRole> roles = new();
                         bool rest = false;
 
-                        for (int j = 0; j < buffer.Length; j++)
+                        for (int j = 0; j < subMeshes.Length; j++)
                         {
-                            StackRole? role = PrefabMesh.RoleOf(buffer[j].m_Flags);
+                            StackRole? role = PrefabMesh.RoleOf(subMeshes[j].m_Flags);
                             if (role.HasValue) roles.Add(role.Value);
-                            else if (ExportsSubMesh(buffer[j].m_Flags)) rest = true;
+                            else if (ExportsSubMesh(subMeshes[j].m_Flags)) rest = true;
                         }
 
                         foreach (StackRole role in roles)
                             skippedAssets.Add(new RipWarning("mesh", PrefabMesh.StackPartId(item.AssetId, role), reason));
                         if (rest) skippedAssets.Add(new RipWarning("mesh", PrefabMesh.StackRestId(item.AssetId), reason));
+                    }
+
+                    foreach (StateVariant variant in StateVariants)
+                    {
+                        if (Authors(subMeshes, variant))
+                            skippedAssets.Add(new RipWarning("mesh", item.AssetId + variant.Suffix, reason));
                     }
                 }
 
@@ -646,7 +674,7 @@ namespace Carto.Systems
         {
             try
             {
-                PrefabMesh prefab = BuildPrefabMesh(item, out string skipReason, out SkirtWork skirt);
+                PrefabMesh prefab = BuildPrefabMesh(item, out string skipReason, out SkirtWork skirt, out List<PrefabMesh> variants);
 
                 if (prefab == null)
                 {
@@ -664,6 +692,13 @@ namespace Carto.Systems
                 // encodes them before the band's .glb needs their names.
                 //
                 if (skirt != null) Enqueue(run, new RipItem { Skirt = skirt });
+
+                // The alternative-state files a prefab authors — a dead tree, a stump, a part-full
+                // stockpile. Each is a whole replacement for the prefab's own file, chosen by the
+                // consumer from `attrs.treeState` / `attrs.fullness`, and exists only where the
+                // prefab flags the state, so absence means "the game has no such variant either".
+                //
+                foreach (PrefabMesh variant in variants) Enqueue(run, new RipItem { Prefab = variant });
 
                 // A stacked prefab also ships one file per stack role, so that the instance pass
                 // can place a foot once, a repeating section as many times as that instance needs,
@@ -892,11 +927,14 @@ namespace Carto.Systems
         /// </summary>
         /// <param name="item">The prefab to assemble.</param>
         /// <param name="skipReason">Why nothing came out, when the result is <c>null</c>.</param>
+        /// <param name="skirt">The foundation skirt to generate behind it, or <c>null</c>.</param>
+        /// <param name="variants">The alternative-state files to write alongside it; never <c>null</c>.</param>
         /// <returns>The assembled prefab, or <c>null</c>.</returns>
-        private PrefabMesh BuildPrefabMesh(WorkItem item, out string skipReason, out SkirtWork skirt)
+        private PrefabMesh BuildPrefabMesh(WorkItem item, out string skipReason, out SkirtWork skirt, out List<PrefabMesh> variants)
         {
             skipReason = null;
             skirt = null;
+            variants = new List<PrefabMesh>();
 
             if (!EntityManager.HasBuffer<SubMesh>(item.PrefabEntity))
             {
@@ -919,9 +957,78 @@ namespace Carto.Systems
 
             List<int> selected = SelectSubMeshes(subMeshes);
 
+            PrefabMesh prefab = AssembleParts(item, subMeshes, selected, item.AssetId, out skirt);
+
+            if (prefab == null)
+            {
+                skipReason = $"none of {subMeshes.Length} sub-mesh(es) yielded geometry";
+                return null;
+            }
+
+            BuildStateVariants(item, subMeshes, variants);
+            return prefab;
+        }
+
+        /// <summary>
+        /// Write each alternative state the prefab authors as its own derived file.
+        /// Only states with a sub-mesh entry flagged for them are built, so an ordinary prop adds
+        /// nothing; a tree adds <c>__dead</c> and <c>__stump</c>, a stockpile its fullness steps.
+        /// A derived file has no skirt of its own — the base band is a property of the prefab's
+        /// footprint, not of which silhouette is standing on it.
+        /// </summary>
+        /// <param name="item">The prefab being ripped.</param>
+        /// <param name="subMeshes">Its sub-mesh entries.</param>
+        /// <param name="variants">Receives the assembled variants.</param>
+        private void BuildStateVariants(WorkItem item, SubMesh[] subMeshes, List<PrefabMesh> variants)
+        {
+            foreach (StateVariant variant in StateVariants)
+            {
+                if (!Authors(subMeshes, variant)) continue;
+
+                List<int> selected = SelectSubMeshes(subMeshes, variant.State, false);
+                if (selected.Count == 0) continue;
+
+                PrefabMesh mesh = AssembleParts(item, subMeshes, selected, item.AssetId + variant.Suffix, out SkirtWork _);
+                if (mesh == null) continue;
+
+                variants.Add(mesh);
+                if (variant.Tree) TreeStateVariants++; else FullnessVariants++;
+            }
+        }
+
+        /// <summary>
+        /// Whether a prefab authors a given alternative state at all.
+        /// </summary>
+        /// <param name="subMeshes">The prefab's sub-mesh entries.</param>
+        /// <param name="variant">The state to look for.</param>
+        /// <returns>Whether any entry is flagged for it.</returns>
+        private static bool Authors(SubMesh[] subMeshes, StateVariant variant)
+        {
+            for (int i = 0; i < subMeshes.Length; i++)
+            {
+                if (((subMeshes[i].m_Flags & variant.Required) != 0)
+                    && ((subMeshes[i].m_Flags & SubMeshFlags.OutlineOnly) == 0)) return true;
+            }
+
+            return false;
+        }
+
+        /// <summary>
+        /// Assemble one chosen set of sub-mesh entries into a <see cref="PrefabMesh"/>.
+        /// </summary>
+        /// <param name="item">The prefab being ripped.</param>
+        /// <param name="subMeshes">Its sub-mesh entries.</param>
+        /// <param name="selected">The entries to assemble.</param>
+        /// <param name="assetId">The id the assembled file takes.</param>
+        /// <param name="skirt">The foundation skirt gathered along the way, or <c>null</c>.</param>
+        /// <returns>The assembled mesh, or <c>null</c> if nothing yielded geometry.</returns>
+        private PrefabMesh AssembleParts(WorkItem item, SubMesh[] subMeshes, List<int> selected, string assetId, out SkirtWork skirt)
+        {
+            skirt = null;
+
             PrefabMesh prefab = new()
             {
-                AssetId = item.AssetId,
+                AssetId = assetId,
                 SourceName = item.SourceName,
                 InstanceCount = item.InstanceCount,
                 SkippedVariants = subMeshes.Length - selected.Count
@@ -1006,13 +1113,7 @@ namespace Carto.Systems
                 }
             }
 
-            if (prefab.Parts.Count == 0)
-            {
-                skipReason = $"none of {subMeshes.Length} sub-mesh(es) yielded geometry";
-                return null;
-            }
-
-            return prefab;
+            return (prefab.Parts.Count > 0) ? prefab : null;
         }
 
         /// <summary>
@@ -1075,8 +1176,10 @@ namespace Carto.Systems
         /// building and its roof units) and <i>alternatives</i> the game picks between at draw time
         /// (a sapling, an adult tree, a dead tree and a stump are four entries on one tree prefab).
         /// Exporting all of them would stack every alternative into the same file. One state is
-        /// therefore fixed and documented: a healthy adult, unloaded, undamaged, forward-facing.
-        /// Traffic side is not a choice — it is read from the city.
+        /// therefore fixed and documented for the prefab's own file: a healthy adult, unloaded,
+        /// undamaged, forward-facing. Traffic side is not a choice — it is read from the city.
+        /// The alternatives an instance can actually be in — see <see cref="StateVariants"/> — get
+        /// a derived file each rather than being lost.
         /// </summary>
         public static SubMeshFlags DefaultState => SubMeshFlags.RequireSafe | SubMeshFlags.RequireAdult
             | SubMeshFlags.RequireEmpty | SubMeshFlags.RequireClear | SubMeshFlags.RequireForward
@@ -1090,15 +1193,79 @@ namespace Carto.Systems
         /// </summary>
         /// <param name="flags">The entry's flags.</param>
         /// <returns>Whether the entry is exported.</returns>
-        public static bool ExportsSubMesh(SubMeshFlags flags)
-            => ((flags & SubMeshFlags.OutlineOnly) == 0) && (((flags & RequireFlags) & ~DefaultState) == 0);
+        public static bool ExportsSubMesh(SubMeshFlags flags) => ExportsSubMesh(flags, DefaultState);
+
+        /// <summary>
+        /// Whether one sub-mesh entry belongs in a given exported state.
+        /// Mirrors the renderer's own test — <c>BatchInstanceSystem.BatchInstanceJob</c> line 522
+        /// keeps an entry when <c>(subMesh.m_Flags &amp; state) == subMesh.m_Flags</c>, i.e. the
+        /// state must satisfy every bit the entry asks for.
+        /// </summary>
+        /// <param name="flags">The entry's flags.</param>
+        /// <param name="state">The state being exported.</param>
+        /// <returns>Whether the entry is exported.</returns>
+        private static bool ExportsSubMesh(SubMeshFlags flags, SubMeshFlags state)
+            => ((flags & SubMeshFlags.OutlineOnly) == 0) && (((flags & RequireFlags) & ~state) == 0);
+
+        /// <summary>
+        /// One alternative state exported as a derived file alongside the prefab's own.
+        /// The renderer picks a tree's silhouette from <c>Tree.m_State</c> and a stockpile's from
+        /// <c>Quantity.m_Fullness</c> (<c>BatchDataHelpers.CalculateTreeSubMeshData</c> /
+        /// <c>CalculateQuantitySubMeshData</c>), and a prefab that authors those alternatives loses
+        /// them entirely when only <see cref="DefaultState"/> ships — every dead tree in the city
+        /// draws in full leaf. Each variant is a <b>complete replacement</b> for the base file, not
+        /// an overlay: its selection also picks up every unconditional part the prefab draws
+        /// alongside the swapped one.
+        /// </summary>
+        private struct StateVariant
+        {
+            /// <summary>The suffix the derived <c>assetId</c> takes.</summary>
+            public string Suffix;
+
+            /// <summary>The flag an entry must carry for this variant to be authored at all.</summary>
+            public SubMeshFlags Required;
+
+            /// <summary>The default-state flag this variant stands in for, cleared from the state.</summary>
+            public SubMeshFlags Replaces;
+
+            /// <summary>Whether this is a tree state rather than a stockpile fullness step.</summary>
+            public bool Tree;
+
+            /// <summary>The state a sub-mesh entry is tested against for this variant.</summary>
+            public SubMeshFlags State => (DefaultState & ~Replaces) | Required;
+        }
+
+        /// <summary>
+        /// Every alternative state shipped as a derived file.
+        /// The states the base file already covers are absent by construction: a healthy adult tree
+        /// and an empty stockpile <i>are</i> <see cref="DefaultState"/>, so they need no suffix. The
+        /// growth steps (<c>RequireChild</c>/<c>Teen</c>/<c>Elderly</c>) would slot in here as three
+        /// more rows if a bundle ever needed them.
+        /// </summary>
+        private static readonly StateVariant[] StateVariants =
+        {
+            new() { Suffix = "__dead", Required = SubMeshFlags.RequireDead, Replaces = SubMeshFlags.RequireAdult, Tree = true },
+            new() { Suffix = "__stump", Required = SubMeshFlags.RequireStump, Replaces = SubMeshFlags.RequireAdult, Tree = true },
+            new() { Suffix = "__partial1", Required = SubMeshFlags.RequirePartial1, Replaces = SubMeshFlags.RequireEmpty },
+            new() { Suffix = "__partial2", Required = SubMeshFlags.RequirePartial2, Replaces = SubMeshFlags.RequireEmpty },
+            new() { Suffix = "__full", Required = SubMeshFlags.RequireFull, Replaces = SubMeshFlags.RequireEmpty }
+        };
 
         /// <summary>
         /// Choose which sub-mesh entries belong in the exported file.
         /// </summary>
         /// <param name="subMeshes">The prefab's sub-mesh entries.</param>
         /// <returns>The indices to export.</returns>
-        private List<int> SelectSubMeshes(SubMesh[] subMeshes)
+        private List<int> SelectSubMeshes(SubMesh[] subMeshes) => SelectSubMeshes(subMeshes, DefaultState, true);
+
+        /// <summary>
+        /// Choose which sub-mesh entries belong in one exported state.
+        /// </summary>
+        /// <param name="subMeshes">The prefab's sub-mesh entries.</param>
+        /// <param name="state">The state being exported.</param>
+        /// <param name="fallback">Whether an empty selection falls back to the first entry — right for the prefab's own file, wrong for a derived one, where an empty selection simply means the variant does not exist.</param>
+        /// <returns>The indices to export.</returns>
+        private List<int> SelectSubMeshes(SubMesh[] subMeshes, SubMeshFlags state, bool fallback)
         {
             List<int> selected = new();
 
@@ -1114,7 +1281,7 @@ namespace Carto.Systems
                 // Unconditional entries are always drawn; conditional ones only when everything
                 // they ask for holds in the exported state.
                 //
-                if (!ExportsSubMesh(subMeshes[i].m_Flags)) continue;
+                if (!ExportsSubMesh(subMeshes[i].m_Flags, state)) continue;
 
                 // The game replaces a part's batch layer with its `m_DefaultLayers` when set
                 // (`UpdateObjectInstances`), so a part defaulting only to Pipeline/SubPipeline —
@@ -1143,7 +1310,7 @@ namespace Carto.Systems
             // The fallback skips outline shells for the same reason the loop does: falling back to
             // one would hand the bundle a silhouette in place of the object.
             //
-            if (selected.Count == 0)
+            if (fallback && (selected.Count == 0))
             {
                 for (int i = 0; i < subMeshes.Length; i++)
                 {
@@ -1292,6 +1459,8 @@ namespace Carto.Systems
             if (PipelinePartsSkipped > 0) run.Report.AppendLine($"Skipped {PipelinePartsSkipped} underground-only sub-mesh entr(ies) inside otherwise visible prefabs (Pipeline layers).");
             if (PlaceholderParts > 0) run.Report.AppendLine($"Missing-asset placeholder parts stretched to prefab bounds: {PlaceholderParts}.");
             if (StackRestParts > 0) run.Report.AppendLine($"Stacked prefabs with untiled rest parts (__stack_rest): {StackRestParts}.");
+            if (TreeStateVariants > 0) run.Report.AppendLine($"Tree-state variant files (__dead/__stump): {TreeStateVariants}; join on attrs.treeState.");
+            if (FullnessVariants > 0) run.Report.AppendLine($"Stockpile fullness variant files (__partial1/__partial2/__full): {FullnessVariants}; join on attrs.fullness — the empty state is the base file.");
             if ((run.SkirtsWritten > 0) || (run.SkirtsEmpty > 0))
                 run.Report.AppendLine($"Foundation skirts (__base): {run.SkirtsWritten} file(s); "
                                     + $"{run.SkirtsEmpty} Base-flagged prefab(s) presented no silhouette at the base level.");

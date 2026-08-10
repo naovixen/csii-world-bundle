@@ -115,6 +115,12 @@ namespace Carto.Systems
         private int _conformKeptVerts;
         private int _conformRaisedVerts;
         private int _conformOutOfWindowTris;
+        private int _unconformedPieces;
+        private int _smoothTopPieces;
+        private int _smoothTopVerts;
+        private int _authoredFramePieces;
+        private int _rebuiltFramePieces;
+        private int _pinnedFrameVerts;
 
         /// <summary>
         /// The event triggered when the system instance is created.
@@ -257,9 +263,17 @@ namespace Carto.Systems
             public Dictionary<Entity, string> LaneMeshIds = new();
             public HashSet<string> LaneIdsUsed = new();
 
+            /// <summary>
+            /// What each part mesh's decal is — <c>marking</c> or <c>wear</c>, keyed by asset id,
+            /// absent where its materials do not say. See <see cref="ClassifyDecalRole"/>.
+            /// </summary>
+            public Dictionary<string, string> LaneDecalRoles = new();
+            public Dictionary<string, int> LaneDecalsByRole = new();
+
             /// <summary>Lane-stage counters, in report order.</summary>
             public long LaneBytes;
             public int SkippedLanePipeline, SkippedLaneDecal, SkippedLaneStale, SkippedLaneDegenerate;
+            public int SkippedLaneDecalUnclassified;
             public int SkippedLaneExcluded, LaneHanging, LaneTunnel, LaneWorn;
             public Dictionary<string, int> LanesByCategory = new();
 
@@ -269,6 +283,32 @@ namespace Carto.Systems
             /// writer needs the reference but must not be the one to obtain it.
             /// </summary>
             public MaterialRipSystem Materials;
+        }
+
+        /// <summary>
+        /// The arrays one assembled network mesh is accumulated into — every composition instance
+        /// of one edge (its two node flares and the run between them) appends to the same set, and
+        /// <see cref="Finish(string, MeshAssembly)"/> packs them.
+        /// Carried as one object rather than six parameters because the shading frame joined them:
+        /// a normal and a tangent are written in the very loop that writes the position, so that
+        /// the bend is evaluated once per vertex and not once per attribute.
+        /// </summary>
+        private class MeshAssembly
+        {
+            public readonly List<float3> Vertices = new();
+            public readonly List<float2> Uvs = new();
+            public readonly List<int> Indices = new();
+            public readonly List<MeshPrimitive> Primitives = new();
+
+            /// <summary>The authored shading frame, rotated into the bend.</summary>
+            public readonly List<float3> Normals = new();
+            public readonly List<float4> Tangents = new();
+
+            /// <summary>
+            /// How many vertices came from a piece with no authored normal buffer and so hold a
+            /// zero placeholder for <see cref="Finish(string, MeshAssembly)"/> to rebuild.
+            /// </summary>
+            public int Rebuilt;
         }
 
         /// <summary>
@@ -403,6 +443,12 @@ namespace Carto.Systems
             _conformKeptVerts = 0;
             _conformRaisedVerts = 0;
             _conformOutOfWindowTris = 0;
+            _unconformedPieces = 0;
+            _smoothTopPieces = 0;
+            _smoothTopVerts = 0;
+            _authoredFramePieces = 0;
+            _rebuiltFramePieces = 0;
+            _pinnedFrameVerts = 0;
             m_ConformProbes.Clear();
 
             // A deselected half simply contributes an empty work list; the pipeline shares the
@@ -691,18 +737,13 @@ namespace Carto.Systems
 
             float3 position = EntityManager.GetComponentData<Node>(entity).m_Position;
 
-            List<float3> vertices = new();
-            List<float2> uvs = new();
-            List<int> indices = new();
-            List<MeshPrimitive> primitives = new();
+            MeshAssembly assembly = new();
 
-            AppendOrphanHalf(composition, position, width, true, run.PieceCache,
-                             vertices, uvs, indices, primitives);
-            AppendOrphanHalf(composition, position, width, false, run.PieceCache,
-                             vertices, uvs, indices, primitives);
+            AppendOrphanHalf(composition, position, width, true, run.PieceCache, assembly);
+            AppendOrphanHalf(composition, position, width, false, run.PieceCache, assembly);
 
             string assetId = $"orphan_{entity.Index}";
-            MeshAsset assembled = Finish(assetId, vertices, uvs, indices, primitives);
+            MeshAsset assembled = Finish(assetId, assembly);
             if (assembled == null)
             {
                 run.SkippedDegenerate++;
@@ -746,13 +787,9 @@ namespace Carto.Systems
         /// <param name="width">The composition width.</param>
         /// <param name="primary">Whether this is the +z half.</param>
         /// <param name="cache">The piece mesh cache.</param>
-        /// <param name="vertices">The shared vertex list.</param>
-        /// <param name="uvs">The shared UV list.</param>
-        /// <param name="indices">The shared index list.</param>
-        /// <param name="primitives">The shared primitive list.</param>
+        /// <param name="assembly">The shared arrays.</param>
         private void AppendOrphanHalf(Entity composition, float3 position, float width, bool primary,
-                                      Dictionary<Entity, MeshAsset> cache, List<float3> vertices,
-                                      List<float2> uvs, List<int> indices, List<MeshPrimitive> primitives)
+                                      Dictionary<Entity, MeshAsset> cache, MeshAssembly assembly)
         {
             // The game's own `CalculateOrphanParameters`, ported in NetworkRipSystem.GameMesh.cs
             // — the four-cubic circle segments, corner rails and mapping tables come from there.
@@ -762,8 +799,7 @@ namespace Carto.Systems
             NetCompositionData data = EntityManager.GetComponentData<NetCompositionData>(composition);
             CompositionCurves curves = OrphanCurves(position, data, primary);
             BuildGameComposition(composition, curves, position,
-                                 primary ? "orphan+" : "orphan-", cache,
-                                 vertices, uvs, indices, primitives, null);
+                                 primary ? "orphan+" : "orphan-", cache, assembly, null);
         }
 
         /// <summary>
@@ -837,6 +873,17 @@ namespace Carto.Systems
                 if (run.SkippedLaneDecal > 0) report.AppendLine(run.IncludeLaneDecals
                     ? $"  {run.SkippedLaneDecal} decal part(s) in the catalogue — wear tint and road markings, lifted by the consumer (§5B)"
                     : $"  excluded {run.SkippedLaneDecal} decal part(s) by the layer selection (lane decals toggle)");
+                if (run.IncludeLaneDecals && (run.SkippedLaneDecal > 0))
+                {
+                    // The §5B split, per catalogue part, so the classification can be sanity-checked
+                    // against the city rather than taken on trust: markings are the opaque paint,
+                    // wear the half-strength tint the drive lanes carry.
+                    //
+                    run.LaneDecalsByRole.TryGetValue("marking", out int markings);
+                    run.LaneDecalsByRole.TryGetValue("wear", out int worn);
+                    report.AppendLine($"    decalRole: {markings} marking / {worn} wear / "
+                                    + $"{run.SkippedLaneDecalUnclassified} unclassified (key omitted)");
+                }
                 if (run.SkippedLaneExcluded > 0) report.AppendLine($"  skipped {run.SkippedLaneExcluded} lane(s) whose parts its flags all exclude (drawn nowhere in-game either)");
                 if (run.SkippedLaneStale > 0) report.AppendLine($"  skipped {run.SkippedLaneStale} lane(s) the simulation removed mid-rip");
                 if (run.SkippedLaneDegenerate > 0) report.AppendLine($"  skipped {run.SkippedLaneDegenerate} lane(s) under the game's 0.1 m draw gate");
@@ -848,11 +895,35 @@ namespace Carto.Systems
                                                       + "halves + wedge cover outer/inner/island; blend weights are shader-side");
             if (_railPieces > 0) report.AppendLine($"Corner-rail (PreserveShape) pieces placed: {_railPieces}");
             if (_skipBottomPieces > 0) report.AppendLine($"SkipBottomHalf pieces halved: {_skipBottomPieces}");
+            // The shading frame (audit #40 P6): the piece's own authored normals and tangents,
+            // rotated into the bend rather than rebuilt from the bent faces.
+            //
+            if (_authoredFramePieces + _rebuiltFramePieces > 0)
+            {
+                report.AppendLine($"Shading frame: {_authoredFramePieces} piece placement(s) shipped the authored "
+                                + $"MeshNormal/MeshTangent buffers rotated into the bend, {_rebuiltFramePieces} fell "
+                                + "back to the face rebuild (no normal buffer on the piece)");
+                if (_smoothTopPieces > 0)
+                    report.AppendLine($"  SmoothTopNormal: {_smoothTopPieces} piece placement(s), {_smoothTopVerts} "
+                                    + "vertex(es) at the top height bound flattened to (0,1,0) before the flip");
+                if (_pinnedFrameVerts > 0)
+                    report.AppendLine($"  {_pinnedFrameVerts} vertex(es) on a pinned column (median centre / zero-width "
+                                    + "piece) took the two-column rotation — the map has no across direction there");
+                report.AppendLine("  APPROXIMATED: the frame is the map's own Jacobian (cofactor for the normal, "
+                                + "plain for the tangent); whether the game's vertex shader orthonormalizes first is "
+                                + "shader-side and unknowable — the two agree on an orthogonal frame");
+            }
+
+            if (_unconformedPieces > 0)
+                report.AppendLine($"NOT CONFORMED: {_unconformedPieces} LowerBottom/RaiseTop piece placement(s) shipped "
+                                + "as authored — the terrain heightmap could not be captured (declared in warnings.jsonl)");
+
             if (_lowerBottomPieces + _raiseTopPieces > 0)
             {
                 report.AppendLine($"{_lowerBottomPieces} LowerBottomToTerrain / {_raiseTopPieces} RaiseTopToTerrain "
-                                + $"piece(s) conformed at rip time (BatchMeshHelpers' per-slice height bounds "
-                                + "+ the vertex shader's terrain sample, applied here):");
+                                + $"piece(s) flagged for terrain conforming, {_unconformedPieces} of them NOT conformed "
+                                + "(BatchMeshHelpers' per-slice height bounds + the vertex shader's terrain sample, "
+                                + "applied here):");
                 report.AppendLine($"  bottom edges (clamp DOWN only — a trench wall's base never lifts, §38): "
                                 + $"{_conformLoweredVerts} vertex(es) buried, {_conformKeptVerts} kept at road level");
                 report.AppendLine($"  top edges (pinned to the terrain both ways — the §34 portal stretch): "
@@ -893,6 +964,12 @@ namespace Carto.Systems
             if (run.SkippedDegenerate > 0) report.AppendLine($"Skipped {run.SkippedDegenerate} edge(s) whose centerline collapsed to a point");
             if (run.SkippedStale > 0) report.AppendLine($"Skipped {run.SkippedStale} edge(s) the simulation removed mid-rip");
             if (run.Skipped.Count > 0) report.AppendLine($"{run.Skipped.Count} surface(s) or texture(s) produced no material entry");
+
+            // Contract §10: this stage's gaps go on disk, not only into the report. Written after
+            // the drain, because that is what closes the material table and fills `run.Skipped`.
+            //
+            WriteWarnings(run, report);
+
             if (!string.IsNullOrEmpty(materials)) report.AppendLine($"Materials: {materials}");
             report.AppendLine($"Output: {run.OutputDirectory}");
 
@@ -923,6 +1000,117 @@ namespace Carto.Systems
             catch (Exception ex)
             {
                 _log.Warn($"Could not show the network rip result: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Declare this stage's gaps in the bundle's <c>warnings.jsonl</c> (contract §10) — the
+        /// lane-part meshes that would not read, the surfaces and textures that produced no
+        /// material entry, and a heightmap that could not be captured. They reached the report and
+        /// stopped there until now (infra F5), so a bundle's own record of what the network stage
+        /// lost was empty however much it lost.
+        /// The ownership-merge scheme of the other passes, with kinds of this stage's own: the
+        /// instance pass owns <c>prefab</c>/<c>instance</c>, the mesh pass
+        /// <c>mesh</c>/<c>material</c>/<c>texture</c>, the lane pass <c>lane</c>, and every kind
+        /// this pass writes is prefixed <c>network</c> — a network run replaces exactly those and
+        /// keeps every other line, so the stages can run in any order without erasing each other.
+        /// The prefix matters: a network piece's mesh warning is about a cross-section piece, which
+        /// is not an <c>assetId</c> in <c>meshes/</c> at all, so filing it as <c>mesh</c> would
+        /// both mislead a consumer and let the next mesh rip delete it.
+        /// </summary>
+        /// <param name="run">The finished run.</param>
+        /// <param name="report">The report to note the outcome in.</param>
+        private void WriteWarnings(NetworkRun run, StringBuilder report)
+        {
+            string path = IOUtils.CombinePath(run.OutputDirectory, "warnings.jsonl");
+
+            try
+            {
+                if (!System.IO.Directory.Exists(run.OutputDirectory)) System.IO.Directory.CreateDirectory(run.OutputDirectory);
+
+                List<string> kept = new();
+                if (System.IO.File.Exists(path))
+                {
+                    foreach (string line in System.IO.File.ReadAllLines(path))
+                    {
+                        if (string.IsNullOrWhiteSpace(line)) continue;
+                        if (!IsOwnedByNetworkRip(line)) kept.Add(line);
+                    }
+                }
+
+                using (System.IO.StreamWriter writer = new(path, false, new UTF8Encoding(false)) { NewLine = "\n" })
+                {
+                    foreach (string line in kept) writer.WriteLine(line);
+
+                    foreach (RipWarning skipped in run.Skipped)
+                    {
+                        Dictionary<string, object> warning = new()
+                        {
+                            ["kind"] = NetworkKind(skipped.Kind),
+                            ["assetId"] = skipped.AssetId,
+                            ["reason"] = skipped.Reason
+                        };
+                        writer.WriteLine(Newtonsoft.Json.JsonConvert.SerializeObject(warning, Newtonsoft.Json.Formatting.None));
+                    }
+
+                    // N-F2: pieces the game conforms to the terrain but this rip could not, because
+                    // the heightmap would not come back. They ship as authored — a trench wall
+                    // standing on nothing, a portal face too short to close its mouth — and the
+                    // bundle now says so instead of claiming they were conformed.
+                    //
+                    if (_unconformedPieces > 0)
+                    {
+                        Dictionary<string, object> warning = new()
+                        {
+                            ["kind"] = "networkConform",
+                            ["assetId"] = "networks/",
+                            ["reason"] = $"terrain heightmap unavailable; {_unconformedPieces} LowerBottomToTerrain/"
+                                       + "RaiseTopToTerrain piece placement(s) shipped unconformed"
+                        };
+                        writer.WriteLine(Newtonsoft.Json.JsonConvert.SerializeObject(warning, Newtonsoft.Json.Formatting.None));
+                    }
+                }
+
+                int written = run.Skipped.Count + ((_unconformedPieces > 0) ? 1 : 0);
+                report.AppendLine($"Recorded {written} gap(s) in warnings.jsonl, keeping {kept.Count} from the other passes");
+            }
+            catch (Exception ex)
+            {
+                _log.Warn($"Could not write warnings.jsonl: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// This stage's kind for a warning raised by a shared reader — see
+        /// <see cref="WriteWarnings"/> for why they are not filed under the mesh pass's kinds.
+        /// </summary>
+        /// <param name="kind">The kind the reader raised it under.</param>
+        /// <returns>The network stage's equivalent.</returns>
+        private static string NetworkKind(string kind) => kind switch
+        {
+            "mesh" => "networkMesh",
+            "material" => "networkMaterial",
+            "texture" => "networkTexture",
+            _ => "network"
+        };
+
+        /// <summary>
+        /// Whether a <c>warnings.jsonl</c> line is one this stage writes, and so this rip's to
+        /// replace. Matched on the declared kind rather than by parsing: a line this system cannot
+        /// read is someone else's and is kept.
+        /// </summary>
+        /// <param name="line">One line of the file.</param>
+        /// <returns>Whether the network stage owns it.</returns>
+        private static bool IsOwnedByNetworkRip(string line)
+        {
+            try
+            {
+                string kind = Newtonsoft.Json.Linq.JObject.Parse(line)["kind"]?.ToString();
+                return (kind != null) && kind.StartsWith("network", StringComparison.Ordinal);
+            }
+            catch (Exception)
+            {
+                return false;
             }
         }
 
@@ -1263,6 +1451,13 @@ namespace Carto.Systems
                         MeshAsset mesh = Instance.MeshRip.ReadMesh(meshEntity, assetId, name);
                         if (mesh == null) continue;
 
+                        // Classified while the mesh is in hand — it is a property of the part's
+                        // materials, so it is settled once per part mesh and reused by every
+                        // prefab that draws it.
+                        //
+                        string role = ClassifyDecalRole(run, mesh);
+                        if (role != null) run.LaneDecalRoles[assetId] = role;
+
                         run.LaneMeshIds[meshEntity] = assetId;
                         run.Queue.Add(new NetworkItem { Mesh = mesh, IsLane = true });
                     }
@@ -1302,7 +1497,25 @@ namespace Carto.Systems
                         }
                     });
 
-                    if (decal) cataloguePart["decal"] = true;
+                    if (decal)
+                    {
+                        cataloguePart["decal"] = true;
+
+                        // Which of the two things a decal part is (§5B). Optional by design: a
+                        // part whose materials say neither carries no key at all rather than a
+                        // guess a consumer would trust.
+                        //
+                        if (run.LaneDecalRoles.TryGetValue(assetId, out string role))
+                        {
+                            cataloguePart["decalRole"] = role;
+                            run.LaneDecalsByRole.TryGetValue(role, out int roleCount);
+                            run.LaneDecalsByRole[role] = roleCount + 1;
+                        }
+                        else
+                        {
+                            run.SkippedLaneDecalUnclassified++;
+                        }
+                    }
                 }
             }
 
@@ -1324,6 +1537,52 @@ namespace Carto.Systems
 
             run.LaneParts[prefab] = entry;
             return entry;
+        }
+
+        /// <summary>
+        /// Which of the two things a lane decal part is, from the material table alone.
+        /// §5B names them: the <b>wear</b> tint — a ~12%-opacity near-black shade the game lays
+        /// over a drive lane, whose texture never reaches opacity (measured ~(18,18,18), α ≤ 113)
+        /// under a half-strength material tint — and the <b>marking</b>: crosswalks, lane lines,
+        /// bus-lane paint, rail covers, all of which paint a fully opaque base where they paint at
+        /// all. A consumer needs the distinction because it decides the draw order (§8b: markings
+        /// go a hair above the wear tint so the two never z-fight) and because a wear tint is
+        /// modulated by <c>wear</c> while a marking is not.
+        /// <b>What separates them in the data</b> is the material's own tint alpha. The wear
+        /// surfaces carry <c>tint.a = 128/255</c> — a factor that caps the part's opacity below
+        /// full however opaque its texture is — and the marking surfaces carry no tint at all
+        /// (white, opaque). Texture pixels would be the more direct test but they never reach this
+        /// stage: a texture is read back and encoded on the writer thread, and the material table
+        /// is what the catalogue can see. So a tint that can never resolve opaque is read as wear,
+        /// an unattenuated one as marking, and a part whose materials resolve to nothing at all is
+        /// left unclassified — <c>decalRole</c> is optional and an absent key is the honest answer.
+        /// The mesh's own name is deliberately NOT consulted: it is the same
+        /// <c>*_Lane_*_Mesh</c>/<c>*_Line_Mesh</c> vocabulary for both, and a name-based rule would
+        /// misfile every modded part.
+        /// </summary>
+        /// <param name="run">The rip in flight.</param>
+        /// <param name="mesh">The part mesh, freshly read.</param>
+        /// <returns><c>"wear"</c>, <c>"marking"</c>, or <c>null</c> when nothing decides.</returns>
+        private static string ClassifyDecalRole(NetworkRun run, MeshAsset mesh)
+        {
+            if ((mesh == null) || (run.Materials == null)) return null;
+
+            bool found = false;
+            float minimumAlpha = float.MaxValue;
+
+            foreach (MeshPrimitive primitive in mesh.Primitives)
+            {
+                if (string.IsNullOrEmpty(primitive.MaterialId)) continue;
+
+                MaterialDescription material = run.Materials.Describe(primitive.MaterialId);
+                if (!material.Found) continue;
+
+                found = true;
+                minimumAlpha = math.min(minimumAlpha, material.Tint.w);
+            }
+
+            if (!found) return null;
+            return (minimumAlpha < 0.99f) ? "wear" : "marking";
         }
 
 
@@ -1416,10 +1675,7 @@ namespace Carto.Systems
         {
             Composition parts = EntityManager.GetComponentData<Composition>(entity);
 
-            List<float3> vertices = new();
-            List<float2> uvs = new();
-            List<int> indices = new();
-            List<MeshPrimitive> primitives = new();
+            MeshAssembly assembly = new();
 
             // The game's own draw gates (`BatchInstanceSystem.UpdateNetInstances`): an edge part
             // needs more than 0.1 m of run, a flare more than 0.05 m on either half. Below that
@@ -1434,7 +1690,7 @@ namespace Carto.Systems
                 if (math.any(node.m_Left.m_Length > 0.05f) | math.any(node.m_Right.m_Length > 0.05f))
                 {
                     BuildNodeSide(parts.m_StartNode, node, center, "startNode",
-                                  cache, vertices, uvs, indices, primitives, report);
+                                  cache, assembly, report);
                 }
             }
 
@@ -1446,7 +1702,7 @@ namespace Carto.Systems
                 if (rotated) _rotatedEdges++;
                 CompositionCurves curves = EdgeCurves(geometry, rotated);
                 BuildGameComposition(parts.m_Edge, curves, center, "edge",
-                                     cache, vertices, uvs, indices, primitives, report);
+                                     cache, assembly, report);
             }
 
             if (EntityManager.HasComponent<EndNodeGeometry>(entity))
@@ -1455,7 +1711,7 @@ namespace Carto.Systems
                 if (math.any(node.m_Left.m_Length > 0.05f) | math.any(node.m_Right.m_Length > 0.05f))
                 {
                     BuildNodeSide(parts.m_EndNode, node, center, "endNode",
-                                  cache, vertices, uvs, indices, primitives, report);
+                                  cache, assembly, report);
                 }
             }
 
@@ -1465,7 +1721,7 @@ namespace Carto.Systems
             // already emits. The bespoke fan this once carried invented geometry the game does
             // not have, and shipped it wrongly shaded.
             //
-            return Finish(assetId, vertices, uvs, indices, primitives);
+            return Finish(assetId, assembly);
         }
 
         /// <summary>
@@ -1621,34 +1877,61 @@ namespace Carto.Systems
         }
 
         /// <summary>
-        /// Finish a shared mesh: pack the accumulated lists and rebuild normals.
+        /// Finish a shared mesh: pack the accumulated lists, and fill in the shading frame of any
+        /// vertex whose piece carried no authored one.
         /// </summary>
         /// <param name="assetId">The asset id to label it with.</param>
-        /// <param name="vertices">The accumulated vertices.</param>
-        /// <param name="uvs">The accumulated UVs.</param>
-        /// <param name="indices">The accumulated indices.</param>
-        /// <param name="primitives">The accumulated primitives.</param>
+        /// <param name="assembly">The accumulated arrays.</param>
         /// <returns>The mesh, or <c>null</c> when nothing was assembled.</returns>
-        private static MeshAsset Finish(string assetId, List<float3> vertices, List<float2> uvs,
-                                        List<int> indices, List<MeshPrimitive> primitives)
+        private static MeshAsset Finish(string assetId, MeshAssembly assembly)
         {
-            if (vertices.Count == 0) return null;
+            if (assembly.Vertices.Count == 0) return null;
 
             MeshAsset mesh = new()
             {
                 AssetId = assetId,
                 SourceName = assetId,
-                Vertices = vertices.ToArray(),
-                Uvs = uvs.ToArray(),
-                Indices = indices.ToArray(),
-                Primitives = primitives
+                Vertices = assembly.Vertices.ToArray(),
+                Uvs = assembly.Uvs.ToArray(),
+                Indices = assembly.Indices.ToArray(),
+                Primitives = assembly.Primitives,
+                Normals = assembly.Normals.ToArray(),
+                Tangents = assembly.Tangents.ToArray()
             };
 
-            // Normals have to be rebuilt, not carried over: bending the mesh rotates every face,
-            // and a piece's authored normal points wherever the straight tile faced.
+            // Normals are the piece's own, rotated into the bend by the map that placed the vertex
+            // (NetworkRipSystem.GameMesh.cs) — the game's authored creases survive, which the face
+            // rebuild bevelled away. A piece with no normal buffer leaves a zero here, and only
+            // those vertices take the rebuild.
             //
-            mesh.Normals = BuildNormals(mesh.Vertices, mesh.Indices);
+            if (assembly.Rebuilt > 0)
+            {
+                float3[] rebuilt = BuildNormals(mesh.Vertices, mesh.Indices);
+                for (int i = 0; i < mesh.Normals.Length; i++)
+                {
+                    if (math.lengthsq(mesh.Normals[i]) > 1e-12f) continue;
+                    mesh.Normals[i] = rebuilt[i];
+                    mesh.Tangents[i] = AnyTangent(rebuilt[i]);
+                }
+            }
+
             return mesh;
+        }
+
+        /// <summary>
+        /// A unit tangent perpendicular to a normal, for a vertex whose piece authored none.
+        /// glTF's <c>TANGENT</c> is per-mesh, not per-primitive, so a mesh that mixes authored and
+        /// rebuilt pieces still needs a value here; any perpendicular is as good as the arbitrary
+        /// one a consumer would generate.
+        /// </summary>
+        /// <param name="normal">The unit normal.</param>
+        /// <returns>The tangent, handedness <c>+1</c>.</returns>
+        private static float4 AnyTangent(float3 normal)
+        {
+            float3 helper = (math.abs(normal.y) < 0.99f) ? new float3(0f, 1f, 0f) : new float3(1f, 0f, 0f);
+            float3 tangent = math.cross(helper, normal);
+            float length = math.length(tangent);
+            return new float4((length > 1e-9f) ? (tangent / length) : new float3(1f, 0f, 0f), 1f);
         }
 
         /// <summary>
