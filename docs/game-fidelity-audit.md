@@ -100,7 +100,20 @@ Disposition key: **P# = producer work** (Phase 12 of the hand-off plan; one fina
 all), **D# = documentation** (Phase 9 / audit-doc amendments), **R# = refactor-adjacent** (Phase
 10/12 mechanical), **N = documented non-goal** (user sign-off).
 
-### 2.1 Producer work-list (Phase 12)
+### 2.1 Producer work-list
+
+**STATUS 2026-08-09: every P item below is implemented and building clean, in three commits —
+`095322a` (P1, P2, P13-half, F4, P3, P15-terrain, P4, P5, T-F20), `b549bbe` (P14, I-F7/8/9/11,
+P8, P12, P9, P10) and `4d6959d` (P6, P7, P11, P13-network, P16, GAP 6, N-F2/N-F3).** None of it
+is validated: per the staleness rule, producer changes can only be proven by an in-game re-rip,
+and every claim here is "built, awaiting re-rip". The live assertions to read in the next rip's
+report and log: the `decalRole` marking/wear split (predicted 38/5 on the last city's
+catalogue), the authored-normals piece counts (`_rebuiltFramePieces` should be 0) and their lit
+A/B render — a sign error in the frame would show as inverted shading that no offline check
+here can rule out — the new `surfaceless`/`waterway` clip-band classes, `lights.json` entries
+finally carrying `range`/`temperature`, and the instance-walk stage time against its 57.6 s
+baseline.
+
 
 | # | Finding | Source | Severity |
 |---|---|---|---|
