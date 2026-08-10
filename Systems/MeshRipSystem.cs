@@ -394,7 +394,7 @@ namespace Carto.Systems
                 Completed = completed
             };
 
-            run.Items = CollectWorkItems(run.Report, maxPrefabs, kinds ?? RipKindFilter.All, out int distinctPrefabs, out int placedObjects);
+            run.Items = CollectWorkItems(run.Report, run.SkippedAssets, maxPrefabs, kinds ?? RipKindFilter.All, out int distinctPrefabs, out int placedObjects);
             run.Report.AppendLine($"Placed objects: {placedObjects}, distinct prefabs: {distinctPrefabs}, queued: {run.Items.Count}");
 
             if (run.Items.Count == 0)
@@ -408,7 +408,7 @@ namespace Carto.Systems
             // would mean walking the whole prefab set twice for data already in hand.
             //
             run.Materials.Begin(outputDirectory, textureSizeCap,
-                texture => run.Queue.Add(new RipItem { Texture = texture }));
+                texture => Enqueue(run, new RipItem { Texture = texture }));
 
             run.Writer = Task.Run(() => WriteQueued(run));
             _run = run;
@@ -431,15 +431,25 @@ namespace Carto.Systems
         /// a capped run still covers most of the city rather than an arbitrary corner of it.
         /// </summary>
         /// <param name="report">The report to note discovery counts in.</param>
+        /// <param name="skippedAssets">Receives a §10 declaration for every prefab the cap drops.</param>
         /// <param name="maxPrefabs">The cap, or <c>0</c> for none.</param>
         /// <param name="kinds">Which instance kinds' prefabs to keep.</param>
         /// <param name="distinctPrefabs">Receives the number of distinct prefabs found.</param>
         /// <param name="placedObjects">Receives the number of placed objects walked.</param>
         /// <returns>The work list.</returns>
-        private List<WorkItem> CollectWorkItems(StringBuilder report, int maxPrefabs, RipKindFilter kinds, out int distinctPrefabs, out int placedObjects)
+        private List<WorkItem> CollectWorkItems(StringBuilder report, List<RipWarning> skippedAssets, int maxPrefabs, RipKindFilter kinds, out int distinctPrefabs, out int placedObjects)
         {
             Dictionary<Entity, int> counts = new();
-            Dictionary<Entity, Entity> samples = new();
+
+            // The instance pass filters kinds per instance, and one prefab's placements can span
+            // kinds — the building/tree kinds hang off the placed entity, not the prefab. Judging
+            // a prefab by a single sampled instance therefore breaks the join under a filter that
+            // excludes anything: an instance kept by the instance pass could reference a mesh
+            // this pass dropped. Collect the union of kinds actually placed for each prefab and
+            // keep the prefab when any of them is allowed. Only built when the filter can exclude
+            // at all, so the default all-kinds rip pays nothing per instance.
+            //
+            Dictionary<Entity, HashSet<string>> kindsByPrefab = kinds.Everything ? null : new();
             NativeArray<Entity> entities = _objectQuery.ToEntityArray(Allocator.TempJob);
 
             try
@@ -469,7 +479,13 @@ namespace Carto.Systems
 
                     counts.TryGetValue(prefabEntity, out int count);
                     counts[prefabEntity] = count + 1;
-                    if (count == 0) samples[prefabEntity] = entity;
+
+                    if (kindsByPrefab != null)
+                    {
+                        if (!kindsByPrefab.TryGetValue(prefabEntity, out HashSet<string> kindSet))
+                            kindsByPrefab[prefabEntity] = kindSet = new HashSet<string>();
+                        kindSet.Add(Instance.InstanceRip.ClassifyKind(entity, prefabEntity));
+                    }
                 }
 
                 if (utilityNodes > 0) report.AppendLine($"Skipped {utilityNodes} buried utility-network node object(s).");
@@ -496,14 +512,23 @@ namespace Carto.Systems
             {
                 AssetIdEntry entry = assetIds[kvp.Key];
 
-                // The advanced kind filter, judged the same way the instance pass judges its
-                // records — on a placed instance of the prefab — so the two layers exclude the
-                // same things.
-                string kind = Instance.InstanceRip.ClassifyKind(samples[kvp.Key], kvp.Key);
-                if (!kinds.Allows(kind))
+                // The advanced kind filter, judged over every kind the prefab was actually
+                // placed as — kept whenever any instance of it survives the instance pass's
+                // per-instance filter, so no kept record references a dropped mesh.
+                //
+                if (kindsByPrefab != null)
                 {
-                    filtered++;
-                    continue;
+                    bool allowed = false;
+                    foreach (string kind in kindsByPrefab[kvp.Key])
+                    {
+                        if (kinds.Allows(kind)) { allowed = true; break; }
+                    }
+
+                    if (!allowed)
+                    {
+                        filtered++;
+                        continue;
+                    }
                 }
 
                 // An unresolvable prefab still gets ripped under the same synthetic id
@@ -524,7 +549,41 @@ namespace Carto.Systems
 
             if ((maxPrefabs > 0) && (items.Count > maxPrefabs))
             {
-                report.AppendLine($"Capped to the {maxPrefabs} most-used prefab(s) of {items.Count}.");
+                // Every capped-off prefab's asset id is still referenced by instances.jsonl, so
+                // each must be declared in warnings.jsonl for a capped rip to stay contract-valid
+                // (§10: a missing mesh declared is a warning; undeclared, a validator error).
+                // A capped stacked prefab's instances reference its per-role part files rather
+                // than the whole-prefab file (the derivation ExpandStack mirrors), so those ids
+                // are declared alongside it.
+                //
+                string reason = $"skipped by the mesh cap ({maxPrefabs} most-used prefabs); instances kept with placement only";
+                for (int i = maxPrefabs; i < items.Count; i++)
+                {
+                    WorkItem item = items[i];
+                    skippedAssets.Add(new RipWarning("mesh", item.AssetId, reason));
+
+                    if (EntityManager.HasComponent<StackData>(item.PrefabEntity)
+                        && EntityManager.HasBuffer<SubMesh>(item.PrefabEntity))
+                    {
+                        DynamicBuffer<SubMesh> buffer = EntityManager.GetBuffer<SubMesh>(item.PrefabEntity, true);
+                        HashSet<StackRole> roles = new();
+                        bool rest = false;
+
+                        for (int j = 0; j < buffer.Length; j++)
+                        {
+                            StackRole? role = PrefabMesh.RoleOf(buffer[j].m_Flags);
+                            if (role.HasValue) roles.Add(role.Value);
+                            else if (ExportsSubMesh(buffer[j].m_Flags)) rest = true;
+                        }
+
+                        foreach (StackRole role in roles)
+                            skippedAssets.Add(new RipWarning("mesh", PrefabMesh.StackPartId(item.AssetId, role), reason));
+                        if (rest) skippedAssets.Add(new RipWarning("mesh", PrefabMesh.StackRestId(item.AssetId), reason));
+                    }
+                }
+
+                report.AppendLine($"Capped to the {maxPrefabs} most-used prefab(s) of {items.Count}; "
+                                + $"{items.Count - maxPrefabs} capped-off prefab(s) declared in warnings.jsonl.");
                 items.RemoveRange(maxPrefabs, items.Count - maxPrefabs);
             }
 
@@ -539,6 +598,16 @@ namespace Carto.Systems
         {
             if (!run.ReadingDone)
             {
+                // A faulted writer never drains the queue: the reader would pause on
+                // back-pressure for the rest of the session, ReadingDone would never turn true,
+                // and a pipeline driving the rip would wait on this stage forever. Abort instead.
+                //
+                if (run.Writer.IsFaulted)
+                {
+                    Fail(run);
+                    return;
+                }
+
                 Stopwatch budget = Stopwatch.StartNew();
 
                 while (run.Index < run.Items.Count)
@@ -588,13 +657,13 @@ namespace Carto.Systems
                 }
 
                 run.Read++;
-                run.Queue.Add(new RipItem { Prefab = prefab });
+                Enqueue(run, new RipItem { Prefab = prefab });
 
                 // The skirt rides behind the prefab that owns it. Its base surface was resolved —
                 // and its textures queued — while the prefab was assembled, so the ordered writer
                 // encodes them before the band's .glb needs their names.
                 //
-                if (skirt != null) run.Queue.Add(new RipItem { Skirt = skirt });
+                if (skirt != null) Enqueue(run, new RipItem { Skirt = skirt });
 
                 // A stacked prefab also ships one file per stack role, so that the instance pass
                 // can place a foot once, a repeating section as many times as that instance needs,
@@ -616,7 +685,7 @@ namespace Carto.Systems
                     foreach (PrefabMeshPart p in prefab.Parts)
                         if (p.StackRole == role) part.Parts.Add(p);
 
-                    run.Queue.Add(new RipItem { Prefab = part });
+                    Enqueue(run, new RipItem { Prefab = part });
                 }
 
                 // Parts with no stack role on a stacked prefab are drawn once, untiled, at the
@@ -641,7 +710,7 @@ namespace Carto.Systems
                     if (rest.Parts.Count > 0)
                     {
                         StackRestParts++;
-                        run.Queue.Add(new RipItem { Prefab = rest });
+                        Enqueue(run, new RipItem { Prefab = rest });
                     }
                 }
             }
@@ -650,6 +719,69 @@ namespace Carto.Systems
                 run.ReadFailed++;
                 run.Report.AppendLine($"  ! {item.AssetId}: {ex.GetType().Name} {ex.Message}");
                 _log.Warn($"Failed to assemble prefab `{item.AssetId}`: {ex}");
+            }
+        }
+
+        /// <summary>
+        /// Hand one item to the bounded queue without wedging on a dead writer.
+        /// A plain <c>Add</c> blocks until the writer makes room, and a writer task that has
+        /// faulted never will — several items can be queued per prefab between
+        /// <see cref="Advance"/>'s capacity checks, so the reader could block the main thread
+        /// forever mid-<see cref="ReadOne"/>. Throwing instead lets <see cref="ReadOne"/>'s
+        /// catch count the prefab failed, and the next <see cref="Advance"/> aborts the pass.
+        /// </summary>
+        /// <param name="run">The run in progress.</param>
+        /// <param name="item">The item to queue.</param>
+        private static void Enqueue(RipRun run, RipItem item)
+        {
+            while (!run.Queue.TryAdd(item, 200))
+            {
+                if (run.Writer.IsFaulted)
+                    throw new InvalidOperationException("the mesh writer task has faulted; the queue will never drain");
+            }
+        }
+
+        /// <summary>
+        /// Abort a rip whose writer task has died mid-read. Nothing more can ever be written —
+        /// the queue will not drain again — so the only honest outcome is a failed stage:
+        /// release what the run holds and hand a summary with the <c>FAILED</c> prefix, which
+        /// is what the orchestrator counts a stage failure by, to whoever is listening.
+        /// </summary>
+        /// <param name="run">The rip whose writer faulted.</param>
+        private void Fail(RipRun run)
+        {
+            _run = null;
+            run.Clock.Stop();
+            RipProgress.Clear();
+
+            Exception cause = run.Writer.Exception?.GetBaseException();
+            _log.Error($"Mesh writer faulted at {run.Index}/{run.Items.Count} prefab(s); aborting the pass: {run.Writer.Exception}");
+
+            // The same release OnDestroy performs for a rip in flight: unblock anything waiting
+            // on the queue and let the material rip drop its half-built state.
+            //
+            try { run.Queue.CompleteAdding(); } catch { /* already completed */ }
+            Instance.MaterialRip.Abandon();
+
+            string summary = $"FAILED: the mesh writer faulted at {run.Index}/{run.Items.Count} prefab(s) — "
+                           + $"meshes/ is incomplete ({System.Threading.Volatile.Read(ref run.Written)} file(s) before the fault): "
+                           + $"{cause?.Message ?? "unknown error"}\n\nFull details: Logs/Carto.log";
+
+            if (run.Completed != null)
+            {
+                try { run.Completed(summary); }
+                catch (Exception ex) { _log.Warn($"Mesh rip completion callback failed: {ex}"); }
+                return;
+            }
+
+            try
+            {
+                Game.UI.MessageDialog dialog = new("Options.SECTION[Carto.Carto.Mod]", summary, "Common.OK");
+                Instance.UI.appBindings.ShowMessageDialog(dialog, null);
+            }
+            catch (Exception ex)
+            {
+                _log.Warn($"Could not show the mesh rip result dialog: {ex.Message}");
             }
         }
 
@@ -1115,12 +1247,14 @@ namespace Carto.Systems
             run.Clock.Stop();
             RipProgress.Clear();
 
+            bool writerFaulted = false;
             try
             {
                 run.Writer.Wait();
             }
             catch (Exception ex)
             {
+                writerFaulted = true;
                 _log.Warn($"Mesh writer ended with an error: {ex}");
             }
 
@@ -1170,6 +1304,12 @@ namespace Carto.Systems
             _log.Info(run.Report.ToString());
 
             StringBuilder summary = new();
+
+            // The orchestrator counts a stage failed by its summary's FAILED prefix. A writer
+            // that died after the reader finished lost queued files, so the stage must not
+            // read as a success.
+            //
+            if (writerFaulted) summary.AppendLine("FAILED: the mesh writer ended with an error — meshes/ is incomplete; see the log.");
             summary.AppendLine($"Wrote {run.Written} mesh file(s), skipped {run.Skipped}, failed {run.Failed}.");
             summary.AppendLine($"{run.Bytes / (1024d * 1024d):F1} MiB in {run.Clock.Elapsed.TotalSeconds:F0} s.");
             if (!string.IsNullOrEmpty(materials)) summary.AppendLine(materials);

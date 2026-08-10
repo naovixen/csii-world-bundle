@@ -1026,6 +1026,20 @@ toward +X (east).
   −Z like every raster, plus the shader shaping constants `splatMultiplier`/`splatPower`); its
   grid is the playable area, not the heightmap grid — sizes differ.
 
+  *(Added 2026-08-09, audit #40 P4/P5 — two more optional `rasters` blocks, no grid of their
+  own:)* **`rasters.water`** carries the authored water appearance a consumer otherwise has to
+  guess: `seaLevel` (world metres) and `WaterRenderSettingsPrefab`'s values verbatim —
+  `waterColor`/`scatteringColor` (RGBA 0–1), `absorptionDistance`, `maxRefractionDistance`,
+  `smoothnessClose`/`smoothnessDistant`/`smoothnessRange`, scattering scalars, foam, caustics
+  and wave parameters; the game's only bind-time transform is
+  `endSmoothness = min(distant, close)`. **`rasters.terrainTiling`** carries the ground texture
+  scales: `playableArea` `[x, z]`, per-layer (`grass`/`dirt`/`rock`) `tiling` `[near, mid, far]`
+  (repeats across the playable area, as bound to `_Terrain*TextureTiling`), the precomputed
+  `metresPerRepeat` `[near, mid, far]` (= `playableArea.x / tiling`), `lodBlend` camera-distance
+  ranges, `extras.extra1/extra2` params (`dirtOverride`, `splatRange`, `blurDepth`,
+  `heightOffset`; extras tile with the grass layer), and the triplanar constants. Never guess
+  metres-per-repeat — the §5B lane-tiling lesson, repeated on terrain.
+
   **The channel-to-ground assignment is published, in `rasters.splatmap.channels`. Read it;
   do not calibrate it.** *(Amended 2026-08-08 — this block previously told consumers to derive
   the map from slope and roadbed contrast, and the reference importer's calibration got three
@@ -1229,7 +1243,13 @@ and a strip is the unit the game actually clips with.
   boundaries' `y`. A cell is clipped where the strip covers it *and* the terrain stands within
   `(lane + bottom, lane + top]`.
 - **`top` absent** means unbounded — an authored clip surface hides whatever covers it, however
-  high. `kind: "area"` records always omit it.
+  high. *(Until 2026-08-09 `kind: "area"` records always omitted it; that read the game's
+  `GenerateAreaClipMeshJob` wrongly — the job builds a **closed prism**: a bottom ring at
+  `min(0, aggMin(heightRange)) − 0.3` and a top ring **and cap** at
+  `max(0, aggMax(heightRange)) + 0.3`, both aggregated over the area's triangles. Area records
+  now carry per-area `bottom` and `top` with exactly those values, relative to each triangle's
+  plane like every band. Consumers must stop treating area clips as open-topped; terrain above
+  the top is NOT clipped. Audit #40 P3/T-F3.)*
 - **`kind: "area"`** records carry their own polygon: `nodes` (bundle-frame world positions,
   §8b's encoding) and `triangles` (index triplets into `nodes`). `area` is the source area
   entity's id, kept as provenance — it joins to nothing, because the game never *paints* a clip
@@ -1290,6 +1310,20 @@ not all be read still writes the `.glb` from what survived, with a `"partial: �
 because the meshes of one asset draw together (§6), an incomplete file is invisible from the
 file alone. Presence of a warning therefore does not imply absence of the file; check the
 reason. *(Added 2026-08-06.)*
+
+Warning kinds are owned per pass, and each pass rewrites only its own kinds (so stage re-runs
+cannot erase another stage's declarations): the instance pass owns `prefab` and `instance`, the
+mesh pass `mesh`/`material`/`texture`, the lane pass `lane`. *(2026-08-09:)* two additions from
+the frame-sliced passes and the mesh cap:
+
+- `instance` / `lane` lines carry **`id`** (the would-be record's `id`) instead of `assetId` —
+  an entity removed by the simulation mid-rip no longer resolves to a prefab. Reasons:
+  `"removed by the simulation mid-rip; no record written"` and
+  `"failed to record (<ExceptionType>); no record written — see the log"`.
+- A mesh-capped rip (Options → mesh limit ≠ All) declares every capped-off prefab:
+  `{"kind":"mesh","assetId":…,"reason":"skipped by the mesh cap (N most-used prefabs);
+  instances kept with placement only"}` — including a stacked prefab's derived `__stack_*` ids,
+  since instances reference the part files. A capped rip therefore still validates.
 
 ---
 
@@ -1504,6 +1538,14 @@ references over one city, of which 22,952 resolve to network records and the res
 at all). The table now states the real invariants; the validator accepts stack-section id
 sharing, resolves `parent` against both record layers, and reports unresolvable parents as one
 aggregated warning rather than an error, since §4 has always made `parent` ignorable.
+
+**2026-08-09 (audit #40, the gap-close pass).** Additive producer catch-ups, no format
+break: §8c `kind: "area"` records gain per-area `bottom`/`top` (the game's closed prism — the
+"always omit top" sentence was a misreading, corrected in place); §10 gains the `instance` and
+`lane` warning kinds (carrying `id`, not `assetId`) and the mesh-cap declaration rule; the
+manifest `rasters` gains optional `water` and `terrainTiling` blocks. The mesh-limit default
+became All — the 50 cap was a dev-measurement default that made a fresh install's rip drop
+~99% of distinct meshes undeclared.
 
 ### 12.2 `schema: 2` (2026-08-09) — clip-area records carry their polygon
 

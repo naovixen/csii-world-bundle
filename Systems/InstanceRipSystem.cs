@@ -39,6 +39,9 @@ namespace Carto.Systems
         /// <summary>Whether any kind is included at all.</summary>
         public bool Any => Buildings || Props || Trees || Decals;
 
+        /// <summary>Whether no kind is excluded — the mask under which filtering is a no-op.</summary>
+        public bool Everything => Buildings && Props && Trees && Decals;
+
         /// <summary>Whether records of this contract kind are ripped.</summary>
         public bool Allows(string kind) => kind switch
         {
@@ -236,6 +239,14 @@ namespace Carto.Systems
             public Dictionary<Entity, int> VehicleCargoByPrefab = new();
             public int StackExpanded, StackRecords;
             public int ProcessFailed, SkippedStale;
+
+            /// <summary>
+            /// The entities behind those two counters. Each one is a record the bundle is
+            /// missing — mid-rip churn or a per-entity failure — and §10 wants such gaps
+            /// declared in <c>warnings.jsonl</c> rather than left to a log line.
+            /// </summary>
+            public List<int> StaleEntities = new();
+            public List<(int Id, string Error)> FailedEntities = new();
             public List<string> SkipSamples = new();
             public HashSet<int> UnresolvedPrefabs = new();
             public HashSet<string> GeometrylessPrefabs = new();
@@ -368,6 +379,16 @@ namespace Carto.Systems
         {
             if (!run.ReadingDone)
             {
+                // A faulted writer never drains the queue: the walk would pause on back-pressure
+                // for the rest of the session, ReadingDone would never turn true, and a pipeline
+                // driving the rip would wait on this stage forever. Abort the pass instead.
+                //
+                if (run.WriterTask.IsFaulted)
+                {
+                    Fail(run);
+                    return;
+                }
+
                 System.Diagnostics.Stopwatch budget = System.Diagnostics.Stopwatch.StartNew();
 
                 while (run.Index < run.Entities.Length)
@@ -385,6 +406,7 @@ namespace Carto.Systems
                     catch (Exception ex)
                     {
                         run.ProcessFailed++;
+                        run.FailedEntities.Add((run.Entities[run.Index].Index, ex.GetType().Name));
                         if (run.ProcessFailed <= 5) _log.Warn($"Failed to record object entity {run.Entities[run.Index].Index}: {ex}");
                     }
 
@@ -421,6 +443,7 @@ namespace Carto.Systems
             if (!EntityManager.Exists(entity))
             {
                 run.SkippedStale++;
+                run.StaleEntities.Add(entity.Index);
                 return;
             }
 
@@ -581,16 +604,24 @@ namespace Carto.Systems
             run.Clock.Stop();
             RipProgress.Clear();
 
+            bool writerFaulted = false;
             try
             {
                 run.WriterTask.Wait();
             }
             catch (Exception ex)
             {
+                writerFaulted = true;
                 _log.Warn($"Instance writer ended with an error: {ex}");
             }
 
             StringBuilder report = run.Report;
+
+            // The orchestrator counts a stage failed by its summary's FAILED prefix. A writer
+            // that died after the walk finished lost queued records, so the stage must not
+            // read as a success.
+            //
+            if (writerFaulted) report.Insert(0, "FAILED: the instance writer ended with an error — instances.jsonl is incomplete; see the log.\n");
             report.AppendLine($"Wrote {run.Writer.Count} instance(s) to instances.jsonl in {run.Clock.Elapsed.TotalSeconds:F1} s");
             if (_colorSets > 0)
             {
@@ -650,9 +681,15 @@ namespace Carto.Systems
             if (run.SkippedNoPrefab > 0)
             {
                 report.AppendLine($"Unresolved prefabs: {run.UnresolvedPrefabs.Count} distinct, {run.SkippedNoPrefab} instance(s) kept under synthetic ids");
-                WriteWarnings(run.OutputDirectory, run.UnresolvedPrefabs, run.GeometrylessPrefabs, report);
                 foreach (string sample in run.SkipSamples) report.AppendLine($"  e.g. {sample}");
             }
+
+            // Unconditional, matching the mesh pass: gating this on unresolved prefabs alone
+            // shipped geometryless-prefab, stale and per-entity-failure gaps undeclared whenever
+            // every prefab happened to resolve — and a rip with nothing to declare still has to
+            // clear the declarations a previous one left.
+            //
+            WriteWarnings(run, report);
             report.AppendLine($"Output: {run.Path}");
 
             _log.Info(report.ToString());
@@ -666,8 +703,50 @@ namespace Carto.Systems
 
             try
             {
-                string summary = $"Wrote {instanceCount} instance record(s), {run.AssetIds.Count} distinct assetId(s), "
+                string summary = (writerFaulted ? "FAILED: the writer ended with an error — the file is incomplete.\n" : "")
+                               + $"Wrote {instanceCount} instance record(s), {run.AssetIds.Count} distinct assetId(s), "
                                + $"in {run.Clock.Elapsed.TotalSeconds:F1} s.\n\nFull report: Logs/Carto.log";
+                Game.UI.MessageDialog dialog = new("Options.SECTION[Carto.Carto.Mod]", summary, "Common.OK");
+                Instance.UI.appBindings.ShowMessageDialog(dialog, null);
+            }
+            catch (Exception ex)
+            {
+                _log.Warn($"Could not show the instance rip result dialog: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Abort a rip whose writer task has died mid-walk. Nothing more can ever be written —
+        /// the queue will not drain again — so the only honest outcome is a failed stage:
+        /// release what the run holds and hand a summary with the <c>FAILED</c> prefix, which
+        /// is what the orchestrator counts a stage failure by, to whoever is listening.
+        /// </summary>
+        /// <param name="run">The rip whose writer faulted.</param>
+        private void Fail(InstanceRun run)
+        {
+            _run = null;
+            run.Clock.Stop();
+            RipProgress.Clear();
+
+            Exception cause = run.WriterTask.Exception?.GetBaseException();
+            _log.Error($"Instance writer faulted at {run.Index}/{run.Entities.Length} object(s); aborting the pass: {run.WriterTask.Exception}");
+
+            int written = run.Writer?.Count ?? 0;
+            Abandon(run);
+
+            string summary = $"FAILED: the instance writer faulted at {run.Index}/{run.Entities.Length} object(s) — "
+                           + $"instances.jsonl is incomplete ({written} record(s) before the fault): "
+                           + $"{cause?.Message ?? "unknown error"}\n\nFull details: Logs/Carto.log";
+
+            if (run.Completed != null)
+            {
+                try { run.Completed(summary); }
+                catch (Exception ex) { _log.Warn($"Instance rip completion callback failed: {ex}"); }
+                return;
+            }
+
+            try
+            {
                 Game.UI.MessageDialog dialog = new("Options.SECTION[Carto.Carto.Mod]", summary, "Common.OK");
                 Instance.UI.appBindings.ShowMessageDialog(dialog, null);
             }
@@ -686,10 +765,24 @@ namespace Carto.Systems
             // Let the writer drain what it holds before the file is closed under it; a run
             // abandoned mid-walk has at most the back-pressure window in flight.
             //
+            bool drained = true;
             try { run.Queue?.CompleteAdding(); } catch { /* already completed */ }
-            try { run.WriterTask?.Wait(TimeSpan.FromSeconds(10)); } catch { /* logged by Finish paths */ }
+            try { drained = run.WriterTask?.Wait(TimeSpan.FromSeconds(10)) ?? true; }
+            catch { /* completed with an error — done either way; logged by the Finish paths */ }
 
-            try { run.Writer?.Dispose(); } catch { /* already closed */ }
+            // A writer that has not stopped may still be inside a WriteLine, and closing the
+            // stream under it risks a torn record. On timeout the stream is deliberately left
+            // to the finalizer instead of being disposed under a live thread.
+            //
+            if (drained)
+            {
+                try { run.Writer?.Dispose(); } catch { /* already closed */ }
+            }
+            else
+            {
+                _log.Warn("Instance writer still running after 10 s; leaving instances.jsonl open rather than closing it mid-write.");
+            }
+
             run.Writer = null;
             if (run.Entities.IsCreated) run.Entities.Dispose();
         }
@@ -1283,14 +1376,11 @@ namespace Carto.Systems
         /// The contract defines this layer as advisory so a consumer may ignore it — its purpose is
         /// to make a stand-in asset explicable rather than mysterious.
         /// </summary>
-        /// <param name="outputDirectory">The bundle root.</param>
-        /// <param name="unresolvedPrefabs">The prefab entity indices that would not resolve.</param>
-        /// <param name="geometrylessPrefabs">Asset ids referenced here that no mesh will back.</param>
+        /// <param name="run">The finished run, holding every declaration set.</param>
         /// <param name="report">The report to note the outcome in.</param>
-        private void WriteWarnings(string outputDirectory, HashSet<int> unresolvedPrefabs,
-                                   HashSet<string> geometrylessPrefabs, StringBuilder report)
+        private void WriteWarnings(InstanceRun run, StringBuilder report)
         {
-            string path = IOUtils.CombinePath(outputDirectory, "warnings.jsonl");
+            string path = IOUtils.CombinePath(run.OutputDirectory, "warnings.jsonl");
 
             try
             {
@@ -1317,7 +1407,7 @@ namespace Carto.Systems
                 using System.IO.StreamWriter writer = new(path, false, new System.Text.UTF8Encoding(false)) { NewLine = "\n" };
                 foreach (string line in kept) writer.WriteLine(line);
 
-                foreach (int prefabIndex in unresolvedPrefabs)
+                foreach (int prefabIndex in run.UnresolvedPrefabs)
                 {
                     Dictionary<string, object> warning = new()
                     {
@@ -1328,7 +1418,7 @@ namespace Carto.Systems
                     writer.WriteLine(Newtonsoft.Json.JsonConvert.SerializeObject(warning, Newtonsoft.Json.Formatting.None));
                 }
 
-                foreach (string assetId in geometrylessPrefabs)
+                foreach (string assetId in run.GeometrylessPrefabs)
                 {
                     Dictionary<string, object> warning = new()
                     {
@@ -1340,9 +1430,39 @@ namespace Carto.Systems
                     writer.WriteLine(Newtonsoft.Json.JsonConvert.SerializeObject(warning, Newtonsoft.Json.Formatting.None));
                 }
 
-                report.AppendLine($"Wrote warnings.jsonl ({unresolvedPrefabs.Count + geometrylessPrefabs.Count} entries: "
-                                + $"{unresolvedPrefabs.Count} unresolved, {geometrylessPrefabs.Count} without geometry), "
-                                + $"keeping {kept.Count} from the mesh pass");
+                // Mid-rip churn and per-entity failures: each is a record instances.jsonl is
+                // missing, and §10 wants a missing object explicable rather than mysterious.
+                // These lines carry the entity id (the record's `id` domain) instead of an
+                // assetId — the stale ones no longer exist to ask for a prefab at all.
+                //
+                foreach (int entityId in run.StaleEntities)
+                {
+                    Dictionary<string, object> warning = new()
+                    {
+                        ["kind"] = "instance",
+                        ["id"] = entityId,
+                        ["reason"] = "removed by the simulation mid-rip; no record written"
+                    };
+                    writer.WriteLine(Newtonsoft.Json.JsonConvert.SerializeObject(warning, Newtonsoft.Json.Formatting.None));
+                }
+
+                foreach ((int entityId, string error) in run.FailedEntities)
+                {
+                    Dictionary<string, object> warning = new()
+                    {
+                        ["kind"] = "instance",
+                        ["id"] = entityId,
+                        ["reason"] = $"failed to record ({error}); no record written — see the log"
+                    };
+                    writer.WriteLine(Newtonsoft.Json.JsonConvert.SerializeObject(warning, Newtonsoft.Json.Formatting.None));
+                }
+
+                int total = run.UnresolvedPrefabs.Count + run.GeometrylessPrefabs.Count
+                          + run.StaleEntities.Count + run.FailedEntities.Count;
+                report.AppendLine($"Wrote warnings.jsonl ({total} entries: "
+                                + $"{run.UnresolvedPrefabs.Count} unresolved, {run.GeometrylessPrefabs.Count} without geometry, "
+                                + $"{run.StaleEntities.Count} removed mid-rip, {run.FailedEntities.Count} failed), "
+                                + $"keeping {kept.Count} from the other passes");
             }
             catch (Exception ex)
             {
@@ -1352,9 +1472,10 @@ namespace Carto.Systems
 
         /// <summary>
         /// Whether a <c>warnings.jsonl</c> line is one this pass writes.
-        /// The instance pass owns <c>prefab</c>; the mesh pass owns <c>mesh</c>, <c>material</c>
-        /// and <c>texture</c>. Each rewrites only its own kinds, so the two can run in either
-        /// order, and re-running one does not double or erase the other's declarations.
+        /// The instance pass owns <c>prefab</c> and <c>instance</c>; the mesh pass owns
+        /// <c>mesh</c>, <c>material</c> and <c>texture</c>; the lane pass owns <c>lane</c>.
+        /// Each rewrites only its own kinds, so the passes can run in any order, and re-running
+        /// one does not double or erase another's declarations.
         /// </summary>
         /// <param name="line">One line of the file.</param>
         /// <returns>Whether this pass owns it.</returns>
@@ -1362,7 +1483,8 @@ namespace Carto.Systems
         {
             try
             {
-                return Newtonsoft.Json.Linq.JObject.Parse(line)["kind"]?.ToString() == "prefab";
+                string kind = Newtonsoft.Json.Linq.JObject.Parse(line)["kind"]?.ToString();
+                return (kind == "prefab") || (kind == "instance");
             }
             catch (Exception)
             {

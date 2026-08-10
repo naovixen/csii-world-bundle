@@ -196,6 +196,7 @@ namespace Carto
             RipObjectsProps = true;
             RipObjectsTrees = true;
             RipObjectsDecals = true;
+            RipMeshLimit = 0;
             RipAppearanceColors = true;
             RipAppearanceLights = true;
             RipNetworks = true;
@@ -874,12 +875,16 @@ namespace Carto
         /// real cost gets measured before it is paid.<br/>
         /// （密集的城市會參照數千個相異預製模板，而單棟完整細節建築即達數 MB，
         /// 因此未受限的擷取是數 GB 等級的操作。限制為最常用的預製模板，
-        /// 能以一小部分的輸出量涵蓋城市的大部分，藉此在付出代價前先量測實際成本。）
+        /// 能以一小部分的輸出量涵蓋城市的大部分，藉此在付出代價前先量測實際成本。）<br/><br/>
+        /// The default is All (0): the 50 cap was a Phase-3 measurement default, and left in place
+        /// it made a fresh install's one-button rip drop ~99% of the meshes the instance layer
+        /// references (audit P1). A capped rip is still legal — every capped-off prefab is
+        /// declared in warnings.jsonl — but it is something the user opts into, not the default.
         /// </summary>
         [SettingsUISection(RipperTab, RipperMeshGroup)]
         [SettingsUIDropdown(typeof(Settings), nameof(GetRipMeshLimits))]
         [SettingsUIDisableByCondition(typeof(Settings), nameof(RipObjects), invert: true)]
-        public int RipMeshLimit { get; set; } = 50;
+        public int RipMeshLimit { get; set; } = 0;
 
         public DropdownItem<int>[] GetRipMeshLimits()
         {

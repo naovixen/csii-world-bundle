@@ -103,8 +103,8 @@ namespace Carto.Systems
         /// </summary>
         private class LaneRun
         {
-            /// <summary>The record file being written.</summary>
-            public string Path;
+            /// <summary>The bundle root, and the record file being written.</summary>
+            public string OutputDirectory, Path;
 
             /// <summary>The lanes to walk, held across frames (persistent allocator).</summary>
             public NativeArray<Entity> Entities;
@@ -129,6 +129,14 @@ namespace Carto.Systems
             // The tallies the walk keeps.
             public Dictionary<string, int> ByKind = new();
             public int Secondary, Degenerate, ProcessFailed, SkippedStale;
+
+            /// <summary>
+            /// The entities behind the failed and stale counters. Each is a record the bundle
+            /// is missing, and §10 wants such gaps declared in <c>warnings.jsonl</c> rather
+            /// than left to a log line.
+            /// </summary>
+            public List<int> StaleEntities = new();
+            public List<(int Id, string Error)> FailedEntities = new();
             public Dictionary<Entity, bool> PrefabHasGeometry = new();
             public Dictionary<Entity, int> DrawnLanesByPrefab = new();
             public int DrawnLanes;
@@ -180,6 +188,7 @@ namespace Carto.Systems
 
             LaneRun run = new()
             {
+                OutputDirectory = outputDirectory,
                 Path = IOUtils.CombinePath(outputDirectory, "lanes.jsonl"),
                 Entities = _laneQuery.ToEntityArray(Allocator.Persistent),
                 Completed = completed
@@ -216,6 +225,16 @@ namespace Carto.Systems
         {
             if (!run.ReadingDone)
             {
+                // A faulted writer never drains the queue: the walk would pause on back-pressure
+                // for the rest of the session, ReadingDone would never turn true, and a pipeline
+                // driving the rip would wait on this stage forever. Abort the pass instead.
+                //
+                if (run.WriterTask.IsFaulted)
+                {
+                    Fail(run);
+                    return;
+                }
+
                 System.Diagnostics.Stopwatch budget = System.Diagnostics.Stopwatch.StartNew();
 
                 while (run.Index < run.Entities.Length)
@@ -233,6 +252,7 @@ namespace Carto.Systems
                     catch (Exception ex)
                     {
                         run.ProcessFailed++;
+                        run.FailedEntities.Add((run.Entities[run.Index].Index, ex.GetType().Name));
                         if (run.ProcessFailed <= 5) _log.Warn($"Failed to record lane entity {run.Entities[run.Index].Index}: {ex}");
                     }
 
@@ -274,6 +294,7 @@ namespace Carto.Systems
             if (!EntityManager.Exists(entity) || !EntityManager.HasComponent<Curve>(entity))
             {
                 run.SkippedStale++;
+                run.StaleEntities.Add(entity.Index);
                 return;
             }
 
@@ -338,16 +359,24 @@ namespace Carto.Systems
             run.Clock.Stop();
             RipProgress.Clear();
 
+            bool writerFaulted = false;
             try
             {
                 run.WriterTask.Wait();
             }
             catch (Exception ex)
             {
+                writerFaulted = true;
                 _log.Warn($"Lane writer ended with an error: {ex}");
             }
 
             StringBuilder report = run.Report;
+
+            // The orchestrator counts a stage failed by its summary's FAILED prefix. A writer
+            // that died after the walk finished lost queued records, so the stage must not
+            // read as a success.
+            //
+            if (writerFaulted) report.Insert(0, "FAILED: the lane writer ended with an error — lanes.jsonl is incomplete; see the log.\n");
             report.AppendLine($"Wrote {run.Writer.Count} lane(s) to lanes.jsonl in {run.Clock.Elapsed.TotalSeconds:F1} s");
             foreach (KeyValuePair<string, int> pair in run.ByKind) report.AppendLine($"  {pair.Key}: {pair.Value}");
             report.AppendLine($"  {run.Secondary} derived from a master lane");
@@ -376,6 +405,11 @@ namespace Carto.Systems
             int laneCount = run.Writer.Count;
             Abandon(run);
 
+            // Unconditional, matching the instance pass: a rip with nothing to declare still
+            // has to clear the lane declarations a previous one left.
+            //
+            WriteWarnings(run, report);
+
             _log.Info(report.ToString());
 
             if (run.Completed != null)
@@ -387,7 +421,49 @@ namespace Carto.Systems
 
             try
             {
-                string summary = $"Wrote {laneCount} lane record(s) in {run.Clock.Elapsed.TotalSeconds:F1} s.\n\nFull report: Logs/Carto.log";
+                string summary = (writerFaulted ? "FAILED: the writer ended with an error — the file is incomplete.\n" : "")
+                               + $"Wrote {laneCount} lane record(s) in {run.Clock.Elapsed.TotalSeconds:F1} s.\n\nFull report: Logs/Carto.log";
+                Game.UI.MessageDialog dialog = new("Options.SECTION[Carto.Carto.Mod]", summary, "Common.OK");
+                Instance.UI.appBindings.ShowMessageDialog(dialog, null);
+            }
+            catch (Exception ex)
+            {
+                _log.Warn($"Could not show the lane rip result dialog: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Abort a rip whose writer task has died mid-walk. Nothing more can ever be written —
+        /// the queue will not drain again — so the only honest outcome is a failed stage:
+        /// release what the run holds and hand a summary with the <c>FAILED</c> prefix, which
+        /// is what the orchestrator counts a stage failure by, to whoever is listening.
+        /// </summary>
+        /// <param name="run">The rip whose writer faulted.</param>
+        private void Fail(LaneRun run)
+        {
+            _run = null;
+            run.Clock.Stop();
+            RipProgress.Clear();
+
+            Exception cause = run.WriterTask.Exception?.GetBaseException();
+            _log.Error($"Lane writer faulted at {run.Index}/{run.Entities.Length} lane(s); aborting the pass: {run.WriterTask.Exception}");
+
+            int written = run.Writer?.Count ?? 0;
+            Abandon(run);
+
+            string summary = $"FAILED: the lane writer faulted at {run.Index}/{run.Entities.Length} lane(s) — "
+                           + $"lanes.jsonl is incomplete ({written} record(s) before the fault): "
+                           + $"{cause?.Message ?? "unknown error"}\n\nFull details: Logs/Carto.log";
+
+            if (run.Completed != null)
+            {
+                try { run.Completed(summary); }
+                catch (Exception ex) { _log.Warn($"Lane rip completion callback failed: {ex}"); }
+                return;
+            }
+
+            try
+            {
                 Game.UI.MessageDialog dialog = new("Options.SECTION[Carto.Carto.Mod]", summary, "Common.OK");
                 Instance.UI.appBindings.ShowMessageDialog(dialog, null);
             }
@@ -405,12 +481,107 @@ namespace Carto.Systems
         {
             // Let the writer drain what it holds before the file is closed under it.
             //
+            bool drained = true;
             try { run.Queue?.CompleteAdding(); } catch { /* already completed */ }
-            try { run.WriterTask?.Wait(TimeSpan.FromSeconds(10)); } catch { /* logged by Finish paths */ }
+            try { drained = run.WriterTask?.Wait(TimeSpan.FromSeconds(10)) ?? true; }
+            catch { /* completed with an error — done either way; logged by the Finish paths */ }
 
-            try { run.Writer?.Dispose(); } catch { /* already closed */ }
+            // A writer that has not stopped may still be inside a WriteLine, and closing the
+            // stream under it risks a torn record. On timeout the stream is deliberately left
+            // to the finalizer instead of being disposed under a live thread.
+            //
+            if (drained)
+            {
+                try { run.Writer?.Dispose(); } catch { /* already closed */ }
+            }
+            else
+            {
+                _log.Warn("Lane writer still running after 10 s; leaving lanes.jsonl open rather than closing it mid-write.");
+            }
+
             run.Writer = null;
             if (run.Entities.IsCreated) run.Entities.Dispose();
+        }
+
+        /// <summary>
+        /// Declare this pass's gaps in the bundle's <c>warnings.jsonl</c> — one line per lane
+        /// the simulation removed mid-rip or that failed to record, so a missing graph edge is
+        /// explicable rather than mysterious (contract §10). The same ownership-merge scheme as
+        /// the instance and mesh passes: only <c>kind: "lane"</c> lines are this pass's to
+        /// replace, so the passes can run in any order without erasing each other.
+        /// </summary>
+        /// <param name="run">The finished run.</param>
+        /// <param name="report">The report to note the outcome in.</param>
+        private void WriteWarnings(LaneRun run, StringBuilder report)
+        {
+            string path = IOUtils.CombinePath(run.OutputDirectory, "warnings.jsonl");
+
+            try
+            {
+                string directory = System.IO.Path.GetDirectoryName(path);
+                if (!string.IsNullOrEmpty(directory) && !System.IO.Directory.Exists(directory)) System.IO.Directory.CreateDirectory(directory);
+
+                List<string> kept = new();
+                if (System.IO.File.Exists(path))
+                {
+                    foreach (string line in System.IO.File.ReadAllLines(path))
+                    {
+                        if (string.IsNullOrWhiteSpace(line)) continue;
+                        if (!IsOwnedByLaneRip(line)) kept.Add(line);
+                    }
+                }
+
+                using System.IO.StreamWriter writer = new(path, false, new System.Text.UTF8Encoding(false)) { NewLine = "\n" };
+                foreach (string line in kept) writer.WriteLine(line);
+
+                foreach (int entityId in run.StaleEntities)
+                {
+                    Dictionary<string, object> warning = new()
+                    {
+                        ["kind"] = "lane",
+                        ["id"] = entityId,
+                        ["reason"] = "removed by the simulation mid-rip; no record written"
+                    };
+                    writer.WriteLine(Newtonsoft.Json.JsonConvert.SerializeObject(warning, Newtonsoft.Json.Formatting.None));
+                }
+
+                foreach ((int entityId, string error) in run.FailedEntities)
+                {
+                    Dictionary<string, object> warning = new()
+                    {
+                        ["kind"] = "lane",
+                        ["id"] = entityId,
+                        ["reason"] = $"failed to record ({error}); no record written — see the log"
+                    };
+                    writer.WriteLine(Newtonsoft.Json.JsonConvert.SerializeObject(warning, Newtonsoft.Json.Formatting.None));
+                }
+
+                report.AppendLine($"Wrote warnings.jsonl ({run.StaleEntities.Count + run.FailedEntities.Count} lane entries: "
+                                + $"{run.StaleEntities.Count} removed mid-rip, {run.FailedEntities.Count} failed), "
+                                + $"keeping {kept.Count} from the other passes");
+            }
+            catch (Exception ex)
+            {
+                _log.Warn($"Could not write warnings.jsonl: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Whether a <c>warnings.jsonl</c> line is one this pass writes — see
+        /// <see cref="WriteWarnings"/> for the kind ownership scheme.
+        /// </summary>
+        /// <param name="line">One line of the file.</param>
+        /// <returns>Whether this pass owns it.</returns>
+        private static bool IsOwnedByLaneRip(string line)
+        {
+            try
+            {
+                return Newtonsoft.Json.Linq.JObject.Parse(line)["kind"]?.ToString() == "lane";
+            }
+            catch (Exception)
+            {
+                return false;
+            }
         }
 
         /// <summary>

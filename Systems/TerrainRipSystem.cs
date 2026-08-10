@@ -85,13 +85,19 @@ namespace Carto.Systems
         EntityQuery _clipAreaQuery;
 
         // Stamp tallies for the report.
-        int _edgesStamped, _nodesStamped, _orphansStamped, _skippedForm, _skippedNoFlatten;
+        int _edgesStamped, _nodesStamped, _orphansStamped, _skippedForm, _skippedNoFlatten, _skippedWaterway;
         int _cutEdges, _cutNodes, _cutOrphans, _cutAreas, _cutRoundaboutApprox;
 
         /// <summary>
         /// The clip volumes collected during the clip walk, for <c>clipvolumes.jsonl</c>.
         /// </summary>
         List<Dictionary<string, object>> _clipVolumes;
+
+        /// <summary>
+        /// Area prefab textures captured during the surface-area walk, PNG-encoded and written by
+        /// the writer task instead of on the main thread (absolute path → captured pixels).
+        /// </summary>
+        List<KeyValuePair<string, PendingTexture>> _pendingAreaTextures;
 
         /// <summary>
         /// The event triggered when the system instance is created.
@@ -222,7 +228,7 @@ namespace Carto.Systems
             if (ground)
             {
                 surfaceIndex = new byte[width * height];
-                _edgesStamped = _nodesStamped = _orphansStamped = _skippedForm = _skippedNoFlatten = 0;
+                _edgesStamped = _nodesStamped = _orphansStamped = _skippedForm = _skippedNoFlatten = _skippedWaterway = 0;
                 StampRoadbed(surfaceIndex, heightData);
 
                 int roadbedCells = 0;
@@ -230,7 +236,8 @@ namespace Carto.Systems
                 report.AppendLine($"Roadbed: {_edgesStamped} edge(s), {_nodesStamped} node strip(s), {_orphansStamped} orphan cap(s) stamped; "
                                 + $"{roadbedCells} cell(s) = {roadbedCells * 100.0 / surfaceIndex.Length:F1}% of the map");
                 report.AppendLine($"  skipped {_skippedNoFlatten} edge(s) whose prefab does not flatten terrain, "
-                                + $"{_skippedForm} elevated/tunnel composition(s) (their ground is not pulled to the road)");
+                                + $"{_skippedForm} elevated/tunnel composition(s) (their ground is not pulled to the road), "
+                                + $"{_skippedWaterway} waterway composition(s) (canal beds are shifted down, not roadbed)");
             }
 
             // ---- 2b. The clip volumes, collected from the game's clip sections. The game never
@@ -256,7 +263,6 @@ namespace Carto.Systems
 
                 report.AppendLine($"Clip: {_cutEdges} edge(s), {_cutNodes} node strip(s), "
                                 + $"{_cutOrphans} orphan cap(s), {_cutAreas} clip area(s) collected");
-                WriteClipVolumes(outputDirectory, report);
                 if (_cutRoundaboutApprox > 0)
                     report.AppendLine($"  APPROXIMATED: {_cutRoundaboutApprox} roundabout node(s) cut with raw composition "
                                     + "flags (the game's AddNode state-shedding and ring trims omitted — can over-cut, never under)");
@@ -278,6 +284,11 @@ namespace Carto.Systems
                     : "Water: no simulation data resident; layer omitted");
             }
 
+            // ---- 3a. The water appearance parameters — what the level grid alone cannot say:
+            // colour, absorption, smoothness, sea level. One managed prefab read.
+            //
+            Dictionary<string, object> waterBlock = water ? CaptureWaterSettings(report) : null;
+
             // ---- 4. The theme's ground textures, read off the live global bindings.
             //
             Dictionary<string, string> surfaceTextures = ground ? CaptureSurfaceTextures(terrainDirectory, report) : null;
@@ -295,6 +306,11 @@ namespace Carto.Systems
                 splatPixels = CaptureSplatmap(surfaceTextures, out splatBlock, report);
                 userSplatPixels = CaptureUserSplatmap(out userSplatBlock, report);
             }
+
+            // ---- 4a2. The ground tiling parameters — the metres-per-repeat the theme authors
+            // per layer, without which every consumer guesses (the §39 lesson, on terrain).
+            //
+            Dictionary<string, object> tilingBlock = ground ? CaptureTerrainTiling(report) : null;
 
             // ---- 4b. The backdrop terrain that fills the horizon beyond the playable border.
             //
@@ -334,6 +350,8 @@ namespace Carto.Systems
             if (splatBlock != null) rasters["splatmap"] = splatBlock;
             if (userSplatBlock != null) rasters["userSplatmap"] = userSplatBlock;
             if (worldBlock != null) rasters["worldTerrain"] = worldBlock;
+            if (waterBlock != null) rasters["water"] = waterBlock;
+            if (tilingBlock != null) rasters["terrainTiling"] = tilingBlock;
 
             // The sidecar merges like materials.json: a block for a layer this run did not touch
             // survives, so a partial terrain re-rip (one sub-toggle) cannot orphan the layers a
@@ -346,7 +364,7 @@ namespace Carto.Systems
                     var existing = JsonConvert.DeserializeObject<Dictionary<string, object>>(File.ReadAllText(rastersPath));
                     if (existing != null)
                     {
-                        foreach (string block in new[] { "splatmap", "userSplatmap", "worldTerrain" })
+                        foreach (string block in new[] { "splatmap", "userSplatmap", "worldTerrain", "water", "terrainTiling" })
                         {
                             if (!rasters.ContainsKey(block) && existing.TryGetValue(block, out object kept))
                                 rasters[block] = kept;
@@ -359,10 +377,28 @@ namespace Carto.Systems
                 }
             }
 
+            string clipVolumesNote = null;
             try
             {
                 Task writer = Task.Run(() =>
                 {
+                    // The ~50k-record serialisation used to run on the main thread; the note it
+                    // produces joins the report after the wait (a StringBuilder is not
+                    // thread-safe, so the task never touches `report` itself).
+                    //
+                    if (clips) clipVolumesNote = WriteClipVolumes(outputDirectory);
+
+                    if (_pendingAreaTextures != null)
+                    {
+                        foreach (KeyValuePair<string, PendingTexture> pending in _pendingAreaTextures)
+                        {
+                            File.WriteAllBytes(pending.Key,
+                                               Png.EncodeRgba(pending.Value.Pixels,
+                                                              pending.Value.Width, pending.Value.Height));
+                        }
+                        _pendingAreaTextures = null;
+                    }
+
                     if (heights)
                     {
                         File.WriteAllBytes(IOUtils.CombinePath(terrainDirectory, "heightmap.png"),
@@ -438,6 +474,7 @@ namespace Carto.Systems
                 report.AppendLine($"Write failed: {ex.Message}");
             }
 
+            if (clipVolumesNote != null) report.AppendLine(clipVolumesNote);
             report.AppendLine($"Output: {terrainDirectory}");
             _log.Info(report.ToString());
             return report.ToString();
@@ -646,6 +683,7 @@ namespace Carto.Systems
             Dictionary<Entity, string> prefabKeys = new();
             HashSet<string> usedKeys = new();
             Dictionary<string, object> catalogue = new();
+            _pendingAreaTextures = new List<KeyValuePair<string, PendingTexture>>();
 
             try
             {
@@ -760,7 +798,8 @@ namespace Carto.Systems
                     unresolvedPrefabs++;
             }
 
-            report.AppendLine($"Surface areas: {written} area(s) over {catalogue.Count} prefab(s)"
+            report.AppendLine($"Surface areas: {written} area(s) over {catalogue.Count} prefab(s); "
+                            + $"{_pendingAreaTextures.Count} texture(s) queued for the writer task"
                             + ((skippedEmpty > 0) ? $"; {skippedEmpty} empty skipped" : "")
                             + ((skippedUnpainted > 0)
                                 ? $"; {skippedUnpainted} unpainted area(s) excluded (prefab has no RenderedArea — "
@@ -858,19 +897,32 @@ namespace Carto.Systems
                             (double)EntityManager.GetComponentData<RenderedAreaData>(prefab).m_HeightOffset, 4);
                     }
 
+                    // The PNG encode is the expensive half; the capture (GPU readback) must stay
+                    // on the main thread, so the pixels are queued and the writer task encodes.
+                    //
                     void WriteAreaTexture(PendingTexture captured)
                     {
                         if (captured?.Pixels == null) return;
-                        byte[] png = Png.EncodeRgba(captured.Pixels, captured.Width, captured.Height);
                         string fileName = $"area_{key}.png";
                         string surfacesDirectory = IOUtils.CombinePath(terrainDirectory, "surfaces");
                         if (!Directory.Exists(surfacesDirectory)) Directory.CreateDirectory(surfacesDirectory);
-                        File.WriteAllBytes(IOUtils.CombinePath(surfacesDirectory, fileName), png);
+                        _pendingAreaTextures.Add(new KeyValuePair<string, PendingTexture>(
+                            IOUtils.CombinePath(surfacesDirectory, fileName), captured));
                         entry["texture"] = $"terrain/surfaces/{fileName}";
                     }
 
+                    // The branch keys on `m_Version`, as the game's batch build effectively
+                    // does: the base material is `m_Material` when present (else the global
+                    // `AreasConfigurationPrefab.m_RenderedAreaMaterial` template, with
+                    // `m_Version` forced to `OverrideMaterial`), and the authored fields are
+                    // pushed onto the clone whenever the version says `OverrideMaterial` —
+                    // which a surface can carry WITH a baked material. Keying on
+                    // `material == null` alone missed that case (audit T-F13b).
+                    //
                     Material material = rendered.m_Material;
-                    if (material != null)
+                    bool overridden = (rendered.m_Version == RenderedArea.Version.OverrideMaterial)
+                                   || (material == null);
+                    if (!overridden)
                     {
                         // `RenderedArea.Version.Original` — vanilla surfaces: the baked material
                         // carries colour and base map directly.
@@ -894,14 +946,13 @@ namespace Carto.Systems
                     }
                     else
                     {
-                        // `RenderedArea.Version.OverrideMaterial` — editor-authored surfaces,
-                        // which is every asset-pack surface. The game (`AreaBatchSystem`'s
-                        // batch build) clones the global `AreasConfigurationPrefab.
-                        // m_RenderedAreaMaterial` template and pushes the authored fields onto
-                        // the clone: `_BaseColor` := `m_BaseColor`, `_BaseColorMap` := the
-                        // `m_BaseColorMap` texture asset (a null reference means no texture at
-                        // all, not a template fallback). Reading only `m_Material` left these
-                        // colourless — the grey-fields defect.
+                        // `OverrideMaterial` — editor-authored surfaces, which is every
+                        // asset-pack surface. The game pushes `_BaseColor` := `m_BaseColor`
+                        // always. Maps follow `Initialize`'s rule: when ANY of the three
+                        // override maps is authored, `_BaseColorMap` := `m_BaseColorMap` (a
+                        // null asset CLEARS the slot, not a fallback); with none authored, the
+                        // base material keeps its own map — the template has none, but a baked
+                        // `m_Material` may.
                         //
                         Color color = rendered.m_BaseColor;
                         entry["color"] = new[]
@@ -913,7 +964,19 @@ namespace Carto.Systems
                         TextureAsset baseColorMap = null;
                         if (rendered.m_BaseColorMap != null) baseColorMap = rendered.m_BaseColorMap;
                         if (baseColorMap != null)
+                        {
                             WriteAreaTexture(MaterialRipSystem.ReadBack(baseColorMap, key, 1024));
+                        }
+                        else if ((material != null)
+                                 && (rendered.m_NormalMap == null) && (rendered.m_MaskMap == null))
+                        {
+                            Texture texture = material.mainTexture;
+                            if ((texture == null) && material.HasProperty("_BaseColorMap"))
+                                texture = material.GetTexture("_BaseColorMap");
+
+                            if (texture != null)
+                                WriteAreaTexture(MaterialRipSystem.Capture(texture, key, name, 1024));
+                        }
                     }
                 }
             }
@@ -1383,6 +1446,211 @@ namespace Carto.Systems
             }
         }
 
+        /// <summary>
+        /// Read the water appearance parameters — the authored numbers every water pixel's look
+        /// depends on, which the level grid alone cannot carry.
+        /// <c>WaterRenderSystem</c> resolves one <c>WaterRenderSettingsPrefab</c> per map
+        /// (<c>currentWaterRenderSettings</c>, the same entity its <c>ApplyMaterialParams</c>
+        /// reads) and pushes the fields verbatim onto every <c>WaterSurface</c>; the one bind-time
+        /// transform is <c>endSmoothness = min(smoothnessDistant, smoothnessClose)</c>. Shipped as
+        /// a <c>rasters.json</c> block like <c>splatMultiplier</c>/<c>splatPower</c>, so the
+        /// manifest scan lifts it with the grids it colours.
+        /// </summary>
+        /// <param name="report">The report to note the outcome in.</param>
+        /// <returns>The <c>rasters.json</c> "water" block, or <c>null</c>.</returns>
+        private Dictionary<string, object> CaptureWaterSettings(StringBuilder report)
+        {
+            try
+            {
+                Game.Rendering.WaterRenderSystem render =
+                    World.GetOrCreateSystemManaged<Game.Rendering.WaterRenderSystem>();
+                Entity settingsEntity = render.currentWaterRenderSettings;
+                if ((settingsEntity == Entity.Null)
+                    || !Instance.Prefab.TryGetPrefab(settingsEntity,
+                                                     out Game.Prefabs.Water.WaterRenderSettingsPrefab settings)
+                    || (settings == null))
+                {
+                    report.AppendLine("Water appearance: no render settings prefab resolved; block omitted");
+                    return null;
+                }
+
+                double[] Rgba(Color color) => new[]
+                {
+                    Math.Round((double)color.r, 4), Math.Round((double)color.g, 4),
+                    Math.Round((double)color.b, 4), Math.Round((double)color.a, 4)
+                };
+
+                float seaLevel = Instance.Water.SeaLevel;
+                var block = new Dictionary<string, object>
+                {
+                    ["semantics"] = "authored WaterRenderSettingsPrefab appearance parameters, "
+                                  + "applied verbatim by WaterRenderSystem.ApplyMaterialParams "
+                                  + "(the one transform: endSmoothness = min(smoothnessDistant, "
+                                  + "smoothnessClose)); seaLevel is WaterSystem.SeaLevel in "
+                                  + "world metres; ranges are [start, distance] camera metres",
+                    ["prefab"] = settings.name,
+                    ["seaLevel"] = Math.Round((double)seaLevel, 3),
+                    ["waterColor"] = Rgba(settings.m_WaterColor),
+                    ["scatteringColor"] = Rgba(settings.m_WaterScatteringColor),
+                    ["absorptionDistance"] = Math.Round((double)settings.m_AbsorptionDistance, 4),
+                    ["maxRefractionDistance"] = Math.Round((double)settings.m_MaxRefractionDistance, 4),
+                    ["smoothnessClose"] = Math.Round((double)settings.m_SmoothnessClose, 4),
+                    ["smoothnessDistant"] = Math.Round((double)settings.m_SmoothnessDistant, 4),
+                    ["smoothnessRange"] = new[]
+                    {
+                        Math.Round((double)settings.m_SmoothnessRange.x, 3),
+                        Math.Round((double)settings.m_SmoothnessRange.y, 3)
+                    },
+                    ["ambientScattering"] = Math.Round((double)settings.m_AmbientScattering, 4),
+                    ["heightScattering"] = Math.Round((double)settings.m_HeightScattering, 4),
+                    ["displacementScattering"] = Math.Round((double)settings.m_DisplacementScattering, 4),
+                    ["directLightTipScattering"] = Math.Round((double)settings.m_DirectLightTipScattering, 4),
+                    ["directLightBodyScattering"] = Math.Round((double)settings.m_DirectLightBodyScattering, 4),
+                    ["foamAmount"] = Math.Round((double)settings.m_FoamAmount, 4),
+                    ["foamFadeRange"] = new[]
+                    {
+                        Math.Round((double)settings.m_FoamFadeRange.x, 3),
+                        Math.Round((double)settings.m_FoamFadeRange.y, 3)
+                    },
+                    ["causticsIntensity"] = Math.Round((double)settings.m_CausticsIntensity, 4),
+                    ["causticsPlaneDistance"] = Math.Round((double)settings.m_CausticsPlaneDistance, 4),
+                    ["wavesMultiplier"] = Math.Round((double)settings.m_WavesMultiplier, 4),
+                    ["lakeWavesMultiplier"] = Math.Round((double)settings.m_LakeWavesMultiplier, 4),
+                    ["minWaterAmountForWaves"] = Math.Round((double)settings.m_MinWaterAmountForWaves, 4),
+                    ["ripplesWindSpeed"] = Math.Round((double)settings.m_RipplesWindSpeed, 4),
+                    ["ripplesChaos"] = Math.Round((double)settings.m_RipplesChaos, 4)
+                };
+
+                report.AppendLine($"Water appearance: '{settings.name}' captured (sea level {seaLevel:F1} m)");
+                return block;
+            }
+            catch (Exception ex)
+            {
+                _log.Warn($"Water appearance capture failed: {ex.Message}");
+                report.AppendLine($"Water appearance: {ex.Message}; block omitted");
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// Read the theme's ground tiling — the authored metres-per-repeat behind every ground
+        /// texture in <c>terrain/surfaces/</c>, which consumers otherwise guess (the §39 lesson).
+        /// <c>TerrainMaterialSystem</c> resolves one <c>TerrainRenderSettingsPrefab</c> per map
+        /// (<c>currentTerrainRenderSettings</c>) and binds each layer's
+        /// <c>TerrainTilingData</c>/<c>TerrainLodBlendData</c> verbatim as
+        /// <c>_Terrain*TextureTiling(Blend)</c>; the terrain shader's UV spans the playable area
+        /// (<c>colossal_TerrainScale = 1 / playableArea</c>), so a tiling value is the repeat
+        /// count across it. The extras tile with the grass layer
+        /// (<c>_TerrainExtraTextureTiling</c> is bound from <c>m_TerrainGrassTiling</c>) and
+        /// carry their four shading scalars instead; only extra1/extra2 ship — the user splatmap
+        /// cannot weight extra3/extra4 (see <see cref="CountPaintableExtras"/>).
+        /// </summary>
+        /// <param name="report">The report to note the outcome in.</param>
+        /// <returns>The <c>rasters.json</c> "terrainTiling" block, or <c>null</c>.</returns>
+        private Dictionary<string, object> CaptureTerrainTiling(StringBuilder report)
+        {
+            try
+            {
+                Game.Rendering.TerrainMaterialSystem materials =
+                    World.GetOrCreateSystemManaged<Game.Rendering.TerrainMaterialSystem>();
+                Entity settingsEntity = materials.currentTerrainRenderSettings;
+                if ((settingsEntity == Entity.Null)
+                    || !Instance.Prefab.TryGetPrefab(settingsEntity,
+                                                     out Game.Prefabs.Terrain.TerrainRenderSettingsPrefab settings)
+                    || (settings == null))
+                {
+                    report.AppendLine("Terrain tiling: no render settings prefab resolved; block omitted");
+                    return null;
+                }
+
+                float2 area = Instance.Terrain.playableArea;
+
+                Dictionary<string, object> Ground(Game.Prefabs.Terrain.TerrainTilingData tiling,
+                                                  Game.Prefabs.Terrain.TerrainLodBlendData blend)
+                {
+                    return new Dictionary<string, object>
+                    {
+                        ["tiling"] = new[]
+                        {
+                            Math.Round((double)tiling.m_NearTiling, 3),
+                            Math.Round((double)tiling.m_MidTiling, 3),
+                            Math.Round((double)tiling.m_FarTiling, 3)
+                        },
+                        ["metresPerRepeat"] = new[]
+                        {
+                            Math.Round(area.x / math.max(tiling.m_NearTiling, 0.001f), 4),
+                            Math.Round(area.x / math.max(tiling.m_MidTiling, 0.001f), 4),
+                            Math.Round(area.x / math.max(tiling.m_FarTiling, 0.001f), 4)
+                        },
+                        ["lodBlend"] = new[]
+                        {
+                            Math.Round((double)blend.m_MidBlendStart, 3),
+                            Math.Round((double)blend.m_MidBlendEnd, 3),
+                            Math.Round((double)blend.m_FarBlendStart, 3),
+                            Math.Round((double)blend.m_FarBlendEnd, 3)
+                        }
+                    };
+                }
+
+                Dictionary<string, object> Extra(float dirtOverride, float splatRange,
+                                                 float blurDepth, float heightOffset)
+                {
+                    return new Dictionary<string, object>
+                    {
+                        ["dirtOverride"] = Math.Round((double)dirtOverride, 4),
+                        ["splatRange"] = Math.Round((double)splatRange, 4),
+                        ["blurDepth"] = Math.Round((double)blurDepth, 4),
+                        ["heightOffset"] = Math.Round((double)heightOffset, 4)
+                    };
+                }
+
+                var block = new Dictionary<string, object>
+                {
+                    ["semantics"] = "authored TerrainRenderSettingsPrefab ground tiling. `tiling` "
+                                  + "is [near, mid, far] texture repeats across the playable area "
+                                  + "(the terrain shader's UV spans it: colossal_TerrainScale = "
+                                  + "1/playableArea), bound as _Terrain*TextureTiling; "
+                                  + "metresPerRepeat = playableArea.x / tiling, precomputed. "
+                                  + "`lodBlend` is [midStart, midEnd, farStart, farEnd] camera "
+                                  + "metres (_Terrain*TextureTilingBlend). Layer names key into "
+                                  + "terrain/surfaces/; extras tile with the grass layer "
+                                  + "(_TerrainExtraTextureTiling is bound from the grass tiling) "
+                                  + "and their effective splatRange is max(splatRange, blurDepth) "
+                                  + "at bind time",
+                    ["prefab"] = settings.name,
+                    ["playableArea"] = new[]
+                    {
+                        Math.Round((double)area.x, 3), Math.Round((double)area.y, 3)
+                    },
+                    ["layers"] = new SortedDictionary<string, object>
+                    {
+                        ["grass"] = Ground(settings.m_TerrainGrassTiling, settings.m_TerrainGrassLodBlend),
+                        ["dirt"] = Ground(settings.m_TerrainDirtTiling, settings.m_TerrainDirtLodBlend),
+                        ["rock"] = Ground(settings.m_TerrainRockTiling, settings.m_TerrainRockLodBlend)
+                    },
+                    ["extras"] = new SortedDictionary<string, object>
+                    {
+                        ["extra1"] = Extra(settings.m_Extra1DirtOverride, settings.m_Extra1SplatRange,
+                                           settings.m_Extra1BlurDepth, settings.m_Extra1HeightOffset),
+                        ["extra2"] = Extra(settings.m_Extra2DirtOverride, settings.m_Extra2SplatRange,
+                                           settings.m_Extra2BlurDepth, settings.m_Extra2HeightOffset)
+                    },
+                    ["triplanarHeightMapBlending"] = Math.Round((double)settings.m_TriplanarHeightMapBlending, 4),
+                    ["triplanarBlendStrengthY"] = Math.Round((double)settings.m_TriplanarBlendStrengthY, 4)
+                };
+
+                report.AppendLine($"Terrain tiling: '{settings.name}' captured "
+                                + $"(grass near {area.x / math.max(settings.m_TerrainGrassTiling.m_NearTiling, 0.001f):F1} m/repeat)");
+                return block;
+            }
+            catch (Exception ex)
+            {
+                _log.Warn($"Terrain tiling capture failed: {ex.Message}");
+                report.AppendLine($"Terrain tiling: {ex.Message}; block omitted");
+                return null;
+            }
+        }
+
         // ------------------------------------------------------------------------------------
         // The roadbed stamp — the game's own flattening footprint, rasterised.
         //
@@ -1415,8 +1683,8 @@ namespace Carto.Systems
                     // The gate the game's job applies per lane section, applied per prefab here:
                     // FlattenTerrain becomes ShiftTerrain, ClipTerrain stays ClipTerrain.
                     //
-                    Game.Net.GeometryFlags geometryFlags = EntityManager.GetComponentData<NetGeometryData>(prefab).m_Flags;
-                    if ((geometryFlags & (Game.Net.GeometryFlags.FlattenTerrain | Game.Net.GeometryFlags.ClipTerrain)) == 0)
+                    NetGeometryData netGeometry = EntityManager.GetComponentData<NetGeometryData>(prefab);
+                    if ((netGeometry.m_Flags & (Game.Net.GeometryFlags.FlattenTerrain | Game.Net.GeometryFlags.ClipTerrain)) == 0)
                     {
                         _skippedNoFlatten++;
                         continue;
@@ -1424,7 +1692,7 @@ namespace Carto.Systems
 
                     Composition composition = EntityManager.GetComponentData<Composition>(entity);
 
-                    if (TryGetGroundComposition(composition.m_Edge, out TerrainComposition edgeTerrain))
+                    if (TryGetGroundComposition(composition.m_Edge, netGeometry, out TerrainComposition edgeTerrain))
                     {
                         EdgeGeometry geometry = EntityManager.GetComponentData<EdgeGeometry>(entity);
                         StampSegment(in context, heightData, geometry.m_Start, edgeTerrain, true, true);
@@ -1433,7 +1701,7 @@ namespace Carto.Systems
                     }
 
                     if (EntityManager.HasComponent<StartNodeGeometry>(entity)
-                        && TryGetGroundComposition(composition.m_StartNode, out TerrainComposition startTerrain)
+                        && TryGetGroundComposition(composition.m_StartNode, netGeometry, out TerrainComposition startTerrain)
                         && StampNode(in context, in context, heightData,
                                      EntityManager.GetComponentData<StartNodeGeometry>(entity).m_Geometry, startTerrain))
                     {
@@ -1441,7 +1709,7 @@ namespace Carto.Systems
                     }
 
                     if (EntityManager.HasComponent<EndNodeGeometry>(entity)
-                        && TryGetGroundComposition(composition.m_EndNode, out TerrainComposition endTerrain)
+                        && TryGetGroundComposition(composition.m_EndNode, netGeometry, out TerrainComposition endTerrain)
                         && StampNode(in context, in context, heightData,
                                      EntityManager.GetComponentData<EndNodeGeometry>(entity).m_Geometry, endTerrain))
                     {
@@ -1464,11 +1732,11 @@ namespace Carto.Systems
                     Entity prefab = EntityManager.GetComponentData<PrefabRef>(entity).m_Prefab;
                     if ((prefab == Entity.Null) || !EntityManager.HasComponent<NetGeometryData>(prefab)) continue;
 
-                    Game.Net.GeometryFlags geometryFlags = EntityManager.GetComponentData<NetGeometryData>(prefab).m_Flags;
-                    if ((geometryFlags & (Game.Net.GeometryFlags.FlattenTerrain | Game.Net.GeometryFlags.ClipTerrain)) == 0) continue;
+                    NetGeometryData netGeometry = EntityManager.GetComponentData<NetGeometryData>(prefab);
+                    if ((netGeometry.m_Flags & (Game.Net.GeometryFlags.FlattenTerrain | Game.Net.GeometryFlags.ClipTerrain)) == 0) continue;
 
                     Entity composition = EntityManager.GetComponentData<Game.Net.Orphan>(entity).m_Composition;
-                    if (!TryGetGroundComposition(composition, out TerrainComposition terrain)) continue;
+                    if (!TryGetGroundComposition(composition, netGeometry, out TerrainComposition terrain)) continue;
 
                     float width = EntityManager.GetComponentData<NetCompositionData>(composition).m_Width;
                     if (!(width > 0f)) continue;
@@ -1490,12 +1758,17 @@ namespace Carto.Systems
         /// tunnels an upward-only one — their terrain is shifted <i>away</i> from the road, not
         /// onto it — unless a side carries a transition, in which case the node handling sheds the
         /// elevated/tunnel state (the portal is ground). <c>HasSurface</c> excludes nets with no
-        /// surface at all (power lines), whose clamp is clearance, not roadbed.
+        /// surface at all (power lines), whose clamp is clearance, not roadbed. Waterway nets
+        /// (canals) share the elevated branch in the game's <c>AddSegment</c> —
+        /// <c>Elevated || (m_MergeLayers &amp; Layer.Waterway)</c> — so their beds are shifted
+        /// down and away, not pulled to a roadbed.
         /// </summary>
         /// <param name="composition">The composition entity.</param>
+        /// <param name="netGeometry">The prefab's geometry data, for the waterway merge layer.</param>
         /// <param name="terrain">Receives the terrain offsets, or default.</param>
         /// <returns>Whether to stamp this composition.</returns>
-        private bool TryGetGroundComposition(Entity composition, out TerrainComposition terrain)
+        private bool TryGetGroundComposition(Entity composition, NetGeometryData netGeometry,
+                                             out TerrainComposition terrain)
         {
             terrain = default;
             if ((composition == Entity.Null) || !EntityManager.HasComponent<NetCompositionData>(composition)) return false;
@@ -1503,12 +1776,15 @@ namespace Carto.Systems
             NetCompositionData data = EntityManager.GetComponentData<NetCompositionData>(composition);
             if ((data.m_State & CompositionState.HasSurface) == 0) return false;
 
-            if ((data.m_Flags.m_General & (CompositionFlags.General.Elevated | CompositionFlags.General.Tunnel)) != 0)
+            bool waterway = (netGeometry.m_MergeLayers & Layer.Waterway) != 0;
+            if (waterway
+                || (data.m_Flags.m_General & (CompositionFlags.General.Elevated | CompositionFlags.General.Tunnel)) != 0)
             {
                 CompositionFlags.Side sides = data.m_Flags.m_Left | data.m_Flags.m_Right;
                 if ((sides & (CompositionFlags.Side.LowTransition | CompositionFlags.Side.HighTransition)) == 0)
                 {
-                    _skippedForm++;
+                    if (waterway) _skippedWaterway++;
+                    else _skippedForm++;
                     return false;
                 }
             }
@@ -1569,20 +1845,25 @@ namespace Carto.Systems
         /// Tunnel portals (Tunnel with a transition side) and open trenches (a Lowered side, not
         /// elevated) raise the top to <c>ElevationLimit·3</c> — 12 m for roads, 6 m for pathways
         /// (<c>m_ElevationLimit</c> is 4 m and 2 m respectively; read live, and asserted by the
-        /// rip log's band-class lines). The job's own ±0.3 m expansion is applied last, taking
+        /// rip log's band-class lines). The raise follows the game's <c>AddSegment</c> branch
+        /// chain: a surface-less composition (<c>HasSurface == 0</c>, power lines) and an
+        /// elevated-or-waterway one (<c>Elevated || (m_MergeLayers &amp; Layer.Waterway)</c>)
+        /// are dispatched <i>before</i> the tunnel and lowered branches, so their top is never
+        /// raised. The job's own ±0.3 m expansion is applied last, taking
         /// the floor 0.3 m <i>below</i> the lane — the everyday shell that keeps crests out of
         /// surface roads. Deep tube sections keep the small base band: the terrain covering them
         /// sits far above it, so the band test cuts nothing there, which is the game's behaviour
         /// too (their cover is never clipped from above).
         /// </summary>
         /// <param name="composition">The composition entity.</param>
-        /// <param name="raisedTop">The prefab's <c>ElevationLimit * 3</c>.</param>
+        /// <param name="netGeometry">The prefab's geometry data — <c>ElevationLimit·3</c> is the
+        /// raised top, and the waterway merge layer gates the raise.</param>
         /// <param name="isStart">Which edge-height half applies.</param>
         /// <param name="terrain">Receives the terrain offsets, or default.</param>
         /// <param name="cutBottom">Receives the band floor.</param>
         /// <param name="cutTop">Receives the band ceiling.</param>
         /// <returns>Whether the band can cut anything at all.</returns>
-        private bool TryGetClipBand(Entity composition, float raisedTop, bool isStart,
+        private bool TryGetClipBand(Entity composition, NetGeometryData netGeometry, bool isStart,
                                     out TerrainComposition terrain, out float cutBottom, out float cutTop)
         {
             terrain = default;
@@ -1596,25 +1877,30 @@ namespace Carto.Systems
                 terrain = EntityManager.GetComponentData<TerrainComposition>(composition);
             }
 
+            float raisedTop = netGeometry.m_ElevationLimit * 3f;
             float3 baseHeights = isStart
                 ? new float3(data.m_EdgeHeights.x, data.m_SurfaceHeight.min, data.m_EdgeHeights.y)
                 : new float3(data.m_EdgeHeights.z, data.m_SurfaceHeight.min, data.m_EdgeHeights.w);
             cutBottom = math.cmin(baseHeights) + terrain.m_ClipHeightOffset.x;
             cutTop = math.cmax(baseHeights) + terrain.m_ClipHeightOffset.y;
 
+            bool hasSurface = (data.m_State & CompositionState.HasSurface) != 0;
+            bool waterway = (netGeometry.m_MergeLayers & Layer.Waterway) != 0;
             bool tunnel = (data.m_Flags.m_General & CompositionFlags.General.Tunnel) != 0;
             bool elevated = (data.m_Flags.m_General & CompositionFlags.General.Elevated) != 0;
             CompositionFlags.Side sides = data.m_Flags.m_Left | data.m_Flags.m_Right;
             bool transition = (sides & (CompositionFlags.Side.LowTransition | CompositionFlags.Side.HighTransition)) != 0;
             bool lowered = (sides & CompositionFlags.Side.Lowered) != 0;
-            if ((tunnel && transition) || (!tunnel && !elevated && lowered))
+            if (hasSurface && !elevated && !waterway
+                && ((tunnel && transition) || (!tunnel && lowered)))
             {
                 cutTop = math.max(cutTop, raisedTop);
             }
             cutBottom -= ClipBandExpansion;
             cutTop += ClipBandExpansion;
 
-            LogClipBandClass(terrain, raisedTop, cutBottom, cutTop, tunnel, elevated, transition, lowered);
+            LogClipBandClass(terrain, raisedTop, cutBottom, cutTop,
+                             hasSurface, waterway, tunnel, elevated, transition, lowered);
 
             // An empty band cannot mark a cell; skip the walk.
             //
@@ -1632,10 +1918,13 @@ namespace Carto.Systems
         /// <c>TerrainComposition</c> offsets, the ±0.3 m expansion).
         /// </summary>
         private void LogClipBandClass(TerrainComposition terrain, float raisedTop,
-                                      float cutBottom, float cutTop,
+                                      float cutBottom, float cutTop, bool hasSurface, bool waterway,
                                       bool tunnel, bool elevated, bool transition, bool lowered)
         {
-            string shape = tunnel ? (transition ? "portal" : "tube") : lowered ? "trench" : elevated ? "elevated" : "surface";
+            string shape = !hasSurface ? "surfaceless"
+                         : waterway ? "waterway"
+                         : tunnel ? (transition ? "portal" : "tube")
+                         : lowered ? "trench" : elevated ? "elevated" : "surface";
             string key = FormattableString.Invariant(
                 $"clip band class {shape}: bottom {cutBottom:0.###} top {cutTop:0.###} (L*3 {raisedTop:0.###}, clipHeightOffset {terrain.m_ClipHeightOffset.x:0.###}/{terrain.m_ClipHeightOffset.y:0.###}, widthOffset {terrain.m_WidthOffset.x:0.###}/{terrain.m_WidthOffset.y:0.###})");
             if (_clipBandClasses.Add(key)) _log.Info(key);
@@ -1676,7 +1965,6 @@ namespace Carto.Systems
 
                     NetGeometryData netGeometry = EntityManager.GetComponentData<NetGeometryData>(prefab);
                     if ((netGeometry.m_Flags & Game.Net.GeometryFlags.ClipTerrain) == 0) continue;
-                    float raisedTop = netGeometry.m_ElevationLimit * 3f;
 
                     Composition composition = EntityManager.GetComponentData<Composition>(entity);
                     bool stamped = false;
@@ -1686,14 +1974,14 @@ namespace Carto.Systems
 
                     // The edge halves take the composition's start/end edge heights respectively,
                     // like the game's isStart select.
-                    if (TryGetClipBand(composition.m_Edge, raisedTop, true, out TerrainComposition edgeTerrain,
+                    if (TryGetClipBand(composition.m_Edge, netGeometry, true, out TerrainComposition edgeTerrain,
                                        out context.CutBottom, out context.CutTop))
                     {
                         StampSegment(in context, heightData,
                                      EntityManager.GetComponentData<EdgeGeometry>(entity).m_Start, edgeTerrain, true, true);
                         stamped = true;
                     }
-                    if (TryGetClipBand(composition.m_Edge, raisedTop, false, out edgeTerrain,
+                    if (TryGetClipBand(composition.m_Edge, netGeometry, false, out edgeTerrain,
                                        out context.CutBottom, out context.CutTop))
                     {
                         StampSegment(in context, heightData,
@@ -1708,11 +1996,11 @@ namespace Carto.Systems
                     // isStart: false there); a band that cannot cut gets a zero top, which the
                     // band test rejects everywhere.
                     if (EntityManager.HasComponent<StartNodeGeometry>(entity)
-                        && TryGetClipBand(composition.m_StartNode, raisedTop, true, out TerrainComposition startTerrain,
+                        && TryGetClipBand(composition.m_StartNode, netGeometry, true, out TerrainComposition startTerrain,
                                           out context.CutBottom, out context.CutTop))
                     {
                         StampContext endContext = context;
-                        if (!TryGetClipBand(composition.m_StartNode, raisedTop, false, out _,
+                        if (!TryGetClipBand(composition.m_StartNode, netGeometry, false, out _,
                                             out endContext.CutBottom, out endContext.CutTop))
                         {
                             endContext.CutBottom = 0f;
@@ -1726,11 +2014,11 @@ namespace Carto.Systems
                     }
 
                     if (EntityManager.HasComponent<EndNodeGeometry>(entity)
-                        && TryGetClipBand(composition.m_EndNode, raisedTop, true, out TerrainComposition endTerrain,
+                        && TryGetClipBand(composition.m_EndNode, netGeometry, true, out TerrainComposition endTerrain,
                                           out context.CutBottom, out context.CutTop))
                     {
                         StampContext endContext = context;
-                        if (!TryGetClipBand(composition.m_EndNode, raisedTop, false, out _,
+                        if (!TryGetClipBand(composition.m_EndNode, netGeometry, false, out _,
                                             out endContext.CutBottom, out endContext.CutTop))
                         {
                             endContext.CutBottom = 0f;
@@ -1763,7 +2051,7 @@ namespace Carto.Systems
                     if ((netGeometry.m_Flags & Game.Net.GeometryFlags.ClipTerrain) == 0) continue;
 
                     Entity composition = EntityManager.GetComponentData<Game.Net.Orphan>(entity).m_Composition;
-                    if (!TryGetClipBand(composition, netGeometry.m_ElevationLimit * 3f, true,
+                    if (!TryGetClipBand(composition, netGeometry, true,
                                         out TerrainComposition terrain, out context.CutBottom, out context.CutTop)) continue;
 
                     float width = EntityManager.GetComponentData<NetCompositionData>(composition).m_Width;
@@ -1787,8 +2075,12 @@ namespace Carto.Systems
 
         /// <summary>
         /// Stamp the areas whose prefab carries <c>ClipArea</c> — the terrain job draws their
-        /// triangles into the same stencil (<c>areaClipMesh</c>). The band has no ceiling: an
-        /// authored clip surface hides whatever terrain covers it.
+        /// triangles into the same stencil (<c>areaClipMesh</c>). The volume is a CLOSED prism:
+        /// <c>GenerateAreaClipMeshJob</c> duplicates the area ring at
+        /// <c>min(0, aggMin) − 0.3</c> and <c>max(0, aggMax) + 0.3</c> (the aggregates run over
+        /// every triangle's <c>m_HeightRange</c>, both starting at zero) and indexes a bottom
+        /// cap, a top cap and the side walls. An earlier revision read the job as capping
+        /// nothing above; the top ring and cap are right there in its index writes.
         /// </summary>
         /// <param name="baseContext">The clip pass's context.</param>
         /// <param name="heightData">The terrain grid.</param>
@@ -1797,11 +2089,6 @@ namespace Carto.Systems
             int width = heightData.resolution.x;
             int height = heightData.resolution.z;
             StampContext context = baseContext;
-            // The game duplicates the area ring at heightRange.min − 0.3 and caps nothing above
-            // (GenerateAreaClipMeshJob); relative to the surface the floor is the same −0.3 m
-            // expansion every strip band gets.
-            context.CutBottom = -ClipBandExpansion;
-            context.CutTop = float.MaxValue;
 
             // An area's geometry is triangles, not boundary curves — and since 2026-08-09 the
             // record carries them itself. It used to hold only a join key into `areas.jsonl`,
@@ -1823,9 +2110,21 @@ namespace Carto.Systems
                     DynamicBuffer<Game.Areas.Triangle> triangles = EntityManager.GetBuffer<Game.Areas.Triangle>(entity, true);
                     if ((nodes.Length < 3) || (triangles.Length == 0)) continue;
 
-                    // No `top`: an authored clip surface hides whatever terrain covers it, however
-                    // high. Absence rather than a sentinel, so nobody has to know what the
-                    // sentinel was.
+                    // The prism band, per area: both aggregates start at zero exactly like the
+                    // job's accumulators, so a flat area still gets the everyday ±0.3 m shell.
+                    // Relative to the surface, the same plane-relative semantics as every strip
+                    // band — the cut test hangs both offsets off each triangle's plane.
+                    //
+                    float aggMin = 0f, aggMax = 0f;
+                    for (int i = 0; i < triangles.Length; i++)
+                    {
+                        Bounds1 range = triangles[i].m_HeightRange;
+                        aggMin = math.min(aggMin, range.min);
+                        aggMax = math.max(aggMax, range.max);
+                    }
+                    context.CutBottom = aggMin - ClipBandExpansion;
+                    context.CutTop = aggMax + ClipBandExpansion;
+
                     if (_clipVolumes != null)
                     {
                         // Same encoding as areas.jsonl (§8b): world positions, millimetre-rounded.
@@ -1855,6 +2154,7 @@ namespace Carto.Systems
                             ["kind"] = "area",
                             ["area"] = entity.Index,
                             ["bottom"] = Math.Round((double)context.CutBottom, 3),
+                            ["top"] = Math.Round((double)context.CutTop, 3),
                             ["nodes"] = nodeArray,
                             ["triangles"] = triangleArray
                         });
@@ -2113,13 +2413,13 @@ namespace Carto.Systems
         /// boundaries.
         /// </summary>
         /// <param name="outputDirectory">The bundle root.</param>
-        /// <param name="report">The report to note the outcome in.</param>
-        private void WriteClipVolumes(string outputDirectory, StringBuilder report)
+        /// <returns>The report line describing the outcome — returned rather than appended
+        /// because this runs on the writer task, and the report belongs to the main thread.</returns>
+        private string WriteClipVolumes(string outputDirectory)
         {
             if ((_clipVolumes == null) || (_clipVolumes.Count == 0))
             {
-                report.AppendLine("Clip volumes: none; clipvolumes.jsonl omitted");
-                return;
+                return "Clip volumes: none; clipvolumes.jsonl omitted";
             }
 
             try
@@ -2132,13 +2432,13 @@ namespace Carto.Systems
                     writer.WriteLine(JsonConvert.SerializeObject(record, Formatting.None));
                 }
 
-                report.AppendLine($"Clip volumes: {_clipVolumes.Count} strip(s) written to clipvolumes.jsonl "
-                                + "(what the game's RoadClip pass hides; §8c)");
+                return $"Clip volumes: {_clipVolumes.Count} strip(s) written to clipvolumes.jsonl "
+                     + "(what the game's RoadClip pass hides; §8c)";
             }
             catch (Exception ex)
             {
                 _log.Warn($"Could not write clipvolumes.jsonl: {ex.Message}");
-                report.AppendLine($"Clip volumes: {ex.Message}; layer omitted");
+                return $"Clip volumes: {ex.Message}; layer omitted";
             }
             finally
             {
