@@ -132,6 +132,8 @@ namespace Carto.IO
 
             if (record.Tunnel) line["tunnel"] = true;
 
+            if (record.Wear != 0f) line["wear"] = Math.Round((double)record.Wear, 3);
+
             _writer.WriteLine(JsonConvert.SerializeObject(line, Formatting.None));
             Count++;
         }

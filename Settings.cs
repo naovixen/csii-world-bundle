@@ -490,6 +490,11 @@ namespace Carto
         //   隨之一致；取消所有子選項會關閉主方塊，重新勾選任一子選項則使其重新開啟——
         //   子選項永不變灰，任一層皆可喚回該類別。後備欄位使設定器維持兩層一致，
         //   UI 永不見到矛盾的組合。）
+        //
+        // Persistence constraint: masters must stay declared BEFORE their subs. Settings load
+        // assigns properties in declaration order, and a master's setter stomps every sub
+        // backing field — loading a sub first would let the master overwrite its persisted
+        // value. (Audit #40 I-F11.)
         // ================================================================================
         private bool _ripObjects = true;
         private bool _ripObjectsBuildings = true, _ripObjectsProps = true, _ripObjectsTrees = true, _ripObjectsDecals = true;

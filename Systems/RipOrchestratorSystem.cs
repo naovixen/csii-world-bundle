@@ -134,9 +134,10 @@ namespace Carto.Systems
 
         /// <summary>
         /// Bumped whenever a run starts or is torn down, so a completion callback from an
-        /// abandoned run cannot advance a later one.
+        /// abandoned run cannot advance a later one. Volatile: the fence is read on worker
+        /// threads (stage completion callbacks) while the main thread bumps it.
         /// </summary>
-        private int _generation;
+        private volatile int _generation;
 
         /// <summary>
         /// Whether a one-button rip is in flight.
@@ -233,9 +234,10 @@ namespace Carto.Systems
             // orphans no record references, silently inflating the bundle's counts and sizes. So a
             // rip first deletes the outputs OWNED by its selected stages (a deselected layer's
             // files stay, by the partial-bundle contract). The shared texture store and material
-            // table are cleared only when BOTH of their producers run: after that pair the rebuilt
-            // table is complete, while a partial rip must keep them — the merge semantics are what
-            // keep the other half's material references valid (MaterialRipSystem.WriteTable).
+            // table are cleared only when ALL THREE of their producers run (objects, network
+            // surfaces AND lane geometry): only then is the rebuilt table complete, while any
+            // partial rip must keep them — the merge semantics are what keep the untouched layers'
+            // material references valid (MaterialRipSystem.WriteTable).
             //
             List<string> staleFiles = new();
             List<string> staleDirectories = new();
@@ -243,9 +245,12 @@ namespace Carto.Systems
             {
                 staleFiles.Add("instances.jsonl");
                 staleDirectories.Add("meshes");
-                if (plan.Colors) staleFiles.Add("colors.json");
-                if (plan.Lights) staleFiles.Add("lights.json");
             }
+            // Appearance depends on the Objects master and its own sub-toggles, not on the kind
+            // filter — mirrored by the stage condition below.
+            //
+            if (plan.Objects && plan.Colors) staleFiles.Add("colors.json");
+            if (plan.Objects && plan.Lights) staleFiles.Add("lights.json");
             if (plan.Networks && plan.NetworkSurfaces)
             {
                 staleFiles.Add("networks.jsonl");
@@ -287,10 +292,24 @@ namespace Carto.Systems
             {
                 staleFiles.AddRange(new[] { "areas.jsonl", "areaprefabs.json" });
             }
-            if (plan.RipsObjects && plan.RipsNetworkStage)
+            if (plan.Vector)
+            {
+                staleDirectories.Add("vector");
+            }
+            if (plan.RipsObjects && plan.Networks && plan.NetworkSurfaces && plan.LaneGeometry)
             {
                 staleFiles.Add("materials.json");
                 staleDirectories.Add("textures");
+            }
+
+            // Whenever any producer stage is selected (every one of them contributes at least one
+            // entry above), the previous rip's manifest is about to go stale: an aborted run must
+            // not leave the old bundle.json describing mixed layers. The Manifest stage, always
+            // last, rebuilds it from whatever the run leaves on disk.
+            //
+            if ((staleFiles.Count > 0) || (staleDirectories.Count > 0))
+            {
+                staleFiles.Add("bundle.json");
             }
 
             if ((staleFiles.Count > 0) || (staleDirectories.Count > 0))
@@ -320,20 +339,25 @@ namespace Carto.Systems
                     Begin = completed => Instance.InstanceRip.BeginRip(directory, completed, plan.Kinds),
                     Running = () => Instance.InstanceRip.IsRipping
                 });
+            }
 
-                // Colours and lights are per-render-prefab tables resolved from the same prefab
-                // set the instances reference; a quick synchronous pass.
-                //
-                if (plan.Colors || plan.Lights)
+            // Colours and lights are per-render-prefab tables resolved from the same prefab
+            // set the instances reference; a quick synchronous pass. Gated on the Objects master
+            // and its own sub-toggles, NOT on the kind filter: all kinds off with Colors or
+            // Lights on must still run Appearance (audit I-F9).
+            //
+            if (plan.Objects && (plan.Colors || plan.Lights))
+            {
+                stages.Add(new Stage
                 {
-                    stages.Add(new Stage
-                    {
-                        Title = "Appearance",
-                        Phase = RipProgress.Phase.Instances,
-                        Work = () => Instance.AppearanceRip.RipAppearance(directory, plan.Colors, plan.Lights)
-                    });
-                }
+                    Title = "Appearance",
+                    Phase = RipProgress.Phase.Instances,
+                    Work = () => Instance.AppearanceRip.RipAppearance(directory, plan.Colors, plan.Lights)
+                });
+            }
 
+            if (plan.RipsObjects)
+            {
                 stages.Add(new Stage
                 {
                     Title = "Meshes, materials & textures",
@@ -380,7 +404,7 @@ namespace Carto.Systems
                 {
                     Title = "Vector export",
                     Phase = RipProgress.Phase.Export,
-                    Work = () => { IO.IO.Export(); return "Vector/raster export completed."; }
+                    Work = () => RunVectorExport(directory)
                 });
             }
 
@@ -397,6 +421,14 @@ namespace Carto.Systems
                 {
                     RipProgress.Report(RipProgress.Phase.Manifest);
                     BundleManifest snapshot = BundleManifest.Capture();
+
+                    // ripOptions must describe THIS run, not the live settings at finalize time —
+                    // the user may have flipped a toggle while the rip ran (audit I-F8). The
+                    // plan's caps are what the stages actually ran with, including the negative
+                    // textures-off encoding of TextureSizeCap.
+                    //
+                    snapshot.TextureSizeCap = plan.TextureSizeCap;
+                    snapshot.MeshLimit = plan.MeshLimit;
 
                     System.Threading.Tasks.Task.Run(() =>
                     {
@@ -478,6 +510,36 @@ namespace Carto.Systems
         }
 
         /// <summary>
+        /// Run the vanilla vector/raster export into the bundle's <c>vector/</c> layer.
+        /// The vanilla path writes under the user's configured <c>CustomDirectory</c>, outside
+        /// the bundle — so the manifest's <c>vector/</c> layer could never exist (audit I-F2).
+        /// A one-off <see cref="IO.Options"/> instance redirects the export without ever touching
+        /// the saved setting, and suppresses the vanilla completion dialog and sound — the rip
+        /// reports once, at the end.
+        /// </summary>
+        /// <param name="bundleDirectory">The bundle root.</param>
+        /// <returns>The stage summary.</returns>
+        private static string RunVectorExport(string bundleDirectory)
+        {
+            IO.Options options = Instance.Settings.GetOptions();
+
+            // The vanilla button refuses to export on invalid projection inputs (with a dialog);
+            // here the refusal becomes a failed stage line instead.
+            //
+            if (options.Errors.Count > 0)
+                return $"FAILED: invalid export settings ({string.Join(", ", options.Errors.Keys)}) — fix them on the Carto options pages.";
+
+            options.CustomDirectory = Utils.IOUtils.CombinePath(bundleDirectory, "vector");
+            options.CompletionDialog = false;
+            options.CompletionSound = false;
+
+            IO.ExportResult result = IO.IO.Export(options);
+            return result.Success
+                ? $"Vector/raster export completed — {result.FilesWritten.Length} file(s) into vector/."
+                : $"FAILED: {result.ErrorMessage}";
+        }
+
+        /// <summary>
         /// Start one stage. Synchronous work is deferred a couple of frames so its caption paints
         /// first; asynchronous work is begun and awaited through its completion callback.
         /// </summary>
@@ -548,10 +610,20 @@ namespace Carto.Systems
         /// <param name="seconds">How long it took.</param>
         private void RecordStage(Stage stage, string summary, double seconds)
         {
-            // Failures reach here as a summary prefix whichever thread they happened on — the
-            // sync catch, the failed-to-start path and the manifest worker all speak it.
+            // Failures reach here as a line prefix whichever thread they happened on — the sync
+            // catch, the failed-to-start path and the manifest worker all speak it. Any line may
+            // carry it, not just the first: the Clean stage reports a partial failure as a
+            // "FAILED to remove …" line after its "Removed …" line (audit I-F7).
             //
-            if ((summary != null) && summary.StartsWith("FAILED", StringComparison.Ordinal)) _stagesFailed++;
+            string[] lines = (summary ?? string.Empty).Replace("\r\n", "\n").Split('\n');
+            foreach (string line in lines)
+            {
+                if (line.StartsWith("FAILED", StringComparison.Ordinal))
+                {
+                    _stagesFailed++;
+                    break;
+                }
+            }
 
             _summary.AppendLine($"{stage.Title} — {seconds:F1} s");
 
@@ -559,7 +631,6 @@ namespace Carto.Systems
             {
                 // A few lines per stage keeps the one dialog readable; every stage's full report
                 // is already in the log.
-                string[] lines = summary.Replace("\r\n", "\n").Split('\n');
                 int shown = 0;
                 foreach (string line in lines)
                 {

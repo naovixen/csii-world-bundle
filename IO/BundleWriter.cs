@@ -131,6 +131,22 @@ namespace Carto.IO
             public double[][] right { get; set; }
         }
 
+        /// <summary>A lane-graph record, as far as bounds care: its tessellated path.</summary>
+        private sealed class LaneRow
+        {
+            public double[][] path { get; set; }
+        }
+
+        /// <summary>
+        /// A lane-geometry record, as far as bounds care: its four bézier control points. A cubic
+        /// bézier lies inside its control points' convex hull, so encapsulating them encloses the
+        /// drawn curve.
+        /// </summary>
+        private sealed class LaneGeometryRow
+        {
+            public double[][] curve { get; set; }
+        }
+
         /// <summary>
         /// Assemble and write <c>bundle.json</c> for the bundle at <paramref name="outputDirectory"/>.
         /// </summary>
@@ -204,8 +220,18 @@ namespace Carto.IO
                 clipCount = ScanClipVolumes(Utils.IOUtils.CombinePath(outputDirectory, "clipvolumes.jsonl"), ref bounds);
             }
 
-            long laneCount = layers.ContainsKey("lanes") ? CountLines(Utils.IOUtils.CombinePath(outputDirectory, "lanes.jsonl")) : 0;
-            long laneGeometryCount = layers.ContainsKey("laneGeometry") ? CountLines(Utils.IOUtils.CombinePath(outputDirectory, "lanemeshes.jsonl")) : 0;
+            // The lane layers carry world-space geometry too, and must contribute to bounds —
+            // §3's enclose-all rule, and what makes a lane-only rip able to state bounds at all.
+            //
+            long laneCount = 0, laneGeometryCount = 0;
+            if (layers.ContainsKey("lanes"))
+            {
+                laneCount = ScanPointRows<LaneRow>(Utils.IOUtils.CombinePath(outputDirectory, "lanes.jsonl"), row => row.path, ref bounds);
+            }
+            if (layers.ContainsKey("laneGeometry"))
+            {
+                laneGeometryCount = ScanPointRows<LaneGeometryRow>(Utils.IOUtils.CombinePath(outputDirectory, "lanemeshes.jsonl"), row => row.curve, ref bounds);
+            }
             long warningCount = layers.ContainsKey("warnings") ? CountLines(Utils.IOUtils.CombinePath(outputDirectory, "warnings.jsonl")) : 0;
 
             int materialCount = 0;
@@ -292,13 +318,21 @@ namespace Carto.IO
             {
                 ["meshSource"] = "runtime",
                 ["lodCap"] = 0,
+                ["meshLimit"] = snapshot.MeshLimit,
                 ["textureSizeCap"] = snapshot.TextureSizeCap,
                 ["includeSubObjects"] = true,
                 ["includeVector"] = layers.ContainsKey("vector")
             };
 
+            // Atomic write: a crash mid-write must never leave a truncated bundle.json — the
+            // consumer's first read of a bundle is the manifest, and a corrupt one poisons every
+            // conclusion after it. Write beside it, then rename into place.
+            //
             string manifestPath = Utils.IOUtils.CombinePath(outputDirectory, "bundle.json");
-            File.WriteAllText(manifestPath, JsonConvert.SerializeObject(manifest, Formatting.Indented));
+            string temporaryPath = manifestPath + ".tmp";
+            File.WriteAllText(temporaryPath, JsonConvert.SerializeObject(manifest, Formatting.Indented));
+            if (File.Exists(manifestPath)) File.Replace(temporaryPath, manifestPath, null);
+            else File.Move(temporaryPath, manifestPath);
 
             // ---- 6. Report.
             // Size by layer and the dedup ratios — the Phase 8 acceptance numbers. Cheap here:
@@ -505,6 +539,39 @@ namespace Carto.IO
                 foreach (double[] node in row.nodes)
                 {
                     if ((node != null) && (node.Length == 3)) bounds.Encapsulate(node[0], node[1], node[2]);
+                }
+            }
+
+            return count;
+        }
+
+        /// <summary>
+        /// Scan a JSON Lines layer whose records carry one world-space point list (<c>lanes.jsonl</c>
+        /// paths, <c>lanemeshes.jsonl</c> bézier control points): count records and grow the bounds
+        /// by every point.
+        /// </summary>
+        /// <param name="path">The layer file.</param>
+        /// <param name="points">Select the record's point list, possibly <c>null</c>.</param>
+        /// <param name="bounds">The bounds to grow.</param>
+        /// <returns>The record count.</returns>
+        private static long ScanPointRows<TRow>(string path, Func<TRow, double[][]> points, ref Aabb bounds)
+        {
+            long count = 0;
+            JsonSerializer serializer = JsonSerializer.CreateDefault();
+            using StreamReader stream = new(path);
+            using JsonTextReader reader = new(stream) { SupportMultipleContent = true };
+            while (reader.Read())
+            {
+                if (reader.TokenType != JsonToken.StartObject) continue;
+                TRow row = serializer.Deserialize<TRow>(reader);
+                count++;
+                if (row == null) continue;
+
+                double[][] list = points(row);
+                if (list == null) continue;
+                foreach (double[] point in list)
+                {
+                    if ((point != null) && (point.Length == 3)) bounds.Encapsulate(point[0], point[1], point[2]);
                 }
             }
 

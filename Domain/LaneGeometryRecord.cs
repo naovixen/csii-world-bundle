@@ -49,5 +49,13 @@ namespace Carto.Domain
 
         /// <summary>Whether the owning network runs below ground — the game draws the lane on its Tunnel cutaway layer.</summary>
         public bool Tunnel;
+
+        /// <summary>
+        /// Road wear, raw from <c>Game.Net.LaneCondition.m_Wear</c> (0..10): the serialized sim
+        /// state the game turns into the lane decals' deterioration tint in the normal view
+        /// (<c>colossal_CurveDeterioration = wear / 10</c> in <c>BatchDataSystem</c> — not the
+        /// infoview-only <c>NetCondition.m_Wear</c>). Zero is the common case and is omitted.
+        /// </summary>
+        public float Wear;
     }
 }

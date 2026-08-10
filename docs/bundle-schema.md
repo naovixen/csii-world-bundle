@@ -203,7 +203,11 @@ Notes on individual fields:
   their layer is declared *(added with the Phase 7 manifest, see §12.1)*.
 - **`bounds`** encloses all exported content in the bundle frame, mesh extents included.
   Contributors: every instance and network placement expanded by its mesh's extents, every
-  §8b area node, every §8c clip band bottom, and the playable-area raster extents (the
+  §8b area node, every §8c clip band bottom, every `lanes.jsonl` path point and
+  `lanemeshes.jsonl` curve control point *(2026-08-09 — previously the two lane layers were
+  only counted, so a lane-only bundle could not state bounds; control points bound the curve
+  by the convex-hull property, part-mesh width is not expanded)*, and the playable-area
+  raster extents (the
   world-backdrop rasters are deliberately excluded — including a 4×-map horizon would make
   `bounds` useless for framing the city). Bounds must *enclose*, not fit tightly; producers
   may expand conservatively (e.g. rotation-independent mesh radii).
@@ -212,6 +216,11 @@ Notes on individual fields:
   `.assets` extraction), `mixed`, or `stub` (placeholder geometry substituted). Instance
   transforms are authoritative in every case, including `stub` — placement never depends on
   mesh readback.
+- **`ripOptions`** describes **the run that produced the bundle**, not the settings at
+  finalize time *(2026-08-09)*: new key `meshLimit` (int, 0 = uncapped — a capped rip also
+  declares every capped-off prefab in §10), and `textureSizeCap` may be **negative**, encoding
+  a run with textures deselected (materials ship tints/scalars only). The standalone finalize
+  button still snapshots live settings, as the best available description.
 - **`rasters`** is required if any raster layer is declared. `originWorld` is the bundle-frame
   position of the **top-left cell centre**; row index increases toward `-Z` (south), column
   index toward `+X` (east).
@@ -314,6 +323,16 @@ version, and by which optional properties the user enabled. Documented keys:
 
 `height` comes from mesh bounds and is authoritative. `storey` and `level` are game metadata
 and must never be used to derive geometry.
+
+*(2026-08-09, audit #40 P12 — until this date none of `name`/`category`/`zone`/`zoning`/
+`theme`/`brand`/`level`/`address` was ever actually produced. Now emitted, only-when-present:
+`level` (int ≥ 1, buildings), `zone` (zone prefab name), `zoning`
+(`residential|commercial|industrial|office`), `brand` (brand prefab name), `theme` (theme
+prefab name), `address` (`[district|null, street, number]`, buildings), `name` (the player's
+custom name only — generated display names are locale output and are not city data). New key
+`fullness` (int 0–100, raw `Quantity` byte percentage; the game swaps stockpile sub-meshes at
+33/50/66 — see §6.1). Still never produced, derive instead: `height`/`storey` (from the mesh),
+`category` (from `kind` + `zoning`), `season` (already baked into every resolved `colorSet`).)*
 
 **`elevation` is how far the object stands _above_ the ground, not the ground's own height.**
 A consumer that reads it as terrain height gets a city where everything sits at a couple of
@@ -694,8 +713,11 @@ Three pieces (layer keys `laneMeshes`, `lanePrefabs`, `laneGeometry` respectivel
      "widthScale": [1.0,1.1],          // NodeLane width scale at curve start/end. Omitted = 1.
      "hang": [0.0,0.0],                // HangingLane.m_Distances end drops. Omitted = none.
      "colorSet": [[…],[…],[…]],        // resolved paint, §7.2 shape. Omitted when absent.
-     "tunnel": true }                  // owning network runs below ground (the game draws the
+     "tunnel": true,                   // owning network runs below ground (the game draws the
                                        // lane on its Tunnel cutaway layer). Omitted = surface.
+     "wear": 3.2 }                     // LaneCondition.m_Wear, 0..10; the game tints decal
+                                       // parts by wear/10 (worn asphalt/markings, normal
+                                       // view). Omitted = 0. (2026-08-09, audit #40 P10.)
    ```
 
 **The bend algorithm** (normative; reference implementation in
@@ -847,12 +869,31 @@ lights likewise, on 1,184 sub-meshes covering 153,548 instances.
 { "NA_ResidentialHigh01_Mesh": [
     { "channels": [[0.8,0.7,0.6,1], [0.3,0.3,0.3,1], [1,1,1,1]], "probability": 100 } ] }
 
-// lights.json
+// lights.json — a procedural (emissive-material) entry and a punctual (HDRP light) entry
 { "StreetlightSingle02_Mesh": [
     { "slot": 0, "color": [1,0.87,0.68,1], "colorOff": [0,0,0,1],
-      "purpose": "StreetLight", "responseSpeed": 0.5,
-      "range": 24.0, "temperature": 2700.0, "animation": -1 } ] }
+      "purpose": "StreetLight", "responseSpeed": 0.5, "animation": -1 } ],
+  "StreetlightSingle02": [
+    { "kind": "punctual", "effect": "Streetlight Spot", "position": [0, 8.2, 1.1],
+      "rotation": [0.5, 0.5, -0.5, 0.5], "parentMesh": 0, "range": 24.0,
+      "type": "Spot", "spotAngle": 120.0, "intensity": 4000.0, "intensityUnit": "Lumen",
+      "temperature": 2700.0, "color": [1,0.87,0.68,1] } ] }
 ```
+
+*(2026-08-09, audit #40 P8 — the entry families split. Until this date the `range`/
+`temperature` shown on procedural entries were documented but **never produced**: the producer
+read `LightEffectData` off the sub-mesh entity, where the game never stores it. Punctual HDRP
+lights live on **EffectPrefab** entities joined through the object prefab's `Effect` buffer,
+with placement in `EffectSource.EffectSettings` — so, contrary to the older text below, CS2
+**does** store a position for them.)* **Punctual entries** carry `kind: "punctual"` and are
+keyed by the **object prefab's assetId** (joining `instances.jsonl`/`meshes/`, unlike
+procedural entries' sub-mesh key). Fields: `effect`, `position` (local; relative to the
+sub-mesh named by `parentMesh` when ≥ 0, else the object frame), `rotation`, `range`; optional
+`intensityScale` (per-placement, when ≠ 1), `finalColor` (resolved linear HDR RGBA),
+`colorChannel` (when the light takes the instance colorSet channel), `type`, `color` (authored
+linear RGBA), `intensity` + `intensityUnit`, `temperature` (K, when used),
+`spotShape`/`spotAngle`/`innerSpotPercentage` (Spot), `areaShape` (Area). Procedural entries
+are unchanged and remain position-less behaviors of the emissive material.
 
 **Colours.** A variation is CS2's `ColorSet`: three channels, and **the material's `colorMask`
 map (§7.1) is what selects between them, per texel.** Not the `mask` map — that is the PBR
@@ -1283,8 +1324,13 @@ every portal, trench and tunnel exactly as they do in-game.
 
 The unchanged vanilla Carto export — GeoJSON, Shapefile, GeoTIFF, exactly as Carto has always
 produced it. The ripper is strictly additive; nothing about the vector output changes, and it
-is simply relocated under the bundle when both run together. Its contents are outside this
-contract; see the Carto wiki.
+is simply relocated under the bundle when both run together — as of 2026-08-09 that relocation
+is real: the one-button rip's Vector stage (default off) writes the vanilla exporter's
+per-format subdirectories under the bundle, `vector/GeoJSON/`, `vector/Shapefile/`,
+`vector/GeoTIFF/`, and `layers.vector`/`ripOptions.includeVector` then declare it (until then
+the stage wrote to the user's configured export directory and the layer could never exist).
+The stage pre-cleans `vector/` and leaves the user's vanilla export directory setting
+untouched. Its contents are outside this contract; see the Carto wiki.
 
 ---
 
@@ -1546,6 +1592,15 @@ break: §8c `kind: "area"` records gain per-area `bottom`/`top` (the game's clos
 manifest `rasters` gains optional `water` and `terrainTiling` blocks. The mesh-limit default
 became All — the 50 cap was a dev-measurement default that made a fresh install's rip drop
 ~99% of distinct meshes undeclared.
+
+**2026-08-09 (audit #40, gap-close wave 2).** More additive catch-ups: §7.2 lights.json
+gains the `kind: "punctual"` entry family (photometry that was documented but never produced —
+the producer read the wrong entity; the procedural example's `range`/`temperature` are gone);
+§4.2's long-documented attrs are now actually emitted (`level`, `zone`, `zoning`, `brand`,
+`theme`, `address`, custom `name`) plus new `fullness`; §5B lane-geometry records gain
+optional `wear` (0..10; tint = wear/10); manifest `bounds` now encloses the lane layers;
+`ripOptions` gains `meshLimit`, may carry a negative `textureSizeCap`, and describes the run
+rather than finalize-time settings; §9's vector relocation is implemented.
 
 ### 12.2 `schema: 2` (2026-08-09) — clip-area records carry their polygon
 

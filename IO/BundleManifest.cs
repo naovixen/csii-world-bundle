@@ -36,8 +36,18 @@ namespace Carto.IO
         /// <summary>The <c>geo</c> block (contract §2.3).</summary>
         public Dictionary<string, object> Geo;
 
-        /// <summary>The texture-size cap in force, for <c>ripOptions</c>.</summary>
+        /// <summary>
+        /// The texture-size cap the rip ran with, for <c>ripOptions</c>: <c>0</c> uncapped,
+        /// negative when textures were off. The orchestrator overwrites the captured value with
+        /// its plan's — the settings may have changed while the rip ran.
+        /// </summary>
         public int TextureSizeCap;
+
+        /// <summary>
+        /// The mesh-prefab cap the rip ran with (<c>0</c> for all), for <c>ripOptions</c>.
+        /// Overwritten from the plan like <see cref="TextureSizeCap"/>.
+        /// </summary>
+        public int MeshLimit;
 
         /// <summary>
         /// Capture the snapshot. Must run on the main thread — it touches ECS systems and the
@@ -68,7 +78,10 @@ namespace Carto.IO
                 Map = (Instance.GameMode == global::Game.GameMode.Game) ? Instance.Map?.mapName : null,
                 MapSize = Instance.Terrain.playableArea.x,
                 Geo = BuildGeo(options),
-                TextureSizeCap = Instance.Settings.RipTextureSize
+                // Live-settings fallback for the standalone finalize button; the orchestrated
+                // pipeline overwrites both with the plan's actual values.
+                TextureSizeCap = Instance.Settings.RipTextures ? Instance.Settings.RipTextureSize : -1,
+                MeshLimit = Instance.Settings.RipMeshLimit
             };
         }
 

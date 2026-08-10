@@ -14,13 +14,19 @@ namespace Carto.Systems
     /// <summary>
     /// The system that writes the two things a render prefab knows about its own appearance that
     /// its geometry does not carry: the colours it may be painted, and the light it casts.
-    /// <b>Both hang off the sub-mesh, not the object.</b> That is not a guess: a census over 4,427
-    /// referenced prefabs in a full city found the colour palette on 3,984 <i>sub-meshes</i>
-    /// covering 1,132,295 instances and on <i>no</i> object prefab at all, and procedural lights on
-    /// 1,184 sub-meshes covering 153,548 instances, likewise none at the object level. Building
-    /// either against the object prefab would have silently produced an empty file.
-    /// Keyed by the sub-mesh's asset id, which is the glTF node name inside the owning prefab's
-    /// <c>.glb</c> — so a consumer joins a node to its palette and its lights by name.
+    /// <b>Palettes and procedural (emissive) lights hang off the sub-mesh, not the object.</b>
+    /// That is not a guess: a census over 4,427 referenced prefabs in a full city found the colour
+    /// palette on 3,984 <i>sub-meshes</i> covering 1,132,295 instances and on <i>no</i> object
+    /// prefab at all, and procedural lights on 1,184 sub-meshes covering 153,548 instances,
+    /// likewise none at the object level. Building either against the object prefab would have
+    /// silently produced an empty file. Keyed by the sub-mesh's asset id, which is the glTF node
+    /// name inside the owning prefab's <c>.glb</c> — so a consumer joins a node to its palette and
+    /// its lights by name.
+    /// <b>Punctual HDRP lights (street lamps, floodlights) are the opposite case</b> (audit P8):
+    /// they live in the <i>object</i> prefab's <c>Effect</c> buffer, each entry placing a
+    /// referenced EffectPrefab that carries the photometry. Those entries are keyed by the object
+    /// prefab's asset id — the same id <c>instances.jsonl</c> references — and marked
+    /// <c>kind: "punctual"</c> so the two families stay distinguishable in one file.
     /// </summary>
     public partial class AppearanceRipSystem : GameSystemBase
     {
@@ -85,43 +91,77 @@ namespace Carto.Systems
             Dictionary<string, object> palettes = new();
             Dictionary<string, object> lights = new();
 
-            NativeArray<Entity> entities = _objectQuery.ToEntityArray(Allocator.TempJob);
+            // The referenced prefab set, collected whole before any key is derived: asset ids
+            // must be assigned over the entire set at once (prefab names are not unique), and
+            // the punctual-light keys below must equal the assetIds instances.jsonl carries.
+            //
+            List<Entity> prefabs = new();
             HashSet<Entity> seen = new();
 
+            NativeArray<Entity> entities = _objectQuery.ToEntityArray(Allocator.TempJob);
             try
             {
                 foreach (Entity entity in entities)
                 {
                     Entity prefab = EntityManager.GetComponentData<PrefabRef>(entity).m_Prefab;
-                    if ((prefab == Entity.Null) || !seen.Add(prefab)) continue;
-                    if (!EntityManager.HasBuffer<SubMesh>(prefab)) continue;
-
-                    DynamicBuffer<SubMesh> subMeshes = EntityManager.GetBuffer<SubMesh>(prefab, true);
-                    for (int i = 0; i < subMeshes.Length; i++)
-                    {
-                        Entity mesh = subMeshes[i].m_SubMesh;
-                        if ((mesh == Entity.Null) || !seen.Add(mesh)) continue;
-
-                        string id = MeshRipSystem.SanitizeAssetId(Instance.Name.GetPrefabName(mesh));
-                        if (string.IsNullOrEmpty(id)) continue;
-
-                        if (colors && EntityManager.HasBuffer<ColorVariation>(mesh) && !palettes.ContainsKey(id))
-                        {
-                            List<object> variations = ReadPalette(mesh);
-                            if (variations.Count > 0) palettes[id] = variations;
-                        }
-
-                        if (lightEmitters && EntityManager.HasBuffer<ProceduralLight>(mesh) && !lights.ContainsKey(id))
-                        {
-                            List<object> emitters = ReadLights(mesh);
-                            if (emitters.Count > 0) lights[id] = emitters;
-                        }
-                    }
+                    if ((prefab != Entity.Null) && seen.Add(prefab)) prefabs.Add(prefab);
                 }
             }
             finally
             {
                 entities.Dispose();
+            }
+
+            Dictionary<Entity, MeshRipSystem.AssetIdEntry> assetIds =
+                MeshRipSystem.BuildAssetIds(EntityManager, prefabs, out _);
+
+            int punctualPrefabs = 0, punctualEmitters = 0;
+
+            foreach (Entity prefab in prefabs)
+            {
+                // Punctual HDRP lights hang off the *object* prefab's Effect buffer, never off a
+                // sub-mesh — see ReadPlacedLights. Keyed by the prefab's assetId, the join to
+                // instances.jsonl and the meshes/ layer.
+                //
+                if (lightEmitters && EntityManager.HasBuffer<Effect>(prefab))
+                {
+                    List<object> placed = ReadPlacedLights(prefab);
+                    if (placed.Count > 0)
+                    {
+                        string prefabId = assetIds[prefab].AssetId;
+                        if (lights.TryGetValue(prefabId, out object existing) && (existing is List<object> merged))
+                            merged.AddRange(placed);
+                        else
+                            lights[prefabId] = placed;
+
+                        punctualPrefabs++;
+                        punctualEmitters += placed.Count;
+                    }
+                }
+
+                if (!EntityManager.HasBuffer<SubMesh>(prefab)) continue;
+
+                DynamicBuffer<SubMesh> subMeshes = EntityManager.GetBuffer<SubMesh>(prefab, true);
+                for (int i = 0; i < subMeshes.Length; i++)
+                {
+                    Entity mesh = subMeshes[i].m_SubMesh;
+                    if ((mesh == Entity.Null) || !seen.Add(mesh)) continue;
+
+                    string id = MeshRipSystem.SanitizeAssetId(Instance.Name.GetPrefabName(mesh));
+                    if (string.IsNullOrEmpty(id)) continue;
+
+                    if (colors && EntityManager.HasBuffer<ColorVariation>(mesh) && !palettes.ContainsKey(id))
+                    {
+                        List<object> variations = ReadPalette(mesh);
+                        if (variations.Count > 0) palettes[id] = variations;
+                    }
+
+                    if (lightEmitters && EntityManager.HasBuffer<ProceduralLight>(mesh) && !lights.ContainsKey(id))
+                    {
+                        List<object> emitters = ReadLights(mesh);
+                        if (emitters.Count > 0) lights[id] = emitters;
+                    }
+                }
             }
 
             // A deselected table is never written — an earlier rip's file stays as it was, by the
@@ -131,6 +171,8 @@ namespace Carto.Systems
 
             report.AppendLine($"Wrote {(colors ? $"colors.json ({palettes.Count} palette(s))" : "no colors (deselected)")} "
                             + $"and {(lightEmitters ? $"lights.json ({lights.Count} emitter set(s))" : "no lights (deselected)")}");
+            if (lightEmitters && (punctualEmitters > 0))
+                report.AppendLine($"  {punctualEmitters} placed punctual light(s) on {punctualPrefabs} object prefab(s) (kind: punctual)");
 
             _log.Info(report.ToString());
             return report.ToString();
@@ -169,14 +211,18 @@ namespace Carto.Systems
         }
 
         /// <summary>
-        /// Read a sub-mesh's procedural lights.
+        /// Read a sub-mesh's procedural (emissive) lights.
         /// <b>What is here and what is not.</b> The colours, the response speed and the animation
         /// index are the light's own data and are exact. The <i>position</i> is not exported,
-        /// because CS2 does not store one: a procedural light binds to a material slot
+        /// because CS2 does not store one for these: a procedural light binds to a material slot
         /// (<c>EmissiveProperties.SingleLightMapping.materialId</c>) and its place in the world is
         /// wherever the geometry using that material is. A consumer places each emitter at the
         /// centroid of the primitive using the corresponding material in the same <c>.glb</c>.
         /// Inventing a transform here would be inventing data, on the same grounds as §5.1.
+        /// (A previous version also read <c>LightEffectData</c> off this mesh entity for a range
+        /// and temperature — audit P8's latent bug: the component only ever exists on an
+        /// EffectPrefab, so no entry ever carried either. Punctual lights, which do have a
+        /// position and photometry, are <see cref="ReadPlacedLights"/>.)
         /// </summary>
         /// <param name="mesh">The render prefab.</param>
         /// <returns>The emitters.</returns>
@@ -184,14 +230,6 @@ namespace Carto.Systems
         {
             DynamicBuffer<ProceduralLight> buffer = EntityManager.GetBuffer<ProceduralLight>(mesh, true);
             List<object> emitters = new(buffer.Length);
-
-            float? range = null, temperature = null;
-            if (EntityManager.HasComponent<LightEffectData>(mesh))
-            {
-                LightEffectData effect = EntityManager.GetComponentData<LightEffectData>(mesh);
-                range = effect.m_Range;
-                temperature = effect.m_ColorTemperature;
-            }
 
             for (int i = 0; i < buffer.Length; i++)
             {
@@ -208,8 +246,112 @@ namespace Carto.Systems
                 };
 
                 if (light.m_AnimationIndex >= 0) emitter["animation"] = light.m_AnimationIndex;
-                if (range.HasValue) emitter["range"] = System.Math.Round(range.Value, 3);
-                if (temperature.HasValue) emitter["temperature"] = System.Math.Round(temperature.Value, 1);
+
+                emitters.Add(emitter);
+            }
+
+            return emitters;
+        }
+
+        /// <summary>
+        /// Read the placed punctual lights off an object prefab's <c>Effect</c> buffer (audit P8).
+        /// <b>Where a punctual light actually lives.</b> A street lamp's cone is not sub-mesh
+        /// data: <c>EffectSource</c> bakes each authored effect into the object prefab's
+        /// <c>Effect</c> buffer — local position/rotation offset, per-placement intensity, parent
+        /// sub-mesh index — and the photometry sits on the referenced <i>EffectPrefab</i>: range
+        /// as <c>LightEffectData</c>, the resolved colour as <c>EffectColorData</c>, and the
+        /// type, spot angle, temperature and unit only on the managed <c>LightEffect</c>
+        /// component, which is exactly where <c>LightCullingSystem</c> reads them
+        /// (<c>GetPrefab&lt;EffectPrefab&gt;().GetComponent&lt;LightEffect&gt;()</c>).
+        /// Offsets are local to the sub-mesh named by <c>parentMesh</c> when that is ≥ 0, else to
+        /// the object's own frame — the same rule <c>EffectTransformSystem</c> applies when it
+        /// places the light in the world.
+        /// </summary>
+        /// <param name="prefab">The object prefab.</param>
+        /// <returns>The placed emitters, marked <c>kind: "punctual"</c>.</returns>
+        private List<object> ReadPlacedLights(Entity prefab)
+        {
+            DynamicBuffer<Effect> effects = EntityManager.GetBuffer<Effect>(prefab, true);
+            List<object> emitters = new();
+
+            for (int i = 0; i < effects.Length; i++)
+            {
+                Effect effect = effects[i];
+                if (effect.m_Effect == Entity.Null) continue;
+
+                // Runtime-generated destruction effects (collapse dust, fire SFX) added by
+                // BuildingInitializeSystem — not authored light placements.
+                //
+                if (effect.m_Procedural) continue;
+
+                // The same buffer carries VFX and audio; only light effects are wanted here.
+                //
+                if (!EntityManager.HasComponent<LightEffectData>(effect.m_Effect)) continue;
+
+                LightEffectData data = EntityManager.GetComponentData<LightEffectData>(effect.m_Effect);
+
+                Dictionary<string, object> emitter = new()
+                {
+                    ["kind"] = "punctual",
+                    ["effect"] = Instance.Name.GetPrefabName(effect.m_Effect),
+                    ["position"] = new double[]
+                    {
+                        System.Math.Round((double)effect.m_Position.x, 4),
+                        System.Math.Round((double)effect.m_Position.y, 4),
+                        System.Math.Round((double)effect.m_Position.z, 4)
+                    },
+                    ["rotation"] = new double[]
+                    {
+                        System.Math.Round((double)effect.m_Rotation.value.x, 6),
+                        System.Math.Round((double)effect.m_Rotation.value.y, 6),
+                        System.Math.Round((double)effect.m_Rotation.value.z, 6),
+                        System.Math.Round((double)effect.m_Rotation.value.w, 6)
+                    },
+                    ["parentMesh"] = effect.m_ParentMesh,
+                    ["range"] = System.Math.Round((double)data.m_Range, 3)
+                };
+
+                if (System.Math.Abs(effect.m_Intensity - 1f) > 1e-4f)
+                    emitter["intensityScale"] = System.Math.Round((double)effect.m_Intensity, 4);
+
+                // The resolved colour the renderer is handed — authored colour × photometric
+                // intensity × temperature × dimmer, linear HDR. `colorChannel` marks lights that
+                // take the owning instance's colorSet channel instead (EffectTransformSystem
+                // swaps it in when EffectColorData.m_Source is set and parentMesh is valid).
+                //
+                if (EntityManager.HasComponent<EffectColorData>(effect.m_Effect))
+                {
+                    EffectColorData colorData = EntityManager.GetComponentData<EffectColorData>(effect.m_Effect);
+                    emitter["finalColor"] = Channel(colorData.m_Color);
+                    if (colorData.m_Source != 0) emitter["colorChannel"] = (int)colorData.m_Source - 1;
+                }
+
+                // The photometric parameters live only on the managed EffectPrefab — the same
+                // resolution LightCullingSystem performs each frame.
+                //
+                if (EntityManager.HasComponent<PrefabData>(effect.m_Effect)
+                    && Instance.Prefab.TryGetPrefab(EntityManager.GetComponentData<PrefabData>(effect.m_Effect),
+                                                    out PrefabBase effectPrefab)
+                    && effectPrefab.TryGet(out Game.Prefabs.Effects.LightEffect light))
+                {
+                    emitter["type"] = light.m_Type.ToString();
+                    emitter["color"] = Channel(light.m_Color.linear);
+                    emitter["intensity"] = System.Math.Round((double)light.m_Intensity, 3);
+                    emitter["intensityUnit"] = light.m_LightUnit.ToString();
+                    if (light.m_UseColorTemperature)
+                        emitter["temperature"] = System.Math.Round((double)light.m_ColorTemperature, 1);
+
+                    if (light.m_Type == Game.Rendering.LightType.Spot)
+                    {
+                        emitter["spotShape"] = light.m_SpotShape.ToString();
+                        emitter["spotAngle"] = System.Math.Round((double)light.m_SpotAngle, 2);
+                        emitter["innerSpotPercentage"] = System.Math.Round((double)light.m_InnerSpotPercentage, 2);
+                    }
+                    else if (light.m_Type == Game.Rendering.LightType.Area)
+                    {
+                        emitter["areaShape"] = light.m_AreaShape.ToString();
+                    }
+                }
 
                 emitters.Add(emitter);
             }

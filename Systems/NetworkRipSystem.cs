@@ -260,7 +260,7 @@ namespace Carto.Systems
             /// <summary>Lane-stage counters, in report order.</summary>
             public long LaneBytes;
             public int SkippedLanePipeline, SkippedLaneDecal, SkippedLaneStale, SkippedLaneDegenerate;
-            public int SkippedLaneExcluded, LaneHanging, LaneTunnel;
+            public int SkippedLaneExcluded, LaneHanging, LaneTunnel, LaneWorn;
             public Dictionary<string, int> LanesByCategory = new();
 
             /// <summary>
@@ -832,6 +832,7 @@ namespace Carto.Systems
                 foreach (KeyValuePair<string, int> kvp in run.LanesByCategory) report.AppendLine($"  {kvp.Key}: {kvp.Value}");
                 if (run.LaneHanging > 0) report.AppendLine($"  hanging (calm-air drop; the consumer builds the cubic): {run.LaneHanging}");
                 if (run.LaneTunnel > 0) report.AppendLine($"  included {run.LaneTunnel} tunnel lane(s), tagged \"tunnel\" (the game draws them on its Tunnel cutaway layer)");
+                if (run.LaneWorn > 0) report.AppendLine($"  {run.LaneWorn} lane(s) carry non-zero road wear (\"wear\", raw 0..10; tint = wear/10)");
                 if (run.SkippedLanePipeline > 0) report.AppendLine($"  excluded {run.SkippedLanePipeline} part(s) with no world-view layer from the catalogue (Pipeline/SubPipeline/Waterway)");
                 if (run.SkippedLaneDecal > 0) report.AppendLine(run.IncludeLaneDecals
                     ? $"  {run.SkippedLaneDecal} decal part(s) in the catalogue — wear tint and road markings, lifted by the consumer (§5B)"
@@ -1119,6 +1120,22 @@ namespace Carto.Systems
             {
                 record.Tunnel = true;
                 run.LaneTunnel++;
+            }
+
+            // Road wear (audit P10): the serialized state behind the game's lane-decal
+            // deterioration tint in the normal view — BatchDataSystem sets
+            // `colossal_CurveDeterioration = LaneCondition.m_Wear / 10` per lane. Raw game value
+            // (0..10), only when non-zero, to keep the layer lean. Not `NetCondition.m_Wear`,
+            // which is infoview-only.
+            //
+            if (EntityManager.HasComponent<Game.Net.LaneCondition>(entity))
+            {
+                float wear = EntityManager.GetComponentData<Game.Net.LaneCondition>(entity).m_Wear;
+                if (wear != 0f)
+                {
+                    record.Wear = wear;
+                    run.LaneWorn++;
+                }
             }
 
             if (hasHang)

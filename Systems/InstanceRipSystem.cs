@@ -116,6 +116,27 @@ namespace Carto.Systems
         int _colorSets, _customColors, _divergentColorSets, _growthScales;
 
         /// <summary>
+        /// Counters for the semantic attributes (audit P9/P12), per rip.
+        /// </summary>
+        int _customNames, _brands, _levels, _zones, _themes, _addresses, _fullness;
+
+        /// <summary>
+        /// What a zone prefab exports as (name and coarse class), cached for one rip —
+        /// a city has dozens of zone prefabs and hundreds of thousands of zoned buildings.
+        /// </summary>
+        readonly Dictionary<Entity, (string Zone, string Zoning)> _zoneTypes = new();
+
+        /// <summary>
+        /// Which theme each object prefab belongs to, cached for one rip.
+        /// </summary>
+        readonly Dictionary<Entity, string> _prefabThemes = new();
+
+        /// <summary>
+        /// The game's name system — the custom-name table <c>attrs.name</c> reads.
+        /// </summary>
+        Game.UI.NameSystem _nameSystem;
+
+        /// <summary>
         /// The event triggered when the system instance is created.
         /// </summary>
         protected override void OnCreate()
@@ -154,6 +175,8 @@ namespace Carto.Systems
                     ComponentType.ReadOnly<Game.Vehicles.Vehicle>()
                 }
             });
+
+            _nameSystem = World.GetOrCreateSystemManaged<Game.UI.NameSystem>();
 
             base.OnCreate();
             _log.Debug("InstanceRipSystem instance created.");
@@ -302,7 +325,10 @@ namespace Carto.Systems
 
             RipProgress.Report(RipProgress.Phase.Scan);
             _colorSets = 0; _customColors = 0; _divergentColorSets = 0; _growthScales = 0;
+            _customNames = 0; _brands = 0; _levels = 0; _zones = 0; _themes = 0; _addresses = 0; _fullness = 0;
             _decalPrefabs.Clear();
+            _zoneTypes.Clear();
+            _prefabThemes.Clear();
 
             InstanceRun run = new()
             {
@@ -630,6 +656,12 @@ namespace Carto.Systems
                                 + $"{_divergentColorSets} had per-part sets that differ (first part exported)");
             }
             if (_growthScales > 0) report.AppendLine($"  {_growthScales} tree(s) carry the game's growth scale (attrs.growthScale)");
+            if (_customNames + _brands + _levels + _zones + _themes + _addresses + _fullness > 0)
+            {
+                report.AppendLine($"  semantic attrs (audit P9/P12): {_customNames} custom name(s), {_brands} brand(s), "
+                                + $"{_levels} building level(s), {_zones} zoned (zone/zoning), {_themes} themed, "
+                                + $"{_addresses} address(es), {_fullness} stockpile fullness");
+            }
             if (run.StackExpanded > 0)
             {
                 report.AppendLine($"Expanded {run.StackExpanded} stacked object(s) into {run.StackRecords} "
@@ -1039,8 +1071,8 @@ namespace Carto.Systems
                 int instances = pair.Value;
 
                 // Light sources are components on the object prefab, not mesh flags: a lamp's
-                // housing is ordinary geometry and the light it casts is separate data the bundle
-                // does not carry at all.
+                // housing is ordinary geometry and the light it casts is separate data, carried
+                // by lights.json (procedural per sub-mesh, punctual per object prefab).
                 //
                 // Per-instance colour: the prefab holds a palette of variations
                 // (colors.json) and the game resolves each placed object's paint into its
@@ -1328,7 +1360,173 @@ namespace Carto.Systems
                 else if (EntityManager.HasComponent<Game.Buildings.Condemned>(entity)) record.Attributes["state"] = "condemned";
                 else if (EntityManager.HasComponent<Game.Objects.UnderConstruction>(entity)) record.Attributes["state"] = "construction";
                 else record.Attributes["state"] = "normal";
+
+                // The zoned-building metadata the contract documents and audit P12 found never
+                // produced. `level` and the zone link are one prefab-side component
+                // (SpawnableBuildingData); the zone strings are cached per zone prefab.
+                //
+                if (EntityManager.HasComponent<SpawnableBuildingData>(prefabEntity))
+                {
+                    SpawnableBuildingData spawnable = EntityManager.GetComponentData<SpawnableBuildingData>(prefabEntity);
+                    record.Attributes["level"] = (int)spawnable.m_Level;
+                    _levels++;
+
+                    if (spawnable.m_ZonePrefab != Entity.Null)
+                    {
+                        (string zone, string zoning) = ZoneOf(spawnable.m_ZonePrefab);
+                        if (zone != null) record.Attributes["zone"] = zone;
+                        if (zoning != null) record.Attributes["zoning"] = zoning;
+                        if ((zone != null) || (zoning != null)) _zones++;
+                    }
+                }
+
+                // The brand of the company renting the building — `CompanyData.m_Brand` on a
+                // renter, resolved to the brand prefab's name. Household renters carry no
+                // CompanyData; the first branded renter wins, matching the signage the game
+                // actually draws for the building.
+                //
+                if (EntityManager.HasBuffer<Game.Buildings.Renter>(entity))
+                {
+                    DynamicBuffer<Game.Buildings.Renter> renters = EntityManager.GetBuffer<Game.Buildings.Renter>(entity, true);
+                    for (int i = 0; i < renters.Length; i++)
+                    {
+                        Entity renter = renters[i].m_Renter;
+                        if ((renter == Entity.Null) || !EntityManager.HasComponent<Game.Companies.CompanyData>(renter)) continue;
+
+                        Entity brand = EntityManager.GetComponentData<Game.Companies.CompanyData>(renter).m_Brand;
+                        string brandName = (brand != Entity.Null) ? Instance.Name.GetPrefabName(brand) : null;
+                        if (!string.IsNullOrEmpty(brandName))
+                        {
+                            record.Attributes["brand"] = brandName;
+                            _brands++;
+                        }
+
+                        break;
+                    }
+                }
+
+                // The postal address, by the game's own resolver (`BuildingUtils.GetAddress`,
+                // the walk along the road-edge aggregate the info panel uses) plus the district
+                // the simulation keeps on the building. The contract's documented shape:
+                // [district, street, number], district null outside every district.
+                //
+                if (Game.Buildings.BuildingUtils.GetAddress(EntityManager, entity, out Entity street, out int number)
+                    && (street != Entity.Null))
+                {
+                    Entity district = EntityManager.HasComponent<Game.Areas.CurrentDistrict>(entity)
+                        ? EntityManager.GetComponentData<Game.Areas.CurrentDistrict>(entity).m_District
+                        : Entity.Null;
+
+                    record.Attributes["address"] = new object[]
+                    {
+                        (district != Entity.Null) ? Instance.Name.GetLabelName(district) : null,
+                        Instance.Name.GetLabelName(street),
+                        number
+                    };
+                    _addresses++;
+                }
             }
+
+            // The player's own name for the object, when one was given. The generated display
+            // name is locale output derived from prefab and address and is not repeated here;
+            // the custom name is the one piece of naming that is city data (the NameSystem's
+            // custom-name table — one dictionary lookup per object).
+            //
+            if ((_nameSystem != null) && _nameSystem.TryGetCustomName(entity, out string customName)
+                && !string.IsNullOrEmpty(customName))
+            {
+                record.Attributes["name"] = customName;
+                _customNames++;
+            }
+
+            // The content theme the prefab belongs to (European / North American, seasonal
+            // packs): `ThemeObject` bakes it into the prefab's requirement buffer as the entry
+            // whose target carries `ThemeData`. Cached per prefab — one walk each.
+            //
+            string theme = ThemeOf(prefabEntity);
+            if (theme != null)
+            {
+                record.Attributes["theme"] = theme;
+                _themes++;
+            }
+
+            // Stockpile fullness (garbage heaps, coal and log piles): serialized sim state, the
+            // value `BatchDataHelpers.CalculateQuantitySubMeshData` selects the Empty / Partial1 /
+            // Partial2 / Full sub-mesh variants by. The game stores a byte percentage 0..100
+            // (QuantityUpdateSystem rounds fraction × 100) and it is shipped raw.
+            //
+            if (EntityManager.HasComponent<Quantity>(entity))
+            {
+                record.Attributes["fullness"] = (int)EntityManager.GetComponentData<Quantity>(entity).m_Fullness;
+                _fullness++;
+            }
+        }
+
+        /// <summary>
+        /// A zone prefab's exported strings, cached: <c>zone</c> is the prefab's own name (the
+        /// specific zoned type, e.g. <c>NA Residential Low</c>); <c>zoning</c> is the coarse class
+        /// from <c>ZoneData</c> — residential/commercial/industrial by <c>m_AreaType</c>, office
+        /// carved out of industrial by the <c>Office</c> flag, exactly the split the game's own
+        /// zoning UI makes.
+        /// </summary>
+        /// <param name="zonePrefab">The zone prefab.</param>
+        /// <returns>The strings, either possibly <c>null</c>.</returns>
+        private (string Zone, string Zoning) ZoneOf(Entity zonePrefab)
+        {
+            if (_zoneTypes.TryGetValue(zonePrefab, out (string Zone, string Zoning) known)) return known;
+
+            string name = Instance.Name.GetPrefabName(zonePrefab);
+            string area = null;
+
+            if (EntityManager.HasComponent<ZoneData>(zonePrefab))
+            {
+                ZoneData zoneData = EntityManager.GetComponentData<ZoneData>(zonePrefab);
+                area = zoneData.m_AreaType switch
+                {
+                    Game.Zones.AreaType.Residential => "residential",
+                    Game.Zones.AreaType.Commercial => "commercial",
+                    Game.Zones.AreaType.Industrial => ((zoneData.m_ZoneFlags & ZoneFlags.Office) != 0) ? "office" : "industrial",
+                    _ => null
+                };
+            }
+
+            (string, string) result = (string.IsNullOrEmpty(name) ? null : name, area);
+            _zoneTypes[zonePrefab] = result;
+            return result;
+        }
+
+        /// <summary>
+        /// The theme an object prefab belongs to, or <c>null</c>, cached. <c>ThemeObject</c> has
+        /// no marker of its own on the object prefab: it adds an <c>ObjectRequirementElement</c>
+        /// whose requirement entity is the theme prefab (the entity carrying <c>ThemeData</c>),
+        /// so that entry is what identifies the theme.
+        /// </summary>
+        /// <param name="prefabEntity">The object prefab.</param>
+        /// <returns>The theme prefab's name, or <c>null</c>.</returns>
+        private string ThemeOf(Entity prefabEntity)
+        {
+            if (_prefabThemes.TryGetValue(prefabEntity, out string known)) return known;
+
+            string theme = null;
+            if (EntityManager.HasBuffer<ObjectRequirementElement>(prefabEntity))
+            {
+                DynamicBuffer<ObjectRequirementElement> requirements = EntityManager.GetBuffer<ObjectRequirementElement>(prefabEntity, true);
+                for (int i = 0; i < requirements.Length; i++)
+                {
+                    Entity requirement = requirements[i].m_Requirement;
+                    if ((requirement == Entity.Null) || !EntityManager.HasComponent<ThemeData>(requirement)) continue;
+
+                    string themeName = Instance.Name.GetPrefabName(requirement);
+                    if (!string.IsNullOrEmpty(themeName))
+                    {
+                        theme = themeName;
+                        break;
+                    }
+                }
+            }
+
+            _prefabThemes[prefabEntity] = theme;
+            return theme;
         }
 
         /// <summary>
