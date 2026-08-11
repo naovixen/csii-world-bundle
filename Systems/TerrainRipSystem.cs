@@ -86,7 +86,7 @@ namespace Carto.Systems
 
         // Stamp tallies for the report.
         int _edgesStamped, _nodesStamped, _orphansStamped, _skippedForm, _skippedNoFlatten, _skippedWaterway;
-        int _cutEdges, _cutNodes, _cutOrphans, _cutAreas, _cutRoundaboutApprox;
+        int _cutEdges, _cutNodes, _cutOrphans, _cutAreas, _cutRoundaboutTransitions;
 
         /// <summary>
         /// The clip volumes collected during the clip walk, for <c>clipvolumes.jsonl</c>.
@@ -246,7 +246,7 @@ namespace Carto.Systems
             // readback legitimately contains ground that blocks them. These are the volumes that
             // pass tests against — a consumer intersects them with the heightmap itself.
             //
-            _cutEdges = _cutNodes = _cutOrphans = _cutAreas = _cutRoundaboutApprox = 0;
+            _cutEdges = _cutNodes = _cutOrphans = _cutAreas = _cutRoundaboutTransitions = 0;
 
             if (clips)
             {
@@ -263,9 +263,9 @@ namespace Carto.Systems
 
                 report.AppendLine($"Clip: {_cutEdges} edge(s), {_cutNodes} node strip(s), "
                                 + $"{_cutOrphans} orphan cap(s), {_cutAreas} clip area(s) collected");
-                if (_cutRoundaboutApprox > 0)
-                    report.AppendLine($"  APPROXIMATED: {_cutRoundaboutApprox} roundabout node(s) cut with raw composition "
-                                    + "flags (the game's AddNode state-shedding and ring trims omitted — can over-cut, never under)");
+                if (_cutRoundaboutTransitions > 0)
+                    report.AppendLine($"  {_cutRoundaboutTransitions} roundabout node(s) took AddNode's shed composition "
+                                    + "state and trimmed ring for their second strip pair");
             }
 
             // ---- 3. Water surface LEVEL, built on the sim grid and resampled onto the terrain
@@ -1974,7 +1974,8 @@ namespace Carto.Systems
                     if (EntityManager.HasComponent<StartNodeGeometry>(entity)
                         && TryGetGroundComposition(composition.m_StartNode, netGeometry, out TerrainComposition startTerrain)
                         && StampNode(in context, in context, heightData,
-                                     EntityManager.GetComponentData<StartNodeGeometry>(entity).m_Geometry, startTerrain))
+                                     EntityManager.GetComponentData<StartNodeGeometry>(entity).m_Geometry, startTerrain,
+                                     composition.m_StartNode, netGeometry))
                     {
                         _nodesStamped++;
                     }
@@ -1982,7 +1983,8 @@ namespace Carto.Systems
                     if (EntityManager.HasComponent<EndNodeGeometry>(entity)
                         && TryGetGroundComposition(composition.m_EndNode, netGeometry, out TerrainComposition endTerrain)
                         && StampNode(in context, in context, heightData,
-                                     EntityManager.GetComponentData<EndNodeGeometry>(entity).m_Geometry, endTerrain))
+                                     EntityManager.GetComponentData<EndNodeGeometry>(entity).m_Geometry, endTerrain,
+                                     composition.m_EndNode, netGeometry))
                     {
                         _nodesStamped++;
                     }
@@ -2148,6 +2150,20 @@ namespace Carto.Systems
                 terrain = EntityManager.GetComponentData<TerrainComposition>(composition);
             }
 
+            return TryGetClipBand(data, terrain, netGeometry, isStart, out cutBottom, out cutTop);
+        }
+
+        /// <summary>
+        /// The band for a composition already in hand — the half of
+        /// <see cref="TryGetClipBand(Entity, NetGeometryData, bool, out TerrainComposition, out float, out float)"/>
+        /// that does the arithmetic. Split out because <c>AddNode</c> feeds the roundabout's
+        /// second strip pair a composition it has MUTATED (see <see cref="StampNode"/>), which
+        /// is not the one stored on any entity.
+        /// </summary>
+        private bool TryGetClipBand(NetCompositionData data, TerrainComposition terrain,
+                                    NetGeometryData netGeometry, bool isStart,
+                                    out float cutBottom, out float cutTop)
+        {
             float raisedTop = netGeometry.m_ElevationLimit * 3f;
             float3 baseHeights = isStart
                 ? new float3(data.m_EdgeHeights.x, data.m_SurfaceHeight.min, data.m_EdgeHeights.y)
@@ -2278,7 +2294,8 @@ namespace Carto.Systems
                             endContext.CutTop = 0f;
                         }
                         if (StampNode(in context, in endContext, heightData,
-                                      EntityManager.GetComponentData<StartNodeGeometry>(entity).m_Geometry, startTerrain))
+                                      EntityManager.GetComponentData<StartNodeGeometry>(entity).m_Geometry, startTerrain,
+                                      composition.m_StartNode, netGeometry))
                         {
                             _cutNodes++;
                         }
@@ -2296,7 +2313,8 @@ namespace Carto.Systems
                             endContext.CutTop = 0f;
                         }
                         if (StampNode(in context, in endContext, heightData,
-                                      EntityManager.GetComponentData<EndNodeGeometry>(entity).m_Geometry, endTerrain))
+                                      EntityManager.GetComponentData<EndNodeGeometry>(entity).m_Geometry, endTerrain,
+                                      composition.m_EndNode, netGeometry))
                         {
                             _cutNodes++;
                         }
@@ -2459,25 +2477,123 @@ namespace Carto.Systems
         }
 
         /// <summary>
+        /// Move a point toward another by <paramref name="amount"/> metres, measured in XZ —
+        /// <c>CullRoadsJob.MoveTowards</c> verbatim. The normalisation is by the XZ length, so a
+        /// climbing ring is trimmed by ground distance, not slope distance.
+        /// </summary>
+        private static void MoveTowards(ref float3 position, float3 other, float amount)
+        {
+            float3 delta = other - position;
+            delta = Colossal.Mathematics.MathUtils.Normalize(delta, delta.xz);
+            position += delta * amount;
+        }
+
+        /// <summary>
+        /// The composition and ring trims the game hands the roundabout's SECOND strip pair —
+        /// <c>CullRoadsJob.AddNode</c>'s <c>m_MiddleRadius &gt; 0</c> branch.
+        /// <para>
+        /// The game does not evaluate that pair against the composition stored on the entity. It
+        /// copies it, and where a side carries an elevation transition it sheds the
+        /// <c>Elevated</c> or <c>Tunnel</c> general flag and replaces the transition side flag
+        /// with the state the ring is transitioning INTO — <c>Raised</c> under an elevated
+        /// composition, <c>Lowered</c> under a tunnel. That moves the band onto a different
+        /// branch of <c>AddSegment</c>: an elevated composition's band is never raised to
+        /// <c>ElevationLimit·3</c>, but once the flag is shed and <c>Lowered</c> is set, it is.
+        /// </para>
+        /// <para>
+        /// It also trims the ring ends toward the middle curve's far point by the sync vertex
+        /// offsets, scaled by the distance across the node at that end. The trims shorten the
+        /// stamped footprint; omitting them (which this used to) over-stamps, and over-stamping
+        /// is the direction that deletes terrain no road covers.
+        /// </para>
+        /// </summary>
+        /// <returns>Whether the composition was mutated at all; when false the caller keeps the
+        /// stored composition's band and both trims are zero.</returns>
+        private bool RoundaboutSecondPair(Entity composition, NetGeometryData netGeometry,
+                                          EdgeNodeGeometry node, out NetCompositionData mutated,
+                                          out float trimLeft, out float trimRight)
+        {
+            mutated = default;
+            trimLeft = 0f;
+            trimRight = 0f;
+            if ((composition == Entity.Null) || !EntityManager.HasComponent<NetCompositionData>(composition)) return false;
+
+            NetCompositionData data = EntityManager.GetComponentData<NetCompositionData>(composition);
+            mutated = data;
+            bool elevated = (data.m_Flags.m_General & CompositionFlags.General.Elevated) != 0;
+            bool tunnel = (data.m_Flags.m_General & CompositionFlags.General.Tunnel) != 0;
+            if (!elevated && !tunnel) return false;
+
+            CompositionFlags.General shed = elevated ? CompositionFlags.General.Elevated
+                                                     : CompositionFlags.General.Tunnel;
+            // An elevated ring transitions down into Raised; a tunnel ring up into Lowered.
+            //
+            CompositionFlags.Side into = elevated ? CompositionFlags.Side.Raised
+                                                  : CompositionFlags.Side.Lowered;
+
+            if ((data.m_Flags.m_Left & CompositionFlags.Side.HighTransition) != 0)
+            {
+                trimLeft = data.m_SyncVertexOffsetsLeft.x;
+                mutated.m_Flags.m_General &= ~shed;
+                mutated.m_Flags.m_Left &= ~CompositionFlags.Side.HighTransition;
+            }
+            else if ((data.m_Flags.m_Left & CompositionFlags.Side.LowTransition) != 0)
+            {
+                trimLeft = data.m_SyncVertexOffsetsLeft.x;
+                mutated.m_Flags.m_General &= ~shed;
+                mutated.m_Flags.m_Left &= ~CompositionFlags.Side.LowTransition;
+                mutated.m_Flags.m_Left |= into;
+            }
+
+            if ((data.m_Flags.m_Right & CompositionFlags.Side.HighTransition) != 0)
+            {
+                trimRight = 1f - data.m_SyncVertexOffsetsRight.w;
+                mutated.m_Flags.m_General &= ~shed;
+                mutated.m_Flags.m_Right &= ~CompositionFlags.Side.HighTransition;
+            }
+            else if ((data.m_Flags.m_Right & CompositionFlags.Side.LowTransition) != 0)
+            {
+                trimRight = 1f - data.m_SyncVertexOffsetsRight.w;
+                mutated.m_Flags.m_General &= ~shed;
+                mutated.m_Flags.m_Right &= ~CompositionFlags.Side.LowTransition;
+                mutated.m_Flags.m_Right |= into;
+            }
+
+            // The offsets are fractions of the node's width at each end, so they scale by the
+            // distance from the ring's start to the middle curve — the game's own scaling.
+            //
+            if (trimLeft != 0f)
+            {
+                trimLeft *= math.distance(node.m_Left.m_Left.a.xz, node.m_Middle.a.xz);
+            }
+            if (trimRight != 0f)
+            {
+                trimRight *= math.distance(node.m_Middle.a.xz, node.m_Left.m_Right.a.xz);
+            }
+            return true;
+        }
+
+        /// <summary>
         /// Stamp one node's strips — the flattened junction interior.
         /// The three cases are <c>CullRoadsJob.AddNode</c>'s: a roundabout rides its middle curve
         /// ring, a true junction (parted corners) covers both halves plus the two wedges to the
         /// middle curve — the petals — and a straight-through node spans half-to-half across the
-        /// middle. The roundabout's elevation-transition ring trims (<c>MoveTowards</c> by the
-        /// sync offsets) are omitted: they shave a few metres off the ring start at elevated
-        /// ramps, so omitting them over-stamps slightly, never under.
+        /// middle.
         /// </summary>
         /// <returns>Whether the node cleared the draw gate and was stamped.</returns>
         /// <remarks>
         /// The roundabout's second strip pair is the one place the game evaluates a section with
         /// <c>isStart: false</c> (its <c>AddNode</c> passes it for both <c>node.m_Right</c>
-        /// segments), so those two strips take <paramref name="contextEnd"/> — the band built
-        /// from the composition's end-half edge heights. Every other strip, and both halves of
-        /// every other node kind, is <c>isStart: true</c> and takes <paramref name="context"/>.
+        /// segments), so those two strips take a band built from the composition's end-half edge
+        /// heights. Every other strip, and both halves of every other node kind, is
+        /// <c>isStart: true</c> and takes <paramref name="context"/>. That pair is also the one
+        /// place the game feeds <c>AddSegment</c> a composition it has MUTATED — see
+        /// <see cref="RoundaboutSecondPair"/>.
         /// </remarks>
         private bool StampNode(in StampContext context, in StampContext contextEnd,
                                TerrainHeightData heightData,
-                               EdgeNodeGeometry node, TerrainComposition terrain)
+                               EdgeNodeGeometry node, TerrainComposition terrain,
+                               Entity composition, NetGeometryData netGeometry)
         {
             // The game's own draw gate: nodes shorter than 5 cm on both sides draw nothing.
             //
@@ -2488,13 +2604,7 @@ namespace Carto.Systems
             {
                 // Roundabout: outer half to the middle curve, middle curve to the inner half,
                 // then the same for the right half against the middle curve's end point.
-                // Approximation, counted for cut passes: the game's AddNode sheds the
-                // elevated/tunnel + transition state (and MoveTowards-trims the ring ends) for
-                // this second pair before building its band; the port keeps the raw flags, which
-                // can only widen the band (over-cut), never narrow it.
                 //
-                if (context.Cut) _cutRoundaboutApprox++;
-
                 strip = node.m_Left;
                 strip.m_Right = node.m_Middle;
                 StampSegment(in context, heightData, strip, terrain, true, false);
@@ -2502,12 +2612,47 @@ namespace Carto.Systems
                 strip.m_Right = node.m_Left.m_Right;
                 StampSegment(in context, heightData, strip, terrain, false, true);
 
+                // The second pair rides a composition the game has shed the elevated/tunnel
+                // transition state from, and a ring trimmed toward the middle by the sync
+                // offsets. Both are AddNode's, and both matter: the mutated flags move the band
+                // onto a different branch of AddSegment, and the trims shorten the stamped
+                // footprint at an elevated or tunnel ramp.
+                //
+                StampContext pairContext = contextEnd;
+                float trimLeft = 0f;
+                float trimRight = 0f;
+                if (RoundaboutSecondPair(composition, netGeometry, node,
+                                         out NetCompositionData mutated, out trimLeft, out trimRight))
+                {
+                    if (context.Cut) _cutRoundaboutTransitions++;
+                    if (TryGetClipBand(mutated, terrain, netGeometry, false,
+                                       out float mutatedBottom, out float mutatedTop))
+                    {
+                        pairContext.CutBottom = mutatedBottom;
+                        pairContext.CutTop = mutatedTop;
+                    }
+                }
+
                 strip = node.m_Right;
                 strip.m_Right = new Bezier4x3(node.m_Middle.d, node.m_Middle.d, node.m_Middle.d, node.m_Middle.d);
-                StampSegment(in contextEnd, heightData, strip, terrain, true, false);
+                if (trimLeft != 0f)
+                {
+                    MoveTowards(ref strip.m_Left.a, node.m_Middle.d, trimLeft);
+                    MoveTowards(ref strip.m_Left.b, node.m_Middle.d, trimLeft);
+                    MoveTowards(ref strip.m_Left.c, node.m_Middle.d, trimLeft);
+                    MoveTowards(ref strip.m_Left.d, node.m_Middle.d, trimLeft);
+                }
+                StampSegment(in pairContext, heightData, strip, terrain, true, false);
                 strip.m_Left = strip.m_Right;
                 strip.m_Right = node.m_Right.m_Right;
-                StampSegment(in contextEnd, heightData, strip, terrain, false, true);
+                if (trimRight != 0f)
+                {
+                    MoveTowards(ref strip.m_Right.a, node.m_Middle.d, trimRight);
+                    MoveTowards(ref strip.m_Right.b, node.m_Middle.d, trimRight);
+                    MoveTowards(ref strip.m_Right.c, node.m_Middle.d, trimRight);
+                    MoveTowards(ref strip.m_Right.d, node.m_Middle.d, trimRight);
+                }
+                StampSegment(in pairContext, heightData, strip, terrain, false, true);
             }
             else if (math.lengthsq(node.m_Left.m_Right.d - node.m_Right.m_Left.d) > 0.0001f)
             {
