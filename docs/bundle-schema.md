@@ -1454,6 +1454,24 @@ not the strip's extent.** *(Bundles ripped before 2026-08-08 carried a producer-
 
 A cut cell's `surface_index.png` id is meaningless — the cell is not drawn at all.
 
+**The invariant a mesh consumer owes** *(2026-08-11, audit §41)*. The game discards **per
+pixel**, so `discarded ⊆ covered by the road mesh` holds by construction and a see-through gap
+beside a road is impossible in-game. A mesh at any finite resolution can only approximate that
+boundary, and the two directions are not symmetric: deleting beyond a volume leaves **sky**,
+while deleting less leaves terrain under a road that already hides it. So **delete a face only
+when the volume contains the whole face** — test the face's own interior, not a sample point,
+and not its corners. Testing the corners against the *union* of volumes is the trap: at a
+junction four corners can be covered by four different volumes while the face's interior escapes
+them all, which reads as contained and tears a hole. Report deleted area against the clipped area
+you measured; the ratio must never exceed 1.00.
+
+Containment alone under-deletes, and the difference is invisible under a surface road but stands
+in the open under a trench or portal band (whose top is `ElevationLimit·3`). Close it by moving
+the hole's rim onto the volume's own wall — outward for a rim vertex inside the band, inward for
+one outside — rather than by loosening the deletion rule. A strip narrower than two of your faces
+holds no whole face and has no rim either; count what that leaves rather than letting it pass
+silently.
+
 **Heightmap-native consumers** (BeamNG-class engines with their own terrain system): do not
 replicate a mesh pipeline. Feed `terrain/heightmap.png` to the engine's terrain directly — it is
 the game's own final, road-flattened ground — and punch terrain holes where these volumes

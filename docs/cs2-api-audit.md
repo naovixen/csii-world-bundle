@@ -1842,3 +1842,104 @@ an invalid bundle (P1), clip-**area** volumes are closed prisms in-game but unbo
 bundle (P3), and `lights.json` photometry never ships because `LightEffectData` lives on the
 EffectPrefab, not the sub-mesh entity (P8). §7.2's lights example and §4.2's attrs list both
 document fields the producer has never emitted — contract-honesty items P8/P12.
+
+## 41. The terrain clip cut: containment, and the three defects it explains (2026-08-11)
+
+Run against the 09:28–09:58 rip, which post-dates every producer commit (`e468704`, 09:14) on a
+clean tree — so the bundle describes today's producer and everything below is measured, not
+inferred. Prompted by three visual defects reported after the split-band round: **gaps at some
+junction intersections**, **square terrain overlapping terrain cutout walls**, and **roads with
+terrain clipping through them**.
+
+### 41.1 Producer versus `Game.Simulation.TerrainSystem` — the clip layer is right
+
+| game rule | producer | verdict |
+|---|---|---|
+| `GenerateClipDataJob` widens the band **vertically**: `m_ClipOffset.x -= 0.3`, `.y += 0.3`, then shifts the left/right curve Y by `.x`. Never laterally. | `ClipBandExpansion` applied to `cutBottom`/`cutTop` only (`TerrainRipSystem.cs:2170`) | **match** |
+| `AddSegment` band = `cmin/cmax(m_EdgeHeights half, m_SurfaceHeight.min) + m_ClipHeightOffset`, raised to `m_ElevationLimit * 3` only on the tunnel+transition or non-tunnel+`Lowered` branch, both reached *after* the `HasSurface == 0` and `Elevated ‖ Waterway` branches | `TryGetClipBand` reproduces the branch chain | **match** — and confirmed by the shipped data, not just the code: deep tops are exactly **12.3 / 6.3 / 7.3** (`ElevationLimit·3 + 0.3` for roads, pathways), bottoms all **−0.5**, area prisms **±0.3** |
+| `AddSegment` trims each side by `TerrainComposition.m_WidthOffset`, skipped on a side flagged `MiddleLeft`/`MiddleRight` | `StampSegment(trimLeft, trimRight)`, flags matched strip for strip in the junction-arm and straight-through branches | **match** |
+| `GenerateAreaClipMeshJob` builds a CLOSED prism from the area ring at `min(0, aggMin) − 0.3` … `max(0, aggMax) + 0.3`, with bottom cap, top cap and side walls | `StampClipAreas` | **match** |
+| `AddNode` hands the roundabout's **second** strip pair a MUTATED composition (sheds `Elevated`/`Tunnel`, sets `Raised`/`Lowered`) and a ring trimmed by `MoveTowards` | omitted, counted `_cutRoundaboutApprox` | **divergence — FIXED** `48c6326`, awaiting re-rip |
+| `ClipMapDraw.m_OffsetFactor` = −1 under `InverseClipOffset` (tunnels) | not modelled | **benign** — it feeds the shader's camera-facing depth bias (`_ClipOffset.w = tan(fov/2)·0.002`), not the volume |
+
+The omitted roundabout trims were justified in the code as "can only over-cut, never under".
+That is backwards: over-cutting in XZ is precisely the direction that deletes terrain no road
+covers. The trims are what prevent it.
+
+### 41.2 The harness cut — all three defects, one rule
+
+Measured over five 240 m windows (the user's two, the two densest deep-band clusters, the
+densest clip-area cluster) against a 0.29 m truth raster.
+
+**Defect 1, junction gaps** = terrain deleted where **no clip prism reaches at all**. The rule
+ANDed a face's four **corner cells** against the **union** of every prism. At a junction those
+four corners are covered by four *different* prisms while the face's interior escapes them all.
+`SEE(band)` — deleted inside a footprint but outside the band — is **0 m² in every window**, so
+the failure was entirely geometric, never the height test.
+
+| rule | sky per window |
+|---|---|
+| face centre (unbiased) | 1,772–6,040 m² |
+| corner-AND ∪ `cut_above` (was shipped) | **197–741 m²** |
+| face interior sampled at 6/cell (`_contain_faces`) | **1–16 m²** |
+
+**Defects 2 and 3, terrain in trenches and cutouts** = terrain kept *inside* a band. Harmless in
+the shallow surface band (`top = 0.1`; measured, terrain rises above the band roof over 2 m² of a
+37,728 m² footprint). The whole defect in the **deep** bands (`top = 12.3`, 868 strips) and the
+**266 `ClipArea` cutouts`**, where it stands a median **+7.4 m** proud of the road.
+
+The cause was that `_snap_hole_boundary` was written for the *over*-deleting rule: it only ever
+pulled a rim vertex inward, and a vertex over the strip got a height clamp that does nothing
+when the band roof is 12 m up. Pushing in-band rim vertices **out** to the same prism wall:
+
+| window | kept-in-band | deep only |
+|---|---|---|
+| train tracks | 46.4% → **18.4%** | — |
+| road junction | 28.7% → **8.3%** | — |
+| trench cluster | 49.6% → **26.6%** | 45.1% → 23.8% |
+| deep cluster | 28.7% → **3.4%** | 25.9% → **2.0%** |
+| clip areas | 31.0% → **3.1%** | — |
+
+with sky unchanged at 2–50 m². The reach saturates — 2.5 and 4.0 cells reproduce 1.5 exactly,
+1.0 is measurably worse — which is the bound the rim argument predicts.
+
+### 41.3 The split band is retired, and why that is safe
+
+`cut_above` existed only to stop corner-containment walling off tunnels (§8c, the §21 row 3
+regression). It is a face-centre rule and therefore the second source of sky. Two measurements
+retire it:
+
+- over the city's three densest tunnel-portal clusters, interior-sampled containment deletes
+  **100%, 100% and 96.7%** of the buried centreline faces — the split band's own numbers to the
+  digit (the 3.3% no rule deletes is terrain at the very edge of the band);
+- of 5,744 genuinely buried centreline stations city-wide, only 37.5% have terrain inside their
+  own band at all. The rest sit a median **17.2 m** below it, where the clip cannot reach and
+  need not — that is the game's behaviour too, and the producer's docstring already said so.
+
+### 41.4 The residual, stated not fixed
+
+A clip strip narrower than two faces holds no whole face, so nothing is deleted along it and
+there is no rim to push either. City-wide the deep band reaches 10,079 faces; 4,294 are not
+deleted, and of those **701 have no deleted neighbour — 8,587 m², 3.3% of the 260,847 m² deep
+footprint**. Strips under two cells wide carry 2.5% of that footprint; 88% of it is over three
+cells wide, where the fix lands at 2.0% kept. `build_terrain` reports the count and area, and
+`tools/test_clip_cut.py` prints it per window.
+
+Fixing it means cutting those faces on the prism boundary itself. The clipper for that exists in
+history (`2878393`, reverted `22a8ca2`) and was sound; what sank it was applying it to every cut
+cell in Python. Applied only to these 701 faces it is 600× less work — but it is new geometry in
+the lattice, and that commit's own note records two bugs that "both rendered almost correctly",
+so it needs a render to accept.
+
+### 41.5 Cost
+
+`_clip_grid` over the full city: **72.7 s → 86.9 s** (94.1 s with the deep-band pass) for a cut
+tested six times finer. The containment raster is tiled over 128² face blocks and only blocks
+holding a cut cell are visited — 7.5% of the map. The scanline splits on row count, short quads
+per row and tall ones whole-array; `tools/test_clip_cut.py` fuzzes the two paths against each
+other on triangles, degenerates and bowties, which is the test `2878393`'s note says it owed.
+
+**Note the framing throughout:** the game never cuts terrain geometry. It draws the whole
+heightfield and stencil-discards per pixel. "Matching the game" means honouring the invariant
+that discard implies road cover — which containment now guarantees by construction, so the
+reported cut/clipped ratio cannot exceed 1.00.
