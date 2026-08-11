@@ -1806,8 +1806,11 @@ namespace Carto.Systems
         /// (<c>colossal_TerrainScale = 1 / playableArea</c>), so a tiling value is the repeat
         /// count across it. The extras tile with the grass layer
         /// (<c>_TerrainExtraTextureTiling</c> is bound from <c>m_TerrainGrassTiling</c>) and
-        /// carry their four shading scalars instead; only extra1/extra2 ship — the user splatmap
-        /// cannot weight extra3/extra4 (see <see cref="CountPaintableExtras"/>).
+        /// carry their four shading scalars instead. All FOUR extras ship: the claim that the
+        /// user splatmap cannot weight extra3/extra4 was wrong, and SPLAT-6 disproved it — B and
+        /// A each pack TWO 4-bit weights, so all four are paintable, and extra4 is the Sand the
+        /// player paints beaches with. <c>TerrainRenderSettingsPrefab</c> carries identical
+        /// <c>m_Extra3*</c>/<c>m_Extra4*</c> fields (verified by decompile).
         /// </summary>
         /// <param name="report">The report to note the outcome in.</param>
         /// <returns>The <c>rasters.json</c> "terrainTiling" block, or <c>null</c>.</returns>
@@ -1897,7 +1900,11 @@ namespace Carto.Systems
                         ["extra1"] = Extra(settings.m_Extra1DirtOverride, settings.m_Extra1SplatRange,
                                            settings.m_Extra1BlurDepth, settings.m_Extra1HeightOffset),
                         ["extra2"] = Extra(settings.m_Extra2DirtOverride, settings.m_Extra2SplatRange,
-                                           settings.m_Extra2BlurDepth, settings.m_Extra2HeightOffset)
+                                           settings.m_Extra2BlurDepth, settings.m_Extra2HeightOffset),
+                        ["extra3"] = Extra(settings.m_Extra3DirtOverride, settings.m_Extra3SplatRange,
+                                           settings.m_Extra3BlurDepth, settings.m_Extra3HeightOffset),
+                        ["extra4"] = Extra(settings.m_Extra4DirtOverride, settings.m_Extra4SplatRange,
+                                           settings.m_Extra4BlurDepth, settings.m_Extra4HeightOffset)
                     },
                     ["triplanarHeightMapBlending"] = Math.Round((double)settings.m_TriplanarHeightMapBlending, 4),
                     ["triplanarBlendStrengthY"] = Math.Round((double)settings.m_TriplanarBlendStrengthY, 4)

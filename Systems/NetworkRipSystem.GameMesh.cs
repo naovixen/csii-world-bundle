@@ -484,6 +484,26 @@ namespace Carto.Systems
             bool roundabout = (data.m_Flags.m_General & CompositionFlags.General.Roundabout) != 0;
             if (roundabout) _roundaboutParts++;
 
+            // A deck standing 17 m above grade must not be dragged down to it. Terrain conforming
+            // was gated on PIECE flags alone (LowerBottomToTerrain / RaiseTopToTerrain), and
+            // RaiseTopToTerrain assigns `world.y = terrain` unconditionally — so any elevated
+            // composition whose pieces carry that flag would have its top edge pinned to the
+            // ground far below. The §38 downward clamp is no protection here: for a deck above
+            // grade `terrain < world.y` always holds, so clamp and assignment agree.
+            //
+            // Dormant in the city ripped 2026-08-10 (0.07% of elevated vertices sit within 2 cm
+            // of the heightmap, per-segment median 0.000%), so this changes no shipped geometry
+            // there — it closes a latent trap.
+            //
+            // The exemption is the roadbed walk's own rule, verbatim (`TryGetGroundComposition`):
+            // an elevated composition with a Low/HighTransition side is where the deck MEETS the
+            // ground, and that end still has to conform or the ramp separates from its approach.
+            bool elevated = (data.m_Flags.m_General & CompositionFlags.General.Elevated) != 0;
+            CompositionFlags.Side conformSides = data.m_Flags.m_Left | data.m_Flags.m_Right;
+            bool elevatedAwayFromGround = elevated
+                && ((conformSides & (CompositionFlags.Side.LowTransition
+                                     | CompositionFlags.Side.HighTransition)) == 0);
+
             float middleOffset = data.m_MiddleOffset;
             float num7 = (data.m_Width * 0.5f) + middleOffset;   // left half width
             float num8 = (data.m_Width * 0.5f) - middleOffset;   // right half width
@@ -541,7 +561,7 @@ namespace Carto.Systems
                     boundsScaleZ = 256f / math.max(piece.m_Size.z, 0.001f);
                 }
 
-                if (lowerBottom || raiseTop)
+                if ((lowerBottom || raiseTop) && !elevatedAwayFromGround)
                 {
                     // N-F2: a heightmap that cannot be captured used to leave the piece silently
                     // unconformed while the report still claimed it was conformed. Counted here,
@@ -549,6 +569,13 @@ namespace Carto.Systems
                     //
                     conforming = EnsureConformTerrain();
                     if (!conforming) _unconformedPieces++;
+                }
+                else if (lowerBottom || raiseTop)
+                {
+                    // Deliberately not conformed: an elevated composition clear of the ground.
+                    // Counted separately from `_unconformedPieces`, which means "we wanted to
+                    // and could not" — this one means "we must not".
+                    _elevatedUnconformedPieces++;
                 }
 
                 if (conforming)

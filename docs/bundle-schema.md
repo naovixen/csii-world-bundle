@@ -1113,9 +1113,15 @@ toward +X (east).
   scales: `playableArea` `[x, z]`, per-layer (`grass`/`dirt`/`rock`) `tiling` `[near, mid, far]`
   (repeats across the playable area, as bound to `_Terrain*TextureTiling`), the precomputed
   `metresPerRepeat` `[near, mid, far]` (= `playableArea.x / tiling`), `lodBlend` camera-distance
-  ranges, `extras.extra1/extra2` params (`dirtOverride`, `splatRange`, `blurDepth`,
+  ranges, `extras.extra1 .. extra4` params (`dirtOverride`, `splatRange`, `blurDepth`,
   `heightOffset`; extras tile with the grass layer), and the triplanar constants. Never guess
   metres-per-repeat — the §5B lane-tiling lesson, repeated on terrain.
+
+  A consumer that draws one ground at one scale will show a visible grid: the game blends
+  **three** scales per ground by camera distance, which is its own anti-tiling, and that is what
+  `tiling`/`lodBlend` are for. All **four** extras carry params — an earlier producer shipped
+  only `extra1`/`extra2` on the belief that the user splatmap could not weight the other two,
+  which the packed-nibble decode disproved (extra4 is the Sand players paint beaches with).
 
   **The channel-to-ground assignment is published, in `rasters.splatmap.channels`. Read it;
   do not calibrate it.** *(Amended 2026-08-08 — this block previously told consumers to derive

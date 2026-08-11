@@ -465,7 +465,7 @@
               }
             },
             "extras": {
-              "description": "Per extra paint layer (extra1, extra2).",
+              "description": "Per extra paint layer (extra1 .. extra4; all four are paintable — the user splatmap packs two 4-bit weights per channel).",
               "type": "object",
               "additionalProperties": {
                 "type": "object",
