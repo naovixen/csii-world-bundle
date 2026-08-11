@@ -2036,3 +2036,34 @@ numeric `.001` suffix stripped (`:5370-5372`), so two `RoadParts_<hash>` materia
 Its known real gap is dropping `TANGENT`, which misorients a normal map but removes no surface.
 
 Not measured here because the bundle was mid-rip. Do A first; it is one script over two `.glb`.
+
+### 42.2 RESOLVED as intermittent: the piece is sometimes not resident (2026-08-11, 17:20 rip)
+
+The re-rip settles it, and corrects §42. The deck is **not** missing by design and **not**
+inverted — candidate A is dead (winding agrees with the shipped NORMAL on 100% of the area in
+every segment measured, tram and otherwise). The same producer code, same city, same save
+produced:
+
+| | 15:15 rip | 17:20 rip |
+|---|---|---|
+| `seg_1604739` primitives | `RoadParts` only | `RoadParts` + **`Road`** |
+| up-facing deck | 49 m² (12% of `length × width`) | **346 m² (88%)** |
+| all 25 elevated trams | `('RoadParts',)` | `('Road', 'RoadParts')` |
+
+**It is all-or-nothing per rip, not per piece** — all 25 segments agree within each rip and
+disagree between them. So this is not a race inside the composition walk: the tram's `Road`
+cross-section piece either has its `MeshVertex`/`MeshIndex`/`MeshMaterial` buffers resident for
+a whole session or has none of them, and `GetPieceGeometry` returns null for every placement.
+That is a prefab/mesh residency state of the session, not of the walk — which is exactly why it
+reads as "sometimes a grey texture would fill the gap" and why it has survived every audit that
+looked at one bundle.
+
+**Consequence for method:** a census over one bundle cannot distinguish "the producer never emits
+this" from "this session did not have it loaded". §42's table was a true statement about one rip
+and a false one about the producer. Any future "layer X is missing" finding needs two rips before
+it is called a producer gap.
+
+**Next:** `7daada5`'s counter names the piece when it happens; it is NOT in the 17:20 DLL (that
+rip predates the build), so it has yet to fire. The producer fix is to make residency a
+precondition rather than a coin toss — force the piece's geometry to load before reading it, or
+retry — and the counter is what will confirm which pieces need it.
