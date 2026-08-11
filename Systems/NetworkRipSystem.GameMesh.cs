@@ -154,10 +154,19 @@ namespace Carto.Systems
             public float Width, MiddleOffset;
             public float LeftMax = -1f, RightMax = -1f, EdgeMax = -1f;
             public int Placements;
+            public string Sample;                // a segment that used it, to look the node up
             public readonly SortedSet<string> Pieces = new();
         }
 
         private readonly Dictionary<Entity, FrameProbe> m_FrameProbes = new();
+
+        /// <summary>
+        /// The segment whose composition is being walked, so a flagged composition names one
+        /// place to go and look. Node compositions are runtime entities, not managed prefabs —
+        /// `TryGetPrefab` on them returns nothing, which is why the 21:34 rip could only print
+        /// `&lt;composition 1217532&gt;`.
+        /// </summary>
+        private string _sectionSampleSegment;
 
         private ushort[] _conformHeights;
         private int2 _conformResolution;
@@ -633,7 +642,8 @@ namespace Carto.Systems
                                       && (compPrefab != null)
                             ? compPrefab.name : $"<composition {composition.Index}>",
                         Width = data.m_Width,
-                        MiddleOffset = data.m_MiddleOffset
+                        MiddleOffset = data.m_MiddleOffset,
+                        Sample = _sectionSampleSegment
                     };
                 }
                 frame.Placements++;
@@ -972,9 +982,17 @@ namespace Carto.Systems
                             section.Lo = section.Hi = relative;
                             section.HasBounds = true;
                         }
-                        if (!isNode) frame.EdgeMax = math.max(frame.EdgeMax, xParam);
-                        else if (halved && leftHalf) frame.LeftMax = math.max(frame.LeftMax, xParam);
-                        else if (halved) frame.RightMax = math.max(frame.RightMax, xParam);
+                        // A ZERO-WIDTH piece pins every vertex to one xParam by construction, so
+                        // it can never "reach" a rail and must not be read as a half that stops
+                        // short — including it flagged 359 compositions on the 21:34 rip, every
+                        // one of them a shoulder or path side piece sitting at a single x, which
+                        // buried the real signal.
+                        if (piece.m_Size.x > 0.01f)
+                        {
+                            if (!isNode) frame.EdgeMax = math.max(frame.EdgeMax, xParam);
+                            else if (halved && leftHalf) frame.LeftMax = math.max(frame.LeftMax, xParam);
+                            else if (halved) frame.RightMax = math.max(frame.RightMax, xParam);
+                        }
 
                         assembly.Vertices.Add(world - center);
 
