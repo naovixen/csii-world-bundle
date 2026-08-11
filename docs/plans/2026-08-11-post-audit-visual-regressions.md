@@ -9,8 +9,8 @@ full-city rip.*
 |---|---|
 | **1a** face-centre cut | **BUILT** `4b97d65`. 10,892 → 8,224 faces cut in the A/B window, **x1.32 → x1.00** of true clipped area, 2,668 faces ≈ 32,683 m² of terrain returned. |
 | **1b** multi-strip snap | **BUILT** `80676e0` — the earlier "not needed" call was **wrong**. It rested on the unreferenced count being 0, which measures whether a vertex found *a* strip, not the *right* one. 46–50% of boundary vertices at the reported junctions are claimed by more than one strip, and the arbitrary first-ref pick lands a median 2.03 m off. |
-| **1a′** split clip band | **BUILT** `40e680a`, then **SUPERSEDED** by the exact cut below. It got the residual to 0.156%/0.018% but was still choosing a direction to err in. |
-| **1a″** exact clip | **BUILT** `2878393` — the lattice builder now cuts on the prism boundary itself. See-through **0.001% / 0.013%**, both antialiasing rather than geometry. `_snap_hole_boundary` deleted. |
+| **1a′** split clip band | **BUILT** `40e680a` and **SHIPPED**. See-through 0.156% / 0.018%. |
+| **1a″** exact clip | **BUILT `2878393`, then REVERTED `22a8ca2`.** Correct — see-through 0.001% / 0.013% — but per-cell Python, and its cost scales with total prism-boundary length: a full-city import read as a hang. A vectorised triage to fix that moved 16,093 px of hole, so it changed the cut rather than its speed. Kept in history, not in the tree. |
 | **1c** report the residual | **BUILT** `4b97d65`. Deleted area vs clipped-cell area as a ratio; `_snap_hole_boundary` returns the unreferenced count. |
 | **2a** unpack paint in numpy | **BUILT** `91ccc7a`. Bit-exact (readback error 0.0000 on all four channels over 4096²). |
 | **2b** shipped tiling | **BUILT** `91ccc7a`. Three scales per ground blended by camera distance; grid gone. |
@@ -79,19 +79,25 @@ See-through gap area (terrain hole with no road mesh over it) across the day:
 | train tracks | 1.260% | 0.521% | **0.156%** (−88%) |
 | road junction | 0.208% | 0.081% | **0.018%** (−91%) |
 
-**This was superseded the same day.** The user authorised the lattice rewrite, and the cut is
-now made on the prism boundary itself (`2878393`), so there is no direction to err in at all:
+**An exact cut was then built and reverted.** The lattice builder was rewritten to clip each
+cell on the prism boundary itself (`2878393`), which removes the choice of direction entirely:
 
-| | face-centre | + nearest snap | + split band | **exact** |
+| | face-centre | + nearest snap | + split band (SHIPPED) | exact (reverted) |
 |---|---|---|---|---|
-| train tracks | 1.260% | 0.521% | 0.156% | **0.001%** (18 px) |
-| road junction | 0.208% | 0.081% | 0.018% | **0.013%** (337 px) |
+| train tracks | 1.260% | 0.521% | **0.156%** | 0.001% (18 px) |
+| road junction | 0.208% | 0.081% | **0.018%** | 0.013% (337 px) |
 
-Terrain-under-road returns to its true 4.3% / 6.5% rather than the split band's 14%, so the cut
-is exact in both directions instead of trading one defect for the other, and `_snap_hole_boundary`
-is gone. Note the honest framing: the *game* never cuts terrain geometry at all — it draws the
-full heightfield and discards per pixel — so "identical" here means the kept surface ends exactly
-where the game stops drawing, which is what contract §8c asks a consumer to produce.
+It worked, and it is not in the tree. The cut is per cell and in Python, and its cost scales
+with the total length of every prism boundary in the city, so a full-city import ran long
+enough past the row walk to be read as a hang. A vectorised per-prism triage to reduce that
+moved 16,093 pixels of hole in the A/B window — changing the cut, not the speed of computing
+it — so it went too. **Anything that revives this needs a test asserting the fast path is
+bit-identical to the per-cell clipper on a real window**; `test_clip_exact.py` (also removed,
+see `2878393`) only covered the clipper itself, not the triage deciding what reaches it.
+
+Note the framing throughout: the *game* never cuts terrain geometry at all — it draws the full
+heightfield and discards per pixel. "Matching the game" here means honouring the invariant that
+discard implies road cover, which is what the split band does and what §8c asks a consumer for.
 
 ### Item 4a — the suspects are dead, the cause is not found
 
