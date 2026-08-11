@@ -2932,14 +2932,20 @@ _CLIP_REF_STATION_BITS = 11  # stations per strip cap at 1024 (< 2^11)
 # independent 0.29 m truth raster, see-through (terrain deleted where no prism covers it) over
 # five 240 m windows:
 #
-#     K:            2        3        4        6
-#     see-through   34-307   14-101   5-47     1-16   m² per window
+#     K:            2        3        4        6       8       12      16
+#     see-through   34-307   14-101   5-47     1-16    2-5     1-2     0.1-0.8   m² per window
 #
-# against 197-741 m² for the corner-AND rule this replaces. 6 is the knee; the residual there is
-# sub-sample slivers along a boundary, which `_snap_hole_boundary` then pulls onto the prism
-# wall. Raising K makes the test STRICTER, so it trades see-through for terrain kept under a
-# road — never the other way round.
-_CLIP_CONTAIN_SAMPLES = 6
+# against 197-741 m² for the corner-AND rule this replaces. Raising K makes the test STRICTER,
+# so it trades see-through for terrain kept under a road — never the other way round, and the
+# terrain it keeps is under a SHALLOW band (the road hides it) because a deep one is re-cut at
+# this same sampling further down.
+#
+# 8 because it is free: measured on the full city, `_clip_grid` runs 78.4 s at 8 against 86.9 s
+# at 6 (the whole-array scanline amortises the extra rows), and it more than halves the residual
+# slivers at a junction — 12.3 -> 4.7 m² over a 180 m window. 12 halves them again but costs
+# 115.5 s and 2.4x the sub-cut geometry (338k sub-quads against 143k), which is a real price for
+# a sliver already below half a metre.
+_CLIP_CONTAIN_SAMPLES = 8
 _CLIP_CONTAIN_BLOCK = 128
 
 # How far, in cells, `_snap_hole_boundary` may push a hole-rim vertex OUT to a prism wall.

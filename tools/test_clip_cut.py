@@ -267,13 +267,14 @@ def check(label, cx, cz, radius, heights, cell, origin_x, origin_z):
     if not ok:
         failures += 1
         return
-    # The one residual the rule cannot reach, reported so it stays visible: a face a TRENCH or
-    # PORTAL band meets with no deleted face beside it, i.e. a strip too narrow for a whole face
-    # to sit inside, so there is no hole rim for the snap to push out to the wall either.
-    stranded = int((deep_touch & ~contain & ~H["_dilate"](contain, 1)).sum())
+    # Faces a TRENCH or PORTAL band meets with no deleted face beside them — a strip too narrow
+    # for a whole face to sit inside, so containment deletes nothing along it and the snap has
+    # no hole rim to push out. `build_terrain` re-cuts exactly these at the containment
+    # sampling; the figure is reported so their number stays visible, not because they are left.
+    recut = int((deep_touch & ~contain & ~H["_dilate"](contain, 1)).sum())
     print(f"  ok   {label:<16} sky {sky:5.0f} m²   cut/clipped x{ratio:.2f}   "
           f"kept-in-band {100 * poke / max(band_area, 1e-9):4.1f}%   "
-          f"stranded {stranded * cell * cell:5.0f} m²   "
+          f"re-cut {recut * cell * cell:5.0f} m²   "
           f"({len(records)} record(s), band {band_area:,.0f} m²)")
 
 
