@@ -1132,6 +1132,17 @@ namespace Carto.Systems
 
             PieceGeometry result = null;
 
+            // The piece's own geometry, read through the reader every building goes through —
+            // which PREFERS the geometry asset and falls back to the ECS buffers, not the other
+            // way round. Hoisted out of the buffer branch below because it is now both the
+            // material source and the geometry fallback.
+            if (!cache.TryGetValue(piece, out MeshAsset read))
+            {
+                string pieceName = Instance.Name.GetPrefabName(piece);
+                read = Instance.MeshRip.ReadMesh(piece, SanitizeId(pieceName), pieceName);
+                cache[piece] = read;
+            }
+
             if (EntityManager.HasBuffer<MeshVertex>(piece) && EntityManager.HasBuffer<MeshIndex>(piece)
                 && EntityManager.HasBuffer<MeshMaterial>(piece))
             {
@@ -1184,13 +1195,6 @@ namespace Carto.Systems
                     // assembly used — ordinal k of the MeshMaterial buffer is ordinal k of the
                     // read primitives, both being the surface-slot order (§3.4/§9.2).
                     //
-                    if (!cache.TryGetValue(piece, out MeshAsset read))
-                    {
-                        string name = Instance.Name.GetPrefabName(piece);
-                        read = Instance.MeshRip.ReadMesh(piece, SanitizeId(name), name);
-                        cache[piece] = read;
-                    }
-
                     for (int k = 0; k < materialBuffer.Length; k++)
                     {
                         MeshMaterial range = materialBuffer[k];
@@ -1203,6 +1207,71 @@ namespace Carto.Systems
                             ? read.Primitives[k].MaterialId
                             : $"piece_{piece.Index}_mat{k}";
                     }
+                }
+            }
+
+            // No buffers, or empty ones — and that is not "this piece has no geometry". The
+            // buffers are a RENDER CACHE (`BatchMeshSystem.LoadMeshes`): the game fills them on
+            // demand for compositions it is batching, under a memory budget, a cap of 30
+            // concurrent async loads, and eviction. So which pieces carry them is a property of
+            // the session, not of the asset — measured on 2026-08-11, the elevated tram deck was
+            // absent in two rips and present in a third, with `Tram Track Piece 3` moving in and
+            // out of the DROPPED list to match, 13% up-facing area against 102% (§42.4-42.6).
+            //
+            // The asset itself is always readable, and the object path has read it that way
+            // since Phase 3 — `MeshRipSystem.TryReadGeometryAsset` obtains the geometry asset,
+            // reads it, and releases it. `read` above is that reader's output, already fetched
+            // for the material ids, so the fix is to build from it rather than give up.
+            if ((result == null) && (read != null) && (read.Vertices != null) && (read.Indices != null)
+                && (read.Vertices.Length > 0) && (read.Indices.Length > 0))
+            {
+                result = new PieceGeometry
+                {
+                    Vertices = read.Vertices,
+                    Uvs = new float2[read.Vertices.Length],
+                    Indices = read.Indices,
+                    Normals = (read.Normals != null) && (read.Normals.Length == read.Vertices.Length)
+                        ? read.Normals : null,
+                    Tangents = (read.Tangents != null) && (read.Tangents.Length == read.Vertices.Length)
+                        ? read.Tangents : null
+                };
+                if ((read.Uvs != null) && (read.Uvs.Length == read.Vertices.Length)) result.Uvs = read.Uvs;
+
+                // A primitive is a material range, in the same surface-slot order the buffers use.
+                int ranges = math.max(read.Primitives.Count, 1);
+                result.RangeStartVertex = new int[ranges];
+                result.RangeVertexCount = new int[ranges];
+                result.RangeStartIndex = new int[ranges];
+                result.RangeIndexCount = new int[ranges];
+                result.RangeMaterial = new string[ranges];
+                if (read.Primitives.Count == 0)
+                {
+                    result.RangeStartVertex[0] = 0;
+                    result.RangeVertexCount[0] = read.Vertices.Length;
+                    result.RangeStartIndex[0] = 0;
+                    result.RangeIndexCount[0] = read.Indices.Length;
+                    result.RangeMaterial[0] = $"piece_{piece.Index}_mat0";
+                }
+                else
+                {
+                    for (int k = 0; k < read.Primitives.Count; k++)
+                    {
+                        MeshPrimitive primitive = read.Primitives[k];
+                        result.RangeStartVertex[k] = primitive.StartVertex;
+                        result.RangeVertexCount[k] = primitive.VertexCount;
+                        result.RangeStartIndex[k] = primitive.StartIndex;
+                        result.RangeIndexCount[k] = primitive.IndexCount;
+                        result.RangeMaterial[k] = string.IsNullOrEmpty(primitive.MaterialId)
+                            ? $"piece_{piece.Index}_mat{k}" : primitive.MaterialId;
+                    }
+                }
+
+                _piecesFromAsset++;
+                if (_pieceFromAssetNames.Count < 64)
+                {
+                    _pieceFromAssetNames.Add(Instance.Prefab.TryGetPrefab(piece, out PrefabBase assetPiece)
+                                             && (assetPiece != null)
+                        ? assetPiece.name : $"<entity {piece.Index}>");
                 }
             }
 

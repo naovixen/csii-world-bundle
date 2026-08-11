@@ -108,6 +108,13 @@ namespace Carto.Systems
         private int _skipBottomPieces;
         private int _railPieces;
         private int _emptyPieces;
+
+        /// <summary>
+        /// Piece placements whose render-cache buffers were absent and whose geometry was read
+        /// from the asset instead (§42.6), and the distinct pieces that needed it.
+        /// </summary>
+        private int _piecesFromAsset;
+        private readonly SortedSet<string> _pieceFromAssetNames = new();
         private readonly SortedSet<string> _emptyPieceNames = new();
         private int _orphanCaps;
         private int _pipelineCompositions;
@@ -439,6 +446,8 @@ namespace Carto.Systems
             _skipBottomPieces = 0;
             _railPieces = 0;
             _emptyPieces = 0;
+            _piecesFromAsset = 0;
+            _pieceFromAssetNames.Clear();
             _emptyPieceNames.Clear();
             _orphanCaps = 0;
             _pipelineCompositions = 0;
@@ -903,6 +912,11 @@ namespace Carto.Systems
                                                       + "halves + wedge cover outer/inner/island; blend weights are shader-side");
             if (_railPieces > 0) report.AppendLine($"Corner-rail (PreserveShape) pieces placed: {_railPieces}");
             if (_skipBottomPieces > 0) report.AppendLine($"SkipBottomHalf pieces halved: {_skipBottomPieces}");
+            if (_piecesFromAsset > 0)
+                report.AppendLine($"Read {_piecesFromAsset} cross-section piece(s) from the geometry asset because their "
+                                + "render-cache buffers were not resident this session (§42.6 — the buffers are a cache "
+                                + "the game fills on demand, not the asset): "
+                                + string.Join(", ", _pieceFromAssetNames));
             if (_emptyPieces > 0)
                 report.AppendLine($"  DROPPED: {_emptyPieces} piece placement(s) had no readable geometry "
                                 + "(no MeshVertex/MeshIndex/MeshMaterial buffer, or empty) — a composition "
