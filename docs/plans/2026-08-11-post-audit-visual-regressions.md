@@ -9,7 +9,8 @@ full-city rip.*
 |---|---|
 | **1a** face-centre cut | **BUILT** `4b97d65`. 10,892 → 8,224 faces cut in the A/B window, **x1.32 → x1.00** of true clipped area, 2,668 faces ≈ 32,683 m² of terrain returned. |
 | **1b** multi-strip snap | **BUILT** `80676e0` — the earlier "not needed" call was **wrong**. It rested on the unreferenced count being 0, which measures whether a vertex found *a* strip, not the *right* one. 46–50% of boundary vertices at the reported junctions are claimed by more than one strip, and the arbitrary first-ref pick lands a median 2.03 m off. |
-| **1a′** split clip band | **BUILT** `40e680a`, after the user's re-rip still showed junction gaps. The face-centre rule's *unbiased* error was the wrong target — half of it deletes terrain no road covers. See "the gaps after the re-rip" below. |
+| **1a′** split clip band | **BUILT** `40e680a`, then **SUPERSEDED** by the exact cut below. It got the residual to 0.156%/0.018% but was still choosing a direction to err in. |
+| **1a″** exact clip | **BUILT** `2878393` — the lattice builder now cuts on the prism boundary itself. See-through **0.001% / 0.013%**, both antialiasing rather than geometry. `_snap_hole_boundary` deleted. |
 | **1c** report the residual | **BUILT** `4b97d65`. Deleted area vs clipped-cell area as a ratio; `_snap_hole_boundary` returns the unreferenced count. |
 | **2a** unpack paint in numpy | **BUILT** `91ccc7a`. Bit-exact (readback error 0.0000 on all four channels over 4096²). |
 | **2b** shipped tiling | **BUILT** `91ccc7a`. Three scales per ground blended by camera distance; grid gone. |
@@ -78,10 +79,19 @@ See-through gap area (terrain hole with no road mesh over it) across the day:
 | train tracks | 1.260% | 0.521% | **0.156%** (−88%) |
 | road junction | 0.208% | 0.081% | **0.018%** (−91%) |
 
-**Still an approximation.** Exactness needs sub-cell clipping — cutting terrain faces along the
-prism boundary rather than deleting whole ones. That remains the only way to reproduce the
-game's per-pixel result, and it is still a rewrite of the lattice builder. The rule above is
-the closest bounded approximation that never violates the game's containment invariant.
+**This was superseded the same day.** The user authorised the lattice rewrite, and the cut is
+now made on the prism boundary itself (`2878393`), so there is no direction to err in at all:
+
+| | face-centre | + nearest snap | + split band | **exact** |
+|---|---|---|---|---|
+| train tracks | 1.260% | 0.521% | 0.156% | **0.001%** (18 px) |
+| road junction | 0.208% | 0.081% | 0.018% | **0.013%** (337 px) |
+
+Terrain-under-road returns to its true 4.3% / 6.5% rather than the split band's 14%, so the cut
+is exact in both directions instead of trading one defect for the other, and `_snap_hole_boundary`
+is gone. Note the honest framing: the *game* never cuts terrain geometry at all — it draws the
+full heightfield and discards per pixel — so "identical" here means the kept surface ends exactly
+where the game stops drawing, which is what contract §8c asks a consumer to produce.
 
 ### Item 4a — the suspects are dead, the cause is not found
 
