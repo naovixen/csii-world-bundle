@@ -2910,8 +2910,9 @@ def _clip_grid(bundle_dir, width, height, heights, cell, origin_x, origin_z,
     refs = numpy.full((height, width), -1, dtype=numpy.int32)
     strip_geo = []
     if not strips:
-        return (numpy.zeros((height, width), dtype=bool),
-                numpy.zeros((height - 1, width - 1), dtype=bool), refs, strip_geo)
+        empty_face = numpy.zeros((height - 1, width - 1), dtype=bool)
+        return (numpy.zeros((height, width), dtype=bool), empty_face, empty_face.copy(),
+                refs, strip_geo)
 
     terrain_y = (numpy.asarray(heights, dtype=numpy.float64).reshape(height, width)
                  * elevation_scale + elevation_offset)
@@ -2925,14 +2926,24 @@ def _clip_grid(bundle_dir, width, height, heights, cell, origin_x, origin_z,
     terrain_face = 0.25 * (terrain_y[:-1, :-1] + terrain_y[:-1, 1:]
                            + terrain_y[1:, :-1] + terrain_y[1:, 1:])
     face_mask = numpy.zeros((face_h, face_w), dtype=bool)
+    face_above = numpy.zeros((face_h, face_w), dtype=bool)
 
     def fill(quad, lane_y, bottom, top, ref_value=-1):
-        """Both rasters from one quad — cell centres (refine corridor + refs) and face
-        centres (deletion). They differ only in where the scanline samples."""
+        """Three rasters from one quad; they differ only in where the scanline samples and,
+        for the third, where the band starts. See `_clip_grid`'s docstring for what each
+        answers and `build_terrain` for how the deletion rule combines them."""
         _fill_clip_quad(mask, terrain_y, width, height, quad, lane_y, bottom, top,
                         refs=(refs if ref_value >= 0 else None), ref_value=ref_value)
+        # Both face rasters share one scanline. The second is the band ABOVE the carriageway
+        # only: the lane curve IS the road surface — measured over the shipped bundle,
+        # `road_top - lane_path.y` has median 0.000 m — so terrain standing above it is terrain
+        # the road mesh does not cover, and only the clip can hide it. That is the half of the
+        # band where deleting is mandatory rather than merely permitted.
         _fill_clip_quad(face_mask, terrain_face, face_w, face_h, quad, lane_y, bottom, top,
                         offset=1.0)
+        if top > 0.0:
+            _fill_clip_quad(face_above, terrain_face, face_w, face_h, quad, lane_y,
+                            max(bottom, 0.0), top, offset=1.0)
 
     def to_cell(points):
         """World positions to cell space, cell (row, col) centred on (col + .5, row + .5)."""
@@ -2986,7 +2997,7 @@ def _clip_grid(bundle_dir, width, height, heights, cell, origin_x, origin_z,
                  float((lane[i - 1] + lane[i]) * 0.5), bottom, top,
                  ref_value=(strip_index << _CLIP_REF_STATION_BITS) | i)
 
-    return mask, face_mask, refs, strip_geo
+    return mask, face_mask, face_above, refs, strip_geo
 
 
 def _snap_hole_boundary(verts, vid, used_grid, cut_face_grid, refs_w, strip_geo, ground_y,
@@ -3536,7 +3547,7 @@ def build_terrain(bundle_dir, collection, center, radius, clip_floor=None):
     # of the heightmap — the game hides it per-frame with a stencil pass — so the clip volumes
     # are rasterised here against this heightmap. The layer is mandatory; _clip_grid raises on
     # a bundle without it.
-    cut_grid, cut_face_raster, cut_refs, strip_geo = _clip_grid(
+    cut_grid, cut_face_raster, cut_above_raster, cut_refs, strip_geo = _clip_grid(
         bundle_dir, width, height, heights, cell, origin_x, origin_z, elevation_scale,
         elevation_offset, floor_override=clip_floor)
 
@@ -3591,6 +3602,7 @@ def build_terrain(bundle_dir, collection, center, radius, clip_floor=None):
     # one entry smaller than the cell grid on each axis, so the window's last lattice row and
     # column carry no face — hence lat_h - 1 / lat_w - 1.
     cut_face = cut_face_raster[row0:row0 + lat_h - 1, col0:col0 + lat_w - 1]
+    cut_above = cut_above_raster[row0:row0 + lat_h - 1, col0:col0 + lat_w - 1]
 
     if levels is not None:
         level_raw = numpy.asarray(levels).reshape(height, width)[row0:row0 + lat_h,
@@ -3683,12 +3695,41 @@ def build_terrain(bundle_dir, collection, center, radius, clip_floor=None):
                                axis=-1)
     coarse_class = block_class[cbr, cbc]
 
-    # -- native cells inside refined blocks, cut by the face's own centre -------------------
-    # A face is deleted iff ITS OWN CENTRE is inside a clip prism, read from the face-centre
-    # raster `_clip_grid` rasterises alongside the cell one. The any-of-four-corners rule this
-    # replaced dilated every hole a full cell outward and never inward, which is what opened
-    # the terrain gaps between close-packed roads. §8c: keeping a genuinely clipped face would
-    # wall off an underground network, so the rule has to be unbiased, not merely tighter.
+    # -- native cells inside refined blocks, cut only where the prism CONTAINS the face -----
+    # A face is deleted iff all four of its corners are inside a clip prism. The corners are
+    # cell centres (contract §3), so this is the cell mask ANDed over the face's own corners.
+    #
+    # The rule is the game's own invariant, not a tuned preference. `GenerateClipDataJob` builds
+    # every clip volume from the road's OWN composition — the left/right curves trimmed by
+    # `TerrainComposition.m_WidthOffset`, the band widened ±0.3 m — and the terrain shader then
+    # discards PER PIXEL inside it. So in game `clipped ⊆ covered by road mesh` always holds and
+    # a see-through gap is impossible. A mesh cut at 3.5 m granularity can only approximate that
+    # boundary, and the choice is which way to err:
+    #
+    #   * delete beyond the prism -> terrain removed that no road covers -> SKY. Visible, wrong.
+    #   * delete less than the prism -> terrain left under a road that already covers it, sunk
+    #     0.15 m below it, and any part still standing proud is pulled down to the band roof by
+    #     `_snap_hole_boundary`'s height clamp. Hidden, harmless.
+    #
+    # Only the second respects the game's invariant. Measured on the two junctions reported
+    # 2026-08-11, over exactly the faces where the two rules disagree: deleting them leaves 81
+    # of 175 (train tracks) and 35 of 115 (junction) with NO road above — see-through — while
+    # keeping them leaves 23 and 5 poking above the road. Erring inward is ~4x better there.
+    #
+    # BUT that argument only holds where the road actually is above the terrain. Terrain
+    # standing ABOVE the carriageway — a tunnel roof, a trench wall — is covered by nothing,
+    # and erring inward there leaves it in place and walls off the network (§8c). Measured:
+    # pure containment deletes only 88.6% of the centreline faces of genuinely buried road
+    # against face-centre's 98.1%.
+    #
+    # So the band is split at the carriageway, which is where the game's own geometry puts the
+    # boundary between "hidden by the road mesh" and "hidden only by the clip":
+    #
+    #   below the lane curve -> the road covers it  -> delete only if fully contained
+    #   above the lane curve -> nothing covers it   -> delete on the face's own centre
+    #
+    # The lane curve is the road surface, not an approximation of it: measured over the shipped
+    # bundle this morning, `road_top - lane_path.y` has a median of 0.000 m.
     rbr, rbc = numpy.nonzero(block_refined)
     span = numpy.arange(stride, dtype=numpy.int64)
     cell_rr = numpy.broadcast_to(rbr[:, None, None] * stride + span[None, :, None],
@@ -3697,9 +3738,14 @@ def build_terrain(bundle_dir, collection, center, radius, clip_floor=None):
                                  (len(rbr), stride, stride)).reshape(-1)
     a = cell_rr * lat_w + cell_cc
     refined_loops_all = numpy.stack((a, a + lat_w, a + lat_w + 1, a + 1), axis=-1)
-    face_cut = cut_face[cell_rr, cell_cc]
+    contained = (cut[cell_rr, cell_cc] & cut[cell_rr, cell_cc + 1]
+                 & cut[cell_rr + 1, cell_cc] & cut[cell_rr + 1, cell_cc + 1])
+    face_cut = contained | cut_above[cell_rr, cell_cc]
     refined_loops = refined_loops_all[~face_cut]
     cut_faces = int(face_cut.sum())
+    # What the prism actually covers, for the containment report below: a face whose own centre
+    # is inside it. `cut_face` is no longer the deletion rule, only the yardstick.
+    face_centre_cut = int(cut_face[cell_rr, cell_cc].sum())
 
     # Refined faces classify from their OWN corners at native resolution; roadbed reads the
     # face's top-left cell sample, the rule the scalar face_roadbed always used.
@@ -3930,18 +3976,20 @@ def build_terrain(bundle_dir, collection, center, radius, clip_floor=None):
     LOG.step(f"{roadbed_faces} roadbed face(s) (sunk {_ROADBED_SINK:g} m), "
              f"{rock_faces} rock face(s), {wet_faces} water face(s), "
              f"{cut_faces} face(s) cut (tunnel portals / trenches)")
-    if cut_faces:
-        # What the cut actually cost, against what the clip volumes actually cover. A deletion
-        # rule that over-deletes reads exactly like a correct one in a face count alone — the
-        # any-of-four rule this replaced ran ~1.29x here and nothing in the log said so — so
-        # the ratio is reported, not just the count. 1.00 is unbiased; above 1 is terrain
-        # deleted that the game keeps.
-        cut_cells = int(cut[:lat_h - 1, :lat_w - 1].sum())
+    if cut_faces or face_centre_cut:
+        # The containment check, not a size check. In game every clip volume is built from the
+        # road's own composition and discarded per pixel, so clipped terrain is always covered
+        # by road. This grid must therefore never delete MORE than the prism covers: a ratio
+        # above 1.00 is terrain removed that nothing draws over, i.e. sky. Below 1.00 is the
+        # safe direction — terrain kept under a road that hides it.
         deleted_area = cut_faces * cell * cell
-        clipped_area = cut_cells * cell * cell
+        clipped_area = face_centre_cut * cell * cell
         ratio = (deleted_area / clipped_area) if clipped_area else float("nan")
-        LOG.step(f"cut {deleted_area:,.0f} m² of terrain against {clipped_area:,.0f} m² of "
-                 f"clipped cells (x{ratio:.2f}; 1.00 = unbiased)")
+        LOG.step(f"cut {deleted_area:,.0f} m² of terrain against {clipped_area:,.0f} m² the "
+                 f"clip prisms cover (x{ratio:.2f}; must not exceed 1.00 — above it is sky)")
+        if ratio > 1.0:
+            LOG.warn(f"the cut deletes {(ratio - 1.0) * 100:.0f}% more terrain than the clip "
+                     "prisms cover — expect see-through gaps beside roads")
     if snapped or unreferenced:
         LOG.step(f"{snapped} hole-boundary vertex(es) snapped onto the clip prisms"
                  + (f", {unreferenced} found no strip to snap to (area-only cuts)"
