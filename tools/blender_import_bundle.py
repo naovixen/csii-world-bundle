@@ -53,6 +53,16 @@ Options (after the `--`):
     --skirts                     also place each building's <assetId>__base.glb foundation
                                  skirt, as authored (the 1 m band; the terrain drop of its
                                  v=0 ring is the consumer rule in contract §4.1)
+    --colour                     replay the game's own colour grading from grading.json
+                                 (exposure, white balance, contrast, saturation,
+                                 shadows/midtones/highlights). Off by default: a plain
+                                 import is a faithful 1:1 albedo view, and CS2's palette
+                                 is post-processing the textures do not carry.
+                                 It writes an OCIO config beside the bundle and prints
+                                 how to switch it on; with that active the whole chain
+                                 rides a "CS2 Graded" VIEW TRANSFORM, so it shows in the
+                                 viewport and in renders alike. Without it, only the
+                                 per-channel half can be applied and the log says so
     --terrain                    also place the §8 terrain under everything: the road-flattened
                                  heightmap as a ground grid (roadbed faces textured from
                                  surface_index.png and sunk slightly, steep faces textured
@@ -108,6 +118,13 @@ import bpy
 import numpy
 from mathutils import Matrix, Quaternion, Vector
 from mathutils.bvhtree import BVHTree
+
+# The grading derivation lives beside this file so the importer and the point probe cannot drift
+# apart on it — the last attempt at this had two calibrations that "converged" on different
+# transforms. Blender does not put a script's own folder on the path when it is run with
+# `--python`, so add it explicitly.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import colour_model
 
 
 # -- the frame conversion, contract §2 ------------------------------------------------------
@@ -195,24 +212,51 @@ _DECAL_DRAPE_TINT = 0.008
 # interpolated (and possibly stride-subsampled) grid crests through it.
 _ROADBED_SINK = 0.15
 
-# Linear-space gain on the terrain ground textures. The theme diffuse is authored dark (the
-# ripped grass averages sRGB (66, 72, 53) — a faithful rip, verified) and reads as it does
-# in-game only under the game's HDR exposure and grading, neither of which a bare Blender
-# scene has. Presentation only: the ripped pixels are untouched on disk.
+# The scene light rig. `clear_scene()` removes Blender's default light along with everything
+# else, so an imported scene would have no lights and no world at all; these put a plain
+# neutral sun and ambient back. White, and deliberately uncalibrated -- the bundle ships
+# albedo, and the importer reproduces it 1:1 rather than grading it toward the game's look.
 #
-# History note: an earlier gain of 2.8—3.4 was applied through a MixRGB colour socket, whose
-# RGBA default_value clamps to [0, 1] — the gain had silently been a no-op since the splat
-# material landed, which is why the ground rendered as the raw dark albedo ("greyscale
-# terrain"). It now rides the HSV node's float Value input and was recalibrated by A/B
-# renders against the in-game screenshots. Terrain grounds only; area surfaces come from
-# ordinary prefab materials at normal albedo brightness and get no gain.
-_GROUND_GAIN = 8.0
+# Set by `--colour` to the `tools/colour_model.Grading` derived from this bundle's grading.json.
+# NOTHING is applied to materials from it: the whole chain rides Blender's display pipeline,
+# where it runs on final radiance in the game's own order and shows in the VIEWPORT. Putting any
+# of it on the albedo instead reorders the chain — measured on this city's grass, moving the
+# saturation onto the material alone costs 18% on the blue channel, which is the same size as the
+# effect this work is trying to measure.
+#
+# Two constants that used to live here have been DELETED rather than tuned, because the model
+# they were compensating for was wrong:
+#
+#   _GROUND_BRIGHTNESS = 3.09 lifted the terrain alone, on the argument that CS2 authors ground
+#   albedo 1.63 stops darker than its object textures. The relative measurement is real, but the
+#   game renders that dark ground too — the shipped sand albedo reaches the in-game eyedropper
+#   colour under the game's own grading at ordinary scene exposure, with no ground-only boost. A
+#   gain on the terrain alone therefore does not fix an imbalance, it creates one, and it is the
+#   reason everything that was NOT boosted read as too dark once exposure was pulled back.
+#
+#   _VIEW_GAMMA = 1.3 was a hand-set tone-curve compensation "because Blender has no ACES view
+#   transform". Blender 5.2 ships ACES 1.3 and ACES 2.0 as view transforms; the premise was
+#   false. The game's contrast is now applied from its own number instead (grading.json's
+#   contrast +20, solved through the ACEScc pivot into an exact power law).
+_GRADING = None
 
-# Saturation companion to the gain, applied by the same HSV node. The game's grading pushes
-# the muted authored albedo toward the vivid in-game palette — green grass, sandy shores; a
-# flat-lit Blender scene shows the albedo as authored, which reads grey-brown. Same status
-# as the gain: presentation only, tuned side-by-side against in-game screenshots.
-_GROUND_SATURATION = 2.0
+# The ambient share of the rig: how much of a fully-lit surface's light comes from the sky rather
+# than the sun. A uniform environment of radiance W gives a Lambertian surface outgoing radiance
+# albedo*W, so this is directly "a quarter of the light is skylight".
+_WORLD_LEVEL = 0.25
+
+# The sun's strength is DERIVED, not chosen, from one requirement: flat, unshadowed, fully-lit
+# ground should render at exactly its albedo. For a Lambertian surface under a sun of irradiance
+# E at incidence cos(theta) plus a uniform sky of radiance W,
+#     outgoing radiance = albedo * (E*cos(theta)/pi + W)
+# so radiance == albedo when  E = pi * (1 - W) / cos(theta).
+#
+# Why bother: it makes "scene-linear" and "albedo" the same number on the ground, which is the
+# assumption `tools/colour_model.py` works under. With an arbitrary sun the model's predictions
+# and the render can only be compared after re-exposing one to the other, and under `--colour`
+# the picture came out near-black — the game's own EV figures are relative to ITS light level,
+# not to a rig picked by eye. `_sun_energy_for` computes it from the sun's actual orientation.
+_SUN_TILT = (0.5, 0.3, 0.0)
 
 # Ground steeper than this (rise over run) is textured rock instead of grass — the gorge
 # embankments. The game classifies grass/dirt/rock per pixel on the GPU by slope, height and
@@ -794,7 +838,7 @@ def apply_color_tints(bundle_dir):
         mask_path = os.path.join(bundle_dir, entry["colorMask"])
         if not os.path.isfile(mask_path):
             continue                                            # report_materials already flagged it
-        image = bpy.data.images.load(mask_path, check_existing=True)
+        image = _unpremultiply(bpy.data.images.load(mask_path, check_existing=True))
         image.colorspace_settings.name = "Non-Color"
 
         anchor = principled.location
@@ -2508,16 +2552,22 @@ def _terrain_paths(bundle_dir):
 
 # Which ground each splatmap channel weights. The producer publishes this in the rasters
 # "splatmap".channels block (contract §8); this is the fallback for a bundle ripped before it
-# did, and using it there is not a guess — the assignment is a property of the game's own
-# TerrainMaterialType ordering, not of any particular bundle.
+# did.
 #
-# This replaces a calibration that used to run here, deriving the map from slope and roadbed
-# contrast. Measured on a full-city rip, that calibration got three of four channels wrong: it
-# discarded a live dirt channel averaging 72 on flat natural ground (its dirt probe sampled the
-# roadbed class, where grass wins, so it concluded there was no dirt channel), it named the
-# Extra1 paint weight a "painted rock variant" because painted ground that happens to be steep
-# gives a positive steep-minus-flat contrast, and it never identified A at all.
-_SPLAT_CHANNELS_DEFAULT = {"R": "grass", "G": "dirt", "B": "extra1", "A": "extra2", "base": "rock"}
+# R IS DIRT AND G IS GRASS, not the other way round (audit SPLAT-3, 2026-08-10). The inverted
+# map is what "the terrain renders brown" was: it painted the whole landmass dirt-brown and the
+# whole lakebed grass-green. Two measurements fix the assignment, and slope is not one of them —
+# rock is the dirt channel's own residual, so BOTH soil weights fall with slope and the slope
+# response never distinguished them:
+#   G is exactly 0 on every texel under 1 m or more of water, and 0.5 on 45-degree cliffs,
+#     against 201.7 on flat land. Identically zero on every lakebed and every cliff = grass.
+#   R averages 249.9 underwater, rising with depth. A weight that blankets the seabed = dirt.
+#
+# B and A are NOT single grounds — each packs two 4-bit weights (audit SPLAT-6), so they are
+# named as pairs here and unpacked in the blend. The four extras are the game's four paint
+# tools: 01 Dry, 02 Lush, 03 Dirt, 04 Sand.
+_SPLAT_CHANNELS_DEFAULT = {"R": "dirt", "G": "grass",
+                           "B": "extra1:extra2", "A": "extra3:extra4", "base": "rock"}
 
 # Stand-ins for a ground whose texture the bundle does not carry, so a missing file degrades to
 # a plausible colour rather than to nothing.
@@ -2525,10 +2575,16 @@ _GROUND_FALLBACK_COLOUR = {
     "grass": (0.20, 0.30, 0.12, 1.0),
     "dirt": (0.35, 0.28, 0.20, 1.0),
     "rock": (0.30, 0.28, 0.26, 1.0),
-    "extra1": (0.32, 0.30, 0.27, 1.0),
-    "extra2": (0.32, 0.30, 0.27, 1.0),
-    "extra3": (0.32, 0.30, 0.27, 1.0),
-    "extra4": (0.32, 0.30, 0.27, 1.0),
+    # The four paint tools, named by the game's own locale: 01 Dry, 02 Lush, 03 Dirt, 04 Sand.
+    # Only reached when the bundle ships no texture for that ground.
+    #
+    # These are LINEAR and must sit at the same level as CS2's authored ground albedo, which is
+    # dark: measured means of the real grounds are 0.04-0.14 linear. Taken from the real
+    # textures - Grass_Dry / Forest_temperate / Light_dirt / Sand, all _temperate_01.
+    "extra1": (0.076, 0.077, 0.050, 1.0),   # 01 Dry   - Grass_Dry_Temperate_01
+    "extra2": (0.039, 0.046, 0.019, 1.0),   # 02 Lush  - Forest_temperate_01
+    "extra3": (0.118, 0.096, 0.080, 1.0),   # 03 Dirt  - Dirt_temperate_01
+    "extra4": (0.155, 0.128, 0.090, 1.0),   # 04 Sand  - Sand_Surface_01
 }
 
 
@@ -2910,21 +2966,23 @@ def _splat_mapping(block):
     """Which ground each splatmap channel weights, and whether the bundle said so itself.
 
     A channel the producer could not name ships as "unknown" — it does that when the theme
-    binds too few grounds for its elimination argument to hold — and an unnamed channel is
-    dropped from the blend rather than guessed at.
+    binds no such ground — and an unnamed channel is dropped from the blend rather than
+    guessed at.
     """
     published = (block or {}).get("channels")
     if not isinstance(published, dict):
-        return dict(_SPLAT_CHANNELS_DEFAULT), False
+        mapping, published_map = dict(_SPLAT_CHANNELS_DEFAULT), False
+    else:
+        mapping = {}
+        for key, default in _SPLAT_CHANNELS_DEFAULT.items():
+            name = published.get(key, default)
+            mapping[key] = None if (not isinstance(name, str) or name == "unknown") else name
+        published_map = True
 
-    mapping = {}
-    for key, default in _SPLAT_CHANNELS_DEFAULT.items():
-        name = published.get(key, default)
-        mapping[key] = None if (not isinstance(name, str) or name == "unknown") else name
-    return mapping, True
+    return mapping, published_map
 
 
-def _splat_ground_material(surfaces_dir, splat, mapping, gain=1.0):
+def _splat_ground_material(surfaces_dir, splat, mapping):
     """One ground material mixing the game's grounds by its own splat weights.
 
     The splatmap image is sampled with linear interpolation in its own UV layer (SplatUV),
@@ -2932,20 +2990,19 @@ def _splat_ground_material(surfaces_dir, splat, mapping, gain=1.0):
     textures keep the world-anchored 8 m tiling of the legacy path.
 
     `mapping` names the ground each of R, G, B, A weights, plus the `base` ground. The base
-    is not a channel: it is the residual of the two PROCEDURAL channels (R grass, G dirt),
-    which is why a cliff renders rock — measured, very steep faces carry ≈0 in both.
+    is not a channel: it is the residual of the DIRT channel alone, which is why a cliff
+    renders rock — measured, the dirt weight falls 251.6 → 9.4 from flat ground to a 45°+ face.
 
-    The two kinds of channel blend differently, and the difference is the whole point: the
-    procedural pair is a normalised partition of grass/dirt/rock, while the player's paint
-    (B, A) composites OVER that at saturate(weight · splatMultiplier)^splatPower. See the
-    comment on the blend below for the measurements that rule out treating all four the same
-    way in either direction (audit SPLAT-1).
+    All four channels composite over that base in channel order as opacities at
+    saturate(weight · splatMultiplier)^splatPower. See the comment on the blend below for why
+    normalising them, or splitting them into two kinds, both render the map wrong (audit
+    SPLAT-3).
     """
     material = bpy.data.materials.new("terrain_ground")
-    material.use_nodes = True
-    tree = material.node_tree
+    tree = _ensure_nodes(material)
     bsdf = tree.nodes.get("Principled BSDF")
     bsdf.inputs["Roughness"].default_value = 0.95
+    _diffuse_ground(bsdf)
 
     world_uv = tree.nodes.new("ShaderNodeUVMap")
     world_uv.uv_map = "UVMap"
@@ -2954,7 +3011,7 @@ def _splat_ground_material(surfaces_dir, splat, mapping, gain=1.0):
         path = os.path.join(surfaces_dir, f"{ground}.png")
         if os.path.isfile(path):
             node = tree.nodes.new("ShaderNodeTexImage")
-            node.image = bpy.data.images.load(path)
+            node.image = _unpremultiply(bpy.data.images.load(path))
             tree.links.new(world_uv.outputs["UV"], node.inputs["Vector"])
             return node.outputs["Color"]
         rgb = tree.nodes.new("ShaderNodeRGB")
@@ -2964,7 +3021,7 @@ def _splat_ground_material(surfaces_dir, splat, mapping, gain=1.0):
     splat_uv = tree.nodes.new("ShaderNodeUVMap")
     splat_uv.uv_map = "SplatUV"
     splat_node = tree.nodes.new("ShaderNodeTexImage")
-    splat_node.image = bpy.data.images.load(splat.path)
+    splat_node.image = _unpremultiply(bpy.data.images.load(splat.path))
     splat_node.image.colorspace_settings.name = "Non-Color"
     splat_node.interpolation = "Linear"
     splat_node.extension = "EXTEND"
@@ -2974,6 +3031,20 @@ def _splat_ground_material(surfaces_dir, splat, mapping, gain=1.0):
     tree.links.new(splat_node.outputs["Color"], separate.inputs["Color"])
     channels = {0: separate.outputs["Red"], 1: separate.outputs["Green"],
                 2: separate.outputs["Blue"], 3: splat_node.outputs["Alpha"]}
+
+    # A SECOND tap on the same image, point-sampled. B and A are bit-packed (two 4-bit weights
+    # each), and interpolating a packed byte is meaningless — halfway between 0x0F and 0x10 is
+    # 0x0F..0x10, which decodes to a nibble pair unrelated to either neighbour. The game agrees:
+    # its user splatmap is created with `filterMode = FilterMode.Point`. The soil channels R and
+    # G are genuine continuous weights and keep the smooth Linear tap above.
+    splat_point = tree.nodes.new("ShaderNodeTexImage")
+    splat_point.image = splat_node.image
+    splat_point.interpolation = "Closest"
+    splat_point.extension = "EXTEND"
+    tree.links.new(splat_uv.outputs["UV"], splat_point.inputs["Vector"])
+    separate_point = tree.nodes.new("ShaderNodeSeparateColor")
+    tree.links.new(splat_point.outputs["Color"], separate_point.inputs["Color"])
+    packed_channels = {2: separate_point.outputs["Blue"], 3: splat_point.outputs["Alpha"]}
 
     def math(op, a, b):
         node = tree.nodes.new("ShaderNodeMath")
@@ -2993,93 +3064,168 @@ def _splat_ground_material(surfaces_dir, splat, mapping, gain=1.0):
         tree.links.new(colour_b, node.inputs["Color2"])
         return node.outputs["Color"]
 
-    # Two different kinds of channel, blended two different ways (audit SPLAT-1, 2026-08-10).
+    # All four channels are opacities, composited over the rock base in channel order at
+    # saturate(weight * splatMultiplier)^splatPower — the game's own multiplier and power,
+    # shipped in the rasters block. This is NOT a partition: R and G are both near-saturated
+    # on flat land (251.6 and 201.7) and routinely sum past 255, so normalising them turns
+    # every meadow half brown. Rock is the residual of R alone and needs no channel: where the
+    # dirt weight falls away, which is what a cliff face is, the base shows through.
     #
-    # R and G are PROCEDURAL weights the game computes from the terrain itself, and rock is
-    # their residual: R falls monotonically with slope on unpainted ground — measured on a
-    # full city, 254/255 at 0-5 deg down to 5.9 at 40-90 deg — so `lerp(rock, grass, R)` is
-    # what it describes. They are normalised into a partition of grass/dirt/rock.
-    #
-    # B and A are the PLAYER'S PAINT, and they composite OVER that natural ground as
-    # opacities at saturate(weight * splatMultiplier)^splatPower.
-    #
-    # Treating all four as opacities (what shipped until now) is what "the painted colours
-    # are lost" actually was: splatMultiplier 2.0 saturates any channel at or above 128/255,
-    # the grass channel is at or above 128 on 96.99% of texels, and grass composites after
-    # dirt — so the rule rendered 92.31% of the map as grass, the painted extra1 as 0.81%,
-    # and dirt as literally nothing anywhere. The tell is that grass reads 249.6/255 BELOW
-    # the waterline: a channel that is near-saturated underwater is not a grass opacity.
-    # Treating all four as a partition instead is the other failure the old comment records,
-    # and it is also real - it leaves painted texels ~48% paint against ~32% grass. Only the
-    # split above puts paint at 86-100% where the player painted while keeping rock on the
-    # cliffs and dirt visible at all.
+    # The order is what makes it read correctly: dirt (R) blankets everything including the
+    # lakebed, then grass (G) covers the land on top of it, then the player's paint. So the
+    # shoreline — dirt with grass falling to zero at the water — is the sandy band, and the
+    # land above it is green.
     #
     # A channel the producer could not name is skipped — that ground is present but
     # unnameable, and painting it as a guess would be worse than leaving the ground below.
-    natural = [(index, mapping[key]) for index, key in ((0, "R"), (1, "G")) if mapping.get(key)]
-    paint = [(index, mapping[key]) for index, key in ((2, "B"), (3, "A")) if mapping.get(key)]
+    #
+    # B AND A ARE BIT-PACKED, two 4-bit weights each (audit SPLAT-6). That is how four paintable
+    # extras fit an R8G8 user splatmap, and it is why reading them as single 0-255 opacities lost
+    # the player's sand: it merged extra1 with extra2, extra3 with extra4, and rendered the
+    # merged result with the wrong ground's texture entirely.
+    #     B.low = extra1 (tool 01 "Dry")     B.high = extra2 (tool 02 "Lush")
+    #     A.low = extra3 (tool 03 "Dirt")    A.high = extra4 (tool 04 "Sand")
+    # Each nibble is 0..15, so it normalises by 15, not 255.
+    def nibble(index, half):
+        raw = math("MULTIPLY", packed_channels[index], 255.0)
+        high = math("FLOOR", math("DIVIDE", raw, 16.0), 0.0)
+        value = high if half == "high" else math("SUBTRACT", raw,
+                                                 math("MULTIPLY", high, 16.0))
+        return math("DIVIDE", value, 15.0)
 
-    if not natural:
-        blended = ground_texture(mapping["base"] if mapping.get("base") else
-                                 _SPLAT_CHANNELS_DEFAULT["R"])
-    else:
-        # rock is the residual of the procedural channels ALONE — the paint channels must not
-        # eat into it, or painting a slope would quietly turn its rock into grass.
-        procedural_sum = channels[natural[0][0]]
-        for index, _ in natural[1:]:
-            procedural_sum = math("ADD", procedural_sum, channels[index])
-        residual = math("MAXIMUM", math("SUBTRACT", 1.0, procedural_sum), 0.0)
-        blended = ground_texture(mapping["base"] if mapping.get("base") else natural[0][1])
-        running = residual
-        for index, ground in natural:
-            # Incremental weighted average: each ground enters at its share of the weight
-            # accumulated so far, which yields the exact normalised partition at the end.
-            running = math("ADD", running, channels[index])
-            share = math("DIVIDE", channels[index], math("ADD", running, 1e-6))
-            blended = mix(blended, ground_texture(ground), share)
+    def opacity_of(weight):
+        out = math("MINIMUM", math("MULTIPLY", weight, splat.multiplier), 1.0)
+        return out if splat.power == 1.0 else math("POWER", out, splat.power)
 
-    for index, ground in paint:
-        opacity = math("MINIMUM", math("MULTIPLY", channels[index], splat.multiplier), 1.0)
-        if splat.power != 1.0:
-            opacity = math("POWER", opacity, splat.power)
-        blended = mix(blended, ground_texture(ground), opacity)
+    blended = ground_texture(mapping["base"] if mapping.get("base") else
+                             _SPLAT_CHANNELS_DEFAULT["R"])
 
-    if (gain != 1.0) or (_GROUND_SATURATION != 1.0):
-        # One HSV node carries both presentation knobs. Gain goes through its Value input —
-        # a FLOAT socket, so it survives >1 — never through a MixRGB colour socket, whose
-        # RGBA default_value clamps to [0,1] and silently turns any gain into a no-op
-        # (which is exactly what it had been doing).
-        hsv = tree.nodes.new("ShaderNodeHueSaturation")
-        hsv.inputs["Saturation"].default_value = _GROUND_SATURATION
-        hsv.inputs["Value"].default_value = gain
-        tree.links.new(blended, hsv.inputs["Color"])
-        blended = hsv.outputs["Color"]
+    # The two continuous soil weights first: dirt blankets everything including the lakebed,
+    # then grass covers the land on top of it.
+    for index, key in ((0, "R"), (1, "G")):
+        ground = mapping.get(key)
+        if ground:
+            blended = mix(blended, ground_texture(ground), opacity_of(channels[index]))
 
+    # Then the player's paint, unpacked, in extra order.
+    for index, half, ground in ((2, "low", "extra1"), (2, "high", "extra2"),
+                                (3, "low", "extra3"), (3, "high", "extra4")):
+        blended = mix(blended, ground_texture(ground), opacity_of(nibble(index, half)))
+
+    # Straight to the BSDF: no gain, no grading. The ground ships albedo, and `--colour` grades
+    # the whole scene in the display pipeline rather than pre-multiplying the terrain.
     tree.links.new(blended, bsdf.inputs["Base Color"])
     return material
 
 
-def _ground_material(name, texture_path, fallback_colour, gain=1.0, saturation=1.0):
+def _unpremultiply(image):
+    """Stop Blender multiplying this texture's COLOUR by its ALPHA.
+
+    THE SINGLE LARGEST FIDELITY BUG THIS IMPORTER HAS HAD. An Image Texture node's `Color`
+    output is alpha-premultiplied when the image is loaded with the default `STRAIGHT` alpha
+    mode. CS2 packs data into the alpha channel of its base-colour maps — it is not opacity —
+    and it is mostly near zero: measured on this bundle, all seven ground textures have a mean
+    alpha between 0.036 and 0.133 and **not one texel** at full opacity. The terrain was
+    therefore drawn at 4-13% of the albedo the bundle ships. Measured at the sand reference
+    point: `#24211d` against a shipped albedo of `#777066`, an 11x deficit.
+
+    That is what "the import is very dark and the colours do not come through" was. It also
+    explains the constants this file used to carry: `_GROUND_BRIGHTNESS = 3.09` was compensating
+    for a ~10x darkening with a 3x gain, which is why it never quite worked and why removing it
+    made things look worse rather than better.
+
+    SCOPE: only the textures THIS file loads — the terrain grounds, the splatmap, the area
+    surfaces. Blender's glTF importer already sets `CHANNEL_PACKED` itself, so object, network
+    and prop textures were never affected; checked, rather than assumed, before claiming it.
+
+    `CHANNEL_PACKED` is the right mode rather than `NONE`: it tells Blender the alpha is data,
+    so `Color` comes through unmodified, while the `Alpha` output stays available for the
+    materials that genuinely do cut out (foliage, decals).
+    """
+    if image is not None:
+        image.alpha_mode = "CHANNEL_PACKED"
+    return image
+
+
+def _unpremultiply_all():
+    """Apply `_unpremultiply` to every image in the file.
+
+    A backstop rather than the fix: the load sites above are what actually mattered, and
+    Blender's glTF importer already channel-packs its own. This catches anything that arrives
+    by a path nobody thought about, and reports how many so a future change that reintroduces
+    premultiplied colour shows up in the log instead of silently darkening the scene.
+    """
+    fixed = 0
+    for image in bpy.data.images:
+        if image.alpha_mode != "CHANNEL_PACKED":
+            image.alpha_mode = "CHANNEL_PACKED"
+            fixed += 1
+    return fixed
+
+
+def _ensure_nodes(datablock):
+    """Return a material's/world's node tree, enabling nodes only if they are not already there.
+
+    `use_nodes` is deprecated in Blender 5.x (removal slated for 6.0) because materials and worlds
+    are always node-based now — assigning it emits a DeprecationWarning on every material the
+    importer builds, which on a full city is thousands of lines of noise. Reading `node_tree`
+    first is both quieter and correct: on 5.x it is already there, and on older Blender the
+    assignment still runs.
+    """
+    if datablock.node_tree is None:
+        datablock.use_nodes = True
+    return datablock.node_tree
+
+
+def _diffuse_ground(bsdf):
+    """Zero the white dielectric specular on a terrain ground.
+
+    Principled defaults to a dielectric reflection that is WHITE regardless of base colour. CS2's
+    terrain is diffuse ground with nothing there to reflect, so zeroing it is a modelling
+    correction rather than a colour adjustment, and that is the whole justification — the effect
+    is modest.
+
+    Re-measured 2026-08-11 at the sand reference point on the fixed pipeline: leaving the
+    specular on costs saturation 0.154 -> 0.141 (8.4%) and *raises* value 0.450 -> 0.462. An
+    earlier note here claimed 64% of the saturation and a large brightness loss; those numbers
+    were taken while the ground was being drawn at a tenth of its albedo (audit §2.5 SPLAT-5) and
+    through a probe that double-encoded its own readings, and neither survived the fixes.
+
+    The socket was renamed across versions ("Specular" -> "Specular IOR Level"); try both.
+    """
+    for name in ("Specular IOR Level", "Specular"):
+        socket = bsdf.inputs.get(name)
+        if socket is not None:
+            socket.default_value = 0.0
+            return
+
+
+def _set_alpha_blend(material):
+    """Make a material's Alpha input actually read as transparency.
+
+    Blender 4.2 moved EEVEE transparency from `blend_method` to `surface_render_method`, and the
+    new default is DITHERED — stochastic transparency, which at low sample counts reads as noise
+    or as fully opaque, not as a translucent surface. `blend_method` still exists on 5.x as a
+    legacy alias, so a `hasattr(material, "blend_method")` guard passes and silently does nothing
+    useful: the water was setting Alpha 0.8 and rendering solid. Set the modern property when it
+    is there, and fall back for pre-4.2 Blender.
+    """
+    if hasattr(material, "surface_render_method"):
+        material.surface_render_method = "BLENDED"
+    elif hasattr(material, "blend_method"):
+        material.blend_method = "BLEND"
+
+
+def _ground_material(name, texture_path, fallback_colour):
     material = bpy.data.materials.new(name)
-    material.use_nodes = True
+    _ensure_nodes(material)
     bsdf = material.node_tree.nodes.get("Principled BSDF")
     bsdf.inputs["Roughness"].default_value = 0.95
+    _diffuse_ground(bsdf)
     if texture_path and os.path.isfile(texture_path):
         image_node = material.node_tree.nodes.new("ShaderNodeTexImage")
-        image_node.image = bpy.data.images.load(texture_path)
-        upstream = image_node.outputs["Color"]
-        if (gain != 1.0) or (saturation != 1.0):
-            # Presentation gain + saturation: the authored theme diffuse is dark and only
-            # reads right under the game's own exposure. The gain rides the HSV node's Value
-            # input — a float socket, unclamped — because a MixRGB colour socket clamps its
-            # default_value to [0,1] and silently ate it. The texture on disk stays the
-            # faithful rip.
-            hsv = material.node_tree.nodes.new("ShaderNodeHueSaturation")
-            hsv.inputs["Saturation"].default_value = saturation
-            hsv.inputs["Value"].default_value = gain
-            material.node_tree.links.new(upstream, hsv.inputs["Color"])
-            upstream = hsv.outputs["Color"]
-        material.node_tree.links.new(upstream, bsdf.inputs["Base Color"])
+        image_node.image = _unpremultiply(bpy.data.images.load(texture_path))
+        material.node_tree.links.new(image_node.outputs["Color"], bsdf.inputs["Base Color"])
     else:
         bsdf.inputs["Base Color"].default_value = fallback_colour
     return material
@@ -3339,13 +3485,10 @@ def build_terrain(bundle_dir, collection, center, radius, clip_floor=None):
     if splat is not None:
         splat_mapping, published = _splat_mapping(splat_block)
         named = ", ".join(f"{key}={splat_mapping[key] or 'unknown'}" for key in "RGBA")
-        LOG.step(f"splatmap channels {'published by the bundle' if published else 'assumed'}: "
-                 f"{named}, base={splat_mapping.get('base') or 'none'} (the unpainted residual)")
-        if not published:
-            LOG.warn("the bundle predates the published channel map; the game's own "
-                     "TerrainMaterialType ordering is assumed — re-rip to have the producer "
-                     "state it and re-derive the one channel it cannot prove")
-
+        source = "published by the bundle" if published else "assumed"
+        LOG.step(f"splatmap channels {source}: "
+                 f"{named}, base={splat_mapping.get('base') or 'none'} (the residual of the "
+                 f"first channel)")
     # World-anchored UVs so the ground textures tile at a plausible density without any
     # per-face unwrap. 8 m per repeat reads roughly like the game's near tiling. Per-LOOP,
     # in the same flat loop order as `loops` (coarse quads, refined quads, fan triangles).
@@ -3353,14 +3496,14 @@ def build_terrain(bundle_dir, collection, center, radius, clip_floor=None):
     uv_layers = {"UVMap": numpy.stack((loop_x / 8.0, loop_z / 8.0), axis=-1)}
 
     if splat_mapping is not None:
-        material_runs = [(_splat_ground_material(surfaces_dir, splat, splat_mapping, gain=_GROUND_GAIN),
+        material_runs = [(_splat_ground_material(surfaces_dir, splat, splat_mapping),
                            len(sizes))]
-        # No face overrides on the blend. Roadbed stays grass, as in game: the measured
-        # splat paints it 251/255 on the grass channel, and the roadbed LOOK is carried by
-        # the ~13%-alpha wear decals and surface areas drawn on top (the sink still
-        # applies). Cliffs need no slope override either: unpainted texels ARE the rock
-        # weight (the residual in _splat_ground_material), which is what keeps gorge walls
-        # smooth instead of the per-face checkerboard.
+        # No face overrides on the blend. The roadbed keeps whatever the splat says, as in
+        # game — the blend has no roadbed response at all, and the roadbed LOOK is carried by
+        # the ~13%-alpha wear decals and surface areas drawn on top (the sink still applies).
+        # Cliffs need no slope override either: where the dirt weight falls away the rock base
+        # shows through, which is what keeps gorge walls smooth instead of the per-face
+        # checkerboard.
 
         # The splat blend samples in its own geo-referenced UV space.
         uv_layers["SplatUV"] = numpy.stack(
@@ -3368,14 +3511,11 @@ def build_terrain(bundle_dir, collection, center, radius, clip_floor=None):
              (loop_z - (splat.max_z - splat.area_z)) / splat.area_z), axis=-1)
     else:
         grass = _ground_material("terrain_natural", os.path.join(surfaces_dir, "grass.png"),
-                                 (0.20, 0.30, 0.12, 1.0), gain=_GROUND_GAIN,
-                                 saturation=_GROUND_SATURATION)
+                                 (0.20, 0.30, 0.12, 1.0))
         dirt = _ground_material("terrain_roadbed", os.path.join(surfaces_dir, "dirt.png"),
-                                (0.35, 0.28, 0.20, 1.0), gain=_GROUND_GAIN,
-                                saturation=_GROUND_SATURATION)
+                                (0.35, 0.28, 0.20, 1.0))
         rock = _ground_material("terrain_rock", os.path.join(surfaces_dir, "rock.png"),
-                                (0.30, 0.28, 0.26, 1.0), gain=_GROUND_GAIN,
-                                saturation=_GROUND_SATURATION)
+                                (0.30, 0.28, 0.26, 1.0))
         by_class = (grass, dirt, rock)
         # Run-length encode face_class into (material, run) pairs — the array is already
         # spatially coherent (grass/dirt/rock form contiguous runs along each sampled row),
@@ -3469,14 +3609,13 @@ def build_terrain(bundle_dir, collection, center, radius, clip_floor=None):
                  surface_y[wur, wuc].astype(numpy.float64)), axis=-1)
 
             water_material = bpy.data.materials.new("terrain_water")
-            water_material.use_nodes = True
+            _ensure_nodes(water_material)
             water_bsdf = water_material.node_tree.nodes.get("Principled BSDF")
             water_bsdf.inputs["Base Color"].default_value = (0.08, 0.22, 0.35, 1.0)
             water_bsdf.inputs["Roughness"].default_value = 0.05
             if "Alpha" in water_bsdf.inputs:
                 water_bsdf.inputs["Alpha"].default_value = 0.8
-            if hasattr(water_material, "blend_method"):
-                water_material.blend_method = "BLEND"
+            _set_alpha_blend(water_material)
 
             water_mesh = _mesh_from_arrays("bundle_water", water_verts,
                                             wvid[water_loops_all],
@@ -3641,10 +3780,6 @@ def build_areas(bundle_dir, collection, center, radius, ground=None, cell=3.5):
             entry = catalogue.get(prefab) or {}
             texture = entry.get("texture")
             colour = entry.get("color") or (0.42, 0.40, 0.38, 1.0)
-            # No gain: area textures come from ordinary prefab materials at normal albedo
-            # brightness, unlike the dark-authored theme grounds. (The old _GROUND_GAIN here
-            # was a silent no-op through the clamped MixRGB socket — this preserves the look
-            # the layer was accepted with.)
             materials[prefab] = _ground_material(
                 f"area_{prefab}",
                 os.path.join(bundle_dir, texture) if texture else None,
@@ -3771,44 +3906,232 @@ def build_areas(bundle_dir, collection, center, radius, ground=None, cell=3.5):
 
 # -- scene building -------------------------------------------------------------------------
 
-def _setup_lighting():
-    """Give the scene the neutral sun and world the ground gain was calibrated against.
+def _view_transform_available(name):
+    """Is `name` one of this Blender's view transforms?
 
-    `clear_scene()` deletes Blender's default light along with everything else, and the
-    importer never replaced it — so an imported scene had **no lights and no world at all**.
-    Nothing looked black only because the interactive viewport falls back to its own studio
-    HDRI in Solid/Material Preview, and that HDRI is warm: it tinted the ground toward brown
-    (measured hue 41.6 deg against 63.9 deg in-game) no matter how correct the blend was. The
-    material itself was fine the whole time — tapped straight out of the node tree it reads
-    hue 62.0 deg, essentially the in-game value.
+    The enum is OCIO-driven, so it cannot be read off `bl_rna` (that reports a placeholder); the
+    only reliable test is to try the assignment and put back what was there.
+    """
+    view_settings = bpy.context.scene.view_settings
+    previous = view_settings.view_transform
+    try:
+        view_settings.view_transform = name
+        return True
+    except (TypeError, AttributeError):
+        return False
+    finally:
+        try:
+            view_settings.view_transform = previous
+        except (TypeError, AttributeError):
+            pass
 
-    The rig mirrors `tools/ab_render.py`, which is where `_GROUND_GAIN` was calibrated: one
-    white sun at energy 4.0, same angle. The world is a plain neutral grey so ambient fill
-    adds brightness without adding a colour cast. Viewports are then told to use the scene's
-    own lights and world rather than the studio HDRI, so what the user sees is what the gain
-    was tuned for.
+
+def _apply_grading(bundle_dir):
+    """Replay the game's colour grading from `grading.json` (the `--colour` flag).
+
+    CS2 authors ground albedo near-grey (rock sRGB saturation 0.111, sand 0.143); the on-screen
+    palette is HDRP post-processing on top. The producer ships the game's **resolved** volume-stack
+    values, so this replays real numbers rather than approximating a screenshot. OFF by default:
+    a plain import stays a faithful 1:1 albedo view.
+
+    WHERE THE GRADING RUNS, AND WHY IT MATTERS MORE THAN THE NUMBERS
+
+    A colour grade is a transform on *final radiance*, applied in a fixed order. There are three
+    places to put it in Blender and only one of them is both correct and visible:
+
+      * the COMPOSITOR runs on rendered output only. A scene graded there looks raw in the
+        viewport, which is where an imported city is actually looked at. This is where the
+        previous version put contrast, and it is why measurements of "what the importer produces"
+        kept disagreeing with what was on screen.
+      * the MATERIALS are visible, but they carry albedo, not radiance, and they come before the
+        lighting rather than after it. Saturation happens to survive the move (it is homogeneous,
+        so it commutes with a scalar light), but it then runs BEFORE the contrast instead of
+        after, and measured on this city's grass that reordering costs 18% on the blue channel.
+      * the VIEW TRANSFORM runs on final radiance, in order, and shows in the viewport and in F12
+        alike. Everything cross-channel therefore belongs there — which needs an OCIO config, and
+        `tools/colour_model.py` writes one from this bundle's own numbers.
+
+    So: with the generated config active, this sets the view and the exposure and touches nothing
+    else. Without it, the per-channel part of the chain still goes into Blender's native Color
+    Management (exact, viewport-visible) and the cross-channel part is reported as MISSING rather
+    than being moved somewhere it would silently change order.
+
+    Exposure is left as the user's control on purpose. The game meters every frame
+    (`AutomaticHistogram`), so absolute brightness is a property of where the camera was pointed,
+    not of the city; the value set here is only the manual offset the bundle does know about.
+    """
+    grading = colour_model.load(bundle_dir)
+    if grading is None:
+        LOG.warn("--colour: this bundle has no grading.json (ripped before the grading layer); "
+                 "leaving the scene ungraded")
+        return
+
+    global _GRADING
+    _GRADING = grading
+    scene = bpy.context.scene
+
+    available = _view_transform_available(grading.view_name)
+    view, exposure, gamma, gain, missing = grading.colour_management(available)
+
+    scene.view_settings.exposure = exposure
+    if hasattr(scene.view_settings, "gamma"):
+        scene.view_settings.gamma = gamma
+    if hasattr(scene.view_settings, "look"):
+        scene.view_settings.look = "None"
+    if hasattr(scene.view_settings, "use_curve_mapping"):
+        scene.view_settings.use_curve_mapping = False
+    if hasattr(scene.view_settings, "use_white_balance"):
+        # Blender's own white balance is a Kelvin control on a different scale from HDRP's
+        # -100..100; mapping between them would be a fit. The game's value is applied exactly
+        # instead, either in the view transform or as a light gain.
+        scene.view_settings.use_white_balance = False
+    try:
+        scene.view_settings.view_transform = view
+    except (AttributeError, TypeError):
+        LOG.warn(f"--colour: this Blender has no '{view}' view transform; leaving "
+                 f"{scene.view_settings.view_transform}")
+
+    # The per-channel gain rides the lights when it cannot ride the view. Scaling every light per
+    # channel scales the whole render per channel, bounces included, so this is exact rather than
+    # an approximation — but it is only reached on the fallback path.
+    if any(abs(c - 1.0) > 1e-6 for c in gain):
+        for ob in scene.objects:
+            if ob.type == "LIGHT":
+                ob.data.color = (gain[0], gain[1], gain[2])
+        background = (scene.world.node_tree.nodes.get("Background")
+                      if scene.world and scene.world.node_tree else None)
+        if background is not None:
+            base = background.inputs["Color"].default_value
+            background.inputs["Color"].default_value = (base[0] * gain[0], base[1] * gain[1],
+                                                        base[2] * gain[2], 1.0)
+
+    LOG.step(f"grading applied from grading.json: view transform {view}, "
+             f"exposure {exposure:+.2f} EV" + (f", gamma {gamma:.4g}" if gamma != 1.0 else "")
+             + (f", light gain {tuple(round(c, 4) for c in gain)}"
+                if any(abs(c - 1.0) > 1e-6 for c in gain) else ""))
+    for line in grading.warnings:
+        LOG.warn("--colour: " + line)
+
+    if available:
+        LOG.step(f"the '{grading.view_name}' view is carrying the whole chain — gain, contrast, "
+                 f"saturation and shadows/midtones/highlights all run on final radiance, in the "
+                 f"viewport")
+        return
+
+    for line in missing:
+        LOG.warn("--colour: NOT applied - " + line)
+    config = colour_model.blender_config_path()
+    if config is None:
+        LOG.warn("--colour: could not find Blender's own config.ocio to extend; set "
+                 "CARTO_BLENDER_COLORMANAGEMENT to the folder holding it")
+        return
+    try:
+        path = grading.write_ocio(os.path.join(bundle_dir, "colour"), config)
+    except OSError as exc:
+        LOG.warn(f"--colour: could not write the OCIO config ({exc})")
+        return
+
+    # LOUD, because this is the one step a person can silently skip and then judge the whole
+    # feature by the result. Without the config Blender has no way to run a cross-channel
+    # operator before the display transform, so the scene loses the saturation entirely and
+    # reads flat and dark — which looks exactly like "the grading does not work".
+    LOG.warn("=" * 78)
+    LOG.warn(f"--colour is only HALF APPLIED. Blender loads its colour config at startup, so")
+    LOG.warn(f"the '{grading.view_name}' view cannot be switched on from inside this script.")
+    LOG.warn("")
+    LOG.warn("  1. close Blender")
+    LOG.warn(f'  2. setx OCIO "{path}"')
+    LOG.warn("  3. reopen Blender, re-import, and set Render Properties > Color Management >")
+    LOG.warn(f"     View Transform to '{grading.view_name}'")
+    LOG.warn("")
+    LOG.warn("`setx` sets it permanently and is safe: this config is Blender's own with one view")
+    LOG.warn("added, so Standard, AgX, Filmic and the rest keep working exactly as before.")
+    LOG.warn("=" * 78)
+
+
+def _sun_from_bundle(bundle_dir):
+    """The game's own sun direction, as a Blender-frame vector pointing AT the light.
+
+    `grading.json`'s `lighting.sun.direction` is the vector the light TRAVELS along, in the
+    bundle's frame (left-handed, X east, Y up, Z north — §2.1). Blender is right-handed with Z
+    up, and the importer maps bundle (x, y, z) to Blender (x, z, y) everywhere else, so the same
+    mapping applies here; negating it turns "where the light goes" into "where the light is".
+
+    Worth using rather than the arbitrary default: the placeholder tilt sits at 33 degrees, and
+    this city was ripped at noon with the sun at 66. Half the terrain that reads as shadow under
+    the placeholder is lit in the game, which is most of "the import looks too dark".
+
+    Returns None when the bundle predates the lighting block, and the placeholder stands.
+    """
+    if not bundle_dir:
+        return None
+    grading = colour_model.load(bundle_dir)
+    if grading is None:
+        return None
+    sun = (grading.raw.get("lighting") or {}).get("sun") or {}
+    travel = sun.get("direction")
+    if not travel or len(travel) != 3:
+        return None
+    toward = Vector((-float(travel[0]), -float(travel[2]), -float(travel[1])))
+    if toward.length < 1e-6 or toward.z <= 0.0:
+        return None                       # below the horizon: a night rip lights nothing
+    return toward.normalized()
+
+
+def _setup_lighting(bundle_dir=None):
+    """Give the scene a plain neutral sun and ambient.
+
+    `clear_scene()` deletes Blender's default light along with everything else, so without this
+    an imported scene has no lights and no world at all — it only looks lit because the viewport
+    falls back to its own studio HDRI, whose warm tint then colours everything. A white sun and a
+    neutral grey world make what you see the albedo the bundle actually ships, not a studio
+    lighting look. The rig is not calibrated against the game and is not meant to be: matching
+    CS2's on-screen colour needs its HDR exposure and colour grading, neither of which is in the
+    bundle. Set up your own lighting if you want the game's look.
     """
     scene = bpy.context.scene
 
     if not any(ob.type == "LIGHT" for ob in scene.objects):
         sun_data = bpy.data.lights.new("carto_sun", type="SUN")
-        sun_data.energy = 4.0
         sun_data.color = (1.0, 1.0, 1.0)
         sun = bpy.data.objects.new("carto_sun", sun_data)
         scene.collection.objects.link(sun)
-        sun.rotation_euler = (0.5, 0.3, 0.0)
+        # A Blender sun shines along its local -Z, so the direction TOWARD it is local +Z, and
+        # its world Z component is the incidence cosine on level ground.
+        toward = _sun_from_bundle(bundle_dir)
+        if toward is not None:
+            sun.rotation_euler = toward.to_track_quat("Z", "Y").to_euler()
+            cos_theta = max(1e-3, toward.z)
+            LOG.step(f"sun placed from the bundle: {math.degrees(math.asin(cos_theta)):.1f} deg "
+                     f"above the horizon, as the game had it at rip time")
+        else:
+            sun.rotation_euler = _SUN_TILT
+            from mathutils import Euler
+            cos_theta = max(1e-3, Euler(_SUN_TILT, "XYZ").to_matrix().col[2].z)
+        sun_data.energy = math.pi * (1.0 - _WORLD_LEVEL) / cos_theta
 
     world = scene.world
     if world is None:
         world = bpy.data.worlds.new("carto_world")
         scene.world = world
-    world.use_nodes = True
+    _ensure_nodes(world)
     background = world.node_tree.nodes.get("Background")
     if background is not None:
-        background.inputs["Color"].default_value = (0.25, 0.25, 0.25, 1.0)
+        background.inputs["Color"].default_value = (_WORLD_LEVEL, _WORLD_LEVEL,
+                                                    _WORLD_LEVEL, 1.0)
         background.inputs["Strength"].default_value = 1.0
 
-    # Make the viewport obey the scene rig instead of its warm studio HDRI. No-ops under -b.
+    # EEVEE ships with raytracing off, so nothing reflects — water included. Turn it on; a
+    # ripped city with flat, mirror-less water reads as plastic.
+    eevee = getattr(scene, "eevee", None)
+    if eevee is not None and hasattr(eevee, "use_raytracing"):
+        eevee.use_raytracing = True
+
+    # Make the viewport obey the scene rig instead of its warm studio HDRI, and REPORT what it
+    # found. A viewport left in Solid shading draws a uniform grey clay regardless of any
+    # material, which is indistinguishable from "the import produced no colour" — so say so out
+    # loud rather than leaving it to be guessed at.
+    seen = []
     for screen in bpy.data.screens:
         for area in screen.areas:
             if area.type != "VIEW_3D":
@@ -3822,21 +4145,23 @@ def _setup_lighting():
                 if shading.type == "MATERIAL":
                     shading.use_scene_lights = True
                     shading.use_scene_world = True
+                seen.append(shading.type)
+
+    if seen:
+        LOG.step(f"viewport shading set to {', '.join(sorted(set(seen)))} "
+                 f"({len(seen)} 3D view(s))")
+    else:
+        LOG.warn("no 3D viewport found to configure (headless run, or the .blend was opened "
+                 "afterwards) — if the scene looks flat grey, set the viewport to Material "
+                 "Preview or Rendered: Solid shading ignores materials entirely")
 
 
 def _pin_view_transform():
-    """Force the Standard view transform, the one the ground gain is calibrated against.
+    """Force the Standard view transform.
 
-    `_GROUND_GAIN` (8.0) and `_GROUND_SATURATION` (2.0) were tuned by A/B renders against
-    in-game screenshots, and `tools/ab_render.py` pins "Standard" — so that is the transform
-    they mean. The importer never pinned it, leaving the interactive scene on whatever the
-    user's Blender defaults to, which since 4.0 is **AgX**. AgX rolls bright colour off toward
-    a desaturated warm neutral, and an 8x gain lands the ground squarely in that rolloff: the
-    grass ground (authored sRGB (67,74,53), hue 80 deg) rendered as desaturated brown — hue
-    41.6 deg measured, against 63.9 deg in-game — with the tonal compression reading as
-    "flipped lights and darks". The pixels and the blend were correct the whole time; only the
-    display transform was wrong. Standard is also the honest choice here: these are ripped
-    albedo textures, not scene-referred HDR.
+    Blender defaults to AgX, a filmic transform that rolls colour off toward a desaturated warm
+    neutral. These are ripped albedo textures, not scene-referred HDR, so Standard — which
+    displays the values as they are — is the honest choice for a 1:1 import.
     """
     scene = bpy.context.scene
     try:
@@ -4552,6 +4877,7 @@ def main():
     assets = None
     everything = None
     clip_floor = None
+    do_colour = False
 
     i = 0
     while i < len(argv):
@@ -4575,6 +4901,9 @@ def main():
             i += 1
         elif arg == "--terrain":
             do_terrain = True
+            i += 1
+        elif arg == "--colour" or arg == "--color":
+            do_colour = True
             i += 1
         elif arg == "--clip-floor":
             do_terrain = True
@@ -4724,10 +5053,13 @@ def main():
     if not keep:
         clear_scene()
 
-    # Unconditionally, including under --keep: the ground gain is meaningless under any other
-    # view transform, and --keep is exactly the path where a stale AgX scene would survive.
+    # Unconditionally, including under --keep, and BEFORE `--colour` gets its say: --keep is
+    # exactly the path where a graded scene from a previous run would otherwise survive and make
+    # the next import look like it changed something it did not.
     _pin_view_transform()
-    _setup_lighting()
+    _setup_lighting(bundle_dir)
+    if do_colour:
+        _apply_grading(bundle_dir)
 
     # Sources live in their own collection, excluded from the view layer, so the templates do
     # not render on top of the instances placed from them.
@@ -4946,6 +5278,14 @@ def main():
     # loop, across the whole pipeline) is the only timing this line carries, exactly as
     # before _Log.
     LOG.done(f"placed {placed} instance(s) from {len(prefabs)} prefab(s) in {elapsed:.1f} s")
+
+    # After every glTF import, because that importer loads its own textures and leaves them
+    # premultiplying colour by alpha. See `_unpremultiply` — this is worth several stops.
+    repacked = _unpremultiply_all()
+    if repacked:
+        LOG.step(f"{repacked} texture(s) set to channel-packed alpha so their colour is not "
+                 f"multiplied by packed alpha data")
+
     if do_skirts:
         LOG.step(f"placed {skirts_placed} foundation skirt(s) (__base, as-authored 1 m bands — "
                  f"the terrain drop is the consumer rule, contract §4.1)")

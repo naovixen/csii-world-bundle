@@ -164,120 +164,199 @@ baseline.
 
 The rip that validated Phase 3 also surfaced two things no offline check could have caught.
 
-### SPLAT-1 — the splat compositing rule is wrong, and it is why painted ground reads green (consumer-side, HIGH)
+### SPLAT — the terrain splat channel map (producer + consumer, CRITICAL, RESOLVED)
 
-**Symptom** (user, in Blender): terrain painted a yellow sand colour near the map edges renders
-as a lighter green.
+Two real defects, found 2026-08-10 and fixed at both ends. Everything else investigated alongside
+them (view transform, light rig, presentation gain) turned out to be presentation tuning and has
+been **removed** rather than kept — see the closing note.
 
-**The data is not lost.** The producer ships the paint correctly: `extra1` is non-zero on 15.07%
-of the splatmap and `extra2` on 12.76%, both at full strength, and those masks match
-`user_splatmap.png`'s two channels texel-for-texel. All five ground textures ship
-(`grass`/`dirt`/`rock`/`extra1`/`extra2`, plus normals).
+**1. `R` and `G` were swapped.** The bundle called the dirt channel "grass", so composited in
+order dirt blanketed the landmass and grass was painted onto the lakebed: the terrain rendered
+brown. `R` had been called grass because it "falls monotonically with slope" — but rock is `R`'s
+own residual, so **both** soil weights fall with slope together and that observation never
+distinguished them. `G` was then assigned *by elimination*, the one inference never measured, and
+it was the wrong one. Settled on where a ground can physically exist:
 
-**The consumer rule erases it.** Applying the documented rule (§8: composite base → G → R → B → A,
-each at `opacity = saturate(weight · splatMultiplier)^splatPower`, published as 2.0 / 1.0) to the
-shipped raster gives:
+| | flat land 0–5° | 45–90° cliff | under ≥1 m water |
+|---|---|---|---|
+| `R` | 251.6 | 9.4 | **249.9** (rises with depth) |
+| `G` | 201.7 | 0.5 | **0.0** |
 
-| visible ground | share of map |
-|---|---|
-| grass | **92.31%** |
-| extra2 | 4.07% |
-| rock | 2.82% |
-| extra1 (the painted sand) | **0.81%** |
-| dirt | **0.00% — never visible anywhere** |
+`G` is identically zero on every lakebed and cliff — a vegetation mask. `R` blankets the seabed —
+sediment. So **`R` = dirt, `G` = grass**, rock the residual of `R` alone.
 
-The mechanism is arithmetic: `splatMultiplier = 2.0` makes any channel ≥ 128/255 fully opaque,
-and the grass channel is ≥ 128 on **96.99%** of texels (≥ 240 on 88.53%). Since grass composites
-*after* dirt, dirt can never show; the extras, mostly below 30, paint over grass at ~16% opacity
-and vanish into it.
+**2. `B` and `A` are bit-packed, and two of four painted grounds were never shipped.** They are
+not two extra weights but **four**, as 4-bit nibbles, two per channel — how the game fits four
+paintable extras into an `R8G8_UNorm` user splatmap:
 
-**Why the current reading of R must be wrong.** The grass channel averages 243.6/255 across the
-whole map and sits at **249.6 below the waterline**, where there is certainly no grass. A channel
-that is near-saturated underwater is not a grass *opacity*. Its own recorded provenance — "falls
-monotonically with slope while every other channel is 0 on unpainted ground" — fits a
-**grass-versus-rock blend factor** (`ground = lerp(rock, grass, R)`, rock being `1 − R` rather
-than a residual of all four), which would leave dirt and the paint channels free to composite on
-top. That is a hypothesis, not a verdict: `G` was never measured directly either (§8's own
-provenance says "by elimination"), so the whole channel semantics need re-deriving against
-in-game screenshots before any rule is written into the consumer guide.
+| splat | nibble | extra | paint tool (game locale) |
+|---|---|---|---|
+| B | low / high | extra1 / extra2 | 01 Dry / 02 Lush |
+| A | low / **high** | extra3 / **extra4** | 03 Dirt / **04 Sand** |
 
-This supersedes nothing in §33 — it *reopens* it. §33's rule was fitted from measurement and is
-now falsified by a case it did not cover.
+`CountPaintableExtras` had read the target's *component count*, got 2, and concluded extra3/extra4
+"can carry no weight anywhere" — so the producer shipped **no texture for either** and the contract
+declared them unrepresentable. A texture format cannot reveal a packing convention. Ground painted
+**Sand** was read as an extra2 opacity and drawn with the forest-floor texture.
 
-**RESOLVED the same day.** The hypothesis held: `R` falls monotonically with slope on unpainted
-ground (254/255 at 0–5°, 5.9/255 at 40–90°), which is blend-weight behaviour, not opacity. The
-rule that fits every measurement splits the channels by kind — `R`/`G` normalised with rock as
-the residual of *those two alone*, then `B`/`A` composited over as opacities:
+Confirmed four ways: `TerrainMaterialSystem.PackToBAChannels` writes four brush components at bit
+offsets 0/4/8/12 across exactly these two bytes; `Locale.cok` names the tools Dry / Lush / Dirt /
+**Sand**; each nibble is a separate coherent brush-shaped region with extra4's tracing the
+**shorelines**; and a probe of a painted beach reads `A = 240 = 0xF0` — extra4 at 15/15. The
+re-rip then named the asset outright: **`extra4 <- Sand_temperate_01_Basecolor`**.
 
-| model | painted `extra1` texels | whole map |
-|---|---|---|
-| all-four-as-opacities (shipped until now) | 0.81% paint | 92.31% grass, 0% dirt |
-| all-four-as-partition | 47.7% paint vs 32.1% grass | 77.3% grass |
-| **split by kind (adopted)** | **86% paint** (extra2 texels: 100%) | 71.8% grass, 14.1% dirt, 6.7%+5.3% paint, 2.1% rock |
+**Blending.** Composite over `base` in order — `R` (dirt), `G` (grass), then the four unpacked
+extras. Soil channels at `saturate(w / 255 · splatMultiplier)^splatPower`, each extra at
+`saturate(nibble / 15 · splatMultiplier)^splatPower`. **Not a partition** — `R` and `G` are both
+near-saturated on flat land and sum past 255, so normalising turns every meadow half brown. Sample
+the packed channels **point/nearest**; interpolating a packed byte is meaningless, and the game's
+own user splatmap is `filterMode = FilterMode.Point`.
 
-Implemented in `tools/blender_import_bundle.py` (`_splat_ground_material`) and rewritten into
-contract §8. The node graph was re-simulated offline and reproduces the table exactly.
+**Also added:** `terrain/surfaces/sources.json` records, per ground, the source `texture.name` and
+the shader global it was bound as. Without it a bundle could say "this is extra2" but never
+"extra2 was captured from *this asset*", so a ground that *renders* wrong could not be told from
+one *captured* wrong. It settled the sand question on its first rip.
 
-### SPLAT-2 — the brown terrain was a view transform, not the blend (consumer-side, HIGH)
+**Presentation is deliberately not calibrated.** Several attempts were made to match the game's
+on-screen colour with a ground gain, a saturation multiplier, a warm light rig and a specular
+override. All are **removed**. Each was fitted to a reference that turned out to be the wrong
+patch of ground — the worst of them tuned a rig to make *rock* match an in-game *beach* — and a
+curve fit cannot tell you that you are fitting the wrong thing. The importer reproduces the
+shipped albedo 1:1 under a plain white sun; `--colour` replays the game's own grading, and
+`tools/probe_point.py` exists so that any future comparison names the coordinate at both ends.
 
-The visual check (user screenshots, in-game vs Blender, same orientation) showed the whole
-landmass rendering **brown** in Blender against **green with sand beaches** in-game. Measured
-over the land pixels of each: in-game hue **63.9°** sat 0.38 val 0.40; Blender hue **41.6°** sat
-0.23 val 0.31.
+### SPLAT-3 — the "4x saturation gap" was a measurement artifact (consumer, RESOLVED)
 
-That is not the blend rule. Composing the shipped splatmap against the shipped ground textures
-offline predicts hue **75.6°** under the old rule and **70.9°** under the new one — both green,
-both near the in-game 63.9°. Neither predicts 41.6°.
+Recorded at length because the *shape* of the error is the lesson. A painted-sand texel was
+measured at saturation 0.101 against an in-game eyedropper of 0.442, and the gap was attributed to
+the game tonemapping with ACES "which Blender has no view transform for". Both halves were wrong.
 
-The cause is downstream of every pixel this project ships: `_GROUND_GAIN` (8.0) and
-`_GROUND_SATURATION` (2.0) were calibrated by A/B renders that pin `view_transform = "Standard"`
-(`tools/ab_render.py:33`), but the importer never pinned it, so an interactive session inherits
-Blender's default — **AgX** since 4.0. AgX rolls bright colour off toward a desaturated warm
-neutral, and an 8× gain lands the ground squarely in that rolloff: authored grass (sRGB
-(67,74,53), hue 80°) comes out desaturated brown, and the tonal compression reads as the
-"flipped lights and darks" the report described. Fixed by pinning Standard in the importer
-(`_pin_view_transform`, called unconditionally including under `--keep`).
+* **Blender 5.2 ships ACES.** Its view transforms are `Standard, ACES 1.3, ACES 2.0, Khronos PBR
+  Neutral, AgX, Filmic, Filmic Log, False Color, Raw`. The premise that an OCIO config had to be
+  installed to test the leading hypothesis was false; it is one assignment.
+* **The 0.101 was not the same quantity as the 0.442.** It came from a 64x64 render of an 8 m
+  patch, *averaged* — and averaging chroma across texels always desaturates — while the reference
+  is a single eyedropper pixel. It was also measured through a chain that applied roughly half the
+  grading: saturation on the albedo (before the contrast rather than after), the contrast in the
+  *compositor* as a linear node (so invisible in the viewport, where the comparison was made), the
+  shadows/midtones/highlights not at all, and then AgX, which desaturates further.
 
-**Lesson for the consumer guide:** the bundle ships *albedo*, not scene-referred HDR. Any
-consumer applying a presentation gain must state the display transform it was calibrated
-against, or the same trap fires in their engine.
+Applied whole, in order, on final radiance, with an ACES view transform, the shipped albedo lands
+**within 0.5% on red and green** and the entire residual is one channel:
 
-**SPLAT-2 was only half the story.** Pinning Standard did not fix it — the user re-imported and
-reported brown land still, with the painted sand now reading greenish. Driving the material
-headlessly settled it (Blender 5.2, `--background`, emission tapped straight off each node so
-lighting is out of the way):
+| | R | G | B |
+|---|---|---|---|
+| required / delivered, green-normalised | 1.005 | 1.000 | **0.674** |
+| the same with SMH also replayed | 0.999 | 1.000 | **0.727** |
+| with no grading applied at all | 1.174 | 1.000 | 0.514 |
 
-| tap | hue |
-|---|---|
-| grass texture | 80.8° |
-| after the natural partition | 79.4° |
-| after dirt / paint | 58.9° → 61.1° |
-| **material output (what Base Color receives)** | **62.0°** |
-| in-game reference | 63.9° |
+So `grading.json` does the great majority of the work, the unreplayed SMH accounts for about a
+sixth of what is left, and what remains is a ~27% blue excess — a *light colour*, not a saturation
+deficit. Two candidate explanations remain and are distinguished by measurement, not argument:
+the game's sun/sky is warmer than the white rig the importer ships (the bundle does not currently
+capture it), or HDRP's ACES differs from Blender's ACES 1.3 by more than the percent-level.
 
-The material is right, and always was. What was missing is that **`clear_scene()` deletes
-Blender's default light and the importer never replaced it** — an imported scene had *no lights
-and no world at all*. It only looked lit because the interactive viewport falls back to its own
-studio HDRI, which is warm, and that tint is the brown. `tools/ab_render.py` — where
-`_GROUND_GAIN` was actually calibrated — builds its own sun (energy 4.0) and pins Standard, so
-the A/B gate never saw the problem the user was looking at.
+Ruled out cheaply along the way, both by measurement: the sand texture cannot supply a saturated
+eyedropper pixel (per-texel saturation p99 = 0.225, and **0.00%** of its texels reach 0.442), and
+the reference coordinate is plain terrain with extra4 at opacity 1.000 — not an area surface.
 
-Fixed by giving the imported scene the same rig (`_setup_lighting`): one white sun at the
-ab_render angle, a neutral grey world, and viewports switched to Material Preview with
-`use_scene_lights` / `use_scene_world` so they stop using the studio HDRI. Verified by a lit
-render of the real splatmap under that rig: **hue 60.3°, sat 0.29** against the in-game 63.9° /
-0.38 — the residual is brightness, not colour, and the hue error is now 3.6° instead of 22°.
+Where it now lives: `tools/colour_model.py` holds the derivation once, and both the importer and
+the probe import it. `colour_model.py --check` prints the residual above against the recorded
+in-game reference, so the number is reproducible rather than remembered.
 
-**Two methodology lessons, both worth carrying into the consumer guide.** First, a presentation
-gain is meaningless without stating the *whole* rig it was calibrated against — display
-transform **and** lighting; the A/B harness had both and the interactive path had neither.
-Second, this took three wrong diagnoses (blend rule, then view transform alone) because each was
-argued from static analysis; the question only closed once the shader was actually executed and
-measured. Prefer driving the real pipeline over reasoning about it.
+### SPLAT-4 — the residual is the LIGHT, measured against three in-game surfaces (open)
 
-**SPLAT-1 itself remains unproven against the game** — the brown masked it throughout. The next
-import tests both: the landmass should read green *and* painted areas should read as their
-painted ground.
+Three in-game screenshots (2026-08-10), each a full-frame crop of one surface, compared against
+the model per texel with exposure freed per shot — auto-exposure differs between shots and the
+bundle cannot supply it, so hue and saturation are the quantities under test:
+
+| shot | rendering | in-game | model | residual R, G, B |
+|---|---|---|---|---|
+| SAND | extra4 at opacity 1.000 | `#ac995e` | `#ac986d` | 0.982, 1.000, **0.722** |
+| GRASS | grass at opacity 1.000 | `#515417` | `#4e551b` | 1.117, 1.000, **0.765** |
+| NEUTRAL | area `Pavement_Surface_02` | `#b5a882` | `#b0a992` | 1.060, 1.000, **0.783** |
+
+(with SMH replayed; without it the blue column reads 0.615 / 0.635 / 0.681.)
+
+**The neutral surface settles the question.** `Pavement_Surface_02`'s albedo is `#5a5a59` — R 90,
+G 90, B 89, neutral to within one code value — and it renders in-game at `#b5a882`, saturation
+0.278 at hue 45. No property of a neutral albedo can make it warm beige. The chroma is added by
+the illumination or by a late display step, which is what the blue residual predicted from the
+sand point alone.
+
+**One light colour accounts for most of it.** Fitting a single per-channel gain BEFORE the tonemap
+across all three surfaces at once (the residuals above are read *after* ACES, which is non-linear,
+so a constant input gain is not a constant output ratio) removes **88%** of the chromatic error;
+a white light is the baseline. What survives is ±14% and **surface-dependent** — it changes sign
+between grass and the other two — so it is not a light. That part is consistent with HDRP's ACES
+differing from Blender's ACES 1.3, which is where blue is known to vary between implementations.
+
+**Do not adopt the fitted gain.** It is three measurements with two free parameters, which is
+exactly the shape of the withdrawn 3.1x saturation. Its value is as a *prediction*: capture the
+game's actual sun and sky colour in `GradingWriter` and see whether it lands there. Agreement
+confirms it; disagreement means the residual was never the light.
+
+**2026-08-11, the capture rip: the prediction was WRONG and the light hypothesis is dead.**
+`lighting.sun.color` is `(1, 1, 1)` with `useColorTemperature` **false**, sky zenith and horizon
+tints `(1, 1, 1)`, indirect multipliers 1.0, moon off, sun at 66° elevation at 12:01. The
+illumination is white. The fitted gain had predicted R x1.05, B x0.87. Vignette is 0.25 but pure
+black, a linear achromatic multiply, so it cannot shift chroma either. Every view transform
+Blender ships was then run against all three surfaces: ACES 1.3 is already the best by a wide
+margin, so the tonemapper *choice* is not it either.
+
+**What the same measurements did settle: the working space.** Grading in ACEScg rather than linear
+Rec.709 — HDRP's documented HDR path — cut the residual error from 0.29 to 0.18 and took grass
+from 23% out on blue to within 5%. `colour_model` had been grading in Rec.709 on the strength of a
+check that measured the difference at "under 2%"; that check compared pre-tonemap values on one
+surface, and was wrong. Saturation now lands within 0.06 on all three surfaces. What remains is a
+**hue** error concentrated on the two warm surfaces (+6.9 deg sand, +6.2 deg pavement) while grass
+is nearly exact (+1.2 deg) — a different shape from the flat blue deficit, and still open.
+
+**SMH should be replayed, and can be.** `ColorUtils.PrepareShadowsMidtonesHighlights` is managed
+code: it puts the authored values through `Mathf.GammaToLinearSpace` first, so this bundle's
+shadows `(1, 0.979, 0.9239)` are really `(1, 0.953, 0.836)` — nearly twice the blue correction a
+naive reading gives. Replaying it closes about a third of the blue gap. Only the luminance blend
+across the three ranges is HLSL, and it is a weighted per-channel gain, so the honest way to carry
+it is a shaper plus a 3D LUT in the generated OCIO config rather than a matrix.
+
+### SPLAT-5 — the terrain was drawn at a tenth of its albedo (consumer, CRITICAL, FIXED)
+
+Found 2026-08-11 while chasing "the viewport is very dark and none of the colours come through",
+and it is the largest fidelity defect this importer has had. Blender premultiplies an Image
+Texture node's **`Color` output by its alpha** when the image loads with the default `STRAIGHT`
+alpha mode. CS2 packs *data* into the alpha channel of its ground base-colour maps — it is not
+opacity — and that data is mostly near zero:
+
+| ground | extra1 | extra2 | extra3 | extra4 | grass | dirt | rock |
+|---|---|---|---|---|---|---|---|
+| mean alpha | 0.037 | 0.064 | 0.036 | 0.104 | 0.036 | 0.133 | 0.096 |
+
+**Not one texel** in any of the seven is fully opaque. Measured at the sand reference point, the
+terrain rendered `#24211d` against a shipped albedo of `#777066` — an **11x** deficit, with the
+hue intact, which is why it read as "dark" rather than "wrong colour".
+
+Isolated by elimination, each step ruling out the next: face normals all point up; disabling
+shadows changes nothing; hiding the water changes nothing; replacing the material with a flat
+Principled of the same albedo renders it correctly; routing the splat blend straight to an
+Emission reproduces the deficit; rendering the `extra4` image node alone gives linear
+(0.0191, 0.0168, 0.0138) against a file mean of (0.1848, 0.1629, 0.1334) — a uniform **0.1034x**,
+which is exactly that texture's mean alpha.
+
+Fixed by loading with `alpha_mode = "CHANNEL_PACKED"`, which leaves `Color` unmodified and keeps
+`Alpha` available for materials that genuinely cut out. **Scope: only the textures the importer
+loads itself** — the terrain grounds, the splatmap, the area surfaces. Blender's glTF importer
+already channel-packs its own, so object, network and prop textures were never affected; that was
+checked rather than assumed.
+
+After the fix the sand point renders `#736c61` against `#777066` (within 4/255), and across the
+region **0.0%** of pixels fall below display value 0.10, against 44.6% before.
+
+**This is also the answer to two things that were previously misdiagnosed.** `_GROUND_BRIGHTNESS
+= 3.09` was a 3x gain compensating for a 10x darkening — which is why it never quite worked, and
+why deleting it appeared to make things worse. And the Phase 1 acceptance test passed against a
+*synthetic control plane* carrying a hardcoded albedo, which dodged the texture path entirely; a
+test that never touches the code under test cannot fail. The acceptance now runs on real terrain
+with the real material: hue +0.4, saturation +0.018 against the model.
 
 ### WATER-2 — `rasters.water.seaLevel` is not the playable water datum (producer, LOW)
 
