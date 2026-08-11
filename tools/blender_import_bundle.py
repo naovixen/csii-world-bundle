@@ -3004,10 +3004,31 @@ def _snap_hole_boundary(verts, vid, used_grid, cut_face_grid, refs_w, strip_geo,
     the game's surviving pixels end at it. Verts cut only by `area` records (ref −1) stay —
     an authored clip surface has no curves to project onto.
 
+    Where several strips overlap — every junction, every pair of close-run tracks — a boundary
+    vertex's neighbourhood names SEVERAL strips, and which one it is projected onto decides
+    where it lands. Taking the first non-negative reference (the rule this replaced) picked
+    arbitrarily among them: measured on the 2026-08-11 rip, 46% of boundary vertices at a
+    double-track run and 50% at a road junction are claimed by more than one strip, and the
+    arbitrary pick lands a median 2.03 m from where the nearest strip would put them (p90
+    4.43 m, max 8.00 m; 23% displaced more than a whole cell at the junction). A vertex dragged
+    onto some other road's prism wall tears the terrain open — the residual junction gaps that
+    survived the face-centre cut. So EVERY candidate is evaluated and the nearest target wins:
+    the same "nearest prism wall" rule this already used within a strip, extended across them.
+
+    A vertex standing OVER a strip is not moved laterally at all, only clamped in height, so it
+    scores a zero-distance target and therefore wins against any wall it merely sits beside.
+    That falls out of ranking by displacement and is the behaviour wanted: a vertex over a
+    prism belongs to that prism.
+
     Everything is in the window lattice: `used_grid`/`cut_face_grid` are (lat_h, lat_w),
     `refs_w` the windowed reference raster, `verts` the built vertex array `vid` indexes.
     Returns `(moved, unreferenced)` — vertices snapped, and boundary vertices that found no
     strip reference in their 3x3 neighbourhood and were therefore left where they were.
+
+    NOTE on that second number: it counts vertices with NO candidate, and it is 0 on a real
+    city. It says nothing about whether the RIGHT strip was chosen among several, which is what
+    the paragraph above is about — reading a zero there as "the snap is fine" is the mistake
+    this rewrite corrects.
     """
     lat_h, lat_w = used_grid.shape
     cut_corner = numpy.zeros((lat_h, lat_w), dtype=bool)
@@ -3018,24 +3039,33 @@ def _snap_hole_boundary(verts, vid, used_grid, cut_face_grid, refs_w, strip_geo,
     if not len(br):
         return 0, 0
 
-    # Each boundary vertex takes the reference of any cut cell in its 3×3 neighbourhood.
-    ref = numpy.full(len(br), -1, dtype=numpy.int64)
+    # Every distinct reference in each boundary vertex's 3×3 neighbourhood becomes a candidate.
+    # One row per (vertex, candidate) pair, so the whole set is scored in one pass and the
+    # per-strip loop below still runs once per strip rather than once per vertex.
+    neighbourhood = []
     for dr in (-1, 0, 1):
         for dc in (-1, 0, 1):
             rr = numpy.clip(br + dr, 0, lat_h - 1)
             cc = numpy.clip(bc + dc, 0, lat_w - 1)
-            cand = refs_w[rr, cc]
-            ref = numpy.where((ref < 0) & (cand >= 0), cand.astype(numpy.int64), ref)
-    keep = ref >= 0
-    unreferenced = int((~keep).sum())
-    if not keep.any():
+            neighbourhood.append(refs_w[rr, cc].astype(numpy.int64))
+    candidates = numpy.stack(neighbourhood, axis=1)                  # (N, 9)
+    live = candidates >= 0
+    unreferenced = int((~live.any(axis=1)).sum())
+    if not live.any():
         return 0, unreferenced
-    br, bc, ref = br[keep], bc[keep], ref[keep]
 
-    x = origin_x + (col0 + bc).astype(numpy.float64) * cell
-    z = origin_z - (row0 + br).astype(numpy.float64) * cell
+    vertex_of = numpy.repeat(numpy.arange(len(br), dtype=numpy.int64), 9)[live.reshape(-1)]
+    ref = candidates.reshape(-1)[live.reshape(-1)]
+
+    vertex_x = origin_x + (col0 + bc).astype(numpy.float64) * cell
+    vertex_z = origin_z - (row0 + br).astype(numpy.float64) * cell
     ids = vid[br * lat_w + bc]
-    y = verts[ids, 2].copy()
+    vertex_y = verts[ids, 2].copy()
+
+    # Expanded to one entry per (vertex, candidate); collapsed back after scoring.
+    x = vertex_x[vertex_of]
+    z = vertex_z[vertex_of]
+    y = vertex_y[vertex_of]
 
     station_mask = (1 << _CLIP_REF_STATION_BITS) - 1
     strip_of = (ref >> _CLIP_REF_STATION_BITS).astype(numpy.int64)
@@ -3052,7 +3082,17 @@ def _snap_hole_boundary(verts, vid, used_grid, cut_face_grid, refs_w, strip_geo,
         return ((g[r0g, c0] * (1 - fu) + g[r0g, c0 + 1] * fu) * (1 - fv)
                 + (g[r0g + 1, c0] * (1 - fu) + g[r0g + 1, c0 + 1] * fu) * fv)
 
-    moved = 0
+    # Scored in place, one entry per (vertex, candidate strip). `wall_distance` is the score:
+    # how far this vertex is from that strip's nearer side polyline — the prism wall — which is
+    # what "the nearest prism" means. Ranking by how far the vertex would MOVE instead is a
+    # trap: a vertex standing over a strip is only clamped in height, so it scores a zero move
+    # and wins every contest, which suppresses the lateral snap that closes the sawtooth and
+    # leaves the raw cell staircase behind (seen, measured, rejected).
+    target_x = x.copy()
+    target_z = z.copy()
+    target_y = y.copy()
+    wall_distance = numpy.full(len(x), numpy.inf)
+
     order = numpy.argsort(strip_of, kind="stable")
     bounds = numpy.searchsorted(strip_of[order], numpy.arange(len(strip_geo) + 1))
     for s in numpy.unique(strip_of):
@@ -3101,13 +3141,24 @@ def _snap_hole_boundary(verts, vid, used_grid, cut_face_grid, refs_w, strip_geo,
             hi = (lane_y + top)[outside] if numpy.isfinite(top) else numpy.full_like(gy, numpy.inf)
             new_y[outside] = numpy.clip(gy, lo, hi)
 
-        changed = (new_x != px) | (new_z != pz) | (new_y != py)
-        idx = ids[sel][changed]
-        verts[idx, 0] = new_x[changed]
-        verts[idx, 1] = new_z[changed]
-        verts[idx, 2] = new_y[changed]
-        moved += int(changed.sum())
-    return moved, unreferenced
+        target_x[sel] = new_x
+        target_z[sel] = new_z
+        target_y[sel] = new_y
+        wall_distance[sel] = numpy.minimum(ld, rd)
+
+    # One winner per vertex: the strip whose wall it stands nearest to.
+    pick = numpy.lexsort((wall_distance, vertex_of))
+    winner = pick[numpy.concatenate(([True], vertex_of[pick][1:] != vertex_of[pick][:-1]))]
+
+    chosen_vertex = vertex_of[winner]
+    new_x, new_z, new_y = target_x[winner], target_z[winner], target_y[winner]
+    px, pz, py = vertex_x[chosen_vertex], vertex_z[chosen_vertex], vertex_y[chosen_vertex]
+    changed = (new_x != px) | (new_z != pz) | (new_y != py)
+    idx = ids[chosen_vertex][changed]
+    verts[idx, 0] = new_x[changed]
+    verts[idx, 1] = new_z[changed]
+    verts[idx, 2] = new_y[changed]
+    return int(changed.sum()), unreferenced
 
 
 def _splat_mapping(block):
