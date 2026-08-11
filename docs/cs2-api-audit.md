@@ -2193,3 +2193,25 @@ not at the curve set.
 
 **Needs.** A decompile of the piece mapping the vertex shader applies, against our port, and then
 a re-rip to validate — the producer half cannot be checked against the bundle on disk.
+
+**Two-rip confirmation (rips 2026-08-11 17:23 and 20:23, producer identical between them).** Not
+residency. The census reproduces to the digit — 2 of 193 node strips unpaved in the window, both
+`Alley Oneway`, 55.6% each — and so does the rail profile of the failing frame
+(0.09 / 2.52 / 2.37 / 2.32 / 2.36 / 2.51 / 2.73 / 3.02 / 3.34 / 3.69 / 0.00 m). Per
+[[rip-residency-is-intermittent]] this is the two-rips test, and it says producer defect.
+
+Refined on the second rip: of 234 node strips with a live frame in the window, every one is
+100.0% paved except those two. Frame stretch alone is NOT the trigger — an `Alley Oneway` half
+frame of 8.52 m (`seg_2302454`) is 100% paved, and the widest frames in the window, four Medium
+Road halves at 11.3-11.8 m, are all 100%. What the two failures share is a nearly COLLAPSED
+sibling: at this node `node.m_Left`'s outer rail is a 0.35 m stub while `node.m_Right` is a full
+flare, so the next thing to check is the piece-to-frame mapping when one half frame of the pair
+is degenerate.
+
+Note for whoever measures next: do not label a strip's role by its index modulo 4. A segment
+emits node strips for BOTH its ends, and a straight-through node emits two rather than four, so
+the modulo silently mislabels every segment after the first such node. Label by geometry — a
+wedge has its two rails sharing a start point, a half frame does not.
+
+**The §41.8 consumer fix is validated on the new rip**: `tools/test_clip_cut.py` is green on all
+six windows, hole 0.0-0.2 m².
