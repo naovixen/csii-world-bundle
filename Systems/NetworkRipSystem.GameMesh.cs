@@ -154,7 +154,7 @@ namespace Carto.Systems
             public float Width, MiddleOffset;
             public float LeftMax = -1f, RightMax = -1f, EdgeMax = -1f;
             public int Placements;
-            public string Sample;                // a segment that used it, to look the node up
+            public readonly SortedSet<string> Samples = new();   // segments that used it
             public readonly SortedSet<string> Pieces = new();
         }
 
@@ -643,11 +643,16 @@ namespace Carto.Systems
                             ? compPrefab.name : $"<composition {composition.Index}>",
                         Width = data.m_Width,
                         MiddleOffset = data.m_MiddleOffset,
-                        Sample = _sectionSampleSegment
+
                     };
                 }
                 frame.Placements++;
                 if (frame.Pieces.Count < 24) frame.Pieces.Add(sectionName);
+                // Several samples, not the first: a composition is shared across many segments,
+                // and recording only the first meant the row could never be matched to the
+                // segment a defect was reported on.
+                if ((frame.Samples.Count < 4) && (_sectionSampleSegment != null))
+                    frame.Samples.Add(_sectionSampleSegment);
 
                 ConformPieceProbe probe = null;
                 if (lowerBottom || raiseTop || smoothTop)

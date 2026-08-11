@@ -2297,3 +2297,42 @@ Corrected: only pieces with a real width contribute to a half's reach, the count
 against the number of node compositions seen, and each row names a segment that used it — node
 compositions are runtime entities, not managed prefabs, so `TryGetPrefab` could only print
 `<composition 1217532>`. The signature to look for is a half reaching **≈0.475**.
+
+### 42.5 PROVEN both directions: the tram deck is the dropped piece (22:22 networks-only rip)
+
+The 22:22 rip skipped Objects and Terrain (stage toggles; ~5 min instead of 28) and its dropped
+set came out DIFFERENT from the 21:34 one — `Tram Track Piece 3` and `Tram Shoulder Piece 1` are
+absent from it. The networks it rewrote:
+
+| | 21:34 rip | 22:22 rip |
+|---|---|---|
+| `Tram Track Piece 3` in `DROPPED:` | yes | **no** |
+| elevated tram primitives | `RoadParts` x25 | **`Road`+`RoadParts` x25** |
+| elevated tram up-facing | 13% of `length × width` | **102%** |
+| ground tram up-facing | 3% | **67%** |
+
+Cause and cure in one rip pair, on the same save with the same producer: when the piece's
+buffers are readable the deck is there, when they are not it is not. §42 is closed as diagnosed.
+The remaining work is the fix — make residency a precondition rather than a coin toss — and it is
+now a well-defined change rather than a hypothesis.
+
+Note the dropped set is not stable in either direction: `Alley Intersection Piece 0 - Flat` and
+`Alley Shoulder To Sidewalk 1 - Flat` were dropped at 21:34 and not at 22:22, and 2,419 -> 2,025
+placements overall. Anything measured from one rip's `networks/` is a statement about that
+session's residency.
+
+### 41.9 (cont.) NOT the same cause — the flare gap is deterministic
+
+Re-measured on the 22:22 networks, whose dropped set no longer contains either alley piece, the
+failing frame is **byte-identical**:
+
+    right rail  0.09  2.52  2.37  2.32  2.36  2.51  2.73  3.02  3.34  3.69  0.00  m uncovered
+
+Three rips, two different dropped sets, one unchanged profile. So the junction flare is a stable
+producer defect and shares nothing with §42 but the file it lives in.
+
+The probe still has not named its composition: the row list was capped at 24 and sorted by worst
+reach, which filled it with pathway and quay compositions at 0.000-0.250 and never reached the
+0.475 row. Raised to 150 rows, and each row now carries up to 4 sample segments instead of the
+first one only — a composition is shared across many segments, so recording just the first meant
+a row could never be matched to the segment the defect was reported on.

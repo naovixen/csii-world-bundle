@@ -1032,12 +1032,12 @@ namespace Carto.Systems
                     int shown = 0;
                     foreach (FrameProbe f in short_)
                     {
-                        if (shown++ >= 24) { report.AppendLine($"  … and {short_.Count - 24} more"); break; }
+                        if (shown++ >= 150) { report.AppendLine($"  … and {short_.Count - 150} more"); break; }
                         report.AppendLine($"  {f.Composition}: width {f.Width:F1}, middleOffset {f.MiddleOffset:F2}, "
                                         + $"{f.Placements} placement(s); left reaches "
                                         + (f.LeftMax < 0f ? "n/a" : $"{f.LeftMax:F3}") + ", right reaches "
                                         + (f.RightMax < 0f ? "n/a" : $"{f.RightMax:F3}")
-                                        + $"; e.g. {f.Sample ?? "?"}; pieces: {string.Join(", ", f.Pieces)}");
+                                        + $"; e.g. {string.Join("/", f.Samples)}; pieces: {string.Join(", ", f.Pieces)}");
                     }
                 }
             }
