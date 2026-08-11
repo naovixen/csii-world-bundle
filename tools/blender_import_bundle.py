@@ -2701,43 +2701,17 @@ def _bezier_points(control, t):
     return (u * u * u) * a + (3.0 * u * u * t) * b + (3.0 * u * t * t) * c + (t * t * t) * d
 
 
-def _fill_clip_quad(mask, terrain_y, width, height, quad, lane_y, bottom, top,
-                    refs=None, ref_value=-1, offset=0.5):
-    """Mark the samples one strip quad clips — even-odd scanline over sample points.
+# Quads spanning fewer rows than this take the scalar scanline: below it the whole-array
+# path's fixed cost (arange / sort / nonzero / clip) outweighs the per-row arithmetic it saves.
+# Measured on the full city, where 471k quad fills split roughly two to one short-to-tall.
+_CLIP_SCANLINE_VECTOR_ROWS = 8
 
-    `quad` is four (x, y) points in cell space, where cell (row, col) spans [col, col+1) ×
-    [row, row+1). `offset` says where in that space entry (row, col) of `mask` is sampled:
-    `(col + offset, row + offset)`, on BOTH axes. A sample is clipped only where the terrain
-    stands *strictly* inside (lane + bottom, lane + top); both ends open, as the producer has
-    them.
 
-    Two rasters are built from this one routine and they differ only in `offset` (see
-    `_clip_grid`):
-
-      * `offset = 0.5` — the CELL-CENTRE raster, entry (row, col) = cell (row, col). This is
-        the true clipped set: contract §3 puts a lattice vertex at a cell centre, so it is
-        also the sample the refine corridor and the hole-boundary `refs` are keyed on.
-      * `offset = 1.0` — the FACE-CENTRE raster, entry (r, c) = the quad face spanning cells
-        (r..r+1, c..c+1), whose centre falls on the shared corner of those four cells, an
-        INTEGER coordinate in this space. Deletion reads this one.
-
-    Deleting by the face's own centre is what keeps the hole unbiased. OR-ing a face's four
-    corner cells instead — the rule this replaced — dilates the cut a full cell in every
-    direction and never shrinks it, so a face is deleted whenever a cut passes anywhere near
-    it. Measured over the densest 350 m road window of the shipped bundle, that over-deleted
-    by 31% (45.7% of faces against a true clipped area of 34.9%) and erased the whole
-    interstitial strip wherever two roads ran within ~7 m — the visible terrain gaps beside
-    junction arms and parallel carriageways. Sampling the face centre lands on 34.2%.
-
-    When `refs` is given, every sample this quad cuts also records `ref_value` — the packed
-    (strip, station) reference the hole-boundary snap reads back.
-    """
-    ys = [p[1] for p in quad]
-    # Rows whose sample line `row + offset` falls inside the quad's y-range. Exact, so the
-    # loop never spins on a row whose scanline cannot cross an edge.
-    row_lo = max(0, int(math.ceil(min(ys) - offset)))
-    row_hi = min(height - 1, int(math.floor(max(ys) - offset)))
-
+def _fill_clip_quad_rows(mask, terrain_y, width, height, quad, lane_y, bottom, top,
+                         refs, ref_value, offset, row_lo, row_hi):
+    """The even-odd scanline, one row at a time — the reference path `_fill_clip_quad` splits
+    from. Kept whole rather than folded into a branch so the two can be fuzzed against each
+    other; see `tools/test_clip_cut.py`."""
     for row in range(row_lo, row_hi + 1):
         y = row + offset
         crossings = []
@@ -2752,15 +2726,91 @@ def _fill_clip_quad(mask, terrain_y, width, height, quad, lane_y, bottom, top,
         crossings.sort()
 
         for pair in range(0, len(crossings) - 1, 2):
-            # Centre-coverage on the column axis: entry k's sample sits at k + offset (same
-            # convention the row sample at `row + offset` above already uses), so the span
-            # [x0, x1] covers exactly the entries with x0 ≤ k + offset ≤ x1. The previous
-            # `round()` implicitly put centres at integers — a systematic half-cell bias on
-            # this one axis that serrated every near-diagonal cut boundary.
             lo = max(0, int(math.ceil(crossings[pair] - offset)))
             hi = min(width - 1, int(math.floor(crossings[pair + 1] - offset)))
             if hi < lo:
                 continue
+            over = terrain_y[row, lo:hi + 1] - lane_y
+            inside = (over > bottom) & (over < top)
+            mask[row, lo:hi + 1] |= inside
+            if refs is not None and ref_value >= 0:
+                span = refs[row, lo:hi + 1]
+                span[inside] = ref_value
+
+
+def _fill_clip_quad(mask, terrain_y, width, height, quad, lane_y, bottom, top,
+                    refs=None, ref_value=-1, offset=0.5):
+    """Mark the samples one strip quad clips — even-odd scanline over sample points.
+
+    `quad` is four (x, y) points in cell space, where cell (row, col) spans [col, col+1) ×
+    [row, row+1). `offset` says where in that space entry (row, col) of `mask` is sampled:
+    `(col + offset, row + offset)`, on BOTH axes. A sample is clipped only where the terrain
+    stands *strictly* inside (lane + bottom, lane + top); both ends open, as the producer has
+    them.
+
+    Two rasters are built from this one routine and they differ only in the frame the caller
+    hands it (see `_clip_grid`):
+
+      * the CELL-CENTRE raster, at `offset = 0.5` in the native cell space, entry (row, col) =
+        cell (row, col). Contract §3 puts a lattice vertex at a cell centre, so this is the
+        sample the refine corridor and the hole-boundary `refs` are keyed on.
+      * the SUB-SAMPLE raster of `_contain_faces`, which passes quads already scaled into a
+        block-local frame of `_CLIP_CONTAIN_SAMPLES` samples per cell per axis. Deletion reads
+        that one, reduced per face.
+
+    When `refs` is given, every sample this quad cuts also records `ref_value` — the packed
+    (strip, station) reference the hole-boundary snap reads back.
+    """
+    ys = [p[1] for p in quad]
+    # Rows whose sample line `row + offset` falls inside the quad's y-range. Exact, so the
+    # loop never spins on a row whose scanline cannot cross an edge.
+    row_lo = max(0, int(math.ceil(min(ys) - offset)))
+    row_hi = min(height - 1, int(math.floor(max(ys) - offset)))
+    if row_hi < row_lo:
+        return
+    if row_hi - row_lo < _CLIP_SCANLINE_VECTOR_ROWS:
+        _fill_clip_quad_rows(mask, terrain_y, width, height, quad, lane_y, bottom, top,
+                             refs, ref_value, offset, row_lo, row_hi)
+        return
+
+    # Edge crossings for EVERY row at once. Four Python comparisons and a `sort()` per row is
+    # cheaper for the short quads that dominate by count, and much dearer for the tall ones, so
+    # the two paths split on row count and `tools/test_clip_cut.py` fuzzes them against each
+    # other. (The exact clip reverted on 2026-08-11 had a fast path that silently disagreed with
+    # its slow one; that is the test this pairing owes.)
+    rows = numpy.arange(row_lo, row_hi + 1, dtype=numpy.int64)
+    y = rows + offset
+    crossings = numpy.full((4, len(rows)), numpy.inf)
+    for e in range(4):
+        px, py = quad[e]
+        qx, qy = quad[(e + 1) & 3]
+        hit = (py <= y) != (qy <= y)
+        if not hit.any():
+            continue
+        # `qy != py` wherever `hit`, so the division is safe on the selected entries alone.
+        yh = y[hit]
+        crossings[e, hit] = px + (yh - py) / (qy - py) * (qx - px)
+
+    ordered = numpy.sort(crossings, axis=0)          # inf pads sort to the end
+    count = numpy.isfinite(ordered).sum(axis=0)
+
+    for pair in (0, 2):                              # a quad crosses in 2 or 4 places
+        live = numpy.nonzero(count >= pair + 2)[0]
+        if not len(live):
+            break
+        # Centre-coverage on the column axis: entry k's sample sits at k + offset (same
+        # convention the row sample at `row + offset` above already uses), so the span
+        # [x0, x1] covers exactly the entries with x0 ≤ k + offset ≤ x1. The previous
+        # `round()` implicitly put centres at integers — a systematic half-cell bias on
+        # this one axis that serrated every near-diagonal cut boundary.
+        # `lo` is clamped up to `width`, not `width - 1`: a span entirely off the right edge
+        # must still fail `hi >= lo` and write nothing, the way `max(0, ...)` / `min(w - 1, ...)`
+        # did when both bounds were scalars.
+        los = numpy.clip(numpy.ceil(ordered[pair, live] - offset), 0, width).astype(int)
+        his = numpy.clip(numpy.floor(ordered[pair + 1, live] - offset), -1, width - 1).astype(int)
+        for k in numpy.nonzero(his >= los)[0]:
+            row = int(rows[live[k]])
+            lo, hi = int(los[k]), int(his[k])
             over = terrain_y[row, lo:hi + 1] - lane_y
             inside = (over > bottom) & (over < top)
             mask[row, lo:hi + 1] |= inside
@@ -2874,6 +2924,102 @@ def _transition_fans(block_refined, block_transition, stride, lattice_w):
 
 _CLIP_REF_STATION_BITS = 11  # stations per strip cap at 1024 (< 2^11)
 
+# Sub-samples per native cell per axis for the containment test, and the face-block edge the
+# test is tiled over.
+#
+# A face is deleted only if EVERY one of its `_CLIP_CONTAIN_SAMPLES`² samples is inside a clip
+# band, so the test is only as exact as the sampling. Measured on the 2026-08-11 rip against an
+# independent 0.29 m truth raster, see-through (terrain deleted where no prism covers it) over
+# five 240 m windows:
+#
+#     K:            2        3        4        6
+#     see-through   34-307   14-101   5-47     1-16   m² per window
+#
+# against 197-741 m² for the corner-AND rule this replaces. 6 is the knee; the residual there is
+# sub-sample slivers along a boundary, which `_snap_hole_boundary` then pulls onto the prism
+# wall. Raising K makes the test STRICTER, so it trades see-through for terrain kept under a
+# road — never the other way round.
+_CLIP_CONTAIN_SAMPLES = 6
+_CLIP_CONTAIN_BLOCK = 128
+
+
+def _contain_faces(width, height, terrain_y, cell_cut, quad_source, samples, block):
+    """Faces wholly inside the union of the clip bands — the deletion rule (contract §8c).
+
+    The game never cuts terrain geometry: it draws the whole heightfield and discards per pixel
+    against a stencil built from these prisms (`GenerateClipDataJob` ->
+    `TerrainSurface.RenderClipAreas`), so `discarded ⊆ covered by road mesh` holds by
+    construction and a see-through gap beside a road cannot happen. A mesh cut at 3.5 m can only
+    approximate that boundary, and the invariant says which way to err: deleting beyond a prism
+    is sky, deleting less leaves terrain under a road that already hides it. Requiring the WHOLE
+    face to be inside honours the invariant directly.
+
+    What this replaces, and why: the rule here used to AND the face's four CORNERS against the
+    union of every prism. Four corners covered by four DIFFERENT prisms passed the test while
+    the face's own interior escaped them all — which is exactly the geometry of a junction, and
+    was the mechanism behind the residual junction gaps. Measured over the two junctions
+    reported on 2026-08-11, corner-AND deleted 398 m² and 197 m² of terrain that no prism
+    covers; sampling the face's interior takes both to a few m² of sub-sample sliver.
+
+    Tiled over `block`² faces so the sub-sample raster stays small: only blocks holding a cut
+    cell are visited at all, which on a full city is 7.5% of the map. `quad_source(r0, c0, r1,
+    c1)` yields `(quad, lane_y, bottom, top)` for every station quad whose face-space bounds
+    touch the block, in NATIVE cell space; this routine scales them into the block's own frame.
+
+    Returns `(contain, band_count)` — the (height − 1, width − 1) deletion mask, and the count
+    of in-band sub-samples PER FACE. That second array is the true clipped area in units of
+    `(cell / samples)²`, and being per-face it can be windowed alongside the mask, which is what
+    makes the containment ratio in `build_terrain`'s report mean the same thing for a region
+    import as for a whole city.
+    """
+    face_h, face_w = height - 1, width - 1
+    contain = numpy.zeros((face_h, face_w), dtype=bool)
+    band_count = numpy.zeros((face_h, face_w), dtype=numpy.uint8)  # <= samples², 6² = 36
+
+    # Only blocks holding a cut cell are visited. A face wholly inside a band has its four
+    # CORNERS inside it too, and those corners are cell centres (contract §3) — which is what
+    # `cell_cut` records. The converse does not hold, so this skips work, never a deletion; and
+    # where the sampling and the corners disagree the face is kept, which is the safe side.
+    cut_face = cell_cut[:-1, :-1] | cell_cut[:-1, 1:] | cell_cut[1:, :-1] | cell_cut[1:, 1:]
+    if not cut_face.any():
+        return contain, band_count
+
+    for r0 in range(0, face_h, block):
+        r1 = min(r0 + block, face_h)
+        for c0 in range(0, face_w, block):
+            c1 = min(c0 + block, face_w)
+            if not cut_face[r0:r1, c0:c1].any():
+                continue
+            nfr, nfc = r1 - r0, c1 - c0
+            sh, sw = nfr * samples, nfc * samples
+
+            # Sample (i, j) sits at cell-space (c0 + 0.5 + (j + 0.5) / K, r0 + 0.5 + (i + 0.5)
+            # / K) — the interior of face (r0 + i // K, c0 + j // K). Terrain there is the
+            # bilinear interpolation the renderer already draws between the cell centres, so
+            # the test reads the same surface the eye sees.
+            gc = numpy.clip(c0 + (numpy.arange(sw) + 0.5) / samples, 0, width - 1.001)
+            gr = numpy.clip(r0 + (numpy.arange(sh) + 0.5) / samples, 0, height - 1.001)
+            ci = gc.astype(numpy.int64); fu = gc - ci
+            ri = gr.astype(numpy.int64); fv = gr - ri
+            top_row = (terrain_y[numpy.ix_(ri, ci)] * (1.0 - fu)[None, :]
+                       + terrain_y[numpy.ix_(ri, ci + 1)] * fu[None, :])
+            bot_row = (terrain_y[numpy.ix_(ri + 1, ci)] * (1.0 - fu)[None, :]
+                       + terrain_y[numpy.ix_(ri + 1, ci + 1)] * fu[None, :])
+            fine_y = top_row * (1.0 - fv)[:, None] + bot_row * fv[:, None]
+
+            band = numpy.zeros((sh, sw), dtype=bool)
+            origin = (c0 + 0.5, r0 + 0.5)
+            for quad, lane_y, bottom, top in quad_source(r0, c0, r1, c1):
+                local = [((px - origin[0]) * samples, (py - origin[1]) * samples)
+                         for px, py in quad]
+                _fill_clip_quad(band, fine_y, sw, sh, local, lane_y, bottom, top)
+
+            per_face = band.reshape(nfr, samples, nfc, samples)
+            contain[r0:r1, c0:c1] = per_face.all(axis=(1, 3))
+            band_count[r0:r1, c0:c1] = per_face.sum(axis=(1, 3), dtype=numpy.uint16)
+
+    return contain, band_count
+
 
 def _clip_grid(bundle_dir, width, height, heights, cell, origin_x, origin_z,
                elevation_scale, elevation_offset, floor_override=None):
@@ -2887,18 +3033,21 @@ def _clip_grid(bundle_dir, width, height, heights, cell, origin_x, origin_z,
     `floor_override`, when not None, replaces every strip's `bottom` — a diagnostic knob
     (`--clip-floor`) for previewing a producer band-floor change against an existing bundle.
 
-    Returns `(mask, face_mask, refs, strip_geo)`: the (height, width) bool cut mask over CELL
-    centres; the (height − 1, width − 1) bool mask over FACE centres, which is what deletion
-    reads; an int32 raster of packed (strip << _CLIP_REF_STATION_BITS | station) references
-    for every cut cell (−1 where uncut or cut only by an `area` record, which has no curves to
-    snap to); and `strip_geo[strip] = (left_pts, right_pts, lane, bottom, top)` — the
-    evaluated boundary polylines the hole-boundary snap projects onto.
+    Returns `(mask, contain, band_count, refs, strip_geo)`: the (height, width) bool cut mask
+    over CELL centres; the (height − 1, width − 1) bool deletion mask from `_contain_faces`;
+    its per-face count of in-band sub-samples, which is the true clipped area in `(cell /
+    _CLIP_CONTAIN_SAMPLES)²` units; an int32 raster of packed (strip <<
+    _CLIP_REF_STATION_BITS | station) references for every cut cell (−1 where uncut or cut only
+    by an `area` record, which has no curves to snap to); and `strip_geo[strip] = (left_pts,
+    right_pts, lane, bottom, top)` — the evaluated boundary polylines the hole-boundary snap
+    projects onto.
 
-    The two rasters answer two different questions and both are needed. "Which cells does the
-    clip volume cover?" decides the refine corridor and gives the boundary snap its reference
-    curve; "is this face's own centre inside the volume?" decides whether the face survives.
-    Answering the second with the first — a face deleted if ANY of its four corner cells was
-    cut — is what dilated every hole by a full cell. See `_fill_clip_quad`.
+    The cell raster and the deletion mask answer different questions and both are needed.
+    "Which cells does the clip volume cover?" decides the refine corridor and gives the
+    boundary snap its reference curve; "is this face WHOLLY inside the volume?" decides whether
+    the face survives. The strips are walked twice: once here at cell centres, and once per
+    face-block inside `_contain_faces`, which re-evaluates the quads from `strip_geo` rather
+    than holding a quarter of a million of them in memory.
     """
     path = os.path.join(bundle_dir, "clipvolumes.jsonl")
     if not os.path.isfile(path):
@@ -2909,41 +3058,19 @@ def _clip_grid(bundle_dir, width, height, heights, cell, origin_x, origin_z,
     strips = [record for record in read_jsonl(path)]
     refs = numpy.full((height, width), -1, dtype=numpy.int32)
     strip_geo = []
+    area_geo = []
     if not strips:
-        empty_face = numpy.zeros((height - 1, width - 1), dtype=bool)
-        return (numpy.zeros((height, width), dtype=bool), empty_face, empty_face.copy(),
-                refs, strip_geo)
+        return (numpy.zeros((height, width), dtype=bool),
+                numpy.zeros((height - 1, width - 1), dtype=bool),
+                numpy.zeros((height - 1, width - 1), dtype=numpy.uint8), refs, strip_geo)
 
     terrain_y = (numpy.asarray(heights, dtype=numpy.float64).reshape(height, width)
                  * elevation_scale + elevation_offset)
     mask = numpy.zeros((height, width), dtype=bool)
 
-    # The face-centre raster's terrain sample. A face centre is the exact midpoint of the four
-    # cell centres around it, and bilinear interpolation at a midpoint is their plain mean —
-    # so the "bilinearly interpolated at the face centre" height is this one array, computed
-    # once, not a per-row interpolation.
-    face_h, face_w = height - 1, width - 1
-    terrain_face = 0.25 * (terrain_y[:-1, :-1] + terrain_y[:-1, 1:]
-                           + terrain_y[1:, :-1] + terrain_y[1:, 1:])
-    face_mask = numpy.zeros((face_h, face_w), dtype=bool)
-    face_above = numpy.zeros((face_h, face_w), dtype=bool)
-
     def fill(quad, lane_y, bottom, top, ref_value=-1):
-        """Three rasters from one quad; they differ only in where the scanline samples and,
-        for the third, where the band starts. See `_clip_grid`'s docstring for what each
-        answers and `build_terrain` for how the deletion rule combines them."""
         _fill_clip_quad(mask, terrain_y, width, height, quad, lane_y, bottom, top,
                         refs=(refs if ref_value >= 0 else None), ref_value=ref_value)
-        # Both face rasters share one scanline. The second is the band ABOVE the carriageway
-        # only: the lane curve IS the road surface — measured over the shipped bundle,
-        # `road_top - lane_path.y` has median 0.000 m — so terrain standing above it is terrain
-        # the road mesh does not cover, and only the clip can hide it. That is the half of the
-        # band where deleting is mandatory rather than merely permitted.
-        _fill_clip_quad(face_mask, terrain_face, face_w, face_h, quad, lane_y, bottom, top,
-                        offset=1.0)
-        if top > 0.0:
-            _fill_clip_quad(face_above, terrain_face, face_w, face_h, quad, lane_y,
-                            max(bottom, 0.0), top, offset=1.0)
 
     def to_cell(points):
         """World positions to cell space, cell (row, col) centred on (col + .5, row + .5)."""
@@ -2970,6 +3097,7 @@ def _clip_grid(bundle_dir, width, height, heights, cell, origin_x, origin_z,
                 # an area cut has no boundary curves for the snap to project onto.
                 fill([tuple(cells[0]), tuple(cells[1]), tuple(cells[2]), tuple(cells[2])],
                      float(pts[:, 1].mean()), bottom, top)
+                area_geo.append((cells, float(pts[:, 1].mean()), bottom, top))
             continue
 
         left, right = strip.get("left"), strip.get("right")
@@ -2997,7 +3125,57 @@ def _clip_grid(bundle_dir, width, height, heights, cell, origin_x, origin_z,
                  float((lane[i - 1] + lane[i]) * 0.5), bottom, top,
                  ref_value=(strip_index << _CLIP_REF_STATION_BITS) | i)
 
-    return mask, face_mask, face_above, refs, strip_geo
+    # -- the deletion mask ----------------------------------------------------------------
+    # Each strip in cell space with PER-STATION bounds, so a face block replays only the
+    # stations that reach it. Without the per-station filter a long strip binned to a block
+    # re-scans all of its quads there, and the containment pass costs ~3x what it needs to.
+    strip_cells = []
+    for left_pts, right_pts, lane, bottom, top in strip_geo:
+        lc, rc = to_cell(left_pts), to_cell(right_pts)
+        quad_r = numpy.stack((lc[:-1, 1], rc[:-1, 1], lc[1:, 1], rc[1:, 1]), axis=-1)
+        quad_c = numpy.stack((lc[:-1, 0], rc[:-1, 0], lc[1:, 0], rc[1:, 0]), axis=-1)
+        strip_cells.append((lc, rc, lane, bottom, top,
+                            quad_r.min(axis=1), quad_r.max(axis=1),
+                            quad_c.min(axis=1), quad_c.max(axis=1)))
+    boxes = [(rmin.min(), cmin.min(), rmax.max(), cmax.max())
+             for _, _, _, _, _, rmin, rmax, cmin, cmax in strip_cells]
+    boxes += [(c[:, 1].min(), c[:, 0].min(), c[:, 1].max(), c[:, 0].max())
+              for c, _, _, _ in area_geo]
+
+    # Bin each strip into the face blocks it reaches, once. Face (r, c) spans cell space
+    # [c + 0.5, c + 1.5] x [r + 0.5, r + 1.5], so block (br, bc) covers cell space
+    # [bc*B + 0.5, (bc+1)*B + 0.5] x same in rows; one cell of slack keeps a strip that only
+    # clips a block edge in play.
+    block = _CLIP_CONTAIN_BLOCK
+    bins = {}
+    for index, (top_, left_, bottom_, right_) in enumerate(boxes):
+        br0 = max(0, int((top_ - 1.5) // block))
+        br1 = min((height - 2) // block, int((bottom_ + 0.5) // block))
+        bc0 = max(0, int((left_ - 1.5) // block))
+        bc1 = min((width - 2) // block, int((right_ + 0.5) // block))
+        for br in range(br0, br1 + 1):
+            for bc in range(bc0, bc1 + 1):
+                bins.setdefault((br, bc), []).append(index)
+
+    def quad_source(r0, c0, r1, c1):
+        """Every station quad whose strip reaches this face block, in native cell space."""
+        for index in bins.get((r0 // block, c0 // block), ()):
+            if index < len(strip_cells):
+                lc, rc, lane_, low, high, rmin, rmax, cmin, cmax = strip_cells[index]
+                live = numpy.nonzero((rmax >= r0 - 0.5) & (rmin <= r1 + 1.5)
+                                     & (cmax >= c0 - 0.5) & (cmin <= c1 + 1.5))[0]
+                for station in live:
+                    i = int(station) + 1
+                    yield ([tuple(lc[i - 1]), tuple(rc[i - 1]), tuple(rc[i]), tuple(lc[i])],
+                           float((lane_[i - 1] + lane_[i]) * 0.5), low, high)
+            else:
+                cells, lane_y, low, high = area_geo[index - len(strip_cells)]
+                yield ([tuple(cells[0]), tuple(cells[1]), tuple(cells[2]), tuple(cells[2])],
+                       lane_y, low, high)
+
+    contain, band_count = _contain_faces(width, height, terrain_y, mask, quad_source,
+                                         _CLIP_CONTAIN_SAMPLES, _CLIP_CONTAIN_BLOCK)
+    return mask, contain, band_count, refs, strip_geo
 
 
 def _snap_hole_boundary(verts, vid, used_grid, cut_face_grid, refs_w, strip_geo, ground_y,
@@ -3547,7 +3725,7 @@ def build_terrain(bundle_dir, collection, center, radius, clip_floor=None):
     # of the heightmap — the game hides it per-frame with a stencil pass — so the clip volumes
     # are rasterised here against this heightmap. The layer is mandatory; _clip_grid raises on
     # a bundle without it.
-    cut_grid, cut_face_raster, cut_above_raster, cut_refs, strip_geo = _clip_grid(
+    cut_grid, contain_raster, band_count_raster, cut_refs, strip_geo = _clip_grid(
         bundle_dir, width, height, heights, cell, origin_x, origin_z, elevation_scale,
         elevation_offset, floor_override=clip_floor)
 
@@ -3601,8 +3779,8 @@ def build_terrain(bundle_dir, collection, center, radius, clip_floor=None):
     # Face (r, c) of this window is face (row0 + r, col0 + c) of the raster, and the raster is
     # one entry smaller than the cell grid on each axis, so the window's last lattice row and
     # column carry no face — hence lat_h - 1 / lat_w - 1.
-    cut_face = cut_face_raster[row0:row0 + lat_h - 1, col0:col0 + lat_w - 1]
-    cut_above = cut_above_raster[row0:row0 + lat_h - 1, col0:col0 + lat_w - 1]
+    contain = contain_raster[row0:row0 + lat_h - 1, col0:col0 + lat_w - 1]
+    band_count = band_count_raster[row0:row0 + lat_h - 1, col0:col0 + lat_w - 1]
 
     if levels is not None:
         level_raw = numpy.asarray(levels).reshape(height, width)[row0:row0 + lat_h,
@@ -3621,15 +3799,15 @@ def build_terrain(bundle_dir, collection, center, radius, clip_floor=None):
     # cells; the rest of the map keeps the coarse grid. The 3-cell (~10.5 m at 3.5 m) dilation
     # covers the game's 8 m terrain smoothing apron, which the roadbed mask deliberately
     # excludes — the meld gradients down to a portal live inside it.
-    # A face whose centre is cut but none of whose four corner cells are (a prism slimmer than
-    # one cell threading between the cell centres) must still land in a refined block, or the
-    # deletion below would have no native face to delete. Fold the face raster back onto the
+    # A deleted face samples its own interior, so its four corner CELLS need not be cut (they
+    # are not among the samples). Such a face must still land in a refined block, or the
+    # deletion below would have no native face to delete. Fold the face mask back onto the
     # cells it spans before dilating.
     cut_for_corridor = cut.copy()
-    cut_for_corridor[:-1, :-1] |= cut_face
-    cut_for_corridor[:-1, 1:] |= cut_face
-    cut_for_corridor[1:, :-1] |= cut_face
-    cut_for_corridor[1:, 1:] |= cut_face
+    cut_for_corridor[:-1, :-1] |= contain
+    cut_for_corridor[:-1, 1:] |= contain
+    cut_for_corridor[1:, :-1] |= contain
+    cut_for_corridor[1:, 1:] |= contain
     refine_cells = _dilate(roadbed | cut_for_corridor | _mask_boundary(wet), 3)
 
     if stride == 1:
@@ -3696,40 +3874,28 @@ def build_terrain(bundle_dir, collection, center, radius, clip_floor=None):
     coarse_class = block_class[cbr, cbc]
 
     # -- native cells inside refined blocks, cut only where the prism CONTAINS the face -----
-    # A face is deleted iff all four of its corners are inside a clip prism. The corners are
-    # cell centres (contract §3), so this is the cell mask ANDed over the face's own corners.
+    # A face is deleted iff the whole face lies inside a clip band — `_contain_faces` decides
+    # that by sampling the face's own interior, and the reasoning is in its docstring. The rule
+    # is the game's own invariant, not a tuned preference: the terrain shader discards PER PIXEL
+    # inside a volume built from the road's own composition, so in game `clipped ⊆ covered by
+    # road mesh` always holds and a see-through gap beside a road is impossible.
     #
-    # The rule is the game's own invariant, not a tuned preference. `GenerateClipDataJob` builds
-    # every clip volume from the road's OWN composition — the left/right curves trimmed by
-    # `TerrainComposition.m_WidthOffset`, the band widened ±0.3 m — and the terrain shader then
-    # discards PER PIXEL inside it. So in game `clipped ⊆ covered by road mesh` always holds and
-    # a see-through gap is impossible. A mesh cut at 3.5 m granularity can only approximate that
-    # boundary, and the choice is which way to err:
+    # Two earlier rules are recorded here because both are tempting and both are wrong:
     #
-    #   * delete beyond the prism -> terrain removed that no road covers -> SKY. Visible, wrong.
-    #   * delete less than the prism -> terrain left under a road that already covers it, sunk
-    #     0.15 m below it, and any part still standing proud is pulled down to the band roof by
-    #     `_snap_hole_boundary`'s height clamp. Hidden, harmless.
+    #   * a face deleted on its own CENTRE. Unbiased, and half of an unbiased error deletes
+    #     terrain no road covers — that half is sky. Measured 1,772-6,040 m² of it per 240 m
+    #     window against the 0-16 m² this rule leaves.
+    #   * a face deleted when all four of its CORNER CELLS are cut. That tests the corners
+    #     against the UNION of every prism, so four corners covered by four different prisms
+    #     passed while the face's interior escaped them all — the geometry of a junction, and
+    #     the mechanism behind the junction gaps this replaces (398 m² and 197 m² of sky at the
+    #     two junctions reported on 2026-08-11).
     #
-    # Only the second respects the game's invariant. Measured on the two junctions reported
-    # 2026-08-11, over exactly the faces where the two rules disagree: deleting them leaves 81
-    # of 175 (train tracks) and 35 of 115 (junction) with NO road above — see-through — while
-    # keeping them leaves 23 and 5 poking above the road. Erring inward is ~4x better there.
-    #
-    # BUT that argument only holds where the road actually is above the terrain. Terrain
-    # standing ABOVE the carriageway — a tunnel roof, a trench wall — is covered by nothing,
-    # and erring inward there leaves it in place and walls off the network (§8c). Measured:
-    # pure containment deletes only 88.6% of the centreline faces of genuinely buried road
-    # against face-centre's 98.1%.
-    #
-    # So the band is split at the carriageway, which is where the game's own geometry puts the
-    # boundary between "hidden by the road mesh" and "hidden only by the clip":
-    #
-    #   below the lane curve -> the road covers it  -> delete only if fully contained
-    #   above the lane curve -> nothing covers it   -> delete on the face's own centre
-    #
-    # The lane curve is the road surface, not an approximation of it: measured over the shipped
-    # bundle this morning, `road_top - lane_path.y` has a median of 0.000 m.
+    # The band used to be SPLIT at the carriageway — contained below the lane curve, face-centre
+    # above it — to stop pure corner-containment walling off tunnels (§8c). That compensation is
+    # gone with the rule that needed it: measured over the city's three densest tunnel-portal
+    # clusters, containment sampled per face deletes 100%, 100% and 96.7% of the buried
+    # centreline faces, which is the split band's own number to the digit.
     rbr, rbc = numpy.nonzero(block_refined)
     span = numpy.arange(stride, dtype=numpy.int64)
     cell_rr = numpy.broadcast_to(rbr[:, None, None] * stride + span[None, :, None],
@@ -3738,14 +3904,9 @@ def build_terrain(bundle_dir, collection, center, radius, clip_floor=None):
                                  (len(rbr), stride, stride)).reshape(-1)
     a = cell_rr * lat_w + cell_cc
     refined_loops_all = numpy.stack((a, a + lat_w, a + lat_w + 1, a + 1), axis=-1)
-    contained = (cut[cell_rr, cell_cc] & cut[cell_rr, cell_cc + 1]
-                 & cut[cell_rr + 1, cell_cc] & cut[cell_rr + 1, cell_cc + 1])
-    face_cut = contained | cut_above[cell_rr, cell_cc]
+    face_cut = contain[cell_rr, cell_cc]
     refined_loops = refined_loops_all[~face_cut]
     cut_faces = int(face_cut.sum())
-    # What the prism actually covers, for the containment report below: a face whose own centre
-    # is inside it. `cut_face` is no longer the deletion rule, only the yardstick.
-    face_centre_cut = int(cut_face[cell_rr, cell_cc].sum())
 
     # Refined faces classify from their OWN corners at native resolution; roadbed reads the
     # face's top-left cell sample, the rule the scalar face_roadbed always used.
@@ -3976,14 +4137,21 @@ def build_terrain(bundle_dir, collection, center, radius, clip_floor=None):
     LOG.step(f"{roadbed_faces} roadbed face(s) (sunk {_ROADBED_SINK:g} m), "
              f"{rock_faces} rock face(s), {wet_faces} water face(s), "
              f"{cut_faces} face(s) cut (tunnel portals / trenches)")
-    if cut_faces or face_centre_cut:
+    band_samples = int(band_count.sum(dtype=numpy.int64))
+    if cut_faces or band_samples:
         # The containment check, not a size check. In game every clip volume is built from the
         # road's own composition and discarded per pixel, so clipped terrain is always covered
         # by road. This grid must therefore never delete MORE than the prism covers: a ratio
         # above 1.00 is terrain removed that nothing draws over, i.e. sky. Below 1.00 is the
         # safe direction — terrain kept under a road that hides it.
+        #
+        # The denominator is the clipped area itself, measured at the containment sampling —
+        # not a face count, which quantises the very thing being measured. Under this deletion
+        # rule the ratio cannot exceed 1.00 by construction, so a warning here means the
+        # sampling missed a sliver, not that the rule drifted.
+        sample = cell / _CLIP_CONTAIN_SAMPLES
         deleted_area = cut_faces * cell * cell
-        clipped_area = face_centre_cut * cell * cell
+        clipped_area = band_samples * sample * sample
         ratio = (deleted_area / clipped_area) if clipped_area else float("nan")
         LOG.step(f"cut {deleted_area:,.0f} m² of terrain against {clipped_area:,.0f} m² the "
                  f"clip prisms cover (x{ratio:.2f}; must not exceed 1.00 — above it is sky)")
