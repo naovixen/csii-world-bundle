@@ -2013,3 +2013,26 @@ counter — the only silent exclusion in that walk, and precisely the shape of t
 note says must be counted. It now counts the placements and names the distinct pieces in the rip
 report, so the next rip states which cross-section is lost rather than leaving it to be found by
 rendering a viaduct. Compiles 0/0; **awaiting an in-game re-rip** to read the answer.
+
+### 42.1 "Sometimes a grey texture would fill the gap" — the next measurement
+
+Reported after §42 was written, and it changes what to test: geometry that is *sometimes drawn*
+cannot be geometry that is absent. Two candidates remain, and one measurement separates them.
+
+**Candidate A — the deck is present but wound/normalled downward.** Network materials ship
+`doubleSided: false`, so Blender culls backfaces: a deck whose triangles face down is invisible
+from above and shows from below or at a grazing angle, and shades flat where its normal opposes
+its winding. That matches "intermittent" and "grey" exactly. §42's table measured only UP-facing
+area and would report such a deck as missing. **Measure down-facing area, and winding against the
+shipped NORMAL, on `seg_1604739` / `seg_1604735`.** §40 checked winding-vs-NORMAL disagreement
+city-wide (99 tris, 0.000%) but not whether a whole deck is consistently inverted, where the two
+agree with each other and both point the wrong way.
+
+**Candidate B — the fast .glb path.** It claims a file only once every material it needs has been
+built by an earlier stock import, so *which* files it claims is nondeterministic across
+`--center`/`--radius`/`--limit` — the one documented source of run-to-run variation.
+**Ruled out for material binding:** `_KNOWN_MATERIALS` keys on the full name with only Blender's
+numeric `.001` suffix stripped (`:5370-5372`), so two `RoadParts_<hash>` materials cannot collide.
+Its known real gap is dropping `TANGENT`, which misorients a normal map but removes no surface.
+
+Not measured here because the bundle was mid-rip. Do A first; it is one script over two `.glb`.
