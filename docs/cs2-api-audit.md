@@ -1974,3 +1974,42 @@ Also corrected: the A/B that established my own change was not the cause. At the
 cuttings, terrain standing over the road measured 65.5% / 36.2% / 59.6% of the footprint under
 the pre-session rule and 64.6% / 35.7% / 57.3% after it — the defect predates this session's work
 in both directions, and only the sub-cut moves it.
+
+## 42. The tram category ships hollow (2026-08-11, evening)
+
+Reported as "elevated tram line has regressed AGAIN — texture gaps on track", with a probe at
+`(2629.3, 1160.0, 548.1)` — `seg_1604739`, Double Tram Track, elevated, 20 m above grade. It is
+not a texture problem: the running surface is not in the bundle.
+
+**Census over `networks/*.glb`, by category and form** — every other elevated type ships two
+primitives, the structure and the surface it carries:
+
+| category | form | prims | materials | count |
+|---|---|---|---|---|
+| road | elevated | 2 | `Road` + `RoadParts` | 587 |
+| train | elevated | 2 | `TrainSubwayTrack` + `RoadParts` | 50 |
+| **tram** | **elevated** | **1** | **`RoadParts` only** | **25** |
+| tram | normal | 1 | `Road` | 35 |
+
+**Up-facing area against the record's own `length × width`** settles that the missing primitive
+is real geometry and not a naming difference:
+
+| segment | expected deck | up-facing | share |
+|---|---|---|---|
+| `seg_1705692` road elevated | 1,301 m² | 934 m² | 72% |
+| `seg_2149746` train elevated | 2,760 m² | 2,001 m² | 72% |
+| `seg_1604739` **tram elevated** | 395 m² | **49 m²** | **12%** |
+| `seg_649089` **tram normal** | 94 m² | **0 m²** | **0%** (its `Road` primitive is 5 m² in total) |
+
+Rendered with `--networks --lanes`, the viaduct is rails and catenary hanging in the air with no
+deck under them. The ground tram hides the same defect because it sits on a road.
+
+The ground tram's `Road` primitive being *present but 5 m²* is the useful clue: the piece is
+found and read, and yields almost nothing — so this is not the composition lacking a surface
+piece. **Root cause not yet established**; it needs the ECS, i.e. a rip.
+
+**What was fixed now:** `GetPieceGeometry` returning null dropped a piece with `continue` and no
+counter — the only silent exclusion in that walk, and precisely the shape of thing §41's method
+note says must be counted. It now counts the placements and names the distinct pieces in the rip
+report, so the next rip states which cross-section is lost rather than leaving it to be found by
+rendering a viaduct. Compiles 0/0; **awaiting an in-game re-rip** to read the answer.

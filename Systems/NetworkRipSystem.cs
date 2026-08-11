@@ -107,6 +107,8 @@ namespace Carto.Systems
         private int _roundaboutParts;
         private int _skipBottomPieces;
         private int _railPieces;
+        private int _emptyPieces;
+        private readonly SortedSet<string> _emptyPieceNames = new();
         private int _orphanCaps;
         private int _pipelineCompositions;
         private int _lowerBottomPieces;
@@ -436,6 +438,8 @@ namespace Carto.Systems
             _roundaboutParts = 0;
             _skipBottomPieces = 0;
             _railPieces = 0;
+            _emptyPieces = 0;
+            _emptyPieceNames.Clear();
             _orphanCaps = 0;
             _pipelineCompositions = 0;
             _lowerBottomPieces = 0;
@@ -897,6 +901,11 @@ namespace Carto.Systems
                                                       + "halves + wedge cover outer/inner/island; blend weights are shader-side");
             if (_railPieces > 0) report.AppendLine($"Corner-rail (PreserveShape) pieces placed: {_railPieces}");
             if (_skipBottomPieces > 0) report.AppendLine($"SkipBottomHalf pieces halved: {_skipBottomPieces}");
+            if (_emptyPieces > 0)
+                report.AppendLine($"  DROPPED: {_emptyPieces} piece placement(s) had no readable geometry "
+                                + "(no MeshVertex/MeshIndex/MeshMaterial buffer, or empty) — a composition "
+                                + "loses that cross-section and ships hollow: "
+                                + string.Join(", ", _emptyPieceNames));
             // The shading frame (audit #40 P6): the piece's own authored normals and tangents,
             // rotated into the bend rather than rebuilt from the bent faces.
             //

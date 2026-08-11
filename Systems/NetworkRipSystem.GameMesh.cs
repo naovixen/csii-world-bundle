@@ -515,7 +515,23 @@ namespace Carto.Systems
             foreach (NetCompositionPiece piece in pieces)
             {
                 PieceGeometry source = GetPieceGeometry(piece.m_Piece, cache);
-                if (source == null) continue;
+                if (source == null)
+                {
+                    // The one exclusion in this walk that said nothing. A composition whose
+                    // running surface is dropped here still ships its RoadParts, so the segment
+                    // looks present and is hollow — measured on the 2026-08-11 rip, an elevated
+                    // tram deck carries 12% of the up-facing area its width and length imply
+                    // against 72% for an elevated road or train. Name the piece so the next rip
+                    // says which one, instead of leaving it to be found by rendering a viaduct.
+                    _emptyPieces++;
+                    if (_emptyPieceNames.Count < 64)
+                    {
+                        _emptyPieceNames.Add(Instance.Prefab.TryGetPrefab(piece.m_Piece, out PrefabBase emptyPiece)
+                                             && (emptyPiece != null)
+                            ? emptyPiece.name : $"<entity {piece.m_Piece.Index}>");
+                    }
+                    continue;
+                }
 
                 bool invert = (piece.m_SectionFlags & NetSectionFlags.Invert) != 0;
                 bool flipMesh = (piece.m_SectionFlags & NetSectionFlags.FlipMesh) != 0;
