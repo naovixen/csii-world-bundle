@@ -183,9 +183,9 @@ something meaningful.
                "elevationScale": 0.0625, "elevationOffset": 0.0,
                "splatmap": { "file": "terrain/splatmap.png", "size": [4096, 4096],
                              "resolution": [3.5, 3.5], "originWorld": [-7166.25, 0, 7166.25],
-                             "channels": { "R": "grass", "G": "dirt", "B": "extra1", "A": "extra2",
+                             "channels": { "R": "dirt", "G": "grass", "B": "extra1", "A": "extra2",
                                            "base": "rock",
-                                           "baseWeight": "max(0, 1 - (R + G + B + A) / 255)" },
+                                           "baseWeight": "max(0, 1 - min(1, R / 255 * splatMultiplier))" },
                              "splatMultiplier": 2.0, "splatPower": 1.0 } },
 
   "ripOptions": { "meshSource": "runtime", "lodCap": 0, "textureSizeCap": 2048,
@@ -1124,57 +1124,117 @@ toward +X (east).
   `terrain/surfaces/index.json`'s own keys, so each joins straight to a texture:
 
   ```jsonc
-  "channels": { "R": "grass", "G": "dirt", "B": "extra1", "A": "extra2",
-                "base": "rock", "baseWeight": "max(0, 1 - (R + G + B + A) / 255)" }
+  "channels": { "R": "dirt", "G": "grass",
+                "B": "extra1:extra2 (packed, low:high nibble)",
+                "A": "extra3:extra4 (packed, low:high nibble)",
+                "packed": { "B.low": "extra1", "B.high": "extra2",
+                            "A.low": "extra3", "A.high": "extra4",
+                            "decode": "extraN weight = (channel & 15) or (channel >> 4), each 0..15; normalise by 15, NOT by 255" },
+                "base": "rock", "baseWeight": "max(0, 1 - min(1, R / 255 * splatMultiplier))" }
   ```
 
+  **`B` and `A` are bit-packed: two 4-bit weights each (corrected 2026-08-10, audit SPLAT-6).**
+  That is how the game fits **four** paintable extras into an `R8G8_UNorm` user splatmap — the
+  packing `TerrainMaterialSystem.PackToBAChannels` writes, four brush components at bit offsets
+  0, 4, 8 and 12 across the two bytes. The four extras are the game's four paint tools, named by
+  its own locale: **01 Dry, 02 Lush, 03 Dirt, 04 Sand**.
+
+  Reading `B` or `A` as one 0–255 opacity **merges two grounds into one and drops the other two
+  entirely** — it is what made a city's painted beaches render as forest floor. Sample the packed
+  channels with **point/nearest** filtering, never bilinear: halfway between `0x0F` and `0x10`
+  decodes to a nibble pair unrelated to either neighbour. The game's own user splatmap is created
+  with `filterMode = FilterMode.Point`. `R` and `G` are genuine continuous weights and should
+  still be sampled smoothly.
+
+  A texture format cannot reveal a packing convention: the `R8G8` user splatmap carries four
+  weights, not two.
+
   A channel the producer cannot name ships as `"unknown"`; drop it from the blend rather than
-  guessing. `channelProvenance` states, per channel, how firmly each is established — `G` is
-  reached by elimination rather than measured, so it is the one to doubt. If the whole
+  guessing. `channelProvenance` states, per channel, the measurement behind it. If the whole
   `channels` object is absent the bundle predates this amendment; the map above is still the
-  right assumption, since it is a property of the game's `TerrainMaterialType` ordering rather
-  than of any bundle.
+  right assumption. **A bundle that declares `"R": "grass", "G": "dirt"` was ripped before
+  2026-08-10 and its map is inverted — see below.**
 
-  **How to blend it (rewritten 2026-08-10, audit SPLAT-1 — the previous rule here was wrong
-  and any consumer following it renders a nearly all-grass map).** The four channels are *two
-  different kinds of thing* and must be blended two different ways:
+  **`R` is dirt and `G` is grass.** Slope cannot tell the two apart and must not be used to:
+  rock is `R`'s own residual, so **both** soil weights fall with slope together (0–5°: R 251.6,
+  G 201.7 → 45–90°: R 9.4, G 0.5). Two measurements settle it, both resting on where a ground can
+  physically exist:
 
-  - **`R` and `G` are procedural weights** the game derives from the terrain, and the base
-    ground is their residual: normalise `R`, `G` and `max(0, 1 − (R+G))` into a **partition**
-    of grass / dirt / rock. `R` falls monotonically with slope on unpainted ground — measured
-    over a full city, 254/255 at 0–5° down to 5.9/255 at 40–90° — which is what makes cliffs
-    rock.
-  - **`B` and `A` are the player's paint** and composite **over** that natural ground as
-    opacities, `saturate(weight · splatMultiplier)^splatPower`.
+  - **`G` is grass** — exactly **0** on every texel under 1 m or more of water and 0.5 on 45°+
+    cliffs, against 201.7 on flat land. Identically zero on every lakebed and every cliff.
+  - **`R` is dirt** — averages **249.9 underwater**, rising with depth. A weight that blankets
+    the seabed is sediment.
 
-  Both single-rule readings are measurably wrong. Treating all four as opacities (what this
-  section said until 2026-08-10) renders **92.31% of the map as grass, painted `extra1` as
-  0.81%, and dirt as 0% — never visible anywhere**, because `splatMultiplier` 2.0 saturates any
-  channel ≥128/255 and `R` is ≥128 on 96.99% of texels. The tell is that `R` reads **249.6/255
-  below the waterline**, where there is no grass: a channel that is near-saturated underwater
-  is not a grass opacity. Treating all four as one partition is the opposite failure and is
-  also real — it leaves painted texels ~48% paint against ~32% grass, the washed-out look the
-  older text warned about. Only the split above puts paint at 86–100% where the player painted
-  while keeping rock on cliffs and dirt visible at all. `baseWeight` in the example below
-  subtracts all four channels for historical reasons; compute rock from `R` and `G` alone, or
-  painting a slope silently turns its rock into grass.
+  **How to blend it.** Composite over `base` in order — `R` (dirt), `G` (grass), then the four
+  unpacked extras `extra1..extra4`. The two soil channels use
+  `saturate(w / 255 · splatMultiplier)^splatPower`; each extra uses
+  `saturate(nibble / 15 · splatMultiplier)^splatPower` — **normalise a nibble by 15, not 255**.
+  The order is what makes it read: dirt blankets everything including the lakebed, grass covers
+  the land on top of it, then the player's paint over that.
 
-  One more thing a consumer must get right: **do not treat a roadbed as dirt.** The blend weights grass as heavily under roadbeds (mean 251/255) as under lawns
-  (243); the dirt look beside roads is the §5B wear decals and §8b surface areas, not this map.
+  **Do not normalise into a partition.** `R` and `G` are both near-saturated on flat land and
+  routinely sum past 255, so normalising turns every meadow half brown. Rock is the residual of
+  **`R` alone** — where the dirt weight falls away, the base shows through — not of all six.
+
+  One more thing a consumer must get right: **do not treat a roadbed as dirt.** The blend has no
+  roadbed response at all — it weights the same ground under roadbeds as under lawns; the dirt
+  look beside roads is the §5B wear decals and §8b surface areas, not this map.
 
   Consumers should sample it bilinearly (it is weights, not ids) and prefer it over per-cell
   classification from `surface_index.png` wherever it is present; `surface_index.png` remains
   the *semantic* roadbed mask (physics, the sink rule), not the visual one. When the file or
   its `rasters.splatmap` block is absent, the pre-2026-08-07 behaviour (per-cell
   classification) is the documented fallback.
+- **`grading.json`** (bundle root, optional) — the game's **resolved HDRP colour grading** at rip
+  time, read from `VolumeManager`'s post-blend volume stack: `exposure`, `whiteBalance`,
+  `colorAdjustments` (postExposure, contrast, colorFilter, hueShift, saturation),
+  `shadowsMidtonesHighlights`, `tonemapping`, `vignette`, and `lighting`.
+
+  **Why it exists.** CS2 authors ground albedo near-grey — the shipped rock basecolor measures
+  sRGB saturation 0.111 and sand 0.143 — and the vivid on-screen palette is post-processing
+  applied on top, not anything in the textures. A consumer drawing the shipped albedo faithfully
+  gets a grey world and, without this block, no way to know what the game did to it.
+
+  **Apply it as a display transform; never bake it into the shipped textures.** The textures stay
+  the faithful rip. `order` states the chain. The values are a **snapshot of one moment** —
+  grading follows weather and time of day, so a rip at dusk records dusk (`weatherDependent`).
+  A consumer that wants raw albedo should ignore the block entirely.
+
+  **`lighting`** *(added 2026-08-10)* — the illumination the grading sits on top of: `sun` and
+  `moon` (colour, colour temperature and whether it is in use, intensity in lux, travel direction
+  plus elevation/azimuth in degrees, shadow state), `sky` (`PhysicallyBasedSky` exposure and
+  zenith/horizon/ground tints), `indirect` (the bounce multipliers), and `time` (the in-game
+  clock, latitude and longitude at rip). It is here because replaying the grading is not enough:
+  measured against three in-game surfaces, the chain above lands within a few percent on red and
+  green and leaves a consistent deficit on blue, and a near-neutral pavement (albedo linear
+  0.1019/0.1018/0.1010) still renders warm beige in game. No property of an albedo can do that,
+  so the missing chroma is the light — and a consumer lighting its scene white could not have
+  known.
+
+  **`tonemapping` carries the LUT fields** *(added 2026-08-10)* — `lutContribution`, `hasLut`,
+  and a `lut` sub-block when one is bound. `Game.Rendering.LightingSystem` builds a
+  priority-1000 volume whose tonemapping is `External` with a 3D LUT blended per time of day,
+  gated on `DayNightCycleData.UseLUT`. Every rip so far has read `ACES` because that gate was
+  off, but a bundle recording only the mode could not tell a consumer whether it got lucky. The
+  LUT itself is **not exported** — the blended result is a GPU 3D render texture — so
+  `mode: External` with `hasLut: true` means the grading block is *incomplete* and says so.
+
+  **`exposure` carries `limitMin`/`limitMax`.** The metered value is not reachable (HDRP keeps it
+  behind internal API), but these are the clamps the game drives per time of day, so they bracket
+  the one term a consumer must otherwise choose blind.
+
+  *(Deliberately a root file rather than a `layers` entry: `layers` is a closed object and this
+  would otherwise force a schema bump for an optional, ignorable block. Give it a `layers.grading`
+  key at the next version bump.)*
+
 - **`terrain/user_splatmap.png`** (`layers.userSplatmap`, optional) — RGBA8 (R/G meaningful): the player's painted
   surface weights for the paintable extra grounds, read back from
   `TerrainMaterialSystem.UserSplatmap`. *(Added 2026-08-07.)* Written only when any texel is
   non-zero; geo-referenced by `rasters.userSplatmap` (same conventions as `rasters.splatmap`).
-  Its channels are published the same way — `"channels": { "R": "extra1", "G": "extra2" }`,
-  straight off the decompiled paint path. The source texture is `R8G8_UNorm`, two channels
-  wide, so `extra3` and `extra4` **can carry no weight anywhere**; the block lists them under
-  `unrepresentable` and `terrain/surfaces/` ships no texture for them.
+  Its channels are packed the same way as the splatmap's `B`/`A` — `R` carries
+  `extra1` (low nibble) and `extra2` (high), `G` carries `extra3` (low) and `extra4` (high).
+  The source is `R8G8_UNorm`, two channels wide, and **all four extras are live**: the nibble
+  packing is how they fit.
 - **`terrain/world_heightmap.png`** (`layers.worldTerrain`, optional) — 16-bit grayscale, the **backdrop terrain**
   beyond the playable border (`TerrainSystem.worldHeightmap`, read losslessly via GPU
   readback). *(Added 2026-08-07.)* Geo-referenced by `rasters.worldTerrain` (texel-centre
