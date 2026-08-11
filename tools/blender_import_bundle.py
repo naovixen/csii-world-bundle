@@ -2545,19 +2545,49 @@ class _Splat:
         self.area_x = cx * self.width
         self.area_z = cz * self.height
 
-    def sample(self, world_x, world_z):
-        """Nearest-texel RGBA at a world position, 0..255 each."""
-        col = int((world_x - self.min_x) / self.cell_x)
-        row = int((self.max_z - world_z) / self.cell_z)
-        col = min(max(col, 0), self.width - 1)
-        row = min(max(row, 0), self.height - 1)
-        offset = (row * self.width + col) * 4
-        return self.pixels[offset:offset + 4]
+    def extras_image(self):
+        """The four packed paint weights as one ordinary RGBA image, `extra1..4` in R,G,B,A.
 
-    def uv(self, world_x, world_z):
-        """Image UV (V = 0 at the south edge, matching row 0 = north) for the shader."""
-        return ((world_x - self.min_x) / self.area_x,
-                (world_z - (self.max_z - self.area_z)) / self.area_z)
+        B and A of the splatmap each hold TWO 4-bit weights (audit SPLAT-6), which is how four
+        paintable grounds fit an R8G8 user splatmap. A packed byte cannot be interpolated —
+        halfway between 0x0F and 0x10 decodes to a nibble pair unrelated to either neighbour —
+        so the shader used to point-sample it and decode with FLOOR. That gave every painted
+        region, the player's beaches included, literal 3.5 m square steps: the splat texels are
+        3.5 m and nothing was ever allowed to blend between them.
+
+        Unpacking here instead makes them four plain continuous weights the GPU can filter
+        normally, so the shader takes ONE linear tap and the whole FLOOR/SUBTRACT/DIVIDE chain
+        disappears. The decode itself is already paid for — `__init__` holds the full RGBA
+        buffer — so this is two shifts and a scale.
+
+        A byte image is exact here, not a quantisation: a nibble is 0..15 and n/15 == (n·17)/255
+        for every one of the 16 values, so the 8-bit round-trip is lossless. Built in memory;
+        nothing derived is written into the bundle.
+        """
+        pixels = numpy.frombuffer(self.pixels, dtype=numpy.uint8).reshape(self.height,
+                                                                         self.width, 4)
+        packed_b, packed_a = pixels[:, :, 2], pixels[:, :, 3]
+        weights = numpy.stack((packed_b & 15, packed_b >> 4,
+                               packed_a & 15, packed_a >> 4), axis=-1)
+        # Blender's image rows run south-to-north; the PNG's run north-to-south (§3, row 0
+        # north), and SplatUV already puts V = 0 at the south edge — so the flip belongs here.
+        flat = (weights[::-1].astype(numpy.float32) * (17.0 / 255.0)).reshape(-1)
+
+        image = bpy.data.images.new("terrain_splat_extras", self.width, self.height,
+                                    alpha=True, float_buffer=False)
+        # ORDER IS LOad-BEARING, and getting it wrong fails silently — the image reads back as
+        # the blank default (RGB 0, alpha 1), which paints the whole map with extra4 and
+        # nothing else. Both settings must precede the write, because changing either one
+        # afterwards re-generates the buffer and discards it, and `update()` must follow it.
+        image.colorspace_settings.name = "Non-Color"
+        # extra4 rides the alpha channel as DATA. Without this Blender multiplies the other
+        # three weights by it on every read — the premultiply trap that once made the whole
+        # terrain render at a tenth of its albedo.
+        image.alpha_mode = "CHANNEL_PACKED"
+        image.pixels.foreach_set(flat)
+        image.update()
+        image.pack()                    # a generated image has no file to reload from
+        return image
 
 
 def _terrain_paths(bundle_dir):
@@ -3068,7 +3098,40 @@ def _splat_mapping(block):
     return mapping, published_map
 
 
-def _splat_ground_material(surfaces_dir, splat, mapping):
+_GROUND_FALLBACK_TILING = 8.0
+
+
+def _ground_tiling(block, ground):
+    """`([near, mid, far] metres per repeat, [midStart, midEnd, farStart, farEnd] camera m)`
+    for one ground, from the shipped `rasters.terrainTiling`, or None when it is absent.
+
+    The game does not tile a ground at one scale: it blends THREE by camera distance
+    (`_Terrain*TextureTiling` / `_Terrain*TextureTilingBlend`, driven in
+    `Game.Rendering.TerrainMaterialSystem.UpdateGrassTiling`), which is its own anti-tiling.
+    The producer has shipped the authored numbers since 095322a and nothing read them (audit
+    P5, producer half done, consumer half never started) — the harness UV'd the whole terrain
+    at a hardcoded 8 m per repeat, tighter than the game's grass near tiling (14.34 m) and
+    8.5x tighter than rock (68.27 m), which is the repeating grid.
+
+    The extras have no tiling block of their own and take the GRASS layer's: the bundle's own
+    semantics string says so (`_TerrainExtraTextureTiling` is bound from `m_TerrainGrassTiling`).
+    """
+    layers = (block or {}).get("layers")
+    if not isinstance(layers, dict):
+        return None
+    entry = layers.get("grass" if str(ground).startswith("extra") else ground)
+    if not isinstance(entry, dict):
+        return None
+    repeats = entry.get("metresPerRepeat")
+    if not isinstance(repeats, list) or len(repeats) != 3 or not all(r > 0 for r in repeats):
+        return None
+    blend = entry.get("lodBlend")
+    if not isinstance(blend, list) or len(blend) != 4:
+        return None
+    return [float(r) for r in repeats], [float(b) for b in blend]
+
+
+def _splat_ground_material(surfaces_dir, splat, mapping, tiling_block=None):
     """One ground material mixing the game's grounds by its own splat weights.
 
     The splatmap image is sampled with linear interpolation in its own UV layer (SplatUV),
@@ -3091,18 +3154,57 @@ def _splat_ground_material(surfaces_dir, splat, mapping):
     _diffuse_ground(bsdf)
 
     world_uv = tree.nodes.new("ShaderNodeUVMap")
-    world_uv.uv_map = "UVMap"
+    world_uv.uv_map = "WorldUV"                     # world metres; the scale is per ground
+
+    camera = tree.nodes.new("ShaderNodeCameraData")
+    blend_cache = {}
+
+    def lod_factor(start, end):
+        """0 below `start`, 1 above `end`, ramped between — the game's tiling LOD blend,
+        keyed on view distance. Cached: grass, dirt and the extras all share one pair."""
+        key = (start, end)
+        if key not in blend_cache:
+            node = tree.nodes.new("ShaderNodeMapRange")
+            node.clamp = True
+            tree.links.new(camera.outputs["View Distance"], node.inputs["Value"])
+            node.inputs["From Min"].default_value = start
+            node.inputs["From Max"].default_value = max(end, start + 1e-3)
+            node.inputs["To Min"].default_value = 0.0
+            node.inputs["To Max"].default_value = 1.0
+            blend_cache[key] = node.outputs["Result"]
+        return blend_cache[key]
+
+    def tap(image, metres_per_repeat):
+        node = tree.nodes.new("ShaderNodeMapping")
+        node.vector_type = "POINT"
+        node.inputs["Scale"].default_value = (1.0 / metres_per_repeat,
+                                              1.0 / metres_per_repeat, 1.0)
+        tree.links.new(world_uv.outputs["UV"], node.inputs["Vector"])
+        texture = tree.nodes.new("ShaderNodeTexImage")
+        texture.image = image
+        tree.links.new(node.outputs["Vector"], texture.inputs["Vector"])
+        return texture.outputs["Color"]
 
     def ground_texture(ground):
         path = os.path.join(surfaces_dir, f"{ground}.png")
-        if os.path.isfile(path):
-            node = tree.nodes.new("ShaderNodeTexImage")
-            node.image = _unpremultiply(bpy.data.images.load(path))
-            tree.links.new(world_uv.outputs["UV"], node.inputs["Vector"])
-            return node.outputs["Color"]
-        rgb = tree.nodes.new("ShaderNodeRGB")
-        rgb.outputs[0].default_value = _GROUND_FALLBACK_COLOUR.get(ground, (0.3, 0.3, 0.3, 1.0))
-        return rgb.outputs[0]
+        if not os.path.isfile(path):
+            rgb = tree.nodes.new("ShaderNodeRGB")
+            rgb.outputs[0].default_value = _GROUND_FALLBACK_COLOUR.get(ground,
+                                                                       (0.3, 0.3, 0.3, 1.0))
+            return rgb.outputs[0]
+
+        image = _unpremultiply(bpy.data.images.load(path))
+        shipped = _ground_tiling(tiling_block, ground)
+        if shipped is None:
+            return tap(image, _GROUND_FALLBACK_TILING)
+
+        (near, mid, far), (mid_start, mid_end, far_start, far_end) = shipped
+        # near -> mid -> far, each fading in over its own camera-distance band. One image
+        # datablock, three samples: the whole point is that the same texture repeats at three
+        # different rates so no single rate's grid can dominate.
+        blended_near_mid = mix(tap(image, near), tap(image, mid),
+                               lod_factor(mid_start, mid_end))
+        return mix(blended_near_mid, tap(image, far), lod_factor(far_start, far_end))
 
     splat_uv = tree.nodes.new("ShaderNodeUVMap")
     splat_uv.uv_map = "SplatUV"
@@ -3118,19 +3220,23 @@ def _splat_ground_material(surfaces_dir, splat, mapping):
     channels = {0: separate.outputs["Red"], 1: separate.outputs["Green"],
                 2: separate.outputs["Blue"], 3: splat_node.outputs["Alpha"]}
 
-    # A SECOND tap on the same image, point-sampled. B and A are bit-packed (two 4-bit weights
-    # each), and interpolating a packed byte is meaningless — halfway between 0x0F and 0x10 is
-    # 0x0F..0x10, which decodes to a nibble pair unrelated to either neighbour. The game agrees:
-    # its user splatmap is created with `filterMode = FilterMode.Point`. The soil channels R and
-    # G are genuine continuous weights and keep the smooth Linear tap above.
-    splat_point = tree.nodes.new("ShaderNodeTexImage")
-    splat_point.image = splat_node.image
-    splat_point.interpolation = "Closest"
-    splat_point.extension = "EXTEND"
-    tree.links.new(splat_uv.outputs["UV"], splat_point.inputs["Vector"])
-    separate_point = tree.nodes.new("ShaderNodeSeparateColor")
-    tree.links.new(splat_point.outputs["Color"], separate_point.inputs["Color"])
-    packed_channels = {2: separate_point.outputs["Blue"], 3: splat_point.outputs["Alpha"]}
+    # The four paint weights, already unpacked out of B and A into an ordinary RGBA image
+    # (`_Splat.extras_image`). Because they are plain weights now, this tap is Linear like the
+    # soil one: the player's painted regions blend across the splatmap's 3.5 m texels instead
+    # of stepping at every texel edge, which is what the old point-sampled + FLOOR decode
+    # forced. Nothing about the game's own values changes — the decode is bit-exact.
+    extras_node = tree.nodes.new("ShaderNodeTexImage")
+    extras_node.image = splat.extras_image()
+    extras_node.image.colorspace_settings.name = "Non-Color"
+    extras_node.interpolation = "Linear"
+    extras_node.extension = "EXTEND"
+    tree.links.new(splat_uv.outputs["UV"], extras_node.inputs["Vector"])
+    separate_extras = tree.nodes.new("ShaderNodeSeparateColor")
+    tree.links.new(extras_node.outputs["Color"], separate_extras.inputs["Color"])
+    extra_weight = {"extra1": separate_extras.outputs["Red"],
+                    "extra2": separate_extras.outputs["Green"],
+                    "extra3": separate_extras.outputs["Blue"],
+                    "extra4": extras_node.outputs["Alpha"]}
 
     def math(op, a, b):
         node = tree.nodes.new("ShaderNodeMath")
@@ -3171,14 +3277,8 @@ def _splat_ground_material(surfaces_dir, splat, mapping):
     # merged result with the wrong ground's texture entirely.
     #     B.low = extra1 (tool 01 "Dry")     B.high = extra2 (tool 02 "Lush")
     #     A.low = extra3 (tool 03 "Dirt")    A.high = extra4 (tool 04 "Sand")
-    # Each nibble is 0..15, so it normalises by 15, not 255.
-    def nibble(index, half):
-        raw = math("MULTIPLY", packed_channels[index], 255.0)
-        high = math("FLOOR", math("DIVIDE", raw, 16.0), 0.0)
-        value = high if half == "high" else math("SUBTRACT", raw,
-                                                 math("MULTIPLY", high, 16.0))
-        return math("DIVIDE", value, 15.0)
-
+    # The unpacking happens in numpy at import (`_Splat.extras_image`), not in shader nodes, so
+    # `extra_weight` above already holds four continuous 0..1 weights.
     def opacity_of(weight):
         out = math("MINIMUM", math("MULTIPLY", weight, splat.multiplier), 1.0)
         return out if splat.power == 1.0 else math("POWER", out, splat.power)
@@ -3193,10 +3293,9 @@ def _splat_ground_material(surfaces_dir, splat, mapping):
         if ground:
             blended = mix(blended, ground_texture(ground), opacity_of(channels[index]))
 
-    # Then the player's paint, unpacked, in extra order.
-    for index, half, ground in ((2, "low", "extra1"), (2, "high", "extra2"),
-                                (3, "low", "extra3"), (3, "high", "extra4")):
-        blended = mix(blended, ground_texture(ground), opacity_of(nibble(index, half)))
+    # Then the player's paint, in extra order.
+    for ground in ("extra1", "extra2", "extra3", "extra4"):
+        blended = mix(blended, ground_texture(ground), opacity_of(extra_weight[ground]))
 
     # Straight to the BSDF: no gain, no grading. The ground ships albedo, and `--colour` grades
     # the whole scene in the display pipeline rather than pre-multiplying the terrain.
@@ -3590,14 +3689,32 @@ def build_terrain(bundle_dir, collection, center, radius, clip_floor=None):
                  f"{named}, base={splat_mapping.get('base') or 'none'} (the residual of the "
                  f"first channel)")
     # World-anchored UVs so the ground textures tile at a plausible density without any
-    # per-face unwrap. 8 m per repeat reads roughly like the game's near tiling. Per-LOOP,
-    # in the same flat loop order as `loops` (coarse quads, refined quads, fan triangles).
+    # per-face unwrap. Per-LOOP, in the same flat loop order as `loops` (coarse quads, refined
+    # quads, fan triangles).
+    #
+    # Two layers, deliberately. `UVMap` keeps the legacy 8 m-per-repeat convention the
+    # per-class fallback materials are built against. `WorldUV` is plain world METRES, and the
+    # splat material scales it per ground from the shipped `terrainTiling` — one ground tiles
+    # at 14.34 m and another at 68.27 m, so a single baked-in rate cannot serve both.
     loop_x, loop_z = verts[loops, 0], verts[loops, 1]
     uv_layers = {"UVMap": numpy.stack((loop_x / 8.0, loop_z / 8.0), axis=-1)}
 
     if splat_mapping is not None:
-        material_runs = [(_splat_ground_material(surfaces_dir, splat, splat_mapping),
-                           len(sizes))]
+        uv_layers["WorldUV"] = numpy.stack((loop_x, loop_z), axis=-1)
+        tiling_block = rasters.get("terrainTiling") if isinstance(rasters, dict) else None
+        named_tiling = [ground for ground in ("grass", "dirt", "rock")
+                        if _ground_tiling(tiling_block, ground)]
+        if named_tiling:
+            detail = ", ".join(
+                f"{ground} {'/'.join(f'{r:g}' for r in _ground_tiling(tiling_block, ground)[0])} m"
+                for ground in named_tiling)
+            LOG.step(f"ground tiling from the bundle (near/mid/far per repeat): {detail}; "
+                     "extras tile with grass")
+        else:
+            LOG.warn(f"no rasters.terrainTiling in the bundle — every ground falls back to "
+                     f"{_GROUND_FALLBACK_TILING:g} m per repeat, expect a visible grid")
+        material_runs = [(_splat_ground_material(surfaces_dir, splat, splat_mapping,
+                                                 tiling_block), len(sizes))]
         # No face overrides on the blend. The roadbed keeps whatever the splat says, as in
         # game — the blend has no roadbed response at all, and the roadbed LOOK is carried by
         # the ~13%-alpha wear decals and surface areas drawn on top (the sink still applies).
