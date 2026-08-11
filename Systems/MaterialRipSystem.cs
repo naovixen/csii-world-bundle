@@ -1504,6 +1504,24 @@ namespace Carto.Systems
 
             string name = template.ToLowerInvariant();
 
+            // The shader the game actually draws this surface with, shipped verbatim so a
+            // consumer can judge on evidence instead of on a name the producer guessed at.
+            //
+            // The case that forced it: `Invisible_Pathway` serialises to `{}` — no maps, no
+            // tint, no alpha mode, because the invisible shader binds none of the properties
+            // the sweep reads — so a consumer has nothing to distinguish "a plain material" from
+            // "geometry the game does not draw", and renders 91 taxiway segments as opaque slabs
+            // across an airport. Before 2026-08-11 that was hidden by the piece being dropped
+            // whenever its render cache was cold (§42.6); making the read deterministic made the
+            // slabs deterministic too.
+            //
+            // `flags` and not a new key: contract §9's material object is closed
+            // (`additionalProperties: false`), so a `template` key would take the schema to 3,
+            // while `flags` is documented as an open list of hints a consumer may act on or
+            // ignore. Adding a value to it is additive by construction.
+            //
+            material.Flags.Add($"template:{template}");
+
             // Double-sidedness is a material *property* before it is a naming convention: HDRP's
             // switch is the `_DoubleSidedEnable` float, which the surface can carry itself
             // (`SyncToUnityMaterial` copies every float the shader knows) and the template

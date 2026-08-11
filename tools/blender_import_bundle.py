@@ -111,6 +111,7 @@ trees and props are the ones that need one.
 import json
 import math
 import os
+import re
 import sys
 import time
 
@@ -5006,6 +5007,72 @@ _GLTF_TO_BLENDER = Matrix(((1, 0, 0, 0),
 # `_fast_import_glb` before it will claim a file. Never written to by the fast path itself —
 # that is what makes "every material this path uses already exists" a true statement rather
 # than something the fast path could accidentally falsify for a later file.
+def hide_invisible_materials(bundle_dir):
+    """Stop drawing surfaces the game itself does not draw, on the producer's own evidence.
+
+    Contract §9 ships each material's game shader as a `template:<name>` flag. That is the ONLY
+    thing separating a plain material from one the game never renders: an invisible shader binds
+    none of the properties the producer reads, so its material object serialises empty — no
+    maps, no tint, no alphaMode — and looks exactly like an untextured surface. Drawing it puts
+    91 opaque taxiway slabs across an airport (measured on the 2026-08-11 22:50 rip).
+
+    The decision is deliberately CONSUMER-side. The producer ships what the game has and names
+    the shader; whether "invisible" means "skip" is a rendering policy, and a different consumer
+    (a collision exporter, say) wants that geometry. Reversible here, not baked into the bundle.
+
+    Materials are hidden rather than deleted so the geometry stays in the scene and can be
+    inspected — alpha 0, blend, and no shadow, which reads as absent in viewport and render.
+    Returns `(materials hidden, object slots affected)`.
+    """
+    path = os.path.join(bundle_dir, "materials.json")
+    if not os.path.isfile(path):
+        return 0, 0
+    try:
+        with open(path, encoding="utf-8") as handle:
+            declared = json.load(handle)
+    except (OSError, ValueError):
+        return 0, 0
+    if not isinstance(declared, dict):
+        return 0, 0
+
+    invisible = set()
+    for name, spec in declared.items():
+        if not isinstance(spec, dict):
+            continue
+        for flag in spec.get("flags", ()):
+            if isinstance(flag, str) and flag.startswith("template:") and "invisible" in flag.lower():
+                invisible.add(name)
+                break
+    if not invisible:
+        return 0, 0
+
+    hidden = 0
+    for material in bpy.data.materials:
+        # Blender suffixes a duplicate name with `.001`; the bundle id is the stem.
+        stem = re.sub(r"\.\d{3}$", "", material.name)
+        if stem not in invisible:
+            continue
+        hidden += 1
+        material.diffuse_color = (0.0, 0.0, 0.0, 0.0)
+        _set_alpha_blend(material)
+        if hasattr(material, "shadow_method"):      # gone in EEVEE Next (4.2+)
+            material.shadow_method = "NONE"
+        _ensure_nodes(material)
+        bsdf = material.node_tree.nodes.get("Principled BSDF")
+        if bsdf is not None and "Alpha" in bsdf.inputs:
+            bsdf.inputs["Alpha"].default_value = 0.0
+
+    slots = 0
+    if hidden:
+        for obj in bpy.data.objects:
+            if obj.type != "MESH":
+                continue
+            for slot in obj.material_slots:
+                if slot.material is not None and re.sub(r"\.\d{3}$", "", slot.material.name) in invisible:
+                    slots += 1
+    return hidden, slots
+
+
 _KNOWN_MATERIALS = {}
 
 # How many .glb this run has built directly vs. handed to the stock importer, reset per phase
@@ -6046,6 +6113,11 @@ def main():
     if do_areas:
         LOG.step(f"placed {area_objects} surface-area object(s) (driveways, lots, paths; §8b)")
     LOG.step(f"skipped: {skipped_kind} by kind, {skipped_asset} by --assets, {skipped_region} outside the region")
+
+    hidden_materials, hidden_slots = hide_invisible_materials(bundle_dir)
+    if hidden_materials:
+        LOG.step(f"hid {hidden_materials} material(s) the game draws with an invisible shader "
+                 f"({hidden_slots} object slot(s)) — §9 `template:` flag")
 
     # An empty-looking scene is nearly always the region filter, not the bundle. Say so, with the
     # coordinates that would have worked. The absolute floor matters as much as the ratio: a

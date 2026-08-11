@@ -75,7 +75,7 @@
           "default": false
         },
         "flags": {
-          "description": "Producer hints a consumer may act on or ignore. Known values in schema 2: 'foliage' (wind-animated / alpha-tested vegetation), 'decal' (projected surface, no thickness), 'glass', 'emissiveWindows' (night-lit windows driven by the emissive map), 'terrainBlend' (blends into the ground surface), 'colorVariation' (per-instance tint applied by the game).",
+          "description": "Producer hints a consumer may act on or ignore. Known values in schema 2: 'foliage' (wind-animated / alpha-tested vegetation), 'decal' (projected surface, no thickness), 'glass', 'emissiveWindows' (night-lit windows driven by the emissive map), 'terrainBlend' (blends into the ground surface), 'colorVariation' (per-instance tint applied by the game); and 'template:<name>', the game shader this surface is drawn with, verbatim. The template is the only evidence distinguishing a material the game draws plainly from one it does not draw at all: an invisible shader binds none of the properties the producer reads, so it serialises with no maps, no tint and no alphaMode. A consumer that draws every material will otherwise render invisible taxiways and paths as opaque surfaces.",
           "type": "array",
           "items": { "type": "string" },
           "uniqueItems": true
