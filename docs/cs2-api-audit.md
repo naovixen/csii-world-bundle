@@ -2157,3 +2157,39 @@ triangles there. Probe: letting shallow bands carve again takes the width-transi
 vertices snapped. `_snap_hole_boundary` now also declines a non-carving strip as a candidate — a
 rim belongs to the volume that made the hole, and a shallow wall would otherwise drag a deep
 hole's rim sideways onto a surface road.
+
+### 41.9 Open, producer: the narrow arm's half-frame is under-paved at an asymmetric-width node
+
+The terrain fix in §41.8 fills the hole with the roadbed-painted ground the game has there. It
+does not build the pavement, and the pavement really is missing: the sector shows in the
+diagnostic as clip footprint with no road mesh over it.
+
+**How rare.** Census of every `kind:"node"` strip in four 400 m windows, sampled 9 across x by 7
+along z and scored against the real segment meshes:
+
+  window              node strips   >15% of the strip unpaved
+  width transition        193            2   (both `Alley Oneway`, 55.6% each)
+  road junction           452            0
+  train tracks            226            0
+  downtown                 24            0
+
+Two of 895. Not systematic — a specific branch.
+
+**What is special about the two.** Both are the alley arms meeting the 24 m Medium Road
+(`seg_2302504`) at the width transition, and in each the short rail is the one facing the wide
+road. The medium road's own three node sectors at that same node are covered to 0.00 m and share
+their boundary curves with the alley's, so the two arms' fans do meet — it is the alley's own
+half-frame that does not reach its rail. Left rail 0.00 m the whole length, right rail 2.5 m at
+t=0.1 widening to 3.7 m at t=0.9, i.e. the mesh holds a roughly constant width while the sector
+diverges toward the junction centre.
+
+**Ruled out so far.** `NodeCurves` matches `BatchDataHelpers.CalculateNodeParameters` term for
+term in both branches, verified against the decompiled source (the one deliberate difference —
+curve 5 set to `m_Middle` where the game writes `float4x4.identity` — is unreachable outside the
+roundabout branch). No producer warning names a piece that yielded nothing for either segment, so
+every piece of the composition did produce geometry. That points at the piece-to-frame mapping
+(`scale6`/`bias9`, the `rightSide` pair) or at the composition genuinely not spanning `num8`,
+not at the curve set.
+
+**Needs.** A decompile of the piece mapping the vertex shader applies, against our port, and then
+a re-rip to validate — the producer half cannot be checked against the bundle on disk.
