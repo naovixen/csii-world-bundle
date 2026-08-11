@@ -1943,3 +1943,34 @@ other on triangles, degenerates and bowties, which is the test `2878393`'s note 
 heightfield and stencil-discards per pixel. "Matching the game" means honouring the invariant
 that discard implies road cover — which containment now guarantees by construction, so the
 reported cut/clipped ratio cannot exceed 1.00.
+
+### 41.6 Amendment after the re-rip (2026-08-11, evening)
+
+Three things the offline gates could not have told me, found by rendering — Blender is at
+`G:\SteamLibrary\steamapps\common\Blender\blender.exe` (a Steam library, not Program Files;
+`tools/ab_render.py` drives it headless against a `--save`d `.blend`).
+
+**§41.4's "state it, don't fix it" call was wrong, and the area figure is why.** The residual was
+3.3% of the deep-band footprint, which is true and irrelevant: rendered at the reported
+coordinate `(1032.5, 6523.3)`, a face left in a deep cutting is not a sliver at the edge of the
+road, it is a 3.5 m **slab lying across the carriageway**, because the cutting is 12–30 m deep and
+the face spans it. The render reproduces the report and shows the road appearing from under the
+slabs once cut. Area was the wrong yardstick for a visual defect; depth of the cutting the face
+sits in was the right one. Fixed in `879984f` by re-cutting those faces at the containment
+sampling — 4,294 faces city-wide, nothing else touched.
+
+**The clip band cannot open a canyon, so a deep gorge in the render is real terrain.** Band tops
+are ≤ 12.3 m (`ElevationLimit·3 + 0.3`), so terrain more than that above a lane is never deleted
+by any rule. A road visible at the bottom of a 30 m gorge is the map's own geometry, and the
+question there is only whether the leftover faces span it.
+
+**The junction slivers are the sampling, and 8 is free.** Measured against a 0.11 m truth, the
+residual see-through at a junction falls 12.3 → 4.7 → 1.7 → 0.8 m² for K = 6, 8, 12, 16, while
+full-city `_clip_grid` runs 86.9 s at 6, **78.4 s at 8**, 115.5 s at 12. K = 8 ships (`7e8672e`).
+The trade only ever moves see-through into terrain kept under a *shallow* band, which the road
+hides — a deep band's faces are re-cut at the same sampling, so raising K refines those too.
+
+Also corrected: the A/B that established my own change was not the cause. At the three deepest
+cuttings, terrain standing over the road measured 65.5% / 36.2% / 59.6% of the footprint under
+the pre-session rule and 64.6% / 35.7% / 57.3% after it — the defect predates this session's work
+in both directions, and only the sub-cut moves it.
