@@ -3749,7 +3749,17 @@ def build_terrain(bundle_dir, collection, center, radius, clip_floor=None):
     clipped_class = []
     cut_faces = 0
     clip_abandoned = 0
-    for i in numpy.nonzero(needs_clip)[0]:
+    # The cut is per cell and in Python, so on a full city it is the longest single stretch of
+    # the terrain phase by far. Reported the same way the row walk is: a silent phase that runs
+    # for minutes is indistinguishable from a hang, and was read as one.
+    #
+    # "terrain clip" deliberately carries no tools/ab_compare.py count marker, so this line can
+    # appear at whatever cadence the window needs without becoming a gated number.
+    clip_todo = numpy.nonzero(needs_clip)[0]
+    clip_step = max(1, len(clip_todo) // 50)
+    for done, i in enumerate(clip_todo):
+        if done % clip_step == 0:
+            LOG.progress("terrain clip", done, len(clip_todo))
         r = int(cell_rr[i])
         c = int(cell_cc[i])
         x0 = origin_x + (col0 + c) * cell
@@ -3785,6 +3795,8 @@ def build_terrain(bundle_dir, collection, center, radius, clip_floor=None):
                 continue
             clipped_polys.append(ring)
             clipped_class.append(int(cell_class[i]))
+    if len(clip_todo):
+        LOG.progress_end()
 
     # Exactly how much terrain the cut removed: every split cell's own area less what survived
     # of it, plus the cells that fell wholly inside. Shoelace over the kept pieces, so this is
