@@ -2068,7 +2068,13 @@ rip predates the build), so it has yet to fire. The producer fix is to make resi
 precondition rather than a coin toss — force the piece's geometry to load before reading it, or
 retry — and the counter is what will confirm which pieces need it.
 
-### 41.7 Open: the notches at a width transition come from the SNAP, not the cut
+### 41.7 SUPERSEDED by §41.8 — this diagnosis was wrong
+
+*Kept for the method lesson: the face-mask test read 1 m² of sky over a window with two
+visible holes in it, and I read that as "the mask is clean, so it must be the snap"
+instead of asking what else the test could not see. It was the yardstick, not the snap.*
+
+### 41.7 (as written) The notches at a width transition come from the SNAP, not the cut
 
 Reported at `(4324.5, 1550.5)` — two triangular holes where a 24 m Medium Road narrows to an 8 m
 Alley Oneway (`seg_2301693`, `seg_2302757`), plus a sawtooth run along a nearby road edge.
@@ -2092,3 +2098,62 @@ in the session scratchpad already builds the real lattice and runs the real snap
 numbers (13–50 m² per window) are consistently higher than the mask-only figures (1–16 m²) for
 exactly this reason. Folding that into `tools/test_clip_cut.py` is the prerequisite for calling
 the snap fixed.
+
+### 41.8 §41.7 was wrong: the notches are the CUT, not the snap — and only a deep band may cut
+
+Measured, not argued. The window was rebuilt from the 2026-08-11 17:23 rip running the real
+`_clip_grid` and the real `_snap_hole_boundary`, and scored against the **real segment meshes**
+out of `networks/seg_*.glb` rather than against the clip footprint.
+
+**The snap is not the cause.** With the snap disabled the two triangles are still there — 9.0 m²
+and 4.2 m² against 12.6 m² and 7.3 m² with it on. The snap widens them ~40%; it does not make
+them. §41.7's mechanism ("a rim vertex beside the narrow alley is claimed by the wide road's
+wall") and its candidate rule are both retracted.
+
+**What does make them.** Both holes sit under a `kind: "node"` clip fan (`seg_2301693`,
+`seg_2302757`) and no road mesh covers them — not the alley's own, not any neighbour's. Walking
+each fan's rails, exactly one sector is short, and only along the segment's own side curve:
+
+      node strip  L[4334.6, 1567.8]..[4325.5, 1555.9]  R[4329.6, 1566.8]..[4323.3, 1563.2]
+         t          0.0   0.1   0.2   0.3   0.4   0.5   0.6   0.7   0.8   0.9   1.0
+         left rail  0.00  0.00  0.00  0.00  0.00  0.00  0.00  0.00  0.00  0.00  0.00
+         right rail 0.09  2.52  2.37  2.32  2.36  2.51  2.73  3.02  3.34  3.69  0.00   m uncovered
+
+The other three sectors of that fan are covered to 0.00 m, and the second notch has the same
+signature (2.2 m widening to 4.4 m). The uncovered wedge widens toward the junction centre as
+the sector diverges.
+
+**Why the ground belongs there.** The producer's own `surface_index` is **1 (roadbed)** on every
+cell inside both notches: the game paints that ground as road surface. So keeping it is right
+whether the game paves the sector with mesh or with paint, and keeping it cannot show sky —
+which deleting it demonstrably can. (Whether our node mesh is ALSO short against the game's own
+is a separate producer question, open, and now masked rather than caused by this.)
+
+**The rule that follows.** A shallow band flattens and paints but never carves; only a trench or
+portal band (`top > _CLIP_DEEP_BAND_TOP`) deletes, because that is the one the game really needs
+stencilled. Measured across six windows against the real meshes:
+
+  window                     ground deleted with no road over it     terrain faces
+  train tracks                     9.1 m²  ->  0.0                     +3.4%
+  road junction                    8.8 m²  ->  0.0                     +8.7%
+  width transition                41.3 m²  ->  0.0 (rest is lot clips) +0.8%
+  trench cluster                   1.5 m²  ->  0.9                     +0.2%
+  deep cluster                    42.9 m²  ->  38.3 (lot clips)        +2.4%
+  clip areas                     147.9 m²  ->  147.0 (lot clips)       +0.4%
+
+Accepted by render: the harness run over `--center 4324.5 1550.5 --radius 150`, rendered
+orthographic with a transparent film, leaves **0.0 m² of the 110 x 110 m window undrawn**.
+
+**Why §41's own gate could not see any of this.** `test_clip_cut.py` scored the cut against the
+PRISM — "deleted where no prism reaches" — and the prism is not the pavement. That budget read
+1 m² over this window while two triangles were plainly missing on screen. The test now scores
+against the real segment meshes, exempting only the two deliberately-open classes (a portal
+mouth, a lot clip), and the exemption is defined independently of the rule under test — deriving
+it from `carves()` made the test vacuous, reading 0.8 m² for the exact behaviour that put the
+triangles there. Probe: letting shallow bands carve again takes the width-transition window to
+14.1 m² against a 1.0 m² budget, and fails.
+
+**Snap status.** With no shallow holes there is no shallow rim: the region import reports 0
+vertices snapped. `_snap_hole_boundary` now also declines a non-carving strip as a candidate — a
+rim belongs to the volume that made the hole, and a shallow wall would otherwise drag a deep
+hole's rim sideways onto a surface road.

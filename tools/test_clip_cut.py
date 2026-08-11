@@ -1,10 +1,24 @@
-"""Terrain clip cut: the deleted set must never reach outside the clip prisms.
+"""Terrain clip cut: no ground may be deleted that nothing is drawn over.
 
 The game never cuts terrain geometry. It draws the whole heightfield and discards per pixel
 against a stencil built from the §8c clip volumes (`GenerateClipDataJob` ->
-`TerrainSurface.RenderClipAreas`), so `discarded ⊆ covered by road mesh` holds by construction
-and a see-through gap beside a road cannot happen in game. A mesh cut at 3.5 m can only
-approximate that boundary, and this test pins which way it errs.
+`TerrainSurface.RenderClipAreas`). A mesh cut at 3.5 m can only approximate that boundary, and
+this test pins which way it errs.
+
+WHAT THIS TEST SCORES AGAINST, AND WHY IT CHANGED (2026-08-11, second round). It used to score
+the deleted set against the clip PRISM: sky meant "deleted where no prism reaches". That budget
+was met — 1 m² over the width-transition window — while two triangles of ground were plainly
+missing on screen, because the prism is not the pavement. At a node the clip fan runs out to the
+segment's own side curve and the road mesh reaches only part of that sector (measured: short by
+2.2 m at the rail's start, 4.4 m at the junction centre), so terrain deleted well inside the
+prism had nothing over it. A test that cannot tell those apart cannot gate this rule.
+
+So the primary score is now against the REAL segment meshes out of `networks/seg_*.glb`: a
+pixel is sky when the cut deleted the ground AND no road triangle covers it. The prism check is
+kept as a secondary, because it still catches the other failure direction.
+
+The shipped rule that follows from this: a shallow band flattens but never carves; only a
+trench or portal band (`top > _CLIP_DEEP_BAND_TOP`) deletes. See `_contain_faces`.
 
 WHAT THIS SETTLED (2026-08-11). Three defects were reported after the split-band round — gaps at
 junction intersections, square terrain overlapping cutout walls, and terrain clipping through
@@ -32,11 +46,14 @@ disk).
 import json
 import math
 import os
+import pathlib
 import random
 import re
 import sys
 
 import numpy
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 SRC = os.path.join(os.path.dirname(__file__), "blender_import_bundle.py")
 BUNDLE = os.environ.get("CARTO_BUNDLE") or os.path.expandvars(
@@ -52,12 +69,23 @@ WINDOWS = (("train tracks", 873.9, 1442.0, 120.0),
            ("road junction", 2936.9, 1397.5, 120.0),
            ("trench cluster", -2650.0, 3850.0, 120.0),
            ("deep cluster", 2750.0, -350.0, 120.0),
-           ("clip areas", 450.0, -2900.0, 120.0))
+           ("clip areas", 450.0, -2900.0, 120.0),
+           # The 2026-08-11 width transition: a 24 m Medium Road narrowing to an 8 m Alley
+           # Oneway, whose node fans opened the two triangles the prism score could not see.
+           ("width transition", 4324.5, 1550.5, 120.0))
 
 # Sky, in m² per window, that the shipped rule is allowed to leave. Above zero only because the
 # containment test samples at `_CLIP_CONTAIN_SAMPLES` per cell and the truth here is finer; the
 # residual is sub-sample sliver along a prism wall.
 SKY_BUDGET = 25.0
+
+# The one that matters: ground deleted with no road mesh over it, per window, outside the two
+# deliberately-open classes below. The shipped rule leaves 0.0-0.2 m² — sub-sample sliver where
+# the exemption footprint and the cut disagree by less than a truth pixel — so a budget of 1 m²
+# is a real gate rather than a formality. Verified by probe: letting shallow bands carve again
+# takes it to 4.3 / 2.3 / 0.9 / 0.9 / 14.1 m² and fails the width-transition window, which is
+# the one the two triangles were reported in.
+ROAD_SKY_BUDGET = 1.0
 
 source = open(SRC, encoding="utf-8").read()
 H = {"numpy": numpy}
@@ -170,6 +198,18 @@ def strips_near(x0, x1, z0, z1):
     return found
 
 
+def carves(record):
+    """Is this record one the shipped rule lets DELETE terrain?
+
+    A shallow band flattens and paints; only a trench or portal band carves. An `area` record
+    is an authored clip surface and keeps its own behaviour.
+    """
+    if record.get("kind") == "area":
+        return True
+    top = record.get("top")
+    return top is None or float(top) > H["_CLIP_DEEP_BAND_TOP"]
+
+
 def quads_of(record, to_cell, cell):
     """`(quad, lane_y, bottom, top)` per station, in cell space — the harness's own stepping."""
     bottom = float(record["bottom"])
@@ -198,6 +238,83 @@ def quads_of(record, to_cell, cell):
                float((lane[i - 1] + lane[i]) * 0.5), bottom, top)
 
 
+def road_cover(cx, cz, radius, origin_x, origin_z, col0, row0, cell, fine_h, fine_w):
+    """What the road meshes actually draw over, at TRUTH samples per cell.
+
+    The bundle's segment meshes are the only honest answer to "is this ground hidden?" — the
+    clip prism is not, which is the whole point of this test. glTF vertices are placed the way
+    contract §2.2 places an instance, with the mirror the harness applies:
+    `world = pos + diag(-1, 1, 1) * v` (every network record ships an identity rotation).
+    """
+    from inspect_glb import read_glb, read_accessor
+
+    cover = numpy.zeros((fine_h, fine_w), dtype=bool)
+    mesh_dir = os.path.join(BUNDLE, "networks")
+    if not os.path.isdir(mesh_dir):
+        return None
+    segments = 0
+    with open(os.path.join(BUNDLE, "networks.jsonl"), encoding="utf-8") as handle:
+        for line in handle:
+            if not line.strip():
+                continue
+            record = json.loads(line)
+            pos = record.get("pos")
+            # A segment's own length is its reach past `pos`; 120 m clears the longest.
+            if not pos or abs(pos[0] - cx) > radius + 120 or abs(pos[2] - cz) > radius + 120:
+                continue
+            path = os.path.join(mesh_dir, record["assetId"] + ".glb")
+            if not os.path.isfile(path):
+                continue
+            try:
+                gltf, blob = read_glb(pathlib.Path(path))
+            except ValueError:
+                continue
+            segments += 1
+            for mesh in gltf.get("meshes", []):
+                for prim in mesh.get("primitives", []):
+                    if prim.get("mode", 4) != 4 or "POSITION" not in prim.get("attributes", {}):
+                        continue
+                    verts = numpy.asarray(
+                        read_accessor(gltf, blob, prim["attributes"]["POSITION"]),
+                        dtype=numpy.float64)
+                    if "indices" in prim:
+                        idx = numpy.asarray(read_accessor(gltf, blob, prim["indices"]),
+                                            dtype=numpy.int64)
+                    else:
+                        idx = numpy.arange(len(verts), dtype=numpy.int64)
+                    tri = verts[idx].reshape(-1, 3, 3)
+                    wx = pos[0] - tri[:, :, 0]
+                    wz = pos[2] + tri[:, :, 2]
+                    px = ((wx - origin_x) / cell + 0.5 - col0 - 0.5) * TRUTH
+                    pz = ((origin_z - wz) / cell + 0.5 - row0 - 0.5) * TRUTH
+                    _fill_triangles(cover, px, pz)
+    return cover if segments else None
+
+
+def _fill_triangles(mask, px, pz):
+    """Scan-fill triangles given per-vertex in fine-pixel coordinates."""
+    fine_h, fine_w = mask.shape
+    for k in range(len(px)):
+        y0 = max(0, int(math.floor(pz[k].min())))
+        y1 = min(fine_h - 1, int(math.ceil(pz[k].max())))
+        x0 = max(0, int(math.floor(px[k].min())))
+        x1 = min(fine_w - 1, int(math.ceil(px[k].max())))
+        if y1 < y0 or x1 < x0:
+            continue
+        ax, bx, cx_ = px[k]
+        az, bz, cz_ = pz[k]
+        det = (bz - cz_) * (ax - cx_) + (cx_ - bx) * (az - cz_)
+        if abs(det) < 1e-12:
+            continue
+        gx, gz = numpy.meshgrid(numpy.arange(x0, x1 + 1) + 0.5,
+                                numpy.arange(y0, y1 + 1) + 0.5)
+        l1 = ((bz - cz_) * (gx - cx_) + (cx_ - bx) * (gz - cz_)) / det
+        l2 = ((cz_ - az) * (gx - cx_) + (ax - cx_) * (gz - cz_)) / det
+        inside = (l1 >= 0) & (l2 >= 0) & (l1 + l2 <= 1)
+        if inside.any():
+            mask[y0:y1 + 1, x0:x1 + 1] |= inside
+
+
 def check(label, cx, cz, radius, heights, cell, origin_x, origin_z):
     """Score the harness's deletion mask on one window against a finer independent truth."""
     global failures
@@ -215,6 +332,10 @@ def check(label, cx, cz, radius, heights, cell, origin_x, origin_z):
                             (origin_z - points[:, 2]) / cell + 0.5 - row0), axis=-1)
 
     quads = [q for record in records for q in quads_of(record, to_cell, cell)]
+    # Only a carving record reaches the deletion rule, exactly as `_clip_grid` bins it. Every
+    # record still fills `cell_cut`, which is the refine corridor, not the cut.
+    cutting = [q for record in records if carves(record)
+               for q in quads_of(record, to_cell, cell)]
     if not quads:
         print(f"  {label:<16} no clip volumes in window — skipped")
         return
@@ -225,7 +346,7 @@ def check(label, cx, cz, radius, heights, cell, origin_x, origin_z):
         H["_fill_clip_quad"](cell_cut, terrain, lat_w, lat_h, quad, lane_y, bottom, top)
     contain, band_count, deep_touch, _sub = H["_contain_faces"](
         lat_w, lat_h, terrain, cell_cut,
-        lambda r0, c0, r1, c1: iter(quads),
+        lambda r0, c0, r1, c1: iter(cutting),
         H["_CLIP_CONTAIN_SAMPLES"], H["_CLIP_CONTAIN_BLOCK"])
 
     # -- truth: the band and the footprint at TRUTH samples per cell -----------------------
@@ -255,7 +376,39 @@ def check(label, cx, cz, radius, heights, cell, origin_x, origin_z):
     ratio = deleted_area / band_area if band_area else 0.0
     poke = float((~deleted & band).sum()) * area
 
+    # The primary score: ground deleted with no road triangle over it. This is what a viewer
+    # sees as a hole, and the only measure that would have caught the width-transition notches.
+    #
+    # Two exclusions, and they are exclusions of SCOPE, not amnesties. A tunnel portal's mouth
+    # is deliberately open — that is the whole reason a deep band carves — and its road mesh
+    # runs down inside the hill rather than over the hole, so it can never "cover" it. A lot
+    # clip is covered by the building or area surface that owns it, which is not a network mesh
+    # and is not this test's subject. What is left is exactly the class the notches belong to:
+    # ground under a SHALLOW network band. That is 0 while only deep bands carve, and it is
+    # what goes non-zero the moment a shallow band is let back into the deletion — which is the
+    # regression this test exists to catch.
+    # NOTE the exemption is defined here, NOT as `carves()`. Deriving it from the rule under
+    # test makes the test vacuous: flip the rule and the exemption flips with it, so every
+    # deletion is excused and the score reads 0 whatever the rule does. (Tried; it read 0.8 m²
+    # for the very behaviour that put two triangles on screen.)
+    cover = road_cover(cx, cz, radius, origin_x, origin_z, col0, row0, cell, fine_h, fine_w)
+    seen_through = None
+    if cover is not None:
+        exempt = numpy.zeros((fine_h, fine_w), dtype=bool)
+        for record in records:
+            deep = record.get("top") is None or float(record["top"]) > H["_CLIP_DEEP_BAND_TOP"]
+            if not (record.get("kind") == "area" or deep):
+                continue
+            for quad, lane_y, bottom, top in quads_of(record, to_cell, cell):
+                local = [((px - 0.5) * TRUTH, (py - 0.5) * TRUTH) for px, py in quad]
+                H["_fill_clip_quad"](exempt, fine_y, fine_w, fine_h, local, 0.0, -1e18, 1e18)
+        seen_through = float((deleted & ~cover & ~exempt).sum()) * area
+
     ok = True
+    if seen_through is not None and seen_through > ROAD_SKY_BUDGET:
+        print(f"  FAIL {label}: {seen_through:.1f} m² of ground deleted with no road mesh over "
+              f"it (budget {ROAD_SKY_BUDGET:.1f} m²) — visible holes")
+        ok = False
     if sky > SKY_BUDGET:
         print(f"  FAIL {label}: {sky:.0f} m² deleted where no clip prism reaches "
               f"(budget {SKY_BUDGET:.0f} m²) — see-through gaps")
@@ -272,10 +425,11 @@ def check(label, cx, cz, radius, heights, cell, origin_x, origin_z):
     # no hole rim to push out. `build_terrain` re-cuts exactly these at the containment
     # sampling; the figure is reported so their number stays visible, not because they are left.
     recut = int((deep_touch & ~contain & ~H["_dilate"](contain, 1)).sum())
-    print(f"  ok   {label:<16} sky {sky:5.0f} m²   cut/clipped x{ratio:.2f}   "
+    hole = f"{seen_through:5.1f} m²" if seen_through is not None else "  (no meshes)"
+    print(f"  ok   {label:<16} hole {hole}   sky {sky:5.0f} m²   cut/clipped x{ratio:.2f}   "
           f"kept-in-band {100 * poke / max(band_area, 1e-9):4.1f}%   "
           f"re-cut {recut * cell * cell:5.0f} m²   "
-          f"({len(records)} record(s), band {band_area:,.0f} m²)")
+          f"({len(records)} record(s), {len(cutting)} carving quad(s))")
 
 
 def main():
