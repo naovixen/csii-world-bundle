@@ -2702,7 +2702,7 @@ def _bezier_points(control, t):
 
 
 def _fill_clip_quad(mask, terrain_y, width, height, quad, lane_y, bottom, top,
-                    offset=0.5):
+                    refs=None, ref_value=-1, offset=0.5):
     """Mark the samples one strip quad clips — even-odd scanline over sample points.
 
     `quad` is four (x, y) points in cell space, where cell (row, col) spans [col, col+1) ×
@@ -2716,7 +2716,7 @@ def _fill_clip_quad(mask, terrain_y, width, height, quad, lane_y, bottom, top,
 
       * `offset = 0.5` — the CELL-CENTRE raster, entry (row, col) = cell (row, col). This is
         the true clipped set: contract §3 puts a lattice vertex at a cell centre, so it is
-        also the sample the refine corridor is keyed on.
+        also the sample the refine corridor and the hole-boundary `refs` are keyed on.
       * `offset = 1.0` — the FACE-CENTRE raster, entry (r, c) = the quad face spanning cells
         (r..r+1, c..c+1), whose centre falls on the shared corner of those four cells, an
         INTEGER coordinate in this space. Deletion reads this one.
@@ -2729,6 +2729,8 @@ def _fill_clip_quad(mask, terrain_y, width, height, quad, lane_y, bottom, top,
     interstitial strip wherever two roads ran within ~7 m — the visible terrain gaps beside
     junction arms and parallel carriageways. Sampling the face centre lands on 34.2%.
 
+    When `refs` is given, every sample this quad cuts also records `ref_value` — the packed
+    (strip, station) reference the hole-boundary snap reads back.
     """
     ys = [p[1] for p in quad]
     # Rows whose sample line `row + offset` falls inside the quad's y-range. Exact, so the
@@ -2762,6 +2764,9 @@ def _fill_clip_quad(mask, terrain_y, width, height, quad, lane_y, bottom, top,
             over = terrain_y[row, lo:hi + 1] - lane_y
             inside = (over > bottom) & (over < top)
             mask[row, lo:hi + 1] |= inside
+            if refs is not None and ref_value >= 0:
+                span = refs[row, lo:hi + 1]
+                span[inside] = ref_value
 
 
 def _face_footprint_reduce(native, row0, col0, nfr, nfc, stride):
@@ -2867,132 +2872,11 @@ def _transition_fans(block_refined, block_transition, stride, lattice_w):
             numpy.asarray(block_ids, dtype=numpy.int64))
 
 
-# A cell the exact clipper splits into more pieces than this is abandoned to the containment
-# rule rather than allowed to shed slivers without bound. Every constraint of a prism can cut a
-# piece in two, so the theoretical worst case per cell is exponential in the number of prisms
-# straddling it; in a real city a cell is straddled by one or two. The cap only bounds the
-# pathological case, and every use of it is counted and reported.
-_CLIP_MAX_PIECES = 24
-
-# Weld tolerance for the exact clipper's new vertices, in metres. Two cells that cut the same
-# boundary agree to the float, so this only has to absorb the last bits; it must stay far below
-# any real feature, and 0.1 mm is four orders under the 3.5 m cell.
-_CLIP_WELD = 1e-4
-
-# Below these a clipped piece is not geometry, it is a rounding artefact of the cut: an edge
-# shorter than a millimetre or a face under a square centimetre. Clipping a cell against a
-# boundary that grazes one of its corners produces them by construction, and keeping them only
-# feeds `mesh.validate()` polygons it will reject anyway.
-_CLIP_MIN_EDGE = 1e-3
-_CLIP_MIN_AREA = 1e-4
-
-
-def _clean_ring(poly):
-    """One clipped piece as a usable polygon, or None if the cut left only an artefact."""
-    ring = []
-    for vertex in poly:
-        if ring and (abs(vertex[0] - ring[-1][0]) < _CLIP_MIN_EDGE
-                     and abs(vertex[1] - ring[-1][1]) < _CLIP_MIN_EDGE):
-            continue
-        ring.append(vertex)
-    while len(ring) >= 2 and (abs(ring[0][0] - ring[-1][0]) < _CLIP_MIN_EDGE
-                              and abs(ring[0][1] - ring[-1][1]) < _CLIP_MIN_EDGE):
-        ring.pop()
-    if len(ring) < 3:
-        return None
-    area = 0.0
-    for i in range(len(ring)):
-        j = (i + 1) % len(ring)
-        area += ring[i][0] * ring[j][1] - ring[j][0] * ring[i][1]
-    return ring if abs(area) * 0.5 >= _CLIP_MIN_AREA else None
-
-
-def _split_convex(poly, values):
-    """Split a convex polygon by the line where a linear vertex quantity changes sign.
-
-    `poly` is a list of `(x, z, y)` and `values` the same length: any quantity that varies
-    LINEARLY over the polygon. Returns `(inside, outside)` — the parts where the value is >= 0
-    and <= 0 — with new vertices interpolated exactly at the zero crossing.
-
-    Working on an arbitrary linear quantity rather than on x/z is what lets one routine serve
-    both kinds of constraint a clip prism has: its four lateral walls (an edge cross product)
-    and its two band surfaces (`y - (lane + bottom)`, `(lane + top) - y`). Because x, z and y
-    are all interpolated together, the split point is exactly on the terrain surface the mesh
-    already represents — no new approximation enters.
-    """
-    inside, outside = [], []
-    count = len(poly)
-    for i in range(count):
-        j = (i + 1) % count
-        vi, vj = values[i], values[j]
-        if vi >= 0.0:
-            inside.append(poly[i])
-        if vi <= 0.0:
-            outside.append(poly[i])
-        # BOTH directions of sign change need the crossing vertex. Testing only one of them
-        # (`>` instead of `!=`) silently drops the second intersection of every polygon the
-        # line enters and leaves, which builds rings that look plausible and are not closed.
-        if (vi > 0.0) != (vj > 0.0) and vi != vj:
-            t = vi / (vi - vj)
-            a, b = poly[i], poly[j]
-            crossing = (a[0] + t * (b[0] - a[0]),
-                        a[1] + t * (b[1] - a[1]),
-                        a[2] + t * (b[2] - a[2]))
-            inside.append(crossing)
-            outside.append(crossing)
-    return (inside if len(inside) >= 3 else []), (outside if len(outside) >= 3 else [])
-
-
-def _subtract_prism(pieces, quad, lane_y, bottom, top):
-    """Every part of `pieces` that lies OUTSIDE one clip prism, still convex.
-
-    A prism is the intersection of six half-spaces — four lateral walls from the station quad,
-    two from the height band — so its complement within a convex piece is not convex, but peels
-    off as one convex piece per constraint: clip by constraint 1 and the outside part is done,
-    then clip what remains by constraint 2, and so on. What survives all six is inside the
-    prism, and is what the game discards.
-    """
-    (ax, az), (bx, bz), (cx, cz), (dx, dz) = quad
-    # Consistent winding, so "inside" is the same side of all four walls.
-    area = ((bx - ax) * (cz - az) - (bz - az) * (cx - ax)
-            + (cx - ax) * (dz - az) - (cz - az) * (dx - ax))
-    # A station quad of no area clips nothing, and must not be asked to: its walls are
-    # zero-length, every constraint value is then exactly 0, and a zero constraint puts the
-    # WHOLE piece on both sides — so the piece is kept once per wall and the mesh ends up with
-    # four copies of it. Curves with a repeated control point produce these routinely.
-    if abs(area) < _CLIP_MIN_AREA:
-        return list(pieces)
-    turn = 1.0 if area >= 0.0 else -1.0
-    walls = [(x0, z0, x1, z1) for x0, z0, x1, z1 in
-             ((ax, az, bx, bz), (bx, bz, cx, cz), (cx, cz, dx, dz), (dx, dz, ax, az))
-             if math.hypot(x1 - x0, z1 - z0) >= _CLIP_MIN_EDGE]
-
-    kept = []
-    for piece in pieces:
-        remaining = piece
-        for x0, z0, x1, z1 in walls:
-            if not remaining:
-                break
-            values = [turn * ((x1 - x0) * (v[1] - z0) - (z1 - z0) * (v[0] - x0))
-                      for v in remaining]
-            remaining, outside = _split_convex(remaining, values)
-            if outside:
-                kept.append(outside)
-        for sign, limit in ((1.0, lane_y + bottom), (-1.0, lane_y + top)):
-            if not remaining:
-                break
-            if not math.isfinite(limit):
-                continue
-            values = [sign * (v[2] - limit) for v in remaining]
-            remaining, outside = _split_convex(remaining, values)
-            if outside:
-                kept.append(outside)
-        # `remaining` is the part inside the prism — the terrain the game clips. Dropped.
-    return kept
+_CLIP_REF_STATION_BITS = 11  # stations per strip cap at 1024 (< 2^11)
 
 
 def _clip_grid(bundle_dir, width, height, heights, cell, origin_x, origin_z,
-               elevation_scale, elevation_offset, floor_override=None, window=None):
+               elevation_scale, elevation_offset, floor_override=None):
     """Rasterise `clipvolumes.jsonl` onto the heightmap grid — contract §8c.
 
     The volumes are what the producer intersects against the heightmap; a consumer meshing at
@@ -3003,10 +2887,12 @@ def _clip_grid(bundle_dir, width, height, heights, cell, origin_x, origin_z,
     `floor_override`, when not None, replaces every strip's `bottom` — a diagnostic knob
     (`--clip-floor`) for previewing a producer band-floor change against an existing bundle.
 
-    Returns `(mask, face_mask, clip_quads)`: the (height, width) bool cut mask over CELL
-    centres, which decides the refine corridor; the (height − 1, width − 1) mask over FACE
-    centres, kept as the yardstick the exact cut is reported against; and
-    `(cell -> quad indices, quad records)`, the per-cell index the exact clipper walks.
+    Returns `(mask, face_mask, refs, strip_geo)`: the (height, width) bool cut mask over CELL
+    centres; the (height − 1, width − 1) bool mask over FACE centres, which is what deletion
+    reads; an int32 raster of packed (strip << _CLIP_REF_STATION_BITS | station) references
+    for every cut cell (−1 where uncut or cut only by an `area` record, which has no curves to
+    snap to); and `strip_geo[strip] = (left_pts, right_pts, lane, bottom, top)` — the
+    evaluated boundary polylines the hole-boundary snap projects onto.
 
     The two rasters answer two different questions and both are needed. "Which cells does the
     clip volume cover?" decides the refine corridor and gives the boundary snap its reference
@@ -3021,9 +2907,12 @@ def _clip_grid(bundle_dir, width, height, heights, cell, origin_x, origin_z,
             "the producer always writes the §8c clip layer; re-rip the bundle")
 
     strips = [record for record in read_jsonl(path)]
+    refs = numpy.full((height, width), -1, dtype=numpy.int32)
+    strip_geo = []
     if not strips:
         empty_face = numpy.zeros((height - 1, width - 1), dtype=bool)
-        return numpy.zeros((height, width), dtype=bool), empty_face, ({}, [])
+        return (numpy.zeros((height, width), dtype=bool), empty_face, empty_face.copy(),
+                refs, strip_geo)
 
     terrain_y = (numpy.asarray(heights, dtype=numpy.float64).reshape(height, width)
                  * elevation_scale + elevation_offset)
@@ -3037,39 +2926,24 @@ def _clip_grid(bundle_dir, width, height, heights, cell, origin_x, origin_z,
     terrain_face = 0.25 * (terrain_y[:-1, :-1] + terrain_y[:-1, 1:]
                            + terrain_y[1:, :-1] + terrain_y[1:, 1:])
     face_mask = numpy.zeros((face_h, face_w), dtype=bool)
+    face_above = numpy.zeros((face_h, face_w), dtype=bool)
 
-    # Which station quads touch which cell, for the exact clipper. Built only inside the import
-    # window: a full city holds ~226,000 station quads and indexing all of them for a
-    # neighbourhood import would cost more than the import.
-    quad_cells = {}
-    quad_data = []
-    win_r0, win_r1, win_c0, win_c1 = window if window else (0, height - 1, 0, width - 1)
-
-    def index_quad(cells_xz, world_quad, lane_y, bottom, top):
-        rows = [c[1] for c in cells_xz]
-        cols = [c[0] for c in cells_xz]
-        r_lo = max(win_r0, int(math.floor(min(rows) - 1.0)))
-        r_hi = min(win_r1, int(math.ceil(max(rows))))
-        c_lo = max(win_c0, int(math.floor(min(cols) - 1.0)))
-        c_hi = min(win_c1, int(math.ceil(max(cols))))
-        if r_hi < r_lo or c_hi < c_lo:
-            return
-        index = len(quad_data)
-        quad_data.append((world_quad, lane_y, bottom, top))
-        for r in range(r_lo, r_hi + 1):
-            for c in range(c_lo, c_hi + 1):
-                quad_cells.setdefault((r, c), []).append(index)
-
-    def fill(quad, lane_y, bottom, top):
+    def fill(quad, lane_y, bottom, top, ref_value=-1):
         """Three rasters from one quad; they differ only in where the scanline samples and,
         for the third, where the band starts. See `_clip_grid`'s docstring for what each
         answers and `build_terrain` for how the deletion rule combines them."""
-        _fill_clip_quad(mask, terrain_y, width, height, quad, lane_y, bottom, top)
-        # The face-centre raster is no longer a deletion rule — the exact clipper decides that
-        # on the prism boundary itself. It survives as the YARDSTICK: the area the prisms cover,
-        # which the cut is reported against so an over-cut can never go unnoticed again.
+        _fill_clip_quad(mask, terrain_y, width, height, quad, lane_y, bottom, top,
+                        refs=(refs if ref_value >= 0 else None), ref_value=ref_value)
+        # Both face rasters share one scanline. The second is the band ABOVE the carriageway
+        # only: the lane curve IS the road surface — measured over the shipped bundle,
+        # `road_top - lane_path.y` has median 0.000 m — so terrain standing above it is terrain
+        # the road mesh does not cover, and only the clip can hide it. That is the half of the
+        # band where deleting is mandatory rather than merely permitted.
         _fill_clip_quad(face_mask, terrain_face, face_w, face_h, quad, lane_y, bottom, top,
                         offset=1.0)
+        if top > 0.0:
+            _fill_clip_quad(face_above, terrain_face, face_w, face_h, quad, lane_y,
+                            max(bottom, 0.0), top, offset=1.0)
 
     def to_cell(points):
         """World positions to cell space, cell (row, col) centred on (col + .5, row + .5)."""
@@ -3094,17 +2968,8 @@ def _clip_grid(bundle_dir, width, height, heights, cell, origin_x, origin_z,
                 # A triangle reaches the scanline as a quad with one doubled corner, and its
                 # lane reference is the corner mean — both as the producer has them. No ref:
                 # an area cut has no boundary curves for the snap to project onto.
-                corners = [tuple(cells[0]), tuple(cells[1]), tuple(cells[2]), tuple(cells[2])]
-                lane_y = float(pts[:, 1].mean())
-                fill(corners, lane_y, bottom, top)
-                # An authored clip area cuts exactly like a road prism does, and the exact
-                # clipper has to see it too or a ClipArea would stop clipping anything at all.
-                # The doubled corner becomes a zero-length wall, which `_subtract_prism` drops,
-                # so the triangle clips as a triangle.
-                index_quad(corners,
-                           ((pts[0][0], pts[0][2]), (pts[1][0], pts[1][2]),
-                            (pts[2][0], pts[2][2]), (pts[2][0], pts[2][2])),
-                           lane_y, bottom, top)
+                fill([tuple(cells[0]), tuple(cells[1]), tuple(cells[2]), tuple(cells[2])],
+                     float(pts[:, 1].mean()), bottom, top)
             continue
 
         left, right = strip.get("left"), strip.get("right")
@@ -3124,21 +2989,187 @@ def _clip_grid(bundle_dir, width, height, heights, cell, origin_x, origin_z,
         right_cells = to_cell(right_pts)
         lane = (left_pts[:, 1] + right_pts[:, 1]) * 0.5
 
+        strip_index = len(strip_geo)
+        strip_geo.append((left_pts, right_pts, lane, bottom, top))
         for i in range(1, steps + 1):
-            cells_xz = [tuple(left_cells[i - 1]), tuple(right_cells[i - 1]),
-                        tuple(right_cells[i]), tuple(left_cells[i])]
-            lane_y = float((lane[i - 1] + lane[i]) * 0.5)
-            fill(cells_xz, lane_y, bottom, top)
-            index_quad(cells_xz,
-                       ((left_pts[i - 1][0], left_pts[i - 1][2]),
-                        (right_pts[i - 1][0], right_pts[i - 1][2]),
-                        (right_pts[i][0], right_pts[i][2]),
-                        (left_pts[i][0], left_pts[i][2])),
-                       lane_y, bottom, top)
+            fill([tuple(left_cells[i - 1]), tuple(right_cells[i - 1]),
+                  tuple(right_cells[i]), tuple(left_cells[i])],
+                 float((lane[i - 1] + lane[i]) * 0.5), bottom, top,
+                 ref_value=(strip_index << _CLIP_REF_STATION_BITS) | i)
 
-    return mask, face_mask, (quad_cells, quad_data)
+    return mask, face_mask, face_above, refs, strip_geo
 
 
+def _snap_hole_boundary(verts, vid, used_grid, cut_face_grid, refs_w, strip_geo, ground_y,
+                        origin_x, origin_z, row0, col0, cell):
+    """Move every cut-hole boundary vertex onto the clip prism's own surface.
+
+    The game clips terrain per pixel against smooth swept prisms; this grid deletes whole
+    3.5 m cells, so the hole is up to a cell wider than the prism everywhere — a sawtooth
+    see-through rim beside every road once the everyday ±0.3 m shell ships, and open gaps
+    around portal mouths. Snapping closes it exactly: a boundary vertex laterally outside
+    the strip moves onto the nearest point of the strip's side polyline (the prism wall),
+    with its height resampled from the ground there; a vertex over the strip whose height is
+    above the band ceiling drops to `lane + top` (the portal-roof iso-edge), below the floor
+    rises to `lane + bottom`. Kept faces then stretch to the exact clip boundary, the way
+    the game's surviving pixels end at it. Verts cut only by `area` records (ref −1) stay —
+    an authored clip surface has no curves to project onto.
+
+    Where several strips overlap — every junction, every pair of close-run tracks — a boundary
+    vertex's neighbourhood names SEVERAL strips, and which one it is projected onto decides
+    where it lands. Taking the first non-negative reference (the rule this replaced) picked
+    arbitrarily among them: measured on the 2026-08-11 rip, 46% of boundary vertices at a
+    double-track run and 50% at a road junction are claimed by more than one strip, and the
+    arbitrary pick lands a median 2.03 m from where the nearest strip would put them (p90
+    4.43 m, max 8.00 m; 23% displaced more than a whole cell at the junction). A vertex dragged
+    onto some other road's prism wall tears the terrain open — the residual junction gaps that
+    survived the face-centre cut. So EVERY candidate is evaluated and the nearest target wins:
+    the same "nearest prism wall" rule this already used within a strip, extended across them.
+
+    A vertex standing OVER a strip is not moved laterally at all, only clamped in height, so it
+    scores a zero-distance target and therefore wins against any wall it merely sits beside.
+    That falls out of ranking by displacement and is the behaviour wanted: a vertex over a
+    prism belongs to that prism.
+
+    Everything is in the window lattice: `used_grid`/`cut_face_grid` are (lat_h, lat_w),
+    `refs_w` the windowed reference raster, `verts` the built vertex array `vid` indexes.
+    Returns `(moved, unreferenced)` — vertices snapped, and boundary vertices that found no
+    strip reference in their 3x3 neighbourhood and were therefore left where they were.
+
+    NOTE on that second number: it counts vertices with NO candidate, and it is 0 on a real
+    city. It says nothing about whether the RIGHT strip was chosen among several, which is what
+    the paragraph above is about — reading a zero there as "the snap is fine" is the mistake
+    this rewrite corrects.
+    """
+    lat_h, lat_w = used_grid.shape
+    cut_corner = numpy.zeros((lat_h, lat_w), dtype=bool)
+    fr, fc = numpy.nonzero(cut_face_grid)
+    for dr, dc in ((0, 0), (0, 1), (1, 0), (1, 1)):
+        cut_corner[fr + dr, fc + dc] = True
+    br, bc = numpy.nonzero(cut_corner & used_grid)
+    if not len(br):
+        return 0, 0
+
+    # Every distinct reference in each boundary vertex's 3×3 neighbourhood becomes a candidate.
+    # One row per (vertex, candidate) pair, so the whole set is scored in one pass and the
+    # per-strip loop below still runs once per strip rather than once per vertex.
+    neighbourhood = []
+    for dr in (-1, 0, 1):
+        for dc in (-1, 0, 1):
+            rr = numpy.clip(br + dr, 0, lat_h - 1)
+            cc = numpy.clip(bc + dc, 0, lat_w - 1)
+            neighbourhood.append(refs_w[rr, cc].astype(numpy.int64))
+    candidates = numpy.stack(neighbourhood, axis=1)                  # (N, 9)
+    live = candidates >= 0
+    unreferenced = int((~live.any(axis=1)).sum())
+    if not live.any():
+        return 0, unreferenced
+
+    vertex_of = numpy.repeat(numpy.arange(len(br), dtype=numpy.int64), 9)[live.reshape(-1)]
+    ref = candidates.reshape(-1)[live.reshape(-1)]
+
+    vertex_x = origin_x + (col0 + bc).astype(numpy.float64) * cell
+    vertex_z = origin_z - (row0 + br).astype(numpy.float64) * cell
+    ids = vid[br * lat_w + bc]
+    vertex_y = verts[ids, 2].copy()
+
+    # Expanded to one entry per (vertex, candidate); collapsed back after scoring.
+    x = vertex_x[vertex_of]
+    z = vertex_z[vertex_of]
+    y = vertex_y[vertex_of]
+
+    station_mask = (1 << _CLIP_REF_STATION_BITS) - 1
+    strip_of = (ref >> _CLIP_REF_STATION_BITS).astype(numpy.int64)
+    station_of = (ref & station_mask).astype(numpy.int64)
+
+    def bilinear_ground(px, pz):
+        gc = numpy.clip((px - origin_x) / cell - col0, 0.0, lat_w - 1.001)
+        gr = numpy.clip((origin_z - pz) / cell - row0, 0.0, lat_h - 1.001)
+        c0 = gc.astype(numpy.int64)
+        r0g = gr.astype(numpy.int64)
+        fu = gc - c0
+        fv = gr - r0g
+        g = ground_y
+        return ((g[r0g, c0] * (1 - fu) + g[r0g, c0 + 1] * fu) * (1 - fv)
+                + (g[r0g + 1, c0] * (1 - fu) + g[r0g + 1, c0 + 1] * fu) * fv)
+
+    # Scored in place, one entry per (vertex, candidate strip). `wall_distance` is the score:
+    # how far this vertex is from that strip's nearer side polyline — the prism wall — which is
+    # what "the nearest prism" means. Ranking by how far the vertex would MOVE instead is a
+    # trap: a vertex standing over a strip is only clamped in height, so it scores a zero move
+    # and wins every contest, which suppresses the lateral snap that closes the sawtooth and
+    # leaves the raw cell staircase behind (seen, measured, rejected).
+    target_x = x.copy()
+    target_z = z.copy()
+    target_y = y.copy()
+    wall_distance = numpy.full(len(x), numpy.inf)
+
+    order = numpy.argsort(strip_of, kind="stable")
+    bounds = numpy.searchsorted(strip_of[order], numpy.arange(len(strip_geo) + 1))
+    for s in numpy.unique(strip_of):
+        sel = order[bounds[s]:bounds[s + 1]]
+        left_pts, right_pts, lane, bottom, top = strip_geo[s]
+        i = numpy.clip(station_of[sel], 1, len(lane) - 1)
+        l0 = left_pts[i - 1]
+        l1 = left_pts[i]
+        r0 = right_pts[i - 1]
+        r1 = right_pts[i]
+        lane_y = (lane[i - 1] + lane[i]) * 0.5
+        px, pz, py = x[sel], z[sel], y[sel]
+
+        def closest(a, b):
+            ax, az = a[:, 0], a[:, 2]
+            dx, dz = b[:, 0] - ax, b[:, 2] - az
+            denom = numpy.maximum(dx * dx + dz * dz, 1e-9)
+            t = numpy.clip(((px - ax) * dx + (pz - az) * dz) / denom, 0.0, 1.0)
+            cxp = ax + t * dx
+            czp = az + t * dz
+            return cxp, czp, numpy.hypot(px - cxp, pz - czp)
+
+        lxp, lzp, ld = closest(l0, l1)
+        rxp, rzp, rd = closest(r0, r1)
+        side_l = (l1[:, 0] - l0[:, 0]) * (pz - l0[:, 2]) - (l1[:, 2] - l0[:, 2]) * (px - l0[:, 0])
+        side_r = (r1[:, 0] - r0[:, 0]) * (pz - r0[:, 2]) - (r1[:, 2] - r0[:, 2]) * (px - r0[:, 0])
+        between = numpy.sign(side_l) != numpy.sign(side_r)
+
+        new_x, new_z, new_y = px.copy(), pz.copy(), py.copy()
+        # Over the strip: clamp to the band's iso surfaces (roof for portals, floor rarely).
+        roof = between & numpy.isfinite(numpy.full_like(py, top)) & (py > lane_y + top)
+        new_y[roof] = (lane_y + top)[roof]
+        floor_hit = between & (py < lane_y + bottom)
+        new_y[floor_hit] = (lane_y + bottom)[floor_hit]
+        # Outside: onto the nearer side polyline, height from the ground there.
+        outside = ~between
+        use_left = outside & (ld <= rd)
+        use_right = outside & ~use_left
+        new_x[use_left] = lxp[use_left]
+        new_z[use_left] = lzp[use_left]
+        new_x[use_right] = rxp[use_right]
+        new_z[use_right] = rzp[use_right]
+        if outside.any():
+            gy = bilinear_ground(new_x[outside], new_z[outside])
+            lo = (lane_y + bottom)[outside]
+            hi = (lane_y + top)[outside] if numpy.isfinite(top) else numpy.full_like(gy, numpy.inf)
+            new_y[outside] = numpy.clip(gy, lo, hi)
+
+        target_x[sel] = new_x
+        target_z[sel] = new_z
+        target_y[sel] = new_y
+        wall_distance[sel] = numpy.minimum(ld, rd)
+
+    # One winner per vertex: the strip whose wall it stands nearest to.
+    pick = numpy.lexsort((wall_distance, vertex_of))
+    winner = pick[numpy.concatenate(([True], vertex_of[pick][1:] != vertex_of[pick][:-1]))]
+
+    chosen_vertex = vertex_of[winner]
+    new_x, new_z, new_y = target_x[winner], target_z[winner], target_y[winner]
+    px, pz, py = vertex_x[chosen_vertex], vertex_z[chosen_vertex], vertex_y[chosen_vertex]
+    changed = (new_x != px) | (new_z != pz) | (new_y != py)
+    idx = ids[chosen_vertex][changed]
+    verts[idx, 0] = new_x[changed]
+    verts[idx, 1] = new_z[changed]
+    verts[idx, 2] = new_y[changed]
+    return int(changed.sum()), unreferenced
 
 
 def _splat_mapping(block):
@@ -3512,6 +3543,14 @@ def build_terrain(bundle_dir, collection, center, radius, clip_floor=None):
             LOG.warn(f"CONTRACT VIOLATION: surface_index is {sw}x{sh}, heightmap {width}x{height}")
             surface_ids = None
 
+    # Contract §8c. The terrain covering tunnel portals and sunken trenches is never carved out
+    # of the heightmap — the game hides it per-frame with a stencil pass — so the clip volumes
+    # are rasterised here against this heightmap. The layer is mandatory; _clip_grid raises on
+    # a bundle without it.
+    cut_grid, cut_face_raster, cut_above_raster, cut_refs, strip_geo = _clip_grid(
+        bundle_dir, width, height, heights, cell, origin_x, origin_z, elevation_scale,
+        elevation_offset, floor_override=clip_floor)
+
     levels = None
     if os.path.isfile(water_path):
         ww, wh, levels = _decode_png_gray(water_path)
@@ -3534,15 +3573,6 @@ def build_terrain(bundle_dir, collection, center, radius, clip_floor=None):
     if col0 >= col1 or row0 >= row1:
         LOG.warn("terrain: the region window misses the raster entirely — skipping terrain")
         return 0, None
-
-    # Contract §8c. The terrain covering tunnel portals and sunken trenches is never carved out
-    # of the heightmap — the game hides it per-frame with a stencil pass — so the clip volumes
-    # are read here against this heightmap. The layer is mandatory; _clip_grid raises on a
-    # bundle without it. The window is settled first so the per-cell quad index it builds for
-    # the exact clipper covers only the cells this import will actually mesh.
-    cut_grid, cut_face_raster, clip_quads = _clip_grid(
-        bundle_dir, width, height, heights, cell, origin_x, origin_z, elevation_scale,
-        elevation_offset, floor_override=clip_floor, window=(row0, row1, col0, col1))
 
     # -- the shared native lattice ---------------------------------------------------------
     # The window is nfr×nfc blocks of stride² native cells; the vertex lattice is the native
@@ -3572,6 +3602,7 @@ def build_terrain(bundle_dir, collection, center, radius, clip_floor=None):
     # one entry smaller than the cell grid on each axis, so the window's last lattice row and
     # column carry no face — hence lat_h - 1 / lat_w - 1.
     cut_face = cut_face_raster[row0:row0 + lat_h - 1, col0:col0 + lat_w - 1]
+    cut_above = cut_above_raster[row0:row0 + lat_h - 1, col0:col0 + lat_w - 1]
 
     if levels is not None:
         level_raw = numpy.asarray(levels).reshape(height, width)[row0:row0 + lat_h,
@@ -3678,7 +3709,7 @@ def build_terrain(bundle_dir, collection, center, radius, clip_floor=None):
     #   * delete beyond the prism -> terrain removed that no road covers -> SKY. Visible, wrong.
     #   * delete less than the prism -> terrain left under a road that already covers it, sunk
     #     0.15 m below it, and any part still standing proud is pulled down to the band roof by
-    #     the road's own mesh. Hidden, harmless.
+    #     `_snap_hole_boundary`'s height clamp. Hidden, harmless.
     #
     # Only the second respects the game's invariant. Measured on the two junctions reported
     # 2026-08-11, over exactly the faces where the two rules disagree: deleting them leaves 81
@@ -3707,6 +3738,15 @@ def build_terrain(bundle_dir, collection, center, radius, clip_floor=None):
                                  (len(rbr), stride, stride)).reshape(-1)
     a = cell_rr * lat_w + cell_cc
     refined_loops_all = numpy.stack((a, a + lat_w, a + lat_w + 1, a + 1), axis=-1)
+    contained = (cut[cell_rr, cell_cc] & cut[cell_rr, cell_cc + 1]
+                 & cut[cell_rr + 1, cell_cc] & cut[cell_rr + 1, cell_cc + 1])
+    face_cut = contained | cut_above[cell_rr, cell_cc]
+    refined_loops = refined_loops_all[~face_cut]
+    cut_faces = int(face_cut.sum())
+    # What the prism actually covers, for the containment report below: a face whose own centre
+    # is inside it. `cut_face` is no longer the deletion rule, only the yardstick.
+    face_centre_cut = int(cut_face[cell_rr, cell_cc].sum())
+
     # Refined faces classify from their OWN corners at native resolution; roadbed reads the
     # face's top-left cell sample, the rule the scalar face_roadbed always used.
     y00 = native_y[cell_rr, cell_cc]
@@ -3715,100 +3755,8 @@ def build_terrain(bundle_dir, collection, center, radius, clip_floor=None):
     y11 = native_y[cell_rr + 1, cell_cc + 1]
     ngx = numpy.maximum(numpy.abs(y01 - y00), numpy.abs(y11 - y10)) / cell
     ngz = numpy.maximum(numpy.abs(y10 - y00), numpy.abs(y11 - y01)) / cell
-    cell_class = numpy.where(numpy.hypot(ngx, ngz) > _ROCK_SLOPE, 2, 0)
-    cell_class = numpy.where(roadbed[cell_rr, cell_cc], 1, cell_class)
-
-    # -- the exact cut ---------------------------------------------------------------------
-    # Contract §8c says a consumer deletes what falls inside the clip volumes, and this is the
-    # reference implementation of that. A cell no prism touches keeps its whole quad; a cell a
-    # prism reaches is split along the prism's own boundary — four lateral walls and two band
-    # surfaces — and only the part outside every prism is kept.
-    #
-    # This replaces deciding whole 3.5 m faces by a sample point. Any such rule has to choose
-    # which way to err, and both directions are wrong somewhere: erring outward deletes terrain
-    # no road covers (sky), erring inward walls off tunnels. Cutting on the boundary itself has
-    # no error to direct — the kept terrain ends exactly where the game stops drawing it, so
-    # `deleted ⊆ covered by road` holds by construction, exactly as it does in game.
-    #
-    # The split is exact for the surface the mesh represents: a cell is halved into triangles
-    # first, so terrain height is linear across each piece, the prism's lane height is constant
-    # per station quad, and every one of the six constraints is therefore linear in the vertex
-    # data being interpolated. No new approximation enters at the cut.
-    touched = numpy.zeros((lat_h, lat_w), dtype=bool)
-    quad_cells, quad_data = clip_quads
-    for (qr, qc) in quad_cells:
-        tr, tc = qr - row0, qc - col0
-        if 0 <= tr < lat_h and 0 <= tc < lat_w:
-            touched[tr, tc] = True
-    needs_clip = touched[cell_rr, cell_cc]
-
-    refined_loops = refined_loops_all[~needs_clip]
-    refined_class = cell_class[~needs_clip]
-
-    clipped_polys = []
-    clipped_class = []
-    cut_faces = 0
-    clip_abandoned = 0
-    # The cut is per cell and in Python, so on a full city it is the longest single stretch of
-    # the terrain phase by far. Reported the same way the row walk is: a silent phase that runs
-    # for minutes is indistinguishable from a hang, and was read as one.
-    #
-    # "terrain clip" deliberately carries no tools/ab_compare.py count marker, so this line can
-    # appear at whatever cadence the window needs without becoming a gated number.
-    clip_todo = numpy.nonzero(needs_clip)[0]
-    clip_step = max(1, len(clip_todo) // 50)
-    for done, i in enumerate(clip_todo):
-        if done % clip_step == 0:
-            LOG.progress("terrain clip", done, len(clip_todo))
-        r = int(cell_rr[i])
-        c = int(cell_cc[i])
-        x0 = origin_x + (col0 + c) * cell
-        x1 = x0 + cell
-        z0 = origin_z - (row0 + r) * cell
-        z1 = z0 - cell
-        nw = (x0, z0, float(ground_y[r, c]))
-        sw = (x0, z1, float(ground_y[r + 1, c]))
-        se = (x1, z1, float(ground_y[r + 1, c + 1]))
-        ne = (x1, z0, float(ground_y[r, c + 1]))
-        pieces = [[nw, sw, se], [nw, se, ne]]
-        for quad_index in quad_cells[(row0 + r, col0 + c)]:
-            if not pieces:
-                break
-            poly, lane_y, bottom, top = quad_data[quad_index]
-            pieces = _subtract_prism(pieces, poly, lane_y, bottom, top)
-            if len(pieces) > _CLIP_MAX_PIECES:
-                clip_abandoned += 1
-                pieces = None
-                break
-        if pieces is None:
-            # Pathological cell: keep the whole quad rather than shed slivers. Counted.
-            refined_loops = numpy.concatenate((refined_loops,
-                                               refined_loops_all[i:i + 1]), axis=0)
-            refined_class = numpy.concatenate((refined_class, cell_class[i:i + 1]))
-            continue
-        if not pieces:
-            cut_faces += 1                      # the whole cell fell inside a prism
-            continue
-        for piece in pieces:
-            ring = _clean_ring(piece)
-            if ring is None:
-                continue
-            clipped_polys.append(ring)
-            clipped_class.append(int(cell_class[i]))
-    if len(clip_todo):
-        LOG.progress_end()
-
-    # Exactly how much terrain the cut removed: every split cell's own area less what survived
-    # of it, plus the cells that fell wholly inside. Shoelace over the kept pieces, so this is
-    # the true figure rather than a face count standing in for one.
-    kept_area = 0.0
-    for piece in clipped_polys:
-        loop = numpy.asarray(piece, dtype=numpy.float64)
-        kept_area += 0.5 * abs(float(numpy.dot(loop[:, 0], numpy.roll(loop[:, 1], -1))
-                                     - numpy.dot(numpy.roll(loop[:, 0], -1), loop[:, 1])))
-    clip_cells = int(needs_clip.sum()) - clip_abandoned
-    cut_area = max(clip_cells * cell * cell - kept_area, 0.0)
-    face_centre_cut = int(cut_face[cell_rr, cell_cc].sum())
+    refined_class = numpy.where(numpy.hypot(ngx, ngz) > _ROCK_SLOPE, 2, 0)
+    refined_class = numpy.where(roadbed[cell_rr, cell_cc], 1, refined_class)[~face_cut]
 
     # -- transition fans -------------------------------------------------------------------
     fan_loops, fan_blocks = _transition_fans(block_refined, block_transition, stride, lat_w)
@@ -3833,31 +3781,15 @@ def build_terrain(bundle_dir, collection, center, radius, clip_floor=None):
                          ground_y[ur, uc].astype(numpy.float64)), axis=-1)
     loops = vid[all_loops]
 
-    # -- the clipped cells' own geometry ---------------------------------------------------
-    # Their vertices are not lattice points: they sit on the prism boundary, wherever that
-    # crosses a cell. Appended after the lattice set and then welded, which is what re-joins a
-    # cut edge to the neighbouring cell that shares it — both computed the crossing from the
-    # same two endpoints and the same constraint, so they agree to the float, and the weld
-    # collapses the pair. No snapping is needed or done any more: the boundary IS the prism.
-    if clipped_polys:
-        extra = numpy.asarray([v for poly in clipped_polys for v in poly], dtype=numpy.float64)
-        counts = numpy.asarray([len(poly) for poly in clipped_polys], dtype=numpy.int64)
-        starts = len(verts) + numpy.concatenate(([0], numpy.cumsum(counts)))[:-1]
-        extra_loops = numpy.concatenate([numpy.arange(start, start + n)
-                                         for start, n in zip(starts, counts)])
-        verts = numpy.concatenate((verts, extra), axis=0)
-        loops = numpy.concatenate((loops, extra_loops))
-        sizes = numpy.concatenate((sizes, counts))
-        face_class = numpy.concatenate((face_class,
-                                        numpy.asarray(clipped_class, dtype=face_class.dtype)))
-
-        # Weld: a cut vertex and its twin in the neighbouring cell are the same point, and the
-        # mesh has to be one surface for smooth normals and for a consumer's collision.
-        key = numpy.round(verts / _CLIP_WELD).astype(numpy.int64)
-        _, first, inverse = numpy.unique(key, axis=0, return_index=True, return_inverse=True)
-        verts = verts[first]
-        loops = inverse.reshape(-1)[loops]
-
+    # Close the cut holes onto the clip prisms exactly (before UVs — they read final verts).
+    snapped = unreferenced = 0
+    if cut_faces and strip_geo:
+        cut_face_grid = numpy.zeros((lat_h, lat_w), dtype=bool)
+        cut_face_grid[cell_rr[face_cut], cell_cc[face_cut]] = True
+        snapped, unreferenced = _snap_hole_boundary(
+            verts, vid, used.reshape(lat_h, lat_w), cut_face_grid,
+            cut_refs[row0:row0 + lat_h, col0:col0 + lat_w], strip_geo,
+            ground_y, origin_x, origin_z, row0, col0, cell)
 
     refined_faces = len(refined_loops)
     fan_faces = len(fan_blocks)
@@ -4044,22 +3976,24 @@ def build_terrain(bundle_dir, collection, center, radius, clip_floor=None):
     LOG.step(f"{roadbed_faces} roadbed face(s) (sunk {_ROADBED_SINK:g} m), "
              f"{rock_faces} rock face(s), {wet_faces} water face(s), "
              f"{cut_faces} face(s) cut (tunnel portals / trenches)")
-    if clip_cells:
-        # The cut measured against what the prisms cover. With the boundary cut exactly this
-        # should land on 1.00 by construction, and the check is kept precisely because that is
-        # a claim about geometry rather than about intent: above 1.00 is terrain removed that
-        # nothing draws over (sky), below it is terrain kept under a road that hides it.
+    if cut_faces or face_centre_cut:
+        # The containment check, not a size check. In game every clip volume is built from the
+        # road's own composition and discarded per pixel, so clipped terrain is always covered
+        # by road. This grid must therefore never delete MORE than the prism covers: a ratio
+        # above 1.00 is terrain removed that nothing draws over, i.e. sky. Below 1.00 is the
+        # safe direction — terrain kept under a road that hides it.
+        deleted_area = cut_faces * cell * cell
         clipped_area = face_centre_cut * cell * cell
-        ratio = (cut_area / clipped_area) if clipped_area else float("nan")
-        LOG.step(f"clip: {clip_cells} cell(s) split on the prism boundary, {cut_faces} wholly "
-                 f"inside; cut {cut_area:,.0f} m² against {clipped_area:,.0f} m² the prisms "
-                 f"cover (x{ratio:.2f})")
-        if ratio > 1.02:
-            LOG.warn(f"the cut removes {(ratio - 1.0) * 100:.0f}% more terrain than the clip "
+        ratio = (deleted_area / clipped_area) if clipped_area else float("nan")
+        LOG.step(f"cut {deleted_area:,.0f} m² of terrain against {clipped_area:,.0f} m² the "
+                 f"clip prisms cover (x{ratio:.2f}; must not exceed 1.00 — above it is sky)")
+        if ratio > 1.0:
+            LOG.warn(f"the cut deletes {(ratio - 1.0) * 100:.0f}% more terrain than the clip "
                      "prisms cover — expect see-through gaps beside roads")
-        if clip_abandoned:
-            LOG.warn(f"{clip_abandoned} cell(s) exceeded {_CLIP_MAX_PIECES} clip pieces and "
-                     "kept their whole face — terrain may stand inside a prism there")
+    if snapped or unreferenced:
+        LOG.step(f"{snapped} hole-boundary vertex(es) snapped onto the clip prisms"
+                 + (f", {unreferenced} found no strip to snap to (area-only cuts)"
+                    if unreferenced else ""))
     if stride > 1:
         LOG.step(f"{refined_faces} native face(s) in {int(block_refined.sum())} corridor "
                  f"block(s), {fan_faces} transition fan face(s), "
