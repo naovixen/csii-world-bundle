@@ -2257,3 +2257,43 @@ Also refuted on the way: the shortfall is not a systematic under-paving hidden b
 arm's overlap. Scored against the OWNING segment's mesh alone, `Alley Oneway` half frames average
 96.5% (min 39.0%), `Alley` 99.9%, `Medium Road` and `Small Road` 100.0% — so most alley frames do
 reach their rail on their own, and the two failures are exceptional even within their asset.
+
+### 42.4 ANSWERED (2026-08-11, 21:34 rip): the tram surface pieces have no geometry buffers
+
+`DROPPED:` fired — **2419 piece placement(s)** with no readable
+`MeshVertex`/`MeshIndex`/`MeshMaterial` buffer — and among the distinct names are exactly the
+tram running surface:
+
+    Tram Track Piece 3, Tram Track Middle Piece 3, Tram Track Intersection Piece 3,
+    Tram Track Stop Piece 3, Tram Shoulder Piece 1, Tram Shoulder To Sidewalk 1
+
+The same rip's trams are `RoadParts`-only at 13% up-facing area, so cause and symptom are in one
+rip for the first time. **§42.2's residency mechanism is confirmed** and **§42.3 is wrong**: not
+one `COLLAPSED:` row appeared, so nothing is being read and collapsed — the pieces are simply not
+there to read.
+
+**§42.3's error, and how it happened.** It asserted "that DLL was live for this rip and the log
+carries no `DROPPED:` line", concluding the piece was read. The first half was never checked
+against the DLL's own bytes — and minutes later the deploy step failed because the game held the
+DLL, which is the obvious reason the 20:23 rip ran a pre-`7daada5` binary. The staleness rule
+already says to confirm against something the rip itself emitted; I applied it to the bundle and
+not to the counter I was reasoning from.
+
+Note the dropped list also holds pieces that are legitimately empty — `Invisible Airplane Edge
+Piece 0` and friends — so the line names suspects, not defects.
+
+**The fix, not yet built.** Residency has to become a precondition rather than a coin toss:
+`RenderPrefab.ObtainMeshes()` (via `geometryAsset.ObtainMeshes()`) is what loads a piece's
+geometry, and the buffers `GetPieceGeometry` reads are generated from it. So the producer should
+obtain the piece's meshes before reading its buffers, and release after — or retry once on an
+empty read — instead of taking whatever the session happens to have streamed in.
+
+### 41.9 (cont.) The half-frame probe needed fixing before it can answer
+
+The first run flagged **359** node compositions, every listed one a zero-width shoulder or path
+side piece reading `left reaches 0.000`. A zero-width piece pins every vertex to a single xParam
+by construction, so it can never reach a rail and must not be read as a half that stops short.
+Corrected: only pieces with a real width contribute to a half's reach, the count is reported
+against the number of node compositions seen, and each row names a segment that used it — node
+compositions are runtime entities, not managed prefabs, so `TryGetPrefab` could only print
+`<composition 1217532>`. The signature to look for is a half reaching **≈0.475**.
