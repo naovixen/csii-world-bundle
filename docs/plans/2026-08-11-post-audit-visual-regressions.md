@@ -1,7 +1,66 @@
 # Post-audit visual regressions — terrain holes, lifted markings, elevated deck gaps, unblended ground
 
-*Written 2026-08-11. Investigation only — nothing here is implemented. Every number below is
-measured against the 2026-08-10 19:53–20:40 full-city rip.*
+*Written 2026-08-11. Every number below is measured against the 2026-08-10 19:53–20:40
+full-city rip.*
+
+## Outcome, 2026-08-11 (worked in this order; read this before the body)
+
+| item | outcome |
+|---|---|
+| **1a** face-centre cut | **BUILT** `4b97d65`. 10,892 → 8,224 faces cut in the A/B window, **x1.32 → x1.00** of true clipped area, 2,668 faces ≈ 32,683 m² of terrain returned. |
+| **1b** multi-strip snap | **NOT NEEDED.** 1a halved snapping demand (4,760 → 2,752) and the new unreferenced-vertex count is **0** — no boundary vertex fails to find a strip. |
+| **1c** report the residual | **BUILT** `4b97d65`. Deleted area vs clipped-cell area as a ratio; `_snap_hole_boundary` returns the unreferenced count. |
+| **2a** unpack paint in numpy | **BUILT** `91ccc7a`. Bit-exact (readback error 0.0000 on all four channels over 4096²). |
+| **2b** shipped tiling | **BUILT** `91ccc7a`. Three scales per ground blended by camera distance; grid gone. |
+| **2c** soil softener | **NOT BUILT** — correctly gated. 2a/2b removed the visible defect; nothing measured says the ramp is too narrow. |
+| **2d** ship extra3/4 params | **BUILT** `e468704`, awaiting re-rip. `m_Extra3*`/`m_Extra4*` confirmed by decompile. |
+| **3a** enumerate hits, pick by curve | **FALSIFIED AND REVERTED.** See below. |
+| **3b** kerb_rejections | **NOT NEEDED.** The counter was never blind; the event is genuinely rare. |
+| **3c** terrain fallback for misses | **BUILT** `e052fb5`. 374 of 1,045 misses recovered; the rest now warn. |
+| **3d** read `decalRole` | **BUILT** `4b97d65`. 7 of 43 parts were misclassified. |
+| **3e** city-wide BVH cost | **NOT MEASURED** — still open. |
+| **4a** diagnose deck gaps | **ALL THREE NAMED SUSPECTS ELIMINATED**, root cause still open. See below. |
+| **4b** gate conform on elevated | **BUILT** `e468704`, awaiting re-rip. |
+
+### Item 3 was wrong — the marking lift is not a kerb
+
+`tools/test_drape_pick.py` (new) parses the `.glb` and casts the vertical ray itself in numpy,
+sharing no code with the harness. It refutes both halves of item 3's mechanism:
+
+- **Nothing shadows the carriageway.** 24,059 of 24,060 samples have exactly **one** surface
+  beneath them — segment meshes are single-layer shells, not stacked compositions. There is no
+  hidden carriageway under a kerb to recover.
+- **Enumerating every hit changes nothing.** All-hits + nearest-to-expected reproduces the
+  shipped rule *to the digit* (0.21% of samples > 2 cm above their own road, max +0.298 m, at
+  the city's densest 300 m window).
+- **The proposed pick is worse.** Highest-candidate-below-the-lane-curve doubles the lift, to
+  0.46%.
+- A choice between surfaces only ever arises between **neighbouring objects**, and only where
+  they stack: 2.1% of samples at the densest window, **0.0%** in a plain road window. That is
+  why `kerb_rejections` reads 1 — not blindness.
+
+The 4.4%/7.1% figures in the body below measured the road **crown standing above the lane
+curve**, which is what the drape exists to follow, and attributed it to kerbs. `drop()` is
+unchanged; its docstring now records this so it is not re-litigated.
+
+### Item 4a — the suspects are dead, the cause is not found
+
+Measured, not argued:
+
+- **No geometry is dropped.** Imported meshes match their `.glb` triangle-for-triangle
+  (2,940/2,940/2,940/3,456 on four elevated road segments), up-facing deck area ~1,600 m² each.
+  Suspect 2 (the quiet degenerate drop) cannot make a hole.
+- **Alpha is not it.** Every road material imports with `Alpha = 1.000 constant`; the glb
+  declares no `alphaMode` at all, so `surface_render_method = DITHERED` has nothing to dither.
+- **Backface culling is not it.** `use_backface_culling` is on (from `doubleSided: false`), but
+  the plan's own measurement puts inverted-winding triangles at 99 = 0.000%.
+- **Suspect 1 is real but cannot cause gaps.** The fast path does silently drop `TANGENT`
+  (network glbs all carry it). A missing tangent misorients normal maps; it removes no surface.
+
+A fresh import of the interchange renders complete decks — the defect did not reproduce from
+the coordinates available. **Next step needs the user:** put the 3D cursor on one gap in the
+live `splat.blend` and run `tools/probe_point.py`, then join back to `networks.jsonl`. The
+producer remains exonerated by the body's measurements.
 
 ## Why this exists
 
