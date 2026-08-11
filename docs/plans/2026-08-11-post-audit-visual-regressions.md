@@ -8,7 +8,8 @@ full-city rip.*
 | item | outcome |
 |---|---|
 | **1a** face-centre cut | **BUILT** `4b97d65`. 10,892 → 8,224 faces cut in the A/B window, **x1.32 → x1.00** of true clipped area, 2,668 faces ≈ 32,683 m² of terrain returned. |
-| **1b** multi-strip snap | **NOT NEEDED.** 1a halved snapping demand (4,760 → 2,752) and the new unreferenced-vertex count is **0** — no boundary vertex fails to find a strip. |
+| **1b** multi-strip snap | **BUILT** `80676e0` — the earlier "not needed" call was **wrong**. It rested on the unreferenced count being 0, which measures whether a vertex found *a* strip, not the *right* one. 46–50% of boundary vertices at the reported junctions are claimed by more than one strip, and the arbitrary first-ref pick lands a median 2.03 m off. |
+| **1a′** split clip band | **BUILT** `40e680a`, after the user's re-rip still showed junction gaps. The face-centre rule's *unbiased* error was the wrong target — half of it deletes terrain no road covers. See "the gaps after the re-rip" below. |
 | **1c** report the residual | **BUILT** `4b97d65`. Deleted area vs clipped-cell area as a ratio; `_snap_hole_boundary` returns the unreferenced count. |
 | **2a** unpack paint in numpy | **BUILT** `91ccc7a`. Bit-exact (readback error 0.0000 on all four channels over 4096²). |
 | **2b** shipped tiling | **BUILT** `91ccc7a`. Three scales per ground blended by camera distance; grid gone. |
@@ -42,6 +43,45 @@ sharing no code with the harness. It refutes both halves of item 3's mechanism:
 The 4.4%/7.1% figures in the body below measured the road **crown standing above the lane
 curve**, which is what the drape exists to follow, and attributed it to kerbs. `drop()` is
 unchanged; its docstring now records this so it is not re-litigated.
+
+### The gaps after the re-rip — resolved against the game's source
+
+The user re-ripped, confirmed items 2 and 4b fixed, and reported residual gaps at
+`(873.9, 1442.0)` (close train tracks) and `(2936.9, 1397.5)` (road junction).
+
+`Game.Simulation.TerrainSystem.GenerateClipDataJob` settles it. Every clip volume is built
+from the road's **own** composition — left/right curves trimmed by
+`TerrainComposition.m_WidthOffset`, band widened by exactly 0.3 m at each end (so the
+producer's `ClipBandExpansion = 0.3f` is verbatim, confirmed) — and the terrain is discarded
+**per pixel** inside it. In game, therefore, `clipped ⊆ covered by road mesh` always holds and a
+see-through gap is impossible.
+
+A 3.5 m mesh cut can only approximate that boundary, so the question is which way to err, and
+*unbiased is the wrong answer*: half of an unbiased error deletes terrain no road covers, and
+that half is sky. But erring inward everywhere walls off tunnels. The band splits at the
+carriageway — which is where the game's own geometry divides "hidden by the road mesh" from
+"hidden only by the clip" — and the lane curve is the road surface exactly (`road_top −
+lane_path.y` median **0.000 m**).
+
+Centreline faces deleted, by rule:
+
+| rule | tunnels/trenches | surface shell |
+|---|---|---|
+| face-centre | 98.1% | 98.4% ← the gaps |
+| containment only | 88.6% ← walls off tunnels | 88.6% |
+| **split band** | **99.0%** | **88.7%** |
+
+See-through gap area (terrain hole with no road mesh over it) across the day:
+
+| | face-centre | + nearest snap | + split band |
+|---|---|---|---|
+| train tracks | 1.260% | 0.521% | **0.156%** (−88%) |
+| road junction | 0.208% | 0.081% | **0.018%** (−91%) |
+
+**Still an approximation.** Exactness needs sub-cell clipping — cutting terrain faces along the
+prism boundary rather than deleting whole ones. That remains the only way to reproduce the
+game's per-pixel result, and it is still a rewrite of the lattice builder. The rule above is
+the closest bounded approximation that never violates the game's containment invariant.
 
 ### Item 4a — the suspects are dead, the cause is not found
 
