@@ -62,11 +62,13 @@ SKY_BUDGET = 25.0
 source = open(SRC, encoding="utf-8").read()
 H = {"numpy": numpy}
 exec(compile("import math", "<math>", "exec"), H)
-for _name in ("_CLIP_CONTAIN_SAMPLES", "_CLIP_CONTAIN_BLOCK"):
+for _name in ("_CLIP_CONTAIN_SAMPLES", "_CLIP_CONTAIN_BLOCK", "_CLIP_DEEP_BAND_TOP",
+              "_CLIP_SCANLINE_VECTOR_ROWS"):
     _m = re.search(rf"^{_name} = .*$", source, re.M)
     assert _m, f"{_name} not found in harness source"
     exec(compile(_m.group(0), f"<{_name}>", "exec"), H)
-for _name in ("_bezier_points", "_fill_clip_quad_rows", "_fill_clip_quad", "_contain_faces"):
+for _name in ("_bezier_points", "_fill_clip_quad_rows", "_fill_clip_quad", "_dilate",
+              "_contain_faces"):
     _m = re.search(rf"\ndef {_name}\(.*?(?=\n\ndef |\n\nclass |\Z)", source, re.S)
     assert _m, f"{_name} not found in harness source"
     exec(compile(_m.group(0), f"<{_name}>", "exec"), H)
@@ -221,7 +223,7 @@ def check(label, cx, cz, radius, heights, cell, origin_x, origin_z):
     cell_cut = numpy.zeros((lat_h, lat_w), dtype=bool)
     for quad, lane_y, bottom, top in quads:
         H["_fill_clip_quad"](cell_cut, terrain, lat_w, lat_h, quad, lane_y, bottom, top)
-    contain, band_count = H["_contain_faces"](
+    contain, band_count, deep_touch = H["_contain_faces"](
         lat_w, lat_h, terrain, cell_cut,
         lambda r0, c0, r1, c1: iter(quads),
         H["_CLIP_CONTAIN_SAMPLES"], H["_CLIP_CONTAIN_BLOCK"])
@@ -265,8 +267,13 @@ def check(label, cx, cz, radius, heights, cell, origin_x, origin_z):
     if not ok:
         failures += 1
         return
+    # The one residual the rule cannot reach, reported so it stays visible: a face a TRENCH or
+    # PORTAL band meets with no deleted face beside it, i.e. a strip too narrow for a whole face
+    # to sit inside, so there is no hole rim for the snap to push out to the wall either.
+    stranded = int((deep_touch & ~contain & ~H["_dilate"](contain, 1)).sum())
     print(f"  ok   {label:<16} sky {sky:5.0f} m²   cut/clipped x{ratio:.2f}   "
           f"kept-in-band {100 * poke / max(band_area, 1e-9):4.1f}%   "
+          f"stranded {stranded * cell * cell:5.0f} m²   "
           f"({len(records)} record(s), band {band_area:,.0f} m²)")
 
 

@@ -2945,6 +2945,12 @@ _CLIP_CONTAIN_BLOCK = 128
 # How far, in cells, `_snap_hole_boundary` may push a hole-rim vertex OUT to a prism wall.
 _CLIP_SNAP_REACH_CELLS = 1.5
 
+# A band this tall is a trench or a tunnel portal (`ElevationLimit * 3` — 12.3 m for roads,
+# 6.3 m for pathways), not the everyday ±0.3 m shell over a surface road. The difference matters
+# for reporting: terrain left inside a shallow band is under the road that hides it, terrain left
+# inside a deep one stands in the cutting.
+_CLIP_DEEP_BAND_TOP = 3.0
+
 
 def _contain_faces(width, height, terrain_y, cell_cut, quad_source, samples, block):
     """Faces wholly inside the union of the clip bands — the deletion rule (contract §8c).
@@ -2969,15 +2975,17 @@ def _contain_faces(width, height, terrain_y, cell_cut, quad_source, samples, blo
     c1)` yields `(quad, lane_y, bottom, top)` for every station quad whose face-space bounds
     touch the block, in NATIVE cell space; this routine scales them into the block's own frame.
 
-    Returns `(contain, band_count)` — the (height − 1, width − 1) deletion mask, and the count
-    of in-band sub-samples PER FACE. That second array is the true clipped area in units of
-    `(cell / samples)²`, and being per-face it can be windowed alongside the mask, which is what
-    makes the containment ratio in `build_terrain`'s report mean the same thing for a region
-    import as for a whole city.
+    Returns `(contain, band_count, deep_touch)` — the (height − 1, width − 1) deletion mask; the
+    count of in-band sub-samples PER FACE, which is the true clipped area in units of
+    `(cell / samples)²` and, being per-face, can be windowed alongside the mask so the
+    containment ratio in `build_terrain`'s report means the same thing for a region import as
+    for a whole city; and which faces a DEEP band reaches without containing, the residual
+    `build_terrain` reports (see `_CLIP_DEEP_BAND_TOP`).
     """
     face_h, face_w = height - 1, width - 1
     contain = numpy.zeros((face_h, face_w), dtype=bool)
     band_count = numpy.zeros((face_h, face_w), dtype=numpy.uint8)  # <= samples², 6² = 36
+    deep_touch = numpy.zeros((face_h, face_w), dtype=bool)
 
     # Only blocks holding a cut cell are visited. A face wholly inside a band has its four
     # CORNERS inside it too, and those corners are cell centres (contract §3) — which is what
@@ -2985,7 +2993,7 @@ def _contain_faces(width, height, terrain_y, cell_cut, quad_source, samples, blo
     # where the sampling and the corners disagree the face is kept, which is the safe side.
     cut_face = cell_cut[:-1, :-1] | cell_cut[:-1, 1:] | cell_cut[1:, :-1] | cell_cut[1:, 1:]
     if not cut_face.any():
-        return contain, band_count
+        return contain, band_count, deep_touch
 
     for r0 in range(0, face_h, block):
         r1 = min(r0 + block, face_h)
@@ -3011,17 +3019,21 @@ def _contain_faces(width, height, terrain_y, cell_cut, quad_source, samples, blo
             fine_y = top_row * (1.0 - fv)[:, None] + bot_row * fv[:, None]
 
             band = numpy.zeros((sh, sw), dtype=bool)
+            deep = numpy.zeros((sh, sw), dtype=bool)
             origin = (c0 + 0.5, r0 + 0.5)
             for quad, lane_y, bottom, top in quad_source(r0, c0, r1, c1):
                 local = [((px - origin[0]) * samples, (py - origin[1]) * samples)
                          for px, py in quad]
                 _fill_clip_quad(band, fine_y, sw, sh, local, lane_y, bottom, top)
+                if top > _CLIP_DEEP_BAND_TOP:
+                    _fill_clip_quad(deep, fine_y, sw, sh, local, lane_y, bottom, top)
 
             per_face = band.reshape(nfr, samples, nfc, samples)
             contain[r0:r1, c0:c1] = per_face.all(axis=(1, 3))
             band_count[r0:r1, c0:c1] = per_face.sum(axis=(1, 3), dtype=numpy.uint16)
+            deep_touch[r0:r1, c0:c1] = deep.reshape(nfr, samples, nfc, samples).any(axis=(1, 3))
 
-    return contain, band_count
+    return contain, band_count, deep_touch
 
 
 def _clip_grid(bundle_dir, width, height, heights, cell, origin_x, origin_z,
@@ -3065,7 +3077,8 @@ def _clip_grid(bundle_dir, width, height, heights, cell, origin_x, origin_z,
     if not strips:
         return (numpy.zeros((height, width), dtype=bool),
                 numpy.zeros((height - 1, width - 1), dtype=bool),
-                numpy.zeros((height - 1, width - 1), dtype=numpy.uint8), refs, strip_geo)
+                numpy.zeros((height - 1, width - 1), dtype=numpy.uint8),
+                numpy.zeros((height - 1, width - 1), dtype=bool), refs, strip_geo)
 
     terrain_y = (numpy.asarray(heights, dtype=numpy.float64).reshape(height, width)
                  * elevation_scale + elevation_offset)
@@ -3176,9 +3189,10 @@ def _clip_grid(bundle_dir, width, height, heights, cell, origin_x, origin_z,
                 yield ([tuple(cells[0]), tuple(cells[1]), tuple(cells[2]), tuple(cells[2])],
                        lane_y, low, high)
 
-    contain, band_count = _contain_faces(width, height, terrain_y, mask, quad_source,
-                                         _CLIP_CONTAIN_SAMPLES, _CLIP_CONTAIN_BLOCK)
-    return mask, contain, band_count, refs, strip_geo
+    contain, band_count, deep_touch = _contain_faces(width, height, terrain_y, mask,
+                                                     quad_source, _CLIP_CONTAIN_SAMPLES,
+                                                     _CLIP_CONTAIN_BLOCK)
+    return mask, contain, band_count, deep_touch, refs, strip_geo
 
 
 def _snap_hole_boundary(verts, vid, used_grid, cut_face_grid, refs_w, strip_geo, ground_y,
@@ -3765,7 +3779,8 @@ def build_terrain(bundle_dir, collection, center, radius, clip_floor=None):
     # of the heightmap — the game hides it per-frame with a stencil pass — so the clip volumes
     # are rasterised here against this heightmap. The layer is mandatory; _clip_grid raises on
     # a bundle without it.
-    cut_grid, contain_raster, band_count_raster, cut_refs, strip_geo = _clip_grid(
+    (cut_grid, contain_raster, band_count_raster, deep_raster,
+     cut_refs, strip_geo) = _clip_grid(
         bundle_dir, width, height, heights, cell, origin_x, origin_z, elevation_scale,
         elevation_offset, floor_override=clip_floor)
 
@@ -3821,6 +3836,7 @@ def build_terrain(bundle_dir, collection, center, radius, clip_floor=None):
     # column carry no face — hence lat_h - 1 / lat_w - 1.
     contain = contain_raster[row0:row0 + lat_h - 1, col0:col0 + lat_w - 1]
     band_count = band_count_raster[row0:row0 + lat_h - 1, col0:col0 + lat_w - 1]
+    deep_touch = deep_raster[row0:row0 + lat_h - 1, col0:col0 + lat_w - 1]
 
     if levels is not None:
         level_raw = numpy.asarray(levels).reshape(height, width)[row0:row0 + lat_h,
@@ -4198,6 +4214,24 @@ def build_terrain(bundle_dir, collection, center, radius, clip_floor=None):
         if ratio > 1.0:
             LOG.warn(f"the cut deletes {(ratio - 1.0) * 100:.0f}% more terrain than the clip "
                      "prisms cover — expect see-through gaps beside roads")
+
+    # The one residual this rule cannot reach. A face is 3.5 m; a clip strip narrower than two
+    # of them holds no whole face, so nothing is deleted along it and there is no hole rim for
+    # `_snap_hole_boundary` to push out to the wall either. Under a shallow surface band that is
+    # invisible — the road covers it — but under a TRENCH or PORTAL band the terrain left behind
+    # stands in the cutting, measured on the 2026-08-11 rip at a median 7.4 m proud of the road
+    # where it happens. City-wide, strips under two cells wide carry 2.5% of the deep-band
+    # footprint, so this is stated rather than fixed; fixing it means cutting those faces on the
+    # prism boundary itself (see §41), which is a lattice change and needs a render to accept.
+    # A deep band's own edge always meets faces it does not contain, and those are fine: they
+    # are the hole rim, and the snap pushes them out to the wall. What cannot be reached is a
+    # face a deep band meets with NO deleted face beside it — there is no rim there, because the
+    # strip never held a whole face.
+    stranded = int((deep_touch & ~contain & ~_dilate(contain, 1)).sum())
+    if stranded:
+        LOG.step(f"{stranded} face(s) meet a trench or portal band too narrow for a "
+                 f"{cell:g} m face to sit inside — {stranded * cell * cell:,.0f} m² of terrain "
+                 "kept in a cutting the game hides (§41 residual)")
     if snapped or unreferenced:
         LOG.step(f"{snapped} hole-boundary vertex(es) snapped onto the clip prisms "
                  f"({pushed} pushed out of a band, the rest pulled in)"
