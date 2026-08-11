@@ -206,6 +206,11 @@ _INSTANCE_DECAL_LIFT = 0.030
 _DECAL_DRAPE_MARKING = 0.014
 _DECAL_DRAPE_TINT = 0.008
 
+# Share of decal vertices that may find no surface at all before the drape says so out loud.
+# Region-edge markings whose road sits outside the window are the legitimate cause and they are
+# a small tail; a big number means the layer is not landing on anything.
+_DRAPE_MISS_WARN = 0.01
+
 # How far terrain faces marked roadbed (§8 surface id 1) sink below their sampled height —
 # the game's own clamp direction: its road job pulls ground under a carriageway to the
 # MINIMUM of the road's surface band, below the asphalt top, while a consumer's linearly
@@ -1956,7 +1961,7 @@ def _load_lane_source(asset_id, lane_mesh_dir, cache):
 _DRAPE_DEDUP_MM = 1.0  # quantise world (x, z) to this many millimetres before deduping ray-casts
 
 
-def _drape_block(block, road_surface, counters):
+def _drape_block(block, road_surface, counters, ground_surface=None):
     """Sample the road surface at each vertex's own (x, z) — including its lateral offset —
     deduping ray-casts on rounded world position, not on curve station.
 
@@ -1991,11 +1996,25 @@ def _drape_block(block, road_surface, counters):
     inverse = inverse.reshape(-1)
 
     new_y = y_pre.copy()
-    draped = missed = 0
+    draped = grounded = missed = 0
     for u, idx in enumerate(first_index):
         counters["queries"] += 1
-        top = road_surface.drop(float(x[idx]), float(z[idx]), float(y_pre[idx]), half, half)
+        sx, sz, sy = float(x[idx]), float(z[idx]), float(y_pre[idx])
+        top = road_surface.drop(sx, sz, sy, half, half)
         at_key = inverse == u
+        if top is None and ground_surface is not None:
+            # No road under this vertex — the two projection surfaces are disjoint, and a
+            # marking that overhangs the carriageway (or whose segment fell outside the
+            # region) has always just kept its authored height, which is a height with
+            # nothing beneath it. The terrain is the other thing the game paints onto, so
+            # try it at the marking's OWN projector reach: still inside the same window, so
+            # this cannot drag a marking to the ground from a bridge.
+            counters["queries"] += 1
+            top = ground_surface.drop(sx, sz, sy, half, half)
+            if top is not None:
+                new_y[at_key] = top + eps
+                grounded += int(at_key.sum())
+                continue
         if top is None:
             missed += int(at_key.sum())
             continue
@@ -2004,6 +2023,7 @@ def _drape_block(block, road_surface, counters):
 
     verts[:, 1] = new_y
     counters["draped"] += draped
+    counters["grounded"] += grounded
     counters["missed"] += missed
 
 
@@ -2104,7 +2124,7 @@ def _tile_instancer_object(name, part_obj, matrices, group_cache):
 
 def build_lanes(lanes_path, catalogue_path, lane_mesh_dir, collection,
                 center=None, radius=None, limit=None, road_surface=None,
-                markings_only=False):
+                markings_only=False, ground_surface=None):
     """Bend every lane record's parts along its curve, merged into one object per prefab.
 
     `markings_only` bends just the decal parts (road markings, wear tint) and skips the
@@ -2213,13 +2233,14 @@ def build_lanes(lanes_path, catalogue_path, lane_mesh_dir, collection,
     # count on the summary line below is the one tools/ab_compare.py's COUNT_MARKERS is
     # expected to move (Tier 1c changed how many decal vertices exist at all) — quote old vs
     # new there.
-    counters = {"draped": 0, "missed": 0, "queries": 0}
+    counters = {"draped": 0, "grounded": 0, "missed": 0, "queries": 0}
     if road_surface is not None:
         for seen, block in enumerate(drape_blocks, 1):
-            _drape_block(block, road_surface, counters)
+            _drape_block(block, road_surface, counters, ground_surface=ground_surface)
             if seen % 5000 == 0:
                 LOG.step(f"{seen}/{len(drape_blocks)} marking(s) draped")
     draped, drape_missed = counters["draped"], counters["missed"]
+    drape_grounded = counters["grounded"]
     if counters["queries"]:
         LOG.step(f"{counters['queries']} drape ray-cast(s) issued for "
                  f"{to_drape} decal vertex(es)")
@@ -2338,9 +2359,20 @@ def build_lanes(lanes_path, catalogue_path, lane_mesh_dir, collection,
         LOG.step(f"{degenerate_totals['faces']} zero-area degenerate face(s) dropped across "
                  f"{degenerate_totals['objects']} object(s) — a heavily tiled part's last "
                  "tile clipping short of a full section, not a bundle defect")
-    if draped or drape_missed:
+    if draped or drape_missed or drape_grounded:
         LOG.step(f"{draped} decal vertex(es) draped onto the road surface"
+                 + (f", {drape_grounded} onto the terrain instead (no road under them)"
+                    if drape_grounded else "")
                  + (f", {drape_missed} kept the fixed lift (no surface hit)" if drape_missed else ""))
+        # A miss is a marking floating or sunk at an authored height with nothing beneath it.
+        # A few are expected at a region edge, where the marking is inside the window and the
+        # road carrying it is not; a large share means the drape is not doing its job.
+        total_drape = draped + drape_grounded + drape_missed
+        if total_drape and drape_missed > total_drape * _DRAPE_MISS_WARN:
+            LOG.warn(f"{drape_missed / total_drape * 100:.1f}% of decal vertices found no "
+                     f"surface within their own projector reach"
+                     + ("" if ground_surface is not None else
+                        " — import --terrain as well and they fall back to the ground"))
     elif road_surface is None:
         LOG.warn("networks layer not built — decals keep the fixed lift, expect "
                  "markings to z-fight or sink into the crown")
@@ -5421,6 +5453,20 @@ def main():
                                       limit=net_limit)
         LOG.end_phase()  # build_networks() may have early-returned before its own done()
 
+    # Terrain BEFORE lanes, since 2026-08-11. It depends on neither networks nor lanes, and
+    # putting it first is what lets a lane marking that finds no road under it fall back to the
+    # ground rather than keeping an authored height with nothing beneath it (§8b drape). Areas
+    # still follow both, as they always have.
+    terrain_objects = 0
+    terrain_ground = None
+    if do_terrain:
+        LOG.phase("Terrain & water")
+        terrain_collection = bpy.data.collections.new("bundle_terrain")
+        bpy.context.scene.collection.children.link(terrain_collection)
+        terrain_objects, terrain_ground = build_terrain(bundle_dir, terrain_collection,
+                                                        center, radius, clip_floor=clip_floor)
+        LOG.end_phase()  # build_terrain() may have early-returned before its own done()
+
     lanes = 0
     if do_lanes or do_lane_markings:
         # Contract §5B v2: lanemeshes.jsonl carries bend parameters, laneprefabs.json the part
@@ -5433,24 +5479,17 @@ def main():
             LOG.phase("Lane markings (lanemeshes.jsonl, decal parts)" if not do_lanes
                       else "Lane geometry (lanemeshes.jsonl)")
             road_surface = _ProjectionSurface(network_collection.objects) if networks else None
+            ground_surface = (_ProjectionSurface([terrain_ground[0]])
+                              if terrain_ground is not None else None)
             with parked_out_of_view_layer(lane_collection):
                 lanes = build_lanes(lanes_path, lane_prefabs_path, lane_mesh_dir,
                                     lane_collection, center=center, radius=radius,
                                     limit=net_limit, road_surface=road_surface,
-                                    markings_only=not do_lanes)
+                                    markings_only=not do_lanes,
+                                    ground_surface=ground_surface)
             LOG.end_phase()  # build_lanes() may have early-returned before its own done()
         else:
             LOG.warn(f"no lanemeshes.jsonl at {lanes_path} — skipping lane geometry")
-
-    terrain_objects = 0
-    terrain_ground = None
-    if do_terrain:
-        LOG.phase("Terrain & water")
-        terrain_collection = bpy.data.collections.new("bundle_terrain")
-        bpy.context.scene.collection.children.link(terrain_collection)
-        terrain_objects, terrain_ground = build_terrain(bundle_dir, terrain_collection,
-                                                        center, radius, clip_floor=clip_floor)
-        LOG.end_phase()  # build_terrain() may have early-returned before its own done()
 
     area_objects = 0
     if do_areas:
