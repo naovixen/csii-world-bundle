@@ -576,10 +576,13 @@
           "type": "string"
         },
         "channels": {
-          "description": "Channel-to-meaning map, e.g. {\"R\": \"grass\"} plus derived entries like base/baseWeight (§8).",
+          "description": "Channel-to-meaning map, e.g. {\"R\": \"dirt\", \"G\": \"grass\"} plus derived entries like base/baseWeight (§8). R is dirt and G is grass — a bundle with these inverted predates audit SPLAT-3. B and A each pack TWO 4-bit weights (extra1:extra2 and extra3:extra4); the nested `packed` object names the nibbles and gives the decode — see audit SPLAT-6.",
           "type": "object",
           "additionalProperties": {
-            "type": "string"
+            "oneOf": [
+              { "type": "string" },
+              { "type": "object", "additionalProperties": { "type": "string" } }
+            ]
           }
         },
         "channelProvenance": {
@@ -602,6 +605,10 @@
           "items": {
             "type": "string"
           }
+        },
+        "blend": {
+          "description": "How to combine the channels (§8): composite over `base` in channel order, each at saturate(w / 255 * splatMultiplier)^splatPower. Not a partition — normalising the weights renders the map wrong.",
+          "type": "string"
         },
         "splatMultiplier": {
           "description": "Shader shaping constant applied to splat weights (§8).",

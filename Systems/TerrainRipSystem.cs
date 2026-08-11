@@ -1146,6 +1146,12 @@ namespace Carto.Systems
         /// <param name="terrainDirectory">The absolute <c>terrain/</c> directory.</param>
         /// <param name="report">The report to note results in.</param>
         /// <returns>Surface name to bundle-relative texture path.</returns>
+        /// <summary>
+        /// Per-ground capture provenance, filled by <see cref="CaptureSurfaceTextures"/> and
+        /// emitted as the <c>rasters.groundSources</c> block. See the note at its write site.
+        /// </summary>
+        private readonly Dictionary<string, object> _groundSources = new Dictionary<string, object>();
+
         private Dictionary<string, string> CaptureSurfaceTextures(string terrainDirectory, StringBuilder report)
         {
             Dictionary<string, string> written = new();
@@ -1223,6 +1229,19 @@ namespace Carto.Systems
                     byte[] png = Png.EncodeRgba(captured.Pixels, captured.Width, captured.Height);
                     File.WriteAllBytes(IOUtils.CombinePath(surfacesDirectory, $"{name}.png"), png);
                     written[name] = $"terrain/surfaces/{name}.png";
+
+                    // Record WHICH asset this ground came from. Without it a bundle says only
+                    // "this is extra2", never "extra2 was captured from <asset>", and a ground
+                    // that looks wrong cannot be told from a ground that was captured wrong.
+                    // Without it, painted beaches rendering as moss could not be diagnosed from
+                    // the bundle at all: it named the ground but never the asset behind it.
+                    _groundSources[name] = new Dictionary<string, object>
+                    {
+                        ["texture"] = texture.name ?? "(unnamed)",
+                        ["boundAs"] = entry[1],
+                        ["sourceSize"] = new[] { texture.width, texture.height },
+                        ["writtenSize"] = new[] { captured.Width, captured.Height }
+                    };
                 }
                 catch (Exception ex)
                 {
@@ -1231,12 +1250,31 @@ namespace Carto.Systems
                 }
             }
 
-            report.AppendLine($"Surfaces: {written.Count} ground texture(s) written");
-            if (paintableExtras < 4)
+            // Provenance goes in its own file, NOT into `rasters`: that object is closed in the
+            // schema, so a key there would force a schema bump for what is pure diagnostics.
+            // A new file is additive (contract §12).
+            if (_groundSources.Count > 0)
             {
-                report.AppendLine($"  extra{paintableExtras + 1}..extra4 skipped: the user splatmap "
-                                + $"has {paintableExtras} channel(s), so no pixel can carry their weight");
+                Dictionary<string, object> sources = new Dictionary<string, object>
+                {
+                    ["semantics"] = "which texture asset each terrain/surfaces/<ground>.png was "
+                                  + "captured from, and the shader global it was bound as. "
+                                  + "Provenance only — nothing joins to it. It exists so a ground "
+                                  + "that RENDERS wrong can be told apart from a ground that was "
+                                  + "CAPTURED wrong; without it neither question is answerable "
+                                  + "from a bundle at all",
+                    ["grounds"] = new Dictionary<string, object>(_groundSources)
+                };
+                File.WriteAllText(IOUtils.CombinePath(surfacesDirectory, "sources.json"),
+                                  JsonConvert.SerializeObject(sources, Formatting.Indented));
+                foreach (KeyValuePair<string, object> pair in _groundSources)
+                {
+                    Dictionary<string, object> d = (Dictionary<string, object>)pair.Value;
+                    report.AppendLine($"  {pair.Key} <- '{d["texture"]}' ({d["boundAs"]})");
+                }
             }
+
+            report.AppendLine($"Surfaces: {written.Count} ground texture(s) written");
             return written;
         }
 
@@ -1252,15 +1290,31 @@ namespace Carto.Systems
         }
 
         /// <summary>
-        /// How many paintable extra grounds the user splatmap can actually weight.
-        /// One weight per channel, so the answer is the texture's component count — 2 for the
-        /// <c>R8G8_UNorm</c> target this game version creates. Falls back to all four if the
-        /// texture cannot be inspected, since dropping a live ground is the worse error of the
-        /// two: a dead file wastes bytes, a missing one leaves a consumer unable to draw ground
-        /// the player painted.
+        /// How many paintable extra grounds the user splatmap can actually weight — <b>all four</b>.
+        /// <para>
+        /// <b>This used to return 2, and that was the bug that lost the player's sand
+        /// (audit SPLAT-6).</b> It reasoned "one weight per channel", read the
+        /// <c>R8G8_UNorm</c> target's component count, and concluded that only Extra1 and
+        /// Extra2 could carry weight — so <c>extra3</c> and <c>extra4</c> shipped no texture at
+        /// all. The premise is wrong: the game packs <b>two 4-bit weights per channel</b>, which
+        /// is how four extras fit in two bytes. <c>TerrainMaterialSystem.PackToBAChannels</c>
+        /// writes exactly that layout — the four brush components at bit offsets 0, 4, 8 and 12
+        /// across the two bytes.
+        /// </para>
+        /// <para>
+        /// Confirmed against the game and against a real city: the locale names the four tools
+        /// <c>Texture Paint Tool 01..04</c> = Dry / Lush / Dirt / <b>Sand</b>, and in a full-city
+        /// rip each of the four nibbles is a separate, coherent, brush-shaped painted region —
+        /// with Extra4 (Sand) tracing the shorelines, which is exactly where a player paints
+        /// beaches. Two of the four grounds a city can paint were simply absent from the bundle.
+        /// </para>
+        /// <para>
+        /// The count is now a constant, deliberately. Deriving it from the texture format is what
+        /// went wrong, and no format inspection can reveal a packing convention.
+        /// </para>
         /// </summary>
         /// <param name="report">The report to note the finding in.</param>
-        /// <returns>The number of extras that can carry weight, 0..4.</returns>
+        /// <returns>4 — every extra the paint tools can write.</returns>
         private int CountPaintableExtras(StringBuilder report)
         {
             try
@@ -1270,9 +1324,13 @@ namespace Carto.Systems
                 Texture user = materials?.UserSplatmap;
                 if (user == null) return 4;
 
+                // Reported, not used as a gate: the component count is real information about the
+                // target, it just does not bound how many weights that target carries.
                 int channels = (int)UnityEngine.Experimental.Rendering.GraphicsFormatUtility
                                     .GetComponentCount(user.graphicsFormat);
-                return Math.Max(0, Math.Min(4, channels));
+                report.AppendLine($"Surfaces: user splatmap is {channels}-channel, carrying 4 "
+                                + "paintable extras as 4-bit nibble pairs (two per channel)");
+                return 4;
             }
             catch (Exception ex)
             {
@@ -1294,28 +1352,39 @@ namespace Carto.Systems
         /// <c>world.xz = playableOffset + uv × playableArea</c> (its own <c>UpdateSplatmap</c>
         /// viewport math). Shipping it verbatim replaces the consumer-side per-cell ground
         /// classification with the game's own smooth per-pixel rule.
-        /// <b>The channel-to-ground assignment is published, not left to the consumer.</b> It used
-        /// to be: this block said "calibrated by the consumer against slope and flat ground", on
-        /// the premise that the assignment is not stated in managed code. That premise was half
-        /// wrong, and the reference consumer's calibration got three of four channels wrong on a
-        /// real bundle — it discarded a live dirt channel averaging 72 on flat ground, named the
-        /// Extra1 paint weight a rock variant, and never identified A at all (audit §7.3.2).
-        /// The map is <c>R = grass, G = dirt, B = extra1, A = extra2</c>, with <b>rock as the
-        /// implicit base</b> — the ground that renders where every channel is ~0, which is what a
-        /// cliff face is. Provenance differs per channel and the block says so rather than
-        /// flattening it:
+        /// <b>The channel-to-ground assignment is published, not left to the consumer.</b> The map
+        /// is <c>R = dirt, G = grass, B = extra1, A = extra2</c>, with <b>rock as the implicit
+        /// base</b> — the ground that renders where R falls away, which is what a cliff face is.
+        /// The grounds composite in channel order over that base, each at
+        /// <c>saturate(w · splatMultiplier)^splatPower</c>; they are <b>not</b> a partition to be
+        /// normalised.
+        /// <para>
+        /// <b>R and G were the wrong way round until 2026-08-10 (audit SPLAT-3), and the fix is
+        /// the reason this doc-comment is long.</b> The earlier reading called R grass because R
+        /// "falls monotonically with slope"; so does every soil weight, because rock is R's own
+        /// residual, so that observation never distinguished them. G was then assigned "by
+        /// elimination" — the one inference in this block that was never measured, and the one
+        /// that was wrong. Two measurements settle it, and neither is a curve fit:
+        /// </para>
         /// <list type="bullet">
+        /// <item><c>G = grass</c> — G is <b>exactly 0 on every texel under 1 m or more of
+        /// water</b> (mean 0.0 across 58% of the map) and averages 201.7 on flat land, falling to
+        /// 0.5 on 45°+ cliffs. A weight that is identically zero on every lakebed and every cliff
+        /// is a vegetation mask; nothing else in the ground set behaves that way.</item>
+        /// <item><c>R = dirt</c> — R averages <b>249.9 underwater</b>, rising with depth, and 251.6
+        /// on flat land. A weight that blankets the seabed is sediment, not grass. Its slope
+        /// falloff (251.6 flat → 9.4 at 45°+) is what uncovers the rock base.</item>
         /// <item><c>B</c>, <c>A</c> — measured exactly: non-zero on precisely the pixels the
         /// player painted with Extra1/Extra2, a biconditional with zero counterexamples over all
-        /// 16,777,216 pixels, and <c>ApplyToSplatmap</c> names the same two channel indices.</item>
-        /// <item><c>R</c>, and rock as the base — measured from the slope response: R falls
-        /// monotonically 254 → 2 from flat to cliff while every other channel is 0 on unpainted
-        /// ground.</item>
-        /// <item><c>G</c> — <b>by elimination</b>, not by direct measurement: seven grounds, four
-        /// channels, two proven extras, one proven grass, rock proven to be the base. That leaves
-        /// dirt as the only ground G can be, and it is falsified by a theme that binds fewer
-        /// grounds — so the check below runs on every rip rather than trusting one bundle.</item>
+        /// 16,777,216 pixels. Note that <c>ApplyToSplatmap</c> writes the <i>user</i> splatmap's
+        /// R/G, not these channels, so it corroborates the pairing but does not name the index.</item>
         /// </list>
+        /// <para>
+        /// The old map inverted the whole city: it painted the land dirt-brown and the lakebed
+        /// grass-green, which is exactly what the reference consumer rendered. The channel
+        /// semantics live in HLSL that ships compiled, so this remains an empirical derivation —
+        /// but one resting on physical facts about where grass can grow rather than on a curve fit.
+        /// </para>
         /// </summary>
         /// <param name="grounds">The ground textures the theme actually bound, from <see cref="CaptureSurfaceTextures"/>.</param>
         /// <param name="block">Receives the <c>rasters.json</c> "splatmap" block, or <c>null</c>.</param>
@@ -1348,14 +1417,13 @@ namespace Carto.Systems
                 double cellX = area.x / captured.Width;
                 double cellZ = area.y / captured.Height;
 
-                // G = dirt holds only while dirt is the one ground left over. Re-derive that here
-                // instead of asserting it: if the theme did not bind dirt, or bound a ground this
-                // rip does not know how to place, the elimination fails and G ships as unknown —
-                // which is honest, and is also the signal that the map needs re-deriving.
+                // Each channel is named only if the theme actually bound the ground it weights.
+                // A theme that binds no grass ground cannot have a grass channel, and shipping the
+                // name anyway would send a consumer to a texture that is not there.
                 //
                 bool dirtBound = (grounds != null) && grounds.ContainsKey("dirt");
-                bool eliminationHolds = dirtBound
-                                     && (grounds.ContainsKey("grass") && grounds.ContainsKey("rock"));
+                bool grassBound = (grounds != null) && grounds.ContainsKey("grass");
+                bool rockBound = (grounds != null) && grounds.ContainsKey("rock");
 
                 // Texel-centre geo-referencing, same convention as the terrain grid: top-left
                 // texel centre, rows toward −Z.
@@ -1371,47 +1439,79 @@ namespace Carto.Systems
                     },
                     ["semantics"] = "GPU-generated ground-blend weights (height variance, rock/grass "
                                   + "limits, noise, user brush). Channels are named in `channels` "
-                                  + "below — do not calibrate them from slope; the blend has no "
-                                  + "roadbed response, so a slope-and-roadbed calibration "
-                                  + "misidentifies the paint channels (schema §8)",
+                                  + "below — do not calibrate them from slope, which cannot tell "
+                                  + "dirt from grass: rock is the dirt channel's own residual, so "
+                                  + "both soil weights fall with slope together (schema §8)",
 
                     // The names are `terrain/surfaces/index.json` keys, so `channels.R` joins
                     // straight to a ground texture with no lookup table on the consumer's side.
                     //
                     ["channels"] = new Dictionary<string, object>
                     {
-                        ["R"] = "grass",
-                        ["G"] = eliminationHolds ? "dirt" : "unknown",
-                        ["B"] = "extra1",
-                        ["A"] = "extra2",
+                        ["R"] = dirtBound ? "dirt" : "unknown",
+                        ["G"] = grassBound ? "grass" : "unknown",
 
-                        // Rock is drawn where every weight falls to ~0 — a cliff face — so it is
-                        // not a channel at all. A consumer that treats the four weights as a
-                        // partition and normalises them loses rock entirely.
+                        // B and A are NOT single weights. Each packs two 4-bit weights, which is
+                        // how four paintable extras fit in the R8G8 user splatmap. Reading either
+                        // as one 0-255 opacity silently merges two different grounds into one and
+                        // drops the other two entirely (audit SPLAT-6).
+                        ["B"] = "extra1:extra2 (packed, low:high nibble)",
+                        ["A"] = "extra3:extra4 (packed, low:high nibble)",
+                        ["packed"] = new Dictionary<string, object>
+                        {
+                            ["B.low"] = "extra1",
+                            ["B.high"] = "extra2",
+                            ["A.low"] = "extra3",
+                            ["A.high"] = "extra4",
+                            ["decode"] = "extraN weight = (channel & 15) or (channel >> 4), "
+                                       + "each 0..15; normalise by 15, NOT by 255"
+                        },
+
+                        // Rock is drawn where the dirt weight falls away — a cliff face — so it is
+                        // not a channel at all. It is the residual of R ALONE: R and G routinely
+                        // sum well past 255 (both are near-saturated on flat land), so a consumer
+                        // that treats the four weights as a partition and normalises them turns
+                        // every meadow half brown.
                         //
-                        ["base"] = "rock",
-                        ["baseWeight"] = "max(0, 1 - (R + G + B + A) / 255)"
+                        ["base"] = rockBound ? "rock" : "unknown",
+                        ["baseWeight"] = "max(0, 1 - min(1, R / 255 * splatMultiplier))"
                     },
+
+                    // The composite the terrain shader's own multiplier/power imply, stated
+                    // explicitly because the natural misreading — normalise the four weights — is
+                    // the one that inverts the map.
+                    //
+                    ["blend"] = "composite over `base` in order: R (dirt), G (grass), then the "
+                              + "four packed extras extra1..extra4 unpacked from B and A. The two "
+                              + "soil channels use opacity saturate(w / 255 * splatMultiplier)"
+                              + "^splatPower; each extra uses saturate(nibble / 15 * "
+                              + "splatMultiplier)^splatPower. Not a partition: do not normalise",
 
                     // Per-channel, because these four are not equally well established and a
                     // consumer deserves to know which one to doubt.
                     //
                     ["channelProvenance"] = new Dictionary<string, object>
                     {
-                        ["R"] = "measured — falls monotonically with slope while every other "
-                              + "channel is 0 on unpainted ground",
-                        ["G"] = eliminationHolds
-                              ? "by elimination — the only ground left once grass, rock and the "
-                              + "two paint channels are accounted for; not measured directly"
-                              : "unknown — this theme does not bind the grounds the elimination "
-                              + "argument needs, so G is not named",
-                        ["B"] = "measured — non-zero on exactly the pixels painted with Extra1, "
-                              + "and TerrainMaterialSystem.ApplyToSplatmap writes Extra1 to this "
-                              + "channel index",
-                        ["A"] = "measured — non-zero on exactly the pixels painted with Extra2, "
-                              + "and ApplyToSplatmap writes Extra2 to this channel index",
-                        ["base"] = "measured — every channel falls to ~0 on cliff faces, and the "
-                              + "ground that renders there is rock"
+                        ["R"] = dirtBound
+                              ? "measured — averages 249.9 under water (rising with depth) and "
+                              + "251.6 on flat land; a weight that blankets the seabed is sediment. "
+                              + "Falls 251.6 → 9.4 from flat to 45°+ cliff, uncovering the rock base"
+                              : "unknown — this theme binds no dirt ground, so R is not named",
+                        ["G"] = grassBound
+                              ? "measured — exactly 0 on every texel under 1 m or more of water and "
+                              + "0.5 on 45°+ cliffs, against 201.7 on flat land; a weight that is "
+                              + "identically zero on every lakebed and every cliff is a vegetation mask"
+                              : "unknown — this theme binds no grass ground, so G is not named",
+                        ["B"] = "packed pair — TerrainMaterialSystem.PackToBAChannels writes the "
+                              + "four brush components at bit offsets 0, 4, 8, 12 across B and A, "
+                              + "so B carries extra1 (low nibble) and extra2 (high). Each nibble "
+                              + "is a separate coherent painted region in a full-city rip",
+                        ["A"] = "packed pair — extra3 (low nibble) and extra4 (high). The game's "
+                              + "locale names the four paint tools Dry / Lush / Dirt / Sand for "
+                              + "extra1..extra4, and extra4 traces the shorelines in a real city, "
+                              + "which is where a player paints beaches",
+                        ["base"] = "measured — the ground that renders where R falls to ~0, which is "
+                              + "what a cliff face is"
                     },
 
                     ["splatMultiplier"] = Math.Round((double)materials.SplatMultiplier, 4),
@@ -1420,10 +1520,18 @@ namespace Carto.Systems
 
                 report.AppendLine($"Splatmap: {captured.Width}x{captured.Height} ground-blend weights "
                                 + $"captured (multiplier {materials.SplatMultiplier:F2}, power {materials.SplatPower:F2})");
-                report.AppendLine(eliminationHolds
-                    ? "  channels: R=grass G=dirt B=extra1 A=extra2, rock as the unpainted residual"
-                    : "  channels: R=grass G=unknown B=extra1 A=extra2, rock as the unpainted residual "
-                    + "(G unnamed: this theme binds no dirt ground, so the elimination does not hold)");
+                report.AppendLine($"  channels: R={(dirtBound ? "dirt" : "unknown")} "
+                                + $"G={(grassBound ? "grass" : "unknown")} B=extra1 A=extra2, "
+                                + $"{(rockBound ? "rock" : "unknown")} as the base under R");
+                if (!dirtBound || !grassBound || !rockBound)
+                {
+                    List<string> missing = new List<string>();
+                    if (!dirtBound) missing.Add("dirt");
+                    if (!grassBound) missing.Add("grass");
+                    if (!rockBound) missing.Add("rock");
+                    report.AppendLine($"  note: this theme binds no {string.Join("/", missing)} ground, "
+                                    + "so those channels ship unnamed rather than guessed");
+                }
                 return captured;
             }
             catch (Exception ex)
@@ -1485,21 +1593,29 @@ namespace Carto.Systems
                     // and sets one component of the brush vector, and the target is R8G8 — so the
                     // enum's own ordering *is* the channel map, with no inference involved.
                     //
+                    // Two channels, four grounds: each byte packs two 4-bit weights. Reading R or
+                    // G as a single 0-255 weight merges two grounds and loses two (audit SPLAT-6).
+                    //
                     ["channels"] = new Dictionary<string, object>
                     {
-                        ["R"] = "extra1",
-                        ["G"] = "extra2"
+                        ["R"] = "extra1:extra2 (packed, low:high nibble)",
+                        ["G"] = "extra3:extra4 (packed, low:high nibble)",
+                        ["packed"] = new Dictionary<string, object>
+                        {
+                            ["R.low"] = "extra1",
+                            ["R.high"] = "extra2",
+                            ["G.low"] = "extra3",
+                            ["G.high"] = "extra4",
+                            ["decode"] = "extraN weight = (channel & 15) or (channel >> 4), "
+                                       + "each 0..15; normalise by 15, NOT by 255"
+                        }
                     },
 
-                    // Extra3 and Extra4 exist in the enum and the brush writes them, but the
-                    // target texture is two channels wide, so those writes land nowhere. This is
-                    // why terrain/surfaces/ ships no extra3/extra4 (see CaptureSurfaceTextures).
-                    //
-                    ["unrepresentable"] = new[] { "extra3", "extra4" },
-
-                    ["channelProvenance"] = "measured — TerrainMaterialSystem.ApplyToSplatmap maps "
-                                          + "TerrainMaterialType to brush-vector components and the "
-                                          + "target is R8G8_UNorm, so the enum ordering is the map"
+                    ["channelProvenance"] = "measured — TerrainMaterialSystem.PackToBAChannels "
+                                          + "writes the four brush components at bit offsets 0, 4, "
+                                          + "8 and 12 across the two bytes, which is how four "
+                                          + "extras fit an R8G8_UNorm target; each nibble is a "
+                                          + "separate coherent painted region in a full-city rip"
                 };
 
                 report.AppendLine($"User splatmap: painted surfaces present, {captured.Width}x{captured.Height} captured");

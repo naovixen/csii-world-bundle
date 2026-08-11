@@ -1543,7 +1543,8 @@ consumer bugs stacking:
    multiplied by white, a silent no-op since the day it landed, for the terrain grounds AND
    the §30 area materials alike. It now rides the HSV node's float `Value` input
    (unclamped), recalibrated by A/B renders against the in-game shots to
-   `_GROUND_GAIN = 8.0`, `_GROUND_SATURATION = 2.0` — presentation only, pixels on disk
+   `_GROUND_GAIN` / `_GROUND_SATURATION` — **both removed 2026-08-10**; the importer
+   now reproduces the shipped albedo 1:1 and does no grading. Pixels on disk
    untouched. Area materials get **no** gain: their textures come from ordinary prefab
    materials at normal albedo brightness, and gain-1 is the look the §30 layer was
    accepted with (the clamp bug means that is also the look it always actually had).

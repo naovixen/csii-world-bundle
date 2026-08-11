@@ -50,6 +50,16 @@
 		<Reference Include="UnityEngine.CoreModule">
 			<Private>False</Private>
 		</Reference>
+		<!-- HDRP's volume stack: the game's colour grading lives in VolumeComponents
+		     (ColorAdjustments, WhiteBalance, ShadowsMidtonesHighlights, Tonemapping), and the
+		     resolved post-blend values are what turn CS2's near-grey ground albedo into its
+		     on-screen palette. Read-only, for the §14 grading block. -->
+		<Reference Include="Unity.RenderPipelines.Core.Runtime">
+			<Private>False</Private>
+		</Reference>
+		<Reference Include="Unity.RenderPipelines.HighDefinition.Runtime">
+			<Private>False</Private>
+		</Reference>
 		<Reference Include="Unity.Burst">
 			<Private>False</Private>
 		</Reference>

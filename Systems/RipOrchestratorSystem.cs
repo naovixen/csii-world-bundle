@@ -422,6 +422,13 @@ namespace Carto.Systems
                     RipProgress.Report(RipProgress.Phase.Manifest);
                     BundleManifest snapshot = BundleManifest.Capture();
 
+                    // The game's resolved colour grading, captured HERE because it must be read on
+                    // the main thread (HDRP render state) and written on the worker with the
+                    // manifest. It is what turns CS2's near-grey ground albedo into its on-screen
+                    // palette; without it a consumer cannot tell the two apart. See GradingWriter.
+                    //
+                    Dictionary<string, object> grading = GradingWriter.Capture();
+
                     // ripOptions must describe THIS run, not the live settings at finalize time —
                     // the user may have flipped a toggle while the rip ran (audit I-F8). The
                     // plan's caps are what the stages actually ran with, including the negative
@@ -436,6 +443,7 @@ namespace Carto.Systems
                         try
                         {
                             summary = BundleWriter.WriteManifest(directory, snapshot);
+                            summary += Environment.NewLine + GradingWriter.Write(directory, grading);
                         }
                         catch (Exception ex)
                         {
