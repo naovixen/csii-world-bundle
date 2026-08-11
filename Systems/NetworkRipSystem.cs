@@ -456,6 +456,8 @@ namespace Carto.Systems
             _rebuiltFramePieces = 0;
             _pinnedFrameVerts = 0;
             m_ConformProbes.Clear();
+            m_SectionProbes.Clear();
+            m_FrameProbes.Clear();
 
             // A deselected half simply contributes an empty work list; the pipeline shares the
             // rest — writers, materials, progress — unchanged.
@@ -966,6 +968,76 @@ namespace Carto.Systems
                                     + $"dropped tris {pr.FrontCutTris} front / {pr.BackCutTris} back / {pr.OutOfWindowTris} window");
                 }
             }
+            // -- what the cross-section walk BUILT (§42 tram deck, §41.9 node flare) -----------
+            //
+            // Both defects are invisible to every other counter here, because both pieces are
+            // found, read and placed. Only two numbers separate them from a healthy piece: how
+            // far across the frame the vertices reached, and how big the geometry is. Reported
+            // as anomalies rather than in full — 137 distinct pieces would bury the answer.
+            //
+            {
+                List<KeyValuePair<string, SectionProbe>> collapsed = new();
+                foreach (KeyValuePair<string, SectionProbe> kvp in m_SectionProbes)
+                {
+                    SectionProbe s = kvp.Value;
+                    if ((s.Vertices == 0) || !s.HasBounds) continue;
+                    float3 extent = s.Hi - s.Lo;
+                    bool pinnedAcross = (s.Size.x > 0.25f) && ((s.XMax - s.XMin) < 0.02f);
+                    // Authored metres that produced no metres. The z axis is the along-run one,
+                    // so a piece tiled along a segment is never thin there; x and y are the
+                    // cross-section, which is where a collapse shows.
+                    bool flat = (math.max(extent.x, extent.z) < 0.05f)
+                                || ((s.Size.y > 0.5f) && (extent.y < 0.05f));
+                    if (pinnedAcross || flat) collapsed.Add(kvp);
+                }
+                if (collapsed.Count > 0)
+                {
+                    collapsed.Sort((a, b) => string.CompareOrdinal(a.Key, b.Key));
+                    report.AppendLine($"COLLAPSED: {collapsed.Count} cross-section piece(s) were read and placed "
+                                    + "but built no surface (authored size against the extent they produced):");
+                    int shown = 0;
+                    foreach (KeyValuePair<string, SectionProbe> kvp in collapsed)
+                    {
+                        if (shown++ >= 40) { report.AppendLine($"  … and {collapsed.Count - 40} more"); break; }
+                        SectionProbe s = kvp.Value;
+                        float3 extent = s.Hi - s.Lo;
+                        report.AppendLine($"  {kvp.Key}: authored offsetX {s.OffsetX:F2}, size "
+                                        + $"{s.Size.x:F1}x{s.Size.y:F1}x{s.Size.z:F1}; {s.Placements} placement(s), "
+                                        + $"{s.Vertices} vertex(es); xParam {s.XMin:F3}..{s.XMax:F3}; "
+                                        + $"built {extent.x:F2}x{extent.y:F2}x{extent.z:F2} m");
+                    }
+                }
+
+                // A half frame whose pieces stop short of its outer rail. The frame is a lerp
+                // from the middle curve to the side curve, so xParam 1 IS the outer rail: a half
+                // that peaks below it leaves the outer part of every flare unbuilt, and that is
+                // invisible until the flare is stretched by a wider arm at the same node.
+                List<FrameProbe> short_ = new();
+                foreach (KeyValuePair<Entity, FrameProbe> kvp in m_FrameProbes)
+                {
+                    FrameProbe f = kvp.Value;
+                    if (((f.LeftMax >= 0f) && (f.LeftMax < 0.95f))
+                        || ((f.RightMax >= 0f) && (f.RightMax < 0.95f))) short_.Add(f);
+                }
+                if (short_.Count > 0)
+                {
+                    short_.Sort((a, b) => math.min(a.LeftMax < 0f ? 9f : a.LeftMax, a.RightMax < 0f ? 9f : a.RightMax)
+                                          .CompareTo(math.min(b.LeftMax < 0f ? 9f : b.LeftMax, b.RightMax < 0f ? 9f : b.RightMax)));
+                    report.AppendLine($"SHORT HALF FRAME: {short_.Count} node composition(s) whose pieces do not reach "
+                                    + "the frame's outer rail (xParam 1 is that rail; the shortfall is unbuilt flare):");
+                    int shown = 0;
+                    foreach (FrameProbe f in short_)
+                    {
+                        if (shown++ >= 24) { report.AppendLine($"  … and {short_.Count - 24} more"); break; }
+                        report.AppendLine($"  {f.Composition}: width {f.Width:F1}, middleOffset {f.MiddleOffset:F2}, "
+                                        + $"{f.Placements} placement(s); left reaches "
+                                        + (f.LeftMax < 0f ? "n/a" : $"{f.LeftMax:F3}") + ", right reaches "
+                                        + (f.RightMax < 0f ? "n/a" : $"{f.RightMax:F3}")
+                                        + $"; pieces: {string.Join(", ", f.Pieces)}");
+                    }
+                }
+            }
+
             if (_pipelineCompositions > 0)
                 report.AppendLine($"Skipped {_pipelineCompositions} composition part(s) with no world-view layer "
                                 + "(Pipeline/SubPipeline/Waterway — utility cutaway and overlay views only; "

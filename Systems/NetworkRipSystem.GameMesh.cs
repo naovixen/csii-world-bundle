@@ -120,6 +120,45 @@ namespace Carto.Systems
 
         private readonly Dictionary<string, ConformPieceProbe> m_ConformProbes = new();
 
+        /// <summary>
+        /// Per piece, what the cross-section walk actually BUILT — the §42/§41.9 probe.
+        /// <para>Two defects need the same fact and neither can be read from a bundle: an
+        /// elevated tram ships its structure and no running surface (§42), and an alley's node
+        /// half frame stops at xParam 0.475 at every station while the frame widens 4.4 -> 7.3 m
+        /// (§41.9). "Which piece was read" is already reported; what is missing is how far across
+        /// the frame its vertices reached and how big the geometry it produced is. A piece that
+        /// is read, placed, and collapses to a ribbon looks identical to a healthy one in every
+        /// count the walk keeps today.</para>
+        /// </summary>
+        private sealed class SectionProbe
+        {
+            public string Where;                 // "node" or "edge"
+            public float3 Size;                  // authored piece size
+            public float OffsetX;                // authored cross-section offset
+            public int Placements, Vertices;
+            public float XMin = float.MaxValue, XMax = float.MinValue;
+            public float3 Lo, Hi;                // emitted extent, relative to composition centre
+            public bool HasBounds;
+        }
+
+        private readonly Dictionary<string, SectionProbe> m_SectionProbes = new();
+
+        /// <summary>
+        /// Per composition, how far across each half frame the union of its pieces reached.
+        /// A half that stops short of 1.0 never builds the outer part of its flare, which is
+        /// what leaves ground exposed at an asymmetric-width node (§41.9).
+        /// </summary>
+        private sealed class FrameProbe
+        {
+            public string Composition;
+            public float Width, MiddleOffset;
+            public float LeftMax = -1f, RightMax = -1f, EdgeMax = -1f;
+            public int Placements;
+            public readonly SortedSet<string> Pieces = new();
+        }
+
+        private readonly Dictionary<Entity, FrameProbe> m_FrameProbes = new();
+
         private ushort[] _conformHeights;
         private int2 _conformResolution;
         private float3 _conformScale;
@@ -570,6 +609,36 @@ namespace Carto.Systems
                 PieceHeightBounds heightBounds = null;
                 float boundsScaleZ = 0f;
                 bool conforming = false;
+                // The §42/§41.9 probe: one row per piece, plus this composition's half-frame
+                // reach. Both are keyed before the vertex loop so the loop only accumulates.
+                string sectionName = Instance.Prefab.TryGetPrefab(piece.m_Piece, out PrefabBase sectionPiece)
+                                     && (sectionPiece != null)
+                    ? sectionPiece.name : $"<entity {piece.m_Piece.Index}>";
+                string sectionKey = $"{sectionName}|{(isNode ? "node" : "edge")}";
+                if (!m_SectionProbes.TryGetValue(sectionKey, out SectionProbe section))
+                {
+                    m_SectionProbes[sectionKey] = section = new SectionProbe
+                    {
+                        Where = isNode ? "node" : "edge",
+                        Size = piece.m_Size,
+                        OffsetX = piece.m_Offset.x
+                    };
+                }
+                section.Placements++;
+                if (!m_FrameProbes.TryGetValue(composition, out FrameProbe frame))
+                {
+                    m_FrameProbes[composition] = frame = new FrameProbe
+                    {
+                        Composition = Instance.Prefab.TryGetPrefab(composition, out PrefabBase compPrefab)
+                                      && (compPrefab != null)
+                            ? compPrefab.name : $"<composition {composition.Index}>",
+                        Width = data.m_Width,
+                        MiddleOffset = data.m_MiddleOffset
+                    };
+                }
+                frame.Placements++;
+                if (frame.Pieces.Count < 24) frame.Pieces.Add(sectionName);
+
                 ConformPieceProbe probe = null;
                 if (lowerBottom || raiseTop || smoothTop)
                 {
@@ -885,6 +954,28 @@ namespace Carto.Systems
                                 probe.Raised++;
                             }
                         }
+                        // What this piece actually built, in the frame's own coordinate and in
+                        // metres. A collapsed piece has a healthy vertex count and a degenerate
+                        // extent; a short half frame has a healthy extent and an xParam that
+                        // never reaches 1.
+                        float3 relative = world - center;
+                        section.Vertices++;
+                        section.XMin = math.min(section.XMin, xParam);
+                        section.XMax = math.max(section.XMax, xParam);
+                        if (section.HasBounds)
+                        {
+                            section.Lo = math.min(section.Lo, relative);
+                            section.Hi = math.max(section.Hi, relative);
+                        }
+                        else
+                        {
+                            section.Lo = section.Hi = relative;
+                            section.HasBounds = true;
+                        }
+                        if (!isNode) frame.EdgeMax = math.max(frame.EdgeMax, xParam);
+                        else if (halved && leftHalf) frame.LeftMax = math.max(frame.LeftMax, xParam);
+                        else if (halved) frame.RightMax = math.max(frame.RightMax, xParam);
+
                         assembly.Vertices.Add(world - center);
 
                         // The shading frame, rotated by the very map that placed the vertex.

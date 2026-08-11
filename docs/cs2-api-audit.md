@@ -2215,3 +2215,45 @@ wedge has its two rails sharing a start point, a half frame does not.
 
 **The §41.8 consumer fix is validated on the new rip**: `tools/test_clip_cut.py` is green on all
 six windows, hole 0.0-0.2 m².
+
+### 42.3 The 20:23 rip contradicts §42.2's mechanism — the piece is read, not dropped
+
+Measured on the 20:23 rip, up- and down-facing area against each record's own `length × width`:
+
+| category | form | n | up | down | primitive families |
+|---|---|---|---|---|---|
+| road | elevated | 597 | 100% | 99% | `Road`+`RoadParts` x587 |
+| train | elevated | 50 | 94% | 79% | `RoadParts`+`TrainSubwayTrack` x50 |
+| **tram** | **elevated** | **25** | **13%** | **101%** | **`RoadParts` only, all 25** |
+| tram | normal | 35 | **3%** | 0% | `Road` x35 |
+
+So the viaduct has its underside at full area and essentially no running surface — the §42 state,
+after §42.2's rip had it healthy. Bad, good, bad across three rips of the same producer.
+
+**But `7daada5`'s counter did not fire.** That DLL was live for this rip and the log carries no
+`DROPPED:` line at all, while reporting `Distinct cross-section pieces read: 137`. §42.2's
+mechanism was "the piece's buffers are not resident for a whole session, so `GetPieceGeometry`
+returns null for every placement" — that path is now counted, and it counted zero. **The piece is
+found and read and still builds no surface**, which is the ground tram's "present but 5 m²" clue
+(§42) generalised: this is collapse, not absence.
+
+**Instrumented, not fixed.** The walk keeps no number that separates a collapsed piece from a
+healthy one — both are read, placed and counted. Added:
+
+* `COLLAPSED:` per piece (node/edge), its authored `offsetX`/size against the extent its vertices
+  actually built, and the xParam span they covered. A piece pinned across (`xParam` span < 0.02
+  with a non-zero authored width) or building under 5 cm where it is authored metres wide is
+  named.
+* `SHORT HALF FRAME:` per node composition, how far across each half its pieces reach. xParam 1
+  IS the outer rail, so a half peaking below it never builds the outer part of its flare — the
+  §41.9 defect, whose measured signature is a mesh stopping at **xParam 0.475 at every station**
+  while the frame widens 4.36 → 7.26 m. Constant in the parameter, not in metres, which is why it
+  only shows where a wider arm stretches the frame.
+
+Compiles 0 warnings; **the deploy step could not run because the game held the DLL**, so this is
+built but not yet live. Nothing here is diagnosed until a rip prints those lines.
+
+Also refuted on the way: the shortfall is not a systematic under-paving hidden by a neighbouring
+arm's overlap. Scored against the OWNING segment's mesh alone, `Alley Oneway` half frames average
+96.5% (min 39.0%), `Alley` 99.9%, `Medium Road` and `Small Road` 100.0% — so most alley frames do
+reach their rail on their own, and the two failures are exceptional even within their asset.
