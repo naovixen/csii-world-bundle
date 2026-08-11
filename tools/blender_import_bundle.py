@@ -2942,6 +2942,9 @@ _CLIP_REF_STATION_BITS = 11  # stations per strip cap at 1024 (< 2^11)
 _CLIP_CONTAIN_SAMPLES = 6
 _CLIP_CONTAIN_BLOCK = 128
 
+# How far, in cells, `_snap_hole_boundary` may push a hole-rim vertex OUT to a prism wall.
+_CLIP_SNAP_REACH_CELLS = 1.5
+
 
 def _contain_faces(width, height, terrain_y, cell_cut, quad_source, samples, block):
     """Faces wholly inside the union of the clip bands — the deletion rule (contract §8c).
@@ -3183,15 +3186,30 @@ def _snap_hole_boundary(verts, vid, used_grid, cut_face_grid, refs_w, strip_geo,
     """Move every cut-hole boundary vertex onto the clip prism's own surface.
 
     The game clips terrain per pixel against smooth swept prisms; this grid deletes whole
-    3.5 m cells, so the hole is up to a cell wider than the prism everywhere — a sawtooth
-    see-through rim beside every road once the everyday ±0.3 m shell ships, and open gaps
-    around portal mouths. Snapping closes it exactly: a boundary vertex laterally outside
-    the strip moves onto the nearest point of the strip's side polyline (the prism wall),
-    with its height resampled from the ground there; a vertex over the strip whose height is
-    above the band ceiling drops to `lane + top` (the portal-roof iso-edge), below the floor
-    rises to `lane + bottom`. Kept faces then stretch to the exact clip boundary, the way
-    the game's surviving pixels end at it. Verts cut only by `area` records (ref −1) stay —
-    an authored clip surface has no curves to project onto.
+    3.5 m cells, so the hole's rim lands within a cell of the prism wall on whichever side the
+    deletion rule errs. Snapping closes the difference exactly, in BOTH directions:
+
+      * a rim vertex laterally outside the strip moves IN, onto the nearest point of the
+        strip's side polyline (the prism wall), with its height resampled from the ground
+        there;
+      * a rim vertex over the strip and INSIDE the band is one the game discards, so it is
+        pushed OUT to that same wall — within `_CLIP_SNAP_REACH_CELLS`, which is what
+        distinguishes a vertex bounded by the band's wall from one bounded by its roof or
+        floor in the middle of a wide prism;
+      * a rim vertex over the strip but out of the band is clamped in height only: above the
+        ceiling it drops to `lane + top` (the portal-roof iso-edge), below the floor it rises
+        to `lane + bottom`.
+
+    Kept faces then stretch to the exact clip boundary, the way the game's surviving pixels end
+    at it. Verts cut only by `area` records (ref −1) stay — an authored clip surface has no
+    curves to project onto.
+
+    The outward push is what the containment deletion rule needs and the old over-deleting rule
+    did not: with `_contain_faces` the hole is INSIDE the prism, so its rim sits in the band and
+    the height clamp alone leaves it there. In a shallow surface band that is invisible (the
+    road covers it), but in a trench or portal band, whose roof is `ElevationLimit * 3`, it is a
+    3.5 m square of hillside standing in the cutting — the "square terrain overlapping the
+    cutout walls" reported on 2026-08-11.
 
     Where several strips overlap — every junction, every pair of close-run tracks — a boundary
     vertex's neighbourhood names SEVERAL strips, and which one it is projected onto decides
@@ -3204,15 +3222,16 @@ def _snap_hole_boundary(verts, vid, used_grid, cut_face_grid, refs_w, strip_geo,
     survived the face-centre cut. So EVERY candidate is evaluated and the nearest target wins:
     the same "nearest prism wall" rule this already used within a strip, extended across them.
 
-    A vertex standing OVER a strip is not moved laterally at all, only clamped in height, so it
-    scores a zero-distance target and therefore wins against any wall it merely sits beside.
-    That falls out of ranking by displacement and is the behaviour wanted: a vertex over a
-    prism belongs to that prism.
+    Candidates are ranked by distance to the strip's own wall, not by how far the vertex would
+    move — a vertex over a prism would otherwise score a free zero-distance win against the wall
+    it actually belongs to, which suppresses the lateral snap entirely and leaves the raw cell
+    staircase behind (seen, measured, rejected).
 
     Everything is in the window lattice: `used_grid`/`cut_face_grid` are (lat_h, lat_w),
     `refs_w` the windowed reference raster, `verts` the built vertex array `vid` indexes.
-    Returns `(moved, unreferenced)` — vertices snapped, and boundary vertices that found no
-    strip reference in their 3x3 neighbourhood and were therefore left where they were.
+    Returns `(moved, unreferenced, pushed)` — vertices snapped, boundary vertices that found no
+    strip reference in their 3x3 neighbourhood and were therefore left where they were, and how
+    many of the moves were outward pushes out of a band.
 
     NOTE on that second number: it counts vertices with NO candidate, and it is 0 on a real
     city. It says nothing about whether the RIGHT strip was chosen among several, which is what
@@ -3226,7 +3245,7 @@ def _snap_hole_boundary(verts, vid, used_grid, cut_face_grid, refs_w, strip_geo,
         cut_corner[fr + dr, fc + dc] = True
     br, bc = numpy.nonzero(cut_corner & used_grid)
     if not len(br):
-        return 0, 0
+        return 0, 0, 0
 
     # Every distinct reference in each boundary vertex's 3×3 neighbourhood becomes a candidate.
     # One row per (vertex, candidate) pair, so the whole set is scored in one pass and the
@@ -3241,7 +3260,7 @@ def _snap_hole_boundary(verts, vid, used_grid, cut_face_grid, refs_w, strip_geo,
     live = candidates >= 0
     unreferenced = int((~live.any(axis=1)).sum())
     if not live.any():
-        return 0, unreferenced
+        return 0, unreferenced, 0
 
     vertex_of = numpy.repeat(numpy.arange(len(br), dtype=numpy.int64), 9)[live.reshape(-1)]
     ref = candidates.reshape(-1)[live.reshape(-1)]
@@ -3277,6 +3296,12 @@ def _snap_hole_boundary(verts, vid, used_grid, cut_face_grid, refs_w, strip_geo,
     # trap: a vertex standing over a strip is only clamped in height, so it scores a zero move
     # and wins every contest, which suppresses the lateral snap that closes the sawtooth and
     # leaves the raw cell staircase behind (seen, measured, rejected).
+    # How far a vertex may be pushed out to a prism wall. A rim vertex is a corner of a deleted
+    # face and of a kept one, and a kept face has a sample outside the band, so a vertex whose
+    # band boundary is a WALL is within a face of it; anything further out is bounded by a roof
+    # or a floor instead and stays put. One and a half cells is that face plus slack.
+    reach = cell * _CLIP_SNAP_REACH_CELLS
+    pushed_flag = numpy.zeros(len(x), dtype=bool)
     target_x = x.copy()
     target_z = z.copy()
     target_y = y.copy()
@@ -3311,29 +3336,44 @@ def _snap_hole_boundary(verts, vid, used_grid, cut_face_grid, refs_w, strip_geo,
         between = numpy.sign(side_l) != numpy.sign(side_r)
 
         new_x, new_z, new_y = px.copy(), pz.copy(), py.copy()
-        # Over the strip: clamp to the band's iso surfaces (roof for portals, floor rarely).
-        roof = between & numpy.isfinite(numpy.full_like(py, top)) & (py > lane_y + top)
+        finite_top = numpy.isfinite(numpy.full_like(py, top))
+        # A vertex standing OVER the strip and INSIDE the band is one the game discards per
+        # pixel, so leaving it is the 3.5 m square of hillside that stands in a trench and
+        # clips through the road. The nearest way out of the volume is the prism wall, and the
+        # rim is by construction within a face of it — a kept face has a sample outside the
+        # band — so the reach gate below only ever declines a vertex whose band boundary is the
+        # band's ROOF or FLOOR rather than its wall (the middle of a wide prism), which is
+        # exactly the vertex that must not be dragged sideways across a road.
+        in_band = between & (py > lane_y + bottom) & (~finite_top | (py < lane_y + top))
+        push = in_band & (numpy.minimum(ld, rd) <= reach)
+        # Over the strip, out of the band: clamp to the band's iso surfaces instead (roof for
+        # portals, floor rarely).
+        hold = between & ~push
+        roof = hold & finite_top & (py > lane_y + top)
         new_y[roof] = (lane_y + top)[roof]
-        floor_hit = between & (py < lane_y + bottom)
+        floor_hit = hold & (py < lane_y + bottom)
         new_y[floor_hit] = (lane_y + bottom)[floor_hit]
-        # Outside: onto the nearer side polyline, height from the ground there.
-        outside = ~between
-        use_left = outside & (ld <= rd)
-        use_right = outside & ~use_left
+        # Onto the nearer side polyline, height from the ground there. Vertices outside the
+        # strip come IN; in-band rim vertices go OUT. Both land the kept terrain's edge on the
+        # prism wall, which is where the game's surviving pixels end.
+        onto = (~between) | push
+        use_left = onto & (ld <= rd)
+        use_right = onto & ~use_left
         new_x[use_left] = lxp[use_left]
         new_z[use_left] = lzp[use_left]
         new_x[use_right] = rxp[use_right]
         new_z[use_right] = rzp[use_right]
-        if outside.any():
-            gy = bilinear_ground(new_x[outside], new_z[outside])
-            lo = (lane_y + bottom)[outside]
-            hi = (lane_y + top)[outside] if numpy.isfinite(top) else numpy.full_like(gy, numpy.inf)
-            new_y[outside] = numpy.clip(gy, lo, hi)
+        if onto.any():
+            gy = bilinear_ground(new_x[onto], new_z[onto])
+            lo = (lane_y + bottom)[onto]
+            hi = (lane_y + top)[onto] if numpy.isfinite(top) else numpy.full_like(gy, numpy.inf)
+            new_y[onto] = numpy.clip(gy, lo, hi)
 
         target_x[sel] = new_x
         target_z[sel] = new_z
         target_y[sel] = new_y
         wall_distance[sel] = numpy.minimum(ld, rd)
+        pushed_flag[sel] = push
 
     # One winner per vertex: the strip whose wall it stands nearest to.
     pick = numpy.lexsort((wall_distance, vertex_of))
@@ -3347,7 +3387,7 @@ def _snap_hole_boundary(verts, vid, used_grid, cut_face_grid, refs_w, strip_geo,
     verts[idx, 0] = new_x[changed]
     verts[idx, 1] = new_z[changed]
     verts[idx, 2] = new_y[changed]
-    return int(changed.sum()), unreferenced
+    return int(changed.sum()), unreferenced, int((pushed_flag[winner] & changed).sum())
 
 
 def _splat_mapping(block):
@@ -3943,11 +3983,11 @@ def build_terrain(bundle_dir, collection, center, radius, clip_floor=None):
     loops = vid[all_loops]
 
     # Close the cut holes onto the clip prisms exactly (before UVs — they read final verts).
-    snapped = unreferenced = 0
+    snapped = unreferenced = pushed = 0
     if cut_faces and strip_geo:
         cut_face_grid = numpy.zeros((lat_h, lat_w), dtype=bool)
         cut_face_grid[cell_rr[face_cut], cell_cc[face_cut]] = True
-        snapped, unreferenced = _snap_hole_boundary(
+        snapped, unreferenced, pushed = _snap_hole_boundary(
             verts, vid, used.reshape(lat_h, lat_w), cut_face_grid,
             cut_refs[row0:row0 + lat_h, col0:col0 + lat_w], strip_geo,
             ground_y, origin_x, origin_z, row0, col0, cell)
@@ -4159,7 +4199,8 @@ def build_terrain(bundle_dir, collection, center, radius, clip_floor=None):
             LOG.warn(f"the cut deletes {(ratio - 1.0) * 100:.0f}% more terrain than the clip "
                      "prisms cover — expect see-through gaps beside roads")
     if snapped or unreferenced:
-        LOG.step(f"{snapped} hole-boundary vertex(es) snapped onto the clip prisms"
+        LOG.step(f"{snapped} hole-boundary vertex(es) snapped onto the clip prisms "
+                 f"({pushed} pushed out of a band, the rest pulled in)"
                  + (f", {unreferenced} found no strip to snap to (area-only cuts)"
                     if unreferenced else ""))
     if stride > 1:
