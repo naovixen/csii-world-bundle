@@ -2336,3 +2336,48 @@ reach, which filled it with pathway and quay compositions at 0.000-0.250 and nev
 0.475 row. Raised to 150 rows, and each row now carries up to 4 sample segments instead of the
 first one only — a composition is shared across many segments, so recording just the first meant
 a row could never be matched to the segment the defect was reported on.
+
+### 42.6 Why residency varies, and the read-only lever that fixes it
+
+Traced through the decompiled `Game.Rendering.BatchMeshSystem.LoadMeshes`. `MeshVertex` and its
+siblings are **not** authored prefab data — they are a **render-side cache** the game fills on
+demand:
+
+    for each NetCompositionPiece of a batched composition:
+        if (!HasComponent<MeshVertex>(piece))              // not cached yet
+            renderPrefab = m_PrefabSystem.GetPrefab<RenderPrefab>(piece.m_Piece)
+            geometryAsset.RequestDataAsync(m_GeometryLoadingSystem, mask)   // ASYNC
+            ... when loading.m_AsyncLoadingDone:
+                CacheMeshData(renderPrefab, geometryAsset, piece, sourceType)
+
+and it is gated three ways: a **memory budget** (`strictMemoryBudget`, `totalSizeInMemory +
+loadingMemorySize + num2 > memoryBudget` bails out and raises `m_PriorityLimit`), a **cap of 30**
+concurrent async geometry loads, and **eviction** (`m_UnloadGeometryAssets.Add(geometryAsset)`
+for anything not being cached). So which pieces carry buffers depends on what the renderer has
+recently batched, how much memory it had, and where the async loads got to — which is exactly the
+run-to-run variation §42.2 measured and could not explain.
+
+**The producer has been reading a cache and calling it the asset.** That is the defect, and it is
+not specific to networks: the same buffers back the 117 `none of 1 sub-mesh(es) yielded geometry`
+mesh warnings.
+
+**Two ways to fix it, and the right one.**
+
+* `Game.Rendering.NetMeshHelpers.CacheMeshData(Mesh, Entity, EntityManager, EntityCommandBuffer)`
+  is `public static` and writes precisely the buffers the port reads. Rejected: it MUTATES game
+  state, adding buffers to prefab entities behind the renderer's own accounting
+  (`m_MeshInfos`, the memory budget), and this mod's contract is that it only reads.
+* `Colossal.IO.AssetDatabase.GeometryAsset` exposes the geometry itself, publicly and CPU-side:
+  `ObtainMeshes()` — which is **synchronous** (`LoadAndCreateMeshes` fills `m_Data`/`m_Loading`
+  inline, no frame polling) and **ref-counted** — plus `GetVertexCount`, `GetIndicesCount`,
+  `GetIndexFormat`, `GetIndices`, `GetAttributeData(ref Data, meshIndex, VertexAttribute)`,
+  `GetAttributeFormat` and `GetSubMeshDesc` for the material ranges, and `ReleaseMeshes()` to
+  balance it.
+
+So `GetPieceGeometry`'s null branch becomes: resolve the piece's `RenderPrefab`, `ObtainMeshes()`,
+read positions/normals/tangents/UV0/indices and the sub-mesh ranges straight out of
+`GeometryAsset.Data`, then `ReleaseMeshes()`. Ref-counting makes that a no-op for an asset that
+was already loaded and a clean load/unload for one that was not — no ECS writes, nothing left
+behind, and the answer no longer depends on what the camera was looking at.
+
+Not yet implemented; this section is the design and the API surface it rests on.
