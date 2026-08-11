@@ -2975,17 +2975,19 @@ def _contain_faces(width, height, terrain_y, cell_cut, quad_source, samples, blo
     c1)` yields `(quad, lane_y, bottom, top)` for every station quad whose face-space bounds
     touch the block, in NATIVE cell space; this routine scales them into the block's own frame.
 
-    Returns `(contain, band_count, deep_touch)` — the (height − 1, width − 1) deletion mask; the
+    Returns `(contain, band_count, deep_touch, sub_bands)` — the (height − 1, width − 1) deletion mask; the
     count of in-band sub-samples PER FACE, which is the true clipped area in units of
     `(cell / samples)²` and, being per-face, can be windowed alongside the mask so the
     containment ratio in `build_terrain`'s report means the same thing for a region import as
     for a whole city; and which faces a DEEP band reaches without containing, the residual
-    `build_terrain` reports (see `_CLIP_DEEP_BAND_TOP`).
+    `build_terrain` reports (see `_CLIP_DEEP_BAND_TOP`); and, for each of those faces, its own
+    sample block, so the caller can cut the face at the sampling rather than choose for it.
     """
     face_h, face_w = height - 1, width - 1
     contain = numpy.zeros((face_h, face_w), dtype=bool)
     band_count = numpy.zeros((face_h, face_w), dtype=numpy.uint8)  # <= samples², 6² = 36
     deep_touch = numpy.zeros((face_h, face_w), dtype=bool)
+    sub_bands = {}                       # (face row, face col) -> (samples, samples) bool
 
     # Only blocks holding a cut cell are visited. A face wholly inside a band has its four
     # CORNERS inside it too, and those corners are cell centres (contract §3) — which is what
@@ -2993,7 +2995,7 @@ def _contain_faces(width, height, terrain_y, cell_cut, quad_source, samples, blo
     # where the sampling and the corners disagree the face is kept, which is the safe side.
     cut_face = cell_cut[:-1, :-1] | cell_cut[:-1, 1:] | cell_cut[1:, :-1] | cell_cut[1:, 1:]
     if not cut_face.any():
-        return contain, band_count, deep_touch
+        return contain, band_count, deep_touch, sub_bands
 
     for r0 in range(0, face_h, block):
         r1 = min(r0 + block, face_h)
@@ -3029,11 +3031,21 @@ def _contain_faces(width, height, terrain_y, cell_cut, quad_source, samples, blo
                     _fill_clip_quad(deep, fine_y, sw, sh, local, lane_y, bottom, top)
 
             per_face = band.reshape(nfr, samples, nfc, samples)
-            contain[r0:r1, c0:c1] = per_face.all(axis=(1, 3))
+            whole = per_face.all(axis=(1, 3))
+            touched = deep.reshape(nfr, samples, nfc, samples).any(axis=(1, 3))
+            contain[r0:r1, c0:c1] = whole
             band_count[r0:r1, c0:c1] = per_face.sum(axis=(1, 3), dtype=numpy.uint16)
-            deep_touch[r0:r1, c0:c1] = deep.reshape(nfr, samples, nfc, samples).any(axis=(1, 3))
+            deep_touch[r0:r1, c0:c1] = touched
 
-    return contain, band_count, deep_touch
+            # A face a DEEP band reaches but does not contain cannot be resolved by keeping or
+            # deleting it whole: a trench narrower than the face holds no whole face, so nothing
+            # is deleted along it and the face is left lying across the cutting. Keep its own
+            # sample block so `build_terrain` can cut it at the sampling instead — the samples
+            # are already computed, and their centres are exactly the sub-face centres.
+            for i, j in zip(*numpy.nonzero(touched & ~whole)):
+                sub_bands[(r0 + int(i), c0 + int(j))] = per_face[i, :, j, :].copy()
+
+    return contain, band_count, deep_touch, sub_bands
 
 
 def _clip_grid(bundle_dir, width, height, heights, cell, origin_x, origin_z,
@@ -3078,7 +3090,7 @@ def _clip_grid(bundle_dir, width, height, heights, cell, origin_x, origin_z,
         return (numpy.zeros((height, width), dtype=bool),
                 numpy.zeros((height - 1, width - 1), dtype=bool),
                 numpy.zeros((height - 1, width - 1), dtype=numpy.uint8),
-                numpy.zeros((height - 1, width - 1), dtype=bool), refs, strip_geo)
+                numpy.zeros((height - 1, width - 1), dtype=bool), {}, refs, strip_geo)
 
     terrain_y = (numpy.asarray(heights, dtype=numpy.float64).reshape(height, width)
                  * elevation_scale + elevation_offset)
@@ -3189,10 +3201,10 @@ def _clip_grid(bundle_dir, width, height, heights, cell, origin_x, origin_z,
                 yield ([tuple(cells[0]), tuple(cells[1]), tuple(cells[2]), tuple(cells[2])],
                        lane_y, low, high)
 
-    contain, band_count, deep_touch = _contain_faces(width, height, terrain_y, mask,
-                                                     quad_source, _CLIP_CONTAIN_SAMPLES,
-                                                     _CLIP_CONTAIN_BLOCK)
-    return mask, contain, band_count, deep_touch, refs, strip_geo
+    contain, band_count, deep_touch, sub_bands = _contain_faces(
+        width, height, terrain_y, mask, quad_source, _CLIP_CONTAIN_SAMPLES,
+        _CLIP_CONTAIN_BLOCK)
+    return mask, contain, band_count, deep_touch, sub_bands, refs, strip_geo
 
 
 def _snap_hole_boundary(verts, vid, used_grid, cut_face_grid, refs_w, strip_geo, ground_y,
@@ -3779,7 +3791,7 @@ def build_terrain(bundle_dir, collection, center, radius, clip_floor=None):
     # of the heightmap — the game hides it per-frame with a stencil pass — so the clip volumes
     # are rasterised here against this heightmap. The layer is mandatory; _clip_grid raises on
     # a bundle without it.
-    (cut_grid, contain_raster, band_count_raster, deep_raster,
+    (cut_grid, contain_raster, band_count_raster, deep_raster, sub_bands,
      cut_refs, strip_geo) = _clip_grid(
         bundle_dir, width, height, heights, cell, origin_x, origin_z, elevation_scale,
         elevation_offset, floor_override=clip_floor)
@@ -3961,7 +3973,15 @@ def build_terrain(bundle_dir, collection, center, radius, clip_floor=None):
     a = cell_rr * lat_w + cell_cc
     refined_loops_all = numpy.stack((a, a + lat_w, a + lat_w + 1, a + 1), axis=-1)
     face_cut = contain[cell_rr, cell_cc]
-    refined_loops = refined_loops_all[~face_cut]
+    # Faces a DEEP band reaches but cannot contain are neither kept whole nor deleted whole —
+    # they are cut at the containment sampling further down. Hold them out of the quad set here
+    # so the slab and its replacement are never both drawn.
+    sub_face = numpy.zeros(len(cell_rr), dtype=bool)
+    if sub_bands:
+        sub_face = numpy.fromiter(
+            (((row0 + int(r), col0 + int(c)) in sub_bands) for r, c in zip(cell_rr, cell_cc)),
+            dtype=bool, count=len(cell_rr)) & ~face_cut
+    refined_loops = refined_loops_all[~face_cut & ~sub_face]
     cut_faces = int(face_cut.sum())
 
     # Refined faces classify from their OWN corners at native resolution; roadbed reads the
@@ -3973,7 +3993,8 @@ def build_terrain(bundle_dir, collection, center, radius, clip_floor=None):
     ngx = numpy.maximum(numpy.abs(y01 - y00), numpy.abs(y11 - y10)) / cell
     ngz = numpy.maximum(numpy.abs(y10 - y00), numpy.abs(y11 - y01)) / cell
     refined_class = numpy.where(numpy.hypot(ngx, ngz) > _ROCK_SLOPE, 2, 0)
-    refined_class = numpy.where(roadbed[cell_rr, cell_cc], 1, refined_class)[~face_cut]
+    refined_class_all = numpy.where(roadbed[cell_rr, cell_cc], 1, refined_class)
+    refined_class = refined_class_all[~face_cut & ~sub_face]
 
     # -- transition fans -------------------------------------------------------------------
     fan_loops, fan_blocks = _transition_fans(block_refined, block_transition, stride, lat_w)
@@ -3989,6 +4010,12 @@ def build_terrain(bundle_dir, collection, center, radius, clip_floor=None):
 
     used = numpy.zeros(lat_h * lat_w, dtype=bool)
     used[all_loops] = True
+    # A sub-cut face draws no quad of its own, but the sub-patch is interpolated from its four
+    # corners and welds to them, so all four must exist in the lattice vertex set — including
+    # their post-snap positions. A corner whose own corner sub-face then falls inside the band
+    # ends up referenced by nothing; the prune after the patch is built removes it.
+    if sub_face.any():
+        used[refined_loops_all[sub_face].reshape(-1)] = True
     used_idx = numpy.nonzero(used)[0]
     vid = numpy.full(lat_h * lat_w, -1, dtype=numpy.int64)
     vid[used_idx] = numpy.arange(len(used_idx))
@@ -4007,6 +4034,79 @@ def build_terrain(bundle_dir, collection, center, radius, clip_floor=None):
             verts, vid, used.reshape(lat_h, lat_w), cut_face_grid,
             cut_refs[row0:row0 + lat_h, col0:col0 + lat_w], strip_geo,
             ground_y, origin_x, origin_z, row0, col0, cell)
+
+    # -- sub-cut the faces a deep band reaches but cannot contain --------------------------
+    # A trench or portal band narrower than one face holds no whole face, so containment
+    # deletes nothing along it and the face is left lying ACROSS the cutting — a 3.5 m slab
+    # over the carriageway, which is what "land artifacts on the road" looks like from inside
+    # a gorge. Neither keeping nor deleting the face whole is right, so it is cut at the
+    # containment sampling instead: each face becomes `_CLIP_CONTAIN_SAMPLES`² sub-quads and
+    # the ones whose own sample is inside a band are dropped.
+    #
+    # Done AFTER the snap and interpolated from the FINAL corner positions, so a sub-face
+    # follows a corner the snap moved and the patch still meets its neighbours exactly. The
+    # boundary of a bilinear quad is linear, so a sub-vertex inserted along a shared edge sits
+    # exactly on it: the T-junction against an un-subdivided neighbour is geometrically
+    # watertight, and `sub_index` welds the seam between two subdivided faces.
+    sub_loops, sub_class, sub_extra, sub_index = [], [], [], {}
+    sub_parents = sub_dropped = 0
+    if sub_face.any():
+        samples = _CLIP_CONTAIN_SAMPLES
+        corner_id = {}                      # lattice corner -> its vertex id, for the weld
+
+        def node(anchor, r, c, i, j):
+            """The sub-patch vertex at (i, j) of face (r, c), welded across faces and, at a
+            face's own corners, to the lattice vertex itself."""
+            key = ((row0 + r) * samples + i, (col0 + c) * samples + j)
+            found = sub_index.get(key)
+            if found is not None:
+                return found
+            if i in (0, samples) and j in (0, samples):
+                found = int(vid[(r + i // samples) * lat_w + c + j // samples])
+            else:
+                u, v = i / samples, j / samples
+                p00, p10, p11, p01 = anchor
+                sub_extra.append((1 - u) * (1 - v) * p00 + (1 - u) * v * p01
+                                 + u * (1 - v) * p10 + u * v * p11)
+                found = len(verts) + len(sub_extra) - 1
+            sub_index[key] = found
+            return found
+
+        for pick in numpy.nonzero(sub_face)[0]:
+            r, c = int(cell_rr[pick]), int(cell_cc[pick])
+            block = sub_bands.get((row0 + r, col0 + c))
+            ids = (int(vid[r * lat_w + c]), int(vid[(r + 1) * lat_w + c]),
+                   int(vid[(r + 1) * lat_w + c + 1]), int(vid[r * lat_w + c + 1]))
+            if block is None or min(ids) < 0:
+                continue
+            anchor = tuple(verts[i] for i in ids)             # NW, SW, SE, NE, post-snap
+            parent = int(refined_class_all[pick])
+            for i in range(samples):
+                for j in range(samples):
+                    if block[i, j]:
+                        sub_dropped += 1
+                        continue
+                    sub_loops.extend((node(anchor, r, c, i, j), node(anchor, r, c, i + 1, j),
+                                      node(anchor, r, c, i + 1, j + 1),
+                                      node(anchor, r, c, i, j + 1)))
+                    sub_class.append(parent)
+            sub_parents += 1
+
+        if sub_loops:
+            if sub_extra:
+                verts = numpy.concatenate((verts, numpy.asarray(sub_extra, dtype=numpy.float64)))
+            loops = numpy.concatenate((loops, numpy.asarray(sub_loops, dtype=numpy.int64)))
+            sizes = numpy.concatenate((sizes, numpy.full(len(sub_class), 4, dtype=numpy.int64)))
+            face_class = numpy.concatenate((face_class,
+                                            numpy.asarray(sub_class, dtype=face_class.dtype)))
+
+        # Anchoring a sub-cut face's corners can leave one referenced by nothing, when its own
+        # corner sub-face fell inside the band. Prune, so the mesh carries no stray vertex.
+        referenced = numpy.zeros(len(verts), dtype=bool)
+        referenced[loops] = True
+        if not referenced.all():
+            verts = verts[referenced]
+            loops = (numpy.cumsum(referenced) - 1)[loops]
 
     refined_faces = len(refined_loops)
     fan_faces = len(fan_blocks)
@@ -4227,11 +4327,11 @@ def build_terrain(bundle_dir, collection, center, radius, clip_floor=None):
     # are the hole rim, and the snap pushes them out to the wall. What cannot be reached is a
     # face a deep band meets with NO deleted face beside it — there is no rim there, because the
     # strip never held a whole face.
-    stranded = int((deep_touch & ~contain & ~_dilate(contain, 1)).sum())
-    if stranded:
-        LOG.step(f"{stranded} face(s) meet a trench or portal band too narrow for a "
-                 f"{cell:g} m face to sit inside — {stranded * cell * cell:,.0f} m² of terrain "
-                 "kept in a cutting the game hides (§41 residual)")
+    if sub_parents:
+        LOG.step(f"{sub_parents} face(s) met a trench or portal band too narrow for a "
+                 f"{cell:g} m face to sit inside and were re-cut at "
+                 f"{cell / _CLIP_CONTAIN_SAMPLES:.2f} m — {sub_dropped * (cell / _CLIP_CONTAIN_SAMPLES) ** 2:,.0f} m² "
+                 f"dropped, {len(sub_class)} sub-face(s) kept")
     if snapped or unreferenced:
         LOG.step(f"{snapped} hole-boundary vertex(es) snapped onto the clip prisms "
                  f"({pushed} pushed out of a band, the rest pulled in)"

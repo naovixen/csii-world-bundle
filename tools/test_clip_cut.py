@@ -223,7 +223,7 @@ def check(label, cx, cz, radius, heights, cell, origin_x, origin_z):
     cell_cut = numpy.zeros((lat_h, lat_w), dtype=bool)
     for quad, lane_y, bottom, top in quads:
         H["_fill_clip_quad"](cell_cut, terrain, lat_w, lat_h, quad, lane_y, bottom, top)
-    contain, band_count, deep_touch = H["_contain_faces"](
+    contain, band_count, deep_touch, _sub = H["_contain_faces"](
         lat_w, lat_h, terrain, cell_cut,
         lambda r0, c0, r1, c1: iter(quads),
         H["_CLIP_CONTAIN_SAMPLES"], H["_CLIP_CONTAIN_BLOCK"])
