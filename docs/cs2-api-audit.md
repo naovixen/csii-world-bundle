@@ -2067,3 +2067,28 @@ it is called a producer gap.
 rip predates the build), so it has yet to fire. The producer fix is to make residency a
 precondition rather than a coin toss — force the piece's geometry to load before reading it, or
 retry — and the counter is what will confirm which pieces need it.
+
+### 41.7 Open: the notches at a width transition come from the SNAP, not the cut
+
+Reported at `(4324.5, 1550.5)` — two triangular holes where a 24 m Medium Road narrows to an 8 m
+Alley Oneway (`seg_2301693`, `seg_2302757`), plus a sawtooth run along a nearby road edge.
+Rendered and reproduced.
+
+**Not the deletion rule.** `test_clip_cut` over that window measures **1 m²** of sky (2 m² over a
+240 m window), ratio x0.57 — the face mask is clean. But that test scores the face mask ALONE; it
+never runs `_snap_hole_boundary`, so everything the snap does to the rim is outside its reach.
+The notches are the difference.
+
+**The mechanism to check first.** At a width transition a rim vertex's 3×3 neighbourhood names
+BOTH compositions' strips. The pick is "nearest prism wall" (`80676e0`), so a vertex beside the
+narrow alley can be claimed by the wide road's wall and dragged there, tearing the terrain open
+between them — the same class §41.2 fixed for deletion, surviving in the snap because the wall it
+picks is the nearest one rather than the one whose prism the vertex is actually inside. Candidate
+rule: prefer a strip that CONTAINS the vertex over one it is merely near, and only then rank by
+distance.
+
+**What the test owes.** It should score the snapped geometry, not the face mask — `push_effect.py`
+in the session scratchpad already builds the real lattice and runs the real snap, and its sky
+numbers (13–50 m² per window) are consistently higher than the mask-only figures (1–16 m²) for
+exactly this reason. Folding that into `tools/test_clip_cut.py` is the prerequisite for calling
+the snap fixed.
