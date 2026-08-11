@@ -2381,3 +2381,42 @@ was already loaded and a clean load/unload for one that was not — no ECS write
 behind, and the answer no longer depends on what the camera was looking at.
 
 Not yet implemented; this section is the design and the API surface it rests on.
+
+### 42.7 The full rip: the piece fix holds, and the invisible-material call was half wrong
+
+**Full rip 2026-08-11 23:37, 1,807 s, all eight stages.**
+
+* `DROPPED:` **absent** — no piece placement lost its geometry. 35 pieces were read from the
+  geometry asset instead, so the fix carried them.
+* Elevated trams `Road`+`RoadParts`, 102% up-facing. Ground trams 95%. Piers, elevated paths,
+  truss bridges, gravel and public-transport lanes all present.
+* `tools/test_clip_cut.py` green on all six windows, hole 0.0-0.2 m².
+* All **4,714** materials carry a `template:` flag. 23 distinct templates, the common ones
+  `Default` (3,197), `Windows` (652), `DefaultCutout` (349).
+
+**What I got wrong.** §42.6's worked example said `Invisible_Pathway` "serialises to `{}` — no
+maps, no tint, no alphaMode". That was measured on the 22:50 **networks-only** rip, where the
+texture stage had not run, so the material had no maps *yet*. On the full rip it carries a
+baseColor and a mask. I drew a conclusion about the producer from a mixed-vintage bundle — the
+exact trap this document warns about two sections earlier.
+
+**The defect underneath is real, though, and is not what I said.** The taxiway material resolves
+to `template:NetCompositionMeshLit` with a baseColor texture that is **pure black with a real
+alpha channel** (RGB mean 0.0, alpha min/mean/max 0/125.9/254) — and the .glb material carries
+**no `alphaMode` at all**, so glTF's default OPAQUE applies and the alpha is ignored. All 91
+taxiway segments therefore draw as solid BLACK surfaces, not grey ones, and the cause is a
+missing alpha mode rather than an empty material.
+
+So the consumer pass added in `85ab88d` fires **zero** times and cannot help: it looks for
+"invisible" in the template name, and the template is a shader name (`NetCompositionMeshLit`),
+never an asset name. It is harmless and correct for a material that genuinely names an invisible
+shader, but it is not the fix for this.
+
+**The actual fix is the alpha mode.** The producer decides `AlphaMode` from shader keywords and
+falls back to the template; `NetCompositionMeshLit` yields neither, so a surface whose base
+colour carries meaningful alpha ships as opaque. Worth measuring how wide that class is — every
+material with a real alpha channel and no alphaMode — before choosing between keying off the
+template list, off the texture's own alpha, or off a shader property the sweep is not reading.
+
+The `template:` flag stays regardless: it is real evidence, it costs one short string per
+material, and it is what made this diagnosable at all.
