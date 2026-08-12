@@ -121,14 +121,15 @@ namespace Carto.Systems
         private readonly Dictionary<string, ConformPieceProbe> m_ConformProbes = new();
 
         /// <summary>
-        /// Per piece, what the cross-section walk actually BUILT — the §42/§41.9 probe.
-        /// <para>Two defects need the same fact and neither can be read from a bundle: an
-        /// elevated tram ships its structure and no running surface (§42), and an alley's node
-        /// half frame stops at xParam 0.475 at every station while the frame widens 4.4 -> 7.3 m
-        /// (§41.9). "Which piece was read" is already reported; what is missing is how far across
+        /// Per piece, what the cross-section walk actually BUILT — the §42 probe.
+        /// <para>"Which piece was read" is already reported; what is missing is how far across
         /// the frame its vertices reached and how big the geometry it produced is. A piece that
         /// is read, placed, and collapses to a ribbon looks identical to a healthy one in every
-        /// count the walk keeps today.</para>
+        /// other count the walk keeps, and that is how an elevated tram came to ship its
+        /// structure with no running surface (§42).</para>
+        /// <para>The companion half-frame reach probe is gone: §41.9's short flare was never a
+        /// piece-to-frame mapping fault, and the reach it measured is answered offline by
+        /// `tools/test_node_fan.py` against the shipped meshes (§43).</para>
         /// </summary>
         private sealed class SectionProbe
         {
@@ -142,31 +143,6 @@ namespace Carto.Systems
         }
 
         private readonly Dictionary<string, SectionProbe> m_SectionProbes = new();
-
-        /// <summary>
-        /// Per composition, how far across each half frame the union of its pieces reached.
-        /// A half that stops short of 1.0 never builds the outer part of its flare, which is
-        /// what leaves ground exposed at an asymmetric-width node (§41.9).
-        /// </summary>
-        private sealed class FrameProbe
-        {
-            public string Composition;
-            public float Width, MiddleOffset;
-            public float LeftMax = -1f, RightMax = -1f, EdgeMax = -1f;
-            public int Placements;
-            public readonly SortedSet<string> Samples = new();   // segments that used it
-            public readonly SortedSet<string> Pieces = new();
-        }
-
-        private readonly Dictionary<Entity, FrameProbe> m_FrameProbes = new();
-
-        /// <summary>
-        /// The segment whose composition is being walked, so a flagged composition names one
-        /// place to go and look. Node compositions are runtime entities, not managed prefabs —
-        /// `TryGetPrefab` on them returns nothing, which is why the 21:34 rip could only print
-        /// `&lt;composition 1217532&gt;`.
-        /// </summary>
-        private string _sectionSampleSegment;
 
         private ushort[] _conformHeights;
         private int2 _conformResolution;
@@ -618,8 +594,8 @@ namespace Carto.Systems
                 PieceHeightBounds heightBounds = null;
                 float boundsScaleZ = 0f;
                 bool conforming = false;
-                // The §42/§41.9 probe: one row per piece, plus this composition's half-frame
-                // reach. Both are keyed before the vertex loop so the loop only accumulates.
+                // The §42 probe: one row per piece, keyed before the vertex loop so the loop only
+                // accumulates.
                 string sectionName = Instance.Prefab.TryGetPrefab(piece.m_Piece, out PrefabBase sectionPiece)
                                      && (sectionPiece != null)
                     ? sectionPiece.name : $"<entity {piece.m_Piece.Index}>";
@@ -634,25 +610,6 @@ namespace Carto.Systems
                     };
                 }
                 section.Placements++;
-                if (!m_FrameProbes.TryGetValue(composition, out FrameProbe frame))
-                {
-                    m_FrameProbes[composition] = frame = new FrameProbe
-                    {
-                        Composition = Instance.Prefab.TryGetPrefab(composition, out PrefabBase compPrefab)
-                                      && (compPrefab != null)
-                            ? compPrefab.name : $"<composition {composition.Index}>",
-                        Width = data.m_Width,
-                        MiddleOffset = data.m_MiddleOffset,
-
-                    };
-                }
-                frame.Placements++;
-                if (frame.Pieces.Count < 24) frame.Pieces.Add(sectionName);
-                // Several samples, not the first: a composition is shared across many segments,
-                // and recording only the first meant the row could never be matched to the
-                // segment a defect was reported on.
-                if ((frame.Samples.Count < 4) && (_sectionSampleSegment != null))
-                    frame.Samples.Add(_sectionSampleSegment);
 
                 ConformPieceProbe probe = null;
                 if (lowerBottom || raiseTop || smoothTop)
@@ -987,18 +944,6 @@ namespace Carto.Systems
                             section.Lo = section.Hi = relative;
                             section.HasBounds = true;
                         }
-                        // A ZERO-WIDTH piece pins every vertex to one xParam by construction, so
-                        // it can never "reach" a rail and must not be read as a half that stops
-                        // short — including it flagged 359 compositions on the 21:34 rip, every
-                        // one of them a shoulder or path side piece sitting at a single x, which
-                        // buried the real signal.
-                        if (piece.m_Size.x > 0.01f)
-                        {
-                            if (!isNode) frame.EdgeMax = math.max(frame.EdgeMax, xParam);
-                            else if (halved && leftHalf) frame.LeftMax = math.max(frame.LeftMax, xParam);
-                            else if (halved) frame.RightMax = math.max(frame.RightMax, xParam);
-                        }
-
                         assembly.Vertices.Add(world - center);
 
                         // The shading frame, rotated by the very map that placed the vertex.

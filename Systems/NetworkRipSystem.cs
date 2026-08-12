@@ -466,7 +466,6 @@ namespace Carto.Systems
             _pinnedFrameVerts = 0;
             m_ConformProbes.Clear();
             m_SectionProbes.Clear();
-            m_FrameProbes.Clear();
 
             // A deselected half simply contributes an empty work list; the pipeline shares the
             // rest — writers, materials, progress — unchanged.
@@ -1022,38 +1021,6 @@ namespace Carto.Systems
                     }
                 }
 
-                // A half frame whose pieces stop short of its outer rail. The frame is a lerp
-                // from the middle curve to the side curve, so xParam 1 IS the outer rail: a half
-                // that peaks below it leaves the outer part of every flare unbuilt, and that is
-                // invisible until the flare is stretched by a wider arm at the same node.
-                List<FrameProbe> short_ = new();
-                int nodeCompositions = 0;
-                foreach (KeyValuePair<Entity, FrameProbe> kvp in m_FrameProbes)
-                {
-                    FrameProbe f = kvp.Value;
-                    if ((f.LeftMax < 0f) && (f.RightMax < 0f)) continue;   // edge-only composition
-                    nodeCompositions++;
-                    if (((f.LeftMax >= 0f) && (f.LeftMax < 0.95f))
-                        || ((f.RightMax >= 0f) && (f.RightMax < 0.95f))) short_.Add(f);
-                }
-                if (short_.Count > 0)
-                {
-                    short_.Sort((a, b) => math.min(a.LeftMax < 0f ? 9f : a.LeftMax, a.RightMax < 0f ? 9f : a.RightMax)
-                                          .CompareTo(math.min(b.LeftMax < 0f ? 9f : b.LeftMax, b.RightMax < 0f ? 9f : b.RightMax)));
-                    report.AppendLine($"SHORT HALF FRAME: {short_.Count} of {nodeCompositions} node composition(s) whose "
-                                    + "non-zero-width pieces do not reach the frame's outer rail (xParam 1 IS that rail; "
-                                    + "the shortfall is flare that is never built):");
-                    int shown = 0;
-                    foreach (FrameProbe f in short_)
-                    {
-                        if (shown++ >= 150) { report.AppendLine($"  … and {short_.Count - 150} more"); break; }
-                        report.AppendLine($"  {f.Composition}: width {f.Width:F1}, middleOffset {f.MiddleOffset:F2}, "
-                                        + $"{f.Placements} placement(s); left reaches "
-                                        + (f.LeftMax < 0f ? "n/a" : $"{f.LeftMax:F3}") + ", right reaches "
-                                        + (f.RightMax < 0f ? "n/a" : $"{f.RightMax:F3}")
-                                        + $"; e.g. {string.Join("/", f.Samples)}; pieces: {string.Join(", ", f.Pieces)}");
-                    }
-                }
             }
 
             if (_pipelineCompositions > 0)
@@ -1794,7 +1761,6 @@ namespace Carto.Systems
                 EdgeNodeGeometry node = EntityManager.GetComponentData<StartNodeGeometry>(entity).m_Geometry;
                 if (math.any(node.m_Left.m_Length > 0.05f) | math.any(node.m_Right.m_Length > 0.05f))
                 {
-                    _sectionSampleSegment = $"seg_{entity.Index}";
                     BuildNodeSide(parts.m_StartNode, node, center, "startNode",
                                   cache, assembly, report);
                 }
@@ -1816,7 +1782,6 @@ namespace Carto.Systems
                 EdgeNodeGeometry node = EntityManager.GetComponentData<EndNodeGeometry>(entity).m_Geometry;
                 if (math.any(node.m_Left.m_Length > 0.05f) | math.any(node.m_Right.m_Length > 0.05f))
                 {
-                    _sectionSampleSegment = $"seg_{entity.Index}";
                     BuildNodeSide(parts.m_EndNode, node, center, "endNode",
                                   cache, assembly, report);
                 }

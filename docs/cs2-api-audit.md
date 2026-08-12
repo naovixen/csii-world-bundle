@@ -2420,3 +2420,92 @@ template list, off the texture's own alpha, or off a shader property the sweep i
 
 The `template:` flag stays regardless: it is real evidence, it costs one short string per
 material, and it is what made this diagnosable at all.
+
+## 43. §41.9 "FLARE" is closed: the short flare was §42's residency, and the probe was mis-oriented (2026-08-12)
+
+Measured on the **2026-08-11 23:37 full rip** (bundle `bundle.json` mtime 23:37;
+`git log --since='2026-08-11 23:37' -- Systems IO Domain` lists nothing, so no producer commit
+post-dates it). This is the first rip that post-dates `0eeb24f`.
+
+### 43.1 The defect is gone, on the two strips §41.9 named
+
+Same segments, same node, same measurement — how far in from each rail, in metres, before a real
+`networks/seg_*.glb` triangle covers you:
+
+| strip | frame width | §41.9 (three rips, byte-identical) | 23:37 rip |
+|---|---|---|---|
+| `seg_2301693` node fan | 4.34 - 7.47 m | right rail bare 2.52 - 3.69 m, 55.6% unpaved | **max 0.15 m, 0.9% unpaved** |
+| `seg_2302757` node fan | 4.36 - 4.91 m | left-reach 0.532 | **max 0.12 m, 1.3% unpaved** |
+
+City-wide: **5,872 node strips** over sixteen 400 m windows (the six `test_clip_cut.py` windows
+plus the ten densest node clusters in the save) read p50 0.10 m, p99 0.36 m, p99.9 0.64 m,
+**max 0.93 m** of bare rail. The two strips still above 15% unpaved are 0.2 m and 1.5 m wide with
+a 0.3 m gap — which is why the gate is in metres and not per cent. User confirmed the same
+segments in Blender.
+
+### 43.2 The cause, attributed offline against the shipped meshes
+
+Scoring the previously-bare band (the outer 40% of the failing right half) **per glTF primitive**
+rather than per segment:
+
+    band  96.8%  strip 51.2%   seg_2301693  ParkingLaneAlleyShoulderToSidewalk2_2E5_69b7590…
+    band   0.0%  strip 44.1%   seg_2301693  Road_0c1d8d6afba9b274ba12424460a2cdcc
+    band   0.0%  strip  3.3%   seg_2302504  Road_0c1d8d6afba9b274ba12424460a2cdcc
+
+`ParkingLaneAlleyShoulderToSidewalk2.5 Mesh` is item 16 of the **35 pieces the 23:37 rip read
+from the geometry asset because their render-cache buffers were not resident** (rip report line
+387). So the piece that paves the outer band had no `MeshVertex` buffer in this session either,
+and `0eeb24f` is the only reason it produced geometry at all.
+
+**§41.9's central measurement was true and about the wrong piece.** The mesh really does stop at
+xParam 0.475 — that is the `Road` primitive, and 0.475 is where its job ends: it spans
+x ∈ [−1.5, +1.88] of a ±4 m half frame, `xParam = 1.88 / num8 = 0.47`. Nothing is wrong with the
+piece-to-frame mapping. The outer band belongs to a *different* piece, and that piece built
+nothing.
+
+**So "NOT the same cause" (§41.9 cont., 22:22 rip) was wrong**, and the reasoning that produced it
+is worth naming:
+
+- *"Deterministic across three rips with two different dropped sets, therefore not residency."*
+  Residency varying between sessions does not mean every piece varies. A piece the renderer never
+  batched in **any** of those sessions is deterministically absent, and produces a byte-identical
+  defect every time. Determinism rules out *flapping*, not *absence*.
+- *"No producer warning names a piece that yielded nothing for either segment."* `DROPPED:` caps
+  its name list at **64** (`_emptyPieceNames.Count < 64`) while the 21:34 rip dropped **2,419
+  placements**. The list names suspects it happened to meet first; absence from it is not
+  evidence. §42.4 already said "the line names suspects, not defects" — the same caveat applies in
+  the other direction.
+
+That the piece was also non-resident in the three earlier sessions is inference from the symptom's
+determinism, not from a log — those logs are overwritten. Everything above it is measured.
+
+### 43.3 The `SHORT HALF FRAME:` probe is retired, and it had a real bug
+
+It never named the cause across three rips, and on the 23:37 rip it flagged **373 of 961** node
+compositions. Most of those are false, because **the probe's orientation is wrong for the left
+half**. From `BatchDataHelpers.CalculateNodeParameters`, a non-roundabout node's curve set is
+
+    0 = m_Left.m_Left    1 = m_Right.m_Left    2 = m_Left.m_Right    3 = m_Right.m_Right    4 = m_Middle
+
+and the left branch lerps `(0, 2)` — outer rail to middle — while the right branch lerps `(1, 3)`
+— middle to outer rail. So `xParam 1` is the outer rail **only on the right**; on the left the
+outer rail is `xParam 0`. The probe took a `max` on both, which measured the left half's reach
+toward the *middle* and called a half that had perfectly reached its outer rail a failure. Rows
+reading `left reaches 0.000` are compositions with no left-handed piece at all.
+
+Removed rather than fixed: it is a per-vertex accumulation in the mesh walk, its question is
+answered offline against the shipped meshes, and a fix would need a rip to validate for no
+ongoing value. `COLLAPSED:` stays — nine real rows, and it is what makes a degenerate piece
+visible. This also retires the PROBE open item.
+
+### 43.4 The gate: `tools/test_node_fan.py`
+
+Scores every `kind:"node"` clip strip in sixteen windows against the real segment meshes and
+fails on **≥1.5 m** of bare rail (observed max 0.93 m; the defect was 2.5-3.7 m).
+
+**Its negative control is part of the test**, per §41.8's lesson that a gate whose exemptions come
+from the rule under test reads green on the exact behaviour it is meant to catch. The test
+re-scores the two named segments with every triangle past `|x| > 1.88 m` in piece space removed —
+standing in for the piece that produced nothing — and **fails if the census does not then report
+the defect**. On the shipped bundle: worst gap 0.20 m clean, **11.64 m amputated**. A pass
+therefore means the gate is live, not that nothing was looked at.
