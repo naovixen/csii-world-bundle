@@ -139,18 +139,29 @@ baseline.
 | # | Item | status |
 |---|---|---|
 | D1 | Consumer caveat: lane `tunnel` tag (`cmin<0`; 3,214 records) and segment `form=tunnel` (deep −2/−3·ElevationLimit; 309) are **different game predicates** — never equate them. One cross-reference sentence in §5B. | **PAID** 2026-08-12, §5B. Both predicates re-checked against the producer and both counts re-measured on the 08-12 rip: 3,214 / 309, to the digit. |
-| D2 | Document as deliberate exclusions: road-name label rendering, city-boundary fence, VFX placements (names + the `"VFX " + prefab` convention for consumers who substitute), backdrop water status. | **OPEN — needs the N sign-off below.** Writing these into the contract as exclusions is what settles §2.3; it is a scope decision, not a documentation one. |
+| D2 | Document as deliberate exclusions: road-name label rendering, city-boundary fence, VFX placements (names + the `"VFX " + prefab` convention for consumers who substitute), backdrop water status. | **PAID** 2026-08-12, §4.3, after the user signed off the §2.3 recommendation: all three are **permanent** non-goals, not deferrals. No `vfx.json`. The `"VFX " + prefab.name` convention is real and is the game's own (`VFXSystem` line 146) — documented as an anchor for a consumer substituting its own effects, not as a layer. Backdrop water status is recorded under D6 instead (`layers.worldWater` reserved, never emitted). |
 | D3 | Fix §4.3 grass wording: the game scatters a FoliageVFX layer *from the splatmap's grass channel* — consumer-side scatter from channel R is game-faithful. | **PAID** 2026-08-12, §4.3 — **but not as written.** "Channel R" is the pre-2026-08-10 channel map; R is dirt and grass is G. The §4.3 text names the *grass* channel and sends the consumer to `rasters.splatmap.channels` for its index rather than hard-coding one. |
 | D4 | Building-state consumer rules: under-construction buildings are *hidden* by the game (crane/fence entities ship as normal instances); condemned has no rendering consumer; destroyed pose/rubble not shipped. | **PAID** 2026-08-12, §4.2, as a per-value table. All three claims re-verified in `BatchInstanceSystem`'s render branch (the `UnderConstruction` skip and its `m_NewPrefab != Entity.Null` upgrade exception; `Destroyed.m_Cleared >= 0`; `Condemned` has no reader in the rendering namespace at all). |
 | D5 | §8c: clip lane reference is the mean of boundary y (game lerps laterally — band tilts on superelevated roads); spans >0.1 m with clip-count 0 draw nothing (§39 rule covers markings). Kind sub-toggles are destructive re-rips (unlike layer toggles). `InstanceWriter` stale compression comment. §7.2 lights example/position claims (with P8). | **PAID** 2026-08-12 — four parts, two of them not as written. §8c: the lane reference is documented as a per-quad constant that does **not** tilt, which is provable from the producer's own stamp; the parenthetical "game lerps laterally" is **not** repeated, because that pass is a GPU rasterisation and is not readable from the managed assemblies. §7.2: the flat "there is no position, because CS2 does not store one" now splits procedural (true) from punctual (false — `EffectSource.EffectSettings` carries one). Kind-toggle destructiveness: §1. The `InstanceWriter` comment was **already current** — it names COMP-1 and its revert; nothing to do. |
 | D6 | Water level-grid + one-cell dilation resample: deliberate deviation re-affirmed this pass. Backdrop terrain honest-omission log line documented (see 1a). | **PAID** 2026-08-12 — half of it already was. The water level-grid deviation and the one-cell dilation were fully described in §8 before this pass; only the backdrop half was owed, and §8 now states that `worldTerrain`'s absence is a residency fact with a named report line. Recorded alongside it: `layers.worldWater` is reserved in the schema and **no producer path has ever emitted it**. |
 
-### 2.3 Non-goals for user sign-off (N)
+### 2.3 Non-goals — SIGNED OFF 2026-08-12
 
-- VFX capture beyond doc note (P-side `vfx.json` possible; recommended: doc-only).
-- Road-name labels / city-boundary fence as capture targets (recommended: doc-only, D2).
-- Backdrop water simulation (heavier; sea-level + water params ship via P4 — recommended: defer, keep §29 open).
-- Snow/wetness/wind/waves/season-live state: remain excluded (established contract).
+The user took the recommendation on all three open items. They are **permanent** non-goals now,
+written into the contract at §4.3, not deferrals to revisit — a future schema version does not
+add them.
+
+- **VFX**: doc-only. No `vfx.json`, no placements. A `VisualEffectAsset` is a compiled VFX
+  graph with nothing to rip, and coordinates for an effect the bundle cannot describe are not
+  worth a layer. ~~P-side `vfx.json` possible~~ — declined.
+- **Road-name labels**: doc-only. The names ship (`networks.jsonl attrs.name`); the rendering
+  is locale + font-atlas output, not city data.
+- **City-boundary fence**: doc-only. Map furniture, drawn from the tile grid by
+  `CityBoundaryMeshSystem`; a recreation does not want it.
+- **Backdrop water simulation**: NOT part of this sign-off and still deferred; §29 stays open.
+  Sea level and the water appearance params ship via P4 (see WATER-2 for what `seaLevel` is and
+  is not), and `layers.worldWater` is reserved in the schema but has never been emitted (D6).
+- **Snow/wetness/wind/waves/season-live state**: remain excluded (established contract).
 
 ### 2.4 Open verification (rides Phase 13 acceptance)
 

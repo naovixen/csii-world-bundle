@@ -444,6 +444,29 @@ map instead of leaving it to be guessed — see §8.) The channel the VFX graph 
 inside the `VisualEffectAsset`, which is not readable, so this is the faithful input rather than
 a byte-for-byte reproduction of the game's own scatter.
 
+**Three more things the game draws are deliberate, permanent non-goals.** *(D2, signed off
+2026-08-12. Each is a real thing on screen, so each is named here rather than left for a
+consumer to notice as a gap — but none will ever be captured, and no future schema version
+adds them.)*
+
+- **VFX** — smokestack plumes, spillways, fountains, fire. `Game.Effects.VFXSystem` drives
+  these from a `VisualEffectAsset` per effect prefab, and a `VisualEffectAsset` is a compiled
+  Unity VFX graph: there is no geometry, no texture and no parameter set to rip, only a program
+  the game's own renderer runs. Shipping placements without the effect would be a list of
+  coordinates for particle systems the bundle cannot describe, so the bundle ships neither.
+  A consumer that wants smoke over a smokestack authors its own and anchors it to the building
+  instance, which it already has by `assetId`. If it wants to match the game's naming while
+  doing so, `VFXSystem` names its own objects `"VFX " + prefab.name`.
+- **Road-name labels** — the world-space text CS2 draws along roads, on by default.
+  `AggregateRenderSystem` builds these as generated name meshes and materials at draw time from
+  the current locale and font atlas. The *data* ships: a road's player-given name is in
+  `networks.jsonl` `attrs.name`. The *rendering* is locale output, not city data, and a
+  consumer that wants labels should generate them from the names in its own typeface.
+- **The city-boundary fence** — the quad strip `CityBoundaryMeshSystem` draws along the edges
+  of owned tiles, every frame, from the tile grid rather than from any placed object. It is a
+  play-area indicator, i.e. map furniture: a recreation of the city wants the city, not the UI
+  that told the player where they could build.
+
 **Markers are excluded.** Spawn points, pedestrian access points, and pipe, cable and network
 nodes are simulation anchors the game never draws, and a city holds enough of them that they
 outnumber most real props. A bundle contains **visible world geometry only**, so they appear
