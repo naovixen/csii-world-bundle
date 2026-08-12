@@ -68,6 +68,7 @@ namespace Carto.IO
             new("areas", "areas.jsonl"),
             new("areaPrefabs", "areaprefabs.json"),
             new("clipVolumes", "clipvolumes.jsonl"),
+            new("grading", "grading.json"),
             new("vector", "vector/", isDirectory: true),
             new("warnings", "warnings.jsonl")
         };

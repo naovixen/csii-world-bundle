@@ -442,8 +442,13 @@ namespace Carto.Systems
                         string summary;
                         try
                         {
+                            // Grading first: the manifest's layer index is a scan of what is on
+                            // disk, so a file written after it is a layer the manifest cannot
+                            // declare. The report still reads manifest-then-grading.
+                            //
+                            string gradingSummary = GradingWriter.Write(directory, grading);
                             summary = BundleWriter.WriteManifest(directory, snapshot);
-                            summary += Environment.NewLine + GradingWriter.Write(directory, grading);
+                            summary += Environment.NewLine + gradingSummary;
                         }
                         catch (Exception ex)
                         {

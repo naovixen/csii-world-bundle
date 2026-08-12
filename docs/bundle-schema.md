@@ -47,6 +47,7 @@ everything else is found through the manifest's `layers` index.
   areas.jsonl                     # (areas)        rendered surface areas (§8b)
   areaprefabs.json                # (areaPrefabs)  area prefab catalogue (§8b)
   clipvolumes.jsonl               # (clipVolumes)  what opens tunnel portals and trenches (§8c)
+  grading.json                    # (grading)      the game's resolved colour grading + lighting (§8)
   vector/                         # (vector)       unchanged vanilla Carto GeoJSON / Shapefile / GeoTIFF
   warnings.jsonl                  # (warnings)     advisory: what the producer skipped and why
 ```
@@ -1191,7 +1192,7 @@ toward +X (east).
   the *semantic* roadbed mask (physics, the sink rule), not the visual one. When the file or
   its `rasters.splatmap` block is absent, the pre-2026-08-07 behaviour (per-cell
   classification) is the documented fallback.
-- **`grading.json`** (bundle root, optional) — the game's **resolved HDRP colour grading** at rip
+- **`grading.json`** (`layers.grading`, optional) — the game's **resolved HDRP colour grading** at rip
   time, read from `VolumeManager`'s post-blend volume stack: `exposure`, `whiteBalance`,
   `colorAdjustments` (postExposure, contrast, colorFilter, hueShift, saturation),
   `shadowsMidtonesHighlights`, `tonemapping`, `vignette`, and `lighting`.
@@ -1229,9 +1230,10 @@ toward +X (east).
   behind internal API), but these are the clamps the game drives per time of day, so they bracket
   the one term a consumer must otherwise choose blind.
 
-  *(Deliberately a root file rather than a `layers` entry: `layers` is a closed object and this
-  would otherwise force a schema bump for an optional, ignorable block. Give it a `layers.grading`
-  key at the next version bump.)*
+  *(Declared as `layers.grading` since 2026-08-12 — see §12.3. It was briefly a root file found
+  by name; that was a contract violation, because §1's rule is that a consumer reads every path
+  from `layers` and never hard-codes one, so a layer absent from the index is a layer a
+  conforming consumer cannot find.)*
 
 - **`terrain/user_splatmap.png`** (`layers.userSplatmap`, optional) — RGBA8 (R/G meaningful): the player's painted
   surface weights for the paintable extra grounds, read back from
@@ -1791,3 +1793,37 @@ finalized bundle onward, closed-object changes take `schema: 2`"), and clip reco
 objects, so the repair takes the version bump. A v1 consumer given v2 data fails at the
 manifest's `schema` const; the only bundles carrying the broken intermediate form were never
 valid under either version.
+
+### 12.3 Amendments to `schema: 2`
+
+**`layers.grading` added (2026-08-12), and it does not take `schema: 3`.**
+
+`grading.json` had been written at the bundle root since 2026-08-10 but never declared in
+`layers`, on the reasoning recorded in §8 at the time: `layers` is `additionalProperties: false`
+in `docs/schema/bundle.schema.json`, so any new key in it looked like a closed-object change.
+
+That reasoning was wrong, and §12 says so in its own words: adding a new layer key is listed
+verbatim among the changes a producer may make *within* a version. The two statements are about
+different things, and the distinction is what the closure is for:
+
+- **A closed object protects a consumer that would otherwise drop a value silently.** That is
+  the `colorMask` case (§12.1) — a v1 consumer applied `colors.json` with no mask and rendered a
+  wrong city while believing it had read everything.
+- **`layers` is presence-indexed by construction.** §1 already requires a consumer to treat an
+  absent key as an absent feature, and §12 requires it to ignore layers it does not implement. A
+  consumer handed `layers.grading` and no notion of grading behaves exactly as one handed a
+  bundle ripped with grading capture unavailable — which is a state the contract already
+  defines. Nothing is dropped silently, so nothing needs a loud failure.
+
+The `additionalProperties: false` on `layers` therefore stays, but as what it actually is: a
+**producer-side typo guard** that forces a new layer to be named in the schema deliberately, not
+a consumer-compatibility boundary. The compatibility boundary is §12's list.
+
+The other half of the fix was ordering. `GradingWriter.Write` ran *after*
+`BundleWriter.WriteManifest`, and the manifest's layer index is a scan of what is on disk — so
+even with the key defined, a first rip into an empty directory would have declared every layer
+except this one, and a second rip would have declared the *previous* rip's grading file. The
+writes are now grading-then-manifest.
+
+Nothing about the file's contents changed. A consumer already reading `grading.json` by name
+keeps working; one following §1 can now find it.

@@ -205,6 +205,9 @@
         "clipVolumes": {
           "$ref": "#/$defs/relPath"
         },
+        "grading": {
+          "$ref": "#/$defs/relPath"
+        },
         "vector": {
           "$ref": "#/$defs/relDir"
         },

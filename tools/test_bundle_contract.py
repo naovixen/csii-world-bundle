@@ -150,6 +150,22 @@ class BundleContractTest(unittest.TestCase):
         self.patch_manifest(bundle, lambda m: m["counts"].pop("areas"))
         self.assertRejected(bundle, "layers.areas is declared but counts.areas is missing")
 
+    def test_grading_layer_is_declarable(self):
+        """`grading.json` is found through `layers.grading` like every other layer (§8, §12.3).
+        `layers` is a closed object, so a producer that writes the file without the schema
+        knowing its key ships a bundle its own validator rejects."""
+        bundle = self.fresh()
+        (bundle / "grading.json").write_text(json.dumps({"order": []}) + "\n", encoding="utf-8")
+        self.patch_manifest(bundle, lambda m: m["layers"].update({"grading": "grading.json"}))
+        self.assertEqual(self.errors(bundle), [])
+
+    def test_declared_grading_layer_must_exist(self):
+        """The index is a promise: a declared layer whose file is missing is an error, not a
+        consumer's problem to discover."""
+        bundle = self.fresh()
+        self.patch_manifest(bundle, lambda m: m["layers"].update({"grading": "grading.json"}))
+        self.assertRejected(bundle, "layers.grading")
+
     def test_count_without_declared_layer_rejected(self):
         """A non-zero count for an undeclared layer describes records nobody can find."""
         bundle = self.fresh()
