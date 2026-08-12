@@ -530,6 +530,13 @@ components the weather system drives, one class each, and it names **eight**:
 | DistanceCloudsProperties | `CloudLayer` | no |
 | VolumetricCloudsProperties | `VolumetricClouds` | no |
 
+> **This table's reasoning was too narrow, and the 18:10 rip proved it.** `Climate.*Properties`
+> enumerates what the **weather system** drives, not what the stack *contains* — the base profile
+> and `LightingSystem`'s priority-1000 volume carry more. The rip's own `diagnostics.unread` (§5.7)
+> came back with **16** further overridden components, one of them a colour-grading operator. The
+> right question was never "what does weather drive" but "what is in the stack", and only a rip
+> can answer that. See §5.7.
+
 The clouds are sky appearance and a reasonable non-goal. **Fog is not.** `FogProperties` binds
 `meanFreePath` (default 8,000 m), `baseHeight`, `maximumHeight`, `maxFogDistance` and — the part
 that matters — **`m_Tint`, an HDR colour** — and `ClimateRenderSystem.UpdateFogOverride` forces
@@ -634,3 +641,83 @@ turned on the audit's own findings:
   producer's honesty. They are one note now, naming the reasons and their counts, and the full
   city validates **VALID with 1 warning** — the genuine parent advisory. An *undeclared* missing
   mesh is still an error.
+
+## 5.7 The 2026-08-12 18:10 rip: P17/P18/P19 land, fog is dead, and the blind-spot report finds `SplitToning`
+
+The rip that validated this section's work also answered the question it was built to ask, and the
+answer was not the one predicted.
+
+**Everything built for §5.6 works.** `__teen` 32 and `__elderly` 32 files — the same 32 prefabs
+that author `__dead`, so a third of the tree catalogue authors every non-adult state and the mesh
+count went 5,728 → 5,792. `COLLAPSED:` reports **nothing** with the `Size.y` clause gone, and no
+real collapse took the false positives' place. Terrain tiling reads
+`DefaultTerrainRenderSettings` unchanged, so the P19 fallback branch correctly did not fire on a
+map whose theme authors every layer. Zero `FAILED`, zero `DROPPED:`.
+
+### Fog is real, and it is achromatic
+
+```json
+"fog": { "meanFreePath": 6900.0, "baseHeight": 0.0, "maximumHeight": 7000.0,
+         "maxFogDistance": 200000.0, "tint": [1.0, 1.0, 1.0] }
+```
+
+Fog is enabled with a 6.9 km mean free path — so it *is* attenuating the scene, and shipping it
+was right. But **the tint is pure white**, and a white attenuation cannot shift hue. It joins the
+warm-light hypothesis and the tonemapper-choice hypothesis on the list of SPLAT-4 explanations
+killed by a measurement rather than an argument. The §5.2 prediction was **wrong**.
+
+### `diagnostics.unread` earned itself on its first rip
+
+It came back with sixteen overridden components this writer does not read:
+
+```
+Bloom · CloudLayer · DepthOfField · DiffusionProfileList · GlobalIllumination ·
+HDShadowSettings · MotionBlur · ScreenSpaceAmbientOcclusion · ScreenSpaceReflection ·
+ScreenSpaceRefraction · SplitToning · TerrainRendering · VisualEnvironment ·
+VolumetricClouds · WaterRendering · WindVolumeComponent
+```
+
+**`SplitToning` is a colour-grading operator**, and HDRP applies it inside the same chain as the
+five blocks already captured. It tints shadows with one colour and highlights with another,
+around neutral grey, split by a `balance` term. `IsActive()` is `shadows != grey || highlights
+!= grey`, and `AnyPropertiesIsOverridden` fired, so some volume in this scene set one of those
+three parameters — and overriding them *to* grey would be pointless.
+
+**It is the right shape for SPLAT-4.** It is the only operator in the chain that shifts hue
+**by luminance**, which is exactly how the residual is distributed. Measured through Blender's
+ACES 1.3 with exposure freed per surface (`colour_model.py --check`):
+
+| surface | model hue | in-game hue | residual | brightness |
+|---|---|---|---|---|
+| sand (`extra4`) | 38.5 | 45.4 | **+6.9** | bright, val 0.675 |
+| pavement (area) | 38.5 | 44.7 | **+6.2** | bright, val 0.710 |
+| grass | 61.8 | 63.0 | **+1.2** | dark, val 0.329 |
+
+The game is *more yellow than the model on both bright surfaces and matches on the dark one*.
+Saturation moves the same way (game +0.024 sand, +0.061 pavement, −0.024 grass).
+
+**The falsifiable prediction, to test against the next rip's numbers:** `splitToning.highlights`
+is tinted toward yellow relative to grey, and `splitToning.shadows` is at or near grey. If both
+ends are tinted equally, or only the shadow end is, then `SplitToning` is not the explanation
+either and the residual is somewhere else entirely. Recording the prediction before the data
+arrives is the point — the fitted per-channel gain that was refused in §SPLAT-4 failed exactly
+because it was fitted after the fact.
+
+### The method correction, which outlives the finding
+
+§5.2 reached its conclusion by enumerating `Game.Prefabs.Climate.*Properties` — the eight
+components the **weather system** drives — and treating that as the stack's contents. It is not:
+the base profile and `LightingSystem`'s priority-1000 volume carry more, and sixteen further
+components were overridden in this very scene.
+
+Worse, a decompiled sweep had been run for exactly these operators — `rg SplitToning` over all
+4,336 types returns **nothing** — and that null result was read as "not in play". It is not: the
+override lives in an **authored volume profile**, an asset, not in code that names the type. *A
+grep over code cannot see data.* This is the same failure mode as every other claim this project
+has had to retract, one layer further out: the sweep was of the right kind for a question about
+readers, and the wrong kind for a question about content.
+
+**Only a rip can enumerate a runtime stack, which is why the diagnostic exists** — and it paid for
+itself on the first one. It has since been upgraded to report each overridden parameter's
+**value**, not just its component's name, so the next blind spot arrives already answered instead
+of costing another rip.

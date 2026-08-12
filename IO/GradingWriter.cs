@@ -4,6 +4,9 @@ using Newtonsoft.Json;
 using System;
 using System.Collections.Generic;
 using System.IO;
+// Aliased because this namespace declares both a `System` enum (IO/Enums.cs) and a `FieldInfo`
+// (IO/FieldInfo.cs), either of which would capture the unqualified name.
+using Reflect = global::System.Reflection;
 using UnityEngine;
 using UnityEngine.Rendering;
 using UnityEngine.Rendering.HighDefinition;
@@ -155,6 +158,7 @@ namespace Carto.IO
                 Add(document, "whiteBalance", CaptureWhiteBalance(stack));
                 Add(document, "colorAdjustments", CaptureColorAdjustments(stack));
                 Add(document, "shadowsMidtonesHighlights", CaptureSmh(stack));
+                Add(document, "splitToning", CaptureSplitToning(stack));
                 Add(document, "tonemapping", CaptureTonemapping(stack));
                 Add(document, "vignette", CaptureVignette(stack));
                 Add(document, "fog", CaptureFog(stack));
@@ -226,6 +230,49 @@ namespace Carto.IO
         }
 
         /// <summary>
+        /// The split-toning tint: one colour into the shadows, another into the highlights.
+        /// <para>
+        /// <b>How this was found, because the method matters more than the block.</b> It was not
+        /// found by reading the game: a sweep of the decompiled assemblies for `SplitToning`
+        /// returns *nothing*, because the override lives in an authored volume profile, not in
+        /// code that names the type. It was found by `diagnostics.unread` on its very first rip
+        /// (audit §5.2) — the blind-spot report added to catch the *next* `Fog`, which caught one
+        /// immediately.
+        /// </para>
+        /// <para>
+        /// <b>Why it matters.</b> HDRP applies it inside the grading chain, and it is the only
+        /// operator in that chain that can shift hue *differently by luminance* — which is the
+        /// exact shape of the residual left after white illumination, tonemapper choice, working
+        /// space and now fog were all eliminated: +6.9 deg on sand and +6.2 deg on pavement, both
+        /// bright, against +1.2 deg on grass, which is dark. `IsActive` is `shadows != grey ||
+        /// highlights != grey`, so a neutral pair means the operator does nothing and this block
+        /// is omitted.
+        /// </para>
+        /// </summary>
+        /// <param name="stack">The resolved volume stack.</param>
+        /// <returns>The <c>splitToning</c> block, or <c>null</c> when it is neutral.</returns>
+        private static object CaptureSplitToning(VolumeStack stack)
+        {
+            SplitToning splitToning = stack.GetComponent<SplitToning>();
+            if ((splitToning == null) || !splitToning.active || !splitToning.IsActive()) return null;
+
+            UnityEngine.Color shadows = splitToning.shadows.value;
+            UnityEngine.Color highlights = splitToning.highlights.value;
+            return new Dictionary<string, object>
+            {
+                ["shadows"] = new[] { Round(shadows.r), Round(shadows.g), Round(shadows.b) },
+                ["highlights"] = new[] { Round(highlights.r), Round(highlights.g), Round(highlights.b) },
+                ["balance"] = Round(splitToning.balance.value),
+                ["units"] = "each colour is LDR rgb around neutral grey (0.5, 0.5, 0.5); grey means "
+                          + "no tint on that end. `balance` is -100..100 and moves the split point "
+                          + "between the two. Applied INSIDE the colour chain, after color "
+                          + "adjustments and before tonemapping - it is the one operator here that "
+                          + "shifts hue by luminance, so it lands differently on a bright surface "
+                          + "than a dark one"
+            };
+        }
+
+        /// <summary>
         /// The atmospheric fog the scene is seen through.
         /// <para>
         /// <b>Why it is here (audit §5.2, P17).</b> `Game.Prefabs.Climate.FogProperties` binds
@@ -270,18 +317,27 @@ namespace Carto.IO
         }
 
         /// <summary>
-        /// Every volume component resolved in the stack that this writer does not read.
-        /// Named so a future sweep reads a rip instead of a decompiler; see the call site.
+        /// Every volume component resolved in the stack that this writer does not read, <b>with
+        /// the values some volume overrode on it</b>.
+        /// <para>
+        /// The values are the point. The first version of this reported type names only, and its
+        /// first rip named `SplitToning` — a colour-grading operator, and a live suspect for a
+        /// months-old residual — which then cost a whole second rip to read three numbers off.
+        /// Reporting the overridden parameters means a blind spot arrives already answered.
+        /// Parameter names come from the component's own public fields, which is where HDRP puts
+        /// them and how its own `FindParameters` walks them.
+        /// </para>
         /// </summary>
         /// <param name="stack">The resolved volume stack.</param>
-        /// <returns>Type names, sorted, of active components with no capture method here.</returns>
+        /// <returns>Sorted <c>"Component.field = value"</c> entries for what is overridden and unread.</returns>
         private static List<string> UnreadComponents(VolumeStack stack)
         {
             HashSet<string> read = new HashSet<string>
             {
                 nameof(Exposure), nameof(WhiteBalance), nameof(ColorAdjustments),
-                nameof(ShadowsMidtonesHighlights), nameof(Tonemapping), nameof(Vignette),
-                nameof(Fog), nameof(PhysicallyBasedSky), nameof(IndirectLightingController)
+                nameof(ShadowsMidtonesHighlights), nameof(SplitToning), nameof(Tonemapping),
+                nameof(Vignette), nameof(Fog), nameof(PhysicallyBasedSky),
+                nameof(IndirectLightingController)
             };
 
             List<string> unread = new List<string>();
@@ -302,7 +358,23 @@ namespace Carto.IO
                     if ((component == null) || !component.active) continue;
                     if (!component.AnyPropertiesIsOverridden()) continue;
 
-                    unread.Add(type.Name);
+                    bool named = false;
+                    foreach (Reflect.FieldInfo field
+                             in type.GetFields(Reflect.BindingFlags.Public
+                                               | Reflect.BindingFlags.Instance))
+                    {
+                        if (!typeof(VolumeParameter).IsAssignableFrom(field.FieldType)) continue;
+                        if (!(field.GetValue(component) is VolumeParameter parameter)) continue;
+                        if (!parameter.overrideState) continue;
+
+                        // VolumeParameter<T> overrides ToString to print its value, so this reads
+                        // every parameter type without a switch over HDRP's parameter zoo.
+                        unread.Add($"{type.Name}.{field.Name} = {parameter}");
+                        named = true;
+                    }
+
+                    // Overridden, but through a field this walk cannot see - still worth naming.
+                    if (!named) unread.Add(type.Name);
                 }
             }
             catch (Exception)

@@ -1471,7 +1471,7 @@ namespace Carto.Systems
             if (PipelinePartsSkipped > 0) run.Report.AppendLine($"Skipped {PipelinePartsSkipped} underground-only sub-mesh entr(ies) inside otherwise visible prefabs (Pipeline layers).");
             if (PlaceholderParts > 0) run.Report.AppendLine($"Missing-asset placeholder parts stretched to prefab bounds: {PlaceholderParts}.");
             if (StackRestParts > 0) run.Report.AppendLine($"Stacked prefabs with untiled rest parts (__stack_rest): {StackRestParts}.");
-            if (TreeStateVariants > 0) run.Report.AppendLine($"Tree-state variant files (__dead/__stump): {TreeStateVariants}; join on attrs.treeState.");
+            if (TreeStateVariants > 0) run.Report.AppendLine($"Tree-state variant files (__teen/__elderly/__dead/__stump): {TreeStateVariants}; join on attrs.treeState.");
             if (FullnessVariants > 0) run.Report.AppendLine($"Stockpile fullness variant files (__partial1/__partial2/__full): {FullnessVariants}; join on attrs.fullness — the empty state is the base file.");
             if ((run.SkirtsWritten > 0) || (run.SkirtsEmpty > 0))
                 run.Report.AppendLine($"Foundation skirts (__base): {run.SkirtsWritten} file(s); "
