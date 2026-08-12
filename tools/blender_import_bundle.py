@@ -179,18 +179,7 @@ _DECAL_DRAPE_TINT = decals.LIFT["lane_tint"]
 
 _DRAPE_MISS_WARN = drape.MISS_WARN_FRACTION
 
-# How far terrain faces marked roadbed (§8 surface id 1) sink below their sampled height —
-# the game's own clamp direction: its road job pulls ground under a carriageway to the
-# MINIMUM of the road's surface band, below the asphalt top, while a consumer's linearly
-# interpolated (and possibly stride-subsampled) grid crests through it.
-#
-# This is the FALLBACK, not the main clamp. It guesses a constant against a road surface it
-# never looks at, and 0.15 m is smaller than the 0.3 m roof of the band it is guessing about —
-# which is precisely how terrain came through the carriageway once a shallow band stopped
-# carving. Where a clip band covers the cell there is a real lane height to reference and
-# `_clamp_shallow_bands` uses it instead; this value now only covers roadbed cells no band
-# reaches, i.e. the flattening apron, where nothing better is available.
-_ROADBED_SINK = 0.15
+_ROADBED_SINK = terrain_math.ROADBED_SINK
 
 # The scene light rig. `clear_scene()` removes Blender's default light along with everything
 # else, so an imported scene would have no lights and no world at all; these put a plain
@@ -238,11 +227,7 @@ _WORLD_LEVEL = 0.25
 # not to a rig picked by eye. `_sun_energy_for` computes it from the sun's actual orientation.
 _SUN_TILT = (0.5, 0.3, 0.0)
 
-# Ground steeper than this (rise over run) is textured rock instead of grass — the gorge
-# embankments. The game classifies grass/dirt/rock per pixel on the GPU by slope, height and
-# noise (§8: the bundle deliberately does not reproduce that); a plain slope threshold at
-# ~40 degrees is the presentation-side stand-in.
-_ROCK_SLOPE = 0.84
+_ROCK_SLOPE = terrain_math.ROCK_SLOPE
 
 
 class _Log:
@@ -2060,307 +2045,69 @@ def build_terrain(bundle_dir, collection, center, radius, clip_floor=None):
         LOG.warn("terrain: the region window misses the raster entirely — skipping terrain")
         return 0, None
 
-    # -- the shared native lattice ---------------------------------------------------------
-    # The window is nfr×nfc blocks of stride² native cells; the vertex lattice is the native
-    # texel grid itself (a vertex sits at a cell centre, contract §3). Every face family
-    # below — coarse block quads, native cells inside the refined corridors, and the
-    # transition fans that join the two — indexes this ONE lattice, so the mesh is welded by
-    # construction: no duplicated positions, no edges pinned to a subsample, shared smooth
-    # normals across every seam. The game keeps mesh density and per-pixel decisions
-    # (clip, flatten) independent; the corridors are how this grid stops coupling them.
-    nfr = (row1 - row0) // stride
-    nfc = (col1 - col0) // stride
-    if nfr < 1 or nfc < 1:
+    # -- the lattice and its faces -----------------------------------------------------------
+    # `csiibundle.terrain.build_lattice` is the whole of it: the corridor that decides where the
+    # mesh goes native, the three face families welded onto one vertex set, the containment
+    # deletion, the hole-rim snap and the sub-cut of a deep band too narrow to contain a face.
+    # Its docstring carries the reasoning, including the two face-deletion rules that are
+    # tempting and wrong.
+    lattice = terrain_math.build_lattice(
+        heights, width, height, surface_ids, levels,
+        row0, col0, row1, col1, stride, cell, origin_x, origin_z,
+        elevation_scale, elevation_offset,
+        cut_grid, contain_raster, band_count_raster, deep_raster,
+        cut_refs, band_floor_raster, sub_bands, strip_geo)
+    if lattice is None:
         LOG.warn("terrain: the region window is smaller than one face — skipping terrain")
         return 0, None
-    lat_h = nfr * stride + 1
-    lat_w = nfc * stride + 1
-
-    heights_native = numpy.asarray(heights).reshape(height, width)
-    native_y = heights_native[row0:row0 + lat_h, col0:col0 + lat_w].astype(numpy.float32) \
-        * numpy.float32(elevation_scale) + numpy.float32(elevation_offset)
-
-    roadbed = (numpy.asarray(surface_ids).reshape(height, width)
-               [row0:row0 + lat_h, col0:col0 + lat_w] != 0) if surface_ids is not None \
-        else numpy.zeros((lat_h, lat_w), dtype=bool)
-    cut = cut_grid[row0:row0 + lat_h, col0:col0 + lat_w]
-    # Face (r, c) of this window is face (row0 + r, col0 + c) of the raster, and the raster is
-    # one entry smaller than the cell grid on each axis, so the window's last lattice row and
-    # column carry no face — hence lat_h - 1 / lat_w - 1.
-    contain = contain_raster[row0:row0 + lat_h - 1, col0:col0 + lat_w - 1]
-    band_count = band_count_raster[row0:row0 + lat_h - 1, col0:col0 + lat_w - 1]
-    deep_touch = deep_raster[row0:row0 + lat_h - 1, col0:col0 + lat_w - 1]
-
-    if levels is not None:
-        level_raw = numpy.asarray(levels).reshape(height, width)[row0:row0 + lat_h,
-                                                                 col0:col0 + lat_w]
-        has_level = level_raw != 0  # 0 = no data, same truthiness test as ever (§8)
-        level_value = level_raw.astype(numpy.float32) * numpy.float32(elevation_scale) \
-            + numpy.float32(elevation_offset)
-        wet = has_level & (level_value > native_y)
-    else:
-        has_level = numpy.zeros((lat_h, lat_w), dtype=bool)
-        level_value = None
-        wet = has_level
-
-    # -- corridors: where the mesh goes native ---------------------------------------------
-    # Every decision boundary — clip volumes, roadbed, shoreline — gets native-resolution
-    # cells; the rest of the map keeps the coarse grid. The 3-cell (~10.5 m at 3.5 m) dilation
-    # covers the game's 8 m terrain smoothing apron, which the roadbed mask deliberately
-    # excludes — the meld gradients down to a portal live inside it.
-    # A deleted face samples its own interior, so its four corner CELLS need not be cut (they
-    # are not among the samples). Such a face must still land in a refined block, or the
-    # deletion below would have no native face to delete. Fold the face mask back onto the
-    # cells it spans before dilating.
-    cut_for_corridor = cut.copy()
-    cut_for_corridor[:-1, :-1] |= contain
-    cut_for_corridor[:-1, 1:] |= contain
-    cut_for_corridor[1:, :-1] |= contain
-    cut_for_corridor[1:, 1:] |= contain
-    refine_cells = _dilate(roadbed | cut_for_corridor | _mask_boundary(wet), 3)
-
-    if stride == 1:
-        # A region import is already native everywhere; the whole window is one corridor and
-        # the transition machinery has nothing to join.
-        block_refined = numpy.ones((nfr, nfc), dtype=bool)
-        block_transition = numpy.zeros((nfr, nfc), dtype=bool)
-    else:
-        block_refined, _ = _face_footprint_reduce(refine_cells, 0, 0, nfr, nfc, stride)
-        block_transition = _dilate(block_refined, 1) & ~block_refined
-    block_coarse = ~block_refined & ~block_transition
-
-    # Safety net: every cut cell must sit inside a refined block (the corridor contains the
-    # cut mask by construction). A stray one would mean a coarse face silently kept over a
-    # tunnel.
-    if stride > 1 and cut_for_corridor.any():
-        s_rr, s_cc = numpy.nonzero(cut_for_corridor)
-        stray = ~block_refined[numpy.minimum(s_rr // stride, nfr - 1),
-                               numpy.minimum(s_cc // stride, nfc - 1)]
-        if stray.any():
-            LOG.warn(f"terrain: {int(stray.sum())} cut cell(s) escaped the refine corridor — "
-                     "coarse faces may wall off part of a tunnel")
-
-    # -- heights, with the anti-poke sink --------------------------------------------------
-    # The game clamps ground under a carriageway down into the road's surface band; this
-    # lattice linearly interpolates 3.5 m samples, so an interpolated crest can still rise
-    # through the road mesh above. Every vertex whose cell touches roadbed — dilated one
-    # cell, so the sink bleeds into the smoothing apron instead of tearing a step — drops by
-    # the documented sink, applied to the lattice ONCE before any face family is built, so
-    # coarse, refined and transition faces all read identical heights. The refine corridor is
-    # the roadbed dilated 3 cells, so a sunk vertex only ever sits inside a refined block:
-    # the sink cannot move a coarse corner or a fan edge.
-    sink = _ROADBED_SINK if surface_ids is not None else 0.0
-    sunk = _dilate(roadbed, 1) if sink else numpy.zeros((lat_h, lat_w), dtype=bool)
-    ground_y = native_y - numpy.where(sunk, numpy.float32(sink), numpy.float32(0.0))
-
-    # Where a SHALLOW band covers the cell there is a real road surface to reference, so the
-    # blind sink above is replaced by the band's own floor. This is the other half of "a
-    # shallow band flattens but never carves": without it the kept ground stands up through the
-    # carriageway by as much as the band's roof, 0.3 m. See `_clamp_shallow_bands`.
-    refs_w = cut_refs[row0:row0 + lat_h, col0:col0 + lat_w]
-    band_clamped, band_clamp_drop = _clamp_shallow_bands(
-        ground_y, band_floor_raster[row0:row0 + lat_h, col0:col0 + lat_w])
+    if lattice.stray_cells:
+        LOG.warn(f"terrain: {lattice.stray_cells} cut cell(s) escaped the refine corridor — "
+                 "coarse faces may wall off part of a tunnel")
+    lat_h = lattice.lat_h
+    lat_w = lattice.lat_w
+    nfr = lattice.nfr
+    nfc = lattice.nfc
+    verts = lattice.verts
+    loops = lattice.loops
+    sizes = lattice.sizes
+    face_class = lattice.face_class
+    native_y = lattice.native_y
+    ground_y = lattice.ground_y
+    wet = lattice.wet
+    has_level = lattice.has_level
+    level_value = lattice.level_value
+    roadbed = lattice.roadbed
+    cut = lattice.cut
+    contain = lattice.contain
+    band_count = lattice.band_count
+    block_refined = lattice.block_refined
+    coarse_loops = lattice.coarse_loops
+    cbr = lattice.cbr
+    cbc = lattice.cbc
+    cell_rr = lattice.cell_rr
+    cell_cc = lattice.cell_cc
+    refined_loops_all = lattice.refined_loops_all
+    fan_loops = lattice.fan_loops
+    fan_faces = lattice.fan_faces
+    refined_faces = lattice.refined_faces
+    cut_faces = lattice.cut_faces
+    roadbed_faces = lattice.roadbed_faces
+    rock_faces = lattice.rock_faces
+    snapped = lattice.snapped
+    unreferenced = lattice.unreferenced
+    pushed = lattice.pushed
+    sub_parents = lattice.sub_parents
+    sub_dropped = lattice.sub_dropped
+    sub_kept = lattice.sub_kept
+    band_clamped = lattice.band_clamped
+    band_clamp_drop = lattice.band_clamp_drop
 
     for row_number in range(lat_h):
-        # "terrain rows" — deliberately not "terrain:" — stays outside every ab_compare.py
-        # count marker so this progress line can print at whatever resolution the lattice
-        # has without ever becoming a gated line the A/B baseline does not have.
+        # "terrain rows" — deliberately not "terrain:" — stays outside every ab_compare.py count
+        # marker so this progress line can print at whatever resolution the lattice has without
+        # ever becoming a gated line the A/B baseline does not have.
         LOG.progress("terrain rows", row_number + 1, lat_h)
 
-    # -- block-level ground class (0 grass / 2 rock), from the coarse corners --------------
-    # Sampled (unsunk) heights, so the roadbed drop cannot flip a boundary face. Coarse and
-    # transition blocks can never be roadbed: a block containing any roadbed cell is refined
-    # by construction.
-    corner_ys = native_y[::stride, ::stride]  # (nfr+1, nfc+1), exact by lattice construction
-    run = float(stride) * cell
-    gx = numpy.maximum(numpy.abs(corner_ys[:-1, 1:] - corner_ys[:-1, :-1]),
-                       numpy.abs(corner_ys[1:, 1:] - corner_ys[1:, :-1])) / run
-    gz = numpy.maximum(numpy.abs(corner_ys[1:, :-1] - corner_ys[:-1, :-1]),
-                       numpy.abs(corner_ys[1:, 1:] - corner_ys[:-1, 1:])) / run
-    block_class = numpy.where(numpy.hypot(gx, gz) > _ROCK_SLOPE, 2, 0)
-
-    # -- coarse quads ----------------------------------------------------------------------
-    # Winding (NW, SW, SE, NE) — south then east — keeps the normal up in Blender's frame,
-    # and faces stay QUADS so Blender tessellates them exactly as the scalar baseline did.
-    lattice_flat = numpy.arange(lat_h * lat_w, dtype=numpy.int64).reshape(lat_h, lat_w)
-    corner_flat = lattice_flat[::stride, ::stride]  # (nfr+1, nfc+1)
-    cbr, cbc = numpy.nonzero(block_coarse)
-    coarse_loops = numpy.stack((corner_flat[cbr, cbc], corner_flat[cbr + 1, cbc],
-                                corner_flat[cbr + 1, cbc + 1], corner_flat[cbr, cbc + 1]),
-                               axis=-1)
-    coarse_class = block_class[cbr, cbc]
-
-    # -- native cells inside refined blocks, cut only where the prism CONTAINS the face -----
-    # A face is deleted iff the whole face lies inside a clip band — `_contain_faces` decides
-    # that by sampling the face's own interior, and the reasoning is in its docstring. The rule
-    # is the game's own invariant, not a tuned preference: the terrain shader discards PER PIXEL
-    # inside a volume built from the road's own composition, so in game `clipped ⊆ covered by
-    # road mesh` always holds and a see-through gap beside a road is impossible.
-    #
-    # Two earlier rules are recorded here because both are tempting and both are wrong:
-    #
-    #   * a face deleted on its own CENTRE. Unbiased, and half of an unbiased error deletes
-    #     terrain no road covers — that half is sky. Measured 1,772-6,040 m² of it per 240 m
-    #     window against the 0-16 m² this rule leaves.
-    #   * a face deleted when all four of its CORNER CELLS are cut. That tests the corners
-    #     against the UNION of every prism, so four corners covered by four different prisms
-    #     passed while the face's interior escaped them all — the geometry of a junction, and
-    #     the mechanism behind the junction gaps this replaces (398 m² and 197 m² of sky at the
-    #     two junctions reported on 2026-08-11).
-    #
-    # The band used to be SPLIT at the carriageway — contained below the lane curve, face-centre
-    # above it — to stop pure corner-containment walling off tunnels (§8c). That compensation is
-    # gone with the rule that needed it: measured over the city's three densest tunnel-portal
-    # clusters, containment sampled per face deletes 100%, 100% and 96.7% of the buried
-    # centreline faces, which is the split band's own number to the digit.
-    rbr, rbc = numpy.nonzero(block_refined)
-    span = numpy.arange(stride, dtype=numpy.int64)
-    cell_rr = numpy.broadcast_to(rbr[:, None, None] * stride + span[None, :, None],
-                                 (len(rbr), stride, stride)).reshape(-1)
-    cell_cc = numpy.broadcast_to(rbc[:, None, None] * stride + span[None, None, :],
-                                 (len(rbr), stride, stride)).reshape(-1)
-    a = cell_rr * lat_w + cell_cc
-    refined_loops_all = numpy.stack((a, a + lat_w, a + lat_w + 1, a + 1), axis=-1)
-    face_cut = contain[cell_rr, cell_cc]
-    # Faces a DEEP band reaches but cannot contain are neither kept whole nor deleted whole —
-    # they are cut at the containment sampling further down. Hold them out of the quad set here
-    # so the slab and its replacement are never both drawn.
-    sub_face = numpy.zeros(len(cell_rr), dtype=bool)
-    if sub_bands:
-        sub_face = numpy.fromiter(
-            (((row0 + int(r), col0 + int(c)) in sub_bands) for r, c in zip(cell_rr, cell_cc)),
-            dtype=bool, count=len(cell_rr)) & ~face_cut
-    refined_loops = refined_loops_all[~face_cut & ~sub_face]
-    cut_faces = int(face_cut.sum())
-
-    # Refined faces classify from their OWN corners at native resolution; roadbed reads the
-    # face's top-left cell sample, the rule the scalar face_roadbed always used.
-    y00 = native_y[cell_rr, cell_cc]
-    y01 = native_y[cell_rr, cell_cc + 1]
-    y10 = native_y[cell_rr + 1, cell_cc]
-    y11 = native_y[cell_rr + 1, cell_cc + 1]
-    ngx = numpy.maximum(numpy.abs(y01 - y00), numpy.abs(y11 - y10)) / cell
-    ngz = numpy.maximum(numpy.abs(y10 - y00), numpy.abs(y11 - y01)) / cell
-    refined_class = numpy.where(numpy.hypot(ngx, ngz) > _ROCK_SLOPE, 2, 0)
-    refined_class_all = numpy.where(roadbed[cell_rr, cell_cc], 1, refined_class)
-    refined_class = refined_class_all[~face_cut & ~sub_face]
-
-    # -- transition fans -------------------------------------------------------------------
-    fan_loops, fan_blocks = _transition_fans(block_refined, block_transition, stride, lat_w)
-    fan_class = block_class.reshape(-1)[fan_blocks]
-
-    # -- one shared vertex set over the lattice --------------------------------------------
-    all_loops = numpy.concatenate((coarse_loops.reshape(-1), refined_loops.reshape(-1),
-                                   fan_loops))
-    sizes = numpy.concatenate((numpy.full(len(coarse_loops), 4, dtype=numpy.int64),
-                               numpy.full(len(refined_loops), 4, dtype=numpy.int64),
-                               numpy.full(len(fan_loops) // 3, 3, dtype=numpy.int64)))
-    face_class = numpy.concatenate((coarse_class, refined_class, fan_class))
-
-    used = numpy.zeros(lat_h * lat_w, dtype=bool)
-    used[all_loops] = True
-    # A sub-cut face draws no quad of its own, but the sub-patch is interpolated from its four
-    # corners and welds to them, so all four must exist in the lattice vertex set — including
-    # their post-snap positions. A corner whose own corner sub-face then falls inside the band
-    # ends up referenced by nothing; the prune after the patch is built removes it.
-    if sub_face.any():
-        used[refined_loops_all[sub_face].reshape(-1)] = True
-    used_idx = numpy.nonzero(used)[0]
-    vid = numpy.full(lat_h * lat_w, -1, dtype=numpy.int64)
-    vid[used_idx] = numpy.arange(len(used_idx))
-    ur, uc = numpy.divmod(used_idx, lat_w)
-    verts = numpy.stack((origin_x + (col0 + uc).astype(numpy.float64) * cell,
-                         origin_z - (row0 + ur).astype(numpy.float64) * cell,
-                         ground_y[ur, uc].astype(numpy.float64)), axis=-1)
-    loops = vid[all_loops]
-
-    # Close the cut holes onto the clip prisms exactly (before UVs — they read final verts).
-    snapped = unreferenced = pushed = 0
-    if cut_faces and strip_geo:
-        cut_face_grid = numpy.zeros((lat_h, lat_w), dtype=bool)
-        cut_face_grid[cell_rr[face_cut], cell_cc[face_cut]] = True
-        snapped, unreferenced, pushed = _snap_hole_boundary(
-            verts, vid, used.reshape(lat_h, lat_w), cut_face_grid,
-            refs_w, strip_geo,
-            ground_y, origin_x, origin_z, row0, col0, cell)
-
-    # -- sub-cut the faces a deep band reaches but cannot contain --------------------------
-    # A trench or portal band narrower than one face holds no whole face, so containment
-    # deletes nothing along it and the face is left lying ACROSS the cutting — a 3.5 m slab
-    # over the carriageway, which is what "land artifacts on the road" looks like from inside
-    # a gorge. Neither keeping nor deleting the face whole is right, so it is cut at the
-    # containment sampling instead: each face becomes `_CLIP_CONTAIN_SAMPLES`² sub-quads and
-    # the ones whose own sample is inside a band are dropped.
-    #
-    # Done AFTER the snap and interpolated from the FINAL corner positions, so a sub-face
-    # follows a corner the snap moved and the patch still meets its neighbours exactly. The
-    # boundary of a bilinear quad is linear, so a sub-vertex inserted along a shared edge sits
-    # exactly on it: the T-junction against an un-subdivided neighbour is geometrically
-    # watertight, and `sub_index` welds the seam between two subdivided faces.
-    sub_loops, sub_class, sub_extra, sub_index = [], [], [], {}
-    sub_parents = sub_dropped = 0
-    if sub_face.any():
-        samples = _CLIP_CONTAIN_SAMPLES
-        corner_id = {}                      # lattice corner -> its vertex id, for the weld
-
-        def node(anchor, r, c, i, j):
-            """The sub-patch vertex at (i, j) of face (r, c), welded across faces and, at a
-            face's own corners, to the lattice vertex itself."""
-            key = ((row0 + r) * samples + i, (col0 + c) * samples + j)
-            found = sub_index.get(key)
-            if found is not None:
-                return found
-            if i in (0, samples) and j in (0, samples):
-                found = int(vid[(r + i // samples) * lat_w + c + j // samples])
-            else:
-                u, v = i / samples, j / samples
-                p00, p10, p11, p01 = anchor
-                sub_extra.append((1 - u) * (1 - v) * p00 + (1 - u) * v * p01
-                                 + u * (1 - v) * p10 + u * v * p11)
-                found = len(verts) + len(sub_extra) - 1
-            sub_index[key] = found
-            return found
-
-        for pick in numpy.nonzero(sub_face)[0]:
-            r, c = int(cell_rr[pick]), int(cell_cc[pick])
-            block = sub_bands.get((row0 + r, col0 + c))
-            ids = (int(vid[r * lat_w + c]), int(vid[(r + 1) * lat_w + c]),
-                   int(vid[(r + 1) * lat_w + c + 1]), int(vid[r * lat_w + c + 1]))
-            if block is None or min(ids) < 0:
-                continue
-            anchor = tuple(verts[i] for i in ids)             # NW, SW, SE, NE, post-snap
-            parent = int(refined_class_all[pick])
-            for i in range(samples):
-                for j in range(samples):
-                    if block[i, j]:
-                        sub_dropped += 1
-                        continue
-                    sub_loops.extend((node(anchor, r, c, i, j), node(anchor, r, c, i + 1, j),
-                                      node(anchor, r, c, i + 1, j + 1),
-                                      node(anchor, r, c, i, j + 1)))
-                    sub_class.append(parent)
-            sub_parents += 1
-
-        if sub_loops:
-            if sub_extra:
-                verts = numpy.concatenate((verts, numpy.asarray(sub_extra, dtype=numpy.float64)))
-            loops = numpy.concatenate((loops, numpy.asarray(sub_loops, dtype=numpy.int64)))
-            sizes = numpy.concatenate((sizes, numpy.full(len(sub_class), 4, dtype=numpy.int64)))
-            face_class = numpy.concatenate((face_class,
-                                            numpy.asarray(sub_class, dtype=face_class.dtype)))
-
-        # Anchoring a sub-cut face's corners can leave one referenced by nothing, when its own
-        # corner sub-face fell inside the band. Prune, so the mesh carries no stray vertex.
-        referenced = numpy.zeros(len(verts), dtype=bool)
-        referenced[loops] = True
-        if not referenced.all():
-            verts = verts[referenced]
-            loops = (numpy.cumsum(referenced) - 1)[loops]
-
-    refined_faces = len(refined_loops)
-    fan_faces = len(fan_blocks)
-    roadbed_faces = int((face_class == 1).sum())
-    rock_faces = int((face_class == 2).sum())
 
     # -- the game's own ground blend, when the bundle carries it --------------------------
     # terrain/splatmap.png is the 4096² weight map the terrain shader samples per pixel, and
@@ -2589,7 +2336,7 @@ def build_terrain(bundle_dir, collection, center, radius, clip_floor=None):
         LOG.step(f"{sub_parents} face(s) met a trench or portal band too narrow for a "
                  f"{cell:g} m face to sit inside and were re-cut at "
                  f"{cell / _CLIP_CONTAIN_SAMPLES:.2f} m — {sub_dropped * (cell / _CLIP_CONTAIN_SAMPLES) ** 2:,.0f} m² "
-                 f"dropped, {len(sub_class)} sub-face(s) kept")
+                 f"dropped, {sub_kept} sub-face(s) kept")
     if snapped or unreferenced:
         LOG.step(f"{snapped} hole-boundary vertex(es) snapped onto the clip prisms "
                  f"({pushed} pushed out of a band, the rest pulled in)"
