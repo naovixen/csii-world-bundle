@@ -2515,39 +2515,59 @@ therefore means the gate is live, not that nothing was looked at.
 Two separate claims lived under "ALPHA". One is a real regression with a game-true fix; the other
 is falsified by measurement.
 
-### 44.1 The regression: `0eeb24f` removed a filter it did not know it was relying on
+### 44.1 The regression: a marker network is a LINE, and the taxiway exception was never real
 
 Reported by the user: since the piece fix, the import "renders stuff which does not render in
 game" — while the tram tracks and platforms it was written for are correct and must stay.
 
-`NetCompositionMeshRefSystem` decides which pieces make up a composition's mesh, and does it four
-times over (hash, equality, build) under exactly one test:
+The game's rule is one line of `BatchInstanceSystem.UpdateNetInstances`:
 
-    (piece.m_PieceFlags & NetPieceFlags.HasMesh) != 0 && (piece.m_SectionFlags & NetSectionFlags.Hidden) == 0
+    bool flag3 = m_NetMarkerData.HasComponent(cullingData.m_Entity);
+    ...
+    if (flag3) { meshLayer2 &= ~MeshLayer.Default; meshLayer2 |= MeshLayer.Marker; }
 
-A piece failing it never enters a mesh entity, so `BatchMeshSystem` never fills its
-`MeshVertex`/`MeshIndex`/`MeshMaterial` buffers, so `BatchMeshHelpers`' own
-`if (!m_MeshVertices.HasBuffer(compositionPiece.m_Piece)) continue` skips it. **The buffer check
-this port inherited was doing two jobs at once** — residency *and* this filter — and `0eeb24f`
-fixed the first by falling back to the geometry asset, which silently removed the second. The
-asset is perfectly readable for a hidden piece; the game just never draws it. Hence 91 opaque
-taxiway slabs across the airport, and the four `Invisible Airplane *` pieces sitting in the 35
-that the 23:37 rip read from the asset.
+A `Game.Net.Marker` edge is taken **off** the Default layer and put on Marker, and the Marker
+Unity layer (`ManagedBatchSystem`, `LayerMask.NameToLayer("Marker")`, shadows off) is drawn only
+when `RenderingSystem.markersVisible` — the editor, or the player toggling markers on.
+`RequiredBatchesSystem` and `PreCullingSystem` agree, the latter admitting the layer through
+`BoundsMask.Debug`. **There is no taxiway exception anywhere in the renderer.**
 
-Both halves of the test come off the `NetCompositionPiece` the walk already has:
+`NetworkRipSystem` already dropped marker networks, and already carried the exception — with the
+premise stated in the comment: *"Taxiways carry the marker component and are genuinely drawn,
+which is why they are the one exception, exactly as the vector export has it."* Right for the
+vector export, where a taxiway is a route to draw as a line. Wrong once it reaches geometry: it
+is what put 91 opaque taxiway slabs, 27,648 triangles, across the airport.
 
-- `HasMesh` is set in `NetInitializeSystem` from `netPieceInfo.m_Piece.meshCount != 0`.
-- `Hidden` is **per placement, not per piece prefab**. A section prefab that hides all four piece
-  layers (`m_HiddenLayers == Surface|Bottom|Top|Side`) carries `NetSectionFlags.Hidden` outright;
-  otherwise `FillCompositionPieces` adds it to the individual pieces whose layer the section
-  hides, by ANDing the section's `HiddenSurface/Bottom/Top/Side` against the piece's own
-  `Surface/Bottom/Top/Side` role flag. So it must be read from the placement, which is where the
-  port now reads it.
+**Why it only appeared on 2026-08-11.** The game never batches a mesh it does not draw, so these
+pieces' render-cache buffers are never resident, so `GetPieceGeometry` returned null, so
+`AssembleNetwork` returned null, so the taxiway silently fell to centerline form. `0eeb24f` made
+the geometry asset the fallback — right for a piece the game does draw, wrong for one it does
+not — and the slabs appeared. The exception had been latent for as long as it had existed.
 
-`BuildComposition` applies the test before it fetches geometry, so a hidden piece costs no read,
-and the rip report names what it skipped. This is a pure exclusion: nothing that was drawn
-correctly before can be lost by it, because everything it drops is something the game does not
-put in a mesh. **Built, deployed, awaiting an in-game re-rip.**
+**The fix, at the level the game decides it:** a `Game.Net.Marker` edge assembles no mesh and
+ships as a centerline record. Taxiways keep their place in `networks.jsonl` with their width and
+their route, exactly as the vector export has them, and gain no surface. It holds for every
+marker network rather than for the one that was noticed. **Built, deployed, awaiting a re-rip.**
+
+### 44.1b The dead end, recorded so it is not walked twice
+
+The first fix for this was `(m_PieceFlags & HasMesh) != 0 && (m_SectionFlags & Hidden) == 0` —
+`NetCompositionMeshRefSystem`'s own per-piece test — applied in the cross-section walk. It builds
+and is correct and it can **never fire**, because that system applies it in `CopyMeshPieces` when
+it copies the composition entity's piece buffer to the **mesh entity's**, and
+`NetworkRipSystem.BuildComposition` reads
+`NetCompositionMeshRef(composition).m_Mesh` — the already-filtered copy. Reverted before it
+shipped.
+
+Worth keeping as a fact about the data: **the piece buffer this port reads is pre-filtered.**
+A piece with no mesh, or one whose layer its section hides, is not in it. The corroboration is in
+the same rip — `Invisible Airplane Edge Piece 0` appears in the 35 pieces read from the asset, so
+it passed that test, so `HasMesh` is set on it and the pieces really do carry geometry. Their
+invisibility is a property of the EDGE, not of the piece.
+
+The near-miss is the same shape as §41.9's: a mechanism that explains the symptom, is true of the
+game, and is not the one in play. Reading `CopyMeshPieces` before writing the guard would have
+cost two minutes.
 
 ### 44.2 The "~2,500 materials with a real alpha channel and no `alphaMode`" is NOT a defect
 

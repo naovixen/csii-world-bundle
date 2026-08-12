@@ -116,14 +116,6 @@ namespace Carto.Systems
         private int _piecesFromAsset;
         private readonly SortedSet<string> _pieceFromAssetNames = new();
         private readonly SortedSet<string> _emptyPieceNames = new();
-
-        /// <summary>
-        /// Piece placements the game does not draw — no <c>HasMesh</c>, or the section hides that
-        /// piece's layer (§44). The buffer read used to exclude them as a side effect; once the
-        /// geometry asset became the fallback the exclusion had to become explicit.
-        /// </summary>
-        private int _hiddenPieces;
-        private readonly SortedSet<string> _hiddenPieceNames = new();
         private int _orphanCaps;
         private int _pipelineCompositions;
         private int _lowerBottomPieces;
@@ -246,6 +238,7 @@ namespace Carto.Systems
             public Dictionary<string, int> ByForm = new();
             public System.Diagnostics.Stopwatch Clock = System.Diagnostics.Stopwatch.StartNew();
             public int SkippedMarker, SkippedNoWidth, SkippedDegenerate, SkippedStale;
+            public int MarkerCenterline;
             public int Points, Triangles;
             public long Bytes;
             public BlockingCollection<NetworkItem> Queue;
@@ -457,8 +450,6 @@ namespace Carto.Systems
             _piecesFromAsset = 0;
             _pieceFromAssetNames.Clear();
             _emptyPieceNames.Clear();
-            _hiddenPieces = 0;
-            _hiddenPieceNames.Clear();
             _orphanCaps = 0;
             _pipelineCompositions = 0;
             _lowerBottomPieces = 0;
@@ -638,10 +629,15 @@ namespace Carto.Systems
                     // Network markers — pipe and cable junction anchors, and airspace — are the
                     // same invisible simulation furniture the instance rip drops, so the two
                     // layers agree on what "the built environment" means. Taxiways carry the
-                    // marker component and are genuinely drawn, which is why they are the one
-                    // exception, exactly as the vector export has it.
+                    // marker component and stay, as the vector export has them: an airport's
+                    // routes are real infrastructure a consumer wants.
                     //
-                    if (EntityManager.HasComponent<Game.Net.Marker>(entity) && !isTaxiway)
+                    // They stay as a LINE, though, and never as a surface — see `markerOnly`
+                    // below. The claim this exception used to carry, that taxiways "are genuinely
+                    // drawn", is not what the renderer does (§44).
+                    //
+                    bool markerOnly = EntityManager.HasComponent<Game.Net.Marker>(entity);
+                    if (markerOnly && !isTaxiway)
                     {
                         run.SkippedMarker++;
                         return;
@@ -676,8 +672,32 @@ namespace Carto.Systems
                     // becomes real geometry, while a pipe or a cable has no surface at all and is
                     // only ever a line the consumer extrudes.
                     //
+                    // A `Game.Net.Marker` edge belongs on the second side of that line, and the
+                    // game says so plainly: `BatchInstanceSystem.UpdateNetInstances` does
+                    // `meshLayer &= ~Default; meshLayer |= Marker` for one, and the Marker layer
+                    // is drawn only when `RenderingSystem.markersVisible` — the editor, or the
+                    // player toggling markers on. There is no taxiway exception anywhere in the
+                    // renderer. The one that used to be here came from the vector export, where
+                    // it is right, and it does not carry over to geometry: it put 91 opaque
+                    // taxiway slabs across the airport, 27,648 triangles the game never draws.
+                    //
+                    // The surface a player sees at an airport belongs to the lot and the airport
+                    // building; the `Invisible Airplane Taxiway` network is the route under it,
+                    // and its composition pieces really are named for being invisible.
+                    //
+                    // Hidden until 2026-08-11 because these pieces' render-cache buffers are
+                    // never resident — the game never batches a mesh it does not draw — so
+                    // `GetPieceGeometry` returned null and the edge fell to centerline anyway.
+                    // `0eeb24f` made the geometry asset the fallback, which is right for a piece
+                    // the game does draw and wrong for one it does not, and the slabs appeared.
+                    // Deciding it here, on the game's own component, fixes it for every marker
+                    // network rather than for the one that was noticed (§44).
+                    //
                     string assetId = $"seg_{entity.Index}";
-                    MeshAsset assembled = AssembleNetwork(entity, geometry, center, assetId, run.PieceCache, null);
+                    MeshAsset assembled = markerOnly
+                        ? null
+                        : AssembleNetwork(entity, geometry, center, assetId, run.PieceCache, null);
+                    if (markerOnly) run.MarkerCenterline++;
 
                     if (assembled != null)
                     {
@@ -921,11 +941,6 @@ namespace Carto.Systems
                                                       + "halves + wedge cover outer/inner/island; blend weights are shader-side");
             if (_railPieces > 0) report.AppendLine($"Corner-rail (PreserveShape) pieces placed: {_railPieces}");
             if (_skipBottomPieces > 0) report.AppendLine($"SkipBottomHalf pieces halved: {_skipBottomPieces}");
-            if (_hiddenPieces > 0)
-                report.AppendLine($"Skipped {_hiddenPieces} piece placement(s) the game does not draw "
-                                + "(NetPieceFlags.HasMesh unset, or the section hides that piece's layer — "
-                                + "`NetCompositionMeshRefSystem`'s own test, §44): "
-                                + string.Join(", ", _hiddenPieceNames));
             if (_piecesFromAsset > 0)
                 report.AppendLine($"Read {_piecesFromAsset} cross-section piece(s) from the geometry asset because their "
                                 + "render-cache buffers were not resident this session (§42.6 — the buffers are a cache "
@@ -1047,6 +1062,11 @@ namespace Carto.Systems
             report.AppendLine("By form:");
             foreach (KeyValuePair<string, int> kvp in run.ByForm) report.AppendLine($"  {kvp.Key}: {kvp.Value}");
             if (run.SkippedMarker > 0) report.AppendLine($"Skipped {run.SkippedMarker} marker network(s)");
+            if (run.MarkerCenterline > 0)
+                report.AppendLine($"Centerline-only: {run.MarkerCenterline} marker network(s) kept as a line and "
+                                + "not a surface — the game draws a Game.Net.Marker edge on the Marker layer "
+                                + "only, which is off unless markers are toggled on (§44); taxiways are the "
+                                + "networks this keeps");
             if (run.SkippedNoWidth > 0) report.AppendLine($"Skipped {run.SkippedNoWidth} edge(s) with no usable width");
             if (run.SkippedDegenerate > 0) report.AppendLine($"Skipped {run.SkippedDegenerate} edge(s) whose centerline collapsed to a point");
             if (run.SkippedStale > 0) report.AppendLine($"Skipped {run.SkippedStale} edge(s) the simulation removed mid-rip");
