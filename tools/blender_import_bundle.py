@@ -216,6 +216,13 @@ _DRAPE_MISS_WARN = 0.01
 # the game's own clamp direction: its road job pulls ground under a carriageway to the
 # MINIMUM of the road's surface band, below the asphalt top, while a consumer's linearly
 # interpolated (and possibly stride-subsampled) grid crests through it.
+#
+# This is the FALLBACK, not the main clamp. It guesses a constant against a road surface it
+# never looks at, and 0.15 m is smaller than the 0.3 m roof of the band it is guessing about —
+# which is precisely how terrain came through the carriageway once a shallow band stopped
+# carving. Where a clip band covers the cell there is a real lane height to reference and
+# `_clamp_shallow_bands` uses it instead; this value now only covers roadbed cells no band
+# reaches, i.e. the flattening apron, where nothing better is available.
 _ROADBED_SINK = 0.15
 
 # The scene light rig. `clear_scene()` removes Blender's default light along with everything
@@ -2708,11 +2715,91 @@ def _bezier_points(control, t):
 _CLIP_SCANLINE_VECTOR_ROWS = 8
 
 
+def _lane_ramp(quad, lane_y):
+    """`(uniform lane height, lateral ramp or None)` for one strip quad.
+
+    A clip band is a prism swept between the road's OWN left and right curves, and those two
+    curves do not sit at the same height: a cambered, superelevated or side-slope road tilts
+    across its width. Collapsing them to their mean makes the band a horizontal slab at
+    mid-height, which is right in the middle and wrong at both edges — and the shallow band is
+    only 0.8 m tall, so a tilt bigger than that puts one whole edge of the carriageway outside
+    its own clip volume. Measured on the 2026-08-12 bundle: |mean(left.y) − mean(right.y)| is
+    0.000 m at p50 and 0.019 m at p90 (the mean is fine for almost every strip) but 0.299 m at
+    p99 and 5.234 m at worst, and **491 strips of 49,464 (1.0%) tilt by more than the whole
+    0.3 m roof**. That 1.0% is exactly the road area still showing ground through it after the
+    band floor clamp went in, and strip 1569180 at `(-342.6, 6893.4)` is the case that named
+    it: left curve 532.55, right curve 533.82, mean 533.18, so the band tested [532.68, 533.28]
+    while the pavement's low edge was at 532.55 and the terrain at 532.62 slipped under the
+    slab and stood over the road.
+
+    `lane_y` may be a plain height (an area record, which has no two sides) or a
+    `(left, right)` pair. The ramp is a 1-D lateral interpolation along the quad's own
+    cross-section — from the midpoint of its two left corners to the midpoint of its two right
+    corners — which is what crossfall is. Cell space is an affine, uniformly scaled image of
+    world space, so the parameter is the same in the native raster and in the sub-sample frame
+    `_contain_faces` rescales quads into; neither caller needs to know.
+
+    Falls back to the mean for a degenerate cross-section or an untilted quad, so the uniform
+    path stays exactly the arithmetic it always was.
+    """
+    if not isinstance(lane_y, tuple):
+        return lane_y, None
+    y_left, y_right = lane_y
+    mean = (y_left + y_right) * 0.5
+    if y_left == y_right:
+        return mean, None
+    lx = (quad[0][0] + quad[3][0]) * 0.5
+    lz = (quad[0][1] + quad[3][1]) * 0.5
+    rx = (quad[1][0] + quad[2][0]) * 0.5
+    rz = (quad[1][1] + quad[2][1]) * 0.5
+    ax, az = rx - lx, rz - lz
+    len2 = ax * ax + az * az
+    if len2 < 1e-9:
+        return mean, None
+    return mean, (y_left, y_right - y_left, lx, lz, ax, az, 1.0 / len2)
+
+
+def _clip_span(mask, terrain_y, row, lo, hi, lane_y, ramp, bottom, top,
+               refs, ref_value, floor, offset):
+    """Mark one scanline span of a clip quad, and record what the span was marked against.
+
+    The body both scanline paths share, so the two cannot drift apart on it —
+    `tools/test_clip_cut.py` fuzzes them against each other precisely because they once did.
+
+    `floor`, when given, receives `lane + bottom` for every sample inside the band: the height
+    at which the game's own surviving terrain resumes under this strip. Writing it here rather
+    than re-deriving it later is what keeps `_clamp_shallow_bands` definitionally consistent
+    with the band test — the clamp lowers ground to the floor of the very band that selected it,
+    including its lateral tilt, with no second opinion about which station or which side.
+    """
+    if ramp is None:
+        lane = lane_y
+    else:
+        y_left, dy, lx, lz, ax, az, inv_len2 = ramp
+        px = numpy.arange(lo, hi + 1, dtype=numpy.float64) + offset
+        s = numpy.clip(((px - lx) * ax + (row + offset - lz) * az) * inv_len2, 0.0, 1.0)
+        lane = y_left + dy * s
+
+    over = terrain_y[row, lo:hi + 1] - lane
+    inside = (over > bottom) & (over < top)
+    mask[row, lo:hi + 1] |= inside
+    if refs is not None and ref_value >= 0:
+        span = refs[row, lo:hi + 1]
+        span[inside] = ref_value
+    if floor is not None:
+        span = floor[row, lo:hi + 1]
+        # Lowest floor wins where strips overlap, so a cell claimed by two roads ends up under
+        # both of them rather than under whichever was rasterised last. `casting="unsafe"` is
+        # only the float64 lane arithmetic landing in the float32 raster, which is deliberate.
+        numpy.minimum(span, lane + bottom, out=span, where=inside, casting="unsafe")
+
+
 def _fill_clip_quad_rows(mask, terrain_y, width, height, quad, lane_y, bottom, top,
-                         refs, ref_value, offset, row_lo, row_hi):
+                         refs, ref_value, offset, row_lo, row_hi, floor=None):
     """The even-odd scanline, one row at a time — the reference path `_fill_clip_quad` splits
     from. Kept whole rather than folded into a branch so the two can be fuzzed against each
     other; see `tools/test_clip_cut.py`."""
+    lane_y, ramp = _lane_ramp(quad, lane_y)
     for row in range(row_lo, row_hi + 1):
         y = row + offset
         crossings = []
@@ -2731,16 +2818,12 @@ def _fill_clip_quad_rows(mask, terrain_y, width, height, quad, lane_y, bottom, t
             hi = min(width - 1, int(math.floor(crossings[pair + 1] - offset)))
             if hi < lo:
                 continue
-            over = terrain_y[row, lo:hi + 1] - lane_y
-            inside = (over > bottom) & (over < top)
-            mask[row, lo:hi + 1] |= inside
-            if refs is not None and ref_value >= 0:
-                span = refs[row, lo:hi + 1]
-                span[inside] = ref_value
+            _clip_span(mask, terrain_y, row, lo, hi, lane_y, ramp, bottom, top,
+                       refs, ref_value, floor, offset)
 
 
 def _fill_clip_quad(mask, terrain_y, width, height, quad, lane_y, bottom, top,
-                    refs=None, ref_value=-1, offset=0.5):
+                    refs=None, ref_value=-1, offset=0.5, floor=None):
     """Mark the samples one strip quad clips — even-odd scanline over sample points.
 
     `quad` is four (x, y) points in cell space, where cell (row, col) spans [col, col+1) ×
@@ -2771,8 +2854,9 @@ def _fill_clip_quad(mask, terrain_y, width, height, quad, lane_y, bottom, top,
         return
     if row_hi - row_lo < _CLIP_SCANLINE_VECTOR_ROWS:
         _fill_clip_quad_rows(mask, terrain_y, width, height, quad, lane_y, bottom, top,
-                             refs, ref_value, offset, row_lo, row_hi)
+                             refs, ref_value, offset, row_lo, row_hi, floor)
         return
+    lane_y, ramp = _lane_ramp(quad, lane_y)
 
     # Edge crossings for EVERY row at once. Four Python comparisons and a `sort()` per row is
     # cheaper for the short quads that dominate by count, and much dearer for the tall ones, so
@@ -2812,12 +2896,8 @@ def _fill_clip_quad(mask, terrain_y, width, height, quad, lane_y, bottom, top,
         for k in numpy.nonzero(his >= los)[0]:
             row = int(rows[live[k]])
             lo, hi = int(los[k]), int(his[k])
-            over = terrain_y[row, lo:hi + 1] - lane_y
-            inside = (over > bottom) & (over < top)
-            mask[row, lo:hi + 1] |= inside
-            if refs is not None and ref_value >= 0:
-                span = refs[row, lo:hi + 1]
-                span[inside] = ref_value
+            _clip_span(mask, terrain_y, row, lo, hi, lane_y, ramp, bottom, top,
+                       refs, ref_value, floor, offset)
 
 
 def _face_footprint_reduce(native, row0, col0, nfr, nfc, stride):
@@ -3117,15 +3197,24 @@ def _clip_grid(bundle_dir, width, height, heights, cell, origin_x, origin_z,
         return (numpy.zeros((height, width), dtype=bool),
                 numpy.zeros((height - 1, width - 1), dtype=bool),
                 numpy.zeros((height - 1, width - 1), dtype=numpy.uint8),
-                numpy.zeros((height - 1, width - 1), dtype=bool), {}, refs, strip_geo)
+                numpy.zeros((height - 1, width - 1), dtype=bool), {}, refs, strip_geo,
+                numpy.full((height, width), numpy.inf, dtype=numpy.float32))
 
     terrain_y = (numpy.asarray(heights, dtype=numpy.float64).reshape(height, width)
                  * elevation_scale + elevation_offset)
     mask = numpy.zeros((height, width), dtype=bool)
 
-    def fill(quad, lane_y, bottom, top, ref_value=-1):
+    # Where the game's terrain resumes under a SHALLOW band, per cell — +inf where no shallow
+    # band covers it. `_clamp_shallow_bands` reads this and nothing else; a deep band writes
+    # nothing here because it is carved instead (`_contain_faces`). float32 deliberately: this
+    # is one full-map raster (67 MiB at 4096², against 134 at float64) and it holds a height
+    # around 500 m, where float32 still resolves better than a ten-thousandth of a millimetre.
+    band_floor = numpy.full((height, width), numpy.inf, dtype=numpy.float32)
+
+    def fill(quad, lane_y, bottom, top, ref_value=-1, floor=None):
         _fill_clip_quad(mask, terrain_y, width, height, quad, lane_y, bottom, top,
-                        refs=(refs if ref_value >= 0 else None), ref_value=ref_value)
+                        refs=(refs if ref_value >= 0 else None), ref_value=ref_value,
+                        floor=floor)
 
     def to_cell(points):
         """World positions to cell space, cell (row, col) centred on (col + .5, row + .5)."""
@@ -3170,15 +3259,21 @@ def _clip_grid(bundle_dir, width, height, heights, cell, origin_x, origin_z,
         right_pts = _bezier_points(right, t)
         left_cells = to_cell(left_pts)
         right_cells = to_cell(right_pts)
-        lane = (left_pts[:, 1] + right_pts[:, 1]) * 0.5
+        left_y, right_y = left_pts[:, 1], right_pts[:, 1]
+        lane = (left_y + right_y) * 0.5
+        carves = top > _CLIP_DEEP_BAND_TOP
 
         strip_index = len(strip_geo)
-        strip_geo.append((left_pts, right_pts, lane, bottom, top, top > _CLIP_DEEP_BAND_TOP))
+        strip_geo.append((left_pts, right_pts, lane, bottom, top, carves))
         for i in range(1, steps + 1):
+            # The band's two sides, not their mean: see `_lane_ramp`. A deep band writes no
+            # floor — it is carved, and a carved cell has no ground left to clamp.
             fill([tuple(left_cells[i - 1]), tuple(right_cells[i - 1]),
                   tuple(right_cells[i]), tuple(left_cells[i])],
-                 float((lane[i - 1] + lane[i]) * 0.5), bottom, top,
-                 ref_value=(strip_index << _CLIP_REF_STATION_BITS) | i)
+                 (float((left_y[i - 1] + left_y[i]) * 0.5),
+                  float((right_y[i - 1] + right_y[i]) * 0.5)), bottom, top,
+                 ref_value=(strip_index << _CLIP_REF_STATION_BITS) | i,
+                 floor=(None if carves else band_floor))
 
     # -- the deletion mask ----------------------------------------------------------------
     # Each strip in cell space with PER-STATION bounds, so a face block replays only the
@@ -3189,7 +3284,7 @@ def _clip_grid(bundle_dir, width, height, heights, cell, origin_x, origin_z,
         lc, rc = to_cell(left_pts), to_cell(right_pts)
         quad_r = numpy.stack((lc[:-1, 1], rc[:-1, 1], lc[1:, 1], rc[1:, 1]), axis=-1)
         quad_c = numpy.stack((lc[:-1, 0], rc[:-1, 0], lc[1:, 0], rc[1:, 0]), axis=-1)
-        strip_cells.append((lc, rc, lane, bottom, top,
+        strip_cells.append((lc, rc, (left_pts[:, 1], right_pts[:, 1]), bottom, top,
                             quad_r.min(axis=1), quad_r.max(axis=1),
                             quad_c.min(axis=1), quad_c.max(axis=1), carves))
     boxes = [(rmin.min(), cmin.min(), rmax.max(), cmax.max())
@@ -3220,13 +3315,15 @@ def _clip_grid(bundle_dir, width, height, heights, cell, origin_x, origin_z,
         """Every station quad whose strip reaches this face block, in native cell space."""
         for index in bins.get((r0 // block, c0 // block), ()):
             if index < len(strip_cells):
-                lc, rc, lane_, low, high, rmin, rmax, cmin, cmax, _ = strip_cells[index]
+                lc, rc, (left_y, right_y), low, high, rmin, rmax, cmin, cmax, _ = \
+                    strip_cells[index]
                 live = numpy.nonzero((rmax >= r0 - 0.5) & (rmin <= r1 + 1.5)
                                      & (cmax >= c0 - 0.5) & (cmin <= c1 + 1.5))[0]
                 for station in live:
                     i = int(station) + 1
                     yield ([tuple(lc[i - 1]), tuple(rc[i - 1]), tuple(rc[i]), tuple(lc[i])],
-                           float((lane_[i - 1] + lane_[i]) * 0.5), low, high)
+                           (float((left_y[i - 1] + left_y[i]) * 0.5),
+                            float((right_y[i - 1] + right_y[i]) * 0.5)), low, high)
             else:
                 cells, lane_y, low, high = area_geo[index - len(strip_cells)]
                 yield ([tuple(cells[0]), tuple(cells[1]), tuple(cells[2]), tuple(cells[2])],
@@ -3235,7 +3332,7 @@ def _clip_grid(bundle_dir, width, height, heights, cell, origin_x, origin_z,
     contain, band_count, deep_touch, sub_bands = _contain_faces(
         width, height, terrain_y, mask, quad_source, _CLIP_CONTAIN_SAMPLES,
         _CLIP_CONTAIN_BLOCK)
-    return mask, contain, band_count, deep_touch, sub_bands, refs, strip_geo
+    return mask, contain, band_count, deep_touch, sub_bands, refs, strip_geo, band_floor
 
 
 def _snap_hole_boundary(verts, vid, used_grid, cut_face_grid, refs_w, strip_geo, ground_y,
@@ -3450,6 +3547,46 @@ def _snap_hole_boundary(verts, vid, used_grid, cut_face_grid, refs_w, strip_geo,
     verts[idx, 1] = new_z[changed]
     verts[idx, 2] = new_y[changed]
     return int(changed.sum()), unreferenced, int((pushed_flag[winner] & changed).sum())
+
+
+def _clamp_shallow_bands(ground_y, band_floor_w):
+    """Drop ground standing inside a SHALLOW clip band to that band's own floor.
+
+    The counterpart to `_contain_faces`' refusal to carve a shallow band, and the reason that
+    refusal does not put terrain through the road. The game discards terrain per pixel inside
+    `(lane + bottom, lane + top)` — for a surface road that shell is only `[-0.5, +0.3]` m, but
+    the top half of it is *above* the carriageway, so terrain kept there wins the depth test
+    against a road running nearly parallel to it. Measured on the 2026-08-12 bundle at
+    `(-435.1, 6859.4)`: 1.9% of the road area with ground over it, median 0.063 m, max
+    **0.303 m** — the band's own roof, to the centimetre, which is what identifies the cause.
+
+    Deleting the face instead is the move this repo has already rejected twice (see
+    `_contain_faces`): at a node the clip fan reaches past the road mesh, so a deleted face
+    there is sky. Lowering it cannot be: the ground stays, still painted roadbed, and merely
+    sits where the game's own surviving pixels resume — the band floor. That is the rule
+    "never loosen the deletion rule to close an intrusion, move the surface instead".
+
+    `lane + bottom` is the game's number and needs no tuned constant of its own, which is the
+    argument for it over the blind `_ROADBED_SINK`: that sink guesses 0.15 m against a road
+    surface it never looks at, and 0.15 < 0.303 is exactly why it failed. The sink still covers
+    roadbed cells no band reaches (the flattening apron), where there is no lane height to
+    reference.
+
+    `band_floor_w` is the windowed floor raster `_clip_span` wrote while it rasterised the
+    bands: `lane + bottom` for every cell a shallow band selected, `+inf` everywhere else, with
+    the lateral tilt of `_lane_ramp` already in it and the LOWEST floor kept where two strips
+    overlap. Taking it from there rather than re-deriving it from a station reference is the
+    point — the clamp then cannot disagree with the test that chose the cell, which a second
+    derivation (via last-writer-wins refs, over a mean-height lane) demonstrably did.
+
+    Mutates `ground_y` in place. Returns `(vertices lowered, largest drop in metres)`.
+    """
+    drop = ground_y - band_floor_w       # +inf floor (no shallow band) never selects
+    hit = drop > 0.0
+    if not hit.any():
+        return 0, 0.0
+    ground_y[hit] = band_floor_w[hit]
+    return int(hit.sum()), float(drop[hit].max())
 
 
 def _splat_mapping(block):
@@ -3828,7 +3965,7 @@ def build_terrain(bundle_dir, collection, center, radius, clip_floor=None):
     # are rasterised here against this heightmap. The layer is mandatory; _clip_grid raises on
     # a bundle without it.
     (cut_grid, contain_raster, band_count_raster, deep_raster, sub_bands,
-     cut_refs, strip_geo) = _clip_grid(
+     cut_refs, strip_geo, band_floor_raster) = _clip_grid(
         bundle_dir, width, height, heights, cell, origin_x, origin_z, elevation_scale,
         elevation_offset, floor_override=clip_floor)
 
@@ -3947,6 +4084,14 @@ def build_terrain(bundle_dir, collection, center, radius, clip_floor=None):
     sink = _ROADBED_SINK if surface_ids is not None else 0.0
     sunk = _dilate(roadbed, 1) if sink else numpy.zeros((lat_h, lat_w), dtype=bool)
     ground_y = native_y - numpy.where(sunk, numpy.float32(sink), numpy.float32(0.0))
+
+    # Where a SHALLOW band covers the cell there is a real road surface to reference, so the
+    # blind sink above is replaced by the band's own floor. This is the other half of "a
+    # shallow band flattens but never carves": without it the kept ground stands up through the
+    # carriageway by as much as the band's roof, 0.3 m. See `_clamp_shallow_bands`.
+    refs_w = cut_refs[row0:row0 + lat_h, col0:col0 + lat_w]
+    band_clamped, band_clamp_drop = _clamp_shallow_bands(
+        ground_y, band_floor_raster[row0:row0 + lat_h, col0:col0 + lat_w])
 
     for row_number in range(lat_h):
         # "terrain rows" — deliberately not "terrain:" — stays outside every ab_compare.py
@@ -4068,7 +4213,7 @@ def build_terrain(bundle_dir, collection, center, radius, clip_floor=None):
         cut_face_grid[cell_rr[face_cut], cell_cc[face_cut]] = True
         snapped, unreferenced, pushed = _snap_hole_boundary(
             verts, vid, used.reshape(lat_h, lat_w), cut_face_grid,
-            cut_refs[row0:row0 + lat_h, col0:col0 + lat_w], strip_geo,
+            refs_w, strip_geo,
             ground_y, origin_x, origin_z, row0, col0, cell)
 
     # -- sub-cut the faces a deep band reaches but cannot contain --------------------------
@@ -4330,6 +4475,10 @@ def build_terrain(bundle_dir, collection, center, radius, clip_floor=None):
              f"{rock_faces} rock face(s), {wet_faces} water face(s), "
              f"{cut_faces} face(s) cut (tunnel portals, trenches and area clips — a shallow "
              f"surface band flattens but never carves)")
+    if band_clamped:
+        LOG.step(f"{band_clamped} lattice vertex(es) standing inside a shallow surface band "
+                 f"lowered to the band floor, worst drop {band_clamp_drop:.2f} m — the pixels "
+                 f"the game discards there (see _clamp_shallow_bands)")
     band_samples = int(band_count.sum(dtype=numpy.int64))
     if cut_faces or band_samples:
         # The containment check, not a size check. Both sides are now the DEEP bands alone —

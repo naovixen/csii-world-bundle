@@ -95,8 +95,8 @@ for _name in ("_CLIP_CONTAIN_SAMPLES", "_CLIP_CONTAIN_BLOCK", "_CLIP_DEEP_BAND_T
     _m = re.search(rf"^{_name} = .*$", source, re.M)
     assert _m, f"{_name} not found in harness source"
     exec(compile(_m.group(0), f"<{_name}>", "exec"), H)
-for _name in ("_bezier_points", "_fill_clip_quad_rows", "_fill_clip_quad", "_dilate",
-              "_contain_faces"):
+for _name in ("_bezier_points", "_lane_ramp", "_clip_span", "_fill_clip_quad_rows",
+              "_fill_clip_quad", "_dilate", "_contain_faces"):
     _m = re.search(rf"\ndef {_name}\(.*?(?=\n\ndef |\n\nclass |\Z)", source, re.S)
     assert _m, f"{_name} not found in harness source"
     exec(compile(_m.group(0), f"<{_name}>", "exec"), H)
@@ -129,7 +129,12 @@ def fuzz_scanline_paths(trials=4000, seed=20260811):
             corner = [corner[0], corner[1], corner[0], corner[1]]
         elif shape == 3:                                  # bowtie
             corner = [corner[0], corner[2], corner[1], corner[3]]
+        # Half the trials use the tilted `(left, right)` band, half the plain height an `area`
+        # record ships. Both reach the same span body, and a ramp that disagreed between the
+        # two paths would be exactly the class of defect this fuzz exists for.
         lane = rng.uniform(-2.0, 2.0)
+        if trial % 2:
+            lane = (lane, lane + rng.uniform(-3.0, 3.0))
         bottom = rng.uniform(-3.0, 0.0)
         top = bottom + rng.uniform(0.0, 4.0)
         offset = rng.choice([0.5, 1.0])
@@ -139,20 +144,25 @@ def fuzz_scanline_paths(trials=4000, seed=20260811):
 
         rows_mask = numpy.zeros((h, w), dtype=bool)
         rows_refs = numpy.full((h, w), -1, dtype=numpy.int32)
+        rows_floor = numpy.full((h, w), numpy.inf)
         if row_hi >= row_lo:
             H["_fill_clip_quad_rows"](rows_mask, terrain, w, h, corner, lane, bottom, top,
-                                      rows_refs, 7, offset, row_lo, row_hi)
+                                      rows_refs, 7, offset, row_lo, row_hi, rows_floor)
         both_mask = numpy.zeros((h, w), dtype=bool)
         both_refs = numpy.full((h, w), -1, dtype=numpy.int32)
+        both_floor = numpy.full((h, w), numpy.inf)
         H["_fill_clip_quad"](both_mask, terrain, w, h, corner, lane, bottom, top,
-                             refs=both_refs, ref_value=7, offset=offset)
+                             refs=both_refs, ref_value=7, offset=offset, floor=both_floor)
 
+        # The floor raster carries the lateral ramp, so comparing it is what actually pins the
+        # two paths to the same per-sample lane height; the mask alone only sees its sign.
         if not (numpy.array_equal(rows_mask, both_mask)
-                and numpy.array_equal(rows_refs, both_refs)):
+                and numpy.array_equal(rows_refs, both_refs)
+                and numpy.allclose(rows_floor, both_floor, equal_nan=True)):
             bad += 1
             if bad <= 3:
                 print(f"  FAIL scanline paths disagree: shape {shape}, offset {offset}, "
-                      f"quad {corner}")
+                      f"lane {lane}, quad {corner}")
     if bad:
         print(f"  FAIL {bad} of {trials} random quads rasterise differently on the two paths")
         failures += 1
@@ -231,11 +241,15 @@ def quads_of(record, to_cell, cell):
     t = numpy.linspace(0.0, 1.0, steps + 1)
     left_pts, right_pts = H["_bezier_points"](left, t), H["_bezier_points"](right, t)
     left_cells, right_cells = to_cell(left_pts), to_cell(right_pts)
-    lane = (left_pts[:, 1] + right_pts[:, 1]) * 0.5
+    # The two sides separately, as the harness rasterises them — a band is a prism between the
+    # road's own curves and they tilt across its width (`_lane_ramp`). Collapsing them to a
+    # mean here would test a band the harness no longer builds.
+    left_y, right_y = left_pts[:, 1], right_pts[:, 1]
     for i in range(1, steps + 1):
         yield ([tuple(left_cells[i - 1]), tuple(right_cells[i - 1]),
                 tuple(right_cells[i]), tuple(left_cells[i])],
-               float((lane[i - 1] + lane[i]) * 0.5), bottom, top)
+               (float((left_y[i - 1] + left_y[i]) * 0.5),
+                float((right_y[i - 1] + right_y[i]) * 0.5)), bottom, top)
 
 
 def road_cover(cx, cz, radius, origin_x, origin_z, col0, row0, cell, fine_h, fine_w):
