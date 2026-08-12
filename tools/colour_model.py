@@ -26,6 +26,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from csiibundle.colour import *            # noqa: F401,F403 - the derivation, re-exported
 from csiibundle.colour import Grading, hex_of, hsv_of, srgb_to_linear   # noqa: F401
 from csiibundle.colour import load as _load
+from csiibundle import colour as _colour
 
 # The producer writes one bundle per install, here. Not a bundle-format fact — just where this
 # machine's rips land, so the CLI has a default.
@@ -40,7 +41,12 @@ def load(bundle_dir=None):
 
 
 def blender_config_path():
-    """Blender's shipped OCIO config, if it can be found."""
+    """Blender's shipped OCIO config, if it can be found.
+
+    Installed as `csiibundle.colour.CONFIG_LOCATOR` at the bottom of this file, which is how
+    `Grading.pick_view` finds a config when `$OCIO` is unset without the package having to know
+    that Blender exists.
+    """
     env = os.environ.get("CARTO_BLENDER_COLORMANAGEMENT")
     if env and os.path.isfile(os.path.join(env, "config.ocio")):
         return os.path.join(env, "config.ocio")
@@ -63,6 +69,10 @@ def blender_config_path():
         if os.path.isfile(candidate):
             return candidate
     return None
+
+
+# Give the package a way to find a config without it knowing what Blender is.
+_colour.CONFIG_LOCATOR = blender_config_path
 
 
 # -- CLI --------------------------------------------------------------------------------------

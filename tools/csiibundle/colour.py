@@ -86,6 +86,12 @@ import sys
 # Rec.709 luminance weights, for anything measured in the scene's own space.
 LUMA = (0.2126, 0.7152, 0.0722)
 
+# How `pick_view` finds an OCIO config when `$OCIO` is unset: a callable returning a path, or
+# None. Left unset here on purpose — WHERE a config lives is a property of the host application,
+# not of the grading, and this module has no business knowing about any particular one. The
+# Blender adapter (`tools/colour_model.py`) installs its own locator.
+CONFIG_LOCATOR = None
+
 # THE GRADING IS DONE IN ACEScg (AP1), NOT IN LINEAR REC.709.
 #
 # HDRP's HDR grading path works in ACEScg, and this file used to grade in linear Rec.709 anyway,
@@ -461,7 +467,7 @@ class Grading(object):
             import PyOpenColorIO as ocio
         except ImportError:
             return None, None, None
-        path = os.environ.get("OCIO") or blender_config_path()
+        path = os.environ.get("OCIO") or (CONFIG_LOCATOR() if CONFIG_LOCATOR else None)
         if not path or not os.path.isfile(path):
             return None, None, None
         config = ocio.Config.CreateFromFile(path)

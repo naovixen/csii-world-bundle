@@ -48,15 +48,14 @@ import math
 import os
 import pathlib
 import random
-import re
 import sys
 
 import numpy
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from csiibundle import bezier as bezier_math
+from csiibundle import terrain as terrain_math
 
-SRC = os.path.join(os.path.dirname(__file__), "blender_import_bundle.py")
 BUNDLE = os.environ.get("CARTO_BUNDLE") or os.path.expandvars(
     r"%USERPROFILE%\AppData\LocalLow\Colossal Order\Cities Skylines II\ModsData\Carto")
 
@@ -88,23 +87,22 @@ SKY_BUDGET = 25.0
 # the one the two triangles were reported in.
 ROAD_SKY_BUDGET = 1.0
 
-source = open(SRC, encoding="utf-8").read()
-H = {"numpy": numpy}
-exec(compile("import math", "<math>", "exec"), H)
-for _name in ("_CLIP_CONTAIN_SAMPLES", "_CLIP_CONTAIN_BLOCK", "_CLIP_DEEP_BAND_TOP",
-              "_CLIP_SCANLINE_VECTOR_ROWS"):
-    _m = re.search(rf"^{_name} = .*$", source, re.M)
-    assert _m, f"{_name} not found in harness source"
-    exec(compile(_m.group(0), f"<{_name}>", "exec"), H)
-# `_bezier_points` is no longer defined in the harness — it was a second copy of the lane
-# bend's own evaluator and now aliases `csiibundle.bezier.evaluate`. Take it from the package;
-# the rest of the clip rasteriser is still harness-side and moves in H7.
-H["_bezier_points"] = bezier_math.evaluate
-for _name in ("_lane_ramp", "_clip_span", "_fill_clip_quad_rows",
-              "_fill_clip_quad", "_dilate", "_contain_faces"):
-    _m = re.search(rf"\ndef {_name}\(.*?(?=\n\ndef |\n\nclass |\Z)", source, re.S)
-    assert _m, f"{_name} not found in harness source"
-    exec(compile(_m.group(0), f"<{_name}>", "exec"), H)
+# Everything under test now lives in `csiibundle` rather than being regexed out of the harness
+# (which imports `bpy` at module scope and cannot be imported under system Python). `H` stays as
+# the one place naming what this file pins, so a rename in the package fails loudly right here.
+H = {
+    "_CLIP_CONTAIN_SAMPLES": terrain_math.CLIP_CONTAIN_SAMPLES,
+    "_CLIP_CONTAIN_BLOCK": terrain_math.CLIP_CONTAIN_BLOCK,
+    "_CLIP_DEEP_BAND_TOP": terrain_math.CLIP_DEEP_BAND_TOP,
+    "_CLIP_SCANLINE_VECTOR_ROWS": terrain_math.CLIP_SCANLINE_VECTOR_ROWS,
+    "_bezier_points": bezier_math.evaluate,
+    "_lane_ramp": terrain_math.lane_ramp,
+    "_clip_span": terrain_math.clip_span,
+    "_fill_clip_quad_rows": terrain_math.fill_clip_quad_rows,
+    "_fill_clip_quad": terrain_math.fill_clip_quad,
+    "_dilate": terrain_math.dilate,
+    "_contain_faces": terrain_math.contain_faces,
+}
 
 failures = 0
 
