@@ -117,54 +117,40 @@ import time
 
 import bpy
 import numpy
-from mathutils import Matrix, Quaternion, Vector
+from mathutils import Matrix, Vector
 from mathutils.bvhtree import BVHTree
 
-# The grading derivation lives beside this file so the importer and the point probe cannot drift
-# apart on it — the last attempt at this had two calibrations that "converged" on different
-# transforms. Blender does not put a script's own folder on the path when it is run with
-# `--python`, so add it explicitly.
+# The engine-neutral half of the reconstruction lives in `tools/csiibundle/`, a package that
+# never imports bpy: the frame conversion, the GLB and PNG readers, the splat decode and the
+# grading derivation are all things a BeamNG builder or a Blender adapter needs identically, and
+# keeping one copy is what stops two of them drifting apart (the last attempt at the grading had
+# two calibrations that "converged" on different transforms). This script is one adapter over it
+# — everything below is the part that is genuinely about Blender.
+#
+# Blender does not put a script's own folder on the path when it is run with `--python`, so add
+# it explicitly before importing either.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import colour_model
+from csiibundle import frames, glb as glb_reader, png as png_reader, reader, splat as splat_reader
 
 
 # -- the frame conversion, contract §2 ------------------------------------------------------
 #
-# The bundle frame is CS2 world space verbatim: left-handed, Y up, X east, Z north (§2.1).
-# Mesh payloads are the one thing converted: every .glb has its vertices mirrored on X so that
-# it is right-handed and opens correctly on its own (§2.2). The contract gives the formula:
+# The whole derivation is `csiibundle.frames`; read its module docstring for why the formula is
+# what it is. What this file adds is the ONE convention that is Blender's rather than the
+# bundle's: the stock glTF importer rewrites Y-up to Z-up on import, so the mesh sitting in the
+# scene is already G·v_glb and that has to be undone. `frames.GLTF_YUP_TO_ZUP` is that G, and
+# `frames.zup_instance_matrix(record, G)` composes the lot:
 #
-#     v_world = T(pos) · R(rot) · S(scale) · diag(-1,1,1) · v_glb
+#     P · T · R · S · diag(-1,1,1) · G⁻¹
 #
-# Two further conversions are Blender's, not the bundle's:
-#
-#   G   Blender's glTF importer rewrites Y-up to Z-up on import: (x,y,z) → (x,-z,y). So the
-#       mesh sitting in Blender is already G·v_glb, and undoing that is the price of letting
-#       the importer do its job.
-#   P   Blender is Z-up: bundle (x,y,z) → Blender (x,z,y). A transposition, determinant -1,
-#       which is exactly what turns the bundle's left-handed frame into Blender's right-handed
-#       one — no extra mirror needed anywhere.
-#
-# So the matrix applied to an imported object is  P · T · R · S · diag(-1,1,1) · G⁻¹, and since
-# P is linear it can be split into a translation by P·pos and a constant linear tail:
-#
-#     P · diag(-1,1,1) · G⁻¹  =  diag(-1,-1,1)     — a 180° turn about Z, no reflection.
-#
-# It being a proper rotation is the sanity check: the mesh was already made right-handed, so
-# reconstructing it in a right-handed application must not mirror anything again.
+# The sanity check on it is that P · diag(-1,1,1) · G⁻¹ = diag(-1,-1,1), a 180° turn about Z
+# with no reflection — the mesh was already made right-handed by the producer, so reconstructing
+# it in a right-handed application must not mirror anything again.
 
-# P — bundle Y-up to Blender Z-up. A row swap, determinant -1, which is precisely what turns
-# the bundle's left-handed frame into Blender's right-handed one.
-_P = Matrix(((1, 0, 0, 0),
-             (0, 0, 1, 0),
-             (0, 1, 0, 0),
-             (0, 0, 0, 1)))
-
-# diag(-1,1,1) · G⁻¹ — undo the bundle's X mirror, then undo Blender's importer axis swap.
-_UNMIRROR_UNIMPORT = Matrix(((-1, 0, 0, 0),
-                             (0, 0, 1, 0),
-                             (0, -1, 0, 0),
-                             (0, 0, 0, 1)))
+# The mesh-side basis Blender's glTF importer applies. Passed to `frames.zup_instance_matrix`
+# for every placement; a consumer reading the .glb buffers directly passes None instead.
+_BLENDER_GLTF_BASIS = frames.GLTF_YUP_TO_ZUP
 
 # The ground-paint ladder, in metres of Blender world Z. Everything the game draws by
 # PROJECTION lands on one and the same ground in-game and cannot z-fight; reconstructed as
@@ -460,77 +446,34 @@ def _mesh_from_arrays(name, verts, tris, uv_layers=None, material_runs=None, pol
             raise ValueError(f"_mesh_from_arrays({name!r}): poly_sizes sum "
                              f"{int(sizes.sum())} != {len(loops_flat)} flat loop indices")
 
+    # The drop itself is `csiibundle.glb.clean_degenerate_polygons` — engine-neutral, and it
+    # trims `material_runs` and the UV layers in the same pass so the survivors keep what they
+    # were given. What stays here is the REPORTING, because what a degenerate face means
+    # depends on where the arrays came from and only this caller knows that.
+    (loops_flat, sizes, uv_layers, material_runs,
+     repeated_count, zero_area_count) = glb_reader.clean_degenerate_polygons(
+        verts, loops_flat, sizes, uv_layers=uv_layers, material_runs=material_runs)
     poly_count = len(sizes)
-    if poly_count:
-        offsets = numpy.concatenate(([0], numpy.cumsum(sizes)))
-        # A repeated vertex index within one polygon's row — the classic cause of a face
-        # mesh.validate() drops (a zero-length edge, most often at a concatenated part seam).
-        # Geometrically zero-area: distinct indices that still collapse to a line or point.
-        # Fan-triangulated from vertex 0 (v0, v[i], v[i+1]) so it covers any size. Sizes are
-        # processed group-wise so the mixed-size path shares the uniform path's arithmetic.
-        repeated = numpy.zeros(poly_count, dtype=bool)
-        area2 = numpy.zeros(poly_count)
-        for size in numpy.unique(sizes):
-            group = numpy.nonzero(sizes == size)[0]
-            rows = loops_flat[offsets[group][:, None] + numpy.arange(size)[None, :]]
-            rep = numpy.zeros(len(group), dtype=bool)
-            for i in range(size):
-                for j in range(i + 1, size):
-                    rep |= rows[:, i] == rows[:, j]
-            v0 = verts[rows[:, 0]]
-            a2 = numpy.zeros(len(group))
-            for i in range(1, size - 1):
-                edge_a = verts[rows[:, i]] - v0
-                edge_b = verts[rows[:, i + 1]] - v0
-                a2 += numpy.linalg.norm(numpy.cross(edge_a, edge_b), axis=1)
-            repeated[group] = rep
-            area2[group] = a2
-        zero_area = (~repeated) & (area2 < 1e-12)
-        degenerate = repeated | zero_area
 
-        if degenerate.any():
-            repeated_count = int(repeated.sum())
-            zero_area_count = int(zero_area.sum())
-            if repeated_count:
-                # Downgradable ONLY for a source-geometry caller with its own aggregate
-                # report — every computed caller (default) gets the unconditional loud line,
-                # by construction: a repeated index in COMPUTED math is historically real bad
-                # data, and no caller can opt that class out of the alarm for itself.
-                if source_geometry and degenerate_report is not None:
-                    degenerate_report(name, repeated_count, True)
-                else:
-                    LOG.warn(f"CONTRACT VIOLATION: {name} array input had {repeated_count} "
-                             "face(s) with a repeated vertex index; dropping before build so "
-                             "materials/UVs stay aligned to the surviving polygons")
-            if zero_area_count:
-                if degenerate_report is not None:
-                    degenerate_report(name, zero_area_count, False)
-                else:
-                    LOG.warn(f"CONTRACT VIOLATION: {name} array input had {zero_area_count} "
-                             "geometrically zero-area face(s) (distinct indices collapsed to "
-                             "a line or point); dropping before build so materials/UVs stay "
-                             "aligned to the surviving polygons")
-            keep = ~degenerate
-            if material_runs:
-                expanded = []
-                for material, count in material_runs:
-                    expanded.extend([material] * count)
-                trimmed = []
-                for material, kept in zip(expanded, keep):
-                    if not kept:
-                        continue
-                    if trimmed and trimmed[-1][0] is material:
-                        trimmed[-1] = (material, trimmed[-1][1] + 1)
-                    else:
-                        trimmed.append((material, 1))
-                material_runs = trimmed
-            loop_keep = numpy.repeat(keep, sizes)
-            if uv_layers:
-                uv_layers = {layer_name: numpy.asarray(uvs)[loop_keep]
-                             for layer_name, uvs in uv_layers.items()}
-            loops_flat = loops_flat[loop_keep]
-            sizes = sizes[keep]
-            poly_count = len(sizes)
+    if repeated_count:
+        # Downgradable ONLY for a source-geometry caller with its own aggregate report — every
+        # computed caller (the default) gets the unconditional loud line, by construction: a
+        # repeated index in COMPUTED math is historically real bad data, and no caller can opt
+        # that class out of the alarm for itself.
+        if source_geometry and degenerate_report is not None:
+            degenerate_report(name, repeated_count, True)
+        else:
+            LOG.warn(f"CONTRACT VIOLATION: {name} array input had {repeated_count} "
+                     "face(s) with a repeated vertex index; dropping before build so "
+                     "materials/UVs stay aligned to the surviving polygons")
+    if zero_area_count:
+        if degenerate_report is not None:
+            degenerate_report(name, zero_area_count, False)
+        else:
+            LOG.warn(f"CONTRACT VIOLATION: {name} array input had {zero_area_count} "
+                     "geometrically zero-area face(s) (distinct indices collapsed to "
+                     "a line or point); dropping before build so materials/UVs stay "
+                     "aligned to the surviving polygons")
 
     mesh = bpy.data.meshes.new(name)
     mesh.vertices.add(len(verts))
@@ -579,49 +522,28 @@ def _mesh_from_arrays(name, verts, tris, uv_layers=None, material_runs=None, pol
 
 def bundle_to_blender_point(pos):
     """Bundle-frame position (X east, Y up, Z north) to Blender (X east, Y north, Z up)."""
-    return Vector((pos[0], pos[2], pos[1]))
+    return Vector(frames.bundle_to_zup_point(pos))
 
 
 def instance_matrix(record):
     """The full world matrix for one instance record, ready to assign to matrix_world.
 
-    Composed left to right exactly as contract §2.2 states it, with Blender's two conventions
-    bracketing the outside:  P · T · R · S · diag(-1,1,1) · G⁻¹
+    `csiibundle.frames` composes it; this only converts to mathutils. The float64 the package
+    works in is truncated to float32 on assignment either way, so the extra precision on the
+    way through is free.
     """
-    pos = record["pos"]
-    rot = record.get("rot", [0.0, 0.0, 0.0, 1.0])
-    scale = record.get("scale", [1.0, 1.0, 1.0])
-
-    # The bundle stores quaternions [x,y,z,w]; mathutils wants (w,x,y,z). The rotation is
-    # applied in bundle coordinates and P converts the result, which is why no term flips sign
-    # here — the same quaternion algebra holds in a left-handed basis.
-    rotation = Quaternion((rot[3], rot[0], rot[1], rot[2])).to_matrix().to_4x4()
-    scaling = Matrix.Diagonal((scale[0], scale[1], scale[2], 1.0))
-
-    return _P @ Matrix.Translation(Vector(pos)) @ rotation @ scaling @ _UNMIRROR_UNIMPORT
+    return Matrix(frames.zup_instance_matrix(record, _BLENDER_GLTF_BASIS).tolist())
 
 
 # -- bundle reading -------------------------------------------------------------------------
+#
+# All of it is `csiibundle.reader`. The aliases keep the call sites below reading the way they
+# always have; `resolve_layers` and `_terrain_paths` return namedtuples whose field order is
+# the tuple order these call sites unpack.
 
-def read_jsonl(path):
-    with open(path, encoding="utf-8") as handle:
-        for line in handle:
-            line = line.strip()
-            if line:
-                yield json.loads(line)
-
-
-def read_declared_gaps(bundle_dir):
-    """assetIds the producer declared it could not deliver (contract §10)."""
-    path = os.path.join(bundle_dir, "warnings.jsonl")
-    gaps = {}
-    if not os.path.isfile(path):
-        return gaps
-    for record in read_jsonl(path):
-        asset_id = record.get("assetId")
-        if isinstance(asset_id, str):
-            gaps[asset_id] = record.get("reason", "")
-    return gaps
+read_jsonl = reader.read_jsonl
+read_declared_gaps = reader.read_declared_gaps
+resolve_layers = reader.resolve_layers
 
 
 def skyline_weight(record):
@@ -881,39 +803,6 @@ def apply_color_tints(bundle_dir):
         rigged += 1
 
     return rigged
-
-
-def resolve_layers(bundle_dir):
-    """Read layer paths from bundle.json, falling back to the conventional layout.
-
-    A Phase 3 bundle has no manifest yet — that is Phase 7 — so the fallback is what actually
-    runs today, and the manifest path is here so this keeps working once it exists.
-    """
-    manifest_path = os.path.join(bundle_dir, "bundle.json")
-    if os.path.isfile(manifest_path):
-        with open(manifest_path, encoding="utf-8") as handle:
-            layers = json.load(handle).get("layers", {})
-        meshes = layers.get("meshes", "meshes/")
-        instances = layers.get("instances", "instances.jsonl")
-        networks = layers.get("networks", "networks.jsonl")
-        net_meshes = layers.get("networkMeshes", "networks/")
-        # The record layer is `laneGeometry`; `laneMeshes` is the part-mesh DIRECTORY. The old
-        # keys here only ever worked because pre-manifest bundles took the fallback path — a
-        # finalized bundle handed --lanes a directory where it expected a .jsonl.
-        lanes = layers.get("laneGeometry", "lanemeshes.jsonl")
-        lane_meshes = layers.get("laneMeshes", "lanemeshes/")
-    else:
-        meshes, instances = "meshes/", "instances.jsonl"
-        networks, net_meshes = "networks.jsonl", "networks/"
-        lanes, lane_meshes = "lanemeshes.jsonl", "lanemeshes/"
-
-    return (os.path.join(bundle_dir, meshes),
-            os.path.join(bundle_dir, instances),
-            os.path.join(bundle_dir, networks),
-            os.path.join(bundle_dir, net_meshes),
-            os.path.join(bundle_dir, lanes),
-            os.path.join(bundle_dir, lane_meshes),
-            os.path.join(bundle_dir, "laneprefabs.json"))
 
 
 # -- networks, contract §5 ------------------------------------------------------------------
@@ -2409,213 +2298,42 @@ def build_lanes(lanes_path, catalogue_path, lane_mesh_dir, collection,
 #
 # The terrain is the Phase 6 acceptance layer: the ground everything else stands on, with the
 # road-flattened cells recorded in surface_index.png. (It is NOT what closes junctions — the
-# arms' node meshes pave those; audit §18 corrected an earlier claim here.) The rasters are
-# decoded in plain Python rather than through Blender's image loader so that no
-# colour-management transform can touch the samples — the decoder below is also deliberately a
-# reference implementation of §8's file format for any consumer to lift.
+# arms' node meshes pave those; audit §18 corrected an earlier claim here.)
+#
+# The rasters are decoded in plain Python rather than through Blender's image loader so that no
+# colour-management transform can touch the samples — they carry NUMBERS, not pictures. That
+# decoder is `csiibundle.png`, where it also serves as a reference implementation of §8's file
+# format for any consumer to port.
+_unfilter_slow = png_reader.unfilter_slow
+_unfilter_scanlines = png_reader.unfilter_scanlines
+_decode_png_gray = png_reader.decode_png_gray
+_decode_png_rgba = png_reader.decode_png_rgba
 
 
-def _unfilter_slow(kind, line, previous, bpp):
-    """Reference per-byte reconstruction for Average(3) and Paeth(4).
+class _Splat(splat_reader.Splat):
+    """`csiibundle.splat.Splat` plus the one Blender-side step: turning the unpacked paint
+    weights into an image datablock the shader can sample.
 
-    Both predict from bytes of the CURRENT row that this same loop has already reconstructed
-    (`line[i - bpp]`), so — unlike None/Up/Sub — they cannot be vectorised across the row and
-    keep the original sequential algorithm. `line` is mutated in place and returned.
+    Everything about WHICH channel is which ground, and how the four extras are packed into
+    two bytes, lives in the package — read its module docstring before touching any of it.
     """
-    stride = len(line)
-    if kind == 3:      # Average
-        for i in range(stride):
-            left = line[i - bpp] if i >= bpp else 0
-            line[i] = (line[i] + ((left + previous[i]) >> 1)) & 0xFF
-    elif kind == 4:    # Paeth
-        for i in range(stride):
-            left = line[i - bpp] if i >= bpp else 0
-            up = previous[i]
-            corner = previous[i - bpp] if i >= bpp else 0
-            estimate = left + up - corner
-            distances = (abs(estimate - left), abs(estimate - up), abs(estimate - corner))
-            predictor = (left, up, corner)[distances.index(min(distances))]
-            line[i] = (line[i] + predictor) & 0xFF
-    else:
-        raise ValueError(f"_unfilter_slow: unsupported filter type {kind}")
-    return line
-
-
-def _unfilter_scanlines(raw, width, height, bpp):
-    """Undo the PNG scanline filters (contract §8) with numpy where the filter allows it.
-
-    None(0) and Up(2) vectorise across the whole row (a straight copy / a row-wide add).
-    Sub(1) is a running sum per interleaved byte lane — reshaping the row to (pixel, channel)
-    and taking a cumulative sum down the pixel axis reproduces `recon[i] = filt[i] +
-    recon[i - bpp]` for every channel at once; the sum is widened to uint32 before truncating
-    back to uint8 because numpy's uint8 cumsum overflows silently instead of wrapping mod 256,
-    and the truncation *is* the mod-256 the format requires. Average(3) and Paeth(4) predict
-    from the current row's own already-reconstructed bytes and are genuinely sequential, so
-    they fall back to `_unfilter_slow`, paid only on the rows that actually use them (the
-    producer only ever writes filter 0, so in practice that fallback is cold).
-    """
-    stride = width * bpp
-    out = numpy.zeros((height, stride), dtype=numpy.uint8)
-    previous = numpy.zeros(stride, dtype=numpy.uint8)
-    for y in range(height):
-        offset = y * (stride + 1)
-        kind = raw[offset]
-        line = numpy.frombuffer(raw, dtype=numpy.uint8, count=stride, offset=offset + 1).copy()
-        if kind == 0:      # None
-            pass
-        elif kind == 2:    # Up
-            line += previous
-        elif kind == 1:    # Sub
-            lanes = line.reshape(-1, bpp).astype(numpy.uint32)
-            line = numpy.cumsum(lanes, axis=0, dtype=numpy.uint32).astype(numpy.uint8).reshape(-1)
-        else:              # Average(3) / Paeth(4)
-            slow = _unfilter_slow(kind, bytearray(line.tobytes()), bytes(previous.tobytes()), bpp)
-            line = numpy.frombuffer(bytes(slow), dtype=numpy.uint8)
-        out[y] = line
-        previous = out[y]
-    return bytearray(out.tobytes())
-
-
-def _decode_png_gray(path):
-    """Decode a single-channel PNG (§8) to (width, height, samples).
-
-    Samples come back as an array of ints at the file's own bit depth — 16-bit values 0..65535
-    for elevation and depth, 8-bit ids for the surface index. All five standard scanline
-    filters are handled; the producer writes filter 0 (None) rows, which is the fast path.
-    """
-    import zlib
-    from array import array
-
-    data = open(path, "rb").read()
-    if not data.startswith(b"\x89PNG\r\n\x1a\n"):
-        raise ValueError(f"{path} is not a PNG")
-
-    pos = 8
-    width = height = depth = None
-    colour_type = None
-    idat = []
-    while pos + 8 <= len(data):
-        (length,) = __import__("struct").unpack(">I", data[pos:pos + 4])
-        tag = data[pos + 4:pos + 8]
-        payload = data[pos + 8:pos + 8 + length]
-        pos += 12 + length
-        if tag == b"IHDR":
-            width, height = __import__("struct").unpack(">II", payload[:8])
-            depth, colour_type = payload[8], payload[9]
-        elif tag == b"IDAT":
-            idat.append(payload)
-        elif tag == b"IEND":
-            break
-
-    if colour_type != 0 or depth not in (8, 16):
-        raise ValueError(f"{path}: contract §8 rasters are 8- or 16-bit grayscale, "
-                         f"got colour type {colour_type} at depth {depth}")
-
-    raw = zlib.decompress(b"".join(idat))
-    bpp = depth // 8
-    out = _unfilter_scanlines(raw, width, height, bpp)
-
-    if depth == 16:
-        samples = array("H", bytes(out))
-        if sys.byteorder == "little":
-            samples.byteswap()
-    else:
-        samples = array("B", bytes(out))
-    return width, height, samples
-
-
-def _decode_png_rgba(path):
-    """Decode an RGBA8 PNG (the §8 splatmap) to (width, height, bytes).
-
-    Same chunk walk and filter handling as _decode_png_gray at four bytes per pixel; the
-    producer writes filter 0 (None) rows, which is the fast path.
-    """
-    import struct
-    import zlib
-
-    data = open(path, "rb").read()
-    if not data.startswith(b"\x89PNG\r\n\x1a\n"):
-        raise ValueError(f"{path} is not a PNG")
-
-    pos = 8
-    width = height = depth = None
-    colour_type = None
-    idat = []
-    while pos + 8 <= len(data):
-        (length,) = struct.unpack(">I", data[pos:pos + 4])
-        tag = data[pos + 4:pos + 8]
-        payload = data[pos + 8:pos + 8 + length]
-        pos += 12 + length
-        if tag == b"IHDR":
-            width, height = struct.unpack(">II", payload[:8])
-            depth, colour_type = payload[8], payload[9]
-        elif tag == b"IDAT":
-            idat.append(payload)
-        elif tag == b"IEND":
-            break
-
-    if colour_type != 6 or depth != 8:
-        raise ValueError(f"{path}: the splatmap is RGBA8, got colour type {colour_type} at depth {depth}")
-
-    raw = zlib.decompress(b"".join(idat))
-    out = _unfilter_scanlines(raw, width, height, 4)
-
-    return width, height, bytes(out)
-
-
-class _Splat:
-    """The ripped splat weight map with its geo-reference — the game's own per-pixel ground
-    blend (rasters.json "splatmap" block), sampled here only to calibrate which channel is
-    which ground; the actual blending happens in the shader nodes."""
-
-    def __init__(self, path, block):
-        self.path = path
-        self.multiplier = float(block.get("splatMultiplier", 1.0))
-        self.power = float(block.get("splatPower", 1.0))
-        self.width, self.height, self.pixels = _decode_png_rgba(path)
-        size = block.get("size", [self.width, self.height])
-        if [self.width, self.height] != list(size):
-            raise ValueError(f"splatmap is {self.width}x{self.height}, block says {size}")
-        cx, cz = block["resolution"]
-        ox, _, oz = block["originWorld"]           # top-left texel CENTRE, row 0 north
-        self.min_x = ox - cx * 0.5
-        self.max_z = oz + cz * 0.5
-        self.cell_x = cx
-        self.cell_z = cz
-        self.area_x = cx * self.width
-        self.area_z = cz * self.height
 
     def extras_image(self):
         """The four packed paint weights as one ordinary RGBA image, `extra1..4` in R,G,B,A.
 
-        B and A of the splatmap each hold TWO 4-bit weights (audit SPLAT-6), which is how four
-        paintable grounds fit an R8G8 user splatmap. A packed byte cannot be interpolated —
-        halfway between 0x0F and 0x10 decodes to a nibble pair unrelated to either neighbour —
-        so the shader used to point-sample it and decode with FLOOR. That gave every painted
-        region, the player's beaches included, literal 3.5 m square steps: the splat texels are
-        3.5 m and nothing was ever allowed to blend between them.
-
-        Unpacking here instead makes them four plain continuous weights the GPU can filter
-        normally, so the shader takes ONE linear tap and the whole FLOOR/SUBTRACT/DIVIDE chain
-        disappears. The decode itself is already paid for — `__init__` holds the full RGBA
-        buffer — so this is two shifts and a scale.
-
-        A byte image is exact here, not a quantisation: a nibble is 0..15 and n/15 == (n·17)/255
-        for every one of the 16 values, so the 8-bit round-trip is lossless. Built in memory;
-        nothing derived is written into the bundle.
+        Unpacking in numpy rather than in shader nodes is what lets this tap be filtered
+        LINEARLY: a packed byte cannot be interpolated (halfway between 0x0F and 0x10 decodes
+        to a nibble pair unrelated to either neighbour), so the old point-sampled + FLOOR chain
+        gave every painted region — the player's beaches included — literal 3.5 m square steps.
+        The decode is bit-exact; nothing derived is written into the bundle.
         """
-        pixels = numpy.frombuffer(self.pixels, dtype=numpy.uint8).reshape(self.height,
-                                                                         self.width, 4)
-        packed_b, packed_a = pixels[:, :, 2], pixels[:, :, 3]
-        weights = numpy.stack((packed_b & 15, packed_b >> 4,
-                               packed_a & 15, packed_a >> 4), axis=-1)
         # Blender's image rows run south-to-north; the PNG's run north-to-south (§3, row 0
         # north), and SplatUV already puts V = 0 at the south edge — so the flip belongs here.
-        flat = (weights[::-1].astype(numpy.float32) * (17.0 / 255.0)).reshape(-1)
+        flat = self.extras(flip_v=True).reshape(-1)
 
         image = bpy.data.images.new("terrain_splat_extras", self.width, self.height,
                                     alpha=True, float_buffer=False)
-        # ORDER IS LOad-BEARING, and getting it wrong fails silently — the image reads back as
+        # ORDER IS LOAD-BEARING, and getting it wrong fails silently — the image reads back as
         # the blank default (RGB 0, alpha 1), which paints the whole map with extra4 and
         # nothing else. Both settings must precede the write, because changing either one
         # afterwards re-generates the buffer and discards it, and `update()` must follow it.
@@ -2630,72 +2348,16 @@ class _Splat:
         return image
 
 
-def _terrain_paths(bundle_dir):
-    """The §8 layer paths and the `rasters` geo-reference block.
+# `csiibundle.reader.terrain_paths` returns a namedtuple in exactly this unpack order:
+# (heightmap, surface_index, water, surfaces, splatmap, rasters).
+_terrain_paths = reader.terrain_paths
 
-    Reads bundle.json when it exists; otherwise the conventional layout plus the producer's
-    pre-manifest terrain/rasters.json sidecar (§8).
-    """
-    manifest_path = os.path.join(bundle_dir, "bundle.json")
-    layers = {}
-    rasters = None
-    if os.path.isfile(manifest_path):
-        with open(manifest_path, encoding="utf-8") as handle:
-            manifest = json.load(handle)
-        layers = manifest.get("layers", {})
-        rasters = manifest.get("rasters")
-
-    heightmap = os.path.join(bundle_dir, layers.get("terrain", "terrain/heightmap.png"))
-    surface = os.path.join(bundle_dir, layers.get("surfaceIndex", "terrain/surface_index.png"))
-    water = os.path.join(bundle_dir, layers.get("water", "terrain/water_level.png"))
-    surfaces_dir = os.path.join(bundle_dir, layers.get("surfaces", "terrain/surfaces/"))
-    splatmap = os.path.join(bundle_dir, layers.get("splatmap", "terrain/splatmap.png"))
-
-    if rasters is None:
-        sidecar = os.path.join(bundle_dir, "terrain", "rasters.json")
-        if os.path.isfile(sidecar):
-            with open(sidecar, encoding="utf-8") as handle:
-                rasters = json.load(handle)
-
-    return heightmap, surface, water, surfaces_dir, splatmap, rasters
-
-
-# Which ground each splatmap channel weights. The producer publishes this in the rasters
-# "splatmap".channels block (contract §8); this is the fallback for a bundle ripped before it
-# did.
-#
-# R IS DIRT AND G IS GRASS, not the other way round (audit SPLAT-3, 2026-08-10). The inverted
-# map is what "the terrain renders brown" was: it painted the whole landmass dirt-brown and the
-# whole lakebed grass-green. Two measurements fix the assignment, and slope is not one of them —
-# rock is the dirt channel's own residual, so BOTH soil weights fall with slope and the slope
-# response never distinguished them:
-#   G is exactly 0 on every texel under 1 m or more of water, and 0.5 on 45-degree cliffs,
-#     against 201.7 on flat land. Identically zero on every lakebed and every cliff = grass.
-#   R averages 249.9 underwater, rising with depth. A weight that blankets the seabed = dirt.
-#
-# B and A are NOT single grounds — each packs two 4-bit weights (audit SPLAT-6), so they are
-# named as pairs here and unpacked in the blend. The four extras are the game's four paint
-# tools: 01 Dry, 02 Lush, 03 Dirt, 04 Sand.
-_SPLAT_CHANNELS_DEFAULT = {"R": "dirt", "G": "grass",
-                           "B": "extra1:extra2", "A": "extra3:extra4", "base": "rock"}
-
-# Stand-ins for a ground whose texture the bundle does not carry, so a missing file degrades to
-# a plausible colour rather than to nothing.
-_GROUND_FALLBACK_COLOUR = {
-    "grass": (0.20, 0.30, 0.12, 1.0),
-    "dirt": (0.35, 0.28, 0.20, 1.0),
-    "rock": (0.30, 0.28, 0.26, 1.0),
-    # The four paint tools, named by the game's own locale: 01 Dry, 02 Lush, 03 Dirt, 04 Sand.
-    # Only reached when the bundle ships no texture for that ground.
-    #
-    # These are LINEAR and must sit at the same level as CS2's authored ground albedo, which is
-    # dark: measured means of the real grounds are 0.04-0.14 linear. Taken from the real
-    # textures - Grass_Dry / Forest_temperate / Light_dirt / Sand, all _temperate_01.
-    "extra1": (0.076, 0.077, 0.050, 1.0),   # 01 Dry   - Grass_Dry_Temperate_01
-    "extra2": (0.039, 0.046, 0.019, 1.0),   # 02 Lush  - Forest_temperate_01
-    "extra3": (0.118, 0.096, 0.080, 1.0),   # 03 Dirt  - Dirt_temperate_01
-    "extra4": (0.155, 0.128, 0.090, 1.0),   # 04 Sand  - Sand_Surface_01
-}
+# Which ground each splatmap channel weights, and the stand-in albedo for a ground whose
+# texture the bundle does not carry. Both live in `csiibundle.splat`, whose docstring records
+# the two measurements that fix R=dirt / G=grass and the nibble packing of B and A — the
+# inverted map is what "the terrain renders brown" was, and it looked entirely plausible.
+_SPLAT_CHANNELS_DEFAULT = splat_reader.SPLAT_CHANNELS_DEFAULT
+_GROUND_FALLBACK_COLOUR = splat_reader.GROUND_FALLBACK_COLOUR
 
 
 def _bezier_points(control, t):
@@ -3624,24 +3286,7 @@ def _clamp_shallow_bands(ground_y, band_floor_w):
     return int(hit.sum()), float(drop[hit].max())
 
 
-def _splat_mapping(block):
-    """Which ground each splatmap channel weights, and whether the bundle said so itself.
-
-    A channel the producer could not name ships as "unknown" — it does that when the theme
-    binds no such ground — and an unnamed channel is dropped from the blend rather than
-    guessed at.
-    """
-    published = (block or {}).get("channels")
-    if not isinstance(published, dict):
-        mapping, published_map = dict(_SPLAT_CHANNELS_DEFAULT), False
-    else:
-        mapping = {}
-        for key, default in _SPLAT_CHANNELS_DEFAULT.items():
-            name = published.get(key, default)
-            mapping[key] = None if (not isinstance(name, str) or name == "unknown") else name
-        published_map = True
-
-    return mapping, published_map
+_splat_mapping = splat_reader.channel_mapping
 
 
 _GROUND_FALLBACK_TILING = 8.0
@@ -5181,10 +4826,10 @@ class parked_out_of_view_layer:                                 # noqa: N801 - u
 # single -1 off the diagonal and a matching +1, so two row swaps' worth of sign, not one) —
 # which is what licenses using the glTF triangle winding as-is below: a rotation preserves
 # which face is "front", a reflection would not.
-_GLTF_TO_BLENDER = Matrix(((1, 0, 0, 0),
-                           (0, 0, -1, 0),
-                           (0, 1, 0, 0),
-                           (0, 0, 0, 1)))
+#
+# G itself is `frames.GLTF_YUP_TO_ZUP`, where the frame conventions all live; this is the same
+# matrix as a mathutils Matrix, for the call sites that stay in Blender's types.
+_GLTF_TO_BLENDER = Matrix(frames.GLTF_YUP_TO_ZUP.tolist())
 
 # Base material name -> the bpy.data.materials datablock a stock import first built for it.
 # Populated by `import_glb`'s stock-import branch after every glTF import, consulted by
@@ -5255,230 +4900,22 @@ def _record_fast_degenerate(_name, dropped, repeated):
         _FAST_DEGENERATE_ZERO_AREA_POLYS += dropped
 
 
-def _gltf_node_local_matrix(node):
-    """One glTF node's local TRS (or explicit `matrix`) as a `mathutils.Matrix`, glTF-space."""
-    if "matrix" in node:
-        m = node["matrix"]                                  # column-major, per the glTF spec
-        return Matrix((m[0:4], m[4:8], m[8:12], m[12:16])).transposed()
-    t = node.get("translation", (0.0, 0.0, 0.0))
-    r = node.get("rotation", (0.0, 0.0, 0.0, 1.0))           # glTF stores quaternions [x,y,z,w]
-    s = node.get("scale", (1.0, 1.0, 1.0))
-    translation = Matrix.Translation(Vector(t))
-    rotation = Quaternion((r[3], r[0], r[1], r[2])).to_matrix().to_4x4()
-    scale = Matrix.Diagonal((s[0], s[1], s[2], 1.0))
-    return translation @ rotation @ scale
-
-
 def _gltf_node_matrix_to_blender(matrix):
     """Conjugate a glTF-space node matrix by G so it lands in Blender's Z-up frame.
 
-    `C @ M @ C.inverted()` with `C` = `_GLTF_TO_BLENDER`. Verified against a stock import of
+    `C @ M @ C.inverted()` with `C` = `_GLTF_TO_BLENDER` — a transform changes frames by
+    conjugation, not by a left-multiply. Verified against a stock import of
     Address_Beach_Resort_Dubai.glb (root empty + one translated, multi-material child node):
     `matrix_world` of the matching mesh object came out identical to the float ULP.
     """
-    return _GLTF_TO_BLENDER @ matrix @ _GLTF_TO_BLENDER.inverted()
+    return Matrix(glb_reader.conjugate(matrix, frames.GLTF_YUP_TO_ZUP).tolist())
 
 
-def _parse_glb_arrays(path):
-    """Parse one .glb into per-node arrays, or `None` the moment anything is unproven-safe.
-
-    Returns a list of dicts, one per mesh-bearing node (a node whose glTF mesh has more than
-    one primitive — trunk + leaves, a building's wall + window materials — is one dict with
-    several material runs, exactly mirroring the single Blender object with several material
-    slots the stock importer builds for it; verified against AppleTree01.glb and
-    Address_Beach_Resort_Dubai.glb, both real bundle files with multi-primitive meshes)::
-
-        {"name": str, "matrix": Matrix (glTF-space world), "verts": (N,3) f32,
-         "normals": (N,3) f32, "uvs": (N,2) f32 | None,
-         "tris": (M,3) int, "material_runs": [(name, tri_count), ...]}
-
-    Every `return None` below is a deliberate refusal, not an oversight — the caller's answer
-    to "can't tell" is always the stock importer, never a guess. The guards enumerate every
-    documented way a glTF can be exotic; the try/except around the whole body is the same
-    answer for an undocumented one — a shape this parser did not anticipate must fall back to
-    the stock importer, not raise and take the whole city-sized import down with it.
-    """
-    try:
-        return _parse_glb_arrays_unguarded(path)
-    except Exception:                                            # noqa: BLE001 - fall back, quietly
-        return None
-
-
-def _parse_glb_arrays_unguarded(path):
-    import struct
-
-    with open(path, "rb") as handle:
-        data = handle.read()
-    if len(data) < 12 or data[:4] != b"glTF":
-        return None
-    _magic, version, total_length = struct.unpack_from("<III", data, 0)
-    if version != 2:
-        return None
-
-    json_chunk = None
-    bin_chunk = None
-    pos = 12
-    while pos + 8 <= total_length:
-        chunk_length, chunk_type = struct.unpack_from("<II", data, pos)
-        payload = data[pos + 8:pos + 8 + chunk_length]
-        if chunk_type == 0x4E4F534A:                          # 'JSON'
-            json_chunk = payload
-        elif chunk_type == 0x004E4942:                         # 'BIN\0'
-            bin_chunk = payload
-        pos += 8 + chunk_length
-    if json_chunk is None:
-        return None
-    doc = json.loads(json_chunk)
-
-    if doc.get("extensionsRequired") or doc.get("skins") or doc.get("animations"):
-        return None
-
-    meshes = doc.get("meshes", [])
-    for mesh in meshes:
-        for prim in mesh.get("primitives", []):
-            if prim.get("mode", 4) != 4 or prim.get("targets"):
-                return None
-            attrs = prim.get("attributes", {})
-            if not {"POSITION", "NORMAL"} <= set(attrs):
-                return None
-            if set(attrs) - {"POSITION", "NORMAL", "TEXCOORD_0", "TANGENT"}:
-                return None                                    # COLOR_0 or anything exotic
-            if "indices" not in prim or "material" not in prim:
-                return None
-
-    accessors = doc.get("accessors", [])
-    for accessor in accessors:
-        if accessor.get("sparse"):
-            return None
-
-    buffers = doc.get("buffers", [])
-    if len(buffers) != 1 or "uri" in buffers[0]:
-        return None                                            # embedded BIN chunk only
-    if bin_chunk is None or len(bin_chunk) < buffers[0].get("byteLength", 0):
-        return None
-    buffer_views = doc.get("bufferViews", [])
-
-    def read_accessor(index, gltf_type, component_type, np_dtype, components):
-        accessor = accessors[index]
-        if accessor.get("normalized") or accessor.get("type") != gltf_type:
-            return None
-        if accessor["componentType"] != component_type:
-            return None
-        view = buffer_views[accessor["bufferView"]]
-        if view.get("byteStride"):
-            return None                                        # interleaved, not this path
-        offset = view.get("byteOffset", 0) + accessor.get("byteOffset", 0)
-        count = accessor["count"] * components
-        if offset + count * numpy.dtype(np_dtype).itemsize > len(bin_chunk):
-            return None
-        flat = numpy.frombuffer(bin_chunk, dtype=np_dtype, count=count, offset=offset)
-        return flat.reshape(accessor["count"], components) if components > 1 else flat
-
-    def read_indices(index):
-        accessor = accessors[index]
-        if accessor.get("normalized") or accessor.get("type") != "SCALAR":
-            return None
-        component_type = accessor["componentType"]
-        np_dtype = {5123: numpy.uint16, 5125: numpy.uint32}.get(component_type)
-        if np_dtype is None:
-            return None
-        return read_accessor(index, "SCALAR", component_type, np_dtype, 1)
-
-    materials = doc.get("materials", [])
-
-    scenes = doc.get("scenes", [])
-    scene_index = doc.get("scene", 0)
-    if not scenes or scene_index >= len(scenes):
-        return None
-    nodes = doc.get("nodes", [])
-
-    mesh_nodes = []                                             # (name, world matrix, mesh index)
-
-    def walk(node_index, parent_matrix):
-        node = nodes[node_index]
-        world = parent_matrix @ _gltf_node_local_matrix(node)
-        mesh_index = node.get("mesh")
-        if mesh_index is not None:
-            if mesh_index >= len(meshes) or not meshes[mesh_index].get("primitives"):
-                raise ValueError(f"node {node_index} references an empty/missing mesh")
-            name = node.get("name") or meshes[mesh_index].get("name") or f"mesh{mesh_index}"
-            mesh_nodes.append((name, world, mesh_index))
-        for child_index in node.get("children", ()):
-            walk(child_index, world)
-
-    for root_index in scenes[scene_index].get("nodes", ()):
-        walk(root_index, Matrix.Identity(4))
-
-    result = []
-    for name, world, mesh_index in mesh_nodes:
-        prims = meshes[mesh_index]["primitives"]
-
-        # A mesh's primitives can share ONE vertex-attribute buffer — every primitive pointing
-        # at the very same POSITION/NORMAL/TEXCOORD_0 accessors and differing only in which
-        # face range its `indices` selects — rather than each owning independent geometry.
-        # Verified against two real bundle files: AppleTree01.glb (trunk + leaves) and
-        # NA_CommercialHigh01_L4_3x4.glb (wall + windows) both do this. Reading the attribute
-        # accessors once per unique POSITION accessor, keyed by its index, handles both that
-        # case and the "each primitive has its own buffer" case uniformly — the latter is just
-        # every POSITION accessor index happening to be unique.
-        blocks = {}                                              # POSITION accessor index -> …
-        block_order = []
-        for prim in prims:
-            attrs = prim["attributes"]
-            pos_index = attrs["POSITION"]
-            pairing = (attrs.get("NORMAL"), attrs.get("TEXCOORD_0"))
-            if pos_index in blocks:
-                if blocks[pos_index][3] != pairing:
-                    return None                                  # same POSITION, different NORMAL/UV
-                continue
-            verts = read_accessor(pos_index, "VEC3", 5126, numpy.float32, 3)
-            normals = read_accessor(attrs["NORMAL"], "VEC3", 5126, numpy.float32, 3)
-            if verts is None or normals is None or len(verts) != len(normals):
-                return None
-            uvs = None
-            if "TEXCOORD_0" in attrs:
-                uvs = read_accessor(attrs["TEXCOORD_0"], "VEC2", 5126, numpy.float32, 2)
-                if uvs is None or len(uvs) != len(verts):
-                    return None
-            blocks[pos_index] = (verts, normals, uvs, pairing)
-            block_order.append(pos_index)
-
-        has_uv = blocks[block_order[0]][2] is not None
-        if any((blocks[i][2] is not None) != has_uv for i in block_order):
-            return None                                          # mixed UV presence in one mesh
-
-        offsets, cursor = {}, 0
-        for pos_index in block_order:
-            offsets[pos_index] = cursor
-            cursor += len(blocks[pos_index][0])
-
-        tri_parts, runs = [], []
-        for prim in prims:
-            indices = read_indices(prim["indices"])
-            if indices is None or len(indices) % 3 != 0:
-                return None
-            material_index = prim["material"]
-            if material_index >= len(materials):
-                return None
-            material_name = materials[material_index].get("name")
-            if not material_name:
-                return None
-
-            offset = offsets[prim["attributes"]["POSITION"]]
-            tri_parts.append(indices.astype(numpy.int64).reshape(-1, 3) + offset)
-            runs.append((material_name, len(indices) // 3))
-
-        result.append({
-            "name": name,
-            "matrix": world,
-            "verts": numpy.concatenate([blocks[i][0] for i in block_order]),
-            "normals": numpy.concatenate([blocks[i][1] for i in block_order]),
-            "uvs": numpy.concatenate([blocks[i][2] for i in block_order]) if has_uv else None,
-            "tris": numpy.concatenate(tri_parts),
-            "material_runs": runs,
-        })
-
-    return result
+# The container parse itself is `csiibundle.glb.parse_glb`: it returns per-node numpy arrays
+# with the node's world matrix in glTF space, or `None` the moment anything about the file is
+# a shape it has not proven it reads correctly. Every one of those refusals is deliberate, and
+# this caller's answer to `None` is always the stock importer, never a guess.
+_parse_glb_arrays = glb_reader.parse_glb
 
 
 def _fast_import_glb(path):
@@ -5528,8 +4965,7 @@ def _fast_import_glb(path):
             normals = node["normals"][:, (0, 2, 1)] * axis_flip
             uv_layers = None
             if node["uvs"] is not None:
-                loop_uv = node["uvs"][node["tris"].ravel()]
-                loop_uv = numpy.stack([loop_uv[:, 0], 1.0 - loop_uv[:, 1]], axis=1)  # glTF v-flip
+                loop_uv = glb_reader.glb_uv_to_texture_uv(node["uvs"][node["tris"].ravel()])
                 uv_layers = {"UVMap": loop_uv}
             material_runs = [(_KNOWN_MATERIALS[name], count)
                              for name, count in node["material_runs"]]

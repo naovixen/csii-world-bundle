@@ -1,19 +1,21 @@
 """PNG reference-decoder check against PIL, on the real bundle rasters plus synthetic ones.
 
-The harness (`tools/blender_import_bundle.py`) decodes contract §8 terrain PNGs itself rather
-than through Blender's image loader, so no colour-management transform touches the samples.
-This test extracts the decoder functions out of that source (it imports `bpy` at module scope,
-so it cannot be imported directly under system Python) and checks them against PIL, which is
-ground truth here.
+`csiibundle.png` decodes the contract §8 terrain rasters itself rather than through an image
+library, so that nothing colour-manages, premultiplies or renormalises samples that are
+NUMBERS — elevation, water level, surface ids, packed splat weights. This test checks that
+decoder against PIL, which is ground truth here.
+
+It used to regex the functions out of `blender_import_bundle.py`, which imports `bpy` at module
+scope and so cannot be imported under system Python. Now that they live in the package it just
+imports them, and the test breaks honestly if a name moves instead of silently matching nothing.
 
 The real bundle rasters are all written by the producer with filter 0 (None) on every row —
 confirmed by histogram below — so they only exercise the None fast path. Sub(1), Up(2),
 Average(3) and Paeth(4) are exercised by hand-built synthetic PNGs instead (see
-`_build_synthetic_png`), one per bit depth/channel-count combination the harness supports
+`_build_synthetic_png`), one per bit depth/channel-count combination the decoder supports
 (gray8, gray16, rgba8), each cycling through all five filter kinds row by row.
 """
 import os
-import re
 import struct
 import sys
 import tempfile
@@ -22,21 +24,22 @@ import zlib
 import numpy
 from PIL import Image
 
-SRC = os.path.join(os.path.dirname(__file__), "blender_import_bundle.py")
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from csiibundle import png as png_reader
+
 BUNDLE = os.path.expandvars(r"%USERPROFILE%\AppData\LocalLow\Colossal Order"
-                            r"\Cities Skylines II\ModsData\Carto\spike")
+                            r"\Cities Skylines II\ModsData\Carto")
 # Synthetic PNGs are throwaway test fixtures — keep them out of the repo tree entirely rather
 # than relying on .gitignore or careful `git add`.
 SCRATCH = os.path.join(tempfile.gettempdir(), "carto_test_png_decode")
 
-source = open(SRC, encoding="utf-8").read()
-namespace = {"zlib": zlib, "numpy": numpy, "struct": struct, "os": os, "sys": sys}
-for name in ("_unfilter_slow", "_unfilter_scanlines", "_decode_png_gray", "_decode_png_rgba"):
-    # Functions are separated by blank-line-delimited top-level `def`s; stop at the next one
-    # (or end of file) rather than assuming a trailing `def`/`class` always follows.
-    match = re.search(rf"\ndef {name}\(.*?(?=\n\ndef |\n\nclass |\Z)", source, re.S)
-    assert match, f"{name} not found in harness source"
-    exec(compile(match.group(0), f"<{name}>", "exec"), namespace)
+# Keyed by the names the cases below use, so a rename in the package fails here loudly.
+namespace = {
+    "_unfilter_slow": png_reader.unfilter_slow,
+    "_unfilter_scanlines": png_reader.unfilter_scanlines,
+    "_decode_png_gray": png_reader.decode_png_gray,
+    "_decode_png_rgba": png_reader.decode_png_rgba,
+}
 
 failures = 0
 

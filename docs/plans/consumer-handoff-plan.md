@@ -3,9 +3,9 @@
 **Goal:** make the CS2 World Bundle consumable by someone who has never read this repo, so a
 BeamNG level builder (or any other consumer) can be written against the bundle alone.
 
-**Status 2026-08-12: phases H1–H4 are closed and nothing is open.** Next step is **H5**, the
-first of five refactor steps that pull the reconstruction logic out of the Blender script into a
-reusable package.
+**Status 2026-08-12: H1–H5 are closed and nothing is open.** H5 landed the first six modules of
+`tools/csiibundle/` — the package a consumer imports — and the Blender script is now an adapter
+over them. Next is **H6**, the second of the five refactor steps.
 
 This file supersedes every dated handoff in this folder; they stay on disk as the record of how
 each conclusion was reached. The contract itself lives in `docs/bundle-schema.md`, the
@@ -56,22 +56,23 @@ reaches the mods folder. Close the game before a build that must ship.
 
 ---
 
-## 2. Next: H5 — extract `tools/cs2bundle/`
+## 2. In progress: H5–H9 — extract `tools/csiibundle/`
 
-`tools/blender_import_bundle.py` is 6,269 lines, and roughly ten algorithms a consumer needs are
-buried in it. H5–H9 move the engine-neutral half into a package that never imports `bpy`, so a
-BeamNG builder can `import cs2bundle` and the Blender script becomes a thin adapter over it.
+`tools/blender_import_bundle.py` was 6,269 lines, and roughly ten algorithms a consumer needs
+were buried in it. H5–H9 move the engine-neutral half into a package that never imports `bpy`,
+so a BeamNG builder can `import csiibundle` and the Blender script becomes a thin adapter over
+it.
 
 **Module layout**
 
 ```
-tools/cs2bundle/
-  reader.py    manifest, layer paths, JSONL iteration, catalogue loaders
-  frames.py    instance_matrix, LH-Y-up conventions, RH-Z-up conversion
-  glb.py       GLB parsing, node flattening, degenerate-face policy
-  png.py       16-bit PNG decode
-  splat.py     channel map, packed-nibble decode, composite-over-base
-  colour.py    the colour derivation (tools/colour_model.py, less its Blender locator)
+tools/csiibundle/
+  reader.py    manifest, layer paths, JSONL iteration, catalogue loaders    H5 ✅
+  frames.py    instance_matrix, LH-Y-up conventions, RH-Z-up conversion     H5 ✅
+  glb.py       GLB parsing, node flattening, degenerate-face policy         H5 ✅
+  png.py       16-bit PNG decode                                            H5 ✅
+  splat.py     channel map, packed-nibble decode, composite-over-base       H5 ✅
+  colour.py    the colour derivation (tools/colour_model.py, less its Blender locator)  H5 ✅
   bezier.py    curve evaluation, cutting, arc tables
   lanes.py     GetTileCount port, clip windows, lane bend, hang drop
   decals.py    decal quads/rows/stations/lattice
@@ -84,13 +85,26 @@ tools/cs2bundle/
 
 **Order — one commit per step, A/B render gate on each**
 
-| step | moves | also in the same commit |
-|---|---|---|
-| **H5** | reader, frames, glb, png, splat, colour | repoint `test_png_decode.py` to real imports |
-| H6 | bezier, lanes, decals | rewrite `test_decal_rows.py` to import the package |
-| H7 | terrain, areas | |
-| H8 | drape (harness keeps a ~15-line BVH adapter) | add `HeightfieldSurface` |
-| H9 | networks, face generation, area driver loop | riskiest; may be 3 commits |
+| step | moves | also in the same commit | status |
+|---|---|---|---|
+| **H5** | reader, frames, glb, png, splat, colour | repoint `test_png_decode.py` to real imports | **done** |
+| H6 | bezier, lanes, decals | rewrite `test_decal_rows.py` to import the package | next |
+| H7 | terrain, areas | | |
+| H8 | drape (harness keeps a ~15-line BVH adapter) | add `HeightfieldSurface` | |
+| H9 | networks, face generation, area driver loop | riskiest; may be 3 commits | |
+
+**The package is named `csiibundle`, not `cs2bundle`** — the earlier draft of this plan had it
+wrong and every reference here is now the real name.
+
+**H5 as built.** `colour_model.py` stays on disk as the Blender/CLI adapter — the locator, the
+`DEFAULT_BUNDLE` path, `REFERENCES` and `main()` — re-exporting the derivation from
+`csiibundle.colour`, so `python tools/colour_model.py --explain` and `probe_point.py`'s
+`import colour_model` both keep working unchanged. `test_splat_extras.py` was repointed too (it
+regexed the same PNG decoders out of the harness) and gained a check 0 that scores
+`Splat.extras` against its own reference decode, so the rest of that test is about the format
+rather than about itself. Its `BUNDLE` constant and `test_png_decode.py`'s both still pointed at
+the retired `Carto/spike/` subfolder, which meant the real-raster half of `test_png_decode` had
+been silently skipping for months; fixed, and all five real rasters now decode PIL-exact.
 
 **Running the gate.** Take the baseline *before* the first move, from the bundle as it stands,
 and keep the same region and camera for every step:
@@ -114,18 +128,34 @@ python tools/ab_compare.py --counts base.log step.log   # log-count diff, second
 
 `ab_compare` strips elapsed times before diffing counts, so timing jitter never fails a run.
 
+**The pixel gate has a noise floor, and it is not zero.** Rendering *the same* `.blend` twice
+gives `max=1` — EEVEE is not bit-deterministic — so "pixel-identical" cannot mean a zero diff
+and a step reporting `max=1` or `2` has proved nothing on its own. Where the answer matters,
+compare the **scene** instead of a render of it: dump every object's `matrix_world` and every
+mesh's vertex/loop digest from both `.blend` files and diff those. H5 did, and it is the reason
+its result is a fact rather than a hope. The dump script is fifteen lines; write it again when
+H6 needs it.
+
 **Rules for every step**
 
-1. `cs2bundle` never imports `bpy` at module scope — `python -c "import cs2bundle"` under system
+1. `csiibundle` never imports `bpy` at module scope — `python -c "import csiibundle"` under system
    Python is part of the gate. (`colour_model.py` is already clean except `blender_config_path()`,
    which is a Blender *locator*, not colour maths — leave it in the harness.)
-2. **The A/B render must be pixel-identical.** A pure refactor that moves pixels is a bug.
-   Investigate the diff; never widen the tolerance.
+2. **The A/B render must be pixel-identical to within the noise floor above**, and where it is
+   not obviously so, the geometry dump must be *exactly* identical. A pure refactor that moves
+   pixels is a bug. Investigate the diff; never widen the tolerance.
+   *H5's one accepted exception:* 100 of 621 dumped lines differ, all of them object
+   `matrix_world` rotation terms, by at most **2.4e-07** — two float32 ULPs, about 7 µm across a
+   building. Zero mesh lines and zero structural lines differ. The cause is understood and
+   one-directional: `frames.instance_matrix` composes in float64 and truncates once at
+   assignment, where mathutils composed every intermediate in float32, so the new numbers are
+   the *more* accurate ones. Anything larger than this, or any difference in a MESH line, is a
+   real defect.
 3. `test_decal_rows.py` and `test_png_decode.py` regex-extract functions from the harness and
    break the moment those functions move. Repoint them in the *same* commit.
 4. Dependencies: package = stdlib + numpy. `validate_bundle.py` stays stdlib-only.
 5. Import pattern, because Blender's `--python` does not add `tools/` to `sys.path`:
-   `sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))` then `import cs2bundle`.
+   `sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))` then `import csiibundle`.
 6. Tag each constant `CONTRACT` (lift-ladder order, tile-count −0.0001 epsilon,
    N = L/max(1,size.z), zero-instance decal rule, quaternion `[x,y,z,w]`, `diag(-1,1,1)`) or
    `TUNED` (lift magnitudes, tolerances). Module docstrings cite the spec § they implement.
@@ -202,7 +232,7 @@ than counted as proven.
 
 | phase | what it delivers |
 |---|---|
-| **H5–H9** | extract `tools/cs2bundle/` — see §2 |
+| **H5–H9** | extract `tools/csiibundle/` — see §2 |
 | **H10** | **Schema completion.** Ten documented layers still have no JSON Schema: `lanes`, `laneprefabs`, `colors`, `lights`, `areas`, `areaprefabs`, `clipvolumes`, `warnings`, `terrain/surfaces/index`, and **`grading`** (now a declared layer, and it gained `fog`). Validator gains structural checks plus the cross-file joins, staying stdlib-only. Then extend `make_example_bundle.py` to exercise the layers it currently skips, and add negative cases per schema |
 | **H11** | **Consumer docs.** `docs/consumer-guide.md` (layer tour, pipeline order and its two hard dependencies, must-implement tiers mapped to modules, the drape protocol, CONTRACT-vs-TUNED constants, a worked example tracing one instance, an LH-Y-up → RH-Z-up appendix); `docs/consumer-caveats.md`; `tools/README.md`; `docs/bundle-changelog.md` |
 | **H12** | **C# refactor** of the ripper additions — behaviour-preserving, no output-shape change. Gate is a clean build plus `/code-review`; proof rides H14 |
@@ -256,7 +286,7 @@ at 32 each, `fog` present, `COLLAPSED:` clean, tiling unchanged, validator VALID
 | H2 | 2 | Phase 2 | repo hygiene |
 | H3 | 3 | — | audit gap-close |
 | H4 | 4 | — | terrain colour |
-| H5–H9 | 5–9 | Phases 3–7 | extract `cs2bundle` |
+| H5–H9 | 5–9 | Phases 3–7 | extract `csiibundle` |
 | H10 | 10 | Phase 8 | schema completion |
 | H11 | 11 | Phase 9 | consumer docs |
 | H12 | 12 | Phase 10 | C# refactor |

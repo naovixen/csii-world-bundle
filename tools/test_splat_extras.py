@@ -7,9 +7,12 @@ packed byte cannot be interpolated, because halfway between 0x0F and 0x10 decode
 pair unrelated to either neighbour. The consequence was that every painted region — the
 player's beaches included — rendered as literal 3.5 m squares, the splatmap's own texel size.
 
-`_Splat.extras_image` moves the unpacking to numpy at import, into an ordinary RGBA image the
-GPU can filter normally. This test pins the two claims that change rests on:
+`csiibundle.splat.Splat.extras` moves the unpacking to numpy at load, and the harness's
+`_Splat.extras_image` wraps it in an ordinary RGBA image the GPU can filter normally. This test
+pins the claims that change rests on:
 
+  0. The shipped decode agrees with this file's own independent reading of the format, so that
+     everything below is a statement about the bundle rather than about the test.
   1. The decode is right — it reproduces the independently-shipped `terrain/user_splatmap.png`,
      which carries the same four weights packed into a different pair of channels (R and G).
      Two different packings agreeing is evidence about the decode; re-deriving one from the
@@ -28,22 +31,17 @@ reverts to blank.
 """
 import json
 import os
-import re
 import sys
 
 import numpy
 
-SRC = os.path.join(os.path.dirname(__file__), "blender_import_bundle.py")
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from csiibundle import png as png_reader
+from csiibundle import splat as splat_reader
+
 BUNDLE = os.path.expandvars(r"%USERPROFILE%\AppData\LocalLow\Colossal Order"
                             r"\Cities Skylines II\ModsData\Carto")
 
-source = open(SRC, encoding="utf-8").read()
-H = {"numpy": numpy, "sys": sys}
-exec(compile("import struct, zlib", "<imports>", "exec"), H)
-for name in ("_unfilter_slow", "_unfilter_scanlines", "_decode_png_rgba"):
-    match = re.search(rf"\ndef {name}\(.*?(?=\n\ndef |\n\nclass |\Z)", source, re.S)
-    assert match, f"{name} not found in harness source"
-    exec(compile(match.group(0), f"<{name}>", "exec"), H)
 
 
 def unpack(byte_plane):
@@ -66,20 +64,33 @@ def main():
         rasters = json.load(handle).get("rasters", {})
     multiplier = float(rasters.get("splatmap", {}).get("splatMultiplier", 1.0))
 
-    width, height, raw = H["_decode_png_rgba"](splat_path)
+    width, height, raw = png_reader.decode_png_rgba(splat_path)
     pixels = numpy.frombuffer(raw, dtype=numpy.uint8).reshape(height, width, 4)
     extra1, extra2 = unpack(pixels[:, :, 2])
     extra3, extra4 = unpack(pixels[:, :, 3])
     extras = numpy.stack((extra1, extra2, extra3, extra4), axis=-1)
 
     failures = 0
+
+    # 0. The shipped decode must agree with the reference one written out above. `unpack` is
+    # this file's own two-line reading of the format; `Splat.extras` is what every consumer
+    # actually calls. Comparing them is what makes the rest of this test about the format
+    # rather than about itself.
+    shipped = splat_reader.Splat(splat_path, rasters.get("splatmap", {})).extras()
+    worst = float(numpy.abs(shipped.astype(numpy.float64) - extras).max())
+    if worst > 1e-6:
+        print(f"FAIL csiibundle.splat.Splat.extras disagrees with the reference decode "
+              f"by {worst:.6f}")
+        failures += 1
+    else:
+        print("PASS csiibundle.splat.Splat.extras matches the reference nibble decode")
     painted = (extras.max(axis=2) > 0)
     print(f"splatmap {width}x{height}; {painted.mean() * 100:.2f}% of the map carries paint; "
           "means " + ", ".join(f"extra{i + 1} {extras[:, :, i].mean():.4f}" for i in range(4)))
 
     # 1. The independent packing must agree, channel for channel.
     if os.path.isfile(user_path):
-        uw, uh, uraw = H["_decode_png_rgba"](user_path)
+        uw, uh, uraw = png_reader.decode_png_rgba(user_path)
         if (uw, uh) != (width, height):
             print(f"FAIL user_splatmap is {uw}x{uh}, splatmap {width}x{height}")
             failures += 1
