@@ -3350,9 +3350,15 @@ def _snap_hole_boundary(verts, vid, used_grid, cut_face_grid, refs_w, strip_geo,
         pushed OUT to that same wall — within `_CLIP_SNAP_REACH_CELLS`, which is what
         distinguishes a vertex bounded by the band's wall from one bounded by its roof or
         floor in the middle of a wide prism;
-      * a rim vertex over the strip but out of the band is clamped in height only: above the
-        ceiling it drops to `lane + top` (the portal-roof iso-edge), below the floor it rises
-        to `lane + bottom`.
+      * a rim vertex over the strip but above the band is clamped in height only: it drops to
+        `lane + top`, the portal-roof iso-edge.
+
+    **The snap moves a vertex sideways, never upward.** Every height it assigns is a minimum
+    against the height the vertex already had. That invariant is what makes the lateral move
+    safe next to a vertical heightmap step, and its absence was the "deep nested road" defect
+    of 2026-08-12 — see the `onto` branch for the measurement. Band heights are read at the
+    vertex's own LATERAL position between the two curves rather than at their mean, because the
+    curves tilt across the road's width (`_lane_ramp` documents that in full).
 
     Kept faces then stretch to the exact clip boundary, the way the game's surviving pixels end
     at it. Verts cut only by `area` records (ref −1) stay — an authored clip surface has no
@@ -3476,7 +3482,13 @@ def _snap_hole_boundary(verts, vid, used_grid, cut_face_grid, refs_w, strip_geo,
         l1 = left_pts[i]
         r0 = right_pts[i - 1]
         r1 = right_pts[i]
-        lane_y = (lane[i - 1] + lane[i]) * 0.5
+        # The band's height at each SIDE, kept apart rather than averaged. The two curves tilt
+        # across the road's width and the snap is a lateral operation, so it interpolates
+        # between them once the wall distances are known — `_lane_ramp` makes the same
+        # correction to the rasteriser, and testing a vertex against a horizontal slab at the
+        # mean is what put a whole carriageway edge outside its own band there.
+        lane_left = (l0[:, 1] + l1[:, 1]) * 0.5
+        lane_right = (r0[:, 1] + r1[:, 1]) * 0.5
         px, pz, py = x[sel], z[sel], y[sel]
 
         def closest(a, b):
@@ -3493,6 +3505,9 @@ def _snap_hole_boundary(verts, vid, used_grid, cut_face_grid, refs_w, strip_geo,
         side_l = (l1[:, 0] - l0[:, 0]) * (pz - l0[:, 2]) - (l1[:, 2] - l0[:, 2]) * (px - l0[:, 0])
         side_r = (r1[:, 0] - r0[:, 0]) * (pz - r0[:, 2]) - (r1[:, 2] - r0[:, 2]) * (px - r0[:, 0])
         between = numpy.sign(side_l) != numpy.sign(side_r)
+        # The band's own height at THIS vertex: its lateral position follows straight from the
+        # two wall distances, so the band tracks the road's crossfall the way the prism does.
+        lane_y = lane_left + (lane_right - lane_left) * (ld / numpy.maximum(ld + rd, 1e-9))
 
         new_x, new_z, new_y = px.copy(), pz.copy(), py.copy()
         finite_top = numpy.isfinite(numpy.full_like(py, top))
@@ -3505,13 +3520,13 @@ def _snap_hole_boundary(verts, vid, used_grid, cut_face_grid, refs_w, strip_geo,
         # exactly the vertex that must not be dragged sideways across a road.
         in_band = between & (py > lane_y + bottom) & (~finite_top | (py < lane_y + top))
         push = in_band & (numpy.minimum(ld, rd) <= reach)
-        # Over the strip, out of the band: clamp to the band's iso surfaces instead (roof for
-        # portals, floor rarely).
+        # Over the strip, above the band: drop to the roof, the portal-mouth iso-edge. There is
+        # deliberately no matching raise from below the floor — terrain under a band's floor is
+        # terrain the game keeps and the road hides, and lifting it to `lane + bottom` would
+        # break the never-upward invariant for nothing.
         hold = between & ~push
         roof = hold & finite_top & (py > lane_y + top)
         new_y[roof] = (lane_y + top)[roof]
-        floor_hit = hold & (py < lane_y + bottom)
-        new_y[floor_hit] = (lane_y + bottom)[floor_hit]
         # Onto the nearer side polyline, height from the ground there. Vertices outside the
         # strip come IN; in-band rim vertices go OUT. Both land the kept terrain's edge on the
         # prism wall, which is where the game's surviving pixels end.
@@ -3523,10 +3538,30 @@ def _snap_hole_boundary(verts, vid, used_grid, cut_face_grid, refs_w, strip_geo,
         new_x[use_right] = rxp[use_right]
         new_z[use_right] = rzp[use_right]
         if onto.any():
-            gy = bilinear_ground(new_x[onto], new_z[onto])
-            lo = (lane_y + bottom)[onto]
-            hi = (lane_y + top)[onto] if numpy.isfinite(top) else numpy.full_like(gy, numpy.inf)
-            new_y[onto] = numpy.clip(gy, lo, hi)
+            # Resample the ground at the destination, but never let the move LIFT the vertex.
+            #
+            # This is the vertical-step fix, and the reason it has to be a minimum rather than a
+            # smarter interpolation. `bilinear_ground` is only meaningful where the heightmap is
+            # smooth; a trench wall is not. At `(1031.6, 6525.0)` the game's own heightmap rises
+            # 12.3 m — `ElevationLimit * 3` exactly — across ONE 3.5 m cell, so the interpolant
+            # between those two texels sweeps the entire 12.3 m and a destination a metre either
+            # way of the wall reads anywhere in it. Instrumented on that trench: a rim vertex
+            # sitting on the trench FLOOR at 528.23 was pushed 3.05 m sideways and resampled to
+            # 533.58 — lifted 5.35 m onto the wall, over a carriageway at 528.3 — and a second
+            # went up 5.91 m. The sub-patch bilinear over those moved corners then dragged the
+            # surface to 530.3, standing 1.96 m proud across 3.75 m of road: the "deep nested
+            # road" report. Disabling the snap outright collapsed it to +0.09 m, which is how
+            # the branch was identified rather than guessed at.
+            #
+            # Taking the minimum keeps every case the resample was for — a vertex pulled IN from
+            # outside is coming DOWN into the cutting, so the resampled height wins and the rim
+            # still follows the wall — while a push that would climb the wall simply keeps the
+            # height it already had, which is by construction a real height of the ground it
+            # came from. Low is always safe here: the road hides it.
+            gy = numpy.minimum(bilinear_ground(new_x[onto], new_z[onto]), py[onto])
+            if numpy.isfinite(top):
+                gy = numpy.minimum(gy, (lane_y + top)[onto])
+            new_y[onto] = gy
 
         target_x[sel] = new_x
         target_z[sel] = new_z
