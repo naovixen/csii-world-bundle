@@ -3,9 +3,10 @@
 **Goal:** make the CS2 World Bundle consumable by someone who has never read this repo, so a
 BeamNG level builder (or any other consumer) can be written against the bundle alone.
 
-**Status 2026-08-12: H1–H5 are closed and nothing is open.** H5 landed the first six modules of
-`tools/csiibundle/` — the package a consumer imports — and the Blender script is now an adapter
-over them. Next is **H6**, the second of the five refactor steps.
+**Status 2026-08-12: H1–H9 are closed and nothing is open.** `tools/csiibundle/` exists: 14
+modules, no `bpy` anywhere in it, and `tools/blender_import_bundle.py` is down from 6,269 lines
+to 3,707 and is now an adapter over the package rather than the only copy of the reconstruction.
+Next is **H10**, schema completion.
 
 This file supersedes every dated handoff in this folder; they stay on disk as the record of how
 each conclusion was reached. The contract itself lives in `docs/bundle-schema.md`, the
@@ -56,7 +57,7 @@ reaches the mods folder. Close the game before a build that must ship.
 
 ---
 
-## 2. In progress: H5–H9 — extract `tools/csiibundle/`
+## 2. Done: H5–H9 — `tools/csiibundle/`
 
 `tools/blender_import_bundle.py` was 6,269 lines, and roughly ten algorithms a consumer needs
 were buried in it. H5–H9 move the engine-neutral half into a package that never imports `bpy`,
@@ -73,14 +74,14 @@ tools/csiibundle/
   png.py       16-bit PNG decode                                            H5 ✅
   splat.py     channel map, packed-nibble decode, composite-over-base       H5 ✅
   colour.py    the colour derivation (tools/colour_model.py, less its Blender locator)  H5 ✅
-  bezier.py    curve evaluation, cutting, arc tables
-  lanes.py     GetTileCount port, clip windows, lane bend, hang drop
-  decals.py    decal quads/rows/stations/lattice
-  drape.py     ProjectionSurface protocol + a numpy heightfield raycaster
-  terrain.py   clip rasterisation, hole snap, lattice, face generation
-  areas.py     area triangle conformance
-  networks.py  ribbon/mitre ring math
-  tints.py     colorSet x colorMask as data + a CPU reference apply
+  bezier.py    curve evaluation, cutting, arc tables   ✅
+  lanes.py     GetTileCount port, clip windows, lane bend, hang drop   ✅
+  decals.py    decal quads/rows/stations/lattice   ✅
+  drape.py     ProjectionSurface protocol + a numpy heightfield raycaster   ✅
+  terrain.py   clip rasterisation, hole snap, lattice, face generation   ✅
+  areas.py     area triangle conformance   ✅
+  networks.py  ribbon/mitre ring math   ✅
+  tints.py     colorSet x colorMask as data + a CPU reference apply   ✅
 ```
 
 **Order — one commit per step, A/B render gate on each**
@@ -88,10 +89,10 @@ tools/csiibundle/
 | step | moves | also in the same commit | status |
 |---|---|---|---|
 | **H5** | reader, frames, glb, png, splat, colour | repoint `test_png_decode.py` to real imports | **done** |
-| H6 | bezier, lanes, decals | rewrite `test_decal_rows.py` to import the package | next |
-| H7 | terrain, areas | | |
-| H8 | drape (harness keeps a ~15-line BVH adapter) | add `HeightfieldSurface` | |
-| H9 | networks, face generation, area driver loop | riskiest; may be 3 commits | |
+| **H6** | bezier, lanes, decals | rewrote `test_decal_rows.py`, `test_clip_cut.py`, `test_drape_pick.py` | **done** |
+| **H7** | terrain, areas | | **done** |
+| **H8** | drape (harness keeps its BVH adapter) | added `HeightfieldSurface` + `test_heightfield.py` | **done** |
+| **H9** | networks, tints, terrain lattice + face generation, area driver loop | three commits, as expected | **done** |
 
 **The package is named `csiibundle`, not `cs2bundle`** — the earlier draft of this plan had it
 wrong and every reference here is now the real name.
@@ -131,10 +132,25 @@ python tools/ab_compare.py --counts base.log step.log   # log-count diff, second
 **The pixel gate has a noise floor, and it is not zero.** Rendering *the same* `.blend` twice
 gives `max=1` — EEVEE is not bit-deterministic — so "pixel-identical" cannot mean a zero diff
 and a step reporting `max=1` or `2` has proved nothing on its own. Where the answer matters,
-compare the **scene** instead of a render of it: dump every object's `matrix_world` and every
-mesh's vertex/loop digest from both `.blend` files and diff those. H5 did, and it is the reason
-its result is a fact rather than a hope. The dump script is fifteen lines; write it again when
-H6 needs it.
+compare the **scene** instead of a render of it: dump every object's `matrix_world`, every mesh's
+vertex/loop/UV digest and every `FLOAT4X4` attribute from both `.blend` files and diff those.
+Every H5–H9 step did, and it is the reason those results are facts rather than hopes. The dump
+script is thirty lines.
+
+**THE STANDARD REGION DOES NOT EXERCISE EVERYTHING, and this bit almost every step.** The
+interchange A/B was byte-identical for four consecutive steps that had *not yet been checked* on
+the path they actually changed. What the region misses, and what each needs instead:
+
+| path | why the region misses it | the run that covers it |
+|---|---|---|
+| rigid-tile instancing | `--lane-markings` skips roadside furniture | `--kinds none --lanes` |
+| area conformance | no `--areas` | `--kinds building --areas --terrain --center downtown` |
+| `ribbon` (§5 centerline form) | its four categories — pipe, cable, waterway, taxiway — are all **off by default**, and every in-region record is mesh form | `--kinds none --networks --net-categories all` |
+| per-instance tints | `--kinds none` places no instances | `--kinds building,tree,prop` + dump `cs2_color*` |
+| coarse quads, transition fans, the sub-cut | a region import is **stride 1** and native everywhere | a full-map `--kinds none --terrain` (stride 4) |
+| `HeightfieldSurface` | the harness keeps its BVH and never calls it | `tools/test_heightfield.py` |
+
+Before gating a step, ask which of these it touched, and run that one too.
 
 **Rules for every step**
 

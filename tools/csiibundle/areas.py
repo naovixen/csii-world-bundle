@@ -120,3 +120,87 @@ def conform_triangle(tri, cell, sample, counters):
         work.append(((ca, bc, c), depth + 1))
         work.append(((ab, bc, ca), depth + 1))
     return out
+
+
+def memoised_sampler(surface, dedup_mm=DEDUP_MM):
+    """A ground lookup over a `csiibundle.drape.ProjectionSurface`, memoised on rounded position.
+
+    Conformance re-samples the same ground constantly — every split shares its edge midpoints
+    with a neighbour, and adjacent area records share their boundary nodes — so the memo is what
+    makes the layer affordable. Quantising to a millimetre is far below anything the answer
+    depends on and turns "the same point" into a dict key. Returns a callable `(x, y) -> height
+    or None`, Z-up like the surface itself.
+    """
+    cache = {}
+    scale = 1000.0 / dedup_mm
+
+    def ground_at(x, y):
+        key = (round(x * scale), round(y * scale))
+        if key not in cache:
+            cache[key] = surface.height(x, y) if surface is not None else None
+        return cache[key]
+
+    return ground_at
+
+
+def build_pieces(records, cell, sample, center=None, radius=None, lift=AREA_LIFT,
+                 progress=None):
+    """Conform every area record into Z-up triangle soup, grouped by prefab.
+
+    `records` is an iterable of §8b area records; `sample` is a `(x, y) -> height or None`
+    ground lookup (see `memoised_sampler`); `cell` is the terrain grid's own spacing.
+    `center`/`radius` filter by the area's centroid in bundle-frame metres.
+
+    Returns `(pieces, stats)`. `pieces` is `{prefab: {"verts": [...], "faces": [...]}}` with
+    vertices already in the Z-up frame and lifted by `lift`; `stats` carries the counts a caller
+    reports, plus `counters` from the conformance itself.
+
+    **Two frame details, and both matter.** Bundle `(x, y, z)` becomes Z-up `(x, z, y)`, which
+    flips handedness (§2.2), so every triangle's winding is REVERSED to keep it facing up — an
+    area drawn face-down is invisible or black depending on the renderer. And a node whose ground
+    lookup misses keeps its authored height rather than being dropped, so an area at the edge of
+    an imported region degrades to flat instead of to nothing.
+    """
+    pieces = {}
+    stats = {"placed": 0, "skipped_region": 0, "dropped_bad": 0, "missed": 0,
+             "source_tris": 0, "painted_area": 0.0,
+             "counters": {"unconformed": 0, "unconformed_area": 0.0, "worst": 0.0}}
+    counters = stats["counters"]
+
+    for record in records:
+        nodes = record.get("nodes") or []
+        triangles = record.get("triangles") or []
+        if len(nodes) < 3 or not triangles:
+            continue
+
+        if radius is not None and center is not None:
+            cx = sum(n[0] for n in nodes) / len(nodes)
+            cz = sum(n[2] for n in nodes) / len(nodes)
+            if math.hypot(cx - center[0], cz - center[1]) > radius:
+                stats["skipped_region"] += 1
+                continue
+
+        sink = pieces.setdefault(record.get("prefab"), {"verts": [], "faces": []})
+        corners = []
+        for n in nodes:
+            hit = sample(n[0], n[2])
+            if hit is None:
+                stats["missed"] += 1
+            corners.append((n[0], n[2], (n[1] if hit is None else hit)))
+        for tri in triangles:
+            if max(tri) >= len(nodes) or min(tri) < 0:
+                stats["dropped_bad"] += 1
+                continue
+            stats["source_tris"] += 1
+            a, b, c = (corners[i] for i in reversed(tri))
+            stats["painted_area"] += abs((b[0] - a[0]) * (c[1] - a[1])
+                                         - (b[1] - a[1]) * (c[0] - a[0])) * 0.5
+            for piece in conform_triangle((a, b, c), cell, sample, counters):
+                base = len(sink["verts"])
+                sink["verts"].extend((p[0], p[1], p[2] + lift) for p in piece)
+                sink["faces"].append((base, base + 1, base + 2))
+        stats["placed"] += 1
+        if progress is not None:
+            progress(stats["placed"])
+
+    return pieces, stats

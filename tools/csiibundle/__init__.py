@@ -23,19 +23,34 @@ implements. Two kinds of constant appear throughout and are tagged in place:
 * ``TUNED`` — a presentation choice with a measured justification. A consumer may pick another
   value and still be reading the bundle correctly.
 
-Modules
--------
-``reader``   manifest, layer paths, JSONL iteration, catalogue loaders (§1, §3, §10)
-``frames``   the §2 frame conversion: instance matrices, LH-Y-up to RH-Z-up
-``glb``      GLB parsing, node flattening, the degenerate-face policy (§6)
-``png``      the §8 raster decode, 8/16-bit grayscale and RGBA8
-``splat``    the §8 splatmap: channel map, packed-nibble decode
-``colour``   the §11 grading derivation — `grading.json` into applicable constants
+Modules, roughly in the order a consumer needs them
+---------------------------------------------------
+``reader``    manifest, layer paths, JSONL iteration, catalogue loaders (§1, §3, §10)
+``frames``    the §2 frame conversion: instance matrices, LH-Y-up to RH-Z-up
+``glb``       GLB parsing, node flattening, the degenerate-face policy (§6)
+``tints``     §7.2 per-instance paint — why the trees are grey without it
+``networks``  §5 centerline fallback: the ribbon, and its mitre
+``bezier``    the curve maths every linear layer is stored as
+``lanes``     §5B: GetTileCount, the bend, the rigid-tile instancing gate
+``decals``    §5B markings: the lift ladder, subdivision, the quad lattice
+``png``       the §8 raster decode, 8/16-bit grayscale and RGBA8
+``splat``     the §8 splatmap: channel map, packed-nibble decode, composite-over-base
+``terrain``   §8 ground: clip rasterisation, the corridor lattice, face generation
+``areas``     §8b surface areas: triangle conformance and the driver loop
+``drape``     the ProjectionSurface protocol, and a numpy heightfield implementing it
+``colour``    the §11 grading derivation — `grading.json` into applicable constants
+
+**Minimum viable consumer**: `reader` + `frames` + `glb` places every building, prop and tree
+correctly. Add `tints` or the foliage is grey. `terrain` + `png` + `splat` gets the ground.
+`lanes` + `decals` + `bezier` + `drape` gets road markings and roadside furniture. `colour` is
+last and optional — the bundle ships albedo, and grading is what the game does on top.
 """
 
-from . import colour, frames, glb, png, reader, splat
+from . import (areas, bezier, colour, decals, drape, frames, glb, lanes, networks, png,
+               reader, splat, terrain, tints)
 
-__all__ = ["colour", "frames", "glb", "png", "reader", "splat"]
+__all__ = ["areas", "bezier", "colour", "decals", "drape", "frames", "glb", "lanes",
+           "networks", "png", "reader", "splat", "terrain", "tints"]
 
 # Bundle schema version this package reads. `reader.check_schema` compares a manifest against
 # it. CONTRACT.

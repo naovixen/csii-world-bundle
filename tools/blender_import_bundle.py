@@ -2398,58 +2398,23 @@ def build_areas(bundle_dir, collection, center, radius, ground=None, cell=3.5):
                 (colour[0], colour[1], colour[2], 1.0))
         return materials[prefab]
 
-    # The ground each area is painted onto (audit §30). Without the terrain layer there is
-    # nothing to conform to, and the flat triangles are all this can draw.
-    sample_cache = {}
-    scale = 1000.0 / _AREA_DEDUP_MM
+    # The ground each area is painted onto (audit §30), memoised — the conformance re-samples
+    # the same points constantly. Without the terrain layer there is nothing to conform to and
+    # the flat triangles are all this can draw.
+    ground_at = area_math.memoised_sampler(ground)
 
-    def ground_at(x, y):
-        """Terrain height under Blender-frame (x, y), memoised on the rounded position."""
-        key = (round(x * scale), round(y * scale))
-        if key not in sample_cache:
-            sample_cache[key] = ground.height(x, y) if ground is not None else None
-        return sample_cache[key]
-
-    builders = {}
-    placed = skipped_region = dropped_bad = missed = 0
-    counters = {"unconformed": 0, "unconformed_area": 0.0, "worst": 0.0}
-    source_tris = painted_area = 0.0
-    for record in read_jsonl(path):
-        nodes = record.get("nodes") or []
-        triangles = record.get("triangles") or []
-        if len(nodes) < 3 or not triangles:
-            continue
-
-        if radius is not None and center is not None:
-            cx = sum(n[0] for n in nodes) / len(nodes)
-            cz = sum(n[2] for n in nodes) / len(nodes)
-            if math.hypot(cx - center[0], cz - center[1]) > radius:
-                skipped_region += 1
-                continue
-
-        sink = builders.setdefault(record.get("prefab"), {"verts": [], "faces": []})
-        # Bundle → Blender: (x, y, z) → (x, z, y), and that flips handedness (§2.2), so every
-        # face reverses to keep facing up — the same compensation the lane bend applies.
-        corners = []
-        for n in nodes:
-            hit = ground_at(n[0], n[2])
-            if hit is None:
-                missed += 1
-            corners.append((n[0], n[2], (n[1] if hit is None else hit)))
-        for tri in triangles:
-            if max(tri) >= len(nodes) or min(tri) < 0:
-                dropped_bad += 1
-                continue
-            source_tris += 1
-            a, b, c = (corners[i] for i in reversed(tri))
-            painted_area += abs((b[0] - a[0]) * (c[1] - a[1])
-                                - (b[1] - a[1]) * (c[0] - a[0])) * 0.5
-            for piece in _conform_area_triangle((a, b, c), cell, ground_at, counters):
-                base = len(sink["verts"])
-                sink["verts"].extend((p[0], p[1], p[2] + _AREA_LIFT) for p in piece)
-                sink["faces"].append((base, base + 1, base + 2))
-        placed += 1
-        LOG.progress("areas conformed", placed, None)
+    # The whole loop is `csiibundle.areas.build_pieces`: region filter, frame change, winding
+    # reversal, and the adaptive split. What comes back is Z-up triangle soup per prefab.
+    builders, stats = area_math.build_pieces(
+        read_jsonl(path), cell, ground_at, center=center, radius=radius,
+        progress=lambda n: LOG.progress("areas conformed", n, None))
+    placed = stats["placed"]
+    skipped_region = stats["skipped_region"]
+    dropped_bad = stats["dropped_bad"]
+    missed = stats["missed"]
+    source_tris = stats["source_tris"]
+    painted_area = stats["painted_area"]
+    counters = stats["counters"]
 
     built = 0
     for prefab, sink in builders.items():
