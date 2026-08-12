@@ -361,11 +361,30 @@ with the real material: hue +0.4, saturation +0.018 against the model.
 ### WATER-2 — `rasters.water.seaLevel` is not the playable water datum (producer, LOW)
 
 The new §P4 block captured `seaLevel: 15.0` while this map's actual water surface measures
-508.6–528.3 m (median 521.0) and the game's own `kDefaultSeaLevel` is 511.7. `WaterSystem.SeaLevel`
-feeds only `ResetBackdropWaterToSeaLevel` — backdrop/ocean water — so the field's semantics string
-("WaterSystem.SeaLevel in world metres", implying the playable datum) is at best misleading and at
-worst reading an uninitialised value. `terrain/water_level.png` remains the authoritative water
-surface and is unaffected. Fix the semantics or drop the key; do not let a consumer seat water on it.
+508.6–528.3 m (median 521.0) and the game's own `kDefaultSeaLevel` is 511.7. The field's semantics
+string ("WaterSystem.SeaLevel in world metres") reads as the playable datum, which it is not.
+`terrain/water_level.png` remains the authoritative water surface and is unaffected. Fix the
+semantics or drop the key; do not let a consumer seat water on it.
+
+**CLOSED 2026-08-12 — semantics fixed, and this entry's own reasoning corrected.** The claim above
+that `SeaLevel` "feeds only `ResetBackdropWaterToSeaLevel` — backdrop/ocean water" is **wrong**, and
+was reached without sweeping the field's readers. It has five: the backdrop reset
+(`WaterSystem.UpdateSeaLevel`), the `seaLevel` uniform bound into the water compute shader on every
+`EvaporateStep`, `EvaluateSeaPropagation` and `RestoreWaterInSea`, `WaterRenderSystem`'s
+`m_LastCameraLocation.y - SeaLevel` depth term that drives `smoothnessRange`, `Viewer`'s
+`maxDistanceToSeaLevel` culling plane, and the editor's sea-level slider
+(`WaterPanelSystem.kSeaLevel`). So it is a live, load-bearing simulation and render parameter — the
+**sea datum** — and not the uninitialised value this entry also floated.
+
+That does not rescue the original reading: a sea datum is still not a water surface, and on a map
+whose water is all inland the two are hundreds of metres apart, which is exactly the 15.0 observed.
+`15.0` is what `UpgradeToNewWaterSystem` left behind — `min(m_Height)` over the map's
+constant-depth sources. The key stays, the string now says what it is and what it is not
+(`TerrainRipSystem`, `docs/bundle-schema.md` §8, `bundle.schema.json`), and the standing
+instruction — never seat water on it, read the raster — is unchanged.
+
+The method note: a "feeds only X" claim is a claim about *every* reader, so it takes a sweep of
+every reader. `decomp all Game <dir>` + `rg SeaLevel` is thirty seconds and would have caught it.
 
 ---
 

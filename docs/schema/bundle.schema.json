@@ -273,7 +273,7 @@
           "$ref": "#/$defs/rasterBlock"
         },
         "water": {
-          "description": "Authored water appearance (WaterRenderSettingsPrefab), applied verbatim by the game; seaLevel is WaterSystem.SeaLevel in world metres. Added 2026-08-09 (audit #40 P4) so a consumer need not guess how water looks.",
+          "description": "Authored water appearance (WaterRenderSettingsPrefab), applied verbatim by the game. Added 2026-08-09 (audit #40 P4) so a consumer need not guess how water looks. seaLevel is the sea datum, not the water surface - see its own description.",
           "type": "object",
           "additionalProperties": false,
           "required": [
@@ -290,7 +290,7 @@
               "type": "string"
             },
             "seaLevel": {
-              "description": "WaterSystem.SeaLevel, world metres.",
+              "description": "WaterSystem.SeaLevel, world metres: the sea datum the simulation and renderer work against, NOT the playable water surface. Do not seat water on it - read the water raster (layers.water) instead. A map whose water is all inland leaves this far from any surface in the city (§8, WATER-2).",
               "type": "number"
             },
             "waterColor": {

@@ -1106,7 +1106,8 @@ toward +X (east).
 
   *(Added 2026-08-09, audit #40 P4/P5 — two more optional `rasters` blocks, no grid of their
   own:)* **`rasters.water`** carries the authored water appearance a consumer otherwise has to
-  guess: `seaLevel` (world metres) and `WaterRenderSettingsPrefab`'s values verbatim —
+  guess: `seaLevel` (world metres — **the sea datum, not the water surface**; see below) and
+  `WaterRenderSettingsPrefab`'s values verbatim —
   `waterColor`/`scatteringColor` (RGBA 0–1), `absorptionDistance`, `maxRefractionDistance`,
   `smoothnessClose`/`smoothnessDistant`/`smoothnessRange`, scattering scalars, foam, caustics
   and wave parameters; the game's only bind-time transform is
@@ -1117,6 +1118,17 @@ toward +X (east).
   ranges, `extras.extra1 .. extra4` params (`dirtOverride`, `splatRange`, `blurDepth`,
   `heightOffset`; extras tile with the grass layer), and the triplanar constants. Never guess
   metres-per-repeat — the §5B lane-tiling lesson, repeated on terrain.
+
+  **`seaLevel` is the sea datum, and a consumer must never seat water on it.** *(Corrected
+  2026-08-12, WATER-2.)* `WaterSystem.SeaLevel` is what backdrop/ocean water is reset to, the
+  `seaLevel` uniform bound into the water compute shader (sea propagation, evaporation,
+  restore-water-in-sea), the plane the renderer measures camera depth against for
+  `smoothnessRange`, and the editor's sea-level slider. It is **not** a statement about where
+  water stands in the city. A map whose water is all inland leaves it far from any surface
+  there: the rip that produced this document's reference bundle read `15.0` while the mapped
+  water measured 508.6–528.3 m (median 521.0), and the game's own default is 511.7.
+  **`terrain/water_level.png` (`layers.water`) is the authoritative surface** and is unaffected.
+  Use `seaLevel` for what it is — the datum the appearance parameters above are relative to.
 
   A consumer that draws one ground at one scale will show a visible grid: the game blends
   **three** scales per ground by camera distance, which is its own anti-tiling, and that is what

@@ -1750,8 +1750,14 @@ namespace Carto.Systems
                     ["semantics"] = "authored WaterRenderSettingsPrefab appearance parameters, "
                                   + "applied verbatim by WaterRenderSystem.ApplyMaterialParams "
                                   + "(the one transform: endSmoothness = min(smoothnessDistant, "
-                                  + "smoothnessClose)); seaLevel is WaterSystem.SeaLevel in "
-                                  + "world metres; ranges are [start, distance] camera metres",
+                                  + "smoothnessClose)); ranges are [start, distance] camera metres. "
+                                  + "seaLevel is WaterSystem.SeaLevel in world metres: the SEA "
+                                  + "datum the sim and renderer work against (backdrop reset "
+                                  + "level, the water compute shader's seaLevel uniform, the "
+                                  + "plane camera depth is measured from, the editor's sea-level "
+                                  + "slider). It is NOT the playable water surface and a map "
+                                  + "with no sea leaves it far from one - read the water raster "
+                                  + "for the surface, never seat water on this",
                     ["prefab"] = settings.name,
                     ["seaLevel"] = Math.Round((double)seaLevel, 3),
                     ["waterColor"] = Rgba(settings.m_WaterColor),
