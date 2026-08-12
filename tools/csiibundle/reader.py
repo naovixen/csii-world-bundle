@@ -206,6 +206,13 @@ def load_materials(bundle_dir):
     """`materials.json` (§7): `{materialId: {baseColor, normal, mask, colorMask, …}}`.
 
     Texture values are bundle-relative paths. `os.path.join(bundle_dir, rel)` resolves them.
+
+    **Most of this table is also inside the `.glb` files, and a glTF-reading consumer gets it
+    for free.** Verified against the shipped bundle: across 117 material uses the `.glb`'s own
+    `alphaMode` and `doubleSided` agree with this table exactly (46 BLEND / 71 MASK, 47
+    double-sided). So do not build a second material pipeline off this layer — read it for the
+    things glTF has no place for, namely `colorMask` (the §7.2 per-instance paint selector, see
+    `csiibundle.tints`) and `tint`, and let your glTF loader do the rest.
     """
     return load_catalogue(bundle_dir, "materials")
 

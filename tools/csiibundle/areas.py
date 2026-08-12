@@ -19,6 +19,14 @@ diagonal, a choice worth a p95 of 9.4 cm at 3.5 m cells and 41 cm at the 14 m st
 full-city import. `conform_triangle` takes a `sample` callable so the caller supplies whatever
 its own ground actually is; `csiibundle.drape` is one such surface.
 
+**The bundle ships the prism band; use it to bound the search.** `heightRanges`, when present,
+is the game's own `Triangle.m_HeightRange` per triangle in the same order as `triangles`: the
+min and max of the terrain over that triangle's footprint, **relative to the triangle's own
+plane**, in metres. It states how far a drape has to reach, so a consumer can size its ray or
+skip a triangle whose ground is already flat. It is a GUIDE, not a substitute for the heightmap
+— the conformance still has to sample — and it is omitted when every range on an area is zero.
+On a full-city rip 91.4% of areas carry one. `height_range()` reads it.
+
 **The tolerance is half the lift, and the ratio is the point** — the same rule the lane decals'
 subdivision uses. How far the ground may rise through a piece cannot be chosen independently of
 how far that piece is lifted clear of it. The lift itself is a rung of `decals.LIFT_LADDER`,
@@ -57,6 +65,30 @@ DEDUP_MM = 1.0              # quantise world (x, y) to this before reusing a ray
 # `RenderedArea.m_UVScale`'s own field default, used only when the bundle predates §8b
 # carrying the per-prefab value. World position times this is the UV.
 UV_SCALE_FALLBACK = 0.2
+
+
+def height_range(record, index):
+    """The `[min, max]` prism band for triangle `index` of an area, or `None`.
+
+    Relative to that triangle's OWN plane, in metres — not absolute heights. `None` means the
+    area shipped no `heightRanges` (its ground is flat) or the layer predates the field, and in
+    both cases the answer is "assume nothing and sample".
+    """
+    ranges = record.get("heightRanges")
+    if not ranges or not 0 <= index < len(ranges):
+        return None
+    band = ranges[index]
+    return (float(band[0]), float(band[1])) if band and len(band) >= 2 else None
+
+
+def is_flat(record, index):
+    """Whether the ground under triangle `index` is flat enough that conformance is a no-op.
+
+    False when the band is unknown — an absent range is not a promise of flatness, and treating
+    it as one is how a consumer skips exactly the triangles it should have split.
+    """
+    band = height_range(record, index)
+    return band is not None and (band[1] - band[0]) <= CONFORM_TOLERANCE
 
 
 def conform_triangle(tri, cell, sample, counters):

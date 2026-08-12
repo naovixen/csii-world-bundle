@@ -24,6 +24,24 @@ flat quads the game paints through a projector volume. Two consequences. They ne
 they must **never become collision geometry**: a car should drive over a painted arrow, not into
 it. Keeping them in their own group is what makes that one command away.
 
+**A `.glb` is one STATE of a prefab, and the instance says which state it is in.** This is the
+rule most likely to be missed, because ignoring it produces a scene that is entirely plausible
+and quietly wrong. A prefab that can be drawn several ways — a tree at five ages, a stockpile at
+four fill levels — exports its base state as `<assetId>.glb` and its other states as derived
+files alongside (§6.1, §9). `attrs.treeState` and `attrs.fullness` say which one this instance
+is actually in, and `mesh_candidates` resolves that to a filename.
+
+On the reference city that is **153,991 trees of 697,256 in a non-Adult state** — 119,237
+Elderly and 33,581 Teen. Drawn from the base file they are all healthy adults. The producer
+shipped these variants in August 2026 precisely to close that gap; a consumer that does not
+join on `treeState` leaves it open on its own side.
+
+**`attrs.growthScale` is a uniform scale and is NOT folded into `scale`.** A tree record has no
+`scale` field at all — the growth scale is separate, and 299,972 trees on the reference city
+carry one below 1.0. Ignoring it draws every sapling at full height. There is no `__child`
+variant and there will not be one: a child tree is a `Teen` mesh below growth 128 scaled by
+this factor, so the scale IS the child state.
+
 **A missing mesh is not automatically a defect.** Check `reader.read_declared_gaps` first: the
 producer declares what it could not deliver (§10), and re-reporting a declared gap as an error
 makes the error count a function of the producer's honesty. An UNDECLARED missing mesh is real.
@@ -43,9 +61,79 @@ SKIRT_SUFFIX = "__base"
 ON_GROUND = "OnGround"
 
 
+# `attrs.treeState` to the derived file's suffix (§6.1). `Adult` is the BASE state and has no
+# suffix — a healthy adult tree *is* `<assetId>.glb`. CONTRACT.
+TREE_STATE_SUFFIX = {
+    "Teen": "__teen",
+    "Elderly": "__elderly",
+    "Dead": "__dead",
+    "Stump": "__stump",
+}
+
+# `attrs.fullness` (0..100) to the derived file's suffix, following the game's own steps:
+# `>66` full, `>33` partial2, `>0` partial1, and 0 is the empty BASE state. The step SET is
+# per-prefab, which is why `mesh_candidates` walks downward through them rather than demanding
+# the exact file — a two-step prefab simply has no `__partial2`. CONTRACT.
+FULLNESS_STEPS = ((66, "__full"), (33, "__partial2"), (0, "__partial1"))
+
+
 def read_instances(bundle_dir):
     """Stream `instances.jsonl`. A generator — a full city is over a million records."""
     return reader.read_jsonl(reader.layer_path(bundle_dir, "instances"))
+
+
+def mesh_candidates(record):
+    """The assetIds to try for this record's mesh, **best first**, base state last.
+
+    Use it as "take the first one that exists on disk":
+
+        for candidate in instances.mesh_candidates(record):
+            path = os.path.join(mesh_dir, candidate + ".glb")
+            if os.path.isfile(path):
+                break
+
+    The list is ordered rather than a single answer because **a variant file exists only where
+    the prefab flags that state** (§6.1) — the step set is per-prefab, so a two-step stockpile
+    has no `__partial2` and a tree prefab with no elderly form has no `__elderly`. Absence means
+    the game has no such variant either, and the next candidate down is the right answer. Always
+    ends with the bare `assetId`, so this never returns nothing.
+
+    `treeState` and `fullness` are independent and no prefab carries both, so whichever is
+    present drives the list.
+    """
+    asset_id = record["assetId"]
+    attrs = record.get("attrs") or {}
+    candidates = []
+
+    suffix = TREE_STATE_SUFFIX.get(attrs.get("treeState"))
+    if suffix:
+        candidates.append(asset_id + suffix)
+
+    fullness = attrs.get("fullness")
+    if isinstance(fullness, (int, float)):
+        # Walk DOWN from the step this instance is at, so a prefab missing the exact step falls
+        # to the next one it does have rather than all the way to empty.
+        for threshold, step_suffix in FULLNESS_STEPS:
+            if fullness > threshold:
+                candidates.append(asset_id + step_suffix)
+
+    candidates.append(asset_id)
+    return candidates
+
+
+def growth_scale(record):
+    """The uniform scale to apply on top of the record's own transform — 1.0 for most things.
+
+    `attrs.growthScale` is how the game draws a tree that has not finished growing, and it is
+    NOT folded into `scale` (a tree record has no `scale` at all). `instance_matrix` applies it;
+    this is here for a consumer composing its own transform.
+    """
+    value = (record.get("attrs") or {}).get("growthScale")
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return 1.0
+    return value if value > 0.0 else 1.0
 
 
 def wants_skirt(record):
@@ -88,18 +176,25 @@ def is_paint(record):
 
 
 def instance_matrix(record, mesh_basis=None, zup=False):
-    """This record's world matrix, with `placement_lift` already applied.
+    """This record's world matrix, with `growth_scale` and `placement_lift` already applied.
 
     `zup`/`mesh_basis` are handed to `frames.zup_instance_matrix` for a Z-up consumer; the
     default is the contract's own bundle-frame matrix. This is the function to call rather than
-    `frames.instance_matrix` directly, because forgetting the decal lift is silent until
-    something flickers.
+    `frames.instance_matrix` directly, because both of the corrections it folds in are silent
+    when missed: a forgotten decal lift flickers, and a forgotten growth scale draws 299,972
+    saplings at full height without anything looking obviously broken.
     """
     matrix = (frames.zup_instance_matrix(record, mesh_basis) if zup
               else frames.instance_matrix(record))
+    scale = growth_scale(record)
+    if scale != 1.0:
+        # Uniform, and pre-multiplied into the linear part only — it scales the MESH about the
+        # instance's own origin, so the position must not move with it.
+        matrix = matrix.copy()
+        matrix[:3, :3] *= scale
     lift = placement_lift(record)
     if lift:
         # The up axis differs between the two frames: Z for a Z-up consumer, Y in the bundle.
-        matrix = matrix.copy()
+        matrix = matrix if scale != 1.0 else matrix.copy()
         matrix[2 if zup else 1, 3] += lift
     return matrix

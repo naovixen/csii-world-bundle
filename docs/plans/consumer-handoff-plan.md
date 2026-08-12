@@ -116,7 +116,37 @@ layer by layer, "can this be rebuilt from the package alone?" — found six gaps
 | the **water surface** was harness-only | the dilated shoreline ring, ground-seated outer corners, and water NOT being filtered by the terrain cut → `terrain.water_surface` |
 | the lane **`hang` cubic** was derived in the driver | `lanes.bend_part` took a finished cubic; the quadratic-to-cubic lift `(d0, (d0+h·L)·2/3, (d1+h·L)·2/3, d1)` was unreachable → `lanes.hang_curve` |
 
-Gates for that sweep: every path A/B'd against the pre-sweep harness — standard region, full-map
+**The second sweep (field-level).** A repeat of the same layer-by-layer question would only
+have confirmed the first sweep, so this one used a finer sieve: enumerate every FIELD the
+producer actually ships across every layer, and check each against whether any consumer-side
+code reads it. That found what the layer view could not.
+
+**The headline: a `.glb` is one STATE of a prefab, and nothing consumed the other states.** The
+producer ships `__teen`/`__elderly`/`__dead`/`__stump` and `__partial1`/`__partial2`/`__full`
+derived meshes (§6.1), and `attrs.treeState`/`attrs.fullness` say which one each instance is in
+— but no consumer-side code had ever joined on them. On the reference city that is **153,991 of
+697,256 trees in a non-Adult state** (119,237 Elderly, 33,581 Teen) all drawing as healthy
+adults: the consumer half of the very gap producer-side P18 closed in August. Separately,
+**299,972 trees carry an `attrs.growthScale` below 1.0** — a uniform scale that is NOT folded
+into `scale` (a tree record has no `scale` field at all), so every sapling drew at full height.
+Both are now `csiibundle.instances` (`mesh_candidates`, `growth_scale`), and the harness uses
+them. Measured on a 250 m downtown tree import: **420 of 2,229 trees swap mesh** (299 elderly,
+121 teen), **1,101 take a growth scale** (0.719–1.272), and **0 positions move**.
+
+Also closed: `lanes.jsonl`'s `limit`/`flags`/`secondary`/`curviness` (the first sweep's new
+`lanegraph` documented only 5 of its 9 fields — 132,883 lanes carry a speed limit and 320,682
+are CS2-derived rather than placed, which is a filter a consumer has to choose deliberately);
+and `areas.heightRanges`, the game's own per-triangle prism band, which `areas.py` cited in its
+docstring while ignoring the shipped values — 32.7% of area triangles are flat within tolerance
+and conformance can skip them outright.
+
+**One thing checked rather than assumed:** `materials.json`'s render fields look unread, but the
+`.glb` files carry them and a glTF consumer gets them free. Verified rather than asserted —
+across 117 material uses the `.glb`'s `alphaMode`/`doubleSided` agree with the table exactly (46
+BLEND, 71 MASK, 47 double-sided). That layer is a convenience table whose unique content is
+`colorMask` and `tint`; the note is now in `reader.load_materials` so nobody re-investigates.
+
+Gates for the first sweep: every path A/B'd against the pre-sweep harness — standard region, full-map
 terrain (water at stride 4), `--skirts` (102 placed), `--lanes`. In all four the **only** differing
 line in the scene dump is `carto_sun`'s rotation matrix, by 6e-08, because the direction is now
 normalised in float64 before truncation and comes out *closer* to unit (1.0000000031 against

@@ -495,11 +495,11 @@ def bundle_to_blender_point(pos):
 def instance_matrix(record):
     """The full world matrix for one instance record, ready to assign to matrix_world.
 
-    `csiibundle.frames` composes it; this only converts to mathutils. The float64 the package
-    works in is truncated to float32 on assignment either way, so the extra precision on the
-    way through is free.
+    `csiibundle.instances` composes it — the §2 frame formula plus the two per-record
+    corrections that are silent when missed: `attrs.growthScale` (a tree that has not finished
+    growing) and the §4.2a decal lift. This only converts to mathutils.
     """
-    return Matrix(frames.zup_instance_matrix(record, _BLENDER_GLTF_BASIS).tolist())
+    return Matrix(instances.instance_matrix(record, _BLENDER_GLTF_BASIS, zup=True).tolist())
 
 
 # -- bundle reading -------------------------------------------------------------------------
@@ -3428,12 +3428,23 @@ def main():
                 skipped_region += 1
                 continue
 
+        # §6.1/§9: a `.glb` is ONE STATE of a prefab, and this record says which state it is
+        # in. `mesh_candidates` orders the derived files best-first (a tree's `__elderly`, a
+        # stockpile's `__partial2`) with the base state last, and a variant file exists only
+        # where the prefab flags that state — so this takes the first one that is actually on
+        # disk. Without it 153,991 of this city's 697,256 trees draw as healthy adults.
         asset_id = record["assetId"]
-        if asset_id not in prefabs:
-            prefabs[asset_id] = load_prefab_collection(asset_id, mesh_dir, sources)
-            if prefabs[asset_id] is None:
-                reason = declared_gaps.get(asset_id, "NOT DECLARED in warnings.jsonl")
-                missing[asset_id] = reason
+        for candidate in instances.mesh_candidates(record):
+            if candidate not in prefabs:
+                path = os.path.join(mesh_dir, candidate + ".glb")
+                prefabs[candidate] = (load_prefab_collection(candidate, mesh_dir, sources)
+                                      if os.path.isfile(path) else None)
+            if prefabs[candidate] is not None:
+                asset_id = candidate
+                break
+        else:
+            reason = declared_gaps.get(asset_id, "NOT DECLARED in warnings.jsonl")
+            missing[asset_id] = reason
 
         collection = prefabs[asset_id]
         if collection is None:
@@ -3476,8 +3487,6 @@ def main():
             # Coplanar paint z-fights the carriageway it sits on, which in the viewport looks
             # like the marking is flickering in and out of the road. A lift far below the
             # tolerance of anything downstream costs nothing and settles it.
-            empty.matrix_world = Matrix.Translation(
-                (0.0, 0.0, instances.placement_lift(record))) @ empty.matrix_world
             decal_collection.objects.link(empty)
         else:
             placed_collection.objects.link(empty)

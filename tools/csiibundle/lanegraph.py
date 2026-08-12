@@ -10,16 +10,34 @@ A BeamNG level builder, a traffic simulation, a pathfinding export or a navmesh 
 this and none of them want the mesh. Nothing else in the bundle carries it: the network meshes
 are surfaces with no direction, no connectivity and no lane count.
 
-    {"id": 55355, "kind": "other", "path": [[x, y, z], …], "length": 37.699, "owner": 262583}
+    {"id": 55355, "kind": "other", "path": [[x, y, z], …], "length": 37.699, "owner": 262583,
+     "limit": 50, "curviness": 0.02, "secondary": true, "flags": ["Twoway", "Yield"]}
 
 **`path` is a polyline, not a Bézier.** The producer has already sampled the lane's curve, so
 these are points to be walked, not control points to be evaluated. Do not feed them to
 `csiibundle.bezier`.
 
-**`owner` is the join key**, and it points at the network record that owns the lane — the
-segment it runs along or the node it crosses. `by_owner()` builds the index; `attach_networks()`
-does the join. Lanes on a node are the turning movements THROUGH a junction, which is what makes
-the graph connected: without them each segment's lanes are an island.
+**`length` is CS2's own curve length, not the polyline's.** Use the shipped value; the polyline
+under-measures a curve, as any chord does. `polyline_length` exists to CHECK it, not to replace
+it.
+
+**`owner` is the join key**, and it points at the network record that owns the lane — but only
+where the lane belongs to an EDGE. **Lanes owned by a node have no `owner` at all**, and those
+are the turning movements THROUGH a junction: the connections that make the graph a graph rather
+than a pile of disconnected segments. Do not filter them out for lacking an owner. `by_owner()`
+groups them under `None` for exactly this reason.
+
+**The other four fields are what a simulation actually needs**, and every one of them is
+optional so a consumer must handle absence:
+
+* `limit` — speed limit in **km/h**, on the kinds that have one (`car`, `track`).
+* `flags` — lane-type flag **NAMES** (`Twoway`, `Yield`, `Runway`, …), deliberately not a bit
+  field: CS2's numeric values are internals that can change meaning between game versions. The
+  set is **open** — ignore what you do not recognise rather than rejecting the record.
+* `secondary` — `true` where CS2 derived this lane from a master lane rather than placing it.
+  **Both are emitted**, which is a choice a consumer has to make: laying out traffic wants every
+  lane a vehicle can occupy, drawing lane lines wants only the masters. `masters()` filters.
+* `curviness` — how much the lane bends, on CS2's own scale, carried rather than recomputed.
 
 Positions are bundle-frame metres (X east, Y up, Z north). Convert with `csiibundle.frames`.
 """
@@ -28,10 +46,13 @@ from collections import defaultdict
 
 from . import reader
 
-# `kind` values seen on the reference city. NOT a closed set — the producer writes the game's own
-# lane classification through, and an unknown kind should be carried, not dropped. `"other"` is
-# the producer's own catch-all.
-KNOWN_KINDS = ("vehicle", "pedestrian", "track", "parking", "service", "other")
+# The closed `kind` set in schema v1. `"other"` is the producer's own catch-all, and an
+# unrecognised value should still be carried rather than dropped. CONTRACT.
+KINDS = ("car", "track", "pedestrian", "parking", "connection", "other")
+
+# The kinds a vehicle can occupy — what a traffic or routing consumer wants. `connection` is in
+# because a junction's turning movements are drivable; `pedestrian` and `parking` are not.
+DRIVABLE_KINDS = ("car", "track", "connection")
 
 
 def read_lanes(bundle_dir):
@@ -65,6 +86,25 @@ def attach_networks(lanes, networks):
         yield lane, owners.get(lane.get("owner"))
 
 
+def masters(lanes):
+    """Only the lanes CS2 placed, dropping the ones it derived from a master (`secondary`).
+
+    The right filter for drawing lane lines and the WRONG one for traffic: a derived lane is
+    still a lane a vehicle occupies. See the module docstring.
+    """
+    return (lane for lane in lanes if not lane.get("secondary"))
+
+
+def drivable(lanes):
+    """Only the lanes a vehicle can occupy, by `kind`. Keeps derived lanes."""
+    return (lane for lane in lanes if lane.get("kind") in DRIVABLE_KINDS)
+
+
+def has_flag(lane, name):
+    """Whether a lane carries a named flag. Absent `flags` reads as "no", not as an error."""
+    return name in (lane.get("flags") or ())
+
+
 def polyline_length(path):
     """The summed segment length of a lane's `path`, in metres.
 
@@ -80,11 +120,16 @@ def polyline_length(path):
 
 def summarise(bundle_dir):
     """`{kind: count}` plus totals — a cheap "what is in this layer" pass over the whole file."""
-    counts, total_length, owned = {}, 0.0, 0
+    counts, flags, total_length, owned, secondary, limited = {}, {}, 0.0, 0, 0, 0
     n = 0
     for lane in read_lanes(bundle_dir):
         n += 1
         counts[lane.get("kind")] = counts.get(lane.get("kind"), 0) + 1
         total_length += float(lane.get("length") or 0.0)
         owned += lane.get("owner") is not None
-    return {"lanes": n, "kinds": counts, "total_length_m": total_length, "with_owner": owned}
+        secondary += bool(lane.get("secondary"))
+        limited += lane.get("limit") is not None
+        for flag in lane.get("flags") or ():
+            flags[flag] = flags.get(flag, 0) + 1
+    return {"lanes": n, "kinds": counts, "flags": flags, "total_length_m": total_length,
+            "with_owner": owned, "secondary": secondary, "with_limit": limited}
