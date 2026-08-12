@@ -134,21 +134,15 @@ baseline.
 | P15 | Small game-rule gates: `HasSurface==0` branch in `TryGetClipBand`; `Waterway` merge-layer in the elevated test (both clip and roadbed gates — canal beds currently land as roadbed); OverrideMaterial keyed on `m_Version` not material-null; kind-filter union rule for mesh pass (unreachable at defaults). | terrain F1/F2/F13b, threading F4 | low |
 | P16 | Perf (measure before/after per `prefer-simple-over-speculative`): hoist `ComponentLookup`/`BufferLookup` in the instance walk (the 57.6 s pass is ~all main-thread component reads; exclusion probes run twice per entity ≈ 2.6M redundant); move `WriteClipVolumes` (~50k records) and area-PNG encodes off the main thread. | threading F5, terrain F20 | perf |
 
-**P16-REG re-measured 2026-08-12, and the recommendation is to stop here.** The follow-up
-opened at 80.5 s against the 57.6 s baseline — the wave-2 semantic attrs costing more than the
-lookup hoist saved — with the gate "measure which reads dominate before changing anything". The
-2026-08-12 09:39 full rip's own log reads **65.0 s**, so the regression is +7.4 s (+12.8%), not
-+22.9 s (+40%): either it shrank, or one sample overstated it. Set against the whole rip, that
-is the point — the eight stages are Clean 0.0, **Instances 65.0**, Appearance 0.7, *Meshes,
-materials & textures 1,313.2*, Lane graph 46.8, Networks & lane geometry 81.8, Terrain & water
-66.8, Manifest 143.0, total 1,717 s. The instance walk is **3.8%** of the rip and the whole
-regression is **0.4%** of it, against a mesh stage that is 76%. Finding which reads dominate
-needs per-read instrumentation on the main thread of the walk — paying main-thread cost, in the
-rip, to chase four tenths of one percent, which is the trade
-`prefer-simple-over-speculative` exists to refuse. Recommend closing P16-REG unmeasured and
-spending any perf attention on the mesh stage. *(The other two halves of P16 —
-`WriteClipVolumes` and the area-PNG encodes off the main thread — are untouched and unaffected
-by this.)*
+**P16-REG is closed and struck, 2026-08-12.** The instance-walk regression follow-up (80.5 s
+against a 57.6 s baseline) is not being pursued. The 2026-08-12 09:39 rip's own log reads
+**65.0 s**, so the regression was +7.4 s rather than +22.9 s, on a **1,717 s** rip whose mesh
+stage alone is 1,313.2 s — the walk is 3.8% of the rip and the regression 0.4% of it. Measuring
+which reads dominate would mean adding per-read instrumentation to the main thread of that walk,
+which is the trade `prefer-simple-over-speculative` exists to refuse. **Do not re-open it**;
+if perf ever matters again, the mesh stage is 76% of the rip and is where to look. *(P16's other
+two halves — `WriteClipVolumes` and the area-PNG encodes off the main thread — are untouched and
+unaffected.)*
 
 ### 2.2 Documentation work-list (Phase 9 / audit amendments)
 

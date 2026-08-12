@@ -1397,6 +1397,19 @@ this layer shows grass wherever the game shows pavement.
 
   `owner`, when present, is the instance `id` of the building/object that spawned the area.
 
+  **Its presence is the distinction between a lot's own ground and the player's brush**, and
+  the join is total. *(V1, confirmed 2026-08-12 both in-game and against the full-city rip.)*
+  Lot-painted ground — storage yards, specialised industry, driveways, the paving inside a
+  parking lot — does arrive here as `Surface` sub-areas, one per painted patch, owned by the
+  lot's building: **27,047 of 27,156 areas carry an `owner`, and every one of them resolves to
+  a `kind: "building"` record in `instances.jsonl`, with none dangling.** So a consumer may
+  treat `owner` as a hard join and group a lot's surfaces under its building rather than
+  scattering them loose on the terrain.
+  The 109 without one are the other case — surfaces the player painted **directly on the
+  ground**, belonging to no lot, which on this city are almost entirely asset-pack brushes
+  (`G87_More_Concrete_*`, `Water_Mirror_*`, `Farming_Surfaces___Decals_*`,
+  `Terrain_Surfaces_Pack_*`). Both are equally real; only their anchor differs.
+
   **A triangle is a footprint, not a surface — conform it to the terrain.** *(Corrected
   2026-08-08; this section previously said the game grades terrain under areas, and it does
   not. See audit §30.)* The game never draws these triangles: it draws a **prism** per

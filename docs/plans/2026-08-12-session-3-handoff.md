@@ -4,10 +4,9 @@ Supersedes `docs/plans/2026-08-12-session-2-handoff.md` where they disagree. Rea
 `docs/plans/2026-08-11-next-session-handoff.md` for the consumer hand-off effort's phase order.
 
 **One-line status:** every item in the 2026-08-12 open table was already closed (FLARE, ALPHA,
-DEADPASS) or is closed now (PROBE); of the 2026-08-11 table, GRADE-1, WATER-2, PILLARS, D1–D6
-and the N sign-off are closed, P16-REG is recommended for closure with the measurement to back
-it, and **V1 is the only item left needing you**. The effort is back at its parked point,
-**Phase 5 — extract `tools/cs2bundle/`**.
+DEADPASS) or is closed now (PROBE); of the 2026-08-11 table, GRADE-1, WATER-2, PILLARS, D1–D6,
+the N sign-off, **V1 and P16-REG** are all closed too. Nothing from either table is outstanding.
+The effort is back at its parked point, **Phase 5 — extract `tools/cs2bundle/`**.
 
 ## State of the world
 
@@ -30,7 +29,8 @@ it, and **V1 is the only item left needing you**. The effort is back at its park
 | **PILLARS** | Not the class it was recorded as. Stack expansions are exempt from the orphan warning; 133 → **120**. |
 | **D1, D3–D6** | Paid, three of them not as written. |
 | **D2 / N items** | Signed off by you: VFX, road-name labels and the city-boundary fence are **permanent** non-goals. |
-| **P16-REG** | Re-measured. Recommended for closure — see below; the call is yours. |
+| **V1** | **Yes** — lot-painted ground does arrive as `Surface` sub-areas. Confirmed in-game and by a total `owner` join. |
+| **P16-REG** | Closed and struck at your instruction. Do not re-open. |
 
 ### GRADE-1 (`8d33983`) — two faults, not one
 
@@ -112,32 +112,33 @@ all. What it cost was the fair objection: it sat in the per-placement loop of th
 the 1,313 s stage — resolving a prefab name and interpolating a string per placement to learn a
 name it needs once per piece. Keyed by `(piece entity, isNode)` now.
 
+### V1 — closed, and stronger than it was asked
+
+**Yes.** Confirmed in-game by the user, and corroborated on the 09:39 rip: **27,047 of 27,156
+areas carry an `owner`, and every single one resolves to a `kind: "building"` record — none
+dangling.** So `owner` is a hard join, not a hint, and a consumer should group a lot's surfaces
+under its building rather than scattering them loose on the terrain. The 109 without an owner
+are the *other* case and equally real: ground the player painted directly, belonging to no lot,
+almost all asset-pack brushes (`G87_More_Concrete_*`, `Water_Mirror_*`,
+`Farming_Surfaces___Decals_*`, `Terrain_Surfaces_Pack_*`). §8b says all of this now.
+
+### P16-REG — closed and struck, do not re-open
+
+The instance-walk regression is not being pursued, by the user's instruction and with the
+numbers to support it. The 09:39 rip's own log reads **65.0 s**, not the 80.5 s the item opened
+with, against a 57.6 s baseline. Stage times from that log: Clean 0.0, **Instances 65.0**,
+Appearance 0.7, *Meshes, materials & textures 1,313.2*, Lane graph 46.8, Networks & lane
+geometry 81.8, Terrain & water 66.8, Manifest 143.0; total 1,717 s. The walk is 3.8% of the rip
+and the regression 0.4%. Measuring which reads dominate would mean main-thread instrumentation
+inside that walk. If perf ever matters again, the mesh stage is 76% of the rip.
+
 ## Still open
 
 | # | item | what it needs |
 |---|---|---|
-| **V1** | Do Lot-painted areas (storage yards, specialised industry) arrive as `Surface` sub-areas? | **You, in-game** — see below. Nothing depends on it. |
-| P16-REG | Recommended closed, your call. | Nothing, unless you disagree. |
 | PILLARS-2 | Should the 120 remaining warnings — every one a gap the producer already declared in `warnings.jsonl` — still warn? | A decision. Not raised before because the class was mis-attributed. |
 | §29 | Backdrop water simulation | Still deferred; explicitly **not** part of the D2 sign-off. |
 | Phase 5 | extract `tools/cs2bundle/` | The effort's actual next step. |
-
-### V1 — what to look at
-
-Place or find a **storage yard** or a **specialised-industry lot** (anything where the lot
-itself is painted rather than the ground). The question is whether that painted ground arrives
-as a `Surface` sub-area — i.e. whether it shows up in `areas.jsonl` at all. Tell me what you
-see and I close it; a rip is not needed, just a look.
-
-### P16-REG — the measurement, so you can disagree with the recommendation
-
-Opened at 80.5 s against a 57.6 s baseline. The 09:39 rip's own log reads **65.0 s** — +7.4 s,
-not +22.9 s. Stage times from that log: Clean 0.0, **Instances 65.0**, Appearance 0.7, *Meshes,
-materials & textures 1,313.2*, Lane graph 46.8, Networks & lane geometry 81.8, Terrain & water
-66.8, Manifest 143.0; total 1,717 s. The instance walk is 3.8% of the rip; the regression is
-0.4%. Finding which reads dominate means adding per-read instrumentation to the main thread of
-that walk — main-thread cost, in the rip, to chase four tenths of a percent. Recommend closing
-it and spending perf attention on the 76% stage instead.
 
 ## Method notes earned this session
 
