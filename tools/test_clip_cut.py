@@ -54,6 +54,7 @@ import sys
 import numpy
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from csiibundle import bezier as bezier_math
 
 SRC = os.path.join(os.path.dirname(__file__), "blender_import_bundle.py")
 BUNDLE = os.environ.get("CARTO_BUNDLE") or os.path.expandvars(
@@ -95,7 +96,11 @@ for _name in ("_CLIP_CONTAIN_SAMPLES", "_CLIP_CONTAIN_BLOCK", "_CLIP_DEEP_BAND_T
     _m = re.search(rf"^{_name} = .*$", source, re.M)
     assert _m, f"{_name} not found in harness source"
     exec(compile(_m.group(0), f"<{_name}>", "exec"), H)
-for _name in ("_bezier_points", "_lane_ramp", "_clip_span", "_fill_clip_quad_rows",
+# `_bezier_points` is no longer defined in the harness — it was a second copy of the lane
+# bend's own evaluator and now aliases `csiibundle.bezier.evaluate`. Take it from the package;
+# the rest of the clip rasteriser is still harness-side and moves in H7.
+H["_bezier_points"] = bezier_math.evaluate
+for _name in ("_lane_ramp", "_clip_span", "_fill_clip_quad_rows",
               "_fill_clip_quad", "_dilate", "_contain_faces"):
     _m = re.search(rf"\ndef {_name}\(.*?(?=\n\ndef |\n\nclass |\Z)", source, re.S)
     assert _m, f"{_name} not found in harness source"

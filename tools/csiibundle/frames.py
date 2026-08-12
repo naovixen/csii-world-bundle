@@ -165,6 +165,24 @@ def zup_to_bundle_point(pos):
     return (float(pos[0]), float(pos[2]), float(pos[1]))
 
 
+def to_zup_transform(matrix):
+    """A bundle-frame TRANSFORM re-expressed for a Z-up consumer: `P · M · P⁻¹`.
+
+    Note the conjugation. A transform is not a point: moving one between frames needs the basis
+    change on BOTH sides, and left-multiplying alone puts the geometry in the right place with
+    the wrong orientation — which reads as "some pieces are rotated", not as a frame bug.
+
+    `P_ZUP` is a permutation and its own inverse, so this is done as a row/column swap: exact by
+    construction, where a matrix product would at least invite the question.
+    """
+    matrix = numpy.asarray(matrix, dtype=numpy.float64)
+    swap = [0, 2, 1]
+    out = numpy.eye(4)
+    out[:3, :3] = matrix[:3, :3][swap, :][:, swap]
+    out[:3, 3] = matrix[:3, 3][swap]
+    return out
+
+
 def transform_points(matrix, points):
     """Apply a `(4, 4)` matrix to an `(N, 3)` array of points. Returns `(N, 3)` float64.
 

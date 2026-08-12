@@ -6,42 +6,54 @@ the surface *rises* above that edge by more than the marking's own lift the mark
 the gap you see on a crest. The station count therefore has to be driven by that rise, measured
 against the lift, and not by a tolerance chosen independently of it.
 
-This test pins that invariant. It extracts the row-count functions out of the harness source
-(which imports `bpy` at module scope, so it cannot be imported under system Python — same
-technique as `test_png_decode.py`), and for each case measures the worst rise of the curve's own
+This test pins that invariant. For each case it measures the worst rise of the curve's own
 vertical profile above the chord polyline the chosen rows produce, on a dense independent
 resampling of the real bézier rather than on the 33-sample arc table the implementation reuses.
+
+It used to regex those functions out of `blender_import_bundle.py`, which imports `bpy` at
+module scope and so cannot be imported under system Python. They live in `csiibundle` now, so
+this imports them; `H` below is kept only as the one place naming every package symbol the test
+pins, so a rename fails here loudly instead of matching nothing.
 
 Run: `python tools/test_decal_rows.py`  (system Python + numpy; the bundle sweep is skipped when
 no bundle is on disk).
 """
 import json
 import os
-import re
 import sys
 
 import numpy
 
-SRC = os.path.join(os.path.dirname(__file__), "blender_import_bundle.py")
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from csiibundle import bezier as bezier_math
+from csiibundle import decals as decal_rules
+from csiibundle import lanes as lane_math
+
 BUNDLE = os.path.expandvars(r"%USERPROFILE%\AppData\LocalLow\Colossal Order"
                             r"\Cities Skylines II\ModsData\Carto")
 DENSE = 513
 
-source = open(SRC, encoding="utf-8").read()
-H = {"numpy": numpy}
-exec(compile("import math", "<math>", "exec"), H)
-for name in ("_LANE_ARC_SAMPLES", "_LANE_MAX_TILES", "_DECAL_MAX_ROWS",
-             "_DECAL_SHAPE_TOLERANCE", "_DECAL_DIP_FRACTION", "_DECAL_DRAPE_MARKING",
-             "_DECAL_DRAPE_TINT"):
-    match = re.search(rf"^{name} = .*$", source, re.M)
-    assert match, f"{name} not found in harness source"
-    exec(compile(match.group(0), f"<{name}>", "exec"), H)
-for name in ("_bezier_point_vec", "_cut_bezier", "_arc_table_vec", "_curve_length",
-             "_shape_rows", "_chord_dip", "_decal_rows", "_decal_station_rows",
-             "_lane_tile_count", "_decal_lattice"):
-    match = re.search(rf"\ndef {name}\(.*?(?=\n\ndef |\n\nclass |\Z)", source, re.S)
-    assert match, f"{name} not found in harness source"
-    exec(compile(match.group(0), f"<{name}>", "exec"), H)
+# Local names are `bezier` (a curve) and `decals` (a list of parts) throughout the body below,
+# so the modules are reached through this table rather than shadowed by them.
+H = {
+    "_LANE_ARC_SAMPLES": bezier_math.ARC_SAMPLES,
+    "_LANE_MAX_TILES": lane_math.MAX_TILES,
+    "_DECAL_MAX_ROWS": decal_rules.MAX_ROWS,
+    "_DECAL_SHAPE_TOLERANCE": decal_rules.SHAPE_TOLERANCE,
+    "_DECAL_DIP_FRACTION": decal_rules.DIP_FRACTION,
+    "_DECAL_DRAPE_MARKING": decal_rules.LIFT["lane_marking"],
+    "_DECAL_DRAPE_TINT": decal_rules.LIFT["lane_tint"],
+    "_bezier_point_vec": bezier_math.evaluate,
+    "_cut_bezier": bezier_math.cut,
+    "_arc_table_vec": bezier_math.arc_table,
+    "_curve_length": bezier_math.length,
+    "_shape_rows": decal_rules.shape_rows,
+    "_chord_dip": decal_rules.chord_dip,
+    "_decal_rows": decal_rules.station_count,
+    "_decal_station_rows": decal_rules.station_rows,
+    "_lane_tile_count": lane_math.tile_count,
+    "_decal_lattice": decal_rules.lattice,
+}
 
 failures = 0
 
@@ -224,9 +236,12 @@ else:
                     bezier = ((base[3], base[2], base[1], base[0])
                               if part.get("inverted") else base)
                     asset = part.get("assetId", "")
-                    eps = (H["_DECAL_DRAPE_MARKING"]
-                           if ("Line" in asset or "Crosswalk" in asset)
-                           else H["_DECAL_DRAPE_TINT"])
+                    # The producer's own `decalRole`, through the shipped rule — NOT the
+                    # assetId substring test this line used to carry. The two disagree on 7 of
+                    # the 43 decal parts in the shipped catalogue, all one way: real markings
+                    # demoted to the wear tint's lower lift, i.e. this sweep was scoring them
+                    # against a tolerance the importer never uses.
+                    eps = decal_rules.drape_lift(part.get("decalRole"))
                     rows = rows_for(bezier, eps)
                     dip = measured_dip(bezier, rows)
                     spans_seen += 1

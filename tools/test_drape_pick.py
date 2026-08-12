@@ -38,7 +38,10 @@ import sys
 
 import numpy
 
-SRC = os.path.join(os.path.dirname(__file__), "blender_import_bundle.py")
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from csiibundle import bezier as bezier_math
+from csiibundle import decals as decal_rules
+
 BUNDLE = os.path.expandvars(r"%USERPROFILE%\AppData\LocalLow\Colossal Order"
                             r"\Cities Skylines II\ModsData\Carto")
 
@@ -60,17 +63,15 @@ LATERALS = 5
 # nothing about it.
 DENSEST = "densest" in sys.argv[1:]
 
-source = open(SRC, encoding="utf-8").read()
-H = {"numpy": numpy}
-exec(compile("import math", "<math>", "exec"), H)
-for name in ("_DECAL_LIFT", "_DECAL_DRAPE_MARKING", "_DECAL_DRAPE_TINT"):
-    match = re.search(rf"^{name} = .*$", source, re.M)
-    assert match, f"{name} not found in harness source"
-    exec(compile(match.group(0), f"<{name}>", "exec"), H)
-for name in ("_bezier_point_vec",):
-    match = re.search(rf"\ndef {name}\(.*?(?=\n\ndef |\n\nclass |\Z)", source, re.S)
-    assert match, f"{name} not found in harness source"
-    exec(compile(match.group(0), f"<{name}>", "exec"), H)
+# The lifts and the curve evaluator come from `csiibundle` rather than being regexed out of the
+# harness, which imports `bpy` at module scope and cannot be imported under system Python. `H`
+# stays as the one place naming what this test pins, so a rename fails loudly here.
+H = {
+    "_DECAL_LIFT": decal_rules.BEND_LIFT,
+    "_DECAL_DRAPE_MARKING": decal_rules.LIFT["lane_marking"],
+    "_DECAL_DRAPE_TINT": decal_rules.LIFT["lane_tint"],
+    "_bezier_point_vec": bezier_math.evaluate,
+}
 
 # How far above the lane curve a candidate may stand and still plausibly be the surface the
 # marking is painted on. The lane curve IS the carriageway (measured `road_top - lane_path.y`

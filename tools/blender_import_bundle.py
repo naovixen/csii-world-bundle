@@ -131,7 +131,8 @@ from mathutils.bvhtree import BVHTree
 # it explicitly before importing either.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import colour_model
-from csiibundle import frames, glb as glb_reader, png as png_reader, reader, splat as splat_reader
+from csiibundle import bezier, decals, frames, lanes, reader
+from csiibundle import glb as glb_reader, png as png_reader, splat as splat_reader
 
 
 # -- the frame conversion, contract §2 ------------------------------------------------------
@@ -152,46 +153,27 @@ from csiibundle import frames, glb as glb_reader, png as png_reader, reader, spl
 # for every placement; a consumer reading the .glb buffers directly passes None instead.
 _BLENDER_GLTF_BASIS = frames.GLTF_YUP_TO_ZUP
 
-# The ground-paint ladder, in metres of Blender world Z. Everything the game draws by
-# PROJECTION lands on one and the same ground in-game and cannot z-fight; reconstructed as
-# geometry it can, so each layer is lifted clear of the one it paints over, in the order the
-# game composites them:
+# The ground-paint ladder is `csiibundle.decals.LIFT_LADDER` — one table, because splitting it
+# across files is how it got broken. Its docstring records why the ORDER matters and the values
+# do not, and why the bend's pre-drape offset is deliberately not a rung of it.
 #
 #   0.000  terrain / road surface           the thing being painted on
-#   0.008  _DECAL_DRAPE_TINT                lane wear tint          ) on the ROAD, draped
-#   0.014  _DECAL_DRAPE_MARKING             lane markings, crosswalks )  onto it per vertex
-#   0.020  _AREA_LIFT                       §8b surface areas — pavement, driveways, paths
-#   0.030  _INSTANCE_DECAL_LIFT             §4.2a decal instances — bay markings, arrows
+#   0.008  lane_tint                        lane wear tint          ) on the ROAD, draped
+#   0.014  lane_marking                     markings, crosswalks    )  onto it per vertex
+#   0.020  area                             §8b surface areas — pavement, driveways, paths
+#   0.030  instance_decal                   §4.2a decal instances — bay markings, arrows
 #
-# The order matters, not the values: they are all far below the tolerance of anything
-# downstream (a 3 cm error is already inside the tolerance of the ground they sit on). Getting
-# it wrong is visible — an area lifted ABOVE the decal instances standing on it paints the
-# parking bays out of a parking lot, which is exactly what 0.02 vs 0.015 did before
-# 2026-08-08. The two lane values sit lower only because they are draped onto the road surface
-# per vertex rather than conformed piecewise, so they need less clearance; an area and a lane
-# marking never paint the same surface.
-#
-# `_DECAL_LIFT` below is NOT part of that ladder and must not be tuned with it: it is the lane
-# bend's pre-drape offset, and `_drape_block` centres each marking's ±half-height search
-# window on the height it produces. Raising it to 0.030 along with the ladder pushed 8 of one
-# region's 4,694 decal vertices out of the top of their own projector window — a silent
-# accuracy loss, caught only by the A/B count gate.
-_DECAL_LIFT = 0.015
-_INSTANCE_DECAL_LIFT = 0.030
-
-# Lane decal parts (§5B `decal`) cannot use a fixed lift: the game stores lane curves at the
-# base plane of the carriageway, and the rendered surface crowns ABOVE them — measured on a
-# full-city rip, the road top near centre lines is a median 7 mm above the lane path and
-# beats path+_DECAL_LIFT on 42% of samples, which is why bent markings vanish into the
-# asphalt. The game never sees the problem because a decal is a projector volume, painted
-# onto whatever surface it meets. The harness equivalent is a drape: sample the road surface
-# under the marking and snap onto it (see _decal_rows / Tier 1b-1c near
-# _bend_lane_part — the old fixed-step subdivide-every-vertex approach was the single
-# biggest driver of a full-city import's memory and ray-cast cost, and is gone). Markings
-# ride a hair higher than the ~12%-alpha wear tint so the two never z-fight where a
-# crosswalk crosses a drive lane.
-_DECAL_DRAPE_MARKING = 0.014
-_DECAL_DRAPE_TINT = 0.008
+# Lane decal parts (§5B `decal`) cannot use a fixed lift at all: the game stores lane curves at
+# the base plane of the carriageway, and the rendered surface crowns ABOVE them — measured on a
+# full-city rip, the road top near centre lines is a median 7 mm above the lane path and beats
+# path + the bend lift on 42% of samples, which is why bent markings vanish into the asphalt.
+# The game never sees the problem because a decal is a projector volume, painted onto whatever
+# surface it meets. The harness equivalent is a drape: sample the road surface under the marking
+# and snap onto it (`_drape_block`).
+_DECAL_LIFT = decals.BEND_LIFT
+_INSTANCE_DECAL_LIFT = decals.LIFT["instance_decal"]
+_DECAL_DRAPE_MARKING = decals.LIFT["lane_marking"]
+_DECAL_DRAPE_TINT = decals.LIFT["lane_tint"]
 
 # Share of decal vertices that may find no surface at all before the drape says so out loud.
 # Region-edge markings whose road sits outside the window are the legitimate cause and they are
@@ -1079,245 +1061,26 @@ def build_networks(networks_path, categories, collection, net_mesh_dir=None, lif
 
 # -- lane geometry, contract §5B v2 ---------------------------------------------------------
 #
-# lanemeshes.jsonl records are bend parameters, not baked meshes: the straight part meshes are
-# stored once under lanemeshes/, laneprefabs.json says how each lane prefab assembles them, and
-# the consumer bends each record's parts along its bézier. The functions below are the
-# reference implementation of the contract's bend algorithm, ported from the producer's former
-# baking code — which itself reproduced the game's BatchDataSystem.UpdateLaneData /
-# BatchInstanceSystem.UpdateLaneInstances. The math is deliberately bpy-free so it can be
-# exercised outside Blender.
+# `csiibundle.lanes` is the reference implementation of the bend, `csiibundle.bezier` the curve
+# maths under it, and `csiibundle.decals` everything about markings. All three are bpy-free and
+# their docstrings carry the reasoning; what remains in this file is the Blender side — loading
+# a part .glb, draping blocks onto the road, and turning the results into objects.
+_LANE_ARC_SAMPLES = bezier.ARC_SAMPLES
+_LANE_MAX_TILES = lanes.MAX_TILES
+_TILE_CHORD_TOL = lanes.TILE_CHORD_TOL
+_TILE_WIDTH_TOL = lanes.TILE_WIDTH_TOL
+_DECAL_SHAPE_TOLERANCE = decals.SHAPE_TOLERANCE
+_DECAL_DIP_FRACTION = decals.DIP_FRACTION
+_DECAL_MAX_ROWS = decals.MAX_ROWS
 
-_LANE_ARC_SAMPLES = 32
-_LANE_MAX_TILES = 256
-
-# Rigid-tile instancing (2026-08-08): the game stamps a tiled part (fence, hedge, sleepers)
-# per tile with its vertex shader; on a straight span that bend IS a rigid transform, so the
-# tile can be an instance of one shared mesh instead of baked vertices — measured on the full
-# city, 85% of all lane vertices were fence/hedge tiles and most fence footage runs straight
-# along lot edges. A tile is instanced only when doing so is exact to these tolerances;
-# everything else (curved tiles, width-tapered spans, hanging cables, the clipped last tile,
-# every decal) bakes exactly as before, so instancing is fidelity-neutral where it applies
-# and absent where it is not.
-_TILE_CHORD_TOL = 0.02   # m: max deviation of the tile's curve window from its 3D chord
-_TILE_WIDTH_TOL = 0.01   # fraction: max widthScale variation across the tile
-
-# Tier 1c (2026-08-07 amendment): the fixed _DECAL_DRAPE_STEP = 3.0 m subdivision drove both
-# the vertex count and the ray-cast count of the old per-vertex drape (2.24M of each for
-# 83,110 markings). Replaced by a sagitta rule: subdivide only as much as the bézier's own
-# curvature demands, measured against the arc-table samples the bend already computes (free
-# reuse, no extra bézier evaluation). A flat run needs one row (its two end stations); a
-# tight curve keeps subdividing until the worst deviation between the true curve and a
-# straight sub-chord falls under tolerance.
-#
-# Two tolerances, because the rows serve two different jobs and only one of them can bury a
-# marking (2026-08-08 fix — the single 3D tolerance below shipped for both and put 13.0% of
-# the city's decal spans under the asphalt, against 3.6% for the fixed 3 m step it replaced):
-#
-#  * _DECAL_SHAPE_TOLERANCE governs how faithfully the flat lattice follows the bézier in
-#    plan. Cutting a corner by 2 cm is invisible, and it cannot bury anything: the drape puts
-#    every vertex on the surface at the vertex's OWN (x, z), wherever the chord placed it.
-#  * _DECAL_DIP_FRACTION governs the axis that does bury: between two draped stations the
-#    mesh is a straight edge, and a road crest RISES above that edge. The tolerance for that
-#    rise cannot be picked independently of the lift — it has to be a fraction of the
-#    marking's own _DECAL_DRAPE_* lift, or the rule permits exactly the burial the lift
-#    exists to prevent. Half leaves the marking clear by at least its remaining half.
-#
-# Measured over the full city's 83,110 decal spans (tools/test_decal_rows.py): spans buried
-# under their own road 3.6% with the 3 m step, 13.0% with the single 3D tolerance, 2 spans
-# (0.002%) now — both pathological vertical curves pinned at the row cap. Vertices
-# 2.24M -> 876k (buried) -> 1.14M, so the drape still costs half what the 3 m step did.
-_DECAL_SHAPE_TOLERANCE = 0.02  # metres of plan-shape deviation from the true curve
-_DECAL_DIP_FRACTION = 0.5      # of the part's own lift, for the vertical rise over a chord
-_DECAL_MAX_ROWS = 64           # same ceiling the old fixed-step code used
-
-
-def _bezier_point_vec(c, t):
-    """De Casteljau, vectorised: `c` is the four (x, y, z) control points, `t` an (S,) array
-    of parameters; returns (S, 3)."""
-    c = numpy.asarray(c, dtype=numpy.float64)
-    t = numpy.asarray(t, dtype=numpy.float64)
-    u = 1.0 - t
-    return ((u ** 3)[:, None] * c[0] + (3 * u * u * t)[:, None] * c[1]
-            + (3 * u * t * t)[:, None] * c[2] + (t ** 3)[:, None] * c[3])
-
-
-def _bezier_tangent_vec(c, t):
-    c = numpy.asarray(c, dtype=numpy.float64)
-    t = numpy.asarray(t, dtype=numpy.float64)
-    u = 1.0 - t
-    return ((3 * u * u)[:, None] * (c[1] - c[0]) + (6 * u * t)[:, None] * (c[2] - c[1])
-            + (3 * t * t)[:, None] * (c[3] - c[2]))
-
-
-def _cut_bezier(c, t0, t1):
-    """The sub-segment of a cubic bézier over [t0, t1], by two De Casteljau splits."""
-    def split_after(points, t):
-        p01 = tuple((1 - t) * points[0][i] + t * points[1][i] for i in range(3))
-        p12 = tuple((1 - t) * points[1][i] + t * points[2][i] for i in range(3))
-        p23 = tuple((1 - t) * points[2][i] + t * points[3][i] for i in range(3))
-        p012 = tuple((1 - t) * p01[i] + t * p12[i] for i in range(3))
-        p123 = tuple((1 - t) * p12[i] + t * p23[i] for i in range(3))
-        p = tuple((1 - t) * p012[i] + t * p123[i] for i in range(3))
-        return (p, p123, p23, points[3]), (points[0], p01, p012, p)
-
-    tail, _ = split_after(c, t0)
-    if t1 >= 1.0 - 1e-9:
-        return tail
-    local = (t1 - t0) / max(1.0 - t0, 1e-9)
-    _, head = split_after(tail, local)
-    return head
-
-
-def _arc_table_vec(c):
-    """Cumulative arc length at _LANE_ARC_SAMPLES+1 evenly spaced parameters, vectorised.
-    Returns `(t_table, arc_table)`, both `(_LANE_ARC_SAMPLES+1,)` — `t_table` the parameter
-    at each sample, `arc_table` its cumulative arc length, so the pair is directly usable as
-    `numpy.interp`'s `(xp, fp)` to invert arc position back to a curve parameter."""
-    t_table = numpy.linspace(0.0, 1.0, _LANE_ARC_SAMPLES + 1)
-    points = _bezier_point_vec(c, t_table)
-    segment_lengths = numpy.linalg.norm(numpy.diff(points, axis=0), axis=1)
-    arc_table = numpy.concatenate(([0.0], numpy.cumsum(segment_lengths)))
-    return t_table, arc_table
-
-
-def _curve_length(curve):
-    return float(_arc_table_vec(curve)[1][-1])
-
-
-def _shape_rows(points):
-    """Fewest lattice rows whose chords stay within `_DECAL_SHAPE_TOLERANCE` of the curve.
-
-    `points` are the `_LANE_ARC_SAMPLES+1` bézier samples the arc table already computed for
-    this span — reused here so curvature costs nothing extra. A flat run (the curve's own
-    worst deviation from its straight end-to-end chord already under tolerance) gets 1 row
-    = 2 stations; a curved one keeps subdividing, using that a smooth arc's sagitta falls off
-    roughly as the square of the subdivision count. Plan fidelity only — burial is
-    `_decal_rows`'s job, on a different axis and a different tolerance.
-    """
-    chord = points[-1] - points[0]
-    chord_len = float(numpy.linalg.norm(chord))
-    if chord_len < 1e-6:
-        return 1
-    direction = chord / chord_len
-    rel = points - points[0]
-    perp = rel - numpy.outer(rel @ direction, direction)
-    max_sagitta = float(numpy.linalg.norm(perp, axis=1).max())
-    if max_sagitta <= _DECAL_SHAPE_TOLERANCE:
-        return 1
-    return max(1, min(_DECAL_MAX_ROWS,
-                      int(math.ceil(math.sqrt(max_sagitta / _DECAL_SHAPE_TOLERANCE)))))
-
-
-def _chord_dip(arc_table, height, rows):
-    """How far the span's vertical profile rises above the chord polyline of `rows` rows.
-
-    This is the quantity that buries a marking: the drape pins each station onto the road
-    surface, the mesh between two stations is a straight edge, and anywhere the surface
-    crests above that edge by more than the lift, the asphalt wins the depth test. Measured
-    on the arc table's own samples, arc-parameterised exactly as `_bend_lane_part` places
-    stations (`arc_pos = stations * total_arc`), so it costs two interpolations over
-    `_LANE_ARC_SAMPLES+1` values and no bézier evaluation at all.
-
-    `height` is the bundle-frame up axis of those samples. The lane curve is the proxy for
-    the surface profile here — the carriageway is built along the same curve — so this sees
-    grade changes, not the crown, which the per-vertex drape handles on its own.
-    """
-    total = float(arc_table[-1])
-    station_arc = numpy.linspace(0.0, total, rows + 1)
-    station_height = numpy.interp(station_arc, arc_table, height)
-    return float((height - numpy.interp(arc_table, station_arc, station_height)).max())
-
-
-def _decal_rows(points, arc_table, drape_eps):
-    """Lattice rows for one decal span: plan fidelity, then refined until it cannot bury.
-
-    The shape rule alone measures deviation from the 3D chord, which on a road is dominated
-    by the horizontal bend — the axis that cannot bury a marking. So it both over-subdivides
-    flat bends and, worse, leaves a long straight run over a crest at a single row: a 19 mm
-    crest is inside a 20 mm tolerance and outside a 14 mm lift. The refinement below doubles
-    the rows until the measured rise over a chord is at most `_DECAL_DIP_FRACTION` of the
-    part's own lift — a measured bound, not the `1/rows²` extrapolation the shape rule
-    assumes, which a bézier with concentrated curvature does not obey.
-
-    `drape_eps` is None for a part that will not be draped, which needs plan fidelity only.
-    """
-    rows = _shape_rows(points)
-    if drape_eps is None or float(arc_table[-1]) < 1e-6:
-        return rows
-    target = drape_eps * _DECAL_DIP_FRACTION
-    height = points[:, 1]
-    while rows < _DECAL_MAX_ROWS and _chord_dip(arc_table, height, rows) > target:
-        rows = min(_DECAL_MAX_ROWS, rows * 2)
-    return rows
-
-
-def _decal_station_rows(rows, n_total):
-    """Lattice stations for one decal span plus each station's within-period V parameter.
-
-    The game repeats a decal's texture `n_total` times along the span (BuildCurveMatrix's
-    `curve.m_Length / max(1, size.z)`, quantised by tilingCount — audit §39). Baking that
-    into vertex UVs needs a seam at every integer of `n = n_total · station`, so this merges
-    the curvature-driven rows (`linspace` over `rows`) with a DUPLICATED station at each
-    interior period boundary: the first copy ends the old period (`v_frac = 1`), the second
-    starts the next (`v_frac = 0`). Authored V per row is `v_near + (v_far − v_near)·v_frac`
-    — the corner-lerp form, because the quad's UV rect is arbitrary after the m_TextureArea
-    rescale (contract §4.2a), never assume [0, 1]. The last period is partial when `n_total`
-    is fractional — game-true (the shader's frac() of the repeated parameter).
-
-    Curvature stations within 1e-6 of a boundary yield to the boundary pair (a third
-    coincident station would add a zero-extent gap for `_decal_lattice` to skip). Boundary
-    rows are correctness-mandatory and therefore NOT capped by `_DECAL_MAX_ROWS` — that cap
-    bounds curvature refinement cost; clamping a period seam would smear the texture across
-    the wrap, the very defect this exists to prevent. Returns `(stations, v_frac)`, both
-    ascending-station `(M,)` float arrays.
-    """
-    base = numpy.linspace(0.0, 1.0, rows + 1)
-    bounds = numpy.arange(1, math.ceil(n_total - 1e-9)) / n_total
-    if len(bounds) == 0:
-        return base, base * n_total
-    keep = base[numpy.abs(base[:, None] - bounds[None, :]).min(axis=1) > 1e-6]
-    tag = numpy.concatenate([numpy.zeros(len(keep)), numpy.ones(len(bounds)),
-                             numpy.full(len(bounds), 2.0)])
-    val = numpy.concatenate([keep, bounds, bounds])
-    order = numpy.lexsort((tag, val))  # by station; period-end copy before period-start copy
-    stations, tag = val[order], tag[order]
-    # Period index per station: `searchsorted(left)` puts an interior station in its own
-    # period and a boundary station in the period it ENDS; the start copy (tag 2) bumps up.
-    period = numpy.searchsorted(bounds, stations, side="left") + (tag == 2.0)
-    v_frac = n_total * stations - period
-    return stations, numpy.clip(v_frac, 0.0, 1.0)
-
-
-def _lane_tile_count(span_length, mesh_length, tiling_count, geometry_tiling):
-    """BatchDataHelpers.GetTileCount with the span's length in place of the whole curve's."""
-    if tiling_count:
-        clip = round(span_length / max(1.0, mesh_length) * tiling_count)
-        tiles = (clip + tiling_count - 1) // tiling_count
-        return (min(_LANE_MAX_TILES, tiles) if geometry_tiling else min(1, tiles)), clip
-    if geometry_tiling:
-        return max(1, min(_LANE_MAX_TILES,
-                          math.ceil(span_length / max(1.0, mesh_length) - 0.0001))), 0
-    return 1, 0
-
-
-def _hang_drop_vec(control, t):
-    control = numpy.asarray(control, dtype=numpy.float64)
-    t = numpy.asarray(t, dtype=numpy.float64)
-    u = 1.0 - t
-    return ((u ** 3) * control[0] + (3 * u * u * t) * control[1]
-            + (3 * u * t * t) * control[2] + (t ** 3) * control[3])
-
-
-def _quat_apply_vec(q, v):
-    """Rotate an (N, 3) array of bundle-frame vectors by bundle quaternion [x, y, z, w]."""
-    x, y, z, w = q
-    v = numpy.asarray(v, dtype=numpy.float64)
-    tx = 2 * (y * v[:, 2] - z * v[:, 1])
-    ty = 2 * (z * v[:, 0] - x * v[:, 2])
-    tz = 2 * (x * v[:, 1] - y * v[:, 0])
-    return numpy.stack((v[:, 0] + w * tx + y * tz - z * ty,
-                        v[:, 1] + w * ty + z * tx - x * tz,
-                        v[:, 2] + w * tz + x * ty - y * tx), axis=1)
+_bezier_point_vec = bezier.evaluate
+_bezier_tangent_vec = bezier.tangent
+_cut_bezier = bezier.cut
+_arc_table_vec = bezier.arc_table
+_curve_length = bezier.length
+_lane_tile_count = lanes.tile_count
+_hang_drop_vec = lanes.hang_drop
+_quat_apply_vec = lanes.quat_apply
 
 
 class _ProjectionSurface:
@@ -1443,345 +1206,11 @@ class _ProjectionSurface:
         return best
 
 
-def _decal_quad_info(verts, tris, uvs):
-    """Reduce a simple two-triangle decal rectangle to its four corners, for direct lattice
-    generation (`_decal_lattice`) instead of subdividing a fixed mesh. Returns None for
-    anything else — a non-rectangle decal source (rare) takes the general, unsubdivided
-    path, exactly the old `_subdivide_decal_quad`'s `return source` guard.
-
-    `verts` (4, 3), `tris` (2, 3) int, `uvs` (2, 3, 2) — one source asset, bundle frame /
-    part-local, called once per unique asset id (there are dozens, not thousands): this
-    stays plain Python, no part of it runs per marking.
-    """
-    if len(verts) != 4 or len(tris) != 2:
-        return None
-    corner_uv = {}
-    for tri, tri_uv in zip(tris, uvs):
-        for vertex, uv in zip(tri, tri_uv):
-            corner_uv.setdefault(int(vertex), (float(uv[0]), float(uv[1])))
-    z_sorted = sorted(float(v[2]) for v in verts)
-    if abs(z_sorted[0] - z_sorted[1]) > 1e-4 or abs(z_sorted[2] - z_sorted[3]) > 1e-4:
-        return None
-    near = sorted((i for i in range(4) if abs(float(verts[i][2]) - z_sorted[0]) <= 1e-4),
-                  key=lambda i: verts[i][0])
-    far = sorted((i for i in range(4) if abs(float(verts[i][2]) - z_sorted[2]) <= 1e-4),
-                 key=lambda i: verts[i][0])
-    if len(near) != 2 or len(far) != 2:
-        return None
-
-    def tri_up(a, b, c):
-        # y-component of the cross product: the winding as seen from above (part-local space)
-        return (b[0] - a[0]) * (c[2] - a[2]) - (b[2] - a[2]) * (c[0] - a[0])
-
-    v0, v1, v2 = (verts[i] for i in tris[0])
-    lattice_v0, lattice_v1, lattice_v3 = verts[near[0]], verts[near[1]], verts[far[0]]
-    flip = tri_up(v0, v1, v2) * tri_up(lattice_v0, lattice_v1, lattice_v3) < 0
-    return {
-        "near_left": tuple(float(c) for c in verts[near[0]]),
-        "near_right": tuple(float(c) for c in verts[near[1]]),
-        "far_left": tuple(float(c) for c in verts[far[0]]),
-        "far_right": tuple(float(c) for c in verts[far[1]]),
-        "uv_near_left": corner_uv[int(near[0])], "uv_near_right": corner_uv[int(near[1])],
-        "uv_far_left": corner_uv[int(far[0])], "uv_far_right": corner_uv[int(far[1])],
-        "flip": flip,
-    }
-
-
-def _decal_lattice(quad, stations, v_frac):
-    """`(M, 2)`-station lattice for one decal quad, part-local — verts `(2*M, 3)`
-    interleaved `[left0, right0, left1, right1, ...]`, tris/uvs to match.
-
-    `stations`/`v_frac` come from `_decal_station_rows`: positions lerp by station,
-    UVs by the within-period parameter, so a duplicated boundary station produces two
-    bitwise-identical rows whose UVs differ — the split seam the repeated texture needs.
-    Triangles bridge only gaps with positive station extent, so the duplicate pair emits
-    no zero-area faces.
-
-    This is the per-marking hot path (called once per bent decal instance — tens of
-    thousands of times a city), so it is pure numpy with no Python loop over rows and no
-    per-vertex list, unlike the mesh it replaces (`_subdivide_decal_quad`, which built a
-    Python list of (material, indices, uvs) tuples per row).
-    """
-    t = stations[:, None]  # (M, 1)
-    nl, nr = numpy.array(quad["near_left"]), numpy.array(quad["near_right"])
-    fl, fr = numpy.array(quad["far_left"]), numpy.array(quad["far_right"])
-    left = nl + (fl - nl) * t
-    right = nr + (fr - nr) * t
-    verts = numpy.empty((2 * len(stations), 3), dtype=numpy.float64)
-    verts[0::2] = left
-    verts[1::2] = right
-
-    w = v_frac[:, None]
-    unl, unr = numpy.array(quad["uv_near_left"]), numpy.array(quad["uv_near_right"])
-    ufl, ufr = numpy.array(quad["uv_far_left"]), numpy.array(quad["uv_far_right"])
-    uv_left = unl + (ufl - unl) * w
-    uv_right = unr + (ufr - unr) * w
-    uv = numpy.empty((2 * len(stations), 2), dtype=numpy.float64)
-    uv[0::2] = uv_left
-    uv[1::2] = uv_right
-
-    row = numpy.nonzero(stations[1:] > stations[:-1])[0]
-    l0, r0, l1, r1 = row * 2, row * 2 + 1, row * 2 + 2, row * 2 + 3
-    tris = numpy.stack((numpy.stack((l0, r0, r1), axis=1),
-                        numpy.stack((l0, r1, l1), axis=1)), axis=1).reshape(-1, 3)
-    if quad["flip"]:
-        tris = tris[:, ::-1]
-    tri_uvs = uv[tris]
-    return verts, tris, tri_uvs
-
-
-def _quat_to_mat3(q):
-    """Bundle quaternion [x, y, z, w] as a 3×3 rotation matrix (columns = rotated axes)."""
-    x, y, z, w = q
-    return numpy.array([
-        [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
-        [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
-        [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)],
-    ], dtype=numpy.float64)
-
-
-def _rigid_tile_matrix(bezier, t_table, arc_table, arc_start, arc_per_z,
-                       span, inverted, width_scale, pos, rot, bmin_z, mesh_length):
-    """The Blender-frame 4×4 that places one straight tile rigidly, or None if the bend is
-    not rigid over this tile's window.
-
-    The bend maps a source vertex `v` as `world = P(arc(z)) + right·(local_x·width) +
-    ŷ·local_y` with `local = R_part·v + pos` and `arc(z) = arc_start + z_fraction·arc_per_z`.
-    When the curve window is straight (within `_TILE_CHORD_TOL`, 3D — so grade curvature
-    counts too) and width is constant (within `_TILE_WIDTH_TOL`), `P(arc)` is linear in `z`
-    and the whole map is one affine transform: columns `right·width`, `ŷ`, `chord/mesh_length`
-    (the chord carries the grade, so a fence on a straight climb shears exactly as the bend
-    sheared it). Composed with the part's own (rot, pos) and conjugated by the bundle→Blender
-    axis swap, it applies verbatim to the shared part mesh datablock — which already carries
-    that swap — so an instanced tile and a baked tile are bit-equal in world space.
-    """
-    arc_end = arc_start + arc_per_z
-    arcs = numpy.array([arc_start, arc_start + 0.25 * arc_per_z, arc_start + 0.5 * arc_per_z,
-                        arc_start + 0.75 * arc_per_z, arc_end])
-    t = numpy.interp(arcs, arc_table, t_table)
-    points = _bezier_point_vec(bezier, t)
-    chord = points[-1] - points[0]
-    chord_len = float(numpy.linalg.norm(chord))
-    if chord_len < 1e-6:
-        return None
-
-    deviation = numpy.linalg.norm(numpy.cross(points[1:4] - points[0], chord), axis=1) / chord_len
-    if float(deviation.max()) > _TILE_CHORD_TOL:
-        return None
-
-    t_global = numpy.where(inverted, span[1] - (span[1] - span[0]) * t[[0, -1]],
-                           span[0] + (span[1] - span[0]) * t[[0, -1]])
-    w0, w1 = (width_scale[0] + (width_scale[1] - width_scale[0]) * t_global)
-    if abs(w1 - w0) > _TILE_WIDTH_TOL * max(abs(w0), abs(w1), 1e-6):
-        return None
-    width = (w0 + w1) * 0.5
-
-    # right = normalize(cross(up, forward)), horizontal — exactly the bend's frame.
-    flat = math.hypot(chord[0], chord[2])
-    if flat < 1e-6:
-        return None
-    right = numpy.array([chord[2] / flat, 0.0, -chord[0] / flat])
-
-    outer = numpy.empty((3, 3), dtype=numpy.float64)
-    outer[:, 0] = right * width
-    outer[:, 1] = (0.0, 1.0, 0.0)
-    outer[:, 2] = chord / mesh_length
-    m3 = outer @ _quat_to_mat3(rot)
-    translation = points[0] - outer[:, 2] * bmin_z + outer @ numpy.asarray(pos, dtype=numpy.float64)
-
-    # Conjugate by the bundle→Blender frame map (the [0, 2, 1] axis swap the baked path
-    # applies to world vertices; the shared part datablock carries the same swap at rest).
-    swap = (0, 2, 1)
-    matrix = numpy.eye(4)
-    matrix[:3, :3] = m3[swap, :][:, swap]
-    matrix[:3, 3] = translation[list(swap)]
-    return matrix
-
-
-def _bend_lane_part(part, source, curve, spans, curve_length, width_scale, hang, sink):
-    """Bend one catalogue part along one lane record's curve, appending blocks to `sink`.
-
-    `sink["blocks"]` collects one dict per (span, tile, material): `verts` (N, 3) bundle-
-    frame world positions, `tris` (M, 3) local indices, `uvs` (M, 3, 2)`, `material`, and
-    `drape_eps` (the lift epsilon, or None for a part that never drapes — the road-surface
-    sampling itself happens later in `build_lanes`, once every block exists). Everything
-    here mirrors the producer's former baking loop, which reproduced what the game's vertex
-    shader does — vectorised across a part's stations instead of looping per vertex.
-
-    A `decal` part is wear tint and road markings — crosswalks, centre lines, the drive
-    lanes' ~12%-alpha darkening — projected over the junction surface the arms' node meshes
-    pave (contract §5B, audit §18). Bent here like any part, it is lifted a little above the
-    surface so it wins the depth test the projection wins in-game.
-    """
-    lift = _DECAL_LIFT if part.get("decal") else 0.0
-    pos = numpy.asarray(part["pos"], dtype=numpy.float64)
-    rot = part["rot"]
-    bmin, bmax = part["boundsMin"], part["boundsMax"]
-    mesh_length = max(bmax[2] - bmin[2], 0.001)
-    tiling_count = part.get("tilingCount", 0)
-    geometry_tiling = part.get("geometryTiling", False)
-    inverted = part.get("inverted", False)
-    is_decal = bool(part.get("decal"))
-    # Tier 0: the marking's OWN projector reach, not a tuned probe/depth constant.
-    half_height = (bmax[1] - bmin[1]) * 0.5
-
-    quad = source.get("quad") if (is_decal and source is not None) else None
-    decal_role = part.get("decalRole") if is_decal else None
-
-    for span in spans:
-        span_length = curve_length * (span[1] - span[0])
-        if span_length <= 0.1:
-            continue
-
-        bezier = _cut_bezier(curve, span[0], span[1])
-        if inverted:
-            bezier = (bezier[3], bezier[2], bezier[1], bezier[0])
-
-        t_table, arc_table = _arc_table_vec(bezier)
-        total_arc = max(float(arc_table[-1]), 0.001)
-
-        # A decal part is a projector box the game stretches chord-to-chord along the lane
-        # (BuildTransformMatrix's isDecal path) — but only the GEOMETRY stretches. The
-        # texture repeats: BuildCurveMatrix scales the along-curve parameter by
-        # N = length / max(1, meshLength), quantised to round(N·T)/T when T = tilingCount
-        # is non-zero, so V runs 0→N over the span (audit §39). And GetTileCount is called
-        # for decals exactly as for tiled geometry: T ≠ 0 with clip = round(L/S·T) == 0
-        # means the game draws ZERO instances — a sub-half-period stub carries no marking.
-        if is_decal:
-            tiles, clip = _lane_tile_count(total_arc, mesh_length, tiling_count, False)
-            tiles = min(tiles, 1)  # geometry stays the single chord-to-chord box
-            n_total = (clip / tiling_count if tiling_count
-                       else total_arc / max(1.0, mesh_length))
-        else:
-            tiles, clip = _lane_tile_count(span_length, mesh_length, tiling_count, geometry_tiling)
-        if tiles < 1 or (tiling_count > 0 and clip < 1):
-            if is_decal:
-                sink["decal_dropped"] = sink.get("decal_dropped", 0) + 1
-            continue
-
-        drape_eps = None
-        if is_decal:
-            # §5B `decalRole` — the producer's own classification, added by 4d6959d precisely
-            # to retire the substring test that used to stand here ("Line" or "Crosswalk" in
-            # the asset id). On the shipped catalogue the two disagree on 7 of 43 decal parts,
-            # all one way: Gravel_Pavement_Transition, Tiled_Transition, Train_Rails_Cover,
-            # Train_Sleepers_Lod, Tram_Rails_Base, Tram_Rails and Public_Transport_Lane_3 are
-            # markings that the substring test demoted to the wear tint's lower lift.
-            drape_eps = (_DECAL_DRAPE_MARKING if decal_role == "marking"
-                         else _DECAL_DRAPE_TINT)
-        if is_decal and quad is not None:
-            # Tier 1c: rows from THIS span's own curvature (reusing its arc-table samples),
-            # not a fixed 3 m step. The lattice is generated directly — no static mesh to
-            # subdivide, and no memo needed since this is already O(rows), not O(mesh size).
-            # The row count needs the part's lift, so `drape_eps` is settled above it.
-            # Texture-period boundaries (integer n) are merged in as duplicated stations so
-            # the repeated V never smears a triangle across the wrap seam (audit §39).
-            curve_points_full = _bezier_point_vec(bezier, t_table)
-            rows = _decal_rows(curve_points_full, arc_table, drape_eps)
-            row_stations, v_frac = _decal_station_rows(rows, n_total)
-            raw_verts, tris_local, uv_local = _decal_lattice(quad, row_stations, v_frac)
-            material_groups = [(quad["material"], numpy.arange(len(tris_local)))]
-        elif is_decal:
-            # Not a simple rectangle (rare) — general path, unsubdivided, same guard the old
-            # _subdivide_decal_quad's `return source` gave it.
-            raw_verts, tris_local, uv_local = source["verts"], source["tris"], source["uvs"]
-            tri_mat = source["tri_material"]
-            material_groups = [(source["materials"][m], numpy.nonzero(tri_mat == m)[0])
-                               for m in numpy.unique(tri_mat)]
-        else:
-            raw_verts, tris_local, uv_local = source["verts"], source["tris"], source["uvs"]
-            tri_mat = source["tri_material"]
-            material_groups = [(source["materials"][m], numpy.nonzero(tri_mat == m)[0])
-                               for m in numpy.unique(tri_mat)]
-
-        local = _quat_apply_vec(rot, raw_verts) + pos
-        z_fraction = (local[:, 2] - bmin[2]) / mesh_length
-        stations, station_of_vert = numpy.unique(z_fraction, return_inverse=True)
-        station_of_vert = station_of_vert.reshape(-1)  # numpy>=2.0 may keep input's ndim
-        local_x = local[:, 0]
-        local_y = local[:, 1]
-        # A part with >1 material (rare — every decal source is one material; only a general
-        # fence/cable mesh can mix them) gets a full `world.copy()` per extra material group
-        # below, i.e. (#materials - 1) x #verts wasted rather than indexing just the subset
-        # each group's tris reference. Deliberately not fixed: it would need renumbering each
-        # group's tri indices into its own compact range, real code for a case this bundle's
-        # lane sources essentially never hit (every multi-material part measured is a small,
-        # non-tiled mesh — a handful of verts, not the million-vertex tiled parts Tier 1a/1c
-        # target), so the complexity isn't worth it unless a future catalogue entry makes
-        # multi-material tiled parts common.
-        share_verts = len(material_groups) == 1
-
-        for tile in range(tiles):
-            if is_decal:
-                # Geometry is the one stretched box regardless of tilingCount — the repeat
-                # lives in the lattice's V (see the gate above), never in clip windows.
-                arc_start, arc_per_z, arc_limit = 0.0, total_arc, total_arc
-                full_tile = False
-            elif tiling_count > 0:
-                clip0 = tile * clip // tiles
-                clip1 = (tile + 1) * clip // tiles
-                if clip1 <= clip0:
-                    continue
-                arc_start = total_arc * clip0 / clip
-                arc_per_z = total_arc * tiling_count / clip
-                arc_limit = total_arc * clip1 / clip
-                full_tile = (clip0 + tiling_count) <= clip1
-            else:
-                arc_start = tile * mesh_length
-                arc_per_z = mesh_length
-                arc_limit = total_arc
-                full_tile = arc_start + mesh_length <= total_arc + 1e-6
-
-            # Rigid-tile gate: a full, un-hung tile whose curve window is straight and whose
-            # width is constant bends into exactly one affine transform — record an instance
-            # and skip the per-vertex bake. Everything failing the gate bakes as before.
-            if full_tile and not is_decal and hang is None and lift == 0.0:
-                matrix = _rigid_tile_matrix(bezier, t_table, arc_table, arc_start, arc_per_z,
-                                            span, inverted, width_scale, pos, rot,
-                                            bmin[2], mesh_length)
-                if matrix is not None:
-                    sink["instances"].append((part["assetId"], matrix))
-                    sink["tiles_instanced"] = sink.get("tiles_instanced", 0) + 1
-                    continue
-            if not is_decal:
-                sink["tiles_baked"] = sink.get("tiles_baked", 0) + 1
-
-            arc_pos = numpy.clip(arc_start + stations * arc_per_z, 0.0, arc_limit)
-            t = numpy.interp(arc_pos, arc_table, t_table)
-            points = _bezier_point_vec(bezier, t)
-            forward = _bezier_tangent_vec(bezier, t)
-            flen = numpy.linalg.norm(forward, axis=1, keepdims=True)
-            forward = forward / numpy.where(flen == 0, 1.0, flen)
-            # right = normalize(cross(up, forward)) with up = +y (bundle frame)
-            right = numpy.stack((forward[:, 2], numpy.zeros(len(t)), -forward[:, 0]), axis=1)
-            rlen = numpy.linalg.norm(right[:, (0, 2)], axis=1, keepdims=True)
-            right = right / numpy.clip(rlen, 1e-9, None)
-
-            t_global = numpy.where(inverted, span[1] - (span[1] - span[0]) * t,
-                                   span[0] + (span[1] - span[0]) * t)
-            width = width_scale[0] + (width_scale[1] - width_scale[0]) * t_global
-            drop = _hang_drop_vec(hang, t_global) if hang is not None else numpy.zeros_like(t_global)
-
-            world = (points[station_of_vert]
-                    + right[station_of_vert] * (local_x * width[station_of_vert])[:, None])
-            world[:, 1] += local_y + lift - drop[station_of_vert]
-
-            for material, tri_rows in material_groups:
-                if len(tri_rows) == 0:
-                    continue
-                block = {
-                    "verts": world if share_verts else world.copy(),
-                    "tris": tris_local[tri_rows],
-                    "uvs": uv_local[tri_rows],
-                    "material": material,
-                    "drape_eps": drape_eps,
-                }
-                if drape_eps is not None:
-                    # Drape samples the vertex's OWN (x, z) — including its lateral offset —
-                    # not the bézier centerline. `_drape_block` reads straight off
-                    # `block["verts"]`, so no extra per-station bookkeeping is stored here.
-                    block["half_height"] = half_height
-                sink["blocks"].append(block)
+_decal_quad_info = decals.quad_info
+_decal_lattice = decals.lattice
+_quat_to_mat3 = lanes.quat_to_mat3
+_rigid_tile_matrix = lanes.rigid_tile_matrix
+_bend_lane_part = lanes.bend_part
 
 
 def _load_lane_source(asset_id, lane_mesh_dir, cache):
@@ -2002,8 +1431,13 @@ def _tile_instancer_object(name, part_obj, matrices, group_cache):
     """A point-cloud mesh (one vertex per tile) carrying each tile's 4×4, instancing the
     shared part object through `_tile_instance_group`. Point positions duplicate the matrix
     translations only so the object has sensible bounds; the transform node replaces the
-    instance matrix wholesale."""
-    mats = numpy.asarray(matrices, dtype=numpy.float64)
+    instance matrix wholesale.
+
+    `matrices` arrive from `lanes.bend_part` in the BUNDLE frame and are conjugated here — the
+    same swap `_lane_part_object` applies to the shared datablock's vertices, which is what
+    makes an instanced tile and a baked tile the same triangles in the same place.
+    """
+    mats = numpy.asarray([frames.to_zup_transform(m) for m in matrices], dtype=numpy.float64)
     mesh = bpy.data.meshes.new(name)
     mesh.vertices.add(len(mats))
     mesh.vertices.foreach_set(
@@ -2360,15 +1794,9 @@ _SPLAT_CHANNELS_DEFAULT = splat_reader.SPLAT_CHANNELS_DEFAULT
 _GROUND_FALLBACK_COLOUR = splat_reader.GROUND_FALLBACK_COLOUR
 
 
-def _bezier_points(control, t):
-    """Evaluate a cubic Bézier at parameters `t` — the game's own MathUtils.Position.
-
-    `control` is (4, 3); `t` is (S,); the result is (S, 3).
-    """
-    a, b, c, d = (numpy.asarray(control[i], dtype=numpy.float64) for i in range(4))
-    t = t[:, None]
-    u = 1.0 - t
-    return (u * u * u) * a + (3.0 * u * u * t) * b + (3.0 * u * t * t) * c + (t * t * t) * d
+# The clip-strip rasteriser evaluated its own copy of the cubic Bézier — the same formula as
+# the lane bend's, written twice. One copy now, in `csiibundle.bezier`.
+_bezier_points = bezier.evaluate
 
 
 # Quads spanning fewer rows than this take the scalar scanline: below it the whole-array
