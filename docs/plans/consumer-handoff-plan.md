@@ -20,12 +20,17 @@ game-vs-bundle analysis in `docs/game-fidelity-audit.md` and `docs/cs2-api-audit
 
 ## 1. Where things stand
 
-**The bundle on disk** is a full rip from **2026-08-12 15:13** — 1,666 s, 8 stages, zero
-failures, zero dropped pieces. Schema 2, 23 layers.
+**The bundle on disk** is a full rip from **2026-08-12 18:10** — 8 stages, zero failures, zero
+dropped pieces. Schema 2, 23 layers.
 
-1,283,514 instances · 5,728 meshes · 4,714 materials · 3,589 textures · 8,259 network segments
-(7,289 with geometry, 970 centerline-only) · 680,629 lanes · 119,302 lane-geometry records ·
-27,156 areas · 49,730 clip volumes.
+1,283,513 instances · **5,792 meshes** · 4,784 materials · 3,729 textures · 8,259 network segments
+· 680,629 lanes · 119,302 lane-geometry records · 27,156 areas · 49,730 clip volumes.
+
+**It validated P18, P17, P19 and PROBE-2** — `__teen` 32 + `__elderly` 32 (the mesh count's +64),
+`grading.json` carrying `fog`, tiling unchanged because the fallback correctly did not fire, and
+`COLLAPSED:` reporting nothing. **One producer change post-dates it**: the `splitToning` capture
+and the valued `diagnostics.unread`, both added *because* of what this rip reported. Those two
+ride the next rip; everything else in the bundle is current.
 
 **Before trusting it, re-run the staleness check.** Producer changes make it a description of
 old code, and only a rip in-game refreshes it:
@@ -35,10 +40,6 @@ git log --format='%h %ad %s' --date=format:'%Y-%m-%d %H:%M' \
         --since='<bundle.json mtime>' -- Systems IO Domain
 ```
 
-As of this writing that lists **this session's producer commits**, so the bundle predates them:
-it is still the right source for *what a real city contains*, and the wrong source for *did this
-session's changes work*. They are verified at H14.
-
 **Gates, all green:**
 
 | gate | result |
@@ -46,7 +47,7 @@ session's changes work*. They are verified at H14.
 | `dotnet build -c Release` | compiles clean, 0 warnings, 0 errors |
 | `tools/test_bundle_contract.py` | 63/63 |
 | `tools/validate_bundle.py docs/example-bundle` | VALID, 0 warnings |
-| `tools/validate_bundle.py <full city>` | VALID, **1 warning** (was 133 — see PILLARS-2) |
+| `tools/validate_bundle.py <full city>` | VALID, **1 warning** on the 18:10 rip (was 133 — see PILLARS-2). The one warning is the genuine parent advisory; the 119 declared gaps are a note |
 | decal rows / png decode / splat extras / drape pick | pass |
 | node fan / clip cut | pass (six windows) |
 
@@ -161,7 +162,7 @@ than counted as proven.
 | The terrain rendered brown: `R` and `G` were swapped, so dirt blanketed the landmass and grass was painted on the lakebed | Channel map corrected — `R`=dirt, `G`=grass, and `B`/`A` each pack **two 4-bit weights** (`extra1:extra2`, `extra3:extra4`; decode `& 15` and `>> 4`, normalise by **15**). Before this, two paint channels shipped no texture at all |
 | The terrain drew at a tenth of its albedo | Blender premultiplies an image's colour by its alpha, and CS2 packs *data* into alpha. Fixed with `CHANNEL_PACKED`. The importer now reproduces shipped albedo 1:1 — **do not re-add gain, saturation or tint knobs** |
 | The on-screen palette did not match, and three explanations were wrong | The chain lives once in `tools/colour_model.py`, grading in ACEScg on an OCIO view. Warm-light and tonemapper-choice hypotheses were both refuted by measurement |
-| A hue error remained: +6.9° sand, +6.2° pavement, +1.2° grass, with light, tonemapper and working space all eliminated (SPLAT-4) | The three reference shots were taken at **different camera distances**, and `Fog` — tinted, distance-dependent — was never in evidence because the bundle did not carry it. It does now (see H1). Re-test when the H14 rip lands the number |
+| A hue error remained: +6.9° sand, +6.2° pavement, +1.2° grass, with light, tonemapper and working space all eliminated (SPLAT-4) | Fog was the suspect and the 18:10 rip **killed it** — fog is on at a 6.9 km mean free path but its tint is pure white, and white attenuation cannot shift hue. The same rip's new `diagnostics.unread` named **`SplitToning`**, a grading operator that tints shadows and highlights separately: the only one in the chain that shifts hue *by luminance*, which is how the residual is distributed (both errors are on bright surfaces, grass is dark and nearly exact). Captured now; the prediction it must satisfy is in H14 |
 
 ### Decisions taken this session
 
@@ -186,16 +187,18 @@ than counted as proven.
 | **H13** | **Producer polish.** One item left: the rip-completion dialog should say *"N prefabs come from asset packs that are not enabled — enable them and re-rip for full fidelity"*, derived from the `unresolved` flag and the 89 unresolved-prefab warnings. It already reports path, stage times and summaries |
 | **H14** | **Final re-rip (user action) + acceptance.** Validate against all 15 schemas; check every ⟳ change against real output; full Blender import for visual acceptance (A/B against pre-rip renders is *not* expected to match — the producer changed); fix measured-fact drift in the docs |
 
-**What H14 must check**, because it is the only place these can be proven:
+**What H14 must check.** The 18:10 rip already settled most of this list — `__teen`/`__elderly`
+at 32 each, `fog` present, `COLLAPSED:` clean, tiling unchanged, validator VALID/1. What is left:
 
-- `__teen` / `__elderly` mesh counts and the tree-variant report line.
-- `grading.json` carries `fog` (or omits it because fog is off), and what `diagnostics.unread`
-  names.
-- **SPLAT-4**: replay the hue residual with the fog tint applied. If it closes, the four-month
-  colour investigation is finished; if it does not, the residual is not the atmosphere either.
-- `COLLAPSED:` reports no rows, or real ones.
-- Validator warning count (expect ~1, not 120).
-- Terrain tiling still reports the same values (the fallback branch should not fire on this map).
+- **`splitToning`** — the block, and with it SPLAT-4. The prediction on record is that
+  `highlights` is tinted toward yellow and `shadows` is at or near grey, because the residual is
+  +6.9° on sand and +6.2° on pavement (both bright) against +1.2° on grass (dark), and split
+  toning is the only operator in the chain that shifts hue by luminance. **Both ends tinted
+  equally, or only the shadow end, falsifies it** — write the outcome down either way.
+- `diagnostics.unread` now reports values, so read it again: the fifteen remaining components
+  arrive with their overridden parameters attached, and anything colour-relevant among them is
+  the next lead if split toning is not the answer.
+- Whatever H12's C# refactor touches.
 
 ---
 
