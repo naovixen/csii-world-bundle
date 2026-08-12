@@ -2509,3 +2509,85 @@ re-scores the two named segments with every triangle past `|x| > 1.88 m` in piec
 standing in for the piece that produced nothing — and **fails if the census does not then report
 the defect**. On the shipped bundle: worst gap 0.20 m clean, **11.64 m amputated**. A pass
 therefore means the gate is live, not that nothing was looked at.
+
+## 44. ALPHA resolved: the bundle drew geometry the game hides, and the alpha class is not a defect (2026-08-12)
+
+Two separate claims lived under "ALPHA". One is a real regression with a game-true fix; the other
+is falsified by measurement.
+
+### 44.1 The regression: `0eeb24f` removed a filter it did not know it was relying on
+
+Reported by the user: since the piece fix, the import "renders stuff which does not render in
+game" — while the tram tracks and platforms it was written for are correct and must stay.
+
+`NetCompositionMeshRefSystem` decides which pieces make up a composition's mesh, and does it four
+times over (hash, equality, build) under exactly one test:
+
+    (piece.m_PieceFlags & NetPieceFlags.HasMesh) != 0 && (piece.m_SectionFlags & NetSectionFlags.Hidden) == 0
+
+A piece failing it never enters a mesh entity, so `BatchMeshSystem` never fills its
+`MeshVertex`/`MeshIndex`/`MeshMaterial` buffers, so `BatchMeshHelpers`' own
+`if (!m_MeshVertices.HasBuffer(compositionPiece.m_Piece)) continue` skips it. **The buffer check
+this port inherited was doing two jobs at once** — residency *and* this filter — and `0eeb24f`
+fixed the first by falling back to the geometry asset, which silently removed the second. The
+asset is perfectly readable for a hidden piece; the game just never draws it. Hence 91 opaque
+taxiway slabs across the airport, and the four `Invisible Airplane *` pieces sitting in the 35
+that the 23:37 rip read from the asset.
+
+Both halves of the test come off the `NetCompositionPiece` the walk already has:
+
+- `HasMesh` is set in `NetInitializeSystem` from `netPieceInfo.m_Piece.meshCount != 0`.
+- `Hidden` is **per placement, not per piece prefab**. A section prefab that hides all four piece
+  layers (`m_HiddenLayers == Surface|Bottom|Top|Side`) carries `NetSectionFlags.Hidden` outright;
+  otherwise `FillCompositionPieces` adds it to the individual pieces whose layer the section
+  hides, by ANDing the section's `HiddenSurface/Bottom/Top/Side` against the piece's own
+  `Surface/Bottom/Top/Side` role flag. So it must be read from the placement, which is where the
+  port now reads it.
+
+`BuildComposition` applies the test before it fetches geometry, so a hidden piece costs no read,
+and the rip report names what it skipped. This is a pure exclusion: nothing that was drawn
+correctly before can be lost by it, because everything it drops is something the game does not
+put in a mesh. **Built, deployed, awaiting an in-game re-rip.**
+
+### 44.2 The "~2,500 materials with a real alpha channel and no `alphaMode`" is NOT a defect
+
+§42.7 inferred a wide class from the taxiway. Measured on the 23:37 rip, the class is real and
+harmless, and the taxiway was never a member of it.
+
+Cross-tabulating all 4,714 materials by `template:` against `alphaMode` gives **zero scatter** —
+every material of a template gets the same mode:
+
+    mask   DefaultCutout 349, DefaultCutoutDoubleSided 88, VegLeaves 51, CurvedCutout 6,
+           DefaultHashedCutout 3, CurvedHashedCutout 1
+    blend  DefaultGlassDoubleSided 109, WaterGeneric 48, DefaultDecal 43, CurvedDecal 7,
+           WaterStream 3, CurvedOverlay 3, CurvedDecalDeterioration 2, CurvedDecalColorOnly 1,
+           CurvedTransparent 1
+    none   Default 3197, Windows 652, VegRoot 51, Grass 40, Curved 28, NetCompositionMeshLit 28,
+           Placeholder 2, Base 1
+
+Every cutout template clips, every glass/decal/water/overlay template blends, and the rest are
+opaque. `MaterialRipSystem.AlphaMode` is not missing shader state for "several templates" — it is
+reading it correctly, and an **opaque HDRP material ignores its base-colour alpha exactly as
+glTF's OPAQUE default does.** Reproducing that alpha would be the bug.
+
+What the alpha channel actually holds, on a 120-material sample of the `Default` template (44
+fully opaque, 70 binary, 6 graded): the binary ones are **signs, posters and billboards** whose
+alpha is a 4-6% transparent border — atlas padding and a UV-bleed guard, not a cutout. Every
+`Windows` sample is graded, and that template is the one CS2 binds `_InteriorAtlas` to (the rip
+report names it as the one library property the contract's five do not carry): an opaque window
+with a faked parallax interior, whose alpha is an effect weight. Blanket transparency on either
+class would make signs fringe and buildings see-through — §42.7's own warning, now measured
+rather than suspected.
+
+Residual risk, stated: this rules out a *missing* mode for the templates present in this city. A
+template whose shader is transparent while its material carries neither `_SURFACE_TYPE_TRANSPARENT`
+nor a `_SurfaceType` float would still read opaque, and nothing short of comparing a render
+against the game would catch it. No such template appears here.
+
+### 44.3 DEADPASS closed
+
+`hide_invisible_materials` is deleted from the harness. It looked for "invisible" in a template
+name; templates are shader names (`NetCompositionMeshLit`), never asset names, so it fired zero
+times. With §44.1 the producer no longer emits the geometry at all, which is the right layer for
+it: the game's own rule, applied where the game applies it, rather than a consumer guessing from
+a name.

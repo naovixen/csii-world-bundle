@@ -538,6 +538,37 @@ namespace Carto.Systems
 
             foreach (NetCompositionPiece piece in pieces)
             {
+                // The game's own test for "this piece is part of the composition's mesh", from
+                // `NetCompositionMeshRefSystem` — it hashes, compares and builds the piece set
+                // under exactly `HasMesh != 0 && Hidden == 0`, four times over. A piece failing it
+                // never enters a mesh entity, so `BatchMeshSystem` never fills its buffers, so
+                // `BatchMeshHelpers`' `if (!m_MeshVertices.HasBuffer(piece)) continue` skips it.
+                //
+                // Which is why this walk got away without the test until 2026-08-11: the buffer
+                // check it inherited was doing two jobs at once — residency AND this filter — and
+                // `0eeb24f` fixed the first by falling back to the geometry asset, which removed
+                // the second. The airport's invisible taxiway sections came back as solid slabs.
+                // The asset is readable for these pieces; the game simply never draws them.
+                //
+                // `HasMesh` is `m_Piece.meshCount != 0` (`NetInitializeSystem`). `Hidden` is
+                // resolved per placement: a section whose prefab hides all four piece layers
+                // carries it outright, and `FillCompositionPieces` adds it to any single piece
+                // whose layer (Surface/Bottom/Top/Side) the section hides. So it is a property of
+                // this placement, not of the piece prefab, and must be read here.
+                //
+                if (((piece.m_PieceFlags & NetPieceFlags.HasMesh) == 0)
+                    || ((piece.m_SectionFlags & NetSectionFlags.Hidden) != 0))
+                {
+                    _hiddenPieces++;
+                    if (_hiddenPieceNames.Count < 64)
+                    {
+                        _hiddenPieceNames.Add(Instance.Prefab.TryGetPrefab(piece.m_Piece, out PrefabBase hiddenPiece)
+                                              && (hiddenPiece != null)
+                            ? hiddenPiece.name : $"<entity {piece.m_Piece.Index}>");
+                    }
+                    continue;
+                }
+
                 PieceGeometry source = GetPieceGeometry(piece.m_Piece, cache);
                 if (source == null)
                 {

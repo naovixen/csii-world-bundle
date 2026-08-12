@@ -116,6 +116,14 @@ namespace Carto.Systems
         private int _piecesFromAsset;
         private readonly SortedSet<string> _pieceFromAssetNames = new();
         private readonly SortedSet<string> _emptyPieceNames = new();
+
+        /// <summary>
+        /// Piece placements the game does not draw — no <c>HasMesh</c>, or the section hides that
+        /// piece's layer (§44). The buffer read used to exclude them as a side effect; once the
+        /// geometry asset became the fallback the exclusion had to become explicit.
+        /// </summary>
+        private int _hiddenPieces;
+        private readonly SortedSet<string> _hiddenPieceNames = new();
         private int _orphanCaps;
         private int _pipelineCompositions;
         private int _lowerBottomPieces;
@@ -449,6 +457,8 @@ namespace Carto.Systems
             _piecesFromAsset = 0;
             _pieceFromAssetNames.Clear();
             _emptyPieceNames.Clear();
+            _hiddenPieces = 0;
+            _hiddenPieceNames.Clear();
             _orphanCaps = 0;
             _pipelineCompositions = 0;
             _lowerBottomPieces = 0;
@@ -911,6 +921,11 @@ namespace Carto.Systems
                                                       + "halves + wedge cover outer/inner/island; blend weights are shader-side");
             if (_railPieces > 0) report.AppendLine($"Corner-rail (PreserveShape) pieces placed: {_railPieces}");
             if (_skipBottomPieces > 0) report.AppendLine($"SkipBottomHalf pieces halved: {_skipBottomPieces}");
+            if (_hiddenPieces > 0)
+                report.AppendLine($"Skipped {_hiddenPieces} piece placement(s) the game does not draw "
+                                + "(NetPieceFlags.HasMesh unset, or the section hides that piece's layer — "
+                                + "`NetCompositionMeshRefSystem`'s own test, §44): "
+                                + string.Join(", ", _hiddenPieceNames));
             if (_piecesFromAsset > 0)
                 report.AppendLine($"Read {_piecesFromAsset} cross-section piece(s) from the geometry asset because their "
                                 + "render-cache buffers were not resident this session (§42.6 — the buffers are a cache "
