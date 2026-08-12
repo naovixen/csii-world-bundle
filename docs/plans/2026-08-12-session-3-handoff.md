@@ -10,14 +10,54 @@ The effort is back at its parked point, **Phase 5 — extract `tools/cs2bundle/`
 
 ## State of the world
 
-- **The bundle is the 2026-08-12 09:39 full rip and every producer change in this session
-  post-dates it.** `8d33983`, `946c9c6`, `dc1d06f` all touch `Systems/` or `IO/`. Nothing here
-  is validated in-game; every producer change below is **built, awaiting re-rip**.
-- Measurements taken against that bundle in this session are all facts about the *save* — what
-  shape the entities have, how many tunnel lanes there are, which meshes nothing references —
-  which is the one thing the staleness rule says it is still the right source for.
+- **The bundle is the 2026-08-12 15:13 full rip and it carries every producer change in this
+  session.** `git log --since='2026-08-12 15:13' -- Systems IO Domain` lists nothing. Safe to
+  measure against, all layers.
+- All eight stages, **1,666 s**, **zero** `FAILED`, **zero** `DROPPED:`.
 - `dotnet build -c Release` 0/0, deployed. `test_bundle_contract.py` **63/63** (was 58).
   `validate_bundle.py` on the full city **VALID, 120 warnings** (was 133).
+
+## The re-rip: DONE and green (full rip 2026-08-12 15:13)
+
+Every producer change in this session is validated in-game.
+
+- **GRADE-1, both halves.** `bundle.json` carries `"grading": "grading.json"` among **23**
+  layers (was 22); `schema` still 2. The ordering fix shows in the timestamps —
+  `grading.json` **15:10:12**, `bundle.json` **15:13:06**: the file exists before the scan that
+  indexes it, which is precisely what was broken.
+- **WATER-2.** The new `semantics` string shipped, naming all five things `SeaLevel` drives and
+  stating that it is not the water surface. Value still `15.0` against
+  `ArchipelagoWaterRenderSettings` — unchanged and expected; the fix was the description.
+- **PROBE.** `COLLAPSED:` still reports with its `Name|Where` labels intact, so re-keying by
+  `(piece entity, isNode)` preserved the report exactly. Stage times: Instances 63.1 s, mesh
+  stage 1,253.0 s, total 1,666 s (was 1,717) — **do not attribute that to this change**; it is
+  one sample either side of run-to-run variance measured in tens of seconds.
+- **PILLARS.** VALID, **120 warnings, zero of them orphan-mesh** — the exemption confirmed
+  against fresh producer output rather than a synthetic bundle. The 120 split exactly as
+  predicted: 89 + 28 + 2 assets the producer declared in `warnings.jsonl`, plus the 1 parent
+  advisory.
+- Networks identical to the previous rip **to the digit**: 7,289 mesh form / 970 centerline /
+  9,266,577 triangles, `Centerline-only: 91`.
+- Gates: `test_node_fan` PASS (5,872 strips, worst 0.93 m; negative control 0.20 → 11.64 m),
+  `test_clip_cut` green on all six windows, contract 63/63, decal rows / png decode / splat
+  extras / drape pick all pass.
+- Incidental: the log printed `World terrain: no backdrop heightmap resident; layer omitted` —
+  the exact residency case documented under D6 this session, live in this rip.
+
+### One new finding — the `COLLAPSED:` probe's third clause is a false-positive generator
+
+The probe reported **9 rows, and all nine are noise.** Every one trips
+`(Size.y > 0.5f) && (extent.y < 0.05f)`, and that clause misreads its own input:
+`NetCompositionHelpers` sets `m_Size.y` from `NetPieceData.m_HeightRange.max - min`, which
+`NetPiecePrefab` declares as an **authored** field defaulting to `Bounds1(0f, 3f)`. It is a
+declared band, not the geometry's thickness. So every flat surface piece whose author left the
+default gets flagged — which is why the list is gravel shoulders, public-transport lanes and
+tram tracks, reporting large built footprints like `120.99 x 0.01 x 94.23 m`. Manifestly built,
+and flat because a lane surface is flat.
+
+The other two clauses — `pinnedAcross` and `max(extent.x, extent.z) < 0.05` — are the real
+collapse tests, and none of the nine trip either. **Recommend dropping the `Size.y` clause and
+keeping those two.** Not done unasked: it weakens a diagnostic, and nothing depends on it.
 
 ## What closed
 
@@ -136,6 +176,7 @@ inside that walk. If perf ever matters again, the mesh stage is 76% of the rip.
 
 | # | item | what it needs |
 |---|---|---|
+| PROBE-2 | Drop the `COLLAPSED:` probe's `Size.y` clause? It flags 9 healthy flat surface pieces per rip and can flag no defect the other two clauses miss. | A yes. Two-line producer change, rides the next rip. |
 | PILLARS-2 | Should the 120 remaining warnings — every one a gap the producer already declared in `warnings.jsonl` — still warn? | A decision. Not raised before because the class was mis-attributed. |
 | §29 | Backdrop water simulation | Still deferred; explicitly **not** part of the D2 sign-off. |
 | Phase 5 | extract `tools/cs2bundle/` | The effort's actual next step. |
