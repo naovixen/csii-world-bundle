@@ -132,7 +132,7 @@ from mathutils.bvhtree import BVHTree
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import colour_model
 from csiibundle import areas as area_math
-from csiibundle import bezier, decals, drape, frames, lanes, reader
+from csiibundle import bezier, decals, drape, frames, lanes, networks, reader, tints
 from csiibundle import terrain as terrain_math
 from csiibundle import glb as glb_reader, png as png_reader, splat as splat_reader
 
@@ -689,17 +689,11 @@ def set_paint(obj, attrs):
     The three colours land on the instancing empty (or the placed mesh object, for lane
     geometry), where the material's Attribute nodes read them per instance — one shared
     material, thousands of individually-painted copies, exactly the game's own split between
-    prefab data and per-object state. White is the identity for the multiply, so objects
-    without a colorSet — older bundles predate the field — render the atlas untouched.
+    prefab data and per-object state. `csiibundle.tints` resolves them and explains why
+    ignoring this layer leaves every tree in the city grey.
     """
-    color_set = (attrs or {}).get("colorSet")
-    for i, prop in enumerate(_TINT_PROPS):
-        channel = color_set[i] if color_set and i < len(color_set) else None
-        if channel:
-            obj[prop] = [float(channel[0]), float(channel[1]), float(channel[2]),
-                         float(channel[3]) if len(channel) > 3 else 1.0]
-        else:
-            obj[prop] = [1.0, 1.0, 1.0, 1.0]
+    for prop, channel in zip(_TINT_PROPS, tints.color_set(attrs)):
+        obj[prop] = list(channel)
 
 
 def _bundle_material_id(name):
@@ -802,76 +796,27 @@ _FORM_COLOURS = {
     "bridge": (0.85, 0.70, 0.20, 1.0),
 }
 
-_DRIVABLE = ("road", "highway", "train", "tram", "subway", "pathway", "taxiway", "runway")
-
-# Contract §4: the closed `kind` set. Listed rather than derived so that a v2 kind shows up here
-# as a deliberate edit instead of silently joining `--everything`.
-_ALL_KINDS = ("building", "prop", "tree", "fence", "decal", "poi")
+_DRIVABLE = networks.DRIVABLE
+_ALL_KINDS = networks.KINDS
 
 _UNSET = object()
 
-
-def _segment_normals(clean):
-    """The left-hand horizontal unit normal of each segment of a polyline."""
-    normals = []
-    for a, b in zip(clean, clean[1:]):
-        direction = Vector((b.x - a.x, b.y - a.y, 0.0))
-        if direction.length < 1e-6:
-            direction = Vector((1.0, 0.0, 0.0))
-        direction.normalize()
-        normals.append(Vector((-direction.y, direction.x, 0.0)))
-    return normals
+_segment_normals = networks.segment_normals
 
 
-def ribbon(centerline, width, lift, mitre_limit=4.0):
-    """Extrude a centerline into a flat ribbon, in Blender coordinates.
+def ribbon(centerline, width, lift, mitre_limit=networks.DEFAULT_MITRE_LIMIT):
+    """`csiibundle.networks.ribbon`, converted into Blender's frame.
 
-    Contract §5: `width` is the *total* width, extruded symmetrically about the line. The
-    offset is taken in the horizontal plane only — a banked road is not a thing CS2 builds, and
-    a horizontal offset keeps a steep ramp's surface the right width in plan.
-
-    Corners are properly mitred: the offset at a bend is pushed out by 1/cos(θ/2) so the ribbon
-    keeps its full width *across* the turn instead of pinching to width·cos(θ/2). Taking the
-    average normal alone is the easy version and is visibly wrong exactly where roads matter —
-    at the junction ends the producer's centerlines run into. The limit caps a hairpin, where
-    the exact mitre goes to infinity.
+    The mitre maths and the "a ribbon is a stand-in, not a road" caveat both live in the
+    package; this only swaps the axes and hands back the list-of-tuples shape `build_networks`
+    already merges.
     """
-    points = [bundle_to_blender_point(p) for p in centerline]
-
-    # Duplicate points would give a zero-length direction and a NaN normal.
-    clean = [points[0]]
-    for point in points[1:]:
-        if (point - clean[-1]).length > 1e-4:
-            clean.append(point)
-    if len(clean) < 2:
+    built = networks.ribbon(centerline, width, lift, mitre_limit=mitre_limit)
+    if built is None:
         return None
-
-    half = width / 2.0
-    normals = _segment_normals(clean)
-
-    verts, faces = [], []
-    for i, point in enumerate(clean):
-        before = normals[max(i - 1, 0)]
-        after = normals[min(i, len(normals) - 1)]
-
-        bisector = before + after
-        if bisector.length < 1e-6:
-            # A perfect reversal has no bisector; there is no sane mitre, so butt it.
-            offset = after * half
-        else:
-            bisector.normalize()
-            scale = min(1.0 / max(bisector.dot(after), 1e-3), mitre_limit)
-            offset = bisector * (half * scale)
-
-        lifted = Vector((point.x, point.y, point.z + lift))
-        verts.append(lifted - offset)
-        verts.append(lifted + offset)
-
-    for i in range(len(clean) - 1):
-        a = 2 * i
-        faces.append((a, a + 1, a + 3, a + 2))
-
-    return verts, faces
+    verts, quads = built
+    return ([Vector(frames.bundle_to_zup_point(v)) for v in verts],
+            [tuple(int(i) for i in quad) for quad in quads])
 
 
 def place_network_mesh(record, mesh_dir, collection):
