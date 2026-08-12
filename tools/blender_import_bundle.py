@@ -132,7 +132,7 @@ from mathutils.bvhtree import BVHTree
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import colour_model
 from csiibundle import areas as area_math
-from csiibundle import bezier, decals, frames, lanes, reader
+from csiibundle import bezier, decals, drape, frames, lanes, reader
 from csiibundle import terrain as terrain_math
 from csiibundle import glb as glb_reader, png as png_reader, splat as splat_reader
 
@@ -177,10 +177,7 @@ _INSTANCE_DECAL_LIFT = decals.LIFT["instance_decal"]
 _DECAL_DRAPE_MARKING = decals.LIFT["lane_marking"]
 _DECAL_DRAPE_TINT = decals.LIFT["lane_tint"]
 
-# Share of decal vertices that may find no surface at all before the drape says so out loud.
-# Region-edge markings whose road sits outside the window are the legitimate cause and they are
-# a small tail; a big number means the layer is not landing on anything.
-_DRAPE_MISS_WARN = 0.01
+_DRAPE_MISS_WARN = drape.MISS_WARN_FRACTION
 
 # How far terrain faces marked roadbed (§8 surface id 1) sink below their sampled height —
 # the game's own clamp direction: its road job pulls ground under a carriageway to the
@@ -1085,7 +1082,7 @@ _hang_drop_vec = lanes.hang_drop
 _quat_apply_vec = lanes.quat_apply
 
 
-class _ProjectionSurface:
+class _ProjectionSurface(drape.ProjectionSurface):
     """Ray-cast access to an imported surface, for the layers the game paints ONTO one.
 
     Two layers need this and they need the same thing: lane decals project onto the road
@@ -1286,73 +1283,8 @@ def _load_lane_source(asset_id, lane_mesh_dir, cache):
     return source
 
 
-_DRAPE_DEDUP_MM = 1.0  # quantise world (x, z) to this many millimetres before deduping ray-casts
-
-
-def _drape_block(block, road_surface, counters, ground_surface=None):
-    """Sample the road surface at each vertex's own (x, z) — including its lateral offset —
-    deduping ray-casts on rounded world position, not on curve station.
-
-    (2026-08-07, fix round 1: an earlier version of this function sampled the bézier
-    CENTERLINE per station and broadcast the result to every vertex at that station,
-    including ones offset sideways by the part's own width. That is only exact for a
-    zero-width part; for anything wider (crosswalks, multi-lane decals) it reintroduced a
-    milder version of the exact kerb/crown error Tier 0 was built to remove — the left and
-    right edge of a cambered carriageway were both draped to a THIRD point's height, neither
-    edge's own. Caught in review, not by the original Tier 1b measurement, because that
-    measurement also only ever varied arc position, never width — see task-6-report.md
-    "Fix round 1" for the corrected measurement.)
-
-    Deduping on rounded (x, z) instead of on station is what makes this exact rather than a
-    weaker approximation: two DIFFERENT stations that clip to the same arc position (the
-    tiling-clip case in §5c) or two literal duplicate source vertices still cost one cast,
-    but a station's left and right edge — different x — are never merged. For a plain
-    2-vertex-per-station quad this gives up most of the old ~2x L/R dedup (every row's two
-    edges are now almost always distinct casts); what remains is Tier 1c's station-count
-    reduction. A miss (no surface within the marking's own reach) keeps that vertex's bent
-    height, exactly like the old per-vertex miss path — no fill-in borrowed from a neighbour.
-    """
-    verts = block["verts"]
-    half = block["half_height"]
-    eps = block["drape_eps"]
-
-    x, y_pre, z = verts[:, 0], verts[:, 1], verts[:, 2]
-    scale = 1000.0 / _DRAPE_DEDUP_MM
-    keys = numpy.stack((numpy.round(x * scale).astype(numpy.int64),
-                        numpy.round(z * scale).astype(numpy.int64)), axis=1)
-    _, first_index, inverse = numpy.unique(keys, axis=0, return_index=True, return_inverse=True)
-    inverse = inverse.reshape(-1)
-
-    new_y = y_pre.copy()
-    draped = grounded = missed = 0
-    for u, idx in enumerate(first_index):
-        counters["queries"] += 1
-        sx, sz, sy = float(x[idx]), float(z[idx]), float(y_pre[idx])
-        top = road_surface.drop(sx, sz, sy, half, half)
-        at_key = inverse == u
-        if top is None and ground_surface is not None:
-            # No road under this vertex — the two projection surfaces are disjoint, and a
-            # marking that overhangs the carriageway (or whose segment fell outside the
-            # region) has always just kept its authored height, which is a height with
-            # nothing beneath it. The terrain is the other thing the game paints onto, so
-            # try it at the marking's OWN projector reach: still inside the same window, so
-            # this cannot drag a marking to the ground from a bridge.
-            counters["queries"] += 1
-            top = ground_surface.drop(sx, sz, sy, half, half)
-            if top is not None:
-                new_y[at_key] = top + eps
-                grounded += int(at_key.sum())
-                continue
-        if top is None:
-            missed += int(at_key.sum())
-            continue
-        new_y[at_key] = top + eps
-        draped += int(at_key.sum())
-
-    verts[:, 1] = new_y
-    counters["draped"] += draped
-    counters["grounded"] += grounded
-    counters["missed"] += missed
+_DRAPE_DEDUP_MM = drape.DEDUP_MM
+_drape_block = drape.drape_block
 
 
 def _lane_object_arrays(blocks):
