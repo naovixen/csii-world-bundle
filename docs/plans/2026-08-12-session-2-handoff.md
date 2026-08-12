@@ -3,9 +3,9 @@
 Supersedes `docs/plans/2026-08-12-next-session-handoff.md` where they disagree. Read this, then
 `docs/plans/2026-08-11-next-session-handoff.md` for the parked consumer hand-off effort.
 
-**One-line status:** FLARE is closed and gated; ALPHA turned out to be two things, one falsified
-and one fixed at the producer; **one networks-only re-rip is owed** before the fix can be called
-validated. The effort is still parked at **Phase 5 — extract `tools/cs2bundle/`**.
+**One-line status:** FLARE and ALPHA are both closed and validated on the 2026-08-12 09:39 full rip
+(VALID, 133 known warnings). Nothing from this session is outstanding. The effort is back at its
+parked point, **Phase 5 — extract `tools/cs2bundle/`**.
 
 ## What closed
 
@@ -27,7 +27,7 @@ Closes **PROBE**.
 
 ### ALPHA — split in two (§44, `01f4f18`)
 
-**The real defect (fixed, needs a rip).** A `Game.Net.Marker` edge is taken off the Default layer
+**The real defect (fixed and validated).** A `Game.Net.Marker` edge is taken off the Default layer
 and put on Marker by `BatchInstanceSystem.UpdateNetInstances`, and the Marker layer draws only
 when `RenderingSystem.markersVisible`. The walk's taxiway exception — *"taxiways ... are genuinely
 drawn"* — is true of the vector export and false of the renderer, and it shipped **91 opaque
@@ -44,28 +44,17 @@ texture alpha; §44.2 has the numbers.
 
 **DEADPASS closed.** `hide_invisible_materials` deleted from the harness.
 
-## The one thing owed: a networks-only re-rip
+## The re-rip: DONE and green (full rip 2026-08-12 09:39)
 
-Options → Carto → Ripper, **uncheck Rip Objects and Rip Terrain**, rip. ~5 min, not ~28 (the mesh
-stage is 1,313 s of a 1,807 s rip). The bundle goes mixed-vintage — stages that do not run are not
-cleaned — which is fine here and must be stated in any conclusion drawn from it.
+All eight stages, 1,717 s, no failures; no producer commit post-dates it. Every prediction landed
+to the digit — §44.4 has the table. Headlines: `Centerline-only: 91`, mesh form 7,380 -> **7,289**,
+centerline 879 -> **970**, triangles 9,294,225 -> **9,266,577**, **zero** `Invisible_Pathway`
+geometry, all 91 taxiways present as centerline records, `SHORT HALF FRAME:` gone. The four pieces
+that left the asset-read list (35 -> 31) are exactly the four `Invisible Airplane *` ones.
 
-Then check, against the 23:37 baseline:
-
-| | 23:37 (before) | expected |
-|---|---|---|
-| rip report | — | a new `Centerline-only: N marker network(s) kept as a line…` line |
-| mesh-form segments | 7,380 | ~7,289 (−91) |
-| centerline-form | 879 | ~970 (+91) |
-| network triangles | 9,294,225 | ~9,266,577 (−27,648) |
-| `Invisible_Pathway` primitives in `networks/` | 91 segments / 27,648 tris | **0** |
-| `SHORT HALF FRAME:` in the report | 373 of 961 | gone |
-| `tools/test_node_fan.py` | PASS | PASS, control still live |
-| validator | VALID, 133 warnings | VALID, 133 warnings |
-
-The `Invisible_Pathway` census is a five-line script over `networks.jsonl` + `networks/*.glb`
-material names; the recipe is in §44.1 and the numbers above came from running it on the 23:37
-bundle.
+Gates: validator **VALID, 133 warnings**; contract 58/58; `test_node_fan` PASS (5,872 strips, worst
+0.93 m, control live 0.20 -> 11.64 m); `test_clip_cut` green; decal rows, png decode, splat extras,
+drape pick all pass. **§43 and §44 are closed. Nothing from this session is outstanding.**
 
 ## Method notes earned this session
 
@@ -91,6 +80,6 @@ bundle.
 
 Everything in `docs/plans/2026-08-11-next-session-handoff.md`'s table — **GRADE-1** (highest, and
 a small producer change that should ride the next rip), P16-REG, WATER-2, V1, PILLARS, D1–D6, N
-items. Nothing from this session is left open once the rip above confirms §44.1.
+items. Nothing from this session is left open.
 
 Then: **Phase 5 — extract `tools/cs2bundle/`**.

@@ -2611,3 +2611,33 @@ name; templates are shader names (`NetCompositionMeshLit`), never asset names, s
 times. With §44.1 the producer no longer emits the geometry at all, which is the right layer for
 it: the game's own rule, applied where the game applies it, rather than a consumer guessing from
 a name.
+
+### 44.4 VALIDATED on the full rip (2026-08-12 09:39)
+
+Full rip, all eight stages, 1,717 s, no failures. `git log --since='2026-08-12 09:39' -- Systems
+IO Domain` lists nothing, so it reflects HEAD's producer.
+
+| | 23:37 (before) | predicted | 09:39 (after) |
+|---|---|---|---|
+| `Centerline-only:` report line | absent | present | **present, 91** |
+| mesh-form segments | 7,380 | ~7,289 | **7,289** |
+| centerline-form segments | 879 | ~970 | **970** |
+| network triangles | 9,294,225 | ~9,266,577 | **9,266,577** |
+| `Invisible_Pathway` geometry in `networks/` | 91 seg / 27,648 tri | 0 | **none** |
+| taxiway records | 91, all mesh | 91, all line | **91, 0 mesh, 91 centerline** |
+| `SHORT HALF FRAME:` | 373 of 961 | gone | **gone** |
+| materials | 4,714 | — | 4,713 (`Invisible_Pathway` no longer referenced) |
+| pieces read from the geometry asset | 35 | 31 | **31** |
+| `DROPPED:` | absent | absent | **absent** |
+
+The four pieces that left the asset-read list are exactly `Invisible Airplane Edge Piece 0`,
+`Invisible Airplane Middle Piece 60`, `Invisible Airplane Oneway Piece 60` and
+`Invisible Airplane Twoway Piece 60`, and nothing else moved — the exclusion hit what it aimed at
+and only that. `taxiway: 91` still stands in the by-category counts, so the routes are in the
+bundle; they simply have no surface.
+
+Gates on the new bundle: validator **VALID, 133 warnings** (the known bridge-pillar class,
+unchanged); `test_bundle_contract` 58/58; `test_node_fan` PASS, 5,872 strips, worst gap 0.93 m,
+control still live at 0.20 m clean / 11.64 m amputated; `test_clip_cut` green on all six windows,
+hole 0.0-0.2 m²; `test_decal_rows`, `test_png_decode`, `test_splat_extras`, `test_drape_pick` all
+pass. §43 and §44 are closed.
