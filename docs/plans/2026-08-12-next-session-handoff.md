@@ -1,5 +1,9 @@
 # Next-session handoff — written 2026-08-12 00:15, after the clip-cut / piece-residency session
 
+> **SUPERSEDED 2026-08-12 by [`consumer-handoff-plan.md`](consumer-handoff-plan.md).** FLARE,
+> ALPHA, DEADPASS and PROBE are all closed. Kept for the residency mechanism (§42.6), the
+> measurement recipes and the method notes, which are still live.
+
 ## Start here
 
 Read this file, then `docs/plans/2026-08-11-next-session-handoff.md` for the consumer hand-off

@@ -1,5 +1,9 @@
 # Handoff — terrain colour fidelity (2026-08-10)
 
+> **SUPERSEDED 2026-08-12 by [`consumer-handoff-plan.md`](consumer-handoff-plan.md)** (phase
+> H4). The channel map, the packed nibbles and the ACEScg colour chain are settled; the only
+> residual is SPLAT-4. Kept as the record of how the channels were re-derived.
+
 **Status (2026-08-11): the chain is applied correctly and verified end to end, and the import
 finally looks right.** The thing that was actually making it look wrong was not colour at all —
 Blender was multiplying every ground texture by its alpha channel and drawing the terrain at a

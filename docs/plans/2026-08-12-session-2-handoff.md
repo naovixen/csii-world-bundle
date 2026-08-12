@@ -1,5 +1,8 @@
 # Handoff — 2026-08-12, the FLARE / ALPHA session
 
+> **SUPERSEDED 2026-08-12 by [`consumer-handoff-plan.md`](consumer-handoff-plan.md).** Kept as
+> the record of the FLARE/ALPHA session.
+
 Supersedes `docs/plans/2026-08-12-next-session-handoff.md` where they disagree. Read this, then
 `docs/plans/2026-08-11-next-session-handoff.md` for the parked consumer hand-off effort.
 

@@ -1,5 +1,9 @@
 # Next-session handoff — consumer hand-off effort (written 2026-08-11)
 
+> **SUPERSEDED 2026-08-12 by [`consumer-handoff-plan.md`](consumer-handoff-plan.md).** Every
+> item in this file's open table (GRADE-1, WATER-2, V1, PILLARS, D1-D6, N items, P16-REG) is
+> closed. Kept as the record of the terrain-colour close-out and the phase order it set.
+
 ## Start here
 
 Read `C:\Users\naomi\.claude\plans\encapsulated-questing-bunny.md` (the approved plan, with a

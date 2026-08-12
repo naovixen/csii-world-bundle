@@ -1,5 +1,9 @@
 # Handoff — 2026-08-12, session 3: the open-items sweep
 
+> **SUPERSEDED 2026-08-12 by [`consumer-handoff-plan.md`](consumer-handoff-plan.md),** which
+> folds this file's closures and its two leftovers (PROBE-2, PILLARS-2) into the live plan.
+> Kept for the per-item reasoning behind each closure.
+
 Supersedes `docs/plans/2026-08-12-session-2-handoff.md` where they disagree. Read this, then
 `docs/plans/2026-08-11-next-session-handoff.md` for the consumer hand-off effort's phase order.
 

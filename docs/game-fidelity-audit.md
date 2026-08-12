@@ -38,6 +38,19 @@ Ranks: **A** = visible in every screenshot · **B** = visible in common cases ·
 dynamic/simulation state a static rip reasonably omits · **D** = invisible in a static daytime
 scene.
 
+> **Read the verdict column as of 2026-08-09.** Every count in these tables is the 2026-08-09
+> 12:39 rip's (1,266,276 instances, 5,589 meshes, 22 layers, 1,899 light entries); the 2026-08-12
+> 15:13 rip reads 1,283,514 · 5,728 · **23** layers · 2,532 light entries. Every gap the tables
+> name — P4/P5 parameter blocks, P7 dead trees, the P8 photometry bug, the P3 clip divergence, the
+> P1 default-cap trap — is **closed and validated** (§2.1). The tables are kept as the record of
+> the pass, not as current status.
+>
+> One caveat the pass could not have known: these "Captured" verdicts were measured before §42.6
+> established that `MeshVertex` and friends are a **render cache**, so whether a net piece's
+> geometry was resident varied per session. `0eeb24f` made the read deterministic
+> (`RenderPrefab.geometryAsset` first) and the 15:13 rip reports zero `DROPPED:` — the claims hold
+> now by construction rather than by luck.
+
 ### 1a. Rendered world geometry
 
 | Content class | Game system | Bundle layer | Verdict | Rank |
@@ -102,17 +115,26 @@ all), **D# = documentation** (Phase 9 / audit-doc amendments), **R# = refactor-a
 
 ### 2.1 Producer work-list
 
-**STATUS 2026-08-09: every P item below is implemented and building clean, in three commits —
+**STATUS 2026-08-12: every P item below is implemented, and now VALIDATED against real output** —
+the 2026-08-12 15:13 full rip, which no producer commit post-dates. Built in three commits:
 `095322a` (P1, P2, P13-half, F4, P3, P15-terrain, P4, P5, T-F20), `b549bbe` (P14, I-F7/8/9/11,
-P8, P12, P9, P10) and `4d6959d` (P6, P7, P11, P13-network, P16, GAP 6, N-F2/N-F3).** None of it
-is validated: per the staleness rule, producer changes can only be proven by an in-game re-rip,
-and every claim here is "built, awaiting re-rip". The live assertions to read in the next rip's
-report and log: the `decalRole` marking/wear split (predicted 38/5 on the last city's
-catalogue), the authored-normals piece counts (`_rebuiltFramePieces` should be 0) and their lit
-A/B render — a sign error in the frame would show as inverted shading that no offline check
-here can rule out — the new `surfaceless`/`waterway` clip-band classes, `lights.json` entries
-finally carrying `range`/`temperature`, and the instance-walk stage time against its 57.6 s
-baseline.
+P8, P12, P9, P10) and `4d6959d` (P6, P7, P11, P13-network, P16, GAP 6, N-F2/N-F3).
+
+Measured on the shipped bundle: P1 — 5,728 meshes at cap 0; P3 — 49,730/49,730 clip volumes
+carry `top`; P4 — 24 water appearance keys; P5 — `rasters.terrainTiling` with per-layer
+tiling/`metresPerRepeat`/LOD blend plus the four `extras` blocks; **P6 — 200/200 sampled network
+`.glb`s carry `NORMAL` *and* `TANGENT`**; P7 — 32 `__dead` + 24 `__stump` meshes; P8 — 654 placed
+emitters carrying `range`, `temperature` and `position`; P9 — `attrs.fullness`; P10 — `wear` on
+lane geometry; P11 — 21 area-material fields including `normalMap`/`maskMap`/`rendererPriority`;
+P12 — the produced attrs, with `height`/`storey`/`category`/`season` documented derive-instead in
+§4.2. **`decalRole` split 38 marking / 5 wear — the prediction to the digit**, and the harness's
+assetId substring heuristic is deleted.
+
+Not observable in a bundle, so evidenced only by four consecutive full rips at 8/8 stages with
+zero `FAILED` and zero `DROPPED:`: P2 (writer-fault detection), P13 (this rip produced no
+network-stage or churn warnings, so the persistence path is unexercised rather than proven), P14
+(orchestrator/manifest), P15 (clip-band gates change band values, not a labelled field), P16
+(perf). The live plan is `docs/plans/consumer-handoff-plan.md`.
 
 
 | # | Finding | Source | Severity |
@@ -429,5 +451,7 @@ manifest scan-the-disk honesty holds; `BundleFile` hygiene centralisation correc
 - Wire sag formula and `laneprefabs.json` fields; the tunnel-tag distinction (D1).
 - LOD0 is the authored mesh by construction — consumers generate LOD chains, nothing was lost.
 - Resolved `colorSet` is the game's own answer — consumers must not re-derive from seeds.
-- Grass: scatter from splatmap R is game-faithful (D3).
+- Grass: scattering consumer-side from the splatmap's **grass** channel is game-faithful (D3).
+  *(Corrected 2026-08-12: this bullet said "channel R", which is the pre-2026-08-10 channel map.
+  `R` is dirt. Read the index from `rasters.splatmap.channels`; never hard-code one.)*
 - Building-state rules (D4). Clip lane-reference tilt (D5).

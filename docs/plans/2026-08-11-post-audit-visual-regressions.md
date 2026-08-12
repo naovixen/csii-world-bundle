@@ -1,5 +1,11 @@
 # Post-audit visual regressions — terrain holes, lifted markings, elevated deck gaps, unblended ground
 
+> **WORKED AND CLOSED except item 4a; superseded 2026-08-12 by**
+> **[`consumer-handoff-plan.md`](consumer-handoff-plan.md).** 1a/1c/2a/2b/3c/3d built and
+> gated, 1b/2c/3a/3b dropped with measured reasons, 2d/4b built and validated, item 3
+> falsified and reverted. Item 4a is most likely closed by the `0eeb24f` residency fix and
+> rides H14 for confirmation.
+
 *Written 2026-08-11. Every number below is measured against the 2026-08-10 19:53–20:40
 full-city rip.*
 
