@@ -150,6 +150,66 @@ class BundleContractTest(unittest.TestCase):
         self.patch_manifest(bundle, lambda m: m["counts"].pop("areas"))
         self.assertRejected(bundle, "layers.areas is declared but counts.areas is missing")
 
+    def _stack_expand(self, bundle: Path) -> None:
+        """Turn the example's one placed prefab into a §4.1 stack expansion: two section
+        records in place of the plain one, a mesh per section, and the bare prefab mesh and
+        its skirt left behind exactly as a real rip leaves them."""
+        stem = "carto_example_cube"
+        mesh = (bundle / "meshes" / f"{stem}.glb").read_bytes()
+        for section in ("first", "last"):
+            (bundle / "meshes" / f"{stem}__stack_{section}.glb").write_bytes(mesh)
+        (bundle / "meshes" / f"{stem}__base.glb").write_bytes(mesh)
+
+        path = bundle / "instances.jsonl"
+        out = []
+        for line in path.read_text(encoding="utf-8").splitlines():
+            record = json.loads(line)
+            if record["assetId"] != stem:
+                out.append(line)
+                continue
+            for section in ("first", "last"):
+                clone = dict(record)
+                clone["assetId"] = f"{stem}__stack_{section}"
+                out.append(json.dumps(clone, separators=(",", ":")))
+        path.write_text("\n".join(out) + "\n", encoding="utf-8")
+        meshes = len(list((bundle / "meshes").glob("*.glb")))
+        self.patch_manifest(bundle, lambda m: m["counts"].update({"instances": len(out),
+                                                                  "meshes": meshes}))
+
+    def test_stack_expanded_prefab_meshes_are_not_orphans(self):
+        """A stacked prefab (pillar, high wall, fence) is placed only through its
+        `__stack_*` sections, so the bare mesh and its skirt are unreferenced by
+        construction — not a shipping mistake, and not worth a warning apiece."""
+        bundle = self.fresh()
+        self._stack_expand(bundle)
+        report = validate_bundle(bundle, DEFAULT_SCHEMA_DIR)
+        self.assertEqual(report.errors, [])
+        orphans = [w for w in report.warnings if "not referenced by any instance" in w]
+        self.assertEqual(orphans, [])
+
+    def test_unplaced_section_of_a_placed_stack_is_not_an_orphan(self):
+        """The producer writes every section a stacked prefab has; which ones a city needs
+        depends on how tall its pillars are, so a written-but-unplaced `__stack_mid` is
+        normal."""
+        bundle = self.fresh()
+        self._stack_expand(bundle)
+        mesh = (bundle / "meshes" / "carto_example_cube.glb").read_bytes()
+        (bundle / "meshes" / "carto_example_cube__stack_mid.glb").write_bytes(mesh)
+        report = validate_bundle(bundle, DEFAULT_SCHEMA_DIR)
+        orphans = [w for w in report.warnings if "not referenced by any instance" in w]
+        self.assertEqual(orphans, [])
+
+    def test_a_genuinely_unreferenced_mesh_still_warns(self):
+        """The exemptions above must not become a blanket amnesty — a mesh nothing places,
+        by any route, is still what this warning is for."""
+        bundle = self.fresh()
+        self._stack_expand(bundle)
+        mesh = (bundle / "meshes" / "carto_example_cube.glb").read_bytes()
+        (bundle / "meshes" / "Nobody_Places_This.glb").write_bytes(mesh)
+        report = validate_bundle(bundle, DEFAULT_SCHEMA_DIR)
+        orphans = [w for w in report.warnings if "not referenced by any instance" in w]
+        self.assertEqual(orphans, ["Nobody_Places_This.glb: mesh is not referenced by any instance"])
+
     def test_grading_layer_is_declarable(self):
         """`grading.json` is found through `layers.grading` like every other layer (§8, §12.3).
         `layers` is a closed object, so a producer that writes the file without the schema

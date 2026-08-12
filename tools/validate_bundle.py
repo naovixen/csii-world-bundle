@@ -572,8 +572,24 @@ def validate_bundle(bundle_dir: Path, schema_dir: Path) -> Report:
         _check_mesh(path, bundle_dir, materials, materials_path is not None, referenced_textures, report)
 
     used_assets = {r["assetId"] for r in instances}
+
+    # Prefabs the city places as §4.1 stack expansions. Every placement of one references a
+    # section (X__stack_first/mid/last/rest) and NEVER the bare prefab, so the bare mesh, its
+    # skirt, and any section this city's placements happened not to need are all unreferenced
+    # by construction. `Vertical_Pillar` is the type case: 1,296 first + 6,706 mid records and
+    # not one reference to `Vertical_Pillar` itself.
+    stacked = {stack_section.sub("", a) for a in used_assets if stack_section.search(a)}
+
+    def _references(stem: str) -> bool:
+        return (stem in used_assets) or (stem in stacked)
+
     for path in mesh_files:
-        if path.stem in used_assets:
+        if _references(path.stem):
+            continue
+
+        # An unplaced section of a placed stack: the producer writes every section the prefab
+        # has, and which ones a given city needs depends on how tall its pillars are.
+        if stack_section.sub("", path.stem) in stacked:
             continue
 
         # Derived files are referenced implicitly, never by an assetId of their own: a
@@ -583,7 +599,7 @@ def validate_bundle(bundle_dir: Path, schema_dir: Path) -> Report:
         # skirts drowned the report in 1,380 of these; variants added 225 more.
         derived = ("__base", "__dead", "__stump", "__partial1", "__partial2", "__full")
         suffix = next((s for s in derived if path.stem.endswith(s)), None)
-        if suffix and path.stem[: -len(suffix)] in used_assets:
+        if suffix and _references(path.stem[: -len(suffix)]):
             continue
 
         report.warn(f"{path.name}: mesh is not referenced by any instance")

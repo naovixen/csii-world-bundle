@@ -57,6 +57,17 @@ paths from `bundle.json`'s `layers` object and never hard-code them. Presence of
 `layers` means the layer exists; absence means it was not exported, and the consumer degrades
 gracefully rather than failing.
 
+**A bundle may be mixed-vintage, and one class of re-rip is destructive.** *(D5, 2026-08-12.)*
+The producer writes into an existing bundle rather than a fresh one, and only deletes the layers
+the run is about to rebuild — so a rip with some layers switched off leaves the others exactly
+as an earlier rip left them, and `bundle.json` describes the union. That is deliberate, and it
+is what makes a quick single-layer rip useful. The trap is that it holds for **layer** toggles
+and not for the **kind** filter inside one: turning off Trees and re-ripping objects still
+deletes `instances.jsonl` and all of `meshes/` first, then rebuilds them without trees, so the
+trees are gone rather than preserved. Anyone reasoning from a bundle — including a producer
+diagnosing its own output — should establish which rip each layer came from before comparing
+two of them.
+
 Path rules for every value in `layers` and every path inside `materials.json`:
 
 - POSIX separators, relative to the bundle root, no leading `/`, no `..` segment.
@@ -335,6 +346,21 @@ custom name only — generated display names are locale output and are not city 
 33/50/66 — see §6.1). Still never produced, derive instead: `height`/`storey` (from the mesh),
 `category` (from `kind` + `zoning`), `season` (already baked into every resolved `colorSet`).)*
 
+**`state` is captured as a flag, and each value has a different consumer rule.** *(D4,
+2026-08-12. Every rule below is `BatchInstanceSystem`'s own render branch, not an inference from
+the name.)*
+
+| `state` | what the game draws | what a consumer should do |
+|---|---|---|
+| `normal` | the building | draw it |
+| `construction` | **nothing** — the game skips a building carrying `UnderConstruction` unless `m_NewPrefab != Entity.Null` (an *upgrade* keeps drawing the old building while the new one is paid for) | **do not draw the building.** The site is not empty: the crane and site fence are real entities with their own prefabs and ship as ordinary instance records, so a bundle already contains everything that is visible there |
+| `condemned` | the building, unchanged — `Condemned` has **no reader in the rendering namespace at all**; it is a simulation flag about eviction | draw it exactly like `normal`. It is metadata, not appearance |
+| `abandoned` | the building, with the game's own abandoned colour/décor variant already resolved into the shipped `colorSet` | draw it normally |
+| `destroyed` | a collapse pose plus rubble; once `Destroyed.m_Cleared >= 0` the mesh is skipped entirely | **neither the pose nor the rubble is shipped** — the collapse is a runtime deformation and no rubble mesh exists as a prefab. Treat as `normal` geometry, or skip the record; do not expect ruins |
+
+On the reference city: 8,889 `normal` and 7 `condemned`, and none of the other three — which is
+why the three unshipped appearances above are a documented rule rather than a measured one.
+
 **`elevation` is how far the object stands _above_ the ground, not the ground's own height.**
 A consumer that reads it as terrain height gets a city where everything sits at a couple of
 metres. Ground level under an instance is `pos[1] − elevation`.
@@ -404,6 +430,19 @@ drivable geometry can drop them with a single `kind` test.
 Ground detail and grass are rendered by the game as a terrain surface layer, not as discrete
 objects. They appear in `terrain/surface_index.png` plus the ground textures (§8), **never**
 in `instances.jsonl`. Do not expect per-blade instances.
+
+**Scattering your own grass is game-faithful, and the splatmap is the input the game itself
+uses.** *(D3, 2026-08-12 — this section previously implied grass was simply absent, which read
+as a fidelity gap it is not.)* `VegetationRenderSystem` binds the whole splatmap into a single
+`FoliageVFX` graph (`m_FoliageVFX.SetTexture("Terrain SplatMap", …)`) and scatters from it with
+**zero per-instance data** — there is no list of grass positions anywhere in the game to rip, so
+a consumer that scatters its own from the same weights is doing what the game does, not
+inventing something. Drive it from the **grass** channel, and take which channel that is from
+`rasters.splatmap.channels` — do not assume an index. (It is `G`; `R` is dirt. An earlier
+revision of this producer had those two inverted, which is exactly why the block publishes the
+map instead of leaving it to be guessed — see §8.) The channel the VFX graph samples lives
+inside the `VisualEffectAsset`, which is not readable, so this is the faithful input rather than
+a byte-for-byte reproduction of the game's own scatter.
 
 **Markers are excluded.** Spawn points, pedestrian access points, and pipe, cable and network
 nodes are simulation anchors the game never draws, and a city holds enough of them that they
@@ -779,7 +818,21 @@ waterway overlays the game draws only in its utility cutaway and overlay views; 
 are included** and tagged `tunnel: true` — the game draws them on its Tunnel cutaway layer;
 the bundle renders tunnels in full (the §8c clip volumes open their portals), and a
 consumer wanting the surface world only filters on the tag. *(Pre-2026-08-07 bundles
-excluded them as "cutaway view only".)* Decal-flagged parts are **included** and tagged (see
+excluded them as "cutaway view only".)*
+
+> **A lane's `tunnel` and a segment's `form: "tunnel"` are different predicates. Never equate
+> them, and never join one to the other.** *(D1, 2026-08-12.)* The lane tag is the game's
+> `BatchInstanceSystem.IsNetOwnerTunnel` — `cmin(Elevation) < 0`, i.e. the owning net dips below
+> ground **at all** (for a node owner, any connected edge does). The segment form is
+> `CompositionFlags.General.Tunnel`, which the game raises only for a composition deep enough to
+> be built as a tunnel (−2 or −3 × `ElevationLimit`). Everything between those two — a road on a
+> gentle downgrade, the approach ramp either side of a portal — is `tunnel: true` on its lanes
+> and **not** `form: "tunnel"` on its segment. On the reference city that is 3,214 tagged lanes
+> against 309 tunnel-form segments, an order of magnitude apart. Use the lane tag to answer "is
+> this lane below ground"; use the segment form to answer "is this segment a tunnel", which is
+> the one that pairs with §8c's clip volumes.
+
+Decal-flagged parts are **included** and tagged (see
 above) — an earlier revision excluded them as "projected markings", which is what opened
 every junction centre.
 Editor-only and wrong-traffic-side sub-meshes are excluded per lane by the game's own
@@ -985,13 +1038,24 @@ A material with no `colorMask` has no per-texel selection, so its meshes take ch
 everywhere or, more safely, are left at their base colour.
 
 **Lights.** The colours, purpose, response speed, range and colour temperature are the light's
-own data and are exact. **There is no position, because CS2 does not store one.** A procedural
-light binds to a *material slot*, and its place in the world is wherever the geometry using that
-material is. A consumer places each emitter at the centroid of the primitive using the
-corresponding material in the same `.glb`. `colorOff` is the unlit colour, and `responseSpeed`
-how fast it crosses between the two — which is what makes a day/night cycle look right rather
-than switching. Inventing a transform here would be inventing data, on the same grounds as
-§5.1.
+own data and are exact. `colorOff` is the unlit colour, and `responseSpeed` how fast it crosses
+between the two — which is what makes a day/night cycle look right rather than switching.
+
+**Where a light goes depends on which family it is, and the two answers are opposite.** *(D5,
+corrected 2026-08-12 — this paragraph said flatly "there is no position, because CS2 does not
+store one", which the P8 split above had already disproved for half the layer. It was true of
+the only family that existed when it was written.)*
+
+- **Procedural** entries genuinely have no position, and none is invented. The light *is* the
+  emissive material: it binds to a **material slot** (`slot`), and its place in the world is
+  wherever the geometry using that material is. Place each emitter at the centroid of the
+  primitive using the corresponding material in the same `.glb`. Inventing a transform here
+  would be inventing data, on the same grounds as §5.1.
+- **Punctual** entries (`kind: "punctual"`) **do** carry a position, because the game stores
+  one: they are HDRP lights on `EffectPrefab` entities, placed by
+  `EffectSource.EffectSettings`. Use the shipped `position`/`rotation` — relative to the
+  sub-mesh named by `parentMesh` when it is ≥ 0, else the object frame — and do not fall back
+  to the centroid rule above, which would move every streetlamp to the middle of its pole.
 
 ### 7.1 Channel semantics — read this before wiring a shader
 
@@ -1263,6 +1327,16 @@ toward +X (east).
   as the main heightmap — the game's height cascade blits both into one seamless surface, so a
   consumer can (and the reference importer should) verify continuity across the playable
   border as a self-check.
+
+  **Its absence is a fact about the session, not a producer failure or a missing feature.**
+  *(D6, 2026-08-12.)* The backdrop heightmap is a GPU resource the game keeps resident only
+  when it needs it, so a rip that finds it unloaded ships no layer and says so in the rip
+  report — `World terrain: no backdrop heightmap resident; layer omitted`. Treat it exactly as
+  §1 says: the key is absent, the feature is absent, degrade. The report line is what
+  distinguishes "the game had nothing to give" from "the producer dropped it", and it is worth
+  reading before concluding the second. `layers.worldWater` is a different case: the schema
+  reserves the key and the geo-referencing for a backdrop water raster, but **no producer path
+  emits one today** — nothing has ever written that layer, so a consumer will not encounter it.
 - The theme's ground textures under `terrain/surfaces/` now include tangent **normal maps**
   (`grass_normal.png`, `dirt_normal.png`, `rock_normal.png`) and, when the theme binds them,
   the four paintable extras (`extra1..4.png` + `extra1..4_normal.png`). *(Added 2026-08-07;
@@ -1439,6 +1513,19 @@ and a strip is the unit the game actually clips with.
   The lane surface is recoverable from the curves: at parameter `t` it is the mean of the two
   boundaries' `y`. A cell is clipped where the strip covers it *and* the terrain stands within
   `(lane + bottom, lane + top]`.
+
+  *(D5, 2026-08-12 — the mean is a **reference**, not the road surface.)* It is a centreline
+  value and it does not tilt: the producer's own stamp holds one `laneY` constant across each
+  quad of arc (the mean of that quad's four boundary corners), so on a superelevated or
+  cross-falling carriageway the band hangs level while the road it belongs to leans. The
+  discrepancy is half the cross-fall — centimetres on ordinary roads, against a band that is
+  metres deep, which is why this is a documented reference rather than a defect. Two consequences
+  worth knowing: a consumer that wants the road surface itself should interpolate
+  `left.y`→`right.y` across the strip rather than reuse this mean, and one reasoning about
+  marginal cells should note the error is signed — a level band sits too low over the high side
+  of the camber and too high over the low side. *(The game rasterises its own clip strip on the
+  GPU from the same two curves; whether that pass interpolates height laterally is not readable
+  from the managed assemblies, so it is not claimed here either way.)*
 - **`top` absent** means unbounded — an authored clip surface hides whatever covers it, however
   high. *(Until 2026-08-09 `kind: "area"` records always omitted it; that read the game's
   `GenerateAreaClipMeshJob` wrongly — the job builds a **closed prism**: a bottom ring at
