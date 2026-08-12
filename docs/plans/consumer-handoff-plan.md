@@ -140,6 +140,27 @@ and `areas.heightRanges`, the game's own per-triangle prism band, which `areas.p
 docstring while ignoring the shipped values — 32.7% of area triangles are flat within tolerance
 and conformance can skip them outright.
 
+**The third sweep (render-rule level), and the biggest find of all three.** Asking "what does
+the game do at draw time that we do not" turned up that **the `.glb` files carry no
+metallic-roughness map at all**: measured, 1,449 of 1,449 glTF materials sampled have no
+`metallicRoughnessTexture` and every one hard-codes `roughnessFactor` 0.9 — while **4,563 of the
+bundle's 4,784 `materials.json` entries ship a real per-texel `mask`** whose R is metallic and
+whose A is smoothness (§7.1). A glTF-only consumer therefore renders every window, metal roof,
+wet carriageway and polished floor at one flat roughness. Sampled across 40 mask textures the
+real values span metallic 0–1 (mean 0.21) and roughness 0–1 (mean 0.64), and **23 of 40 differ
+from 0.9 by more than 0.1**. New `csiibundle.materials` carries the packing; the harness wires R
+and A (and deliberately not G/B, whose two available readings disagree). 114 materials rig in
+the standard region, geometry byte-identical, 18.6% of pixels changed.
+
+Also closed at this level:
+
+| rule | why it is needed for 1:1 |
+|---|---|
+| `areaprefabs.json`'s **PBR block** — `normalMap`, `maskMap`, `metallic`, `smoothness` | before it shipped, pavement and plazas "rendered flat-lit with guessed specular" (audit #40 P11); 35 of 40 area prefabs carry a normal map and 23 a mask map, and the harness read none of them |
+| **`rendererPriority`** | the game's overlap draw order — "without it a consumer has no rule for which of two overlapping areas paints on top". Rebuilt as geometry it becomes a rank-ordered lift inside the area rung: tiles +3.0 mm over sand +1.5 mm over grass +1.0 mm, all inside the ladder's 10 mm gap |
+| **`attrs.state == "construction"` draws NOTHING** | `BatchInstanceSystem` skips the building; the crane and site fence are separate records the bundle already carries. Drawing it puts a finished tower on a building site |
+| `attrs.elevation`, `attrs.decalLayers`, `attrs.decalHeight` | ground level is `pos[1] − elevation` and it is signed (29,610 records negative, to −86.3 m); decal layers keep a road marking off the wall behind it |
+
 **One thing checked rather than assumed:** `materials.json`'s render fields look unread, but the
 `.glb` files carry them and a glTF consumer gets them free. Verified rather than asserted —
 across 117 material uses the `.glb`'s `alphaMode`/`doubleSided` agree with the table exactly (46

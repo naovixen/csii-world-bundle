@@ -29,6 +29,7 @@ Modules, roughly in the order a consumer needs them
 ``frames``    the §2 frame conversion: instance matrices, LH-Y-up to RH-Z-up
 ``glb``       GLB parsing, node flattening, the degenerate-face policy (§6)
 ``instances`` §4 placement rules: the `__base` skirt condition, the decal lift
+``materials`` §7 channel packing — the metallic/roughness glTF does NOT carry
 ``tints``     §7.2 per-instance paint — why the trees are grey without it
 ``lights``    §4.3 photometry — and the two different record shapes in one file
 ``networks``  §5 centerline fallback: the ribbon, and its mitre
@@ -44,7 +45,8 @@ Modules, roughly in the order a consumer needs them
 ``colour``    the §11 grading derivation — `grading.json` into applicable constants
 
 **Minimum viable consumer**: `reader` + `frames` + `instances` + `glb` places every building,
-prop and tree correctly. Add `tints` or the foliage is grey. `terrain` + `png` + `splat` gets the
+prop and tree correctly. Add `tints` or the foliage is grey, and `materials` or the whole city
+renders at one flat roughness — the `.glb` carries no metallic-roughness map at all. `terrain` + `png` + `splat` gets the
 ground and its water. `lanes` + `decals` + `bezier` + `drape` gets road markings and roadside
 furniture. `lanegraph` is what a SIMULATION consumer wants and geometry consumers can skip
 entirely. `colour` and `lights` come last: the bundle ships albedo, and both the illumination and
@@ -52,11 +54,11 @@ the grading on top of it are things the game does, not things the textures carry
 """
 
 from . import (areas, bezier, colour, decals, drape, frames, glb, instances, lanegraph,
-               lanes, lights, networks, png, reader, splat, terrain, tints)
+               lanes, lights, materials, networks, png, reader, splat, terrain, tints)
 
 __all__ = ["areas", "bezier", "colour", "decals", "drape", "frames", "glb", "instances",
-           "lanegraph", "lanes", "lights", "networks", "png", "reader", "splat", "terrain",
-           "tints"]
+           "lanegraph", "lanes", "lights", "materials", "networks", "png", "reader", "splat",
+           "terrain", "tints"]
 
 # Bundle schema version this package reads. `reader.schema_version` reports what a bundle on
 # disk declares, for a consumer that wants to compare. CONTRACT.

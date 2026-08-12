@@ -42,6 +42,32 @@ carry one below 1.0. Ignoring it draws every sapling at full height. There is no
 variant and there will not be one: a child tree is a `Teen` mesh below growth 128 scaled by
 this factor, so the scale IS the child state.
 
+**`attrs.state` is a RENDER branch, not metadata**, and one of its values means "draw nothing".
+Every rule below is `BatchInstanceSystem`'s own branch:
+
+* `normal` / `condemned` — draw it. `Condemned` has no reader in the rendering namespace at all;
+  it is a simulation flag about eviction.
+* `abandoned` — draw it normally. The game's abandoned colour and décor variant are **already
+  resolved into the shipped `colorSet`**, so nothing extra is needed.
+* `construction` — **do not draw the building.** The game skips it. The site is not empty: the
+  crane and site fence are real entities with their own prefabs and ship as ordinary instance
+  records, so the bundle already contains everything visible there. Drawing the building puts a
+  finished tower on a construction site.
+* `destroyed` — neither the collapse pose nor rubble is shipped (the collapse is a runtime
+  deformation, and no rubble mesh exists as a prefab). Draw as `normal` geometry or skip it; do
+  not expect ruins.
+
+`should_draw()` implements that. On the reference city it changes nothing — 8,889 `normal` and
+7 `condemned`, none of the other three — which is why this is a documented rule rather than a
+measured one, and why it must come from the contract instead of from what one save happens to
+contain.
+
+**`attrs.elevation` is how far the object stands ABOVE the ground, not the ground's height.**
+Read as terrain height it gives a city where everything sits at a couple of metres. Ground level
+under an instance is `pos[1] - elevation`, and it is SIGNED: of 517,398 records carrying it,
+29,610 are negative, down to −86.3 m — buried utility hookups and the underground parts of
+transit stations.
+
 **A missing mesh is not automatically a defect.** Check `reader.read_declared_gaps` first: the
 producer declares what it could not deliver (§10), and re-reporting a declared gap as an error
 makes the error count a function of the producer's honesty. An UNDECLARED missing mesh is real.
@@ -134,6 +160,53 @@ def growth_scale(record):
     except (TypeError, ValueError):
         return 1.0
     return value if value > 0.0 else 1.0
+
+
+# `attrs.state` values whose buildings the game does not draw at all. CONTRACT (§4, D4).
+NOT_DRAWN_STATES = ("construction",)
+
+
+def should_draw(record):
+    """Whether the game draws this record's own mesh at all.
+
+    False only for `state: "construction"`, where CS2 skips the building and draws the site's
+    own crane and fence entities instead — which the bundle ships separately as ordinary
+    records. See the module docstring for every state's rule.
+    """
+    return (record.get("attrs") or {}).get("state") not in NOT_DRAWN_STATES
+
+
+def ground_level(record):
+    """World height of the ground under this instance, or `None` when it is not recorded.
+
+    `pos[1] - attrs.elevation`. Returns `None` rather than `pos[1]` when `elevation` is absent,
+    because absent means "sitting flat on the ground" for most records but says nothing for the
+    rest, and a consumer should decide that itself rather than inherit a guess.
+    """
+    elevation = (record.get("attrs") or {}).get("elevation")
+    if elevation is None:
+        return None
+    return float(record["pos"][1]) - float(elevation)
+
+
+def decal_layers(record):
+    """Which surfaces a `decal` instance may paint onto — `("Terrain",)`, `("Roads",)`, ….
+
+    CS2 targets a projection at named layers, and honouring them is what keeps a road marking
+    off the wall behind it: a decal whose layers are `["Roads"]` must not be painted across
+    terrain or buildings. Empty tuple when the record does not say.
+    """
+    return tuple((record.get("attrs") or {}).get("decalLayers") or ())
+
+
+def decal_height(record):
+    """Height in metres of the projector volume this decal was projected through (§4.2a).
+
+    The reach a consumer building a real projector needs; one draping the quad as geometry does
+    not. `None` when absent.
+    """
+    value = (record.get("attrs") or {}).get("decalHeight")
+    return float(value) if value is not None else None
 
 
 def wants_skirt(record):

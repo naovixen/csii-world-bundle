@@ -132,7 +132,7 @@ from mathutils.bvhtree import BVHTree
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import colour_model
 from csiibundle import areas as area_math
-from csiibundle import bezier, decals, drape, frames, instances, lanes
+from csiibundle import bezier, decals, drape, frames, instances, lanes, materials
 from csiibundle import networks, reader, tints
 from csiibundle import terrain as terrain_math
 from csiibundle import glb as glb_reader, png as png_reader, splat as splat_reader
@@ -697,6 +697,77 @@ def _mix_socket(node, name, outputs=False):
     """
     pool = node.outputs if outputs else node.inputs
     return next(s for s in pool if s.name == name and s.enabled)
+
+
+_PBR_LABEL = "cs2_pbr"
+
+
+def apply_pbr_masks(bundle_dir):
+    """Wire each material's §7 `mask` into metallic and roughness. Returns how many were rigged.
+
+    **This is the difference between a city and a city made of plastic.** The producer writes no
+    `metallicRoughnessTexture` into its `.glb` files — measured, 1,449 of 1,449 glTF materials
+    carry none and every one hard-codes `roughnessFactor` 0.9 — so a stock glTF import renders
+    every window, metal roof, wet carriageway and polished floor at one flat roughness. The real
+    per-texel values are in `mask`, referenced only from `materials.json`, and 4,563 of the
+    bundle's 4,784 materials have one.
+
+    Only R (metallic) and A (smoothness, so roughness is `1 - A`) are wired.
+    `csiibundle.materials.wire_plan` decides that, and its docstring says why G and B are left
+    alone rather than fed in as ambient occlusion.
+
+    The mask is loaded Non-Color — it is data, and an sRGB curve on a roughness is a silent
+    error — and CHANNEL_PACKED, because its alpha is data too and Blender would otherwise
+    multiply the other three channels by it.
+    """
+    table = reader.load_materials(bundle_dir)
+    if not table:
+        return 0
+
+    rigged = 0
+    for mat in bpy.data.materials:
+        entry = table.get(_bundle_material_id(mat.name))
+        plan = materials.wire_plan(entry)
+        if not plan:
+            continue
+        tree = getattr(mat, "node_tree", None)
+        if tree is None or any(node.label == _PBR_LABEL for node in tree.nodes):
+            continue                                            # already rigged
+        principled = next((n for n in tree.nodes if n.type == "BSDF_PRINCIPLED"), None)
+        if principled is None:
+            continue
+        mask_path = materials.texture_path(bundle_dir, entry, "mask")
+        if not mask_path or not os.path.isfile(mask_path):
+            continue                                            # report_materials flags it
+
+        image = _unpremultiply(bpy.data.images.load(mask_path, check_existing=True))
+        image.colorspace_settings.name = "Non-Color"
+
+        anchor = principled.location
+        tex = tree.nodes.new("ShaderNodeTexImage")
+        tex.image, tex.label = image, _PBR_LABEL
+        tex.location = (anchor.x - 1000, anchor.y + 300)
+        sep = tree.nodes.new("ShaderNodeSeparateColor")
+        sep.label = _PBR_LABEL
+        sep.location = (anchor.x - 700, anchor.y + 300)
+        tree.links.new(tex.outputs["Color"], sep.inputs["Color"])
+
+        for _slot, channel, target, invert in plan:
+            socket = (tex.outputs["Alpha"] if channel == "A"
+                      else sep.outputs[{"R": "Red", "G": "Green", "B": "Blue"}[channel]])
+            if invert:
+                node = tree.nodes.new("ShaderNodeMath")
+                node.operation, node.label = "SUBTRACT", _PBR_LABEL
+                node.inputs[0].default_value = 1.0
+                node.location = (anchor.x - 450, anchor.y + 200)
+                tree.links.new(socket, node.inputs[1])
+                socket = node.outputs[0]
+            name = {"metallic": "Metallic", "roughness": "Roughness"}[target]
+            if name in principled.inputs:
+                tree.links.new(socket, principled.inputs[name])
+        rigged += 1
+
+    return rigged
 
 
 def apply_color_tints(bundle_dir):
@@ -2336,18 +2407,62 @@ def build_areas(bundle_dir, collection, center, radius, ground=None, cell=3.5):
         with open(catalogue_path, encoding="utf-8") as handle:
             catalogue = json.load(handle)
 
-    materials = {}
+    area_materials = {}
 
     def area_material(prefab):
-        if prefab not in materials:
-            entry = catalogue.get(prefab) or {}
-            texture = entry.get("texture")
-            colour = entry.get("color") or (0.42, 0.40, 0.38, 1.0)
-            materials[prefab] = _ground_material(
-                f"area_{prefab}",
-                os.path.join(bundle_dir, texture) if texture else None,
-                (colour[0], colour[1], colour[2], 1.0))
-        return materials[prefab]
+        """The §8b surface as the PBR material the catalogue actually describes.
+
+        `areaprefabs.json` carries `normalMap`, `maskMap`, `metallic` and `smoothness` beside
+        the diffuse; before it did, pavement and plazas rendered flat-lit with guessed specular
+        (audit #40 P11). The maskMap packs §7's channels, so roughness is `1 - smoothness` and
+        metallic is R — the same two `csiibundle.materials` wires for object materials, and for
+        the same reason.
+        """
+        if prefab in area_materials:
+            return area_materials[prefab]
+        surface = area_math.surface_material(catalogue.get(prefab))
+        colour = surface["color"] or (0.42, 0.40, 0.38, 1.0)
+        material = _ground_material(
+            f"area_{prefab}",
+            os.path.join(bundle_dir, surface["texture"]) if surface["texture"] else None,
+            (colour[0], colour[1], colour[2], 1.0))
+        tree = material.node_tree
+        bsdf = tree.nodes.get("Principled BSDF")
+
+        # Scalars first, so an entry with no maskMap still gets its authored values instead of
+        # the generic ground roughness.
+        if surface["metallic"] is not None:
+            bsdf.inputs["Metallic"].default_value = surface["metallic"]
+        if surface["roughness"] is not None:
+            bsdf.inputs["Roughness"].default_value = surface["roughness"]
+
+        normal_path = (os.path.join(bundle_dir, surface["normal_map"])
+                       if surface["normal_map"] else None)
+        if normal_path and os.path.isfile(normal_path):
+            tex = tree.nodes.new("ShaderNodeTexImage")
+            tex.image = _unpremultiply(bpy.data.images.load(normal_path, check_existing=True))
+            tex.image.colorspace_settings.name = "Non-Color"
+            nmap = tree.nodes.new("ShaderNodeNormalMap")   # CS2 authors OpenGL +Y, as Blender wants
+            tree.links.new(tex.outputs["Color"], nmap.inputs["Color"])
+            tree.links.new(nmap.outputs["Normal"], bsdf.inputs["Normal"])
+
+        mask_path = (os.path.join(bundle_dir, surface["mask_map"])
+                     if surface["mask_map"] else None)
+        if mask_path and os.path.isfile(mask_path):
+            tex = tree.nodes.new("ShaderNodeTexImage")
+            tex.image = _unpremultiply(bpy.data.images.load(mask_path, check_existing=True))
+            tex.image.colorspace_settings.name = "Non-Color"
+            sep = tree.nodes.new("ShaderNodeSeparateColor")
+            tree.links.new(tex.outputs["Color"], sep.inputs["Color"])
+            tree.links.new(sep.outputs["Red"], bsdf.inputs["Metallic"])
+            invert = tree.nodes.new("ShaderNodeMath")
+            invert.operation = "SUBTRACT"
+            invert.inputs[0].default_value = 1.0
+            tree.links.new(tex.outputs["Alpha"], invert.inputs[1])   # A is smoothness
+            tree.links.new(invert.outputs[0], bsdf.inputs["Roughness"])
+
+        area_materials[prefab] = material
+        return material
 
     # The ground each area is painted onto (audit §30), memoised — the conformance re-samples
     # the same points constantly. Without the terrain layer there is nothing to conform to and
@@ -2358,7 +2473,7 @@ def build_areas(bundle_dir, collection, center, radius, ground=None, cell=3.5):
     # reversal, and the adaptive split. What comes back is Z-up triangle soup per prefab.
     builders, stats = area_math.build_pieces(
         read_jsonl(path), cell, ground_at, center=center, radius=radius,
-        progress=lambda n: LOG.progress("areas conformed", n, None))
+        progress=lambda n: LOG.progress("areas conformed", n, None), catalogue=catalogue)
     placed = stats["placed"]
     skipped_region = stats["skipped_region"]
     dropped_bad = stats["dropped_bad"]
@@ -3402,6 +3517,7 @@ def main():
     skipped_kind = 0
     skipped_region = 0
     skipped_asset = 0
+    skipped_state = 0
     missing = {}
     started = time.time()
 
@@ -3427,6 +3543,12 @@ def main():
             if math.hypot(pos[0] - center[0], pos[2] - center[1]) > radius:
                 skipped_region += 1
                 continue
+
+        # §4 D4: `state: "construction"` means the game draws NO building here — the site's
+        # crane and fence are separate records the bundle already carries.
+        if not instances.should_draw(record):
+            skipped_state += 1
+            continue
 
         # §6.1/§9: a `.glb` is ONE STATE of a prefab, and this record says which state it is
         # in. `mesh_candidates` orders the derived files best-first (a tree's `__elderly`, a
@@ -3575,6 +3697,10 @@ def main():
     sources_park.__exit__()
 
     # Every .glb is in, so every material exists: apply the per-instance paint rule (§7.2).
+    masked = apply_pbr_masks(bundle_dir)
+    if masked:
+        LOG.step(f"pbr:       {masked} material(s) took metallic + roughness from their §7 mask "
+                 "(the .glb ships neither — it hard-codes roughness 0.9)")
     tinted = apply_color_tints(bundle_dir)
     if tinted:
         LOG.step(f"tinted:    {tinted} material(s) wired to per-instance colorSet via their colorMask")

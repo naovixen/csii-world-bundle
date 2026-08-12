@@ -19,6 +19,16 @@ diagonal, a choice worth a p95 of 9.4 cm at 3.5 m cells and 41 cm at the 14 m st
 full-city import. `conform_triangle` takes a `sample` callable so the caller supplies whatever
 its own ground actually is; `csiibundle.drape` is one such surface.
 
+**The surface is a full PBR material, not a diffuse texture.** `areaprefabs.json` carries
+`normalMap`, `maskMap`, `metallic` and `smoothness` alongside `texture`/`color`, and before it
+did (audit #40 P11) pavement and plazas "rendered flat-lit with guessed specular". The maskMap
+packs the same channels as a §7 material — see `csiibundle.materials` — so **`roughness =
+1 - smoothness`** here too. `surface_material()` normalises an entry into one shape.
+
+**`rendererPriority` is the overlap draw order, and without it a consumer has no rule for which
+of two overlapping areas paints on top** — they z-fight instead. It is always present.
+`draw_order()` sorts by it.
+
 **The bundle ships the prism band; use it to bound the search.** `heightRanges`, when present,
 is the game's own `Triangle.m_HeightRange` per triangle in the same order as `triangles`: the
 min and max of the terrain over that triangle's footprint, **relative to the triangle's own
@@ -65,6 +75,88 @@ DEDUP_MM = 1.0              # quantise world (x, y) to this before reusing a ray
 # `RenderedArea.m_UVScale`'s own field default, used only when the bundle predates §8b
 # carrying the per-prefab value. World position times this is the UV.
 UV_SCALE_FALLBACK = 0.2
+
+
+# `RenderedArea.m_UVScale`'s own field default, for a bundle predating the per-prefab value.
+# World position times this is the UV, so 0.2 means one repeat every 5 m. CONTRACT.
+UV_SCALE_DEFAULT = 0.2
+
+# The area-surface keys the game always pushes, so their absence means an old bundle rather than
+# an unauthored slot. CONTRACT.
+ALWAYS_PRESENT = ("roundness", "rendererPriority", "expandAmount", "decalLayers")
+
+
+def surface_material(entry):
+    """One `areaprefabs.json` entry as a normalised PBR description.
+
+    Returns a dict with `texture`, `color`, `normal_map`, `mask_map`, `metallic`, `roughness`,
+    `uv_scale`, `priority`, `decal_layers`, `unresolved` and `name`. Absent optional keys come
+    back as `None` rather than as invented defaults, because **an unauthored map on an override
+    surface is a CLEARED slot in the game too** — filling it in renders something CS2 does not.
+
+    `roughness` is `1 - smoothness`, matching §7. `uv_scale` falls back to `UV_SCALE_DEFAULT`,
+    which is the game's own field default rather than a guess.
+
+    `unresolved` marks a surface whose asset was not loaded in the rip session: the game itself
+    drew those with its grey Missing Area fallback, so the honest thing is to surface them BY
+    NAME rather than silently render neutral. The cure is enabling the pack and re-ripping.
+    """
+    entry = entry or {}
+    smoothness = entry.get("smoothness")
+    return {
+        "name": entry.get("name"),
+        "texture": entry.get("texture"),
+        "color": tuple(entry["color"][:4]) if entry.get("color") else None,
+        "normal_map": entry.get("normalMap"),
+        "mask_map": entry.get("maskMap"),
+        "metallic": float(entry["metallic"]) if entry.get("metallic") is not None else None,
+        "roughness": (1.0 - float(smoothness)) if smoothness is not None else None,
+        "uv_scale": float(entry.get("uvScale") or UV_SCALE_DEFAULT),
+        "priority": int(entry.get("rendererPriority") or 0),
+        "expand_amount": entry.get("expandAmount"),
+        "decal_layers": tuple(entry.get("decalLayers") or ()),
+        "unresolved": bool(entry.get("unresolved")),
+    }
+
+
+# How far apart two overlapping areas are separated, per step of draw order, when the surfaces
+# are rebuilt as GEOMETRY rather than drawn as decals. The game has no such offset — it composites
+# decals by `rendererPriority` in one pass — so this is the geometric stand-in for that rule.
+#
+# It must stay well inside the gap between the `area` rung of `decals.LIFT_LADDER` (0.020) and
+# the `instance_decal` rung above it (0.030): with the reference city's 13 distinct priorities
+# this spends 0.0065 of the available 0.010, so an area can never climb through the decal
+# instances standing on it. TUNED.
+PRIORITY_LIFT_STEP = 0.0005
+
+
+def priority_lift(priority, ordered):
+    """Extra metres to raise a surface of this `rendererPriority`, given all priorities present.
+
+    `ordered` is the ascending list of distinct priorities in the catalogue. The lift is by
+    RANK, not by the raw value: the game's priorities are sparse and signed (−122 … 42 on the
+    reference city) and scaling by them directly would push the top surface metres into the air.
+    """
+    try:
+        rank = list(ordered).index(priority)
+    except ValueError:
+        rank = 0
+    return rank * PRIORITY_LIFT_STEP
+
+
+def priorities(catalogue):
+    """The distinct `rendererPriority` values in a catalogue, ascending — `priority_lift`'s arg."""
+    return sorted({int((v or {}).get("rendererPriority") or 0) for v in (catalogue or {}).values()})
+
+
+def draw_order(catalogue):
+    """Prefab ids sorted by `rendererPriority`, lowest first — paint in this order.
+
+    The game's own rule for which of two overlapping areas wins. A consumer that draws them in
+    catalogue or record order gets whichever the iteration happened to reach last, which is
+    z-fighting with extra steps.
+    """
+    return sorted(catalogue or {}, key=lambda k: int((catalogue[k] or {}).get("rendererPriority") or 0))
 
 
 def height_range(record, index):
@@ -176,7 +268,7 @@ def memoised_sampler(surface, dedup_mm=DEDUP_MM):
 
 
 def build_pieces(records, cell, sample, center=None, radius=None, lift=AREA_LIFT,
-                 progress=None):
+                 progress=None, catalogue=None):
     """Conform every area record into Z-up triangle soup, grouped by prefab.
 
     `records` is an iterable of §8b area records; `sample` is a `(x, y) -> height or None`
@@ -193,6 +285,9 @@ def build_pieces(records, cell, sample, center=None, radius=None, lift=AREA_LIFT
     lookup misses keeps its authored height rather than being dropped, so an area at the edge of
     an imported region degrades to flat instead of to nothing.
     """
+    # Overlapping surfaces are separated by draw order, so the game's `rendererPriority` rule
+    # survives being rebuilt as geometry instead of composited as decals. See `priority_lift`.
+    ordered = priorities(catalogue) if catalogue else []
     pieces = {}
     stats = {"placed": 0, "skipped_region": 0, "dropped_bad": 0, "missed": 0,
              "source_tris": 0, "painted_area": 0.0,
@@ -212,7 +307,11 @@ def build_pieces(records, cell, sample, center=None, radius=None, lift=AREA_LIFT
                 stats["skipped_region"] += 1
                 continue
 
-        sink = pieces.setdefault(record.get("prefab"), {"verts": [], "faces": []})
+        prefab = record.get("prefab")
+        sink = pieces.setdefault(prefab, {"verts": [], "faces": []})
+        piece_lift = lift + (priority_lift(
+            int(((catalogue or {}).get(prefab) or {}).get("rendererPriority") or 0), ordered)
+            if ordered else 0.0)
         corners = []
         for n in nodes:
             hit = sample(n[0], n[2])
@@ -229,7 +328,7 @@ def build_pieces(records, cell, sample, center=None, radius=None, lift=AREA_LIFT
                                          - (b[1] - a[1]) * (c[0] - a[0])) * 0.5
             for piece in conform_triangle((a, b, c), cell, sample, counters):
                 base = len(sink["verts"])
-                sink["verts"].extend((p[0], p[1], p[2] + lift) for p in piece)
+                sink["verts"].extend((p[0], p[1], p[2] + piece_lift) for p in piece)
                 sink["faces"].append((base, base + 1, base + 2))
         stats["placed"] += 1
         if progress is not None:
