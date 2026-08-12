@@ -72,14 +72,6 @@ namespace Carto.Systems
         private const float TessellationGap = 3f;
 
         /// <summary>
-        /// How far from the camera the spike looks for a road to rip, in metres.
-        /// Wide enough that the road on screen is in range at any normal zoom, tight enough that
-        /// what comes out is the road being looked at rather than one across the city.
-        /// </summary>
-        private const float FocusRadius = 250f;
-
-
-        /// <summary>
         /// The query for placed network edges.
         /// </summary>
         EntityQuery _edgeQuery;
@@ -1851,42 +1843,7 @@ namespace Carto.Systems
         }
 
         /// <summary>
-        /// Whether an edge is the invisible simulation furniture both rip queries drop — a pipe or
-        /// cable junction anchor, or airport airspace.
-        /// Taxiways carry the marker component and are genuinely drawn, which is why they are the
-        /// one exception, exactly as the vector export has it.
-        /// </summary>
-        /// <param name="entity">The edge entity.</param>
-        /// <returns>Whether it is a marker network.</returns>
-        private bool IsMarkerNetwork(Entity entity)
-        {
-            if (!EntityManager.HasComponent<Composition>(entity)) return false;
-
-            Entity edgeComposition = EntityManager.GetComponentData<Composition>(entity).m_Edge;
-            bool isTaxiway = (edgeComposition != Entity.Null)
-                          && EntityManager.HasComponent<TaxiwayComposition>(edgeComposition);
-
-            if (EntityManager.HasComponent<Game.Net.Marker>(entity) && !isTaxiway) return true;
-
-            return isTaxiway
-                && ((EntityManager.GetComponentData<TaxiwayComposition>(edgeComposition).m_Flags
-                     & TaxiwayFlags.Airspace) != 0);
-        }
-
         /// <summary>
-        /// How many edges meet at a node. Three or more makes it an intersection rather than a
-        /// bend or a dead end.
-        /// </summary>
-        /// <param name="node">The node entity.</param>
-        /// <returns>The number of connected edges.</returns>
-        private int CountConnections(Entity node)
-        {
-            if ((node == Entity.Null) || !EntityManager.HasBuffer<ConnectedEdge>(node)) return 0;
-            return EntityManager.GetBuffer<ConnectedEdge>(node, true).Length;
-        }
-
-
-
         /// <summary>
         /// The across-width vertex remap CS2 applies to a junction flare.
         /// A composition names four positions across each half of its cross-section

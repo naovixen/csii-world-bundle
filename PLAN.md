@@ -18,7 +18,7 @@ built against the schema alone, without reading this mod's code.
 Loading a save (or the map editor) and triggering **Rip World** produces:
 
 ```
-ModsData/Carto/<CityName>/
+ModsData/Carto/            # the bundle root itself — no per-city subfolder
   bundle.json          # manifest: version, frame, CRS, extent, counts, layer index
   meshes/*.glb         # unique meshes, deduped by prefab (geometry + LODs + material refs)
   textures/*.png       # unique textures, deduped by content hash

@@ -455,3 +455,164 @@ manifest scan-the-disk honesty holds; `BundleFile` hygiene centralisation correc
   *(Corrected 2026-08-12: this bullet said "channel R", which is the pre-2026-08-10 channel map.
   `R` is dirt. Read the index from `rasters.splatmap.channels`; never hard-code one.)*
 - Building-state rules (D4). Clip lane-reference tilt (D5).
+
+---
+
+# 5. The H1 re-run — 2026-08-12
+
+The 2026-08-09 audit above was measured against a producer that has since changed by **5,252
+inserted lines** across every rip system (`git diff --stat f6526f7..HEAD -- Systems IO Domain`).
+This section is the re-run over that delta, following the same `validate-vs-game` process. It does
+**not** replace §1–§4; it records what the re-sweep found that the first pass could not have.
+
+Authority: a fresh decompile of `Game.dll` (4,336 types) via `tools/decomp`, and the
+**2026-08-12 15:13** full rip, which no producer commit post-dates.
+
+**Verdict: two new gaps, one of them large; every exclusion gate added since the last audit is
+game-true; no regression found in the rules the first pass validated.**
+
+## 5.1 P18 — two of the five tree states are never exported (B-rank, the largest live gap)
+
+`BatchDataHelpers.CalculateTreeSubMeshData` switches on `Tree.m_State` and returns a **different
+sub-mesh requirement per state**: `RequireTeen`, `RequireAdult`, `RequireElderly`, `RequireDead`,
+`RequireStump`. `MeshRipSystem.StateVariants` exports three of those five — the base file is
+`RequireAdult`, plus derived `__dead` and `__stump` files — and its own comment records the
+omission: *"The growth steps (RequireChild/Teen/Elderly) would slot in here as three more rows if
+a bundle ever needed them."*
+
+This city needs them. Over all 1,283,514 instances:
+
+| state | trees | mesh shipped |
+|---|---|---|
+| Elderly | **119,237** | ✗ — draws as an adult |
+| Adult | 102,822 | ✓ the base file |
+| Teen | **33,581** | ✗ — draws as an adult |
+| Dead | 1,173 | ✓ `__dead` (32 prefabs) |
+| Stump | **0** | ✓ `__stump` (24 prefabs) |
+
+**152,818 of 256,813 stated trees — 59.5% — render in a silhouette the game would not draw**,
+while `__stump` ships for a state no tree in the city is in. The scale comparison is the argument:
+P7 was raised, built and accepted for the **1,173** Dead trees. This is the same defect, one flag
+along, at 130x the size.
+
+Two things keep it from being an A-rank gap. The per-instance `growthScale` the bundle already
+ships is the game's own `scale` term from that same switch, so a Teen tree is at least the right
+*size*; and the silhouette only differs where a prefab authors a distinct Teen/Elderly sub-mesh —
+`__dead` exists for 32 prefabs, so the authored-variant rate is real but not universal. **How many
+prefabs author them is a count only a rip can take, and the producer is the thing that takes it:**
+two more `StateVariant` rows (`__teen`, `__elderly`, both `Replaces = RequireAdult`) reuse the
+proven P7 mechanism exactly, and the next rip's report states the answer for free.
+
+Re-verified clean alongside it: `RequirePartial1`/`RequirePartial2` are **stockpile fullness
+steps**, not partially-built buildings (`CalculateQuantitySubMeshData`, the `m_StepMask & 6`
+ladder at 33/66 or 50), so §1c's "no partially-built meshes exist in the game at all" survives —
+and the producer ships all four fullness variants (`__partial1` 4, `__partial2` 4, `__full` 28).
+`TreeState.Collected` is masked out of the game's own switch and correctly ignored.
+
+## 5.2 P17 — `Fog` is the unread half of the volume stack (B-rank, and a live SPLAT-4 suspect)
+
+`GradingWriter` (495 lines, new since the last audit, never audited) reads the resolved
+`VolumeManager.instance.stack` and captures Exposure, WhiteBalance, ColorAdjustments,
+ShadowsMidtonesHighlights, Tonemapping, Vignette, PhysicallyBasedSky, IndirectLightingController
+and the sun/moon lights. The §4b sweep asks what else is *in* that stack.
+
+The game answers directly: `Game.Prefabs.Climate.*Properties` is the exhaustive list of volume
+components the weather system drives, one class each, and it names **eight**:
+
+| climate properties class | HDRP component | in `grading.json` |
+|---|---|---|
+| ColorAdjustmentsProperties | `ColorAdjustments` | yes |
+| ShadowsMidtonesHighlightsProperties | `ShadowsMidtonesHighlights` | yes |
+| WhiteBalanceProperties | `WhiteBalance` | yes |
+| VignetteProperties | `Vignette` | yes |
+| AtmosphereProperties | `PhysicallyBasedSky` | partial |
+| **FogProperties** | **`Fog`** | **no** |
+| DistanceCloudsProperties | `CloudLayer` | no |
+| VolumetricCloudsProperties | `VolumetricClouds` | no |
+
+The clouds are sky appearance and a reasonable non-goal. **Fog is not.** `FogProperties` binds
+`meanFreePath` (default 8,000 m), `baseHeight`, `maximumHeight`, `maxFogDistance` and — the part
+that matters — **`m_Tint`, an HDR colour** — and `ClimateRenderSystem.UpdateFogOverride` forces
+`m_Fog.enabled.Override(true)` whenever a fog override is active, lerping the mean free path from
+10,000 m down to 1 m. Fog is a tinted, distance-dependent term sitting between every surface the
+bundle ships and the camera, and the bundle carries no trace of it.
+
+**This is a named candidate for SPLAT-4**, the one item Phase 4 left open: a hue error of +6.9 deg
+(sand) and +6.2 deg (pavement) against +1.2 deg (grass), measured on three full-frame crops taken
+at *different camera distances*, after white illumination and tonemapper choice were both
+eliminated. A distance-dependent tint is exactly the shape that survives those eliminations. It is
+a hypothesis with a mechanism, not a conclusion — and unlike the fitted per-channel gain that was
+refused, it is settled by capturing a number the game already holds.
+
+**Fix:** capture the resolved `Fog` component beside the other seven, and — so no future sweep has
+to guess again — enumerate every component in the resolved stack with an active override and
+record the type names the writer does not read, as a `diagnostics.unread` list. Both are the same
+`stack.GetComponent<T>()` pattern already used eight times in the file.
+
+## 5.3 Every exclusion gate added since the last audit, re-derived (§4c)
+
+Exclusions are the class of change with no row in a rule matrix, so each new one is re-derived at
+the renderer end and counted against the shipped rip.
+
+| gate | the game's own rule | verdict | what it drops, measured |
+|---|---|---|---|
+| **Marker networks ship as a line, never a surface** (`01f4f18`) | `BatchInstanceSystem` line 604-608: a `Game.Net.Marker` edge gets `meshLayer &= ~Default; meshLayer \|= Marker`, and `PreCullingSystem:2557` only adds the Marker bounds mask when `RenderingSystem.markersVisible` — the editor, or the player toggling markers on | **match** | 91 taxiway edges keep their `networks.jsonl` record, width and route, and lose their surface (27,648 triangles the game never draws); 18,982 non-taxiway marker edges and airspace taxiways drop entirely, the documented simulation-furniture class |
+| **Hidden composition pieces** (`4bf9ea1`, reverted in `01f4f18`) | `NetCompositionMeshRefSystem` applies `HasMesh != 0 && Hidden == 0` five times, and `CopyMeshPieces` applies it when filling **the mesh entity's** buffer | **correct but redundant — the revert was right** | nothing. The producer reads `NetCompositionMeshRef.m_Mesh`'s buffer (`GameMesh.cs:516,569`), i.e. the already-filtered copy, so the gate could never fire. Verified in the decompiled `CopyMeshPieces`, not taken from §44.1b's word |
+| **Lane parts whose flags all exclude** — 142,268 lanes, the rip's largest single exclusion | `BatchInstanceSystem` line 755: `if ((subMesh.m_Flags & subMeshFlags2) != 0) continue` — an **exclusion** mask, built at 689-745 | **match, term for term** | see the polarity note below |
+| **Unpainted areas** (266) | prefab has no `RenderedArea`; the game never draws them | **match** | triangles still ship in `clipvolumes.jsonl`, so nothing is lost |
+| `template:<shader>` on every material (`85ab88d`) | — | **additive, not an exclusion** | — |
+
+**The polarity note, re-verified because it is the most confusing rule in the layer.** The object
+path and the lane path use *opposite* polarity for the same flags, and both producer paths match
+their own side:
+
+- Object path — `BatchInstanceSystem:522` keeps an entry when
+  `(subMesh.m_Flags & state) == subMesh.m_Flags`: an **inclusion** test over satisfied conditions,
+  so `leftHandTraffic -> RequireLeftHandTraffic`. `MeshRipSystem.DefaultState` builds exactly
+  that, and `ExportsSubMesh` is `((flags & RequireFlags) & ~state) == 0`, the same test restricted
+  to the `Require*` bits.
+- Lane path — `BatchInstanceSystem:755` skips an entry when `(m_Flags & mask) != 0`: an
+  **exclusion** test, so `leftHandTraffic -> RequireRightHandTraffic`. `NetworkRipSystem:1308`
+  builds exactly that.
+
+`MeshRipSystem.RequireFlags` was checked against the enum member by member: **19 of 19** `Require*`
+bits present, `OutlineOnly` explicitly rejected, the three `IsStack*` bits handled by the stack
+path, `DefaultMissingMesh`/`HasTransform` benign. Complete.
+
+One honest asymmetry to state rather than fix: the producer always excludes `RequireEditor` parts,
+while the game draws them when `m_EditorMode` is true. A rip taken **in the map editor** therefore
+omits parts the editor is drawing. That is the right answer for a bundle that recreates a played
+city, and it is now written down instead of silent.
+
+## 5.4 The gap-close, re-measured against the game rather than against its own labels
+
+- **P4 (water appearance) is complete.** `WaterRenderSettingsPrefab` declares 22 fields; the
+  bundle ships 21 of them plus `seaLevel`. The one omission is `m_SeaWindAffectWavesDirection`,
+  a waves-direction bool inside the excluded dynamic-water domain (§29). Benign.
+- **P5 (terrain tiling) is complete, including a quirk worth keeping.** The producer's claim that
+  `_TerrainExtraTextureTiling` is bound from `m_TerrainGrassTiling` looked like a misreading and
+  is exactly right: `TerrainMaterialSystem` binds it from the **grass** tiling in all eight
+  branches, so all four extra layers share the grass repeat. Ground normal maps ship for all
+  seven layers (`dirt_normal`, `grass_normal`, `rock_normal`, `extra1..4_normal`).
+- One low-severity divergence found: `TerrainMaterialSystem` falls back to a
+  `fallbackRenderSettingsPrefab` for both texture *and* tiling when a theme leaves a layer's
+  diffuse null; the producer reads only `currentTerrainRenderSettings`, so it would report the
+  primary's tiling for a fallen-back layer. Fires only where a layer has no texture — in which
+  case that layer is not painted. Recorded, not fixed.
+
+## 5.5 Re-verified clean this pass (do not re-audit without cause)
+
+`ExportsSubMesh` is equivalent to the renderer's test (both polarities, complete flag set); the
+fullness ladder including both `Partial` steps; `CopyMeshPieces` pre-filtering; the marker layer
+swap and its visibility gate; the lane exclusion mask term-for-term; water and terrain parameter
+completeness; `GradingWriter`'s stack-evaluation order (`VolumeManager.stack` returns all defaults
+unless `Update()` runs first — the writer does).
+
+## 5.6 The work-list this re-run adds
+
+| # | finding | severity | where |
+|---|---|---|---|
+| **P18** | `__teen` and `__elderly` tree variants — 152,818 trees (59.5% of stated trees) draw in the wrong silhouette. Two `StateVariant` rows; the P7 mechanism, unchanged. | **B, largest live gap** | H13 |
+| **P17** | Capture the resolved `Fog` volume component (tint, mean free path, height band, max distance) plus a `diagnostics.unread` list of stack components the writer does not read. Live suspect for SPLAT-4. | B | H13 |
+| P19 | Terrain tiling ignores `fallbackRenderSettingsPrefab` for layers whose diffuse is null. | low | H13 if free |
+| D7 | Document that a rip taken in the map editor omits `RequireEditor` parts the editor draws. | doc | H11 |

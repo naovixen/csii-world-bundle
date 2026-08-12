@@ -69,8 +69,25 @@ textures · 8,259 network segments (7,289 mesh-form + 970 centerline-only) · 68
 
 ### H1 — full game-fidelity audit → `docs/game-fidelity-audit.md`
 
-**Holds.** The classification is sound and no later session has falsified a *verdict* in it. What
-was stale is the status text around it, corrected this session:
+**Re-run 2026-08-12 over the 5,252-line producer delta since the original pass** (`§5` of the
+audit). The original classification holds; the re-run found **two new gaps** and confirmed every
+exclusion gate added since is game-true:
+
+- **P18 — `__teen` and `__elderly` tree meshes are never exported.** The game picks a different
+  sub-mesh per `Tree.m_State`; the producer exports three of five states. **152,818 of 256,813
+  stated trees — 59.5% — draw in a silhouette the game would not draw**, while `__stump` ships
+  for a state no tree in this city is in. Two `StateVariant` rows, the proven P7 mechanism.
+- **P17 — `Fog` is the unread half of the volume stack.** The game's own
+  `Game.Prefabs.Climate.*Properties` set names eight weather-driven volume components;
+  `GradingWriter` reads five of them plus the sky. `FogProperties` binds an **HDR tint** and a
+  mean free path, and `ClimateRenderSystem` forces fog on under an override. A tinted,
+  distance-dependent term between every shipped surface and the camera — and a **named suspect
+  for SPLAT-4**, whose residual is a hue error on two warm surfaces measured at different camera
+  distances after white light and tonemapper choice were both eliminated.
+- P19 (terrain tiling ignores the fallback settings prefab) and D7 (a map-editor rip omits
+  `RequireEditor` parts) are the small tail.
+
+Status text that was stale and is corrected: 
 
 1. **§2.1's "None of it is validated ... awaiting re-rip" was true when written and is now
    false.** Every P-item is validated — see H3 below.
@@ -90,7 +107,27 @@ became a standing rule.
 
 ### H2 — repo & label hygiene
 
-**Holds, re-swept this session.**
+**Re-run 2026-08-12.** The label and comment halves hold; the stale-code and stale-doc halves
+found real work, now done:
+
+- **99 lines of dead code removed** from fork-added C#, found by whole-repo reference count:
+  `MeshRipSystem.GetCandidatePrefabs` and `NetworkRipSystem.FocusRadius` (both Phase-1 spike
+  leftovers), `CountConnections`, and `IsMarkerNetwork` — the last of which was worse than dead,
+  because its doc comment still asserted that taxiways "are genuinely drawn, which is why they
+  are the one exception", the exact claim §44.1 falsified. Build clean after removal.
+- **Three doc paths pointed at a directory layout the code does not use** — `CLAUDE.md`'s
+  run/test line (`ModsData\Carto\<name>\`), `PLAN.md` §1's tree (`ModsData/Carto/<CityName>/`),
+  and, worst, the staleness non-negotiable's own example (`…\ModsData\Carto\spike\`). The bundle
+  root is `ModsData/Carto` with no subfolder (`Instance.CartoDataPath`, and the disk agrees).
+  Fixed in all three, and `CLAUDE.md`'s Layout section now lists all eight rip systems and the
+  fourteen `IO/` writers instead of the three-and-four it was frozen at.
+- **`Documents/Related APIs.md` stays** — recorded here so the sweep stops re-raising it. It is
+  *upstream Carto's* file (added in `10e6208`, before the fork point), documenting the parent
+  mod's API surface at 1.0.13. It never claimed to cover the ripper, so it misleads no one.
+- `colour_model.linear_to_srgb` is unreferenced but is public API of a module about to become
+  `cs2bundle.colour`. Kept deliberately.
+
+Verified still clean:
 
 - **English-only comments:** all 94 fork-added files re-scanned for CJK — **zero** hits in any
   added `.cs` or `.py`. The remaining CJK is upstream Carto's own bilingual style (65 files:
@@ -339,9 +376,13 @@ Everything genuinely open, in one place. Nothing else is outstanding.
 
 | # | item | kind | where it is paid |
 |---|---|---|---|
+| **P18** | `__teen` + `__elderly` tree variants. 152,818 trees draw as adults. Two `StateVariant` rows. | **producer, B — biggest live gap** | H13 |
+| **P17** | Capture the resolved `Fog` volume component + a `diagnostics.unread` list of stack components `GradingWriter` does not read. | producer, B | H13 |
+| P19 | Terrain tiling ignores `fallbackRenderSettingsPrefab` for a layer with no diffuse. | producer, low | H13 if free |
+| D7 | A map-editor rip omits `RequireEditor` parts the editor draws. | doc | H11 |
 | PROBE-2 | Drop the `COLLAPSED:` probe's `Size.y` clause — 9 false positives per rip, no defect it can uniquely catch. | needs a yes | H13 |
 | PILLARS-2 | Should the 120 warnings — every one a gap the producer already declared — still warn? | decision | H10 |
-| SPLAT-4 | Warm-surface hue residual (+6.9° sand, +6.2° pavement, +1.2° grass). Light, tonemapper choice and working space are all eliminated. | consumer, open | unscheduled — blocks nothing |
+| SPLAT-4 | Warm-surface hue residual (+6.9° sand, +6.2° pavement, +1.2° grass). Light, tonemapper choice and working space are all eliminated — **but `Fog` was never in evidence.** Re-test once P17 ships the tint. | consumer, open | after P17's rip |
 | 4a | Elevated deck gaps: probably closed by the `0eeb24f` residency fix, never confirmed. | verify | H14 |
 | beaches | Painted sand unconfirmed by eye since the extras fix. | verify | H14 |
 | §29 | Backdrop water simulation. Explicitly **not** part of the D2 sign-off. | deferred | — |

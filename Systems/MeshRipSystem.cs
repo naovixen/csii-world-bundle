@@ -1755,62 +1755,6 @@ namespace Carto.Systems
         }
 
         /// <summary>
-        /// Collect the prefab entities worth ripping, preferring prefabs actually placed in the
-        /// loaded city over the asset database's full catalogue.
-        /// The first spike run walked the catalogue and found 20,017 prefabs whose meshes were all
-        /// empty — unsurprising in hindsight, since the game has no reason to load geometry for an
-        /// asset nobody placed. Placed buildings are the ones whose meshes must be resident.
-        /// </summary>
-        /// <param name="report">The report to append discovery counts to.</param>
-        /// <returns>Distinct prefab entities, in discovery order.</returns>
-        private List<Entity> GetCandidatePrefabs(StringBuilder report)
-        {
-            List<Entity> result = new();
-            HashSet<Entity> seen = new();
-
-            NativeArray<Entity> placed = _placedBuildingQuery.ToEntityArray(Allocator.TempJob);
-            try
-            {
-                report.AppendLine($"Buildings placed in the city: {placed.Length}");
-                foreach (Entity building in placed)
-                {
-                    Entity prefabEntity = EntityManager.GetComponentData<PrefabRef>(building).m_Prefab;
-                    if ((prefabEntity != Entity.Null) && seen.Add(prefabEntity)) result.Add(prefabEntity);
-                }
-                report.AppendLine($"Distinct building prefabs in use: {result.Count}");
-            }
-            finally
-            {
-                placed.Dispose();
-            }
-
-            // An empty map (or the editor) has nothing placed; fall back to the catalogue so the
-            // spike still reports something useful rather than silently doing nothing.
-            //
-            if (result.Count == 0)
-            {
-                report.AppendLine("No placed buildings; falling back to the prefab catalogue.");
-                NativeArray<Entity> catalogue = _subMeshPrefabQuery.ToEntityArray(Allocator.TempJob);
-                try
-                {
-                    report.AppendLine($"Prefabs with a SubMesh buffer: {catalogue.Length}");
-                    foreach (Entity prefabEntity in catalogue)
-                    {
-                        if (!Instance.Prefab.TryGetPrefab(EntityManager.GetComponentData<PrefabData>(prefabEntity), out PrefabBase prefab)) continue;
-                        if (prefab is not BuildingPrefab) continue;
-                        if (seen.Add(prefabEntity)) result.Add(prefabEntity);
-                    }
-                }
-                finally
-                {
-                    catalogue.Dispose();
-                }
-            }
-
-            return result;
-        }
-
-        /// <summary>
         /// List the component and buffer types present on an entity, for diagnostics.
         /// </summary>
         /// <param name="entity">The entity to describe.</param>

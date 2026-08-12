@@ -39,23 +39,32 @@ seam everything depends on.
   (zip). `AllowUnsafeBlocks` is on (needed for native mesh buffer reads).
 - **Build:** `dotnet build -c Release` (or open `Carto.sln` in VS 2022). `Mod.targets`
   deploys the DLL to the CS2 mods folder automatically.
-- **Run/test:** launch CS2, load a save or the map editor, open **Options → Carto**, and
-  trigger the export (add a "Rip World" toggle/button in the Feature/General UI — see PLAN
-  §fork points). Bundle lands under
-  `…\AppData\LocalLow\Colossal Order\Cities Skylines II\ModsData\Carto\<name>\`.
+- **Run/test:** launch CS2, load a save or the map editor, open **Options → Carto → Ripper**,
+  and press **Rip World**. The bundle lands directly in
+  `…\AppData\LocalLow\Colossal Order\Cities Skylines II\ModsData\Carto\` — one bundle per
+  install, no per-city subfolder, beside the vector export's `GeoJSON/`, `GeoTIFF/`,
+  `Shapefile/` and `Styles/` folders. A full city takes ~28 min; unchecking **Rip Objects** and
+  **Rip Terrain** gives a ~5 min networks-only rip, and files whose stage did not run are left
+  alone, so the bundle goes **mixed-vintage** rather than broken.
 - **Only the user can produce a bundle.** Ripping needs the game running with a city loaded;
   you cannot do it. See the staleness non-negotiable below before using one.
 
 ## Layout (parent Carto + ripper additions)
 - `Systems/` — one `GameSystemBase` per domain (`BuildingSystem`, `NetworkSystem`,
   `AreaSystem`, `POISystem`, `RouteSystem`, `ZoningSystem`, `RasterSystem`,
-  `SharedDataCollectionSystem`). **New:** `MeshRipSystem`, `MaterialRipSystem`,
-  `InstanceRipSystem` (the ripper's collectors) live here.
+  `SharedDataCollectionSystem`). **New — the ripper's collectors:** `InstanceRipSystem`,
+  `MeshRipSystem`, `MaterialRipSystem`, `AppearanceRipSystem`, `NetworkRipSystem` (+ the
+  `.GameMesh` partial that ports the game's composition-mesh generator), `LaneRipSystem`,
+  `TerrainRipSystem`, and `RipOrchestratorSystem`, which sequences all eight stages behind the
+  one **Rip World** button.
 - `IO/` — writers (`GeoJson`, `Shapefile`, `GeoTiff`, `IO`, `Options`, `Enums`, `FieldInfo`).
-  **New:** `GltfWriter`, `BundleWriter`, `TextureWriter` (DDS/RenderTexture → PNG),
-  `BundleManifest`.
+  **New:** `GltfWriter`, `BundleWriter`, `BundleManifest`, `BundleFile`, `InstanceWriter`,
+  `NetworkWriter`, `LaneWriter`, `TextureWriter` (DDS/RenderTexture → PNG), `Png` (16-bit
+  rasters), `GeometryAssetReader` (the native mesh decode), `BaseSkirtBuilder`,
+  `GradingWriter`, `RipProgress`.
 - `Domain/` — data records (`BuildingStat`, `NetworkStat`, `POI`, `Theme`, …). **New:**
-  `MeshAsset`, `MaterialAsset`, `InstanceRecord`.
+  `InstanceRecord`, `MeshAsset`, `MaterialAsset`, `NetworkRecord`, `LaneRecord`,
+  `LaneGeometryRecord`, `PrefabMesh`, `RipWarning`.
 - `Geodata/` — CRS/projection math (PROJ port). Reuse for the manifest's geo-referencing.
 - `Utils/`, `Locale/`, `Settings.cs`, `Mod.cs`, `Instance.cs` (service-locator exposing
   `Instance.Prefab`, `Instance.Terrain`, `Instance.Water`, `Instance.Map`, …).
@@ -74,7 +83,7 @@ seam everything depends on.
 
 ## Non-negotiables
 - **The bundle on disk goes stale the moment producer code changes.**
-  `…\ModsData\Carto\spike\` is the output of *one* rip at *one* point in time, not a live view of
+  `…\ModsData\Carto\` is the output of *one* rip at *one* point in time, not a live view of
   what the producer would emit today. Any change under `Systems/`, `IO/` or `Domain/` makes those
   bytes a description of the **old** code, and only the user can refresh them by ripping in-game.
   Therefore:
