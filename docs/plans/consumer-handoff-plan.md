@@ -92,6 +92,28 @@ tools/cs2bundle/
 | H8 | drape (harness keeps a ~15-line BVH adapter) | add `HeightfieldSurface` |
 | H9 | networks, face generation, area driver loop | riskiest; may be 3 commits |
 
+**Running the gate.** Take the baseline *before* the first move, from the bundle as it stands,
+and keep the same region and camera for every step:
+
+```sh
+BLENDER="G:/SteamLibrary/steamapps/common/Blender/blender.exe"
+BUNDLE="C:/Users/naomi/AppData/LocalLow/Colossal Order/Cities Skylines II/ModsData/Carto"
+
+# import a region  (--center interchange|downtown|auto, or explicit X Z)
+"$BLENDER" --background --factory-startup --python tools/blender_import_bundle.py -- \
+    "$BUNDLE" --networks --terrain --lane-markings --center interchange --radius 350 \
+    --save base.blend > base.log 2>&1
+
+# render it — the camera args are the "aimed N viewport(s) at X … Y …" line from the log,
+# NOT world coordinates: the harness has already converted them
+"$BLENDER" --background base.blend --python tools/ab_render.py -- base.png <X> <Y> 528
+
+python tools/ab_compare.py base.png step.png      # pixel diff — must be zero
+python tools/ab_compare.py --counts base.log step.log   # log-count diff, secondary signal
+```
+
+`ab_compare` strips elapsed times before diffing counts, so timing jitter never fails a run.
+
 **Rules for every step**
 
 1. `cs2bundle` never imports `bpy` at module scope — `python -c "import cs2bundle"` under system
