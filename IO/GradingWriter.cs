@@ -157,7 +157,16 @@ namespace Carto.IO
                 Add(document, "shadowsMidtonesHighlights", CaptureSmh(stack));
                 Add(document, "tonemapping", CaptureTonemapping(stack));
                 Add(document, "vignette", CaptureVignette(stack));
+                Add(document, "fog", CaptureFog(stack));
                 Add(document, "lighting", CaptureLighting(stack));
+
+                // What is in the stack that nothing above reads (audit §5.2, P17). The reason
+                // this exists rather than a longer list of capture methods: the previous sweep
+                // had to enumerate `Game.Prefabs.Climate.*Properties` in a decompiler to learn
+                // that `Fog` was being missed, and that answer goes stale the next time the game
+                // patches. A rip that names its own blind spot cannot hide one for three months.
+                //
+                ((Dictionary<string, object>)document["diagnostics"])["unread"] = UnreadComponents(stack);
 
                 return document;
             }
@@ -214,6 +223,96 @@ namespace Carto.IO
                           + "but it is why a screenshot's corners read darker than its centre, "
                           + "which matters if a reference colour is sampled off-centre"
             };
+        }
+
+        /// <summary>
+        /// The atmospheric fog the scene is seen through.
+        /// <para>
+        /// <b>Why it is here (audit §5.2, P17).</b> `Game.Prefabs.Climate.FogProperties` binds
+        /// HDRP's <c>Fog</c> from the weather prefab, carrying an <b>HDR tint</b> alongside the
+        /// attenuation distance, and <c>ClimateRenderSystem.UpdateFogOverride</c> forces
+        /// <c>enabled</c> on whenever a fog override is active, lerping the mean free path from
+        /// 10 km down to 1 m. So this is a tinted, <i>distance-dependent</i> term sitting between
+        /// every surface the bundle ships and the camera — and the bundle carried no trace of it
+        /// while SPLAT-4's unexplained residual was a hue error on two warm surfaces measured at
+        /// different camera distances, after white illumination and tonemapper choice had both
+        /// been eliminated. Whether it is the cause is now a number to read rather than an
+        /// argument to have.
+        /// </para>
+        /// <para>
+        /// Unlike the grading blocks this is <b>not</b> a display transform a consumer replays on
+        /// a texture: it is a per-pixel function of distance from the camera, so it belongs in the
+        /// consumer's own atmosphere, and a consumer reconstructing albedo should ignore it.
+        /// </para>
+        /// </summary>
+        /// <param name="stack">The resolved volume stack.</param>
+        /// <returns>The <c>fog</c> block, or <c>null</c> when fog is off.</returns>
+        private static object CaptureFog(VolumeStack stack)
+        {
+            Fog fog = stack.GetComponent<Fog>();
+            if ((fog == null) || !fog.active || !fog.enabled.value) return null;
+
+            UnityEngine.Color tint = fog.tint.value;
+            return new Dictionary<string, object>
+            {
+                ["meanFreePath"] = Round(fog.meanFreePath.value),
+                ["baseHeight"] = Round(fog.baseHeight.value),
+                ["maximumHeight"] = Round(fog.maximumHeight.value),
+                ["maxFogDistance"] = Round(fog.maxFogDistance.value),
+                ["tint"] = new[] { Round(tint.r), Round(tint.g), Round(tint.b) },
+                ["units"] = "`meanFreePath` is the distance in metres over which the fog "
+                          + "attenuates to 1/e, `baseHeight`/`maximumHeight` bound it vertically "
+                          + "in world metres, `maxFogDistance` clamps it. `tint` is an HDR colour "
+                          + "and may exceed 1. NOT part of the colour chain above: fog is a "
+                          + "function of distance from the camera, so it belongs in a consumer's "
+                          + "atmosphere, not in its textures"
+            };
+        }
+
+        /// <summary>
+        /// Every volume component resolved in the stack that this writer does not read.
+        /// Named so a future sweep reads a rip instead of a decompiler; see the call site.
+        /// </summary>
+        /// <param name="stack">The resolved volume stack.</param>
+        /// <returns>Type names, sorted, of active components with no capture method here.</returns>
+        private static List<string> UnreadComponents(VolumeStack stack)
+        {
+            HashSet<string> read = new HashSet<string>
+            {
+                nameof(Exposure), nameof(WhiteBalance), nameof(ColorAdjustments),
+                nameof(ShadowsMidtonesHighlights), nameof(Tonemapping), nameof(Vignette),
+                nameof(Fog), nameof(PhysicallyBasedSky), nameof(IndirectLightingController)
+            };
+
+            List<string> unread = new List<string>();
+            try
+            {
+                // `AnyPropertiesIsOverridden` is the right filter, not `active`: every registered
+                // component type is present in a resolved stack, almost all of them at their
+                // defaults. `VolumeManager.ReplaceData` clears every parameter's `overrideState`
+                // at the top of each `Update`, and `VolumeComponent.Override` sets it as each
+                // volume is blended in - so an overridden parameter means some volume in THIS
+                // scene set it, which is exactly the set worth reporting.
+                //
+                foreach (Type type in VolumeManager.instance.baseComponentTypeArray)
+                {
+                    if ((type == null) || read.Contains(type.Name)) continue;
+
+                    VolumeComponent component = stack.GetComponent(type);
+                    if ((component == null) || !component.active) continue;
+                    if (!component.AnyPropertiesIsOverridden()) continue;
+
+                    unread.Add(type.Name);
+                }
+            }
+            catch (Exception)
+            {
+                // Diagnostics only - never fail a rip over a blind-spot report.
+                return unread;
+            }
+
+            unread.Sort(StringComparer.Ordinal);
+            return unread;
         }
 
         /// <summary>

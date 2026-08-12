@@ -1238,12 +1238,24 @@ namespace Carto.Systems
         /// <summary>
         /// Every alternative state shipped as a derived file.
         /// The states the base file already covers are absent by construction: a healthy adult tree
-        /// and an empty stockpile <i>are</i> <see cref="DefaultState"/>, so they need no suffix. The
-        /// growth steps (<c>RequireChild</c>/<c>Teen</c>/<c>Elderly</c>) would slot in here as three
-        /// more rows if a bundle ever needed them.
+        /// and an empty stockpile <i>are</i> <see cref="DefaultState"/>, so they need no suffix.
+        /// <para>
+        /// All four non-adult tree states ship (audit §5.1, P18). <c>Teen</c> and <c>Elderly</c>
+        /// were left out when <c>__dead</c>/<c>__stump</c> were added, on the reasoning that the
+        /// growth steps could wait — but <c>CalculateTreeSubMeshData</c> returns a distinct
+        /// sub-mesh requirement for every one of the five states, and the two that were skipped are
+        /// the two the city is full of: 119,237 Elderly and 33,581 Teen against 1,173 Dead and no
+        /// Stumps at all, so 59.5% of stated trees were drawing in a silhouette the game would not
+        /// draw. <c>RequireChild</c> is deliberately still absent, and is not a fourth row: the
+        /// game's own switch has no Child case — a child tree is a <c>Teen</c> entry below growth
+        /// 128, scaled by <c>m_ChildSize / m_TeenSize</c>, which the per-instance
+        /// <c>growthScale</c> already carries.
+        /// </para>
         /// </summary>
         private static readonly StateVariant[] StateVariants =
         {
+            new() { Suffix = "__teen", Required = SubMeshFlags.RequireTeen, Replaces = SubMeshFlags.RequireAdult, Tree = true },
+            new() { Suffix = "__elderly", Required = SubMeshFlags.RequireElderly, Replaces = SubMeshFlags.RequireAdult, Tree = true },
             new() { Suffix = "__dead", Required = SubMeshFlags.RequireDead, Replaces = SubMeshFlags.RequireAdult, Tree = true },
             new() { Suffix = "__stump", Required = SubMeshFlags.RequireStump, Replaces = SubMeshFlags.RequireAdult, Tree = true },
             new() { Suffix = "__partial1", Required = SubMeshFlags.RequirePartial1, Replaces = SubMeshFlags.RequireEmpty },

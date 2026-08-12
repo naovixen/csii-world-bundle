@@ -474,6 +474,16 @@ in neither `instances.jsonl` nor `meshes/`. A consumer therefore never has to re
 filter them, and the object count in a bundle is deliberately lower than the game's own
 internal object count. Building, tree and prop counts are unaffected.
 
+**A bundle is always the played world, even when it is ripped in the map editor.** *(D7,
+2026-08-12, audit §5.3.)* The game selects sub-meshes and lane parts against a state that
+includes `RequireEditor`, and it satisfies that flag when `m_EditorMode` is on — so the editor
+draws editor-only furniture that normal play does not. The producer excludes `RequireEditor`
+parts unconditionally. A rip taken in the editor therefore omits parts that were on screen while
+it ran, and that is deliberate: the bundle describes the city as a player sees it, and a
+consumer never has to know which mode produced its bundle. This is also why a marker network
+ships as a line and never a surface (§5B) — the Marker layer draws only in the editor or with
+markers toggled on.
+
 ---
 
 ## 5. `networks.jsonl`
@@ -923,8 +933,16 @@ ship as derived files**, joining the `__base` / `__stack_*` family:
 
 | file | join on |
 |---|---|
-| `meshes/<assetId>__dead.glb`, `__stump.glb` | `attrs.treeState` |
+| `meshes/<assetId>__teen.glb`, `__elderly.glb`, `__dead.glb`, `__stump.glb` | `attrs.treeState` |
 | `meshes/<assetId>__partial1.glb`, `__partial2.glb`, `__full.glb` | `attrs.fullness` |
+
+*(2026-08-12, audit §5.1 P18 — `__teen` and `__elderly` were added on this date. All four
+non-adult tree states now ship. The game picks a distinct sub-mesh for each of `Teen`, `Adult`,
+`Elderly`, `Dead` and `Stump`, and the two that had been omitted are the common ones: in the
+reference city, 119,237 Elderly and 33,581 Teen against 1,173 Dead and no Stumps. There is no
+`__child` and there will not be one — the game's own switch has no Child case, because a child
+tree is a `Teen` entry below growth 128 scaled by `m_ChildSize / m_TeenSize`, which
+`attrs.growthScale` already carries.)*
 
 Each derived file is a **complete replacement** for `<assetId>.glb`, not an overlay: it already
 contains every unconditional part the prefab also draws. **The base state has no suffix** — a
@@ -1329,6 +1347,22 @@ toward +X (east).
   behind internal API), but these are the clamps the game drives per time of day, so they bracket
   the one term a consumer must otherwise choose blind.
 
+  **`fog`** *(added 2026-08-12, audit §5.2)* — HDRP's `Fog` as the weather system resolved it:
+  `meanFreePath` (metres to 1/e attenuation), `baseHeight`/`maximumHeight` (the vertical band, in
+  world metres), `maxFogDistance`, and `tint`, **an HDR colour that may exceed 1**. Absent when
+  fog is off. It is **not** part of the colour chain above and must not be applied to a texture:
+  fog is a function of a pixel's distance from the camera, so it belongs in a consumer's own
+  atmosphere. It ships because it is the one term that changes a *shipped* surface's on-screen
+  colour by how far away it is, and nothing else in the bundle could tell a consumer that.
+
+  **`diagnostics.unread`** *(added 2026-08-12)* — the type names of volume components that some
+  volume in the scene actively overrode and that this writer does **not** capture. Normally
+  `CloudLayer` and `VolumetricClouds` (sky appearance, a documented non-goal). It exists because
+  `Fog` went unnoticed for two months and was only found by enumerating the game's own
+  `Game.Prefabs.Climate.*Properties` set in a decompiler — an answer that goes stale on the next
+  game patch. A rip that names its own blind spot cannot hide one that long again. A consumer can
+  ignore it; it is there so the *producer's* gaps stay visible.
+
   *(Declared as `layers.grading` since 2026-08-12 — see §12.3. It was briefly a root file found
   by name; that was a contract violation, because §1's rule is that a consumer reads every path
   from `layers` and never hard-codes one, so a layer absent from the index is a layer a
@@ -1359,7 +1393,19 @@ toward +X (east).
   distinguishes "the game had nothing to give" from "the producer dropped it", and it is worth
   reading before concluding the second. `layers.worldWater` is a different case: the schema
   reserves the key and the geo-referencing for a backdrop water raster, but **no producer path
-  emits one today** — nothing has ever written that layer, so a consumer will not encounter it.
+  emits one and none will** — see the non-goal below. The key stays reserved so the schema's
+  raster geo-referencing rules remain uniform; a consumer will never encounter it.
+
+  **Backdrop water is a permanent non-goal.** *(Decided 2026-08-12, closing the long-deferred
+  §29; it was explicitly left out of the D2 sign-off and is settled here on its own terms.)*
+  `WaterSystem.simulateBackdrop` seeds a GPU texture with `ResetBackdropWaterToSeaLevel` and then
+  runs the same flow simulation over it. So everything it holds that a static bundle could use is
+  already in the bundle twice over: the surface is the **sea datum** `rasters.water.seaLevel`
+  (§8, and read that entry — it is a datum, not the playable water surface), and the ground it
+  sits on is `worldTerrain` when the session has it resident. What is left is transient flow,
+  which is the same class as waves and wetness and excluded for the same reason — *the bundle is
+  the dry, built world*. A consumer that wants a horizon sea draws a plane at `seaLevel` out to
+  its own draw distance, which is what the game is showing it.
 - The theme's ground textures under `terrain/surfaces/` now include tangent **normal maps**
   (`grass_normal.png`, `dirt_normal.png`, `rock_normal.png`) and, when the theme binds them,
   the four paintable extras (`extra1..4.png` + `extra1..4_normal.png`). *(Added 2026-08-07;

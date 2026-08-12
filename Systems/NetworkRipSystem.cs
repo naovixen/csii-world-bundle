@@ -1020,8 +1020,19 @@ namespace Carto.Systems
                     // Authored metres that produced no metres. The z axis is the along-run one,
                     // so a piece tiled along a segment is never thin there; x and y are the
                     // cross-section, which is where a collapse shows.
-                    bool flat = (math.max(extent.x, extent.z) < 0.05f)
-                                || ((s.Size.y > 0.5f) && (extent.y < 0.05f));
+                    //
+                    // There used to be a third clause here, `Size.y > 0.5 && extent.y < 0.05`,
+                    // and it was a false-positive generator: it flagged 9 healthy pieces per rip
+                    // and never a defect. `m_Size.y` comes from `NetPieceData.m_HeightRange`,
+                    // which `NetPiecePrefab` declares as an AUTHORED field defaulting to
+                    // `Bounds1(0f, 3f)` — a declared band, not the geometry's thickness. So every
+                    // flat surface piece whose author left the default tripped it: gravel
+                    // shoulders, public-transport lanes and tram tracks, reporting built
+                    // footprints like 120.99 x 0.01 x 94.23 m. Manifestly built, and flat because
+                    // a lane surface is flat. Dropped 2026-08-12; the two clauses that remain are
+                    // the ones that test what the piece actually produced.
+                    //
+                    bool flat = math.max(extent.x, extent.z) < 0.05f;
                     if (pinnedAcross || flat) collapsed.Add(s);
                 }
                 if (collapsed.Count > 0)

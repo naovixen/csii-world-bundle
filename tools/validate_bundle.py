@@ -466,16 +466,35 @@ def validate_bundle(bundle_dir: Path, schema_dir: Path) -> Report:
             # instances, and a line-per-instance report buries every other finding.
             missing_meshes[asset_id] = missing_meshes.get(asset_id, 0) + 1
 
+    # A gap the producer DECLARED is not a validator warning (decided 2026-08-12, PILLARS-2).
+    # warnings.jsonl is the contract's own channel for "this asset could not be delivered" (§10),
+    # and re-reporting each one made the warning count a function of how honest the producer was:
+    # 120 of the full city's 120 warnings were assets the bundle had already declared, which
+    # buried the classes that mean something. They are counted in one note instead, and only an
+    # UNDECLARED missing mesh is still an error. Nothing is hidden - `warnings.jsonl` is the
+    # authority and the note points at it.
+    declared_gaps = 0
+    declared_instances = 0
     for asset_id, count in sorted(missing_meshes.items(), key=lambda kv: -kv[1]):
         where = f"{layers['meshes']}{asset_id}.glb"
         plural = "instance" if count == 1 else "instances"
         if asset_id in declared_missing:
-            report.warn(
-                f"assetId {asset_id!r} ({count} {plural}) has no mesh at {where}; "
-                f"declared in warnings.jsonl: {declared_missing[asset_id]}"
-            )
+            declared_gaps += 1
+            declared_instances += count
         else:
             report.error(f"assetId {asset_id!r} ({count} {plural}) has no mesh at {where}")
+
+    if declared_gaps:
+        reasons: Dict[str, int] = {}
+        for asset_id in missing_meshes:
+            if asset_id in declared_missing:
+                reason = declared_missing[asset_id]
+                reasons[reason] = reasons.get(reason, 0) + 1
+        breakdown = "; ".join(f"{n}x {r}" for r, n in sorted(reasons.items(), key=lambda kv: -kv[1]))
+        report.note(
+            f"{declared_gaps} assetId(s) referenced by {declared_instances} instance(s) have no "
+            f"mesh, every one of them declared in warnings.jsonl (§10): {breakdown}"
+        )
 
     # -- networks.jsonl ----------------------------------------------------------------
     networks: List[Dict[str, Any]] = []
@@ -594,10 +613,11 @@ def validate_bundle(bundle_dir: Path, schema_dir: Path) -> Report:
 
         # Derived files are referenced implicitly, never by an assetId of their own: a
         # foundation skirt (__base) is placed by the consumer's terrain skirting, and a state
-        # variant (__dead, __stump, __partial1/2, __full — contract §6.1) is swapped in from
-        # the instance's own attrs.treeState / attrs.fullness. The first full-city rip with
-        # skirts drowned the report in 1,380 of these; variants added 225 more.
-        derived = ("__base", "__dead", "__stump", "__partial1", "__partial2", "__full")
+        # variant (__teen, __elderly, __dead, __stump, __partial1/2, __full — contract §6.1) is
+        # swapped in from the instance's own attrs.treeState / attrs.fullness. The first
+        # full-city rip with skirts drowned the report in 1,380 of these; variants added 225 more.
+        derived = ("__base", "__teen", "__elderly", "__dead", "__stump",
+                   "__partial1", "__partial2", "__full")
         suffix = next((s for s in derived if path.stem.endswith(s)), None)
         if suffix and _references(path.stem[: -len(suffix)]):
             continue

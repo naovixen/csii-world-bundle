@@ -1838,6 +1838,32 @@ namespace Carto.Systems
 
                 float2 area = Instance.Terrain.playableArea;
 
+                // The game's fallback settings prefab (audit §5.4, P19). `TerrainMaterialSystem`
+                // binds a layer's texture AND its tiling from `FallbackRenderSettingsPrefab`
+                // whenever the theme's own diffuse is null, so reading only the current prefab
+                // would report a tiling the shader is not using. That property is private, but it
+                // is derived from the public `NewMapSettingsData` singleton, which is queried the
+                // same way here. Null when the singleton is absent, which just means no fallback.
+                //
+                Game.Prefabs.Terrain.TerrainRenderSettingsPrefab fallback = null;
+                if (World.EntityManager
+                         .CreateEntityQuery(ComponentType.ReadOnly<Game.Prefabs.NewMapSettingsData>())
+                         .TryGetSingleton(out Game.Prefabs.NewMapSettingsData mapSettings)
+                    && (mapSettings.m_DefaultTerrainRenderSettings != Entity.Null))
+                {
+                    Instance.Prefab.TryGetPrefab(mapSettings.m_DefaultTerrainRenderSettings, out fallback);
+                }
+
+                // Per layer: which prefab the shader actually reads its tiling from. The game's
+                // own test is a load attempt (`SetTexture` -> `LoadTexture`); an unset reference
+                // is the case that fires in practice, so this asks whether the layer names a
+                // texture at all. A named-but-unloadable texture is a broken install, and would
+                // be reported here as the theme's own tiling rather than the fallback's.
+                //
+                Game.Prefabs.Terrain.TerrainRenderSettingsPrefab Source(
+                    Colossal.IO.AssetDatabase.AssetReference diffuse)
+                    => ((diffuse == null) || !diffuse.guid.isValid) && (fallback != null) ? fallback : settings;
+
                 Dictionary<string, object> Ground(Game.Prefabs.Terrain.TerrainTilingData tiling,
                                                   Game.Prefabs.Terrain.TerrainLodBlendData blend)
                 {
@@ -1897,9 +1923,12 @@ namespace Carto.Systems
                     },
                     ["layers"] = new SortedDictionary<string, object>
                     {
-                        ["grass"] = Ground(settings.m_TerrainGrassTiling, settings.m_TerrainGrassLodBlend),
-                        ["dirt"] = Ground(settings.m_TerrainDirtTiling, settings.m_TerrainDirtLodBlend),
-                        ["rock"] = Ground(settings.m_TerrainRockTiling, settings.m_TerrainRockLodBlend)
+                        ["grass"] = Ground(Source(settings.m_GrassDiffuse).m_TerrainGrassTiling,
+                                           Source(settings.m_GrassDiffuse).m_TerrainGrassLodBlend),
+                        ["dirt"] = Ground(Source(settings.m_DirtDiffuse).m_TerrainDirtTiling,
+                                          Source(settings.m_DirtDiffuse).m_TerrainDirtLodBlend),
+                        ["rock"] = Ground(Source(settings.m_RockDiffuse).m_TerrainRockTiling,
+                                          Source(settings.m_RockDiffuse).m_TerrainRockLodBlend)
                     },
                     ["extras"] = new SortedDictionary<string, object>
                     {

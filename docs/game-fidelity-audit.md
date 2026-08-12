@@ -608,11 +608,29 @@ swap and its visibility gate; the lane exclusion mask term-for-term; water and t
 completeness; `GradingWriter`'s stack-evaluation order (`VolumeManager.stack` returns all defaults
 unless `Update()` runs first — the writer does).
 
-## 5.6 The work-list this re-run adds
+## 5.6 The work-list this re-run added — all of it built, 2026-08-12
 
-| # | finding | severity | where |
-|---|---|---|---|
-| **P18** | `__teen` and `__elderly` tree variants — 152,818 trees (59.5% of stated trees) draw in the wrong silhouette. Two `StateVariant` rows; the P7 mechanism, unchanged. | **B, largest live gap** | H13 |
-| **P17** | Capture the resolved `Fog` volume component (tint, mean free path, height band, max distance) plus a `diagnostics.unread` list of stack components the writer does not read. Live suspect for SPLAT-4. | B | H13 |
-| P19 | Terrain tiling ignores `fallbackRenderSettingsPrefab` for layers whose diffuse is null. | low | H13 if free |
-| D7 | Document that a rip taken in the map editor omits `RequireEditor` parts the editor draws. | doc | H11 |
+Per the staleness rule none of the producer work below is *validated*: it compiles and it matches
+the decompiled source, and the next in-game rip is what proves it. The assertions to read in that
+rip are listed in the plan's H14 section.
+
+| # | finding | built as |
+|---|---|---|
+| **P18** | `__teen` and `__elderly` tree variants — 152,818 trees (59.5% of stated trees) drew in the wrong silhouette. | Two `StateVariant` rows in `MeshRipSystem`, the P7 mechanism unchanged; contract §6.1 and `validate_bundle.py`'s derived-file list updated. **No `__child`** — the game's switch has no Child case; a child is a `Teen` below growth 128, scaled by `m_ChildSize / m_TeenSize`, which `attrs.growthScale` already carries. |
+| **P17** | `Fog` unread — an HDR tint and an attenuation distance between every shipped surface and the camera. Live suspect for SPLAT-4. | `grading.json` gains a `fog` block (`meanFreePath`, `baseHeight`, `maximumHeight`, `maxFogDistance`, `tint`), absent when fog is off, documented as **not** part of the colour chain. Plus `diagnostics.unread`: every volume component some volume in the scene actually overrode (`AnyPropertiesIsOverridden`, which is meaningful because `ReplaceData` clears the flags each `Update`) and this writer skips — so the next blind spot appears in a rip instead of needing a decompiler. |
+| P19 | Terrain tiling ignored `fallbackRenderSettingsPrefab` for a layer whose diffuse is null. | Resolved per layer from the public `NewMapSettingsData` singleton, mirroring the game's own branch. The game's test is a load attempt; this asks whether the layer names a texture at all, which is the case that fires — noted in the code. |
+| D7 | A rip taken in the map editor omits `RequireEditor` parts the editor draws. | Documented in contract §4.3, alongside why a marker network ships as a line. |
+
+Two long-standing items were also settled alongside this pass and are recorded here because both
+turned on the audit's own findings:
+
+- **The `COLLAPSED:` probe's `Size.y` clause is gone.** `NetPieceData.m_HeightRange` is an
+  *authored* field defaulting to `Bounds1(0f, 3f)` — a declared band, not the geometry's
+  thickness — so every flat surface piece whose author left the default was flagged. The two
+  clauses that test what a piece actually built remain.
+- **Declared gaps no longer produce validator warnings.** 119 of the full city's 120 warnings
+  were assets the producer had already declared in `warnings.jsonl`, which is the contract's own
+  channel for exactly that (§10); warning again for them made the count a function of the
+  producer's honesty. They are one note now, naming the reasons and their counts, and the full
+  city validates **VALID with 1 warning** — the genuine parent advisory. An *undeclared* missing
+  mesh is still an error.

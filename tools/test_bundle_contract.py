@@ -370,11 +370,14 @@ class BundleContractTest(unittest.TestCase):
         self.patch_first_instance(bundle, lambda r: r.update({"assetId": "no_such_prefab"}))
         self.assertRejected(bundle, "no_such_prefab")
 
-    def test_declared_missing_mesh_is_a_warning_not_an_error(self):
+    def test_declared_missing_mesh_is_noted_not_warned(self):
         """warnings.jsonl (§10) is how a producer declares an asset it could not deliver.
 
         Dropping the instances instead would lose their placement, which the contract says must
-        survive even when geometry cannot — so a declared gap has to validate, loudly.
+        survive even when geometry cannot — so a declared gap has to validate. It is a *note*,
+        not a warning (PILLARS-2, 2026-08-12): warning again for something the bundle already
+        declared makes the warning count a function of the producer's honesty, and on the full
+        city it buried every other class under 119 of these.
         """
         bundle = self.fresh()
         self.patch_first_instance(bundle, lambda r: r.update({"assetId": "no_such_prefab"}))
@@ -385,8 +388,11 @@ class BundleContractTest(unittest.TestCase):
 
         report = validate_bundle(bundle, DEFAULT_SCHEMA_DIR)
         self.assertEqual(report.errors, [])
-        self.assertTrue(any("no_such_prefab" in w for w in report.warnings),
-                        f"expected a warning about the declared gap, got: {report.warnings}")
+        self.assertFalse(any("no_such_prefab" in w for w in report.warnings),
+                         f"a declared gap must not warn, got: {report.warnings}")
+        self.assertTrue(any("warnings.jsonl" in n and "empty SubMesh buffer" in n
+                            for n in report.notes),
+                        f"expected a note naming the declared reason, got: {report.notes}")
 
     def test_missing_mesh_is_reported_once_per_asset_not_per_instance(self):
         """One broken prefab can be referenced by tens of thousands of instances."""
