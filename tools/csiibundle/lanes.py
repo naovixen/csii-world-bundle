@@ -76,6 +76,33 @@ def tile_count(span_length, mesh_length, tiling_count, geometry_tiling):
     return 1, 0
 
 
+def hang_curve(record, prefab, curve_length):
+    """The lane's droop as a cubic, from the record's `hang` and the prefab's `hanging`, or None.
+
+    Cables and wires sag, and the bundle ships that as two separate pieces a consumer has to
+    combine: the record's `hang` is the drop in metres at each END of the lane (the endpoints are
+    fixed by whatever the cable is strung between), and the prefab's `hanging` is the sag rate
+    over the span. Neither alone is the curve.
+
+    The game's own quadratic-to-cubic lift of the hanging parabola, at calm air:
+
+        (d0,  (d0 + hanging·L)·2/3,  (d1 + hanging·L)·2/3,  d1)
+
+    The `2/3` is what turns a quadratic Bézier's single control point into the two a cubic needs;
+    it is not a tuned sag factor and must not be adjusted to taste. `hang_drop` then evaluates
+    this, and `bend_part` subtracts the result from the up axis.
+
+    Returns `None` when the lane neither hangs nor sags, which is almost all of them.
+    """
+    distances = record.get("hang")
+    hanging = float((prefab or {}).get("hanging", 0.0) or 0.0)
+    if distances is None and not hanging:
+        return None
+    d0, d1 = distances if distances is not None else (0.0, 0.0)
+    return (d0, (d0 + hanging * curve_length) * 2 / 3,
+            (d1 + hanging * curve_length) * 2 / 3, d1)
+
+
 def hang_drop(control, t):
     """A lane's droop in metres at parameters `t` — the cubic in `hang`, a curve of scalars.
 

@@ -3,10 +3,12 @@
 **Goal:** make the CS2 World Bundle consumable by someone who has never read this repo, so a
 BeamNG level builder (or any other consumer) can be written against the bundle alone.
 
-**Status 2026-08-12: H1–H9 are closed and nothing is open.** `tools/csiibundle/` exists: 14
-modules, no `bpy` anywhere in it, and `tools/blender_import_bundle.py` is down from 6,269 lines
-to 3,707 and is now an adapter over the package rather than the only copy of the reconstruction.
-Next is **H10**, schema completion.
+**Status 2026-08-12: H1–H9 are closed and nothing is open.** `tools/csiibundle/` exists: **17
+modules**, no `bpy` anywhere in it, and `tools/blender_import_bundle.py` is down from 6,269 lines
+to ~3,700 and is now an adapter over the package rather than the only copy of the
+reconstruction. A completeness sweep after H9 found six layers of knowledge the harness held and
+the package did not — see §2's closing note — and all six are now in it. Next is **H10**, schema
+completion.
 
 This file supersedes every dated handoff in this folder; they stay on disk as the record of how
 each conclusion was reached. The contract itself lives in `docs/bundle-schema.md`, the
@@ -82,6 +84,9 @@ tools/csiibundle/
   areas.py     area triangle conformance   ✅
   networks.py  ribbon/mitre ring math   ✅
   tints.py     colorSet x colorMask as data + a CPU reference apply   ✅
+  instances.py §4 placement: the __base skirt condition, the decal lift    (sweep) ✅
+  lanegraph.py §5A lanes.jsonl — the lane GRAPH: paths, kinds, owners      (sweep) ✅
+  lights.py    §4.3 photometry, and the two record shapes in one file      (sweep) ✅
 ```
 
 **Order — one commit per step, A/B render gate on each**
@@ -96,6 +101,27 @@ tools/csiibundle/
 
 **The package is named `csiibundle`, not `cs2bundle`** — the earlier draft of this plan had it
 wrong and every reference here is now the real name.
+
+**The completeness sweep (post-H9).** The module list above was written before the extraction
+and turned out to be incomplete: it enumerated the *algorithms* in the harness and missed
+knowledge that was not algorithmic. Asking the question from the CONSUMER's end instead —
+layer by layer, "can this be rebuilt from the package alone?" — found six gaps, all now closed:
+
+| gap | why it mattered |
+|---|---|
+| `grading.json`'s **`lighting` block** was unparsed (`raw` only) | the illumination everything else is measured against: sun at **110,000 lux, 66°**, sky ambient tints, indirect multipliers, the in-game clock. The bundle's own semantics string says a consumer lighting the scene white misses the game's colour → `colour.Lighting` |
+| **`lanes.jsonl` had no reader at all** | 680,629 records — the lane GRAPH (path, kind, length, owner). The layer a BeamNG builder or any simulation consumer wants most, and nothing in this repo had ever read it → new `lanegraph` |
+| **`lights.json` was uninterpreted** | one file, **two record shapes**: 654 photometric lights vs 1,878 emissive colour slots (NeonSign, TrafficLight_Red, BrakeLight…). A consumer treating them uniformly makes 2,532 lights or none → new `lights` |
+| the **§4 placement rules** lived in `main()` | the `__base` skirt condition (buildings with `elevationFlags` absent or `["OnGround"]` only) and the decal-kind lift → new `instances` |
+| the **water surface** was harness-only | the dilated shoreline ring, ground-seated outer corners, and water NOT being filtered by the terrain cut → `terrain.water_surface` |
+| the lane **`hang` cubic** was derived in the driver | `lanes.bend_part` took a finished cubic; the quadratic-to-cubic lift `(d0, (d0+h·L)·2/3, (d1+h·L)·2/3, d1)` was unreachable → `lanes.hang_curve` |
+
+Gates for that sweep: every path A/B'd against the pre-sweep harness — standard region, full-map
+terrain (water at stride 4), `--skirts` (102 placed), `--lanes`. In all four the **only** differing
+line in the scene dump is `carto_sun`'s rotation matrix, by 6e-08, because the direction is now
+normalised in float64 before truncation and comes out *closer* to unit (1.0000000031 against
+1.0000000696). That moves **4 pixels of 2,560,000**, one of them by 8/255 — a shadow edge. Worth
+recording: the pixel gate is more sensitive to a light's direction than to geometry.
 
 **H5 as built.** `colour_model.py` stays on disk as the Blender/CLI adapter — the locator, the
 `DEFAULT_BUNDLE` path, `REFERENCES` and `main()` — re-exporting the derivation from

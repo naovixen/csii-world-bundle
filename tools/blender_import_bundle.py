@@ -132,7 +132,8 @@ from mathutils.bvhtree import BVHTree
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import colour_model
 from csiibundle import areas as area_math
-from csiibundle import bezier, decals, drape, frames, lanes, networks, reader, tints
+from csiibundle import bezier, decals, drape, frames, instances, lanes
+from csiibundle import networks, reader, tints
 from csiibundle import terrain as terrain_math
 from csiibundle import glb as glb_reader, png as png_reader, splat as splat_reader
 
@@ -1372,14 +1373,7 @@ def build_lanes(lanes_path, catalogue_path, lane_mesh_dir, collection,
         spans = record.get("spans") or [[0.0, 1.0]]
         width_scale = record.get("widthScale", [1.0, 1.0])
 
-        hang = None
-        distances = record.get("hang")
-        hanging = entry.get("hanging", 0.0)
-        if distances is not None or hanging:
-            d0, d1 = distances if distances is not None else (0.0, 0.0)
-            # The game's quadratic-to-cubic lift of the hanging parabola, at calm air.
-            hang = (d0, (d0 + hanging * curve_length) * 2 / 3,
-                    (d1 + hanging * curve_length) * 2 / 3, d1)
+        hang = lanes.hang_curve(record, entry, curve_length)
 
         # Grouped by (prefab, paint): one object per prefab would lose the per-lane colorSet
         # (§7.2), and the distinct paints per prefab are few — the variation table is small.
@@ -2165,9 +2159,7 @@ def build_terrain(bundle_dir, collection, center, radius, clip_floor=None):
         # checkerboard.
 
         # The splat blend samples in its own geo-referenced UV space.
-        uv_layers["SplatUV"] = numpy.stack(
-            ((loop_x - splat.min_x) / splat.area_x,
-             (loop_z - (splat.max_z - splat.area_z)) / splat.area_z), axis=-1)
+        uv_layers["SplatUV"] = numpy.stack(splat.uv(loop_x, loop_z), axis=-1)
     else:
         grass = _ground_material("terrain_natural", os.path.join(surfaces_dir, "grass.png"),
                                  (0.20, 0.30, 0.12, 1.0))
@@ -2221,68 +2213,27 @@ def build_terrain(bundle_dir, collection, center, radius, clip_floor=None):
     # the coarse block size), fans in transition blocks, coarse quads in the open water. The
     # level extends one sim cell past the shoreline (producer dilation), so the surface runs
     # flat into the bank and the ground cuts the shoreline where the game's own shoreline is.
-    wet_faces = 0
-    if level_value is not None and wet.any():
-        coarse_wet = (wet[cbr * stride, cbc * stride] |
-                      wet[(cbr + 1) * stride, cbc * stride] |
-                      wet[(cbr + 1) * stride, (cbc + 1) * stride] |
-                      wet[cbr * stride, (cbc + 1) * stride])
-        water_coarse = coarse_loops[coarse_wet]
+    # The wet-face rules — the dilated shoreline ring, the ground-seated outer corners, and
+    # water NOT being filtered by the terrain cut — are `csiibundle.terrain.water_surface`.
+    water = terrain_math.water_surface(lattice, stride, cell, origin_x, origin_z, row0, col0)
+    wet_faces = water.faces if water is not None else 0
+    if water is not None:
+        water_material = bpy.data.materials.new("terrain_water")
+        _ensure_nodes(water_material)
+        water_bsdf = water_material.node_tree.nodes.get("Principled BSDF")
+        water_bsdf.inputs["Base Color"].default_value = (0.08, 0.22, 0.35, 1.0)
+        water_bsdf.inputs["Roughness"].default_value = 0.05
+        if "Alpha" in water_bsdf.inputs:
+            water_bsdf.inputs["Alpha"].default_value = 0.8
+        _set_alpha_blend(water_material)
 
-        refined_wet = (wet[cell_rr, cell_cc] | wet[cell_rr, cell_cc + 1] |
-                       wet[cell_rr + 1, cell_cc] | wet[cell_rr + 1, cell_cc + 1])
-        # NOT filtered by the cut: a clipped trench under a lake still has water over it,
-        # exactly as the coarse rule always kept it.
-        water_refined = refined_loops_all[refined_wet]
-
-        if len(fan_loops):
-            fan_tris = fan_loops.reshape(-1, 3)
-            fan_wet = wet.reshape(-1)[fan_tris].any(axis=1)
-            water_fans = fan_tris[fan_wet]
-        else:
-            water_fans = numpy.zeros((0, 3), dtype=numpy.int64)
-
-        wet_faces = len(water_coarse) + len(water_refined) + len(water_fans)
-        if wet_faces:
-            water_loops_all = numpy.concatenate((water_coarse.reshape(-1),
-                                                 water_refined.reshape(-1),
-                                                 water_fans.reshape(-1)))
-            water_sizes = numpy.concatenate((
-                numpy.full(len(water_coarse), 4, dtype=numpy.int64),
-                numpy.full(len(water_refined), 4, dtype=numpy.int64),
-                numpy.full(len(water_fans), 3, dtype=numpy.int64)))
-
-            # A corner past the dilated ring carries no level; seat it on the ground so the
-            # surface closes instead of tearing.
-            surface_y = numpy.where(has_level, level_value, native_y)
-
-            wused = numpy.zeros(lat_h * lat_w, dtype=bool)
-            wused[water_loops_all] = True
-            wused_idx = numpy.nonzero(wused)[0]
-            wvid = numpy.full(lat_h * lat_w, -1, dtype=numpy.int64)
-            wvid[wused_idx] = numpy.arange(len(wused_idx))
-            wur, wuc = numpy.divmod(wused_idx, lat_w)
-            water_verts = numpy.stack(
-                (origin_x + (col0 + wuc).astype(numpy.float64) * cell,
-                 origin_z - (row0 + wur).astype(numpy.float64) * cell,
-                 surface_y[wur, wuc].astype(numpy.float64)), axis=-1)
-
-            water_material = bpy.data.materials.new("terrain_water")
-            _ensure_nodes(water_material)
-            water_bsdf = water_material.node_tree.nodes.get("Principled BSDF")
-            water_bsdf.inputs["Base Color"].default_value = (0.08, 0.22, 0.35, 1.0)
-            water_bsdf.inputs["Roughness"].default_value = 0.05
-            if "Alpha" in water_bsdf.inputs:
-                water_bsdf.inputs["Alpha"].default_value = 0.8
-            _set_alpha_blend(water_material)
-
-            water_mesh = _mesh_from_arrays("bundle_water", water_verts,
-                                            wvid[water_loops_all],
-                                            material_runs=[(water_material, wet_faces)],
-                                            poly_sizes=water_sizes, smooth=False)
-            water_object = bpy.data.objects.new("bundle_water", water_mesh)
-            collection.objects.link(water_object)
-            placed += 1
+        water_mesh = _mesh_from_arrays("bundle_water", water.verts,
+                                        water.loops,
+                                        material_runs=[(water_material, wet_faces)],
+                                        poly_sizes=water.sizes, smooth=False)
+        water_object = bpy.data.objects.new("bundle_water", water_mesh)
+        collection.objects.link(water_object)
+        placed += 1
 
     LOG.done(f"terrain:   {nfr}x{nfc} block window of {width}x{height} at {cell:g} m"
              + (f", stride {stride}" if stride > 1 else ""))
@@ -2645,14 +2596,10 @@ def _sun_from_bundle(bundle_dir):
     grading = colour_model.load(bundle_dir)
     if grading is None:
         return None
-    sun = (grading.raw.get("lighting") or {}).get("sun") or {}
-    travel = sun.get("direction")
-    if not travel or len(travel) != 3:
+    toward = grading.lighting.sun.toward     # None below the horizon: a night rip lights nothing
+    if toward is None:
         return None
-    toward = Vector((-float(travel[0]), -float(travel[2]), -float(travel[1])))
-    if toward.length < 1e-6 or toward.z <= 0.0:
-        return None                       # below the horizon: a night rip lights nothing
-    return toward.normalized()
+    return Vector(frames.bundle_to_zup_point(toward)).normalized()
 
 
 def _setup_lighting(bundle_dir=None):
@@ -3509,29 +3456,28 @@ def main():
         # for instances resting on the ground. The band is shown as authored (a 1 m plinth);
         # dropping its v=0 ring to the terrain raster is a consumer's job, and this harness has
         # no terrain — so slopes will still show a gap below the band, and that is expected.
-        if do_skirts and record.get("kind") == "building":
-            flags = record.get("attrs", {}).get("elevationFlags")
-            if not flags or flags == ["OnGround"]:
-                base_id = asset_id + "__base"
-                if base_id not in skirt_prefabs:
-                    base_path = os.path.join(mesh_dir, base_id + ".glb")
-                    skirt_prefabs[base_id] = (load_prefab_collection(base_id, mesh_dir, sources)
-                                              if os.path.isfile(base_path) else None)
-                if skirt_prefabs[base_id] is not None:
-                    skirt = bpy.data.objects.new(f"{base_id}.{record.get('id', placed)}", None)
-                    skirt.instance_type = "COLLECTION"
-                    skirt.instance_collection = skirt_prefabs[base_id]
-                    skirt.empty_display_size = 0.01
-                    skirt.matrix_world = instance_matrix(record)
-                    set_paint(skirt, record.get("attrs"))
-                    placed_collection.objects.link(skirt)
-                    skirts_placed += 1
+        if do_skirts and instances.wants_skirt(record):
+            base_id = instances.skirt_asset_id(record)
+            if base_id not in skirt_prefabs:
+                base_path = os.path.join(mesh_dir, base_id + ".glb")
+                skirt_prefabs[base_id] = (load_prefab_collection(base_id, mesh_dir, sources)
+                                          if os.path.isfile(base_path) else None)
+            if skirt_prefabs[base_id] is not None:
+                skirt = bpy.data.objects.new(f"{base_id}.{record.get('id', placed)}", None)
+                skirt.instance_type = "COLLECTION"
+                skirt.instance_collection = skirt_prefabs[base_id]
+                skirt.empty_display_size = 0.01
+                skirt.matrix_world = instance_matrix(record)
+                set_paint(skirt, record.get("attrs"))
+                placed_collection.objects.link(skirt)
+                skirts_placed += 1
 
         if record.get("kind") == "decal":
             # Coplanar paint z-fights the carriageway it sits on, which in the viewport looks
             # like the marking is flickering in and out of the road. A lift far below the
             # tolerance of anything downstream costs nothing and settles it.
-            empty.matrix_world = Matrix.Translation((0.0, 0.0, _INSTANCE_DECAL_LIFT)) @ empty.matrix_world
+            empty.matrix_world = Matrix.Translation(
+                (0.0, 0.0, instances.placement_lift(record))) @ empty.matrix_world
             decal_collection.objects.link(empty)
         else:
             placed_collection.objects.link(empty)

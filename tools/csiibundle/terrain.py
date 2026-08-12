@@ -1371,3 +1371,87 @@ def build_lattice(heights, width, height, surface_ids, levels,
         refined_faces=refined_faces, cut_faces=cut_faces, roadbed_faces=roadbed_faces, rock_faces=rock_faces,
         snapped=snapped, unreferenced=unreferenced, pushed=pushed, sub_parents=sub_parents, sub_dropped=sub_dropped, sub_kept=len(sub_class),
         band_clamped=band_clamped, band_clamp_drop=band_clamp_drop, stray_cells=stray_cells)
+
+
+WaterSurface = namedtuple("WaterSurface", "verts loops sizes faces")
+
+
+def water_surface(lattice, stride, cell, origin_x, origin_z, row0, col0):
+    """The §8 water surface for one window, on the SAME lattice as the ground, or `None`.
+
+    Returns a `WaterSurface` of `verts` `(N, 3)`, flat `loops`, per-face `sizes` and a face
+    count. Nothing is meshed here; that is the consumer's.
+
+    **Water exists where the level raster stands above the ground** (§8; 0 means dry, so the
+    raster is a level, not a depth). A face is placed wherever ANY of its corners is wet, decided
+    per face family so the shoreline steps at native resolution inside a refined corridor rather
+    than at the coarse block size — the shoreline IS a corridor, by construction.
+
+    Three details that are each a visible defect when missed:
+
+    * **The level extends one sim cell past the shoreline.** The producer dilates it, so the
+      surface runs flat INTO the bank and the ground cuts the shoreline where the game's own
+      shoreline is. Clipping the water to exactly the wet cells leaves a rim of bare ground.
+    * **A corner past that dilated ring carries no level at all**, and is seated on the GROUND so
+      the surface closes instead of tearing open along its outer edge.
+    * **Water faces are NOT filtered by the terrain cut.** A clipped trench under a lake still
+      has water over it — the tunnel is under the water, not instead of it.
+    """
+    (lat_h, lat_w) = lattice.lat_h, lattice.lat_w
+    wet, has_level, level_value = lattice.wet, lattice.has_level, lattice.level_value
+    native_y = lattice.native_y
+    cbr, cbc, coarse_loops = lattice.cbr, lattice.cbc, lattice.coarse_loops
+    cell_rr, cell_cc = lattice.cell_rr, lattice.cell_cc
+    refined_loops_all, fan_loops = lattice.refined_loops_all, lattice.fan_loops
+
+    wet_faces = 0
+    if level_value is not None and wet.any():
+        coarse_wet = (wet[cbr * stride, cbc * stride] |
+                      wet[(cbr + 1) * stride, cbc * stride] |
+                      wet[(cbr + 1) * stride, (cbc + 1) * stride] |
+                      wet[cbr * stride, (cbc + 1) * stride])
+        water_coarse = coarse_loops[coarse_wet]
+
+        refined_wet = (wet[cell_rr, cell_cc] | wet[cell_rr, cell_cc + 1] |
+                       wet[cell_rr + 1, cell_cc] | wet[cell_rr + 1, cell_cc + 1])
+        # NOT filtered by the cut: a clipped trench under a lake still has water over it,
+        # exactly as the coarse rule always kept it.
+        water_refined = refined_loops_all[refined_wet]
+
+        if len(fan_loops):
+            fan_tris = fan_loops.reshape(-1, 3)
+            fan_wet = wet.reshape(-1)[fan_tris].any(axis=1)
+            water_fans = fan_tris[fan_wet]
+        else:
+            water_fans = numpy.zeros((0, 3), dtype=numpy.int64)
+
+        wet_faces = len(water_coarse) + len(water_refined) + len(water_fans)
+        if wet_faces:
+            water_loops_all = numpy.concatenate((water_coarse.reshape(-1),
+                                                 water_refined.reshape(-1),
+                                                 water_fans.reshape(-1)))
+            water_sizes = numpy.concatenate((
+                numpy.full(len(water_coarse), 4, dtype=numpy.int64),
+                numpy.full(len(water_refined), 4, dtype=numpy.int64),
+                numpy.full(len(water_fans), 3, dtype=numpy.int64)))
+
+            # A corner past the dilated ring carries no level; seat it on the ground so the
+            # surface closes instead of tearing.
+            surface_y = numpy.where(has_level, level_value, native_y)
+
+            wused = numpy.zeros(lat_h * lat_w, dtype=bool)
+            wused[water_loops_all] = True
+            wused_idx = numpy.nonzero(wused)[0]
+            wvid = numpy.full(lat_h * lat_w, -1, dtype=numpy.int64)
+            wvid[wused_idx] = numpy.arange(len(wused_idx))
+            wur, wuc = numpy.divmod(wused_idx, lat_w)
+            water_verts = numpy.stack(
+                (origin_x + (col0 + wuc).astype(numpy.float64) * cell,
+                 origin_z - (row0 + wur).astype(numpy.float64) * cell,
+                 surface_y[wur, wuc].astype(numpy.float64)), axis=-1)
+
+
+    if not wet_faces:
+        return None
+    return WaterSurface(verts=water_verts, loops=wvid[water_loops_all],
+                        sizes=water_sizes, faces=wet_faces)
