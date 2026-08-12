@@ -130,9 +130,16 @@ namespace Carto.Systems
         /// <para>The companion half-frame reach probe is gone: §41.9's short flare was never a
         /// piece-to-frame mapping fault, and the reach it measured is answered offline by
         /// `tools/test_node_fan.py` against the shipped meshes (§43).</para>
+        /// <para><b>This one stays permanently</b> (the open PROBE question, settled 2026-08-12).
+        /// It was kept where its companion was dropped because the two numbers it reports —
+        /// authored piece size against the extent that piece produced — are not derivable from
+        /// the bundle: the authored size never ships, so no offline gate can ask the question at
+        /// all. What it costs was the real objection, and that is now paid once per distinct
+        /// piece rather than once per placement; see <see cref="PieceKey"/>.</para>
         /// </summary>
         private sealed class SectionProbe
         {
+            public string Name;                  // the piece prefab's name
             public string Where;                 // "node" or "edge"
             public float3 Size;                  // authored piece size
             public float OffsetX;                // authored cross-section offset
@@ -140,9 +147,36 @@ namespace Carto.Systems
             public float XMin = float.MaxValue, XMax = float.MinValue;
             public float3 Lo, Hi;                // emitted extent, relative to composition centre
             public bool HasBounds;
+
+            /// <summary>The report's row label — what the probe was keyed by before it was keyed
+            /// by entity.</summary>
+            public string Label => $"{Name}|{Where}";
         }
 
-        private readonly Dictionary<string, SectionProbe> m_SectionProbes = new();
+        /// <summary>
+        /// What identifies a probe row: the piece prefab, and which half of the network it was
+        /// placed in. <b>Keyed by entity, not by name, and that is the point</b> — the probe runs
+        /// inside the per-placement loop of the mesh stage, the longest stage of the rip, so
+        /// resolving a prefab name and interpolating a string there charged the whole city for a
+        /// diagnostic that only ever needed the name once per distinct piece.
+        /// </summary>
+        private readonly struct PieceKey : IEquatable<PieceKey>
+        {
+            private readonly Entity _piece;
+            private readonly bool _isNode;
+
+            public PieceKey(Entity piece, bool isNode)
+            {
+                _piece = piece;
+                _isNode = isNode;
+            }
+
+            public bool Equals(PieceKey other) => (_piece == other._piece) && (_isNode == other._isNode);
+            public override bool Equals(object obj) => (obj is PieceKey other) && Equals(other);
+            public override int GetHashCode() => (_piece.GetHashCode() * 397) ^ (_isNode ? 1 : 0);
+        }
+
+        private readonly Dictionary<PieceKey, SectionProbe> m_SectionProbes = new();
 
         private ushort[] _conformHeights;
         private int2 _conformResolution;
@@ -595,15 +629,17 @@ namespace Carto.Systems
                 float boundsScaleZ = 0f;
                 bool conforming = false;
                 // The §42 probe: one row per piece, keyed before the vertex loop so the loop only
-                // accumulates.
-                string sectionName = Instance.Prefab.TryGetPrefab(piece.m_Piece, out PrefabBase sectionPiece)
-                                     && (sectionPiece != null)
-                    ? sectionPiece.name : $"<entity {piece.m_Piece.Index}>";
-                string sectionKey = $"{sectionName}|{(isNode ? "node" : "edge")}";
+                // accumulates. Resolving the name is the expensive half and happens on first
+                // sight of a piece, never per placement.
+                PieceKey sectionKey = new PieceKey(piece.m_Piece, isNode);
                 if (!m_SectionProbes.TryGetValue(sectionKey, out SectionProbe section))
                 {
+                    string sectionName = Instance.Prefab.TryGetPrefab(piece.m_Piece, out PrefabBase sectionPiece)
+                                         && (sectionPiece != null)
+                        ? sectionPiece.name : $"<entity {piece.m_Piece.Index}>";
                     m_SectionProbes[sectionKey] = section = new SectionProbe
                     {
+                        Name = sectionName,
                         Where = isNode ? "node" : "edge",
                         Size = piece.m_Size,
                         OffsetX = piece.m_Offset.x

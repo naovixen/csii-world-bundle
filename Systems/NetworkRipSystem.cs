@@ -1019,10 +1019,9 @@ namespace Carto.Systems
             // as anomalies rather than in full — 137 distinct pieces would bury the answer.
             //
             {
-                List<KeyValuePair<string, SectionProbe>> collapsed = new();
-                foreach (KeyValuePair<string, SectionProbe> kvp in m_SectionProbes)
+                List<SectionProbe> collapsed = new();
+                foreach (SectionProbe s in m_SectionProbes.Values)
                 {
-                    SectionProbe s = kvp.Value;
                     if ((s.Vertices == 0) || !s.HasBounds) continue;
                     float3 extent = s.Hi - s.Lo;
                     bool pinnedAcross = (s.Size.x > 0.25f) && ((s.XMax - s.XMin) < 0.02f);
@@ -1031,20 +1030,19 @@ namespace Carto.Systems
                     // cross-section, which is where a collapse shows.
                     bool flat = (math.max(extent.x, extent.z) < 0.05f)
                                 || ((s.Size.y > 0.5f) && (extent.y < 0.05f));
-                    if (pinnedAcross || flat) collapsed.Add(kvp);
+                    if (pinnedAcross || flat) collapsed.Add(s);
                 }
                 if (collapsed.Count > 0)
                 {
-                    collapsed.Sort((a, b) => string.CompareOrdinal(a.Key, b.Key));
+                    collapsed.Sort((a, b) => string.CompareOrdinal(a.Label, b.Label));
                     report.AppendLine($"COLLAPSED: {collapsed.Count} cross-section piece(s) were read and placed "
                                     + "but built no surface (authored size against the extent they produced):");
                     int shown = 0;
-                    foreach (KeyValuePair<string, SectionProbe> kvp in collapsed)
+                    foreach (SectionProbe s in collapsed)
                     {
                         if (shown++ >= 40) { report.AppendLine($"  … and {collapsed.Count - 40} more"); break; }
-                        SectionProbe s = kvp.Value;
                         float3 extent = s.Hi - s.Lo;
-                        report.AppendLine($"  {kvp.Key}: authored offsetX {s.OffsetX:F2}, size "
+                        report.AppendLine($"  {s.Label}: authored offsetX {s.OffsetX:F2}, size "
                                         + $"{s.Size.x:F1}x{s.Size.y:F1}x{s.Size.z:F1}; {s.Placements} placement(s), "
                                         + $"{s.Vertices} vertex(es); xParam {s.XMin:F3}..{s.XMax:F3}; "
                                         + $"built {extent.x:F2}x{extent.y:F2}x{extent.z:F2} m");
