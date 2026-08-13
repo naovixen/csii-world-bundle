@@ -3,12 +3,12 @@
 **Goal:** make the CS2 World Bundle consumable by someone who has never read this repo, so a
 BeamNG level builder (or any other consumer) can be written against the bundle alone.
 
-**Status 2026-08-12: H1–H9 are closed and nothing is open.** `tools/csiibundle/` exists: **17
-modules**, no `bpy` anywhere in it, and `tools/blender_import_bundle.py` is down from 6,269 lines
-to ~3,700 and is now an adapter over the package rather than the only copy of the
-reconstruction. A completeness sweep after H9 found six layers of knowledge the harness held and
-the package did not — see §2's closing note — and all six are now in it. Next is **H10**, schema
-completion.
+**Status 2026-08-13: H1–H9 are closed and nothing is open.** `tools/csiibundle/` exists: **19
+modules**, no `bpy` anywhere in it, and `tools/blender_import_bundle.py` is an adapter over the
+package rather than the only copy of the reconstruction. **Four coverage sweeps** followed H9,
+each asking a different question — layer, field, render-rule, and the three defects visible by
+eye — and each found gaps the previous one structurally could not. All are closed; §2's closing
+notes carry them. Next is **H10**, schema completion.
 
 This file supersedes every dated handoff in this folder; they stay on disk as the record of how
 each conclusion was reached. The contract itself lives in `docs/bundle-schema.md`, the
@@ -87,6 +87,8 @@ tools/csiibundle/
   instances.py §4 placement: the __base skirt condition, the decal lift    (sweep) ✅
   lanegraph.py §5A lanes.jsonl — the lane GRAPH: paths, kinds, owners      (sweep) ✅
   lights.py    §4.3 photometry, and the two record shapes in one file      (sweep) ✅
+  materials.py §7 channel packing — the metallic/roughness glTF omits      (sweep) ✅
+  water.py     §8 rasters.water — the ocean AND every swimming pool        (sweep) ✅
 ```
 
 **Order — one commit per step, A/B render gate on each**
