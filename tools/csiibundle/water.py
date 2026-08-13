@@ -1,0 +1,156 @@
+"""Water (§8 `rasters.water`) — the ocean, the lakes, and every swimming pool.
+
+**Why pools render white.** CS2 draws water with a shader, not a texture. A pool's water surface
+is its own material carrying `template:WaterGeneric` and **no maps at all** — the bundle cannot
+export a compiled shader, so there is nothing for it to reference. A glTF loader meeting a
+material with no `baseColorTexture` falls back to `baseColorFactor`, which the producer writes
+as `[1, 1, 1, 1]`. The result is a pool full of flat white paint, and the same happens to every
+fountain and stream. 48 materials on the reference city are `WaterGeneric` and every one of them
+is textureless.
+
+The appearance those materials need is shipped — just somewhere else. `rasters.water` carries
+`WaterRenderSettingsPrefab` verbatim: colour, scattering, absorption, smoothness, foam, caustics
+and waves. It is the same authored settings the OCEAN uses, because in the game it is the same
+shader. So one block drives both, and `Appearance` below is what a consumer applies to a lake
+surface and to a swimming pool alike.
+
+**What is exact and what is modelled.** The parameters are the game's own, read verbatim; the
+mapping onto a physically-based renderer is not, because CS2's water shader is compiled inside
+an asset bundle and cannot be read. So:
+
+* `base_color`, `scattering_color`, `absorption_distance`, the smoothness pair — **exact**,
+  straight from the prefab.
+* `endSmoothness = min(smoothnessDistant, smoothnessClose)` — **exact**; it is the game's one
+  documented bind-time transform.
+* `roughness = 1 - smoothness` — the §7 convention, consistent with every other material.
+* IOR 1.333 — water's, not the game's; CS2 does not ship one.
+* Turning `absorption_distance` into a volume density is **modelled**: Beer-Lambert with the
+  shipped distance as the depth at which transmission falls to 1/e. A consumer with a real
+  volumetric water shader should use the distance directly instead.
+
+**`seaLevel` is a datum, not a surface, and a consumer must never seat water on it.** It is what
+backdrop ocean is reset to and the plane the renderer measures camera depth against for
+`smoothnessRange`. On the reference bundle it reads 15.0 while the mapped water stands at
+508.6–528.3 m. **`terrain/water_level.png` is the authoritative surface.**
+
+**Smoothness varies with camera distance** (`smoothnessRange` = `[start, distance]` metres), which
+is an anti-aliasing measure for a rippled surface seen far away, not an appearance choice. A
+consumer with no distance-varying material should use the CLOSE value and accept sparkle at
+range; `roughness_at()` is there for one that can.
+"""
+
+import math
+
+from . import reader
+
+# Material templates whose entire appearance is the water shader — no maps, and white by default
+# in any glTF loader. CONTRACT (§7 `flags`).
+WATER_TEMPLATES = ("WaterGeneric", "WaterStream")
+
+# Water's index of refraction. NOT from the game — CS2 ships no IOR — but it is a physical
+# constant, not a taste. TUNED only in the sense that a consumer may prefer its own.
+WATER_IOR = 1.333
+
+# Fallbacks for a bundle with no `rasters.water` block, so a consumer degrades to plausible water
+# rather than to white. TUNED.
+FALLBACK_COLOR = (0.08, 0.22, 0.35, 1.0)
+FALLBACK_SMOOTHNESS = 0.95
+
+
+class Appearance(object):
+    """`rasters.water` as constants a renderer can apply. See the module docstring for the
+    exact/modelled split."""
+
+    def __init__(self, block):
+        block = block or {}
+        self.raw = block
+        self.present = bool(block)
+        self.prefab = block.get("prefab")
+
+        self.base_color = tuple(block.get("waterColor") or FALLBACK_COLOR)[:4]
+        self.scattering_color = tuple(block.get("scatteringColor")
+                                      or self.base_color)[:4]
+        self.absorption_distance = float(block.get("absorptionDistance", 16.0) or 16.0)
+        self.max_refraction_distance = float(block.get("maxRefractionDistance", 3.0) or 3.0)
+
+        self.smoothness_close = float(block.get("smoothnessClose", FALLBACK_SMOOTHNESS)
+                                      or FALLBACK_SMOOTHNESS)
+        self.smoothness_distant = float(block.get("smoothnessDistant", self.smoothness_close)
+                                        or self.smoothness_close)
+        # The game's one bind-time transform, from `WaterRenderSystem.ApplyMaterialParams`.
+        self.end_smoothness = min(self.smoothness_distant, self.smoothness_close)
+        rng = block.get("smoothnessRange") or (0.0, 0.0)
+        self.smoothness_range = (float(rng[0]), float(rng[1]))
+
+        self.foam_amount = float(block.get("foamAmount", 0.0) or 0.0)
+        self.caustics_intensity = float(block.get("causticsIntensity", 0.0) or 0.0)
+        self.waves_multiplier = float(block.get("wavesMultiplier", 0.0) or 0.0)
+        self.lake_waves_multiplier = float(block.get("lakeWavesMultiplier", 0.0) or 0.0)
+
+        # The sea DATUM. Not a surface. See the module docstring before using it for anything.
+        self.sea_level = block.get("seaLevel")
+
+    # -- what a PBR renderer needs ------------------------------------------------------------
+
+    @property
+    def roughness(self):
+        """Roughness at the camera-close end — `1 - smoothnessClose`. The value to use when the
+        renderer has no distance-varying material."""
+        return 1.0 - self.smoothness_close
+
+    @property
+    def roughness_distant(self):
+        return 1.0 - self.end_smoothness
+
+    def roughness_at(self, camera_distance):
+        """Roughness at a given camera distance, ramping across `smoothness_range`.
+
+        `smoothnessRange` is `[start, distance]`: the ramp begins at `start` metres and takes
+        `distance` metres to complete.
+        """
+        start, span = self.smoothness_range
+        if span <= 0.0:
+            return self.roughness
+        t = min(max((camera_distance - start) / span, 0.0), 1.0)
+        smoothness = self.smoothness_close + (self.end_smoothness - self.smoothness_close) * t
+        return 1.0 - smoothness
+
+    def volume_density(self):
+        """Beer-Lambert extinction per metre, from `absorption_distance`. MODELLED.
+
+        The shipped distance is treated as the depth at which transmission falls to `1/e`, so
+        density is its reciprocal. A renderer with a real absorption-distance input should take
+        `absorption_distance` directly rather than this.
+        """
+        return 1.0 / max(self.absorption_distance, 1e-6)
+
+    def surface_alpha(self, depth=None):
+        """Opacity for a renderer with no volumetrics, from Beer-Lambert over `depth` metres.
+
+        With no depth given it uses `max_refraction_distance`, which is how far the game lets a
+        refracted ray travel — the closest thing the prefab has to "how deep does this look".
+        A flat alpha is a poor model of water and this says so rather than pretending: prefer
+        transmission plus `volume_density()` where the renderer supports it.
+        """
+        d = self.max_refraction_distance if depth is None else depth
+        return min(1.0, 1.0 - math.exp(-self.volume_density() * max(d, 0.0)))
+
+
+def load(bundle_dir):
+    """This bundle's water appearance. Never `None` — an absent block yields the fallbacks, so a
+    consumer always has something better than white."""
+    manifest = reader.load_manifest(bundle_dir) or {}
+    rasters = manifest.get("rasters") or {}
+    return Appearance(rasters.get("water"))
+
+
+def is_water_material(entry):
+    """Whether a §7 material entry is one of the shader-only water templates.
+
+    These carry no maps at all, so a glTF loader renders them white. Detect them by template and
+    give them `Appearance` instead.
+    """
+    for flag in (entry or {}).get("flags", ()):
+        if flag.startswith("template:") and flag[9:] in WATER_TEMPLATES:
+            return True
+    return False

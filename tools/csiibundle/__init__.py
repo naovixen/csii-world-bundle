@@ -30,6 +30,7 @@ Modules, roughly in the order a consumer needs them
 ``glb``       GLB parsing, node flattening, the degenerate-face policy (§6)
 ``instances`` §4 placement rules: the `__base` skirt condition, the decal lift
 ``materials`` §7 channel packing — the metallic/roughness glTF does NOT carry
+``water``     §8 `rasters.water` — the ocean AND every swimming pool
 ``tints``     §7.2 per-instance paint — why the trees are grey without it
 ``lights``    §4.3 photometry — and the two different record shapes in one file
 ``networks``  §5 centerline fallback: the ribbon, and its mitre
@@ -45,20 +46,27 @@ Modules, roughly in the order a consumer needs them
 ``colour``    the §11 grading derivation — `grading.json` into applicable constants
 
 **Minimum viable consumer**: `reader` + `frames` + `instances` + `glb` places every building,
-prop and tree correctly. Add `tints` or the foliage is grey, and `materials` or the whole city
-renders at one flat roughness — the `.glb` carries no metallic-roughness map at all. `terrain` + `png` + `splat` gets the
-ground and its water. `lanes` + `decals` + `bezier` + `drape` gets road markings and roadside
-furniture. `lanegraph` is what a SIMULATION consumer wants and geometry consumers can skip
-entirely. `colour` and `lights` come last: the bundle ships albedo, and both the illumination and
-the grading on top of it are things the game does, not things the textures carry.
+prop and tree correctly. Then, in rough order of how wrong the result looks without each:
+
+* `materials` — or the whole city renders at ONE flat roughness. The `.glb` carries no
+  metallic-roughness map at all, and no consumer notices until it looks like plastic.
+* `water` — or the sea is the wrong colour and every swimming pool is a rectangle of white
+  paint. CS2 draws water with a shader, so those materials ship with no textures.
+* `tints` — or all the foliage is grey.
+* `terrain` + `png` + `splat` — the ground and its water surface.
+* `lanes` + `decals` + `bezier` + `drape` — road markings and roadside furniture.
+* `lanegraph` — what a SIMULATION consumer wants, and a geometry consumer can skip entirely.
+* `colour` + `lights` last: the bundle ships albedo, and both the illumination and the grading
+  on top of it are things the game does, not things the textures carry.
 """
 
 from . import (areas, bezier, colour, decals, drape, frames, glb, instances, lanegraph,
-               lanes, lights, materials, networks, png, reader, splat, terrain, tints)
+               lanes, lights, materials, networks, png, reader, splat, terrain, tints,
+               water)
 
 __all__ = ["areas", "bezier", "colour", "decals", "drape", "frames", "glb", "instances",
            "lanegraph", "lanes", "lights", "materials", "networks", "png", "reader", "splat",
-           "terrain", "tints"]
+           "terrain", "tints", "water"]
 
 # Bundle schema version this package reads. `reader.schema_version` reports what a bundle on
 # disk declares, for a consumer that wants to compare. CONTRACT.

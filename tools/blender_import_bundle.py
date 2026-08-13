@@ -53,6 +53,14 @@ Options (after the `--`):
     --skirts                     also place each building's <assetId>__base.glb foundation
                                  skirt, as authored (the 1 m band; the terrain drop of its
                                  v=0 ring is the consumer rule in contract §4.1)
+    --sky                        light the scene with a physical sky at the bundle's OWN sun
+                                 elevation and azimuth (grading.json `lighting.sun`) instead of
+                                 the flat grey world. Off by default because the default rig is
+                                 calibrated so flat ground renders at exactly its albedo; a sky
+                                 breaks that identity. Turn it on to see REFLECTIONS — water at
+                                 roughness 0.05 mirrors its environment faithfully, and a
+                                 uniform grey environment mirrors as uniform grey, which reads
+                                 as "the ocean has no reflection"
     --colour                     replay the game's own colour grading from grading.json
                                  (exposure, white balance, contrast, saturation,
                                  shadows/midtones/highlights). Off by default: a plain
@@ -132,7 +140,7 @@ from mathutils.bvhtree import BVHTree
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import colour_model
 from csiibundle import areas as area_math
-from csiibundle import bezier, decals, drape, frames, instances, lanes, materials
+from csiibundle import bezier, decals, drape, frames, instances, lanes, materials, water
 from csiibundle import networks, reader, tints
 from csiibundle import terrain as terrain_math
 from csiibundle import glb as glb_reader, png as png_reader, splat as splat_reader
@@ -627,11 +635,11 @@ def report_materials(bundle_dir):
         return
 
     with open(path, encoding="utf-8") as handle:
-        materials = json.load(handle)
+        table = json.load(handle)
 
     slots = ("baseColor", "normal", "mask", "emissive", "colorMask")
     referenced, dangling, mapless, masked = set(), [], 0, 0
-    for mat_id, material in materials.items():
+    for mat_id, material in table.items():
         paths = [material[s] for s in slots if s in material]
         if not paths:
             mapless += 1
@@ -642,7 +650,7 @@ def report_materials(bundle_dir):
             if not os.path.isfile(os.path.join(bundle_dir, rel)):
                 dangling.append(f"{mat_id}.{rel}")
 
-    LOG.step(f"materials: {len(materials)} ({mapless} with no maps), {len(referenced)} distinct textures")
+    LOG.step(f"materials: {len(table)} ({mapless} with no maps), {len(referenced)} distinct textures")
 
     # colors.json is a palette; colorMask is what says where each channel of it lands. Counting
     # them here is how "did the colour layer actually come out?" gets answered by the harness
@@ -697,6 +705,81 @@ def _mix_socket(node, name, outputs=False):
     """
     pool = node.outputs if outputs else node.inputs
     return next(s for s in pool if s.name == name and s.enabled)
+
+
+_SHADER_LABEL = "cs2_shader_only"
+
+
+def apply_shader_only_materials(bundle_dir):
+    """Give the textureless materials an appearance, instead of the white glTF leaves them.
+
+    CS2 draws water, glass and some foliage with a **shader and no texture**. The bundle cannot
+    export a compiled shader, so those materials ship with no maps at all — and a glTF loader
+    meeting a material with no `baseColorTexture` falls back to `baseColorFactor`, which is
+    `[1, 1, 1, 1]`. **That is why swimming pools render as flat white paint**, and every window
+    pane with them: 206 materials on the reference city, 109 of them glass and 51 water.
+
+    What each becomes:
+
+    * **water** — the authored `rasters.water` appearance (`csiibundle.water`), the same block
+      the ocean surface uses, because in the game it is the same shader.
+    * **glass** — transmissive, at the water block's close roughness. CS2's glass shader is not
+      readable, so this is the honest minimum: see-through rather than white.
+    * **foliage / overlay / placeholder** — the material's own `tint` when it ships one,
+      otherwise left alone; there is nothing in the bundle to do better with.
+
+    Returns `(water_count, glass_count, tinted_count)`.
+    """
+    table = reader.load_materials(bundle_dir)
+    if not table:
+        return 0, 0, 0
+    appearance = water.load(bundle_dir)
+
+    counts = {"water": 0, "glass": 0, "tint": 0}
+    for mat in bpy.data.materials:
+        entry = table.get(_bundle_material_id(mat.name))
+        kind = materials.shader_only_kind(entry)
+        if kind is None:
+            continue
+        tree = getattr(mat, "node_tree", None)
+        if tree is None or any(node.label == _SHADER_LABEL for node in tree.nodes):
+            continue                                    # already done
+        bsdf = next((n for n in tree.nodes if n.type == "BSDF_PRINCIPLED"), None)
+        if bsdf is None or bsdf.inputs["Base Color"].links:
+            continue                                    # it has a texture after all; leave it
+
+        # Mark the BSDF itself, so a `--keep-existing` re-run can tell this material is done
+        # without needing a node type to hang a label on.
+        bsdf.label = _SHADER_LABEL
+
+        flat = materials.tint(entry)
+        if kind == "water":
+            bsdf.inputs["Base Color"].default_value = appearance.base_color
+            bsdf.inputs["Roughness"].default_value = appearance.roughness
+            if "IOR" in bsdf.inputs:
+                bsdf.inputs["IOR"].default_value = water.WATER_IOR
+            if "Transmission Weight" in bsdf.inputs:
+                bsdf.inputs["Transmission Weight"].default_value = 1.0
+            else:
+                bsdf.inputs["Alpha"].default_value = appearance.surface_alpha()
+                _set_alpha_blend(mat)
+            counts["water"] += 1
+        elif kind == "glass":
+            bsdf.inputs["Base Color"].default_value = flat or (0.92, 0.96, 1.0, 1.0)
+            bsdf.inputs["Roughness"].default_value = appearance.roughness
+            if "IOR" in bsdf.inputs:
+                bsdf.inputs["IOR"].default_value = 1.5     # architectural glass
+            if "Transmission Weight" in bsdf.inputs:
+                bsdf.inputs["Transmission Weight"].default_value = 1.0
+            else:
+                bsdf.inputs["Alpha"].default_value = 0.15
+                _set_alpha_blend(mat)
+            counts["glass"] += 1
+        elif flat:
+            bsdf.inputs["Base Color"].default_value = flat
+            counts["tint"] += 1
+
+    return counts["water"], counts["glass"], counts["tint"]
 
 
 _PBR_LABEL = "cs2_pbr"
@@ -1253,7 +1336,7 @@ def _load_lane_source(asset_id, lane_mesh_dir, cache):
             mesh.loop_triangles.foreach_get("vertices", tri_verts)
             tris = tri_verts.reshape(-1, 3)
 
-            materials = list(mesh.materials) if mesh.materials else [None]
+            slot_materials = list(mesh.materials) if mesh.materials else [None]
             if mesh.materials:
                 tri_poly = numpy.empty(tri_count, dtype=numpy.int64)
                 mesh.loop_triangles.foreach_get("polygon_index", tri_poly)
@@ -1275,9 +1358,9 @@ def _load_lane_source(asset_id, lane_mesh_dir, cache):
 
             quad = _decal_quad_info(verts, tris, uvs)
             if quad is not None:
-                quad["material"] = materials[int(tri_material[0])] if tri_count else None
+                quad["material"] = slot_materials[int(tri_material[0])] if tri_count else None
             source = {"verts": verts, "tris": tris, "uvs": uvs,
-                     "tri_material": tri_material, "materials": materials, "quad": quad}
+                     "tri_material": tri_material, "materials": slot_materials, "quad": quad}
         for obj in imported:
             bpy.data.objects.remove(obj, do_unlink=True)
 
@@ -2286,23 +2369,38 @@ def build_terrain(bundle_dir, collection, center, radius, clip_floor=None):
     # flat into the bank and the ground cuts the shoreline where the game's own shoreline is.
     # The wet-face rules — the dilated shoreline ring, the ground-seated outer corners, and
     # water NOT being filtered by the terrain cut — are `csiibundle.terrain.water_surface`.
-    water = terrain_math.water_surface(lattice, stride, cell, origin_x, origin_z, row0, col0)
-    wet_faces = water.faces if water is not None else 0
-    if water is not None:
+    # NOT named `water` — that is the `csiibundle.water` module, and shadowing it here is a
+    # bug this file has already made once.
+    water_mesh = terrain_math.water_surface(lattice, stride, cell, origin_x, origin_z, row0, col0)
+    wet_faces = water_mesh.faces if water_mesh is not None else 0
+    if water_mesh is not None:
+        # The ocean's appearance is AUTHORED and shipped — `rasters.water` carries
+        # WaterRenderSettingsPrefab verbatim. It used to be three hard-coded numbers here, which
+        # is how the sea ended up the wrong colour and with nothing to reflect. Same block the
+        # swimming pools use, because in the game it is the same shader.
+        appearance = water.load(bundle_dir)
         water_material = bpy.data.materials.new("terrain_water")
         _ensure_nodes(water_material)
         water_bsdf = water_material.node_tree.nodes.get("Principled BSDF")
-        water_bsdf.inputs["Base Color"].default_value = (0.08, 0.22, 0.35, 1.0)
-        water_bsdf.inputs["Roughness"].default_value = 0.05
-        if "Alpha" in water_bsdf.inputs:
-            water_bsdf.inputs["Alpha"].default_value = 0.8
-        _set_alpha_blend(water_material)
+        water_bsdf.inputs["Base Color"].default_value = appearance.base_color
+        water_bsdf.inputs["Roughness"].default_value = appearance.roughness
+        if "IOR" in water_bsdf.inputs:
+            water_bsdf.inputs["IOR"].default_value = water.WATER_IOR
+        if "Transmission Weight" in water_bsdf.inputs:
+            water_bsdf.inputs["Transmission Weight"].default_value = 1.0
+        else:
+            water_bsdf.inputs["Alpha"].default_value = appearance.surface_alpha()
+            _set_alpha_blend(water_material)
+        if appearance.present:
+            LOG.step(f"water:     {appearance.prefab} — colour "
+                     f"{tuple(round(c, 3) for c in appearance.base_color[:3])}, roughness "
+                     f"{appearance.roughness:.2f} near / {appearance.roughness_distant:.2f} far, "
+                     f"absorption {appearance.absorption_distance:g} m")
 
-        water_mesh = _mesh_from_arrays("bundle_water", water.verts,
-                                        water.loops,
-                                        material_runs=[(water_material, wet_faces)],
-                                        poly_sizes=water.sizes, smooth=False)
-        water_object = bpy.data.objects.new("bundle_water", water_mesh)
+        mesh = _mesh_from_arrays("bundle_water", water_mesh.verts, water_mesh.loops,
+                                material_runs=[(water_material, wet_faces)],
+                                poly_sizes=water_mesh.sizes, smooth=False)
+        water_object = bpy.data.objects.new("bundle_water", mesh)
         collection.objects.link(water_object)
         placed += 1
 
@@ -2717,6 +2815,88 @@ def _sun_from_bundle(bundle_dir):
     return Vector(frames.bundle_to_zup_point(toward)).normalized()
 
 
+# Set by `--sky`. Off by default ON PURPOSE: the default rig is a uniform grey world plus a sun
+# whose energy is DERIVED so that flat, fully-lit ground renders at exactly its albedo, which is
+# what makes "scene-linear" and "albedo" the same number and is the assumption
+# `tools/colour_model.py` works under. A sky replaces that uniform ambient with a directional
+# one and breaks the identity — worth it to see reflections, wrong as a default for measurement.
+_SKY = False
+
+# Mean radiance of Blender's atmosphere model over the UPPER hemisphere, measured with a 128x64
+# equirectangular Cycles render at the reference elevation below (`--sky` normalises against it;
+# see `_build_sky`). Re-measure with the same render if the sky model changes.
+_SKY_REFERENCE_MEAN = 14.28
+_SKY_REFERENCE_ELEVATION = 66.263
+
+
+def _build_sky(world, background, bundle_dir):
+    """Replace the flat grey world with a physical sky at the bundle's OWN sun position.
+
+    **Why this exists: a mirror needs something to be a mirror OF.** Water at roughness 0.05
+    reflects its environment faithfully, and a uniform grey environment reflects as uniform grey
+    — which reads as "the ocean has no reflection". The fix is not to change the water.
+
+    What is exact and what is not, in the manner of `csiibundle.colour`:
+
+    * the sun's ELEVATION and AZIMUTH are the game's own, from `grading.json`'s
+      `lighting.sun` — so the sky's gradient, its horizon glow and the specular glint on water
+      all sit where the game put them.
+    * the sky MODEL is Blender's, not CS2's. The game uses HDRP's PhysicallyBasedSky and ships
+      only its three tints and an exposure, not a sky texture, so an atmosphere model driven by
+      the right sun is the closest honest reconstruction. `groundTint` is applied as the
+      below-horizon colour, which is the one tint that is not white on the reference bundle.
+    * `sky.exposure` is applied as a strength multiplier on the result.
+    """
+    grading = colour_model.load(bundle_dir) if bundle_dir else None
+    lighting = grading.lighting if grading is not None else None
+
+    tree = world.node_tree
+    sky = tree.nodes.new("ShaderNodeTexSky")
+    available = sky.bl_rna.properties["sky_type"].enum_items.keys()
+    for preferred in ("MULTIPLE_SCATTERING", "SINGLE_SCATTERING", "HOSEK_WILKIE", "PREETHAM"):
+        if preferred in available:
+            sky.sky_type = preferred
+            break
+
+    if lighting is not None and lighting.sun.elevation_degrees is not None:
+        sky.sun_elevation = math.radians(float(lighting.sun.elevation_degrees))
+        # The bundle's azimuth is degrees clockwise from -Z toward the light; Blender's
+        # `sun_rotation` is counter-clockwise from +Y, and bundle -Z maps to Blender -Y.
+        sky.sun_rotation = math.radians(180.0 - float(lighting.sun.azimuth_degrees or 0.0))
+    if hasattr(sky, "sun_intensity"):
+        # The disc itself is the sun LAMP's job; leaving it in double-counts the key light.
+        sky.sun_intensity = 0.0
+
+    tree.links.new(sky.outputs["Color"], background.inputs["Color"])
+
+    # NORMALISE, or the sky bleaches the scene. Blender's atmosphere model emits physical
+    # radiance: measured with a 128x64 equirectangular render at this bundle's own sun
+    # elevation, its mean over the UPPER hemisphere is 14.28, against the flat rig's
+    # _WORLD_LEVEL of 0.25 — 57x. Left alone it blows out every surface and the whole city
+    # renders pale blue, which is what the first attempt at this did.
+    #
+    # So the sky is scaled to deliver the SAME mean ambient the grey world did. That keeps
+    # `_sun_energy_for`'s derivation intact — flat lit ground still renders at its albedo — and
+    # changes only the DIRECTIONALITY of the ambient, which is the whole point: a mirror needs
+    # something to be a mirror of.
+    #
+    # The elevation term is MODELLED, not measured: sky radiance falls roughly with the sine of
+    # the sun's height, so the reference measurement is scaled by sin(elev)/sin(reference). At
+    # this bundle's own elevation it is exact by construction; at another time of day it is
+    # approximate, which is acceptable for an ambient rig whose job is to be reflected.
+    elevation = getattr(sky, "sun_elevation", math.radians(_SKY_REFERENCE_ELEVATION))
+    reference = math.sin(math.radians(_SKY_REFERENCE_ELEVATION))
+    scale = max(math.sin(elevation), 0.05) / reference
+    strength = _WORLD_LEVEL / max(_SKY_REFERENCE_MEAN * scale, 1e-6)
+    if lighting is not None:
+        strength *= 2.0 ** float(lighting.sky.exposure)
+    background.inputs["Strength"].default_value = strength
+    LOG.step(f"sky:       physical sky at the bundle's own sun ({math.degrees(elevation):.1f}° "
+             f"elevation), normalised to the rig's {_WORLD_LEVEL:g} ambient (strength "
+             f"{strength:.4f}) so reflections gain a horizon without changing exposure")
+    return sky
+
+
 def _setup_lighting(bundle_dir=None):
     """Give the scene a plain neutral sun and ambient.
 
@@ -2759,6 +2939,9 @@ def _setup_lighting(bundle_dir=None):
         background.inputs["Color"].default_value = (_WORLD_LEVEL, _WORLD_LEVEL,
                                                     _WORLD_LEVEL, 1.0)
         background.inputs["Strength"].default_value = 1.0
+
+    if _SKY and background is not None:
+        _build_sky(world, background, bundle_dir)
 
     # EEVEE ships with raytracing off, so nothing reflects — water included. Turn it on; a
     # ripped city with flat, mirror-less water reads as plastic.
@@ -3335,6 +3518,10 @@ def main():
         elif arg == "--colour" or arg == "--color":
             do_colour = True
             i += 1
+        elif arg == "--sky":
+            global _SKY
+            _SKY = True
+            i += 1
         elif arg == "--clip-floor":
             do_terrain = True
             clip_floor = float(argv[i + 1])
@@ -3623,14 +3810,14 @@ def main():
     LOG.done(f"{placed} placed, {len(prefabs)} mesh source(s) loaded")
     _glb_fast_path_counts_log()
 
-    networks = 0
+    network_count = 0
     network_collection = None
     if do_networks:
         LOG.phase("Networks")
         network_collection = bpy.data.collections.new("bundle_networks")
         bpy.context.scene.collection.children.link(network_collection)
         with parked_out_of_view_layer(network_collection):
-            networks = build_networks(networks_path, net_categories, network_collection,
+            network_count = build_networks(networks_path, net_categories, network_collection,
                                       net_mesh_dir, center=center, radius=radius,
                                       limit=net_limit)
         LOG.end_phase()  # build_networks() may have early-returned before its own done()
@@ -3649,7 +3836,7 @@ def main():
                                                         center, radius, clip_floor=clip_floor)
         LOG.end_phase()  # build_terrain() may have early-returned before its own done()
 
-    lanes = 0
+    lane_count = 0
     if do_lanes or do_lane_markings:
         # Contract §5B v2: lanemeshes.jsonl carries bend parameters, laneprefabs.json the part
         # catalogue, lanemeshes/ the straight part meshes stored once. The bend runs here —
@@ -3660,11 +3847,11 @@ def main():
             bpy.context.scene.collection.children.link(lane_collection)
             LOG.phase("Lane markings (lanemeshes.jsonl, decal parts)" if not do_lanes
                       else "Lane geometry (lanemeshes.jsonl)")
-            road_surface = _ProjectionSurface(network_collection.objects) if networks else None
+            road_surface = _ProjectionSurface(network_collection.objects) if network_count else None
             ground_surface = (_ProjectionSurface([terrain_ground[0]])
                               if terrain_ground is not None else None)
             with parked_out_of_view_layer(lane_collection):
-                lanes = build_lanes(lanes_path, lane_prefabs_path, lane_mesh_dir,
+                lane_count = build_lanes(lanes_path, lane_prefabs_path, lane_mesh_dir,
                                     lane_collection, center=center, radius=radius,
                                     limit=net_limit, road_surface=road_surface,
                                     markings_only=not do_lanes,
@@ -3698,9 +3885,14 @@ def main():
 
     # Every .glb is in, so every material exists: apply the per-instance paint rule (§7.2).
     masked = apply_pbr_masks(bundle_dir)
+    shader_water, shader_glass, shader_tint = apply_shader_only_materials(bundle_dir)
     if masked:
         LOG.step(f"pbr:       {masked} material(s) took metallic + roughness from their §7 mask "
                  "(the .glb ships neither — it hard-codes roughness 0.9)")
+    if shader_water or shader_glass or shader_tint:
+        LOG.step(f"shaders:   {shader_water} water, {shader_glass} glass, {shader_tint} tinted "
+                 "material(s) given an appearance — CS2 draws these with a shader and no "
+                 "texture, so the .glb leaves them white")
     tinted = apply_color_tints(bundle_dir)
     if tinted:
         LOG.step(f"tinted:    {tinted} material(s) wired to per-instance colorSet via their colorMask")
@@ -3724,8 +3916,8 @@ def main():
     # collection is empty, and aiming at an empty collection leaves the viewport at the origin
     # — which is where a city almost never is.
     aim_viewports(placed_collection if placed else
-                  (network_collection if networks else
-                   (lane_collection if lanes else placed_collection)))
+                  (network_collection if network_count else
+                   (lane_collection if lane_count else placed_collection)))
 
     elapsed = time.time() - started
     # No phase is open at this point — Instances closed right after its loop, and whichever
