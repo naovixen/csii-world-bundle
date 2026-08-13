@@ -152,6 +152,18 @@ from 0.9 by more than 0.1**. New `csiibundle.materials` carries the packing; the
 and A (and deliberately not G/B, whose two available readings disagree). 114 materials rig in
 the standard region, geometry byte-identical, 18.6% of pixels changed.
 
+**A fourth pass, on the three defects the user reported by eye** — white pools, no ocean
+reflection, and "is the terrain missing something similar" — found all three to be the SAME
+mechanism as the metallic gap, plus one more shipped-and-unread block:
+
+| defect | cause | fix |
+|---|---|---|
+| **swimming pools render white** | a pool is two materials and the water one is `template:WaterGeneric` with **no maps at all** — CS2 draws water with a shader, so a glTF loader falls back to `baseColorFactor` `[1,1,1,1]`. Confirmed in the scene: the only textureless materials in a downtown import were both WaterGeneric at Base Color exactly (1,1,1,1) | `csiibundle.water` + `materials.shader_only_kind` |
+| **every window pane too** | same mechanism, `DefaultGlassDoubleSided`, 109 materials, all textureless. 206 shader-only materials in total | same pass, given transmission |
+| **ocean the wrong colour** | `rasters.water` ships `WaterRenderSettingsPrefab` verbatim — colour, scattering, absorption, smoothness, foam, waves — and **nothing read it**. The harness had three hard-coded numbers: (0.08, 0.22, 0.35) against the authored (0.366, 0.581, 0.6) | `water.Appearance`, driving the ocean AND the pools, because in game it is one shader |
+| **ocean has no reflection** | not the water: a uniform grey world reflects as uniform grey. Raytracing was already on | new `--sky`, a physical sky at the bundle's OWN sun elevation/azimuth, **normalised** to the rig's 0.25 ambient (measured 14.28 mean, 57x) so the albedo identity survives |
+| **terrain flat-lit** | all seven ground layers ship a `*_normal.png` and the splat blend read **none** — 0 normal maps wired, BSDF Normal input unlinked | all seven now composite in the same order, at the same opacities and tiling, as the albedo |
+
 Also closed at this level:
 
 | rule | why it is needed for 1:1 |

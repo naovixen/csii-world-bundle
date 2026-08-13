@@ -1897,19 +1897,11 @@ def _splat_ground_material(surfaces_dir, splat, mapping, tiling_block=None):
         tree.links.new(node.outputs["Vector"], texture.inputs["Vector"])
         return texture.outputs["Color"]
 
-    def ground_texture(ground):
-        path = os.path.join(surfaces_dir, f"{ground}.png")
-        if not os.path.isfile(path):
-            rgb = tree.nodes.new("ShaderNodeRGB")
-            rgb.outputs[0].default_value = _GROUND_FALLBACK_COLOUR.get(ground,
-                                                                       (0.3, 0.3, 0.3, 1.0))
-            return rgb.outputs[0]
-
-        image = _unpremultiply(bpy.data.images.load(path))
+    def sampled(image, ground):
+        """One ground image at the game's own three tiling rates, blended by camera distance."""
         shipped = _ground_tiling(tiling_block, ground)
         if shipped is None:
             return tap(image, _GROUND_FALLBACK_TILING)
-
         (near, mid, far), (mid_start, mid_end, far_start, far_end) = shipped
         # near -> mid -> far, each fading in over its own camera-distance band. One image
         # datablock, three samples: the whole point is that the same texture repeats at three
@@ -1917,6 +1909,34 @@ def _splat_ground_material(surfaces_dir, splat, mapping, tiling_block=None):
         blended_near_mid = mix(tap(image, near), tap(image, mid),
                                lod_factor(mid_start, mid_end))
         return mix(blended_near_mid, tap(image, far), lod_factor(far_start, far_end))
+
+    def ground_texture(ground):
+        path = os.path.join(surfaces_dir, f"{ground}.png")
+        if not os.path.isfile(path):
+            rgb = tree.nodes.new("ShaderNodeRGB")
+            rgb.outputs[0].default_value = _GROUND_FALLBACK_COLOUR.get(ground,
+                                                                       (0.3, 0.3, 0.3, 1.0))
+            return rgb.outputs[0]
+        return sampled(_unpremultiply(bpy.data.images.load(path)), ground)
+
+    def ground_normal(ground):
+        """The ground's own normal map, at the same three tiling rates, or None.
+
+        Every ground layer ships one — `<ground>_normal.png`, seven of them on the reference
+        bundle — and nothing read them, so the terrain lit perfectly flat: no grain in the sand,
+        no aggregate in the gravel, no relief on a rock face. The theme's own maps are the only
+        source of that, since §8 deliberately does not reproduce the game's per-pixel ground
+        classification.
+
+        Sampled at the SAME tiling as the albedo it belongs to, or the bumps would swim against
+        the colour at every LOD band.
+        """
+        path = os.path.join(surfaces_dir, f"{ground}_normal.png")
+        if not os.path.isfile(path):
+            return None
+        image = _unpremultiply(bpy.data.images.load(path))
+        image.colorspace_settings.name = "Non-Color"      # a normal is data, not colour
+        return sampled(image, ground)
 
     splat_uv = tree.nodes.new("ShaderNodeUVMap")
     splat_uv.uv_map = "SplatUV"
@@ -1995,23 +2015,47 @@ def _splat_ground_material(surfaces_dir, splat, mapping, tiling_block=None):
         out = math("MINIMUM", math("MULTIPLY", weight, splat.multiplier), 1.0)
         return out if splat.power == 1.0 else math("POWER", out, splat.power)
 
-    blended = ground_texture(mapping["base"] if mapping.get("base") else
-                             _SPLAT_CHANNELS_DEFAULT["R"])
+    base_ground = mapping["base"] if mapping.get("base") else _SPLAT_CHANNELS_DEFAULT["R"]
 
-    # The two continuous soil weights first: dirt blankets everything including the lakebed,
-    # then grass covers the land on top of it.
+    # The composite order, resolved once: the two continuous soil weights first — dirt blankets
+    # everything including the lakebed, then grass covers the land on top of it — and then the
+    # player's paint in extra order. Built as a list so the NORMALS below can be composited in
+    # exactly the same order with exactly the same opacities.
+    composite = []
     for index, key in ((0, "R"), (1, "G")):
         ground = mapping.get(key)
         if ground:
-            blended = mix(blended, ground_texture(ground), opacity_of(channels[index]))
-
-    # Then the player's paint, in extra order.
+            composite.append((ground, opacity_of(channels[index])))
     for ground in ("extra1", "extra2", "extra3", "extra4"):
-        blended = mix(blended, ground_texture(ground), opacity_of(extra_weight[ground]))
+        composite.append((ground, opacity_of(extra_weight[ground])))
+
+    blended = ground_texture(base_ground)
+    for ground, opacity in composite:
+        blended = mix(blended, ground_texture(ground), opacity)
 
     # Straight to the BSDF: no gain, no grading. The ground ships albedo, and `--colour` grades
     # the whole scene in the display pipeline rather than pre-multiplying the terrain.
     tree.links.new(blended, bsdf.inputs["Base Color"])
+
+    # The normals composite in the SAME order with the SAME opacities as the albedo, so a
+    # texel's bumps always come from the ground whose colour it is showing. Blending tangent
+    # normals as vectors is an approximation — the correct operation is a reorientation — but at
+    # these opacities it is far closer than the flat surface it replaces, and it costs one mix
+    # per ground rather than a node graph per pair.
+    normal_layers = [(ground, ground_normal(ground)) for ground, _op in composite]
+    if any(socket for _g, socket in normal_layers):
+        blended_n = ground_normal(base_ground)
+        if blended_n is None:
+            flat = tree.nodes.new("ShaderNodeRGB")
+            flat.outputs[0].default_value = (0.5, 0.5, 1.0, 1.0)   # tangent-space "no bump"
+            blended_n = flat.outputs[0]
+        for (ground, socket), (_g, opacity) in zip(normal_layers, composite):
+            if socket is not None:
+                blended_n = mix(blended_n, socket, opacity)
+        normal_map = tree.nodes.new("ShaderNodeNormalMap")
+        # CS2 authors OpenGL (+Y up), which is Blender's own convention — no green flip.
+        tree.links.new(blended_n, normal_map.inputs["Color"])
+        tree.links.new(normal_map.outputs["Normal"], bsdf.inputs["Normal"])
     return material
 
 
