@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://erohs.github.io/csii-world-bundle/schema/surfaceindex.schema.json",
+  "title": "CS2 World Bundle surface index (terrain/surfaces/index.json, contract section 8)",
+  "description": "Maps each id in terrain/surface_index.png to a name and a representative texture. The raster is IDS, NOT COLOURS — 8-bit grayscale whose values are keys into this file. Id 0 is ground the game classifies procedurally (grass/dirt/rock by slope and noise); id 1 is road-flattened ground, which in-game reads as dirt under the lane decals' wear tint. This is the SEMANTIC roadbed mask — physics, the sink rule — not the visual one: where terrain/splatmap.png is present a consumer should prefer it for appearance, and per-cell classification from this raster is only the documented fallback. A cut cell's id is meaningless, because the cell is not drawn at all (section 8c).",
+  "type": "object",
+  "propertyNames": {
+    "description": "The raster value, as a decimal string. 8-bit, so 0..255.",
+    "type": "string",
+    "pattern": "^(0|[1-9][0-9]?|1[0-9][0-9]|2[0-4][0-9]|25[0-5])$"
+  },
+  "additionalProperties": {
+    "type": "object",
+    "required": ["name", "texture"],
+    "additionalProperties": false,
+    "properties": {
+      "name": {
+        "description": "What the id means. 'natural' and 'roadbed' are the two the producer emits.",
+        "type": "string",
+        "minLength": 1
+      },
+      "texture": {
+        "description": "A bundle-root-relative PNG that stands for this surface, or NULL when the theme texture could not be read. Representative only — the real ground appearance is the splatmap blend over terrain/surfaces/*.png (section 8), not one texture per id.",
+        "type": ["string", "null"],
+        "pattern": "^(?!/)(?!.*(^|/)\\.\\.(/|$))[A-Za-z0-9._\\-/]+\\.png$"
+      }
+    }
+  }
+}

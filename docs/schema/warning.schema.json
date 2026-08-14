@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://erohs.github.io/csii-world-bundle/schema/warning.schema.json",
+  "title": "CS2 World Bundle warning record (contract section 10)",
+  "description": "One line of warnings.jsonl (JSON Lines): something the producer could not do, said out loud, so that a missing object is explicable rather than mysterious. A CONSUMER MAY IGNORE THIS FILE ENTIRELY — but it is schema-validated all the same, because it is also how a producer DECLARES a gap it could not close: an assetId referenced by instances.jsonl with no .glb behind it is normally invalid, and declared here it validates as a note instead, so the objects still land in the right places behind a stand-in. That amnesty is keyed on 'assetId' and 'reason', so a line the validator cannot read silently stops excusing anything.",
+  "type": "object",
+  "required": ["kind", "reason"],
+  "additionalProperties": false,
+  "anyOf": [
+    { "title": "Named by asset", "required": ["assetId"] },
+    { "title": "Named by entity id", "required": ["id"] }
+  ],
+  "properties": {
+    "kind": {
+      "description": "What kind of thing is missing. KINDS ARE OWNED PER PASS and each pass rewrites only its own, so a stage re-run cannot erase another stage's declarations: the instance pass owns 'prefab' and 'instance', the mesh pass 'mesh'/'material'/'texture', the lane pass 'lane', and the network pass everything prefixed 'network'. That prefix is load-bearing — a network warning names a cross-section piece that is NOT an assetId in meshes/, so filing it as 'mesh' would let the next mesh rip delete it.",
+      "enum": [
+        "prefab", "instance", "mesh", "material", "texture", "lane",
+        "network", "networkMesh", "networkMaterial", "networkTexture", "networkConform"
+      ]
+    },
+    "assetId": {
+      "description": "The id or name a consumer would have looked for. Usually an assetId in the sense the mesh layers use it, but not always — the network stage files a whole-directory warning as 'networks/', so this is a free string rather than a filesystem-safe id.",
+      "type": "string",
+      "minLength": 1
+    },
+    "id": {
+      "description": "The would-be record's 'id' instead of an assetId, for the two kinds that name an ENTITY rather than an asset ('instance' and 'lane'): an entity the simulation removed mid-rip no longer resolves to a prefab to ask for.",
+      "type": "integer",
+      "minimum": 0
+    },
+    "reason": {
+      "description": "Why it is not there, in prose. Read it: a declared assetId may EXIST BUT BE INCOMPLETE — a geometry asset whose meshes could not all be read still writes the .glb from what survived, with a 'partial: …' reason here, because the meshes of one asset draw together (section 6) and an incomplete file is invisible from the file alone. Presence of a warning therefore does not imply absence of the file.",
+      "type": "string",
+      "minLength": 1
+    }
+  }
+}

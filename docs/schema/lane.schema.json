@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://erohs.github.io/csii-world-bundle/schema/lane.schema.json",
+  "title": "CS2 World Bundle lane record (contract section 5A)",
+  "description": "One line of lanes.jsonl (JSON Lines): the drivable GRAPH, not the road surface. networks.jsonl says where the asphalt is; this says where a vehicle may go, in which direction and how fast. A city ships hundreds of thousands of these, so the file streams a record per line.",
+  "type": "object",
+  "required": ["id", "kind", "path", "length"],
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "description": "Producer-local unique identifier (the ECS entity index). Unique within this file.",
+      "type": "integer",
+      "minimum": 0
+    },
+    "kind": {
+      "description": "What may travel this lane. Closed set: the producer classifies from the lane entity's own component (CarLane / TrackLane / PedestrianLane / ParkingLane / ConnectionLane), and 'other' is everything else.",
+      "enum": ["car", "track", "pedestrian", "parking", "connection", "other"]
+    },
+    "path": {
+      "description": "World-space polyline in bundle-frame metres (left-handed, X=east, Y=up, Z=north), already tessellated from CS2's cubic bezier. At least two points.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/vec3" },
+      "minItems": 2
+    },
+    "length": {
+      "description": "The curve's length in metres — CS2's own Curve.m_Length, NOT the summed polyline, which is shorter on a bend.",
+      "type": "number",
+      "minimum": 0
+    },
+    "owner": {
+      "description": "The ECS index of whatever entity owns this lane — an edge, a NODE, or a building/object lot. It is NOT a networks.jsonl id, and a consumer must not assume it resolves: measured on the reference city, of 677,566 lanes carrying one, 21.7% resolve to a networks.jsonl record, 19.1% to an instances.jsonl record and 59.2% to neither, because net nodes get no record at all (contract section 5.1: CS2 keeps no junction geometry on the node) and are the commonest owner. Treat it as an advisory grouping key in the same id space instances.jsonl and networks.jsonl use, exactly like an instance's 'parent'. Absent when the lane entity carries no Owner component.",
+      "type": "integer",
+      "minimum": 0
+    },
+    "limit": {
+      "description": "Speed limit in km/h, for the kinds that have one (car, track). Absent where CS2 holds none.",
+      "type": "number",
+      "minimum": 0
+    },
+    "curviness": {
+      "description": "How much the lane bends, on CS2's own scale, carried verbatim rather than recomputed.",
+      "type": "number"
+    },
+    "secondary": {
+      "description": "True where CS2 DERIVED this lane from a master lane rather than the player placing it (Game.Net.SecondaryLane). Emitted only when true. Both families ship: a consumer laying out traffic wants every lane a vehicle can occupy, one drawing lane lines may want only the placed ones — which makes this a filter a consumer has to choose deliberately.",
+      "const": true
+    },
+    "flags": {
+      "description": "Lane-type flag NAMES ('Twoway', 'Yield', 'Runway', …), not a bit field: the numeric values are CS2 internals that can change meaning between game versions. Open — ignore what you do not recognise. Omitted when empty.",
+      "type": "array",
+      "items": { "type": "string" },
+      "minItems": 1,
+      "uniqueItems": true
+    }
+  },
+  "$defs": {
+    "vec3": {
+      "type": "array",
+      "items": { "type": "number" },
+      "minItems": 3,
+      "maxItems": 3
+    }
+  }
+}

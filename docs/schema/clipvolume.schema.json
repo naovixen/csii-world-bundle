@@ -1,0 +1,85 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://erohs.github.io/csii-world-bundle/schema/clipvolume.schema.json",
+  "title": "CS2 World Bundle clip-volume record (contract section 8c)",
+  "description": "One line of clipvolumes.jsonl (JSON Lines). READ THIS IF YOU BUILD TERRAIN. The game hides the ground over tunnel portals and sunken trenches with a per-frame stencil pass rather than carving it out of the heightmap, so a consumer that meshes heightmap.png alone walls off every underground network. These are the volumes it clips with; intersect them against your own mesh and delete what falls inside. One line per clipping STRIP — not per section: a junction node contributes several, and a strip is the unit the game actually clips with. A record carries geometry in exactly one of two forms: two boundary curves (net kinds) or an inline polygon (kind 'area').",
+  "type": "object",
+  "required": ["id", "kind", "bottom"],
+  "additionalProperties": false,
+  "oneOf": [
+    {
+      "title": "Net strip form (edge / node / orphan)",
+      "required": ["left", "right"],
+      "not": { "required": ["nodes"] }
+    },
+    {
+      "title": "Area prism form",
+      "required": ["kind", "area", "nodes", "triangles"],
+      "not": { "required": ["left"] }
+    }
+  ],
+  "properties": {
+    "id": {
+      "description": "The net entity (kinds edge/node/orphan) or area entity this strip belongs to; net kinds join to networks.jsonl. NOT UNIQUE — several strips share one id.",
+      "type": "integer",
+      "minimum": 0
+    },
+    "kind": {
+      "description": "What produced the volume. 'edge' is a run of network, 'node' a junction, 'orphan' a clip with no surviving owner, 'area' an authored clip surface.",
+      "enum": ["edge", "node", "orphan", "area"]
+    },
+    "left": {
+      "description": "Net form only. The strip's left boundary as a cubic bezier — four control points in bundle-frame metres, as authored AFTER the composition's width trim, so the pair bounds exactly the ribbon the game clips.",
+      "$ref": "#/$defs/bezier"
+    },
+    "right": {
+      "description": "Net form only. The strip's right boundary, same encoding.",
+      "$ref": "#/$defs/bezier"
+    },
+    "area": {
+      "description": "Area form only. The source area entity's id, kept as PROVENANCE — it joins to nothing, because the game never paints a clip surface and areas.jsonl therefore does not carry it (section 8b). Do not treat it as a foreign key.",
+      "type": "integer",
+      "minimum": 0
+    },
+    "nodes": {
+      "description": "Area form only. The polygon's corners as bundle-frame world positions, section 8b's encoding. Inline since 2026-08-09 (schema 2): before that these records referenced areas.jsonl and the join dangled, 229 broken on the first full rip.",
+      "type": "array",
+      "minItems": 3,
+      "items": { "$ref": "#/$defs/vec3" }
+    },
+    "triangles": {
+      "description": "Area form only. Index triplets into this record's own 'nodes'.",
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "array",
+        "minItems": 3,
+        "maxItems": 3,
+        "items": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "bottom": {
+      "description": "The clip band's floor in metres RELATIVE TO THE LANE SURFACE (area form: relative to each triangle's own plane), never absolute. The lane surface is recoverable from the curves: at parameter t it is the mean of the two boundaries' y — but that mean is a REFERENCE, not the road: the producer holds one laneY per quad of arc, so on a superelevated carriageway the band hangs level while the road leans, by half the cross-fall. A consumer wanting the road surface itself interpolates left.y -> right.y across the strip. The floor reaches ~0.3 m BELOW the lane and clips the roadbed shell itself — exactly as in-game, where the road meshes cover that hole; consumers get those same meshes from networks.jsonl and take collision from them, not from terrain.",
+      "type": "number"
+    },
+    "top": {
+      "description": "The band's ceiling, same datum. ABSENT MEANS UNBOUNDED — an authored clip surface hides whatever covers it, however high. Present on every net strip (raised to ElevationLimit*3 for tunnel portals and open trenches — 12 m roads, 6 m pathways), and present on area records since 2026-08-09, because GenerateAreaClipMeshJob builds a CLOSED prism with a top ring and cap: terrain above the top is NOT clipped, and consumers must stop treating area clips as open-topped. A cell is clipped where the strip covers it AND the terrain stands within (lane + bottom, lane + top].",
+      "type": "number"
+    }
+  },
+  "$defs": {
+    "vec3": {
+      "type": "array",
+      "items": { "type": "number" },
+      "minItems": 3,
+      "maxItems": 3
+    },
+    "bezier": {
+      "description": "Cubic bezier: four control points in bundle-frame metres.",
+      "type": "array",
+      "minItems": 4,
+      "maxItems": 4,
+      "items": { "$ref": "#/$defs/vec3" }
+    }
+  }
+}

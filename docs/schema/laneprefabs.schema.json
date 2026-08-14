@@ -1,0 +1,103 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://erohs.github.io/csii-world-bundle/schema/laneprefabs.schema.json",
+  "title": "CS2 World Bundle lane-prefab catalogue (laneprefabs.json, contract section 5B v2)",
+  "description": "A flat object keyed by lane-prefab name: the STRAIGHT part meshes a drawing lane assembles along its curve, shipped once. lanemeshes.jsonl carries the per-lane bend parameters that reference these entries; the bend algorithm is normative in contract section 5B. This is what makes the layer dedupe-by-prefab (section 6): the reference city draws 33,500 lanes from 94 part meshes.",
+  "type": "object",
+  "additionalProperties": { "$ref": "#/$defs/entry" },
+  "$defs": {
+    "assetId": {
+      "description": "Filesystem-safe: ASCII alphanumerics, dot, underscore and hyphen; must start with an alphanumeric.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 180,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"
+    },
+    "vec3": {
+      "type": "array",
+      "items": { "type": "number" },
+      "minItems": 3,
+      "maxItems": 3
+    },
+    "quat": {
+      "type": "array",
+      "items": { "type": "number" },
+      "minItems": 4,
+      "maxItems": 4
+    },
+    "entry": {
+      "description": "One lane prefab that draws geometry. A lane prefab with no parts is not written at all.",
+      "type": "object",
+      "required": ["category", "hanging", "parts"],
+      "additionalProperties": false,
+      "properties": {
+        "category": {
+          "description": "From CS2's UtilityTypes. 'cable' and 'pipe' are utility runs, 'fence' is fences and hedge rows, 'lane' is everything drawn along a road lane (wear tint, markings).",
+          "enum": ["cable", "pipe", "fence", "lane"]
+        },
+        "hanging": {
+          "description": "UtilityLaneData.m_Hanging — the prefab-level sag factor. 0 when the prefab never sags. The per-lane drop at each end is lanemeshes.jsonl's own 'hang'; this is the h in the cubic (d0, (d0+h*L)*2/3, (d1+h*L)*2/3, d1).",
+          "type": "number"
+        },
+        "parts": {
+          "description": "The prefab's sub-meshes, in the order lanemeshes.jsonl's 'parts' indices refer to. A lane draws the subset its own record names, not all of them.",
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/part" }
+        }
+      }
+    },
+    "part": {
+      "description": "One straight part mesh plus how it is laid along the curve.",
+      "type": "object",
+      "required": [
+        "assetId", "pos", "rot", "inverted", "tilingCount", "geometryTiling",
+        "boundsMin", "boundsMax"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "assetId": {
+          "description": "Resolves to <layers.laneMeshes><assetId>.glb, standard mesh frame (section 2.2 / 6), materials joining materials.json as everywhere else.",
+          "$ref": "#/$defs/assetId"
+        },
+        "pos": {
+          "description": "Part offset within the prefab, bundle mesh frame (section 2.2).",
+          "$ref": "#/$defs/vec3"
+        },
+        "rot": {
+          "description": "Part rotation within the prefab as a unit quaternion [x, y, z, w].",
+          "$ref": "#/$defs/quat"
+        },
+        "inverted": {
+          "description": "MeshFlags.Invert — the bend runs the curve backwards for this part.",
+          "type": "boolean"
+        },
+        "tilingCount": {
+          "description": "MeshData.m_TilingCount. Feeds the game's GetTileCount, which the consumer must port verbatim rather than dividing lengths: N = L / max(1, size.z) quantised through the clip window, and 0 means the part draws nothing (contract section 5B).",
+          "type": "integer",
+          "minimum": 0
+        },
+        "geometryTiling": {
+          "description": "MeshFlags.Tiling — true means the part really repeats along the curve, false means one instance stretched across it.",
+          "type": "boolean"
+        },
+        "boundsMin": {
+          "description": "Authored bounds, low corner. The z span (boundsMax[2] - boundsMin[2]) is the tile length the tile count is measured in.",
+          "$ref": "#/$defs/vec3"
+        },
+        "boundsMax": {
+          "description": "Authored bounds, high corner.",
+          "$ref": "#/$defs/vec3"
+        },
+        "decal": {
+          "description": "The game projects this part onto the ground rather than drawing it as standing geometry — road markings and wear tint. Emitted only when true. A consumer drapes these onto its terrain and lifts them off it by the section 8b ladder; it must never generate collision from one.",
+          "const": true
+        },
+        "decalRole": {
+          "description": "Which kind of ground projection this is (2026-08-09, audit #40). 'marking' is painted line work, 'wear' is the tinted asphalt/gravel surface under it — they take different lifts on the drape ladder. The producer classifies from the part material's tint alpha (wear surfaces carry tint.a < 1, markings carry no tint) and omits the key when no material resolves. An ABSENT key means unknown, not either class: do not fall back to string-matching the assetId, which is what this key replaced because it fails on mods.",
+          "enum": ["marking", "wear"]
+        }
+      }
+    }
+  }
+}

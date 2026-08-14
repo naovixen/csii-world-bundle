@@ -6,6 +6,17 @@
       0.4,
       0.38,
       1.0
-    ]
+    ],
+    "texture": "terrain/surfaces/area_example_concrete_pad.png",
+    "uvScale": 0.2,
+    "heightOffset": 0.0,
+    "expandAmount": 0.5,
+    "roundness": 0.0,
+    "rendererPriority": 0,
+    "decalLayers": [
+      "Terrain"
+    ],
+    "metallic": 0.0,
+    "smoothness": 0.35
   }
 }

@@ -1,0 +1,126 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://erohs.github.io/csii-world-bundle/schema/areaprefabs.schema.json",
+  "title": "CS2 World Bundle area-prefab catalogue (areaprefabs.json, contract section 8b)",
+  "description": "A flat object keyed by the 'prefab' values areas.jsonl uses: how each painted surface looks. All appearance keys are optional and a consumer falls back texture -> color -> its own neutral. Areas whose prefab resolves but carries no RenderedArea are not written at all — the game structurally never paints them (the map editor's Clip Surface is the one case, and its triangles ship through clipvolumes.jsonl instead).",
+  "type": "object",
+  "additionalProperties": { "$ref": "#/$defs/entry" },
+  "$defs": {
+    "texRef": {
+      "description": "Bundle-root-relative POSIX path, e.g. \"terrain/surfaces/area_<key>.png\".",
+      "type": "string",
+      "pattern": "^(?!/)(?!.*(^|/)\\.\\.(/|$))[A-Za-z0-9._\\-/]+\\.png$"
+    },
+    "vec2": {
+      "type": "array",
+      "items": { "type": "number" },
+      "minItems": 2,
+      "maxItems": 2
+    },
+    "entry": {
+      "type": "object",
+      "required": ["name"],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "description": "Display name, as the game shows it. The one key always present — it is what a consumer surfaces to a user when the rest could not be read.",
+          "type": "string"
+        },
+        "unresolved": {
+          "description": "The save references a surface asset — an asset pack, in practice — that was NOT LOADED in the rip session, so there was no material to read and the game itself drew those areas with its grey Missing Area fallback. The bundle faithfully records that session. The cure is enabling the pack in-game and re-ripping, NOT consumer-side invention: a consumer should surface these by 'name' rather than silently rendering neutral. Emitted only when true.",
+          "const": true
+        },
+        "prefabId": {
+          "description": "Unresolved entries only. The game's own identity string for the missing asset, 'SurfacePrefab:Name (hash)', where the hash is Hash128.Calculate over the source mod's platform ID (or its GUID). Not reversible, but it convicts a candidate pack: hash its mod ID and compare. Observed to differ per asset within one pack, so it identifies the asset, not the pack.",
+          "type": "string"
+        },
+        "color": {
+          "description": "The surface's base colour, linear RGBA — the baked material's _BaseColor on a vanilla surface, the authored RenderedArea.m_BaseColor on an override one. Multiply it into 'texture' where both are present.",
+          "type": "array",
+          "items": { "type": "number" },
+          "minItems": 4,
+          "maxItems": 4
+        },
+        "texture": {
+          "description": "The area material's base map, captured as bound. TILING IS WORLD-PLANAR, not UV-mapped: uv = world position * uvScale.",
+          "$ref": "#/$defs/texRef"
+        },
+        "uvScale": {
+          "description": "RenderedArea.m_UVScale, handed to the shader as colossal_UVScale: uv = world position * uvScale, so 0.2 means one repeat every 5 m. Absent in bundles older than 2026-08-08 — fall back to the game's own field default, 0.2. Never guess a metres-per-repeat.",
+          "type": "number"
+        },
+        "heightOffset": {
+          "description": "RenderedAreaData.m_HeightOffset in metres: how far the projection prism reaches beyond the terrain's own departure from the triangle (see areas.jsonl 'heightRanges'). A consumer draping the surface as geometry does not need it; one building a real decal projector does.",
+          "type": "number"
+        },
+        "expandAmount": {
+          "description": "The game's derived edge-rounding radius in METRES — clamp(roundness, 0.01, 0.99) * GetMinNodeDistance(areaType) * 0.5, already resolved so a consumer needn't know the per-area-type node distance. The shader gets twice it as colossal_AreaParameters.x. Always present on a resolved entry.",
+          "type": "number"
+        },
+        "roundness": {
+          "description": "The authored edge roundness 'expandAmount' derives from. Always present on a resolved entry.",
+          "type": "number"
+        },
+        "rendererPriority": {
+          "description": "THE OVERLAP DRAW ORDER — without it a consumer has no rule for which of two overlapping areas paints on top, and z-fights every overlap. Rebuilt as geometry it becomes a rank-ordered lift inside the area rung of the section 8b ladder. Always present on a resolved entry.",
+          "type": "integer"
+        },
+        "decalLayers": {
+          "description": "Which surfaces the game projects this area onto, as CS2 DecalLayers flag NAMES — the same vocabulary an instance's own attrs.decalLayers uses, one concept and one spelling across the bundle. Always present on a resolved entry unless the mask serialised numerically.",
+          "type": "array",
+          "items": { "type": "string" },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "normalMap": {
+          "description": "Tangent-space normal map. Contract section 7.1 promises ONE convention for every normal map in the bundle: the producer rebuilds CS2's two-channel packings (AG and RG) to ordinary tangent RGB before writing. A bundle ripped before 2026-08-14 did NOT do this on the area path — 20 of 35 shipped packed, and read as tangent RGB they shade BLACK (AG gives normal.x = +1, a normal lying flat along the surface; RG gives normal.z = -1, pointing into it). tools/test_normal_packing.py prints the count; a consumer reading an older bundle must detect and unpack.",
+          "$ref": "#/$defs/texRef"
+        },
+        "maskMap": {
+          "description": "CS2 control/MADS map, same channel semantics as a material's (section 7.1): R metallic, G ambient occlusion, B detail/emissive mask, A smoothness (roughness = 1 - A).",
+          "$ref": "#/$defs/texRef"
+        },
+        "metallic": {
+          "description": "Scalar metallic, weighted by 'metallicOpacity' against 'maskMap'.",
+          "type": "number"
+        },
+        "smoothness": {
+          "description": "Scalar smoothness (roughness = 1 - smoothness).",
+          "type": "number"
+        },
+        "normalOpacity": {
+          "description": "How much of 'normalMap' bends the surface. Shipped WITH the map rather than after it: a consumer given the map without this is guessing.",
+          "type": "number"
+        },
+        "metallicOpacity": {
+          "description": "How much of 'maskMap' drives metallic.",
+          "type": "number"
+        },
+        "normalAlphaSource": {
+          "description": "Which channel of the normal map the shader takes its alpha from.",
+          "type": "number"
+        },
+        "metallicAlphaSource": {
+          "description": "Which channel of the mask map the shader takes its alpha from.",
+          "type": "number"
+        },
+        "edgeNormal": {
+          "description": "Normal strength at the expanded edge band. Override-authored surfaces only.",
+          "type": "number"
+        },
+        "edgeFadeRange": {
+          "description": "[start, end] of the alpha fade across the expanded edge band. Without the edge* keys a consumer draws a hard-edged polygon where the game draws a soft, ragged one.",
+          "$ref": "#/$defs/vec2"
+        },
+        "edgeNormalRange": {
+          "description": "[start, end] of the normal-bend ramp across the edge band.",
+          "$ref": "#/$defs/vec2"
+        },
+        "edgeNoise": {
+          "description": "[scale, strength] of the noise breaking up the edge boundary.",
+          "$ref": "#/$defs/vec2"
+        }
+      }
+    }
+  }
+}

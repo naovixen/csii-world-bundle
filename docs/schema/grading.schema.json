@@ -1,0 +1,325 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://erohs.github.io/csii-world-bundle/schema/grading.schema.json",
+  "title": "CS2 World Bundle colour grading and lighting (grading.json, contract section 8)",
+  "description": "The game's RESOLVED HDRP colour grading at rip time, read from VolumeManager's post-blend volume stack, plus the illumination it sits on top of. WHY IT EXISTS: CS2 authors ground albedo near-grey (shipped rock basecolor measures sRGB saturation 0.111, sand 0.143) and the vivid on-screen palette is post-processing applied on top, not anything in the textures — so a consumer drawing the shipped albedo faithfully gets a grey world and, without this, no way to know what the game did to it. APPLY IT AS A DISPLAY TRANSFORM; NEVER BAKE IT INTO THE SHIPPED TEXTURES. The values are a snapshot of ONE MOMENT: grading follows weather and time of day, so a rip at dusk records dusk. A consumer that wants raw albedo ignores the block entirely. Every capture block is optional — an inactive volume component is omitted rather than shipped at its default.",
+  "type": "object",
+  "required": ["semantics", "order", "weatherDependent", "diagnostics"],
+  "additionalProperties": false,
+  "properties": {
+    "semantics": {
+      "description": "Prose statement of what this file is and how to use it.",
+      "type": "string"
+    },
+    "order": {
+      "description": "The chain the blocks below are applied in.",
+      "type": "string"
+    },
+    "weatherDependent": {
+      "description": "Always true: these numbers follow weather and time of day.",
+      "type": "boolean"
+    },
+    "note": { "type": "string" },
+    "diagnostics": {
+      "description": "Enough to tell 'the game really does grade this way' from 'the capture read an unevaluated stack' WITHOUT another rip. An all-default block with stackEvaluated false or volumesFound 0 is a FAILED READ, not a neutral grade — the first cut of this layer shipped exactly that (saturation 0, colorFilter (1,1,1), tonemapping 'None'), because reading VolumeManager.instance.stack without calling Update() first returns every component at its default.",
+      "type": "object",
+      "required": ["stackEvaluated", "volumesFound", "camera", "volumeLayerMask"],
+      "additionalProperties": false,
+      "properties": {
+        "stackEvaluated": {
+          "description": "Whether VolumeManager.Update() ran before the read. False invalidates every block below.",
+          "type": "boolean"
+        },
+        "volumesFound": {
+          "description": "How many volumes the mask matched. 0 invalidates every block below.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "camera": {
+          "description": "Which camera anchored the blend, or '(none - scratch trigger)' when a throwaway transform was used. The weather volumes are global, so a scratch trigger still blends them correctly.",
+          "type": "string"
+        },
+        "volumeLayerMask": {
+          "description": "The layer mask the stack was evaluated against.",
+          "type": "integer"
+        },
+        "unread": {
+          "description": "THE PRODUCER'S OWN BLIND-SPOT REPORT: 'Component.field = value' for every volume component some volume in this scene actively OVERRODE and that this writer does not capture. It exists because Fog went unnoticed for two months and was only found by enumerating the game's own Climate.*Properties set in a decompiler — an answer that goes stale on the next game patch. It earned itself on its first rip by naming SplitToning, a live suspect for a months-old hue residual. Normally CloudLayer and VolumetricClouds (sky appearance, a documented non-goal). A consumer can ignore it; it is there so the PRODUCER's gaps stay visible.",
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "exposure": {
+      "type": "object",
+      "required": ["mode", "fixedExposure", "compensation", "limitMin", "limitMax", "units"],
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "description": "HDRP ExposureMode name. In the Automatic* modes the game meters every frame and THE METERED VALUE IS NOT REACHABLE (HDRP keeps it in a 1x1 render texture behind internal API), so absolute brightness cannot be replayed.",
+          "type": "string"
+        },
+        "fixedExposure": { "type": "number" },
+        "compensation": {
+          "description": "Stops. Maps straight onto Blender's Color Management exposure.",
+          "type": "number"
+        },
+        "limitMin": {
+          "description": "The clamps the game drives per time of day (LightingSystem, from DayNightCycleData). They BRACKET the one term a consumer must otherwise choose blind.",
+          "type": "number"
+        },
+        "limitMax": { "type": "number" },
+        "units": { "type": "string" }
+      }
+    },
+    "whiteBalance": {
+      "type": "object",
+      "required": ["temperature", "tint", "units"],
+      "additionalProperties": false,
+      "properties": {
+        "temperature": {
+          "description": "-100..100 on HDRP's own scale; negative cooler, positive warmer.",
+          "type": "number"
+        },
+        "tint": { "type": "number" },
+        "units": { "type": "string" }
+      }
+    },
+    "colorAdjustments": {
+      "type": "object",
+      "required": ["postExposure", "contrast", "colorFilter", "hueShift", "saturation", "units"],
+      "additionalProperties": false,
+      "properties": {
+        "postExposure": { "description": "EV / stops.", "type": "number" },
+        "contrast": { "description": "-100..100.", "type": "number" },
+        "colorFilter": {
+          "description": "Linear HDR multiplier, RGB.",
+          "$ref": "#/$defs/rgb"
+        },
+        "hueShift": { "description": "-100..100, i.e. degrees / 180.", "type": "number" },
+        "saturation": {
+          "description": "-100..100: -100 greyscale, 0 unchanged, +100 double.",
+          "type": "number"
+        },
+        "units": { "type": "string" }
+      }
+    },
+    "shadowsMidtonesHighlights": {
+      "description": "A lift/gamma/gain colour balance. Each of the three is [r, g, b, w]: rgb a per-channel multiplier around 1.0, w an overall offset.",
+      "type": "object",
+      "required": [
+        "shadows", "midtones", "highlights",
+        "shadowsStart", "shadowsEnd", "highlightsStart", "highlightsEnd", "units"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "shadows": { "$ref": "#/$defs/rgbw" },
+        "midtones": { "$ref": "#/$defs/rgbw" },
+        "highlights": { "$ref": "#/$defs/rgbw" },
+        "shadowsStart": { "type": "number" },
+        "shadowsEnd": { "type": "number" },
+        "highlightsStart": { "type": "number" },
+        "highlightsEnd": { "type": "number" },
+        "units": { "type": "string" }
+      }
+    },
+    "splitToning": {
+      "description": "One colour into the shadows, another into the highlights. IT IS THE ONLY OPERATOR IN THE CHAIN THAT SHIFTS HUE BY LUMINANCE, so it lands differently on a bright surface than a dark one — which is the exact shape of the residual left after white illumination, tonemapper choice, working space and fog were all eliminated (+6.9 deg on sand and +6.2 deg on pavement, both bright, against +1.2 deg on grass, which is dark). HDRP's IsActive is 'shadows != grey || highlights != grey', so a neutral pair means the operator does nothing and this block is omitted entirely. Added 2026-08-13; it was found by diagnostics.unread on that report's very first rip, not by reading the game — a sweep of the decompiled assemblies for SplitToning returns nothing, because the override lives in an authored volume profile.",
+      "type": "object",
+      "required": ["shadows", "highlights", "balance", "units"],
+      "additionalProperties": false,
+      "properties": {
+        "shadows": {
+          "description": "LDR rgb around neutral grey (0.5, 0.5, 0.5); grey means no tint on that end.",
+          "$ref": "#/$defs/rgb"
+        },
+        "highlights": { "$ref": "#/$defs/rgb" },
+        "balance": {
+          "description": "-100..100; moves the split point between the two ends.",
+          "type": "number"
+        },
+        "units": { "type": "string" }
+      }
+    },
+    "tonemapping": {
+      "type": "object",
+      "required": ["mode", "note", "lutContribution", "hasLut"],
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "description": "The display transform the grading above was authored against — 'ACES', 'Neutral', 'None', 'External'. Blender ships ACES 1.3 and 2.0 as view transforms so 'ACES' maps directly; 'Neutral' is closest to Khronos PBR Neutral and 'None' to Standard.",
+          "type": "string"
+        },
+        "note": { "type": "string" },
+        "lutContribution": { "type": "number" },
+        "hasLut": {
+          "description": "THE LUT PATH IS NOT HYPOTHETICAL: Game.Rendering.LightingSystem builds a priority-1000 volume whose tonemapping is 'External' with a 3D LUT blended per time of day, gated on DayNightCycleData.UseLUT. Every rip so far has read ACES because that gate was off — but a bundle recording only the mode could not tell a consumer whether it got lucky. mode 'External' WITH hasLut true means THE GRADING BLOCK IS INCOMPLETE and says so.",
+          "type": "boolean"
+        },
+        "lut": {
+          "description": "Present only when a LUT is bound. The LUT ITSELF IS NOT EXPORTED — the blended result is a GPU 3D render texture and reading it back needs a compute dispatch this layer does not do.",
+          "type": "object",
+          "required": ["name", "width", "height", "type", "note"],
+          "additionalProperties": false,
+          "properties": {
+            "name": { "type": "string" },
+            "width": { "type": "integer", "minimum": 0 },
+            "height": { "type": "integer", "minimum": 0 },
+            "type": { "type": "string" },
+            "note": { "type": "string" }
+          }
+        }
+      }
+    },
+    "vignette": {
+      "description": "Screen-space darkening toward the frame edge. NOT part of the colour chain — it is a function of WHERE a pixel is, not what colour it is — but it is why a screenshot's corners read darker than its centre, which matters if a reference colour is sampled off-centre. Omitted when intensity is 0.",
+      "type": "object",
+      "required": ["intensity", "smoothness", "roundness", "color", "units"],
+      "additionalProperties": false,
+      "properties": {
+        "intensity": { "type": "number" },
+        "smoothness": { "type": "number" },
+        "roundness": { "type": "number" },
+        "color": { "$ref": "#/$defs/rgb" },
+        "units": { "type": "string" }
+      }
+    },
+    "fog": {
+      "description": "HDRP Fog as the weather system resolved it. NOT part of the colour chain and NOT to be applied to a texture: fog is a function of a pixel's DISTANCE from the camera, so it belongs in a consumer's own atmosphere, and a consumer reconstructing albedo should ignore it. It ships because it is the one term that changes a shipped surface's on-screen colour by how far away it is, and nothing else in the bundle could say so. Absent when fog is off.",
+      "type": "object",
+      "required": ["meanFreePath", "baseHeight", "maximumHeight", "maxFogDistance", "tint", "units"],
+      "additionalProperties": false,
+      "properties": {
+        "meanFreePath": {
+          "description": "Metres over which the fog attenuates to 1/e. ClimateRenderSystem lerps it from 10 km down to 1 m.",
+          "type": "number"
+        },
+        "baseHeight": { "description": "World metres.", "type": "number" },
+        "maximumHeight": { "description": "World metres.", "type": "number" },
+        "maxFogDistance": { "type": "number" },
+        "tint": {
+          "description": "AN HDR COLOUR — components may exceed 1. A WHITE tint cannot shift hue, only lower saturation with distance; that measurement is what killed fog as the explanation for the SPLAT-4 hue residual.",
+          "$ref": "#/$defs/rgb"
+        },
+        "units": { "type": "string" }
+      }
+    },
+    "lighting": {
+      "description": "The illumination the grading sits on top of. WHY IT BELONGS HERE: replayed faithfully against three in-game surfaces the grading lands within a few percent on red and green and leaves a consistent deficit on blue, and a near-neutral pavement (albedo linear 0.1019/0.1018/0.1010) still renders warm beige in game. No property of an albedo can do that, so the missing chroma is the light — and a consumer lighting its scene white could not have known.",
+      "type": "object",
+      "required": ["semantics"],
+      "additionalProperties": false,
+      "properties": {
+        "semantics": { "type": "string" },
+        "sun": { "$ref": "#/$defs/celestialLight" },
+        "moon": { "$ref": "#/$defs/celestialLight" },
+        "sunError": {
+          "description": "Present only when reading PlanetarySystem threw; carries the exception message. Its presence means 'sun', 'moon' and 'time' are absent for a reason rather than by omission.",
+          "type": "string"
+        },
+        "sky": {
+          "description": "HDRP PhysicallyBasedSky: the AMBIENT half of the illumination, and what fills shadow. 'exposure' is EV on the sky's own contribution; the tints multiply it.",
+          "type": "object",
+          "required": ["exposure", "zenithTint", "horizonTint", "groundTint", "units"],
+          "additionalProperties": false,
+          "properties": {
+            "exposure": { "type": "number" },
+            "zenithTint": { "$ref": "#/$defs/rgb" },
+            "horizonTint": { "$ref": "#/$defs/rgb" },
+            "groundTint": { "$ref": "#/$defs/rgb" },
+            "units": { "type": "string" }
+          }
+        },
+        "indirect": {
+          "description": "Multipliers on bounced light. The game raises these heavily at night (DayNightCycleData.NightIndirectDiffuseMultiplier), so a rip after dark reads very differently from one at noon.",
+          "type": "object",
+          "required": ["diffuseMultiplier", "reflectionMultiplier", "units"],
+          "additionalProperties": false,
+          "properties": {
+            "diffuseMultiplier": { "type": "number" },
+            "reflectionMultiplier": { "type": "number" },
+            "units": { "type": "string" }
+          }
+        },
+        "time": {
+          "description": "The in-game clock and map position at rip time. The sun's colour and angle follow these, so a reference screenshot taken at another hour is not describing this grading.",
+          "type": "object",
+          "required": ["hour", "minute", "day", "year", "latitude", "longitude", "units"],
+          "additionalProperties": false,
+          "properties": {
+            "hour": { "type": "integer" },
+            "minute": { "type": "integer" },
+            "day": { "type": "integer" },
+            "year": { "type": "integer" },
+            "latitude": { "type": "number" },
+            "longitude": { "type": "number" },
+            "units": { "type": "string" }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "rgb": {
+      "type": "array",
+      "items": { "type": "number" },
+      "minItems": 3,
+      "maxItems": 3
+    },
+    "rgbw": {
+      "type": "array",
+      "items": { "type": "number" },
+      "minItems": 4,
+      "maxItems": 4
+    },
+    "celestialLight": {
+      "description": "A directional light (sun or moon) as PlanetarySystem holds it. THE EFFECTIVE COLOUR IS A PRODUCT: when useColorTemperature is set, HDRP multiplies 'color' by the blackbody colour of 'colorTemperature' kelvin, so both terms are needed to reproduce the light.",
+      "type": "object",
+      "required": ["color", "useColorTemperature", "colorTemperature", "units", "shadows", "enabled", "which"],
+      "additionalProperties": false,
+      "properties": {
+        "color": {
+          "description": "The light's own filter as authored, RGB.",
+          "$ref": "#/$defs/rgb"
+        },
+        "useColorTemperature": { "type": "boolean" },
+        "colorTemperature": { "description": "Kelvin.", "type": "number" },
+        "units": { "type": "string" },
+        "intensity": {
+          "description": "Lux for a directional light — the CURRENT value. The game scales the sun down as it approaches the horizon (PlanetarySystem multiplies initialIntensity by a smoothstep on the sun's height), so this and 'initialIntensity' differ at any hour but noon.",
+          "type": "number"
+        },
+        "initialIntensity": {
+          "description": "Lux before the horizon falloff.",
+          "type": "number"
+        },
+        "intensityUnits": { "type": "string" },
+        "direction": {
+          "description": "The unit vector the light TRAVELS along, in the game's left-handed Y-up frame. A consumer placing its own sun points it this way, not at this.",
+          "$ref": "#/$defs/rgb"
+        },
+        "elevationDegrees": {
+          "description": "Degrees above the horizon: straight overhead is +90, at the horizon 0.",
+          "type": "number"
+        },
+        "azimuthDegrees": {
+          "description": "Degrees clockwise from -Z toward the light, 0..360.",
+          "type": "number"
+        },
+        "directionUnits": { "type": "string" },
+        "shadows": {
+          "description": "UnityEngine.LightShadows name — 'None', 'Hard', 'Soft'.",
+          "type": "string"
+        },
+        "enabled": {
+          "description": "Whether the light is on AND its object active in the hierarchy. A moon block with enabled false is a moon the rip's hour does not light by.",
+          "type": "boolean"
+        },
+        "which": {
+          "description": "Which body this is, so the block is self-describing when lifted out of the file.",
+          "enum": ["sun", "moon"]
+        }
+      }
+    }
+  }
+}

@@ -6,8 +6,7 @@ game has 654, or create none at all. On the reference city:
 
 * **654 photometric lights** — a real light source to instantiate. Carries `type` (`Spot` or
   `Point`), `position`, `rotation`, `range`, `intensity` + `intensityUnit`, `temperature`,
-  `color`, and for a spot `spotAngle` / `innerSpotPercentage` / `spotShape`. `parentMesh` says
-  which sub-mesh of the prefab it is attached to, so it moves with that part.
+  `color`, and for a spot `spotAngle` / `innerSpotPercentage` / `spotShape`.
 * **1,878 colour slots** — NOT lights. These carry `slot`, `color`, `colorOff`, `purpose` and
   `responseSpeed`, and they describe **emissive material state**: a neon sign's lit colour, a
   traffic light's red/amber/green, a vehicle's brake and indicator lamps. The game switches a
@@ -27,14 +26,32 @@ in and is NOT normalised — the sample below reaches 243.4. Use `color` × `int
 blackbody(`temperature`) to build a light, and treat `finalColor` as the producer's own
 cross-check.
 
-Positions and rotations are prefab-local, in the bundle frame; place them through the same
-instance matrix as the mesh (`csiibundle.frames`).
+Positions and rotations are **in the object frame**, in the bundle frame's axes; place them
+through the same instance matrix as the mesh (`csiibundle.frames`).
+
+**`parentMesh` is not a parent** *(corrected 2026-08-14, H10.)* This module used to say it
+"says which sub-mesh of the prefab it is attached to, so it moves with that part", and so did
+the contract. Every reader of the game's `Effect.m_ParentMesh` was swept: `EffectTransformSystem`
+uses it only to pick which sub-mesh's colour the light takes (the `colorChannel` case),
+`SubObjectSystem` as sub-object elevation flags, `BuildingInitializeSystem` for fire SFX. None
+places the light. It is also not a plain index — a value above the prefab's sub-mesh count is a
+procedural-bone connection id, and negatives other than -1 are unresolvable authored values
+(-1001 occurs in the reference city). `bone_space` is the field that really does change where a
+light goes; see it.
 """
 
 from . import reader
 
-# Fields that only a real light source carries, and only an emissive slot carries. Presence is
-# the discriminator — the file has no type tag. CONTRACT.
+# The discriminator the producer actually writes: a punctual (real) light carries
+# `kind: "punctual"` unconditionally, an emissive colour slot carries no `kind` at all.
+# CONTRACT.
+PUNCTUAL_KIND = "punctual"
+
+# The old discriminators, kept as a fallback. `type` is written only when the managed
+# LightEffect prefab resolves, so keying on it alone silently DROPPED any punctual entry whose
+# photometry could not be read — neither a light nor a colour slot, and gone from both lists.
+# It never fired on the reference city (609 punctual entries, 609 with `type`), which is
+# exactly why it was worth fixing before it did.
 PHOTOMETRIC_MARKER = "type"
 COLOUR_SLOT_MARKER = "purpose"
 
@@ -50,12 +67,36 @@ def load(bundle_dir):
 
 def is_photometric(entry):
     """Whether this entry is a real light source to instantiate."""
-    return isinstance(entry, dict) and PHOTOMETRIC_MARKER in entry
+    if not isinstance(entry, dict):
+        return False
+    return entry.get("kind") == PUNCTUAL_KIND or PHOTOMETRIC_MARKER in entry
 
 
 def is_colour_slot(entry):
     """Whether this entry is emissive material state rather than a light."""
     return isinstance(entry, dict) and COLOUR_SLOT_MARKER in entry and not is_photometric(entry)
+
+
+def bone_space(entry):
+    """`(boneIndex, subMesh)` when this light's `position`/`rotation` are NOT object-frame.
+
+    The one thing that changes what a punctual light's position means. The game's
+    `EffectInitializeSystem` resolves `parentMesh` through `FindBoneIndex`, and on a match that
+    method rewrites the position and rotation into the matched procedural bone's BIND-POSE space
+    and records the bone. The producer emits `boneIndex` exactly in that case, so:
+
+    * `None` — ordinary light, `position`/`rotation` are in the object frame. Place it there.
+    * a pair — the position is bone-relative and the bundle does not carry the bone. Either
+      compose the bind pose yourself or skip the light; placing it in the object frame puts it
+      somewhere the game never draws it.
+
+    On the reference city this is 4 of 609 punctual lights (bicycles, one workshop asset), so
+    skipping is a defensible consumer choice — believing the object frame is not.
+    """
+    pair = entry.get("boneIndex") if isinstance(entry, dict) else None
+    if not isinstance(pair, (list, tuple)) or len(pair) != 2:
+        return None
+    return int(pair[0]), int(pair[1])
 
 
 def split(entries):

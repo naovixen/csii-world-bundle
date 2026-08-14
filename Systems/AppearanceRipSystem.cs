@@ -263,9 +263,16 @@ namespace Carto.Systems
         /// type, spot angle, temperature and unit only on the managed <c>LightEffect</c>
         /// component, which is exactly where <c>LightCullingSystem</c> reads them
         /// (<c>GetPrefab&lt;EffectPrefab&gt;().GetComponent&lt;LightEffect&gt;()</c>).
-        /// Offsets are local to the sub-mesh named by <c>parentMesh</c> when that is ≥ 0, else to
-        /// the object's own frame — the same rule <c>EffectTransformSystem</c> applies when it
-        /// places the light in the world.
+        /// <b>Offsets are in the object's own frame</b>, and <c>parentMesh</c> does not change
+        /// that. <i>(Corrected 2026-08-14, H10 — this said "local to the sub-mesh named by
+        /// <c>parentMesh</c> when that is ≥ 0", which is what contract §7.2 said too.)</i> A
+        /// sweep of every reader of <c>Effect.m_ParentMesh</c> in the managed assemblies finds
+        /// three, and not one of them places the light: <c>EffectTransformSystem</c> reads it
+        /// only to pick which sub-mesh's <c>MeshColor</c> the light takes (the
+        /// <c>colorChannel</c> case below), <c>SubObjectSystem</c> reads it as sub-object
+        /// elevation flags, and <c>BuildingInitializeSystem</c> for fire SFX. What actually
+        /// places the light is <c>GetEffectTransform</c>, which branches on
+        /// <c>m_BoneIndex</c> — see <c>boneIndex</c> below.
         /// </summary>
         /// <param name="prefab">The object prefab.</param>
         /// <returns>The placed emitters, marked <c>kind: "punctual"</c>.</returns>
@@ -310,6 +317,21 @@ namespace Carto.Systems
                     ["parentMesh"] = effect.m_ParentMesh,
                     ["range"] = System.Math.Round((double)data.m_Range, 3)
                 };
+
+                // The one thing that changes what `position` MEANS, and the bundle carried no
+                // trace of it. `EffectInitializeSystem` resolves `m_ParentMesh` through
+                // `RenderingUtils.FindBoneIndex`, which — when it matches a ProceduralBone
+                // connection id — transforms `m_Position`/`m_Rotation` into that bone's
+                // bind-pose space in place and records the bone in `m_BoneIndex`. So an effect
+                // with `m_BoneIndex.x >= 0` ships a position that is NOT object-frame, and a
+                // consumer placing it in the object frame puts the light in the wrong spot with
+                // nothing in the file to say so. Emitted only in that case, because `.x < 0` is
+                // the ordinary object-frame light and an always-present -1 pair would imply the
+                // bundle carries bone data it does not. 4 of 609 punctual lights on the
+                // reference city.
+                //
+                if (effect.m_BoneIndex.x >= 0)
+                    emitter["boneIndex"] = new[] { effect.m_BoneIndex.x, effect.m_BoneIndex.y };
 
                 if (System.Math.Abs(effect.m_Intensity - 1f) > 1e-4f)
                     emitter["intensityScale"] = System.Math.Round((double)effect.m_Intensity, 4);

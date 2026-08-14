@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://erohs.github.io/csii-world-bundle/schema/colors.schema.json",
+  "title": "CS2 World Bundle colour palettes (colors.json, contract section 7.2)",
+  "description": "A flat object keyed by SUB-MESH assetId — the glTF node name inside the owning prefab's .glb (section 6), because that is where CS2 keeps the palette. Each value is the prefab's POSSIBLE colour variations with their weights, for a consumer re-colouring a city. The paint a given object was actually drawn with is on the instance, as attrs.colorSet. Measured over a full city: palettes sit on 3,984 sub-meshes covering 1,132,295 instances, and on no object prefab at all.",
+  "type": "object",
+  "additionalProperties": {
+    "description": "The sub-mesh's ColorVariation buffer, in the game's own order. May be empty.",
+    "type": "array",
+    "items": { "$ref": "#/$defs/variation" }
+  },
+  "$defs": {
+    "variation": {
+      "type": "object",
+      "required": ["channels", "probability"],
+      "additionalProperties": false,
+      "properties": {
+        "channels": {
+          "description": "CS2's ColorSet: exactly three linear RGBA channels. The material's colorMask map (section 7.1) selects between them PER TEXEL — not the 'mask' map, which is the PBR packing; confusing the two is how this layer once shipped a palette nothing could apply. Apply as a masked multiply, never a replacement: tinted = lerp(tinted, tinted * channels[i].rgb, colorMask[i]) for i in R, G, B. Reading 'selects' as replace-the-albedo flattens every surface to a solid tone.",
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 3,
+          "items": {
+            "type": "array",
+            "items": { "type": "number" },
+            "minItems": 4,
+            "maxItems": 4
+          }
+        },
+        "probability": {
+          "description": "The weight CS2 makes its random choice by, 0..100. Carried so a consumer re-colouring a city can reproduce the distribution rather than picking uniformly.",
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    }
+  }
+}

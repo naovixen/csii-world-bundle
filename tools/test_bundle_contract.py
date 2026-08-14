@@ -97,7 +97,7 @@ class BundleContractTest(unittest.TestCase):
     def test_clip_volume_unknown_kind_rejected(self):
         bundle = self.fresh()
         self.patch_clip_volume(bundle, 0, lambda r: r.update(kind="ribbon"))
-        self.assertRejected(bundle, "'kind' must be edge, node, orphan or area")
+        self.assertRejected(bundle, "'ribbon' is not one of")
 
     def test_clip_volume_inverted_band_rejected(self):
         bundle = self.fresh()
@@ -108,25 +108,25 @@ class BundleContractTest(unittest.TestCase):
         """A cubic Bézier is four control points; three is a different curve, silently."""
         bundle = self.fresh()
         self.patch_clip_volume(bundle, 0, lambda r: r.update(left=r["left"][:3]))
-        self.assertRejected(bundle, "must be 4 control points")
+        self.assertRejected(bundle, "minItems 4")
 
     def test_clip_volume_area_without_polygon_rejected(self):
         """Since schema 2 an area record carries its own polygon (S12.2) — the game never
         paints clip surfaces, so areas.jsonl cannot supply the triangles."""
         bundle = self.fresh()
         self.patch_clip_volume(bundle, 1, lambda r: r.pop("nodes"))
-        self.assertRejected(bundle, "must carry 'nodes'")
+        self.assertRejected(bundle, "matched no oneOf branch")
 
     def test_clip_volume_area_with_dangling_triangle_index_rejected(self):
         bundle = self.fresh()
         self.patch_clip_volume(bundle, 1, lambda r: r.update(triangles=[[0, 1, 999]]))
-        self.assertRejected(bundle, "indices into its own 'nodes'")
+        self.assertRejected(bundle, "does not index its")
 
     def test_clip_volume_area_carrying_curves_rejected(self):
         """An area clips with its polygon; boundary curves on it could disagree with it."""
         bundle = self.fresh()
-        self.patch_clip_volume(bundle, 1, lambda r: r.update(left=[[0, 0, 0]] * 4))
-        self.assertRejected(bundle, "carries no curves")
+        self.patch_clip_volume(bundle, 1, lambda r: r.update(left=[[0.0, 0.0, 0.0]] * 4))
+        self.assertRejected(bundle, "matched no oneOf branch")
 
     def test_clip_volume_unbounded_top_accepted(self):
         """An absent `top` means unbounded, which is how a clip surface says 'however high'."""
@@ -210,20 +210,19 @@ class BundleContractTest(unittest.TestCase):
         orphans = [w for w in report.warnings if "not referenced by any instance" in w]
         self.assertEqual(orphans, ["Nobody_Places_This.glb: mesh is not referenced by any instance"])
 
-    def test_grading_layer_is_declarable(self):
-        """`grading.json` is found through `layers.grading` like every other layer (§8, §12.3).
-        `layers` is a closed object, so a producer that writes the file without the schema
-        knowing its key ships a bundle its own validator rejects."""
+    def test_bundle_without_grading_is_valid(self):
+        """`grading.json` is optional: a rip that found no HDRP volume stack ships no layer,
+        and §1's rule is that an absent key is an absent feature."""
         bundle = self.fresh()
-        (bundle / "grading.json").write_text(json.dumps({"order": []}) + "\n", encoding="utf-8")
-        self.patch_manifest(bundle, lambda m: m["layers"].update({"grading": "grading.json"}))
+        (bundle / "grading.json").unlink()
+        self.patch_manifest(bundle, lambda m: m["layers"].pop("grading"))
         self.assertEqual(self.errors(bundle), [])
 
     def test_declared_grading_layer_must_exist(self):
         """The index is a promise: a declared layer whose file is missing is an error, not a
         consumer's problem to discover."""
         bundle = self.fresh()
-        self.patch_manifest(bundle, lambda m: m["layers"].update({"grading": "grading.json"}))
+        (bundle / "grading.json").unlink()
         self.assertRejected(bundle, "layers.grading")
 
     def test_count_without_declared_layer_rejected(self):
@@ -381,10 +380,15 @@ class BundleContractTest(unittest.TestCase):
         """
         bundle = self.fresh()
         self.patch_first_instance(bundle, lambda r: r.update({"assetId": "no_such_prefab"}))
-        (bundle / "warnings.jsonl").write_text(
-            json.dumps({"kind": "mesh", "assetId": "no_such_prefab",
-                        "reason": "empty SubMesh buffer"}) + "\n",
+        # Append: the example already declares its own undeliverable prop, and overwriting the
+        # file would turn that declared gap into an undeclared one.
+        path = bundle / "warnings.jsonl"
+        path.write_text(
+            path.read_text(encoding="utf-8")
+            + json.dumps({"kind": "mesh", "assetId": "no_such_prefab",
+                          "reason": "empty SubMesh buffer"}) + "\n",
             encoding="utf-8")
+        self.patch_manifest(bundle, lambda m: m["counts"].update({"warnings": 2}))
 
         report = validate_bundle(bundle, DEFAULT_SCHEMA_DIR)
         self.assertEqual(report.errors, [])
@@ -656,6 +660,255 @@ class BundleContractTest(unittest.TestCase):
         path = bundle / "materials.json"
         path.write_text(json.dumps({"some_other_mat": {}}, indent=2) + "\n", encoding="utf-8")
         self.assertRejected(bundle, "is not a key in materials.json")
+
+    # -- negative: the lane graph, contract §5A ----------------------------------------
+
+    def patch_first_lane(self, bundle: Path, mutate) -> None:
+        path = bundle / "lanes.jsonl"
+        lines = path.read_text(encoding="utf-8").splitlines()
+        record = json.loads(lines[0])
+        mutate(record)
+        lines[0] = json.dumps(record, separators=(",", ":"))
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    def test_lane_unknown_kind_rejected(self):
+        """§5A's kinds are a closed set the producer derives from the lane entity's own
+        component; an unknown one means a consumer's traffic filter silently drops it."""
+        bundle = self.fresh()
+        self.patch_first_lane(bundle, lambda r: r.update(kind="monorail"))
+        self.assertRejected(bundle, "'monorail' is not one of")
+
+    def test_lane_single_point_path_rejected(self):
+        """A one-point path is not a path — nothing can travel it, and a consumer building
+        geometry from it divides by a zero-length segment."""
+        bundle = self.fresh()
+        self.patch_first_lane(bundle, lambda r: r.update(path=r["path"][:1]))
+        self.assertRejected(bundle, "minItems 2")
+
+    def test_lane_secondary_false_rejected(self):
+        """The writer omits `secondary` for placed lanes; an explicit false is a producer bug,
+        and it matters because 'derived vs placed' is a filter a consumer chooses deliberately."""
+        bundle = self.fresh()
+        self.patch_first_lane(bundle, lambda r: r.update(secondary=False))
+        self.assertRejected(bundle, "expected const True")
+
+    def test_lane_unknown_field_rejected(self):
+        bundle = self.fresh()
+        self.patch_first_lane(bundle, lambda r: r.update(congestion=0.5))
+        self.assertRejected(bundle, "unexpected property 'congestion'")
+
+    def test_lane_owner_resolving_nowhere_is_accepted(self):
+        """`owner` is the generic ECS owner, not a foreign key: on a real city 59% of them
+        point at net NODES, which get no record at all (§5.1). Requiring it to resolve would
+        fail every correct bundle, so the validator reports the split as a note instead."""
+        bundle = self.fresh()
+        self.patch_first_lane(bundle, lambda r: r.update(owner=7777))
+        report = validate_bundle(bundle, DEFAULT_SCHEMA_DIR)
+        self.assertEqual(report.errors, [])
+        self.assertTrue(any("into neither" in n for n in report.notes),
+                        f"expected an owner-resolution note, got: {report.notes}")
+
+    # -- negative: the lane-prefab catalogue, contract §5B ------------------------------
+
+    def patch_lane_catalogue(self, bundle: Path, mutate) -> None:
+        path = bundle / "laneprefabs.json"
+        catalogue = json.loads(path.read_text(encoding="utf-8"))
+        mutate(catalogue)
+        path.write_text(json.dumps(catalogue, indent=2) + "\n", encoding="utf-8")
+
+    def test_lane_prefab_unknown_category_rejected(self):
+        bundle = self.fresh()
+        self.patch_lane_catalogue(
+            bundle, lambda c: c["Example_Fence"].update(category="powerline"))
+        self.assertRejected(bundle, "'powerline' is not one of")
+
+    def test_lane_part_without_bounds_rejected(self):
+        """The part's z span IS the tile length the tile count is measured in, so a part
+        without bounds cannot be tiled at all."""
+        bundle = self.fresh()
+        self.patch_lane_catalogue(
+            bundle, lambda c: c["Example_Fence"]["parts"][0].pop("boundsMax"))
+        self.assertRejected(bundle, "missing required property 'boundsMax'")
+
+    def test_lane_part_unknown_decal_role_rejected(self):
+        """`decalRole` replaced an assetId string-match precisely so the vocabulary is closed;
+        an absent key means unknown, but a wrong one would be read as a class."""
+        bundle = self.fresh()
+        self.patch_lane_catalogue(
+            bundle, lambda c: c["Example_Fence"]["parts"][0].update(decal=True,
+                                                                   decalRole="kerb"))
+        self.assertRejected(bundle, "'kerb' is not one of")
+
+    # -- negative: colours and lights, contract §7.2 ------------------------------------
+
+    def test_color_variation_needs_three_channels(self):
+        """A ColorSet is exactly three channels because the colorMask has exactly three
+        selector channels; two would leave a mask channel selecting nothing."""
+        bundle = self.fresh()
+        path = bundle / "colors.json"
+        colors = json.loads(path.read_text(encoding="utf-8"))
+        entry = colors["carto_example_cube"][0]
+        entry["channels"] = entry["channels"][:2]
+        path.write_text(json.dumps(colors, indent=2) + "\n", encoding="utf-8")
+        self.assertRejected(bundle, "minItems 3")
+
+    def test_punctual_light_without_position_rejected(self):
+        """The two families are told apart by shape: a `kind: punctual` entry that carries no
+        position matches neither, rather than silently falling back to the centroid rule that
+        would move every streetlamp to the middle of its pole."""
+        bundle = self.fresh()
+        path = bundle / "lights.json"
+        lights = json.loads(path.read_text(encoding="utf-8"))
+        lights["carto_example_cube"][1].pop("position")
+        path.write_text(json.dumps(lights, indent=2) + "\n", encoding="utf-8")
+        self.assertRejected(bundle, "matched no oneOf branch")
+
+    def test_appearance_key_matching_no_mesh_is_noted(self):
+        """A §7.2 key joins to the mesh layer. One that matches nothing is not an error — a
+        real rip writes 184 palette keys for tree states §6.1 does not export, and 86 light
+        keys for vehicles both rip queries exclude — but no consumer lookup can ever reach it,
+        which is worth saying once."""
+        bundle = self.fresh()
+        path = bundle / "colors.json"
+        colors = json.loads(path.read_text(encoding="utf-8"))
+        colors["Nothing_Has_This_Submesh"] = colors["carto_example_cube"]
+        path.write_text(json.dumps(colors, indent=2) + "\n", encoding="utf-8")
+        report = validate_bundle(bundle, DEFAULT_SCHEMA_DIR)
+        self.assertEqual(report.errors, [])
+        self.assertTrue(any("match no mesh file" in n for n in report.notes),
+                        f"expected an unmatched-key note, got: {report.notes}")
+
+    # -- negative: surface areas, contract §8b ------------------------------------------
+
+    def patch_area(self, bundle: Path, mutate) -> None:
+        path = bundle / "areas.jsonl"
+        record = json.loads(path.read_text(encoding="utf-8"))
+        mutate(record)
+        path.write_text(json.dumps(record, separators=(",", ":")) + "\n", encoding="utf-8")
+
+    def test_area_height_ranges_must_run_parallel_to_triangles(self):
+        """§8b says heightRanges is 'in the same order as triangles', which a consumer indexes
+        by — a shorter list silently mis-bands every drape after the first."""
+        bundle = self.fresh()
+        self.patch_area(bundle, lambda r: r.update(heightRanges=[[0.0, 0.1]]))
+        self.assertRejected(bundle, "heightRanges has 1 entries")
+
+    def test_area_height_ranges_accepted_when_parallel(self):
+        bundle = self.fresh()
+        self.patch_area(bundle, lambda r: r.update(heightRanges=[[0.0, 0.1], [0.0, 0.05]]))
+        self.assertEqual(self.errors(bundle), [])
+
+    def test_area_owner_resolving_nowhere_warns(self):
+        """§8b calls this join total (27,047 of 27,156 on the reference city, none dangling),
+        so a dangling owner means the instance layer and the area layer came from different
+        rips — a mixed-vintage bundle, which is worth a warning rather than silence."""
+        bundle = self.fresh()
+        self.patch_area(bundle, lambda r: r.update(owner=7777))
+        report = validate_bundle(bundle, DEFAULT_SCHEMA_DIR)
+        self.assertEqual(report.errors, [])
+        matches = [w for w in report.warnings if "resolves to no instance" in w]
+        self.assertEqual(len(matches), 1, f"expected one aggregated warning, got:\n{report.warnings}")
+
+    def test_area_prefab_dangling_normal_map_rejected(self):
+        """The catalogue's PBR block is four separate maps; a dangling normalMap is exactly as
+        broken as a dangling base map, and used to go unchecked (audit #40 P11)."""
+        bundle = self.fresh()
+        path = bundle / "areaprefabs.json"
+        catalogue = json.loads(path.read_text(encoding="utf-8"))
+        catalogue["example_concrete_pad"]["normalMap"] = "terrain/surfaces/no_such_n.png"
+        path.write_text(json.dumps(catalogue, indent=2) + "\n", encoding="utf-8")
+        self.assertRejected(bundle, "normalMap")
+
+    def test_area_prefab_unknown_field_rejected(self):
+        bundle = self.fresh()
+        path = bundle / "areaprefabs.json"
+        catalogue = json.loads(path.read_text(encoding="utf-8"))
+        catalogue["example_concrete_pad"]["lodBias"] = 1.0
+        path.write_text(json.dumps(catalogue, indent=2) + "\n", encoding="utf-8")
+        self.assertRejected(bundle, "unexpected property 'lodBias'")
+
+    # -- negative: warnings, contract §10 -----------------------------------------------
+
+    def test_warning_naming_nothing_rejected(self):
+        """The declared-gap amnesty is keyed on `assetId`; a line naming neither an asset nor
+        an entity silently stops excusing anything, which is the failure worth catching."""
+        bundle = self.fresh()
+        (bundle / "warnings.jsonl").write_text(
+            json.dumps({"kind": "mesh", "reason": "gone"}) + "\n", encoding="utf-8")
+        self.assertRejected(bundle, "matched no anyOf branch")
+
+    def test_warning_unknown_kind_rejected(self):
+        """Kinds are owned per pass and each pass rewrites only its own; an unknown kind is a
+        line no pass will ever replace, so it outlives whatever it described."""
+        bundle = self.fresh()
+        (bundle / "warnings.jsonl").write_text(
+            json.dumps({"kind": "terrain", "assetId": "x", "reason": "gone"}) + "\n",
+            encoding="utf-8")
+        self.assertRejected(bundle, "'terrain' is not one of")
+
+    # -- negative: the surface index, contract §8 ---------------------------------------
+
+    def test_surface_index_id_out_of_range_rejected(self):
+        """The raster is 8-bit, so an id above 255 names a value it cannot hold."""
+        bundle = self.fresh()
+        path = bundle / "terrain" / "surfaces" / "index.json"
+        index = json.loads(path.read_text(encoding="utf-8"))
+        index["300"] = {"name": "impossible", "texture": None}
+        path.write_text(json.dumps(index, indent=2) + "\n", encoding="utf-8")
+        self.assertRejected(bundle, "does not match pattern")
+
+    def test_surface_index_null_texture_accepted(self):
+        """`texture` may be null when the theme texture could not be read (§8) — a stated
+        absence, not a broken reference."""
+        bundle = self.fresh()
+        path = bundle / "terrain" / "surfaces" / "index.json"
+        index = json.loads(path.read_text(encoding="utf-8"))
+        index["1"]["texture"] = None
+        path.write_text(json.dumps(index, indent=2) + "\n", encoding="utf-8")
+        self.assertEqual(self.errors(bundle), [])
+
+    # -- negative: colour grading, contract §8 ------------------------------------------
+
+    def patch_grading(self, bundle: Path, mutate) -> None:
+        path = bundle / "grading.json"
+        document = json.loads(path.read_text(encoding="utf-8"))
+        mutate(document)
+        path.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
+
+    def test_grading_unevaluated_stack_rejected(self):
+        """An all-default block with stackEvaluated false is a FAILED READ, not a neutral
+        grade — the first cut of this layer shipped exactly that and it read as a city that
+        does not tonemap."""
+        bundle = self.fresh()
+        self.patch_grading(bundle, lambda d: d["diagnostics"].update(stackEvaluated=False))
+        self.assertRejected(bundle, "stackEvaluated is false")
+
+    def test_grading_no_volumes_found_rejected(self):
+        bundle = self.fresh()
+        self.patch_grading(bundle, lambda d: d["diagnostics"].update(volumesFound=0))
+        self.assertRejected(bundle, "volumesFound is 0")
+
+    def test_grading_unknown_block_rejected(self):
+        """`grading.json` is a closed object on purpose: a block the writer starts emitting
+        without the schema knowing it is exactly the drift diagnostics.unread exists to expose,
+        and it should not reach a consumer unannounced."""
+        bundle = self.fresh()
+        self.patch_grading(bundle, lambda d: d.update(bloom={"intensity": 0.5}))
+        self.assertRejected(bundle, "unexpected property 'bloom'")
+
+    def test_grading_external_tonemapping_with_lut_warns(self):
+        """mode External WITH a bound LUT means the grading block is incomplete — the LUT is a
+        GPU 3D render texture and is not exported, so a consumer replaying this will not match
+        the game and must be told."""
+        bundle = self.fresh()
+        self.patch_grading(bundle, lambda d: d["tonemapping"].update(
+            mode="External", hasLut=True,
+            lut={"name": "DayLUT", "width": 1024, "height": 32, "type": "RenderTexture",
+                 "note": "NOT exported"}))
+        report = validate_bundle(bundle, DEFAULT_SCHEMA_DIR)
+        self.assertEqual(report.errors, [])
+        self.assertTrue(any("External with a bound LUT" in w for w in report.warnings),
+                        f"expected an incomplete-grading warning, got: {report.warnings}")
 
     def test_glb_image_uri_escaping_the_bundle_rejected(self):
         bundle = self.fresh()

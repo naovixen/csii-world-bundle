@@ -2,9 +2,15 @@
 """Generate the hand-authored example CS2 World Bundle (schema 2, frozen 2026-08-09).
 
 The example is the executable half of the Phase-0 schema freeze: it is a tiny but
-*complete* bundle (one cube mesh, one texture, one material, two instances, one
+*complete* bundle (one cube mesh, one texture, one material, three instances, one
 centerline network segment, a manifest) that `tools/validate_bundle.py` accepts.
 A consumer can be built and smoke-tested against it with no game and no mod.
+
+**Every layer the contract documents appears here** (H10, 2026-08-14), so a consumer author
+meets each one before meeting a real city — including the three that are easy to skip and
+expensive to get wrong: the lane GRAPH (§5A), the two record shapes sharing `lights.json`
+(§7.2), and the §10 declared-gap amnesty, which the example exercises for real by placing an
+instance whose mesh is deliberately absent and declared.
 
 Everything here is deterministic — re-running rewrites byte-identical files.
 
@@ -27,6 +33,10 @@ DEFAULT_OUT = REPO_ROOT / "docs" / "example-bundle"
 
 ASSET_ID = "carto_example_cube"
 MATERIAL_ID = "carto_example_cube_mat"
+
+# A prefab the producer could not deliver geometry for. Referenced by an instance and declared
+# in warnings.jsonl, so the example carries the §10 amnesty as a live case rather than prose.
+MISSING_ASSET_ID = "carto_example_undeliverable_prop"
 
 # Cube dimensions in metres: a 4 x 4 footprint, 4 tall, origin at the base centre.
 HALF = 2.0
@@ -293,6 +303,19 @@ def build(out_dir: Path) -> None:
                 "state": "normal",
             },
         },
+        # The §10 declared-gap amnesty, exercised rather than described: this instance's
+        # prefab has NO .glb, which would normally be a hard error — and is one when it is
+        # undeclared. warnings.jsonl declares it, so the validator counts it in a note and the
+        # placement survives for a consumer to stand something in for. Dropping the record
+        # instead would lose the placement, which §4.1 requires to outlive the geometry.
+        {
+            "id": 1003,
+            "assetId": MISSING_ASSET_ID,
+            "kind": "prop",
+            "pos": [140.0, 12.0, -336.0],
+            "rot": [0.0, 0.0, 0.0, 1.0],
+            "attrs": {"name": "Example Bench (mesh undeliverable)", "category": "Street Furniture"},
+        },
     ]
     with (out_dir / "instances.jsonl").open("w", encoding="utf-8", newline="\n") as fh:
         for record in instances:
@@ -320,6 +343,28 @@ def build(out_dir: Path) -> None:
     ]
     with (out_dir / "networks.jsonl").open("w", encoding="utf-8", newline="\n") as fh:
         for record in networks:
+            fh.write(json.dumps(record, separators=(",", ":")) + "\n")
+
+    # -- the lane graph (contract §5A): what makes the road drivable ------------------
+    # networks.jsonl is the road SURFACE; this is the road GRAPH. Two car lanes running
+    # opposite ways along the example segment, and a footway beside it. `owner` is the generic
+    # ECS owner and merely happens to resolve to the segment here — a real bundle's owners are
+    # mostly net NODES, which get no record at all (§5.1), so a consumer must treat it as an
+    # advisory grouping key rather than a foreign key.
+    graph_lanes = [
+        {"id": 4001, "kind": "car", "owner": networks[0]["id"],
+         "path": [[100.0, 12.0, -362.0], [140.0, 12.0, -362.0], [180.0, 12.2, -362.0]],
+         "length": 80.02, "limit": 50.0, "curviness": 0.004, "flags": ["Twoway"]},
+        {"id": 4002, "kind": "car", "owner": networks[0]["id"],
+         "path": [[180.0, 12.2, -358.0], [140.0, 12.0, -358.0], [100.0, 12.0, -358.0]],
+         "length": 80.02, "limit": 50.0, "curviness": 0.004, "flags": ["Twoway"],
+         "secondary": True},
+        {"id": 4003, "kind": "pedestrian", "owner": networks[0]["id"],
+         "path": [[100.0, 12.0, -353.0], [180.0, 12.2, -353.0]],
+         "length": 80.0},
+    ]
+    with (out_dir / "lanes.jsonl").open("w", encoding="utf-8", newline="\n") as fh:
+        for record in graph_lanes:
             fh.write(json.dumps(record, separators=(",", ":")) + "\n")
 
     # -- lane geometry (contract §5B v2): a fence along a gentle curve -----------------
@@ -368,6 +413,107 @@ def build(out_dir: Path) -> None:
     with (out_dir / "lanemeshes.jsonl").open("w", encoding="utf-8", newline="\n") as fh:
         for record in lanes:
             fh.write(json.dumps(record, separators=(",", ":")) + "\n")
+
+    # -- colours and lights (contract §7.2) -------------------------------------------
+    # Both are keyed by the SUB-MESH assetId — the glTF node name inside the owning prefab's
+    # .glb — which for this one-node cube is the prefab name itself. `colors.json` is the
+    # prefab's POSSIBLE variations with their weights; what a given instance was actually
+    # drawn with is its own attrs.colorSet. Applying it is a masked MULTIPLY through the
+    # material's colorMask map, never a replacement.
+    (out_dir / "colors.json").write_text(
+        json.dumps({ASSET_ID: [
+            {"channels": [[0.82, 0.74, 0.62, 1.0], [0.35, 0.33, 0.31, 1.0], [1.0, 1.0, 1.0, 1.0]],
+             "probability": 70},
+            {"channels": [[0.62, 0.66, 0.72, 1.0], [0.28, 0.3, 0.34, 1.0], [1.0, 1.0, 1.0, 1.0]],
+             "probability": 30},
+        ]}, indent=2) + "\n", encoding="utf-8")
+
+    # ONE FILE, TWO RECORD SHAPES, keyed the same way and placed by OPPOSITE rules. The
+    # procedural entry has no position because the light IS the emissive material: put it at
+    # the centroid of the primitive using that slot. The punctual entry carries a real local
+    # position and must use it — falling back to the centroid would move every streetlamp to
+    # the middle of its pole. A consumer that treats them uniformly makes both or neither.
+    (out_dir / "lights.json").write_text(
+        json.dumps({ASSET_ID: [
+            {"slot": 0, "color": [1.0, 0.87, 0.68, 1.0], "colorOff": [0.0, 0.0, 0.0, 1.0],
+             "purpose": "DecorativeLight", "responseSpeed": 0.5},
+            {"kind": "punctual", "effect": "Example Wall Lamp",
+             "position": [0.0, 3.2, 2.1], "rotation": [0.0, 0.0, 0.0, 1.0],
+             "parentMesh": -1, "range": 12.0,
+             "finalColor": [3.2, 2.78, 2.18, 1.0],
+             "type": "Spot", "color": [1.0, 0.87, 0.68, 1.0],
+             "intensity": 2000.0, "intensityUnit": "Lumen", "temperature": 2700.0,
+             "spotShape": "Cone", "spotAngle": 100.0, "innerSpotPercentage": 60.0},
+        ]}, indent=2) + "\n", encoding="utf-8")
+
+    # -- warnings (contract §10): the producer declaring a gap it could not close ------
+    (out_dir / "warnings.jsonl").write_text(
+        json.dumps({"kind": "mesh", "assetId": MISSING_ASSET_ID,
+                    "reason": "mesh not readable at runtime"},
+                   separators=(",", ":")) + "\n", encoding="utf-8")
+
+    # -- colour grading and lighting (contract §8) ------------------------------------
+    # A DISPLAY TRANSFORM, never baked into the shipped textures — and a snapshot of one
+    # moment, because grading follows weather and time of day. `diagnostics` is what tells a
+    # consumer this is the game's real grade rather than an unevaluated stack of defaults.
+    grading = {
+        "semantics": "the game's resolved HDRP colour grading at rip time, read from "
+                     "VolumeManager's post-blend volume stack. CS2's ground albedo is authored "
+                     "near-grey and this is what turns it into the on-screen palette. Optional: "
+                     "a consumer that wants the raw albedo should ignore this block entirely; "
+                     "one that wants the game's look should apply it as a display transform, "
+                     "NOT bake it into the shipped textures",
+        "order": "exposure -> white balance -> color adjustments (filter, contrast, hue, "
+                 "saturation) -> shadows/midtones/highlights -> tonemapping",
+        "weatherDependent": True,
+        "note": "a snapshot of one moment: grading follows weather and time of day, so a rip "
+                "taken at dusk records dusk",
+        "diagnostics": {"stackEvaluated": True, "volumesFound": 3,
+                        "camera": "Main Camera", "volumeLayerMask": -1,
+                        "unread": ["CloudLayer", "VolumetricClouds"]},
+        "exposure": {"mode": "AutomaticHistogram", "fixedExposure": 0.0, "compensation": 0.0,
+                     "limitMin": -2.0, "limitMax": 14.0,
+                     "units": "EV100; `compensation` is stops"},
+        "whiteBalance": {"temperature": 8.0, "tint": 0.0,
+                         "units": "both -100..100, HDRP's own scale"},
+        "colorAdjustments": {"postExposure": 0.0, "contrast": 12.0,
+                             "colorFilter": [1.0, 1.0, 1.0], "hueShift": 0.0,
+                             "saturation": 8.0,
+                             "units": "postExposure in EV/stops; the rest on HDRP's -100..100"},
+        "shadowsMidtonesHighlights": {
+            "shadows": [1.0, 1.0, 1.02, 0.0], "midtones": [1.0, 1.0, 1.0, 0.0],
+            "highlights": [1.02, 1.0, 0.98, 0.0],
+            "shadowsStart": 0.0, "shadowsEnd": 0.3,
+            "highlightsStart": 0.55, "highlightsEnd": 1.0,
+            "units": "each is [r, g, b, w]: rgb a per-channel multiplier around 1.0, w an offset"},
+        "tonemapping": {"mode": "ACES",
+                        "note": "the display transform the grading above was authored against",
+                        "lutContribution": 1.0, "hasLut": False},
+        "lighting": {
+            "semantics": "the illumination the grading above sits on top of. A consumer that "
+                         "reproduces the albedo and the grading but lights the scene white will "
+                         "still miss the game's colour: the sun is not white",
+            "sun": {"color": [1.0, 1.0, 1.0], "useColorTemperature": False,
+                    "colorTemperature": 6570.0,
+                    "units": "`color` is the light's own filter as authored",
+                    "intensity": 110000.0, "initialIntensity": 130000.0,
+                    "intensityUnits": "lux for a directional light",
+                    "direction": [-0.35, -0.91, 0.22],
+                    "elevationDegrees": 66.0, "azimuthDegrees": 122.0,
+                    "directionUnits": "`direction` is the unit vector the light TRAVELS along",
+                    "shadows": "Soft", "enabled": True, "which": "sun"},
+            "sky": {"exposure": 0.0, "zenithTint": [0.42, 0.56, 0.86],
+                    "horizonTint": [0.78, 0.82, 0.88], "groundTint": [0.28, 0.26, 0.24],
+                    "units": "HDRP PhysicallyBasedSky; this is the ambient half of the light"},
+            "indirect": {"diffuseMultiplier": 1.0, "reflectionMultiplier": 1.0,
+                         "units": "multipliers on bounced light"},
+            "time": {"hour": 13, "minute": 20, "day": 172, "year": 2026,
+                     "latitude": 25.033, "longitude": 121.5654,
+                     "units": "in-game clock and map position at rip time"},
+        },
+    }
+    (out_dir / "grading.json").write_text(
+        json.dumps(grading, indent=2) + "\n", encoding="utf-8")
 
     # -- terrain layers (contract §8): one small grid shared by every raster -----------
     # 32x32 cells at 4 m cover x 80..208, z -300..-428 — the whole example scene. Rows run
@@ -439,10 +585,25 @@ def build(out_dir: Path) -> None:
     }
     (out_dir / "areas.jsonl").write_text(
         json.dumps(area_record, separators=(",", ":")) + "\n", encoding="utf-8")
+    # The catalogue carries the four keys the game pushes for every version — and
+    # `rendererPriority` above all, because without it a consumer has no rule for which of two
+    # overlapping areas paints on top. `uvScale` is the authored rate: uv = world position ×
+    # uvScale, so 0.2 means one repeat every 5 m. Tiling is world-planar, never UV-mapped.
+    (terrain_dir / "surfaces" / "area_example_concrete_pad.png").write_bytes(
+        make_checker_png(16, 4, (168, 166, 162, 255), (152, 150, 147, 255)))
     (out_dir / "areaprefabs.json").write_text(
         json.dumps({"example_concrete_pad": {
             "name": "Example Concrete Pad",
             "color": [0.42, 0.4, 0.38, 1.0],
+            "texture": "terrain/surfaces/area_example_concrete_pad.png",
+            "uvScale": 0.2,
+            "heightOffset": 0.0,
+            "expandAmount": 0.5,
+            "roundness": 0.0,
+            "rendererPriority": 0,
+            "decalLayers": ["Terrain"],
+            "metallic": 0.0,
+            "smoothness": 0.35,
         }}, indent=2) + "\n", encoding="utf-8")
 
     # -- clip volumes (contract §8c): what opens the tunnel portal -----------------------
@@ -558,7 +719,8 @@ def build(out_dir: Path) -> None:
             "textures": 1,
             "instances": len(instances),
             "networkSegments": len(networks),
-            "warnings": 0,
+            "warnings": 1,
+            "lanes": len(graph_lanes),
             "laneGeometry": len(lanes),
             "areas": 1,
             "clipVolumes": len(clip_volumes),
@@ -566,9 +728,12 @@ def build(out_dir: Path) -> None:
         "layers": {
             "instances": "instances.jsonl",
             "networks": "networks.jsonl",
+            "lanes": "lanes.jsonl",
             "laneGeometry": "lanemeshes.jsonl",
             "lanePrefabs": "laneprefabs.json",
             "materials": "materials.json",
+            "colors": "colors.json",
+            "lights": "lights.json",
             "meshes": "meshes/",
             "laneMeshes": "lanemeshes/",
             "textures": "textures/",
@@ -579,6 +744,8 @@ def build(out_dir: Path) -> None:
             "areas": "areas.jsonl",
             "areaPrefabs": "areaprefabs.json",
             "clipVolumes": "clipvolumes.jsonl",
+            "grading": "grading.json",
+            "warnings": "warnings.jsonl",
         },
         "rasters": rasters,
         "ripOptions": {

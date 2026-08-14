@@ -702,7 +702,7 @@ One JSON object per lane:
 | `kind` | yes | `car`, `track`, `pedestrian`, `parking`, `connection`, `other`. Closed set in v1. |
 | `path` | yes | World-space polyline, bundle frame, already tessellated from CS2's bézier. At least two points, no two consecutive points coincident. |
 | `length` | yes | The curve's length in metres — CS2's own value, not the polyline's. |
-| `owner` | no | The `id` of the `networks.jsonl` record this lane belongs to, where it belongs to an edge. Absent for lanes owned by a node. |
+| `owner` | no | The ECS index of whatever entity owns this lane — an edge, a **node**, or a building lot. **Not a foreign key**; see the correction below. |
 | `limit` | no | Speed limit in km/h, for the kinds that have one (`car`, `track`). |
 | `curviness` | no | How much the lane bends, on CS2's own scale. Carried rather than recomputed. |
 | `secondary` | no | `true` where CS2 derived this lane from a master lane rather than placing it. |
@@ -711,6 +711,17 @@ One JSON object per lane:
 Both master and derived lanes are emitted, the derived ones marked: a consumer laying out
 traffic wants every lane a vehicle can occupy, while one drawing lane lines may want only the
 placed ones.
+
+**`owner` is an advisory grouping key, not a join** *(corrected 2026-08-14, H10.)* This row
+used to read "the `id` of the `networks.jsonl` record this lane belongs to … absent for lanes
+owned by a node", and measurement falsifies both halves. The producer writes
+`Game.Common.Owner.m_Owner.Index` verbatim, and that component names whatever owns the lane. On
+the reference city, of 677,566 lanes carrying an owner, **21.7% resolve into `networks.jsonl`,
+19.1% into `instances.jsonl` (lot-owned parking and pedestrian lanes) and 59.2% into neither** —
+because the commonest owner is a net **node**, and §5.1 explains why the bundle emits no node
+records at all. A further 3,063 lanes carry no owner. Treat it exactly like an instance's
+`parent`: useful for grouping when it resolves, never required to. The validator reports the
+three-way split as a note and checks nothing.
 
 ---
 
@@ -1018,13 +1029,38 @@ lights live on **EffectPrefab** entities joined through the object prefab's `Eff
 with placement in `EffectSource.EffectSettings` — so, contrary to the older text below, CS2
 **does** store a position for them.)* **Punctual entries** carry `kind: "punctual"` and are
 keyed by the **object prefab's assetId** (joining `instances.jsonl`/`meshes/`, unlike
-procedural entries' sub-mesh key). Fields: `effect`, `position` (local; relative to the
-sub-mesh named by `parentMesh` when ≥ 0, else the object frame), `rotation`, `range`; optional
+procedural entries' sub-mesh key). Fields: `effect`, `position` (**in the object frame** — see
+the correction below), `rotation`, `range`; optional
 `intensityScale` (per-placement, when ≠ 1), `finalColor` (resolved linear HDR RGBA),
 `colorChannel` (when the light takes the instance colorSet channel), `type`, `color` (authored
-linear RGBA), `intensity` + `intensityUnit`, `temperature` (K, when used),
-`spotShape`/`spotAngle`/`innerSpotPercentage` (Spot), `areaShape` (Area). Procedural entries
-are unchanged and remain position-less behaviors of the emissive material.
+linear RGBA), `intensity` + `intensityUnit` (**read the unit, do not assume it**: the reference
+city reads `Lux` on all 609 of its punctual lights while the example above shows `Lumen`),
+`temperature` (K, when used),
+`spotShape`/`spotAngle`/`innerSpotPercentage` (Spot), `areaShape` (Area), `boneIndex` (rare —
+see below). Procedural entries are unchanged and remain position-less behaviors of the emissive
+material.
+
+**`parentMesh` is a colour selector, not a parent** *(corrected 2026-08-14, H10 — this section
+said `position` was "relative to the sub-mesh named by `parentMesh` when ≥ 0, else the object
+frame", and the producer's own doc comment said the same.)* A sweep of **every** reader of
+`Effect.m_ParentMesh` in the managed assemblies turns up three, and not one places the light:
+`EffectTransformSystem` reads it solely to pick which sub-mesh's `MeshColor` the light takes
+(the `colorChannel` case), `SubObjectSystem` reads it as sub-object elevation flags, and
+`BuildingInitializeSystem` for fire SFX. **A punctual light's `position`/`rotation` are in the
+object frame.** Nor is `parentMesh` a plain index — the field is overloaded across those uses:
+`-1` is none, `0` is by far the commonest value, a value `> 0` exceeding the prefab's sub-mesh
+count is a **`ProceduralBone` connection id** (`RenderingUtils.FindBoneIndex`), and other
+negatives are authored values the game itself cannot resolve (`-1001` occurs on a workshop
+asset in the reference city). Bounds-check before indexing anything with it.
+
+**`boneIndex`, when present, changes what `position` means.** `EffectInitializeSystem` resolves
+`m_ParentMesh` through `FindBoneIndex`, and on a match that method rewrites `m_Position` and
+`m_Rotation` **into the bone's bind-pose space** and records `m_BoneIndex`. So an entry
+carrying `boneIndex` is *not* in the object frame, and `[boneIndex, subMesh]` names the
+`BoneHistory` slot (an animation the bundle does not carry) and the sub-mesh transform applied
+after it, or `-1`. It is emitted only in that case. On the reference city it is **4 of 609**
+punctual lights — bicycles and one workshop asset — so a consumer may reasonably skip them;
+what it must not do is place them in the object frame and believe the result.
 
 **Colours.** A variation is CS2's `ColorSet`: three channels, and **the material's `colorMask`
 map (§7.1) is what selects between them, per texel.** Not the `mask` map — that is the PBR
@@ -1679,8 +1715,14 @@ untouched. Its contents are outside this contract; see the Carto wiki.
 
 ## 10. `warnings.jsonl`
 
-Advisory, not schema-validated in v1. One JSON object per line describing something the
-producer could not do, so that a missing object is explicable rather than mysterious:
+**Advisory to a consumer — it may ignore the file entirely — but schema-validated all the
+same** *(since 2026-08-14, H10; `docs/schema/warning.schema.json`)*. It is advisory in the
+sense that nothing downstream must read it; it is validated because the *declared-gap amnesty
+below* is keyed on `assetId` and `reason`, so a line the validator cannot parse silently stops
+excusing anything and turns a declared gap back into a contract violation.
+
+One JSON object per line describing something the producer could not do, so that a missing
+object is explicable rather than mysterious:
 
 ```jsonc
 { "kind": "mesh", "assetId": "some_prefab", "reason": "mesh not readable at runtime" }
@@ -1730,13 +1772,23 @@ python tools/validate_bundle.py <bundle_dir>
 Standard library only — Python 3.8+, no pip installs, no game, no mod source. It checks the
 structural schemas *and* the cross-file invariants a schema cannot express: every `assetId`
 resolves to a mesh, every texture reference resolves and is named by its own hash, every
-`.glb` is a well-formed glTF 2.0 whose material names join into `materials.json`, manifest
+`.glb` is a well-formed glTF 2.0 whose material names join into `materials.json`, an area's
+`heightRanges` runs parallel to its `triangles` and its `owner` joins to a building, manifest
 counts match reality, quaternions are unit length, and `bounds` actually encloses the content.
 Exit code 0 means valid.
 
+**Every documented layer has a JSON Schema** *(H10, 2026-08-14 — fifteen documents in
+`docs/schema/`)*. Ten were added that day: `lane`, `laneprefabs`, `colors`, `lights`, `area`,
+`areaprefabs`, `clipvolume`, `warning`, `surfaceindex` and `grading`. They describe the format
+as the producer really writes it, which is not always as this document described it — the two
+corrections that came out of writing them are in §5A (`owner`) and §7.2 (`parentMesh`). Nothing
+about any file's contents changed, so the schema version stays 2.
+
 `docs/example-bundle/` is a complete, minimal, hand-authored bundle — one cube mesh, one
-texture, one material, two instances, one network segment — that validates clean. Build a
-consumer against it before pointing one at a real city.
+texture, one material, three instances, one network segment, and **at least one record in every
+layer the contract documents** — that validates clean. Build a consumer against it before
+pointing one at a real city. Its third instance references a prefab with no `.glb`, declared in
+`warnings.jsonl`: the §10 amnesty as a live case a consumer has to handle rather than as prose.
 
 ```
 python tools/make_example_bundle.py    # regenerate it (deterministic, byte-identical)
@@ -2008,3 +2060,34 @@ writes are now grading-then-manifest.
 
 Nothing about the file's contents changed. A consumer already reading `grading.json` by name
 keeps working; one following §1 can now find it.
+
+---
+
+**Ten schemas added and two field descriptions corrected (2026-08-14, H10). No version bump.**
+
+`docs/schema/` had five documents for a contract with fifteen layers, so ten layers were
+"documented" only in prose here — which is how the two errors below survived. The new documents
+are `lane`, `laneprefabs`, `colors`, `lights`, `area`, `areaprefabs`, `clipvolume`, `warning`,
+`surfaceindex` and `grading`. Nothing about any file's contents changed: this is a description
+catching up with what the producer already writes, which §12 allows within a version.
+
+Writing a schema forces the question "what values does this field actually take", and twice the
+answer was not what this document said:
+
+- **§5A `owner`** was described as "the `id` of the `networks.jsonl` record this lane belongs
+  to … absent for lanes owned by a node". It is the generic ECS `Owner`, and 59.2% of them
+  resolve into no exported record at all. See §5A for the measured split.
+- **§7.2 `parentMesh`** was described as the sub-mesh a punctual light's `position` is relative
+  to. A sweep of every reader of `Effect.m_ParentMesh` in the game shows none of them places a
+  light; positions are object-frame, and the field is a colour selector. See §7.2.
+
+The producer gained one additive optional key from the same investigation — `boneIndex` on a
+punctual light — because the game *does* have a case where the shipped position is not
+object-frame, and nothing in the bundle said which entries those were.
+
+Three checks the validator gained with them, all cross-file and none expressible in a schema:
+an area's `heightRanges` must run parallel to its `triangles`; an area's `owner` must join to an
+instance (§8b calls that join total, so a dangling one means a mixed-vintage bundle); and a
+§7.2 key that matches no mesh file or glTF node name is reported as a note — 184 palette keys
+and 86 light keys on the reference city, all for geometry the bundle deliberately excludes
+(tree `*Child*` states, vehicles).

@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://erohs.github.io/csii-world-bundle/schema/area.schema.json",
+  "title": "CS2 World Bundle surface-area record (contract section 8b)",
+  "description": "One line of areas.jsonl (JSON Lines): a painted ground patch the game draws through its area system — house driveways, parking-lot pavement, park paths, sports courts, campsite clearings. These surfaces belong to no other layer, and a consumer without them shows grass wherever the game shows pavement. A TRIANGLE IS A FOOTPRINT, NOT A SURFACE: the game draws a prism per triangle and projects the material onto whatever ground is inside it, so a consumer must drape the triangle onto the section 8 heightmap rather than drawing the plane. Nothing flattens the ground underneath.",
+  "type": "object",
+  "required": ["id", "prefab", "nodes", "triangles"],
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "description": "Producer-local unique identifier (the ECS entity index).",
+      "type": "integer",
+      "minimum": 0
+    },
+    "prefab": {
+      "description": "Key into areaprefabs.json — a hard join; every value resolves.",
+      "type": "string",
+      "minLength": 1
+    },
+    "owner": {
+      "description": "The instances.jsonl 'id' of the building/object whose lot spawned this area. Present on lot-painted ground — storage yards, specialised industry, driveways, the paving inside a parking lot — and ABSENT on ground the player painted directly, which belongs to no lot. This is the distinction between the two, and the join is total: on the reference city 27,047 of 27,156 areas carry one and every one resolves to a kind 'building' record, with none dangling. A consumer may group a lot's surfaces under its building rather than scattering them loose on the terrain.",
+      "type": "integer",
+      "minimum": 0
+    },
+    "nodes": {
+      "description": "The polygon's corners as bundle-frame world positions (section 2.1) — NOT mesh-frame mirrored. At least 3.",
+      "type": "array",
+      "minItems": 3,
+      "items": { "$ref": "#/$defs/vec3" }
+    },
+    "triangles": {
+      "description": "The game's own triangulation: index triplets into this record's own 'nodes'.",
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "array",
+        "minItems": 3,
+        "maxItems": 3,
+        "items": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "heightRanges": {
+      "description": "The game's own Triangle.m_HeightRange per triangle, IN THE SAME ORDER AS 'triangles' (a validator checks the lengths agree): [min, max] of the terrain and water height over that triangle's footprint, RELATIVE TO THE TRIANGLE'S OWN PLANE, in metres. It is the vertical band the game's prism spans, so it states how far a drape has to reach — and 32.7% of triangles are flat within tolerance, which a conformance pass can skip outright. Omitted when every range on the area is zero; 91.4% of areas carry one. IT IS A GUIDE, NOT A SUBSTITUTE FOR THE HEIGHTMAP: checked against an independent recomputation over terrain/heightmap.png (86,233 triangles) the game's band contains the recomputed one on 83.3% with ~11 mm median slack, but 0.52% come out NARROWER, most plausibly because the game recomputes only when the area changes and can lag a later terrain edit. A consumer that needs the surface to sit on the ground must sample the ground.",
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "array",
+        "minItems": 2,
+        "maxItems": 2,
+        "items": { "type": "number" }
+      }
+    }
+  },
+  "$defs": {
+    "vec3": {
+      "type": "array",
+      "items": { "type": "number" },
+      "minItems": 3,
+      "maxItems": 3
+    }
+  }
+}

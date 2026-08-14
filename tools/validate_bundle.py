@@ -7,13 +7,14 @@ consumer author runs to confirm a bundle they were handed is well-formed.
 
 It does two jobs:
 
-  1. Structural — validates bundle.json, every line of instances.jsonl / networks.jsonl and
-     materials.json against docs/schema/*.schema.json, using a small built-in evaluator for
-     the JSON Schema subset those files use.
+  1. Structural — validates every declared layer against docs/schema/*.schema.json (fifteen
+     documents as of 2026-08-14, one per layer), using a small built-in evaluator for the JSON
+     Schema subset those files use.
   2. Semantic — the cross-file invariants a schema cannot state: every assetId resolves to a
      mesh file, every texture reference resolves and is named by its own SHA-256, every .glb
      is a well-formed glTF 2.0 container whose material names join into materials.json,
-     manifest counts match reality, and bounds actually enclose the content.
+     an area's heightRanges runs parallel to its triangles, an area's owner joins to a
+     building, manifest counts match reality, and bounds actually enclose the content.
 
 Usage:  python tools/validate_bundle.py <bundle_dir> [--schema-dir DIR] [-q]
 Exit:   0 = valid (warnings allowed), 1 = invalid, 2 = could not run.
@@ -36,6 +37,17 @@ DEFAULT_SCHEMA_DIR = REPO_ROOT / "docs" / "schema"
 
 QUAT_TOLERANCE = 1e-3
 BOUNDS_TOLERANCE = 1e-6
+
+# One schema document per layer of the contract. `lanemesh` is §5B's parameter record and
+# `laneprefabs` its catalogue; `lane` is §5A's graph, a different file. Every name here must
+# exist in the schema directory — a missing one is a setup error, not a bundle error.
+SCHEMA_NAMES = (
+    "bundle", "instance", "network", "materials",
+    "lane", "lanemesh", "laneprefabs",
+    "colors", "lights",
+    "area", "areaprefabs", "clipvolume",
+    "warning", "surfaceindex", "grading",
+)
 
 
 # ======================================================================================
@@ -333,6 +345,19 @@ def _load_jsonl(path: Path, validator: Validator, label: str, report: Report) ->
     return records
 
 
+def _load_json_layer(path: Path, validator: Validator, label: str,
+                     report: Report) -> Optional[Any]:
+    """Parse a whole-file JSON layer and validate it. Returns None when it could not be read."""
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except ValueError as exc:
+        report.error(f"{label}: not valid JSON — {exc}")
+        return None
+    for err in validator.validate(document):
+        report.error(f"{label}: {err}")
+    return document
+
+
 def _load_declared_missing(bundle_dir: Path) -> Dict[str, str]:
     """Read warnings.jsonl and return {assetId: reason} for assets the producer could not deliver.
 
@@ -381,7 +406,7 @@ def validate_bundle(bundle_dir: Path, schema_dir: Path) -> Report:
     report = Report()
 
     schemas = {}
-    for name in ("bundle", "instance", "network", "materials"):
+    for name in SCHEMA_NAMES:
         path = schema_dir / f"{name}.schema.json"
         schemas[name] = Validator(json.loads(path.read_text(encoding="utf-8")), path.name)
 
@@ -545,14 +570,12 @@ def validate_bundle(bundle_dir: Path, schema_dir: Path) -> Report:
     catalogue_path = _resolve_layer(bundle_dir, layers, "lanePrefabs")
     lane_mesh_dir = _resolve_layer(bundle_dir, layers, "laneMeshes")
     if lanes_path and lanes_path.is_file():
-        lane_schema_path = schema_dir / "lanemesh.schema.json"
-        lane_schema = Validator(json.loads(lane_schema_path.read_text(encoding="utf-8")),
-                                lane_schema_path.name)
-        lanes = _load_jsonl(lanes_path, lane_schema, layers["laneGeometry"], report)
+        lanes = _load_jsonl(lanes_path, schemas["lanemesh"], layers["laneGeometry"], report)
 
         catalogue: Dict[str, Any] = {}
         if catalogue_path and catalogue_path.is_file():
-            catalogue = json.loads(catalogue_path.read_text(encoding="utf-8"))
+            catalogue = _load_json_layer(catalogue_path, schemas["laneprefabs"],
+                                         layers["lanePrefabs"], report) or {}
         elif lanes:
             report.error("layers.laneGeometry is declared but no lanePrefabs catalogue resolves")
 
@@ -587,8 +610,17 @@ def validate_bundle(bundle_dir: Path, schema_dir: Path) -> Report:
     mesh_files: List[Path] = sorted(mesh_dir.glob("*.glb")) if mesh_dir and mesh_dir.is_dir() else []
     net_mesh_files: List[Path] = sorted(net_mesh_dir.glob("*.glb")) if net_mesh_dir and net_mesh_dir.is_dir() else []
     lane_mesh_files: List[Path] = sorted(lane_mesh_dir.glob("*.glb")) if lane_mesh_dir and lane_mesh_dir.is_dir() else []
-    for path in mesh_files + net_mesh_files + lane_mesh_files:
-        _check_mesh(path, bundle_dir, materials, materials_path is not None, referenced_textures, report)
+    # Sub-mesh names, for the §7.2 appearance join: a palette or a procedural light is keyed by
+    # the glTF node name inside the owning prefab's .glb, and a punctual light by the prefab's
+    # own assetId, so both are looked up in this set. Object meshes only — a colors.json key
+    # matching a network cross-section piece would be a coincidence, not a join.
+    mesh_names: set = set()
+    for path in mesh_files:
+        _check_mesh(path, bundle_dir, materials, materials_path is not None, referenced_textures,
+                    report, mesh_names)
+    for path in net_mesh_files + lane_mesh_files:
+        _check_mesh(path, bundle_dir, materials, materials_path is not None, referenced_textures,
+                    report)
 
     used_assets = {r["assetId"] for r in instances}
 
@@ -631,8 +663,14 @@ def validate_bundle(bundle_dir: Path, schema_dir: Path) -> Report:
             report.warn(f"{path.name}: texture is not referenced by any material or mesh")
 
     # -- surface areas and clip volumes (§8b / §8c, optional) --------------------------
-    area_count = _check_areas(bundle_dir, layers, report)
-    clip_count = _check_clip_volumes(bundle_dir, layers, report)
+    area_count = _check_areas(bundle_dir, layers, schemas, seen_ids, report)
+    clip_count = _check_clip_volumes(bundle_dir, layers, schemas, report)
+
+    # -- the remaining documented layers (§5A, §7.2, §8, §10) --------------------------
+    _check_lanes(bundle_dir, layers, schemas, net_ids, seen_ids, report)
+    _check_appearance(bundle_dir, layers, schemas, mesh_names, report)
+    _check_warnings(bundle_dir, layers, schemas, report)
+    _check_grading(bundle_dir, layers, schemas, report)
 
     # -- counts ------------------------------------------------------------------------
     counts = manifest["counts"]
@@ -693,7 +731,7 @@ def validate_bundle(bundle_dir: Path, schema_dir: Path) -> Report:
     if raster_layers and "rasters" not in manifest:
         report.error(f"bundle.json declares raster layers {raster_layers} but has no 'rasters' block")
     elif raster_layers:
-        _check_raster_layers(bundle_dir, manifest, layers, report)
+        _check_raster_layers(bundle_dir, manifest, layers, schemas, report)
 
     report.note(f"schema {manifest['schema']}, generator {manifest['generator']!r}")
     report.note(f"{len(instances)} instances, {len(networks)} network records")
@@ -713,8 +751,8 @@ def _png_header(path: Path) -> Optional[Tuple[int, int, int, int]]:
     return width, height, data[24], data[25]
 
 
-def _check_raster_layers(bundle_dir: Path, manifest: Dict[str, Any],
-                         layers: Dict[str, str], report: Report) -> None:
+def _check_raster_layers(bundle_dir: Path, manifest: Dict[str, Any], layers: Dict[str, str],
+                         schemas: Dict[str, Validator], report: Report) -> None:
     """The terrain-layer invariants of contract §8.
 
     Every raster is a single-channel PNG on the one grid the manifest's `rasters` block
@@ -800,29 +838,29 @@ def _check_raster_layers(bundle_dir: Path, manifest: Dict[str, Any],
         if not index_path.is_file():
             report.error(f"layers.surfaces: {surfaces_dir!r} has no index.json")
         else:
-            try:
-                index = json.loads(index_path.read_text(encoding="utf-8"))
-            except ValueError as exc:
-                report.error(f"{surfaces_dir}index.json: not valid JSON ({exc})")
-                index = {}
-            for surface_id, entry in index.items():
-                label = f"{surfaces_dir}index.json[{surface_id}]"
-                if not surface_id.isdigit() or not 0 <= int(surface_id) <= 255:
-                    report.error(f"{label}: id must be an integer 0..255")
-                if not isinstance(entry, dict) or not isinstance(entry.get("name"), str):
-                    report.error(f"{label}: entry must carry a string 'name'")
+            label = f"{surfaces_dir}index.json"
+            index = _load_json_layer(index_path, schemas["surfaceindex"], label, report)
+            for surface_id, entry in (index or {}).items():
+                if not isinstance(entry, dict):
                     continue
+                # `texture` may be null when the theme texture could not be read (§8), which is
+                # a stated absence rather than a broken reference.
                 texture = entry.get("texture")
                 if texture is not None and not (bundle_dir / texture).is_file():
-                    report.error(f"{label}: texture {texture!r} does not exist")
+                    report.error(f"{label}[{surface_id}]: texture {texture!r} does not exist")
 
 
-def _check_areas(bundle_dir: Path, layers: Dict[str, str], report: Report) -> int:
+def _check_areas(bundle_dir: Path, layers: Dict[str, str], schemas: Dict[str, Validator],
+                 instance_ids: Dict[int, bool], report: Report) -> int:
     """The surface-area invariants of contract §8b, when the optional layer is declared.
 
-    Every record's triangles index into its own nodes; every `prefab` key resolves in the
-    areaPrefabs catalogue; a catalogue `texture`, when named, exists on disk. Returns the
-    record count for the counts check.
+    The record shape is `area.schema.json`'s; what stays here is what a schema cannot say.
+    Every record's triangles index into its own nodes and `heightRanges`, when present, runs
+    PARALLEL to them — the contract's "in the same order as triangles" is a length agreement a
+    consumer indexes by, so a mismatch silently mis-bands every drape. Every `prefab` resolves
+    in the areaPrefabs catalogue, every catalogue map exists on disk, and `owner` joins to an
+    instance (§8b calls that join total: 27,047 of 27,156 on the reference city, none dangling).
+    Returns the record count for the counts check.
     """
     areas_path = _resolve_layer(bundle_dir, layers, "areas")
     if areas_path is None or not areas_path.is_file():
@@ -833,17 +871,32 @@ def _check_areas(bundle_dir: Path, layers: Dict[str, str], report: Report) -> in
     if catalogue_path is None:
         report.error("layers.areas is declared but no areaPrefabs catalogue is declared")
     elif catalogue_path.is_file():
-        try:
-            catalogue = json.loads(catalogue_path.read_text(encoding="utf-8"))
-        except ValueError as exc:
-            report.error(f"areaprefabs.json: not valid JSON ({exc})")
+        catalogue = _load_json_layer(catalogue_path, schemas["areaprefabs"],
+                                     layers["areaPrefabs"], report) or {}
 
+    # The catalogue's PBR block is four separate maps, not one `texture` (audit #40 P11). A
+    # dangling normalMap is exactly as broken as a dangling base map and used to go unchecked.
+    unresolved = 0
     for key, entry in catalogue.items():
-        texture = entry.get("texture") if isinstance(entry, dict) else None
-        if texture is not None and not (bundle_dir / texture).is_file():
-            report.error(f"areaprefabs.json[{key}]: texture {texture!r} does not exist")
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("unresolved"):
+            unresolved += 1
+        for slot in ("texture", "normalMap", "maskMap"):
+            rel = entry.get(slot)
+            if rel is not None and not (bundle_dir / rel).is_file():
+                report.error(f"areaprefabs.json[{key}].{slot}: {rel!r} does not exist")
+
+    if unresolved:
+        report.note(
+            f"{unresolved} of {len(catalogue)} area prefabs are `unresolved` — the save "
+            "references a surface asset that was not loaded in the rip session, and the game "
+            "itself drew those areas grey (§8b). Enable the asset pack and re-rip; do not "
+            "invent an appearance consumer-side"
+        )
 
     records = 0
+    dangling_owners: Dict[int, int] = {}
     with areas_path.open(encoding="utf-8") as handle:
         for line_no, line in enumerate(handle, start=1):
             line = line.strip()
@@ -856,36 +909,56 @@ def _check_areas(bundle_dir: Path, layers: Dict[str, str], report: Report) -> in
                 report.error(f"{label}: not valid JSON ({exc})")
                 continue
             records += 1
+            for err in schemas["area"].validate(record):
+                report.error(f"{label}: {err}")
+
             nodes = record.get("nodes")
             triangles = record.get("triangles")
-            if not isinstance(nodes, list) or len(nodes) < 3:
-                report.error(f"{label}: 'nodes' must be a list of at least 3 positions")
-                continue
-            if not isinstance(triangles, list) or not triangles:
-                report.error(f"{label}: 'triangles' must be a non-empty list")
-                continue
+            if not isinstance(nodes, list) or not isinstance(triangles, list):
+                continue  # already reported structurally
             for tri in triangles:
                 if (not isinstance(tri, list) or len(tri) != 3
-                        or any(not isinstance(i, int) or i < 0 or i >= len(nodes) for i in tri)):
+                        or any(not _is_int(i) or i < 0 or i >= len(nodes) for i in tri)):
                     report.error(f"{label}: triangle {tri!r} does not index its {len(nodes)} nodes")
                     break
+
+            ranges = record.get("heightRanges")
+            if isinstance(ranges, list) and len(ranges) != len(triangles):
+                report.error(f"{label}: heightRanges has {len(ranges)} entries but the area has "
+                             f"{len(triangles)} triangles; §8b indexes them in parallel")
+
             prefab = record.get("prefab")
-            if not isinstance(prefab, str) or not prefab:
-                report.error(f"{label}: 'prefab' must be a non-empty string")
-            elif prefab not in catalogue:
+            if isinstance(prefab, str) and prefab and prefab not in catalogue:
                 report.error(f"{label}: prefab {prefab!r} is not in the areaPrefabs catalogue")
+
+            owner = record.get("owner")
+            if owner is not None and owner not in instance_ids:
+                dangling_owners[owner] = dangling_owners.get(owner, 0) + 1
+
+    if dangling_owners:
+        total = sum(dangling_owners.values())
+        samples = ", ".join(str(o) for o in list(dangling_owners)[:5])
+        report.warn(
+            f"{total} area record(s) carry an owner that resolves to no instance "
+            f"({len(dangling_owners)} distinct, e.g. {samples}); §8b states this join is total, "
+            "so a dangling owner means the instance layer and the area layer came from "
+            "different rips"
+        )
 
     report.note(f"{records} surface areas over {len(catalogue)} area prefabs (§8b)")
     return records
 
 
-def _check_clip_volumes(bundle_dir: Path, layers: Dict[str, str], report: Report) -> int:
+def _check_clip_volumes(bundle_dir: Path, layers: Dict[str, str],
+                        schemas: Dict[str, Validator], report: Report) -> int:
     """The clip-volume invariants of contract §8c, when the optional layer is declared.
 
     This layer replaced `terrain/cutout.png` on 2026-08-08 — the precomputed intersection the
-    producer used to ship. What is checkable here is the record shape, that a band is ordered,
-    and that an `area` record joins to a real area; whether a volume opens the right terrain is
-    a question about the rip, not about the file. Returns the record count for the counts check.
+    producer used to ship. `clipvolume.schema.json` carries the record shape and the two-form
+    split (curves for a net strip, an inline polygon for an area prism); what stays here is
+    that a band is ordered and that an area's triangles index its own nodes. Whether a volume
+    opens the right terrain is a question about the rip, not about the file. Returns the record
+    count for the counts check.
     """
     path = _resolve_layer(bundle_dir, layers, "clipVolumes")
     if path is None or not path.is_file():
@@ -893,6 +966,7 @@ def _check_clip_volumes(bundle_dir: Path, layers: Dict[str, str], report: Report
 
     kinds: Dict[str, int] = {}
     records = 0
+    unbounded = 0
     with path.open("r", encoding="utf-8") as handle:
         for line_no, line in enumerate(handle, start=1):
             line = line.strip()
@@ -905,67 +979,213 @@ def _check_clip_volumes(bundle_dir: Path, layers: Dict[str, str], report: Report
                 report.error(f"{label}: not valid JSON ({exc})")
                 continue
             records += 1
+            for err in schemas["clipvolume"].validate(record):
+                report.error(f"{label}: {err}")
 
             kind = record.get("kind")
-            if kind not in ("edge", "node", "orphan", "area"):
-                report.error(f"{label}: 'kind' must be edge, node, orphan or area, got {kind!r}")
-                continue
-            kinds[kind] = kinds.get(kind, 0) + 1
+            if isinstance(kind, str):
+                kinds[kind] = kinds.get(kind, 0) + 1
 
             bottom = record.get("bottom")
-            if not isinstance(bottom, (int, float)) or isinstance(bottom, bool):
-                report.error(f"{label}: 'bottom' must be a number")
-                continue
+            if not _is_num(bottom):
+                continue  # already reported structurally
 
             # An absent top means unbounded (§8c), which is not the same as a missing field:
             # it is how an authored clip surface says "however high the cover is".
             top = record.get("top")
-            if top is not None:
-                if not isinstance(top, (int, float)) or isinstance(top, bool):
-                    report.error(f"{label}: 'top' must be a number when present")
-                elif top <= bottom:
-                    report.error(f"{label}: band is empty or inverted (bottom {bottom}, top {top})")
+            if top is None:
+                unbounded += 1
+            elif _is_num(top) and top <= bottom:
+                report.error(f"{label}: band is empty or inverted (bottom {bottom}, top {top})")
 
-            if kind == "area":
-                # Since 2026-08-09 an 'area' record carries its own polygon (schema 2, §8c,
-                # §12.2): the game never paints clip surfaces, so §36 removed them from
-                # areas.jsonl, and the old geometry-by-reference dangled — 229 broken joins
-                # on the first full rip with both changes live. `area` is provenance only.
-                area = record.get("area")
-                if area is None:
-                    report.error(f"{label}: an 'area' record must name its source area entity")
-                nodes = record.get("nodes")
-                triangles = record.get("triangles")
-                if (not isinstance(nodes, list) or len(nodes) < 3
-                        or any(not isinstance(p, list) or len(p) != 3
-                               or any(not isinstance(c, (int, float)) or isinstance(c, bool) for c in p)
-                               for p in nodes)):
-                    report.error(f"{label}: an 'area' record must carry 'nodes' — 3+ points of "
-                                 "3 numbers each (its polygon ships inline since 2026-08-09, §8c)")
-                elif (not isinstance(triangles, list) or not triangles
-                        or any(not isinstance(t, list) or len(t) != 3
-                               or any(not isinstance(i, int) or isinstance(i, bool)
-                                      or not 0 <= i < len(nodes) for i in t)
-                               for t in triangles)):
-                    report.error(f"{label}: an 'area' record must carry 'triangles' — "
-                                 "triplets of indices into its own 'nodes' (§8c)")
-                if "left" in record or "right" in record:
-                    report.error(f"{label}: an 'area' record carries no curves — "
-                                 "its geometry is its own 'nodes'/'triangles' (§8c)")
-                continue
-
-            for side in ("left", "right"):
-                curve = record.get(side)
-                if (not isinstance(curve, list) or len(curve) != 4
-                        or any(not isinstance(p, list) or len(p) != 3
-                               or any(not isinstance(c, (int, float)) or isinstance(c, bool) for c in p)
-                               for p in curve)):
-                    report.error(f"{label}: {side!r} must be 4 control points of 3 numbers each")
-                    break
+            nodes = record.get("nodes")
+            triangles = record.get("triangles")
+            if isinstance(nodes, list) and isinstance(triangles, list):
+                for tri in triangles:
+                    if (not isinstance(tri, list) or len(tri) != 3
+                            or any(not _is_int(i) or not 0 <= i < len(nodes) for i in tri)):
+                        report.error(f"{label}: triangle {tri!r} does not index its "
+                                     f"{len(nodes)} nodes (§8c)")
+                        break
 
     summary = ", ".join(f"{count} {kind}" for kind, count in sorted(kinds.items()))
     report.note(f"{records} clip volume strips ({summary}) (§8c)")
+    if unbounded:
+        report.note(f"{unbounded} clip volume(s) have no `top` — unbounded, hiding whatever "
+                    "covers them however high (§8c)")
     return records
+
+
+def _check_lanes(bundle_dir: Path, layers: Dict[str, str], schemas: Dict[str, Validator],
+                 net_ids: set, instance_ids: Dict[int, bool], report: Report) -> None:
+    """The lane-graph invariants of contract §5A, when the optional layer is declared.
+
+    `lane.schema.json` carries the record shape. What stays here is `owner`, and it is a NOTE
+    rather than a check on purpose: §5A used to call it "the id of the networks.jsonl record
+    this lane belongs to … absent for lanes owned by a node", and measurement falsifies both
+    halves — it is the generic ECS Owner, so it can be an edge, a node (which gets no record at
+    all, §5.1) or a building lot. On the reference city 21.7% resolve into networks.jsonl,
+    19.1% into instances.jsonl and 59.2% into neither. Reporting the split is useful; requiring
+    it to resolve would fail every correct bundle.
+    """
+    path = _resolve_layer(bundle_dir, layers, "lanes")
+    if path is None or not path.is_file():
+        return
+
+    records = 0
+    kinds: Dict[str, int] = {}
+    to_net = to_instance = to_neither = no_owner = 0
+    with path.open("r", encoding="utf-8") as handle:
+        for line_no, line in enumerate(handle, start=1):
+            line = line.strip()
+            if not line:
+                report.error(f"lanes.jsonl:{line_no}: blank line (JSON Lines allows no blank lines)")
+                continue
+            try:
+                record = json.loads(line)
+            except ValueError as exc:
+                report.error(f"lanes.jsonl:{line_no}: not valid JSON — {exc}")
+                continue
+            records += 1
+            for err in schemas["lane"].validate(record):
+                report.error(f"lanes.jsonl:{line_no}: {err}")
+
+            kind = record.get("kind")
+            if isinstance(kind, str):
+                kinds[kind] = kinds.get(kind, 0) + 1
+
+            owner = record.get("owner")
+            if owner is None:
+                no_owner += 1
+            elif owner in net_ids:
+                to_net += 1
+            elif owner in instance_ids:
+                to_instance += 1
+            else:
+                to_neither += 1
+
+    summary = ", ".join(f"{count} {kind}" for kind, count in sorted(kinds.items()))
+    report.note(f"{records} lanes ({summary}) (§5A)")
+    report.note(
+        f"lane owners: {to_net} resolve into networks.jsonl, {to_instance} into "
+        f"instances.jsonl, {to_neither} into neither (net nodes get no record, §5.1), "
+        f"{no_owner} absent — `owner` is an advisory grouping key, not a foreign key"
+    )
+
+
+def _check_appearance(bundle_dir: Path, layers: Dict[str, str], schemas: Dict[str, Validator],
+                      mesh_names: set, report: Report) -> None:
+    """`colors.json` and `lights.json` — contract §7.2, when either layer is declared.
+
+    Both are keyed by an assetId that must be findable in the mesh layer: a sub-mesh's glTF
+    node name for a palette or a procedural light, the object prefab's own assetId for a
+    punctual one. An unresolvable key is not an error — it is dead weight the producer wrote
+    for geometry the bundle deliberately does not carry — but it is worth counting, because it
+    is the only signal that a key a consumer will look up can never match. Measured on the
+    reference city: 184 of 3,620 palette keys (tree `*Child*` sub-meshes, a state §6.1 does not
+    export) and 86 of 1,186 light keys (vehicles, which both rip queries exclude).
+    """
+    for layer_key, schema_key, what in (("colors", "colors", "colour palettes"),
+                                        ("lights", "lights", "light entries")):
+        path = _resolve_layer(bundle_dir, layers, layer_key)
+        if path is None or not path.is_file():
+            continue
+        document = _load_json_layer(path, schemas[schema_key], layers[layer_key], report)
+        if not isinstance(document, dict):
+            continue
+
+        entries = sum(len(v) for v in document.values() if isinstance(v, list))
+        report.note(f"{entries} {what} over {len(document)} keys ({layers[layer_key]}, §7.2)")
+
+        if not mesh_names:
+            continue
+        unknown = [key for key in document if key not in mesh_names]
+        if unknown:
+            samples = ", ".join(sorted(unknown)[:4])
+            report.note(
+                f"{len(unknown)} of {len(document)} {layers[layer_key]} keys match no mesh file "
+                f"or glTF node name (e.g. {samples}); §7.2 keys join to the mesh layer, so these "
+                "describe geometry this bundle does not carry and no consumer lookup can reach"
+            )
+
+
+def _check_warnings(bundle_dir: Path, layers: Dict[str, str], schemas: Dict[str, Validator],
+                    report: Report) -> None:
+    """`warnings.jsonl` — contract §10, when the layer is declared.
+
+    A consumer may ignore this file entirely; it is schema-validated anyway, because it is also
+    how the producer DECLARES a gap, and `_load_declared_missing` reads exactly `assetId` and
+    `reason` off it. A line the reader cannot parse silently stops excusing anything, which is
+    the failure this check exists to make loud.
+    """
+    path = _resolve_layer(bundle_dir, layers, "warnings")
+    if path is None or not path.is_file():
+        return
+
+    kinds: Dict[str, int] = {}
+    with path.open("r", encoding="utf-8") as handle:
+        for line_no, line in enumerate(handle, start=1):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                record = json.loads(line)
+            except ValueError as exc:
+                report.error(f"warnings.jsonl:{line_no}: not valid JSON — {exc}")
+                continue
+            for err in schemas["warning"].validate(record):
+                report.error(f"warnings.jsonl:{line_no}: {err}")
+            kind = record.get("kind")
+            if isinstance(kind, str):
+                kinds[kind] = kinds.get(kind, 0) + 1
+
+    if kinds:
+        summary = ", ".join(f"{count} {kind}" for kind, count in sorted(kinds.items()))
+        report.note(f"warnings.jsonl declares {sum(kinds.values())} gap(s): {summary} (§10)")
+
+
+def _check_grading(bundle_dir: Path, layers: Dict[str, str], schemas: Dict[str, Validator],
+                   report: Report) -> None:
+    """`grading.json` — contract §8, when the layer is declared.
+
+    The one semantic check a schema cannot make is the capture's own honesty flag: an
+    all-default block with `stackEvaluated` false or `volumesFound` 0 is a FAILED READ, not a
+    neutral grade, and the first cut of this layer shipped exactly that.
+    """
+    path = _resolve_layer(bundle_dir, layers, "grading")
+    if path is None or not path.is_file():
+        return
+
+    document = _load_json_layer(path, schemas["grading"], layers["grading"], report)
+    if not isinstance(document, dict):
+        return
+
+    diagnostics = document.get("diagnostics", {})
+    if isinstance(diagnostics, dict):
+        if diagnostics.get("stackEvaluated") is False:
+            report.error(f"{layers['grading']}: diagnostics.stackEvaluated is false — the volume "
+                         "stack was never evaluated, so every block in this file is HDRP's "
+                         "default rather than the game's grade")
+        elif diagnostics.get("volumesFound") == 0:
+            report.error(f"{layers['grading']}: diagnostics.volumesFound is 0 — the stack "
+                         "matched no volume, so every block in this file is a default")
+        unread = diagnostics.get("unread")
+        if isinstance(unread, list) and unread:
+            report.note(f"{layers['grading']}: the producer names {len(unread)} volume "
+                        "component(s) it does not capture (diagnostics.unread) — read them "
+                        "before concluding the colour chain is complete")
+
+    blocks = [k for k in ("exposure", "whiteBalance", "colorAdjustments",
+                          "shadowsMidtonesHighlights", "splitToning", "tonemapping",
+                          "vignette", "fog", "lighting") if k in document]
+    report.note(f"{layers['grading']} carries {', '.join(blocks)} (§8)")
+
+    tonemapping = document.get("tonemapping")
+    if isinstance(tonemapping, dict) and tonemapping.get("mode") == "External" \
+            and tonemapping.get("hasLut"):
+        report.warn(f"{layers['grading']}: tonemapping is External with a bound LUT, which is "
+                    "NOT exported — the grading block is incomplete and a consumer replaying it "
+                    "will not match the game (§8)")
 
 
 def _check_quat(rot: Any, label: str, report: Report) -> None:
@@ -996,6 +1216,7 @@ def _check_mesh(
     have_materials: bool,
     referenced_textures: set,
     report: Report,
+    names: Optional[set] = None,
 ) -> None:
     if not re.match(r"^[A-Za-z0-9][A-Za-z0-9._-]*$", path.stem):
         report.error(f"{path.name}: filename stem is not a valid assetId")
@@ -1004,6 +1225,14 @@ def _check_mesh(
     except (ValueError, json.JSONDecodeError, UnicodeDecodeError) as exc:
         report.error(f"{path.name}: not a valid GLB — {exc}")
         return
+
+    if names is not None:
+        names.add(path.stem)
+        for group in ("nodes", "meshes"):
+            for item in gltf.get(group, []):
+                name = item.get("name")
+                if name:
+                    names.add(name)
 
     for i, material in enumerate(gltf.get("materials", [])):
         name = material.get("name")
