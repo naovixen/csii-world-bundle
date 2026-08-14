@@ -307,7 +307,14 @@ Where it now lives: `tools/colour_model.py` holds the derivation once, and both 
 the probe import it. `colour_model.py --check` prints the residual above against the recorded
 in-game reference, so the number is reproducible rather than remembered.
 
-### SPLAT-4 — the residual is the LIGHT, measured against three in-game surfaces (open)
+### SPLAT-4 — the residual is the LIGHT, measured against three in-game surfaces (still open)
+
+> **Status 2026-08-14: still open, and `SplitToning` is now eliminated too.** The 22:20 rip
+> shipped the block and both its ends are achromatic — `highlights` exactly neutral,
+> `shadows` grey-but-darker — so it is a pure luminance shift and cannot move hue at all. The
+> prediction recorded in §5.2 named that as disqualifying; see the verdict there for what
+> `diagnostics.unread`'s 180 valued entries suggest looking at next. Eliminated so far: warm
+> light, tonemapper choice, working space, fog, split toning.
 
 Three in-game screenshots (2026-08-10), each a full-frame crop of one surface, compared against
 the model per texel with exposure freed per shot — auto-exposure differs between shots and the
@@ -702,6 +709,47 @@ ends are tinted equally, or only the shadow end is, then `SplitToning` is not th
 either and the residual is somewhere else entirely. Recording the prediction before the data
 arrives is the point — the fitted per-channel gain that was refused in §SPLAT-4 failed exactly
 because it was fitted after the fact.
+
+#### The verdict: FALSIFIED (2026-08-14 22:20 rip)
+
+The block shipped, and it says:
+
+```jsonc
+"splitToning": { "shadows":    [0.3962, 0.3962, 0.3962],
+                 "highlights": [0.5,    0.5,    0.5   ],
+                 "balance": 0.0 }
+```
+
+**Both ends are achromatic.** `highlights` is *exactly* neutral grey — no tint at all, which is
+the opposite of the predicted yellow — and `shadows` is grey too, merely darker than neutral
+(0.3962 against 0.5). `balance` is 0. The operator IS active, which is why the block was written
+at all (`IsActive()` is `shadows != grey || highlights != grey`, and 0.3962 ≠ 0.5), and the
+override that `AnyPropertiesIsOverridden` reported was real — but it is a **pure luminance
+shift**. r = g = b on both ends, so it cannot move hue by any amount, on any surface, ever.
+
+The prediction named this exact outcome as disqualifying ("only the shadow end is"), and it is
+also the stronger version of it: not merely the wrong end, but no chroma anywhere. **`SplitToning`
+is not SPLAT-4.** The residual stands unexplained, with fog, warm light, tonemapper choice,
+working space and now split toning all eliminated.
+
+**Where to look next.** `diagnostics.unread` now reports *values* (180 entries, up from 16 bare
+type names), and two entries are worth more than the rest:
+
+- **`VisualEnvironment.skyAmbientMode = Dynamic`** with **`CloudLayer.opacity = 0.3754`** over an
+  upper hemisphere. A dynamic sky ambient means the ambient probe is integrated from the sky *as
+  drawn* — including that cloud layer — so the chroma actually filling shadow is not what
+  `lighting.sky`'s raw `PhysicallyBasedSky` tints imply on their own. This is a fidelity gap in
+  its own right regardless of SPLAT-4: a consumer lighting from the shipped sky tints gets the
+  un-clouded sky.
+- **`Bloom.intensity = 0.2`, `scatter 0.7`, tint white.** Bloom acts on bright pixels only, which
+  is the same luminance-selectivity that made split toning attractive. A white tint cannot shift
+  hue by itself, but bloom bleeds a blurred copy of the *scene's own* bright colours into bright
+  regions before tonemapping, which on a warm-lit city biases bright surfaces warm.
+
+Neither is a claim, and neither should be written up as one until it is measured — that is the
+mistake this section already made twice. `ScreenSpaceAmbientOcclusion` (intensity 0.5,
+`directLightingStrength` 0) is achromatic and can be ruled out on the same grounds as split
+toning; `GlobalIllumination.enable` is `False`.
 
 ### The method correction, which outlives the finding
 

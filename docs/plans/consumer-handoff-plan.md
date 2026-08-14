@@ -3,15 +3,16 @@
 **Goal:** make the CS2 World Bundle consumable by someone who has never read this repo, so a
 BeamNG level builder (or any other consumer) can be written against the bundle alone.
 
-**Status 2026-08-14: H1–H13 are closed. The only thing left is H14, and it needs the user.**
+**Status 2026-08-14: H1–H14 are closed. The hand-off is done.**
 `tools/csiibundle/` exists: **19 modules**, no `bpy` anywhere in it, and
 `tools/blender_import_bundle.py` is an adapter over the package rather than the only copy of the
 reconstruction. **Four coverage sweeps** followed H9, each asking a different question — layer,
 field, render-rule, and the three defects visible by eye — and each found gaps the previous one
 structurally could not. All are closed; §2's closing notes carry them. H10–H13 are §5.
 
-**H14 is a user action: rip the city in-game, then acceptance.** §4 is what that rip has to
-answer.
+**H14 is accepted** on the **2026-08-14 22:20** rip — 1,647 s, 8 stages, **0 failures**,
+validator **VALID / 1 warning** against all 15 schemas. §4 has the acceptance table, including
+the one prediction that was **falsified**.
 
 This file supersedes every dated handoff in this folder; they stay on disk as the record of how
 each conclusion was reached. The contract itself lives in `docs/bundle-schema.md`, the
@@ -26,41 +27,22 @@ game-vs-bundle analysis in `docs/game-fidelity-audit.md` and `docs/cs2-api-audit
 
 ## 1. Where things stand
 
-**The bundle on disk** is a full rip from **2026-08-12 18:10** — 8 stages, zero failures, zero
-dropped pieces. Schema 2, 23 layers.
+**The bundle on disk is the ACCEPTED rip: 2026-08-14 22:20** — every layer written by this one
+run (21:37–22:20), 8 stages, **zero failures**, 1,647 s. Schema 2, 23 layers.
 
-1,283,513 instances · **5,792 meshes** · 4,784 materials · 3,729 textures · 8,259 network segments
-· 680,629 lanes · 119,302 lane-geometry records · 27,156 areas · 49,730 clip volumes.
+1,226,046 instances · **5,575 meshes** · 4,641 materials · 3,544 textures · 8,259 network segments
+· 641,639 lanes · 117,374 lane-geometry records · 24,938 areas · 49,711 clip volumes.
 
-**It validated P18, P17, P19 and PROBE-2** — `__teen` 32 + `__elderly` 32 (the mesh count's +64),
-`grading.json` carrying `fog`, tiling unchanged because the fallback correctly did not fire, and
-`COLLAPSED:` reporting nothing. **Five producer changes now post-date it**, and every one of them
-rides H14's rip:
+*(Counts are 4–8% below the 2026-08-12 rip across every layer, non-uniformly — the city was
+edited between the two. It is not a producer regression: a query change would move instances and
+meshes together and leave areas alone, and this moved all of them by different amounts.)*
 
-1. the `splitToning` capture with the valued `diagnostics.unread`, both added *because* of what
-   this rip reported;
-2. the **area normal-map rebuild** (§3, the black-areas fix) — visible in the bundle as
-   `terrain/surfaces/area_*_n.png`, of which **20 of 35 are still two-channel packed on disk**;
-   `tools/test_normal_packing.py` prints the count, so the next rip is checked against it rather
-   than assumed;
-3. **`boneIndex`** on a punctual light (H10) — the field that says a light's position is *not*
-   object-frame;
-4. the **asset-pack line** in the completion dialog (H13);
-5. everything **H12** touched — four `warnings.jsonl` writers, every coordinate's precision, the
-   shared object query, and network piece asset ids;
-6. the **six producer fixes the `/code-review` pass found** (§5) — two of which move geometry:
-   the roundabout at-grade branch, and `LowerBottomToTerrain` no longer suppressed on elevated
-   compositions.
-
-Everything else in the bundle is current.
-
-**Before trusting it, re-run the staleness check.** Producer changes make it a description of
-old code, and only a rip in-game refreshes it:
-
-```
-git log --format='%h %ad %s' --date=format:'%Y-%m-%d %H:%M' \
-        --since='<bundle.json mtime>' -- Systems IO Domain
-```
+**It is no longer stale, and this is the first plan status in the project's history that can say
+so.** The mod deployed at 20:31, the rip began at 21:37. Confirmed against what the rip itself
+emitted rather than against timestamps: `boneIndex` appears in `lights.json` (H10), the
+asset-pack line appears in the completion dialog (H13), the `warnings.jsonl` merge trace shows
+H12's `WarningsFile` protocol running, and `test_normal_packing.py` reports **0** packed area
+maps where the previous rip had 20.
 
 **Gates, all green:**
 
@@ -68,11 +50,12 @@ git log --format='%h %ad %s' --date=format:'%Y-%m-%d %H:%M' \
 |---|---|
 | `dotnet build -c Release` | compiles clean, 0 warnings, 0 errors |
 | `tools/test_bundle_contract.py` | **88/88** (63 before H10) |
-| `tools/validate_bundle.py docs/example-bundle` | VALID, 0 warnings — and the example now carries a record in **every** documented layer |
-| `tools/validate_bundle.py <full city>` | VALID, **1 warning** on the 18:10 rip, against all **15** schemas (was 133 — see PILLARS-2). The one warning is the genuine parent advisory; the 119 declared gaps are a note. ~7 minutes |
+| `tools/validate_bundle.py docs/example-bundle` | VALID, 0 warnings — the example carries a record in **every** documented layer |
+| `tools/validate_bundle.py <full city>` | **VALID, 1 warning** against all **15** schemas. The one warning is the genuine parent advisory (20,962 records over 4,190 owners); the 118 declared gaps are a note. ~7 minutes |
 | decal rows / png decode / splat extras / drape pick | pass |
 | node fan / clip cut / normal packing / heightfield | pass |
 | `python -c "import csiibundle"` under system Python | clean |
+| Blender import + render, downtown areas | areas render at their own albedo — sand, concrete, pavement — over grass. **No black.** Pools are water, not white slabs |
 
 The deploy step fails `MSB3231` while CS2 is running — the compile still succeeds, but nothing
 reaches the mods folder. Close the game before a build that must ship.
@@ -393,49 +376,64 @@ than counted as proven.
 
 ---
 
-## 4. The remaining phase
+## 4. H14 — accepted, 2026-08-14 22:20
 
-| phase | what it delivers |
+| phase | what it delivered |
 |---|---|
-| **H5–H9** | extract `tools/csiibundle/` — see §2 |
-| **H10–H13** | schemas, consumer docs, the C# refactor, the producer polish — **all closed**, see §5 |
-| **H14** | **Final re-rip (user action) + acceptance.** Validate against all 15 schemas; check every ⟳ change against real output; full Blender import for visual acceptance (A/B against pre-rip renders is *not* expected to match — the producer changed); fix measured-fact drift in the docs |
+| **H5–H9** | extract `tools/csiibundle/` — §2 |
+| **H10–H13** | schemas, consumer docs, the C# refactor, the producer polish — §5 |
+| **H14** | the final re-rip and this acceptance |
 
-**What H14 must check.** The 18:10 rip already settled most of this list — `__teen`/`__elderly`
-at 32 each, `fog` present, `COLLAPSED:` clean, tiling unchanged, validator VALID/1. What is left:
+**Every producer change riding this rip, and what the rip said:**
 
-- **`splitToning`** — the block, and with it SPLAT-4. The prediction on record is that
-  `highlights` is tinted toward yellow and `shadows` is at or near grey, because the residual is
-  +6.9° on sand and +6.2° on pavement (both bright) against +1.2° on grass (dark), and split
-  toning is the only operator in the chain that shifts hue by luminance. **Both ends tinted
-  equally, or only the shadow end, falsifies it** — write the outcome down either way.
-- `diagnostics.unread` now reports **values**, so read it again. The 18:10 rip reported names
-  only and named **sixteen**: `Bloom`, `CloudLayer`, `DepthOfField`, `DiffusionProfileList`,
-  `GlobalIllumination`, `HDShadowSettings`, `MotionBlur`, `ScreenSpaceAmbientOcclusion`,
-  `ScreenSpaceReflection`, `ScreenSpaceRefraction`, **`SplitToning`**, `TerrainRendering`,
-  `VisualEnvironment`, `VolumetricClouds`, `WaterRendering`, `WindVolumeComponent`. If split
-  toning is not the answer, the colour-relevant ones to read next are `VisualEnvironment`,
-  `GlobalIllumination`, `TerrainRendering` and `WaterRendering`.
-- **The area normal-map rebuild.** `tools/test_normal_packing.py` prints how many of the 35
-  `terrain/surfaces/area_*_n.png` are still two-channel packed. It is 20 on the 18:10 rip; it
-  must be **0** after this one. The consumer-side unpack is a no-op once it is.
-- **`boneIndex`** on `lights.json` (H10) — expect it on ~4 punctual entries, all bicycles and
-  one workshop asset, and on none of the other 605.
-- **The asset-pack line in the completion dialog** (H13) — expect *"89 prefab(s) in this city
-  come from asset packs that are not enabled"*, or a smaller number if packs were enabled since.
-- **Everything H12 touched**, which is where the real risk is: the four `warnings.jsonl`
-  writers, the coordinate precision of every position and rotation in the bundle, the shared
-  object query, and network piece asset ids. A clean `validate_bundle.py` covers most of it —
-  the precisions are checked by the schemas, the query by the instance/mesh counts agreeing, the
-  ids by the mesh-stem check. **`warnings.jsonl` is the one to read by eye**: 210 declarations,
-  119 `mesh` and 91 `prefab`, and the merge must have kept every pass's lines.
-- **The two review fixes that move geometry** (§5, the `/code-review` pass). The roundabout
-  at-grade branch should *reduce* carved terrain at any roundabout on a trenched approach — look
-  for terrain that used to be missing beside one. The `LowerBottomToTerrain` narrowing should
-  put an elevated composition's abutment and retaining pieces back on the ground. Neither has a
-  counter of its own; both are visible in a render and in nothing else.
-- **The `COLLAPSED:` probe is now per-composition**, so it may report rows the 18:10 rip could
-  not see. A new row is a finding, not a regression — read it before assuming the rip got worse.
+| change | expected | measured | verdict |
+|---|---|---|---|
+| area normal-map rebuild | 0 of 35 packed (was 20) | **35 rgb, 0 packed**; the harness logged no rebuild-warning, so the consumer-side unpack is the no-op it was designed to become | **PASS** |
+| `boneIndex` on punctual lights (H10) | ≤ 4 of ~654 | **2**, both bicycles at `parentMesh` 100 → bone `[1, -1]`. `parentMesh: -1001` and `9` got none — exactly as decompiled `FindBoneIndex` predicts (`boneID > 0`, and 9 is under the sub-mesh count) | **PASS**, and informative: it separates "rode a bone" from "did not", which nothing else could |
+| asset-pack line (H13) | "N prefabs … not enabled" | **"88 prefab(s) in this city come from asset packs that are not enabled…"** on screen | **PASS** |
+| H12 `WarningsFile` (§10 protocol) | every pass keeps the others' lines | instance writes 90 keeping 0 → mesh records 118 **keeping 90** → lane keeps **208** → network keeps **208**. Validator: **208 = 90 prefab + 118 mesh** | **PASS**, end to end |
+| H12 `BundlePrecision` | positions 3 dp, quaternions 6 dp | 3 / 6 exactly, across instances, lanes, clip volumes and areas — four layers, four writers | **PASS** |
+| H12 `RipQueries` (shared query) | instance and mesh layers agree | validator resolves every assetId; only declared gaps | **PASS** |
+| H12 sanitiser unification | network mesh stems are valid assetIds | validator's stem check clean | **PASS** |
+| review: roundabout at-grade branch | less over-carved terrain | no counter of its own. Clip bands are sane: 1.5% of node strips deep (>6 m), median 0.80 m, max 12.80 m; harness cut ratio 0.28 (must not exceed 1.00) | **no regression**; the improvement is not separately observable |
+| review: `LowerBottomToTerrain` un-suppressed | abutments reach the ground | same — visible in a render and nothing else; nothing regressed | **no regression** |
+| review: RG normal false positive | no black placeholder "rebuilt" | 0 packed maps anywhere, 7 grounds + 40 objects + 35 areas all rgb | **PASS** |
+| review: shader-only materials | all textureless classified | **216 of 216** (115 glass, 55 water, 40 foliage, 4 overlay, 2 placeholder). Was 12 unclassified | **PASS** |
+| `splitToning` / SPLAT-4 | highlights tinted yellow, shadows near grey | **`highlights` exactly neutral, `shadows` achromatic (0.3962 grey)** | **FALSIFIED** — see below |
+| `diagnostics.unread` with values | values, not bare names | **180 entries with values**, up from 16 type names | **PASS** |
+
+### The one falsification, written down as promised
+
+`splitToning` shipped, and **both ends are achromatic**: `highlights` is *exactly* neutral grey
+(0.5, 0.5, 0.5) and `shadows` is grey too, merely darker (0.3962). `balance` 0. The operator is
+active — which is why the block exists at all — but r = g = b on both ends, so it is a **pure
+luminance shift and cannot move hue by any amount on any surface**.
+
+The prediction on record named this as disqualifying. **`SplitToning` is not SPLAT-4.** The
+residual (+6.9° sand, +6.2° pavement, +1.2° grass) stands unexplained, and the eliminated list is
+now: warm light, tonemapper choice, working space, fog, split toning.
+
+Recording the prediction *before* the data arrived is what made this cheap to settle — one
+number, no argument. `docs/game-fidelity-audit.md` §5.2 carries the verdict and names the next
+two things to measure (`VisualEnvironment.skyAmbientMode = Dynamic` under a `CloudLayer` at 0.375
+opacity, which means the ambient probe is not what `lighting.sky`'s raw tints imply; and `Bloom`
+at 0.2, which is luminance-selective in the same way split toning was). **Neither is a claim.**
+
+### The one thing the rip found that was not on the list
+
+The `COLLAPSED:` probe, re-keyed per composition by the review pass, reported **22 rows — and
+every one is healthy.** The rows carry their own disproof: `Alley Drive Piece 3` has authored
+`Size.x` 3.0, an `xParam` pinned at 0.500..0.500, and a **built extent of 3.05 m across**. It
+built its 3 m; its mesh is simply authored at local x = 0, so `xParam = vertex.x / width + 0.5`
+is 0.5 for every vertex while the width comes from the frame mapping. The four
+`Raised Side Piece 0.5` rows say it arithmetically: the composition width recovered from the span
+and the width recovered from the authored `offsetX` agree **within 3.5% on all four**.
+
+This is `m_Size` being an **authored** field again — the same trap that retired the `Size.y`
+clause (PROBE-2), made visible only because the re-keying stopped the union across compositions
+from hiding it. `pinnedAcross` now also requires the BUILT extent to be degenerate, so the span
+is corroboration and the extent decides. **No bundle data is affected** — the probe is a report
+line. The fix awaits a future rip, which costs nothing because it is diagnostics only.
 
 ---
 

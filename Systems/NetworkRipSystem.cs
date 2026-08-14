@@ -1015,23 +1015,29 @@ namespace Carto.Systems
                 foreach (SectionProbe s in m_SectionProbes.Values)
                 {
                     if ((s.Vertices == 0) || !s.HasBounds) continue;
+                    // "Pinned across" needs the piece to have built no surface as well as to
+                    // have a degenerate xParam span, and it did not ask the second question
+                    // until 2026-08-14 — whereupon the first rip with the probe keyed
+                    // per-composition produced 22 rows and every one was healthy.
+                    //
+                    // The rows carried their own disproof. `Alley Drive Piece 3` reports
+                    // authored size 3.0 x 5.0 x 64.0, an xParam pinned at 0.500..0.500 — and a
+                    // BUILT extent of 3.05 m across. It built its 3 m. Its mesh is simply
+                    // authored at local x = 0, so `xParam = vertex.x / width + 0.5` is 0.5 for
+                    // every vertex while the width comes from the frame mapping instead. The
+                    // four `Raised Side Piece 0.5` rows say the same thing arithmetically: the
+                    // composition width recovered from the span and the width recovered from the
+                    // authored offsetX agree within 3.5% on all four, so their tiny spans are
+                    // correct for a 0.5 m piece on a 30 m road.
+                    //
+                    // This is `m_Size` being an AUTHORED field again — the same trap that
+                    // retired the `Size.y` clause (PROBE-2). A probe that fires on 22 healthy
+                    // pieces per rip cannot report a real one, so the extent test is what
+                    // decides and the span is only corroboration.
+                    //
                     float3 extent = s.Hi - s.Lo;
-                    bool pinnedAcross = (s.Size.x > 0.25f) && ((s.XMax - s.XMin) < 0.02f);
-                    // Authored metres that produced no metres. The z axis is the along-run one,
-                    // so a piece tiled along a segment is never thin there; x and y are the
-                    // cross-section, which is where a collapse shows.
-                    //
-                    // There used to be a third clause here, `Size.y > 0.5 && extent.y < 0.05`,
-                    // and it was a false-positive generator: it flagged 9 healthy pieces per rip
-                    // and never a defect. `m_Size.y` comes from `NetPieceData.m_HeightRange`,
-                    // which `NetPiecePrefab` declares as an AUTHORED field defaulting to
-                    // `Bounds1(0f, 3f)` — a declared band, not the geometry's thickness. So every
-                    // flat surface piece whose author left the default tripped it: gravel
-                    // shoulders, public-transport lanes and tram tracks, reporting built
-                    // footprints like 120.99 x 0.01 x 94.23 m. Manifestly built, and flat because
-                    // a lane surface is flat. Dropped 2026-08-12; the two clauses that remain are
-                    // the ones that test what the piece actually produced.
-                    //
+                    bool pinnedAcross = (s.Size.x > 0.25f) && ((s.XMax - s.XMin) < 0.02f)
+                                     && (math.min(extent.x, extent.z) < 0.05f);
                     bool flat = math.max(extent.x, extent.z) < 0.05f;
                     if (pinnedAcross || flat) collapsed.Add(s);
                 }
