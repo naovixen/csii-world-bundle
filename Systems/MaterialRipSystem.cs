@@ -1330,10 +1330,11 @@ namespace Carto.Systems
             int count = pixels.Length / 4;
             if (count == 0) return;
 
-            int highRed = 0, lowBlue = 0, minA = 255;
+            int highRed = 0, lowBlue = 0, lowRed = 0, minA = 255;
             for (int i = 0; i < pixels.Length; i += 4)
             {
                 if (pixels[i] >= 250) highRed++;
+                if (pixels[i] <= 5) lowRed++;
                 if (pixels[i + 2] <= 5) lowBlue++;
                 if (pixels[i + 3] < minA) minA = pixels[i + 3];
             }
@@ -1344,8 +1345,16 @@ namespace Carto.Systems
             // in it — while RG needs blue to be the pinned channel instead. The two are mutually
             // exclusive by construction, so the order of these tests never decides anything.
             //
+            // Each test needs a POSITIVE signature as well as a pinned channel, and RG's was
+            // missing one until 2026-08-14: `lowBlue >= threshold && highRed < threshold` says
+            // only "blue is dark and red is not white", which a black or near-black placeholder
+            // normal satisfies everywhere. Such a map was then "rebuilt" from x = y = -1 into a
+            // uniform sideways normal — the very failure this method exists to repair, inflicted
+            // on a map that never needed it. RG carries X in RED, so red must be carrying
+            // something too: `lowRed < threshold` is the mirror of AG's `minA < 250`.
+            //
             bool alphaPacked = (highRed >= threshold) && (minA < 250);
-            bool redPacked = (lowBlue >= threshold) && (highRed < threshold);
+            bool redPacked = (lowBlue >= threshold) && (highRed < threshold) && (lowRed < threshold);
             if (!alphaPacked && !redPacked) return;
 
             for (int i = 0; i < pixels.Length; i += 4)

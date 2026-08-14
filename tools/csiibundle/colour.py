@@ -169,6 +169,30 @@ def gamma_to_linear(c):
     return c ** 2.2
 
 
+def _smh_offset(rgbw):
+    """The lift `PrepareShadowsMidtonesHighlights` adds to all three channels, from `w`.
+
+    `num = w * (sign(w) < 0 ? 1 : 4)` — the game's own ASYMMETRIC scale: a negative w counts
+    once, a positive one four times. Verified against decompiled
+    `UnityEngine.Rendering.ColorUtils`.
+    """
+    w = float(rgbw[3]) if len(rgbw) > 3 else 0.0
+    return w * (1.0 if w < 0.0 else 4.0)
+
+
+def _prepare_smh(rgbw):
+    """One authored `[r, g, b, w]` through `PrepareShadowsMidtonesHighlights`, ported whole.
+
+    `gamma_to_linear` on rgb, then `max(component + offset, 0)`. The offset half was missing
+    here until 2026-08-14: `w` was sliced off with `[:3]` and the sources string still claimed
+    the step was an exact managed port. Dormant on every rip so far — all three `w` read 0.0 —
+    but a volume authoring w = 0.05 grades every shadow-range pixel 0.2 too dark on all three
+    channels, and nothing would have said so.
+    """
+    offset = _smh_offset(rgbw)
+    return tuple(max(gamma_to_linear(c) + offset, 0.0) for c in rgbw[:3])
+
+
 def hex_of(rgb_srgb):
     return "#" + "".join("%02x" % int(round(max(0.0, min(1.0, v)) * 255)) for v in rgb_srgb)
 
@@ -344,16 +368,23 @@ class Grading(object):
                 f"(the value is normally 0)")
         if self.smh:
             self.smh_prepared = {
-                k: tuple(gamma_to_linear(c) for c in self.smh[k][:3])
+                k: _prepare_smh(self.smh[k])
                 for k in ("shadows", "midtones", "highlights") if k in self.smh}
+            offsets = {k: round(_smh_offset(self.smh[k]), 4)
+                       for k in self.smh_prepared}
             self.sources.append(
                 "shadows/midtones/highlights: each authored colour through "
-                "ColorUtils.PrepareShadowsMidtonesHighlights (managed, ported) — it applies "
-                f"Mathf.GammaToLinearSpace first, so shadows {tuple(self.smh['shadows'][:3])} "
+                "ColorUtils.PrepareShadowsMidtonesHighlights (managed, ported) — "
+                "Mathf.GammaToLinearSpace on rgb, then + w*(w<0 ? 1 : 4) clamped at 0, so "
+                f"shadows {tuple(self.smh['shadows'][:3])} with w {self.smh['shadows'][3]} "
                 f"become {tuple(round(c, 4) for c in self.smh_prepared['shadows'])}; blended "
                 "across the three ranges by luminance against "
                 f"[{self.smh.get('shadowsStart')}, {self.smh.get('shadowsEnd')}] and "
                 f"[{self.smh.get('highlightsStart')}, {self.smh.get('highlightsEnd')}]")
+            if any(offsets.values()):
+                self.sources.append(
+                    f"shadows/midtones/highlights offsets from w: {offsets} — the game's own "
+                    "asymmetric scale (a NEGATIVE w counts once, a positive one four times)")
             self.warnings.append(
                 "the shadows/midtones/highlights BLEND is the one modelled step in this file. The "
                 "values are exact (managed code) but the weighting across the three ranges is "

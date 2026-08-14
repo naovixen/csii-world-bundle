@@ -1809,8 +1809,6 @@ namespace Carto.Systems
         private static string SanitizeId(string name) => MeshRipSystem.SanitizeAssetId(name);
 
         /// <summary>
-        /// <summary>
-        /// <summary>
         /// The across-width vertex remap CS2 applies to a junction flare.
         /// A composition names four positions across each half of its cross-section
         /// (<c>NetCompositionData.m_SyncVertexOffsets*</c>), and a node geometry names where those

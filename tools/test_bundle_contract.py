@@ -702,11 +702,22 @@ class BundleContractTest(unittest.TestCase):
         point at net NODES, which get no record at all (§5.1). Requiring it to resolve would
         fail every correct bundle, so the validator reports the split as a note instead."""
         bundle = self.fresh()
+        # The example's three lanes all resolve, so the mutated one is the ONLY unresolvable
+        # owner and the note must say "1 into neither". Asserting on the bare phrase would
+        # pass without the mutation at all — the validator emits it unconditionally — and
+        # would stay green if it stopped counting unresolvable owners entirely.
         self.patch_first_lane(bundle, lambda r: r.update(owner=7777))
         report = validate_bundle(bundle, DEFAULT_SCHEMA_DIR)
         self.assertEqual(report.errors, [])
-        self.assertTrue(any("into neither" in n for n in report.notes),
-                        f"expected an owner-resolution note, got: {report.notes}")
+        self.assertTrue(any("1 into neither" in n for n in report.notes),
+                        f"expected the note to count exactly one, got: {report.notes}")
+
+    def test_lane_owner_note_counts_zero_when_all_resolve(self):
+        """The other half of the gate above: unmutated, the count must be zero. Without this
+        the assertion could be satisfied by a validator that always reported 1."""
+        report = validate_bundle(self.pristine, DEFAULT_SCHEMA_DIR)
+        self.assertTrue(any("0 into neither" in n for n in report.notes),
+                        f"expected a zero count on the pristine example, got: {report.notes}")
 
     # -- negative: the lane-prefab catalogue, contract §5B ------------------------------
 

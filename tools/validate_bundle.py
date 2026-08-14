@@ -346,8 +346,15 @@ def _load_jsonl(path: Path, validator: Validator, label: str, report: Report) ->
 
 
 def _load_json_layer(path: Path, validator: Validator, label: str,
-                     report: Report) -> Optional[Any]:
-    """Parse a whole-file JSON layer and validate it. Returns None when it could not be read."""
+                     report: Report) -> Optional[Dict[str, Any]]:
+    """Parse a whole-file JSON layer and validate it, or return None.
+
+    Every whole-file layer in the contract is a JSON **object**, so anything else is reported
+    and then withheld from the caller. That second half matters: a truncation leaving a valid
+    JSON array parses fine, fails the schema, and used to be handed back anyway — whereupon the
+    caller's `.items()` raised an `AttributeError` that `main()` does not catch, so the user got
+    a traceback and no verdict in place of the INVALID the schema had already established.
+    """
     try:
         document = json.loads(path.read_text(encoding="utf-8"))
     except ValueError as exc:
@@ -355,6 +362,9 @@ def _load_json_layer(path: Path, validator: Validator, label: str,
         return None
     for err in validator.validate(document):
         report.error(f"{label}: {err}")
+    if not isinstance(document, dict):
+        report.error(f"{label}: expected a JSON object at the top level, got {_kind(document)}")
+        return None
     return document
 
 

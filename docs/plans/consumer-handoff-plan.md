@@ -47,7 +47,10 @@ rides H14's rip:
    object-frame;
 4. the **asset-pack line** in the completion dialog (H13);
 5. everything **H12** touched — four `warnings.jsonl` writers, every coordinate's precision, the
-   shared object query, and network piece asset ids.
+   shared object query, and network piece asset ids;
+6. the **six producer fixes the `/code-review` pass found** (§5) — two of which move geometry:
+   the roundabout at-grade branch, and `LowerBottomToTerrain` no longer suppressed on elevated
+   compositions.
 
 Everything else in the bundle is current.
 
@@ -64,7 +67,7 @@ git log --format='%h %ad %s' --date=format:'%Y-%m-%d %H:%M' \
 | gate | result |
 |---|---|
 | `dotnet build -c Release` | compiles clean, 0 warnings, 0 errors |
-| `tools/test_bundle_contract.py` | **87/87** (63 before H10) |
+| `tools/test_bundle_contract.py` | **88/88** (63 before H10) |
 | `tools/validate_bundle.py docs/example-bundle` | VALID, 0 warnings — and the example now carries a record in **every** documented layer |
 | `tools/validate_bundle.py <full city>` | VALID, **1 warning** on the 18:10 rip, against all **15** schemas (was 133 — see PILLARS-2). The one warning is the genuine parent advisory; the 119 declared gaps are a note. ~7 minutes |
 | decal rows / png decode / splat extras / drape pick | pass |
@@ -426,6 +429,13 @@ at 32 each, `fog` present, `COLLAPSED:` clean, tiling unchanged, validator VALID
   the precisions are checked by the schemas, the query by the instance/mesh counts agreeing, the
   ids by the mesh-stem check. **`warnings.jsonl` is the one to read by eye**: 210 declarations,
   119 `mesh` and 91 `prefab`, and the merge must have kept every pass's lines.
+- **The two review fixes that move geometry** (§5, the `/code-review` pass). The roundabout
+  at-grade branch should *reduce* carved terrain at any roundabout on a trenched approach — look
+  for terrain that used to be missing beside one. The `LowerBottomToTerrain` narrowing should
+  put an elevated composition's abutment and retaining pieces back on the ground. Neither has a
+  counter of its own; both are visible in a render and in nothing else.
+- **The `COLLAPSED:` probe is now per-composition**, so it may report rows the 18:10 rip could
+  not see. A new row is a finding, not a regression — read it before assuming the rip got worse.
 
 ---
 
@@ -509,8 +519,8 @@ table are digest-suffixed today, against 7 mesh stems that are. Narrowing the qu
 *and* drops 270 keys, which is an output change, so it waits for a rip that can prove it rather
 than riding a refactor. The comment now states the difference instead of denying it.
 
-**Gate:** `dotnet build` 0 warnings 0 errors, plus `/code-review`. Proof rides H14 — see §4 for
-what to look at.
+**Gate:** `dotnet build` 0 warnings 0 errors, plus `/code-review` — whose findings are below,
+and were substantial. Proof rides H14 — see §4 for what to look at.
 
 ### H13 — the asset-pack line in the completion dialog
 
@@ -522,6 +532,44 @@ the run, so the line stays true after a partial rip, and matched on the `unresol
 assetId rather than on `kind: "prefab"`, because that kind also covers prefabs that resolved
 fine and simply have no SubMesh buffer — enabling a pack cannot help those, and promising it
 would be a cure that does not exist. ⟳
+
+### The `/code-review` pass, and what it found
+
+H12's second gate returned fourteen findings and **eleven were real**. Worth recording because
+of what they were: two of them were mine from this session, and the rest were latent —
+dormant-until-the-input-changes bugs that no gate in this repo was ever going to fire on.
+
+**Producer, and the two that change geometry** — both ride H14:
+
+| finding | what it was |
+|---|---|
+| `TerrainRipSystem.RoundaboutSecondPair` bailed on `!elevated && !tunnel` | the game's `AddNode` has a **third** branch: an at-grade side carrying `LowTransition` beside `Raised`/`Lowered`/`SoundBarrier` gets the same ring trim and has both bits **cleared**. Keeping them raised `cutTop` to `ElevationLimit*3` — 12 m — over an untrimmed ring, carving terrain the game leaves standing. The case is a roundabout on a road coming out of a trench |
+| `elevatedAwayFromGround` suppressed `LowerBottomToTerrain` as well as `RaiseTopToTerrain` | the argument for the gate is about a TOP being dragged down; it says nothing about a bottom reaching up to meet the ground, and the game tags the two independently. An elevated composition's abutment and retaining pieces were shipping floating. Narrowed to `raiseTop` only — **and the gate is now labelled a producer CHOICE**, because `BatchMeshHelpers` conforms nothing on the CPU: it writes the class into a vertex `Color32.b` and the compiled shader decides. There is no managed counterpart to port |
+| the RG normal-map test had only a negative signature | `lowBlue >= threshold && highRed < threshold` says "blue dark, red not white", which a **black placeholder normal** satisfies everywhere — and it was then "rebuilt" from `x = y = -1` into a uniform sideways normal, the exact defect the method repairs. Now requires red to carry something too, mirroring AG's `minA < 250`. Fixed in both the producer and `csiibundle` so the two still agree |
+| `_groundSources` was never cleared between rips | rip, change theme, rip again: `sources.json` declared the previous theme's grounds, naming `.png` files no longer in the bundle |
+| `sources.json` was the one unguarded write in `CaptureSurfaceTextures` | and `RipTerrain` has no outer try, so a locked file took splatmap, tiling, backdrop, clip volumes, areas and `rasters.json` with it — for a file the code itself calls "provenance only" |
+| the `COLLAPSED:` probe keyed on `(piece, isNode)` | extents accumulate against the *current segment's* centre, so unioning across compositions unions different frames. A piece that collapses on the elevated tram deck and builds fine on 200 at-grade segments read as healthy — which is **exactly the §42 shape the probe was built for**. Now keyed by composition too |
+
+**Consumer:**
+
+| finding | what it was |
+|---|---|
+| `SHADER_ONLY_TEMPLATES` missed `Windows` and `Default` | so 12 of the 218 textureless materials fell through `if kind is None: continue` and rendered as **flat white slabs**: 7 window panes and 5 that are the city's fountains and a hot tub. `Windows` is now in the table (632 uses, 625 with maps, so only unbound panes reach it); the 5 `Default` ones are caught by CS2's own `_Wat_` name suffix, which **47 sibling materials corroborate**. All 218 now classify |
+| `colour.smh_prepared` sliced `w` off with `[:3]` | dropping the game's `num = w * (sign(w) < 0 ? 1 : 4)` offset and its `max(x + num, 0)` clamp — verified against decompiled `ColorUtils` — while `explain()` claimed the step was an exact managed port. Dormant (all three `w` read 0.0 today), so no number moved |
+| `areas.priority_lift` was `rank * 0.0005` uncapped | against the invariant stated four lines above it. At 21 distinct `rendererPriority` values the top surface reaches the `instance_decal` rung and paints a parking lot over its own bay markings. The catalogue has 13, so the 13-value spread is byte-identical; only ≥16 compress |
+| two `TypeError`s in `probe_point.py` | both on a `channels.base: "unknown"` bundle, and both after the whole report is built and before a line of it prints |
+| `decals.lattice` indexed the raw `stations` argument | after coercing everything else with `asarray`, so a caller passing a list crashed |
+| `blender_import_bundle` fell back to `_SPLAT_CHANNELS_DEFAULT["R"]` for the base ground | which is `"dirt"`; the base's own default in the same dict is `"rock"`. It fires exactly when `channels.base` is `"unknown"` — so every cliff face and gorge wall, precisely where the base shows through, was painted with `dirt.png` |
+| `validate_bundle._load_json_layer` returned a non-object to callers that `.items()` it | a truncation leaving a valid JSON array gave a traceback and **no verdict** in place of the INVALID the schema had already established |
+| `test_lane_owner_resolving_nowhere_is_accepted` asserted on a substring the validator emits unconditionally | so it passed without its own mutation. Now asserts the count, with a companion test that the pristine example reads zero |
+
+**Not findings:** the H12 dedup itself came back clean — the four warnings writers migrated with
+their kind-ownership intact, and the taxiway drop survived. One cosmetic leftover (three
+`/// <summary>` openers from a deleted method) fixed.
+
+**Gate:** `dotnet build` 0 warnings 0 errors; **88/88** contract tests; every standalone test
+passes with unchanged numbers (83,110 decal spans, clip cut ok, 5,872 node strips). Proof of the
+producer half rides H14 — see §4.
 
 ---
 

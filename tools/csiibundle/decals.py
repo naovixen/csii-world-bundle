@@ -252,23 +252,28 @@ def lattice(quad, stations, v_frac):
     This is the per-marking hot path — tens of thousands of calls per city — so it is pure numpy
     with no Python loop over rows.
     """
-    t = numpy.asarray(stations, dtype=numpy.float64)[:, None]
+    # Coerce ONCE and use `st` everywhere below. The `[:, None]` view alone is not enough:
+    # `numpy.nonzero(stations[1:] > stations[:-1])` further down indexed the raw argument, so a
+    # caller passing a plain list got a lexicographic list compare yielding a scalar bool and
+    # then `ValueError: Calling nonzero on 0d arrays is not allowed`.
+    st = numpy.asarray(stations, dtype=numpy.float64)
+    t = st[:, None]
     nl, nr = numpy.array(quad["near_left"]), numpy.array(quad["near_right"])
     fl, fr = numpy.array(quad["far_left"]), numpy.array(quad["far_right"])
     left = nl + (fl - nl) * t
     right = nr + (fr - nr) * t
-    verts = numpy.empty((2 * len(stations), 3), dtype=numpy.float64)
+    verts = numpy.empty((2 * len(st), 3), dtype=numpy.float64)
     verts[0::2] = left
     verts[1::2] = right
 
     w = numpy.asarray(v_frac, dtype=numpy.float64)[:, None]
     unl, unr = numpy.array(quad["uv_near_left"]), numpy.array(quad["uv_near_right"])
     ufl, ufr = numpy.array(quad["uv_far_left"]), numpy.array(quad["uv_far_right"])
-    uv = numpy.empty((2 * len(stations), 2), dtype=numpy.float64)
+    uv = numpy.empty((2 * len(st), 2), dtype=numpy.float64)
     uv[0::2] = unl + (ufl - unl) * w
     uv[1::2] = unr + (ufr - unr) * w
 
-    row = numpy.nonzero(stations[1:] > stations[:-1])[0]
+    row = numpy.nonzero(st[1:] > st[:-1])[0]
     l0, r0, l1, r1 = row * 2, row * 2 + 1, row * 2 + 2, row * 2 + 3
     tris = numpy.stack((numpy.stack((l0, r0, r1), axis=1),
                         numpy.stack((l0, r1, l1), axis=1)), axis=1).reshape(-1, 3)

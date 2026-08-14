@@ -129,6 +129,14 @@ def surface_material(entry):
 # instances standing on it. TUNED.
 PRIORITY_LIFT_STEP = 0.0005
 
+# The whole priority spread may never reach the next rung. 21 or more distinct priorities would
+# put the top-ranked surface at 0.030 — the `instance_decal` rung exactly — and paint a parking
+# lot's pavement over its own bay markings, which is the regression the ladder comment records.
+# The catalogue has 13, so this has never bitten; a modded city with more surfaces would find it.
+# The step is what compresses, not the order, so the ranking survives the clamp. CONTRACT (the
+# ceiling) / TUNED (the step).
+PRIORITY_LIFT_CEILING = (decals.LIFT["instance_decal"] - AREA_LIFT) * 0.75
+
 
 def priority_lift(priority, ordered):
     """Extra metres to raise a surface of this `rendererPriority`, given all priorities present.
@@ -136,12 +144,22 @@ def priority_lift(priority, ordered):
     `ordered` is the ascending list of distinct priorities in the catalogue. The lift is by
     RANK, not by the raw value: the game's priorities are sparse and signed (−122 … 42 on the
     reference city) and scaling by them directly would push the top surface metres into the air.
+
+    The total is capped at `PRIORITY_LIFT_CEILING` — see it for why an uncapped rank is unsafe.
     """
+    ordered = list(ordered)
     try:
-        rank = list(ordered).index(priority)
+        rank = ordered.index(priority)
     except ValueError:
         rank = 0
-    return rank * PRIORITY_LIFT_STEP
+    if rank == 0:
+        return 0.0
+
+    step = PRIORITY_LIFT_STEP
+    top = max(len(ordered) - 1, 1)
+    if top * step > PRIORITY_LIFT_CEILING:
+        step = PRIORITY_LIFT_CEILING / top
+    return rank * step
 
 
 def priorities(catalogue):

@@ -280,8 +280,13 @@ def probe(bundle, x, z):
             out["stack"] = stack
 
             # The composite the importer builds: base, then each channel over it.
+            # `base` is None when the producer wrote `channels.base: "unknown"`, and
+            # `_ground_mean` returns None for a ground whose texture the bundle does not carry
+            # (declared in warnings.jsonl). Either way there is no base colour to composite
+            # over, and mid-grey is the honest stand-in — indexing None here killed the whole
+            # report, after it had been built and before a line of it printed.
             base = mapping.get("base")
-            colour = _ground_mean(bundle, base) if base else (0.5, 0.5, 0.5)
+            colour = (_ground_mean(bundle, base) if base else None) or (0.5, 0.5, 0.5)
             contrib = []
             for _key, ground, _w, op in stack:
                 gc = _ground_mean(bundle, ground)
@@ -529,7 +534,9 @@ def main():
         say("                      B/A pack extra1..extra4 as low:high nibbles")
         say()
         say("  ground stack, base first, each composited over the last:")
-        say(f"      {'base':<10} {ch.get('base'):<10}")
+        # `ch["base"]` is None on a theme that binds no rock ground; `:<10` on None is a
+        # TypeError, and because the report is buffered it took the whole tool with it.
+        say(f"      {'base':<10} {str(ch.get('base') or 'unknown'):<10}")
         for key, ground, weight, op in info["stack"]:
             bar = "#" * int(round(op * 30))
             say(f"      {key:<8} {ground:<8} weight {weight:>7}  "

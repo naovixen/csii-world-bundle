@@ -737,8 +737,12 @@ def apply_shader_only_materials(bundle_dir):
 
     counts = {"water": 0, "glass": 0, "tint": 0}
     for mat in bpy.data.materials:
-        entry = table.get(_bundle_material_id(mat.name))
-        kind = materials.shader_only_kind(entry)
+        material_id = _bundle_material_id(mat.name)
+        entry = table.get(material_id)
+        # The id goes in too: a textureless material whose template is the generic `Default`
+        # is classified by CS2's own name suffix, which is the only signal left. Without it the
+        # reference city leaves five fountain bowls and a hot tub rendering as white slabs.
+        kind = materials.shader_only_kind(entry, material_id)
         if kind is None:
             continue
         tree = getattr(mat, "node_tree", None)
@@ -2026,7 +2030,12 @@ def _splat_ground_material(surfaces_dir, splat, mapping, tiling_block=None):
         out = math("MINIMUM", math("MULTIPLY", weight, splat.multiplier), 1.0)
         return out if splat.power == 1.0 else math("POWER", out, splat.power)
 
-    base_ground = mapping["base"] if mapping.get("base") else _SPLAT_CHANNELS_DEFAULT["R"]
+    # The base ground's own default is "rock" — NOT the "R" channel's "dirt". `mapping["base"]`
+    # is None exactly when the producer wrote `channels.base: "unknown"` (a theme that binds
+    # no rock ground), which is precisely where the base shows through: every cliff face and
+    # gorge wall, the places the dirt weight has fallen away. Falling back to "dirt" painted
+    # them all with `dirt.png` while the log printed `base=none`.
+    base_ground = mapping["base"] if mapping.get("base") else _SPLAT_CHANNELS_DEFAULT["base"]
 
     # The composite order, resolved once: the two continuous soil weights first — dirt blankets
     # everything including the lakebed, then grass covers the land on top of it — and then the

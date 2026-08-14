@@ -51,16 +51,20 @@ material carries it. It matters because a template is sometimes the material's *
 appearance: CS2 draws water, glass and some foliage with a shader and no texture, the bundle
 cannot export a compiled shader, and a glTF loader meeting a material with no `baseColorTexture`
 falls back to `baseColorFactor` — which the producer writes as `[1, 1, 1, 1]`. **Those materials
-render as flat white paint.** On the reference city that is 218 materials:
+render as flat white paint.** On the reference city that is 218 materials, all 218 classified:
 
 | template | count | what it needs instead |
 |---|---|---|
 | `DefaultGlassDoubleSided` | 109 | transmission — every window pane in the city |
 | `WaterGeneric` | 48 | `csiibundle.water`'s `Appearance` — pools, ponds, fountains |
 | `Grass` | 40 | a foliage colour; the shader tints from the ground |
+| `Windows` | 7 | glass. 632 materials use this template and 625 carry maps, so these are panes whose maps did not bind |
+| `Default` | 5 | water — the fountains and hot tub, caught by name suffix rather than by template |
 | `WaterStream`, `CurvedOverlay`, `CurvedTransparent`, `Placeholder` | 9 | see `tint`, below |
 
-`is_textureless()` finds them and `template()` says which. This is the answer to "why are the
+`is_textureless()` finds them and `shader_only_kind(entry, material_id)` says which. **Pass the
+id**: the five `Default` ones have no template signal at all and are classified by CS2's own
+`_Wat_` name suffix, which 47 sibling materials corroborate. This is the answer to "why are the
 swimming pools white".
 
 **`tint` is the flat colour of a material that has no texture.** Only 7 materials carry it and
@@ -120,7 +124,30 @@ SHADER_ONLY_TEMPLATES = {
     "CurvedOverlay": "overlay",
     "CurvedTransparent": "overlay",
     "Placeholder": "placeholder",
+
+    # `Windows` is a real window template with 632 uses on the reference city, 625 of them
+    # carrying maps — so it reaches here only for the 7 whose maps did not bind, and those are
+    # window panes. Gated on `is_textureless`, as every entry in this table is.
+    "Windows": "glass",
 }
+
+# CS2's own material-name suffix, as the second-choice evidence when the template says nothing.
+# A textureless material whose template is the generic `Default` has no other signal, and on the
+# reference city there are five: `SmallFountain01/02/03_Wat_*`, `LargeFountain03_Wat_*`,
+# `HotTub02_Wat_*`. Left unclassified they render as flat white slabs, which is the exact defect
+# this module exists to prevent.
+#
+# This is NOT the assetId substring test that `decalRole` retired. That one guessed at a
+# distinction the producer could publish and did not; this one reads a naming convention the
+# bundle CORROBORATES 47 times over — every other `_Wat_` material on this city carries the
+# explicit `WaterGeneric` template, and every `_Gls_` one carries `DefaultGlassDoubleSided`. It
+# fires only when the template gives no answer at all. TUNED (the mapping is evidence-backed but
+# it is a naming convention, not a contract).
+SHADER_ONLY_NAME_SUFFIXES = (
+    ("_Wat_", "water"),
+    ("_Gls_", "glass"),
+    ("_Win_", "glass"),
+)
 
 
 def load(bundle_dir):
@@ -152,15 +179,30 @@ def is_textureless(entry):
     return not any(slot in (entry or {}) for slot in TEXTURE_SLOTS)
 
 
-def shader_only_kind(entry):
+def shader_only_kind(entry, material_id=None):
     """`"water"`, `"glass"`, `"foliage"`, `"overlay"`, `"placeholder"` — or `None`.
 
     What a textureless material actually is, so a consumer can substitute the right appearance
-    rather than leaving it white. `None` means the material has maps and needs no substitute.
+    rather than leaving it white. `None` means the material has maps and needs no substitute —
+    or that it is textureless and nothing here can say what it is, which a caller should surface
+    rather than silently skip.
+
+    Pass `material_id` (the `materials.json` key) to enable the name-suffix fallback for
+    templates that carry no meaning of their own; see `SHADER_ONLY_NAME_SUFFIXES`. Without it,
+    the reference city leaves 5 fountains and hot tubs unclassified.
     """
     if not is_textureless(entry):
         return None
-    return SHADER_ONLY_TEMPLATES.get(template(entry))
+
+    kind = SHADER_ONLY_TEMPLATES.get(template(entry))
+    if kind is not None:
+        return kind
+
+    for suffix, named in SHADER_ONLY_NAME_SUFFIXES:
+        if material_id and (suffix in material_id):
+            return named
+
+    return None
 
 
 def tint(entry):
@@ -244,12 +286,14 @@ def detect_normal_packing(samples):
     cannot classify. Guessing at an unrecognised layout would invent relief the game does not
     draw; leaving it alone renders what the bundle actually says.
     """
-    total = high_red = low_blue = 0
+    total = high_red = low_blue = low_red = 0
     varying_alpha = False
     for r, g, b, a in samples:
         total += 1
         if r >= _PINNED_HIGH:
             high_red += 1
+        if r <= _PINNED_LOW:
+            low_red += 1
         if b <= _PINNED_LOW:
             low_blue += 1
         if a < _PINNED_HIGH:
@@ -258,10 +302,14 @@ def detect_normal_packing(samples):
         return NORMAL_RGB
 
     threshold = total * _PINNED_FRACTION
-    # AG needs alpha to be carrying something: a map whose alpha is constant has no X in it.
+    # Each layout needs a POSITIVE signature as well as a pinned channel. AG needs alpha to be
+    # carrying something: a map whose alpha is constant has no X in it. RG needs the same of RED,
+    # which is where it keeps X — without that clause a black or near-black placeholder normal
+    # (blue dark everywhere, red nowhere near white) reads as RG and gets "unpacked" from
+    # x = y = -1 into a uniform sideways normal, which is the exact defect this detects.
     if (high_red >= threshold) and varying_alpha:
         return NORMAL_AG
-    if (low_blue >= threshold) and (high_red < threshold):
+    if (low_blue >= threshold) and (high_red < threshold) and (low_red < threshold):
         return NORMAL_RG
     return NORMAL_RGB
 

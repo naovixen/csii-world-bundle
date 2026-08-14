@@ -143,37 +143,57 @@ namespace Carto.Systems
             public string Where;                 // "node" or "edge"
             public float3 Size;                  // authored piece size
             public float OffsetX;                // authored cross-section offset
+            public int Composition;              // the composition entity this row is for
             public int Placements, Vertices;
             public float XMin = float.MaxValue, XMax = float.MinValue;
             public float3 Lo, Hi;                // emitted extent, relative to composition centre
             public bool HasBounds;
 
-            /// <summary>The report's row label — what the probe was keyed by before it was keyed
-            /// by entity.</summary>
-            public string Label => $"{Name}|{Where}";
+            /// <summary>The report's row label. Carries the composition because one piece now
+            /// gets one row PER composition — without it two rows would print identically and a
+            /// per-composition collapse would read as a duplicate rather than as a finding.</summary>
+            public string Label => $"{Name}|{Where}|comp{Composition}";
         }
 
         /// <summary>
-        /// What identifies a probe row: the piece prefab, and which half of the network it was
-        /// placed in. <b>Keyed by entity, not by name, and that is the point</b> — the probe runs
-        /// inside the per-placement loop of the mesh stage, the longest stage of the rip, so
-        /// resolving a prefab name and interpolating a string there charged the whole city for a
-        /// diagnostic that only ever needed the name once per distinct piece.
+        /// What identifies a probe row: the piece prefab, <b>the composition it was placed in</b>,
+        /// and which half of the network. <b>Keyed by entity, not by name, and that is the
+        /// point</b> — the probe runs inside the per-placement loop of the mesh stage, the longest
+        /// stage of the rip, so resolving a prefab name and interpolating a string there charged
+        /// the whole city for a diagnostic that only ever needed the name once per distinct piece.
+        /// <para>
+        /// <b>The composition is in the key because the defect it hunts is per-composition</b>
+        /// <i>(added 2026-08-14)</i>. The extents accumulate as `world - centre` against the
+        /// CURRENT segment's centre, so unioning a piece's placements across compositions unions
+        /// different local frames: a piece that collapses to a ribbon on the elevated tram deck
+        /// and builds normally on 200 at-grade segments produced a healthy union extent and a
+        /// full `xParam` span, and neither clause fired. That is exactly the §42 shape — same
+        /// piece, different composition — the probe exists to catch.
+        /// </para>
         /// </summary>
         private readonly struct PieceKey : IEquatable<PieceKey>
         {
             private readonly Entity _piece;
+            private readonly Entity _composition;
             private readonly bool _isNode;
 
-            public PieceKey(Entity piece, bool isNode)
+            public PieceKey(Entity piece, Entity composition, bool isNode)
             {
                 _piece = piece;
+                _composition = composition;
                 _isNode = isNode;
             }
 
-            public bool Equals(PieceKey other) => (_piece == other._piece) && (_isNode == other._isNode);
+            public bool Equals(PieceKey other) => (_piece == other._piece)
+                                               && (_composition == other._composition)
+                                               && (_isNode == other._isNode);
             public override bool Equals(object obj) => (obj is PieceKey other) && Equals(other);
-            public override int GetHashCode() => (_piece.GetHashCode() * 397) ^ (_isNode ? 1 : 0);
+            public override int GetHashCode()
+            {
+                int hash = _piece.GetHashCode() * 397;
+                hash = (hash ^ _composition.GetHashCode()) * 397;
+                return hash ^ (_isNode ? 1 : 0);
+            }
         }
 
         private readonly Dictionary<PieceKey, SectionProbe> m_SectionProbes = new();
@@ -556,6 +576,17 @@ namespace Carto.Systems
             // The exemption is the roadbed walk's own rule, verbatim (`TryGetGroundComposition`):
             // an elevated composition with a Low/HighTransition side is where the deck MEETS the
             // ground, and that end still has to conform or the ramp separates from its approach.
+            //
+            // **This is a producer CHOICE, not a port** (stated plainly 2026-08-14, after a
+            // review found no counterpart for it in the game). `BatchMeshHelpers` sets the
+            // conform classification from `NetPieceFlags` alone — there is no `Elevated` test
+            // anywhere in that path — but it does not conform on the CPU at all: it writes the
+            // class into a vertex `Color32.b` and the SHADER decides what to do with it. CS2
+            // ships its shaders compiled, so what the GPU does with a raise-top vertex 17 m
+            // above its terrain sample is not readable, and the producer has to pick. It picks
+            // "leave the deck where it is", which cannot separate a deck from its own ramp
+            // because the transition sides are exempt. Recorded as a choice so the next person
+            // does not read it as a faithful port of something.
             bool elevated = (data.m_Flags.m_General & CompositionFlags.General.Elevated) != 0;
             CompositionFlags.Side conformSides = data.m_Flags.m_Left | data.m_Flags.m_Right;
             bool elevatedAwayFromGround = elevated
@@ -631,7 +662,7 @@ namespace Carto.Systems
                 // The §42 probe: one row per piece, keyed before the vertex loop so the loop only
                 // accumulates. Resolving the name is the expensive half and happens on first
                 // sight of a piece, never per placement.
-                PieceKey sectionKey = new PieceKey(piece.m_Piece, isNode);
+                PieceKey sectionKey = new PieceKey(piece.m_Piece, composition, isNode);
                 if (!m_SectionProbes.TryGetValue(sectionKey, out SectionProbe section))
                 {
                     string sectionName = Instance.Prefab.TryGetPrefab(piece.m_Piece, out PrefabBase sectionPiece)
@@ -641,6 +672,7 @@ namespace Carto.Systems
                     {
                         Name = sectionName,
                         Where = isNode ? "node" : "edge",
+                        Composition = composition.Index,
                         Size = piece.m_Size,
                         OffsetX = piece.m_Offset.x
                     };
@@ -654,7 +686,14 @@ namespace Carto.Systems
                     boundsScaleZ = 256f / math.max(piece.m_Size.z, 0.001f);
                 }
 
-                if ((lowerBottom || raiseTop) && !elevatedAwayFromGround)
+                // The gate applies to `raiseTop` ONLY (narrowed 2026-08-14). The argument for
+                // it is about a TOP being dragged down to a ground the deck stands clear of; it
+                // says nothing about a bottom reaching down to meet the ground, and the game
+                // tags the two independently. Suppressing both left an elevated composition's
+                // abutment and retaining pieces floating.
+                //
+                bool wantsConform = lowerBottom || (raiseTop && !elevatedAwayFromGround);
+                if (wantsConform)
                 {
                     // N-F2: a heightmap that cannot be captured used to leave the piece silently
                     // unconformed while the report still claimed it was conformed. Counted here,
@@ -663,9 +702,10 @@ namespace Carto.Systems
                     conforming = EnsureConformTerrain();
                     if (!conforming) _unconformedPieces++;
                 }
-                else if (lowerBottom || raiseTop)
+
+                if (raiseTop && elevatedAwayFromGround)
                 {
-                    // Deliberately not conformed: an elevated composition clear of the ground.
+                    // Deliberately not raised: an elevated composition clear of the ground.
                     // Counted separately from `_unconformedPieces`, which means "we wanted to
                     // and could not" — this one means "we must not".
                     _elevatedUnconformedPieces++;
@@ -794,7 +834,8 @@ namespace Carto.Systems
                             // offset.
                             int slice = math.clamp((int)math.round(raw.z * boundsScaleZ) + 128, 0, 256);
                             if (conforming && lowerBottom && (raw.y <= heightBounds.Min[slice] + 0.01f)) conform = 1;
-                            if (conforming && raiseTop && (raw.y >= heightBounds.Max[slice] - 0.01f)) conform = 2;
+                            if (conforming && raiseTop && !elevatedAwayFromGround
+                                && (raw.y >= heightBounds.Max[slice] - 0.01f)) conform = 2;
 
                             // SmoothTopNormal: the authored normal of the top row is discarded for
                             // straight up, so a kerb's or a wall's cap shades with the surface
