@@ -64,9 +64,11 @@ contain.
 
 **`attrs.elevation` is how far the object stands ABOVE the ground, not the ground's height.**
 Read as terrain height it gives a city where everything sits at a couple of metres. Ground level
-under an instance is `pos[1] - elevation`, and it is SIGNED: of 517,398 records carrying it,
-29,610 are negative, down to −86.3 m — buried utility hookups and the underground parts of
-transit stations.
+under an instance is `pos[1] - elevation`, and it is SIGNED: on the 2026-08-12 city, of 483,351
+records carrying it, 970 are negative, down to −86.3 m — the underground parts of transit
+stations, and a scatter of buried props and decals. (Re-measured 2026-08-14; this said "29,610
+of 517,398", which were the 2026-08-08 rip's figures. The −86.3 m floor is unchanged. What a
+consumer needs is the sign rule, which is not in question.)
 
 **A missing mesh is not automatically a defect.** Check `reader.read_declared_gaps` first: the
 producer declares what it could not deliver (§10), and re-reporting a declared gap as an error

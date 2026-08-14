@@ -372,10 +372,18 @@ why the three unshipped appearances above are a documented rule rather than a me
 A consumer that reads it as terrain height gets a city where everything sits at a couple of
 metres. Ground level under an instance is `pos[1] − elevation`.
 
-It is **signed**: negative means buried. Measured over one full city, of 517,398 records
-carrying the key, 436,329 are positive, 51,459 are exactly zero and 29,610 are negative, down
-to −86.3 m — the buried utility hookups under every lot, and the underground parts of transit
-stations. The component is absent altogether for objects sitting flat on the ground.
+It is **signed**: negative means buried. Measured on the 2026-08-12 full city, of **483,351**
+records carrying the key, **970 are negative**, down to **−86.3 m** — the underground parts of
+transit stations and a scatter of buried props and decals — and 47,067 are exactly zero. The
+component is absent altogether for objects sitting flat on the ground.
+
+*(Counts re-measured 2026-08-14. This paragraph read "of 517,398 records carrying the key …
+29,610 are negative" — the 2026-08-08 rip's figures, and the evidence that killed a
+"clamped at zero" reading taken from correctly-decompiled source. The **−86.3 m floor is
+unchanged**; what moved is the population, most plausibly because the buried utility-node props
+— `Water_Pipe_Node_*`, `Sewage_Pipe_Node_*`, `Ground_Cable_Node_*`, tens of thousands of them
+and every one buried — were excluded in between. That is an inference from the size of the
+change, not a proof. The sign rule is what a consumer needs and it is unaffected.)*
 
 `elevationFlags` carries CS2's own `ElevationFlags` names alongside it — `Stacked`, `OnGround`,
 `Lowered`, `OnAttachedParent` — which say *why* an object is off the ground where the magnitude
@@ -1041,7 +1049,7 @@ the correction below), `rotation`, `range`; optional
 `intensityScale` (per-placement, when ≠ 1), `finalColor` (resolved linear HDR RGBA),
 `colorChannel` (when the light takes the instance colorSet channel), `type`, `color` (authored
 linear RGBA), `intensity` + `intensityUnit` (**read the unit, do not assume it**: the reference
-city reads `Lux` on all 609 of its punctual lights while the example above shows `Lumen`),
+city reads `Lux` on all 654 of its punctual lights while the example above shows `Lumen`),
 `temperature` (K, when used),
 `spotShape`/`spotAngle`/`innerSpotPercentage` (Spot), `areaShape` (Area), `boneIndex` (rare —
 see below). Procedural entries are unchanged and remain position-less behaviors of the emissive
@@ -1065,8 +1073,9 @@ asset in the reference city). Bounds-check before indexing anything with it.
 `m_Rotation` **into the bone's bind-pose space** and records `m_BoneIndex`. So an entry
 carrying `boneIndex` is *not* in the object frame, and `[boneIndex, subMesh]` names the
 `BoneHistory` slot (an animation the bundle does not carry) and the sub-mesh transform applied
-after it, or `-1`. It is emitted only in that case. On the reference city it is **4 of 609**
-punctual lights — bicycles and one workshop asset — so a consumer may reasonably skip them;
+after it, or `-1`. It is emitted only in that case. On the reference city **at most 4 of 654**
+punctual lights can take one — the three bicycles and one park asset whose `parentMesh` exceeds
+their prefab's sub-mesh count — so a consumer may reasonably skip them;
 what it must not do is place them in the object frame and believe the result.
 
 **Colours.** A variation is CS2's `ColorSet`: three channels, and **the material's `colorMask`

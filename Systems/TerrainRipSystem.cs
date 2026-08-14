@@ -727,13 +727,7 @@ namespace Carto.Systems
                     double[][] nodeArray = new double[nodes.Length][];
                     for (int i = 0; i < nodes.Length; i++)
                     {
-                        float3 position = nodes[i].m_Position;
-                        nodeArray[i] = new[]
-                        {
-                            Math.Round((double)position.x, 3),
-                            Math.Round((double)position.y, 3),
-                            Math.Round((double)position.z, 3)
-                        };
+                        nodeArray[i] = BundlePrecision.Vector(nodes[i].m_Position);
                     }
                     record["nodes"] = nodeArray;
 
@@ -2939,20 +2933,12 @@ namespace Carto.Systems
         /// <returns>Four <c>[x, y, z]</c> triples.</returns>
         private static double[][] Curve(Bezier4x3 curve)
         {
-            return new[] { Point(curve.a), Point(curve.b), Point(curve.c), Point(curve.d) };
+            return new[]
+            {
+                BundlePrecision.Vector(curve.a), BundlePrecision.Vector(curve.b),
+                BundlePrecision.Vector(curve.c), BundlePrecision.Vector(curve.d)
+            };
         }
-
-        /// <summary>
-        /// One control point, millimetre-rounded.
-        /// </summary>
-        /// <param name="value">The point.</param>
-        /// <returns>The rounded triple.</returns>
-        private static double[] Point(float3 value) => new[]
-        {
-            Math.Round((double)value.x, 3),
-            Math.Round((double)value.y, 3),
-            Math.Round((double)value.z, 3)
-        };
 
         /// <summary>
         /// Lerp one boundary bézier toward another by a per-control-point parameter — the game's

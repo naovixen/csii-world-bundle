@@ -38,7 +38,7 @@ namespace Carto.IO
             if ((record.Path == null) || (record.Path.Count < 2)) return;
 
             List<double[]> path = new(record.Path.Count);
-            foreach (float3 point in record.Path) path.Add(Round(point));
+            foreach (float3 point in record.Path) path.Add(BundlePrecision.Vector(point));
 
             Dictionary<string, object> line = new()
             {
@@ -57,14 +57,6 @@ namespace Carto.IO
             _writer.WriteLine(JsonConvert.SerializeObject(line, Formatting.None));
             Count++;
         }
-
-        /// <summary>
-        /// Round a position to millimetres, matching every other coordinate in the bundle.
-        /// </summary>
-        /// <param name="v">The position.</param>
-        /// <returns>The rounded triple.</returns>
-        private static double[] Round(float3 v) =>
-            new double[] { Math.Round(v.x, 3), Math.Round(v.y, 3), Math.Round(v.z, 3) };
 
         /// <summary>Close the file.</summary>
         public void Dispose() => _writer?.Dispose();

@@ -53,11 +53,11 @@ namespace Carto.IO
                 ["id"] = record.Id,
                 ["assetId"] = record.AssetId,
                 ["kind"] = record.Kind,
-                ["pos"] = Round(record.Position),
-                ["rot"] = Round(Normalize(record.Rotation))
+                ["pos"] = BundlePrecision.Vector(record.Position),
+                ["rot"] = BundlePrecision.Rotation(Normalize(record.Rotation))
             };
 
-            if (record.Scale.HasValue) line["scale"] = Round(record.Scale.Value);
+            if (record.Scale.HasValue) line["scale"] = BundlePrecision.Vector(record.Scale.Value);
             if (record.Parent.HasValue) line["parent"] = record.Parent.Value;
             if ((record.Attributes != null) && (record.Attributes.Count > 0)) line["attrs"] = record.Attributes;
 
@@ -83,29 +83,6 @@ namespace Carto.IO
             return new quaternion(v * math.rsqrt(lengthSquared));
         }
 
-        /// <summary>
-        /// Round a position to millimetres.
-        /// Full float precision would add several bytes per number across hundreds of thousands of
-        /// lines to express a precision the game does not meaningfully have.
-        /// </summary>
-        private static double[] Round(float3 value) => new[]
-        {
-            Math.Round((double)value.x, 3),
-            Math.Round((double)value.y, 3),
-            Math.Round((double)value.z, 3)
-        };
-
-        /// <summary>
-        /// Round a quaternion, keeping enough precision that it stays a unit quaternion within the
-        /// tolerance a validator checks.
-        /// </summary>
-        private static double[] Round(quaternion value) => new[]
-        {
-            Math.Round((double)value.value.x, 6),
-            Math.Round((double)value.value.y, 6),
-            Math.Round((double)value.value.z, 6),
-            Math.Round((double)value.value.w, 6)
-        };
 
         /// <summary>
         /// Flush and close the file.

@@ -53,14 +53,14 @@ namespace Carto.IO
             if (!string.IsNullOrEmpty(record.AssetId))
             {
                 line["assetId"] = record.AssetId;
-                line["pos"] = Round(record.Position);
-                line["rot"] = Round(record.Rotation);
+                line["pos"] = BundlePrecision.Vector(record.Position);
+                line["rot"] = BundlePrecision.Rotation(record.Rotation);
                 MeshForm++;
             }
             else
             {
                 double[][] centerline = new double[record.Centerline.Count][];
-                for (int i = 0; i < record.Centerline.Count; i++) centerline[i] = Round(record.Centerline[i]);
+                for (int i = 0; i < record.Centerline.Count; i++) centerline[i] = BundlePrecision.Vector(record.Centerline[i]);
 
                 line["centerline"] = centerline;
                 line["width"] = Math.Round((double)record.Width, 3);
@@ -88,8 +88,8 @@ namespace Carto.IO
                 ["category"] = record.Category,
                 ["curve"] = new[]
                 {
-                    Round(record.CurveA), Round(record.CurveB),
-                    Round(record.CurveC), Round(record.CurveD)
+                    BundlePrecision.Vector(record.CurveA), BundlePrecision.Vector(record.CurveB),
+                    BundlePrecision.Vector(record.CurveC), BundlePrecision.Vector(record.CurveD)
                 },
                 ["parts"] = record.Parts
             };
@@ -148,27 +148,6 @@ namespace Carto.IO
         /// </summary>
         public int CenterlineForm { get; private set; }
 
-        /// <summary>
-        /// Round a rotation, keeping enough precision that it stays a unit quaternion within the
-        /// tolerance a validator checks.
-        /// </summary>
-        private static double[] Round(quaternion value) => new[]
-        {
-            Math.Round((double)value.value.x, 6),
-            Math.Round((double)value.value.y, 6),
-            Math.Round((double)value.value.z, 6),
-            Math.Round((double)value.value.w, 6)
-        };
-
-        /// <summary>
-        /// Round a position to millimetres, as <see cref="InstanceWriter"/> does.
-        /// </summary>
-        private static double[] Round(float3 value) => new[]
-        {
-            Math.Round((double)value.x, 3),
-            Math.Round((double)value.y, 3),
-            Math.Round((double)value.z, 3)
-        };
 
         /// <summary>
         /// Flush and close the file.

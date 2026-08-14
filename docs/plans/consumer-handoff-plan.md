@@ -3,12 +3,15 @@
 **Goal:** make the CS2 World Bundle consumable by someone who has never read this repo, so a
 BeamNG level builder (or any other consumer) can be written against the bundle alone.
 
-**Status 2026-08-13: H1–H9 are closed and nothing is open.** `tools/csiibundle/` exists: **19
-modules**, no `bpy` anywhere in it, and `tools/blender_import_bundle.py` is an adapter over the
-package rather than the only copy of the reconstruction. **Four coverage sweeps** followed H9,
-each asking a different question — layer, field, render-rule, and the three defects visible by
-eye — and each found gaps the previous one structurally could not. All are closed; §2's closing
-notes carry them. Next is **H10**, schema completion.
+**Status 2026-08-14: H1–H13 are closed. The only thing left is H14, and it needs the user.**
+`tools/csiibundle/` exists: **19 modules**, no `bpy` anywhere in it, and
+`tools/blender_import_bundle.py` is an adapter over the package rather than the only copy of the
+reconstruction. **Four coverage sweeps** followed H9, each asking a different question — layer,
+field, render-rule, and the three defects visible by eye — and each found gaps the previous one
+structurally could not. All are closed; §2's closing notes carry them. H10–H13 are §5.
+
+**H14 is a user action: rip the city in-game, then acceptance.** §4 is what that rip has to
+answer.
 
 This file supersedes every dated handoff in this folder; they stay on disk as the record of how
 each conclusion was reached. The contract itself lives in `docs/bundle-schema.md`, the
@@ -31,12 +34,22 @@ dropped pieces. Schema 2, 23 layers.
 
 **It validated P18, P17, P19 and PROBE-2** — `__teen` 32 + `__elderly` 32 (the mesh count's +64),
 `grading.json` carrying `fog`, tiling unchanged because the fallback correctly did not fire, and
-`COLLAPSED:` reporting nothing. **Two producer changes post-date it**: the `splitToning` capture
-with the valued `diagnostics.unread`, both added *because* of what this rip reported; and the
-area normal-map rebuild (§3, the black-areas fix), whose effect is visible in the bundle as
-`terrain/surfaces/area_*_n.png` — 20 of 35 are still two-channel packed on disk, and
-`tools/test_normal_packing.py` prints the count, so the next rip is checked against it rather
-than assumed. Those ride the next rip; everything else in the bundle is current.
+`COLLAPSED:` reporting nothing. **Five producer changes now post-date it**, and every one of them
+rides H14's rip:
+
+1. the `splitToning` capture with the valued `diagnostics.unread`, both added *because* of what
+   this rip reported;
+2. the **area normal-map rebuild** (§3, the black-areas fix) — visible in the bundle as
+   `terrain/surfaces/area_*_n.png`, of which **20 of 35 are still two-channel packed on disk**;
+   `tools/test_normal_packing.py` prints the count, so the next rip is checked against it rather
+   than assumed;
+3. **`boneIndex`** on a punctual light (H10) — the field that says a light's position is *not*
+   object-frame;
+4. the **asset-pack line** in the completion dialog (H13);
+5. everything **H12** touched — four `warnings.jsonl` writers, every coordinate's precision, the
+   shared object query, and network piece asset ids.
+
+Everything else in the bundle is current.
 
 **Before trusting it, re-run the staleness check.** Producer changes make it a description of
 old code, and only a rip in-game refreshes it:
@@ -51,11 +64,12 @@ git log --format='%h %ad %s' --date=format:'%Y-%m-%d %H:%M' \
 | gate | result |
 |---|---|
 | `dotnet build -c Release` | compiles clean, 0 warnings, 0 errors |
-| `tools/test_bundle_contract.py` | 63/63 |
-| `tools/validate_bundle.py docs/example-bundle` | VALID, 0 warnings |
-| `tools/validate_bundle.py <full city>` | VALID, **1 warning** on the 18:10 rip (was 133 — see PILLARS-2). The one warning is the genuine parent advisory; the 119 declared gaps are a note |
+| `tools/test_bundle_contract.py` | **87/87** (63 before H10) |
+| `tools/validate_bundle.py docs/example-bundle` | VALID, 0 warnings — and the example now carries a record in **every** documented layer |
+| `tools/validate_bundle.py <full city>` | VALID, **1 warning** on the 18:10 rip, against all **15** schemas (was 133 — see PILLARS-2). The one warning is the genuine parent advisory; the 119 declared gaps are a note. ~7 minutes |
 | decal rows / png decode / splat extras / drape pick | pass |
-| node fan / clip cut | pass (six windows) |
+| node fan / clip cut / normal packing / heightfield | pass |
+| `python -c "import csiibundle"` under system Python | clean |
 
 The deploy step fails `MSB3231` while CS2 is running — the compile still succeeds, but nothing
 reaches the mods folder. Close the game before a build that must ship.
@@ -132,7 +146,8 @@ derived meshes (§6.1), and `attrs.treeState`/`attrs.fullness` say which one eac
 — but no consumer-side code had ever joined on them. On the reference city that is **153,991 of
 697,256 trees in a non-Adult state** (119,237 Elderly, 33,581 Teen) all drawing as healthy
 adults: the consumer half of the very gap producer-side P18 closed in August. Separately,
-**299,972 trees carry an `attrs.growthScale` below 1.0** — a uniform scale that is NOT folded
+**299,972 trees carry an `attrs.growthScale`, 130,880 of them below 1.0** *(count corrected
+2026-08-14: the earlier figure conflated "carries one" with "carries one below 1")* — a uniform scale that is NOT folded
 into `scale` (a tree record has no `scale` field at all), so every sapling drew at full height.
 Both are now `csiibundle.instances` (`mesh_candidates`, `growth_scale`), and the harness uses
 them. Measured on a 250 m downtown tree import: **420 of 2,229 trees swap mesh** (299 elderly,
@@ -176,7 +191,7 @@ Also closed at this level:
 | `areaprefabs.json`'s **PBR block** — `normalMap`, `maskMap`, `metallic`, `smoothness` | before it shipped, pavement and plazas "rendered flat-lit with guessed specular" (audit #40 P11); 35 of 40 area prefabs carry a normal map and 23 a mask map, and the harness read none of them |
 | **`rendererPriority`** | the game's overlap draw order — "without it a consumer has no rule for which of two overlapping areas paints on top". Rebuilt as geometry it becomes a rank-ordered lift inside the area rung: tiles +3.0 mm over sand +1.5 mm over grass +1.0 mm, all inside the ladder's 10 mm gap |
 | **`attrs.state == "construction"` draws NOTHING** | `BatchInstanceSystem` skips the building; the crane and site fence are separate records the bundle already carries. Drawing it puts a finished tower on a building site |
-| `attrs.elevation`, `attrs.decalLayers`, `attrs.decalHeight` | ground level is `pos[1] − elevation` and it is signed (29,610 records negative, to −86.3 m); decal layers keep a road marking off the wall behind it |
+| `attrs.elevation`, `attrs.decalLayers`, `attrs.decalHeight` | ground level is `pos[1] − elevation` and it is signed (970 records negative on the 08-12 rip, to −86.3 m); decal layers keep a road marking off the wall behind it |
 
 **The area PBR block bit back: the surfaces rendered BLACK, and it was not the wiring.** Reading
 `areaprefabs.json`'s `normalMap` was right; what it exposed is that **the area path never
@@ -375,15 +390,12 @@ than counted as proven.
 
 ---
 
-## 4. The remaining phases
+## 4. The remaining phase
 
 | phase | what it delivers |
 |---|---|
 | **H5–H9** | extract `tools/csiibundle/` — see §2 |
-| **H10** | **Schema completion.** Ten documented layers still have no JSON Schema: `lanes`, `laneprefabs`, `colors`, `lights`, `areas`, `areaprefabs`, `clipvolumes`, `warnings`, `terrain/surfaces/index`, and **`grading`** (now a declared layer, and it gained `fog`). Validator gains structural checks plus the cross-file joins, staying stdlib-only. Then extend `make_example_bundle.py` to exercise the layers it currently skips, and add negative cases per schema |
-| **H11** | **Consumer docs.** `docs/consumer-guide.md` (layer tour, pipeline order and its two hard dependencies, must-implement tiers mapped to modules, the drape protocol, CONTRACT-vs-TUNED constants, a worked example tracing one instance, an LH-Y-up → RH-Z-up appendix); `docs/consumer-caveats.md`; `tools/README.md`; `docs/bundle-changelog.md` |
-| **H12** | **C# refactor** of the ripper additions — behaviour-preserving, no output-shape change. Gate is a clean build plus `/code-review`; proof rides H14 |
-| **H13** | **Producer polish.** One item left: the rip-completion dialog should say *"N prefabs come from asset packs that are not enabled — enable them and re-rip for full fidelity"*, derived from the `unresolved` flag and the 89 unresolved-prefab warnings. It already reports path, stage times and summaries |
+| **H10–H13** | schemas, consumer docs, the C# refactor, the producer polish — **all closed**, see §5 |
 | **H14** | **Final re-rip (user action) + acceptance.** Validate against all 15 schemas; check every ⟳ change against real output; full Blender import for visual acceptance (A/B against pre-rip renders is *not* expected to match — the producer changed); fix measured-fact drift in the docs |
 
 **What H14 must check.** The 18:10 rip already settled most of this list — `__teen`/`__elderly`
@@ -394,14 +406,126 @@ at 32 each, `fog` present, `COLLAPSED:` clean, tiling unchanged, validator VALID
   +6.9° on sand and +6.2° on pavement (both bright) against +1.2° on grass (dark), and split
   toning is the only operator in the chain that shifts hue by luminance. **Both ends tinted
   equally, or only the shadow end, falsifies it** — write the outcome down either way.
-- `diagnostics.unread` now reports values, so read it again: the fifteen remaining components
-  arrive with their overridden parameters attached, and anything colour-relevant among them is
-  the next lead if split toning is not the answer.
-- Whatever H12's C# refactor touches.
+- `diagnostics.unread` now reports **values**, so read it again. The 18:10 rip reported names
+  only and named **sixteen**: `Bloom`, `CloudLayer`, `DepthOfField`, `DiffusionProfileList`,
+  `GlobalIllumination`, `HDShadowSettings`, `MotionBlur`, `ScreenSpaceAmbientOcclusion`,
+  `ScreenSpaceReflection`, `ScreenSpaceRefraction`, **`SplitToning`**, `TerrainRendering`,
+  `VisualEnvironment`, `VolumetricClouds`, `WaterRendering`, `WindVolumeComponent`. If split
+  toning is not the answer, the colour-relevant ones to read next are `VisualEnvironment`,
+  `GlobalIllumination`, `TerrainRendering` and `WaterRendering`.
+- **The area normal-map rebuild.** `tools/test_normal_packing.py` prints how many of the 35
+  `terrain/surfaces/area_*_n.png` are still two-channel packed. It is 20 on the 18:10 rip; it
+  must be **0** after this one. The consumer-side unpack is a no-op once it is.
+- **`boneIndex`** on `lights.json` (H10) — expect it on ~4 punctual entries, all bicycles and
+  one workshop asset, and on none of the other 605.
+- **The asset-pack line in the completion dialog** (H13) — expect *"89 prefab(s) in this city
+  come from asset packs that are not enabled"*, or a smaller number if packs were enabled since.
+- **Everything H12 touched**, which is where the real risk is: the four `warnings.jsonl`
+  writers, the coordinate precision of every position and rotation in the bundle, the shared
+  object query, and network piece asset ids. A clean `validate_bundle.py` covers most of it —
+  the precisions are checked by the schemas, the query by the instance/mesh counts agreeing, the
+  ids by the mesh-stem check. **`warnings.jsonl` is the one to read by eye**: 210 declarations,
+  119 `mesh` and 91 `prefab`, and the merge must have kept every pass's lines.
 
 ---
 
-## 5. Rules that have already cost something
+## 5. Done: H10–H13 (2026-08-14)
+
+### H10 — a schema for every layer
+
+`docs/schema/` held **five** documents for a contract with **fifteen** layers, so ten layers
+were specified in prose only. That is how both of the errors below survived: nothing ever forced
+the question *what values does this field actually take*. The ten new documents — `lane`,
+`laneprefabs`, `colors`, `lights`, `area`, `areaprefabs`, `clipvolume`, `warning`,
+`surfaceindex`, `grading` — were derived from the **producer's own writers** and cross-checked
+against the full-city rip, not written up from the prose.
+
+Two field descriptions were wrong, and writing a schema is what found them:
+
+| field | what the contract said | what it is |
+|---|---|---|
+| §5A `owner` | "the id of the `networks.jsonl` record this lane belongs to … absent for lanes owned by a node" | the generic ECS `Owner`. Of 677,566 lanes carrying one: **21.7%** resolve into `networks.jsonl`, **19.1%** into `instances.jsonl`, **59.2% into neither** (net nodes get no record, §5.1). 3,063 more carry none at all. Advisory grouping key |
+| §7.2 `parentMesh` | the sub-mesh a punctual light's `position` is relative to | a **colour selector**. The full-city run rejected `parentMesh: -1001`, and a sweep of every reader of `Effect.m_ParentMesh` found three, none of which places a light. Positions are **object-frame** |
+
+That second one produced the session's one producer change: what *does* move a light is
+`m_BoneIndex` — `FindBoneIndex` rewrites position and rotation into the matched bone's bind-pose
+space — and the bundle carried no trace of it, so a consumer could not tell which entries were
+not object-frame. `boneIndex` now ships in exactly that case. ⟳
+
+`csiibundle.lights` picked up both, plus a latent bug: the photometric discriminator was `type`,
+which the producer writes only when the managed `LightEffect` resolves, so any punctual entry
+whose photometry could not be read was **silently dropped from both lists**. It never fired on
+this city (654 punctual, 654 with `type`), which is why it was worth fixing.
+
+The validator loads all fifteen and gained three cross-file checks a schema cannot state:
+`heightRanges` must run parallel to `triangles`; an area's `owner` must join to an instance
+(§8b calls that join total, so a dangling one means a **mixed-vintage bundle**); and a §7.2 key
+matching no mesh or glTF node name is reported — 184 of 3,620 palette keys and 86 of 1,186 light
+keys, all for geometry the bundle deliberately excludes.
+
+The example bundle now carries a record in **every** documented layer, including a third
+instance whose mesh is deliberately absent and declared in `warnings.jsonl` — the §10 amnesty as
+a live case rather than as prose. `warnings.jsonl` is schema-validated now, because
+`_load_declared_missing` reads `assetId` and `reason` off it and a line the validator cannot
+parse silently stops excusing anything.
+
+**Gates:** 87/87 contract tests (24 new, one negative case per new schema); `validate_bundle`
+VALID/0 on the example and **VALID/1** on the full city — the same single genuine parent
+advisory as before, now with 680,629 lanes, 3,620 palettes, 1,186 light keys and `grading.json`
+under schema. Full-city validation takes ~7 minutes. `dotnet build` 0/0.
+
+### H11 — consumer docs
+
+Four documents, each answering a different question, cross-linked from `README.md` and the top
+of `bundle-schema.md` so a consumer author lands on the route rather than on the law:
+`docs/consumer-guide.md` (the route), `docs/consumer-caveats.md` (what is true and surprising),
+`docs/bundle-changelog.md` (which vintage of bundle you have, with a detection recipe per
+entry), `tools/README.md` (what each tool is for). The guide's worked example is taken from
+`docs/example-bundle`, so every number in it can be run.
+
+### H12 — the C# refactor
+
+Deliberately narrow, because nothing here can be *proved* before H14: three duplications where
+the duplicated thing is a load-bearing invariant, plus one inconsistency that was a latent bug.
+−437 lines and +136 across eight files, plus three new ones.
+
+| what | why it mattered |
+|---|---|
+| `IO/WarningsFile.cs` — the §10 read-keep-rewrite protocol, **4 copies → 1** | both halves of the ownership rule have already been broken in opposite directions: truncating instead of merging made a meshes-first rip report 118 declarations and ship 87, and appending instead of replacing made a twice-ripped bundle declare every gap twice |
+| `IO/BundlePrecision.cs` — the coordinate precisions, **5 copies → 1** | mm for positions, 6 dp for quaternions, both contract-visible. The later copies carried comments saying *"as `InstanceWriter` does"* and *"matching every other coordinate in the bundle"* — a constant whose copies describe each other wants to be one constant |
+| `Systems/RipQueries.cs` — the world-object query, **2 copies → 1** | the instance and mesh passes carried byte-identical descriptors with the reasoning on only one. Exclusions are the dangerous half (a rule matrix has no row for absence), and if the copies drifted the two layers would describe different worlds with nothing to say so |
+| `NetworkRipSystem.SanitizeId` → `MeshRipSystem.SanitizeAssetId` | **not purely a refactor.** The two sanitisers disagreed: the network one tested with `char.IsLetterOrDigit`, which is Unicode-aware, so a non-Latin letter came through and produced an id the contract's `^[A-Za-z0-9][A-Za-z0-9._-]*$` rejects. The same file already called the other one twice, so this was an inconsistency inside one system |
+
+**One thing found and deliberately NOT fixed.** `AppearanceRipSystem` has a **third** object
+query, and its doc comment claimed it "matches the instance rip". It does not: it excludes only
+`Deleted`/`Temp`/`Marker`, while the instance and mesh passes also exclude `Moving`, `Creature`
+and `Vehicle`. That superset is exactly where the validator's new note comes from — 184 of 3,620
+`colors.json` keys and 86 of 1,186 `lights.json` keys match no mesh, almost all vehicles and tree
+`*Child*` states. Harmless to a consumer, but it carries a **latent join hazard**:
+`BuildAssetIds` disambiguates a shared name only against the set it is handed, so a name shared
+between a building and a vehicle would be digest-suffixed in `lights.json` and left bare in
+`meshes/`, and the punctual-light key would stop joining. **Not live** — zero keys in either
+table are digest-suffixed today, against 7 mesh stems that are. Narrowing the query closes it
+*and* drops 270 keys, which is an output change, so it waits for a rip that can prove it rather
+than riding a refactor. The comment now states the difference instead of denying it.
+
+**Gate:** `dotnet build` 0 warnings 0 errors, plus `/code-review`. Proof rides H14 — see §4 for
+what to look at.
+
+### H13 — the asset-pack line in the completion dialog
+
+A prefab whose asset was not loaded this session is not a producer failure and not a bundle
+defect; the game itself drew those objects as nothing. But it is the **one shortfall a re-rip
+fixes**, and it reached only `warnings.jsonl` and `areaprefabs.json`, which nobody opens after a
+rip — 89 prefabs going unmentioned every time. Counted from the bundle on disk rather than from
+the run, so the line stays true after a partial rip, and matched on the `unresolved_<index>`
+assetId rather than on `kind: "prefab"`, because that kind also covers prefabs that resolved
+fine and simply have no SubMesh buffer — enabling a pack cannot help those, and promising it
+would be a cure that does not exist. ⟳
+
+---
+
+## 6. Rules that have already cost something
 
 - **The bundle goes stale the instant producer code changes**, and only the user can refresh it.
   The staleness check gives false positives — the mod deploys on `dotnet build`, not on commit —

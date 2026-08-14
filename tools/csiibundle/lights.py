@@ -50,7 +50,7 @@ PUNCTUAL_KIND = "punctual"
 # The old discriminators, kept as a fallback. `type` is written only when the managed
 # LightEffect prefab resolves, so keying on it alone silently DROPPED any punctual entry whose
 # photometry could not be read — neither a light nor a colour slot, and gone from both lists.
-# It never fired on the reference city (609 punctual entries, 609 with `type`), which is
+# It never fired on the reference city (654 punctual entries, 654 with `type`), which is
 # exactly why it was worth fixing before it did.
 PHOTOMETRIC_MARKER = "type"
 COLOUR_SLOT_MARKER = "purpose"
@@ -90,7 +90,8 @@ def bone_space(entry):
       compose the bind pose yourself or skip the light; placing it in the object frame puts it
       somewhere the game never draws it.
 
-    On the reference city this is 4 of 609 punctual lights (bicycles, one workshop asset), so
+    On the reference city at most 4 of 654 punctual lights can take one (three bicycles, one
+    park asset), so
     skipping is a defensible consumer choice — believing the object frame is not.
     """
     pair = entry.get("boneIndex") if isinstance(entry, dict) else None

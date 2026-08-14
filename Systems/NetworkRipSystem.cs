@@ -1130,61 +1130,40 @@ namespace Carto.Systems
         /// <param name="report">The report to note the outcome in.</param>
         private void WriteWarnings(NetworkRun run, StringBuilder report)
         {
-            string path = IOUtils.CombinePath(run.OutputDirectory, "warnings.jsonl");
+            int kept = WarningsFile.Rewrite(
+                run.OutputDirectory,
+                line => WarningsFile.IsKindPrefixed(line, WarningsFile.NetworkKindPrefix),
+                NetworkDeclarations(run));
+            if (kept < 0) return;
 
-            try
+            int written = run.Skipped.Count + ((_unconformedPieces > 0) ? 1 : 0);
+            report.AppendLine($"Recorded {written} gap(s) in {WarningsFile.FileName}, "
+                            + $"keeping {kept} from the other passes");
+        }
+
+        /// <summary>
+        /// This stage's §10 declarations, in write order.
+        /// </summary>
+        /// <param name="run">The finished run.</param>
+        /// <returns>One record per gap.</returns>
+        private IEnumerable<Dictionary<string, object>> NetworkDeclarations(NetworkRun run)
+        {
+            foreach (RipWarning skipped in run.Skipped)
             {
-                if (!System.IO.Directory.Exists(run.OutputDirectory)) System.IO.Directory.CreateDirectory(run.OutputDirectory);
-
-                List<string> kept = new();
-                if (System.IO.File.Exists(path))
-                {
-                    foreach (string line in System.IO.File.ReadAllLines(path))
-                    {
-                        if (string.IsNullOrWhiteSpace(line)) continue;
-                        if (!IsOwnedByNetworkRip(line)) kept.Add(line);
-                    }
-                }
-
-                using (System.IO.StreamWriter writer = new(path, false, new UTF8Encoding(false)) { NewLine = "\n" })
-                {
-                    foreach (string line in kept) writer.WriteLine(line);
-
-                    foreach (RipWarning skipped in run.Skipped)
-                    {
-                        Dictionary<string, object> warning = new()
-                        {
-                            ["kind"] = NetworkKind(skipped.Kind),
-                            ["assetId"] = skipped.AssetId,
-                            ["reason"] = skipped.Reason
-                        };
-                        writer.WriteLine(Newtonsoft.Json.JsonConvert.SerializeObject(warning, Newtonsoft.Json.Formatting.None));
-                    }
-
-                    // N-F2: pieces the game conforms to the terrain but this rip could not, because
-                    // the heightmap would not come back. They ship as authored — a trench wall
-                    // standing on nothing, a portal face too short to close its mouth — and the
-                    // bundle now says so instead of claiming they were conformed.
-                    //
-                    if (_unconformedPieces > 0)
-                    {
-                        Dictionary<string, object> warning = new()
-                        {
-                            ["kind"] = "networkConform",
-                            ["assetId"] = "networks/",
-                            ["reason"] = $"terrain heightmap unavailable; {_unconformedPieces} LowerBottomToTerrain/"
-                                       + "RaiseTopToTerrain piece placement(s) shipped unconformed"
-                        };
-                        writer.WriteLine(Newtonsoft.Json.JsonConvert.SerializeObject(warning, Newtonsoft.Json.Formatting.None));
-                    }
-                }
-
-                int written = run.Skipped.Count + ((_unconformedPieces > 0) ? 1 : 0);
-                report.AppendLine($"Recorded {written} gap(s) in warnings.jsonl, keeping {kept.Count} from the other passes");
+                yield return WarningsFile.ByAsset(NetworkKind(skipped.Kind), skipped.AssetId,
+                                                  skipped.Reason);
             }
-            catch (Exception ex)
+
+            // N-F2: pieces the game conforms to the terrain but this rip could not, because
+            // the heightmap would not come back. They ship as authored — a trench wall
+            // standing on nothing, a portal face too short to close its mouth — and the
+            // bundle now says so instead of claiming they were conformed.
+            //
+            if (_unconformedPieces > 0)
             {
-                _log.Warn($"Could not write warnings.jsonl: {ex.Message}");
+                yield return WarningsFile.ByAsset("networkConform", "networks/",
+                    $"terrain heightmap unavailable; {_unconformedPieces} LowerBottomToTerrain/"
+                    + "RaiseTopToTerrain piece placement(s) shipped unconformed");
             }
         }
 
@@ -1201,26 +1180,6 @@ namespace Carto.Systems
             "texture" => "networkTexture",
             _ => "network"
         };
-
-        /// <summary>
-        /// Whether a <c>warnings.jsonl</c> line is one this stage writes, and so this rip's to
-        /// replace. Matched on the declared kind rather than by parsing: a line this system cannot
-        /// read is someone else's and is kept.
-        /// </summary>
-        /// <param name="line">One line of the file.</param>
-        /// <returns>Whether the network stage owns it.</returns>
-        private static bool IsOwnedByNetworkRip(string line)
-        {
-            try
-            {
-                string kind = Newtonsoft.Json.Linq.JObject.Parse(line)["kind"]?.ToString();
-                return (kind != null) && kind.StartsWith("network", StringComparison.Ordinal);
-            }
-            catch (Exception)
-            {
-                return false;
-            }
-        }
 
         // ====================================================================================
         // Lane-drawn geometry — hanging cables, fences, hedges (bundle layer `lanemeshes/`).
@@ -1833,25 +1792,21 @@ namespace Carto.Systems
         }
 
         /// <summary>
-        /// Reduce a name to the character set the contract allows an <c>assetId</c>.
+        /// Reduce a cross-section piece's name to the contract's <c>assetId</c> pattern.
+        /// <para>
+        /// <b>This delegates rather than implementing its own rule</b> <i>(2026-08-14, H12)</i>.
+        /// It used to be a second sanitiser, and the two disagreed on a class of input: it tested
+        /// with <c>char.IsLetterOrDigit</c>, which is Unicode-aware, so a non-Latin letter came
+        /// through unchanged and produced an id the contract's
+        /// <c>^[A-Za-z0-9][A-Za-z0-9._-]*$</c> pattern rejects — an invalid file name in
+        /// <c>networks/</c> that a validator would flag as a bad stem. This same file already
+        /// called <see cref="MeshRipSystem.SanitizeAssetId"/> in two other places, so the split
+        /// was an inconsistency within one system rather than a considered difference.
+        /// </para>
         /// </summary>
         /// <param name="name">The raw name.</param>
         /// <returns>A safe id.</returns>
-        private static string SanitizeId(string name)
-        {
-            if (string.IsNullOrEmpty(name)) return "unnamed";
-
-            StringBuilder safe = new(name.Length);
-            foreach (char c in name)
-            {
-                safe.Append(char.IsLetterOrDigit(c) || (c == '.') || (c == '-') || (c == '_') ? c : '_');
-            }
-
-            // The pattern requires the first character to be alphanumeric.
-            //
-            if (!char.IsLetterOrDigit(safe[0])) safe.Insert(0, 'x');
-            return safe.ToString();
-        }
+        private static string SanitizeId(string name) => MeshRipSystem.SanitizeAssetId(name);
 
         /// <summary>
         /// <summary>

@@ -31,16 +31,19 @@ is wrong.
 
 Ranked by how much of the city they ruin, from the record of what actually went wrong here.
 
-1. **A `.glb` carries no metallic-roughness map.** Measured: 1,449 of 1,449 sampled glTF
-   materials have none and every one hard-codes `roughnessFactor` 0.9, while 4,563 of the
-   bundle's 4,784 `materials.json` entries ship a real per-texel `mask` whose **R is metallic
+1. **A `.glb` carries no metallic-roughness map.** Measured twice on the reference city, on
+   independent samples of 1,449 and 638 glTF materials: **every single one** lacks a
+   `metallicRoughnessTexture` and hard-codes `roughnessFactor` 0.9 — while **4,563 of the
+   bundle's 4,784** `materials.json` entries ship a real per-texel `mask` whose **R is metallic
    and A is smoothness** (`roughness = 1 − A`). A glTF-only consumer renders every window,
    metal roof, wet carriageway and polished floor at one flat roughness. → `materials`, §7.1.
 2. **Some materials have no textures at all, and they are not broken.** CS2 draws water and
    glass with shaders, so `template:WaterGeneric` and `DefaultGlassDoubleSided` serialise with
-   no maps — 206 shader-only materials. A glTF loader falls back to `baseColorFactor`
-   `[1,1,1,1]`, which is why every swimming pool renders as a white rectangle until you give
-   those templates an appearance. → `materials.shader_only_kind`, `water`, §7.1.
+   no maps. Measured on the reference city: **218 of 4,784 materials carry no texture in any
+   slot**, and `csiibundle.materials.shader_only_kind` names 206 of them — 109 glass, 51 water,
+   40 foliage, 4 overlay, 2 placeholder, 12 unclassified. A glTF loader falls back to
+   `baseColorFactor` `[1,1,1,1]`, which is why every swimming pool renders as a white rectangle
+   until you give those templates an appearance. → `materials.shader_only_kind`, `water`, §7.1.
 3. **Vegetation is authored grey.** Colour reaches a tree only through the per-instance
    `attrs.colorSet` applied through the material's `colorMask`, as a masked **multiply**. Skip
    it and every tree, bush and hedge is grey-brown and the city reads as dead. → `tints`, §7.2.
@@ -52,8 +55,9 @@ Ranked by how much of the city they ruin, from the record of what actually went 
    `__partial1`/`__partial2`/`__full` ship as derived meshes and `attrs.treeState` /
    `attrs.fullness` say which one an instance is in; `attrs.growthScale` is a uniform scale
    that is **not** folded into `scale` (a tree record has no `scale` field at all). On the
-   reference city that is 153,991 of 697,256 trees in a non-adult state and 299,972 carrying a
-   growth scale below 1.0 — all drawing as full-grown adults if you ignore them. →
+   reference city that is 153,991 of 697,256 trees in a non-adult state (119,237 Elderly,
+   33,581 Teen, 1,173 Dead) and 299,972 carrying a growth scale, 130,880 of them below 1.0 —
+   all drawing as full-grown adults if you ignore them. →
    `instances.mesh_candidates` / `instances.growth_scale`, §6.1.
 
 None of these fail loudly. Every one of them produces a city that looks plausible and is wrong.
@@ -287,8 +291,8 @@ instances.ground_level(record)       # 0.0   — pos[1] - attrs.elevation, NOT a
 ```
 
 That last line is the one people get wrong: `attrs.elevation` is how far the object stands
-**above** the ground, and it is signed — on the reference city 29,610 records are negative,
-down to −86.3 m.
+**above** the ground, and it is signed — on the reference city 970 of 483,351 records carrying
+it are negative, down to −86.3 m.
 
 **4. Build the placement matrix.** The contract's formula (§2.2) is
 

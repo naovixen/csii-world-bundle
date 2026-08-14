@@ -167,40 +167,9 @@ namespace Carto.Systems
         /// </summary>
         protected override void OnCreate()
         {
-            _objectQuery = GetEntityQuery(new EntityQueryDesc()
-            {
-                All = new ComponentType[]
-                {
-                    ComponentType.ReadOnly<Game.Objects.Object>(),
-                    ComponentType.ReadOnly<Game.Objects.Transform>(),
-                    ComponentType.ReadOnly<PrefabRef>()
-                },
-                None = new ComponentType[]
-                {
-                    // Moving things are vehicles and citizens, not world geometry; Deleted and Temp
-                    // are mid-edit bookkeeping that must never reach the bundle.
-                    //
-                    ComponentType.ReadOnly<Moving>(),
-                    ComponentType.ReadOnly<Game.Common.Deleted>(),
-                    ComponentType.ReadOnly<Game.Tools.Temp>(),
-
-                    // Markers — spawn points, pedestrian access, pipe and cable nodes — are editor
-                    // gizmos the game never draws. They are numerous enough to reach the top of the
-                    // prefab usage table, so keeping them would scatter stand-in boxes across the
-                    // whole reconstruction in exchange for nothing anyone can see.
-                    //
-                    ComponentType.ReadOnly<Marker>(),
-
-                    // Agents, not scenery. `Moving` only excludes the ones in motion at the instant
-                    // of export — a citizen waiting at a stop and a parked car have no `Moving`, so
-                    // they were being written into the bundle as world geometry. A level is the
-                    // built environment; the traffic and pedestrians passing through it at the
-                    // moment someone pressed the button are not part of it.
-                    //
-                    ComponentType.ReadOnly<Game.Creatures.Creature>(),
-                    ComponentType.ReadOnly<Game.Vehicles.Vehicle>()
-                }
-            });
+            // Shared with the mesh pass, and shared on purpose — see RipQueries.WorldObjects for
+            // what each exclusion is for and why the two layers cannot be allowed to disagree.
+            _objectQuery = GetEntityQuery(RipQueries.WorldObjects());
 
             _nameSystem = World.GetOrCreateSystemManaged<Game.UI.NameSystem>();
 
@@ -1681,115 +1650,55 @@ namespace Carto.Systems
         /// <param name="report">The report to note the outcome in.</param>
         private void WriteWarnings(InstanceRun run, StringBuilder report)
         {
-            string path = IOUtils.CombinePath(run.OutputDirectory, "warnings.jsonl");
+            int kept = WarningsFile.Rewrite(
+                run.OutputDirectory,
+                line => WarningsFile.IsKind(line, WarningsFile.InstanceKinds),
+                InstanceDeclarations(run));
+            if (kept < 0) return;
 
-            try
-            {
-                string directory = System.IO.Path.GetDirectoryName(path);
-                if (!string.IsNullOrEmpty(directory) && !System.IO.Directory.Exists(directory)) System.IO.Directory.CreateDirectory(directory);
-
-                // Keep every line this pass does not own, exactly as the mesh rip keeps ours.
-                // Truncating instead made the file order-dependent: the mesh rip declares its
-                // gaps and then a later instance pass erased all of them, so a bundle ripped
-                // meshes-first reported 118 declarations and shipped 87. Every one of those
-                // erased lines became an undeclared gap — a contract violation manufactured by
-                // the writer rather than by anything missing.
-                //
-                List<string> kept = new();
-                if (System.IO.File.Exists(path))
-                {
-                    foreach (string line in System.IO.File.ReadAllLines(path))
-                    {
-                        if (string.IsNullOrWhiteSpace(line)) continue;
-                        if (!IsOwnedByInstanceRip(line)) kept.Add(line);
-                    }
-                }
-
-                using System.IO.StreamWriter writer = new(path, false, new System.Text.UTF8Encoding(false)) { NewLine = "\n" };
-                foreach (string line in kept) writer.WriteLine(line);
-
-                foreach (int prefabIndex in run.UnresolvedPrefabs)
-                {
-                    Dictionary<string, object> warning = new()
-                    {
-                        ["kind"] = "prefab",
-                        ["assetId"] = $"unresolved_{prefabIndex}",
-                        ["reason"] = "managed prefab did not resolve; instances kept with placement only"
-                    };
-                    writer.WriteLine(Newtonsoft.Json.JsonConvert.SerializeObject(warning, Newtonsoft.Json.Formatting.None));
-                }
-
-                foreach (string assetId in run.GeometrylessPrefabs)
-                {
-                    Dictionary<string, object> warning = new()
-                    {
-                        ["kind"] = "prefab",
-                        ["assetId"] = assetId,
-                        ["reason"] = "prefab has no SubMesh buffer, so no mesh is produced; "
-                                   + "instances kept with placement only"
-                    };
-                    writer.WriteLine(Newtonsoft.Json.JsonConvert.SerializeObject(warning, Newtonsoft.Json.Formatting.None));
-                }
-
-                // Mid-rip churn and per-entity failures: each is a record instances.jsonl is
-                // missing, and §10 wants a missing object explicable rather than mysterious.
-                // These lines carry the entity id (the record's `id` domain) instead of an
-                // assetId — the stale ones no longer exist to ask for a prefab at all.
-                //
-                foreach (int entityId in run.StaleEntities)
-                {
-                    Dictionary<string, object> warning = new()
-                    {
-                        ["kind"] = "instance",
-                        ["id"] = entityId,
-                        ["reason"] = "removed by the simulation mid-rip; no record written"
-                    };
-                    writer.WriteLine(Newtonsoft.Json.JsonConvert.SerializeObject(warning, Newtonsoft.Json.Formatting.None));
-                }
-
-                foreach ((int entityId, string error) in run.FailedEntities)
-                {
-                    Dictionary<string, object> warning = new()
-                    {
-                        ["kind"] = "instance",
-                        ["id"] = entityId,
-                        ["reason"] = $"failed to record ({error}); no record written — see the log"
-                    };
-                    writer.WriteLine(Newtonsoft.Json.JsonConvert.SerializeObject(warning, Newtonsoft.Json.Formatting.None));
-                }
-
-                int total = run.UnresolvedPrefabs.Count + run.GeometrylessPrefabs.Count
-                          + run.StaleEntities.Count + run.FailedEntities.Count;
-                report.AppendLine($"Wrote warnings.jsonl ({total} entries: "
-                                + $"{run.UnresolvedPrefabs.Count} unresolved, {run.GeometrylessPrefabs.Count} without geometry, "
-                                + $"{run.StaleEntities.Count} removed mid-rip, {run.FailedEntities.Count} failed), "
-                                + $"keeping {kept.Count} from the other passes");
-            }
-            catch (Exception ex)
-            {
-                _log.Warn($"Could not write warnings.jsonl: {ex.Message}");
-            }
+            int total = run.UnresolvedPrefabs.Count + run.GeometrylessPrefabs.Count
+                      + run.StaleEntities.Count + run.FailedEntities.Count;
+            report.AppendLine($"Wrote {WarningsFile.FileName} ({total} entries: "
+                            + $"{run.UnresolvedPrefabs.Count} unresolved, {run.GeometrylessPrefabs.Count} without geometry, "
+                            + $"{run.StaleEntities.Count} removed mid-rip, {run.FailedEntities.Count} failed), "
+                            + $"keeping {kept} from the other passes");
         }
 
         /// <summary>
-        /// Whether a <c>warnings.jsonl</c> line is one this pass writes.
-        /// The instance pass owns <c>prefab</c> and <c>instance</c>; the mesh pass owns
-        /// <c>mesh</c>, <c>material</c> and <c>texture</c>; the lane pass owns <c>lane</c>.
-        /// Each rewrites only its own kinds, so the passes can run in any order, and re-running
-        /// one does not double or erase another's declarations.
+        /// This pass's §10 declarations, in write order.
         /// </summary>
-        /// <param name="line">One line of the file.</param>
-        /// <returns>Whether this pass owns it.</returns>
-        private static bool IsOwnedByInstanceRip(string line)
+        /// <param name="run">The finished run.</param>
+        /// <returns>One record per gap.</returns>
+        private static IEnumerable<Dictionary<string, object>> InstanceDeclarations(InstanceRun run)
         {
-            try
+            foreach (int prefabIndex in run.UnresolvedPrefabs)
             {
-                string kind = Newtonsoft.Json.Linq.JObject.Parse(line)["kind"]?.ToString();
-                return (kind == "prefab") || (kind == "instance");
+                yield return WarningsFile.ByAsset("prefab", $"unresolved_{prefabIndex}",
+                    "managed prefab did not resolve; instances kept with placement only");
             }
-            catch (Exception)
+
+            foreach (string assetId in run.GeometrylessPrefabs)
             {
-                return false;
+                yield return WarningsFile.ByAsset("prefab", assetId,
+                    "prefab has no SubMesh buffer, so no mesh is produced; "
+                    + "instances kept with placement only");
+            }
+
+            // Mid-rip churn and per-entity failures: each is a record instances.jsonl is
+            // missing, and §10 wants a missing object explicable rather than mysterious.
+            // These lines carry the entity id (the record's `id` domain) instead of an
+            // assetId — the stale ones no longer exist to ask for a prefab at all.
+            //
+            foreach (int entityId in run.StaleEntities)
+            {
+                yield return WarningsFile.ById("instance", entityId,
+                    "removed by the simulation mid-rip; no record written");
+            }
+
+            foreach ((int entityId, string error) in run.FailedEntities)
+            {
+                yield return WarningsFile.ById("instance", entityId,
+                    $"failed to record ({error}); no record written — see the log");
             }
         }
 

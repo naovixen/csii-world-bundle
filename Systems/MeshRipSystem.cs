@@ -90,24 +90,8 @@ namespace Carto.Systems
                 }
             });
 
-            _objectQuery = GetEntityQuery(new EntityQueryDesc()
-            {
-                All = new ComponentType[]
-                {
-                    ComponentType.ReadOnly<Game.Objects.Object>(),
-                    ComponentType.ReadOnly<Game.Objects.Transform>(),
-                    ComponentType.ReadOnly<PrefabRef>()
-                },
-                None = new ComponentType[]
-                {
-                    ComponentType.ReadOnly<Moving>(),
-                    ComponentType.ReadOnly<Game.Common.Deleted>(),
-                    ComponentType.ReadOnly<Game.Tools.Temp>(),
-                    ComponentType.ReadOnly<Marker>(),
-                    ComponentType.ReadOnly<Game.Creatures.Creature>(),
-                    ComponentType.ReadOnly<Game.Vehicles.Vehicle>()
-                }
-            });
+            // The instance pass's query, shared: the two layers must describe the same world.
+            _objectQuery = GetEntityQuery(RipQueries.WorldObjects());
 
             _meshSettingsQuery = GetEntityQuery(ComponentType.ReadOnly<MeshSettingsData>());
 
@@ -1351,69 +1335,24 @@ namespace Carto.Systems
             // declarations the previous one left, or the bundle keeps claiming losses it no longer
             // has.
 
-            // warnings.jsonl sits at the bundle root, one level above meshes/.
-            //
+            // This stage's OutputDirectory is `meshes/`; the layer sits at the bundle root, one
+            // level above it.
             string root = System.IO.Path.GetDirectoryName(run.OutputDirectory);
-            string path = IOUtils.CombinePath(root, "warnings.jsonl");
 
-            try
+            List<Dictionary<string, object>> records = new(run.SkippedAssets.Count);
+            foreach (RipWarning skipped in run.SkippedAssets)
             {
-                // Drop this rip's own kinds from any previous run before writing them again.
-                // The instance pass owns the file and its lines must survive, but re-ripping
-                // meshes used to append a second full set — so a bundle ripped twice declared
-                // every gap twice, and a gap since closed stayed declared forever.
-                //
-                List<string> kept = new();
-                if (System.IO.File.Exists(path))
-                {
-                    foreach (string line in System.IO.File.ReadAllLines(path))
-                    {
-                        if (string.IsNullOrWhiteSpace(line)) continue;
-                        if (!IsOwnedByMeshRip(line)) kept.Add(line);
-                    }
-                }
-
-                using System.IO.StreamWriter writer = new(path, false, new UTF8Encoding(false)) { NewLine = "\n" };
-                foreach (string line in kept) writer.WriteLine(line);
-
-                foreach (RipWarning skipped in run.SkippedAssets)
-                {
-                    Dictionary<string, object> warning = new()
-                    {
-                        ["kind"] = skipped.Kind,
-                        ["assetId"] = skipped.AssetId,
-                        ["reason"] = skipped.Reason
-                    };
-                    writer.WriteLine(Newtonsoft.Json.JsonConvert.SerializeObject(warning, Newtonsoft.Json.Formatting.None));
-                }
-
-                run.Report.AppendLine($"Recorded {run.SkippedAssets.Count} gap(s) in warnings.jsonl, keeping {kept.Count} from the instance pass");
+                records.Add(WarningsFile.ByAsset(skipped.Kind, skipped.AssetId, skipped.Reason));
             }
-            catch (Exception ex)
-            {
-                _log.Warn($"Could not write warnings.jsonl: {ex.Message}");
-            }
-        }
 
-        /// <summary>
-        /// Whether a <c>warnings.jsonl</c> line was written by a mesh rip rather than by the
-        /// instance pass, and so is this rip's to replace.
-        /// Matched on the declared kind rather than by parsing: a line this system cannot read is
-        /// someone else's and is kept.
-        /// </summary>
-        /// <param name="line">The line to classify.</param>
-        /// <returns>Whether the mesh rip owns it.</returns>
-        private static bool IsOwnedByMeshRip(string line)
-        {
-            try
-            {
-                string kind = Newtonsoft.Json.Linq.JObject.Parse(line)["kind"]?.ToString();
-                return (kind == "mesh") || (kind == "material") || (kind == "texture");
-            }
-            catch (Exception)
-            {
-                return false;
-            }
+            int kept = WarningsFile.Rewrite(
+                root,
+                line => WarningsFile.IsKind(line, WarningsFile.MeshKinds),
+                records);
+            if (kept < 0) return;
+
+            run.Report.AppendLine($"Recorded {run.SkippedAssets.Count} gap(s) in {WarningsFile.FileName}, "
+                                + $"keeping {kept} from the instance pass");
         }
 
         /// <summary>

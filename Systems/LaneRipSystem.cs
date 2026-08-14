@@ -514,73 +514,35 @@ namespace Carto.Systems
         /// <param name="report">The report to note the outcome in.</param>
         private void WriteWarnings(LaneRun run, StringBuilder report)
         {
-            string path = IOUtils.CombinePath(run.OutputDirectory, "warnings.jsonl");
+            int kept = WarningsFile.Rewrite(
+                run.OutputDirectory,
+                line => WarningsFile.IsKind(line, WarningsFile.LaneKinds),
+                LaneDeclarations(run));
+            if (kept < 0) return;
 
-            try
-            {
-                string directory = System.IO.Path.GetDirectoryName(path);
-                if (!string.IsNullOrEmpty(directory) && !System.IO.Directory.Exists(directory)) System.IO.Directory.CreateDirectory(directory);
-
-                List<string> kept = new();
-                if (System.IO.File.Exists(path))
-                {
-                    foreach (string line in System.IO.File.ReadAllLines(path))
-                    {
-                        if (string.IsNullOrWhiteSpace(line)) continue;
-                        if (!IsOwnedByLaneRip(line)) kept.Add(line);
-                    }
-                }
-
-                using System.IO.StreamWriter writer = new(path, false, new System.Text.UTF8Encoding(false)) { NewLine = "\n" };
-                foreach (string line in kept) writer.WriteLine(line);
-
-                foreach (int entityId in run.StaleEntities)
-                {
-                    Dictionary<string, object> warning = new()
-                    {
-                        ["kind"] = "lane",
-                        ["id"] = entityId,
-                        ["reason"] = "removed by the simulation mid-rip; no record written"
-                    };
-                    writer.WriteLine(Newtonsoft.Json.JsonConvert.SerializeObject(warning, Newtonsoft.Json.Formatting.None));
-                }
-
-                foreach ((int entityId, string error) in run.FailedEntities)
-                {
-                    Dictionary<string, object> warning = new()
-                    {
-                        ["kind"] = "lane",
-                        ["id"] = entityId,
-                        ["reason"] = $"failed to record ({error}); no record written — see the log"
-                    };
-                    writer.WriteLine(Newtonsoft.Json.JsonConvert.SerializeObject(warning, Newtonsoft.Json.Formatting.None));
-                }
-
-                report.AppendLine($"Wrote warnings.jsonl ({run.StaleEntities.Count + run.FailedEntities.Count} lane entries: "
-                                + $"{run.StaleEntities.Count} removed mid-rip, {run.FailedEntities.Count} failed), "
-                                + $"keeping {kept.Count} from the other passes");
-            }
-            catch (Exception ex)
-            {
-                _log.Warn($"Could not write warnings.jsonl: {ex.Message}");
-            }
+            report.AppendLine($"Wrote {WarningsFile.FileName} ({run.StaleEntities.Count + run.FailedEntities.Count} lane entries: "
+                            + $"{run.StaleEntities.Count} removed mid-rip, {run.FailedEntities.Count} failed), "
+                            + $"keeping {kept} from the other passes");
         }
 
         /// <summary>
-        /// Whether a <c>warnings.jsonl</c> line is one this pass writes — see
-        /// <see cref="WriteWarnings"/> for the kind ownership scheme.
+        /// This pass's §10 declarations, in write order. Both kinds name an ENTITY rather than an
+        /// asset: a lane the simulation removed mid-rip no longer resolves to a prefab to ask for.
         /// </summary>
-        /// <param name="line">One line of the file.</param>
-        /// <returns>Whether this pass owns it.</returns>
-        private static bool IsOwnedByLaneRip(string line)
+        /// <param name="run">The finished run.</param>
+        /// <returns>One record per gap.</returns>
+        private static IEnumerable<Dictionary<string, object>> LaneDeclarations(LaneRun run)
         {
-            try
+            foreach (int entityId in run.StaleEntities)
             {
-                return Newtonsoft.Json.Linq.JObject.Parse(line)["kind"]?.ToString() == "lane";
+                yield return WarningsFile.ById("lane", entityId,
+                    "removed by the simulation mid-rip; no record written");
             }
-            catch (Exception)
+
+            foreach ((int entityId, string error) in run.FailedEntities)
             {
-                return false;
+                yield return WarningsFile.ById("lane", entityId,
+                    $"failed to record ({error}); no record written — see the log");
             }
         }
 

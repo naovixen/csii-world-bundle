@@ -28,9 +28,10 @@ The validator's "an area's owner resolves to no instance" warning is the symptom
 ## Placement
 
 **`attrs.elevation` is not the ground's height.** It is how far the object stands *above* the
-ground, and it is **signed**: 29,610 of 517,398 records carrying it are negative, to −86.3 m
-(buried utility hookups, underground station parts). Ground level is `pos[1] − elevation`.
-Reading it as terrain height gives a city where everything sits at a couple of metres. (§4.2)
+ground, and it is **signed**: on the 2026-08-12 city, 970 of 483,351 records carrying it are
+negative, down to **−86.3 m** (underground station parts, buried props and decals). Ground level
+is `pos[1] − elevation`. Reading it as terrain height gives a city where everything sits at a
+couple of metres. (§4.2)
 
 **A `.glb` is one STATE of a prefab, not the prefab.** `attrs.treeState` and `attrs.fullness`
 select a derived mesh — `__teen`, `__elderly`, `__dead`, `__stump`, `__partial1`,
@@ -39,8 +40,9 @@ exists rather than demanding the exact one. There is no `__child`: the game has 
 a child is a Teen below growth 128, scaled. (§6.1)
 
 **`attrs.growthScale` is not in `scale`.** A tree record has no `scale` field at all;
-`growthScale` is a uniform multiplier you fold in yourself. 299,972 trees on the reference city
-carry one below 1.0. (§4.2)
+`growthScale` is a uniform multiplier you fold in yourself. On the reference city **299,972
+instances carry one — all of them trees — and 130,880 of those are below 1.0**, so ignoring it
+draws every one of those saplings at full height. (§4.2)
 
 **`attrs.state == "construction"` draws NOTHING.** `BatchInstanceSystem` skips the building
 entirely; the crane and the site fence are separate records the bundle already carries. Draw
@@ -77,7 +79,9 @@ rather than resolved. Both readings agree on R and A, which are the two that mat
 
 **Some materials have no textures and are not broken.** CS2 draws water and glass with shaders,
 so `template:WaterGeneric` (pools) and `DefaultGlassDoubleSided` (windows) serialise with no
-maps at all — 206 shader-only materials. A glTF loader falls back to `baseColorFactor`
+maps at all: **218 of 4,784 materials carry no texture in any slot**, of which
+`csiibundle.materials.shader_only_kind` names 206 (109 glass, 51 water, 40 foliage, 4 overlay,
+2 placeholder) and leaves 12 unclassified. A glTF loader falls back to `baseColorFactor`
 `[1,1,1,1]`, which is why every pool renders as a white rectangle. Branch on the
 `template:<name>` flag. (§7.1)
 
@@ -134,10 +138,10 @@ values (−1001 occurs on a workshop asset). Bounds-check before indexing anythi
 
 **`boneIndex`, when present, changes what `position` means.** The game rewrites the position
 into a procedural bone's bind-pose space when it resolves one, so an entry carrying `boneIndex`
-is not object-frame. 4 of 609 punctual lights on the reference city. Skipping them is
+is not object-frame. At most 4 of 654 punctual lights on the reference city. Skipping them is
 defensible; placing them in the object frame and believing the result is not.
 
-**Read `intensityUnit`.** The reference city reads `Lux` on all 609 punctual lights while the
+**Read `intensityUnit`.** The reference city reads `Lux` on all 654 punctual lights while the
 contract's own worked example shows `Lumen`. A Lux spot and a Lumen point are different
 quantities.
 

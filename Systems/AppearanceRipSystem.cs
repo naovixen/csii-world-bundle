@@ -37,8 +37,30 @@ namespace Carto.Systems
         static readonly ILog _log = Instance.Log;
 
         /// <summary>
-        /// The query for placed objects, matching the instance rip so the two agree on which
-        /// prefabs the city actually uses.
+        /// The query for placed objects.
+        /// <para>
+        /// <b>It is deliberately NOT <see cref="RipQueries.WorldObjects"/>, and the difference is
+        /// visible in the output.</b> <i>(Recorded 2026-08-14, H12 — this comment used to claim it
+        /// matched the instance rip, and it does not.)</i> This one excludes only
+        /// <c>Deleted</c>/<c>Temp</c>/<c>Marker</c>; the instance and mesh passes also exclude
+        /// <c>Moving</c>, <c>Creature</c> and <c>Vehicle</c>. So the prefab set here is a
+        /// <b>superset</b>, and the tables it writes carry entries for geometry the bundle
+        /// deliberately does not ship — measured on the reference city, <b>184 of 3,620</b>
+        /// <c>colors.json</c> keys and <b>86 of 1,186</b> <c>lights.json</c> keys match no mesh
+        /// file or glTF node name, almost all of them vehicles and tree <c>*Child*</c> states.
+        /// They are harmless to a consumer (a lookup simply misses) and the validator reports the
+        /// count as a note.
+        /// </para>
+        /// <para>
+        /// <b>The latent hazard is the asset id, not the dead keys.</b>
+        /// <see cref="MeshRipSystem.BuildAssetIds"/> disambiguates a shared name only against the
+        /// set it is handed, so a name shared between a building and a vehicle would be
+        /// digest-suffixed here and left bare in the mesh layer, and the punctual-light key would
+        /// stop joining. Not live: <b>zero</b> keys in either table are digest-suffixed today,
+        /// against 7 mesh stems that are. Narrowing this query would close it — and would also
+        /// drop those 270 keys, which is an output change, so it waits for a rip that can prove
+        /// it rather than riding a refactor.
+        /// </para>
         /// </summary>
         EntityQuery _objectQuery;
 
@@ -327,7 +349,7 @@ namespace Carto.Systems
                 // consumer placing it in the object frame puts the light in the wrong spot with
                 // nothing in the file to say so. Emitted only in that case, because `.x < 0` is
                 // the ordinary object-frame light and an always-present -1 pair would imply the
-                // bundle carries bone data it does not. 4 of 609 punctual lights on the
+                // bundle carries bone data it does not. At most 4 of 654 punctual lights on the
                 // reference city.
                 //
                 if (effect.m_BoneIndex.x >= 0)
