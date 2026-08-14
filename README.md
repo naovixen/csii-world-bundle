@@ -25,10 +25,18 @@ existing GeoJSON/Shapefile/GeoTIFF output, it walks the loaded city in-engine an
 meshes, materials/textures, per-instance transforms and full attributes into a single,
 versioned, engine-neutral **CS2 World Bundle**.
 
+* **Writing a consumer? Start at [`docs/consumer-guide.md`](docs/consumer-guide.md)** — the route
+  through the layers, the pipeline order, the must-implement tiers, and a worked example tracing
+  one instance from manifest to pixels. Then
+  [`docs/consumer-caveats.md`](docs/consumer-caveats.md) for the things that are true and
+  surprising, and [`docs/bundle-changelog.md`](docs/bundle-changelog.md) for telling which
+  vintage of bundle you have.
 * The bundle contract is frozen and documented in **[`docs/bundle-schema.md`](docs/bundle-schema.md)**,
-  with JSON Schemas in [`docs/schema/`](docs/schema/) and a complete minimal example bundle in
-  [`docs/example-bundle/`](docs/example-bundle/). A consumer can be built against those alone —
-  no game, no mod source.
+  with a JSON Schema per layer in [`docs/schema/`](docs/schema/) (fifteen) and a complete minimal
+  example bundle in [`docs/example-bundle/`](docs/example-bundle/). A consumer can be built
+  against those alone — no game, no mod source.
+* An engine-neutral reference reader lives in [`tools/csiibundle/`](tools/csiibundle/) — standard
+  library plus numpy, never imports `bpy`. See [`tools/README.md`](tools/README.md).
 * Validate any bundle with `python tools/validate_bundle.py <bundle_dir>` (standard library only).
 * Downstream consumers (Blender importers, level builders for other engines) are deliberately
   **out of scope** for this repository. The bundle is the entire interface.

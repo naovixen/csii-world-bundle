@@ -10,6 +10,13 @@ and the mod has a bug.
 
 See [Versioning](#12-versioning-and-compatibility) before changing anything here.
 
+> **Writing a consumer rather than checking a claim?** This document is normative but it is not
+> a route. Start at [`consumer-guide.md`](consumer-guide.md) — layer tour, pipeline order,
+> must-implement tiers and a worked example — with [`consumer-caveats.md`](consumer-caveats.md)
+> beside it for what is true and surprising, and [`bundle-changelog.md`](bundle-changelog.md)
+> for working out which vintage of bundle you have. `tools/csiibundle/` is the reference
+> implementation of every algorithm named here.
+
 > **Scope and boundary.** A bundle contains geometry and textures extracted from the
 > producer's own copy of Cities: Skylines II, for interoperability with software they own.
 > Bundles are local artefacts. Do not publish, upload or redistribute them, and never commit
