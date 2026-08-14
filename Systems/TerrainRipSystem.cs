@@ -954,6 +954,17 @@ namespace Carto.Systems
                     void WriteAreaTexture(PendingTexture captured, string field, string suffix)
                     {
                         if (captured?.Pixels == null) return;
+
+                        // Area normal maps are two-channel-packed exactly as object and ground
+                        // normals are, and this path was the one that never unpacked them —
+                        // measured on the reference city, 20 of 35 shipped with red pinned to
+                        // white, so a consumer reading them as ordinary tangent normals got
+                        // `normal.x = +1` for every texel and every painted surface shaded
+                        // black. Contract §7.1 promises ONE convention for every normal map in
+                        // the bundle; this is where the area half of that promise is kept.
+                        //
+                        if (field == "normalMap") MaterialRipSystem.ReconstructTwoChannelNormal(captured.Pixels);
+
                         string fileName = $"area_{key}{suffix}.png";
                         string surfacesDirectory = IOUtils.CombinePath(terrainDirectory, "surfaces");
                         if (!Directory.Exists(surfacesDirectory)) Directory.CreateDirectory(surfacesDirectory);

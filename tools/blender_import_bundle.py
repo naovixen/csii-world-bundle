@@ -1936,6 +1936,17 @@ def _splat_ground_material(surfaces_dir, splat, mapping, tiling_block=None):
             return None
         image = _unpremultiply(bpy.data.images.load(path))
         image.colorspace_settings.name = "Non-Color"      # a normal is data, not colour
+
+        # Measured on the reference bundle, all seven grounds ship tangent RGB — unlike the
+        # area surfaces, which ship two-channel packings and shaded black for it. Checked
+        # rather than assumed, because the failure is silent and the blend below mixes three
+        # taps of the image with its alpha already dropped, so unpacking here would mean
+        # threading alpha through `tap`. If this ever fires, that is the work it needs.
+        packing = materials.detect_normal_packing(_sample_image_rgba(image))
+        if packing != materials.NORMAL_RGB:
+            LOG.warn(f"ground normal {ground}_normal.png is {packing}-packed, not the tangent "
+                     "RGB of contract §7.1 — its relief will be wrong; re-rip to ship it "
+                     "unpacked (see materials.detect_normal_packing)")
         return sampled(image, ground)
 
     splat_uv = tree.nodes.new("ShaderNodeUVMap")
@@ -2086,6 +2097,76 @@ def _unpremultiply(image):
     if image is not None:
         image.alpha_mode = "CHANNEL_PACKED"
     return image
+
+
+_NORMAL_SAMPLE_STRIDE = 64          # every 64th texel: enough to see a channel is CONSTANT
+
+
+def _sample_image_rgba(image, stride=_NORMAL_SAMPLE_STRIDE):
+    """A subsample of a loaded image as `(r, g, b, a)` tuples in 0-1, for `detect_normal_packing`.
+
+    Set the colour space BEFORE calling: `pixels` hands back what the image holds, and the point
+    of the sample is to read the stored numbers rather than a managed version of them.
+
+    Strided rather than whole: the signatures being tested are channels that are constant across
+    the entire map, so a few thousand texels settle it, and pulling 4 M floats per image out of
+    Blender for a yes/no answer would cost more than the shading it fixes.
+    """
+    width, height = image.size
+    if (width == 0) or (height == 0):
+        return []
+    buffer = numpy.empty(width * height * 4, dtype=numpy.float32)
+    image.pixels.foreach_get(buffer)
+    return [tuple(float(v) for v in texel) for texel in buffer.reshape(-1, 4)[::stride]]
+
+
+def _tangent_normal_colour(tree, texture, packing, anchor):
+    """The colour a Normal Map node wants, rebuilt from a two-channel-packed normal map.
+
+    Mirrors `csiibundle.materials.unpack_normal` in nodes: X comes from whichever channel the
+    packing put it in, Y from green, and Z is RECONSTRUCTED as `sqrt(1 - x^2 - y^2)` because the
+    stored blue means nothing in either packed layout. Returns the source's own `Color` output
+    unchanged when the map already conforms to §7.1, so the node graph only grows where it must.
+    """
+    channel = materials.normal_x_channel(packing)
+    if channel is None:
+        return texture.outputs["Color"]
+
+    def math(operation, first, second=None, third=None, offset=0):
+        node = tree.nodes.new("ShaderNodeMath")
+        node.operation = operation
+        node.location = (anchor.x - 620 + offset, anchor.y + 520)
+        for index, value in enumerate((first, second, third)):
+            if value is None:
+                continue
+            if hasattr(value, "is_linked"):
+                tree.links.new(value, node.inputs[index])
+            else:
+                node.inputs[index].default_value = value
+        return node.outputs[0]
+
+    separate = tree.nodes.new("ShaderNodeSeparateColor")
+    separate.location = (anchor.x - 800, anchor.y + 520)
+    tree.links.new(texture.outputs["Color"], separate.inputs["Color"])
+
+    stored_x = texture.outputs["Alpha"] if channel == "A" else separate.outputs["Red"]
+    stored_y = separate.outputs["Green"]
+
+    # -1..1, square, and the Pythagorean remainder — clamped at zero because a compressed texel
+    # can land marginally outside the unit disc and a negative square root is a black texel.
+    x = math("MULTIPLY_ADD", stored_x, 2.0, -1.0, offset=0)
+    y = math("MULTIPLY_ADD", stored_y, 2.0, -1.0, offset=160)
+    remainder = math("SUBTRACT", 1.0, math("ADD", math("MULTIPLY", x, x, offset=320),
+                                           math("MULTIPLY", y, y, offset=320), offset=480),
+                     offset=640)
+    z = math("SQRT", math("MAXIMUM", remainder, 0.0, offset=800), offset=960)
+
+    combine = tree.nodes.new("ShaderNodeCombineColor")
+    combine.location = (anchor.x - 400, anchor.y + 520)
+    tree.links.new(stored_x, combine.inputs["Red"])
+    tree.links.new(stored_y, combine.inputs["Green"])
+    tree.links.new(math("MULTIPLY_ADD", z, 0.5, 0.5, offset=1120), combine.inputs["Blue"])
+    return combine.outputs["Color"]
 
 
 def _unpremultiply_all():
@@ -2550,6 +2631,7 @@ def build_areas(bundle_dir, collection, center, radius, ground=None, cell=3.5):
             catalogue = json.load(handle)
 
     area_materials = {}
+    area_packings = {}
 
     def area_material(prefab):
         """The §8b surface as the PBR material the catalogue actually describes.
@@ -2583,9 +2665,19 @@ def build_areas(bundle_dir, collection, center, radius, ground=None, cell=3.5):
         if normal_path and os.path.isfile(normal_path):
             tex = tree.nodes.new("ShaderNodeTexImage")
             tex.image = _unpremultiply(bpy.data.images.load(normal_path, check_existing=True))
-            tex.image.colorspace_settings.name = "Non-Color"
+            tex.image.colorspace_settings.name = "Non-Color"   # set BEFORE sampling the pixels
+
+            # An area normal map is not reliably three-channel. Feeding a packed one straight
+            # into a Normal Map node points every shading normal sideways or into the surface,
+            # and the surface renders BLACK — see `materials.detect_normal_packing`. The
+            # producer rebuilds these to §7.1 as of this change; until a bundle is re-ripped,
+            # this is what keeps the ground lit.
+            packing = materials.detect_normal_packing(_sample_image_rgba(tex.image))
+            area_packings[packing] = area_packings.get(packing, 0) + 1
+
             nmap = tree.nodes.new("ShaderNodeNormalMap")   # CS2 authors OpenGL +Y, as Blender wants
-            tree.links.new(tex.outputs["Color"], nmap.inputs["Color"])
+            tree.links.new(_tangent_normal_colour(tree, tex, packing, bsdf.location),
+                           nmap.inputs["Color"])
             tree.links.new(nmap.outputs["Normal"], bsdf.inputs["Normal"])
 
         mask_path = (os.path.join(bundle_dir, surface["mask_map"])
@@ -2649,6 +2741,16 @@ def build_areas(bundle_dir, collection, center, radius, ground=None, cell=3.5):
     LOG.done(f"areas:     {placed} surface area(s) into {built} object(s) "
              f"over {len(builders)} prefab(s)"
              + (f", {skipped_region} outside the region" if skipped_region else ""))
+
+    # Say it out loud when a bundle ships normal maps the contract does not describe: rebuilt
+    # here they light correctly, but the fix belongs in the producer, and a silent rebuild is
+    # how a consumer written against §7.1 alone inherits black ground without ever knowing why.
+    packed = {k: v for k, v in area_packings.items() if k != materials.NORMAL_RGB}
+    if packed:
+        LOG.warn(f"{sum(packed.values())} of {sum(area_packings.values())} area normal map(s) "
+                 f"are two-channel packed ({', '.join(f'{n}x {k}' for k, n in sorted(packed.items()))}) "
+                 "rather than the tangent RGB of contract §7.1 — rebuilt here (they would "
+                 "otherwise shade black); re-rip to ship them unpacked")
 
     # A prefab with neither texture nor colour renders the neutral grey fallback — say why,
     # per prefab, instead of leaving grey boxes as a riddle. `unresolved` is the producer's

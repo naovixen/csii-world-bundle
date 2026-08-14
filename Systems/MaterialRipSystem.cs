@@ -1302,39 +1302,55 @@ namespace Carto.Systems
 
         /// <summary>
         /// Rebuild a two-channel-packed normal map into a standard tangent normal.
-        /// Unity's DXT5nm/BC3n packing stores X in <b>alpha</b> and Y in green, forcing red to 1
-        /// and leaving blue to mirror green; the shader reconstructs Z. Written out raw, a
-        /// consumer reading it as an ordinary tangent normal map gets <c>normal.x = +1</c> for
-        /// every texel — measured on a full city, every road surface shaded by its compass
-        /// bearing, which is what "each road is a different colour" turned out to be. The
-        /// packing's signature — red pinned at white while green varies and alpha is not
-        /// constant — matches no legitimate colour or mask content (white-with-alpha decals have
-        /// green pinned too), so it is detected here, where every readback route converges, and
-        /// rebuilt to <c>(x, y, z, 1)</c> exactly as the shader would.
+        /// A two-channel normal ships X and Y and lets the shader reconstruct Z, and CS2's art
+        /// arrives in both of the layouts Unity's own <c>UnpackNormalmapRGorAG</c> exists to
+        /// straddle: <b>AG</b> (DXT5nm/BC3n — X in alpha, Y in green, red forced to 1 and blue
+        /// left mirroring green) and <b>RG</b> (BC5 — X in red, Y in green, blue left at 0 and
+        /// alpha at 1). Written out raw, a consumer reading either as an ordinary tangent normal
+        /// map gets a nonsense normal: AG gives <c>normal.x = +1</c> for every texel — measured
+        /// on a full city, every road surface shaded by its compass bearing, which is what "each
+        /// road is a different colour" turned out to be — and RG gives <c>normal.z = -1</c>, a
+        /// normal pointing into the surface, which shades black.
+        /// Each layout has a signature that matches no legitimate colour or mask content: red
+        /// pinned at white while alpha varies, or blue pinned at black while red and green both
+        /// vary. They are detected here, where every readback route converges, and rebuilt to
+        /// <c>(x, y, z, 1)</c> exactly as the shader would. Contract §7.1 promises consumers one
+        /// convention for every normal map in the bundle, and this is the only place that keeps
+        /// that promise.
         /// </summary>
         /// <param name="pixels">RGBA8 pixels, rebuilt in place.</param>
         internal static void ReconstructTwoChannelNormal(byte[] pixels)
         {
             // The fraction test rather than a strict minimum: block compression dents a few
-            // texels of the constant-white red channel (247–249, and one map to 191), and a
-            // strict minimum was measured to miss 235 of 784 packed normals in a full city. A
-            // standard three-channel normal has red centred at 128 and passes nowhere near 90 %.
+            // texels of the constant channel (red at 247–249, and one map to 191), and a strict
+            // minimum was measured to miss 235 of 784 packed normals in a full city. A standard
+            // three-channel normal has red centred at 128 and blue up near white, so it passes
+            // nowhere near 90 % on either test.
             //
             int count = pixels.Length / 4;
             if (count == 0) return;
 
-            int highRed = 0, minA = 255;
+            int highRed = 0, lowBlue = 0, minA = 255;
             for (int i = 0; i < pixels.Length; i += 4)
             {
                 if (pixels[i] >= 250) highRed++;
+                if (pixels[i + 2] <= 5) lowBlue++;
                 if (pixels[i + 3] < minA) minA = pixels[i + 3];
             }
 
-            if ((highRed < (count * 0.9f)) || (minA >= 250)) return;
+            float threshold = count * 0.9f;
+
+            // AG needs alpha to be carrying something — a map whose alpha is constant has no X
+            // in it — while RG needs blue to be the pinned channel instead. The two are mutually
+            // exclusive by construction, so the order of these tests never decides anything.
+            //
+            bool alphaPacked = (highRed >= threshold) && (minA < 250);
+            bool redPacked = (lowBlue >= threshold) && (highRed < threshold);
+            if (!alphaPacked && !redPacked) return;
 
             for (int i = 0; i < pixels.Length; i += 4)
             {
-                float x = (pixels[i + 3] / 255f * 2f) - 1f;
+                float x = ((alphaPacked ? pixels[i + 3] : pixels[i]) / 255f * 2f) - 1f;
                 float y = (pixels[i + 1] / 255f * 2f) - 1f;
                 float z = Mathf.Sqrt(Mathf.Max(0f, 1f - (x * x) - (y * y)));
 

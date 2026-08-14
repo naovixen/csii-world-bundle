@@ -31,9 +31,12 @@ dropped pieces. Schema 2, 23 layers.
 
 **It validated P18, P17, P19 and PROBE-2** — `__teen` 32 + `__elderly` 32 (the mesh count's +64),
 `grading.json` carrying `fog`, tiling unchanged because the fallback correctly did not fire, and
-`COLLAPSED:` reporting nothing. **One producer change post-dates it**: the `splitToning` capture
-and the valued `diagnostics.unread`, both added *because* of what this rip reported. Those two
-ride the next rip; everything else in the bundle is current.
+`COLLAPSED:` reporting nothing. **Two producer changes post-date it**: the `splitToning` capture
+with the valued `diagnostics.unread`, both added *because* of what this rip reported; and the
+area normal-map rebuild (§3, the black-areas fix), whose effect is visible in the bundle as
+`terrain/surfaces/area_*_n.png` — 20 of 35 are still two-channel packed on disk, and
+`tools/test_normal_packing.py` prints the count, so the next rip is checked against it rather
+than assumed. Those ride the next rip; everything else in the bundle is current.
 
 **Before trusting it, re-run the staleness check.** Producer changes make it a description of
 old code, and only a rip in-game refreshes it:
@@ -174,6 +177,43 @@ Also closed at this level:
 | **`rendererPriority`** | the game's overlap draw order — "without it a consumer has no rule for which of two overlapping areas paints on top". Rebuilt as geometry it becomes a rank-ordered lift inside the area rung: tiles +3.0 mm over sand +1.5 mm over grass +1.0 mm, all inside the ladder's 10 mm gap |
 | **`attrs.state == "construction"` draws NOTHING** | `BatchInstanceSystem` skips the building; the crane and site fence are separate records the bundle already carries. Drawing it puts a finished tower on a building site |
 | `attrs.elevation`, `attrs.decalLayers`, `attrs.decalHeight` | ground level is `pos[1] − elevation` and it is signed (29,610 records negative, to −86.3 m); decal layers keep a road marking off the wall behind it |
+
+**The area PBR block bit back: the surfaces rendered BLACK, and it was not the wiring.** Reading
+`areaprefabs.json`'s `normalMap` was right; what it exposed is that **the area path never
+rebuilt its two-channel normal maps**. A two-channel normal ships X and Y and lets the shader
+reconstruct Z, and CS2's art arrives in both of the layouts Unity's `UnpackNormalmapRGorAG`
+straddles — **AG** (X in alpha, red pinned white) and **RG** (X in red, blue pinned black).
+`MaterialRipSystem.ReconstructTwoChannelNormal` has detected and rebuilt them since the
+`661a441` mesh-pipeline work — it is what "each road is a different colour" turned out to be —
+and it is called on the object path and on the ground-surface path. It was never called on the
+area path. Measured on the bundle as it stands: **18 of 35 area normal maps are AG and 2 are
+RG**, against 0 of 7 grounds and 0 of 40 objects sampled. Read as tangent RGB, AG gives
+`normal.x = +1` — a shading normal lying flat along the surface, which on level ground faces 90°
+away from any sun — and RG gives `normal.z = -1`, pointing into the surface. Both shade black,
+which is exactly what was on screen: green terrain, and every driveway, lot, path and plaza in
+the frame near-black.
+
+Fixed at both ends, because they answer different questions:
+
+| end | change | when it takes effect |
+|---|---|---|
+| **producer** (the real fix) | `TerrainRipSystem`'s `WriteAreaTexture` now runs the rebuild on `normalMap`, the one funnel all four area normal-map sites pass through; `ReconstructTwoChannelNormal` gained the RG signature beside the AG one it already had | **next re-rip** — contract §7.1 promises consumers ONE convention for every normal map in the bundle, and this is where the area half of that promise is kept |
+| **consumer** (what un-blackens today's bundle) | `materials.detect_normal_packing` / `unpack_normal` classify a map from a strided sample using the producer's own thresholds, and the harness rebuilds a packed one in nodes — X from its channel, Y from green, Z reconstructed — and **warns** that it had to | immediately, and it is a no-op once a re-ripped bundle ships them unpacked |
+
+**What is deliberately NOT guessed at.** 15 of the 35 area maps match neither signature: red is
+near-constant at ~0.89 with real variation, alpha pinned, and no colour-space reading makes them
+unit-length (raw |n| 1.257, sRGB→linear 1.199, linear→sRGB 1.414 — so it is not a gamma mangle).
+They are left exactly as shipped, which renders them with a uniform ~40° normal tilt rather than
+black. Inventing a layout for them would invent relief the game does not draw; the honest state
+is "unclassified, recorded here".
+
+Gates: `tools/test_normal_packing.py` — detection on maps whose layout is known by construction
+(including the two negatives that would break working paths: a flat RGB map, and an RGB map with
+data in its alpha, which is exactly what the seven grounds are), round-trip through each layout
+within 8-bit quantisation, and the black itself asserted as `N·L` rather than by eye. Nine
+standalone tests, validator VALID/1, 20 modules clean, `dotnet build` 0 warnings. On the area
+region: **7 count lines identical** — no geometry moved — and the render goes from black lots to
+sand, concrete and pavement at their own albedo.
 
 **One thing checked rather than assumed:** `materials.json`'s render fields look unread, but the
 `.glb` files carry them and a glTF consumer gets them free. Verified rather than asserted —
