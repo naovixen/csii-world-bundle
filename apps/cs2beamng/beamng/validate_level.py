@@ -157,6 +157,24 @@ def check(level_dir, bundle_dir, progress=None):
             if sym.lower() not in mapto:
                 unbound.setdefault(sym, name)
     checks["unboundMaterials"] = len(unbound)
+    # detail sizes must be positive: BeamNG logs "Shape with invalid detail levels" and draws nothing (load #6)
+    bad_detail = 0
+    detail_re = re.compile(r'<node id="[^"]*_a(\d+)"')
+    for name, path in dae_files:
+        try:
+            with open(path, "rb") as handle:
+                handle.seek(0, os.SEEK_END)
+                size = handle.tell()
+                handle.seek(max(0, size - 262144))
+                tail = handle.read().decode("utf-8", "replace")
+        except OSError:
+            continue
+        sizes = [int(v) for v in detail_re.findall(tail)]
+        if sizes and min(sizes) <= 0:
+            bad_detail += 1
+            if bad_detail <= 5:
+                note(f"{name}: detail level size 0 (BeamNG: invalid detail levels)")
+    checks["invalidDetailShapes"] = bad_detail
     for sym, where in list(unbound.items())[:20]:
         note(f"material {sym!r} bound by {where} has no mapTo in any main.materials.json")
     for m in missing[:20]:

@@ -30,6 +30,7 @@ from . import Stage, level_of
 from .materials import mapto_name
 
 STAGE_KEY = "derived"
+TILE_DETAIL_PX = 2      # detail sizes must be > 0 (BeamNG: "invalid detail levels"); 2 px = always drawn
 PRODUCTS = {
     # product: (setting toggle, group, collision setting or None for paint, castShadows)
     "markings": ("markings", "Markings", "collision_paint", False),
@@ -92,7 +93,7 @@ def run(ctx, progress):
             shape_name = f"{product}_{tx}_{tz}"
             mesh = dae.group_by_material(dae.merge_meshes(shape_name, parts))
             path = level.path("art", "shapes", product, f"{shape_name}.dae")
-            stats = dae.write_shape(path, dae.Shape(shape_name, [(0, [mesh])]))
+            stats = dae.write_shape(path, dae.Shape(shape_name, [(TILE_DETAIL_PX, [mesh])]))
             obj = {"name": shape_name, "class": "TSStatic", "shapeName": level.game_path("art", "shapes", product, f"{shape_name}.dae"),
                    "position": [round(ox, 3), round(oy, 3), 0.0], "rotationMatrix": frame.identity_matrix(), "scale": [1, 1, 1],
                    "collisionType": "Visible Mesh Final" if collide else "None", "decalType": "None",

@@ -30,6 +30,7 @@ from . import Stage, level_of
 from .materials import mapto_name
 
 STAGE_KEY = "networks"
+TILE_DETAIL_PX = 2      # detail sizes must be > 0 (BeamNG: "invalid detail levels"); 2 px = always drawn
 REACH = 150.0
 SPLIT_VERTS = 300_000
 GROUP = ["Networks"]
@@ -87,7 +88,7 @@ def run(ctx, progress):
             name = f"net_{tx}_{tz}" + (f"_{sub_index}" if sub_index else "")
             mesh = dae.group_by_material(dae.Mesh(name, merged["verts"], merged["tris"], merged["runs"],
                                                   normals=merged["normals"], uvs=merged["uvs"]))
-            shape = dae.Shape(name, [(0, [mesh])], collision=[], billboard_px=None, null_px=None)
+            shape = dae.Shape(name, [(TILE_DETAIL_PX, [mesh])], collision=[], billboard_px=None, null_px=None)
             path = level.path(*shapes_dir, f"{name}.dae")
             stats = dae.write_shape(path, shape)
             level.add(GROUP, {

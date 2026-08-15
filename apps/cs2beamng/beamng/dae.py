@@ -63,6 +63,9 @@ class Shape:
     def __init__(self, name, levels, collision=(), billboard_px=None, null_px=None):
         self.name = name
         self.levels = list(levels)
+        for px, _ms in self.levels:
+            if int(px) <= 0:
+                raise ValueError(f"{name}: detail size must be > 0 (BeamNG rejects the shape: 'invalid detail levels')")
         self.collision = list(collision)
         self.billboard_px = billboard_px
         self.null_px = null_px
