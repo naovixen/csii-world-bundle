@@ -134,9 +134,13 @@ def test_materials(tmp):
     lv = level_mod.Level(os.path.join(tmp, "lvl"), "lvl", "L")
     rec = {"alphaMode": "mask", "alphaCutoff": 0.4, "doubleSided": True, "tintable": True, "baseColorFactor": [1, 1, 1, 1]}
     mat = bm.material_v15(lv, "lvl_x", rec, {"baseColor": "/a.color.png", "normal": "/n.normal.png", "colorMask": "/m.data.png",
-                                             "roughness": "/r.data.png"})
+                                             "roughness": "/r.data.png", "opacity": "/a_o.data.png"})
     st = mat["Stages"][0]
     check(mat["alphaTest"] is True and mat["alphaRef"] == 102 and mat["doubleSided"] is True, "mask -> alphaTest/alphaRef/doubleSided")
+    check(st["opacityMap"] == "/a_o.data.png", "opacityMap bound (v1.5 opacity source)")
+    mat3 = bm.material_v15(lv, "lvl_z", {"alphaMode": "blend", "baseColorFactor": [1, 1, 1, 0.5]}, {"baseColor": "/a.color.png", "opacity": "/o.png"})
+    check(mat3["Stages"][0].get("opacityFactor") == 0.5 and "diffuseColor" not in mat3["Stages"][0], "factor alpha -> opacityFactor")
+    p3 = bm.export_texture(lv, os.path.join(tmp, "t.png"), "opacity", 32) if os.path.isfile(os.path.join(tmp, "t.png")) else None
     check(st["colorPaletteMap"] == "/m.data.png" and st["roughnessMap"] == "/r.data.png" and mat["mapTo"] == "lvl_x", "maps + palette + mapTo")
     mat2 = bm.material_v15(lv, "lvl_y", {"alphaMode": "blend", "roughness": 0.3, "metallic": 0.1}, {"baseColor": "/a.color.png"})
     check(mat2.get("translucent") is True and mat2["Stages"][0]["roughnessFactor"] == 0.3 and mat2["Stages"][0]["metallicFactor"] == 0.1,
@@ -157,6 +161,9 @@ def test_materials(tmp):
     check(struct.unpack(">II", d1[16:24]) == (32, 32) and d1[25] == 2, "capped to 32 and written RGB")
     check(struct.unpack(">II", d2[16:24]) == (32, 32) and d2[25] == 6, "keep_alpha writes RGBA")
     check(p1.endswith(".color.png") and p1.startswith("/levels/lvl/art/textures/"), f"game path {p1}")
+    p3 = bm.export_texture(lv, src, "opacity", 32)
+    d3 = open(lv.path("art", "textures", "t_o.data.png"), "rb").read()
+    check(p3.endswith("_o.data.png") and d3[25] == 0 and struct.unpack(">II", d3[16:24]) == (32, 32), "opacity map = grey of the alpha")
 
 
 def test_example_cube(tmp):

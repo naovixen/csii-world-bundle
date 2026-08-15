@@ -104,7 +104,9 @@ def run(ctx, progress):
         mode = rec.get("alphaMode") or "opaque"
         plan = {}
         if rec.get("baseColor"):
-            plan["baseColor"] = (os.path.join(ctx.bundle, rec["baseColor"]), "color", mode != "opaque")
+            plan["baseColor"] = (os.path.join(ctx.bundle, rec["baseColor"]), "color", False)
+            if mode != "opaque":
+                plan["opacity"] = (os.path.join(ctx.bundle, rec["baseColor"]), "opacity", False)
         normal_rel = rebuilt.get(name) or rec.get("normal")
         if normal_rel:
             base = ctx.derived_dir if normal_rel.endswith("_normal_rgb.png") else ctx.bundle
@@ -149,7 +151,9 @@ def run(ctx, progress):
             keep_alpha = False
             if tex and os.path.isfile(os.path.join(ctx.bundle, tex)):
                 keep_alpha = _has_alpha(os.path.join(ctx.bundle, tex))
-                maps["baseColor"] = bm.export_texture(level, os.path.join(ctx.bundle, tex), "color", max_size, keep_alpha, cache)
+                maps["baseColor"] = bm.export_texture(level, os.path.join(ctx.bundle, tex), "color", max_size, False, cache)
+                if keep_alpha:
+                    maps["opacity"] = bm.export_texture(level, os.path.join(ctx.bundle, tex), "opacity", max_size, False, cache)
             if rec.get("normal_map") and os.path.isfile(os.path.join(ctx.bundle, rec["normal_map"])):
                 maps["normal"] = bm.export_texture(level, os.path.join(ctx.bundle, rec["normal_map"]), "normal", max_size, False, cache)
             arec = {"alphaMode": "mask" if keep_alpha else "opaque", "alphaCutoff": 0.5, "doubleSided": False,

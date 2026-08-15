@@ -10,8 +10,11 @@ Conventions (from shipped `main.materials.json` files and the v1.5 docs):
   `ambientOcclusionMap` (`.data.png`, linear, from the bake's split mask), `emissiveMap`,
   `colorPaletteMap` (the CS2 colour mask: RGB selects `instanceColor/1/2` — the palette tint
   path). Scalars: `roughnessFactor`, `metallicFactor`, `diffuseColor`, `emissiveFactor`.
-* Alpha: `alphaMode == "mask"` → `alphaTest` + `alphaRef` (0..255); `"blend"` → `translucent`
-  + `translucentBlendOp LerpAlpha` + `translucentZWrite`. `doubleSided` as given.
+* Alpha: v1.5 takes opacity from an **`opacityMap`** (464 of ~500 vanilla translucent materials
+  and every alphaTest one carry it), NOT from the albedo's alpha — load #7 drew every marking
+  decal as an opaque white box. So mask/blend materials get the albedo alpha exported as a grey
+  `_o.data.png`, `opacityFactor` = the base-colour factor's alpha; `"mask"` → `alphaTest` +
+  `alphaRef`; `"blend"` → `translucent` + `LerpAlpha` + `translucentZWrite`. `doubleSided` as given.
 * Every material name carries the level name (materials are a global registry; see the
   terrain lesson) — `mapto(level_name, raw_name)`.
 
@@ -77,7 +80,10 @@ def export_texture(level, src_path, kind, max_size=0, keep_alpha=False, cache=No
     if not src_path or not os.path.isfile(src_path):
         return None
     stem = re.sub(r"[^A-Za-z0-9_\-]", "_", os.path.splitext(os.path.basename(src_path))[0])
-    name = f"{stem}.{kind}.png" if not keep_alpha else f"{stem}_a.{kind}.png"
+    if kind == "opacity":                              # the albedo's alpha as a grey map: v1.5's opacityMap
+        name = f"{stem}_o.data.png"
+    else:
+        name = f"{stem}.{kind}.png" if not keep_alpha else f"{stem}_a.{kind}.png"
     key = (name, int(max_size or 0))
     if cache is not None and key in cache:
         return cache[key]
@@ -88,7 +94,10 @@ def export_texture(level, src_path, kind, max_size=0, keep_alpha=False, cache=No
         arr, form = _load_any(src_path)
         arr = _cap(arr, max_size)
         with open(dst, "wb") as handle:
-            if form == "gray":
+            if kind == "opacity":
+                alpha = arr[:, :, 3] if form == "rgba" else (numpy.full(arr.shape[:2], 255, numpy.uint8))
+                handle.write(png.encode_gray(alpha.astype(numpy.uint8), bit_depth=8))
+            elif form == "gray":
                 g = arr
                 if g.dtype != numpy.uint8:
                     g = (g.astype(numpy.uint32) >> 8).astype(numpy.uint8) if g.max() > 255 else g.astype(numpy.uint8)
@@ -129,9 +138,16 @@ def material_v15(level, name, rec, maps, pid_key=None):
         stage["emissiveFactor"] = [float(v) for v in factor[:3]]
     if maps.get("colorMask") and rec.get("tintable"):
         stage["colorPaletteMap"] = maps["colorMask"]
+    if maps.get("opacity"):
+        stage["opacityMap"] = maps["opacity"]           # v1.5 reads opacity from here, not from the albedo's alpha
     factor = rec.get("baseColorFactor")
-    if factor and any(abs(float(v) - 1.0) > 1e-3 for v in factor[:4]):
-        stage["diffuseColor"] = [float(v) for v in factor[:4]]
+    if factor:
+        rgb = [float(v) for v in factor[:3]]
+        alpha = float(factor[3]) if len(factor) > 3 else 1.0
+        if any(abs(v - 1.0) > 1e-3 for v in rgb):
+            stage["baseColorFactor"] = rgb + [1.0]
+        if alpha < 0.999:
+            stage["opacityFactor"] = alpha
     if not stage.get("baseColorMap") and rec.get("color"):
         stage["diffuseColor"] = [float(v) for v in list(rec["color"])[:4]] + [1.0] * (4 - len(rec["color"][:4]))
     if rec.get("uv_scale") and rec.get("uv_scale") != 1.0:
