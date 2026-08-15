@@ -69,6 +69,38 @@ def real():
         print(f"SKIP real bundle: none at {BUNDLE}")
         return
     with tempfile.TemporaryDirectory() as tmp:
+        region = {"centerX": 2994.0, "centerZ": 1853.0, "radius": 200.0}
+        outcomes = run(BUNDLE, derived_dir=tmp, only=["markings", "lanegeometry"], progress=Progress(), force=True,
+                       options={"region": region})
+        by_name = {o.name: o for o in outcomes}
+        check(by_name["markings"].status == "baked" and by_name["lanegeometry"].status == "baked",
+              f"real region markings/lanegeometry: {[(o.name, o.status) for o in outcomes]}")
+        ms = by_name["markings"].stats or {}
+        check(ms.get("lanesBent", 0) > 100 and ms["drape"]["draped"] > 1000, f"markings stats {ms.get('lanesBent')} lanes, drape {ms.get('drape')}")
+        check(ms["drape"]["missed"] / max(1, ms["drape"]["vertices"]) < 0.02, "marking misses under 2 % on the region")
+        tiles = sorted(glob.glob(os.path.join(tmp, "markings", "markings_*.glb")))
+        check(len(tiles) == ms.get("tiles"), f"{len(tiles)} marking tiles on disk == stats")
+        for f in tiles[:5]:
+            nodes = glb.parse_glb(f)
+            base = os.path.splitext(os.path.basename(f))[0]
+            check(nodes is not None and len(nodes) == 1 and nodes[0]["name"] == base and nodes[0]["uvs"] is not None,
+                  f"{base}: one node named by the tile id, with UVs")
+            # every vertex of a marking tile lies within its tile plus a margin (centroid rule)
+            v = nodes[0]["verts"]
+            tx, tz = int(base.split("_")[1]), int(base.split("_")[2])
+            # glTF verts are X-mirrored: bundle x = -x
+            bx = -v[:, 0]; bz = v[:, 2]
+            check(bx.min() > tx * 256 - 100 and bx.max() < (tx + 1) * 256 + 100 and bz.min() > tz * 256 - 100 and bz.max() < (tz + 1) * 256 + 100,
+                  f"{base}: geometry within its tile (+100 m: a long marking triangle spans a boundary; the centroid rule)")
+        lg = by_name["lanegeometry"].stats or {}
+        inst = os.path.join(tmp, "lanegeometry", "instances.jsonl")
+        n_rows = sum(1 for _ in open(inst, encoding="utf-8"))
+        check(n_rows == lg.get("placements"), f"lanegeometry placements on disk {n_rows} == stats {lg.get('placements')}")
+        row = json.loads(open(inst, encoding="utf-8").readline())
+        check(len(row["matrix"]) == 16 and row["assetId"] and row["category"] in ("lane", "fence", "cable"), "placement row shape")
+        m = numpy.asarray(row["matrix"]).reshape(4, 4)
+        c2 = m[:3, 2]
+        check(abs(c2[1]) / max(numpy.hypot(c2[0], c2[2]), 1e-9) <= 0.02 + 1e-9, "placement is level (grade <= 2 %)")
         outcomes = run(BUNDLE, derived_dir=tmp, only=["lods"], progress=Progress(), force=True,
                        options={"region": {"centerX": 2994.0, "centerZ": 1853.0, "radius": 120.0}, "jobs": 4})
         check(outcomes and outcomes[0].status == "baked", f"real region lods: {outcomes[0].status if outcomes else None}")
