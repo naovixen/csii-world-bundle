@@ -177,3 +177,97 @@ def rgba_array(path):
     """`decode_png_rgba` as a `(height, width, 4)` uint8 numpy array."""
     width, height, pixels = decode_png_rgba(path)
     return numpy.frombuffer(pixels, dtype=numpy.uint8).reshape(height, width, 4)
+
+
+# -- encoding: the same shapes, written --------------------------------------------------------
+#
+# The bake writes rasters of its own (the §13 hole mask, split metallic/roughness maps, tinted
+# albedos, downsampled textures) and they must be readable by exactly the decoder above and by
+# the producer's contract: filter 0 on every row, 8- or 16-bit grayscale (colour type 0) or RGBA8
+# (colour type 6), deterministic bytes (same input, same file), no interlace, no ancillary chunks.
+# `IO/Png.cs` is the producer's twin of this.
+
+def _chunk(tag, payload):
+    return struct.pack(">I", len(payload)) + tag + payload + struct.pack(">I", zlib.crc32(tag + payload) & 0xFFFFFFFF)
+
+
+def encode_gray(samples, bit_depth=None, level=6):
+    """A `(height, width)` array of ints → PNG bytes, colour type 0 at 8 or 16 bits.
+
+    `bit_depth` defaults to 16 for a uint16 array and 8 otherwise; values are range-checked, not
+    rescaled — an array holding metres must be quantised by the caller (§8's `elevationScale`).
+    """
+    arr = numpy.asarray(samples)
+    if arr.ndim != 2:
+        raise ValueError(f"encode_gray wants (height, width), got shape {arr.shape}")
+    if bit_depth is None:
+        bit_depth = 16 if arr.dtype == numpy.uint16 else 8
+    if bit_depth == 16:
+        if arr.min() < 0 or arr.max() > 65535:
+            raise ValueError("16-bit samples must be within 0..65535")
+        rows = arr.astype(">u2")
+    elif bit_depth == 8:
+        if arr.min() < 0 or arr.max() > 255:
+            raise ValueError("8-bit samples must be within 0..255")
+        rows = arr.astype(numpy.uint8)
+    else:
+        raise ValueError("bit_depth must be 8 or 16")
+    height, width = rows.shape
+    body = numpy.concatenate([numpy.zeros((height, 1), numpy.uint8), rows.view(numpy.uint8).reshape(height, -1)], axis=1)
+    ihdr = struct.pack(">IIBBBBB", width, height, bit_depth, COLOUR_TYPE_GRAY, 0, 0, 0)
+    return PNG_SIGNATURE + _chunk(b"IHDR", ihdr) + _chunk(b"IDAT", zlib.compress(body.tobytes(), level)) + _chunk(b"IEND", b"")
+
+
+def encode_rgba(pixels, level=6):
+    """A `(height, width, 4)` uint8 array → PNG bytes, colour type 6 at 8 bits. Alpha is written
+    as given — data, never premultiplied."""
+    arr = numpy.asarray(pixels)
+    if arr.ndim != 3 or arr.shape[2] != 4:
+        raise ValueError(f"encode_rgba wants (height, width, 4), got shape {arr.shape}")
+    if arr.dtype != numpy.uint8:
+        if arr.min() < 0 or arr.max() > 255:
+            raise ValueError("RGBA8 samples must be within 0..255")
+        arr = arr.astype(numpy.uint8)
+    height, width, _ = arr.shape
+    body = numpy.concatenate([numpy.zeros((height, 1), numpy.uint8), arr.reshape(height, width * 4)], axis=1)
+    ihdr = struct.pack(">IIBBBBB", width, height, 8, COLOUR_TYPE_RGBA, 0, 0, 0)
+    return PNG_SIGNATURE + _chunk(b"IHDR", ihdr) + _chunk(b"IDAT", zlib.compress(body.tobytes(), level)) + _chunk(b"IEND", b"")
+
+
+def write_gray(path, samples, bit_depth=None):
+    with open(path, "wb") as handle:
+        handle.write(encode_gray(samples, bit_depth))
+
+
+def write_rgba(path, pixels):
+    with open(path, "wb") as handle:
+        handle.write(encode_rgba(pixels))
+
+
+def downsample_box(pixels, factor):
+    """Box-filter a `(height, width[, channels])` array by an integer `factor` (mean of each
+    factor×factor block; edge blocks are truncated so the result is `floor(h/f) x floor(w/f)`).
+
+    Used for the texture size cap: it is a plain average in whatever encoding the pixels are in
+    (sRGB values averaged as numbers). That is what every game engine's mip generation does too,
+    so it matches what the consumer would have got from a full-size copy — a colour-managed
+    resample would not. Returns the same dtype as the input, rounded for integers.
+    """
+    arr = numpy.asarray(pixels)
+    factor = int(factor)
+    if factor <= 1:
+        return arr
+    h, w = arr.shape[0] // factor, arr.shape[1] // factor
+    if h == 0 or w == 0:
+        raise ValueError("factor larger than the image")
+    trimmed = arr[:h * factor, :w * factor]
+    if arr.ndim == 2:
+        blocks = trimmed.reshape(h, factor, w, factor).astype(numpy.float64)
+        mean = blocks.mean(axis=(1, 3))
+    else:
+        blocks = trimmed.reshape(h, factor, w, factor, arr.shape[2]).astype(numpy.float64)
+        mean = blocks.mean(axis=(1, 3))
+    if numpy.issubdtype(arr.dtype, numpy.integer):
+        info = numpy.iinfo(arr.dtype)
+        return numpy.clip(numpy.rint(mean), info.min, info.max).astype(arr.dtype)
+    return mean.astype(arr.dtype)

@@ -346,3 +346,121 @@ def coverage(catalogue):
         for slot in entry or ():
             counts[slot] = counts.get(slot, 0) + 1
     return counts
+
+
+
+# -- the resolved material: what a renderer needs, decided once ----------------------------------
+
+# Substitutes for the shader-only kinds — a flat colour, roughness, and how the surface is
+# drawn. Glass and foliage are TUNED (the game's shaders are compiled and ship no numbers);
+# water is EXACT from `rasters.water` and is filled in by `resolve` from the bundle's block.
+SHADER_ONLY_SUBSTITUTE = {
+    "glass": {"baseColorFactor": (0.92, 0.96, 1.0, 0.35), "roughness": 0.05, "metallic": 0.0,
+              "alphaMode": "blend", "doubleSided": False},
+    "foliage": {"baseColorFactor": (0.28, 0.42, 0.18, 1.0), "roughness": 0.85, "metallic": 0.0,
+                "alphaMode": "opaque", "doubleSided": True},
+    "overlay": {"baseColorFactor": (0.5, 0.5, 0.5, 0.5), "roughness": 0.9, "metallic": 0.0,
+                "alphaMode": "blend", "doubleSided": False},
+    "placeholder": {"baseColorFactor": (0.6, 0.6, 0.6, 1.0), "roughness": 0.9, "metallic": 0.0,
+                    "alphaMode": "opaque", "doubleSided": False},
+}
+
+
+def resolve(entry, material_id=None, water_appearance=None):
+    """One material's §7 record → the engine-neutral resolved dict every consumer wants.
+
+    ```
+    {"id": material_id,
+     "kind": None | "water" | "glass" | "foliage" | "overlay" | "placeholder",
+     "baseColor": path|None, "normal": path|None, "emissive": path|None, "colorMask": path|None,
+     "mask": path|None,               # the packed source; split maps are the bake's product
+     "metallicSource": ("mask", "R") | None,      "roughnessSource": ("mask", "A", "invert") | None,
+     "aoSource": ("mask", "G") | None,             # advisory (§7.1) — a consumer may ignore it
+     "baseColorFactor": (r, g, b, a),  # 1,1,1,1 unless textureless (tint or substitute)
+     "emissiveFactor": (r, g, b),
+     "roughness": float | None, "metallic": float | None,   # factors when there is no mask
+     "alphaMode": "opaque"|"mask"|"blend", "alphaCutoff": float, "doubleSided": bool,
+     "flags": [...], "tintable": bool}
+    ```
+
+    Decides, once, the things every consumer otherwise re-derives: what a textureless material
+    is (`shader_only_kind`) and what to draw for it; where metallic/roughness come from
+    (`wire_plan`); the roughness convention (`1 - smoothness`). Pass `water_appearance`
+    (`csiibundle.water.Appearance`) so water gets the bundle's own colour and roughness.
+    Textures are the record's relative paths, unresolved.
+    """
+    entry = entry or {}
+    kind = shader_only_kind(entry, material_id)
+    flat = tint(entry)
+    out = {
+        "id": material_id,
+        "kind": kind,
+        "baseColor": entry.get("baseColor"),
+        "normal": entry.get("normal"),
+        "emissive": entry.get("emissive"),
+        "colorMask": entry.get("colorMask"),
+        "mask": entry.get("mask"),
+        "metallicSource": None,
+        "roughnessSource": None,
+        "aoSource": None,
+        "baseColorFactor": tuple(float(v) for v in (flat or (1.0, 1.0, 1.0, 1.0)))[:4],
+        "emissiveFactor": tuple(float(v) for v in (entry.get("emissiveFactor") or (0.0, 0.0, 0.0)))[:3],
+        "roughness": None,
+        "metallic": None,
+        "alphaMode": (entry.get("alphaMode") or "opaque").lower(),
+        "alphaCutoff": float(entry.get("alphaCutoff", 0.5) or 0.5),
+        "doubleSided": bool(entry.get("doubleSided", False)),
+        "flags": list(entry.get("flags") or []),
+        "tintable": bool(entry.get("colorMask")),
+    }
+    for slot, channel, target, invert in wire_plan(entry):
+        if target == "metallic":
+            out["metallicSource"] = (slot, channel)
+        elif target == "roughness":
+            out["roughnessSource"] = (slot, channel, "invert" if invert else "direct")
+    if entry.get("mask"):
+        out["aoSource"] = ("mask", "G")
+    if out["metallicSource"] is None:
+        out["metallic"] = GLTF_FALLBACK_METALLIC
+    if out["roughnessSource"] is None:
+        out["roughness"] = GLTF_FALLBACK_ROUGHNESS
+
+    if kind == "water":
+        app = water_appearance
+        colour = tuple(app.base_color)[:4] if app is not None else (0.08, 0.22, 0.35, 1.0)
+        out["baseColorFactor"] = (float(colour[0]), float(colour[1]), float(colour[2]),
+                                  float(app.surface_alpha()) if app is not None else 0.8)
+        out["roughness"] = float(app.roughness) if app is not None else 0.05
+        out["metallic"] = 0.0
+        out["alphaMode"] = "blend"
+    elif kind in SHADER_ONLY_SUBSTITUTE:
+        sub = SHADER_ONLY_SUBSTITUTE[kind]
+        if flat is None:
+            out["baseColorFactor"] = tuple(sub["baseColorFactor"])
+        elif kind == "glass":
+            out["baseColorFactor"] = (flat[0], flat[1], flat[2], sub["baseColorFactor"][3])
+        out["roughness"] = sub["roughness"]
+        out["metallic"] = sub["metallic"]
+        out["alphaMode"] = sub["alphaMode"]
+        out["doubleSided"] = out["doubleSided"] or sub["doubleSided"]
+    return out
+
+
+def resolve_all(catalogue, water_appearance=None):
+    """`{material_id: resolve(entry)}` for a whole `materials.json` table."""
+    return {key: resolve(entry, key, water_appearance) for key, entry in (catalogue or {}).items()}
+
+
+def texture_set_key(resolved):
+    """The tuple two materials share when a renderer could not tell them apart: same maps, same
+    alpha mode/cutoff, same double-sidedness, same factors. The bake collapses such materials
+    into one (BeamNG's first performance cost is unique materials per view); the alias map it
+    writes lets a consumer follow a mesh's material name to the canonical one."""
+    return (resolved.get("baseColor"), resolved.get("normal"), resolved.get("mask"),
+            resolved.get("emissive"), resolved.get("colorMask"), resolved.get("kind"),
+            resolved.get("alphaMode"), round(float(resolved.get("alphaCutoff") or 0.5), 3),
+            bool(resolved.get("doubleSided")),
+            tuple(round(float(v), 4) for v in resolved.get("baseColorFactor") or ()),
+            tuple(round(float(v), 4) for v in resolved.get("emissiveFactor") or ()),
+            None if resolved.get("roughness") is None else round(float(resolved["roughness"]), 4),
+            None if resolved.get("metallic") is None else round(float(resolved["metallic"]), 4))

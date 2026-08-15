@@ -192,6 +192,59 @@ def rigid_tile_matrix(curve, t_table, arc_table, arc_start, arc_per_z,
     return matrix
 
 
+def part_source(nodes):
+    """Reduce a parsed part `.glb` (`glb.parse_glb` output) to the `source` dict `bend_part` bends.
+
+    The bpy-free twin of the Blender adapter's `_load_lane_source`. Returns
+    `{"verts": (N,3) bundle-frame part-local, "tris": (M,3), "uvs": (M,3,2) per corner,
+    "tri_material": (M,) index into "materials", "materials": [name, ...], "quad": decals.quad_info
+    or None}` — or `None` when `nodes` is None/empty (a refused or empty file).
+
+    Positions: the glTF-stored vertices carry each node's own transform, then the §2.2 mirror is
+    undone (`x -> -x`); triangle winding is left as stored, which — as `_load_lane_source`
+    documents at length — is what the double reversal of the old path net-produced, and what
+    the bend expects. UVs are the glTF-stored ones (top-left origin), untouched: `quad_info` and
+    `lattice` map corners by identity, and a consumer writing tiles back through `glbwrite`
+    keeps the same convention as every producer mesh.
+    """
+    if not nodes:
+        return None
+    verts, tris, uv_rows, tri_mat, materials = [], [], [], [], []
+    base = 0
+    for node in nodes:
+        v = numpy.asarray(node["verts"], dtype=numpy.float64)
+        m = numpy.asarray(node.get("matrix"), dtype=numpy.float64) if node.get("matrix") is not None else numpy.identity(4)
+        v = v @ m[:3, :3].T + m[:3, 3]
+        v[:, 0] *= -1.0
+        t = numpy.asarray(node["tris"], dtype=numpy.int64)
+        uvs = node.get("uvs")
+        uv_corner = (numpy.asarray(uvs, dtype=numpy.float64)[t] if uvs is not None
+                     else numpy.zeros((len(t), 3, 2), dtype=numpy.float64))
+        cursor = 0
+        for name, count in node.get("material_runs", []):
+            if name not in materials:
+                materials.append(name)
+            tri_mat.append(numpy.full(count, materials.index(name), dtype=numpy.int64))
+            cursor += count
+        if cursor < len(t):
+            tri_mat.append(numpy.zeros(len(t) - cursor, dtype=numpy.int64))
+        verts.append(v)
+        tris.append(t + base)
+        uv_rows.append(uv_corner)
+        base += len(v)
+    verts = numpy.concatenate(verts) if verts else numpy.zeros((0, 3))
+    tris = numpy.concatenate(tris) if tris else numpy.zeros((0, 3), numpy.int64)
+    uvs = numpy.concatenate(uv_rows) if uv_rows else numpy.zeros((0, 3, 2))
+    tri_material = numpy.concatenate(tri_mat) if tri_mat else numpy.zeros(0, numpy.int64)
+    if not materials:
+        materials = [None]
+    quad = decals.quad_info(verts, tris, uvs)
+    if quad is not None:
+        quad["material"] = materials[int(tri_material[0])] if len(tris) else None
+    return {"verts": verts, "tris": tris, "uvs": uvs, "tri_material": tri_material,
+            "materials": materials, "quad": quad}
+
+
 def bend_part(part, source, curve, spans, curve_length, width_scale, hang, sink):
     """Bend one catalogue part along one lane record's curve, appending results to `sink`.
 

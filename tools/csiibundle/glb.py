@@ -28,6 +28,7 @@ finding and this repo reports them separately.
 """
 
 import json
+import re
 import struct
 
 import numpy
@@ -45,9 +46,28 @@ COMPONENT_UINT = 5125
 # glTF primitive mode 4 is TRIANGLES. Nothing in the bundle is anything else.
 MODE_TRIANGLES = 4
 
-# The attribute set the bundle uses. A file carrying anything beyond these (COLOR_0, a second
-# UV set, joints) is refused rather than partially read.
-KNOWN_ATTRIBUTES = {"POSITION", "NORMAL", "TEXCOORD_0", "TANGENT"}
+# The attribute set the bundle uses. A file carrying anything beyond these (a second UV set,
+# joints, weights) is refused rather than partially read. COLOR_0 is permitted by §6 and is
+# read when present (float VEC3/VEC4, or normalised UNSIGNED_BYTE/UNSIGNED_SHORT VEC4 — the
+# shapes the spec allows); a bake product may write it (the `lod_vertcol` last LOD).
+KNOWN_ATTRIBUTES = {"POSITION", "NORMAL", "TEXCOORD_0", "TANGENT", "COLOR_0"}
+COMPONENT_UBYTE = 5121
+
+# §6: LOD n > 0 is a scene node named `<assetId>_LOD<n>`; LOD 0 is the unsuffixed root node.
+_LOD_SUFFIX = re.compile(r"^(?P<base>.+)_LOD(?P<level>\d+)$")
+
+
+def lod_level(node_name):
+    """`(base_name, level)` for a node name: `("X", 0)` for `X`, `("X", 2)` for `X_LOD2`.
+
+    A consumer that ignores LODs keeps only level 0 (§6: "A consumer that ignores LODs renders
+    only the unsuffixed node"); one that builds a detail chain groups nodes by base name. The
+    producer ships LOD 0 only today (`lodCap` 0), so every node is level 0 until it does not.
+    """
+    match = _LOD_SUFFIX.match(node_name or "")
+    if not match:
+        return node_name, 0
+    return match.group("base"), int(match.group("level"))
 
 _CHUNK_JSON = 0x4E4F534A
 _CHUNK_BIN = 0x004E4942
@@ -89,6 +109,7 @@ def parse_glb(path):
          "matrix": (4, 4) float64 — the node's WORLD transform, glTF space (Y-up, RH),
          "verts": (N, 3) float32,     "normals": (N, 3) float32,
          "uvs":   (N, 2) float32 | None,
+         "colors": (N, 4) float32 | None — COLOR_0 as linear RGBA in 0..1 (alpha 1 for VEC3),
          "tris":  (M, 3) int64 — indices into the concatenated vertex arrays,
          "material_runs": [(material_name, triangle_count), ...] in polygon order}
 
@@ -183,6 +204,34 @@ def _parse_glb_unguarded(path):
             return None
         return read_accessor(index, "SCALAR", component_type, np_dtype, 1)
 
+    def read_colors(index):
+        """COLOR_0 as (N, 4) float32 in 0..1, or None for a shape the spec does not allow."""
+        accessor = accessors[index]
+        gltf_type = accessor.get("type")
+        components = {"VEC3": 3, "VEC4": 4}.get(gltf_type)
+        if components is None:
+            return None
+        component_type = accessor["componentType"]
+        view = buffer_views[accessor["bufferView"]]
+        if view.get("byteStride"):
+            return None
+        offset = view.get("byteOffset", 0) + accessor.get("byteOffset", 0)
+        count = accessor["count"] * components
+        if component_type == COMPONENT_FLOAT and not accessor.get("normalized"):
+            raw = numpy.frombuffer(bin_chunk, dtype=numpy.float32, count=count, offset=offset)
+            values = raw.reshape(-1, components).astype(numpy.float32)
+        elif component_type == COMPONENT_UBYTE and accessor.get("normalized"):
+            raw = numpy.frombuffer(bin_chunk, dtype=numpy.uint8, count=count, offset=offset)
+            values = raw.reshape(-1, components).astype(numpy.float32) / 255.0
+        elif component_type == COMPONENT_USHORT and accessor.get("normalized"):
+            raw = numpy.frombuffer(bin_chunk, dtype=numpy.uint16, count=count, offset=offset)
+            values = raw.reshape(-1, components).astype(numpy.float32) / 65535.0
+        else:
+            return None
+        if components == 3:
+            values = numpy.concatenate([values, numpy.ones((len(values), 1), numpy.float32)], axis=1)
+        return values
+
     materials = doc.get("materials", [])
 
     scenes = doc.get("scenes", [])
@@ -225,7 +274,7 @@ def _parse_glb_unguarded(path):
         for prim in prims:
             attrs = prim["attributes"]
             pos_index = attrs["POSITION"]
-            pairing = (attrs.get("NORMAL"), attrs.get("TEXCOORD_0"))
+            pairing = (attrs.get("NORMAL"), attrs.get("TEXCOORD_0"), attrs.get("COLOR_0"))
             if pos_index in blocks:
                 if blocks[pos_index][3] != pairing:
                     return None                                  # same POSITION, different NORMAL/UV
@@ -239,12 +288,20 @@ def _parse_glb_unguarded(path):
                 uvs = read_accessor(attrs["TEXCOORD_0"], "VEC2", COMPONENT_FLOAT, numpy.float32, 2)
                 if uvs is None or len(uvs) != len(verts):
                     return None
-            blocks[pos_index] = (verts, normals, uvs, pairing)
+            colors = None
+            if "COLOR_0" in attrs:
+                colors = read_colors(attrs["COLOR_0"])
+                if colors is None or len(colors) != len(verts):
+                    return None
+            blocks[pos_index] = (verts, normals, uvs, pairing, colors)
             block_order.append(pos_index)
 
         has_uv = blocks[block_order[0]][2] is not None
         if any((blocks[i][2] is not None) != has_uv for i in block_order):
             return None                                          # mixed UV presence in one mesh
+        has_color = blocks[block_order[0]][4] is not None
+        if any((blocks[i][4] is not None) != has_color for i in block_order):
+            return None                                          # mixed COLOR_0 presence
 
         offsets, cursor = {}, 0
         for pos_index in block_order:
@@ -273,6 +330,7 @@ def _parse_glb_unguarded(path):
             "verts": numpy.concatenate([blocks[i][0] for i in block_order]),
             "normals": numpy.concatenate([blocks[i][1] for i in block_order]),
             "uvs": numpy.concatenate([blocks[i][2] for i in block_order]) if has_uv else None,
+            "colors": numpy.concatenate([blocks[i][4] for i in block_order]) if has_color else None,
             "tris": numpy.concatenate(tri_parts),
             "material_runs": runs,
         })

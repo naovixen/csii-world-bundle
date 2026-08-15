@@ -41,6 +41,8 @@ range; `roughness_at()` is there for one that can.
 
 import math
 
+import numpy
+
 from . import reader
 
 # Material templates whose entire appearance is the water shader — no maps, and white by default
@@ -154,3 +156,112 @@ def is_water_material(entry):
         if flag.startswith("template:") and flag[9:] in WATER_TEMPLATES:
             return True
     return False
+
+
+
+# -- water bodies: connected wet regions with a level, for an engine that wants planes ---------
+
+class Body(object):
+    """One connected water body on the downsampled grid.
+
+    `level_mean/min/max` metres; `area_m2`; `bbox` `(min_x, min_z, max_x, max_z)` in bundle
+    metres (Z north); `cells` count on the coarse grid; `touches_edge` when the body reaches the
+    raster's border (the sea rather than a lake); `mask` the coarse (rows, cols) bool array.
+    """
+    __slots__ = ("level_mean", "level_min", "level_max", "area_m2", "bbox", "cells", "touches_edge", "mask")
+
+    def __init__(self, **kw):
+        for k, v in kw.items():
+            setattr(self, k, v)
+
+    def __repr__(self):
+        return (f"Body(level={self.level_mean:.2f} [{self.level_min:.2f}..{self.level_max:.2f}], "
+                f"area={self.area_m2:.0f} m2, cells={self.cells}, edge={self.touches_edge})")
+
+
+def bodies(levels, heights, cell, origin_x, origin_z, downsample=8, min_cells=2):
+    """Connected water bodies from the §8 level and height rasters.
+
+    `levels` and `heights` are `(rows, cols)` world-metre arrays (row 0 north); `levels` is 0
+    where there is no water data. Water exists where `level > ground`. Both are reduced by
+    `downsample` (block mean; the game simulates water on a coarser grid than the heightmap —
+    28 m against 3.5, i.e. 8 — so finer detail is resampling, not information), the wet mask is
+    labelled by 4-connectivity, and each component becomes a `Body` with its level statistics.
+    Bodies of fewer than `min_cells` coarse cells are dropped (a single wet texel is noise).
+
+    A heightmap-native engine turns each body into a water plane or block at `level_mean`;
+    a body whose `level_max − level_min` is large (a river descending its valley) wants
+    splitting into level bands or a spline river — the caller's choice, the numbers are here.
+    """
+    lv = numpy.asarray(levels, dtype=numpy.float64)
+    hg = numpy.asarray(heights, dtype=numpy.float64)
+    if lv.shape != hg.shape:
+        raise ValueError(f"levels {lv.shape} and heights {hg.shape} differ")
+    d = max(1, int(downsample))
+    rows, cols = lv.shape[0] // d, lv.shape[1] // d
+    if rows == 0 or cols == 0:
+        return []
+    lv_c = lv[:rows * d, :cols * d].reshape(rows, d, cols, d)
+    hg_c = hg[:rows * d, :cols * d].reshape(rows, d, cols, d).mean(axis=(1, 3))
+    has = (lv_c > 0)
+    # level of a coarse cell = mean of the texels that carry a level (0 = no data must not drag it)
+    level_sum = numpy.where(has, lv_c, 0.0).sum(axis=(1, 3))
+    level_n = has.sum(axis=(1, 3))
+    level_c = numpy.where(level_n > 0, level_sum / numpy.maximum(level_n, 1), 0.0)
+    wet = (level_n > 0) & (level_c > hg_c)
+    labels, count = _label4(wet)
+    out = []
+    coarse_cell = cell * d
+    for k in range(1, count + 1):
+        m = labels == k
+        n = int(m.sum())
+        if n < min_cells:
+            continue
+        rr, cc = numpy.nonzero(m)
+        lvls = level_c[m]
+        touches = bool(rr.min() == 0 or cc.min() == 0 or rr.max() == rows - 1 or cc.max() == cols - 1)
+        min_x = origin_x + cc.min() * coarse_cell - 0.5 * cell
+        max_x = origin_x + (cc.max() + 1) * coarse_cell - 0.5 * cell
+        max_z = origin_z - rr.min() * coarse_cell + 0.5 * cell
+        min_z = origin_z - (rr.max() + 1) * coarse_cell + 0.5 * cell
+        out.append(Body(level_mean=float(lvls.mean()), level_min=float(lvls.min()), level_max=float(lvls.max()),
+                        area_m2=float(n * coarse_cell * coarse_cell), bbox=(float(min_x), float(min_z), float(max_x), float(max_z)),
+                        cells=n, touches_edge=touches, mask=m))
+    out.sort(key=lambda b: -b.area_m2)
+    return out
+
+
+def _label4(mask):
+    """Connected-component labelling (4-neighbour) with numpy only: iterative label
+    propagation over the wet cells. Returns `(labels int32 (rows, cols), count)`; 0 = dry."""
+    mask = numpy.asarray(mask, dtype=bool)
+    rows, cols = mask.shape
+    labels = numpy.zeros((rows, cols), dtype=numpy.int64)
+    idx = numpy.flatnonzero(mask)
+    if idx.size == 0:
+        return labels.astype(numpy.int32), 0
+    labels.reshape(-1)[idx] = idx + 1          # each wet cell starts as its own label (index+1)
+    # propagate the MIN label across 4-neighbours until nothing changes; each pass halves the
+    # remaining disagreement along a chain, and real water bodies are compact, so it converges
+    # in tens of passes on a 512² grid.
+    while True:
+        prev = labels.copy()
+        for shift in ((0, 1), (0, -1), (1, 0), (-1, 0)):
+            neighbour = numpy.roll(labels, shift, axis=(0, 1))
+            if shift == (0, 1):
+                neighbour[:, 0] = 0
+            elif shift == (0, -1):
+                neighbour[:, -1] = 0
+            elif shift == (1, 0):
+                neighbour[0, :] = 0
+            else:
+                neighbour[-1, :] = 0
+            better = mask & (neighbour > 0) & ((neighbour < labels) | (labels == 0))
+            labels = numpy.where(better, neighbour, labels)
+        if numpy.array_equal(prev, labels):
+            break
+    # compact labels to 1..count
+    uniq, inv = numpy.unique(labels[mask], return_inverse=True)
+    compact = numpy.zeros((rows, cols), dtype=numpy.int32)
+    compact[mask] = (inv + 1).astype(numpy.int32)
+    return compact, int(len(uniq))

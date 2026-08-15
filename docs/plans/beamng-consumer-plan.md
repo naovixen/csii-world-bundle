@@ -411,6 +411,13 @@ Each phase ends with its offline gate + commit; in-game loads are the user's. B*
 - **E3 district mode**: N overlapping vanilla-sized district levels sharing one
   `assets/cs2_<city>/` tree via `.link` files.
 - **E4 buildings-as-forest**: opt-in; compare FPS and load time against TSStatic.
+- **E5 markings as `DecalRoad`s** (user question 2026-08-15: is draping right?): on one region,
+  emit each marking as a `DecalRoad` (`overObjects`, CS2 texture, `textureLength` = repeat)
+  instead of the pre-draped tile; compare FPS, load time and look at grazing angles / distance
+  against the tile path. Texture-integration (unique-UV overlay atlas) is rejected on texel
+  budget (~2.5 GB at 5 cm/texel) and the lack of a proven second-UV overlay stage; the tile
+  path's 14 mm lift is invisible at eye height, and its far-distance shimmer is handled by a
+  `nulldetail` cull on marking tiles.
 - **Gate:** each experiment has a before/after table in `docs/plans/beamng-consumer-plan.md`;
   losers are removed, not left as dead flags.
 
@@ -472,3 +479,4 @@ behaviour: `_ProjectionSurface` (L1174), `_load_lane_source` (L1304), `build_lan
 | date | phase | result |
 |---|---|---|
 | 2026-08-15 | B0 | Framework landed: root `pyproject.toml` (`pip install -e .` → `csiibundle`, `cs2beamng`, scripts `cs2beamng` / `csiibundle-bake`), `csiibundle/bake/` (registry, `derived.json` manifest with per-product fingerprints, progress protocol, runner, CLI, `locate`), contract §13 + `docs/schema/derived.schema.json`, `tools/test_bake_manifest.py` (16 checks green), `tools/beamng/probe_ter.py` committed, lift-ladder prose and `lanegraph` docstring corrected, CLAUDE.md / PLAN.md §9 / tools/README.md amended. Confirmed `CleanStaleOutputs` and the manifest scan touch declared layers only, so `derived/` inside the bundle is safe. |
+| 2026-08-15 | B1 | `csiibundle` additions landed, all bpy-free: `glb` reads `COLOR_0` + `lod_level`; new `glbwrite` (parse∘write = id, §2.2 mirror/winding); `png.encode_gray/encode_rgba/downsample_box`; `drape.TriangleSoupSurface` (CSR grid, `drop_many`/`height_many`) + `drape_blocks` — exact against a brute-force scan, the heightfield, and `test_drape_pick.py`'s intersector on 181 real segments; **full city: 7,289 segment meshes / 9.3M tris load 8 s, index 4 s, 1M drops 35 s**; `lanes.part_source`; `instances` skirt rings/drop/parent flags, `density_keep` (stable, monotone, state-weighted), `object_radius`; `terrain.hole_mask`; `splat.dominant_layer` (composite-share argmax + roadbed; 1.6 s full city); `water.bodies` (4-connected, 8× sim grid; 99 bodies on the reference city, the sea+river body spans 508–527 m → A1 splits by level band); `materials.resolve/resolve_all/texture_set_key` (**4,641 → 1,409 distinct texture sets**); new `decimate` (cluster backend; quadric via optional `pyfqmr`; 182k-tri building → 24 %/6 % in 11 s) and `collision` (PCA thickness, 0.3 m ColBox padding, trunk cylinder, wind colours). Gates: `test_glbwrite`, `test_soup_surface`, `test_lod_collision`, `test_b1_readers` + the whole existing suite green. |

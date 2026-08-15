@@ -42,8 +42,13 @@ Modules, roughly in the order a consumer needs them
 ``splat``     the §8 splatmap: channel map, packed-nibble decode, composite-over-base
 ``terrain``   §8 ground: clip rasterisation, the corridor lattice, face generation
 ``areas``     §8b surface areas: triangle conformance and the driver loop
-``drape``     the ProjectionSurface protocol, and a numpy heightfield implementing it
+``drape``     the ProjectionSurface protocol; a numpy heightfield AND a numpy triangle-soup
+              surface implementing it (the road surface for a consumer with no ray-caster)
 ``colour``    the §11 grading derivation — `grading.json` into applicable constants
+``glbwrite``  the inverse of `glb`: arrays back to a §6-shaped `.glb` (the bake's tiles)
+``decimate``  generated LOD chains (quadric via optional `pyfqmr`, else vertex clustering)
+``collision`` simple colliders: thickness rule, box, trunk cylinder, wind vertex colours
+``bake``      the offline second stage: `python -m csiibundle.bake` writes `derived/` (§13)
 
 **Minimum viable consumer**: `reader` + `frames` + `instances` + `glb` places every building,
 prop and tree correctly. Then, in rough order of how wrong the result looks without each:
@@ -60,13 +65,13 @@ prop and tree correctly. Then, in rough order of how wrong the result looks with
   on top of it are things the game does, not things the textures carry.
 """
 
-from . import (areas, bezier, colour, decals, drape, frames, glb, instances, lanegraph,
-               lanes, lights, materials, networks, png, reader, splat, terrain, tints,
-               water)
+from . import (areas, bezier, collision, colour, decals, decimate, drape, frames, glb,
+               glbwrite, instances, lanegraph, lanes, lights, materials, networks, png, reader,
+               splat, terrain, tints, water)
 
-__all__ = ["areas", "bezier", "colour", "decals", "drape", "frames", "glb", "instances",
-           "lanegraph", "lanes", "lights", "materials", "networks", "png", "reader", "splat",
-           "terrain", "tints", "water"]
+__all__ = ["areas", "bezier", "collision", "colour", "decals", "decimate", "drape", "frames",
+           "glb", "glbwrite", "instances", "lanegraph", "lanes", "lights", "materials",
+           "networks", "png", "reader", "splat", "terrain", "tints", "water"]
 
 # Bundle schema version this package reads. `reader.schema_version` reports what a bundle on
 # disk declares, for a consumer that wants to compare. CONTRACT.

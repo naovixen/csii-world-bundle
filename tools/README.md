@@ -19,7 +19,7 @@ Everything else is this repo's own harness.
 
 ### `csiibundle/`
 
-Nineteen modules plus `__init__`, ~6,200 lines, **no `bpy` anywhere** — `python -c "import csiibundle"` under a
+Twenty-two modules plus `__init__` and the `bake/` subpackage, ~8,000 lines, **no `bpy` anywhere** — `python -c "import csiibundle"` under a
 plain system Python is part of the gate. Dependencies: the standard library plus `numpy`.
 
 ```python
@@ -188,6 +188,10 @@ correctly. Run them with plain `python`.
 | `test_clip_cut.py` | the §8c containment invariant — only a deep band carves, and a face is deleted only when a volume contains the whole face |
 | `test_node_fan.py` | the junction fan: every cross-section piece stretched across the node's boundary curves |
 | `test_heightfield.py` | `csiibundle.drape.HeightfieldSurface`, which the Blender harness never calls because it keeps its own BVH |
+| `test_glbwrite.py` | `csiibundle.glbwrite` — parse(write(x)) == x, the §2.2 mirror + winding, COLOR_0 |
+| `test_soup_surface.py` | `csiibundle.drape.TriangleSoupSurface` against a brute-force scan, the heightfield, and `test_drape_pick.py`'s own intersector on real segments; `drape_blocks` |
+| `test_lod_collision.py` | `csiibundle.decimate` (ratios, material runs, UV seams, vertex albedo) and `csiibundle.collision` (thickness, colbox padding, trunk cylinder, wind colours) |
+| `test_b1_readers.py` | `lanes.part_source`, `splat.dominant_layer`, `water.bodies`, `terrain.hole_mask`, `materials.resolve`/`texture_set_key`, the instances skirt/density helpers |
 | `test_bake_manifest.py` | the bake framework — `derived.json` validates against `docs/schema/derived.schema.json`, staleness is per product from input fingerprints, cancel is honoured between chunks |
 
 ---

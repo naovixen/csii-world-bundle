@@ -230,3 +230,49 @@ class Splat:
             if not ground:
                 continue
             yield ground, self.opacity(weight)
+
+
+# -- one ground per texel, for an engine whose terrain holds a single material per sample --------
+
+def dominant_layer(splat, mapping=None, surface_index=None, roadbed_name="roadbed",
+                   roadbed_id=1, flip_v=False):
+    """`(index_raster uint8 (h, w), names)` — the ground that shows most at each texel.
+
+    A BeamNG-class terrain stores ONE material index per heightmap sample and blends only at
+    the boundary between different indices, so the six-way composite has to collapse to a
+    winner. The winner is chosen by the composite's own arithmetic, not by raw weight: with
+    layers `L1..Ln` (in `COMPOSITE_ORDER`) of opacity `o_i`, the visible share of layer `i` is
+    `o_i · Π_{j>i}(1 − o_j)` and the base's share is `Π(1 − o_j)`; argmax of those shares is
+    the ground a viewer sees most of at that texel. That is why grass beats dirt on a meadow
+    (dirt is under it, opaque or not) and why the base rock wins only where every weight is low
+    — a cliff.
+
+    `names[0]` is the base (`mapping["base"]`); the rest are the layer grounds in composite
+    order; a channel `channel_mapping` dropped is absent. When `surface_index` (the §8
+    `surface_index.png` array, same shape) is given, texels with id `roadbed_id` get an extra
+    final index `roadbed_name` — the flattened apron under a road, which the game paints as
+    its own ground and which a terrain engine wants as its own material so the seam under a
+    road mesh reads as pavement, not meadow.
+    """
+    if mapping is None:
+        mapping = SPLAT_CHANNELS_DEFAULT
+    layers = list(splat.layers(mapping, flip_v=flip_v))
+    base_name = mapping.get("base") or "rock"
+    names = [base_name] + [ground for ground, _ in layers]
+    height, width = splat.height, splat.width
+    # visible share, computed back to front: remaining = Π(1 - o_j) for j > i
+    shares = numpy.zeros((len(names), height, width), dtype=numpy.float32)
+    remaining = numpy.ones((height, width), dtype=numpy.float32)
+    for i in range(len(layers) - 1, -1, -1):
+        opacity = layers[i][1]
+        shares[i + 1] = opacity * remaining
+        remaining = remaining * (1.0 - opacity)
+    shares[0] = remaining
+    index = shares.argmax(axis=0).astype(numpy.uint8)
+    if surface_index is not None:
+        surface = numpy.asarray(surface_index)
+        if surface.shape != index.shape:
+            raise ValueError(f"surface_index {surface.shape} does not match the splatmap {index.shape}")
+        names.append(roadbed_name)
+        index = numpy.where(surface == roadbed_id, len(names) - 1, index).astype(numpy.uint8)
+    return index, names

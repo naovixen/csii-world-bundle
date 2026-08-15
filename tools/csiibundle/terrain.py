@@ -1455,3 +1455,54 @@ def water_surface(lattice, stride, cell, origin_x, origin_z, row0, col0):
         return None
     return WaterSurface(verts=water_verts, loops=wvid[water_loops_all],
                         sizes=water_sizes, faces=wet_faces)
+
+
+# -- the hole mask for a heightmap-native consumer -----------------------------------------------
+
+HoleMask = namedtuple("HoleMask", "contain deep_touch band_count band_floor heights cell "
+                                  "origin_x origin_z elevation_scale elevation_offset")
+
+
+def hole_mask(bundle_dir, floor_override=None):
+    """The §8c decision rasters at the heightmap's own resolution, for a consumer that feeds
+    the heightmap to its engine's terrain and punches holes instead of building a lattice.
+
+    Returns a `HoleMask`:
+
+    * `contain` — `(h−1, w−1)` bool: the face (terrain SQUARE between four heightmap samples)
+      lies wholly inside a DEEP clip band and must not draw. This is `contain_faces`' rule
+      unchanged: only a deep band may carve, and only when every sub-sample is inside it.
+      A heightmap-native engine marks these squares as holes.
+    * `deep_touch` — `(h−1, w−1)` bool: a deep band reaches the face without containing it.
+      Informational (a "majority" hole rule can use `band_count` against
+      `CLIP_CONTAIN_SAMPLES²`); the contract's rule is `contain`.
+    * `band_count` — `(h−1, w−1)` uint8 count of in-band sub-samples per face.
+    * `band_floor` — `(h, w)` float32 per SAMPLE: the floor of the SHALLOW band that covers
+      the sample (`lane + bottom`), `+inf` where none does. Feed it to `clamp_shallow_bands`
+      with the world heights to lower terrain standing inside a shallow band to the band's own
+      floor — the "flatten, never delete" half of §8c, without which terrain pokes through the
+      carriageway by up to the band's roof (0.303 m measured).
+    * `heights` — `(h, w)` float64 world heights, `cell`, `origin_x/z` (top-left texel centre;
+      row 0 north), and the scale/offset, so the caller can write the clamped heights back at
+      the bundle's own quantisation.
+
+    Face `(r, c)` spans samples `(r..r+1, c..c+1)`, i.e. world x from `origin_x + c·cell` to
+    `+ (c+1)·cell` and z from `origin_z − r·cell` down to `− (r+1)·cell` — the same squares a
+    BeamNG-style terrain triangulates between adjacent samples.
+    """
+    from . import png
+    paths = reader.terrain_paths(bundle_dir)
+    if paths.rasters is None or not os.path.isfile(paths.heightmap):
+        raise RuntimeError("hole_mask needs the terrain layer and its rasters block")
+    raw = png.gray_array(paths.heightmap)
+    height, width = raw.shape
+    cell = float(paths.rasters["resolution"])
+    origin_x, _, origin_z = paths.rasters["originWorld"]
+    scale = float(paths.rasters.get("elevationScale", 1.0))
+    offset = float(paths.rasters.get("elevationOffset", 0.0))
+    (_mask, contain, band_count, deep_touch, _sub_bands, _refs, _strip_geo, band_floor) = clip_grid(
+        bundle_dir, width, height, raw.reshape(-1), cell, origin_x, origin_z, scale, offset,
+        floor_override=floor_override)
+    heights = raw.astype(numpy.float64) * scale + offset
+    return HoleMask(contain, deep_touch, band_count, band_floor, heights, cell,
+                    float(origin_x), float(origin_z), scale, offset)

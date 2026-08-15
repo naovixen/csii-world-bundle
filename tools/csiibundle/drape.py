@@ -251,3 +251,268 @@ def drape_block(block, road_surface, counters, ground_surface=None):
     counters["draped"] += draped
     counters["grounded"] += grounded
     counters["missed"] += missed
+
+
+# -- bulk queries on the heightfield -----------------------------------------------------------
+
+def _heightfield_drop_many(self, x, y, z, half_up, half_down):
+    """Vectorised `drop`: `(N,)` arrays in, `(N,)` heights out with NaN where nothing is in the
+    window. Same rule as the scalar form: one surface, so a window test."""
+    top = self._sample(numpy.asarray(x, dtype=numpy.float64), numpy.asarray(y, dtype=numpy.float64))
+    z = numpy.asarray(z, dtype=numpy.float64)
+    ok = (~numpy.isnan(top)) & (top >= z - half_down) & (top <= z + half_up)
+    return numpy.where(ok, top, numpy.nan)
+
+
+def _heightfield_height_many(self, x, y, ceiling=4000.0):   # noqa: ARG001 - single surface
+    return self._sample(numpy.asarray(x, dtype=numpy.float64), numpy.asarray(y, dtype=numpy.float64))
+
+
+HeightfieldSurface.drop_many = _heightfield_drop_many
+HeightfieldSurface.height_many = _heightfield_height_many
+
+
+# -- a triangle soup as a projection surface ---------------------------------------------------
+
+class TriangleSoupSurface(ProjectionSurface):
+    """A `ProjectionSurface` over an arbitrary triangle soup — the network meshes — in numpy.
+
+    This is what a consumer with no scene graph uses as the ROAD surface: every `networks/*.glb`
+    placed into Z-up world space and concatenated. Vertical rays only, which is exactly what the
+    protocol asks (both queries are "the surface under (x, y)"), so the intersection reduces to a
+    2-D point-in-triangle test plus a plane height — no BVH, no ray direction.
+
+    **Index.** A uniform 2-D grid of `cell` metres over the soup's XY bounds; each triangle is
+    listed in every cell its bounding box touches; stored CSR-style (`_cell_start`, `_cell_tris`).
+    A query finds its cell, tests that cell's triangles vectorised, and picks by the protocol's
+    rule (nearest-to-expected inside the window for `drop`, topmost for `height`). Queries are
+    processed grouped by cell so a million of them cost a few thousand small numpy calls, not a
+    million Python iterations. `cell` is TUNED (8 m: road triangles are 1–4 m, so a cell holds a
+    few dozen); a denser city can pass a smaller one.
+
+    Vertices are kept as float32 (19M of them for a full city ≈ 230 MB); the per-cell maths runs
+    in float64. Edge-on (vertical) triangles are skipped by the determinant test — a vertical ray
+    cannot hit them either. A vertex shared by two triangles yields two equal hits, harmless.
+    """
+
+    def __init__(self, verts_zup, tris, cell=8.0):
+        verts = numpy.asarray(verts_zup, dtype=numpy.float32)
+        tris = numpy.asarray(tris, dtype=numpy.int64)
+        if verts.ndim != 2 or verts.shape[1] != 3:
+            raise ValueError(f"verts must be (N, 3), got {verts.shape}")
+        if tris.ndim != 2 or tris.shape[1] != 3:
+            raise ValueError(f"tris must be (M, 3), got {tris.shape}")
+        self.verts = verts
+        self.tris = tris
+        self.cell = float(cell)
+        self.count = len(tris)
+        if self.count == 0:
+            self.origin = numpy.zeros(2)
+            self.ncols = self.nrows = 0
+            self._cell_start = numpy.zeros(1, numpy.int64)
+            self._cell_tris = numpy.zeros(0, numpy.int64)
+            return
+        p0, p1, p2 = (verts[tris[:, k], :2].astype(numpy.float64) for k in range(3))
+        lo = numpy.minimum(numpy.minimum(p0, p1), p2)
+        hi = numpy.maximum(numpy.maximum(p0, p1), p2)
+        self.origin = lo.min(axis=0)
+        extent = hi.max(axis=0) - self.origin
+        self.ncols = int(numpy.floor(extent[0] / self.cell)) + 1
+        self.nrows = int(numpy.floor(extent[1] / self.cell)) + 1
+        c0 = numpy.floor((lo[:, 0] - self.origin[0]) / self.cell).astype(numpy.int64)
+        c1 = numpy.floor((hi[:, 0] - self.origin[0]) / self.cell).astype(numpy.int64)
+        r0 = numpy.floor((lo[:, 1] - self.origin[1]) / self.cell).astype(numpy.int64)
+        r1 = numpy.floor((hi[:, 1] - self.origin[1]) / self.cell).astype(numpy.int64)
+        spans = (c1 - c0 + 1) * (r1 - r0 + 1)
+        total = int(spans.sum())
+        # Expand (triangle -> every cell its bbox touches) without a Python loop over triangles.
+        tri_ids = numpy.repeat(numpy.arange(self.count), spans)
+        offsets = numpy.arange(total) - numpy.repeat(numpy.cumsum(spans) - spans, spans)
+        width = numpy.repeat(c1 - c0 + 1, spans)
+        cols = numpy.repeat(c0, spans) + offsets % width
+        rows = numpy.repeat(r0, spans) + offsets // width
+        cell_ids = rows * self.ncols + cols
+        order = numpy.argsort(cell_ids, kind="stable")
+        self._cell_tris = tri_ids[order]
+        counts = numpy.bincount(cell_ids, minlength=self.ncols * self.nrows)
+        self._cell_start = numpy.concatenate([[0], numpy.cumsum(counts)]).astype(numpy.int64)
+
+    @classmethod
+    def from_pieces(cls, pieces, cell=8.0):
+        """Concatenate `[(verts_zup, tris), ...]` into one surface (offsets handled)."""
+        verts, tris, base = [], [], 0
+        for v, t in pieces:
+            v = numpy.asarray(v, dtype=numpy.float32)
+            t = numpy.asarray(t, dtype=numpy.int64)
+            if len(v) == 0 or len(t) == 0:
+                continue
+            verts.append(v)
+            tris.append(t + base)
+            base += len(v)
+        if not verts:
+            return cls(numpy.zeros((0, 3), numpy.float32), numpy.zeros((0, 3), numpy.int64), cell)
+        return cls(numpy.concatenate(verts), numpy.concatenate(tris), cell)
+
+    # -- protocol ------------------------------------------------------------------------------
+
+    def drop(self, x, y, z, half_up, half_down):
+        out = self.drop_many(numpy.array([x], numpy.float64), numpy.array([y], numpy.float64),
+                             numpy.array([z], numpy.float64), half_up, half_down)
+        return None if numpy.isnan(out[0]) else float(out[0])
+
+    def height(self, x, y, ceiling=4000.0):
+        out = self.height_many(numpy.array([x], numpy.float64), numpy.array([y], numpy.float64), ceiling)
+        return None if numpy.isnan(out[0]) else float(out[0])
+
+    def drop_many(self, x, y, z, half_up, half_down):
+        """`(N,)` heights, NaN where no surface lies within `[z - half_down, z + half_up]`;
+        among those that do, the one NEAREST `z`."""
+        return self._query(x, y, z, "drop", half_up, half_down)
+
+    def height_many(self, x, y, ceiling=4000.0):
+        """`(N,)` topmost heights at or below `ceiling`, NaN where nothing is under (x, y)."""
+        return self._query(x, y, None, "height", ceiling, None)
+
+    # -- internals -----------------------------------------------------------------------------
+
+    def _query(self, x, y, z, mode, a, b):
+        x = numpy.asarray(x, dtype=numpy.float64).ravel()
+        y = numpy.asarray(y, dtype=numpy.float64).ravel()
+        n = len(x)
+        out = numpy.full(n, numpy.nan)
+        if n == 0 or self.count == 0:
+            return out
+        z = None if z is None else numpy.asarray(z, dtype=numpy.float64).ravel()
+        cols = numpy.floor((x - self.origin[0]) / self.cell).astype(numpy.int64)
+        rows = numpy.floor((y - self.origin[1]) / self.cell).astype(numpy.int64)
+        inside = (cols >= 0) & (rows >= 0) & (cols < self.ncols) & (rows < self.nrows)
+        if not inside.any():
+            return out
+        cell_ids = numpy.where(inside, rows * self.ncols + cols, -1)
+        order = numpy.argsort(cell_ids, kind="stable")
+        sorted_ids = cell_ids[order]
+        first_valid = numpy.searchsorted(sorted_ids, 0)
+        order = order[first_valid:]
+        sorted_ids = sorted_ids[first_valid:]
+        boundaries = numpy.flatnonzero(numpy.diff(sorted_ids)) + 1
+        starts = numpy.concatenate([[0], boundaries])
+        ends = numpy.concatenate([boundaries, [len(sorted_ids)]])
+        verts = self.verts
+        tris = self.tris
+        for s, e in zip(starts, ends):
+            cid = int(sorted_ids[s])
+            t0, t1 = self._cell_start[cid], self._cell_start[cid + 1]
+            if t1 <= t0:
+                continue
+            q = order[s:e]
+            cand = self._cell_tris[t0:t1]
+            tri = tris[cand]
+            a0 = verts[tri[:, 0]].astype(numpy.float64)
+            a1 = verts[tri[:, 1]].astype(numpy.float64)
+            a2 = verts[tri[:, 2]].astype(numpy.float64)
+            # Barycentric coordinates of every query against every candidate triangle (Q x T).
+            qx = x[q][:, None]
+            qy = y[q][:, None]
+            d00x, d00y = (a1[:, 0] - a0[:, 0])[None, :], (a1[:, 1] - a0[:, 1])[None, :]
+            d01x, d01y = (a2[:, 0] - a0[:, 0])[None, :], (a2[:, 1] - a0[:, 1])[None, :]
+            det = d00x * d01y - d01x * d00y
+            px, py = qx - a0[:, 0][None, :], qy - a0[:, 1][None, :]
+            safe = numpy.where(numpy.abs(det) > 1e-12, det, 1.0)
+            w1 = (px * d01y - d01x * py) / safe
+            w2 = (d00x * py - px * d00y) / safe
+            w0 = 1.0 - w1 - w2
+            eps = -1e-9
+            hit = (numpy.abs(det) > 1e-12) & (w0 >= eps) & (w1 >= eps) & (w2 >= eps)
+            if not hit.any():
+                continue
+            h = w0 * a0[:, 2][None, :] + w1 * a1[:, 2][None, :] + w2 * a2[:, 2][None, :]
+            if mode == "height":
+                h = numpy.where(hit & (h <= a), h, -numpy.inf)
+                best = h.max(axis=1)
+                got = numpy.isfinite(best)
+                out[q[got]] = best[got]
+            else:
+                zq = z[q][:, None]
+                within = hit & (h >= zq - b) & (h <= zq + a)
+                dist = numpy.where(within, numpy.abs(h - zq), numpy.inf)
+                k = dist.argmin(axis=1)
+                got = numpy.isfinite(dist[numpy.arange(len(q)), k])
+                out[q[got]] = h[numpy.arange(len(q)), k][got]
+        return out
+
+
+# -- bulk draping -------------------------------------------------------------------------------
+
+def drape_blocks(blocks, road_surface, ground_surface=None, counters=None):
+    """`drape_block` over many blocks with ONE bulk surface query — the form the bake uses.
+
+    Same rule per vertex as `drape_block` (own (x, z), projector window, nearest-to-expected,
+    ground fallback at the same window, a miss keeps its height); differs only in that queries
+    are deduplicated across all blocks and issued through `drop_many` when the surface has it.
+    The dedup key includes the EXPECTED height as well as (x, z) — two markings stacked on a
+    bridge and the road beneath it share (x, z) and must not share an answer.
+
+    Returns the counters dict (`queries`, `draped`, `grounded`, `missed`), also updated in place
+    when one is passed.
+    """
+    counters = counters if counters is not None else {}
+    for key in ("queries", "draped", "grounded", "missed"):
+        counters.setdefault(key, 0)
+    live = [b for b in blocks if len(b["verts"])]
+    if not live:
+        return counters
+    xs = numpy.concatenate([numpy.asarray(b["verts"][:, 0], numpy.float64) for b in live])
+    ys = numpy.concatenate([numpy.asarray(b["verts"][:, 1], numpy.float64) for b in live])   # expected (up)
+    zs = numpy.concatenate([numpy.asarray(b["verts"][:, 2], numpy.float64) for b in live])
+    halves = numpy.concatenate([numpy.full(len(b["verts"]), float(b["half_height"])) for b in live])
+    epss = numpy.concatenate([numpy.full(len(b["verts"]), float(b["drape_eps"])) for b in live])
+    scale = 1000.0 / DEDUP_MM
+    keys = numpy.stack((numpy.round(xs * scale), numpy.round(zs * scale), numpy.round(ys * scale),
+                        numpy.round(halves * scale)), axis=1).astype(numpy.int64)
+    _, first, inverse = numpy.unique(keys, axis=0, return_index=True, return_inverse=True)
+    inverse = inverse.reshape(-1)
+    counters["queries"] += int(len(first))
+    # Bundle (x, y_up, z_north) -> Z-up (x, y_north, z_up).
+    qx, qy, qz, qh = xs[first], zs[first], ys[first], halves[first]
+    top = _bulk_drop(road_surface, qx, qy, qz, qh)
+    status = numpy.where(numpy.isnan(top), 0, 1)                 # 1 = draped, 2 = grounded
+    if ground_surface is not None:
+        miss = numpy.isnan(top)
+        if miss.any():
+            counters["queries"] += int(miss.sum())
+            g = _bulk_drop(ground_surface, qx[miss], qy[miss], qz[miss], qh[miss])
+            got = ~numpy.isnan(g)
+            idx = numpy.flatnonzero(miss)[got]
+            top[idx] = g[got]
+            status[idx] = 2
+    per_vertex_top = top[inverse]
+    per_vertex_status = status[inverse]
+    new_y = numpy.where(numpy.isnan(per_vertex_top), ys, per_vertex_top + epss)
+    counters["draped"] += int((per_vertex_status == 1).sum())
+    counters["grounded"] += int((per_vertex_status == 2).sum())
+    counters["missed"] += int((per_vertex_status == 0).sum())
+    cursor = 0
+    for b in live:
+        n = len(b["verts"])
+        b["verts"][:, 1] = new_y[cursor:cursor + n]
+        cursor += n
+    return counters
+
+
+def _bulk_drop(surface, x, y, z, half):
+    """`drop_many` when the surface has it, else the scalar protocol in a loop; NaN = miss.
+    Windows may differ per query (`half` is an array), so a surface with a scalar-window
+    `drop_many` is called once per distinct half-height."""
+    out = numpy.full(len(x), numpy.nan)
+    if len(x) == 0:
+        return out
+    if hasattr(surface, "drop_many"):
+        for h in numpy.unique(half):
+            sel = half == h
+            out[sel] = surface.drop_many(x[sel], y[sel], z[sel], float(h), float(h))
+        return out
+    for i in range(len(x)):
+        r = surface.drop(float(x[i]), float(y[i]), float(z[i]), float(half[i]), float(half[i]))
+        if r is not None:
+            out[i] = r
+    return out

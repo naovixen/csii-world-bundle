@@ -207,4 +207,26 @@ for filename, depth, colour_type, bpp, decoder in SYNTH_CASES:
     assert kinds == [0, 1, 2, 3, 4], f"{filename}: synthetic build didn't cover all filters"
     check(f"synthetic depth={depth} colour_type={colour_type}", decoder, path)
 
+print("\n-- encoders (csiibundle.png.encode_gray / encode_rgba round-trip, deterministic) --")
+import numpy as _np
+from csiibundle import png as _png
+_cases = [
+    ("enc_gray8.png", ((_np.arange(17 * 23, dtype=_np.uint32).reshape(23, 17) * 3) % 256).astype(_np.uint8), _png.gray_array),
+    ("enc_gray16.png", (_np.arange(17 * 23, dtype=_np.uint32).reshape(23, 17) * 197 % 65536).astype(_np.uint16), _png.gray_array),
+    ("enc_rgba8.png", _np.frombuffer(bytes(rng.getrandbits(8) for _ in range(23 * 17 * 4)), dtype=_np.uint8).reshape(23, 17, 4), _png.rgba_array),
+]
+for filename, arr, back in _cases:
+    path = os.path.join(SCRATCH, filename)
+    data = _png.encode_rgba(arr) if arr.ndim == 3 else _png.encode_gray(arr)
+    with open(path, "wb") as f:
+        f.write(data)
+    again = _png.encode_rgba(arr) if arr.ndim == 3 else _png.encode_gray(arr)
+    ok = _np.array_equal(back(path), arr) and again == data
+    print(("ok  " if ok else "FAIL") + f"  {filename}: round-trip {'exact' if ok else 'MISMATCH'}")
+    failures += 0 if ok else 1
+_ds = _png.downsample_box(_np.arange(16, dtype=_np.uint8).reshape(4, 4), 2)
+ok = _ds.tolist() == [[2, 4], [10, 12]]
+print(("ok  " if ok else "FAIL") + "  downsample_box 4x4 -> 2x2 block means")
+failures += 0 if ok else 1
+
 sys.exit(1 if failures else 0)
