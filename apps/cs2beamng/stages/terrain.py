@@ -40,8 +40,13 @@ GROUNDMODEL = {"grass": "GRASS", "dirt": "DIRT", "rock": "ROCK", "extra1": "GRAS
                "extra3": "DIRT", "extra4": "SAND", "roadbed": "DIRT"}
 # a ground whose texture the bundle does not carry borrows this one's
 TEXTURE_FALLBACK = {"roadbed": "dirt", "extra1": "grass", "extra2": "grass", "extra3": "dirt", "extra4": "dirt"}
-BASE_TILE_M = 64.0        # the coarse tier's world tiling
-MACRO_TILE_M = 24.0       # the mid tier's
+# world tiling per tier (docs: base 128-2048 m, macro 30-80 m, detail 2-8 m); the SAME source
+# texture is written once per tier under a distinct name because every vanilla level does that
+# and sharing one path across tiers is the one thing our first loads did differently
+BASE_TILE_M = 128.0
+MACRO_TILE_M = 40.0
+DETAIL_TILE_M = 4.0
+TIERS = ("base", "macro", "detail")
 
 
 def enabled(settings):
@@ -139,6 +144,12 @@ def run(ctx, progress):
         progress.end(f"{size}x{size} @ {cell} m")
 
     # -- write .ter + block ----------------------------------------------------------------
+    # Terrain material names are a GLOBAL, case-insensitive registry in BeamNG, and loose level
+    # folders under levels/ are always mounted: two of our levels (or ours and a vanilla one)
+    # both defining "grass" shadow each other, and the loser's terrain draws garbage (load #3).
+    # So every internal name carries the level name.
+    grounds = list(names)
+    names = [f"{level.name}_{n}" for n in grounds]
     progress.begin("terrain: write", total=None, unit="")
     h16, l8, max_height, pos_z = ter_mod.from_bundle_arrays(heights, layers, scale, offset)
     ter_name = f"{level.name}.ter"
@@ -151,7 +162,7 @@ def run(ctx, progress):
         "terrainFile": level.game_path(ter_name),
         "materialTextureSet": f"{level.name}_TerrainTextureSet",
     })
-    materials = _terrain_materials(level, bundle, names)
+    materials = _terrain_materials(level, bundle, grounds)
     level.write_materials("terrains", materials)
     level.write_objects()
     progress.check()
@@ -190,9 +201,9 @@ NEUTRAL_MAPS = {          # every v1.5 terrain material must name all five maps 
 }
 
 
-def _neutral_map(level, kind, size=1024):
-    """A flat gray PNG for a map the bundle does not carry (written once per level)."""
-    name = f"neutral_{kind}.png"
+def _neutral_map(level, kind, tier="detail", size=1024):
+    """A flat gray PNG for a map the bundle does not carry (written once per level and tier)."""
+    name = f"{level.name}_neutral_{kind}_{tier}.png"
     path = level.path("art", "terrains", name)
     if not os.path.isfile(path):
         os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -226,7 +237,7 @@ def _terrain_materials(level, bundle, names):
     set_name = f"{level.name}_TerrainTextureSet"
     out[set_name] = {"name": set_name, "class": "TerrainMaterialTextureSet", "persistentId": level.pid("terrain:textureset"),
                      "baseTexSize": [1024, 1024], "detailTexSize": [1024, 1024], "macroTexSize": [1024, 1024]}
-    neutral = {kind: _neutral_map(level, kind) for kind in NEUTRAL_MAPS}
+    neutral = {(kind, tier): _neutral_map(level, kind, tier=tier) for kind in NEUTRAL_MAPS for tier in TIERS}
     for name in names:
         source = name
         if not os.path.isfile(os.path.join(surfaces_dir, f"{source}.png")):
@@ -236,30 +247,28 @@ def _terrain_materials(level, bundle, names):
         # written as RGB: the theme textures carry a mask in alpha, and BeamNG's terrain
         # texture packer reads PNG alpha as coverage (load #2: the detail tier vanished close
         # up into purple/green). Vanilla terrain textures are colour type 2, no alpha.
-        albedo = _rgb_texture(level, albedo_src, f"{source}.png")
-        normal = _rgb_texture(level, normal_src, f"{source}_normal.png")
+        albedo = {tier: _rgb_texture(level, albedo_src, f"{level.name}_{source}_{tier}_b.png") for tier in TIERS}
+        normal = {tier: _rgb_texture(level, normal_src, f"{level.name}_{source}_{tier}_nm.png") for tier in TIERS}
         pid = level.pid(f"terrain:material:{name}")
-        albedo = albedo or neutral["ao"]              # a ground with no texture at all: flat white
-        normal = normal or neutral["height"]           # flat normal stand-in (mid gray reads as up)
-        mat = {"name": name, "internalName": name, "class": "TerrainMaterial", "persistentId": pid,
+        size = {"base": BASE_TILE_M, "macro": MACRO_TILE_M, "detail": DETAIL_TILE_M}
+        internal = f"{level.name}_{name}"               # globally unique: see run()
+        mat = {"name": f"{internal}-{pid}", "internalName": internal, "class": "TerrainMaterial", "persistentId": pid,
                "annotation": name.upper(), "groundmodelName": GROUNDMODEL.get(name, "DIRT"),
                "detailDistances": [0, 0, 50, 70], "detailDistAtten": [0, 0.9],
                "macroDistances": [0, 0, 400, 8000], "macroDistAtten": [0.35, 1],
-               "baseColorBaseTex": albedo, "baseColorBaseTexSize": BASE_TILE_M,
-               "baseColorMacroTex": albedo, "baseColorMacroTexSize": MACRO_TILE_M, "baseColorMacroStrength": [0.1, 0.4],
-               "baseColorDetailTex": albedo, "baseColorDetailStrength": [0.4, 0],
-               "normalBaseTex": normal, "normalBaseTexSize": BASE_TILE_M,
-               "normalMacroTex": normal, "normalMacroTexSize": MACRO_TILE_M, "normalMacroStrength": [0.4, 1.1],
-               "normalDetailTex": normal, "normalDetailStrength": [0.7, 0.2],
-               "aoBaseTex": neutral["ao"], "aoBaseTexSize": BASE_TILE_M,
-               "aoMacroTex": neutral["ao"], "aoMacroTexSize": MACRO_TILE_M, "aoDetailTex": neutral["ao"],
-               "heightBaseTex": neutral["height"], "heightBaseTexSize": BASE_TILE_M,
-               "heightMacroTex": neutral["height"], "heightMacroTexSize": MACRO_TILE_M, "heightDetailTex": neutral["height"],
-               "roughnessBaseTex": neutral["roughness"], "roughnessBaseTexSize": BASE_TILE_M,
-               "roughnessMacroTex": neutral["roughness"], "roughnessMacroTexSize": MACRO_TILE_M,
-               "roughnessMacroStrength": [0.9, 0.9], "roughnessDetailTex": neutral["roughness"],
-               "roughnessDetailStrength": [0.9, 0.7]}
-        out[name] = mat
+               "baseColorMacroStrength": [0.1, 0.4], "baseColorDetailStrength": [0.4, 0],
+               "normalMacroStrength": [0.4, 1.1], "normalDetailStrength": [0.7, 0.2],
+               "roughnessMacroStrength": [0.9, 0.9], "roughnessDetailStrength": [0.9, 0.7]}
+        for tier in TIERS:
+            cap = tier.capitalize()
+            mat[f"baseColor{cap}Tex"] = albedo[tier] or neutral[("ao", tier)]       # no texture at all: flat white
+            mat[f"normal{cap}Tex"] = normal[tier] or neutral[("height", tier)]      # mid gray reads as up
+            mat[f"ao{cap}Tex"] = neutral[("ao", tier)]
+            mat[f"height{cap}Tex"] = neutral[("height", tier)]
+            mat[f"roughness{cap}Tex"] = neutral[("roughness", tier)]
+            for group in ("baseColor", "normal", "ao", "height", "roughness"):
+                mat[f"{group}{cap}TexSize"] = size[tier]
+        out[f"{internal}-{pid}"] = mat
     return out
 
 

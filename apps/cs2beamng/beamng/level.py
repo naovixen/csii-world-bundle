@@ -110,16 +110,14 @@ class Level:
         return path
 
     def copy_file(self, src, *rel_dst):
-        """Copy `src` into the level at `rel_dst` (hardlink when the filesystem allows; the level
-        must not depend on the bundle staying where it is, so never a symlink)."""
+        """Copy `src` into the level at `rel_dst`. A real copy, never a hard link: a later stage
+        that opens the level's copy for writing must not reach the bundle's original through a
+        shared inode (that happened once — the bundle's terrain textures lost their alpha)."""
         dst = self.path(*rel_dst)
         os.makedirs(os.path.dirname(dst), exist_ok=True)
         if os.path.exists(dst):
             os.remove(dst)
-        try:
-            os.link(src, dst)
-        except OSError:
-            shutil.copyfile(src, dst)
+        shutil.copyfile(src, dst)
         return dst
 
     def write_info(self, info):
