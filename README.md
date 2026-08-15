@@ -74,6 +74,34 @@ Carto is available exclusively via [Paradox Mods](https://mods.paradoxplaza.com/
 
 See the [Tutorials](https://github.com/taipei-native/Carto/wiki/Tutorial) for making maps with QGIS, and the [User Manual](https://github.com/taipei-native/Carto/wiki) for detailed documentation.
 
+## Ripping the world and building a BeamNG.drive level
+
+1. In-game: **Options → Carto → Ripper → Rip World** (a full city takes ~28 min; untick
+   *Rip Objects* / *Rip Terrain* for a ~5 min networks-only rip). The bundle lands in
+   `…\AppData\LocalLow\Colossal Order\Cities Skylines II\ModsData\Carto\`.
+2. Install the consumer tools once (Python ≥ 3.10, from a clone of this repo):
+   ```
+   pip install -e .          # csiibundle (reader + bake) and the cs2beamng app
+   pip install -e .[gui]     # optional: a native window instead of your default browser
+   ```
+3. Launch the app:
+   ```
+   cs2beamng                 # opens the UI (native window, or your browser at http://127.0.0.1:<port>/?t=…)
+   cs2beamng gui --browser   # always the browser
+   python -m cs2beamng       # the same, without the console script on PATH
+   ```
+   The app finds the bundle and your BeamNG userfolder by itself; pick a quality preset,
+   optionally a region (`X Z R` in bundle metres) and press **Build level**. Progress, ETA,
+   log and a Cancel button are on screen; the level is written to
+   `%LOCALAPPDATA%\BeamNG\BeamNG.drive\current\levels\<level_name>\` (Linux/macOS paths are
+   detected too) with a `cs2beamng_report.json` beside it. The first build also bakes the
+   bundle's `derived/` cache (≈ 15 min for a full city); later builds re-bake only what changed.
+4. Headless / scripted:
+   ```
+   cs2beamng build [bundle] --out <levels>/<name> [--set foliage_density=60 --set region="2994 1853 200"] [--settings my.json]
+   ```
+   Details, settings and the architecture: [`apps/cs2beamng/README.md`](apps/cs2beamng/README.md).
+
 ## API Integration
 
 Carto exposes a public API at `Carto.IO.IO.Export(Carto.IO.Options)` so other mods can drive exports on their demand. For the detailed documentation, please refer to the [API guide](https://github.com/taipei-native/Carto/wiki/Api).
