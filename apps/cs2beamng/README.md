@@ -5,12 +5,14 @@ of the ripper mod in this repo), bakes the engine-neutral derivatives it needs
 (`csiibundle.bake` → `<bundle>/derived/`), and writes a BeamNG.drive level. Everything long
 runs in a worker **process** with live progress, ETA and Cancel; the UI never computes.
 
-Status (2026-08-15): A0 (shell) and A1 (terrain, water, sky, spawn) of
-`docs/plans/beamng-consumer-plan.md` are built — the pipeline runs **bake → terrain → water →
-scene → validate** and produces a level BeamNG can load: a lossless 4096² `.ter` with one
-material per ground and tunnel holes, water planes/blocks by level band, sky/time from the
-rip's lighting, a spawn on a road, preview and `info.json`. Meshes, materials, roads and the
-1.2 M instances land in A2–A5.
+Status (2026-08-16): A0 (shell), A1 (terrain, water, sky, spawn) and A2 (roads/networks,
+markings, areas, skirts, lane furniture, materials + textures) of
+`docs/plans/beamng-consumer-plan.md` are built and **accepted in-game**. The pipeline runs
+**bake → terrain → water → scene → networks → derived → materials → validate**: a lossless
+4096² `.ter` with one material per ground and tunnel holes, water by level band, sky/time from
+the rip's lighting, a spawn on a road, every network segment as 256 m COLLADA tiles with exact
+collision, the bake's draped/conformed tiles, v1.5 materials with capped textures. Buildings,
+props, trees (the 1.2 M instances) land in A3; performance tuning A4; the BeamNG cook A5.
 
 ## Install & run
 
@@ -52,18 +54,22 @@ UI (browser / pywebview)  ──HTTP+SSE──►  server.py  ──►  pipelin
   freshness + estimates), `history.py`.
 * `stages/` — `Stage(key, title, enabled, units, run)`; `bake` (runs `csiibundle.bake` for
   the products the settings need and reports a stage-level fraction from per-product
-  estimates), `terrain`, `water`, `scene`, `validate`; A2+ add `materials`, `shapes`,
-  `networks`, `derived`, `instances`, `lights`, `cook`. Every stage appends to one
+  estimates), `terrain`, `water`, `scene`, `networks` (segment meshes → tiles), `derived`
+  (bake tiles → shapes), `materials` (runs last: exports only the materials this build bound),
+  `validate`; A3+ add `shapes`, `instances`, `lights`, `cook`. Every stage appends to one
   `beamng.level.Level` (`stages.level_of(ctx)`) and rewrites the object tree when done.
 * `beamng/` — the format layer: `frame` (bundle→BeamNG axes, heading matrices), `ter` (v9
-  `.ter` read/write, orientation contract, `sample_height`), `level` (SimGroup tree,
-  materials, `info.json`, deterministic persistentIds), `validate_level` (structure + the
-  terrain-under-buildings check).
+  `.ter` read/write, orientation contract, `sample_height`), `dae` (COLLADA writer with the
+  vanilla shape hierarchy), `materials` (v1.5 objects + texture export), `level` (SimGroup
+  tree, materials, `info.json`, deterministic persistentIds), `validate_level` (structure,
+  material bindings, detail sizes, the terrain-under-buildings check).
 * `ui/` — `index.html`, `app.css`, `app.js`: no build step, no CDN; dark by default, light via
   `prefers-color-scheme`.
 
 ## Tests
 
+`python tools/test_a2_dae.py` — the COLLADA writer round trip, hierarchy, frame/winding/UV
+conventions, v1.5 material rules (opacityMap, alphaTest, palette), texture export.
 `python tools/test_a1_level.py` — `.ter` identity + orientation, `heading_matrix` vs a
 vanilla spawn, the level tree, validator faults, a headless example build, the water band
 split on a synthetic river, and (real bundle present) the terrain-under-buildings check.
