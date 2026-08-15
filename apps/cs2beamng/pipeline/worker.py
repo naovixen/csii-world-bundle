@@ -6,6 +6,7 @@ stops (a level with a missing stage is not a level); `Cancelled` records `cancel
 cleanly; the final message is `done` with the report or `error` with a traceback.
 """
 
+import json
 import os
 import time
 import traceback
@@ -62,10 +63,17 @@ def main(settings, census, queue, cancel_event):
                 break
             seconds = time.monotonic() - started
             report["stages"][stage.key] = {"seconds": round(seconds, 1), "result": result}
-            units = stage.units(census, settings)
-            history.update(stage.key, units, seconds)
+            per_key = result.pop("_history", None) if isinstance(result, dict) else None
+            if per_key:                                   # heterogeneous stages learn per sub-key
+                for key, (u, sec) in per_key.items():
+                    history.update(key, u, sec)
+            else:
+                history.update(stage.key, stage.units(census, settings), seconds)
             queue.put({"t": "stage", "stage": stage.key, "status": "done", "seconds": seconds,
                        "summary": _summary(result), "at": time.time()})
+        report["status"] = "done" if ok else ("cancelled" if "cancelled" in report else "failed")
+        report["finishedAt"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        _write_report(level_dir, report, queue)
         queue.put({"t": "done", "ok": ok, "report": report, "at": time.time()})
     except Exception:  # noqa: BLE001
         queue.put({"t": "error", "text": traceback.format_exc(), "at": time.time()})
@@ -75,6 +83,22 @@ def main(settings, census, queue, cancel_event):
             queue.close()
         except Exception:  # noqa: BLE001
             pass
+
+
+REPORT_NAME = "cs2beamng_report.json"
+
+
+def _write_report(level_dir, report, queue):
+    """The build report lives beside the level; the worker writes it last so every stage — the
+    validator included — has its timing and result in it. A cancelled or failed build gets one
+    too (with `status` saying so), which is what makes a partial level explainable later."""
+    try:
+        os.makedirs(level_dir, exist_ok=True)
+        path = os.path.join(level_dir, REPORT_NAME)
+        with open(path, "w", encoding="utf-8", newline="\n") as handle:
+            json.dump(report, handle, indent=1, sort_keys=True, default=str)
+    except OSError as exc:
+        queue.put({"t": "log", "stage": "system", "text": f"could not write {REPORT_NAME}: {exc}", "at": time.time()})
 
 
 def _summary(result):

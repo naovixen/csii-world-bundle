@@ -11,15 +11,24 @@
 worker (`pipeline/worker.py`) is what sequences them.
 """
 
+import importlib
+import os
 from collections import namedtuple
 
 Stage = namedtuple("Stage", "key title enabled units run")
 
 BuildContext = namedtuple("BuildContext", "settings bundle level_dir derived_dir census region report jobs")
 
+# Tests (and only tests) point this at a module whose `all_stages()` returns stub stages; the
+# variable is read in the worker process too, which is what makes hang/cancel tests possible.
+STAGE_MODULE_ENV = "CS2BEAMNG_STAGE_MODULE"
+
 
 def all_stages():
     """The ordered stage list. Imported lazily so the UI process never loads numpy-heavy code."""
+    override = os.environ.get(STAGE_MODULE_ENV)
+    if override:
+        return importlib.import_module(override).all_stages()
     from . import bake as _bake            # noqa: WPS433
     from . import validate as _validate    # noqa: WPS433
     stages = [_bake.STAGE]

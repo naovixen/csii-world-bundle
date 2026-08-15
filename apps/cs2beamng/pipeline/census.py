@@ -95,12 +95,22 @@ def take(values):
             u = 0
         seconds = history.estimate_seconds(key, u, rates) if u else 0.0
         out["estimates"][key] = {"units": u, "seconds": seconds}
+    # the total counts only the stages that exist and are enabled, so the preflight number and
+    # the Build card's stage list say the same thing
+    from ..stages import all_stages  # noqa: WPS433 - lazy: stages import numpy-heavy code
+
     total = 0.0
     known = True
-    for est in out["estimates"].values():
-        if est["seconds"] is None:
+    for stage in all_stages():
+        if not stage.enabled(values):
+            continue
+        stage_units = stage.units(out, values)
+        if not stage_units:
+            continue
+        seconds = history.stage_estimate(stage.key, stage_units, out["estimates"], rates)
+        if seconds is None:
             known = False
         else:
-            total += est["seconds"]
+            total += seconds
     out["totalSeconds"] = total if known else None
     return out

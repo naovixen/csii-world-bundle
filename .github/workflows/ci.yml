@@ -1,0 +1,67 @@
+# Consumer-side CI: the Python packages (csiibundle + cs2beamng) on the three desktop OSes.
+# The C# mod is not built here (it needs the CS2 modding toolchain and the game's assemblies).
+#
+# Every test below self-skips the parts that need a real rip; what runs on CI is the offline
+# gate suite plus a headless `cs2beamng build` of docs/example-bundle — the A0 acceptance.
+name: ci
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "tools/**"
+      - "apps/**"
+      - "docs/example-bundle/**"
+      - "docs/schema/**"
+      - "pyproject.toml"
+      - ".github/workflows/ci.yml"
+  pull_request:
+    paths:
+      - "tools/**"
+      - "apps/**"
+      - "docs/example-bundle/**"
+      - "docs/schema/**"
+      - "pyproject.toml"
+      - ".github/workflows/ci.yml"
+  workflow_dispatch:
+
+jobs:
+  python:
+    name: ${{ matrix.os }} / py${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python: ["3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e . pillow
+      - name: Offline gates (csiibundle)
+        run: |
+          python tools/test_bundle_contract.py
+          python tools/test_glbwrite.py
+          python tools/test_bake_manifest.py
+          python tools/test_lod_collision.py
+          python tools/test_b1_readers.py
+          python tools/test_soup_surface.py
+          python tools/test_bake_products.py
+          python tools/test_png_decode.py
+          python tools/test_normal_packing.py
+      - name: App shell gate (runner / server / SSE / cancel / dead worker)
+        run: python tools/test_app_shell.py
+      - name: Headless build of the example bundle
+        shell: bash
+        run: |
+          python -m cs2beamng build docs/example-bundle --out "$RUNNER_TEMP/cs2_example" --set jobs=1
+          test -f "$RUNNER_TEMP/cs2_example/cs2beamng_report.json"
+          rm -rf docs/example-bundle/derived
+      - name: Working tree is clean (no test wrote into the repo)
+        shell: bash
+        run: git status --porcelain && test -z "$(git status --porcelain)"

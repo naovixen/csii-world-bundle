@@ -62,13 +62,14 @@ class Runner:
             self._settings = dict(settings)
             self._census = census or census_mod.take(settings)
             self._state = _initial_state(self._settings, self._census)
-            self._log.clear()
-            self._log_seq = 0
+            self._log.clear()                    # the seq keeps counting: SSE clients filter by it across builds
             ctx = multiprocessing.get_context("spawn")
             self._queue = ctx.Queue()
             self._cancel = ctx.Event()
+            # NOT a daemon: parallel stages (the lods bake) spawn a pool of their own, and a
+            # daemonic process may not have children. `kill()` is what stops a stray one instead.
             self._process = ctx.Process(target=worker_main, args=(self._settings, self._census, self._queue, self._cancel),
-                                        daemon=True, name="cs2beamng-worker")
+                                        daemon=False, name="cs2beamng-worker")
             self._process.start()
             self._state["status"] = "running"
             self._state["startedAt"] = time.time()
@@ -89,6 +90,22 @@ class Runner:
 
     def running(self):
         return self._process is not None and self._process.is_alive()
+
+    def kill(self):
+        """Terminate the worker outright (used at application exit after a cancel grace period)."""
+        with self._lock:
+            if self._process is not None and self._process.is_alive():
+                self._process.terminate()
+                self._process.join(5.0)
+                if self._state["status"] == "running":
+                    self._state["status"] = "cancelled"
+                    self._state["finishedAt"] = time.time()
+                    for st in self._state["stages"]:
+                        if st["status"] == "running":
+                            st["status"] = "cancelled"
+                    self._append_log("system", "worker terminated at application exit")
+                return True
+            return False
 
     # -- state ---------------------------------------------------------------------------------
 
@@ -212,6 +229,12 @@ class Runner:
                 self._append_log(msg["stage"], f"{msg.get('phase')}: {msg['summary']}")
             st["phaseSummary"] = msg.get("summary")
             st["phase"] = None
+        elif kind == "stagep":
+            st = self._stage(msg["stage"])
+            if st is not None:
+                st["stageFraction"] = msg.get("fraction")
+                st["stageRemaining"] = msg.get("remaining")
+                st["stageProgressAt"] = now
         elif kind == "log":
             self._append_log(msg.get("stage") or "", msg.get("text", ""))
 
@@ -251,7 +274,7 @@ def _initial_state(settings, census):
     for stage in all_stages():
         enabled = stage.enabled(settings)
         units = stage.units(census, settings) if enabled else 0
-        est = history.estimate_seconds(stage.key, units, rates) if units else 0.0
+        est = history.stage_estimate(stage.key, units, (census or {}).get("estimates"), rates) if units else 0.0
         state["stages"].append({
             "key": stage.key, "title": stage.title, "status": "pending" if enabled else "skipped",
             "units": units, "estimateSeconds": est, "phase": None, "phaseDone": 0, "phaseTotal": None,
@@ -274,17 +297,27 @@ def _refresh_estimates(state, census, now):
     for st in state["stages"]:
         st["elapsed"] = ((st.get("finishedAt") or now) - st["startedAt"]) if st.get("startedAt") else 0.0
         if st["status"] == "running":
-            frac = None
-            eta = None
+            # the current phase, from its live rate (row bar + a floor under the stage ETA)
+            phase_eta = phase_frac = None
             if st.get("phaseTotal") and st.get("phaseRate"):
                 remaining_units = max(0, st["phaseTotal"] - st.get("phaseDone", 0))
-                eta = remaining_units / max(st["phaseRate"], 1e-9)
-                frac = min(1.0, st.get("phaseDone", 0) / st["phaseTotal"])
+                phase_eta = remaining_units / max(st["phaseRate"], 1e-9)
+                phase_frac = min(1.0, st.get("phaseDone", 0) / st["phaseTotal"])
+            # the stage: what it reported about itself > history estimate > the phase alone
+            if st.get("stageFraction") is not None:
+                frac = min(1.0, max(0.0, st["stageFraction"]))
+                rem = st.get("stageRemaining")
+                eta = None if rem is None else max(0.0, rem - (now - (st.get("stageProgressAt") or now)))
+                if eta is not None and phase_eta is not None:
+                    eta = max(eta, phase_eta)
             elif st.get("estimateSeconds"):
-                eta = max(0.0, st["estimateSeconds"] - st["elapsed"])
+                eta = max(st["estimateSeconds"] - st["elapsed"], phase_eta or 0.0)
                 frac = min(0.99, st["elapsed"] / max(st["estimateSeconds"], 1e-9))
+            else:
+                eta, frac = phase_eta, phase_frac
             st["eta"] = eta
             st["fraction"] = frac if frac is not None else 0.0
+            st["phaseFraction"] = phase_frac
             if eta is None:
                 known = False
             else:
@@ -301,7 +334,7 @@ def _refresh_estimates(state, census, now):
     finished = len([s for s in state["stages"] if s["status"] == "done"])
     running_frac = sum(s.get("fraction", 0.0) for s in state["stages"] if s["status"] == "running")
     state["overall"] = {
-        "elapsed": (now - state["startedAt"]) if state.get("startedAt") else 0.0,
+        "elapsed": ((state.get("finishedAt") or now) - state["startedAt"]) if state.get("startedAt") else 0.0,
         "eta": overall_remaining if (known and state["status"] == "running") else None,
         "fraction": (finished + running_frac) / total,
     }
@@ -371,10 +404,13 @@ def build_headless(args):
                 break
             time.sleep(0.5)
     except KeyboardInterrupt:
-        print("\ncancelling…")
+        print("\ncancelling...")
         runner.cancel()
-        while runner.running():
+        deadline = time.time() + HARD_CANCEL_SECONDS + 5.0
+        while runner.running() and time.time() < deadline:
+            runner.state()                              # the watchdog lives here
             time.sleep(0.2)
+        runner.kill()
         return 130
     state = runner.state()
     print()

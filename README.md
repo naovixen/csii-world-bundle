@@ -38,8 +38,12 @@ versioned, engine-neutral **CS2 World Bundle**.
 * An engine-neutral reference reader lives in [`tools/csiibundle/`](tools/csiibundle/) — standard
   library plus numpy, never imports `bpy`. See [`tools/README.md`](tools/README.md).
 * Validate any bundle with `python tools/validate_bundle.py <bundle_dir>` (standard library only).
-* Downstream consumers (Blender importers, level builders for other engines) are deliberately
-  **out of scope** for this repository. The bundle is the entire interface.
+* Downstream consumers read the bundle through its documented contract and are never coupled
+  into the mod. Two live in this repo beside it: the Blender adapter
+  (`tools/blender_import_bundle.py`) and the **`cs2beamng` BeamNG.drive level builder**
+  ([`apps/cs2beamng/`](apps/cs2beamng/README.md)), both on the engine-neutral `csiibundle`
+  package and its offline bake (`csiibundle.bake`, contract §13). `pip install -e .` installs
+  both.
 * **Local and personal use only.** The ripper extracts assets from your own copy of the game for
   interoperability with software you own. Do not publish, upload or redistribute ripped meshes
   or textures, and never commit them to a repository.

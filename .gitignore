@@ -405,6 +405,8 @@ Styles.zip
 
 # Posponed UI Project
 UI/
+# ...but the cs2beamng web UI is source (the pattern above is case-insensitive on Windows)
+!apps/cs2beamng/ui/
 # JetBrains Rider / IntelliJ local IDE state
 .idea/
 

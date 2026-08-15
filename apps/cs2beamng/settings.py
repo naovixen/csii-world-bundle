@@ -70,6 +70,18 @@ SCHEMA = {
     "quality_preset": ("high", "choice:ultra|high|medium|low|custom", "Quality preset last applied"),
 }
 
+# How the UI groups the knobs; every SCHEMA key appears exactly once (checked by test_app_shell).
+GROUPS = [
+    ("Where", ["bundle", "output", "level_name", "level_title", "region"]),
+    ("What", ["buildings", "networks", "trees", "props", "markings", "areas", "skirts", "lane_furniture",
+              "lane_furniture_categories", "water", "groundcover", "lights", "lights_max", "ai_roads"]),
+    ("How much", ["foliage_density", "prop_density", "texture_max", "generate_lods", "imposters", "cull_px",
+                  "tile_size", "terrain_upsample", "terrain_holes", "forest_shadows", "tree_wind"]),
+    ("Collision", ["collision_preset", "collision_buildings", "collision_props", "collision_trees",
+                   "collision_furniture", "collision_skirts", "collision_paint"]),
+    ("Process", ["jobs", "keep_partial", "cook", "beamng_exe", "quality_preset"]),
+]
+
 PRESETS = {
     "ultra": {"foliage_density": 100, "prop_density": 100, "texture_max": 0, "generate_lods": True,
               "lane_furniture": True, "lights": True, "groundcover": True, "forest_shadows": True,
@@ -272,3 +284,27 @@ def find_beamng_exe(values=None):
         if os.path.isfile(cand):
             return cand
     return None
+
+
+def detected(values=None):
+    """What this machine offers, for the UI's path pickers: bundles that exist, levels folders that
+    exist, the BeamNG executable if any. Never raises."""
+    from csiibundle.bake.locate import candidate_bundle_dirs
+
+    bundles = [p for p in candidate_bundle_dirs() if os.path.isfile(os.path.join(p, "bundle.json"))]
+    levels = [os.path.join(f, "levels") for f in candidate_userfolders() if os.path.isdir(f)]
+    return {"bundles": bundles, "levelsDirs": levels, "beamngExe": find_beamng_exe(values),
+            "platform": sys.platform, "appDir": app_dir()}
+
+
+def schema_for_ui():
+    """SCHEMA as a list the UI can render: [{key, kind, default, help, group, choices}]."""
+    group_of = {key: title for title, keys in GROUPS for key in keys}
+    out = []
+    for key, (default, kind, help_text) in SCHEMA.items():
+        entry = {"key": key, "kind": kind.split(":", 1)[0], "default": default, "help": help_text,
+                 "group": group_of.get(key, "Other")}
+        if kind.startswith("choice:"):
+            entry["choices"] = kind.split(":", 1)[1].split("|")
+        out.append(entry)
+    return out

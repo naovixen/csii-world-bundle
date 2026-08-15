@@ -27,6 +27,7 @@ class QueueProgress(Progress):
         self._unit = ""
         self._last_sent = 0.0
         self._last_done_sent = -1
+        self._last_stagep = 0.0
 
     def set_stage(self, stage):
         self.stage = stage
@@ -56,6 +57,16 @@ class QueueProgress(Progress):
 
     def log(self, message):
         self.queue.put({"t": "log", "stage": self.stage, "text": str(message), "at": time.time()})
+
+    def stage_progress(self, fraction, remaining_seconds):
+        """Optional, for stages that know their own overall shape (the bake: products × phases):
+        a stage-level fraction 0..1 and seconds remaining. The runner prefers these over its
+        phase- and history-based guesses. Rate-limited like `advance`."""
+        now = self.clock()
+        if now - self._last_stagep >= ADVANCE_INTERVAL or fraction >= 1.0:
+            self._last_stagep = now
+            self.queue.put({"t": "stagep", "stage": self.stage, "fraction": float(fraction),
+                            "remaining": None if remaining_seconds is None else float(remaining_seconds), "at": time.time()})
 
     def end(self, summary=None):
         self._flush()

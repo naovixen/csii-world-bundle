@@ -75,3 +75,16 @@ def estimate_seconds(key, units, rates=None):
     if not rate or units is None:
         return None
     return float(units) / rate
+
+
+def stage_estimate(key, units, estimates=None, rates=None):
+    """Seconds for one stage. Prefers the census's per-key estimates (`estimates[key]` and every
+    `estimates[key + "/..."]` — the bake stage is the sum of its products, and a fresh product
+    costs 0); falls back to `units / rate` for the stage key itself. None when unknown."""
+    if estimates:
+        parts = [v for k, v in estimates.items() if k == key or k.startswith(key + "/")]
+        if parts:
+            if any(p.get("seconds") is None for p in parts):
+                return None
+            return float(sum(p.get("seconds") or 0.0 for p in parts))
+    return estimate_seconds(key, units, rates)

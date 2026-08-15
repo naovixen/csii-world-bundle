@@ -25,6 +25,7 @@ def _parser():
     build.add_argument("--settings", default=None, help="settings JSON file")
     gui = sub.add_parser("gui", help="open the application (the default)")
     gui.add_argument("--browser", action="store_true", help="always use the default browser, never a native window")
+    gui.add_argument("--port", type=int, default=0, help="fixed port for the local UI server (default: ephemeral)")
     return parser
 
 
@@ -34,7 +35,7 @@ def main(argv=None):
         from .pipeline.runner import build_headless
         return build_headless(args)
     from .app import launch
-    return launch(browser=getattr(args, "browser", False))
+    return launch(browser=getattr(args, "browser", False), port=getattr(args, "port", 0) or 0)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark light">
+<title>cs2beamng</title>
+<link rel="stylesheet" href="/static/app.css">
+<script>window.CS2BEAMNG = {token: "__TOKEN__", version: "__VERSION__"};</script>
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true">
+      <path d="M4 22 L16 6 L28 22 Z" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linejoin="round"/>
+      <path d="M2 26 H30" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/>
+      <circle cx="16" cy="19" r="2.2" fill="currentColor"/>
+    </svg>
+    <div>
+      <div class="brand-name">cs2beamng <span class="brand-version" id="version"></span></div>
+      <div class="brand-sub">CS2 World Bundle &rarr; BeamNG.drive level</div>
+    </div>
+  </div>
+  <div class="topbar-right">
+    <span class="pill" id="statusPill" data-status="idle">Idle</span>
+    <button class="btn ghost" id="quitBtn" title="Close the application">Quit</button>
+  </div>
+</header>
+
+<main class="layout">
+  <!-- left column: bundle + settings -->
+  <div class="column">
+    <section class="card" id="bundleCard">
+      <header class="card-head">
+        <h2>Bundle</h2>
+        <span class="muted" id="bundleStatus"></span>
+      </header>
+      <div class="field">
+        <label for="in_bundle">Bundle folder</label>
+        <div class="path-row">
+          <input type="text" id="in_bundle" data-key="bundle" spellcheck="false" placeholder="…\ModsData\Carto">
+          <button class="btn small browse" data-for="bundle" hidden>Browse</button>
+          <select class="detected" data-for="bundle" hidden></select>
+        </div>
+      </div>
+      <div class="census" id="census">
+        <div class="census-empty muted">No bundle loaded.</div>
+      </div>
+      <div class="derived" id="derived"></div>
+    </section>
+
+    <section class="card" id="settingsCard">
+      <header class="card-head">
+        <h2>Settings</h2>
+        <div class="segmented" id="presets" role="group" aria-label="Quality preset"></div>
+      </header>
+      <div class="problems" id="settingsProblems" hidden></div>
+      <div id="settingsGroups"></div>
+    </section>
+  </div>
+
+  <!-- right column: build, log, results -->
+  <div class="column">
+    <section class="card" id="buildCard">
+      <header class="card-head">
+        <h2>Build</h2>
+        <div class="actions">
+          <button class="btn primary" id="startBtn">Build level</button>
+          <button class="btn danger" id="cancelBtn" hidden>Cancel</button>
+        </div>
+      </header>
+      <div class="overall">
+        <div class="bar big"><div class="fill" id="overallFill"></div></div>
+        <div class="overall-stats">
+          <div><span class="k">Elapsed</span><span class="v" id="ovElapsed">–</span></div>
+          <div><span class="k">Remaining</span><span class="v" id="ovEta">–</span></div>
+          <div><span class="k">Expected</span><span class="v" id="ovExpected">–</span></div>
+          <div><span class="k">Worker</span><span class="v" id="ovWorker">–</span></div>
+        </div>
+        <div class="banner" id="banner" hidden></div>
+      </div>
+      <ol class="stages" id="stages"></ol>
+    </section>
+
+    <section class="card" id="resultsCard" hidden>
+      <header class="card-head">
+        <h2>Result</h2>
+        <div class="actions">
+          <button class="btn small" data-open="level">Open level folder</button>
+          <button class="btn small" data-open="report">Open report</button>
+        </div>
+      </header>
+      <div id="resultsBody"></div>
+    </section>
+
+    <section class="card log-card" id="logCard">
+      <header class="card-head">
+        <h2>Log</h2>
+        <label class="check"><input type="checkbox" id="logFollow" checked> follow</label>
+      </header>
+      <pre class="log" id="log"></pre>
+    </section>
+  </div>
+</main>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
