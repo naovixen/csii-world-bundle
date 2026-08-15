@@ -340,6 +340,12 @@ def test_server(tmp):
         check(payload["ok"] is False, "open of nothing is refused politely")
         status, payload = client.call("POST", "/api/browse", {"key": "bundle"})
         check(status == 501, "browse without a window -> 501")
+        # a second server on the same port must fail loudly (Windows SO_REUSEADDR would let it bind)
+        try:
+            AppServer(port=server.port, values=stub_settings(tmp, "ok")).start()
+            check(False, "second server on the same port refused")
+        except SystemExit:
+            check(True, "second server on the same port refused")
         status, payload = client.call("POST", "/api/quit")
         check(status == 200, "POST /api/quit")
         stopped = wait_until(lambda: server.stopped.is_set(), 3.0)

@@ -80,7 +80,11 @@ class AppServer:
     # -- lifecycle -----------------------------------------------------------------------------
 
     def start(self):
-        self._httpd = _Server((self.host, self.port), _Handler, self)
+        try:
+            self._httpd = _Server((self.host, self.port), _Handler, self)
+        except OSError as exc:
+            raise SystemExit(f"cs2beamng: cannot listen on {self.host}:{self.port} ({exc}). "
+                             "Is another cs2beamng already running? Close it, or pick another --port.") from exc
         self.port = self._httpd.server_address[1]
         self._thread = threading.Thread(target=self._httpd.serve_forever, kwargs={"poll_interval": 0.25},
                                         daemon=True, name="cs2beamng-http")
@@ -262,7 +266,10 @@ class _BadRequest(Exception):
 
 class _Server(ThreadingHTTPServer):
     daemon_threads = True
-    allow_reuse_address = True
+    # On Windows SO_REUSEADDR lets a SECOND process bind the same port and steal requests
+    # (two app instances, two tokens, "wrong token" at random); there it must stay off. On
+    # POSIX it only skips TIME_WAIT after a restart, which is what we want.
+    allow_reuse_address = not sys.platform.startswith("win")
 
     def __init__(self, address, handler, app):
         self.app = app
