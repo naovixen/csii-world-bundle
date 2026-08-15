@@ -47,6 +47,11 @@ BASE_TILE_M = 128.0
 MACRO_TILE_M = 40.0
 DETAIL_TILE_M = 4.0
 TIERS = ("base", "macro", "detail")
+# CS2's ground albedos are dark (grass ~0.06 linear: the game lights them with a 110 klux sun and
+# exposure); BeamNG's pipeline expects mid-brightness albedo (vanilla grass ~0.2 linear), so one
+# linear gain lifts CS2 grass to this luminance and every other ground by the same factor.
+GRASS_TARGET_LUMINANCE = 0.16
+MAX_GAIN = 6.0
 
 
 def enabled(settings):
@@ -162,11 +167,13 @@ def run(ctx, progress):
         "terrainFile": level.game_path(ter_name),
         "materialTextureSet": f"{level.name}_TerrainTextureSet",
     })
-    materials = _terrain_materials(level, bundle, grounds)
+    materials = _terrain_materials(level, bundle, grounds, gain=_albedo_gain(os.path.join(bundle, "terrain", "surfaces"),
+                                                                             settings.get("terrain_brightness", 1.0)))
     level.write_materials("terrains", materials)
     level.write_objects()
     progress.check()
-    progress.end(f"{ter_name} {os.path.getsize(level.path(ter_name)) / 2**20:.0f} MB, {len(materials) - 1} terrain materials")
+    progress.end(f"{ter_name} {os.path.getsize(level.path(ter_name)) / 2**20:.0f} MB, {len(materials) - 1} terrain materials, "
+                 f"albedo gain x{_albedo_gain(os.path.join(bundle, 'terrain', 'surfaces'), settings.get('terrain_brightness', 1.0)):.2f}")
     shared = ctx.shared if ctx.shared is not None else {}
     shared["terrain"] = {"position": position, "squareSize": cell, "maxHeight": max_height, "size": size,
                          "cell": cell, "elevationScale": scale, "elevationOffset": offset}
@@ -212,22 +219,54 @@ def _neutral_map(level, kind, tier="detail", size=1024):
     return level.game_path("art", "terrains", name)
 
 
-def _rgb_texture(level, src, name):
-    """Copy `src` into art/terrains/ as an alpha-free RGB PNG; the game path, or None."""
+def _read_rgb(path):
+    """(h, w, 3) uint8 from an 8-bit RGB or RGBA PNG (the theme textures are either)."""
+    try:
+        return png.rgba_array(path)[:, :, :3]
+    except ValueError:
+        from PIL import Image  # noqa: WPS433 - only for the RGB (colour type 2) case
+        return numpy.asarray(Image.open(path).convert("RGB"))
+
+
+def _linear_luminance(rgb8):
+    lin = ((rgb8.astype(numpy.float64) / 255.0) ** 2.2)
+    return float((0.2126 * lin[..., 0] + 0.7152 * lin[..., 1] + 0.0722 * lin[..., 2]).mean())
+
+
+def _albedo_gain(surfaces_dir, user_gain):
+    """The linear gain applied to every ground albedo: calibrated on grass, times the user's."""
+    path = os.path.join(surfaces_dir, "grass.png")
+    gain = 1.0
+    if os.path.isfile(path):
+        try:
+            lum = _linear_luminance(_read_rgb(path))
+            if lum > 1e-4:
+                gain = min(MAX_GAIN, GRASS_TARGET_LUMINANCE / lum)
+        except Exception:  # noqa: BLE001
+            gain = 1.0
+    return gain * float(user_gain or 1.0)
+
+
+def _rgb_texture(level, src, name, gain=1.0):
+    """Copy `src` into art/terrains/ as an alpha-free RGB PNG, optionally lifted by `gain` in
+    linear light; the game path, or None."""
     if not os.path.isfile(src):
         return None
     dst = level.path("art", "terrains", name)
     os.makedirs(os.path.dirname(dst), exist_ok=True)
     try:
-        pixels = png.rgba_array(src)
+        rgb = _read_rgb(src)
+        if abs(gain - 1.0) > 1e-3:
+            lin = (rgb.astype(numpy.float64) / 255.0) ** 2.2 * gain
+            rgb = (numpy.clip(lin, 0.0, 1.0) ** (1 / 2.2) * 255.0 + 0.5).astype(numpy.uint8)
         with open(dst, "wb") as handle:
-            handle.write(png.encode_rgb(pixels))
+            handle.write(png.encode_rgb(rgb))
     except Exception:  # noqa: BLE001 - an odd PNG: ship it as is rather than nothing
         level.copy_file(src, "art", "terrains", name)
     return level.game_path("art", "terrains", name)
 
 
-def _terrain_materials(level, bundle, names):
+def _terrain_materials(level, bundle, names, gain=1.0):
     """`{name: TerrainMaterial}` + the texture set; copies the ground textures into
     `art/terrains/`. Every one of the fifteen `*Tex` slots is filled: BeamNG resolves an
     absent slot to `/` and logs `Missing Terrain texture: /` per material, and the terrain
@@ -247,7 +286,7 @@ def _terrain_materials(level, bundle, names):
         # written as RGB: the theme textures carry a mask in alpha, and BeamNG's terrain
         # texture packer reads PNG alpha as coverage (load #2: the detail tier vanished close
         # up into purple/green). Vanilla terrain textures are colour type 2, no alpha.
-        albedo = {tier: _rgb_texture(level, albedo_src, f"{level.name}_{source}_{tier}_b.png") for tier in TIERS}
+        albedo = {tier: _rgb_texture(level, albedo_src, f"{level.name}_{source}_{tier}_b.png", gain=gain) for tier in TIERS}
         normal = {tier: _rgb_texture(level, normal_src, f"{level.name}_{source}_{tier}_nm.png") for tier in TIERS}
         pid = level.pid(f"terrain:material:{name}")
         size = {"base": BASE_TILE_M, "macro": MACRO_TILE_M, "detail": DETAIL_TILE_M}
@@ -256,8 +295,8 @@ def _terrain_materials(level, bundle, names):
                "annotation": name.upper(), "groundmodelName": GROUNDMODEL.get(name, "DIRT"),
                "detailDistances": [0, 0, 50, 70], "detailDistAtten": [0, 0.9],
                "macroDistances": [0, 0, 400, 8000], "macroDistAtten": [0.35, 1],
-               "baseColorMacroStrength": [0.1, 0.4], "baseColorDetailStrength": [0.4, 0],
-               "normalMacroStrength": [0.4, 1.1], "normalDetailStrength": [0.7, 0.2],
+               "baseColorMacroStrength": [0.6, 0.6], "baseColorDetailStrength": [0.85, 0.3],
+               "normalMacroStrength": [0.6, 1.0], "normalDetailStrength": [0.8, 0.3],
                "roughnessMacroStrength": [0.9, 0.9], "roughnessDetailStrength": [0.9, 0.7]}
         for tier in TIERS:
             cap = tier.capitalize()
