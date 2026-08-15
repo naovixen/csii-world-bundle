@@ -6,10 +6,14 @@ exporter into a **full world ripper**: it walks the loaded city in-engine and du
 buildings, networks, props, trees, terrain and water into a single, well-documented,
 engine-neutral **CS2 World Bundle** on disk.
 
-This mod is the **producer** of that bundle and nothing more. Downstream consumers (e.g. a
-BeamNG level builder, a Blender importer) are **out of scope for this repo** — they read the
-bundle through its documented contract and must not be coupled into the mod. Keep this repo
-buildable and useful on its own.
+The mod is the **producer** of that bundle and nothing more. Consumers read the bundle through
+its documented contract and **must not be coupled into the mod**; the mod builds and runs
+without any of them. Two consumers do live in this repo, beside the mod, as of 2026-08-15:
+the Blender adapter (`tools/blender_import_bundle.py`) and the **`cs2beamng` BeamNG.drive level
+builder application** (`apps/cs2beamng/`), both built on the engine-neutral `tools/csiibundle/`
+package and its offline **bake** stage (`csiibundle.bake` → `<bundle>/derived/`, contract §13).
+The live plan for that work is `docs/plans/beamng-consumer-plan.md`; `pip install -e .` installs
+both Python packages (`pyproject.toml` at the root maps them from `tools/` and `apps/`).
 
 ## The spec
 `@PLAN.md` is the authoritative spec. It defines the extraction inventory, the bundle

@@ -1604,9 +1604,12 @@ this layer shows grass wherever the game shows pavement.
 Areas are ground paint, like decals (§4.2a): never generate collision from them, and draw
 them just above the terrain to avoid z-fighting. **They go UNDER the §4.2a decal instances
 standing on them** — a parking lot's bay markings are decal instances, and an area lifted
-above them paints the bays out of the lot. The reference importer's ladder is terrain 0 →
-area 6 mm → lane tint 8 mm → lane marking 14 mm → decal instance 20 mm; the order is what
-matters, not the values. It places areas under `--areas` (implied by `--everything`), and
+above them paints the bays out of the lot. The reference ladder (`csiibundle.decals.LIFT_LADDER`,
+the one table every consumer should read rather than copy) is terrain 0 → lane tint 8 mm →
+lane marking 14 mm → area 20 mm → decal instance 30 mm; the ORDER is contract, the values are
+tuned. *(Corrected 2026-08-15: this passage used to put areas at 6 mm, below the lane
+layers — that was the pre-2026-08-08 ladder, superseded when the instance-decal rung moved to
+30 mm; the code and the consumer guide were already right.)* It places areas under `--areas` (implied by `--everything`), and
 conforms them to `--terrain` when that layer is also built.
 
 ---
@@ -2107,3 +2110,64 @@ instance (§8b calls that join total, so a dangling one means a mixed-vintage bu
 §7.2 key that matches no mesh file or glTF node name is reported as a note — 184 palette keys
 and 86 light keys on the reference city, all for geometry the bundle deliberately excludes
 (tree `*Child*` states, vehicles).
+
+
+---
+
+## 13. `derived/` — the consumer cache written by `csiibundle.bake` *(2026-08-15)*
+
+**This is not a producer layer.** Nothing under `derived/` is written by the mod, indexed by
+`bundle.json`, counted by `counts`, or required by any consumer. It is the output of the
+offline **bake** — `python -m csiibundle.bake <bundle>` — which computes, once per rip, the
+expensive engine-neutral derivatives that every consumer would otherwise recompute: markings
+draped onto the real road surface, lane furniture bent along its curves, area surfaces
+conformed to the terrain, foundation skirts dropped to the ground, the per-cell terrain hole
+mask, split metallic/roughness maps and a resolved material table, and generated LOD chains.
+The bake exists because the rip must stay fast (its writer thread gates the whole rip, §5.1)
+and because draping needs the *assembled* surface, which exists only after the rip.
+
+Rules:
+
+- **Location.** `<bundle>/derived/` by default, beside `bundle.json` and the existing
+  `colour/` directory. The producer never touches it: `CleanStaleOutputs` deletes only the
+  layers it is about to rebuild and the manifest scan reads only declared layers. A bake may be
+  redirected elsewhere (`--derived-dir`); consumers find it via `derived/derived.json` at either
+  place, never by assuming products exist.
+- **`derived/derived.json` is the only fixed name**, and it is validated by
+  `docs/schema/derived.schema.json`. It records the `bakeVersion`, the bundle it was baked
+  against (`bundle.sha256` of `bundle.json`, `bundle.generatedAt`), the options that shaped the
+  outputs, and — the load-bearing part — a **fingerprint of every input layer per product**.
+- **Staleness is per product, not per bundle.** A bundle is mixed-vintage by design (§1), so
+  `generatedAt` alone cannot say whether a product is current. Each product lists the layer keys
+  it was computed from and the fingerprint of each at bake time (`size` + `mtimeNs` for a file;
+  `count` + `bytes` + `maxMtimeNs` + a hash of the sorted names for a directory). A product is
+  **stale** when any of its inputs' current fingerprints differ, or when `bakeVersion` differs.
+  A consumer reads a stale product at its own risk; the bake re-bakes only stale products.
+- **Frame and formats are the bundle's own.** Tile `.glb`s obey §6 exactly (bundle frame,
+  X-mirrored positions/normals, reversed winding, `TEXCOORD_0` glTF-origin, one root node named
+  by the tile's `assetId`, materials joined by glTF material `name`), so `csiibundle.frames`
+  and `csiibundle.glb` apply unchanged. Rasters are PNG as in §8. Records are `.jsonl` as in §1.
+- **Tiles.** World-space products are tiled on a square grid of `options.tile` metres
+  (default 256) anchored at bundle-frame `(0, 0)`: `tx = floor(x / tile)`, `tz = floor(z /
+  tile)`, `assetId = "<product>_<tx>_<tz>"` (negative indices keep their sign; the id pattern
+  of §4 allows `-`). One primitive per (material, paint variant) per tile. Empty tiles are not
+  written; `products.<name>.tiles` lists the ones that are.
+- **Never invents.** Every product is a deterministic function of the bundle and the recorded
+  options; the bake refuses a bundle that fails `tools/validate_bundle.py` and inherits every
+  §10 declared gap unchanged.
+
+Products (all optional; a consumer treats an absent product as "compute it yourself or skip"):
+
+| product | path | contents | inputs |
+|---|---|---|---|
+| `materials` | `materials.json`, `textures/` | resolved per-material PBR table (metallic/roughness/AO split out of `mask` as single-channel PNGs, shader-only materials resolved to factors, alpha mode, doubleSided, `colorMask`), an alias map collapsing materials whose resolved texture set is identical, and `paint_variants.json` + tinted albedos per (material, colorSet) | `materials`, `textures`, `colors`, `instances` |
+| `lods` | `lods/<assetId>_LOD<n>.glb` | generated LOD chain per mesh state (skipped where the producer shipped `_LOD<n>` nodes, §6) | `meshes` |
+| `markings` | `markings/<tile>.glb` | §5B decal-role parts and §4.2a instance decals draped onto the road/terrain with the `decals.LIFT_LADDER` rung applied | `laneGeometry`, `lanePrefabs`, `laneMeshes`, `networkMeshes`, `networks`, `instances`, `meshes`, `terrain` |
+| `lanegeometry` | `lanegeometry/<tile>.glb`, `lanegeometry/instances.jsonl` | non-decal §5B parts: rigid, level tiles as placements (`assetId` + bundle-frame 4×4), everything else baked | `laneGeometry`, `lanePrefabs`, `laneMeshes` |
+| `areas` | `areas/<tile>.glb` | §8b surfaces conformed to the terrain, world-planar UVs, priority lift | `areas`, `areaPrefabs`, `terrain` |
+| `skirts` | `skirts/<tile>.glb` | §4.1 `__base` bands per instance with the bottom ring dropped to the terrain | `instances`, `meshes`, `terrain` |
+| `terrain` | `terrain/clip_cells.png` | gray8 at heightmap face resolution `(h−1, w−1)`: 0 keep, 128 touched by a deep band, 255 fully contained (a heightmap-native engine punches holes at 255) | `clipVolumes`, `terrain` |
+
+The `derived/` tree is a **cache**: delete it and nothing about the bundle is lost; a bake
+rebuilds it. It is not part of the contract's compatibility promise (§12) — `bakeVersion` is its
+own version, and a consumer that reads a product must check it.

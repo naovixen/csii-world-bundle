@@ -53,6 +53,33 @@ A full city takes about **seven minutes**; `docs/example-bundle` takes a second.
 
 ---
 
+## The bake: `csiibundle/bake/` — engine-neutral derivatives, once per rip
+
+```
+python -m csiibundle.bake [bundle] [--check] [--only markings,areas] [--region X Z R] [--force]
+csiibundle-bake ...            # the same, after `pip install -e .` at the repo root
+```
+
+The offline second stage of the producer (contract §13). The in-game rip stays raw and fast;
+the bake computes what every consumer would otherwise recompute — draped markings, bent lane
+furniture, conformed areas, dropped skirts, the terrain hole mask, split PBR maps, generated
+LODs — into `<bundle>/derived/`, with a `derived.json` that fingerprints each product's input
+layers so a partial re-rip re-bakes only what changed. Products register in
+`csiibundle/bake/__init__.py`; the framework (manifest, staleness, progress protocol, CLI) is
+gated by `test_bake_manifest.py`. The `cs2beamng` application (`apps/cs2beamng/`) runs it as
+its first stages. `python -m csiibundle.bake --list` shows what is registered.
+
+---
+
+## `beamng/` — offline probes against the BeamNG install
+
+* **`probe_ter.py`** — determines the `.ter` heightmap orientation from a shipped BeamNG level
+  by sampling under its DecalRoad nodes (roads sit on the terrain). Read-only; re-run on a new
+  BeamNG version before trusting `cs2beamng.beamng.ter`. Result on 0.39.2 `small_island`: row 0
+  south, col 0 west, `h = stored·maxHeight/65536 + position.z`, 2 cm median.
+
+---
+
 ## Building and checking the example bundle
 
 ### `make_example_bundle.py`
@@ -161,6 +188,7 @@ correctly. Run them with plain `python`.
 | `test_clip_cut.py` | the §8c containment invariant — only a deep band carves, and a face is deleted only when a volume contains the whole face |
 | `test_node_fan.py` | the junction fan: every cross-section piece stretched across the node's boundary curves |
 | `test_heightfield.py` | `csiibundle.drape.HeightfieldSurface`, which the Blender harness never calls because it keeps its own BVH |
+| `test_bake_manifest.py` | the bake framework — `derived.json` validates against `docs/schema/derived.schema.json`, staleness is per product from input fingerprints, cancel is honoured between chunks |
 
 ---
 

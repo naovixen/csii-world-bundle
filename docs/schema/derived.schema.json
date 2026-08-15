@@ -1,0 +1,207 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://erohs.github.io/csii-world-bundle/schema/derived.schema.json",
+  "title": "CS2 World Bundle derived cache manifest (derived/derived.json)",
+  "description": "Written by `python -m csiibundle.bake`. Not a producer layer and not part of the bundle contract's compatibility promise (bundle-schema.md §13). Records what was baked, against which bundle, from which inputs, so a consumer can tell a fresh product from a stale one per product.",
+  "type": "object",
+  "required": [
+    "bakeVersion",
+    "csiibundleSchema",
+    "generatedAt",
+    "bundle",
+    "options",
+    "products"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "bakeVersion": {
+      "description": "Version of the bake's own outputs. A consumer that reads a product must check it; a differing bakeVersion makes every product stale.",
+      "type": "integer",
+      "minimum": 1
+    },
+    "csiibundleSchema": {
+      "description": "The bundle contract version the bake understands (bundle-schema.md §12).",
+      "type": "integer",
+      "minimum": 1
+    },
+    "generatedAt": {
+      "description": "When the bake finished, ISO 8601 UTC.",
+      "type": "string",
+      "minLength": 1
+    },
+    "bundle": {
+      "description": "Identity of the bundle the products were baked from.",
+      "type": "object",
+      "required": [
+        "sha256",
+        "generatedAt"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "sha256": {
+          "description": "SHA-256 of bundle.json's bytes at bake time.",
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "generatedAt": {
+          "description": "The bundle manifest's own generatedAt at bake time.",
+          "type": "string"
+        },
+        "generator": {
+          "type": "string"
+        },
+        "city": {
+          "type": "string"
+        }
+      }
+    },
+    "options": {
+      "description": "The options that shaped the outputs. Two bakes with different options are different caches; a consumer that needs a specific option value must check it here.",
+      "type": "object",
+      "required": [
+        "tile"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "tile": {
+          "description": "Tile edge in bundle-frame metres, grid anchored at (0, 0).",
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "diagonal": {
+          "description": "Heightfield triangulation assumed when conforming to the terrain.",
+          "type": "string",
+          "enum": [
+            "nw_se",
+            "ne_sw",
+            "envelope"
+          ]
+        },
+        "region": {
+          "description": "Absent or null for a full-bundle bake; otherwise the bundle-frame disc the products were limited to.",
+          "type": [
+            "object",
+            "null"
+          ],
+          "required": [
+            "centerX",
+            "centerZ",
+            "radius"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "centerX": {
+              "type": "number"
+            },
+            "centerZ": {
+              "type": "number"
+            },
+            "radius": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            }
+          }
+        }
+      }
+    },
+    "products": {
+      "description": "One entry per product that was baked. Absent product = not baked. Keys are the product names of bundle-schema.md §13.",
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/product"
+      }
+    }
+  },
+  "$defs": {
+    "fingerprint": {
+      "description": "What an input layer looked like at bake time. A file carries size + mtimeNs; a directory carries count + bytes + maxMtimeNs + a SHA-256 over its sorted relative file names.",
+      "type": "object",
+      "required": [
+        "kind"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "file",
+            "dir",
+            "missing"
+          ]
+        },
+        "size": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "mtimeNs": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "maxMtimeNs": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "names": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "product": {
+      "type": "object",
+      "required": [
+        "path",
+        "inputs",
+        "generatedAt"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "description": "Relative to the derived directory: a file, or a directory (trailing slash).",
+          "type": "string",
+          "minLength": 1
+        },
+        "generatedAt": {
+          "type": "string",
+          "minLength": 1
+        },
+        "seconds": {
+          "description": "Wall-clock the product took to bake.",
+          "type": "number",
+          "minimum": 0
+        },
+        "inputs": {
+          "description": "Fingerprint of every bundle layer this product was computed from, keyed by the manifest layer key (bundle.json `layers`).",
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/fingerprint"
+          }
+        },
+        "tiles": {
+          "description": "For tiled products: the [tx, tz] tile indices that were written (files named <product>_<tx>_<tz>.glb).",
+          "type": "array",
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            },
+            "minItems": 2,
+            "maxItems": 2
+          }
+        },
+        "stats": {
+          "description": "Product-specific counters (vertices, queries, draped, missed, ...). Informational.",
+          "type": "object"
+        }
+      }
+    }
+  }
+}

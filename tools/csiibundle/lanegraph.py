@@ -21,11 +21,15 @@ these are points to be walked, not control points to be evaluated. Do not feed t
 under-measures a curve, as any chord does. `polyline_length` exists to CHECK it, not to replace
 it.
 
-**`owner` is the join key**, and it points at the network record that owns the lane — but only
-where the lane belongs to an EDGE. **Lanes owned by a node have no `owner` at all**, and those
-are the turning movements THROUGH a junction: the connections that make the graph a graph rather
-than a pile of disconnected segments. Do not filter them out for lacking an owner. `by_owner()`
-groups them under `None` for exactly this reason.
+**`owner` is an advisory grouping key, not a join** *(contract §5A, corrected 2026-08-14, H10)*.
+The producer writes `Game.Common.Owner.m_Owner.Index` verbatim — whatever entity owns the lane.
+Measured on the reference city: of 677,566 lanes carrying an owner, 21.7% resolve into
+`networks.jsonl`, 19.1% into `instances.jsonl` (lot-owned parking and pedestrian lanes) and
+**59.2% into neither**, because the commonest owner is a net NODE and the bundle emits no node
+records (§5.1). A further 3,063 lanes carry no owner at all. Node-owned lanes are the turning
+movements THROUGH a junction — the connections that make the graph a graph — so never filter
+a lane out for an owner that does not resolve. `by_owner()` groups the owner-less under `None`;
+`attach_networks()` yields `None` for the ~78% that are not edge-owned, which is normal.
 
 **The other four fields are what a simulation actually needs**, and every one of them is
 optional so a consumer must handle absence:
@@ -78,8 +82,9 @@ def attach_networks(lanes, networks):
 
     `networks` is an iterable of §5 network records; it is materialised into a dict by `id`, so
     pass the network layer (thousands of records) here and stream the lane layer (hundreds of
-    thousands) as `lanes`. A lane whose owner is not in the network layer yields `None` — normal
-    when the caller filtered the networks to a region, and a bundle defect otherwise.
+    thousands) as `lanes`. A lane whose owner is not in the network layer yields `None` — and on
+    a full bundle that is the COMMON case (~78%: node-owned and lot-owned lanes, §5A), not a
+    defect. Only edge-owned lanes join.
     """
     owners = {record["id"]: record for record in networks if "id" in record}
     for lane in lanes:

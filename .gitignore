@@ -427,3 +427,11 @@ Library/ilpp.pid
 # rewrites them, so the fork untracked them (git rm --cached) and ignores the tree.
 obj/
 bin/
+
+# Python packaging (pip install -e .)
+*.egg-info/
+build/
+dist/
+
+# Bake caches must never be committed (they live beside a bundle, but a test may point one anywhere)
+derived/

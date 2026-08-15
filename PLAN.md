@@ -351,8 +351,11 @@ Phases 0 and 1 are the gate. Everything after can iterate.
 ---
 
 ## 9. Non-goals (keep this repo focused)
-- **No downstream conversion.** Turning the bundle into a BeamNG level / Blender scene / other
-  game is a separate consumer project. This repo stops at a correct, documented bundle.
+- **The mod stops at a correct, documented bundle.** Downstream conversion is not the mod's
+  job and never couples into it. *(Amended 2026-08-15: the repo does now host two consumers
+  beside the mod — the Blender adapter and the `cs2beamng` BeamNG level builder application,
+  plus the offline `csiibundle.bake` stage — see `docs/plans/beamng-consumer-plan.md`. They
+  read the bundle through the contract like any third party; the C# rip is unchanged.)*
 - **No redistribution/publishing** of ripped assets — ever.
 - **No replacement** of Carto's vector export; the ripper sits beside it.
 
