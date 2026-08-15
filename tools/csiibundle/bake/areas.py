@@ -65,7 +65,7 @@ def run(context, progress):
 
     pieces, stats = area_rules.build_pieces(records, cell, sample, center=center, radius=radius,
                                             progress=tick, catalogue=catalogue)
-    progress.end(f"{stats['placed']} areas → {sum(len(p['faces']) for p in pieces.values()):,} pieces "
+    progress.end(f"{stats['placed']} areas -> {sum(len(p['faces']) for p in pieces.values()):,} pieces "
                  f"({stats['skipped_region']} outside region, {stats['missed']} node lookups missed, "
                  f"worst unconformed {stats['counters']['worst']:.3f} m)")
 
