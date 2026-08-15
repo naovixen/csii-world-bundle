@@ -24,9 +24,21 @@ BuildContext = namedtuple("BuildContext", "settings bundle level_dir derived_dir
 STAGE_MODULE_ENV = "CS2BEAMNG_STAGE_MODULE"
 
 
+_CACHE = {}
+
+
 def all_stages():
-    """The ordered stage list. Imported lazily so the UI process never loads numpy-heavy code."""
-    override = os.environ.get(STAGE_MODULE_ENV)
+    """The ordered stage list. Imported lazily so the UI process never loads numpy-heavy code;
+    resolved once per process (the census, the runner and the state preview all ask)."""
+    override = os.environ.get(STAGE_MODULE_ENV) or ""
+    if override in _CACHE:
+        return list(_CACHE[override])
+    stages = _resolve(override)
+    _CACHE[override] = stages
+    return list(stages)
+
+
+def _resolve(override):
     if override:
         return importlib.import_module(override).all_stages()
     from . import bake as _bake            # noqa: WPS433

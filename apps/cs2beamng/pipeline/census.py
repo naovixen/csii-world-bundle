@@ -22,6 +22,54 @@ from .. import settings as settings_mod
 from . import history
 
 
+_SIZE_CACHE = {}
+
+
+def _bundle_size(bundle, layers):
+    """Bytes on disk over the manifest's layers. 20k files on the reference bundle: a scandir
+    walk with DirEntry.stat is ~0.1 s; cached per (bundle, bundle.json mtime) because the UI
+    asks for a census after every settings change."""
+    try:
+        key = (bundle, os.path.getmtime(os.path.join(bundle, "bundle.json")))
+    except OSError:
+        key = (bundle, None)
+    if key in _SIZE_CACHE:
+        return _SIZE_CACHE[key]
+    total = 0
+    for rel in layers.values():
+        path = os.path.join(bundle, rel)
+        try:
+            if os.path.isdir(path):
+                total += _dir_size(path)
+            elif os.path.isfile(path):
+                total += os.path.getsize(path)
+        except OSError:
+            pass
+    _SIZE_CACHE.clear()
+    _SIZE_CACHE[key] = total
+    return total
+
+
+def _dir_size(path):
+    total = 0
+    stack = [path]
+    while stack:
+        current = stack.pop()
+        try:
+            with os.scandir(current) as it:
+                for entry in it:
+                    try:
+                        if entry.is_dir(follow_symlinks=False):
+                            stack.append(entry.path)
+                        elif entry.is_file(follow_symlinks=False):
+                            total += entry.stat(follow_symlinks=False).st_size
+                    except OSError:
+                        pass
+        except OSError:
+            pass
+    return total
+
+
 def take(values):
     bundle = values.get("bundle") or ""
     out = {"bundle": None, "derived": {"present": False, "products": {}}, "region": None, "scale": 1.0,
@@ -32,21 +80,7 @@ def take(values):
         return out
     counts = dict(manifest.get("counts") or {})
     layers = dict(manifest.get("layers") or {})
-    size_bytes = 0
-    for rel in layers.values():
-        path = os.path.join(bundle, rel)
-        try:
-            if os.path.isdir(path):
-                for root, _d, files in os.walk(path):
-                    for f in files:
-                        try:
-                            size_bytes += os.path.getsize(os.path.join(root, f))
-                        except OSError:
-                            pass
-            elif os.path.isfile(path):
-                size_bytes += os.path.getsize(path)
-        except OSError:
-            pass
+    size_bytes = _bundle_size(bundle, layers)
     out["bundle"] = {"path": bundle, "city": manifest.get("city"), "generatedAt": manifest.get("generatedAt"),
                      "generator": manifest.get("generator"), "schema": manifest.get("schema"),
                      "mapSize": manifest.get("mapSize"), "counts": counts, "layers": sorted(layers),

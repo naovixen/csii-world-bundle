@@ -80,16 +80,40 @@ class QueueProgress(Progress):
 
 class Heartbeat(threading.Thread):
     """Ticks on the queue while the worker is alive; the runner turns a missing tick into
-    'worker busy' (long numpy call) and, past a longer limit, into a hard stop."""
+    'worker busy' (long numpy call) and, past a longer limit, into a hard stop.
 
-    def __init__(self, queue, interval=HEARTBEAT_INTERVAL):
+    It is also the worker's own watchdog: when the runner raises the hard-cancel event, or the
+    parent process is gone (window crashed, console closed), it terminates the pool children
+    this worker started (`multiprocessing.active_children()`) and exits the process — the one
+    reliable way to keep an orphan from writing into `derived/` and the level folder."""
+
+    def __init__(self, queue, interval=HEARTBEAT_INTERVAL, hard_cancel=None):
         super().__init__(daemon=True)
         self.queue = queue
         self.interval = interval
+        self.hard_cancel = hard_cancel
         self._stop = threading.Event()
 
     def run(self):
+        import multiprocessing
+        import os
+
+        parent = multiprocessing.parent_process()
         while not self._stop.wait(self.interval):
+            hard = self.hard_cancel is not None and self.hard_cancel.is_set()
+            orphan = parent is not None and not parent.is_alive()
+            if hard or orphan:
+                for child in multiprocessing.active_children():
+                    try:
+                        child.terminate()
+                    except Exception:  # noqa: BLE001
+                        pass
+                try:
+                    self.queue.put({"t": "log", "stage": "system", "at": time.time(),
+                                    "text": "worker: hard cancel" if hard else "worker: parent gone, exiting"})
+                except Exception:  # noqa: BLE001
+                    pass
+                os._exit(3)
             try:
                 self.queue.put({"t": "hb", "at": time.time()})
             except Exception:  # noqa: BLE001 - the queue is gone; nothing to say

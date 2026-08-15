@@ -46,8 +46,8 @@ from urllib.parse import parse_qs, urlparse
 from . import __version__
 from . import settings as settings_mod
 from .pipeline import census as census_mod
-from .pipeline import runner as runner_mod
 from .pipeline.runner import Runner
+from .pipeline.worker import REPORT_NAME
 
 UI_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ui")
 STATE_INTERVAL = 0.5
@@ -71,6 +71,7 @@ class AppServer:
         self.on_quit = None                # set by app.py: callable() when /api/quit arrives
         self._census = None
         self._census_key = None
+        self._planned = None
         self._lock = threading.RLock()
         self._httpd = None
         self._thread = None
@@ -91,11 +92,14 @@ class AppServer:
         return f"{base}?t={self.token}" if with_token else base
 
     def stop(self):
+        """Idempotent and safe from any thread (`/api/quit`'s thread and the main thread's
+        shutdown both call it)."""
         self.stopped.set()
-        if self._httpd is not None:
-            self._httpd.shutdown()
-            self._httpd.server_close()
-            self._httpd = None
+        with self._lock:
+            httpd, self._httpd = self._httpd, None
+        if httpd is not None:
+            httpd.shutdown()
+            httpd.server_close()
 
     # -- settings / census ---------------------------------------------------------------------
 
@@ -131,10 +135,16 @@ class AppServer:
         return payload
 
     def apply_preset(self, name):
+        errors = []
         with self._lock:
             self.values = settings_mod.apply_preset(self.values, name)
-            settings_mod.save(self.values)
-        return self.settings_payload()
+            try:
+                settings_mod.save(self.values)
+            except OSError as exc:
+                errors.append(f"could not save settings: {exc}")
+        payload = self.settings_payload()
+        payload["errors"] = errors
+        return payload
 
     def census(self, force=False):
         with self._lock:
@@ -162,10 +172,14 @@ class AppServer:
         problems = settings_mod.validate(values)
         if problems:
             return {"ok": False, "problems": problems}, HTTPStatus.BAD_REQUEST
-        if self.runner.running():
-            return {"ok": False, "problems": ["a build is already running"]}, HTTPStatus.CONFLICT
         census = self.census()
-        self.runner.start(values, census)
+        try:
+            self.runner.start(values, census)          # the runner's own lock decides; two racing starts -> one 409
+        except RuntimeError as exc:
+            return {"ok": False, "problems": [str(exc)]}, HTTPStatus.CONFLICT
+        except ValueError as exc:
+            return {"ok": False, "problems": [str(exc)]}, HTTPStatus.BAD_REQUEST
+        self._planned = None
         return {"ok": True, "state": self.state(with_log=True)}, HTTPStatus.OK
 
     def cancel_build(self):
@@ -183,24 +197,32 @@ class AppServer:
 
     def _planned_stages(self):
         """Before the first build: the stage list the current settings would run, with the
-        history-based estimate per stage, so the Build card is never an empty box."""
+        history-based estimate per stage, so the Build card is never an empty box. Memoised on
+        (settings, census identity): it is served on every state tick."""
         with self._lock:
             values = dict(self.values)
             census = self._census
+            key = (json.dumps(values, sort_keys=True, default=str), id(census))
+            if self._planned is not None and self._planned[0] == key:
+                return self._planned[1]
         if census is None or settings_mod.validate(values):
-            return []
-        try:
-            return runner_mod._initial_state(values, census)["stages"]
-        except Exception:  # noqa: BLE001 - a preview must never break the state stream
-            return []
+            stages = []
+        else:
+            stages = Runner.plan(values, census)
+        with self._lock:
+            self._planned = (key, stages)
+        return stages
 
     def report(self):
+        """The report of the last build in this session; before any build, the report file left
+        in the level folder by an earlier session (never a previous build's file for a build
+        that died without writing one - the worker removes it at start)."""
         state = self.runner.state()
-        if state.get("report"):
-            return state["report"]
+        if state.get("report") or state["status"] != "idle":
+            return state.get("report")
         with self._lock:
             values = dict(self.values)
-        path = os.path.join(values.get("output") or "", values.get("level_name") or "", "cs2beamng_report.json")
+        path = os.path.join(values.get("output") or "", values.get("level_name") or "", REPORT_NAME)
         try:
             with open(path, encoding="utf-8") as handle:
                 return json.load(handle)
@@ -213,7 +235,7 @@ class AppServer:
         level = os.path.join(values.get("output") or "", values.get("level_name") or "")
         target = {"level": level, "output": values.get("output"), "bundle": values.get("bundle"),
                   "derived": os.path.join(values.get("bundle") or "", "derived"),
-                  "report": os.path.join(level, "cs2beamng_report.json")}.get(what)
+                  "report": os.path.join(level, REPORT_NAME)}.get(what)
         if not target or not os.path.exists(target):
             return {"ok": False, "error": f"nothing at {target!r}"}
         try:
@@ -338,7 +360,10 @@ class _Handler(BaseHTTPRequestHandler):
 
     def _authorised(self, query):
         token = self.headers.get("X-Token") or (query.get("t") or [None])[0]
-        return token is not None and secrets.compare_digest(token, self.app.token)
+        ok = token is not None and secrets.compare_digest(token, self.app.token)
+        if not ok:
+            self.close_connection = True       # an unread body must not become the next request on a keep-alive socket
+        return ok
 
     def _body(self):
         length = int(self.headers.get("Content-Length") or 0)

@@ -8,6 +8,7 @@ cleanly; the final message is `done` with the report or `error` with a traceback
 
 import json
 import os
+import signal
 import time
 import traceback
 
@@ -26,8 +27,14 @@ def _jobs(settings):
     return jobs
 
 
-def main(settings, census, queue, cancel_event):
-    heartbeat = Heartbeat(queue)
+def main(settings, census, queue, cancel_event, hard_cancel=None):
+    # Ctrl-C in the parent's console reaches this process too; cancellation must arrive through
+    # the event (between chunks), never as a KeyboardInterrupt in the middle of a write.
+    try:
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
+    except (ValueError, OSError):
+        pass
+    heartbeat = Heartbeat(queue, hard_cancel=hard_cancel)
     heartbeat.start()
     queue.put({"t": "hello", "pid": os.getpid(), "at": time.time()})
     progress = QueueProgress(queue, cancel_event)
@@ -41,6 +48,7 @@ def main(settings, census, queue, cancel_event):
     ok = True
     try:
         os.makedirs(level_dir, exist_ok=True)
+        _remove_stale_report(level_dir)               # a killed build must not be explained by the previous one's report
         for stage in all_stages():
             if not stage.enabled(settings):
                 queue.put({"t": "stage", "stage": stage.key, "status": "skipped", "at": time.time()})
@@ -86,6 +94,15 @@ def main(settings, census, queue, cancel_event):
 
 
 REPORT_NAME = "cs2beamng_report.json"
+
+
+def _remove_stale_report(level_dir):
+    try:
+        os.remove(os.path.join(level_dir, REPORT_NAME))
+    except FileNotFoundError:
+        pass
+    except OSError:
+        pass
 
 
 def _write_report(level_dir, report, queue):

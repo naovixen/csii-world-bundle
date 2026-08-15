@@ -16,7 +16,8 @@
     census: null,
     build: null,             // last state from SSE
     lastSeq: 0,
-    wasRunning: false,
+    resultsFor: null,        // finishedAt of the build whose results are on screen
+    commitSeq: 0,            // ordering token for /api/settings responses
     controls: new Map(),     // key -> {input, apply(value)}
     events: null,
     censusTimer: null,
@@ -116,7 +117,7 @@
     box.hidden = all.length === 0;
     for (const p of all) box.appendChild(el("div", "", p));
     for (const [key, ctl] of app.controls) {
-      ctl.input.classList.toggle("invalid", problems.some((p) => p.startsWith(key + ":")));
+      ctl.input.classList.toggle("invalid", all.some((p) => p.startsWith(key + ":")));
     }
   }
 
@@ -272,7 +273,9 @@
   }
 
   async function commit(key, value) {
+    const seq = ++app.commitSeq;
     const payload = await api("/api/settings", { method: "POST", body: { values: { [key]: value } } });
+    if (seq !== app.commitSeq) return;                           // a newer commit's response already landed
     renderSettings(payload);
     scheduleCensus();
   }
@@ -432,8 +435,14 @@
 
     renderStages(st.stages || []);
 
-    if (app.wasRunning && !running) { showResults(st); scheduleCensus(); }   // derived/ changed under us
-    app.wasRunning = running;
+    // results whenever a finished build is on screen that we have not shown yet - covers the
+    // running->finished edge AND a page opened/reloaded after the build already ended
+    const finished = st.status === "done" || st.status === "failed" || st.status === "cancelled";
+    if (finished && st.finishedAt && app.resultsFor !== st.finishedAt) {
+      app.resultsFor = st.finishedAt;
+      showResults(st);
+      scheduleCensus();                                          // derived/ changed under us
+    }
   }
 
   function renderStages(stages) {
@@ -539,8 +548,10 @@
       log.appendChild(line);
       app.logLines++;
     }
-    while (app.logLines > 2500) { log.removeChild(log.firstChild); app.logLines--; }
-    if (follow) log.scrollTop = log.scrollHeight;
+    if (follow) {                                                // never pull lines out from under a reader
+      while (app.logLines > 2500) { log.removeChild(log.firstChild); app.logLines--; }
+      log.scrollTop = log.scrollHeight;
+    }
   }
 
   function resetLog() {
@@ -552,17 +563,30 @@
 
   async function startBuild() {
     $("startBtn").disabled = true;
-    resetLog();
+    resetLog();                                                  // before the POST: the new build's first lines arrive at once
     $("resultsCard").hidden = true;
-    const res = await api("/api/start", { method: "POST" });
+    let res = null;
+    try { res = await api("/api/start", { method: "POST" }); } catch (e) { res = { ok: false, error: String(e) }; }
     if (!res || !res.ok) {
       const banner = $("banner");
       banner.hidden = false; banner.className = "banner danger";
       banner.textContent = (res && res.problems && res.problems.join(" · ")) || (res && res.error) || "Could not start.";
       $("startBtn").disabled = false;
+      await restoreLog();                                        // nothing started: bring the previous build's log back
+      if (app.build) { app.resultsFor = null; renderBuild(app.build); }
       return;
     }
+    app.resultsFor = null;
     if (res.state) renderBuild(res.state);
+  }
+
+  async function restoreLog() {
+    try {
+      const st = await api("/api/state");
+      resetLog();
+      app.lastSeq = 0;
+      appendLog(st.log || []);
+    } catch (_) { /* nothing to restore */ }
   }
 
   async function cancelBuild() {

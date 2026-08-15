@@ -45,13 +45,11 @@ class _StageProgress(Progress):
         self.current, self.current_started = name, time.monotonic()
         self._report()
 
-    def _report(self, finished=False):
+    def _report(self):
         done_w = sum(self.weights[n] for n in self.done)
         cur_w = self.weights.get(self.current, 0.0) if self.current else 0.0
         elapsed = (time.monotonic() - self.current_started) if self.current_started else 0.0
         within = min(0.95, elapsed / cur_w) if cur_w > 0 else 0.0
-        if finished:
-            done_w, cur_w, within = self.total, 0.0, 0.0
         fraction = min(1.0, (done_w + cur_w * within) / self.total)
         remaining = max(0.0, self.total - done_w - cur_w * within)
         if hasattr(self.inner, "stage_progress"):
@@ -60,7 +58,7 @@ class _StageProgress(Progress):
     def finish(self):
         self.done.update(self.weights)
         self.current = None
-        self._report(finished=True)
+        self._report()
 
     # -- Progress protocol, forwarded --------------------------------------------------------
 
@@ -140,7 +138,8 @@ def run(ctx, progress):
     tracker = _StageProgress(progress, weights)
     outcomes = bake_runner.run(ctx.bundle, derived_dir=ctx.derived_dir, options=options, only=only,
                                force=False, progress=tracker)
-    tracker.finish()
+    if all(o.status in ("baked", "fresh") for o in outcomes):
+        tracker.finish()                               # a cancelled/failed bake must not read as 100 %
     summary = {o.name: {"status": o.status, "reason": o.reason, "seconds": round(o.seconds, 1),
                         "stats": {k: v for k, v in (o.stats or {}).items() if k != "_tiles"}} for o in outcomes}
     if any(o.status == "cancelled" for o in outcomes):
@@ -148,12 +147,15 @@ def run(ctx, progress):
     failed = [o.name for o in outcomes if o.status == "failed"]
     if failed:
         raise RuntimeError(f"bake products failed: {failed}")
-    # rates are learnt per product (a "bake" rate over mixed units would be meaningless)
+    # rates are learnt per product (a "bake" rate over mixed units would be meaningless), and
+    # only from full-city builds: a region bake pairs region-limited seconds with city-wide
+    # census units and would teach a rate several times too fast
     learnt = {}
-    for o in outcomes:
-        u = (estimates.get(f"bake/{o.name}") or {}).get("units")
-        if o.status == "baked" and u and o.seconds > 0:
-            learnt[f"bake/{o.name}"] = (u, o.seconds)
+    if ctx.region is None:
+        for o in outcomes:
+            u = (estimates.get(f"bake/{o.name}") or {}).get("units")
+            if o.status == "baked" and u and o.seconds > 0:
+                learnt[f"bake/{o.name}"] = (u, o.seconds)
     return {"products": summary, "_history": learnt}
 
 

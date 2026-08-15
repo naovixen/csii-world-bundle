@@ -166,9 +166,15 @@ def coerce(key, raw):
             return False
         raise ValueError(f"{key}: expected true/false, got {raw!r}")
     if kind == "int":
-        return int(text)
+        try:
+            return int(text)
+        except (TypeError, ValueError):
+            raise ValueError(f"{key}: expected a whole number, got {raw!r}") from None
     if kind == "float":
-        return float(text)
+        try:
+            return float(text)
+        except (TypeError, ValueError):
+            raise ValueError(f"{key}: expected a number, got {raw!r}") from None
     if kind.startswith("choice:"):
         choices = kind.split(":", 1)[1].split("|")
         s = str(text)

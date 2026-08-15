@@ -9,6 +9,7 @@ the behaviour comes from a `stub_mode` key smuggled in the settings dict:
     crash          one stage that kills the worker process mid-way (os._exit)
     fail           one stage that raises
     children       one stage that runs a multiprocessing pool (the worker must not be a daemon)
+    pool_stubborn  a pool that never finishes under a stage that never checks cancel (hard cancel)
 """
 
 import os
@@ -38,6 +39,15 @@ def _run(ctx, progress):
             progress.check()
         progress.end("200 ticks")
         return {"ticks": 200}
+    if mode == "pool_stubborn":
+        # a pool whose tasks never finish and a stage that never checks cancel: hard cancel must
+        # take the worker AND its children down
+        import multiprocessing
+
+        progress.begin("stubborn pool", total=None, unit="")
+        with multiprocessing.get_context("spawn").Pool(2) as pool:
+            pool.map(_sleep_forever, [1, 2])
+        return {}
     if mode == "ignore_cancel":
         progress.begin("stubborn", total=None, unit="")
         time.sleep(60.0)
@@ -66,6 +76,10 @@ def _run(ctx, progress):
 
 def _square(x):
     return x * x
+
+
+def _sleep_forever(_x):
+    time.sleep(600)
 
 
 def all_stages():

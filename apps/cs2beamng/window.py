@@ -8,7 +8,6 @@ folder picker (`server.pick_folder`) so the Browse buttons open the OS dialog; a
 such thing, and the UI hides them.
 """
 
-import sys
 import threading
 import webbrowser
 
@@ -58,11 +57,11 @@ def _show_native(url, server):
     server.pick_folder = pick_folder
 
     def on_closing():
-        # closing the window while a build runs: confirm, then cancel it
+        # Closing the window while a build runs cancels it (app.launch's shutdown then waits for
+        # the worker). No native confirm here: pywebview's cocoa backend blocks the main thread
+        # for its dialogs and `closing` runs ON the main thread - a confirm would deadlock macOS.
+        # The page's own Quit button asks first; the window's close box is the "I mean it" path.
         if server.runner.running():
-            ok = window.create_confirmation_dialog("Build in progress", "Cancel the build and quit?")
-            if not ok:
-                return False
             server.runner.cancel()
         return True
 
@@ -77,8 +76,5 @@ def _show_native(url, server):
         server.stop()
 
     window.events.closed += stop_server_when_closed
-    gui = None
-    if sys.platform.startswith("linux"):
-        gui = None                                    # let pywebview pick GTK or Qt, whichever exists
-    webview.start(gui=gui, debug=False)
+    webview.start(debug=False)                        # pywebview picks the platform backend (GTK/Qt on Linux)
     return 0

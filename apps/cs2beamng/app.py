@@ -11,7 +11,6 @@ runner's watchdog) so no orphan keeps writing into the level folder.
 """
 
 import sys
-import time
 
 from . import __version__
 from . import window as window_mod
@@ -35,12 +34,5 @@ def launch(browser=False, host="127.0.0.1", port=0):
 
 
 def _shutdown(server):
-    runner = server.runner
-    if runner.running():
-        runner.cancel()
-        deadline = time.time() + 20.0
-        while runner.running() and time.time() < deadline:
-            runner.state()          # the watchdog lives in state(): it hard-kills a stubborn worker
-            time.sleep(0.2)
-    runner.kill()                   # a non-daemon worker would otherwise keep the process alive
+    server.runner.stop()            # cancel, grace period, then kill: a non-daemon worker must not outlive us
     server.stop()

@@ -13,6 +13,7 @@ import os
 import shutil
 import sys
 import tempfile
+import threading
 import time
 import traceback
 from urllib.parse import urlparse
@@ -159,6 +160,30 @@ def test_runner(tmp):
     check(latency is not None and latency < 4.0, f"terminated within HARD_CANCEL_SECONDS + slack ({latency})")
     check(any("terminated" in e["text"] for e in state["log"]), "log says the worker was terminated")
 
+    print("runner: repeated cancel does not postpone the hard kill; hard-killed stage has finishedAt")
+    runner_mod.HARD_CANCEL_SECONDS = 2.0
+    try:
+        def cancel_twice(r):
+            r.cancel()
+            threading.Timer(1.0, r.cancel).start()          # a second cancel 1 s later must not reset the deadline
+        state, latency, _ = run_mode(tmp, "ignore_cancel", action=cancel_twice, act_on_progress=False)
+    finally:
+        runner_mod.HARD_CANCEL_SECONDS = old
+    check(state["status"] == "cancelled" and latency is not None and latency < 4.5,
+          f"second cancel did not extend the deadline ({latency})")
+    work = next(s for s in state["stages"] if s["key"] == "work")
+    check(work.get("finishedAt") is not None and work.get("elapsed") == state["stages"][1]["elapsed"], "hard-killed stage carries finishedAt")
+    check(sum(1 for e in state["log"] if "cancel requested" in e["text"]) == 1, "one 'cancel requested' log line, not two")
+
+    print("runner: hard cancel with a live pool")
+    runner_mod.HARD_CANCEL_SECONDS = 2.0
+    try:
+        state, latency, _ = run_mode(tmp, "pool_stubborn", action=lambda r: r.cancel(), act_on_progress=False, timeout=40)
+    finally:
+        runner_mod.HARD_CANCEL_SECONDS = old
+    check(state["status"] == "cancelled" and latency is not None and latency < 6.0,
+          f"worker with a stubborn pool ends cancelled in time ({state['status']}, {latency})")
+
     print("runner: worker dies")
     state, _, slow = run_mode(tmp, "crash")
     check(state["status"] == "failed", f"dead worker -> failed ({state['status']})")
@@ -244,6 +269,18 @@ def test_server(tmp):
         check(status == 403, "API without token -> 403")
         status, _ = client.call("POST", "/api/start", token=False)
         check(status == 403, "POST without token -> 403")
+        # keep-alive: a rejected POST with a body must not poison the next request on the socket
+        conn = http.client.HTTPConnection(client.host, client.port, timeout=10)
+        conn.request("POST", "/api/start", body=b'{"values": {"trees": false}}', headers={"Content-Type": "application/json"})
+        r1 = conn.getresponse(); r1.read()
+        try:
+            conn.request("GET", "/api/state", headers={"X-Token": server.token})
+            r2 = conn.getresponse(); r2.read()
+            second = r2.status
+        except (http.client.HTTPException, OSError):
+            second = "reconnect"                        # the server closed the connection: also fine
+        conn.close()
+        check(r1.status == 403 and second in (200, "reconnect"), f"keep-alive survives a rejected POST ({second})")
         status, payload = client.call("GET", "/api/settings")
         check(status == 200 and payload["values"]["bundle"] == EXAMPLE and payload["schema"], "GET /api/settings")
         check(payload["canBrowse"] is False, "no folder picker outside a native window")
@@ -267,6 +304,17 @@ def test_server(tmp):
         check(status == 200 and payload["ok"], "POST /api/start")
         status, payload = client.call("POST", "/api/start")
         check(status == 409, "second start while running -> 409")
+        # concurrent starts after this one finishes: exactly one wins, the other gets 409 (never 500)
+        server.runner.cancel()
+        wait_until(lambda: not server.runner.running(), 5.0)
+        codes = []
+        def _start():
+            codes.append(client.call("POST", "/api/start")[0])
+        threads = [threading.Thread(target=_start) for _ in range(3)]
+        for t in threads: t.start()
+        for t in threads: t.join()
+        check(sorted(codes) == [200, 409, 409], f"racing starts -> one 200, rest 409 ({codes})")
+        wait_until(lambda: server.runner.running(), 2.0)
         status, ctype, seen = client.sse()
         check(status == 200 and ctype.startswith("text/event-stream"), "SSE stream")
         check("state" in seen and seen["state"]["status"] == "running" and "log" not in seen["state"], "state event (without log)")
