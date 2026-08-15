@@ -192,6 +192,7 @@ correctly. Run them with plain `python`.
 | `test_soup_surface.py` | `csiibundle.drape.TriangleSoupSurface` against a brute-force scan, the heightfield, and `test_drape_pick.py`'s own intersector on real segments; `drape_blocks` |
 | `test_lod_collision.py` | `csiibundle.decimate` (ratios, material runs, UV seams, vertex albedo) and `csiibundle.collision` (thickness, colbox padding, trunk cylinder, wind colours) |
 | `test_b1_readers.py` | `lanes.part_source`, `splat.dominant_layer`, `water.bodies`, `terrain.hole_mask`, `materials.resolve`/`texture_set_key`, the instances skirt/density helpers |
+| `test_bake_products.py` | the bake products `materials` (resolved table, aliases, split masks, paint variants) and `lods` (LOD glbs parse, LOD2 carries COLOR_0) on the example bundle + a real region |
 | `test_bake_manifest.py` | the bake framework — `derived.json` validates against `docs/schema/derived.schema.json`, staleness is per product from input fingerprints, cancel is honoured between chunks |
 
 ---

@@ -35,6 +35,8 @@ def _parse(argv):
                         help="bundle-frame disc to limit world-space products to")
     parser.add_argument("--jobs", type=int, default=1, help="worker processes for products that can use them")
     parser.add_argument("--list", action="store_true", help="list registered products and exit")
+    parser.add_argument("--opt", action="append", default=[], metavar="KEY=VALUE",
+                        help="product option (JSON value if it parses, else string), e.g. --opt paint_kinds=[\"tree\",\"prop\"]")
     return parser.parse_args(argv)
 
 
@@ -51,7 +53,15 @@ def main(argv=None):
         print(f"bundle directory not found: {bundle}", file=sys.stderr)
         return 1
     only = [s.strip() for s in args.only.split(",")] if args.only else None
-    options = {"tile": args.tile, "diagonal": args.diagonal, "jobs": args.jobs,
+    extra = {}
+    for item in args.opt:
+        key, _, value = item.partition("=")
+        try:
+            import json as _json
+            extra[key] = _json.loads(value)
+        except ValueError:
+            extra[key] = value
+    options = {"tile": args.tile, "diagonal": args.diagonal, "jobs": args.jobs, **extra,
                "region": None if args.region is None else
                {"centerX": args.region[0], "centerZ": args.region[1], "radius": args.region[2]}}
 

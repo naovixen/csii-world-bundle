@@ -90,7 +90,7 @@ class ConsoleProgress(Progress):
         self._render(force=True)
         self._close_line()
         elapsed = time.monotonic() - self._t0
-        tail = f" — {summary}" if summary else ""
+        tail = f" - {summary}" if summary else ""
         self.stream.write(f"[{self._name}] done in {elapsed:.1f}s{tail}\n")
         self.stream.flush()
         self._name = None

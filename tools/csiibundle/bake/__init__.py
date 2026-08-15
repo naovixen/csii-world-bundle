@@ -48,11 +48,29 @@ def register(product):
     return product
 
 
+# Product modules, in bake order. Imported lazily by `products()` so a consumer that only wants
+# `manifest` (to ask "is this derived cache fresh?") never pays for the numpy-heavy imports.
+PRODUCT_MODULES = ("materials", "lods", "markings", "lanegeometry", "areas", "skirts", "terrainmask")
+
+
 def products():
     """The registry, after importing every product module. Order is bake order."""
-    # Product modules are imported lazily so that a consumer that only wants `manifest` (to ask
-    # "is this derived cache fresh?") never pays for numpy-heavy imports.
-    return dict(PRODUCTS)
+    import importlib
+    ordered = {}
+    for name in PRODUCT_MODULES:
+        try:
+            importlib.import_module(f"{__name__}.{name}")
+        except ModuleNotFoundError as exc:
+            if exc.name != f"{__name__}.{name}":
+                raise
+            continue                                   # a phase not built yet
+    for name in PRODUCT_MODULES:
+        for key, product in PRODUCTS.items():
+            if key not in ordered and (key == name or product.name == name):
+                ordered[key] = product
+    for key, product in PRODUCTS.items():
+        ordered.setdefault(key, product)
+    return ordered
 
 
 __all__ = ["BAKE_VERSION", "Product", "PRODUCTS", "register", "products"]
