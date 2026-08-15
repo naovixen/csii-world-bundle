@@ -4,8 +4,10 @@
   biggest performance lever the engine gives us); fog density from `grading.fog.meanFreePath`
   (`1 / meanFreePath` — an exponential attenuation over the same distance), height from its
   `maximumHeight`, colour a daylight haze.
-* `TimeOfDay` from `grading.lighting.time` (in-game clock as a fraction of the day, the map's
-  latitude/longitude); `play` off so the sky stays where the rip was taken.
+* `TimeOfDay` from `grading.lighting.time` (or the `tod_hour` setting): BeamNG's `time` is
+  `(hour/24 − 0.5) % 1` — **0 is noon, 0.5 midnight** (`environment.lua`; the first load
+  came up at 01:20 because of the naive fraction); the map's latitude/longitude; `play` off so
+  the sky stays put.
 * `ScatterSky` azimuth/elevation from the sun's own direction vector (`Lighting.sun.toward`,
   bundle frame → azimuth clockwise from north = `atan2(east, north)`), sun colour from the
   light's filter × blackbody when the game used a colour temperature. Everything else is
@@ -74,7 +76,11 @@ def run(ctx, progress):
     progress.begin("scene: sky", total=None, unit="")
     clock = lighting.time or {}
     hour = float(clock.get("hour", 12) or 0) + float(clock.get("minute", 0) or 0) / 60.0
-    tod_time = (hour / 24.0) % 1.0
+    override = settings.get("tod_hour")
+    if override is not None and float(override) >= 0.0:
+        hour = float(override) % 24.0
+    # BeamNG's TimeOfDay: 0 = NOON, 0.5 = midnight (environment.lua: time = (s/86400 - 0.5) % 1)
+    tod_time = (hour / 24.0 - 0.5) % 1.0
     lat = float(clock.get("latitude") or manifest.get("geo", {}).get("latitude") or 45.0)
     lon = float(clock.get("longitude") or manifest.get("geo", {}).get("longitude") or 0.0)
     day = int(clock.get("day") or 172)
@@ -136,7 +142,7 @@ def run(ctx, progress):
     city = manifest.get("city") or "CS2 city"
     info = {"title": level.title, "description": f"{city} - ripped from Cities: Skylines II with Carto and built by cs2beamng",
             "previews": [preview] if preview else [], "size": [map_size, map_size], "authors": "cs2beamng",
-            "spawnPoints": [{"translationId": "City", "objectname": SPAWN_NAME, "preview": ""}] if spawns else [],
+            "spawnPoints": [{"translationId": "City", "objectname": SPAWN_NAME, "preview": preview or ""}] if spawns else [],
             "defaultSpawnPointName": SPAWN_NAME if spawns else ""}
     level.write_info(info)
     return {"visibleDistance": view, "sunAzimuth": round(azimuth, 1), "sunElevation": round(elevation, 1),

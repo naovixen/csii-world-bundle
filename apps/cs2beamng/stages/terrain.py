@@ -183,14 +183,35 @@ def _upsample_bilinear(h):
     return out
 
 
+NEUTRAL_MAPS = {          # every v1.5 terrain material must name all five maps at all three tiers
+    "ao": 255,             # no occlusion
+    "height": 128,         # flat mid height (blend weight between materials)
+    "roughness": 217,      # 0.85: matte ground
+}
+
+
+def _neutral_map(level, kind, size=1024):
+    """A flat gray PNG for a map the bundle does not carry (written once per level)."""
+    name = f"neutral_{kind}.png"
+    path = level.path("art", "terrains", name)
+    if not os.path.isfile(path):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "wb") as handle:
+            handle.write(png.encode_gray(numpy.full((size, size), NEUTRAL_MAPS[kind], dtype=numpy.uint8), bit_depth=8))
+    return level.game_path("art", "terrains", name)
+
+
 def _terrain_materials(level, bundle, names):
     """`{name: TerrainMaterial}` + the texture set; copies the ground textures into
-    `art/terrains/`."""
+    `art/terrains/`. Every one of the fifteen `*Tex` slots is filled: BeamNG resolves an
+    absent slot to `/` and logs `Missing Terrain texture: /` per material, and the terrain
+    draws untextured (load #1)."""
     surfaces_dir = os.path.join(bundle, "terrain", "surfaces")
     out = {}
     set_name = f"{level.name}_TerrainTextureSet"
     out[set_name] = {"name": set_name, "class": "TerrainMaterialTextureSet", "persistentId": level.pid("terrain:textureset"),
                      "baseTexSize": [1024, 1024], "detailTexSize": [1024, 1024], "macroTexSize": [1024, 1024]}
+    neutral = {kind: _neutral_map(level, kind) for kind in NEUTRAL_MAPS}
     for name in names:
         source = name
         if not os.path.isfile(os.path.join(surfaces_dir, f"{source}.png")):
@@ -206,19 +227,26 @@ def _terrain_materials(level, bundle, names):
             level.copy_file(normal_src, "art", "terrains", f"{source}_normal.png")
             normal = level.game_path("art", "terrains", f"{source}_normal.png")
         pid = level.pid(f"terrain:material:{name}")
+        albedo = albedo or neutral["ao"]              # a ground with no texture at all: flat white
+        normal = normal or neutral["height"]           # flat normal stand-in (mid gray reads as up)
         mat = {"name": name, "internalName": name, "class": "TerrainMaterial", "persistentId": pid,
                "annotation": name.upper(), "groundmodelName": GROUNDMODEL.get(name, "DIRT"),
                "detailDistances": [0, 0, 50, 70], "detailDistAtten": [0, 0.9],
-               "macroDistances": [0, 0, 400, 8000], "macroDistAtten": [0.35, 1]}
-        if albedo:
-            mat.update({"baseColorBaseTex": albedo, "baseColorBaseTexSize": BASE_TILE_M,
-                        "baseColorMacroTex": albedo, "baseColorMacroTexSize": MACRO_TILE_M,
-                        "baseColorMacroStrength": [0.1, 0.4],
-                        "baseColorDetailTex": albedo, "baseColorDetailStrength": [0.4, 0]})
-        if normal:
-            mat.update({"normalBaseTex": normal, "normalBaseTexSize": BASE_TILE_M,
-                        "normalMacroTex": normal, "normalMacroTexSize": MACRO_TILE_M, "normalMacroStrength": [0.4, 1.1],
-                        "normalDetailTex": normal, "normalDetailStrength": [0.7, 0.2]})
+               "macroDistances": [0, 0, 400, 8000], "macroDistAtten": [0.35, 1],
+               "baseColorBaseTex": albedo, "baseColorBaseTexSize": BASE_TILE_M,
+               "baseColorMacroTex": albedo, "baseColorMacroTexSize": MACRO_TILE_M, "baseColorMacroStrength": [0.1, 0.4],
+               "baseColorDetailTex": albedo, "baseColorDetailStrength": [0.4, 0],
+               "normalBaseTex": normal, "normalBaseTexSize": BASE_TILE_M,
+               "normalMacroTex": normal, "normalMacroTexSize": MACRO_TILE_M, "normalMacroStrength": [0.4, 1.1],
+               "normalDetailTex": normal, "normalDetailStrength": [0.7, 0.2],
+               "aoBaseTex": neutral["ao"], "aoBaseTexSize": BASE_TILE_M,
+               "aoMacroTex": neutral["ao"], "aoMacroTexSize": MACRO_TILE_M, "aoDetailTex": neutral["ao"],
+               "heightBaseTex": neutral["height"], "heightBaseTexSize": BASE_TILE_M,
+               "heightMacroTex": neutral["height"], "heightMacroTexSize": MACRO_TILE_M, "heightDetailTex": neutral["height"],
+               "roughnessBaseTex": neutral["roughness"], "roughnessBaseTexSize": BASE_TILE_M,
+               "roughnessMacroTex": neutral["roughness"], "roughnessMacroTexSize": MACRO_TILE_M,
+               "roughnessMacroStrength": [0.9, 0.9], "roughnessDetailTex": neutral["roughness"],
+               "roughnessDetailStrength": [0.9, 0.7]}
         out[name] = mat
     return out
 
