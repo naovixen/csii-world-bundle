@@ -33,6 +33,14 @@ class TileSink:
         self._buckets = defaultdict(lambda: {"corners": [], "uvs": [], "colors": []})
         self.triangles = 0
         os.makedirs(out_dir, exist_ok=True)
+        # A previous bake (another region, another tile size) leaves tiles this one will not
+        # rewrite; a consumer would read them as current. Clear the product's own files first.
+        for name in os.listdir(out_dir):
+            if name.startswith(product + "_") and name.endswith(".glb"):
+                try:
+                    os.remove(os.path.join(out_dir, name))
+                except OSError:
+                    pass
 
     def add(self, verts, tris, uvs, material, variant=None, colors=None):
         """Add triangles. `verts` `(N,3)` bundle frame; `tris` `(M,3)`; `uvs` `(M,3,2)` per corner

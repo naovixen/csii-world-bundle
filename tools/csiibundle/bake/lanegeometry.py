@@ -164,7 +164,12 @@ def run(context, progress):
             dropped_budget += n
             continue
         material = block["material"] if isinstance(block["material"], str) else str(block["material"])
-        tile_sink.add(block["verts"], block["tris"], block["uvs"], material)
+        # bundle-frame face order is the reverse of the part .glb's (see markings._face_up's note);
+        # furniture has no "up" to force, so the rule alone applies
+        tris = numpy.asarray(block["tris"], dtype=numpy.int64)[:, [0, 2, 1]]
+        uvs = numpy.asarray(block["uvs"], dtype=numpy.float64)
+        uvs = uvs[:, [0, 2, 1]] if uvs.ndim == 3 else uvs
+        tile_sink.add(block["verts"], tris, uvs, material)
         tris_total += n
         tris_by_category[block.get("category", "lane")] += n
     tiles = tile_sink.tiles()

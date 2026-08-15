@@ -62,6 +62,20 @@ def example():
         # a second run is fresh, product-wise
         outcomes = run(bundle, only=["materials", "lods"], progress=Progress())
         check(all(o.status == "fresh" for o in outcomes), "second run fresh")
+        # the world-space products run on the example bundle too (tiny, but every code path)
+        outcomes = run(bundle, only=["markings", "lanegeometry", "areas", "skirts", "terrainmask"], progress=Progress(), force=True)
+        check(all(o.status == "baked" for o in outcomes), f"example world-space products: {[(o.name, o.status) for o in outcomes]}")
+        tm = json.load(open(os.path.join(derived, "terrain", "mask.json"), encoding="utf-8"))
+        cells = png.gray_array(os.path.join(derived, "terrain", "clip_cells.png"))
+        floor = png.gray_array(os.path.join(derived, "terrain", "shallow_floor.png"))
+        check(list(cells.shape) == tm["faceSize"] and list(floor.shape) == tm["sampleSize"] and floor.dtype == numpy.uint16,
+              f"terrainmask rasters {cells.shape} faces / {floor.shape} samples")
+        check(int((cells == 255).sum()) == tm["counts"]["contain"], "clip_cells 255 count == contain count")
+        area_mats = json.load(open(os.path.join(derived, "areas", "materials.json"), encoding="utf-8"))
+        check("materials" in area_mats, "areas/materials.json shape")
+        doc = json.load(open(os.path.join(derived, "derived.json"), encoding="utf-8"))
+        check(not v.validate(doc) and set(doc["products"]) >= {"markings", "lanegeometry", "areas", "skirts", "terrainmask"},
+              "derived.json validates with every product recorded")
 
 
 def real():
@@ -101,6 +115,34 @@ def real():
         m = numpy.asarray(row["matrix"]).reshape(4, 4)
         c2 = m[:3, 2]
         check(abs(c2[1]) / max(numpy.hypot(c2[0], c2[2]), 1e-9) <= 0.02 + 1e-9, "placement is level (grade <= 2 %)")
+        # areas + skirts on the region: paint above the ground, skirt bottoms on the ground
+        outcomes = run(BUNDLE, derived_dir=tmp, only=["areas", "skirts"], progress=Progress(), force=True, options={"region": region})
+        by_name = {o.name: o for o in outcomes}
+        check(by_name["areas"].status == "baked" and by_name["skirts"].status == "baked", "real region areas/skirts bake")
+        from csiibundle import drape as _drape
+        hf = _drape.HeightfieldSurface.from_bundle(BUNDLE)
+        for prod, lo, hi, label in (("areas", 0.0, 0.5, "areas sit 0..0.5 m above the heightfield (lift + priority + envelope)"),):
+            files = sorted(glob.glob(os.path.join(tmp, prod, prod + "_*.glb")))
+            check(files, f"{prod}: tiles written")
+            if files:
+                n = glb.parse_glb(files[0])[0]
+                b = n["verts"].astype(float); b[:, 0] *= -1
+                h = hf.height_many(b[:, 0], b[:, 2])
+                d = b[:, 1] - h
+                good = ~numpy.isnan(d)
+                check(good.any() and numpy.nanmin(d) >= lo - 1e-3 and numpy.nanpercentile(d, 95) <= hi, f"{label} (min {numpy.nanmin(d):.3f}, p95 {numpy.nanpercentile(d, 95):.3f})")
+                t = n["tris"]; tb = t[:, [0, 2, 1]]
+                nrm = numpy.cross(b[tb[:, 1]] - b[tb[:, 0]], b[tb[:, 2]] - b[tb[:, 0]])
+                check((nrm[:, 1] > 0).mean() > 0.99, f"{prod}: faces up in the bundle frame ({(nrm[:, 1] > 0).mean():.3f})")
+        files = sorted(glob.glob(os.path.join(tmp, "skirts", "skirts_*.glb")))
+        check(files, "skirts: tiles written")
+        if files:
+            n = glb.parse_glb(files[0])[0]
+            b = n["verts"].astype(float); b[:, 0] *= -1
+            h = hf.height_many(b[:, 0], b[:, 2])
+            below_or_at = (b[:, 1] <= h + 0.05)
+            # a skirt band: some vertices at ground (bottom ring, dropped), the rest above (top ring)
+            check(below_or_at.mean() > 0.3, f"skirt bottom ring reaches the ground ({below_or_at.mean():.2f} of vertices at/below ground)")
         outcomes = run(BUNDLE, derived_dir=tmp, only=["lods"], progress=Progress(), force=True,
                        options={"region": {"centerX": 2994.0, "centerZ": 1853.0, "radius": 120.0}, "jobs": 4})
         check(outcomes and outcomes[0].status == "baked", f"real region lods: {outcomes[0].status if outcomes else None}")

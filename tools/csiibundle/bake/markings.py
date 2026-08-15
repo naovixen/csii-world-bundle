@@ -224,11 +224,17 @@ def run(context, progress):
     # -- 5. tiles -------------------------------------------------------------------------------
     resolved_specs = _material_specs(derived, bundle)
     tile_sink = TileSink(tile, PRODUCT_NAME, out_dir, resolved_specs)
+    # Winding. A `lanes.part_source` block keeps the part .glb's triangle order in the bundle
+    # frame (the X un-mirror flips orientation), so the bundle-frame face order is the REVERSE
+    # of that — the same reversal the producer applies when it writes a .glb (§2.2). Draped
+    # markings are flat paint seen from above, so on top of the rule every face is forced to
+    # face +Y: measured, marking tiles came out 90 % face-down before this.
     for b in lane_blocks + decal_blocks_road + decal_blocks_ground:
         if len(b["tris"]) == 0:
             continue
         material = b["material"] if isinstance(b["material"], str) else str(b["material"])
-        tile_sink.add(b["verts"], b["tris"], b["uvs"], material)
+        tris, uvs = _face_up(b["verts"], b["tris"], b["uvs"])
+        tile_sink.add(b["verts"], tris, uvs, material)
     tiles = tile_sink.tiles()
     progress.begin("markings: tiles", total=len(tiles), unit="tiles")
     uri_base = _texture_uri_base(out_dir, bundle)
@@ -237,6 +243,27 @@ def run(context, progress):
     stats.update({"tiles": written["files"], "verts": written["verts"], "tris": written["tris"],
                   "_tiles": written["tiles"], "seconds": round(time.monotonic() - started, 1)})
     return stats
+
+
+def _face_up(verts, tris, uvs):
+    """Reverse any triangle whose bundle-frame normal points down; keeps per-corner uvs aligned."""
+    v = numpy.asarray(verts, dtype=numpy.float64)
+    t = numpy.asarray(tris, dtype=numpy.int64)
+    n = numpy.cross(v[t[:, 1]] - v[t[:, 0]], v[t[:, 2]] - v[t[:, 0]])
+    down = n[:, 1] < 0
+    if not down.any():
+        return t, uvs
+    t2 = t.copy()
+    t2[down] = t[down][:, [0, 2, 1]]
+    u2 = None
+    if uvs is not None:
+        u = numpy.asarray(uvs, dtype=numpy.float64)
+        if u.ndim == 3:
+            u2 = u.copy()
+            u2[down] = u[down][:, [0, 2, 1]]
+        else:
+            u2 = u
+    return t2, u2
 
 
 def _material_specs(derived, bundle):
