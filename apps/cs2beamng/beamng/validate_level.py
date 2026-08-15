@@ -15,6 +15,7 @@ everywhere). The tolerance covers the roadbed sink and the shallow-band clamp.
 
 import json
 import os
+import re
 import xml.etree.ElementTree as ET
 
 import numpy
@@ -92,16 +93,20 @@ def check(level_dir, bundle_dir, progress=None):
             if path is not None and not os.path.isfile(path):
                 missing.append(f"{obj['class']} {obj['name']}: {field} {obj[field]}")
     dae_bad = 0
+    dae_files = []
     for _rel, _n, obj in objects:
         if obj["class"] == "TSStatic":
             path = resolve(obj.get("shapeName"))
             if path and os.path.isfile(path) and path.lower().endswith(".dae"):
-                try:
-                    ET.parse(path)
-                except ET.ParseError:
-                    dae_bad += 1
-                    if dae_bad <= 5:
-                        note(f"{obj['name']}: {obj['shapeName']} is not well-formed XML")
+                dae_files.append((obj["name"], path))
+    # full XML parse on a sample (a 10 MB tile takes a second), material-symbol check on all
+    for _name, path in dae_files[::max(1, len(dae_files) // 8)][:8]:
+        try:
+            ET.parse(path)
+        except ET.ParseError:
+            dae_bad += 1
+            note(f"{path}: not well-formed XML")
+    checks["daeFiles"] = len(dae_files)
     # material texture paths under art/
     art = os.path.join(level_dir, "art")
     material_files = 0
@@ -126,6 +131,34 @@ def check(level_dir, bundle_dir, progress=None):
                                     missing.append(f"material {mat_name}: {key} {value}")
     checks["materialFiles"] = material_files
     checks["missingFiles"] = len(missing)
+    # every material a .dae binds must be a mapTo somewhere in the level (else BeamNG's orange checker)
+    mapto = set()
+    if os.path.isdir(art):
+        for root, _d, files in os.walk(art):
+            for name in files:
+                if name.endswith(".materials.json"):
+                    try:
+                        with open(os.path.join(root, name), encoding="utf-8") as handle:
+                            doc = json.load(handle)
+                    except ValueError:
+                        continue
+                    for mat in (doc or {}).values():
+                        if isinstance(mat, dict) and mat.get("mapTo"):
+                            mapto.add(str(mat["mapTo"]).lower())
+    unbound = {}
+    mat_re = re.compile(r'<material id="[^"]*" name="([^"]+)"')
+    for name, path in dae_files:
+        try:
+            with open(path, encoding="utf-8", errors="replace") as handle:
+                head = handle.read(262144)
+        except OSError:
+            continue
+        for sym in mat_re.findall(head):
+            if sym.lower() not in mapto:
+                unbound.setdefault(sym, name)
+    checks["unboundMaterials"] = len(unbound)
+    for sym, where in list(unbound.items())[:20]:
+        note(f"material {sym!r} bound by {where} has no mapTo in any main.materials.json")
     for m in missing[:20]:
         note("missing file: " + m)
 

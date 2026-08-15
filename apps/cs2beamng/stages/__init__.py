@@ -30,6 +30,7 @@ def level_of(ctx):
     shared = ctx.shared if ctx.shared is not None else {}
     if "level" not in shared:
         shared["level"] = Level(ctx.level_dir, ctx.settings["level_name"], ctx.settings.get("level_title") or ctx.settings["level_name"])
+        shared["level"].derived_dir = ctx.derived_dir
     return shared["level"]
 
 # Tests (and only tests) point this at a module whose `all_stages()` returns stub stages; the
@@ -57,7 +58,8 @@ def _resolve(override):
     from . import bake as _bake            # noqa: WPS433
     from . import validate as _validate    # noqa: WPS433
     stages = [_bake.STAGE]
-    for name in ("terrain", "water", "scene", "materials", "shapes", "networks", "derived", "instances", "lights", "cook"):
+    # materials runs AFTER every stage that binds a material, so it exports only what is used
+    for name in ("terrain", "water", "scene", "shapes", "networks", "derived", "instances", "lights", "materials", "cook"):
         try:
             module = __import__(f"{__name__}.{name}", fromlist=["STAGE"])
         except ModuleNotFoundError as exc:
