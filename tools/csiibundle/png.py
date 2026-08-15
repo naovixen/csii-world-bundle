@@ -234,6 +234,25 @@ def encode_rgba(pixels, level=6):
     return PNG_SIGNATURE + _chunk(b"IHDR", ihdr) + _chunk(b"IDAT", zlib.compress(body.tobytes(), level)) + _chunk(b"IEND", b"")
 
 
+def encode_rgb(pixels, level=6):
+    """A `(height, width, 3)` (or `(…, 4)`, alpha dropped) uint8 array → PNG bytes, colour type
+    2 at 8 bits — for consumers that read a PNG's alpha as transparency (an engine's texture
+    packer) when the source alpha was a mask."""
+    arr = numpy.asarray(pixels)
+    if arr.ndim != 3 or arr.shape[2] not in (3, 4):
+        raise ValueError(f"encode_rgb wants (height, width, 3|4), got shape {arr.shape}")
+    arr = arr[:, :, :3]
+    if arr.dtype != numpy.uint8:
+        if arr.min() < 0 or arr.max() > 255:
+            raise ValueError("RGB8 samples must be within 0..255")
+        arr = arr.astype(numpy.uint8)
+    arr = numpy.ascontiguousarray(arr)
+    height, width, _ = arr.shape
+    body = numpy.concatenate([numpy.zeros((height, 1), numpy.uint8), arr.reshape(height, width * 3)], axis=1)
+    ihdr = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+    return PNG_SIGNATURE + _chunk(b"IHDR", ihdr) + _chunk(b"IDAT", zlib.compress(body.tobytes(), level)) + _chunk(b"IEND", b"")
+
+
 def write_gray(path, samples, bit_depth=None):
     with open(path, "wb") as handle:
         handle.write(encode_gray(samples, bit_depth))

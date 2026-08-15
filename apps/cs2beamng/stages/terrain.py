@@ -201,6 +201,21 @@ def _neutral_map(level, kind, size=1024):
     return level.game_path("art", "terrains", name)
 
 
+def _rgb_texture(level, src, name):
+    """Copy `src` into art/terrains/ as an alpha-free RGB PNG; the game path, or None."""
+    if not os.path.isfile(src):
+        return None
+    dst = level.path("art", "terrains", name)
+    os.makedirs(os.path.dirname(dst), exist_ok=True)
+    try:
+        pixels = png.rgba_array(src)
+        with open(dst, "wb") as handle:
+            handle.write(png.encode_rgb(pixels))
+    except Exception:  # noqa: BLE001 - an odd PNG: ship it as is rather than nothing
+        level.copy_file(src, "art", "terrains", name)
+    return level.game_path("art", "terrains", name)
+
+
 def _terrain_materials(level, bundle, names):
     """`{name: TerrainMaterial}` + the texture set; copies the ground textures into
     `art/terrains/`. Every one of the fifteen `*Tex` slots is filled: BeamNG resolves an
@@ -218,14 +233,11 @@ def _terrain_materials(level, bundle, names):
             source = TEXTURE_FALLBACK.get(name, "grass")
         albedo_src = os.path.join(surfaces_dir, f"{source}.png")
         normal_src = os.path.join(surfaces_dir, f"{source}_normal.png")
-        albedo = None
-        normal = None
-        if os.path.isfile(albedo_src):
-            level.copy_file(albedo_src, "art", "terrains", f"{source}.png")
-            albedo = level.game_path("art", "terrains", f"{source}.png")
-        if os.path.isfile(normal_src):
-            level.copy_file(normal_src, "art", "terrains", f"{source}_normal.png")
-            normal = level.game_path("art", "terrains", f"{source}_normal.png")
+        # written as RGB: the theme textures carry a mask in alpha, and BeamNG's terrain
+        # texture packer reads PNG alpha as coverage (load #2: the detail tier vanished close
+        # up into purple/green). Vanilla terrain textures are colour type 2, no alpha.
+        albedo = _rgb_texture(level, albedo_src, f"{source}.png")
+        normal = _rgb_texture(level, normal_src, f"{source}_normal.png")
         pid = level.pid(f"terrain:material:{name}")
         albedo = albedo or neutral["ao"]              # a ground with no texture at all: flat white
         normal = normal or neutral["height"]           # flat normal stand-in (mid gray reads as up)
