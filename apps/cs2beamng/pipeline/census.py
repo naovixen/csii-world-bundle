@@ -115,6 +115,8 @@ def take(values):
         "bake/skirts": counts.get("instances", 0) if values.get("skirts", True) else 0,
         "bake/terrainmask": 1,
         "terrain": 4096 * 4096 * (values.get("terrain_upsample", 1) or 1) ** 2,
+        "water": 1 if values.get("water", True) else 0,
+        "scene": counts.get("lanes", 0) or 1,
         "materials": counts.get("materials", 0),
         "shapes": counts.get("meshes", 0),
         "networks": counts.get("networkSegments", 0) * scale if values.get("networks", True) else 0,

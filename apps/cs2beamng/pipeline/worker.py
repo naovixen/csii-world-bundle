@@ -44,7 +44,7 @@ def main(settings, census, queue, cancel_event, hard_cancel=None):
     derived_dir = os.path.join(settings["bundle"], "derived")
     ctx = BuildContext(settings=settings, bundle=settings["bundle"], level_dir=level_dir,
                        derived_dir=derived_dir, census=census, region=region_of(settings),
-                       report=report, jobs=_jobs(settings))
+                       report=report, jobs=_jobs(settings), shared={})
     ok = True
     try:
         os.makedirs(level_dir, exist_ok=True)

@@ -183,10 +183,12 @@ def bodies(levels, heights, cell, origin_x, origin_z, downsample=8, min_cells=2)
     """Connected water bodies from the §8 level and height rasters.
 
     `levels` and `heights` are `(rows, cols)` world-metre arrays (row 0 north); `levels` is 0
-    where there is no water data. Water exists where `level > ground`. Both are reduced by
-    `downsample` (block mean; the game simulates water on a coarser grid than the heightmap —
-    28 m against 3.5, i.e. 8 — so finer detail is resampling, not information), the wet mask is
-    labelled by 4-connectivity, and each component becomes a `Body` with its level statistics.
+    where there is no water data. Water exists where `level > ground`, decided per texel. Both
+    are reduced by `downsample` (the game simulates water on a coarser grid than the heightmap —
+    28 m against 3.5, i.e. 8 — so finer detail is resampling, not information): a coarse cell is
+    wet when a quarter of its texels are, and its level/ground are the means over those wet
+    texels (see `coarse_grid`). The wet mask is labelled by 4-connectivity, and each component
+    becomes a `Body` with its level statistics.
     Bodies of fewer than `min_cells` coarse cells are dropped (a single wet texel is noise).
 
     A heightmap-native engine turns each body into a water plane or block at `level_mean`;
@@ -198,17 +200,11 @@ def bodies(levels, heights, cell, origin_x, origin_z, downsample=8, min_cells=2)
     if lv.shape != hg.shape:
         raise ValueError(f"levels {lv.shape} and heights {hg.shape} differ")
     d = max(1, int(downsample))
-    rows, cols = lv.shape[0] // d, lv.shape[1] // d
-    if rows == 0 or cols == 0:
+    grid = coarse_grid(lv, hg, d)
+    if grid is None:
         return []
-    lv_c = lv[:rows * d, :cols * d].reshape(rows, d, cols, d)
-    hg_c = hg[:rows * d, :cols * d].reshape(rows, d, cols, d).mean(axis=(1, 3))
-    has = (lv_c > 0)
-    # level of a coarse cell = mean of the texels that carry a level (0 = no data must not drag it)
-    level_sum = numpy.where(has, lv_c, 0.0).sum(axis=(1, 3))
-    level_n = has.sum(axis=(1, 3))
-    level_c = numpy.where(level_n > 0, level_sum / numpy.maximum(level_n, 1), 0.0)
-    wet = (level_n > 0) & (level_c > hg_c)
+    level_c, hg_c, wet = grid
+    rows, cols = wet.shape
     labels, count = _label4(wet)
     out = []
     coarse_cell = cell * d
@@ -229,6 +225,35 @@ def bodies(levels, heights, cell, origin_x, origin_z, downsample=8, min_cells=2)
                         cells=n, touches_edge=touches, mask=m))
     out.sort(key=lambda b: -b.area_m2)
     return out
+
+
+def coarse_grid(levels, heights, downsample=8):
+    """`(level_c, ground_c, wet)` on the block-mean grid `bodies` works on, or None when the
+    rasters are smaller than one block. Public so a consumer can split a body further (by level
+    band, say) on exactly the grid the bodies were found on."""
+    lv = numpy.asarray(levels, dtype=numpy.float64)
+    hg = numpy.asarray(heights, dtype=numpy.float64)
+    d = max(1, int(downsample))
+    rows, cols = lv.shape[0] // d, lv.shape[1] // d
+    if rows == 0 or cols == 0:
+        return None
+    lv_c = lv[:rows * d, :cols * d].reshape(rows, d, cols, d)
+    hg_b = hg[:rows * d, :cols * d].reshape(rows, d, cols, d)
+    # wet is decided per TEXEL (level > ground) and a coarse cell is wet when a quarter of its
+    # texels are; level and ground are then averaged over the wet texels only. Averaging land
+    # into a shoreline cell's ground made every river narrower than a few cells read as dry.
+    wet_t = (lv_c > 0) & (lv_c > hg_b)
+    wet_n = wet_t.sum(axis=(1, 3))
+    wet = wet_n >= max(1, (d * d) // 4)
+    denom = numpy.maximum(wet_n, 1)
+    level_c = numpy.where(wet_n > 0, numpy.where(wet_t, lv_c, 0.0).sum(axis=(1, 3)) / denom, 0.0)
+    hg_c = numpy.where(wet_n > 0, numpy.where(wet_t, hg_b, 0.0).sum(axis=(1, 3)) / denom, hg_b.mean(axis=(1, 3)))
+    return level_c, hg_c, wet
+
+
+def label_components(mask):
+    """Public name for the 4-connected labeller: `(labels, count)`, 0 = background."""
+    return _label4(mask)
 
 
 def _label4(mask):

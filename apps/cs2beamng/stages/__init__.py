@@ -17,7 +17,20 @@ from collections import namedtuple
 
 Stage = namedtuple("Stage", "key title enabled units run")
 
-BuildContext = namedtuple("BuildContext", "settings bundle level_dir derived_dir census region report jobs")
+BuildContext = namedtuple("BuildContext", "settings bundle level_dir derived_dir census region report jobs shared",
+                          defaults=(None,))
+
+
+def level_of(ctx):
+    """The one `beamng.level.Level` every stage of a build appends to (kept in `ctx.shared`).
+    Each stage writes the accumulated object tree when it is done, so the level folder is
+    consistent after every stage — a cancelled build is a smaller level, not a broken one."""
+    from ..beamng.level import Level  # noqa: WPS433
+
+    shared = ctx.shared if ctx.shared is not None else {}
+    if "level" not in shared:
+        shared["level"] = Level(ctx.level_dir, ctx.settings["level_name"], ctx.settings.get("level_title") or ctx.settings["level_name"])
+    return shared["level"]
 
 # Tests (and only tests) point this at a module whose `all_stages()` returns stub stages; the
 # variable is read in the worker process too, which is what makes hang/cancel tests possible.
@@ -44,7 +57,7 @@ def _resolve(override):
     from . import bake as _bake            # noqa: WPS433
     from . import validate as _validate    # noqa: WPS433
     stages = [_bake.STAGE]
-    for name in ("terrain", "materials", "shapes", "networks", "derived", "instances", "lights", "cook"):
+    for name in ("terrain", "water", "scene", "materials", "shapes", "networks", "derived", "instances", "lights", "cook"):
         try:
             module = __import__(f"{__name__}.{name}", fromlist=["STAGE"])
         except ModuleNotFoundError as exc:

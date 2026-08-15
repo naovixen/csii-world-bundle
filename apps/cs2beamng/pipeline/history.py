@@ -25,6 +25,8 @@ DEFAULT_RATES = {
     "bake/skirts": 1226046 / 60.0,            # instances scanned
     "bake/terrainmask": 1 / 45.0,
     "terrain": 4096 * 4096 / 30.0,            # samples
+    "water": 1 / 20.0,
+    "scene": 641639 / 25.0,                   # lanes streamed for the spawn pick
     "materials": 4641 / 120.0,
     "shapes": 5575 / 300.0,
     "networks": 8259 / 120.0,

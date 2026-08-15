@@ -5,9 +5,12 @@ of the ripper mod in this repo), bakes the engine-neutral derivatives it needs
 (`csiibundle.bake` → `<bundle>/derived/`), and writes a BeamNG.drive level. Everything long
 runs in a worker **process** with live progress, ETA and Cancel; the UI never computes.
 
-Status (2026-08-15): the shell is complete (A0 of `docs/plans/beamng-consumer-plan.md`) — the
-pipeline runs **bake → validate**; the level writers (terrain, materials, shapes, instances …)
-land in A1–A5.
+Status (2026-08-15): A0 (shell) and A1 (terrain, water, sky, spawn) of
+`docs/plans/beamng-consumer-plan.md` are built — the pipeline runs **bake → terrain → water →
+scene → validate** and produces a level BeamNG can load: a lossless 4096² `.ter` with one
+material per ground and tunnel holes, water planes/blocks by level band, sky/time from the
+rip's lighting, a spawn on a road, preview and `info.json`. Meshes, materials, roads and the
+1.2 M instances land in A2–A5.
 
 ## Install & run
 
@@ -49,13 +52,21 @@ UI (browser / pywebview)  ──HTTP+SSE──►  server.py  ──►  pipelin
   freshness + estimates), `history.py`.
 * `stages/` — `Stage(key, title, enabled, units, run)`; `bake` (runs `csiibundle.bake` for
   the products the settings need and reports a stage-level fraction from per-product
-  estimates), `validate`; A1+ add `terrain`, `materials`, `shapes`, `networks`, `derived`,
-  `instances`, `lights`, `cook`.
+  estimates), `terrain`, `water`, `scene`, `validate`; A2+ add `materials`, `shapes`,
+  `networks`, `derived`, `instances`, `lights`, `cook`. Every stage appends to one
+  `beamng.level.Level` (`stages.level_of(ctx)`) and rewrites the object tree when done.
+* `beamng/` — the format layer: `frame` (bundle→BeamNG axes, heading matrices), `ter` (v9
+  `.ter` read/write, orientation contract, `sample_height`), `level` (SimGroup tree,
+  materials, `info.json`, deterministic persistentIds), `validate_level` (structure + the
+  terrain-under-buildings check).
 * `ui/` — `index.html`, `app.css`, `app.js`: no build step, no CDN; dark by default, light via
   `prefers-color-scheme`.
 
 ## Tests
 
+`python tools/test_a1_level.py` — `.ter` identity + orientation, `heading_matrix` vs a
+vanilla spawn, the level tree, validator faults, a headless example build, the water band
+split on a synthetic river, and (real bundle present) the terrain-under-buildings check.
 `python tools/test_app_shell.py` — settings schema/groups, runner (cancel within a chunk,
 hard-kill of a worker that ignores cancel, dead worker, raising stage), server (token, API,
 SSE), and a headless build of `docs/example-bundle`. Stub stages come from
