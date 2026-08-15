@@ -69,6 +69,7 @@ SCHEMA = {
     "cook": (False, "bool", "Run BeamNG's headless mesh compiler / cache warmer after the build"),
     "beamng_exe": (None, "path", "BeamNG executable (auto-detected when empty)"),
     "quality_preset": ("high", "choice:ultra|high|medium|low|custom", "Quality preset last applied"),
+    "ui_browser": ("window", "choice:window|chrome|edge|firefox|default", "Where the UI opens: a native window, a named browser, or the system default"),
 }
 
 # How the UI groups the knobs; every SCHEMA key appears exactly once (checked by test_app_shell).
@@ -80,7 +81,7 @@ GROUPS = [
                   "view_distance", "tile_size", "terrain_upsample", "terrain_holes", "forest_shadows", "tree_wind"]),
     ("Collision", ["collision_preset", "collision_buildings", "collision_props", "collision_trees",
                    "collision_furniture", "collision_skirts", "collision_paint"]),
-    ("Process", ["jobs", "keep_partial", "cook", "beamng_exe", "quality_preset"]),
+    ("Process", ["jobs", "keep_partial", "cook", "beamng_exe", "ui_browser", "quality_preset"]),
 ]
 
 PRESETS = {

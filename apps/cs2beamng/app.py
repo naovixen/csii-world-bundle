@@ -17,17 +17,22 @@ from . import window as window_mod
 from .server import AppServer
 
 
-def launch(browser=False, host="127.0.0.1", port=0):
+def launch(browser=None, host="127.0.0.1", port=0, open_ui=True):
+    """`browser`: None = the saved `ui_browser` setting; "window" = native; "chrome" / "edge" /
+    "firefox" / "default" = that browser (and the choice is saved)."""
     for stream in (sys.stdout, sys.stderr):
         try:
             stream.reconfigure(errors="replace")
         except (AttributeError, ValueError):
             pass
     server = AppServer(host=host, port=port)
+    if browser:
+        server.update_settings({"ui_browser": browser})       # remembered for next time
+    mode = server.values.get("ui_browser") or "window"
     url = server.start()
     print(f"cs2beamng {__version__}: {url}", flush=True)     # also the way to reach a native window's server
     try:
-        code = window_mod.show(url, server, force_browser=browser)
+        code = window_mod.show(url, server, mode=mode, open_ui=open_ui)
     finally:
         _shutdown(server)
     return code

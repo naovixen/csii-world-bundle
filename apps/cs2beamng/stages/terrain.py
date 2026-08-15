@@ -50,7 +50,8 @@ def enabled(settings):
 
 def units(census, settings):
     factor = int(settings.get("terrain_upsample") or 1)
-    return 4096 * 4096 * factor * factor
+    size = (((census or {}).get("bundle") or {}).get("rasterSize") or [4096, 4096])
+    return int(size[0]) * int(size[1]) * factor * factor
 
 
 def run(ctx, progress):

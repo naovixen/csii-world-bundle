@@ -24,8 +24,11 @@ def _parser():
     build.add_argument("--set", action="append", default=[], metavar="KEY=VALUE", help="override a setting")
     build.add_argument("--settings", default=None, help="settings JSON file")
     gui = sub.add_parser("gui", help="open the application (the default)")
-    gui.add_argument("--browser", action="store_true", help="always use the default browser, never a native window")
+    gui.add_argument("--browser", nargs="?", const="default", default=None, metavar="NAME",
+                     help="open in a browser instead of a native window: chrome, edge, firefox, or default (system); "
+                          "remembered in settings as ui_browser")
     gui.add_argument("--port", type=int, default=0, help="fixed port for the local UI server (default: ephemeral)")
+    gui.add_argument("--no-open", action="store_true", help="serve the UI and print its URL, but open no window or browser")
     return parser
 
 
@@ -35,7 +38,8 @@ def main(argv=None):
         from .pipeline.runner import build_headless
         return build_headless(args)
     from .app import launch
-    return launch(browser=getattr(args, "browser", False), port=getattr(args, "port", 0) or 0)
+    return launch(browser=getattr(args, "browser", None), port=getattr(args, "port", 0) or 0,
+                  open_ui=not getattr(args, "no_open", False))
 
 
 if __name__ == "__main__":

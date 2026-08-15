@@ -81,10 +81,11 @@ def take(values):
     counts = dict(manifest.get("counts") or {})
     layers = dict(manifest.get("layers") or {})
     size_bytes = _bundle_size(bundle, layers)
+    raster_size = ((manifest.get("rasters") or {}).get("size") or [4096, 4096])
     out["bundle"] = {"path": bundle, "city": manifest.get("city"), "generatedAt": manifest.get("generatedAt"),
                      "generator": manifest.get("generator"), "schema": manifest.get("schema"),
                      "mapSize": manifest.get("mapSize"), "counts": counts, "layers": sorted(layers),
-                     "sizeBytes": size_bytes}
+                     "sizeBytes": size_bytes, "rasterSize": raster_size}
     region = settings_mod.region_of(values)
     out["region"] = region
     map_size = float(manifest.get("mapSize") or 14336.0)
@@ -114,7 +115,7 @@ def take(values):
         "bake/areas": counts.get("areas", 0) * scale if values.get("areas", True) else 0,
         "bake/skirts": counts.get("instances", 0) if values.get("skirts", True) else 0,
         "bake/terrainmask": 1,
-        "terrain": 4096 * 4096 * (values.get("terrain_upsample", 1) or 1) ** 2,
+        "terrain": int(raster_size[0]) * int(raster_size[1]) * (values.get("terrain_upsample", 1) or 1) ** 2,
         "water": 1 if values.get("water", True) else 0,
         "scene": counts.get("lanes", 0) or 1,
         "materials": counts.get("materials", 0),
