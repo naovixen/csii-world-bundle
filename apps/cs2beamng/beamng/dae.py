@@ -78,7 +78,14 @@ def sanitize(name):
 
 
 def write_shape(path, shape):
-    """Write `shape` as a `.dae`. Returns `{materials: [...], triangles: n, vertices: n}`."""
+    """Write `shape` as a `.dae`. Returns `{materials: [...], triangles: n, vertices: n}`.
+
+    A `.cdae` beside the `.dae` (the cook stage's, or BeamNG's own compiler's) is what the
+    game loads in preference to parsing the XML, so one left over from a previous build would
+    ship the OLD geometry: it is removed here, before the new `.dae` lands."""
+    stale = os.path.splitext(path)[0] + ".cdae"
+    if os.path.isfile(stale):
+        os.remove(stale)
     meshes = []
     seen_ids = set()
     names_used = {}

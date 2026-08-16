@@ -135,9 +135,10 @@ def save(derived, document):
     os.replace(tmp, manifest_path(derived))
 
 
-def record_product(document, name, path, inputs, seconds, tiles=None, stats=None):
+def record_product(document, name, path, inputs, seconds, tiles=None, stats=None, version=1):
     """Write one product's entry into `document["products"]`."""
-    entry = {"path": path, "generatedAt": now_iso(), "seconds": round(float(seconds), 3), "inputs": inputs}
+    entry = {"path": path, "version": int(version), "generatedAt": now_iso(),
+             "seconds": round(float(seconds), 3), "inputs": inputs}
     if tiles is not None:
         entry["tiles"] = [[int(a), int(b)] for a, b in tiles]
     if stats:
@@ -159,14 +160,15 @@ def _same_options(recorded, wanted):
     return True
 
 
-def product_status(document, name, product_inputs, bundle_dir, wanted_options, manifest=None):
+def product_status(document, name, product_inputs, bundle_dir, wanted_options, manifest=None,
+                   product_version=1):
     """One of 'fresh', 'stale', 'absent' for a product, with a reason string.
 
     `product_inputs` are the layer keys the product reads (its registry entry). A product is
-    stale when the bake version differs, a shaping option differs, the bundle manifest bytes
-    changed AND any input fingerprint differs, or any input fingerprint differs on its own.
-    (The bundle sha alone is not decisive: a partial re-rip rewrites `bundle.json` even when
-    this product's inputs are untouched.)
+    stale when the bake version differs, its own product version differs, a shaping option
+    differs, the bundle manifest bytes changed AND any input fingerprint differs, or any input
+    fingerprint differs on its own. (The bundle sha alone is not decisive: a partial re-rip
+    rewrites `bundle.json` even when this product's inputs are untouched.)
     """
     if document is None or name not in document.get("products", {}):
         return "absent", "not baked"
@@ -174,6 +176,9 @@ def product_status(document, name, product_inputs, bundle_dir, wanted_options, m
         return "stale", f"bakeVersion {document.get('bakeVersion')} != {BAKE_VERSION}"
     if not _same_options(document.get("options", {}), wanted_options):
         return "stale", "options differ"
+    recorded_version = document["products"][name].get("version", 1)
+    if recorded_version != product_version:
+        return "stale", f"product version {recorded_version} != {product_version}"
     recorded = document["products"][name].get("inputs", {})
     current = fingerprint_layers(bundle_dir, product_inputs, manifest)
     for key in product_inputs:
@@ -185,7 +190,8 @@ def product_status(document, name, product_inputs, bundle_dir, wanted_options, m
 def status_report(document, registry, bundle_dir, wanted_options):
     """`{name: (status, reason)}` for every registered product."""
     manifest = reader.load_manifest(bundle_dir)
-    return {name: product_status(document, name, prod.inputs, bundle_dir, wanted_options, manifest)
+    return {name: product_status(document, name, prod.inputs, bundle_dir, wanted_options, manifest,
+                                 product_version=getattr(prod, "version", 1))
             for name, prod in registry.items()}
 
 

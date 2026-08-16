@@ -64,7 +64,8 @@ def plan(bundle_dir, derived, options, only=None, force=False, registry=None):
         if force:
             status, reason = "stale", "forced"
         else:
-            status, reason = _manifest.product_status(document, name, product.inputs, bundle_dir, options)
+            status, reason = _manifest.product_status(document, name, product.inputs, bundle_dir, options,
+                                                      product_version=getattr(product, "version", 1))
         result.append((product, status, reason))
     return result
 
@@ -129,7 +130,8 @@ def run(bundle_dir, derived_dir=None, options=None, only=None, force=False, prog
         seconds = time.monotonic() - started
         tiles = stats.pop("_tiles", None) if isinstance(stats, dict) else None
         _manifest.record_product(document, product.name, product.path, inputs, seconds,
-                                 tiles=tiles, stats=stats or None)
+                                 tiles=tiles, stats=stats or None,
+                                 version=getattr(product, "version", 1))
         _manifest.save(derived, document)
         outcomes.append(Outcome(product.name, "baked", reason, seconds, stats))
     return outcomes

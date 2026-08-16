@@ -7,12 +7,16 @@ runs in a worker **process** with live progress, ETA and Cancel; the UI never co
 
 Status (2026-08-16): A0 (shell), A1 (terrain, water, sky, spawn) and A2 (roads/networks,
 markings, areas, skirts, lane furniture, materials + textures) of
-`docs/plans/beamng-consumer-plan.md` are built and **accepted in-game**. The pipeline runs
-**bake → terrain → water → scene → networks → derived → materials → validate**: a lossless
-4096² `.ter` with one material per ground and tunnel holes, water by level band, sky/time from
+`docs/plans/beamng-consumer-plan.md` are built and **accepted in-game** (region); the first
+full-city load's feedback is worked into the terrain stage and a cook stage (plan log,
+2026-08-16). The pipeline runs **bake → terrain → water → scene → networks → derived →
+materials → cook → validate**: a lossless 4096² `.ter` with one material per ground, ground
+under roads at the game's own graded plane (`lane − 0.25`) and flush at the kerb, tunnel/trench
+holes (`touch`) with rock **rim walls** down to the road, water by level band, sky/time from
 the rip's lighting, a spawn on a road, every network segment as 256 m COLLADA tiles with exact
-collision, the bake's draped/conformed tiles, v1.5 materials with capped textures. Buildings,
-props, trees (the 1.2 M instances) land in A3; performance tuning A4; the BeamNG cook A5.
+collision, the bake's draped/conformed tiles, v1.5 materials with capped textures, and
+BeamNG's own headless `-compilemeshes` over the shapes so the first load does not parse 2 GB
+of COLLADA. Buildings, props, trees (the 1.2 M instances) land in A3; performance tuning A4.
 
 ## Install & run
 
@@ -55,8 +59,10 @@ UI (browser / pywebview)  ──HTTP+SSE──►  server.py  ──►  pipelin
 * `stages/` — `Stage(key, title, enabled, units, run)`; `bake` (runs `csiibundle.bake` for
   the products the settings need and reports a stage-level fraction from per-product
   estimates), `terrain`, `water`, `scene`, `networks` (segment meshes → tiles), `derived`
-  (bake tiles → shapes), `materials` (runs last: exports only the materials this build bound),
-  `validate`; A3+ add `shapes`, `instances`, `lights`, `cook`. Every stage appends to one
+  (bake tiles → shapes), `materials` (runs after every binder: exports only the materials this
+  build bound), `cook` (BeamNG `-compilemeshes` headless; skips with a reason when BeamNG is
+  running, not found, or the level is outside a userfolder), `validate`; A3+ add `shapes`,
+  `instances`, `lights`. Every stage appends to one
   `beamng.level.Level` (`stages.level_of(ctx)`) and rewrites the object tree when done.
 * `beamng/` — the format layer: `frame` (bundle→BeamNG axes, heading matrices), `ter` (v9
   `.ter` read/write, orientation contract, `sample_height`), `dae` (COLLADA writer with the

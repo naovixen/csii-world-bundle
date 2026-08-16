@@ -54,7 +54,7 @@ SCHEMA = {
     "tod_hour": (-1.0, "float", "Time of day in hours 0-24 for the level's sun (-1 = the in-game clock at rip time)"),
     "terrain_brightness": (1.0, "float", "Extra gain on the ground textures (1 = calibrated: CS2 grass to BeamNG's typical grass brightness)"),
     "terrain_upsample": (1, "choice:1|2", "Terrain upsample factor (2 = 8192 @ 1.75 m)"),
-    "terrain_holes": ("contain", "choice:contain|majority|none", "Which clip cells become terrain holes"),
+    "terrain_holes": ("touch", "choice:touch|contain|none", "Which clip cells become terrain holes (touch clears tunnel mouths)"),
     "forest_shadows": (True, "bool", "Forest items cast shadows"),
     "tree_wind": (False, "bool", "Synthesise wind vertex colours for trees"),
     # collision
@@ -68,7 +68,7 @@ SCHEMA = {
     # process
     "jobs": (0, "int", "Worker processes for parallel stages (0 = CPU count - 1)"),
     "keep_partial": (False, "bool", "Keep a partially built level after cancel"),
-    "cook": (False, "bool", "Run BeamNG's headless mesh compiler / cache warmer after the build"),
+    "cook": (True, "bool", "Compile the level's shapes to .cdae with BeamNG's headless mesh compiler after the build (skipped when BeamNG is running or not found)"),
     "beamng_exe": (None, "path", "BeamNG executable (auto-detected when empty)"),
     "quality_preset": ("high", "choice:ultra|high|medium|low|custom", "Quality preset last applied"),
     "ui_browser": ("window", "choice:window|chrome|edge|firefox|default", "Where the UI opens: a native window, a named browser, or the system default"),
