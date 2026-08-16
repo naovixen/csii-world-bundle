@@ -2300,7 +2300,7 @@ def build_terrain(bundle_dir, collection, center, radius, clip_floor=None):
     # are rasterised here against this heightmap. The layer is mandatory; _clip_grid raises on
     # a bundle without it.
     (cut_grid, contain_raster, band_count_raster, deep_raster, sub_bands,
-     cut_refs, strip_geo, band_floor_raster, _band_lane, _deep_lane, _face_lane) = _clip_grid(
+     cut_refs, strip_geo, band_floor_raster) = _clip_grid(
         bundle_dir, width, height, heights, cell, origin_x, origin_z, elevation_scale,
         elevation_offset, floor_override=clip_floor)
 

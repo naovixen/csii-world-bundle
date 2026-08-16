@@ -1,40 +1,22 @@
 """Stage `terrain` — the §8 heightmap as a BeamNG `TerrainBlock`: `.ter` + `.terrain.json`,
-one material per ground, textures from `terrain/surfaces/`, holes from the bake's clip cells,
-and a wall down to the road under every hole rim.
+one material per ground, textures from `terrain/surfaces/`, holes from the bake's clip cells.
 
 What is exact and what is a choice:
 
-* **Heights are lossless** away from roads. `maxHeight = 65536 · elevationScale`, `position.z =
-  elevationOffset`, so `stored == the bundle's own 16-bit value` for every untouched sample.
-  Three touches, all under or beside a road, all LOWERING only (see `_ground_under_roads`):
-    - a sample a shallow clip band covers (`derived/terrain/shallow_lane.png`, which since
-      terrainmask v2 includes the ones standing above the band's roof — the spikes) is capped
-      at `lane − UNDER_ROAD_SINK`, the plane the game's own grading already put its neighbours
-      on. Not at the game's band floor (`lane − 0.5`): that number is the depth to which the
-      game HIDES ground per pixel, and putting the whole heightfield there dug a second trench
-      under every road that stepped back up at the kerb (2026-08-16 load: "annoying to drive
-      off").
-    - a sample next to a covered one (its 8-ring) is capped at the lane, so the sheet meets the
-      road edge flush instead of rising through the kerb between two samples on a cross-slope.
-    - roadbed (§8 surface id 1) samples are otherwise left where the game graded them; the old
-      blanket 0.15 m sink beside the road was the other half of the step.
+* **Heights are lossless.** `maxHeight = 65536 · elevationScale`, `position.z = elevationOffset`,
+  so `stored == the bundle's own 16-bit value` for every untouched sample. Two touches, both
+  contract rules: samples the bake's shallow clip band covers are lowered to the band's floor
+  (`derived/terrain/shallow_floor.png`; §8c "ground never pokes through a carriageway"), and
+  roadbed samples (§8 surface id 1) sink `terrain.ROADBED_SINK` = 0.15 m.
 * **Orientation** is the empirically settled one (`beamng/ter.py`): row 0 south, so the bundle
   arrays flip; `position = [originWorld.x, originWorld.z − (H−1)·cell, offset]`, `squareSize =
   cell` (3.5 m; 1.75 with `terrain_upsample = 2`).
 * **One material per sample** = `splat.dominant_layer` (the visible-share argmax of the game's
   own splat composite) with `roadbed` stamped from `surface_index`. Names are the bundle's
   ground names (`rock`, `dirt`, `grass`, `extra1..4`, `roadbed`).
-* **Holes** come from `derived/terrain/clip_cells.png`: `touch` (default) punches every face a
-  deep band reaches, `contain` only the ones wholly inside one, `none` never. `contain` is the
-  contract's per-face rule and errs to keeping ground; on a heightfield that kept ground is the
-  face the tunnel mouth passes through, standing across the road, so the app defaults to
-  `touch`. A face `(r, c)` in bundle order maps to the `.ter` layer byte at its SOUTHERN sample.
-* **Rim walls.** A heightfield hole shows the underside of the sheet — nothing — from any
-  angle but straight down. Every edge between a punched face and a kept one gets a vertical
-  quad from the rim samples down to the road under the hole (`derived/terrain/deep_lane.png`)
-  minus `WALL_DROP`, textured with the level's rock, facing the hole, with collision, tiled
-  like the derived layers (`HoleWalls` group). The game hides that terrain per pixel against
-  the prism wall; a wall on the prism's outer rim is the heightfield-native stand-in.
+* **Holes** come from `derived/terrain/clip_cells.png`: `contain` (default) punches only faces
+  wholly inside a deep clip band, `majority` also the deep-touched ones, `none` never.
+  A face `(r, c)` in bundle order maps to the `.ter` layer byte at its SOUTHERN sample.
 * Terrain materials point all three tiers (base/macro/detail) at the ground's own texture at
   three tilings; the numbers are the vanilla `small_island` values where BeamNG's own artists
   chose them (distances, attenuations) and plain guesses where the vanilla file is a per-level
@@ -43,13 +25,12 @@ What is exact and what is a choice:
 
 import os
 import time
-from collections import defaultdict
 
 import numpy
 
-from csiibundle import png, reader, splat as splat_mod
+from csiibundle import png, reader, splat as splat_mod, terrain as terrain_mod
 
-from ..beamng import dae, frame, ter as ter_mod
+from ..beamng import ter as ter_mod
 from . import Stage, level_of
 
 STAGE_KEY = "terrain"
@@ -71,23 +52,6 @@ TIERS = ("base", "macro", "detail")
 # linear gain lifts CS2 grass to this luminance and every other ground by the same factor.
 GRASS_TARGET_LUMINANCE = 0.16
 MAX_GAIN = 6.0
-
-# How far below the carriageway the ground under a road sits (metres). MEASURED, not tuned: on
-# the 2026-08-16 rip the game's own graded heightmap under a shallow band is at lane − 0.25 at
-# the 25th, 50th and 75th percentile alike (573,689 samples), and the ring just outside sits at
-# −0.06 median / 0.00 at p75 — the game grades a 25 cm bed under the carriageway and brings the
-# ground back flush at the edge. Lowering only the samples standing above that plane (15% of
-# them, the crossfall/curvature crests) puts them level with their neighbours, so nothing bumps
-# under the asphalt and nothing steps at the edge. (The old rule sat everything at the band
-# floor, lane − 0.5: a second 25 cm trench under every road that had to climb back at the kerb.)
-UNDER_ROAD_SINK = 0.25
-# A hole-rim wall reaches this far below the road under the hole, so its foot is out of sight
-# under the shell / carriageway. TUNED.
-WALL_DROP = 1.0
-# The rim wall's texture repeat in metres (the terrain's own detail tiling).
-WALL_UV_M = DETAIL_TILE_M
-WALL_GROUP = "HoleWalls"
-WALL_DETAIL_PX = 2      # detail sizes must be > 0 (BeamNG: "invalid detail levels")
 
 
 def enabled(settings):
@@ -124,14 +88,23 @@ def run(ctx, progress):
     surface = png.gray_array(paths.surface_index) if paths.surface_index and os.path.isfile(paths.surface_index) else None
     if surface is not None and surface.shape != heights.shape:
         surface = None
-    mask_dir = os.path.join(ctx.derived_dir, "terrain")
-    lane = _height_raster(os.path.join(mask_dir, "shallow_lane.png"), heights.shape, scale, offset)
-    deep_lane = _height_raster(os.path.join(mask_dir, "deep_lane.png"), heights.shape, scale, offset)
-    hole_lane = _height_raster(os.path.join(mask_dir, "hole_lane.png"), (size - 1, size - 1), scale, offset)
-    ground = _ground_under_roads(heights, lane)
+    lowered = 0
+    floor_path = os.path.join(ctx.derived_dir, "terrain", "shallow_floor.png")
+    if os.path.isfile(floor_path):
+        floor_raw = png.gray_array(floor_path)
+        if floor_raw.shape == heights.shape:
+            floor = floor_raw.astype(numpy.float64) * scale + offset
+            has = floor_raw > 0
+            hit = has & (heights > floor)
+            lowered = int(hit.sum())
+            heights[hit] = floor[hit]
+    sunk = 0
+    if surface is not None:
+        roadbed = surface == 1
+        sunk = int(roadbed.sum())
+        heights[roadbed] -= terrain_mod.ROADBED_SINK
     progress.check()
-    progress.end(f"{size}x{size} @ {cell} m, {ground['underRoad']:,} samples put under a road "
-                 f"(worst drop {ground['worstDrop']:.2f} m), {ground['ring']:,} ring samples capped at the lane")
+    progress.end(f"{size}x{size} @ {cell} m, {lowered:,} samples clamped to shallow bands, {sunk:,} roadbed samples sunk")
 
     # -- layers ----------------------------------------------------------------------------
     progress.begin("terrain: ground layers", total=None, unit="")
@@ -151,30 +124,19 @@ def run(ctx, progress):
         layers = numpy.where(surface == 1, names.index("roadbed"), layers).astype(numpy.uint8)
     progress.check()
     # holes
-    holes_mode = str(settings.get("terrain_holes") or "touch")
+    holes_mode = str(settings.get("terrain_holes") or "contain")
     holes = 0
-    punch = None
-    cells_path = os.path.join(mask_dir, "clip_cells.png")
-    if holes_mode != "none":
-        if not os.path.isfile(cells_path):
-            raise RuntimeError(f"terrain: {cells_path} missing — the bake's terrainmask product did not run")
+    cells_path = os.path.join(ctx.derived_dir, "terrain", "clip_cells.png")
+    if holes_mode != "none" and os.path.isfile(cells_path):
         cells = png.gray_array(cells_path)
-        if cells.shape != (size - 1, size - 1):
-            raise RuntimeError(f"terrain: clip_cells.png is {cells.shape}, heightmap faces are {(size - 1, size - 1)}")
-        punch = cells == 255 if holes_mode == "contain" else cells >= 128
-        holes = int(punch.sum())
-        # bundle face (r, c) spans samples r..r+1 north->south and c..c+1 west->east: the
-        # .ter square is the one that starts at its SOUTH-WEST sample, i.e. bundle (r+1, c)
-        target = layers[1:, :-1]
-        target[punch] = ter_mod.HOLE
+        if cells.shape == (size - 1, size - 1):
+            punch = cells == 255 if holes_mode == "contain" else cells >= 128
+            holes = int(punch.sum())
+            # bundle face (r, c) spans samples r..r+1 north->south and c..c+1 west->east: the
+            # .ter square is the one that starts at its SOUTH-WEST sample, i.e. bundle (r+1, c)
+            target = layers[1:, :-1]
+            target[punch] = ter_mod.HOLE
     progress.end(f"{len(names)} materials {names}, {holes:,} holes ({holes_mode})")
-
-    # -- rim walls -------------------------------------------------------------------------
-    walls = {"tiles": 0, "quads": 0, "skipped": 0}
-    if punch is not None and holes:
-        progress.begin("terrain: hole rim walls", total=None, unit="")
-        walls = _write_hole_walls(ctx, level, heights, punch, deep_lane, hole_lane, cell, origin_x, origin_z, progress)
-        progress.end(f"{walls['quads']:,} wall quads in {walls['tiles']} tiles ({walls['skipped']} rim edges without a road height)")
 
     # -- upsample --------------------------------------------------------------------------
     factor = int(settings.get("terrain_upsample") or 1)
@@ -205,211 +167,19 @@ def run(ctx, progress):
         "terrainFile": level.game_path(ter_name),
         "materialTextureSet": f"{level.name}_TerrainTextureSet",
     })
-    gain = _albedo_gain(os.path.join(bundle, "terrain", "surfaces"), settings.get("terrain_brightness", 1.0))
-    materials = _terrain_materials(level, bundle, grounds, gain=gain)
-    materials.update(_wall_material(level, bundle, gain))
+    materials = _terrain_materials(level, bundle, grounds, gain=_albedo_gain(os.path.join(bundle, "terrain", "surfaces"),
+                                                                             settings.get("terrain_brightness", 1.0)))
     level.write_materials("terrains", materials)
     level.write_objects()
     progress.check()
-    progress.end(f"{ter_name} {os.path.getsize(level.path(ter_name)) / 2**20:.0f} MB, {len(materials) - 2} terrain materials, "
-                 f"albedo gain x{gain:.2f}")
+    progress.end(f"{ter_name} {os.path.getsize(level.path(ter_name)) / 2**20:.0f} MB, {len(materials) - 1} terrain materials, "
+                 f"albedo gain x{_albedo_gain(os.path.join(bundle, 'terrain', 'surfaces'), settings.get('terrain_brightness', 1.0)):.2f}")
     shared = ctx.shared if ctx.shared is not None else {}
     shared["terrain"] = {"position": position, "squareSize": cell, "maxHeight": max_height, "size": size,
                          "cell": cell, "elevationScale": scale, "elevationOffset": offset}
-    return {"size": size, "squareSize": cell, "materials": len(names), "holes": holes, "holesMode": holes_mode,
-            "underRoad": ground["underRoad"], "ring": ground["ring"], "worstDrop": ground["worstDrop"],
-            "wallQuads": walls["quads"], "wallTiles": walls["tiles"],
-            "seconds": round(time.monotonic() - started, 1)}
+    return {"size": size, "squareSize": cell, "materials": len(names), "holes": holes, "clamped": lowered,
+            "roadbedSunk": sunk, "seconds": round(time.monotonic() - started, 1)}
 
-
-# -- ground under roads -------------------------------------------------------------------------
-
-def _height_raster(path, shape, scale, offset):
-    """A gray16 height raster from the terrainmask bake → float64 metres, NaN where 0 (none).
-    Missing or mis-sized is an error: the bake product that writes it runs earlier in the same
-    build, so absence means an old cache or a failed bake, never a bundle without roads."""
-    if not os.path.isfile(path):
-        raise RuntimeError(f"terrain: {path} missing — the bake's terrainmask (v2) product did not run; "
-                           "re-run the build so the bake refreshes derived/terrain/")
-    q = png.gray_array(path)
-    if q.shape != shape:
-        raise RuntimeError(f"terrain: {os.path.basename(path)} is {q.shape}, heightmap is {shape}")
-    out = q.astype(numpy.float64) * scale + offset
-    out[q == 0] = numpy.nan
-    return out
-
-
-def _ground_under_roads(heights, lane):
-    """Mutates `heights` in place; see the module docstring. Returns the counts."""
-    band = numpy.isfinite(lane)
-    target = lane - UNDER_ROAD_SINK
-    hit = band & (heights > target)
-    worst = float((heights - target)[hit].max()) if hit.any() else 0.0
-    heights[hit] = target[hit]
-    under = int(hit.sum())
-
-    # ring: the highest neighbouring lane caps a sample that no band covers
-    ring_lane = numpy.full(heights.shape, -numpy.inf)
-    lane_filled = numpy.where(band, lane, -numpy.inf)
-    h, w = heights.shape
-    for dr in (-1, 0, 1):
-        for dc in (-1, 0, 1):
-            if dr == 0 and dc == 0:
-                continue
-            src = lane_filled[max(0, dr):h + min(0, dr), max(0, dc):w + min(0, dc)]
-            dst = ring_lane[max(0, -dr):h + min(0, -dr), max(0, -dc):w + min(0, -dc)]
-            numpy.maximum(dst, src, out=dst)
-    ring = (~band) & numpy.isfinite(ring_lane) & (heights > ring_lane)
-    heights[ring] = ring_lane[ring]
-    return {"underRoad": under, "ring": int(ring.sum()), "worstDrop": round(worst, 3)}
-
-
-# -- hole rim walls -----------------------------------------------------------------------------
-
-def _write_hole_walls(ctx, level, heights, punch, deep_lane, hole_lane, cell, origin_x, origin_z, progress):
-    """One vertical quad per edge between a punched face and a kept one, from the two rim
-    samples down to the road under the hole − WALL_DROP, facing the hole. Tiled like the
-    derived layers, one `TSStatic` per tile with collision, material `<level>_holewall`.
-
-    The road height a wall reaches for is the punched face's own `hole_lane` (the lowest lane
-    of the deep quads that reached it — known for every `touch`/`contain` hole), else the
-    nearest `deep_lane` sample within two cells."""
-    tile = float(ctx.settings.get("tile_size") or 256)
-    collide = True          # a wall stands where ground was: it always collides, like the ground did
-    fh, fw = punch.shape
-    ref = _nearest_finite(deep_lane, radius=2)
-
-    quads = []          # (ax, ay, bx, by, top_a, top_b, bottom, nx, ny) in bundle x / bundle z / height
-    skipped = 0
-
-    def sample_xy(r, c):
-        return origin_x + c * cell, origin_z - r * cell          # bundle x, bundle z (BeamNG x, y)
-
-    # vertical edges: between face (r, c) and (r, c+1) -> along sample column c+1, rows r..r+1
-    diff = punch[:, :-1] != punch[:, 1:]
-    for r, c in zip(*numpy.nonzero(diff)):
-        hole_right = punch[r, c + 1]
-        col = c + 1
-        a, b = (r, col), (r + 1, col)
-        face = (r, c + 1) if hole_right else (r, c)
-        # the hole lies east (+x) of the edge when the right face is punched
-        skipped += _add_wall(quads, heights, ref, hole_lane[face], a, b, sample_xy, (1.0 if hole_right else -1.0, 0.0))
-    # horizontal edges: between face (r, c) and (r+1, c) -> along sample row r+1, cols c..c+1
-    diff = punch[:-1, :] != punch[1:, :]
-    for r, c in zip(*numpy.nonzero(diff)):
-        hole_south = punch[r + 1, c]
-        row = r + 1
-        a, b = (row, c), (row, c + 1)
-        face = (r + 1, c) if hole_south else (r, c)
-        # bundle z runs north; the southern face is punched -> the hole lies at -z
-        skipped += _add_wall(quads, heights, ref, hole_lane[face], a, b, sample_xy, (0.0, -1.0 if hole_south else 1.0))
-    # map-edge holes need no wall (there is no kept face beside them)
-
-    if not quads:
-        return {"tiles": 0, "quads": 0, "skipped": skipped}
-    by_tile = defaultdict(list)
-    for q in quads:
-        mx, my = (q[0] + q[2]) * 0.5, (q[1] + q[3]) * 0.5
-        by_tile[(int(numpy.floor(mx / tile)), int(numpy.floor(my / tile)))].append(q)
-    material = f"{level.name}_holewall"
-    written = 0
-    for (tx, ty), items in sorted(by_tile.items()):
-        ox, oy = (tx + 0.5) * tile, (ty + 0.5) * tile
-        verts, uvs, normals, tris = [], [], [], []
-        for ax, ay, bx, by, top_a, top_b, bottom, nx, ny in items:
-            base = len(verts)
-            length = float(numpy.hypot(bx - ax, by - ay))
-            corners = [(ax, ay, top_a), (bx, by, top_b), (bx, by, bottom), (ax, ay, bottom)]
-            for (x, y, z) in corners:
-                verts.append((x - ox, y - oy, z))
-                normals.append((nx, ny, 0.0))
-            uvs += [(0.0, top_a / WALL_UV_M), (length / WALL_UV_M, top_b / WALL_UV_M),
-                    (length / WALL_UV_M, bottom / WALL_UV_M), (0.0, bottom / WALL_UV_M)]
-            # wind so the geometric normal points along (nx, ny): the hole side
-            t1, t2 = (base, base + 1, base + 2), (base, base + 2, base + 3)
-            p0, p1, p2 = (numpy.asarray(verts[i], dtype=numpy.float64) for i in t1)
-            geo = numpy.cross(p1 - p0, p2 - p0)
-            if geo[0] * nx + geo[1] * ny < 0:
-                t1, t2 = (base, base + 2, base + 1), (base, base + 3, base + 2)
-            tris += [t1, t2]
-        shape_name = f"holewalls_{tx}_{ty}"
-        mesh = dae.Mesh(shape_name, numpy.asarray(verts), numpy.asarray(tris), [(material, len(tris))],
-                        normals=numpy.asarray(normals), uvs=numpy.asarray(uvs))
-        path = level.path("art", "shapes", "holewalls", f"{shape_name}.dae")
-        dae.write_shape(path, dae.Shape(shape_name, [(WALL_DETAIL_PX, [mesh])]))
-        level.add([WALL_GROUP], {
-            "name": shape_name, "class": "TSStatic",
-            "shapeName": level.game_path("art", "shapes", "holewalls", f"{shape_name}.dae"),
-            "position": [round(ox, 3), round(oy, 3), 0.0], "rotationMatrix": frame.identity_matrix(), "scale": [1, 1, 1],
-            "collisionType": "Visible Mesh Final" if collide else "None", "decalType": "None",
-            "useInstanceRenderData": True}, key=f"holewalls:{shape_name}")
-        written += 1
-        if written % 20 == 0:
-            progress.check()
-    return {"tiles": written, "quads": len(quads), "skipped": skipped}
-
-
-def _add_wall(quads, heights, ref, face_lane, a, b, sample_xy, normal):
-    """Append one wall quad for the edge a→b (sample indices) if a road height is known under
-    it and the rim stands above the wall's foot. Returns 1 when skipped for want of a height."""
-    ra, ca = a
-    rb, cb = b
-    if numpy.isfinite(face_lane):
-        lane_ref = float(face_lane)
-    else:
-        refs = [v for v in (ref[ra, ca], ref[rb, cb]) if numpy.isfinite(v)]
-        if not refs:
-            return 1
-        lane_ref = min(refs)
-    bottom = float(lane_ref) - WALL_DROP
-    top_a, top_b = float(heights[ra, ca]), float(heights[rb, cb])
-    if max(top_a, top_b) <= bottom + 0.05:
-        return 0
-    ax, ay = sample_xy(ra, ca)
-    bx, by = sample_xy(rb, cb)
-    quads.append((ax, ay, bx, by, max(top_a, bottom), max(top_b, bottom), bottom, normal[0], normal[1]))
-    return 0
-
-
-def _nearest_finite(raster, radius=2):
-    """Each sample's own value where finite, else the minimum finite value within `radius`
-    samples (Chebyshev), else NaN."""
-    out = raster.copy()
-    missing = ~numpy.isfinite(out)
-    if not missing.any():
-        return out
-    h, w = raster.shape
-    best = numpy.full(raster.shape, numpy.inf)
-    for dr in range(-radius, radius + 1):
-        for dc in range(-radius, radius + 1):
-            src = raster[max(0, dr):h + min(0, dr), max(0, dc):w + min(0, dc)]
-            dst = best[max(0, -dr):h + min(0, -dr), max(0, -dc):w + min(0, -dc)]
-            numpy.fmin(dst, src, out=dst)
-    fill = missing & numpy.isfinite(best)
-    out[fill] = best[fill]
-    return out
-
-
-def _wall_material(level, bundle, gain):
-    """The rim walls' v1.5 Material: the level's rock texture, tiled every WALL_UV_M metres."""
-    surfaces_dir = os.path.join(bundle, "terrain", "surfaces")
-    source = "rock" if os.path.isfile(os.path.join(surfaces_dir, "rock.png")) else "dirt"
-    albedo = _rgb_texture(level, os.path.join(surfaces_dir, f"{source}.png"), f"{level.name}_{source}_detail_b.png", gain=gain)
-    normal = _rgb_texture(level, os.path.join(surfaces_dir, f"{source}_normal.png"), f"{level.name}_{source}_detail_nm.png")
-    name = f"{level.name}_holewall"
-    stage = {"roughnessFactor": 0.95, "metallicFactor": 0.0}
-    if albedo:
-        stage["baseColorMap"] = albedo
-    else:
-        stage["baseColorFactor"] = [0.35, 0.32, 0.28, 1.0]
-    if normal:
-        stage["normalMap"] = normal
-    return {name: {"name": name, "mapTo": name, "class": "Material", "persistentId": level.pid("material:holewall"),
-                   "version": 1.5, "materialTag0": "beamng", "materialTag1": "cs2",
-                   "Stages": [stage, {}, {}, {}]}}
-
-
-# -- helpers ------------------------------------------------------------------------------------
 
 def _nearest_resample(index, shape):
     rows = (numpy.arange(shape[0]) * index.shape[0] / shape[0]).astype(int)
@@ -479,15 +249,10 @@ def _albedo_gain(surfaces_dir, user_gain):
 
 def _rgb_texture(level, src, name, gain=1.0):
     """Copy `src` into art/terrains/ as an alpha-free RGB PNG, optionally lifted by `gain` in
-    linear light; the game path, or None. Written once per level (the terrain materials and
-    the wall material share the detail tier)."""
+    linear light; the game path, or None."""
     if not os.path.isfile(src):
         return None
     dst = level.path("art", "terrains", name)
-    written = level.__dict__.setdefault("_terrain_textures", set())
-    if dst in written:
-        return level.game_path("art", "terrains", name)
-    written.add(dst)
     os.makedirs(os.path.dirname(dst), exist_ok=True)
     try:
         rgb = _read_rgb(src)

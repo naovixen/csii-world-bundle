@@ -8,6 +8,7 @@ cleanly; the final message is `done` with the report or `error` with a traceback
 
 import json
 import os
+import shutil
 import signal
 import time
 import traceback
@@ -49,6 +50,7 @@ def main(settings, census, queue, cancel_event, hard_cancel=None):
     try:
         os.makedirs(level_dir, exist_ok=True)
         _remove_stale_report(level_dir)               # a killed build must not be explained by the previous one's report
+        _clear_generated(level_dir, queue)            # shapes/textures are rewritten whole: no orphans from an older build
         for stage in all_stages():
             if not stage.enabled(settings):
                 queue.put({"t": "stage", "stage": stage.key, "status": "skipped", "at": time.time()})
@@ -94,6 +96,24 @@ def main(settings, census, queue, cancel_event, hard_cancel=None):
 
 
 REPORT_NAME = "cs2beamng_report.json"
+
+
+# Folders every build rewrites from scratch. A tile or texture left over from a previous build
+# (a stage since removed, a region change, a different texture cap) is not referenced by the new
+# object tree, but BeamNG still mounts and compiles it, `export_texture` would reuse a stale
+# texture of the same name, and a stale `.cdae` beside a missing `.dae` is a ghost shape.
+GENERATED_DIRS = (("art", "shapes"), ("art", "textures"))
+
+
+def _clear_generated(level_dir, queue):
+    for parts in GENERATED_DIRS:
+        path = os.path.join(level_dir, *parts)
+        if os.path.isdir(path):
+            try:
+                shutil.rmtree(path)
+                queue.put({"t": "log", "stage": "", "text": f"cleared {'/'.join(parts)}/ from the previous build", "at": time.time()})
+            except OSError as exc:
+                queue.put({"t": "log", "stage": "", "text": f"could not clear {'/'.join(parts)}/: {exc}", "at": time.time()})
 
 
 def _remove_stale_report(level_dir):

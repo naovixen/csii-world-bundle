@@ -54,7 +54,7 @@ SCHEMA = {
     "tod_hour": (-1.0, "float", "Time of day in hours 0-24 for the level's sun (-1 = the in-game clock at rip time)"),
     "terrain_brightness": (1.0, "float", "Extra gain on the ground textures (1 = calibrated: CS2 grass to BeamNG's typical grass brightness)"),
     "terrain_upsample": (1, "choice:1|2", "Terrain upsample factor (2 = 8192 @ 1.75 m)"),
-    "terrain_holes": ("touch", "choice:touch|contain|none", "Which clip cells become terrain holes (touch clears tunnel mouths)"),
+    "terrain_holes": ("contain", "choice:contain|majority|none", "Which clip cells become terrain holes"),
     "forest_shadows": (True, "bool", "Forest items cast shadows"),
     "tree_wind": (False, "bool", "Synthesise wind vertex colours for trees"),
     # collision

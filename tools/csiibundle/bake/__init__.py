@@ -33,11 +33,9 @@ from collections import namedtuple
 BAKE_VERSION = 1
 
 # One registered product: the layer keys it reads (its staleness inputs), the path it writes
-# under the derived directory (a directory ends in '/'), the callable that bakes it:
+# under the derived directory (a directory ends in '/'), and the callable that bakes it:
 #     run(context, progress) -> dict of stats
-# and its own `version` — bump it when THAT product's bytes would change for the same bundle
-# and options, so only it re-bakes (`BAKE_VERSION` above is the sledgehammer for all of them).
-Product = namedtuple("Product", "name inputs path run version", defaults=(1,))
+Product = namedtuple("Product", "name inputs path run")
 
 # name -> Product. Filled by the product modules on import (see `products()`), kept empty at
 # import time so `import csiibundle.bake` stays cheap.

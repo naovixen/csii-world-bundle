@@ -131,20 +131,44 @@ def check(level_dir, bundle_dir, progress=None):
                                     missing.append(f"material {mat_name}: {key} {value}")
     checks["materialFiles"] = material_files
     checks["missingFiles"] = len(missing)
-    # every material a .dae binds must be a mapTo somewhere in the level (else BeamNG's orange checker)
+    # every material a .dae binds must be a mapTo somewhere in the level (else BeamNG's orange checker);
+    # and no name may be defined TWICE — BeamNG mounts every loose *.materials.json under levels/, so a
+    # second definition (the headless compiler's auto-generated `diffuseColor 0.8` placeholder beside
+    # a shape, load #10) shadows the real one. We write materials under art/cs2/ and art/terrains/
+    # only: a materials file under art/shapes/ is never ours.
     mapto = set()
+    defined_in = {}                                     # lower-case name -> [relative file, ...]
+    stray = []
+    shapes_root = os.path.join(art, "shapes")
     if os.path.isdir(art):
         for root, _d, files in os.walk(art):
             for name in files:
                 if name.endswith(".materials.json"):
+                    full = os.path.join(root, name)
+                    rel = os.path.relpath(full, level_dir).replace("\\", "/")
+                    if os.path.commonpath([os.path.abspath(full), os.path.abspath(shapes_root)]) == os.path.abspath(shapes_root):
+                        stray.append(rel)
                     try:
-                        with open(os.path.join(root, name), encoding="utf-8") as handle:
+                        with open(full, encoding="utf-8") as handle:
                             doc = json.load(handle)
                     except ValueError:
                         continue
-                    for mat in (doc or {}).values():
-                        if isinstance(mat, dict) and mat.get("mapTo"):
+                    for key, mat in (doc or {}).items():
+                        if not isinstance(mat, dict):
+                            continue
+                        if mat.get("mapTo"):
                             mapto.add(str(mat["mapTo"]).lower())
+                        for label in {str(mat.get("name") or key), str(mat.get("mapTo") or "")}:
+                            if label:
+                                defined_in.setdefault(label.lower(), []).append(rel)
+    duplicates = {n: sorted(set(f)) for n, f in defined_in.items() if len(set(f)) > 1}
+    checks["strayMaterialFiles"] = len(stray)
+    checks["duplicateMaterials"] = len(duplicates)
+    for rel in stray[:10]:
+        note(f"{rel}: a materials file under art/shapes/ - BeamNG's compiler/importer auto-generated it "
+             "(opaque placeholders that shadow the level's materials); the cook stage removes these")
+    for n, files in list(duplicates.items())[:10]:
+        note(f"material {n!r} is defined in {len(files)} files ({', '.join(files)}): one shadows the other")
     unbound = {}
     mat_re = re.compile(r'<material id="[^"]*" name="([^"]+)"')
     for name, path in dae_files:

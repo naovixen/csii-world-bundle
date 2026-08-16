@@ -218,18 +218,10 @@ def test_real_ground():
         from csiibundle.bake.progress import Progress
         ldir = os.path.join(tmp, "real")
         derived = os.path.join(BUNDLE, "derived")
-        # the terrain stage reads the terrainmask bake (clip cells, shallow/deep lane rasters):
-        # bake that one product if the derived cache is absent or old (~50 s on a full city)
-        from csiibundle.bake import runner as bake_runner
-        bake_runner.run(BUNDLE, derived_dir=derived, only=["terrainmask"], progress=Progress())
-        ctx = BuildContext(settings={"level_name": "real", "level_title": "real", "terrain_holes": "touch", "terrain_upsample": 1},
+        ctx = BuildContext(settings={"level_name": "real", "level_title": "real", "terrain_holes": "contain", "terrain_upsample": 1},
                            bundle=BUNDLE, level_dir=ldir, derived_dir=derived, census={}, region=None, report={}, jobs=1, shared={})
         result = terrain_stage.run(ctx, Progress())
         check(result["size"] == 4096 and result["materials"] >= 4, f"real terrain written: {result}")
-        check(result["underRoad"] > 5_000 and result["ring"] > 10_000, f"ground under roads + ring applied: {result}")
-        check(result["holes"] > 0 and result["wallQuads"] > 0 and result["wallTiles"] > 0, f"holes punched and rim walls written: {result}")
-        wall_daes = [f for f in os.listdir(os.path.join(ldir, "art", "shapes", "holewalls")) if f.endswith(".dae")]
-        check(len(wall_daes) == result["wallTiles"], "one holewalls .dae per wall tile")
         checks, problems = validate_level.check(ldir, BUNDLE)
         g = checks.get("groundCheck", {})
         check(g.get("sampled", 0) >= 500 and g.get("fraction", 0) >= 0.97 and g.get("medianAbs", 9) < 0.1,
