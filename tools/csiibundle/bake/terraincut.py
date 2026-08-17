@@ -32,8 +32,11 @@ Outputs (`derived/terraincut/terraincut_<tx>_<tz>.glb`, plus `derived/terrain/co
 
 * one glTF per tile, primitives per ground material `ground:<layer>` — the ground the consumer's
   heightfield paints there (`splat.dominant_layer`; no roadbed, because the game paints none) —
-  world-planar UVs at
-  `GROUND_UV_M` metres per repeat, heightfield normals, bundle frame.
+  world UVs at `GROUND_UV_M` metres per repeat, **projected triplanar**: a face is projected in
+  the plane it is most parallel to, because CS2's terrain samples its grounds triplanar
+  (`TRIPLANAR_PLANES` has the game's own binding and what is approximated). Faces flatter than
+  45 deg — 83 % of the mesh — get the `(x, z)` projection, as before. Heightfield normals,
+  bundle frame.
 * `corridor_faces.png` — gray8 at FACE resolution `(h−1, w−1)`, 255 where the heightfield square
   is replaced by mesh (punch it), 0 elsewhere.
 
@@ -54,7 +57,7 @@ from .tiles import TileSink
 
 PRODUCT_NAME = "terraincut"
 INPUTS = ("clipVolumes", "terrain", "terrainFine", "surfaceIndex", "splatmap")
-VERSION = 17         # v13: the EXACT cut (audit §46) — `terrainclip` against the prisms, replacing the
+VERSION = 18         # v13: the EXACT cut (audit §46) — `terrainclip` against the prisms, replacing the
                      #      containment scoring, the rim snap, the sub-cut and the cliff lift of v3-v12
                      # v14: sub-centimetre ribbons dropped (they rendered as hairlines: load #18) and the
                      #      prism construction shared with the Blender harness (`terrainclip.load_prisms`)
@@ -63,6 +66,11 @@ VERSION = 17         # v13: the EXACT cut (audit §46) — `terrainclip` against
                      # v17: the game's own graded heights kept — the 0.15 m roadbed sink and the
                      #      clamp to the band FLOOR are gone, only the over-carriageway residual
                      #      is lowered, onto the game's own profile top (audit §51)
+                     # v18: TRIPLANAR UVs — CS2's terrain samples its grounds triplanar
+                     #      (`TerrainMaterialSystem` binds `_TriplanarHeightmapBlending` and
+                     #      `_TerrainTriplanarBlendStrengthY` as shader globals), so a face is
+                     #      projected in the plane it is most parallel to, not always in (x, z)
+                     #      (audit §61)
 
 # metres per texture repeat on the ground mesh: the terrain material's MACRO tier period
 GROUND_UV_M = 40.0
@@ -75,6 +83,44 @@ MIN_PIECE_M2 = 1e-4
 # mesh-shaded one over 0.3 % of its area. On the reference city the threshold is the difference
 # between 46,550 punched squares and 43,043.
 MIN_REMOVED_M2 = 0.01
+
+# Which plane a face's ground texture is projected in. PORTED, with a declared collapse.
+#
+# CS2's terrain samples its grounds TRIPLANAR. `Game.Rendering.TerrainMaterialSystem` sets two
+# shader globals from the theme's `TerrainRenderSettingsPrefab`, beside `_SplatMultiplier` and
+# the `_TerrainExtra*` set the rest of this bake already ports:
+#
+#     _TriplanarHeightmapBlending      <- m_TriplanarHeightMapBlending  (class default 0.5)
+#     _TerrainTriplanarBlendStrengthY  <- m_TriplanarBlendStrengthY     (class default 0.2)
+#
+# and the producer already ships both, per map, as `rasters.terrainTiling.triplanar*` — on the
+# reference city's `DefaultTerrainRenderSettings` they are **0.25 and 0.75**, not the class
+# defaults. So a steep face in the game is textured from its SIDE projection, not smeared from
+# above.
+# A pure `(x, z)` projection stretches a face by `1/cos(slope)`: measured on the built level,
+# 11.6 % of the cut mesh's area sits on faces at 85 deg or more (real 10-13 m steps between
+# adjacent 1.75 m samples, where CS2 graded a corridor into a hillside), and 11.0 % of the area
+# samples the ground at 4-10x the intended period. A 4-10x magnified 68 m rock tiling is one
+# texel over a whole wall, which renders as a flat single-colour slab — the cream and near-black
+# patches of load #26. Predicted colour for the worst of them (198, 186, 172) against (200, 186,
+# 173) measured off the screenshot; audit §61.
+#
+# APPROXIMATED, declared and counted: the game blends the three projections PER PIXEL, weighted
+# by the two globals above and by the grounds' own height maps. Those weights live in an HLSL
+# shader that is not in the managed assemblies, and a mesh carries ONE baked UV set, so this
+# collapses the blend to the single dominant plane PER FACE — `argmax(|n|)`, the limit every
+# triplanar formulation agrees on, and the choice with no density error at the 45 deg crossover
+# (both planes stretch by 1.41 there). The cost is a texture-pattern discontinuity across an edge
+# whose two faces pick different planes; the run report counts the faces and area per plane.
+# The shipped `triplanarBlendStrengthY` is deliberately NOT used as a weight: whether it scales
+# the Y projection up, scales it down, or is an exponent is not determinable without the shader,
+# and reading it as a Y weight would move the crossover to 36.9 deg (at 0.75) or 11.3 deg (at the
+# class default 0.2) and send near-flat ground to a side projection. When the weighting curve is
+# recovered, that is the upgrade path — and it needs the multi-stage `inLayer.opacity` mechanism,
+# not a different UV.
+# Faces flatter than 45 deg keep the `(x, z)` projection they had, so 83 % of the mesh is
+# unchanged.
+TRIPLANAR_PLANES = ((2, 1), (0, 2), (0, 1))     # per dominant normal axis x/y/z: the two axes kept
 
 
 def run(context, progress):
@@ -158,6 +204,8 @@ def run(context, progress):
     removed_m2 = 0.0
     stats = {}
     materials_used = set()
+    plane_tris = [0, 0, 0]              # faces projected in zy / xz / xy (dominant normal x/y/z)
+    plane_area = [0.0, 0.0, 0.0]
     done = 0
     for (r, c), station_ids in by_face.items():
         done += 1
@@ -202,25 +250,47 @@ def run(context, progress):
         nrm = numpy.cross(b - a, d - a)
         flip = nrm[:, 1] < 0
         tris[flip] = tris[flip][:, ::-1]
-        uvs = numpy.stack((verts[:, 0] / GROUND_UV_M, verts[:, 2] / GROUND_UV_M), axis=-1)
+        # triplanar: project each face in the plane it is most parallel to (see TRIPLANAR_PLANES)
+        corners = verts[tris]                               # (M, 3, 3)
+        dominant = numpy.abs(nrm).argmax(axis=1)
+        uvs = numpy.empty((len(tris), 3, 2), dtype=numpy.float64)
+        for axis, (u_ax, v_ax) in enumerate(TRIPLANAR_PLANES):
+            on = dominant == axis
+            if not on.any():
+                continue
+            uvs[on, :, 0] = corners[on, :, u_ax] / GROUND_UV_M
+            uvs[on, :, 1] = corners[on, :, v_ax] / GROUND_UV_M
+            plane_tris[axis] += int(on.sum())
+            plane_area[axis] += float(0.5 * numpy.linalg.norm(nrm[on], axis=1).sum())
         normals = raster_normals(verts[:, 0], verts[:, 2])
-        centres = verts[tris].mean(axis=1)
+        centres = corners.mean(axis=1)
         tri_mat = layer_at(centres[:, 0], centres[:, 2])
         for name in sorted(set(tri_mat.tolist())):
             pick = tri_mat == name
-            sink.add(verts, tris[pick], uvs, name, normals=normals)
+            sink.add(verts, tris[pick], uvs[pick], name, normals=normals)
             tris_out += int(pick.sum())
             materials_used.add(name)
     written = sink.flush(progress)
+    side_tris = plane_tris[0] + plane_tris[2]
+    side_area = plane_area[0] + plane_area[2]
+    total_area = sum(plane_area)
     progress.end(f"{written['files']} tiles, {faces_cut:,} squares cut -> {pieces_out:,} pieces / "
                  f"{tris_out:,} triangles, {removed_m2:,.0f} m2 removed, "
                  f"{stats.get('slivers', 0):,} ribbon(s) under {terrainclip.MIN_WIDTH_M * 100:g} cm dropped "
                  f"({stats.get('sliverArea', 0.0):.1f} m2 — the game resolves those per pixel)")
+    progress.log(f"terraincut: triplanar — {side_tris:,} face(s) / {side_area:,.0f} m2 "
+                 f"({100.0 * side_area / max(total_area, 1e-9):.1f} % of the mesh) project from a SIDE "
+                 f"plane, the rest from above. APPROXIMATED: the game blends the three projections "
+                 f"per pixel (_TerrainTriplanarBlendStrengthY, _TriplanarHeightmapBlending); a baked "
+                 f"UV set collapses that to the dominant plane per face, so those faces meet their "
+                 f"neighbours with a pattern seam the game would blend away")
     _write_mask(derived, replaced, cell, field.fine, sorted(materials_used))
     return {"tiles": written["files"], "faces": faces_cut, "triangles": tris_out, "pieces": pieces_out,
             "removedSquareMetres": round(removed_m2, 1), "shallowVolumesSkipped": skipped_shallow,
             "sliversDropped": stats.get("slivers", 0), "sliverSquareMetres": round(stats.get("sliverArea", 0.0), 2),
             "materials": sorted(materials_used), "corridorFaces": int(replaced.sum()),
+            "triplanarSideFaces": side_tris, "triplanarSideSquareMetres": round(side_area, 1),
+            "triplanarFacesPerPlane": {"zy": plane_tris[0], "xz": plane_tris[1], "xy": plane_tris[2]},
             "_tiles": written["tiles"], "seconds": round(time.monotonic() - started, 1)}
 
 

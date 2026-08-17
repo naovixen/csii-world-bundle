@@ -108,27 +108,33 @@ Priority is "how visible is the divergence" × "how likely we invented something
   (119,133,81), predicted (180,190,152)); and the mesh's base slot held the full-contrast albedo
   where the detail carries a deviation from the mean, doubling contrast and clamping **32.5 % of
   extra2 to black**. Gate `tools/test_terrain_blend.py` 47/47.
-- **OPEN §49.6 — the polygon edges.** The last structural difference: terrain blends up to four
-  grounds PER PIXEL, an ordinary mesh draws one per triangle, and 27 % of the rim is within two
-  squares of a ground boundary. The faithful fix is verified in BeamNG's source and content but not
-  built: `Stages` is a list, `defaultMat.hlsl` blends stage N over N-1 by `inLayer.opacity`, and
-  vanilla ships 1,073 four-stage materials and 38 driving later stages from an `opacityMap`. Bake
-  per-tile opacity masks from the same splat weights the terrain blends.
-- **OPEN §60 — the cut mesh's UVs are a horizontal projection, so vertical walls stretch 5.4x.**
-  `bake/terraincut.py:205` is `uv = (x, z) / GROUND_UV_M` with no vertical component, so a wall
-  gets UV span only from its horizontal footprint: measured **217.5 m/uv on vertical faces against
-  40.0 on flat ones**, correlation with verticality **+0.800**, 3,409 m² stretched past 2x. It is
-  why "the side of deep terrain" loses its texture, and it worsens with cut depth.
+- **§49.6 — NOT the cause of anything visible, and off the critical path (§61.5).** The claim was
+  that terrain blends four grounds per pixel where a mesh draws one per triangle. **Measured**
+  rather than assumed, at last: for every cut triangle, the ground the mesh paints against the
+  ground the built `.ter` holds in the terrain beside it — **95.1 % agree**, and every mismatch is
+  a boundary sliver (largest class `dirt -> rock`, 872 triangles / 169 m²). The mesh is not painting
+  flat single grounds where the terrain blends. The four-stage opacity-mask design stays on the
+  books as the eventual home for a real triplanar blend (§61.4), but it fixes no reported defect
+  and was **not built**.
+- **CLOSED §60 → §61 — the cut mesh's horizontal projection WAS the cause, and §60.4's retraction
+  of it was wrong.** `uv = (x, z) / GROUND_UV_M` stretches a face by `1/cos(slope)`, and the
+  heightfield steps **10-13 m between adjacent 1.75 m samples** where CS2 graded a corridor into a
+  hillside: **11.6 % of the cut mesh's area is on faces at ≥ 85°** and **11.0 % sampled the ground
+  at 4-10x** its intended period — one texel of a 68 m rock tiling over a whole wall, which is the
+  flat cream and near-black slabs. It predicts the pixels: observed **(199.8, 185.8, 172.8) σ 0.4**
+  against predicted **(198, 186, 172)**, **ΔE 2**.
   **The game's rule is TRIPLANAR and we already ship it** — `_TriplanarHeightmapBlending` and
   `_TerrainTriplanarBlendStrengthY` are globals from `TerrainRenderSettingsPrefab`, in the bundle
   as `rasters.terrainTiling.triplanar*` (**0.25 / 0.75 on this map — NOT the class defaults
-  0.5 / 0.2**), and no consumer reads them. Two limits before building it: BeamNG has triplanar
-  only in `sdfTerrain*`, never in `defaultMat.hlsl`, so a real blend needs the SAME three-stage
-  `inLayer.opacity` mechanism §49.6 needs (dominant-axis projection is only its discrete limit,
-  and most of the mesh is in the transition band); and the weighting curve lives in a compiled
-  shader, so the structure ports but the weights are reconstructed. **Also: BeamNG's own terrain
-  is planar too**, so a triplanar cut mesh could make the seam against the heightfield MORE
-  visible, not less. Sequenced behind confirming whether the black faces survive at gain 0.16.
+  0.5 / 0.2**). §60.4 retracted the fix because our planar UV matches **BeamNG's** terrain; that
+  reasoned from the consumer engine instead of the game.
+  **Built as `terraincut` v18:** project each face in the plane it is most parallel to,
+  `argmax(|n|)`, per triangle. Geometry untouched. Measured ≥ 4x stretch **2,234 m² → 0 m²**,
+  nominal-density area **75.3 % → 98.5 %**. Faces under 45° keep the projection they had, so 83 %
+  of the mesh is unchanged and the seam concern above is confined to faces already ≥ 45° — where
+  BeamNG's own terrain is itself ≥ 1.41x smeared. APPROXIMATED and counted: the game blends the
+  three projections per pixel and a baked UV set collapses that to one plane per face
+  (5,337 faces / 5,023 m², 24.6 %). Awaiting Naomi's in-game validation.
 - **Rejected, and gone from the tree (§49.5):** `terrain_holes: majority` (over-cuts up to 1.75 m
   past the game's line — Naomi saw it) and `terrain_rim: lower` (lowering the rim to the band floor
   — *"that's a fidelity loss"*, and correct: the game hides with a stencil and never moves ground).
@@ -287,8 +293,11 @@ Priority is "how visible is the divergence" × "how likely we invented something
   **217.5 m/uv against 40.0** for flat faces (correlation with verticality +0.800), which is why
   it shows on "the side of deep terrain" and worsens with depth. The measurement is not withdrawn:
   `MEASURED_GRASS_ANCHOR = 0.2185` sits beside the shipped value and the gate reports the gap.
-- **OPEN:** the pure-black faces are still unexplained; and the triplanar UV fix (vertex split +
-  `terraincut` version bump) is not built.
+- **RESOLVED (§61):** the black and cream faces were the horizontal UV projection on near-vertical
+  cut faces, and the triplanar fix IS built (`terraincut` v18, per-corner UVs — no vertex split
+  needed, `TileSink.add` already takes `(M,3,2)`). The gain stays at 0.16 by the earlier decision;
+  **restoring 0.2185 is now a clean separate call**, since the defect it was reverted to mask is
+  fixed. `MEASURED_GRASS_ANCHOR = 0.2185` still sits beside it and the gate still reports the gap.
 
 ### 6. Water — WORKED 2026-08-17 (audit §56); one producer field added, awaiting re-rip
 - **Game:** `WaterRenderSystem.ApplyMaterialParams`, `WaterSystem`, `WaterRenderSettingsPrefab`.

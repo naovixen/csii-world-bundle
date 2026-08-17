@@ -32,6 +32,24 @@ def check(cond, msg):
     (print("ok:  ", msg) if cond else (failures.append(msg), print("FAIL:", msg)))
 
 
+def versions():
+    """A product's `VERSION` is the ONLY thing that makes an edit reach a rebuilt level — the bake
+    reports `fresh (inputs unchanged), skipped` otherwise, and the level rebuilds from the old
+    bytes with no error anywhere. Where a module records its history as `# vNN:` entries beside
+    the constant, the constant must equal the newest of them: adding the changelog line and
+    forgetting the literal is a silent no-op, and it happened on `terraincut` v18 (audit §61)."""
+    import re
+    for name, prod in sorted(_products().items()):
+        src = os.path.join(REPO, "tools", "csiibundle", "bake", f"{name}.py")
+        if not os.path.isfile(src):
+            continue
+        entries = [int(v) for v in re.findall(r"#\s*v(\d+):", open(src, encoding="utf-8").read())]
+        if not entries:
+            continue
+        check(prod.version == max(entries),
+              f"{name}: VERSION={prod.version} matches its newest changelog entry v{max(entries)}")
+
+
 def example():
     reg = _products()
     check("materials" in reg and "lods" in reg, f"products registered: {sorted(reg)}")
@@ -157,6 +175,7 @@ def real():
 
 
 def main():
+    versions()
     example()
     real()
     print()

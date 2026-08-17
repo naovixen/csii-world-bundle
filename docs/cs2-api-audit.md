@@ -4598,3 +4598,120 @@ file, the second from proposing a fix before reading the module's own contract, 
 first paragraph exactly what the mesh is and why its UVs and normals are what they are. **Read the
 thing you are about to change before measuring it, not after.**
 
+
+## 61. CLOSED — CS2's terrain is TRIPLANAR, so the cut mesh's horizontal projection was wrong after all (2026-08-18)
+
+**Status: CAUSE PROVEN, FIX BUILT AND MEASURED, awaiting Naomi's in-game validation.**
+This closes the flat cream / near-black patches of §60 and `docs/plans/cut-mesh-patches.md`.
+It also **un-retracts §60.2 and overturns §60.4**, and it removes §49.6/§60.5 from the critical
+path — the opacity-mask fix was NOT built, because it is not the cause.
+
+### 61.1 The rule, from the game's own source
+
+`Game.Rendering.TerrainMaterialSystem` sets two shader globals from the theme's
+`Game.Prefabs.Terrain.TerrainRenderSettingsPrefab` — the same prefab §47 already reads the ground
+tilings from, in the same method that sets `_SplatMultiplier`, `_SplatPower` and the whole
+`_TerrainExtra*` set this bake ports:
+
+```
+_TriplanarHeightmapBlending      <- m_TriplanarHeightMapBlending   (class default 0.5)
+_TerrainTriplanarBlendStrengthY  <- m_TriplanarBlendStrengthY      (class default 0.2, range 0.01..1)
+```
+
+**CS2's terrain samples its grounds triplanar.** A steep face in the game is textured from its
+side projection; it is not smeared from above.
+
+The producer already ships both per map, as `rasters.terrainTiling.triplanar*` — on this city's
+`DefaultTerrainRenderSettings` they are **0.25 and 0.75**, not the class defaults. The parity sweep
+had already recorded the globals and the shipped values; what was missing was the measurement that
+made the cost concrete, and the recognition that §60.4 had retracted the right fix.
+
+This is what §60.4 got wrong. That retraction was right that our planar `(x, z)` UV matches
+**BeamNG's** terrain (which has triplanar only in `sdfTerrain*`) — and then concluded the UV was
+correct. The authority is the game, not the consumer engine. The mesh was matching the wrong one.
+
+### 61.2 What it costs, measured on the built level
+
+Per-triangle 3-D area against UV area over all 76,326 cut triangles of `cs2_city_fine`:
+
+| face slope | triangles | area | share |
+|---|---|---|---|
+| < 30 deg | 64,826 | 13,662 m2 | 66.98 % |
+| 30-45 | 5,789 | 1,593 m2 | 7.81 % |
+| 45-60 | 2,335 | 867 m2 | 4.25 % |
+| 60-75 | 1,955 | 831 m2 | 4.07 % |
+| 75-85 | 986 | 1,084 m2 | 5.31 % |
+| **>= 85** | **435** | **2,359 m2** | **11.57 %** |
+
+Those are not artefacts of the cut: the heightfield itself steps **10-13 m between adjacent 1.75 m
+samples** where CS2 graded a corridor into a hillside (sampled off the built `.ter` at three of
+them: 12.44, 13.38, 10.13 m). A `1/cos(slope)` stretch on an 85 deg face is 11x.
+
+Texture density against the intended `GROUND_UV_M` = 40 m:
+
+| stretch | triangles | area | share | after the fix |
+|---|---|---|---|---|
+| 1.0-1.2x | 70,819 | 15,352 m2 | 75.27 % | **98.52 %** |
+| 1.2-2x | 4,096 | 1,635 m2 | 8.02 % | 1.48 % |
+| 2-4x | 970 | 1,175 m2 | 5.76 % | 0.00 % |
+| **4-10x** | **373** | **2,234 m2** | **10.95 %** | **0.00 %** |
+
+**100 % of the >= 4x area is `rock`** — rock is the splat's residual, so it is exactly what a cliff
+wears. Rock's near tiling is 68.25 m, so at 4-10x it repeats every 273-683 m: one texel over a
+whole wall.
+
+### 61.3 It predicts the observed pixels
+
+The handoff's bar was that a cause must produce the measured values, not merely something flat.
+Sampling each >= 4x triangle's own material composite — `saturate(srgb_decode(base.color) +
+2*detail.data - 1)`, the arithmetic `defaultMat.hlsl` runs — at its UV centroid, and scaling by the
+1.26 screen/texture factor calibrated on the grass terrain in the same frame:
+
+* observed cream slab **(199.8, 185.8, 172.8), sigma 0.4**; nearest predicted **(198, 186, 172)**,
+  **dE 2**, and **134 of the 373 stretched triangles land within 25** of it.
+* predicted p5 (144, 137, 122) x an ambient-only factor gives the near-black slabs; the crop shows
+  the dark slab meeting the cream one across a straight edge, one lit and one not.
+* sigma 0.4 over a 28x28 px window is the signature: a magnified texture has no local variation.
+  The terrain beside it measures sigma 15-40.
+
+### 61.4 The fix — `terraincut` v18
+
+`bake/terraincut.py` projects each face in the plane it is most parallel to (`argmax(|n|)`),
+per triangle, through the sink's per-corner UV path. Geometry is untouched: same 76,326 triangles,
+same 20,396 m2. Faces flatter than 45 deg keep the `(x, z)` projection, so **83 % of the mesh is
+unchanged** and only the steep faces move. Shared code, so the Blender harness gets it too.
+
+**APPROXIMATED, declared and counted in the run report** (`triplanarSideFaces`,
+`triplanarSideSquareMetres`, `triplanarFacesPerPlane`): the game blends the three projections PER
+PIXEL, weighted by the two globals above and by the grounds' own height maps. Those weights are in
+an HLSL shader that is not in the managed assemblies, and a mesh carries ONE baked UV set, so the
+blend collapses to the dominant plane per face. `argmax(|n|)` is the limit every triplanar
+formulation agrees on, and it is the choice with **no density error at the 45 deg crossover** —
+both planes stretch by 1.41 there. The cost is a texture-pattern seam across an edge whose two
+faces pick different planes. On the reference city: **5,337 faces / 5,023 m2 (24.6 % of the mesh)
+project from a side plane.**
+
+The shipped `triplanarBlendStrengthY` is deliberately NOT used as a weight here: whether it scales
+the Y projection up, scales it down, or is an exponent is not determinable without the shader, and
+reading it as a Y weight would move the crossover to 36.9 deg (at this map's 0.75) or 11.3 deg (at
+the class default 0.2) and send near-flat ground to a side projection. When the curve is recovered,
+that is the upgrade path — and it needs the multi-stage `inLayer.opacity` mechanism §49.6 describes,
+not a different UV.
+
+### 61.5 What this clears, and the one symptom left
+
+* **§60.2 stands** (the measurement was right) and **§60.4 is overturned** (the retraction reasoned
+  from the wrong authority). §60.1's four dead hypotheses stay dead.
+* **§49.6 / §60.5 is NOT the cause.** Measured directly rather than assumed: for every cut triangle,
+  the ground the mesh paints against the ground the built `.ter` holds in the terrain beside it —
+  **95.1 % agree**, and every mismatch is a boundary sliver (largest class `dirt -> rock`, 872
+  triangles / 169 m2). The mesh is not painting flat single grounds where the terrain blends. The
+  four-stage opacity-mask work is therefore **not on the critical path** and was not built.
+* **The 90 orphaned `art/ground/*blend*.dds`** are from an abandoned 14:50 experiment on 2026-08-17,
+  not from any code in the tree. Harmless; the cook can drop them.
+* **STILL OPEN — the vivid lime green.** Sampled properly at last: **(142, 200, 28)**, and it is
+  **not any ground**. Scanned: the closest texel in any of the seven ground-mesh composites is
+  dE 60 away, the closest in any terrain-tier composite is dE 51, **no level PNG carries a lime
+  texel**, and **no material in the level has a lime `baseColorFactor`**. So it is a DDS-only
+  texture (the `art/textures/` BC7 set) or engine state. It is a handful of small spots, it is a
+  different defect from the slabs, and it is now bounded rather than guessed at.
