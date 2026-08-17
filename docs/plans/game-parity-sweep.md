@@ -62,16 +62,18 @@ Priority is "how visible is the divergence" × "how likely we invented something
   them (the alpha of `<ground>_normal.png`, measured), so both consumers were discarding CS2's own
   relief and filling `height{tier}Tex` with a flat 128. Fixed, gated at
   `tools/test_terrain_blend.py` 25/25.
-- **OPEN 1a-residual — our layer texel is 3.5 m and BeamNG's constants assume ~0.5 m.** Rendering
+- **OPEN 1a-residual — our layer texel is 1.75 m and BeamNG's constants assume ~0.5 m.** Rendering
   the ported shader over the real index raster reproduces load #19's photograph exactly. Every
   softening mechanism BeamNG has is sized in layer texels — domain warp ±0.5 texel at a 0.77-texel
-  period, soft band 0.245 texel — and vanilla levels run `squareSize` 0.3–0.75 m against our
-  3.5 m, so all of it renders 5–12× oversize as metre-scale blobs of whole ground. No material
-  setting reaches it (`TERRAIN_LAYER_WARP` is already on; `heightRange`/`warpAmp` are shader
-  literals) and the `.ter` layer array shares the heightmap's grid, so the only lever is
-  heightfield resolution: `terrain_upsample` gives 1.75 m today, 0.875 m would be a 16384²
-  `.ter`. **Decide whether that trade is worth making — it is a size/memory question for Naomi,
-  not a parity question.**
+  period, soft band 0.245 texel — and vanilla levels run `squareSize` 0.3–0.75 m against the
+  **1.75 m we already ship** (`terrain_upsample = 2` is the default), so all of it renders
+  2.3–5.8× oversize as metre-scale blobs of whole ground. No material setting reaches it
+  (`TERRAIN_LAYER_WARP` is already on; `heightRange`/`warpAmp` are shader literals) and the `.ter`
+  layer array shares the heightmap's grid, so the only lever is heightfield resolution — and
+  `terrain_upsample` has **no headroom left**: already at 2, and refused on a fine rip because the
+  fine map *is* 1.75 m. The next step is 0.875 m, the game's own next cascade slice, at a 16384²
+  `.ter` — **768 MB against 192 MB today**. **Decide whether that trade is worth making — it is a
+  size/memory question for Naomi, not a parity question.**
 - **1b — WORKED (audit §47.5).** The `terraincut` mesh materials were composited at a global 4 m
   detail inside a 40 m macro against a heightfield running the wrong tiling itself; both now take
   the ground's own `rasters.terrainTiling` near and mid metres, so the piece and the terrain beside

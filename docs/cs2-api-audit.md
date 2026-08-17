@@ -3126,17 +3126,20 @@ texels**, not metres:
 
 Vanilla BeamNG terrains run at `squareSize` **0.3–0.75 m** (measured off the shipped levels:
 `derby` 0.3, `automation_test_track` 0.5, `hirochi_raceway` 0.75, `johnson_valley` 0.75). We ship
-3.5 m, or 1.75 m on a rip with `layers.terrainFine`. So the shader's boundary softening is
-**5–12x oversize** and every one of its organic wiggles renders as a metre-scale blob of whole
-ground — which is what "a literal checkerboard of whole squares, each fully one ground" is.
+**1.75 m** on the default `terrain_upsample = 2` (the table's last column is the 3.5 m light
+setting; halve it for the default). So the shader's boundary softening is **2.3–5.8x oversize as
+shipped** and every one of its organic wiggles renders as a metre-scale blob of whole ground —
+which is what "a literal checkerboard of whole squares, each fully one ground" is.
 
 No material setting reaches it. `TERRAIN_LAYER_WARP` is `#define ... 1` in `terrain.h.hlsl` and
 that include sits at line 3 of `terrainMat.hlsl`, so the warp is already on; `heightRange` and
 `warpAmp` are shader literals. The only lever is the layer raster's resolution, and in BeamNG's
 `.ter` the layer byte array shares the heightmap's grid — so it is the heightfield resolution or
-nothing. `terrain_upsample = 2` on a base rip gives 1.75 m and is refused on a fine one (the fine
-map is already 1.75 m); 0.875 m would be a 16384 squared `.ter`. **OPEN**, carried back to the
-sweep plan as item 1a's residual with these numbers.
+nothing — and `terrain_upsample` has **no headroom left**: it is already at 2, and it is refused
+on a fine rip because the fine map *is* 1.75 m. The next step is 0.875 m, the game's own next
+cascade slice, at a 16384 squared `.ter`: **768 MB against the 192 MB it writes today** (48 MB at
+4096 squared, measured). **OPEN**, carried back to the sweep plan as item 1a's residual with these
+numbers.
 
 ### 47.5 Item 1b: the cut meshes wore the wrong tiling too
 
