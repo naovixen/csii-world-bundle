@@ -4143,3 +4143,179 @@ Consumer-side only: no producer change, no re-rip owed. `test_mask_channels.py`,
 `test_bake_products.py`, `test_b1_readers.py`, `test_bundle_contract.py` (88 tests),
 `test_a2_dae.py` (58/58) and `test_normal_packing.py` all pass. The materials bake product is at
 version 2, so the next build re-bakes that product and drops the `_ao.png` files.
+
+## 55. Exposure is AUTOMATIC, so the albedo gain is real — and its target was still a guess (2026-08-17)
+
+Game-parity sweep **area #5**. The ask: *"our colour chain is documented as one derivation riding
+an OCIO view, and the ground albedo gain in the BeamNG app (`GRASS_TARGET_LUMINANCE = 0.16`,
+`MAX_GAIN = 6`) is a calibration, not a rule. What does the game's exposure actually do, and is the
+gain compensating for something we should be reading?"*
+
+### 55.1 What the game's exposure does
+
+`Game.Rendering.LightingSystem.SetupPostprocessing` builds one priority-1000 volume and puts HDRP
+in **`ExposureMode.Automatic`**, `limitMin −5`, `limitMax 14`. `LightingSystem` then overwrites
+those limits every frame from `DayNightCycleData`: by day `[DayExposureMin, DayExposureMax]` =
+**[4, 14] EV**, by night `[NightExposureLowMin, NightExposureMax]` = [2.5, 14], with the minimum
+lerped across dawn and dusk. The same volume sets `TonemappingMode.External` with
+**`lutContribution = 0.5`**, `ColorAdjustments.contrast = 0`, a white colour filter, and
+`IndirectLightingController` reflection/diffuse multipliers.
+
+**The producer already ships every one of those, and this pass confirms them from source rather
+than adding anything.** `grading.json` reads `exposure.mode = AutomaticHistogram`,
+`limitMin = 4.0`, `limitMax = 14.0` — the exact `DayExposureMin`/`DayExposureMax` pair — plus
+`tonemapping.lutContribution = 0.5`, `tonemapping.mode = ACES`, and the sun at 110,000 lux. Its
+`units` note already states the operative conclusion: *"In Automatic\* modes the game meters every
+frame and the metered value is not exposed by HDRP, so absolute brightness cannot be replayed."*
+That was a producer claim; it is now a source-verified one.
+
+So the answer to *"is the gain compensating for something we should be reading?"* is: **yes — it is
+compensating for auto-exposure, and no, there is nothing to read.** HDRP does not expose the
+metered value. A fixed linear gain on the albedo is the right *shape* of answer for an engine with
+no equivalent metering, and it stays a declared approximation.
+
+### 55.2 But the gain's TARGET is not CS2's to set, and it was 27 % low
+
+The gain's job is to land CS2's grounds where **BeamNG's** lighting was authored to receive them,
+so the authority is BeamNG's own content, not CS2's. That content is on disk: the vanilla levels
+are zips under `content/levels/`, each carrying `*.materials.json` that name their
+`TerrainMaterial` base-colour maps.
+
+Measured over **149 ground albedos across 15 shipped levels** (Cliff, Industrial, Utah,
+automation_test_track, derby, driver_training, east_coast_usa, gridmap_v2, hirochi_raceway, italy,
+johnson_valley, jungle_rock_island, small_island, template, west_coast_usa):
+
+| | mean | median | p10 | p90 |
+|---|---|---|---|---|
+| all grounds | 0.2085 | 0.2196 | 0.1386 | 0.2344 |
+| the 26 grass-named ones (what the constant calibrates on) | 0.2147 | **0.2185** | | |
+
+`GRASS_TARGET_LUMINANCE` was **0.16** — a guess, and **27 % below BeamNG's own grass**. Every CS2
+ground has been shipping about a third darker than the engine expects. Corrected to **0.2185**, the
+measured anchor.
+
+### 55.3 The predicate
+
+`tools/test_ground_albedo.py` re-measures BeamNG's vanilla content and fails if the constant drifts
+from it. Its tolerance is chosen so that **the value it replaced fails**: 0.16 sits 0.0585 from the
+anchor, so the obvious 0.07 would have called the guess healthy and the gate would have been
+decoration. It is 0.03, and the superseded 0.16 is asserted to be convicted — the negative control
+is a clause of the test rather than a note beside it. A second clause requires the target to lie
+inside the p10–p90 band of vanilla ground albedo, so it tracks the range and not just one
+statistic.
+
+**This one is visible in game** (every ground brightens by 1.37×), so it follows the standing rule:
+`cs2_city_fine` rebuilt in place with cook on, and Naomi validates before it is called good.
+
+## 56. Water: "applied verbatim" was wrong — there are four more bind-time transforms (2026-08-17)
+
+Game-parity sweep **area #6** (`Game.Simulation.WaterSystem`, `Game.Rendering.WaterRenderSystem`,
+`WaterRenderSettingsPrefab`). The ask: levels, the shoreline dilation, waves, and whether the
+depth-based appearance we ship is the one the game computes.
+
+**Waves were the finding.** The producer's own `rasters.water.semantics` string claimed these were
+*"applied verbatim by WaterRenderSystem.ApplyMaterialParams (the one transform: endSmoothness =
+min(smoothnessDistant, smoothnessClose))"*. Reading `ApplyMaterialParams` shows four more, and
+every one is camera- or wind-dependent — which is exactly why they cannot be shipped as values,
+and exactly why a consumer has to be told which numbers reach a shader unchanged:
+
+| # | Game rule | Consequence for the shipped value |
+|---|---|---|
+| 1 | `t = saturate((cameraHeight − seaLevel − 750) / 250)`; when `m_WavesMultiplier > 1` the game lerps it toward 1 by `t` | The authored **1.3** only holds below 750 m over the sea; above 1000 m it is exactly 1.0 |
+| 2 | `largeBand0Multiplier = largeBand1Multiplier = saturate(wavesMultiplier)` | An authored value above 1 **never reaches a band amplitude at all** — the reference city's 1.3 reads 1.0 there |
+| 3 | `simulationFoamAmount = m_FoamAmount × ComputeFoamFade()`, a camera-height fade over `m_FoamFadeRange` | `foamAmount` is a ceiling, not a value |
+| 4 | `largeWindSpeed = lerp(0, distanceWindSpeed, wavesMultiplier²)`, `largeChaos` from live wind strength, both gated by `m_SeaWindAffectWavesDirection` | Wind terms are live and unshippable — but when the gate is **false** the game passes 0 for both, so **calm water is the game exactly**, not an approximation of it |
+
+Everything else — `refractionColor`, `scatteringColor`, `absorptionDistance`,
+`maxRefractionDistance`, the four scattering terms, caustics, ripples, `startSmoothness`,
+`smoothnessFadeStart/Distance` — is bound straight through, and `endSmoothness =
+min(smoothnessDistant, smoothnessClose)` is confirmed.
+
+**One field was missing and is now shipped:** `m_SeaWindAffectWavesDirection`, the last field of the
+prefab and the one that decides whether row 4's wind branch is live at all. Additive attr, schema
+unchanged, **awaiting re-rip**. Both the producer's semantics string and
+`tools/csiibundle/water.py`'s header are corrected with the four transforms named.
+
+**Not findings, checked and closed:**
+
+* **The shoreline dilation is the producer's, is honest, and has no game counterpart to port.**
+  `TerrainRipSystem.BuildWaterLevel` dilates the surface-level grid one simulation cell so a
+  terrain cell straddling the shoreline does not lerp against a dry cell's "no data" and drag the
+  surface below the ground. The game has the same problem — it samples a
+  `R32G32B32A32_SFloat` water texture on the GPU with bilinear filtering — and solves it in a
+  compiled shader that cannot be read. So the dilation is a declared resampling-correctness
+  measure, already documented as one, and there is nothing to replace it with.
+* **The depth-based appearance is the game's.** `rasters.water` carries every remaining field of
+  `WaterRenderSettingsPrefab` verbatim, and `csiibundle/water.py` already separates the exact
+  values from the modelled Beer-Lambert mapping and from water's IOR (which CS2 does not ship).
+* **`seaLevel` is a datum, not a surface** — already stated at length in the shipped block.
+
+## 57. Instances and decals: the LOD rule is exact, and the lift ladder is standing in for a field we never shipped (2026-08-17)
+
+Game-parity sweep **areas #7 and #8**, taken together because they converge on one producer gap.
+
+### 57.1 The LOD rule, derived exactly
+
+`Game.Rendering.RenderingUtils` is short and complete:
+
+```
+CalculateLodParameters(lodFactor, p):  n = 1 / tan(radians(fov / 2))
+                                       lodFactor *= 540 · n
+                                       → float4(lodFactor, 1/lodFactor², n + 1, n)
+CalculateLod(distanceSq, p):           d² = distanceSq · p.y
+                                       return (255 − (asint(d² · d² · d²) >> 23)) & 0xFF
+```
+
+`asint(x) >> 23` is the IEEE-754 biased exponent, so `255 − exponent(v)` is
+`128 − floor(log2(v))`, and with `v = (distance / lodFactor)⁶` the whole thing reduces to
+
+> **LOD = 128 − floor(6 · log₂(distance / lodFactor))**,  `lodFactor = bias · 540 / tan(fov/2)`
+
+— one LOD step per **2^(1/6) ≈ 1.122×** in distance. `CalculateLodLimit(metresPerPixel)` is the
+same expression on a scale rather than a distance, which means **a CS2 LOD index IS a
+metres-per-pixel figure**: level *L* is `2^((128 − L)/6)` m/px, independent of camera and FOV.
+
+**The gap:** the bundle ships none of it. `MeshData.m_MinLod` appears only in a mesh trace line,
+`ObjectGeometryData.m_MinLod` and `NetCompositionMeshData.m_LodBias`/`m_ShadowBias` not at all, and
+`lodCap` is 0 by design (the producer ships the highest detail level and the bake generates its own
+ladder at 25 %/6 %). That is the right call for the *meshes*. It is not the right call for the
+**thresholds**: the BeamNG app culls small props with `cull_px`, a tuned global (6/10/16/24 across
+the quality presets), where CS2 states a **per-prefab** answer that the rule above converts into a
+real distance for any FOV and screen height. **Filed, not built** — it needs a producer change and
+a re-rip, so nothing here can validate it.
+
+### 57.2 A decal prefab has no blend mode, and the ordering it does have was never shipped
+
+`Game.Prefabs.DecalProperties` carries exactly four things: `m_TextureArea` (the atlas rect,
+confirmed against `ManagedBatchSystem.CreateBatch` and `RenderPrefabRenderer` both binding
+`_TextureArea` as `float4(min, max)` — §19's reading re-verified from source, as area #8 asked),
+`m_LayerMask` (which surfaces it projects onto), `m_EnableInfoviewColor`, and
+**`m_RendererPriority`**.
+
+So *"what a decal's blend mode really is"* has a clean answer: **there isn't one on the prefab.**
+Blending belongs to the shader template (`DefaultDecal`/`CurvedDecal`) and HDRP's decal system;
+the prefab decides only *where* it projects and *in what order*.
+
+That makes `m_RendererPriority` the **only ordering CS2 states**, and it is what decides which of
+two overlapping markings wins. We were shipping `decalLayers` and `decalHeight` and dropping it —
+which is why `csiibundle.decals.LIFT_LADDER` exists at all. The ladder's five rungs (terrain 0,
+lane_tint 0.008, lane_marking 0.014, area 0.020, instance_decal 0.030) are a geometric stand-in for
+a sort key, for a consumer that cannot depth-sort projectors. **Half of it is already ported**:
+`csiibundle.areas` orders surface areas by `RenderedArea.m_RendererPriority`, which the producer
+*does* ship, using `PRIORITY_LIFT_STEP` inside the gap between two rungs. The object-decal half
+stayed a guess purely because the field was absent.
+
+**Now shipped:** `attrs.decalPriority` on decal instances, taken as the maximum
+`DecalProperties.m_RendererPriority` over a prefab's decal meshes (highest wins, so a prefab whose
+meshes disagree takes the one that ends up on screen). Absent means the prefab carries no decal
+properties — **not** priority zero. Contract §4.2a and `docs/schema/instance.schema.json` updated;
+88 contract tests pass. **Awaiting re-rip**, and the consumer half — ordering the ladder's
+`instance_decal` rung by it the way `areas.py` already does — is open work that needs the field on
+disk first.
+
+### 57.3 Not re-litigated
+
+Tree state → mesh choice (§15, and the 153,991-trees-as-adults defect), sub-object composition
+(§10 and the `cs2-prefab-submeshes` note), and the colour-variation path (`colorSet`, §7.2 and
+§44's `attrs.color` correction) were all settled in earlier passes and re-checked only for
+contradictions with the above. None found.

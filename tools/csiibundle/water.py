@@ -20,8 +20,27 @@ an asset bundle and cannot be read. So:
 
 * `base_color`, `scattering_color`, `absorption_distance`, the smoothness pair — **exact**,
   straight from the prefab.
-* `endSmoothness = min(smoothnessDistant, smoothnessClose)` — **exact**; it is the game's one
-  documented bind-time transform.
+* `endSmoothness = min(smoothnessDistant, smoothnessClose)` — **exact**.
+
+**It is NOT the game's only bind-time transform, and this file used to say it was** (corrected
+2026-08-17 from `WaterRenderSystem.ApplyMaterialParams`, audit §56). Four more exist, and every
+one is camera- or wind-dependent — which is exactly why they cannot be shipped as values, and why
+a consumer has to be told which of these numbers reaches a shader unchanged:
+
+1. **`wavesMultiplier` decays with camera height.** `t = saturate((cameraHeight − seaLevel − 750)
+   / 250)`, and when the authored value exceeds 1 the game lerps it toward 1 by `t`. Above 1000 m
+   over the sea it is exactly 1.0.
+2. **The wave bands take `saturate(wavesMultiplier)`.** `largeBand0Multiplier` and
+   `largeBand1Multiplier` are both the saturated value, so the reference city's authored **1.3
+   never reaches a band amplitude at all** — it reads 1.0 there.
+3. **`foamAmount` is scaled by a camera-height fade** over `foamFadeRange`.
+4. **The wind terms are live**: `largeWindSpeed = lerp(0, distanceWindSpeed, wavesMultiplier²)`
+   and `largeChaos` comes from the current wind strength, both gated by
+   `seaWindAffectWavesDirection` — when that is false the game passes 0 for both, so calm water is
+   the game exactly and not an approximation of it.
+
+A consumer replaying a static scene should take the **ground-level calm** case: bands at
+`saturate(wavesMultiplier)`, foam at the full `foamAmount`, no wind terms.
 * `roughness = 1 - smoothness` — the §7 convention, consistent with every other material.
 * IOR 1.333 — water's, not the game's; CS2 does not ship one.
 * Turning `absorption_distance` into a volume density is **modelled**: Beer-Lambert with the

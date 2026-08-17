@@ -80,10 +80,27 @@ CS2_TILING_TIER = {"detail": 0, "macro": 1, "base": 2}          # near, mid, far
 FALLBACK_TILE_M = {"base": 128.0, "macro": 40.0, "detail": 4.0}
 # CS2 grass, for a bundle with no block: [midStart, midEnd, farStart, farEnd]. TUNED.
 FALLBACK_LOD_BLEND = (100.0, 1000.0, 2000.0, 4000.0)
-# CS2's ground albedos are dark (grass ~0.06 linear: the game lights them with a 110 klux sun and
-# exposure); BeamNG's pipeline expects mid-brightness albedo (vanilla grass ~0.2 linear), so one
-# linear gain lifts CS2 grass to this luminance and every other ground by the same factor.
-GRASS_TARGET_LUMINANCE = 0.16
+# WHY A GAIN EXISTS AT ALL, from CS2's source (audit §55). `Game.Rendering.LightingSystem.
+# SetupPostprocessing` puts HDRP in `ExposureMode.Automatic`, and `DayNightCycleData` clamps it to
+# [DayExposureMin, DayExposureMax] = [4, 14] EV by day — the exact pair the producer already ships
+# in `grading.json`. So CS2 meters the scene every frame and normalises it, which is what lets its
+# ground albedos be authored dark (grass ~0.06 linear) under a 110 klux sun. HDRP does not expose
+# the metered value, so there is no number to read and replay; BeamNG has no equivalent metering on
+# terrain. A fixed linear gain on the albedo is therefore the right SHAPE of answer, and it is
+# declared as an approximation rather than a port.
+#
+# WHAT THE TARGET IS, and it is no longer tuned. The gain's job is to land CS2's grounds where
+# BeamNG's own lighting was authored to receive them, so the authority is BeamNG's content, not
+# CS2's. Measured over **149 vanilla ground albedos across 15 shipped levels** (Cliff, Industrial,
+# Utah, automation_test_track, derby, driver_training, east_coast_usa, gridmap_v2, hirochi_raceway,
+# italy, johnson_valley, jungle_rock_island, small_island, template, west_coast_usa): mean linear
+# luminance 0.2085, median 0.2196, p10 0.1386, p90 0.2344. Restricted to the 26 grass-named ones —
+# which is what this constant calibrates on — mean 0.2147, **median 0.2185**.
+#
+# The value here was 0.16, a guess, and it was 27 % below BeamNG's own grass: every CS2 ground
+# shipped a third darker than the engine expects. `tools/test_ground_albedo.py` re-measures the
+# vanilla content and fails if this constant drifts away from it.
+GRASS_TARGET_LUMINANCE = 0.2185
 MAX_GAIN = 6.0
 
 

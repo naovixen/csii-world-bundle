@@ -1875,10 +1875,30 @@ namespace Carto.Systems
                 float seaLevel = Instance.Water.SeaLevel;
                 var block = new Dictionary<string, object>
                 {
-                    ["semantics"] = "authored WaterRenderSettingsPrefab appearance parameters, "
-                                  + "applied verbatim by WaterRenderSystem.ApplyMaterialParams "
-                                  + "(the one transform: endSmoothness = min(smoothnessDistant, "
-                                  + "smoothnessClose)); ranges are [start, distance] camera metres. "
+                    // The old wording here claimed these were "applied verbatim ... (the one
+                    // transform: endSmoothness = min(...))". Re-derived from
+                    // `WaterRenderSystem.ApplyMaterialParams` 2026-08-17 (audit §56), that is
+                    // wrong: FOUR more bind-time transforms exist, and they are all camera- or
+                    // wind-dependent, which is why they cannot be shipped as values. Named here
+                    // so a consumer knows which of these numbers reaches a shader unchanged.
+                    ["semantics"] = "authored WaterRenderSettingsPrefab appearance parameters. "
+                                  + "Colours, absorption, refraction, scattering, caustics, "
+                                  + "ripples and the smoothness pair reach the shader unchanged; "
+                                  + "endSmoothness = min(smoothnessDistant, smoothnessClose). "
+                                  + "FOUR values do NOT, because WaterRenderSystem."
+                                  + "ApplyMaterialParams makes them camera- or wind-dependent: "
+                                  + "(1) wavesMultiplier is lerped toward 1 as the camera climbs, "
+                                  + "t = saturate((cameraHeight - seaLevel - 750) / 250), so above "
+                                  + "1000 m over the sea it is exactly 1; (2) the wave bands take "
+                                  + "saturate(wavesMultiplier), so an authored value above 1 never "
+                                  + "reaches the band amplitude at all; (3) foamAmount is scaled "
+                                  + "by a camera-height fade over foamFadeRange; (4) the large "
+                                  + "wind speed is lerp(0, distanceWindSpeed, wavesMultiplier^2) "
+                                  + "and the large chaos comes from live wind strength. A "
+                                  + "consumer replaying a static scene should take the "
+                                  + "ground-level calm case: bands at saturate(wavesMultiplier), "
+                                  + "foam at full foamAmount, no wind terms. "
+                                  + "Ranges are [start, distance] camera metres. "
                                   + "seaLevel is WaterSystem.SeaLevel in world metres: the SEA "
                                   + "datum the sim and renderer work against (backdrop reset "
                                   + "level, the water compute shader's seaLevel uniform, the "
@@ -1916,7 +1936,14 @@ namespace Carto.Systems
                     ["lakeWavesMultiplier"] = Math.Round((double)settings.m_LakeWavesMultiplier, 4),
                     ["minWaterAmountForWaves"] = Math.Round((double)settings.m_MinWaterAmountForWaves, 4),
                     ["ripplesWindSpeed"] = Math.Round((double)settings.m_RipplesWindSpeed, 4),
-                    ["ripplesChaos"] = Math.Round((double)settings.m_RipplesChaos, 4)
+                    ["ripplesChaos"] = Math.Round((double)settings.m_RipplesChaos, 4),
+                    // The last field of the prefab, and the only one this block used to drop
+                    // (audit §56). It gates whether sea wind steers the wave direction at all:
+                    // when false, `ApplyMaterialParams` passes 0 for both the wind orientation
+                    // and the wind strength, so the whole wind branch is inert and a consumer
+                    // reproducing calm water is reproducing the game exactly rather than
+                    // approximating it. Additive; schema unchanged.
+                    ["seaWindAffectWavesDirection"] = settings.m_SeaWindAffectWavesDirection
                 };
 
                 report.AppendLine($"Water appearance: '{settings.name}' captured (sea level {seaLevel:F1} m)");

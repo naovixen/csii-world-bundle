@@ -249,27 +249,69 @@ Priority is "how visible is the divergence" × "how likely we invented something
   two overlapping decals wins and is shipped for areas but not for object decals; `RenderedArea`'s
   four mask/normal blend scalars are unswept.
 
-### 5. Lighting, exposure and colour
-- **Game:** HDRP volume stack, `LightingSystem`, the tonemapper, `grading.json`'s own source.
-- **Ask:** our colour chain is documented as one derivation riding an OCIO view
-  ([[colour-chain-lives-in-colour-model]]), and the ground albedo gain in the BeamNG app
-  (`GRASS_TARGET_LUMINANCE = 0.16`, `MAX_GAIN = 6`) is a calibration, not a rule. What does the
-  game's exposure actually do, and is the gain compensating for something we should be reading?
+### 5. Lighting, exposure and colour — WORKED 2026-08-17 (audit §55); consumer-only, needs an in-game look
+- **Game:** `LightingSystem.SetupPostprocessing`, `DayNightCycleData`, the HDRP volume stack.
+- **Exposure is AUTOMATIC**, clamped by `DayNightCycleData` to **[4, 14] EV** by day and
+  [2.5, 14] by night, with `TonemappingMode.External` at `lutContribution = 0.5`. The producer
+  already ships every one of those — `grading.json`'s `limitMin 4.0`/`limitMax 14.0` are exactly
+  `DayExposureMin`/`DayExposureMax` — so this pass **confirmed a producer claim from source**
+  rather than adding anything, including its own note that HDRP never exposes the metered value.
+- **So the gain is compensating for auto-exposure, and there is nothing to read.** A fixed linear
+  gain stays the right shape of answer and a declared approximation. **But its TARGET was a
+  guess**: the authority is BeamNG's content, not CS2's, and measured over **149 vanilla ground
+  albedos in 15 shipped levels** the mean is 0.2085 / median 0.2196, with the 26 grass ones at
+  median **0.2185**. `GRASS_TARGET_LUMINANCE` was **0.16 — 27 % low**, so every CS2 ground shipped
+  a third darker than the engine expects. Corrected to 0.2185.
+- **Predicate:** `tools/test_ground_albedo.py`, whose tolerance (0.03) is chosen so the value it
+  replaced FAILS it — the negative control is a clause of the test, not a note beside it.
+- **Visible change**: `cs2_city_fine` rebuilt in place (6 m 45 s, cook clean, validator 0
+  duplicates, ground check 99.79 %) — **awaiting Naomi's in-game look**.
 
-### 6. Water
-- **Game:** `Game.Simulation.WaterSystem`, `WaterRenderSystem`, `WaterRenderSettingsPrefab`.
-- **Ask:** levels, the shoreline dilation, waves, and whether the depth-based appearance we ship is
-  the one the game computes.
+### 6. Water — WORKED 2026-08-17 (audit §56); one producer field added, awaiting re-rip
+- **Game:** `WaterRenderSystem.ApplyMaterialParams`, `WaterSystem`, `WaterRenderSettingsPrefab`.
+- **"Applied verbatim ... the one transform" was wrong.** The producer's own semantics string
+  claimed a single bind-time transform; there are **four more**, all camera- or wind-dependent:
+  `wavesMultiplier` decays toward 1 with camera height (`t = saturate((h − seaLevel − 750)/250)`);
+  the wave bands take `saturate(wavesMultiplier)`, so the authored **1.3 never reaches a band
+  amplitude at all**; `foamAmount` is scaled by a camera-height fade; and the wind terms are live,
+  gated by `m_SeaWindAffectWavesDirection` — when that is false the game passes 0 for both, so
+  **calm water is the game exactly**. Named in both the producer string and `csiibundle/water.py`.
+- **Shipped:** `seaWindAffectWavesDirection`, the last prefab field the block dropped. Additive,
+  schema unchanged, **awaiting re-rip**.
+- **Closed, not findings:** the shoreline dilation is the producer's own declared resampling fix
+  (the game hits the same problem and solves it in an unreadable shader); the depth-based
+  appearance is the game's verbatim; `seaLevel` is already documented as a datum.
 
-### 7. Instances: trees, props, buildings
-- **Game:** `BatchInstanceSystem`, `ObjectGeometrySystem`, tree growth/season state, `RenderedArea`.
-- **Ask:** LOD selection thresholds, tree state → mesh choice (153,991 trees once drew as adults),
-  sub-object composition, and the colour-variation path.
+### 7. Instances: trees, props, buildings — WORKED 2026-08-17 (audit §57.1); one gap filed, not built
+- **Game:** `Game.Rendering.RenderingUtils` (`CalculateLodParameters`/`CalculateLod`/
+  `CalculateLodLimit`), `BatchInstanceSystem`, `BatchDataSystem`.
+- **The LOD rule is exact and now derived**: `asint(x) >> 23` is the IEEE-754 exponent, so the
+  whole thing reduces to **LOD = 128 − floor(6 · log₂(distance / lodFactor))** with
+  `lodFactor = bias · 540 / tan(fov/2)` — one step per **2^(1/6) ≈ 1.122×** in distance. And
+  `CalculateLodLimit` is the same expression on a scale, so **a CS2 LOD index IS a
+  metres-per-pixel figure**: level *L* is `2^((128 − L)/6)` m/px, camera- and FOV-independent.
+- **The gap, filed not built (producer + re-rip):** the bundle ships none of it — `m_MinLod`
+  appears in one trace line, `m_LodBias`/`m_ShadowBias` nowhere. Shipping LOD-0 meshes and
+  generating the ladder is right; leaving the THRESHOLDS to a tuned global is not. The BeamNG app
+  culls with `cull_px` (6/10/16/24 across presets) where CS2 states a **per-prefab** answer the
+  rule above converts to a real distance.
+- **Not re-litigated:** tree state → mesh choice (§15), sub-object composition (§10), the
+  `colorSet` colour-variation path (§7.2, §44) — settled earlier, re-checked for contradictions.
 
-### 8. Areas and markings
-- **Game:** area projection, `LaneMarkings`, the decal projector.
-- **Status:** §8b/§39 settled the projection and the texture repeat; re-check the atlas rects and
-  the lift ladder against source rather than against our own notes.
+### 8. Areas and markings — WORKED 2026-08-17 (audit §57.2); producer field added, consumer half open
+- **Game:** `Game.Prefabs.DecalProperties`, `ManagedBatchSystem.CreateBatch`, `RenderPrefabRenderer`.
+- **Atlas rects re-verified from source**, as asked: both binding sites hand the shader
+  `_TextureArea = float4(m_TextureArea.min, m_TextureArea.max)`. §19's reading stands.
+- **A decal prefab has no blend mode.** `DecalProperties` carries four things — the atlas rect,
+  `m_LayerMask`, `m_EnableInfoviewColor` and **`m_RendererPriority`**. Blending belongs to the
+  shader template and HDRP's decal system; the prefab decides only *where* and *in what order*.
+- **So `m_RendererPriority` is the ONLY ordering CS2 states — and we were dropping it.** That is
+  what `csiibundle.decals.LIFT_LADDER` has been standing in for. Half the ladder is already
+  ported: `areas.py` orders surface areas by `RenderedArea.m_RendererPriority`, which we do ship.
+  The object-decal half stayed a guess purely because the field was absent.
+- **Shipped:** `attrs.decalPriority` (max over a prefab's decal meshes; absent ≠ zero). Contract
+  §4.2a and `instance.schema.json` updated, 88 contract tests pass. **Awaiting re-rip**, and
+  ordering the `instance_decal` rung by it is open consumer work that needs the field on disk.
 
 ## Working agreements (from CLAUDE.md's non-negotiables)
 

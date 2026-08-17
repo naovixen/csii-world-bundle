@@ -97,11 +97,28 @@ namespace Carto.Systems
             /// </summary>
             public float Height { get; }
 
-            public DecalInfo(bool isDecal, Game.Rendering.DecalLayers layers, float height)
+            /// <summary>
+            /// <c>DecalProperties.m_RendererPriority</c> — the game's own sort key for two decals
+            /// projecting onto the same surface, highest last (audit §57).
+            /// <para><b>Why this matters more than it looks.</b> A decal prefab carries no blend
+            /// mode at all: blending is the shader template's, projection targets are
+            /// <see cref="Layers"/>, and ORDER is this. It is the only thing the game uses to
+            /// decide which of two overlapping markings wins, and without it a consumer that
+            /// cannot depth-sort projectors has to invent a geometric stand-in — which is exactly
+            /// what `csiibundle.decals.LIFT_LADDER` is. Areas already ship
+            /// <c>RenderedArea.m_RendererPriority</c> and `areas.py` orders them by it; object
+            /// decals had no such field, so their half of the ladder stayed a guess.</para>
+            /// <c>int.MinValue</c> when the prefab carries no decal properties at all.
+            /// </summary>
+            public int Priority { get; }
+
+            public DecalInfo(bool isDecal, Game.Rendering.DecalLayers layers, float height,
+                             int priority = int.MinValue)
             {
                 IsDecal = isDecal;
                 Layers = layers;
                 Height = height;
+                Priority = priority;
             }
         }
 
@@ -1244,12 +1261,13 @@ namespace Carto.Systems
         /// <returns>Whether every mesh it draws is a decal, and onto what.</returns>
         private DecalInfo DecalOf(Entity prefabEntity)
         {
-            if (prefabEntity == Entity.Null) return new DecalInfo(false, 0, 0f);
+            if (prefabEntity == Entity.Null) return new DecalInfo(false, 0, 0f, int.MinValue);
             if (_decalPrefabs.TryGetValue(prefabEntity, out DecalInfo known)) return known;
 
             bool decal = false;
             Game.Rendering.DecalLayers layers = 0;
             float height = 0f;
+            int priority = int.MinValue;
 
             if (EntityManager.HasBuffer<SubMesh>(prefabEntity))
             {
@@ -1290,6 +1308,9 @@ namespace Carto.Systems
                                 && (properties != null) && properties.active)
                             {
                                 layers |= properties.m_LayerMask;
+                                // Highest wins, so a prefab whose meshes disagree takes the
+                                // topmost — that is the one that ends up on screen.
+                                priority = math.max(priority, properties.m_RendererPriority);
                             }
                         }
                         catch (Exception ex)
@@ -1305,7 +1326,7 @@ namespace Carto.Systems
                 decal = (meshes > 0) && (decals == meshes);
             }
 
-            DecalInfo info = new(decal, layers, height);
+            DecalInfo info = new(decal, layers, height, priority);
             _decalPrefabs[prefabEntity] = info;
             return info;
         }
@@ -1353,6 +1374,10 @@ namespace Carto.Systems
                 // thing the mesh layer no longer says. See `MeshRipSystem.TryFlattenDecal`.
                 //
                 if (info.Height > 0f) record.Attributes["decalHeight"] = math.round(info.Height * 1000f) / 1000f;
+                // The game's own draw order for overlapping decals (audit §57). Additive attr;
+                // omitted where the prefab carries no `DecalProperties`, so its absence means
+                // "the game states no order here" rather than "priority zero".
+                if (info.Priority != int.MinValue) record.Attributes["decalPriority"] = info.Priority;
             }
 
             // The paint this particular object was drawn with — the game's own resolved answer,

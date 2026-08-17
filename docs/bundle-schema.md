@@ -339,7 +339,7 @@ version, and by which optional properties the user enabled. Documented keys:
 (`normal|construction|abandoned|condemned|destroyed`), `growth` (tree stage, 0..1), `treeState`,
 `growthScale` (the uniform scale the game draws a growing tree at — see §7.2), `colorSet`,
 `colorCustom` (§7.2), `season`, `address` (`[district, street, number]`), `decalLayers`,
-`decalHeight` (§4.2a).
+`decalHeight`, `decalPriority` (§4.2a).
 
 `height` comes from mesh bounds and is authoritative. `storey` and `level` are game metadata
 and must never be used to derive geometry.
@@ -433,6 +433,14 @@ A consumer **must not** treat a decal as ordinary geometry:
 - **`attrs.decalLayers`** names what CS2 targets the projection at — `Terrain`, `Roads`,
   `Buildings`, `Vehicles`, `Creatures`, `Other`. It matters if you re-project: a road marking
   whose `decalLayers` is `["Roads"]` must not be painted across the wall behind it.
+- **`attrs.decalPriority`** is `DecalProperties.m_RendererPriority`, the game's own sort key
+  for two decals projecting onto the same surface — highest drawn last. **It is the only ordering
+  CS2 states**: a decal prefab carries no blend mode at all (blending belongs to the shader
+  template, targets to `decalLayers`), so this is what decides which of two overlapping markings
+  wins. A consumer that cannot depth-sort projectors turns it into a geometric lift instead of
+  guessing one, the way `csiibundle.areas` already orders surface areas by the equivalent
+  `RenderedArea.m_RendererPriority`. Absent means the prefab carries no decal properties — not
+  priority zero.
 - **`attrs.decalHeight`** is the height of the volume the marking was projected through, in
   metres. It is the one thing flattening discards, and it is what you need to re-project onto a
   surface the producer's flat quad does not follow — a heavily cambered or sloped carriageway.

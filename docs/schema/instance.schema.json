@@ -65,6 +65,10 @@
           "items": { "type": "string" },
           "uniqueItems": true
         },
+        "decalPriority": {
+          "description": "For kind 'decal': DecalProperties.m_RendererPriority - the game's own sort key for two decals projecting onto the same surface, highest drawn last. A decal prefab carries no blend mode, so this is the ONLY ordering CS2 states; a consumer that cannot depth-sort projectors uses it to build a geometric lift ladder instead of guessing one. Absent means the prefab carries no decal properties, not priority zero. See contract section 4.2a.",
+          "type": "integer"
+        },
         "decalHeight": {
           "description": "For kind 'decal': the height in metres of the volume the marking was projected through - what a consumer needs to re-project the producer's flat quad onto a cambered or sloped surface. Not a thickness. See contract section 4.2a.",
           "type": "number",
