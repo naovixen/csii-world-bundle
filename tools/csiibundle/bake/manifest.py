@@ -135,9 +135,12 @@ def save(derived, document):
     os.replace(tmp, manifest_path(derived))
 
 
-def record_product(document, name, path, inputs, seconds, tiles=None, stats=None):
+def record_product(document, name, path, inputs, seconds, tiles=None, stats=None, version=1, options=None):
     """Write one product's entry into `document["products"]`."""
-    entry = {"path": path, "generatedAt": now_iso(), "seconds": round(float(seconds), 3), "inputs": inputs}
+    entry = {"path": path, "generatedAt": now_iso(), "seconds": round(float(seconds), 3), "inputs": inputs,
+             "version": int(version)}
+    if options:
+        entry["options"] = dict(options)
     if tiles is not None:
         entry["tiles"] = [[int(a), int(b)] for a, b in tiles]
     if stats:
@@ -159,7 +162,8 @@ def _same_options(recorded, wanted):
     return True
 
 
-def product_status(document, name, product_inputs, bundle_dir, wanted_options, manifest=None):
+def product_status(document, name, product_inputs, bundle_dir, wanted_options, manifest=None, version=1,
+                   option_keys=()):
     """One of 'fresh', 'stale', 'absent' for a product, with a reason string.
 
     `product_inputs` are the layer keys the product reads (its registry entry). A product is
@@ -174,6 +178,13 @@ def product_status(document, name, product_inputs, bundle_dir, wanted_options, m
         return "stale", f"bakeVersion {document.get('bakeVersion')} != {BAKE_VERSION}"
     if not _same_options(document.get("options", {}), wanted_options):
         return "stale", "options differ"
+    recorded_version = document["products"][name].get("version", 1)
+    if recorded_version != version:
+        return "stale", f"product version {recorded_version} != {version}"
+    recorded_opts = document["products"][name].get("options", {})
+    for key in option_keys:
+        if recorded_opts.get(key) != wanted_options.get(key):
+            return "stale", f"option {key!r} changed ({recorded_opts.get(key)!r} -> {wanted_options.get(key)!r})"
     recorded = document["products"][name].get("inputs", {})
     current = fingerprint_layers(bundle_dir, product_inputs, manifest)
     for key in product_inputs:
@@ -185,7 +196,7 @@ def product_status(document, name, product_inputs, bundle_dir, wanted_options, m
 def status_report(document, registry, bundle_dir, wanted_options):
     """`{name: (status, reason)}` for every registered product."""
     manifest = reader.load_manifest(bundle_dir)
-    return {name: product_status(document, name, prod.inputs, bundle_dir, wanted_options, manifest)
+    return {name: product_status(document, name, prod.inputs, bundle_dir, wanted_options, manifest, prod.version, prod.options)
             for name, prod in registry.items()}
 
 

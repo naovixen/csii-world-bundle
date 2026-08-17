@@ -106,6 +106,8 @@ def _wanted_products(settings):
     if settings.get("skirts", True):
         wanted.append("skirts")
     wanted.append("terrainmask")
+    if settings.get("terrain_cut", True):
+        wanted.append("terraincut")
     return wanted
 
 
@@ -132,6 +134,9 @@ def run(ctx, progress):
         "jobs": ctx.jobs,
         "lane_parts": categories,
         "paint_kinds": ["tree"],
+        # the ground the level will have: the fine 1.75 m raster only when the .ter is built from
+        # it (terrain_upsample 2 = 8192); the paint must be conformed to the same surface
+        "ground": "fine" if int(settings.get("terrain_upsample") or 1) == 2 else "base",
     }
     estimates = (ctx.census or {}).get("estimates", {})
     weights = {name: (estimates.get(f"bake/{name}") or {}).get("seconds") for name in only}

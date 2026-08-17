@@ -45,6 +45,7 @@ everything else is found through the manifest's `layers` index.
   lanemeshes/<assetId>.glb        # (laneMeshes)   straight lane part meshes, stored once each (§5B)
   textures/<sha256>.png           # (textures)     textures, deduped by content hash
   terrain/heightmap.png           # (terrain)      elevation raster (§8)
+  terrain/heightmap_fine.png      # (terrainFine)  optional: the same ground at the game's near-camera 1.75 m (§8)
   terrain/world_heightmap.png     # (worldTerrain) optional backdrop terrain beyond the border (§8)
   terrain/surface_index.png       # (surfaceIndex) per-cell ground-material id (§8)
   terrain/splatmap.png            # (splatmap)     optional ground-blend weights (§8)
@@ -1205,6 +1206,24 @@ toward +X (east).
   is the flattened ground *beneath* them, not the visible junction surface; skipping the
   heightmap costs the ground everywhere, not the junction floors. *(Corrected 2026-08-07,
   audit §18.)*
+- **`terrain/heightmap_fine.png`** (`layers.terrainFine`, optional, *added 2026-08-16*) —
+  16-bit grayscale, **the ground the game actually renders near the camera**, on its own grid
+  (`rasters.terrainFine`: `resolution [1.75, 1.75]`, `size [8192, 8192]`, texel-centre
+  `originWorld`), same elevation decode as `heightmap.png`. `heightmap.png` is the CPU
+  readback of one slice of the game's four-slice height cascade — the playable map at 3.5 m
+  per texel — but the terrain the game draws within ~3.6 km of the camera is a **finer slice**
+  of the same cascade: the raw heightmap re-blitted and *every lot, lane and area height
+  adjustment re-rasterised at 1.75 m* (and at 0.875 m within ~1.8 km). Away from that
+  flattening footprint the two rasters agree to the quantum; under and beside roads the fine
+  one follows the road bed the way the game shows it, where the 3.5 m one steps across a kerb
+  between two samples. **A consumer that meshes the ground should prefer this raster wherever
+  it is present** — a heightfield engine feeds it in directly (8192 @ 1.75 m); a mesh
+  consumer builds its lattice from it. It is captured by steering the game's own cascade over
+  the map (`TerrainRipSystem.FineCascade.cs`; audit §45), so its absence on a rip that wanted it
+  is declared in `warnings.jsonl` (`kind: terrainFine`) — like `worldTerrain`, absence is a
+  fact about the session, not a versioning signal. Everything else in this section — the clip
+  volumes (§8c), the roadbed mask, the water level — is defined on the 3.5 m grid and applies
+  to the fine raster by world position.
 - **`terrain/water_level.png`** (`layers.water`) — 16-bit grayscale. The water **surface
   level** — an elevation, in the heightmap's own encoding: level in metres is
   `value * rasters.elevationScale + rasters.elevationOffset`; the stored value `0` means dry
@@ -1235,7 +1254,8 @@ toward +X (east).
     z-fighting; the reference importer does this (`_ROADBED_SINK`). *(Added 2026-08-07.)*
 - **Terrain that the game hides rather than carves** — the ground covering tunnel portals and
   sunken trenches — is **not** in these rasters. It cannot be: the game does not carve it out
-  of its heightmap. A trench's ground is merely clamped into `[lane, lane + 30 m]` and a
+  of its heightmap. A trench's ground is merely clamped into `[lane, lane + ElevationLimit·3]`
+  (12 m for roads, 6 m for pathways — §31 corrected an earlier "30 m" here) and a
   shallow tube's cover is shifted *up*, and every frame a stencil pre-pass (`RoadClip`)
   discards the covering pixels on screen. `heightmap.png` therefore legitimately contains
   ground that walls off every tunnel mouth and sunken road, and **`clipvolumes.jsonl` (§8c) is
@@ -1763,8 +1783,10 @@ reason. *(Added 2026-08-06.)*
 
 Warning kinds are owned per pass, and each pass rewrites only its own kinds (so stage re-runs
 cannot erase another stage's declarations): the instance pass owns `prefab` and `instance`, the
-mesh pass `mesh`/`material`/`texture`, the lane pass `lane`, and the network pass every kind
-**prefixed `network`** (`networkMesh`, `networkMaterial`, `networkTexture`, `networkConform`).
+mesh pass `mesh`/`material`/`texture`, the lane pass `lane`, the network pass every kind
+**prefixed `network`** (`networkMesh`, `networkMaterial`, `networkTexture`, `networkConform`), and
+the terrain pass every kind **prefixed `terrain`** (`terrainFine`: the fine cascade capture was
+wanted and could not be made — the reason says why; *added 2026-08-16*).
 The network prefix is load-bearing: a network warning names a cross-section piece that is *not*
 an `assetId` in `meshes/`, so filing it as `mesh` would let the next mesh rip delete it.
 *(2026-08-09 — until this date the network stage wrote no warnings at all; unreadable lane-part
@@ -2112,6 +2134,13 @@ and 86 light keys on the reference city, all for geometry the bundle deliberatel
 (tree `*Child*` states, vehicles).
 
 
+**`layers.terrainFine` added (2026-08-16), and it does not take `schema: 3`.** A new optional
+raster (`terrain/heightmap_fine.png`, §8) with its own `rasters.terrainFine` geo-referencing
+block and a new `warnings.jsonl` kind (`terrainFine`, owned by the terrain pass): additive
+under §12, nothing existing changes meaning. A consumer that ignores it sees the bundle it saw
+yesterday. The §8 prose that put a trench's clamp at "30 m" was corrected to `ElevationLimit·3`
+in passing (§31 had corrected the audit, not this document).
+
 ---
 
 ## 13. `derived/` — the consumer cache written by `csiibundle.bake` *(2026-08-15)*
@@ -2166,7 +2195,8 @@ Products (all optional; a consumer treats an absent product as "compute it yours
 | `lanegeometry` | `lanegeometry/<tile>.glb`, `lanegeometry/instances.jsonl` | non-decal §5B parts: rigid AND level tiles as placements (`{assetId, category, prefab, matrix[16] row-major bundle frame, scale[3], uniform}` — a rigid tile on a grade is a shear no rotation×scale engine can express, so it is baked instead), everything else baked | `laneGeometry`, `lanePrefabs`, `laneMeshes` |
 | `areas` | `areas/<tile>.glb`, `areas/materials.json` | §8b surfaces conformed to the terrain, world-planar UVs (`uv = world × uvScale`), priority lift; one primitive per prefab named `area:<prefab>`, described in `areas/materials.json` (`areas.surface_material`) | `areas`, `areaPrefabs`, `terrain` |
 | `skirts` | `skirts/<tile>.glb` | §4.1 `__base` bands per instance with the bottom ring dropped to the terrain | `instances`, `meshes`, `terrain` |
-| `terrainmask` | `terrain/clip_cells.png`, `terrain/shallow_floor.png`, `terrain/mask.json` | `clip_cells`: gray8 at heightmap face resolution `(h−1, w−1)`: 0 keep, 128 touched by a deep band, 255 fully contained (a heightmap-native engine punches holes at 255); `shallow_floor`: gray16 per sample in the heightmap's quantisation (0 = none) — the shallow band's floor to clamp ground to (`terrain.clamp_shallow_bands`); `mask.json` sizes/counts | `clipVolumes`, `terrain` |
+| `terrainmask` (v3) | `terrain/clip_cells.png`, `terrain/shallow_floor.png`, `terrain/mask.json` | `clip_cells`: gray8 at heightmap face resolution `(h−1, w−1)`: 0 keep, 128 touched by a deep band, 255 fully contained (a heightmap-native engine punches holes at 255); `shallow_floor`: gray16 per sample in the heightmap's quantisation (0 = none) — the shallow band's floor to clamp ground to (`terrain.clamp_shallow_bands`); `mask.json` sizes/counts (`fine`: which raster). v2's `deep_floor.png`/`deep_footprint.png` (a heightfield-only stand-in that lowered in-band samples) are retired with v3 (2026-08-17): the ground a deep band reaches is `terraincut`'s. | `clipVolumes`, `terrain`, `terrainFine` |
+| `terraincut` (v13) | `terraincut/terraincut_<tx>_<tz>.glb`, `terrain/corridor_faces.png`, `terrain/corridor.json` | the terrain around every DEEP clip band, cut EXACTLY the way the game hides it (audit §46: a terrain pixel is drawn unless its 3-D position lies inside the swept prism — `GenerateClipDataJob` → a closed prism mesh → a stencil). Every heightfield square a deep band reaches is cut against the prisms by `csiibundle.terrainclip` (convex subtraction: on one triangle the side walls, floor and roof are all affine in x/z), so the hole's edge follows the prism's curve and ground above the band's roof stays. Primitives `ground:<layer>` — the ground the consumer's heightfield paints there (`splat.dominant_layer` + roadbed) — world-planar UVs at 40 m per repeat, heightfield normals, bundle frame; heights are `terrain.ground_heights` quantised to the elevation encoding, so a boundary vertex equals the consumer's own sample bit for bit. `corridor_faces.png`: gray8 at face resolution, 255 = the square the mesh replaces — the WHOLE hole set, not to be unioned with `terrainmask`'s scored `clip_cells.png`. Deliberate deviation, counted in the report: only a DEEP band cuts (`top > 3 m`); the shallow shell over a surface road still only flattens. Added 2026-08-16, exact since 2026-08-17 | `clipVolumes`, `terrain`, `terrainFine`, `surfaceIndex`, `splatmap` |
 
 The `derived/` tree is a **cache**: delete it and nothing about the bundle is lost; a bake
 rebuilds it. It is not part of the contract's compatibility promise (§12) — `bakeVersion` is its

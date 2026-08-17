@@ -2641,3 +2641,400 @@ unchanged); `test_bundle_contract` 58/58; `test_node_fan` PASS, 5,872 strips, wo
 control still live at 0.20 m clean / 11.64 m amputated; `test_clip_cut` green on all six windows,
 hole 0.0-0.2 m²; `test_decal_rows`, `test_png_decode`, `test_splat_extras`, `test_drape_pick` all
 pass. §43 and §44 are closed.
+
+## 45. The ground the game draws is a finer cascade slice; the BeamNG junction shards were mesh size (2026-08-16)
+
+Reported (BeamNG load #10, 04:45–04:53): terrain poking through carriageways and kerbs on
+cross-slopes; junction geometry torn into shards at the big interchanges — "curbs not lining
+up". Naomi asked for the implementation to be validated against the decompiled game, the
+divergences fixed, carried through to the BeamNG app, and A/B'd in headless Blender.
+
+### 45.1 The defects, classified before any code moved
+
+| defect (load #10) | where it exists | mechanism | verdict |
+|---|---|---|---|
+| terrain through the carriageway / kerb on cross-slopes | BeamNG heightfield; in Blender as the §34 seam approximation | the bundle's heightmap is the 3.5 m cascade slice; the game draws a 0.875–1.75 m slice near the camera (§45.2) | **producer gap — fixed (built, awaiting re-rip)** |
+| junctions in shards, kerb/sidewalk strips across the carriageway, misplaced markings | BeamNG only — the bundle at the same junction renders clean (`E:\carto-out\probe2\lvlab_*_obl.png`, `probe\ref_junction_obl.png`) | one COLLADA `<geometry>` per 256 m tile; the torn interchange at (2936, 2240) is `net_11_8` with **94,001** vertices, the accepted region level's largest tile was **62,798**, and 59 city tiles pass 65,535 (up to 167k). BeamNG's compiler keeps the whole mesh with 32-bit indices in the `.cdae` (`tools/beamng/probe_cdae.py`), so the wrap is downstream of it — the Torque-lineage 16-bit per-mesh index buffer | **consumer — fixed (`dae.split_mesh`, cap 60,000 vertices per geometry); confirmed geometry-identical by oracle renders, decided by load #11** |
+| kerbs at nodes in the bundle | not a defect | node rails already carry `m_EdgeHeights`/`m_SideConnectionOffset` (`GeometrySystem.OffsetCurveHeight` :2382, :2341-2346) and the port copies `EdgeNodeGeometry` rails through (`GameMesh.cs:372-422`); net meshes never sample terrain on the CPU beyond the vertex-colour conform classes we port (`BatchDataSystem`/`BatchMeshHelpers`: 0 hits) | **match** |
+| walled tunnel mouths, moats, opaque decal boxes | BeamNG | the c426641 rim walls / `touch` holes (reverted in c32b13a) and BeamNG's auto-generated placeholder materials (cook removes them, c32b13a) | closed by the parallel session |
+
+### 45.2 The game's terrain, from source (`Game.Simulation.TerrainSystem`)
+
+- `m_HeightmapCascade` is one `RenderTexture` **`Tex2DArray` of 4 slices, all `heightmap.width ×
+  height` (4096²), R16_UNorm** (:3309-3316). `baseLod` is 0 without a world map and 1 with one
+  (:3276-3289); slice `baseLod` is the playable map (`m_CascadeRanges[baseLod] = (playableOffset,
+  +playableArea)`, :3370); slice 0 with a backdrop is the 4× world.
+- Slices `baseLod+1..3` are **camera-centred windows of `playable / 2^(n−baseLod)`** — with the
+  defaults 7168 m (1.75 m/texel), 3584 m (0.875 m) and, without a backdrop, 1792 m (0.4375 m) —
+  re-snapped only when the window's corner would move by more than a quarter of it
+  (`UpdateCascades` :4295-4331, `num6 = min(size)/4`).
+- **Every slice is rendered by `RenderCascade`** (:4803): the raw base heightmap blitted in
+  (`TerrainCascadeBlit`, `_CascadeHeightmapOffsetScale`) and then `DrawHeightAdjustments`
+  (:4699) — building lots, lanes and areas, in three passes with a `_CascadeMinHeights` copy
+  between them, under an orthographic projection whose depth is height — **at that slice's
+  texel size**. `RenderCascades` (:4400) walks `3 → baseLod`.
+- `GetHeightData()` (:2596-2616) is the CPU readback of **slice `baseLod` only**
+  (`m_AsyncGPUReadback.Request(m_HeightmapCascade, …, baseLod, 1)`, :3628); `offset.xz` carries
+  the half-texel shift and `14336f` is hard-coded (not `playableArea`).
+- The terrain mesh is not in `Game.dll`: `TerrainRenderSystem` hands the cascade, `BaseLOD`,
+  per-slice `CascadeArea/Ranges` (`min(extent)·0.75`) and sizes to the HDRP fork's
+  `CBTSubdivisionTerrainEngine` (`UndergroundPass.cs:113-120`); slice selection is in HLSL
+  (`colossal_TerrainTextureArrayLODArea/LODRange/BaseLod`, `TerrainRenderSystem.cs:115-117`).
+  Only `finalTessellation` (2–5) and `targetPatchSize` (4–64) are visible.
+- The flatten shape/height (`CullRoadsJob.AddSegment` :1397-1574): `m_WidthOffset` inset per
+  side over inverse widths (skipped on `MiddleLeft/Right`), the 3-sample profile
+  `(edgeL, surface.min, edgeR)` from `m_EdgeHeights`/`m_SurfaceHeight` plus
+  `TerrainComposition.m_Min/MaxHeightOffset`, `GetTerrainSmoothingWidth` 8/20/100 m stored in
+  the confusingly named `LaneSection.m_WidthOffset`, ±1e6 sentinels for "unbounded", the extra
+  3 m `ClampLengthInverse` low-transition section and the ±2 m tunnel-mouth stub — all as
+  §17/§20/§22/§31/§41 already have them. Re-verified; no new divergence, and §22 row 17 (the
+  3 m transition section is not modelled in `surface_index`) stays open.
+- Steering: `CameraUpdateSystem.position` is `activeViewer.position` (the camera transform);
+  the gameplay `CameraController.position` setter is a **no-op** — the transform is derived from
+  `pivot + zoom + angle` in `UpdateCamera` (:397-460), and the pitch is clamped
+  (`ClampTilt(m_Angle.y, m_Zoom, MinTiltZoomCurve, tiltRange.y)`, :381-387), so a "straight
+  down" request leaves a horizontal offset that has to be measured, not assumed.
+
+### 45.3 Rule matrix — the terrain/road interface, producer against the game
+
+| # | game rule | producer | verdict |
+|---|---|---|---|
+| 1 | ground rendered near the camera = cascade slice `baseLod+1/+2` (1.75 / 0.875 m), grading rasterised at that texel size | shipped `heightmap.png` = slice `baseLod` (3.5 m) only | **divergence → fixed:** `TerrainRipSystem.FineCascade.cs` steers the game's own cascade over the map (2×2 windows of slice `baseLod+1`, camera pivot per window, offset calibrated, kick-away when the hysteresis would swallow the move), reads each slice back synchronously and ships `terrain/heightmap_fine.png` (8192² @ 1.75 m) + `rasters.terrainFine`; the report prints the fine-vs-base difference split on/off roadbed |
+| 2 | conform (`RaiseTop`/`LowerBottom`) samples the finest slice covering the vertex per frame | sampled the 3.5 m readback (§34 approximation, p95 ≈ 9 cm) | **approximation narrowed:** `SampleConformHeight` samples the fine capture when present (report says which raster) |
+| 3 | camera-following slices are session state | — | **counted:** a capture that cannot land (no gameplay controller, other cascade layout, stalled render, world unload) yields no file and one `warnings.jsonl` line, `kind: terrainFine`; the terrain pass now owns `terrain*` kinds |
+| 4 | roadbed walk / clip band arithmetic | §17/§20/§22/§31/§41 | match (re-verified this pass) |
+| 5 | kerb heights at nodes ride the rails | rails copied through | match |
+| 6 | `GetHeightData` hard-codes 14336 m | producer uses the readback's own scale/offset | benign (agrees on every shipped map) |
+
+### 45.4 Consumers
+
+- `csiibundle.reader.load_heightfield(bundle, prefer_fine=True)` is the one loader (declared
+  `terrainFine` + missing file = CONTRACT VIOLATION; undeclared = base map, `fine=False`);
+  `resample_nearest` reads the 3.5 m companions (roadbed ids, water level) onto the fine grid.
+  `drape.HeightfieldSurface.from_bundle`, `terrain.hole_mask`, `blender_import_bundle.build_terrain`
+  and the BeamNG `terrain` stage all go through it; the bake products that read the ground list
+  `terrainFine` in their inputs so a re-rip that adds it re-bakes.
+- Cell-tuned constants became metre-tuned: `contain_samples(cell)` keeps the 0.4375 m sub-sample
+  spacing (8 @ 3.5 m, 4 @ 1.75 m — same cost per m²), the refine corridor is `ceil(10.5 m / cell)`.
+- BeamNG: the `.ter` is written from the fine raster when present (8192 @ 1.75 m, `terrain_upsample`
+  skipped — a bilinear upsample adds no information); every `<geometry>` is capped at 60,000
+  vertices (`dae.split_mesh`, node names keep the trailing `_a<px>`: `net_11_8_p1_a2`, since a
+  suffix after the detail size would read as a second LOD nobody sees); the level validator flags
+  any geometry over the cap.
+
+### 45.5 A/B (headless Blender, images) — nothing regressed on today's bundle
+
+| run | base = c32b13a worktree, step = this tree | result |
+|---|---|---|
+| interchange, `--kinds none --terrain --networks --lane-markings --radius 220` | `ab_render` top-down | **PASS frac=1.00000 max=1** (noise floor); counts equal but for the new `terrain: meshing …` line |
+| downtown, `--kinds building --areas --terrain` | same | **PASS frac=1.00000 max=1** |
+| full map, `--kinds none --terrain` (stride 4 path) | scene digest (vertex/loop hashes) | **identical** |
+| interchange networks tile through the level oracle (`blender_import_level.py`), before/after the 60k split | top-down + oblique | **PASS max=0** — one geometry of 94,001 became 60,000 + 31,360, same triangles |
+
+Gates: `test_a2_dae` 44/44 (8 new: split, node naming, validator), `test_terrain_fine` 14/14
+(new: loader semantics, hole mask + BeamNG stage on a synthetic 2× fine copy of the example
+bundle; the real-bundle fidelity block prints AWAITING RE-RIP), `test_a1_level` 36/36,
+`test_app_shell` 70/70, `test_clip_cut`, `test_b1_readers`, `test_bake_products`,
+`validate_bundle` VALID/1 on today's rip. `dotnet build -c Release` clean. Two Sonnet review
+agents (one per side) found three things worth fixing, all applied: the per-frame capture
+step ran unguarded (a throw would have stranded the camera and hung the pipeline — now every
+path ends in `Finish`), the run was installed before the controller took the attitude (a
+throwing setter would have left a zombie run behind a failed stage), and the level validator's
+oversize-geometry scan slurped every `.dae` (now skips files too small to hold one and streams
+the rest: 12 s over the 2,839-shape city level, 76 tiles flagged in the pre-fix build).
+
+### 45.6 What the re-rip must show (the fidelity half is not validated until it does)
+
+**Re-rip 2026-08-16 15:38–15:42 — VALIDATED.** The rip log: `Terrain (fine cascade)` — `Fine terrain:
+8192x8192 @ 1.750 m from cascade slice 1 (2x2 windows, 4 readbacks, 1.0 s)` (this session had no
+backdrop, so `baseLod` = 0 and the 1.75 m slice is 1); the network stage's conform reported
+`sampled against the fine cascade (1.750 m)`; the terrain stage's comparison: `fine vs base at
+16,777,216 base samples: mean |d| 0.048 m, max 73.38 m, 1,693,826 differ by > 0.1 m (10.10%:
+69,698 on roadbed, 1,624,128 off)` — the > 0.1 m tail is the half-texel offset on steep ground
+(the block-mean comparison in `test_terrain_fine.py` gives **median |d| 0.0000 m off roads**, p99
+0.55 m; near roads median 0.000, p99 0.39). `validate_bundle` VALID/1 with `layers.terrainFine`;
+`test_terrain_fine.py` 17/17. Inside the shallow clip bands the terrain-above-lane share drops
+from 0.69 % / 48,547 m² (base) to 0.39 % / 27,333 m² (fine); the distribution is otherwise the
+same plane (p25 = p50 = −0.25 m — the game's grading, memory `cs2-grades-ground-at-lane-minus-025`).
+The visible payoff is at the edges: at the cut road (992, 5882) the 3.5 m terrain saw-tooths onto
+the pavement in a chain of triangles, the 1.75 m raster meets the kerb cleanly
+(`E:\carto-out\probe2\slope_coarse_road.png` vs `slope_fine_road.png`; the harness gained
+`--coarse-terrain` for the "before" side). Level rebuild → load #11 pending.
+
+Producer built, **awaiting an in-game rip** (terrain stage on; a networks+terrain rip is enough).
+Then: the rip log carries `Fine terrain: 8192x8192 @ 1.750 m from cascade slice 2 (2x2 windows,
+4 readbacks, … s)` and its `fine vs base` line — expected: median |d| ≤ one quantum off the
+roadbed, the > 0.1 m differences concentrated on the roadbed/apron; `tools/test_terrain_fine.py`
+prints the poke-through area above the shallow band roof, base vs fine (fine must be lower);
+`validate_bundle` VALID with `layers.terrainFine`; three oblique renders base-vs-fine (a
+cross-slope road, a trench, a junction) for the record; then a `cs2_city_network` rebuild
+(8192 terrain + split tiles) → **load #11**: junction shards gone, terrain meeting kerbs.
+If BeamNG rejects an 8192 terrain, decimate the fine map 2:1 (still the game's grading at 3.5 m
+— never worse than today) and record it.
+
+### 45.7 Load #11 (4096, split tiles) and the heightfield's answer to the per-pixel clip (2026-08-16, evening)
+
+Load #11 (`cs2_city_network` rebuilt at 4096 after 8192 hung the game — see below): **the junction
+shards are gone and the roads sit level (the 60k-vertex cap was the cause), the decals draw**,
+the cook worked (2,839 TSStatics in 41.6 s via `.cdae`; the "objects" phase was 210 s in load #9),
+and the remaining lag was BeamNG cooking all 302 textures on first load because every build had
+cleared and rewritten `art/textures` (its cache is keyed on the source file) — fixed: textures are
+written only when their bytes change and orphans swept, so a rebuild keeps the cooked cache.
+**8192 terrain**: BeamNG's stated ceiling ("8192 as heightmap resolution is the usable limit",
+Nadeox1), no vanilla level above 4096; ours loaded (TerrainBlock 9.5 s, level 59 s) and the game
+hung once the world was up — main thread not responding, 9.2 GB, log stopped mid-line — cause not
+established (VRAM on the 3070, or the runtime minimap generation over the block); `terrain_upsample`
+now selects the grid (1 = 4096 base map, default; 2 = 8192 from `terrainFine`), the bake's `ground`
+option follows it, and 8192 stays an experiment (lane furniture off / minimap supplied).
+
+**The teeth.** What remained were terrain teeth along every trench and standing in tunnel mouths.
+Mechanism: the game discards terrain per pixel inside a deep clip band; the mesh harness imitates
+that with containment delete + rim snap + sub-cut (§41); a heightfield can only keep or punch whole
+3.5 m faces — a kept face with one corner in the trench is a tooth, a punched one a gap. Two
+answers were built, in order:
+
+1. `terrain.lower_deep_bands` (heightfield-only): every sample standing inside a deep band goes to
+   the band's floor (`lane + bottom`, under the carriageway) — the discard region put out of sight —
+   except the ring against a portal's roof, where a lowered sample would draw a triangle across
+   the tunnel. Full city 7,442 lowered / 301 kept. Level-oracle A/B at the sunken road (2790, −300):
+   standing spikes gone, trench floor is the road; but the kept mouth ring still stood as teeth
+   inside the portals (Naomi's 17:37 screenshot), and the rim zig-zag stays. Kept as the fallback
+   when the next product is off.
+2. **`terraincut` bake product** — the harness's cut lattice itself, as ground meshes in heightfield
+   holes: for every deep-touched face plus a one-cell margin, `build_lattice` (stride 1) with the
+   containment delete, the rim snap and the sub-cut, primitives per `face_class`, world-planar UVs;
+   the terrain stage punches exactly those faces (`corridor_faces.png`) and the derived stage
+   places the tiles with collision (`TerrainCut`, materials `<level>_ground_{grass,dirt,rock}`
+   written by the terrain stage from the same detail textures). The seam is watertight by
+   construction: boundary vertices are heightfield samples at `terrain.ground_heights` heights —
+   the ONE definition (roadbed sink dilated one cell, then the shallow-band clamp) now shared by
+   `build_lattice` and the app's terrain stage — computed in the same float32 arithmetic and
+   quantised to the elevation encoding the `.ter` stores; every snapped rim vertex is interior to
+   the corridor (a rim vertex touches a deleted face, so all its faces are deep-touched or their
+   neighbours). Full city: 17,141 corridor faces, 168 tiles, 322k triangles, 62 s to bake.
+   Level-oracle vs bundle-harness renders at the sunken road (`E:\carto-out\probe2\cut2_obl.png`
+   vs `cut2_ref_obl.png`, `cut2_top` vs `cut2_ref_top`): the same picture — no teeth, the same
+   rim, the same slivers beside the retaining walls (the known cut-edge limitation of the
+   harness). Coverage check (`test_terrain_fine.py`): every corridor face is meshed except the
+   contained ones, the `.ter` punches every corridor face, no mesh outside the corridor.
+
+Also: per-product bake versions are back (`Product.version`; only the changed product re-bakes),
+`terrainmask` v2 writes `deep_floor.png` / `deep_footprint.png`, `derived.json` records `version`
+and the `ground` option. Gates: `test_terrain_fine` 25/25, `test_a2_dae` 46/46, `test_a1_level`
+36/36, `test_app_shell` 70/70, `test_bake_products`, `test_clip_cut`. Awaiting load #12.
+
+
+## 45.8 The consumer-side gap closing is gutted; `terraincut` is the harness lattice verbatim (2026-08-17)
+
+Naomi, after load #16: *"We've attempted to implement our own tunnel cut and terrain gap closing as
+the original had gaps between the deep nested terrain walls and the terrain. It's caused artifacts
+poking up to the sky and texture not matching the terrain. Gut it and implement it as closely to how
+it looks on Blender as possible as that implementation works flawlessly."*
+
+**What was gutted.** Everything the consumer had invented on top of the mesh harness's cut, all of it
+added 2026-08-16 between loads #12 and #16, all of it a fix for a symptom of the previous fix:
+
+| gone | what it was | what it did in game |
+| --- | --- | --- |
+| `terraincut` v3–v8 rim skirts | vertical `ground:rock` curtains hung from every once-used lattice edge down past the band floor, with a T-junction resolver, a one-sidedness test, a 13.5 m height gate | closed tunnel bores (load #14), hung rock fins and strips off cliffs (#14), needed three successive tests to stop drawing where it must not |
+| `terraincut` v9 `CORRIDOR_MARGIN_CELLS` + `snap=False` | a one-cell ring of extra mesh beyond the cut, and the hole rim left on raster positions instead of the prism wall | the pale jagged band along every trench wall (#15) — mesh in a material the terrain shader never matches, and a staircase rim instead of the harness's snapped one |
+| `terrain.lower_deep_bands` + `terrainmask` v2 `deep_floor.png` / `deep_footprint.png` | a heightfield-only stand-in that dropped in-band samples to the band floor | the flat 12 m "spikes" behind trench walls (#12/#13), then a `_samples_fully_punched` gate to stop them |
+| `networks._cap_portal_walls` | clamped `TunnelTopEnding` vertices to level + 13.5 m | hid a *producer-true* piece; the pillars at #15 are the game's own geometry against a heightfield that cannot stand vertical |
+| the fine-grid roadbed paint erosion | eroded the roadbed stamp by one fine sample | a compensation for the mesh and the heightfield painting differently; they now paint from the same rule |
+
+**What ships instead.** `terraincut` v10 runs `terrain.build_lattice` **unchanged** — containment
+delete, `snap_hole_boundary`, the sub-cut, the cliff sub-patch resolve — and hands the consumer the
+faces it changed. Which faces: every face a deep band touches, plus every face with a corner the snap
+moved (a moved vertex is shared by up to four faces; a heightfield square still holding it at its
+raster position would tear against the mesh that does not), and nothing else. The mesh's outer
+boundary is therefore unmoved raster samples at `terrain.ground_heights` heights, so the seam is
+watertight by construction. Nothing is added: no skirts, no lowering, no ring. Where the harness
+shows a slot beside a retaining wall (the clip prism is 0.22 m wider than the wall,
+`TerrainComposition.m_WidthOffset` — [[clip-prism-wider-than-wall-skirt]]), so does this. That is the
+instruction: what the harness draws is what a heightfield consumer gets.
+
+Full city (8192 fine grid): 45,927 heightfield faces punched, 10,463 meshed into 83 tiles / 134,455
+triangles, 288 s to bake. Against v9: 480k triangles including skirts, and mesh 1.75–3.5 m beyond
+every wall.
+
+**Measured against the harness, not eyeballed.** Level oracle vs bundle harness at the 1031/5921
+trench and the 1092/6490 portal, ray-cast ground profiles on a 0.5 m grid over 241×241 columns:
+
+- holes agree to **6 columns of 58,081** (3,922 vs 3,917 empty);
+- **median |Δh| 0.005 m, p99 0.094 m** — the elevation quantum is 0.0625 m;
+- of the 1,553 columns over 0.5 m, **1,552 are cliff columns** (local relief > 2 m in a 2.5 m window,
+  where a vertical ray cannot compare two triangulations at all). The single flat-ground outlier is a
+  30 m cliff *in the source raster* one sample away, where the `.ter` is bit-identical to the bundle
+  and only the diagonal differs — the documented `drape.py` choice, not a defect.
+
+**Two invariants now gated** (`test_terrain_fine.py`, exact triangle/face SAT rather than face
+centres — the snap moves rim vertices laterally, so centroid binning cannot tell a gap from a fold):
+
+- *no punched face is left without ground.* City-wide: **1** face of 45,927 (the harness leaves sky
+  there too); the remaining 35,464 unmeshed punched faces are `contain`ed, which is the hole the
+  harness deletes outright.
+- *the seam is watertight.* Every sample where the mesh reaches kept ground carries the `.ter`'s own
+  height. City-wide 12,512 such vertices: **median 3.9e-6 m, max 3.0e-5 m, none over a millimetre** —
+  that residue is glTF storing positions as float32 at 600 m elevation, not a step. Getting there took
+  two quantisation fixes, both found by this gate and both the same mistake: the bake rounded in
+  float32 where the consumer rounds in float64. (1) vertex heights — `beamng.ter.from_bundle_arrays`
+  widens the float32 heightfield to float64 before `rint`; (2) the shallow-band floor — the consumer
+  reads it back from `terrainmask`'s `shallow_floor.png`, so the bake has to reproduce that whole
+  round trip (float64 `rint`, the clip to a storable code, then the float32 the app decodes into),
+  not merely quantise the same number. Before (1): 2 of 12,512 a quantum (6 cm) off; after (1): still
+  2, both roadbed samples under a shallow band, which is what pointed at (2). The gate's tolerance is
+  1 mm — above float32 noise, far below the 6 cm quantum. **A code change to a bake product must bump
+  its `Product.version`**: the first re-bake after fix (1) reported `fresh` and silently kept the old
+  tiles.
+
+5,527 faces have mesh and kept heightfield overlapping *in plan*. That is the snap folding the rim
+outward, and the harness's lattice does exactly the same — probed at 14 of them, the only surface
+visible from above is the heightfield, with the mesh below it. Not double ground on screen.
+
+**Still open, and deliberately not compensated for here:** the ground meshes wear
+`<level>_ground_<layer>` materials against the terrain's three-tier shader, so colour parity is
+approximate (`GROUND_MESH_*_FACTOR`); and the `TunnelTopEnding` pillars at three portals are the
+producer's own conformed geometry — if they are to go, they go in the producer or by giving the
+heightfield a vertical wall, not by clamping the piece in the consumer.
+
+Gates: `test_terrain_fine` 26/26 (the two new invariants), `test_a2_dae` 58/58, `test_a1_level`
+36/36, `test_app_shell` 70/70, `test_bake_products`, `test_clip_cut`, `test_b1_readers` green.
+Awaiting load #17.
+
+
+## 46. How the game really hides terrain at a deep road or tunnel — validated from source (2026-08-17)
+
+Naomi, after load #17: *"Can we take a pause and validate against the game and replicate how it
+does it exactly, this inventing and guessing has us going around in loops in terms of cutting the
+hole / terrain for deeply nested roads and tunnels."* Right call. Everything below is read out of
+the decompiled `Game.Simulation.TerrainSystem`, not inferred.
+
+### 46.1 The mechanism, end to end
+
+| step | source | what it does |
+| --- | --- | --- |
+| 1. which sections clip | `CullRoadsJob`, `TerrainSystem.cs:1136` | a lane section gets `LaneFlags.ClipTerrain` iff its prefab carries `Game.Net.GeometryFlags.ClipTerrain`. The two EXTRA sections the same job emits for flattening (the shifted middle, the start-tangent strip) are added with `m_Flags & ~LaneFlags.ClipTerrain` — they flatten, they never clip. |
+| 2. the side curves | `TerrainSystem.cs:1400-1417` | the composition's own left/right béziers, each lerped toward the other by `TerrainComposition.m_WidthOffset` — the prism is the **trimmed** composition, not the road's drawn width. |
+| 3. the band | `TerrainSystem.cs:1419-1514` | `clipOffset = [cmin, cmax]` of `(m_EdgeHeights.xy or .zw, m_SurfaceHeight.min)` by `isStart`, `+ m_ClipHeightOffset`; then `clipOffset.y = max(clipOffset.y, m_ElevationLimit * 3)` for a **Lowered** side, or for a **Tunnel** with a Low/HighTransition side. Elevated and waterway keep the small band. |
+| 4. the ±0.3 | `GenerateClipDataJob`, `TerrainSystem.cs:1702-1712` | `m_ClipOffset.x -= 0.3; m_ClipOffset.y += 0.3` — **vertical only**, applied once, at emit time. Then `m_Left.c1 += m_ClipOffset.x` / `m_Right.c1 += ...`: the curves are RAISED to the band's floor, and `m_Height = clipOffset.y - clipOffset.x` is the box's height above them. |
+| 5. the volume | `TerrainSystem.cs:4939` "Clip Mesh" | a **closed unit prism**: a subdivided lid at `y = 1`, the same grid at `y = 0`, and side walls stitching the two. Instanced procedurally, one instance per `ClipMapDraw`, the vertex shader placing it on the two curves. |
+| 6. the discard | `RenderClipAreas`, `TerrainSystem.cs:3678-3692` | `DrawMeshInstancedProcedural(m_ClipMesh, …, pass 0)` for roads, `DrawMesh(areaClipMesh, …, pass 2)` for clip AREAS, then one full-screen `DrawProcedural(… pass 3, 3 verts)` that resolves it. `TerrainShadowUseStencilClip` names the buffer: this is a **stencil volume**, and the terrain heightfield is never touched. |
+| 7. the fudge | `RenderClipAreas` | `m_ClipMaterial.SetVector(_ClipOffset, float4(camera.position, tan(fov/2) * 0.002))` — the volume is dilated **toward the camera** by ~0.2 % of distance (a couple of pixels). The game deliberately clips a hair MORE than the exact prism so no sliver of terrain survives at the boundary. |
+
+**So the game's rule is exactly: a terrain pixel is drawn unless its 3D position lies inside the
+swept prism.** Nothing is deleted, nothing is snapped, nothing is sampled — the boundary of the
+hole is the prism's own surface, evaluated per pixel.
+
+### 46.2 The producer is already game-exact; the consumers are not
+
+`Systems/TerrainRipSystem.cs` `TryGetClipBand` reproduces steps 1–4 line for line — the `isStart`
+select, `m_ClipHeightOffset`, the `ElevationLimit * 3` raise under exactly the game's flag
+combination, the ±0.3 expansion, and the `GeometryFlags.ClipTerrain` gate. `clipvolumes.jsonl`
+(§8c) is a faithful dump of the game's own `ClipMapDraw` set. **No producer change is needed.**
+
+Every artifact of loads #11–#17 is a CONSUMER approximation of step 6:
+
+| our rule | what it approximates | what it produces on screen |
+| --- | --- | --- |
+| `contain_faces`: delete a face iff all `K²` sub-samples are in-band | per-pixel containment | a rim that steps at the sampling, not the prism curve — the serrated silhouette along every trench |
+| `snap_hole_boundary`: move a rim vertex onto the prism wall | — nothing in the game | folds the mesh over its neighbours; 5,527 faces of plan overlap |
+| the sub-cut (`CLIP_CONTAIN_SAMPLES²` sub-quads, centre rule) | per-pixel containment inside one face | teeth and slivers at 1/8-cell scale |
+| the cliff sub-patch lift onto the roof iso (`SUBCUT_CLIFF_RANGE_M`, 2026-08-16) | — nothing in the game | **the needles**: proven by experiment, disabling it removes them and changes nothing else |
+| a face deleted with no road mesh over it | the game has this too (the stencil does not ask what covers it) | 65 open columns per 80 m window at the tested portal — but see below |
+
+### 46.3 What replication actually requires
+
+The terrain is a heightfield `h(x, z)`; the discarded set on its surface is
+
+    { (x, z) : (x, z) inside the prism's 2-D footprint  AND  bottom(x, z) ≤ h(x, z) ≤ top(x, z) }
+
+whose boundary has exactly two kinds of edge: the prism's **side wall** (a curve in plan), and the
+**iso-line** where `h = top` or `h = bottom` (where the ground enters or leaves the band — the roof
+edge over a portal mouth). Both are cuttable exactly:
+
+* on a TRIANGLE of the terrain grid `h` is linear, and `bottom`/`top` are linear along a station
+  quad, so `h - top` and `h - bottom` are linear too. Every one of the six conditions (four side
+  half-planes, two height half-planes) is a **half-plane in the triangle's own plane**;
+* so the discarded part of a triangle is a convex polygon, and the kept part is the triangle minus
+  a convex region — a standard convex subtraction that yields at most one piece per half-plane.
+
+That is the exact analogue of the stencil, done on geometry: no sampling rate, no snap, no lift,
+no sub-cut. It also removes the class of bug that produced every artifact since load #11, because
+there is no longer any approximation left to tune.
+
+Deliberate deviation to keep and count: the camera-relative dilation of step 7 has no meaning for
+geometry (it is a per-frame, per-pixel bias) and is not reproduced.
+
+
+### 46.4 Built: the exact cut (`csiibundle.terrainclip`, `terraincut` v13)
+
+`tools/csiibundle/terrainclip.py` cuts terrain triangles against the prisms by convex subtraction.
+On one triangle every condition of §46.3 is affine in `(x, z)` — `h` is the triangle's own plane,
+`bottom`/`top` are the lane surface (fitted affinely per station quad) plus a constant, and the
+footprint's edges are straight — so the discarded part is an intersection of half-planes and the
+kept part is at most one convex piece per half-plane. Station quads are split into two triangles
+first (a quad on a sharp curve need not be convex in plan).
+
+**Watertight for the same reason the game is seamless:** every constraint is a function of
+`(x, z)` alone except `h`, and two triangles sharing an edge interpolate the same endpoint heights
+along it, so both compute the same cut parameter there.
+
+`bake/terraincut.py` v13 reads `clipvolumes.jsonl` directly (no more `clip_grid` scoring), builds
+the prisms, and cuts every heightfield square a deep band reaches. A square that loses area is
+punched and its kept pieces shipped; a square that loses nothing is left to the heightfield. The
+app's `_punch_mask` now takes `corridor_faces.png` as the WHOLE hole set — unioning it with the old
+scored `clip_cells.png` punched **8,132** squares the exact cut keeps, every one a gap with no mesh
+under it, which is a large part of what "massive gaps in the terrain" was.
+
+Removed with it, from the shared harness: the **cliff sub-patch lift** (`SUBCUT_CLIFF_RANGE_M`,
+`band_heights_at`). It was the only place a vertex moved up, and the experiment is on record —
+re-importing the same region with it disabled removed the needles and changed nothing else
+(open-sky columns identical at 65/25,921).
+
+**Measured against the game's own predicate** (`E:\carto-out\probe2\v10_gamecheck.py`: sample
+points, ask "is this point inside a deep prism at the terrain's height", compare with "does the
+level draw ground here — unpunched `.ter` square or a `terraincut` triangle"):
+
+| window | scored cut (v12) | exact cut (v13) |
+| --- | --- | --- |
+| the 1031/5921 trench, 12,000 samples | 99.825 % agree — 17 sky, 4 ground the game discards | **99.983 %** — 2 sky, **0** |
+| the 220/5062 portal, 12,000 samples | — | **100.000 %** — 0, 0 |
+| open-sky columns, 80 m at the portal | 65 / 25,921 | **3 / 25,921** |
+
+Full city: 43,043 squares cut, 112,606 pieces, 188,693 triangles, 117 tiles, **134 s** (the scored
+cut took 288 s). Seam unchanged and exact: 30,305 vertices where the mesh meets kept ground, max
+3.2e-5 m (glTF float32 storage), none over a millimetre.
+
+Still deliberate, still counted: shallow bands do not cut (see the product docstring); the
+camera-relative dilation of §46.1 step 7 is a per-pixel bias with no geometric meaning. The Blender
+harness still meshes with `build_lattice`'s scored cut — it is now the *less* accurate of the two
+consumers, and adopting `terrainclip` there is the follow-up.
+
+
+### 46.5 Both consumers now cut the same way; the scoring machinery is deleted
+
+The Blender harness was the *less* accurate consumer for one day; it now calls the same
+`terrainclip`. `build_lattice` takes `prisms` and cuts every face one reaches; what that replaced
+is gone from the tree, not merely bypassed:
+
+| deleted | was |
+| --- | --- |
+| `snap_hole_boundary` (~250 lines) + `CLIP_SNAP_REACH_CELLS` | moved a hole-rim vertex onto the prism wall — an approximation of a boundary the cut now produces exactly |
+| the sub-cut block, `contain_faces`'s `sub_bands`, `clip_grid`'s eighth return value | re-cut a face at `CLIP_CONTAIN_SAMPLES` per cell when a band was too narrow to contain it |
+| the cliff sub-patch lift (`SUBCUT_CLIFF_RANGE_M`, `band_heights_at`) | the needles of loads #15-#17 |
+| `terraincut`'s own prism reader/index | duplicated what `terrainclip.load_prisms` / `index_prisms` now do for both consumers |
+| the harness's containment-ratio report | scored deleted FACES against sampled prism area; it now reports removed AREA, and reads **x1.00** |
+
+`contain_faces` stays, with one job: answer "which squares would a heightmap-native engine punch"
+for `hole_mask` and the bake's `clip_cells.png` (the fallback when the cut meshes are off).
+
+Harness at the 220/5062 portal after the change: **cut 499 m² against 499 m² of prism (x1.00)**,
+216 faces cut into 340 pieces, 54 sub-centimetre ribbons dropped, and the open-sky columns are the
+**same 3 of 25,921** the level reports — the two consumers now agree face for face. Gates:
+`test_terrainclip`, `test_terrain_fine` 26/26, `test_clip_cut`, `test_bake_products`,
+`test_b1_readers`, `test_a1_level` 36/36, `test_a2_dae` 58/58, `test_app_shell` 70/70.
+
+**A ribbon thinner than a centimetre is dropped** (`terrainclip.MIN_WIDTH_M`, counted in both
+consumers' reports). The stencil resolves those per pixel; a polygon renders them as a bright
+hairline, which is what crossed the road and the retaining wall in load #18. On the reference city
+they are 10.5 % of the triangles and 0.07 % of the plan area — 25.7 m² of 36,130.

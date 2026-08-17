@@ -107,6 +107,26 @@ seam everything depends on.
     rip, but the rip's own log already printed that commit's `CaptureSplatmap` lines.)
   - It is still the right source for *what shape the entities in a real city have* — a fact about
     the save, not about the code. It is the wrong source for *did my change work*.
+- **When output looks wrong, find the game's rule before writing a fix.** The game's own
+  implementation is decompilable (`tools/decomp`; `decomp all Game <dir>` then ripgrep) and it is
+  the only authority on what the output should be. Between BeamNG loads #11 and #17 the terrain cut
+  was "fixed" seven times — containment scoring, a rim snap, a sub-cut, a cliff lift, rim skirts, a
+  band lowering, a margin ring — and every one of them was a guess that closed one artifact and
+  opened the next. Thirty minutes in `Game.Simulation.TerrainSystem` gave the actual rule (a stencil
+  prism, audit §46), showed the producer had matched it all along, and replaced all seven with one
+  exact cut. So:
+  - **Do not invent a rule in a consumer.** If a consumer needs to decide something the game also
+    decides, read how the game decides it and port that. A rule with no counterpart in the game's
+    source is a hack with a countdown on it, however reasonable it looks.
+  - **Every approximation is declared and counted** in the code that makes it and in the rip/build
+    report — what it approximates, why an exact answer is not available, and how often it fires.
+    An undeclared approximation is indistinguishable from a bug once its artifact appears.
+  - **The Blender harness is not the oracle; the game is.** The harness is a consumer with the same
+    licence to be wrong, and on 2026-08-17 it carried the very defect a screenshot was blaming on
+    the app. Compare a consumer against the game's rule (`tools/check_terrain_vs_game.py`
+    samples points and asks the game's own predicate), not against the other consumer.
+  - **A fix that only one consumer gets is in the wrong place.** Shared rules live in
+    `tools/csiibundle/`; both consumers call the same function.
 - **Prove GPU mesh readback FIRST** (PLAN Phase 1 spike). Reading real vertex/index buffers at
   runtime is the single highest risk; if it's infeasible, the fallback is offline
   `.assets`/asset-DB extraction keyed by prefab name — decide before building everything else.

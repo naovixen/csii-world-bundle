@@ -4,7 +4,9 @@ into world tiles, one `.dae` + `TSStatic` per tile with exact collision (`Visibl
 Why tiles: 7,289 segment meshes as 7,289 TSStatics is 3× vanilla's whole-level object count
 before a single building; 256 m tiles are a few hundred objects and one draw per material per
 tile. A tile whose vertex count passes `SPLIT_VERTS` is quartered by segment origin (dense
-junction clusters) so no single shape is a memory spike. Each tile's geometry is written
+junction clusters) so no single shape is a memory spike, and within a shape no geometry holds
+more than `dae.MAX_GEOMETRY_VERTS` vertices (`dae.split_mesh` — the load #10 junction shards
+were the tiles that passed 65,535). Each tile's geometry is written
 relative to the tile's origin (float32 precision stays sub-millimetre) and the TSStatic sits at
 that origin.
 
@@ -74,6 +76,7 @@ def run(ctx, progress):
     tris_total = 0
     verts_total = 0
     refused = 0
+    split_geoms = 0
     for (tx, tz), recs in sorted(buckets.items()):
         parts = _load_parts(ctx, lay, recs, tris_total)
         refused += parts.pop("refused")
@@ -88,7 +91,9 @@ def run(ctx, progress):
             name = f"net_{tx}_{tz}" + (f"_{sub_index}" if sub_index else "")
             mesh = dae.group_by_material(dae.Mesh(name, merged["verts"], merged["tris"], merged["runs"],
                                                   normals=merged["normals"], uvs=merged["uvs"]))
-            shape = dae.Shape(name, [(TILE_DETAIL_PX, [mesh])], collision=[], billboard_px=None, null_px=None)
+            meshes = dae.split_mesh(mesh)                # <= MAX_GEOMETRY_VERTS per geometry (load #10 shards)
+            split_geoms += len(meshes) - 1
+            shape = dae.Shape(name, [(TILE_DETAIL_PX, meshes)], collision=[], billboard_px=None, null_px=None)
             path = level.path(*shapes_dir, f"{name}.dae")
             stats = dae.write_shape(path, shape)
             level.add(GROUP, {
@@ -103,9 +108,10 @@ def run(ctx, progress):
         progress.advance(len(recs))
         progress.check()
     level.write_objects()
-    progress.end(f"{written} tiles, {tris_total:,} triangles, {verts_total:,} vertices ({refused} meshes refused)")
+    progress.end(f"{written} tiles, {tris_total:,} triangles, {verts_total:,} vertices ({refused} meshes refused, "
+                 f"{split_geoms} extra geometries from the {dae.MAX_GEOMETRY_VERTS:,}-vertex cap)")
     return {"segments": len(records), "tiles": written, "triangles": tris_total, "vertices": verts_total,
-            "refused": refused, "seconds": round(time.monotonic() - started, 1)}
+            "refused": refused, "splitGeometries": split_geoms, "seconds": round(time.monotonic() - started, 1)}
 
 
 def _load_parts(ctx, lay, recs, _acc):

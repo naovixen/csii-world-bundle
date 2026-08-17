@@ -15,6 +15,10 @@ city) and answers two questions an engine terrain needs:
 
 `derived/terrain/mask.json` records the sizes, the counts, and the option `holes` the app
 should apply by default (`contain`).
+
+The grid is the ground the consumer will mesh: the bundle's 1.75 m `terrainFine` raster when
+it carries one (`reader.load_heightfield`; `mask.json` says `"fine": true`, sizes 8192/8191),
+else the 3.5 m base map. Both are inputs, so a re-rip that adds the fine raster re-bakes.
 """
 
 import json
@@ -27,7 +31,7 @@ from .. import png, terrain
 from . import Product, register
 
 PRODUCT_NAME = "terrainmask"
-INPUTS = ("clipVolumes", "terrain")
+INPUTS = ("clipVolumes", "terrain", "terrainFine")
 
 
 def run(context, progress):
@@ -36,7 +40,7 @@ def run(context, progress):
     os.makedirs(out_dir, exist_ok=True)
     started = time.monotonic()
     progress.begin("terrainmask: clip volumes", total=None, unit="")
-    hm = terrain.hole_mask(bundle)
+    hm = terrain.hole_mask(bundle, prefer_fine=context.options.get("ground", "fine") == "fine")
     progress.end(f"{int(hm.contain.sum()):,} contained faces, {int(hm.deep_touch.sum()):,} deep-touched, "
                  f"{int(numpy.isfinite(hm.band_floor).sum()):,} samples under a shallow band")
 
@@ -53,6 +57,14 @@ def run(context, progress):
         q[has] = numpy.clip(raw, 1, 65535).astype(numpy.uint16)
     png.write_gray(os.path.join(out_dir, "shallow_floor.png"), q, bit_depth=16)
 
+    # v2's deep_floor.png / deep_footprint.png (a heightfield-only stand-in that lowered in-band
+    # samples) are gone with v3: the ground a deep band reaches is the `terraincut` mesh's now.
+    for stale in ("deep_floor.png", "deep_footprint.png"):
+        try:
+            os.remove(os.path.join(out_dir, stale))
+        except OSError:
+            pass
+
     # how much a clamp would move: informational
     lowered = 0
     worst = 0.0
@@ -61,8 +73,8 @@ def run(context, progress):
         hit = has & (drop > 0)
         lowered = int(hit.sum())
         worst = float(drop[hit].max()) if hit.any() else 0.0
-    doc = {"schema": "csiibundle.bake.terrainmask/1", "faceSize": [int(cells.shape[0]), int(cells.shape[1])],
-           "sampleSize": [int(q.shape[0]), int(q.shape[1])], "cell": hm.cell,
+    doc = {"schema": "csiibundle.bake.terrainmask/3", "faceSize": [int(cells.shape[0]), int(cells.shape[1])],
+           "sampleSize": [int(q.shape[0]), int(q.shape[1])], "cell": hm.cell, "fine": bool(hm.fine),
            "originWorld": [hm.origin_x, hm.origin_z], "elevationScale": hm.elevation_scale,
            "elevationOffset": hm.elevation_offset, "holesDefault": "contain",
            "counts": {"contain": int(hm.contain.sum()), "deepTouch": int(hm.deep_touch.sum()),
@@ -74,4 +86,4 @@ def run(context, progress):
             "worstDrop": round(worst, 3), "seconds": round(time.monotonic() - started, 1)}
 
 
-register(Product(PRODUCT_NAME, INPUTS, "terrain/", run))
+register(Product(PRODUCT_NAME, INPUTS, "terrain/", run, version=3, options=("ground",)))   # v3: v2's deep_floor / deep_footprint retired

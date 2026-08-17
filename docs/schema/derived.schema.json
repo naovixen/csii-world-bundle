@@ -68,6 +68,11 @@
           "type": "number",
           "exclusiveMinimum": 0
         },
+        "ground": {
+          "description": "Which §8 raster the ground products (areas, skirts, markings, terrainmask, terraincut) were baked against: 'fine' = layers.terrainFine (1.75 m) when the bundle carries it, 'base' = the 3.5 m heightmap (2026-08-16).",
+          "type": "string",
+          "enum": ["fine", "base"]
+        },
         "diagonal": {
           "description": "Heightfield triangulation assumed when conforming to the terrain.",
           "type": "string",
@@ -177,6 +182,16 @@
           "description": "Wall-clock the product took to bake.",
           "type": "number",
           "minimum": 0
+        },
+        "version": {
+          "description": "The product's own output version (its registry entry); a product whose version differs from the code's re-bakes alone (2026-08-16).",
+          "type": "integer",
+          "minimum": 1
+        },
+        "options": {
+          "description": "The non-shaping bake options this product's outputs depended on (e.g. `ground` for the terrain-conforming products); a change re-bakes this product alone (2026-08-16).",
+          "type": "object",
+          "additionalProperties": true
         },
         "inputs": {
           "description": "Fingerprint of every bundle layer this product was computed from, keyed by the manifest layer key (bundle.json `layers`).",

@@ -81,6 +81,8 @@ Options (after the `--`):
                                  junction floors — junction interiors are the arms' own node
                                  meshes (audit §18)
     --clip-floor V               diagnostic: override every clip strip's `bottom` with V
+    --coarse-terrain             diagnostic: mesh the 3.5 m base heightmap even when the bundle
+                                 carries layers.terrainFine (the "before" side of a fine A/B)
                                  metres (relative to the lane surface) when rasterising
                                  clipvolumes.jsonl — previews a producer band-floor change
                                  against an existing bundle (implies --terrain)
@@ -142,7 +144,7 @@ import colour_model
 from csiibundle import areas as area_math
 from csiibundle import bezier, decals, drape, frames, instances, lanes, materials, water
 from csiibundle import networks, reader, tints
-from csiibundle import terrain as terrain_math
+from csiibundle import terrain as terrain_math, terrainclip
 from csiibundle import glb as glb_reader, png as png_reader, splat as splat_reader
 
 
@@ -1824,7 +1826,6 @@ _CLIP_SCANLINE_VECTOR_ROWS = terrain_math.CLIP_SCANLINE_VECTOR_ROWS
 _CLIP_REF_STATION_BITS = terrain_math.CLIP_REF_STATION_BITS
 _CLIP_CONTAIN_SAMPLES = terrain_math.CLIP_CONTAIN_SAMPLES
 _CLIP_CONTAIN_BLOCK = terrain_math.CLIP_CONTAIN_BLOCK
-_CLIP_SNAP_REACH_CELLS = terrain_math.CLIP_SNAP_REACH_CELLS
 _CLIP_DEEP_BAND_TOP = terrain_math.CLIP_DEEP_BAND_TOP
 _lane_ramp = terrain_math.lane_ramp
 _clip_span = terrain_math.clip_span
@@ -1836,7 +1837,6 @@ _mask_boundary = terrain_math.mask_boundary
 _transition_fans = terrain_math.transition_fans
 _contain_faces = terrain_math.contain_faces
 _clip_grid = terrain_math.clip_grid
-_snap_hole_boundary = terrain_math.snap_hole_boundary
 _clamp_shallow_bands = terrain_math.clamp_shallow_bands
 
 
@@ -2262,7 +2262,7 @@ def _ground_material(name, texture_path, fallback_colour):
     return material
 
 
-def build_terrain(bundle_dir, collection, center, radius, clip_floor=None):
+def build_terrain(bundle_dir, collection, center, radius, clip_floor=None, coarse=False):
     """Place the §8 terrain under everything: ground grid, roadbed split, water surface.
 
     Returns `(placed, ground)` — the number of objects placed (0 when the layer is absent)
@@ -2273,7 +2273,7 @@ def build_terrain(bundle_dir, collection, center, radius, clip_floor=None):
     resolution inside it. `clip_floor` overrides every clip strip's `bottom` (diagnostic,
     `--clip-floor`).
     """
-    heightmap_path, surface_path, water_path, surfaces_dir, splat_path, rasters = _terrain_paths(bundle_dir)
+    heightmap_path, surface_path, water_path, surfaces_dir, splat_path, rasters, _fine_path = _terrain_paths(bundle_dir)
     if not os.path.isfile(heightmap_path):
         LOG.warn(f"no terrain layer at {heightmap_path} — skipping terrain")
         return 0, None
@@ -2282,34 +2282,59 @@ def build_terrain(bundle_dir, collection, center, radius, clip_floor=None):
                  "terrain/rasters.json) — skipping terrain")
         return 0, None
 
-    width, height, heights = _decode_png_gray(heightmap_path)
-    cell = float(rasters["resolution"])
-    origin_x, _, origin_z = rasters["originWorld"]
-    elevation_scale = float(rasters.get("elevationScale", 1.0))
-    elevation_offset = float(rasters.get("elevationOffset", 0.0))
+    # The ground to mesh: the fine 1.75 m `terrainFine` raster when the bundle carries it — the
+    # game's near-camera ground, its road grading rasterised at that texel size — else the
+    # 3.5 m base map (§8, `reader.load_heightfield`). Everything below is in cells of whichever
+    # it is; the 3.5 m companions (roadbed ids, water level) are read onto that grid by
+    # nearest sample.
+    field = reader.load_heightfield(bundle_dir, prefer_fine=not coarse)
+    heights = field.raw.reshape(-1)
+    height, width = field.raw.shape
+    cell = field.cell
+    origin_x, origin_z = field.origin_x, field.origin_z
+    elevation_scale, elevation_offset = field.elevation_scale, field.elevation_offset
+    base_size = tuple(int(v) for v in rasters["size"])
+    if field.fine:
+        LOG.step(f"terrain: meshing the fine {width}x{height} raster @ {cell:.3f} m (layers.terrainFine — "
+                 f"the game's near-camera ground); the {base_size[0]}x{base_size[1]} base map stays the reference for "
+                 "surface ids and water")
+    elif coarse:
+        LOG.step(f"terrain: meshing the {width}x{height} base raster @ {cell:.3f} m (--coarse-terrain: the fine raster, "
+                 "if any, is deliberately ignored)")
+    else:
+        LOG.step(f"terrain: meshing the {width}x{height} base raster @ {cell:.3f} m (no layers.terrainFine in this "
+                 "rip — the game's finer near-camera grading is not available; kerb seams sit within a 3.5 m texel)")
 
     surface_ids = None
     if os.path.isfile(surface_path):
         sw, sh, surface_ids = _decode_png_gray(surface_path)
-        if (sw, sh) != (width, height):
-            LOG.warn(f"CONTRACT VIOLATION: surface_index is {sw}x{sh}, heightmap {width}x{height}")
+        if (sw, sh) != base_size:
+            LOG.warn(f"CONTRACT VIOLATION: surface_index is {sw}x{sh}, heightmap {base_size[0]}x{base_size[1]}")
             surface_ids = None
+        elif (sw, sh) != (width, height):
+            surface_ids = reader.resample_nearest(numpy.asarray(surface_ids).reshape(sh, sw), (height, width)).reshape(-1)
 
     # Contract §8c. The terrain covering tunnel portals and sunken trenches is never carved out
     # of the heightmap — the game hides it per-frame with a stencil pass — so the clip volumes
     # are rasterised here against this heightmap. The layer is mandatory; _clip_grid raises on
     # a bundle without it.
-    (cut_grid, contain_raster, band_count_raster, deep_raster, sub_bands,
+    (cut_grid, contain_raster, band_count_raster, deep_raster,
      cut_refs, strip_geo, band_floor_raster) = _clip_grid(
         bundle_dir, width, height, heights, cell, origin_x, origin_z, elevation_scale,
         elevation_offset, floor_override=clip_floor)
+    # The prisms themselves, for the EXACT cut (audit §46): the game hides terrain by discarding
+    # the pixels inside its clip volume, so the hole's boundary is the prism's own surface and
+    # the mesh is CUT on it — `csiibundle.terrainclip`, shared with the heightfield bake.
+    prisms, shallow_skipped = terrainclip.load_prisms(bundle_dir, cell)
 
     levels = None
     if os.path.isfile(water_path):
         ww, wh, levels = _decode_png_gray(water_path)
-        if (ww, wh) != (width, height):
-            LOG.warn(f"CONTRACT VIOLATION: water_level is {ww}x{wh}, heightmap {width}x{height}")
+        if (ww, wh) != base_size:
+            LOG.warn(f"CONTRACT VIOLATION: water_level is {ww}x{wh}, heightmap {base_size[0]}x{base_size[1]}")
             levels = None
+        elif (ww, wh) != (width, height):
+            levels = reader.resample_nearest(numpy.asarray(levels).reshape(wh, ww), (height, width)).reshape(-1)
 
     # The crop window, in raster indices. Row 0 is the northernmost (§3: rows toward -Z).
     if center is not None and radius is not None:
@@ -2330,15 +2355,13 @@ def build_terrain(bundle_dir, collection, center, radius, clip_floor=None):
     # -- the lattice and its faces -----------------------------------------------------------
     # `csiibundle.terrain.build_lattice` is the whole of it: the corridor that decides where the
     # mesh goes native, the three face families welded onto one vertex set, the containment
-    # deletion, the hole-rim snap and the sub-cut of a deep band too narrow to contain a face.
-    # Its docstring carries the reasoning, including the two face-deletion rules that are
-    # tempting and wrong.
+    # deletion — which is now the EXACT cut against the clip prisms rather than a score.
     lattice = terrain_math.build_lattice(
         heights, width, height, surface_ids, levels,
         row0, col0, row1, col1, stride, cell, origin_x, origin_z,
         elevation_scale, elevation_offset,
-        cut_grid, contain_raster, band_count_raster, deep_raster,
-        cut_refs, band_floor_raster, sub_bands, strip_geo)
+        cut_grid, contain_raster, band_count_raster, band_floor_raster, strip_geo,
+        prisms=prisms)
     if lattice is None:
         LOG.warn("terrain: the region window is smaller than one face — skipping terrain")
         return 0, None
@@ -2375,12 +2398,10 @@ def build_terrain(bundle_dir, collection, center, radius, clip_floor=None):
     cut_faces = lattice.cut_faces
     roadbed_faces = lattice.roadbed_faces
     rock_faces = lattice.rock_faces
-    snapped = lattice.snapped
-    unreferenced = lattice.unreferenced
-    pushed = lattice.pushed
-    sub_parents = lattice.sub_parents
-    sub_dropped = lattice.sub_dropped
-    sub_kept = lattice.sub_kept
+    cut_parents = lattice.cut_parents
+    cut_pieces = lattice.cut_pieces
+    cut_removed_m2 = lattice.cut_removed_m2
+    cut_slivers = lattice.cut_slivers
     band_clamped = lattice.band_clamped
     band_clamp_drop = lattice.band_clamp_drop
 
@@ -2549,53 +2570,34 @@ def build_terrain(bundle_dir, collection, center, radius, clip_floor=None):
                  f"lowered to the band floor, worst drop {band_clamp_drop:.2f} m — the pixels "
                  f"the game discards there (see _clamp_shallow_bands)")
     band_samples = int(band_count.sum(dtype=numpy.int64))
-    if cut_faces or band_samples:
-        # The containment check, not a size check. Both sides are now the DEEP bands alone —
-        # a shallow band no longer deletes (see `_contain_faces`), so it contributes neither
-        # deleted faces nor covered area. This grid must never delete MORE than those prisms
-        # cover: a ratio above 1.00 is terrain removed that nothing draws over, i.e. sky. Below
-        # 1.00 is the safe direction — terrain kept under a road that hides it.
-        #
-        # Note what this ratio still cannot see: it scores the cut against the PRISM, and the
-        # prism is not the pavement. That is what hid the width-transition notches for a week.
-        # `tools/test_clip_cut.py` scores against the real segment meshes instead.
-        #
-        # The denominator is the clipped area itself, measured at the containment sampling —
-        # not a face count, which quantises the very thing being measured. Under this deletion
-        # rule the ratio cannot exceed 1.00 by construction, so a warning here means the
-        # sampling missed a sliver, not that the rule drifted.
-        sample = cell / _CLIP_CONTAIN_SAMPLES
-        deleted_area = cut_faces * cell * cell
+    if cut_removed_m2 or band_samples:
+        # How much ground the cut removed, against how much the prisms cover — the same sanity
+        # check as ever, but both sides now measure AREA rather than counting whole faces, because
+        # the cut is exact and removes fractions of a face. A ratio above 1.00 would mean terrain
+        # removed that no prism covers, i.e. sky; the cut cannot do that by construction (it only
+        # ever subtracts a prism's own interior), so a warning here means the DENOMINATOR is
+        # short — the containment sampling missed part of a prism.
+        sample = cell / terrain_math.contain_samples(cell)
         clipped_area = band_samples * sample * sample
-        ratio = (deleted_area / clipped_area) if clipped_area else float("nan")
-        LOG.step(f"cut {deleted_area:,.0f} m² of terrain against {clipped_area:,.0f} m² the "
-                 f"clip prisms cover (x{ratio:.2f}; must not exceed 1.00 — above it is sky)")
-        if ratio > 1.0:
-            LOG.warn(f"the cut deletes {(ratio - 1.0) * 100:.0f}% more terrain than the clip "
-                     "prisms cover — expect see-through gaps beside roads")
+        ratio = (cut_removed_m2 / clipped_area) if clipped_area else float("nan")
+        LOG.step(f"cut {cut_removed_m2:,.0f} m² of terrain against {clipped_area:,.0f} m² the "
+                 f"clip prisms cover (x{ratio:.2f})")
+        if ratio > 1.05:
+            LOG.warn(f"the cut removed {(ratio - 1.0) * 100:.0f}% more than the sampled prism "
+                     "area — check the containment sampling, not the cut")
 
-    # The one residual this rule cannot reach. A face is 3.5 m; a clip strip narrower than two
-    # of them holds no whole face, so nothing is deleted along it and there is no hole rim for
-    # `_snap_hole_boundary` to push out to the wall either. Under a shallow surface band that is
-    # invisible — the road covers it — but under a TRENCH or PORTAL band the terrain left behind
-    # stands in the cutting, measured on the 2026-08-11 rip at a median 7.4 m proud of the road
-    # where it happens. City-wide, strips under two cells wide carry 2.5% of the deep-band
-    # footprint, so this is stated rather than fixed; fixing it means cutting those faces on the
-    # prism boundary itself (see §41), which is a lattice change and needs a render to accept.
-    # A deep band's own edge always meets faces it does not contain, and those are fine: they
-    # are the hole rim, and the snap pushes them out to the wall. What cannot be reached is a
-    # face a deep band meets with NO deleted face beside it — there is no rim there, because the
-    # strip never held a whole face.
-    if sub_parents:
-        LOG.step(f"{sub_parents} face(s) met a trench or portal band too narrow for a "
-                 f"{cell:g} m face to sit inside and were re-cut at "
-                 f"{cell / _CLIP_CONTAIN_SAMPLES:.2f} m — {sub_dropped * (cell / _CLIP_CONTAIN_SAMPLES) ** 2:,.0f} m² "
-                 f"dropped, {sub_kept} sub-face(s) kept")
-    if snapped or unreferenced:
-        LOG.step(f"{snapped} hole-boundary vertex(es) snapped onto the clip prisms "
-                 f"({pushed} pushed out of a band, the rest pulled in)"
-                 + (f", {unreferenced} found no strip to snap to (area-only cuts)"
-                    if unreferenced else ""))
+    # The exact cut has no residual to report: every face a prism reaches is cut on the prism's
+    # own surface, which is where the game's stencil discards. What IS worth stating is how much
+    # ground it removed and how many sub-centimetre ribbons were dropped with it (the game
+    # resolves those per pixel; a polygon renders them as a hairline — see `terrainclip`).
+    if cut_parents:
+        LOG.step(f"{cut_parents} face(s) met a clip prism and were CUT on it — "
+                 f"{cut_pieces} piece(s) kept, {cut_removed_m2:,.0f} m² removed"
+                 + (f", {cut_slivers} ribbon(s) under "
+                    f"{terrainclip.MIN_WIDTH_M * 100:g} cm dropped" if cut_slivers else ""))
+    if shallow_skipped:
+        LOG.step(f"{shallow_skipped} shallow clip volume(s) skipped: the ±0.3 m shell over a "
+                 "surface road is under the carriageway that hides it (contract §8c)")
     if stride > 1:
         LOG.step(f"{refined_faces} native face(s) in {int(block_refined.sum())} corridor "
                  f"block(s), {fan_faces} transition fan face(s), "
@@ -3645,6 +3647,7 @@ def main():
     assets = None
     everything = None
     clip_floor = None
+    coarse_terrain = False
     do_colour = False
 
     i = 0
@@ -3681,6 +3684,9 @@ def main():
             do_terrain = True
             clip_floor = float(argv[i + 1])
             i += 2
+        elif arg == "--coarse-terrain":
+            coarse_terrain = True
+            i += 1
         elif arg == "--areas":
             do_areas = True
             i += 1
@@ -3988,7 +3994,8 @@ def main():
         terrain_collection = bpy.data.collections.new("bundle_terrain")
         bpy.context.scene.collection.children.link(terrain_collection)
         terrain_objects, terrain_ground = build_terrain(bundle_dir, terrain_collection,
-                                                        center, radius, clip_floor=clip_floor)
+                                                        center, radius, clip_floor=clip_floor,
+                                                        coarse=coarse_terrain)
         LOG.end_phase()  # build_terrain() may have early-returned before its own done()
 
     lane_count = 0
