@@ -100,14 +100,18 @@ namespace Carto.Systems
             /// <summary>
             /// <c>DecalProperties.m_RendererPriority</c> — the game's own sort key for two decals
             /// projecting onto the same surface, highest last (audit §57).
-            /// <para><b>Why this matters more than it looks.</b> A decal prefab carries no blend
-            /// mode at all: blending is the shader template's, projection targets are
-            /// <see cref="Layers"/>, and ORDER is this. It is the only thing the game uses to
-            /// decide which of two overlapping markings wins, and without it a consumer that
-            /// cannot depth-sort projectors has to invent a geometric stand-in — which is exactly
-            /// what `csiibundle.decals.LIFT_LADDER` is. Areas already ship
-            /// <c>RenderedArea.m_RendererPriority</c> and `areas.py` orders them by it; object
-            /// decals had no such field, so their half of the ladder stayed a guess.</para>
+            /// <para>A decal prefab carries no blend mode at all: blending is the shader
+            /// template's, projection targets are <see cref="Layers"/>, and ORDER is this. It is
+            /// the only thing the game uses to decide which of two overlapping markings wins.</para>
+            /// <para><b>And on a real city it says almost nothing — measured the day it shipped
+            /// (audit §58).</b> On the 2026-08-17 22:25 rip this reads <b>0 on 17,721 of 17,722
+            /// decals</b>, with a single instance at 2. Ship it anyway: it is the game's own
+            /// answer, "absent" is now distinguishable from "zero", and a modded or DLC asset may
+            /// use the range. But do NOT expect it to order
+            /// <c>csiibundle.decals.LIFT_LADDER</c>'s `instance_decal` rung — there is no
+            /// per-decal ordering here to port. Areas are the opposite case and are why the other
+            /// half of that ladder could be ported: <c>RenderedArea.m_RendererPriority</c> takes
+            /// <b>13 distinct values from -122 to 42</b> on the same city.</para>
             /// <c>int.MinValue</c> when the prefab carries no decal properties at all.
             /// </summary>
             public int Priority { get; }

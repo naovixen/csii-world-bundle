@@ -4224,7 +4224,7 @@ and exactly why a consumer has to be told which numbers reach a shader unchanged
 | 1 | `t = saturate((cameraHeight − seaLevel − 750) / 250)`; when `m_WavesMultiplier > 1` the game lerps it toward 1 by `t` | The authored **1.3** only holds below 750 m over the sea; above 1000 m it is exactly 1.0 |
 | 2 | `largeBand0Multiplier = largeBand1Multiplier = saturate(wavesMultiplier)` | An authored value above 1 **never reaches a band amplitude at all** — the reference city's 1.3 reads 1.0 there |
 | 3 | `simulationFoamAmount = m_FoamAmount × ComputeFoamFade()`, a camera-height fade over `m_FoamFadeRange` | `foamAmount` is a ceiling, not a value |
-| 4 | `largeWindSpeed = lerp(0, distanceWindSpeed, wavesMultiplier²)`, `largeChaos` from live wind strength, both gated by `m_SeaWindAffectWavesDirection` | Wind terms are live and unshippable — but when the gate is **false** the game passes 0 for both, so **calm water is the game exactly**, not an approximation of it |
+| 4 | `largeWindSpeed = lerp(0, distanceWindSpeed, wavesMultiplier²)`, `largeChaos` from live wind strength, both gated by `m_SeaWindAffectWavesDirection` | Wind terms are live and unshippable. **Corrected on the 2026-08-17 22:25 rip — see §58 — the flag reads `true` on this map**, so the wind branch is live and calm water is an approximation of one windy moment. The original wording here ("when the gate is false ... calm water is the game exactly") was a true conditional presented as the operative case, and the field had not yet shipped to check it against |
 
 Everything else — `refractionColor`, `scatteringColor`, `absorptionDistance`,
 `maxRefractionDistance`, the four scattering terms, caustics, ripples, `startSmoothness`,
@@ -4309,9 +4309,13 @@ stayed a guess purely because the field was absent.
 `DecalProperties.m_RendererPriority` over a prefab's decal meshes (highest wins, so a prefab whose
 meshes disagree takes the one that ends up on screen). Absent means the prefab carries no decal
 properties — **not** priority zero. Contract §4.2a and `docs/schema/instance.schema.json` updated;
-88 contract tests pass. **Awaiting re-rip**, and the consumer half — ordering the ladder's
-`instance_decal` rung by it the way `areas.py` already does — is open work that needs the field on
-disk first.
+88 contract tests pass.
+
+> **CORRECTED on the 2026-08-17 22:25 rip (§58).** The field shipped, and it **refutes the
+> consequence drawn above**: `decalPriority` is **0 on 17,721 of 17,722 decals**, with a single
+> instance at 2. There was no per-decal ordering to port, so the `instance_decal` rung was never
+> "a guess purely because the field was absent". See §58.2 for what the rung is actually standing
+> in for.
 
 ### 57.3 Not re-litigated
 
@@ -4319,3 +4323,73 @@ Tree state → mesh choice (§15, and the 153,991-trees-as-adults defect), sub-o
 (§10 and the `cs2-prefab-submeshes` note), and the colour-variation path (`colorSet`, §7.2 and
 §44's `attrs.color` correction) were all settled in earlier passes and re-checked only for
 contradictions with the above. None found.
+
+## 58. The 2026-08-17 22:25 re-rip: both new fields landed, and both corrected what §56/§57 concluded
+
+The two producer fields added by sweep areas #6 and #8 shipped in the same rip, and each one
+**falsified a consequence** the section that added it had drawn from source alone. That is the
+whole reason for shipping a field rather than reasoning about it, and it is worth recording as a
+pattern: *reading the game tells you what the branch does; only the data tells you which branch a
+real city is on.*
+
+**Staleness, checked the honest way** (CLAUDE.md's non-negotiable — the mtime test gives false
+positives, so confirm against something the rip itself emitted): `bundle.json` 22:25, no producer
+commit after it, and both new fields are present in the output with plausible values. The network
+`.glb`s were rewritten at 22:21 and the save's entity indices happened to be stable across the two
+rips, so `tools/test_net_composition.py` re-measured fresh bytes and returned the same numbers —
+a genuine second confirmation, not a stale read.
+
+### 58.1 §56 row 4: the flag reads `true`, so calm water is NOT the game exactly
+
+`rasters.water.seaWindAffectWavesDirection` = **`true`** on the reference map. §56 wrote *"when the
+gate is false the game passes 0 for both, so calm water is the game exactly, not an approximation
+of it"* — a true conditional presented as the operative case, written before the field existed to
+check against.
+
+With the flag true the wind branch is **live**: `largeWindOrientationValue = m_SeaWindDirection`,
+`largeWindSpeed = lerp(0, distanceWindSpeed, wavesMultiplier²)`, and `largeChaos` from live wind
+strength. So a consumer's calm water is an approximation of **one windy moment**, and it has to be
+declared as one. §56's row 4 is annotated in place and `tools/csiibundle/water.py` now says *"read
+the flag; do not assume it"* with the measured value.
+
+### 58.2 §57.2: the decal priority is uniform, so the lift ladder was never standing in for it
+
+`attrs.decalPriority` shipped on **17,722 decal instances**, and it is **0 on 17,721 of them** —
+one instance carries 2. `decalLayers` is equally degenerate: `("Terrain", "Roads", "Buildings")` on
+the same 17,721, `("Roads", "Buildings", "Other")` on the same one.
+
+§57.2 concluded that the object-decal half of `csiibundle.decals.LIFT_LADDER` *"stayed a guess
+purely because the field was absent"*, and that ordering that rung by it was open consumer work.
+**Both halves of that are wrong.** There is no per-decal ordering in this city to port, so:
+
+* The `instance_decal` rung is **not** a stand-in for a data field. It stands in for
+  **depth-sorted decal projectors** — a renderer capability that a static-mesh consumer does not
+  have and that no shipped field can supply. That is a genuine approximation with **no game
+  counterpart to replace it**, and it is now declared as one rather than left on a to-do list.
+* The contrast with areas is what makes this readable, and it is measured on the same rip:
+  `RenderedArea.m_RendererPriority` takes **13 distinct values spanning −122 to 42**. Areas really
+  do carry an authored ordering, which is why `areas.py` could port that half of the ladder. Object
+  decals do not.
+
+**The field still belongs in the bundle** — it is the game's own answer, "absent" is now
+distinguishable from "zero" (the distinction the schema note already draws), and a modded or DLC
+decal may use the range. It simply does not unblock anything, and §57.2 is annotated in place to
+say so.
+
+### 58.3 §54 re-confirmed on an independent rip
+
+The mask measurement was re-run against the new bundle: **841 distinct masks** (against 890),
+R mean 35.3 with 81.6 % of texels at an extreme, G mean **9.3** with 91.5 % exactly zero, B 2.4,
+A 98.5 with 5.1 % zero — the same distribution to within a rounding error, and 2 of 841 (0.24 %)
+classify as AO against 2 of 890 (0.22 %) before. **`mask.G` is not ambient occlusion on two
+independent rips**, which is a materially stronger result than §54 could claim on one.
+`tools/test_net_composition.py`, `test_terrain_blend`, `test_roadgrade`, `test_terrainclip`,
+`test_heightfield`, `test_terrain_fine` (26/26) and `test_bake_products` all pass unchanged.
+
+### 58.4 What this does not touch
+
+The §55 ground-albedo correction (0.16 → 0.2185) is **still unvalidated**: `cs2_city_fine` was
+built from the *previous* bundle, and Naomi has not looked at it yet. Rebuilding now would change
+two things at once — the albedo target and a whole new rip — so the build on disk is deliberately
+left alone until that look happens. Once it does, the level should be rebuilt from this rip to pick
+up both new fields.

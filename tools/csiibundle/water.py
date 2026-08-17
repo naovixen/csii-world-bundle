@@ -21,6 +21,11 @@ an asset bundle and cannot be read. So:
 * `base_color`, `scattering_color`, `absorption_distance`, the smoothness pair — **exact**,
   straight from the prefab.
 * `endSmoothness = min(smoothnessDistant, smoothnessClose)` — **exact**.
+* `roughness = 1 - smoothness` — the §7 convention, consistent with every other material.
+* IOR 1.333 — water's, not the game's; CS2 does not ship one.
+* Turning `absorption_distance` into a volume density is **modelled**: Beer-Lambert with the
+  shipped distance as the depth at which transmission falls to 1/e. A consumer with a real
+  volumetric water shader should use the distance directly instead.
 
 **It is NOT the game's only bind-time transform, and this file used to say it was** (corrected
 2026-08-17 from `WaterRenderSystem.ApplyMaterialParams`, audit §56). Four more exist, and every
@@ -36,16 +41,17 @@ a consumer has to be told which of these numbers reaches a shader unchanged:
 3. **`foamAmount` is scaled by a camera-height fade** over `foamFadeRange`.
 4. **The wind terms are live**: `largeWindSpeed = lerp(0, distanceWindSpeed, wavesMultiplier²)`
    and `largeChaos` comes from the current wind strength, both gated by
-   `seaWindAffectWavesDirection` — when that is false the game passes 0 for both, so calm water is
-   the game exactly and not an approximation of it.
+   `seaWindAffectWavesDirection`. When that flag is false the game passes 0 for both, and calm
+   water is then the game exactly rather than an approximation of it.
+
+**Read the flag; do not assume it.** On the reference city (2026-08-17 rip) it is **true**, so the
+wind branch IS live there and calm water is an approximation of one windy moment — not a faithful
+replay. It was measured the day it started shipping, which is the only reason this paragraph does
+not still say the comfortable thing.
 
 A consumer replaying a static scene should take the **ground-level calm** case: bands at
-`saturate(wavesMultiplier)`, foam at the full `foamAmount`, no wind terms.
-* `roughness = 1 - smoothness` — the §7 convention, consistent with every other material.
-* IOR 1.333 — water's, not the game's; CS2 does not ship one.
-* Turning `absorption_distance` into a volume density is **modelled**: Beer-Lambert with the
-  shipped distance as the depth at which transmission falls to 1/e. A consumer with a real
-  volumetric water shader should use the distance directly instead.
+`saturate(wavesMultiplier)`, foam at the full `foamAmount`, no wind terms — and, where the flag is
+true, declare that as the approximation it is.
 
 **`seaLevel` is a datum, not a surface, and a consumer must never seat water on it.** It is what
 backdrop ocean is reset to and the plane the renderer measures camera depth against for

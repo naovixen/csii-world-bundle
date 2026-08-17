@@ -274,10 +274,11 @@ Priority is "how visible is the divergence" × "how likely we invented something
   `wavesMultiplier` decays toward 1 with camera height (`t = saturate((h − seaLevel − 750)/250)`);
   the wave bands take `saturate(wavesMultiplier)`, so the authored **1.3 never reaches a band
   amplitude at all**; `foamAmount` is scaled by a camera-height fade; and the wind terms are live,
-  gated by `m_SeaWindAffectWavesDirection` — when that is false the game passes 0 for both, so
-  **calm water is the game exactly**. Named in both the producer string and `csiibundle/water.py`.
-- **Shipped:** `seaWindAffectWavesDirection`, the last prefab field the block dropped. Additive,
-  schema unchanged, **awaiting re-rip**.
+  gated by `m_SeaWindAffectWavesDirection`. Named in both the producer string and
+  `csiibundle/water.py`.
+- **Shipped, and it corrected this section the same day (§58.1).** The flag reads **`true`** on the
+  reference map, so the wind branch is LIVE and calm water is an approximation of one windy moment
+  — not, as this entry first said, the game exactly. Read the flag; do not assume it.
 - **Closed, not findings:** the shoreline dilation is the producer's own declared resampling fix
   (the game hits the same problem and solves it in an unreadable shader); the depth-based
   appearance is the game's verbatim; `seaLevel` is already documented as a datum.
@@ -305,13 +306,18 @@ Priority is "how visible is the divergence" × "how likely we invented something
 - **A decal prefab has no blend mode.** `DecalProperties` carries four things — the atlas rect,
   `m_LayerMask`, `m_EnableInfoviewColor` and **`m_RendererPriority`**. Blending belongs to the
   shader template and HDRP's decal system; the prefab decides only *where* and *in what order*.
-- **So `m_RendererPriority` is the ONLY ordering CS2 states — and we were dropping it.** That is
-  what `csiibundle.decals.LIFT_LADDER` has been standing in for. Half the ladder is already
-  ported: `areas.py` orders surface areas by `RenderedArea.m_RendererPriority`, which we do ship.
-  The object-decal half stayed a guess purely because the field was absent.
-- **Shipped:** `attrs.decalPriority` (max over a prefab's decal meshes; absent ≠ zero). Contract
-  §4.2a and `instance.schema.json` updated, 88 contract tests pass. **Awaiting re-rip**, and
-  ordering the `instance_decal` rung by it is open consumer work that needs the field on disk.
+- **`m_RendererPriority` is the ONLY ordering CS2 states — and we were dropping it.** Shipped as
+  `attrs.decalPriority` (max over a prefab's decal meshes; absent ≠ zero). Contract §4.2a and
+  `instance.schema.json` updated, 88 contract tests pass.
+- **The re-rip then refuted what that was FOR (§58.2).** Measured: `decalPriority` is **0 on 17,721
+  of 17,722 decals** (one carries 2), and `decalLayers` is equally uniform. So the ladder's
+  `instance_decal` rung was never "a guess because the field was absent" — there is no per-decal
+  ordering here to port. It stands in for **depth-sorted projectors**, a renderer capability no
+  shipped field can supply, and is now declared an approximation with no game counterpart rather
+  than left as open work. Areas are the opposite case and are why that half COULD be ported:
+  `RenderedArea.m_RendererPriority` takes **13 distinct values from −122 to 42** on the same city.
+  The field still belongs in the bundle — it is the game's own answer and a modded asset may use
+  the range — it simply unblocks nothing.
 
 ## Working agreements (from CLAUDE.md's non-negotiables)
 
