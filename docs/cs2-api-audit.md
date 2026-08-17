@@ -3038,3 +3038,125 @@ Harness at the 220/5062 portal after the change: **cut 499 m² against 499 m² o
 consumers' reports). The stencil resolves those per pixel; a polygon renders them as a bright
 hairline, which is what crossed the road and the retaining wall in load #18. On the reference city
 they are 10.5 % of the triangles and 0.07 % of the plan area — 25.7 m² of 36,130.
+
+
+## 47. The terrain material composite: the game's tilings, the ground's relief, and why the boundary is blocky (2026-08-17)
+
+Sweep items **1a** (the boundary checkerboard) and **1b** (the cut meshes read flat beside the
+terrain) from `docs/plans/game-parity-sweep.md`, worked by the plan's own method: decompile
+first, write the rule matrix, separate producer from consumer, build a predicate that can be
+sampled, gate it, delete what the rule replaces.
+
+Sources read this round: `Game.Rendering.TerrainMaterialSystem` (1,505 lines),
+`Game.Rendering.TerrainRenderSystem`, `Game.Prefabs.Terrain.TerrainRenderSettingsPrefab` +
+`TerrainTilingData` / `TerrainLodBlendData` / `TerrainBlurDepthData` / `TerrainDepthScaleSetting`,
+`Game.UI.Widgets.TextureImportAttribute`; and, on the consumer's side of the seam, BeamNG's own
+terrain shader — `shaders/common/terrain/terrain.h.hlsl`, `terrainImpl.hlsl`,
+`material/shadergen/terrainMat.hlsl`.
+
+### 47.1 The rule matrix
+
+| # | the game's rule | ours | verdict |
+| --- | --- | --- | --- |
+| 1 | The splat classification is procedural and runs on the GPU: `UpdateSplatmap` blits `m_SplatMaterial` with the height cascade, the water texture, a 256 squared Perlin `_NoiseTex`, the user brush, and the thresholds `_SplatRockLimit = (500, 1500, 0.75, 0)`, `_SplatGrassLimit = (20, 300, 500, 0.5)`, `_SplatHeightVariance = (0.2, 0.4)` | we rip the **output** render texture, so the whole classifier is already baked into `terrain/splatmap.png` | **match** — closes sweep item 1a's third question: there is no classifier to port |
+| 2 | Six grounds composite as opacities `saturate(w x splatMultiplier)^splatPower` over a rock base, in `COMPOSITE_ORDER` | `csiibundle.splat` is that expression verbatim, with the producer's captured multiplier/power | **match** (settled at §33 / SPLAT-3 / SPLAT-6) |
+| 3 | Each ground is drawn at **three tilings** cross-blended by camera distance — `_Terrain*TextureTiling` = [near, mid, far] repeats across the playable area, `_Terrain*TextureTilingBlend` = [midStart, midEnd, farStart, farEnd] camera metres. The reference city: grass 14.34 / 71.68 / 358.4 m, dirt 20.48 / 71.68 / 238.9 m, rock 68.27 / 204.8 / 409.6 m; extras take the grass numbers | the producer has shipped these as `rasters.terrainTiling` since `095322a` and `csiibundle.terrain.ground_tiling` serves them; **the BeamNG app ignored them** and gave every ground a global base 128 / macro 40 / **detail 4 m** | **divergence, consumer-side — FIXED.** BeamNG's base/macro/detail *are* CS2's far/mid/near, and now carry the game's own metres and ramps |
+| 4 | Grounds blend **continuously per pixel** with a height/depth blend: `_BlurDepth` (near 0.1 to far 0.4 over 50 to 2000 m), `_GrassDepthScale`/`_DirtDepthScale`/`_RockDepthScale`, `_TriplanarHeightmapBlending` 0.5 | the per-ground height exists in the bundle and both consumers threw it away | **divergence, consumer-side — FIXED.** See 47.2 |
+| 5 | `TerrainRenderSettingsPrefab.m_*Normal` is imported as `TextureImportAttribute.Mode.MaskMap` (linear, BC-compressed), not as a normal map | we capture it as `<ground>_normal.png` and run `ReconstructTwoChannelNormal` over it | **match** — measured: RGB is a real three-channel tangent normal (R/G centred on 128, B 196–254), so the two-channel rebuild correctly declines to fire, and the alpha survives untouched |
+| 6 | `_SplatMultiplier` 2, `_SplatPower` 1, `_TerrainMipScale`, `_TerrainExtra*BlurDepth` / `SplatRange` / `HeightOffset` / `DirtOverride` | the first two are shipped and applied; the extras' four per-ground knobs are **not captured** | **producer gap, small.** The extras' `splatRange`/`blurDepth` already ride in `rasters.terrainTiling`'s semantics note; `heightOffset` and `dirtOverride` are unread. Filed, not built — they change a paint's softness, not its place |
+
+### 47.2 `<ground>_normal.png`'s alpha is the ground's height map — measured, not assumed
+
+CS2 names a per-ground *depth* three times (`_GrassDepthScale`, `_DirtDepthScale`,
+`_RockDepthScale`) and blends its triplanar terrain with a heightmap, so a height per ground has
+to exist somewhere. It is the alpha of the mask the theme binds as `colossal_Terrain*Normal`, and
+the bundle has been shipping it all along:
+
+* its gradient reproduces the normal's own XY — `corr(nx, -dh/du)` = **+0.36 to +0.54** and
+  `corr(ny, -dh/dv)` the same magnitude with the sign flipped (the usual OpenGL/DirectX green
+  convention), across grass, dirt, rock and extra2;
+* it correlates **+0.23 to +0.59** with the albedo's luminance — crevices dark, peaks light;
+* its spread is per-ground and plausible as relief: rock 107 +- 50, dirt 69 +- 26, grass 134 +- 14.
+
+Not shipped, and recorded here so it is not re-derived: the **albedo's** alpha (means 9–34/255,
+correlating +0.31 to +0.83 with the height) is a plausible *smoothness*, which would replace the
+`roughness` neutral 217. Nothing in the game's source names that channel, so it stays a
+HYPOTHESIS for sweep area #4, exactly as §7.1's "mask G = ambient occlusion" does.
+
+BeamNG consumes a height map at `height{Base,Macro,Detail}Tex`, packs it into the normal texture
+array's G at cook time and reads it back as `data0[*].y` — so the slot our materials filled with a
+flat 128 is precisely the one CS2's own data belongs in. `stages/terrain._height_texture` now
+writes it, centred on mid-gray and rescaled to `HEIGHT_SIGMA`; both of those are **deliberate
+deviations**, declared at the constant, because the two engines' height blends are different
+arithmetic and no CS2 quantity transfers.
+
+### 47.3 The predicate, and the two claims it corrected
+
+`tools/test_terrain_blend.py` ports BeamNG's blend out of the HLSL — `calcBlendValues`,
+`calcHeightBlend`, the `height = saturate(map) + 2 x matFactor` key, and the back-to-front
+composite — and samples it. A scratch probe renders the same port at pixel resolution over a real
+patch of the level's own index raster. Two claims this change was first written on did not survive:
+
+1. **"A real height map widens the soft band."** It does not. The band is set by the bilinear ramp
+   against `heightRange = 0.5` alone and is **24.5 % of a boundary texel** with or without relief.
+   What relief does is **displace** the boundary: sigma = **0.088 texel** at `HEIGHT_SIGMA` =
+   0.125, matching the closed form sigma_h / sqrt(2) to three decimals. That is 0.31 m on a 3.5 m
+   grid — real, and second-order.
+2. **"The checkerboard is `dominant_layer`'s argmax dithering."** Measured on the reference city's
+   splat: only **0.07 %** of texels have their top two visible shares within 0.02 (1.56 % within
+   0.10), and **0.148 %** are isolated from all four neighbours — 5.4 % of the 2.73 % that sit on
+   any boundary. Argmax dither is real and it is small. It is also the **correct** encoding: a
+   heightfield engine that resolves four materials per pixel represents a mix as a dithered index
+   field, and the render shows the blend resolving it. Smoothing the argmax would delete a mix the
+   game actually paints. **Do not smooth it** — that was sweep item 1a's leading candidate, and it
+   is now falsified.
+
+### 47.4 What the boundary blocks are: BeamNG's constants are in texels, and our texel is 3.5 m
+
+Rendering the ported shader over the real index raster reproduces load #19's photograph exactly —
+and isolates the cause. Every softening mechanism in BeamNG's terrain shader is sized in **layer
+texels**, not metres:
+
+| mechanism | source | in texels | at BeamNG's own 0.5 m | at our 3.5 m |
+| --- | --- | --- | --- | --- |
+| domain warp amplitude | `calcLayerWarp`, `warpAmp = 0.5` | +-0.5 | +-0.25 m | **+-1.75 m** |
+| domain warp period | `warpFreq = 1.3` | 0.77 | 0.38 m | **2.69 m** |
+| soft band across a boundary | `heightRange = 0.5` against `2 x matFactor` | 0.245 | 0.12 m | **0.86 m** |
+| height-map displacement | 47.3 | 0.088 | 0.04 m | 0.31 m |
+
+Vanilla BeamNG terrains run at `squareSize` **0.3–0.75 m** (measured off the shipped levels:
+`derby` 0.3, `automation_test_track` 0.5, `hirochi_raceway` 0.75, `johnson_valley` 0.75). We ship
+3.5 m, or 1.75 m on a rip with `layers.terrainFine`. So the shader's boundary softening is
+**5–12x oversize** and every one of its organic wiggles renders as a metre-scale blob of whole
+ground — which is what "a literal checkerboard of whole squares, each fully one ground" is.
+
+No material setting reaches it. `TERRAIN_LAYER_WARP` is `#define ... 1` in `terrain.h.hlsl` and
+that include sits at line 3 of `terrainMat.hlsl`, so the warp is already on; `heightRange` and
+`warpAmp` are shader literals. The only lever is the layer raster's resolution, and in BeamNG's
+`.ter` the layer byte array shares the heightmap's grid — so it is the heightfield resolution or
+nothing. `terrain_upsample = 2` on a base rip gives 1.75 m and is refused on a fine one (the fine
+map is already 1.75 m); 0.875 m would be a 16384 squared `.ter`. **OPEN**, carried back to the
+sweep plan as item 1a's residual with these numbers.
+
+### 47.5 Item 1b: the cut meshes wore the wrong tiling too
+
+`_ground_mesh_texture` composited a ground at a global 4 m detail inside a 40 m macro, against a
+heightfield that (row 3 above) was itself running the wrong tiling. Both now take the ground's own
+`rasters.terrainTiling` near and mid metres, so a `terraincut` piece and the terrain beside it are
+built from the same three periods. Two APPROXIMATIONS remain and are declared where they are made:
+neither period divides `terraincut.GROUND_UV_M` = 40 m evenly and a world-planar UV has to tile at
+the image edge, so the detail repeats round to a whole number (grass 40 / 14.336 = 2.79 -> 3, a
+7 % scale error) and the macro tier — longer than the whole image for every shipped ground — is
+drawn at exactly one repeat.
+
+### 47.6 Counted, deleted, gated
+
+The stage report now prints one line per approximation: the tier strengths and attenuations (the
+vanilla `small_island` numbers, kept because CS2 *lerps* three full tilings where BeamNG *adds*
+two signed overlays, so nothing maps onto them), any ground falling back to the pre-§47 tiling
+guesses, and any ground shipping no height map. Deleted, not bypassed: `BASE_TILE_M`,
+`MACRO_TILE_M`, `DETAIL_TILE_M`, and `NEUTRAL_MAPS["height"]`'s use as a terrain material's actual
+height. Gate: `tools/test_terrain_blend.py`, **25/25**.
+
+**Consumer-side only — no re-rip needed.** Everything §47 fixes was already in the bundle; the one
+producer gap it found (row 6) is filed, not built.

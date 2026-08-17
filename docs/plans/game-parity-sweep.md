@@ -44,7 +44,7 @@ rule replaces. Parity work a phase cannot finish lands here rather than being dr
 
 Priority is "how visible is the divergence" × "how likely we invented something".
 
-### 1. Terrain materials and the splat — IN PROGRESS
+### 1. Terrain materials and the splat — 1a/1b WORKED 2026-08-17 (audit §47); one residual open
 - **Game:** `Game.Rendering.TerrainMaterialSystem` (`UpdateSplatmap`: height cascade + water +
   noise + user brush + `_SplatRockLimit`/`_SplatGrassLimit`; ground roster rock/dirt/grass + 4
   extras), `TerrainRenderSystem`, the terrain shader's own tier blend.
@@ -54,31 +54,34 @@ Priority is "how visible is the divergence" × "how likely we invented something
   edge; removed. BeamNG's own terrain shader adds macro/detail tiers as `(2t − 1)·factor`, so the
   same dark CS2 albedo in all three tiers rendered `extra2` at (0, 6, 0) black; tiers are now
   centred on mid-gray.
-- **OPEN 1a — the boundary dither (load #19, confirmed by Naomi).** The per-sample material INDEX
-  is `splat.dominant_layer`'s argmax, but the game blends the six grounds continuously per pixel.
-  Where two weights are near-equal the argmax flips sample to sample and BeamNG draws a literal
-  checkerboard of whole squares, each fully one ground. Read the composite the game actually
-  renders (`COMPOSITE_ORDER` and the terrain shader's own blend) and decide what a
-  one-index-per-sample engine should store — the argmax of a SMOOTHED weight field is the obvious
-  candidate, but measure it against a render before shipping it.
-  A second, concrete suspect for the same symptom: BeamNG blends adjacent terrain materials using
-  their **height maps**, and we ship a flat 128 gray for every material at every tier
-  (`NEUTRAL_MAPS`, `height{tier}Tex`) — there is nothing for the blend to work with, where every
-  vanilla level ships real ones. Check what BeamNG's terrain shader does with `heightTex` before
-  assuming which of the two causes the checkerboard; it may be both.
-  Also open: `_SplatRockLimit`/`_SplatGrassLimit`/noise mean the game's classification is partly
-  procedural and height/slope-driven — does the shipped splatmap already bake that in, or are we
-  missing the classifier?
-- **OPEN 1b — the ground meshes do not look like the terrain beside them (load #19).** Every
-  `terraincut` piece wears `<level>_ground_<layer>`, a single texture at
-  `terraincut.GROUND_UV_M` = 40 m per repeat composited from the ground's tiers; the terrain beside
-  it renders base+macro+detail with distance attenuation and a 4 m detail tier. Close to the camera
-  the mesh is a flat pale blur against richly textured ground, which is the "square blocks around
-  every cutout" Naomi photographed — the cut geometry is right, the material is not. Options to
-  weigh AFTER reading how BeamNG composes the terrain tiers: give the mesh material its own
-  detail-scale second UV layer and a matching blend, or drive the mesh from the same three textures
-  at the same three tilings. This is presentation parity between two of OUR materials, so the
-  game's role here is only to say what the terrain should look like.
+- **1a — WORKED, and the leading candidate was falsified (audit §47).** Three questions closed:
+  the game's classifier is procedural but runs on the GPU and we rip its **output**, so there is
+  nothing to port; the **argmax dither is NOT the checkerboard** (0.07 % of texels have their top
+  two shares within 0.02; 0.148 % are isolated) and smoothing it would delete a mix the game
+  actually paints — do not; the **height maps were the real gap** and the bundle already carried
+  them (the alpha of `<ground>_normal.png`, measured), so both consumers were discarding CS2's own
+  relief and filling `height{tier}Tex` with a flat 128. Fixed, gated at
+  `tools/test_terrain_blend.py` 25/25.
+- **OPEN 1a-residual — our layer texel is 3.5 m and BeamNG's constants assume ~0.5 m.** Rendering
+  the ported shader over the real index raster reproduces load #19's photograph exactly. Every
+  softening mechanism BeamNG has is sized in layer texels — domain warp ±0.5 texel at a 0.77-texel
+  period, soft band 0.245 texel — and vanilla levels run `squareSize` 0.3–0.75 m against our
+  3.5 m, so all of it renders 5–12× oversize as metre-scale blobs of whole ground. No material
+  setting reaches it (`TERRAIN_LAYER_WARP` is already on; `heightRange`/`warpAmp` are shader
+  literals) and the `.ter` layer array shares the heightmap's grid, so the only lever is
+  heightfield resolution: `terrain_upsample` gives 1.75 m today, 0.875 m would be a 16384²
+  `.ter`. **Decide whether that trade is worth making — it is a size/memory question for Naomi,
+  not a parity question.**
+- **1b — WORKED (audit §47.5).** The `terraincut` mesh materials were composited at a global 4 m
+  detail inside a 40 m macro against a heightfield running the wrong tiling itself; both now take
+  the ground's own `rasters.terrainTiling` near and mid metres, so the piece and the terrain beside
+  it are built from the same three periods. Two rounding approximations remain, declared and
+  counted (the periods do not divide `GROUND_UV_M`).
+- **Filed, not built:** the extras' `_TerrainExtra*HeightOffset` / `DirtOverride` are the one
+  producer gap §47 found; they change a paint's softness, not its place.
+- **HYPOTHESIS for area #4:** the ground **albedo**'s alpha (means 9–34/255) is a plausible
+  smoothness, which would replace the `roughness` neutral 217. Nothing in the game's source names
+  that channel — settle it there, from the shader, not from the correlation.
 
 ### 2. Terrain flattening, smoothing and the road interface
 - **Game:** `CullRoadsJob` (the `ShiftTerrain` sections, `m_MinOffset`/`m_MaxOffset`,
