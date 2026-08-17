@@ -17,7 +17,7 @@ It just looks like plastic. The per-texel values are in `mask`, referenced only 
 |---|---|---|
 | `baseColor` | **sRGB** | RGB albedo, A alpha |
 | `normal` | linear | tangent-space, **OpenGL convention (+Y up)** |
-| `mask` | linear | **R** metallic · G ambient occlusion · B detail/emissive · **A** smoothness |
+| `mask` | linear | **R** metallic · G *not AO, see below* · B unused · **A** smoothness |
 | `emissive` | **sRGB** | RGB emission |
 | `colorMask` | linear | R/G/B per-texel weights for §7.2's three colours · A snow (advisory) |
 
@@ -25,12 +25,32 @@ It just looks like plastic. The per-texel values are in `mask`, referenced only 
 common way to make a bundle look wrong and it is silent: everything renders too shiny or too
 flat, and neither reads as a bug.
 
-**Only R and A are safe to wire.** `mask.G` and `mask.B` are the producer's reading of CS2 as an
-HDRP derivative; the game's own asset-authoring documentation describes them instead as a
-glossy-coat layer and an unused channel. CS2 ships its shaders compiled inside asset bundles, so
-the packing is not recoverable from managed code and the disagreement is recorded rather than
-resolved. Both readings agree on R and on A. `wire_plan()` therefore returns those two and
-leaves G and B out on purpose — do not "improve" it by feeding G in as ambient occlusion.
+**Only R and A are safe to wire, and `mask.G` is NOT ambient occlusion** — settled by measurement
+2026-08-17 (audit §54), where it had been an open disagreement between the HDRP reading and CS2's
+own asset-authoring documentation. CS2 ships its shaders compiled inside asset bundles, so the
+packing is not recoverable from managed code and no amount of reading settles it; what does settle
+it is the content. Over **all 890 distinct mask textures** of the reference city:
+
+| channel | mean | shape | verdict |
+|---|---|---|---|
+| R | 34/255 | 75 % of texels exactly 0, 7 % exactly 255 | **metallic** — binary, as metallic is |
+| G | **9/255** | 91 % of texels exactly 0; 34 % of masks all-zero | **not AO** (see below) |
+| B | 2/255 | 99 % zero — except `NetCompositionMeshLit` (mean 103) | unused for world assets |
+| A | 98/255 | populated everywhere (0.3 % all-zero), uncorrelated with R/G/B | **smoothness** |
+
+An ambient-occlusion map is near-white with dark creases. A channel whose mean is 9/255 is not
+one, and the 18 masks (2 %) whose G mean clears 96 are not one either: **nine are uniformly white**
+(σ ≤ 0.3 — a no-op) and **nine are bimodal** (σ 40–126, half the texels at 0 and half at 255 — a
+selector, not a gradient). Applying all three AO clauses at once (high mean, mostly bright, not
+two-level) leaves **2 of 890 = 0.22 %**, both near-white at G mean 162 and 242. So binding G as AO
+is either pointless or a hard stencil that paints half a surface black; that is exactly what "the
+tunnels are closed off" was. G is also not the emissive/window mask (IoU 0.009 against the emissive map), and
+neither is R (IoU 0.011). G and B correlate with each other at +0.64 and with nothing else, so they
+are a related pair of effect masks whose meaning stays unknown — recorded as unknown rather than
+guessed at again.
+
+`wire_plan()` therefore returns R and A only, and no consumer may bind an occlusion slot from this
+layer.
 
 **A normal map is not always three channels, and reading a packed one as RGB shades it BLACK.**
 The convention above is what the producer *rebuilds* every normal map to; where a rip predates

@@ -218,13 +218,36 @@ Priority is "how visible is the divergence" × "how likely we invented something
   `_pipelineCompositions`, `_rebuiltFramePieces`, …) is rip-report-only, so no offline pass can say
   whether the roundabout branch ever fired. Surfacing them in `warnings.jsonl` needs schema 3.
 
-### 4. Materials: the CS2 shader → PBR mapping
-- **Game:** the surface shaders' own inputs, `TerrainMaterialPropertiesData`, decal properties.
-- **Ask:** contract §7.1 says mask G = ambient occlusion; that is a HYPOTHESIS and it is already
-  suspect — 67 % of masks have an all-zero G, which blacked out walls and tunnels until the
-  materials stage stopped binding AO below a mean of 96/255. Read the shader's own channel use and
-  settle it. Then: metallic/roughness packing, `colorMask`/`colorSet` tinting, alpha modes,
-  emissive, and what a decal's blend mode really is.
+### 4. Materials: the CS2 shader → PBR mapping — WORKED 2026-08-17 (audit §54); consumer-only, no re-rip
+- **Game:** `Colossal.AssetPipeline.Constants.Material`, `TextureImportAttribute.Mode`,
+  `TerrainMaterialSystem.CreateFallbackNormalTexture`, `RenderedArea`, `DecalProperties`.
+- **The shader cannot be read, and that is the finding.** Constants names the complete world-asset
+  texture set but never a channel; the templates are Colossal's own (`Default`, `Windows`,
+  `VegLeaves`, `NetCompositionMeshLit`, `DefaultDecal`), not stock HDRP Lit, so the HDRP packing is
+  an assumption not an inheritance; the install ships no shader source; the modding toolchain is a
+  stub. `_AmbientOcclusionMap` exists only on the **character** path.
+- **`mask.G` IS NOT AMBIENT OCCLUSION — settled by measuring all 890 masks.** G mean **9/255** with
+  91 % of texels exactly zero. R (mean 34, 82 % at an extreme) is metallic and A (mean 98,
+  populated everywhere, uncorrelated with the rest) is smoothness, exactly as §7.1 had them. Of the
+  18 masks clearing the old 96/255 gate, nine are uniformly white (a no-op) and nine are bimodal
+  0/255 stencils; only **2 of 890 (0.22 %)** read as AO at all, both near-white. G is not the
+  emissive mask either (IoU 0.009); G and B correlate at +0.64 with nothing else and their meaning
+  is **recorded as unknown** rather than guessed a fourth time.
+- **Deleted:** `AO_MIN_MEAN`/`_usable_ao` (a per-texture gate that did no useful work and read
+  every mask off disk to decide), the `ambientOcclusionMap` binding, and the bake's `_ao.png`
+  split (890 PNG writes; materials product version 1 → 2). The rule moved into
+  `tools/csiibundle/materials.py` so both consumers get it.
+- **Predicate:** `tools/test_mask_channels.py` — two structural clauses plus the measurement re-run
+  against whatever bundle is on disk, with a negative control that must classify a synthesised AO
+  map AS AO.
+- **§47 corrected from source:** `CreateFallbackNormalTexture` builds the neutral ground map as
+  RGBA **(128, 128, 255, 128)** — RGB is a genuine flat tangent normal, and the alpha's neutral is
+  the **midpoint**, which is a height map and not smoothness. §47's correlation-based reading is
+  confirmed.
+- **OPEN, filed not built:** `_WindRangeLvlB`/`_WindElasticityLvlB` are authored material
+  properties we never ship (animation only); `DecalProperties.m_RendererPriority` decides which of
+  two overlapping decals wins and is shipped for areas but not for object decals; `RenderedArea`'s
+  four mask/normal blend scalars are unswept.
 
 ### 5. Lighting, exposure and colour
 - **Game:** HDRP volume stack, `LightingSystem`, the tonemapper, `grading.json`'s own source.

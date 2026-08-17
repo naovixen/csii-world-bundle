@@ -107,7 +107,6 @@ def run(ctx, progress):
     progress.begin("materials: textures", total=None, unit="textures")
     jobs = {}                                          # (src, kind, keep_alpha) -> None
     plans = {}                                         # canonical -> {slot: (src, kind, keep_alpha)}
-    ao_cache = {}
     for name in canonical:
         rec = materials.get(name) or {}
         mode = rec.get("alphaMode") or "opaque"
@@ -120,11 +119,11 @@ def run(ctx, progress):
         if normal_rel:
             base = ctx.derived_dir if normal_rel.endswith("_normal_rgb.png") else ctx.bundle
             plan["normal"] = (os.path.join(base, normal_rel), "normal", False)
-        for slot in ("roughness", "metallic", "ao"):
+        # No occlusion slot: the mask's G is not AO (audit §54), so the bake no longer splits it
+        # and nothing here may wire one.
+        for slot in ("roughness", "metallic"):
             rel = (rec.get("derived") or {}).get(slot)
             if rel:
-                if slot == "ao" and not _usable_ao(os.path.join(ctx.derived_dir, rel), ao_cache):
-                    continue
                 plan[slot] = (os.path.join(ctx.derived_dir, rel), "data", False)
         if rec.get("emissive"):
             plan["emissive"] = (os.path.join(ctx.bundle, rec["emissive"]), "color", False)
@@ -202,26 +201,18 @@ def run(ctx, progress):
             "seconds": round(time.monotonic() - started, 1)}
 
 
-# The bake splits the §7.1 mask's G channel out as `_ao.png`, and on the reference city that
-# channel is all-zero on 67 % of the masks (mean 11.5/255 over the set) — whatever the game keeps
-# there, it is not an occlusion term a renderer may multiply ambient light by: bound as
-# `ambientOcclusionMap` it painted every retaining wall and tunnel interior pitch black in shadow
-# (loads #9-#14, "the tunnels are closed off"). A map is only bound when it reads like AO — mostly
-# light. Below this mean the slot is left unset (BeamNG's default AO is 1).
-AO_MIN_MEAN = 96.0
-
-
-def _usable_ao(path, cache):
-    if path in cache:
-        return cache[path]
-    ok = False
-    try:
-        arr = png.gray_array(path)
-        ok = bool(arr[::4, ::4].mean() >= AO_MIN_MEAN)
-    except (OSError, ValueError):
-        ok = False
-    cache[path] = ok
-    return ok
+# THE OCCLUSION SLOT IS GONE, and it is not coming back (audit §54, 2026-08-17).
+# What stood here was `AO_MIN_MEAN = 96.0` and a per-texture gate: bind the §7.1 mask's G channel
+# as `ambientOcclusionMap` only when it "reads like AO — mostly light", because binding it
+# unconditionally painted every retaining wall and tunnel interior pitch black in shadow (loads
+# #9-#14, "the tunnels are closed off"). That was a heuristic standing in for a rule, and the rule
+# is now measured over all 890 masks of the reference city: G means 9/255 with 91 % of texels
+# exactly zero, and of the 18 masks that cleared the gate NINE ARE UNIFORMLY WHITE (a no-op) and
+# NINE ARE BIMODAL 0/255 SELECTORS (a stencil, not a gradient); only 2 of 890 (0.22 %) read as AO
+# on every clause, and both are near-white. So the gate admitted almost only the cases where
+# binding changed nothing, and rejected the cases where it would have been wrong — it did no useful
+# work, and it read every mask off disk to decide that.
+# The bake stopped splitting the channel; BeamNG's own default AO is 1, which is the right answer.
 
 
 def _has_alpha(path):

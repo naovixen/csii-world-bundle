@@ -6,8 +6,9 @@ Conventions (from shipped `main.materials.json` files and the v1.5 docs):
   1.5, "Stages": [{...}, {}, {}, {}], flags...}`. `mapTo` is the name the `.dae` binds
   (`<material name="...">`), so it is what `dae.sanitize` produces for the same string.
 * Stage 0 maps: `baseColorMap` (`.color.png`, sRGB, alpha kept when the material cuts or
-  blends), `normalMap` (`.normal.png`), `roughnessMap` / `metallicMap` /
-  `ambientOcclusionMap` (`.data.png`, linear, from the bake's split mask), `emissiveMap`,
+  blends), `normalMap` (`.normal.png`), `roughnessMap` / `metallicMap` (`.data.png`, linear,
+  from the bake's split mask — there is **no** `ambientOcclusionMap`, because the mask's G
+  channel is not occlusion; audit §54), `emissiveMap`,
   `colorPaletteMap` (the CS2 colour mask: RGB selects `instanceColor/1/2` — the palette tint
   path). Scalars: `roughnessFactor`, `metallicFactor`, `diffuseColor`, `emissiveFactor`.
 * Alpha: v1.5 takes opacity from an **`opacityMap`** (464 of ~500 vanilla translucent materials
@@ -132,8 +133,9 @@ def _encode_dds(arr, kind, keep_alpha=False):
 
 def material_v15(level, name, rec, maps, pid_key=None):
     """One v1.5 material object. `name` is the final (mapTo) name; `rec` the bake's resolved
-    record; `maps` the exported game paths: {baseColor, normal, roughness, metallic, ao,
-    emissive, colorMask} (any may be None)."""
+    record; `maps` the exported game paths: {baseColor, normal, roughness, metallic,
+    emissive, colorMask} (any may be None). There is deliberately no occlusion map: the §7.1
+    mask's G channel is not AO (audit §54)."""
     stage = {}
     if maps.get("baseColor"):
         stage["baseColorMap"] = maps["baseColor"]
@@ -147,8 +149,6 @@ def material_v15(level, name, rec, maps, pid_key=None):
         stage["metallicMap"] = maps["metallic"]
     elif rec.get("metallic") is not None:
         stage["metallicFactor"] = float(rec["metallic"])
-    if maps.get("ao"):
-        stage["ambientOcclusionMap"] = maps["ao"]
     if maps.get("emissive"):
         stage["emissiveMap"] = maps["emissive"]
         factor = rec.get("emissiveFactor") or [1.0, 1.0, 1.0]

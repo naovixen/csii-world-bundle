@@ -7,10 +7,16 @@ What a renderer needs from `materials.json` is decided once here (contract §13)
   texture set is identical (`materials.texture_set_key`) — 4,641 → 1,409 on the reference city,
   and BeamNG's first performance cost is unique materials per view; the normal maps that were
   rebuilt; and the paint-variant textures.
-* `derived/textures/<sha>_metallic.png` / `_roughness.png` / `_ao.png` — the §7.1 `mask`
-  channels as single-channel PNGs (R, 255 − A, G). Every engine wants them separate; the `.glb`
-  ships none of them and every glTF consumer rendered the city at one flat roughness until it
-  read this.
+* `derived/textures/<sha>_metallic.png` / `_roughness.png` — the §7.1 `mask` channels a renderer
+  may actually wire, as single-channel PNGs (R, and 255 − A). Every engine wants them separate;
+  the `.glb` ships none of them and every glTF consumer rendered the city at one flat roughness
+  until it read this.
+  **`_ao.png` is gone (product version 2, audit §54).** It was the mask's G channel, and G is not
+  ambient occlusion: measured over all 890 masks of the reference city its mean is 9/255 with 91 %
+  of texels exactly zero, and of the 18 that clear an "is it light enough to be AO" gate nine are
+  uniformly white (a no-op) and nine are bimodal 0/255 selectors — only 2 of 890 (0.22 %) read as
+  AO at all, and both are near-white. Binding it darkened every tunnel interior. The channel is not lost — `materials.json`'s `mask` still ships it — but nothing may
+  wire it as occlusion, so the bake stops writing 890 PNGs no consumer is allowed to read.
 * `derived/textures/<sha>_normal_rgb.png` — a two-channel (AG/RG) normal map rebuilt to RGB, for
   the rare packed one that still reaches disk (`materials.detect_normal_packing`).
 * `derived/paint_variants.json` + `derived/textures/<sha>_v<k>.png` — per prefab, K
@@ -132,21 +138,20 @@ def run(context, progress):
         progress.check()
         src = os.path.join(bundle, rel)
         stem = _sha_stem(rel)
-        outs = {"metallic": f"textures/{stem}_metallic.png", "roughness": f"textures/{stem}_roughness.png",
-                "ao": f"textures/{stem}_ao.png"}
+        outs = {"metallic": f"textures/{stem}_metallic.png",
+                "roughness": f"textures/{stem}_roughness.png"}
         if os.path.isfile(src):
             try:
                 rgba = png.rgba_array(src)
                 png.write_gray(os.path.join(derived, outs["metallic"]), rgba[:, :, 0])
                 png.write_gray(os.path.join(derived, outs["roughness"]), 255 - rgba[:, :, 3])
-                png.write_gray(os.path.join(derived, outs["ao"]), rgba[:, :, 1])
                 split_of[rel] = outs
                 written += 1
             except Exception as exc:  # noqa: BLE001 - one bad texture must not stop the bake
                 progress.log(f"mask {rel}: unreadable ({exc!r}), skipped")
         if i % 25 == 0:
             progress.advance(min(25, len(mask_paths) - i))
-    progress.end(f"{written} masks split into metallic/roughness/ao")
+    progress.end(f"{written} masks split into metallic/roughness")
     stats["masksSplit"] = written
 
     # 3. rebuild packed normals -----------------------------------------------------------------
@@ -322,4 +327,4 @@ def run(context, progress):
     return stats
 
 
-register(Product(PRODUCT_NAME, INPUTS, "materials.json", run))
+register(Product(PRODUCT_NAME, INPUTS, "materials.json", run, version=2))

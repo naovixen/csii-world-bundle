@@ -4029,3 +4029,117 @@ Producer edits are comment- and dead-code-only (`NetworkRipSystem.GameMesh.cs` h
 cross-anchor branch, `NetworkRipSystem.cs`'s hanging-lane comment); `dotnet build -c Release` is
 clean, 0 warnings. **No geometry changes, so no re-rip is owed** — the gate above already runs
 against the current bundle and passes.
+
+## 54. Materials: `mask.G` is not ambient occlusion, settled by measurement (2026-08-17)
+
+Game-parity sweep **area #4**. The headline ask: *"contract §7.1 says mask G = ambient occlusion;
+that is a HYPOTHESIS and it is already suspect — 67 % of masks have an all-zero G, which blacked
+out walls and tunnels until the materials stage stopped binding AO below a mean of 96/255. Read
+the shader's own channel use and settle it."*
+
+**The shader cannot be read, and that is a finding rather than a blocker.** Every route was tried:
+`Colossal.AssetPipeline.Constants.Material` names the complete world-asset texture set
+(`_BaseColorMap`, `_ControlMask`, `_MaskMap`, `_NormalMap`, `_EmissiveColorMap`, `_MainTex`,
+`_InteriorAtlas`, the `_Worldspace*` trio) but never a channel; `TextureImportAttribute.Mode`
+gives only colour space (`MaskMap` ⇒ linear, BC-compressed, not a normal map); the shader
+*templates* are Colossal's own (`Default`, `Windows`, `VegLeaves`, `NetCompositionMeshLit`,
+`DefaultDecal`, …), not stock HDRP Lit, so the HDRP packing is an assumption and not an
+inheritance; the game install ships no `.hlsl`/`.shader`/`.cginc`; and the modding toolchain at
+`CSII_TOOLPATH` is a stub (an empty Unity project, no HDRP package, no material templates).
+`_AmbientOcclusionMap` *does* exist as a property — but only in `GetDidimoShaderProperty`, the
+**character** path, beside `_CavityMap`/`_RoughnessMap`/`_TransMap`. World assets have no AO map.
+
+So the question was settled the way the method allows when source runs out: by measuring the
+content, over **all 890 distinct mask textures** of the 2026-08-16 rip.
+
+### 54.1 What the channels actually are
+
+| channel | mean | shape | verdict |
+|---|---|---|---|
+| **R** | 34/255 | 75 % of texels exactly 0, 7 % exactly 255 (82 % at an extreme) | **metallic** — binary, as metallic is |
+| **G** | **9/255** | 91 % of texels exactly 0; 34 % of masks entirely zero | **NOT ambient occlusion** |
+| **B** | 2/255 | 99 % zero — except `NetCompositionMeshLit`, where mean 103 and 37 % at 255 | unused for world assets |
+| **A** | 98/255 | populated everywhere (0.3 % of masks all-zero), uncorrelated with R/G/B (\|r\| ≤ 0.17) | **smoothness** |
+
+R and A come out exactly as §7.1 had them. G does not. An ambient-occlusion map is near-white
+with dark creases; a channel whose mean is 9/255 is not one. Nor are the outliers: of the 18 masks
+(2 %) whose G mean clears the app's own 96/255 gate, **nine are uniformly white** (σ ≤ 0.3 — a
+no-op) and **nine are bimodal** (σ 40–126, half the texels at 0 and half at 255 — a stencil, not a
+gradient). Applying all three AO clauses at once — high mean, mostly bright, not two-level — leaves
+**2 of 890 = 0.22 %**, and both of those are near-white (G mean 162 and 242), so even they would
+barely darken anything.
+
+Two candidate identities for G were tested and both failed: it is **not** the emissive/window mask
+(IoU 0.009 between `G > 8` and `emissive > 8` over materials carrying both), and neither is R (IoU
+0.011). G and B correlate with each other at **+0.64** and with nothing else, so they are a related
+pair of effect masks. What they select stays unknown, and is now **recorded as unknown** rather
+than guessed at for a fourth time.
+
+Per-template, the packing is clearly not uniform, which is itself the reason no single "mask G ="
+rule was ever going to hold: `VegLeaves`/`VegRoot` masks have G and B identically zero and R at
+mean 70; `DefaultDecal` inverts the picture entirely (R and B ≈ 0, **G mean 147 with 52 % at
+exactly 255**); `NetCompositionMeshLit` is the only template that uses B.
+
+### 54.2 What changed
+
+| # | Finding | Action |
+|---|---|---|
+| 1 | `mask.G` is not AO — measured, not argued | Contract row in `csiibundle/materials.py` corrected from "G ambient occlusion · B detail/emissive" to "G *not AO* · B unused", with the measurement table inline |
+| 2 | The BeamNG app carried `AO_MIN_MEAN = 96.0` and `_usable_ao()`, a per-texture gate deciding whether a mask's G "reads like AO" | **Deleted.** The gate admitted almost only the cases where binding changed nothing (nine uniformly white masks) and rejected the cases where it would have been wrong — it did no useful work, and read every mask off disk to decide that. BeamNG's own default AO is 1, which is the right answer |
+| 3 | `beamng/materials.py` bound `ambientOcclusionMap` from the split | **Deleted**, and the stage-0 map list documents the absence |
+| 4 | The bake split the channel to `derived/textures/<sha>_ao.png` — 890 PNG writes per bake | **Deleted**; materials product **version 1 → 2**. The channel is not lost (`materials.json`'s `mask` still ships it), but nothing may wire it as occlusion |
+| 5 | The rule lived in one consumer | Moved to `tools/csiibundle/materials.py`, so both consumers get it — CLAUDE.md's "a fix only one consumer gets is in the wrong place" |
+
+### 54.3 The predicate
+
+`tools/test_mask_channels.py`. Two structural clauses that stop the answer being un-learned
+(`wire_plan()` offers no occlusion slot; the bake writes no `_ao.png`), plus the measurement
+re-run against whatever bundle is on disk — so a future city that genuinely ships AO in G is not
+silently judged by yesterday's conclusion. It asserts the AO-like fraction stays under 1 % (it is
+0.22 %), that A is populated everywhere, and that R is binary.
+
+The negative control is part of the test, per `test_node_fan.py`'s lesson: the same classifier is
+run over a synthesised near-white AO map and **must** call it AO, and over a uniform-white channel
+and a bimodal stencil and must reject both. Otherwise "not AO" would be a verdict the classifier
+hands out to everything.
+
+### 54.4 A correction to §47, from the same source pass
+
+`Game.Rendering.TerrainMaterialSystem.CreateFallbackNormalTexture()` builds the neutral ground
+"normal" as RGBA **(128, 128, 255, 128)**. That settles two things §47 had to establish by
+correlation:
+
+* **RGB is a genuine three-channel tangent normal** — (128, 128, 255) is flat (0, 0, 1). The
+  `TerrainRenderSettingsPrefab` fields are declared `TextureImport(Mode.MaskMap)` rather than
+  `Mode.Normal`, which is a *colour-space* declaration (linear, so the shader does its own
+  `2x − 1`) and not a claim that the texture is a mask.
+* **The alpha's neutral is the MIDPOINT, 128** — not 255 and not 0. A channel whose no-op value is
+  0.5 is a signed displacement about a mid-plane, i.e. a **height map**. §47 shipped that reading
+  off a measured gradient correlation (+0.36…+0.54 against the normal's own XY); it is now
+  confirmed from the game's own source, and the competing "the alpha is smoothness" reading is
+  ruled out (smoothness has no reason to sit at 0.5).
+
+### 54.5 Reachable and unread, this domain
+
+- **`_WindRangeLvlB` / `_WindElasticityLvlB`** (filed here from §53.5): authored `MaterialProperty`
+  entries no game system writes, read by the shader against the global wind field. Not in
+  `materials.json`. Animation only, so no static geometry changes — but data the design never
+  shipped.
+- **`DecalProperties.m_RendererPriority`.** A decal prefab carries no blend mode at all — the
+  answer to *"what a decal's blend mode really is"* is that there isn't one on the prefab: blending
+  comes from the shader template (`DefaultDecal`/`CurvedDecal`) and HDRP's decal system, while the
+  prefab decides only **where** it projects (`m_LayerMask`, a `DecalLayers` mask) and **in what
+  order** (`m_RendererPriority`). We ship `decalLayers` and `decalHeight` per instance; we do
+  **not** ship the priority, which is what decides which of two overlapping decals wins. Areas do
+  ship it (`TerrainRipSystem` writes `rendererPriority` for `RenderedArea`), so this is an
+  object-decal gap, not a layer-wide one.
+- `RenderedArea` also exposes `m_MetallicOpacity`, `m_NormalOpacity`, `m_MetallicAlphaSource` and
+  `m_NormalAlphaSource` — four blend scalars for how an area surface's mask and normal mix with
+  its scalars. Not swept here.
+
+### 54.6 Status
+
+Consumer-side only: no producer change, no re-rip owed. `test_mask_channels.py`,
+`test_bake_products.py`, `test_b1_readers.py`, `test_bundle_contract.py` (88 tests),
+`test_a2_dae.py` (58/58) and `test_normal_packing.py` all pass. The materials bake product is at
+version 2, so the next build re-bakes that product and drops the `_ao.png` files.
