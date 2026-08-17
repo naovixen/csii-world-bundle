@@ -37,7 +37,7 @@ from .roads import load_road_surface
 from .tiles import TileSink
 
 PRODUCT_NAME = "markings"
-INPUTS = ("laneGeometry", "lanePrefabs", "laneMeshes", "networkMeshes", "networks", "instances", "meshes", "terrain")
+INPUTS = ("laneGeometry", "lanePrefabs", "laneMeshes", "networkMeshes", "networks", "instances", "meshes", "terrain", "terrainFine")
 DECAL_STEP = 2.0     # metres: instance-decal quads are split so no edge exceeds this before draping. TUNED.
 
 
@@ -101,7 +101,7 @@ def run(context, progress):
 
     road, road_stats = load_road_surface(bundle, region, progress)
     stats["road"] = road_stats
-    ground = drape.HeightfieldSurface.from_bundle(bundle)
+    ground = drape.HeightfieldSurface.from_bundle(bundle, prefer_fine=options.get("ground", "fine") == "fine")
     if ground is None:
         progress.log("no terrain layer: markings with no road beneath keep their bent height")
 
@@ -299,4 +299,4 @@ def _texture_uri_base(out_dir, bundle):
         return None
 
 
-register(Product(PRODUCT_NAME, INPUTS, "markings/", run))
+register(Product(PRODUCT_NAME, INPUTS, "markings/", run, options=("ground",)))

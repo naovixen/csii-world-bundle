@@ -2,7 +2,7 @@
 
     blender --background --python tools/blender_import_level.py -- --level <levels/cs2_city> \
         --center <X> <Y> --radius 250 [--products networks,markings,lanegeometry,holewalls] \
-        [--no-terrain] --save out.blend
+        [--no-terrain] [--ter other.ter] --save out.blend
 
 Reads what BeamNG reads — the level folder, nothing from the bundle — so a render answers
 "what will the game draw here" for the parts Blender can show: the `.ter` heightfield with its
@@ -48,7 +48,7 @@ def log(msg):
 
 def parse_args():
     argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
-    opts = {"level": None, "center": None, "radius": 250.0, "products": None, "terrain": True, "save": None}
+    opts = {"level": None, "center": None, "radius": 250.0, "products": None, "terrain": True, "save": None, "ter": None}
     i = 0
     while i < len(argv):
         a = argv[i]
@@ -62,6 +62,10 @@ def parse_args():
             opts["products"] = set(argv[i + 1].split(",")); i += 2
         elif a == "--no-terrain":
             opts["terrain"] = False; i += 1
+        elif a == "--ter":
+            # diagnostic: another level's .ter (same size/origin) in place of this level's — the
+            # A/B of a terrain-stage change against the shapes that did not change
+            opts["ter"] = argv[i + 1]; i += 2
         elif a == "--save":
             opts["save"] = argv[i + 1]; i += 2
         else:
@@ -101,12 +105,12 @@ def resolve(level_dir, game_path):
 
 # -- terrain -------------------------------------------------------------------------------------
 
-def build_terrain(level_dir, objects, center, radius):
+def build_terrain(level_dir, objects, center, radius, ter_override=None):
     block = next((o for o in objects if o.get("class") == "TerrainBlock"), None)
     if block is None:
         log("no TerrainBlock in the level")
         return
-    ter_path = resolve(level_dir, block["terrainFile"])
+    ter_path = ter_override or resolve(level_dir, block["terrainFile"])
     size, heights, layers, names = ter_mod.read_ter(ter_path)
     pos = [float(v) for v in block["position"]]
     cell = float(block.get("squareSize") or 1.0)
@@ -414,7 +418,7 @@ def main():
     objects, materials = read_level(level_dir)
     log(f"{len(objects)} objects, {len(materials)} materials in {level_dir}")
     if opts["terrain"]:
-        build_terrain(level_dir, objects, opts["center"], opts["radius"])
+        build_terrain(level_dir, objects, opts["center"], opts["radius"], ter_override=opts["ter"])
     tiles = tiles_in_region(level_dir, objects, opts["center"], opts["radius"], opts["products"])
     log(f"{len(tiles)} shape tiles meet the region")
     import_tiles(tiles, materials, level_dir, opts["center"], opts["radius"])

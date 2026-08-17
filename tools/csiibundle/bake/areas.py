@@ -23,7 +23,7 @@ from .ground import GroundSurface
 from .tiles import TileSink
 
 PRODUCT_NAME = "areas"
-INPUTS = ("areas", "areaPrefabs", "terrain")
+INPUTS = ("areas", "areaPrefabs", "terrain", "terrainFine")
 
 
 def run(context, progress):
@@ -40,7 +40,7 @@ def run(context, progress):
     areas_path = reader.layer_path(bundle, "areas")
     manifest = context.manifest or {}
     total = int(((manifest.get("counts") or {}).get("areas")) or 0) or None
-    ground = GroundSurface(bundle, options.get("diagonal", "envelope"), mode="max")
+    ground = GroundSurface(bundle, options.get("diagonal", "envelope"), mode="max", prefer_fine=options.get("ground", "fine") == "fine")
     if not ground.present:
         progress.log("areas: no terrain layer — areas stay at their authored heights (flat)")
         sample = lambda x, y: None  # noqa: E731
@@ -102,4 +102,4 @@ def run(context, progress):
             "seconds": round(time.monotonic() - started, 1)}
 
 
-register(Product(PRODUCT_NAME, INPUTS, "areas/", run))
+register(Product(PRODUCT_NAME, INPUTS, "areas/", run, options=("ground",)))

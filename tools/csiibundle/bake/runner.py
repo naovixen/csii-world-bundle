@@ -30,6 +30,10 @@ DEFAULT_OPTIONS = {
     "diagonal": "envelope",
     "region": None,
     "jobs": 1,
+    # Which §8 raster is "the ground": "fine" = layers.terrainFine (1.75 m) when the bundle has
+    # it, "base" = the 3.5 m heightmap. A consumer that feeds its engine the 4096 base map must
+    # bake against it too, or the paint floats over / sinks under a ground the level does not have.
+    "ground": "fine",
 }
 
 
@@ -64,7 +68,8 @@ def plan(bundle_dir, derived, options, only=None, force=False, registry=None):
         if force:
             status, reason = "stale", "forced"
         else:
-            status, reason = _manifest.product_status(document, name, product.inputs, bundle_dir, options)
+            status, reason = _manifest.product_status(document, name, product.inputs, bundle_dir, options,
+                                                      version=product.version, option_keys=product.options)
         result.append((product, status, reason))
     return result
 
@@ -129,7 +134,8 @@ def run(bundle_dir, derived_dir=None, options=None, only=None, force=False, prog
         seconds = time.monotonic() - started
         tiles = stats.pop("_tiles", None) if isinstance(stats, dict) else None
         _manifest.record_product(document, product.name, product.path, inputs, seconds,
-                                 tiles=tiles, stats=stats or None)
+                                 tiles=tiles, stats=stats or None, version=product.version,
+                                 options={k: options.get(k) for k in product.options})
         _manifest.save(derived, document)
         outcomes.append(Outcome(product.name, "baked", reason, seconds, stats))
     return outcomes

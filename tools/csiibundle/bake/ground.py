@@ -16,13 +16,13 @@ from .. import drape
 
 
 class GroundSurface(drape.ProjectionSurface):
-    def __init__(self, bundle_dir, diagonal="envelope", mode="max"):
+    def __init__(self, bundle_dir, diagonal="envelope", mode="max", prefer_fine=True):
         self.mode = mode
         if diagonal == "envelope":
-            self.a = drape.HeightfieldSurface.from_bundle(bundle_dir, diagonal="nw_se")
-            self.b = drape.HeightfieldSurface.from_bundle(bundle_dir, diagonal="ne_sw")
+            self.a = drape.HeightfieldSurface.from_bundle(bundle_dir, diagonal="nw_se", prefer_fine=prefer_fine)
+            self.b = drape.HeightfieldSurface.from_bundle(bundle_dir, diagonal="ne_sw", prefer_fine=prefer_fine)
         else:
-            self.a = drape.HeightfieldSurface.from_bundle(bundle_dir, diagonal=diagonal)
+            self.a = drape.HeightfieldSurface.from_bundle(bundle_dir, diagonal=diagonal, prefer_fine=prefer_fine)
             self.b = None
         self.present = self.a is not None
 

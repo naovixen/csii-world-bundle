@@ -30,7 +30,7 @@ class TileSink:
         self.product = product
         self.out_dir = out_dir
         self.material_specs = material_specs or {}
-        self._buckets = defaultdict(lambda: {"corners": [], "uvs": [], "colors": []})
+        self._buckets = defaultdict(lambda: {"corners": [], "uvs": [], "colors": [], "normals": []})
         self.triangles = 0
         os.makedirs(out_dir, exist_ok=True)
         # A previous bake (another region, another tile size) leaves tiles this one will not
@@ -42,9 +42,10 @@ class TileSink:
                 except OSError:
                     pass
 
-    def add(self, verts, tris, uvs, material, variant=None, colors=None):
+    def add(self, verts, tris, uvs, material, variant=None, colors=None, normals=None):
         """Add triangles. `verts` `(N,3)` bundle frame; `tris` `(M,3)`; `uvs` `(M,3,2)` per corner
-        or `(N,2)` per vertex or None; `colors` `(N,4)` per vertex or None."""
+        or `(N,2)` per vertex or None; `colors` `(N,4)` per vertex or None; `normals` `(N,3)` per
+        vertex (bundle frame) or None — a primitive without them gets flat normals at write time."""
         verts = numpy.asarray(verts, dtype=numpy.float64)
         tris = numpy.asarray(tris, dtype=numpy.int64)
         if len(tris) == 0:
@@ -56,6 +57,7 @@ class TileSink:
             uvs = numpy.asarray(uvs, dtype=numpy.float64)
             corner_uv = uvs if uvs.ndim == 3 else uvs[tris]
         corner_col = None if colors is None else numpy.asarray(colors, dtype=numpy.float64)[tris]
+        corner_nrm = None if normals is None else numpy.asarray(normals, dtype=numpy.float64)[tris]
         centroid = corners.mean(axis=1)
         tx = numpy.floor(centroid[:, 0] / self.tile).astype(numpy.int64)
         tz = numpy.floor(centroid[:, 2] / self.tile).astype(numpy.int64)
@@ -73,6 +75,7 @@ class TileSink:
             bucket["corners"].append(corners[sel])
             bucket["uvs"].append(corner_uv[sel])
             bucket["colors"].append(None if corner_col is None else corner_col[sel])
+            bucket["normals"].append(None if corner_nrm is None else corner_nrm[sel])
         self.triangles += len(tris)
 
     def tiles(self):
@@ -95,12 +98,19 @@ class TileSink:
                 cols = None
                 if all(c is not None for c in bucket["colors"]) and bucket["colors"]:
                     cols = numpy.concatenate(bucket["colors"])          # (M,3,4)
-                v, n_uv, n_col, t = weld(corners, uvs, cols)
+                nrms = None
+                if all(c is not None for c in bucket["normals"]) and bucket["normals"]:
+                    nrms = numpy.concatenate(bucket["normals"])         # (M,3,3)
+                welded = weld(corners, uvs, cols, nrms)
+                v, n_uv, n_col, t = welded[:4]
+                n_nrm = welded[4] if len(welded) > 4 else None
                 if len(t) == 0:
                     continue
                 prim = {"verts": v, "uvs": n_uv, "tris": t, "material": name}
                 if n_col is not None:
                     prim["colors"] = n_col
+                if n_nrm is not None:
+                    prim["normals"] = n_nrm
                 prims.append(prim)
                 total_verts += len(v)
                 total_tris += len(t)
@@ -142,9 +152,11 @@ class TileSink:
         return specs
 
 
-def weld(corners, uvs, colors=None):
-    """Per-corner arrays → indexed mesh: `(verts (N,3), uvs (N,2), colors (N,4)|None, tris (M,3))`,
-    merging corners whose position (to `WELD_MM`), uv and colour agree."""
+def weld(corners, uvs, colors=None, normals=None):
+    """Per-corner arrays → indexed mesh: `(verts (N,3), uvs (N,2), colors (N,4)|None, tris (M,3)
+    [, normals (N,3)|None])`, merging corners whose position (to `WELD_MM`), uv and colour agree
+    (a welded vertex takes the normalised mean of its corners' normals). The fifth element is
+    returned only when `normals` is passed, so older callers keep their 4-tuple."""
     m = len(corners)
     pos = corners.reshape(-1, 3)
     uv = uvs.reshape(-1, 2)
@@ -162,7 +174,15 @@ def weld(corners, uvs, colors=None):
     out_col = None if col_flat is None else col_flat[first].astype(numpy.float32)
     tris = inverse.reshape(m, 3)
     keep = (tris[:, 0] != tris[:, 1]) & (tris[:, 1] != tris[:, 2]) & (tris[:, 0] != tris[:, 2])
-    return verts, out_uv, out_col, tris[keep]
+    if normals is None:
+        return verts, out_uv, out_col, tris[keep]
+    nrm_flat = numpy.asarray(normals, dtype=numpy.float64).reshape(-1, 3)
+    acc = numpy.zeros((len(first), 3), dtype=numpy.float64)
+    numpy.add.at(acc, inverse, nrm_flat)
+    length = numpy.linalg.norm(acc, axis=1)
+    acc[length > 1e-9] /= length[length > 1e-9][:, None]
+    acc[length <= 1e-9] = (0.0, 1.0, 0.0)
+    return verts, out_uv, out_col, tris[keep], acc.astype(numpy.float32)
 
 
 def tile_of(x, z, tile):

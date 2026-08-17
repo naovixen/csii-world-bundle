@@ -24,7 +24,7 @@ from .markings import _in_region, _material_specs, _texture_uri_base
 from .tiles import TileSink
 
 PRODUCT_NAME = "skirts"
-INPUTS = ("instances", "meshes", "terrain")
+INPUTS = ("instances", "meshes", "terrain", "terrainFine")
 
 
 def run(context, progress):
@@ -39,7 +39,7 @@ def run(context, progress):
     manifest = context.manifest or {}
     total = int(((manifest.get("counts") or {}).get("instances")) or 0) or None
 
-    ground = GroundSurface(bundle, options.get("diagonal", "envelope"), mode="min")
+    ground = GroundSurface(bundle, options.get("diagonal", "envelope"), mode="min", prefer_fine=options.get("ground", "fine") == "fine")
     if not ground.present:
         progress.log("skirts: no terrain layer — bands stay as authored (1 m plinths)")
 
@@ -125,4 +125,4 @@ def run(context, progress):
             "seconds": round(time.monotonic() - started, 1)}
 
 
-register(Product(PRODUCT_NAME, INPUTS, "skirts/", run))
+register(Product(PRODUCT_NAME, INPUTS, "skirts/", run, options=("ground",)))

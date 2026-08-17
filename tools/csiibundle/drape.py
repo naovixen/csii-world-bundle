@@ -116,17 +116,17 @@ class HeightfieldSurface(ProjectionSurface):
         self.diagonal = diagonal
 
     @classmethod
-    def from_bundle(cls, bundle_dir, diagonal="nw_se"):
-        """Build one straight from a bundle's §8 terrain layer, or `None` if it has none."""
-        paths = reader.terrain_paths(bundle_dir)
-        if paths.rasters is None or not os.path.isfile(paths.heightmap):
+    def from_bundle(cls, bundle_dir, diagonal="nw_se", prefer_fine=True):
+        """Build one straight from a bundle's §8 terrain layer, or `None` if it has none —
+        the fine 1.75 m raster when the bundle carries it (`reader.load_heightfield`), which is
+        the ground a heightfield engine will actually be given."""
+        field = reader.load_heightfield(bundle_dir, prefer_fine=prefer_fine)
+        if field is None:
             return None
-        raw = png.gray_array(paths.heightmap).astype(numpy.float64)
-        scale = float(paths.rasters.get("elevationScale", 1.0))
-        offset = float(paths.rasters.get("elevationOffset", 0.0))
-        origin_x, _, origin_z = paths.rasters["originWorld"]
-        return cls(raw * scale + offset, float(paths.rasters["resolution"]),
-                   origin_x, origin_z, diagonal=diagonal)
+        surface = cls(field.raw.astype(numpy.float64) * field.elevation_scale + field.elevation_offset,
+                      field.cell, field.origin_x, field.origin_z, diagonal=diagonal)
+        surface.fine = field.fine
+        return surface
 
     # -- the queries ---------------------------------------------------------------------------
 
