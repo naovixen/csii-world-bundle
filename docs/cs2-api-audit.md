@@ -3425,3 +3425,98 @@ blends would give the mesh the terrain's own per-pixel blend, with no geometry c
 fidelity loss.
 
 Gate: `tools/test_terrain_blend.py` **47/47**. Consumer-side only — no re-rip needed.
+
+
+## 50. OPEN BUG — the grey rim: BeamNG blends terrain material slot 0 into every pixel beside a hole (2026-08-17)
+
+**Status: OPEN. Proven in game, cause understood, no acceptable fix found. Nothing is committed for
+it — one workaround was built, tried and reverted.**
+
+### 50.1 The symptom
+
+A flat grey band hugs every terrain cutout: along each corridor the `terraincut` mesh replaces, and
+around every isolated punched square. Measured off the screenshots at **(182, 170, 158) with σ 0.0**
+— flatter than the asphalt (σ 1.5) or the concrete (σ 1.4), so it is not a texture at all. Naomi:
+*"the TERRAIN … rendering as grey in game. The cut out renders fine. When we do not have the cutout,
+this part renders fine (should be blue like the rest)."*
+
+### 50.2 The cause, proven by experiment rather than argued
+
+Every terrain material was given a flat identifying colour in the level's own
+`art/terrains/main.materials.json` (rock red, dirt green, grass blue, extras magenta/cyan/orange/
+white), the cut meshes black and the roads yellow, and the level reloaded — no rebuild. **The grey
+bands came back RED**, the colour given to `rock`, which was material **index 0**. Everything else
+in frame took its assigned colour, so nothing else could be drawing them.
+
+The mechanism, from BeamNG's own source:
+
+* A `.ter` layer byte is ONE value that is **either** a material index (0-254) **or** the hole
+  marker (255). `MFT_TerrainVertEmpty` clips a pixel by reading that very byte
+  (`clip(1.0 - layerTex.Load(...).r - 0.0001)`), so the flag has to live there. **Punching a square
+  erases the material that texel carried, and there is nowhere left to record it.**
+* `blendTerrainMaterials` gathers the FOUR texels around every pixel and has no branch for "one of
+  these is a hole": `matId = min(uint4(31, 31, 31, 31), matId)`.
+* 255 clamps to 31. `terrainMaterialData` is a `StructuredBuffer` sized to the materials we wrote
+  (7), so index 31 reads out of bounds and returns zeros; a zero `texBaseIdxSizePacked` unpacks to
+  texture index 0, which `isValidTerrainTex` accepts. So the rim blends **texture-array slice 0**,
+  sampled at a degenerate UV — which is why it is a single flat colour.
+
+So the engine is not choosing slot 0 over a better answer. The better answer no longer exists.
+
+### 50.3 Why it hurts us and not vanilla
+
+| level | materials | hole texels | slot 0 | drawn texels next to a hole |
+| --- | --- | --- | --- | --- |
+| Industrial | 16 | 1,013 | `Rock` | 1,032 (1 m texels) |
+| Utah | 13 | 1,302 | `groundmodel_asphalt1` | 876 |
+| west_coast_usa | 11 | 1,599 | `grass` | 997 |
+| **cs2_city_fine** | **7** | **36,405** | **`rock`** | **11,287 at 1.75 m = 34,566 m²** |
+
+No vanilla level pads its list to 32, and none has a slot 31. They get away with it because their
+holes are a few tunnel mouths whose rim is hidden under the portal. We punch 36,405 squares in the
+open, so we exercise the same path **~35× harder, on texels 3× the area**.
+
+### 50.4 Part of the grey is real
+
+Ground share by distance to the nearest hole, over the shipped `.ter`:
+
+| distance | texels | rock | grass | extra3 |
+| --- | --- | --- | --- | --- |
+| 1 texel | 11,287 | **10.5 %** | 54.1 % | 24.3 % |
+| 3-4 | 18,699 | 7.9 % | 57.7 % | 24.0 % |
+| 10-49 | 754,583 | 2.4 % | 63.2 % | 24.2 % |
+| 50+ | 66.2 M | 0.7 % | 25.0 % | 5.7 % |
+
+Rock is genuinely enriched at the rim (roads cut into steep ground), so **~10 % of the grey is the
+splat's own answer** and would be there without the bug. The diagnostic cannot separate the two:
+genuine rock and the slot-0 fallback both paint red.
+
+### 50.5 What was tried and REVERTED
+
+**Reordering the material list so slot 0 is the ground that most often borders a hole** — measured
+per city from the punch mask (grass, 54.9 % of 8,486 rim samples, against rock's 10.0 %), a pure
+permutation of the list with the layer bytes remapped, no geometry change. Built, gated 54/54,
+loaded. Naomi: *"looks awful in areas that are not grass"* — which is the flaw in it: it makes the
+fallback right in the 55 % of rim that is grass and **more** wrong everywhere else, because one
+global slot cannot follow a per-texel ground. Reverted whole.
+
+### 50.6 What has NOT been tried
+
+* **Pad the `.ter` material list to 32 so index 31 exists** and author it — 32 is the engine's own
+  cap (`min(31, id)`), so slot 31 is a legitimate slot and the out-of-bounds read stops. Give it a
+  ZERO height map and `calcHeightBlend`'s own arithmetic (`height = saturate(map) + 2·matFactor`,
+  `heightRange` 0.5) biases it to lose against any real neighbour — an engine rule, portable and
+  gateable, rather than a preference. Cost to check first: 25 padding materials × 15 texture slots
+  against a packer that builds 1024² arrays per slot.
+* **Cover the rim with the cut mesh** — extend the punch and the mesh by one texel so no drawn
+  terrain pixel gathers a hole. Geometry change; risks z-fighting where mesh and terrain coincide.
+* **Punch fewer squares** — a square that loses little area to the cut is punched and replaced
+  anyway (`MIN_REMOVED_M2` is 0.01 m²). Fewer holes is less rim, but the mesh and terrain would
+  then overlap.
+
+### 50.7 What this bug is NOT
+
+Ruled out by measurement during this session, so a future pass does not re-tread them: it is not the
+cut meshes (they tint black and render correctly), not the ground assignment (`terraincut`'s
+per-triangle ground agrees with the `.ter` at the same texel on **97.8 %** of 19,967 triangles), not
+`extra4` or the albedo gain, and not the §49.6 opacity masks.

@@ -109,8 +109,22 @@ Priority is "how visible is the divergence" × "how likely we invented something
 - **Rejected, and gone from the tree (§49.5):** `terrain_holes: majority` (over-cuts up to 1.75 m
   past the game's line — Naomi saw it) and `terrain_rim: lower` (lowering the rim to the band floor
   — *"that's a fidelity loss"*, and correct: the game hides with a stencil and never moves ground).
-- **Filed, not built:** the extras' `_TerrainExtra*HeightOffset` / `DirtOverride` are the one
-  producer gap §47 found; they change a paint's softness, not its place.
+- **OPEN BUG §50 — the grey rim around every cutout. Proven, understood, unfixed.** BeamNG's
+  terrain blends **material slot 0** into every pixel beside a hole: a `.ter` layer byte is the
+  material index OR the 255 hole marker, so punching erases the material, and
+  `matId = min(31, matId)` then reads past the material buffer onto texture-array slice 0. Proven
+  in game by painting the seven terrain materials identifying colours — the grey came back as
+  `rock`'s colour, which was index 0. We hit it ~35× harder than vanilla (34,566 m² of hole-adjacent
+  terrain against Utah's 876 m²) because our holes are open corridors, not tunnel mouths. **Tried
+  and reverted:** reordering the list so slot 0 is the commonest rim ground — right in the 55 % that
+  is grass, worse everywhere else, *"looks awful in areas that are not grass"*. **Not tried:**
+  padding the list to 32 so slot 31 exists and authoring it with a zero height map (an engine rule,
+  `calcHeightBlend`, rather than a preference). ~10 % of the grey is genuine rock and would remain.
+- **Corrected while chasing that bug:** §47's "the extras' `_TerrainExtra*HeightOffset` /
+  `DirtOverride` are the one producer gap" is WRONG — all four scalars for all four extras have
+  been in `rasters.terrainTiling.extras` since the tiling capture landed (extra4: `dirtOverride`
+  0.48, `splatRange` 0.16, `blurDepth` 0.04, `heightOffset` 0.07). Consuming them is open consumer
+  work, needs no re-rip, and is NOT what caused the grey.
 - **HYPOTHESIS for area #4:** the ground **albedo**'s alpha (means 9–34/255) is a plausible
   smoothness, which would replace the `roughness` neutral 217. Nothing in the game's source names
   that channel — settle it there, from the shader, not from the correlation.
