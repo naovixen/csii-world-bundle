@@ -3163,3 +3163,265 @@ height. Gate: `tools/test_terrain_blend.py`, **25/25**.
 
 **Consumer-side only — no re-rip needed.** Everything §47 fixes was already in the bundle; the one
 producer gap it found (row 6) is filed, not built.
+
+
+## 48. Load #20: the tier encoding doubled every deviation, and §47's tiling flattened the cut meshes (2026-08-17)
+
+Naomi's load #20 verdict on §47's build: *"blocky shading at the edge of cutouts is NOT fixed.
+green black artifacts show up. The blocky boundaries are also still present."* Three symptoms, and
+the sweep's method separates them into two regressions with exact fixes and one residual with none.
+
+### 48.1 The green-black blotching: our tier encoding was 2x the deviation the shader wants
+
+CS2 **lerps** between three tilings by camera distance. BeamNG **adds** two signed overlays to a
+base tier — and it is the same operation in both the terrain shader and an ordinary material:
+
+```
+terrain.h.hlsl  calculateValue : value = saturate(base + (2*macro - 1)*mF + (2*detail - 1)*dF)
+defaultMat.hlsl blendDetail    : return   saturate(map  + (2*detail - 1)*max(0, f))
+```
+
+Those two are identical **iff** the tier is written as half its deviation from the base:
+
+    t = 0.5 + (T - base)/2   =>   base + (2t - 1)*f = base + (T - base)*f = lerp(base, T, f)
+
+so `f = 1` reproduces the near tiling exactly, and any `f` between is CS2's own cross-fade. We
+wrote `T - mean + 0.5` instead — **twice** that deviation — and then the tier strengths (0.6 macro,
+0.85 detail) multiplied it again. Measured on the shipped textures at close range:
+
+| ground | contrast sigma, albedo -> composite | clamped to a rail |
+| --- | --- | --- |
+| grass | 0.088 -> 0.208 (**2.4x**) | 1.3 % |
+| dirt | 0.101 -> 0.256 | 1.0 %, 8.0 % of it to WHITE |
+| rock | — | 6.4 % to white |
+| extra1 | 0.085 -> 0.208 | 2.2 % |
+| **extra2** | — | **15.8 % to BLACK** |
+
+Clamping one channel and not its neighbours is a hue shift, not a brightness change — which is why
+the artefact reads as green-black blotches rather than as dark ground, and why `extra2`
+(`Forest_temperate_01`, the darkest ground we ship) carries nearly all of it. This is the same
+class of defect as load #17's black `extra2`, which `_centre_to_mid` only half-fixed: centring
+removed the *bias* and left the *gain*.
+
+With `_tier_deviation` the composite reproduces the near tiling to within 8-bit quantisation and
+**0.0 % of every shipped ground clamps** (gated).
+
+### 48.2 The tier strengths are the game's cross-fade, not a guess — §47 row 3's approximation is gone
+
+§47 kept the vanilla `small_island` strengths and counted them as APPROXIMATED, on the reasoning
+that "CS2 lerps three full tilings where BeamNG adds two signed overlays, so nothing maps onto
+them". That was wrong: with the encoding above a strength **is** a lerp weight, so the game's
+cross-fade ports exactly.
+
+    detail = 1 - middle              full near tiling, gone by midBlendEnd
+    macro  = middle * (1 - far)      rises as the near tier goes, gone by farBlendEnd
+    base   = the remainder           so the three always sum to 1
+
+`calculateStrenth(distanceFactor, 1 - atten, s)` delivers both from `blendDetailMacro`'s three
+ramps with `detail: s = [1, 0], atten = [0, 0]` and `macro: s = [0, 1], atten = [0, 1]`, and — the
+check that the mapping is right — **both read the same four distances**,
+`[0, midBlendStart, midBlendEnd, farBlendEnd]`. Sampled at grass's numbers: near 1.000 / mid 0.000
+at the camera, 0.000 / 1.000 at 1000 m, 0.000 / 0.000 (pure far tier) at 4000 m, and
+`max(near + mid) = 1.000` over the whole range.
+
+Height rides the same additive overlay, so `_height_texture` now writes **half** `HEIGHT_SIGMA`
+with a flat base tier; the composite lands on `HEIGHT_SIGMA` exactly. Writing the full sigma into
+all three tiers, as §47 did, tripled it.
+
+### 48.3 The pale stepped slabs at every cut: §47's tiling made the ground meshes WORSE
+
+The pale, near-untextured staircase around every trench in load #20 is the `terraincut` mesh
+pieces. §47 gave them the game's tilings inside a single pre-composited texture whose period is
+the mesh's own baked `terraincut.GROUND_UV_M` = 40 m — so moving the detail tier from a global 4 m
+to the game's 14-68 m took the whole image low-frequency:
+
+| | detail repeats in the 40 m image | period | a 10 m cut piece spans |
+| --- | --- | --- | --- |
+| before §47 | 10 | 4.0 m | 2.50 of a period |
+| after §47 | 3 | 13.3 m | **0.75 of a period** |
+
+Less than one period across a piece is no texture at all, which is the flat slab. **A §47 fix made
+a defect worse; the render in 48.1's probe would have caught it and was not run on the mesh path.**
+
+The faithful fix is BeamNG's own material detail system, which exists precisely for this:
+`detailMap` + `detailScale` + `detailBaseColorMapStrength`, blended by the `blendDetail` above.
+`detailScale` is a free UV multiplier, so the near tier now sits at the ground's exact period with
+**no rounding at all** — the approximation §47.5 declared is gone. Base map at the mesh's 40 m UV
+period, detail at `40 / nearTiling` (2.79 for grass), strength 1, plus `detailNormalMap` at the
+same scale.
+
+APPROXIMATED, declared and counted: a v1.5 material has two texture slots where the terrain has
+three, so the mesh gets near-over-mid and no far tier, and the base map's period is the baked 40 m
+rather than the game's mid tiling (71.68 m for grass) — a 1.8x scale error on the slowest-varying
+tier only. Over a piece that is metres across, both are a wash.
+
+### 48.4 The blocky boundaries: no faithful fix exists, so the workaround is separated and labelled
+
+Unchanged from §47.4 and re-confirmed: every softening mechanism in BeamNG's terrain shader is
+sized in **layer texels** — `calcLayerWarp` warpAmp 0.5 at a 0.77-texel period, `calcHeightBlend`
+heightRange 0.5 giving a 0.245-texel soft band — vanilla levels run `squareSize` 0.3-0.75 m, and we
+run 1.75 m. `TERRAIN_LAYER_WARP` is a `#define`, `heightRange` and `warpAmp` are shader literals,
+and the `.ter` layer byte array shares the heightmap's grid. **Nothing but heightfield resolution
+reaches it, and `terrain_upsample` is already at its maximum.** The faithful fix is a 16384²
+`.ter` — 0.875 m, 768 MB against 192 MB — which is a size decision, not a parity one.
+
+So, per Naomi's instruction ("if no faithful fix is available, try to find a new one which gives us
+the same result but document and separate it as such"), there is now **one setting that is
+explicitly not parity**: `terrain_blend_sharpen`, defaulting to **1.0 = the faithful value**.
+
+* What it does: multiplies the ground relief in `HEIGHT_SIGMA`. A boundary is displaced by
+  `sigma/sqrt(2)` texels at the height TEXTURE's period (14-68 m over a 1024 px map, i.e.
+  per-pixel), not at the layer texel's, so raising it dissolves the blobs into interlock finer than
+  the eye reads as structure. Measured displacement: 0.125 -> 0.088 texel, 0.25 -> 0.167,
+  0.40 -> 0.28.
+* What it costs: a rougher blend than the game's. It does not remove the blobs, it makes them
+  sub-structural.
+* How it is kept apart: its own labelled block in `stages/terrain.py` under a `NOT PARITY` banner
+  with `MAX_HEIGHT_SHARPEN`, its own `NOT A PARITY SETTING` comment in `settings.py`, and its own
+  counted report line whenever it is not 1.0. Nothing above it in either file depends on it.
+
+### 48.5 Counted, deleted, gated
+
+Deleted, not bypassed: `_centre_to_mid` and its doubled encoding, `_ground_mesh_texture` and the
+baked three-tier composite with `GROUND_MESH_MACRO_FACTOR`/`GROUND_MESH_DETAIL_FACTOR`, the vanilla
+`small_island` strengths and attenuations, and §47.5's detail-repeat rounding. One approximation
+line remains in the stage report (48.3's two-slot mesh material), plus the sharpen line when it is
+armed. Gate: `tools/test_terrain_blend.py` **36/36**, which now includes the encoding identity,
+the clamp measurement on the real textures, and the strength partition sampled across 0-4000 m.
+
+**Consumer-side only — no re-rip needed.**
+
+
+## 49. The cut meshes: four stacked defects, each hiding the next (2026-08-17)
+
+Loads #19-#26. Naomi's complaint never changed — *"blocky shading at the edge of cutouts"* — and it
+survived §47 and §48 because **four independent bugs sat on top of each other**, and each one's
+symptom was loud enough to hide the one behind it. Fixing any three of them would have looked like
+no progress at all. Recorded in the order they were found, with what each one actually was.
+
+The governing lesson is not any of the four. It is this: after §47 I changed the mesh's textures
+three times and **the pieces looked identical in every screenshot**, and I read that as "my texture
+maths is still wrong" and rebuilt the texture again. A change that produces *no visible effect at
+all* is not evidence about the change — it is evidence that the thing you edited is not the thing
+being drawn. Two loads were spent before Naomi's question about swapping in BeamNG's own textures
+prompted the pixel measurement that turned it around.
+
+### 49.1 The material was in a file BeamNG does not take plain materials from
+
+The 7 ground mesh `Material` entries shipped in `art/terrains/main.materials.json`, beside the
+`TerrainMaterial` entries. **Measured across every shipped vanilla level: `art/terrains/*.materials
+.json` holds 191 `TerrainMaterial` and ZERO plain `Material` entries, and not one vanilla file
+mixes the two classes.** The cut meshes drew as flat, untextured neutral grey — pixel-sampled at
+(108, 107, 105) with sigma **2.3**, against the terrain's sigma 29-34 and indistinguishable from
+the asphalt's (100, 99, 97). Everything else about the binding was correct and was checked one at a
+time: texture files on disk, `mapTo`, the UVs in the `.dae`, the material names inside the cooked
+`.cdae`, no shadowing `materials.json` under `art/shapes/`.
+
+Fixed by writing them to their own `art/ground/main.materials.json`. Not `art/cs2/` (the materials
+stage rewrites that file wholesale, and it runs after the terrain stage) and not `art/shapes/` (the
+mesh compiler writes placeholder materials files there and the cook stage deletes what it finds).
+
+**Our own validator passed 0 problems throughout**, because it checks that every material a `.dae`
+binds is DEFINED somewhere — not that BeamNG applies it. That blind spot is now closed by a check
+that no `*.materials.json` mixes the two classes; it fired on the shipped level immediately.
+
+### 49.2 `*TexSize` is in LAYER TEXELS, not metres — the terrain itself was 1.75x too coarse
+
+§47 set every tier's `*TexSize` to the game's metres per repeat. The shader wants texels:
+`blendTerrainMaterials` takes `uv = terrainUv * layerSize`, a position in layer texels, and
+`sampleTextures`/`calculateValue` sample at `uv / texBaseIdxSize.y`, so the period is `TexSize`
+TEXELS = `TexSize x squareSize` metres. Confirmed twice over:
+
+| tier | vanilla median `TexSize x squareSize` | BeamNG's documented range |
+| --- | --- | --- |
+| detail | **2.10 m** | 2-8 m |
+| macro | **40.00 m** | 30-80 m |
+| base | **2048.00 m** | 128-2048 m |
+
+Read as metres instead, vanilla's base tier median would be 4096 m — twice the documented maximum.
+
+So on the 1.75 m grid **every terrain tier drew 1.75x too coarse**: grass detail at 24.5 m where
+the game tiles it at 14.34, rock at 119 m against 68.27. That is a whole-map fidelity error, not a
+seam artefact — every screenshot from load #20 on carried it. It is also *a* seam artefact, because
+a mesh's world-planar UVs are in true metres, so mesh and terrain were drawing the same textures at
+periods 1.75x apart across their boundary. `_tex_size` now divides by the cell and rounds (the
+value is packed into a `uint2`, so it is an integer whatever we write).
+
+### 49.3 The colour-space suffix is load-bearing
+
+BeamNG reads a texture's colour space out of its FILENAME: `.color` is sRGB, `.data` is raw linear,
+`.normal` is a normal map. Our ground mesh maps had no suffix at all, so the albedo was decoded as
+linear data. Measured off load #24, and the prediction is exact:
+
+| | |
+| --- | --- |
+| terrain grass | (119, 133, 81) |
+| cut mesh | **(174, 179, 166)** |
+| sRGB albedo mistaken for linear, re-encoded | **(180, 190, 152)** |
+
+That is the whole of the pale, washed-out, low-contrast look; the pattern and the scale already
+matched by then, which is what made the tone the only remaining variable. The convention is
+BeamNG's own — **1,404 vanilla `baseColorMap`s end `.color.png`** — and our own road and marking
+materials, the ones that never had this problem, end `.color.dds`. The terrain's own textures go
+through the `TerrainCellMaterial` packer, a different path that declares its slots explicitly, and
+are deliberately left alone.
+
+Since `.color` is decoded before `blendDetail` runs, the detail tier's deviation is now computed in
+LINEAR light and written as `.data`, so `_tier_deviation`'s identity holds in the space the shader
+actually works in.
+
+### 49.4 The base slot must be low-frequency, or its contrast is added twice
+
+`blendDetail(map, detail, f) = saturate(map + (2*detail - 1)*f)`, and the detail carries the
+ground's deviation from the image MEAN — so `base + (2*detail - 1)` reproduces the albedo only
+where the base map is locally that mean. On the terrain that is automatic: its base tier repeats
+every 240-410 m, a smooth wash across one 14-68 m detail patch. On the mesh the base was the
+FULL-contrast albedo at the 40 m UV period, so its contrast was applied a second time:
+
+| ground | as shipped | with a low-passed base | the albedo |
+| --- | --- | --- | --- |
+| grass | clamps 7.4 %, sigma 0.122 | 0.0 %, sigma 0.068 | sigma 0.069 |
+| dirt | 7.3 %, sigma 0.201 | 0.0 %, sigma 0.108 | 0.107 |
+| **extra2** | **32.5 %**, sigma 0.119 | 1.2 %, sigma 0.067 | 0.068 |
+| extra4 | 0.9 % | 0.0 % | — |
+
+1.8x the albedo's contrast, clamping at both ends: dark grounds crushed to black and pale ones
+blown to cream, which is exactly the black and cream polygons of load #25. `BASE_LOWPASS` reduces
+the base slot to 4 samples across `GROUND_UV_M` before scaling back up, leaving only variation
+slower than the detail period — the role the terrain's far tier plays over the same footprint.
+
+This is the same class of error as §48.1, contrast added twice, and it was missed for the same
+reason: the composite was verified on the terrain path and assumed to carry over to the mesh. The
+gate now measures the MESH composite on the real ground textures, which is what would have caught
+both this and §49.3.
+
+### 49.5 What was rejected, and why it is not in the tree
+
+Two approaches were built and removed rather than left beside the fix:
+
+* **`terrain_holes: majority`** — punch every square a deep band touches instead of meshing the
+  partial ones. Same squares either way (9,108 carry visible mesh; `deepTouch` is 8,097), so it
+  trades the seam for an over-cut of up to 1.75 m past the game's own line. Naomi's load: it
+  over-cuts visibly.
+* **`terrain_rim: lower`** — restore v2's `deep_floor.png` and lower the rim samples to the band
+  floor, keeping them in the terrain shader. Naomi: *"That's a fidelity loss"* — correct, the game
+  hides terrain with a stencil and never moves it (§46), and unlike `clamp_shallow_bands` there is
+  no §8c precedent for doing it to a deep band. Reverted whole: the setting, the stage handling,
+  `deep_rim_floor`, the `deep_floor` raster, and the bake version bump. `terrainmask` stays v3.
+
+### 49.6 What remains
+
+The tone, scale, contrast and binding now match; **the polygon edges do not**. That is the one
+structural difference left: BeamNG draws terrain with up to four grounds blended per pixel (the
+four surrounding layer texels, with a domain warp and a height blend) and an ordinary mesh with one
+ground per triangle. 27 % of the rim sits within two squares of a ground boundary, so that fraction
+can still show a hard edge.
+
+The faithful fix, verified in BeamNG's source and its own content but NOT yet built: `Stages` is a
+list, `defaultMat.hlsl` blends stage N over stage N-1 by `inLayer.opacity`, and that opacity can be
+driven by an `opacityMap`. Vanilla ships **1,073 four-stage materials** and **38** whose later
+stages use an opacity map. Baking per-tile opacity masks from the same splat weights the terrain
+blends would give the mesh the terrain's own per-pixel blend, with no geometry change and no
+fidelity loss.
+
+Gate: `tools/test_terrain_blend.py` **47/47**. Consumer-side only — no re-rip needed.

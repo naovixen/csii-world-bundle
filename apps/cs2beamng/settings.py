@@ -57,6 +57,10 @@ SCHEMA = {
     "terrain_brightness": (1.0, "float", "Extra gain on the ground textures (1 = calibrated: CS2 grass to BeamNG's typical grass brightness)"),
     "terrain_upsample": (2, "choice:1|2", "Terrain grid: 2 = 8192 @ 1.75 m (the rip's fine terrainFine raster when present, else bilinear; the game's own near-camera grading, loaded fine on load #13 once the level's VRAM footprint was trimmed); 1 = 4096 @ 3.5 m (the base heightmap, lighter)"),
     "terrain_holes": ("contain", "choice:contain|majority|none", "Which clip cells become terrain holes"),
+    # NOT A PARITY SETTING - see stages/terrain.HEIGHT_SIGMA and audit §48.3. 1.0 is the value
+    # BeamNG's own blend arithmetic derives; above that it is a deliberate deviation that trades
+    # fidelity for hiding an artefact the engine's texel-sized constants cause on our coarse grid.
+    "terrain_blend_sharpen": (1.0, "float", "Ground-boundary interlock, x the derived amount (1 = faithful; 2-3 dissolves the blocky material boundaries our 1.75 m layer grid causes, at the cost of a rougher blend than the game's)"),
     "forest_shadows": (True, "bool", "Forest items cast shadows"),
     "tree_wind": (False, "bool", "Synthesise wind vertex colours for trees"),
     # collision
@@ -82,7 +86,7 @@ GROUPS = [
     ("What", ["buildings", "networks", "trees", "props", "markings", "areas", "skirts", "terrain_cut", "lane_furniture",
               "lane_furniture_categories", "water", "groundcover", "lights", "lights_max", "ai_roads"]),
     ("How much", ["foliage_density", "prop_density", "texture_max", "texture_dds", "generate_lods", "imposters", "cull_px",
-                  "view_distance", "tod_hour", "terrain_brightness", "tile_size", "terrain_upsample", "terrain_holes", "forest_shadows", "tree_wind"]),
+                  "view_distance", "tod_hour", "terrain_brightness", "tile_size", "terrain_upsample", "terrain_holes", "terrain_blend_sharpen", "forest_shadows", "tree_wind"]),
     ("Collision", ["collision_preset", "collision_buildings", "collision_props", "collision_trees",
                    "collision_furniture", "collision_skirts", "collision_paint"]),
     ("Process", ["jobs", "keep_partial", "cook", "beamng_exe", "ui_browser", "quality_preset"]),

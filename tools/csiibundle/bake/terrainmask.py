@@ -57,8 +57,10 @@ def run(context, progress):
         q[has] = numpy.clip(raw, 1, 65535).astype(numpy.uint16)
     png.write_gray(os.path.join(out_dir, "shallow_floor.png"), q, bit_depth=16)
 
-    # v2's deep_floor.png / deep_footprint.png (a heightfield-only stand-in that lowered in-band
-    # samples) are gone with v3: the ground a deep band reaches is the `terraincut` mesh's now.
+    # v2's deep_floor.png / deep_footprint.png (a heightfield-only stand-in that LOWERED in-band
+    # samples) stay retired: moving the ground is a fidelity loss — the game hides terrain with a
+    # stencil and never moves it (audit §46) — and §49 showed the cut mesh's mismatch was a unit
+    # error in `*TexSize`, not something the rim geometry could fix.
     for stale in ("deep_floor.png", "deep_footprint.png"):
         try:
             os.remove(os.path.join(out_dir, stale))

@@ -44,7 +44,7 @@ rule replaces. Parity work a phase cannot finish lands here rather than being dr
 
 Priority is "how visible is the divergence" × "how likely we invented something".
 
-### 1. Terrain materials and the splat — 1a/1b WORKED 2026-08-17 (audit §47); one residual open
+### 1. Terrain materials and the splat — 1a/1b WORKED 2026-08-17 (audit §47, corrected by §48 and §49); two residuals open
 - **Game:** `Game.Rendering.TerrainMaterialSystem` (`UpdateSplatmap`: height cascade + water +
   noise + user brush + `_SplatRockLimit`/`_SplatGrassLimit`; ground roster rock/dirt/grass + 4
   extras), `TerrainRenderSystem`, the terrain shader's own tier blend.
@@ -73,12 +73,42 @@ Priority is "how visible is the divergence" × "how likely we invented something
   `terrain_upsample` has **no headroom left**: already at 2, and refused on a fine rip because the
   fine map *is* 1.75 m. The next step is 0.875 m, the game's own next cascade slice, at a 16384²
   `.ter` — **768 MB against 192 MB today**. **Decide whether that trade is worth making — it is a
-  size/memory question for Naomi, not a parity question.**
-- **1b — WORKED (audit §47.5).** The `terraincut` mesh materials were composited at a global 4 m
-  detail inside a 40 m macro against a heightfield running the wrong tiling itself; both now take
-  the ground's own `rasters.terrainTiling` near and mid metres, so the piece and the terrain beside
-  it are built from the same three periods. Two rounding approximations remain, declared and
-  counted (the periods do not divide `GROUND_UV_M`).
+  size/memory question for Naomi, not a parity question.** Meanwhile §48.4 ships the one
+  deliberately NON-PARITY lever in the app, `terrain_blend_sharpen` (default 1.0 = faithful),
+  which dissolves the blobs into sub-structural interlock rather than removing them. It is
+  labelled as such in `settings.py`, under a `NOT PARITY` banner in `stages/terrain.py`, and in
+  its own counted report line.
+- **§48 corrected two of §47's own answers — read it before trusting the rows above.** (1) The
+  tier ENCODING was doubling every deviation: BeamNG's `base + (2t − 1)·f` equals CS2's
+  `lerp(base, T, f)` only when the tier is written `0.5 + (T − base)/2`, and we wrote
+  `T − mean + 0.5`. That inflated the albedo's contrast 2.4× and clamped **15.8 % of `extra2` to
+  black** — the green-black blotching of load #20. (2) Because a strength is then a lerp weight,
+  the tier strengths ARE portable and §47's "no game quantity maps onto them" approximation is
+  deleted: `detail = 1 − middle`, `macro = middle·(1 − far)`, both off the one ramp
+  `[0, midStart, midEnd, farEnd]`.
+- **1b — WORKED (audit §47.5), then REGRESSED and fixed properly in §48.3.** §47 put the game's
+  tilings into a single pre-composited 40 m texture, which took a 10 m cut piece from 2.50 detail
+  periods to 0.75 — the flat pale stepped slabs of load #20. The mesh now uses BeamNG's own
+  `detailMap`/`detailScale`/`detailBaseColorMapStrength` (the same `blendDetail` arithmetic), so
+  the near tier sits at the ground's exact period with no rounding at all.
+- **§49 — the cut meshes took FOUR stacked defects to fix, and Naomi confirmed the look on load
+  #26.** Each hid the next: the material sat in `art/terrains/*.materials.json`, where no vanilla
+  level puts a plain `Material` (191 TerrainMaterial / 0 Material) so it never bound — flat grey;
+  `*TexSize` is in LAYER TEXELS not metres, so **the whole terrain drew 1.75x too coarse** and the
+  mesh's true-metre UVs were 1.75x off it; the textures carried no `.color`/`.data`/`.normal`
+  suffix, so the albedo was decoded as linear (measured (174,179,166) against the terrain's
+  (119,133,81), predicted (180,190,152)); and the mesh's base slot held the full-contrast albedo
+  where the detail carries a deviation from the mean, doubling contrast and clamping **32.5 % of
+  extra2 to black**. Gate `tools/test_terrain_blend.py` 47/47.
+- **OPEN §49.6 — the polygon edges.** The last structural difference: terrain blends up to four
+  grounds PER PIXEL, an ordinary mesh draws one per triangle, and 27 % of the rim is within two
+  squares of a ground boundary. The faithful fix is verified in BeamNG's source and content but not
+  built: `Stages` is a list, `defaultMat.hlsl` blends stage N over N-1 by `inLayer.opacity`, and
+  vanilla ships 1,073 four-stage materials and 38 driving later stages from an `opacityMap`. Bake
+  per-tile opacity masks from the same splat weights the terrain blends.
+- **Rejected, and gone from the tree (§49.5):** `terrain_holes: majority` (over-cuts up to 1.75 m
+  past the game's line — Naomi saw it) and `terrain_rim: lower` (lowering the rim to the band floor
+  — *"that's a fidelity loss"*, and correct: the game hides with a stencil and never moves ground).
 - **Filed, not built:** the extras' `_TerrainExtra*HeightOffset` / `DirtOverride` are the one
   producer gap §47 found; they change a paint's softness, not its place.
 - **HYPOTHESIS for area #4:** the ground **albedo**'s alpha (means 9–34/255) is a plausible

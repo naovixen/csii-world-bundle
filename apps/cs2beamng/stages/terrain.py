@@ -26,9 +26,11 @@ What is exact and what is a choice:
 * Terrain materials point all three tiers (base/macro/detail) at the ground's own texture, at
   **the game's own three tilings**: BeamNG's base/macro/detail ARE CS2's far/mid/near, and the
   metres per repeat and the two distance ramps come from `rasters.terrainTiling` through the
-  shared `csiibundle.terrain.ground_tiling` (audit §47). The tier strengths and attenuations stay
-  the vanilla `small_island` numbers and are counted as an approximation — CS2 lerps between three
-  full tilings where BeamNG adds two signed overlays, so nothing maps onto them.
+  shared `csiibundle.terrain.ground_tiling` (audit §47). The tier **strengths** are the game's own
+  cross-fade too: with `_tier_deviation`'s encoding a strength IS a lerp weight, so
+  `detail = 1 − middle`, `macro = middle·(1 − far)` and the base is the remainder — the three
+  always sum to 1, and both overlays read the one distance ramp `[0, midBlendStart, midBlendEnd,
+  farBlendEnd]`.
 * **Height maps are the ground's own relief**, from `terrain/surfaces/<ground>_normal.png`'s
   alpha: BeamNG picks between the four layer texels around a pixel by a height blend, and the flat
   128 we used to ship made that blend a straight bilinear ramp across one 3.5 m sample — the hard
@@ -214,15 +216,19 @@ def run(ctx, progress):
         "materialTextureSet": f"{level.name}_TerrainTextureSet",
     })
     albedo_gain = _albedo_gain(os.path.join(bundle, "terrain", "surfaces"), settings.get("terrain_brightness", 1.0))
-    materials, notes = _terrain_materials(level, bundle, grounds, gain=albedo_gain, rasters=rasters)
-    level.write_materials("terrains", materials)
+    sharpen = float(settings.get("terrain_blend_sharpen") or 1.0)
+    materials, ground_materials, notes = _terrain_materials(level, bundle, grounds, gain=albedo_gain,
+                                                            rasters=rasters, sharpen=sharpen, cell=cell)
+    level.write_materials("terrains", materials)          # TerrainMaterial only - vanilla convention
+    level.write_materials("ground", ground_materials)     # the cut meshes' plain v1.5 Materials
     level.write_objects()
     progress.check()
     for note in notes:                          # every approximation is counted where it is made
         progress.log(note)
     terrain_materials = sum(1 for m in materials.values() if m.get("class") == "TerrainMaterial")
     progress.end(f"{ter_name} {os.path.getsize(level.path(ter_name)) / 2**20:.0f} MB, {terrain_materials} terrain materials "
-                 f"(+{len(materials) - terrain_materials - 1} ground mesh materials), albedo gain x{albedo_gain:.2f}")
+                 f"in art/terrains/ (+{len(ground_materials)} ground mesh materials in art/ground/), "
+                 f"albedo gain x{albedo_gain:.2f}")
     shared = ctx.shared if ctx.shared is not None else {}
     shared["terrain"] = {"position": position, "squareSize": cell, "maxHeight": max_height, "size": size,
                          "cell": cell, "elevationScale": scale, "elevationOffset": offset}
@@ -315,7 +321,44 @@ NEUTRAL_MAPS = {          # every v1.5 terrain material must name all five maps 
 #     boundary by +-0.25 texel - a visible interlock that never reaches the neighbouring texel -
 #     so +-2 sigma = 0.5 gives sigma = 0.125. The shipped maps sit at sigma 0.04 (extra4) to 0.20
 #     (rock), i.e. between 3x too flat and 1.6x too strong for an equal say.
-HEIGHT_SIGMA = 0.125
+#
+# The value is BeamNG's OWN, not that derivation. CS2 has no counterpart to port here, so the
+# reference is the consumer engine's own art: 189 TerrainMaterials across the shipped vanilla
+# levels carry a real height map, and their sigma runs min 0.000 / median 0.178 / mean 0.156 /
+# max 0.297 (Utah's grounds are the top of the range). The derivation above lands at 0.125, just
+# under that median, and where the two disagree the engine's own artists win - they authored
+# against this exact blend. MEASURED, from `content/levels/*.zip`.
+HEIGHT_SIGMA = 0.178
+
+# The ground mesh's BASE slot is the albedo reduced to this many samples across `GROUND_UV_M`
+# before being scaled back up — a low-pass that leaves only variation slower than the detail
+# tier's own period, which is what the terrain's far tier is over the same footprint. See
+# `_ground_mesh_maps`; 4 across 40 m keeps features coarser than 10 m, against a detail period of
+# 14-68 m.
+BASE_LOWPASS = 4
+
+# ---- NOT PARITY. A deliberate deviation, kept apart from everything above. --------------------
+#
+# `terrain_blend_sharpen` multiplies HEIGHT_SIGMA. At 1.0 the relief is what BeamNG's own
+# arithmetic derives and the terrain blends the way the game's does. Above 1.0 it is a WORKAROUND
+# with no counterpart in CS2, and it exists because one defect has no faithful fix available:
+#
+# every softening mechanism in BeamNG's terrain shader is sized in LAYER TEXELS (`calcLayerWarp`
+# warpAmp 0.5 at a 0.77-texel period; `calcHeightBlend` heightRange 0.5 giving a 0.245-texel soft
+# band), vanilla levels run `squareSize` 0.3-0.75 m, and we run 1.75 m — so all of it is 2.3-5.8x
+# oversize and renders as metre-scale blobs of whole ground. `TERRAIN_LAYER_WARP` is a `#define`,
+# `heightRange` and `warpAmp` are shader literals, and the `.ter` layer array shares the
+# heightmap's grid, so nothing but heightfield resolution reaches it — and `terrain_upsample` is
+# already at its maximum. The faithful fix is a 16384² `.ter` (0.875 m, 768 MB against 192 MB).
+#
+# What this does instead: the relief displaces a boundary by sigma/sqrt(2) texels, at the height
+# TEXTURE's period (14-68 m over a 1024 px map, i.e. per-pixel) rather than the layer texel's. Push
+# sigma up and the boundary dissolves into fine interlock instead of reading as blobs — the blobs
+# are still there, they are just below the size the eye reads as structure. It is cosmetic, it
+# makes the blend rougher than the game's, and it is the only lever short of the .ter size.
+# Measured in the §47 render: 0.125 -> 0.088 texel of displacement, 0.25 -> 0.167, 0.40 -> 0.28.
+MAX_HEIGHT_SHARPEN = 4.0
+# ----------------------------------------------------------------------------------------------
 
 
 def _neutral_map(level, kind, tier="detail", size=1024):
@@ -345,13 +388,16 @@ def _read_alpha(path):
     return None if int(alpha.max()) == int(alpha.min()) else alpha
 
 
-def _height_texture(level, src, name):
-    """The ground's own height map, from `<ground>_normal.png`'s alpha, centred on mid-gray and
-    scaled to `HEIGHT_SIGMA` — the game path, or None when the source carries no height.
+def _height_texture(level, src, name, sharpen=1.0):
+    """The ground's own height map, from `<ground>_normal.png`'s alpha, as a TIER DEVIATION —
+    the game path, or None when the source carries no height.
 
-    See `HEIGHT_SIGMA` for what BeamNG does with this and why it is centred and rescaled. The
-    macro and detail tiers go through the same `(2t − 1) · factor` overlay arithmetic as the
-    albedo, and the base tier is centred too (deviation 1), so all three are the same array."""
+    See `HEIGHT_SIGMA` for what BeamNG does with this. Height rides the same additive overlay as
+    the albedo (`calculateValue`, `MatDecodeNone`), so this is written at HALF the target sigma
+    and the BASE tier is left at the neutral flat 128: the composite
+    `0.5 + (2·(0.5 + σ/2) − 1)·1` then lands at exactly `0.5 ± HEIGHT_SIGMA` close up. Writing
+    the full sigma into all three tiers, as this did before `_tier_deviation` existed, tripled it.
+    """
     alpha = _read_alpha(src)
     if alpha is None:
         return None
@@ -359,7 +405,8 @@ def _height_texture(level, src, name):
     sigma = float(values.std())
     if sigma < 1e-4:
         return None
-    scaled = (values - values.mean()) * (HEIGHT_SIGMA / sigma) + 0.5
+    target = HEIGHT_SIGMA * 0.5 * min(MAX_HEIGHT_SHARPEN, max(0.0, float(sharpen)))
+    scaled = (values - values.mean()) * (target / sigma) + 0.5
     grey = numpy.clip(scaled * 255.0 + 0.5, 0.0, 255.0).astype(numpy.uint8)
     level.write_bytes_if_changed(png.encode_gray(numpy.ascontiguousarray(grey), bit_depth=8),
                                  "art", "terrains", name)
@@ -394,25 +441,39 @@ def _albedo_gain(surfaces_dir, user_gain):
     return gain * float(user_gain or 1.0)
 
 
-def _centre_to_mid(rgb):
-    """Shift each channel so its mean is 128 — a SIGNED detail texture.
+def _tier_deviation(rgb):
+    """`0.5 + (albedo − base)/2` — the encoding that makes BeamNG's ADD reproduce CS2's LERP.
 
-    BeamNG's terrain shader combines the tiers as `base + (2·macro − 1)·mF + (2·detail − 1)·dF`
-    (`terrain.h.hlsl calculateValue`), so the macro and detail tiers are deviations around
-    mid-gray, not colours: a tier whose mean is `m` biases the result by `(2m − 1)·factor` every
-    time it is sampled. CS2's ground albedos are dark (grass 0.40 encoded, extra2 0.33), and we
-    put the same albedo in all three tiers, so that bias was applied twice on top of the base and
-    the ground went black — evaluated on the shipped textures, `extra2` came out at (0, 6, 0)
-    near the camera and grass at (41, 77, 0), which is the black patch and the oversaturated
-    green of load #17. Centred tiers average to zero deviation, so the terrain renders at its
-    base tier's own colour and the tiers add texture instead of darkness."""
-    shifted = rgb.astype(numpy.float64) - rgb.reshape(-1, 3).mean(axis=0)[None, None, :] + 128.0
-    return numpy.clip(shifted, 0.0, 255.0).astype(numpy.uint8)
+    CS2 cross-fades three tilings of a ground by camera distance; BeamNG adds two signed overlays
+    to a base tier, `value = base + (2·t − 1)·f` (`terrain.h.hlsl calculateValue`, and the very
+    same `blendDetail` in `defaultMat.hlsl` for an ordinary material's detail map). Those are the
+    same operation if — and only if — the tier is written as half its deviation from the base:
+
+        t = 0.5 + (T − base)/2   ⇒   base + (2t − 1)·f = base + (T − base)·f = lerp(base, T, f)
+
+    so `f = 1` reproduces the near tiling EXACTLY and `f` in between is CS2's own cross-fade.
+
+    The previous encoding centred each tier on its own mean (`T − mean + 0.5`), which is TWICE
+    this deviation, and the tier strengths then multiplied it again. Measured on the shipped
+    textures at close range: it inflated the albedo's contrast from σ 0.088 to σ 0.208 — 2.4× the
+    real texture — and clamped **15.8 % of `extra2`'s pixels to zero in at least one channel**,
+    8 % of `dirt` and 6.4 % of `rock` to one. Clamping one channel and not its neighbours is a
+    hue shift, which is the green-black blotching in load #20's screenshots. This encoding clamps
+    **0.0 %** of every ground and reproduces the near tiling to within the base tier's own
+    large-scale variation (mean error 0.007–0.029).
+
+    `base` is approximated by the image's mean: the base tier repeats every 240–410 m and a
+    near-tier patch is 14–68 m, so over one patch the far tiling is a slowly-varying wash. That
+    residual is what the remaining error is, and it is the large-scale colour variation the far
+    tier exists to provide — DECLARED, not a defect."""
+    values = rgb.astype(numpy.float64)
+    mean = values.reshape(-1, 3).mean(axis=0)[None, None, :]
+    return numpy.clip(0.5 * (values - mean) + 128.0, 0.0, 255.0).astype(numpy.uint8)
 
 
-def _rgb_texture(level, src, name, gain=1.0, centre=False):
+def _rgb_texture(level, src, name, gain=1.0, deviation=False):
     """Copy `src` into art/terrains/ as an alpha-free RGB PNG, optionally lifted by `gain` in
-    linear light and centred on mid-gray (`_centre_to_mid`); the game path, or None."""
+    linear light and encoded as a tier deviation (`_tier_deviation`); the game path, or None."""
     if not os.path.isfile(src):
         return None
     dst = level.path("art", "terrains", name)
@@ -422,85 +483,120 @@ def _rgb_texture(level, src, name, gain=1.0, centre=False):
         if abs(gain - 1.0) > 1e-3:
             lin = (rgb.astype(numpy.float64) / 255.0) ** 2.2 * gain
             rgb = (numpy.clip(lin, 0.0, 1.0) ** (1 / 2.2) * 255.0 + 0.5).astype(numpy.uint8)
-        if centre:
-            rgb = _centre_to_mid(rgb)
+        if deviation:
+            rgb = _tier_deviation(rgb)
         level.write_bytes_if_changed(png.encode_rgb(rgb), "art", "terrains", name)
     except Exception:  # noqa: BLE001 - an odd PNG: ship it as is rather than nothing
         level.copy_file(src, "art", "terrains", name)
     return level.game_path("art", "terrains", name)
 
 
-# The ground meshes are composited by the same arithmetic the terrain shader applies to its
-# tiers, so a mesh in a hole reads like the heightfield beside it. With the macro and detail tiers
-# CENTRED on mid-gray (`_centre_to_mid`) both sides average to the ground's own base colour and
-# only the texture varies — before centring, both sides applied a dark albedo's bias twice and the
-# darkest grounds clipped to black.
-# What BeamNG's terrain shader does with our three tiers, read from `shaders/common/terrain/
-# terrain.h.hlsl` (`calculateValue`): value = base + (macro·2 − 1)·macroFactor + (detail·2 − 1)·
-# detailFactor, on the SAMPLED texel values, the factors from our TerrainMaterial's strengths and
-# distance attenuation (`calculateStrenth`: macro 0.6 × (1 − 0.35) = 0.39 up to 400 m; detail
-# 0.85 at the camera falling to 0.3 at 50 m). With a mid-tone texture at all three scales that
-# overlay DARKENS: load #14's screenshots put terrain grass at ≈ 0.22 (encoded) where the same
-# texture on a plain mesh read 0.40 — the sum of factors ≈ 0.9 at that range, and the math is in
-# the texel's own (encoded) space: done in linear light the terrain would be black near the camera,
-# which it is not. That difference is why the ground meshes drew as pale squares against the
-# heightfield (loads #12-#14). The composite applies the same overlay at a middle range (~60 m).
-GROUND_MESH_MACRO_FACTOR = 0.39
-GROUND_MESH_DETAIL_FACTOR = 0.30
+# The ground meshes read like the heightfield beside them because they are given the SAME two
+# tiers by the SAME arithmetic. BeamNG's ordinary v1.5 material has its own detail-map system and
+# `defaultMat.hlsl`'s
+#
+#     half3 blendDetail(mapSample, detailSample, f) { return saturate(mapSample + (2*detailSample - 1) * max(0, f)); }
+#
+# is byte-for-byte the terrain shader's tier overlay — so `_tier_deviation` transfers unchanged and
+# `detailBaseColorMapStrength = 1` reproduces the ground's near tiling EXACTLY over the base map.
+#
+# This replaced a single pre-composited texture (a baked `base + macro*0.39 + detail*0.30`). That
+# texture had to hold every tier at the mesh's own 40 m UV period, so once §47 moved the detail
+# tier from a global 4 m to the game's 14-68 m the whole image went low-frequency: a 10 m cut piece
+# spanned 0.75 of a detail period instead of 2.50 and rendered as a flat pale slab — the stepped
+# pale border in load #20's screenshots. `detailScale` is a free UV multiplier, so the detail tier
+# now sits at the ground's own period with no rounding at all.
+#
+# APPROXIMATED, declared and counted: a v1.5 material has TWO texture slots where the terrain has
+# three, so the mesh gets the near tier (detail) over the mid tier (base) and no far tier, and the
+# base map's period is the mesh's baked `terraincut.GROUND_UV_M` = 40 m rather than the game's mid
+# tiling (71.68 m for grass) — a 1.8x scale error on the slowest-varying tier only. Over a cut
+# piece, which is metres across, both are a wash.
 
 
-def _ground_mesh_texture(level, src, name, gain=1.0, normal=False, size=2048,
-                         macro_m=None, detail_m=None):
-    """One texture for the pre-clipped ground meshes that reads like the heightfield beside them.
+def _ground_mesh_maps(level, src, name, gain=1.0, normal=False, size=2048):
+    """`(base_map, detail_map)` game paths for one ground mesh material, or `(None, None)`.
 
-    The mesh UVs repeat every `csiibundle.bake.terraincut.GROUND_UV_M` metres (baked geometry, so
-    it is fixed here), and this image is one such repeat. Into it go the same three tiers the
-    terrain material gets for that ground, at the SAME world periods — the ground's own
-    `rasters.terrainTiling` near (`detail_m`) and mid (`macro_m`) metres, over the far tier's mean
-    colour, combined by the terrain shader's own `base + (2t − 1)·factor` (`GROUND_MESH_*_FACTOR`).
-    That is sweep item 1b: until 2026-08-17 this used a global 4 m detail and assumed the macro
-    period equalled the image, so every cut piece wore a 40 m blur while the heightfield beside it
-    ran a 14 m grass detail — the "square blocks around every cutout" of load #19.
+    **The filename suffix is load-bearing.** BeamNG reads a texture's colour space out of the
+    name — `.color` is sRGB, `.data` is raw linear, `.normal` is a normal map — and every one of
+    our maps shipped without one until §49. MEASURED off load #24: the cut pieces rendered at
+    (174, 179, 166) where the terrain beside them was (119, 133, 81), and treating the same sRGB
+    albedo as linear and re-encoding it predicts **(180, 190, 152)**. That is the whole of the
+    remaining pale, washed-out, low-contrast look — the pattern and the scale already matched.
+    The convention is BeamNG's own: 1,404 vanilla `baseColorMap`s end `.color.png`, and our own
+    road and marking materials — the ones that always rendered correctly — end `.color.dds`.
 
-    Both periods are APPROXIMATED in one respect and it cannot be otherwise: neither divides
-    `GROUND_UV_M` evenly, and a world-planar UV must tile at the image edge, so the detail
-    repeats are rounded to a whole number (grass: 40/14.336 = 2.79 → 3, a 7 % scale error) and
-    the macro tier — longer than the whole image for every ground — is zoomed to the closest
-    period that does tile, which is the image itself. A normal map takes the detail tier only
-    (a macro normal would be a metre-scale bump). Presentation, not contract."""
+    Because `.color` is decoded to linear before `blendDetail` runs, the detail tier's deviation
+    is computed in LINEAR light here and written as `.data` (raw, undecoded), so the identity
+    `base + (2t − 1) = T` that `_tier_deviation` derives holds in the space the shader actually
+    does the arithmetic. The terrain's own tiers keep the encoded-space deviation: they go
+    through the TerrainCellMaterial packer, not this path, and that math is in the texel's own
+    space (audit §35).
+    """
     if not os.path.isfile(src):
-        return None
-    macro_m = float(macro_m or FALLBACK_TILE_M["macro"])
-    detail_m = float(detail_m or FALLBACK_TILE_M["detail"])
+        return None, None
     try:
-        from PIL import Image
         rgb = _read_rgb(src)
         if abs(gain - 1.0) > 1e-3 and not normal:
             lin = (rgb.astype(numpy.float64) / 255.0) ** 2.2 * gain
             rgb = (numpy.clip(lin, 0.0, 1.0) ** (1 / 2.2) * 255.0 + 0.5).astype(numpy.uint8)
-        im = Image.fromarray(rgb)
-        repeats = max(1, int(round(terraincut.GROUND_UV_M / detail_m)))
-        per = max(1, size // repeats)
-        detail = numpy.asarray(im.resize((per, per), Image.LANCZOS))
-        detail = numpy.tile(detail, (repeats + 1, repeats + 1, 1))[:size, :size]
+        from PIL import Image  # noqa: WPS433
+        if rgb.shape[0] != size:
+            rgb = numpy.asarray(Image.fromarray(rgb).resize((size, size), Image.LANCZOS))
+        base_name = f"{name}.normal.png" if normal else f"{name}.color.png"
         if normal:
-            out = detail
-        else:
-            # the macro period is longer than the image for every shipped ground, so it renders
-            # as a fraction of a repeat; anything but 1 breaks the tile, hence exactly one
-            macro_repeats = max(1, int(round(terraincut.GROUND_UV_M / macro_m)))
-            mper = max(1, size // macro_repeats)
-            macro = numpy.asarray(im.resize((mper, mper), Image.BILINEAR))
-            macro = numpy.tile(macro, (macro_repeats + 1, macro_repeats + 1, 1))[:size, :size]
-            macro = _centre_to_mid(macro).astype(numpy.float64) / 255.0
-            det = _centre_to_mid(detail).astype(numpy.float64) / 255.0
-            base = numpy.asarray(im).reshape(-1, 3).mean(axis=0) / 255.0
-            val = base[None, None, :] + (macro * 2.0 - 1.0) * GROUND_MESH_MACRO_FACTOR + (det * 2.0 - 1.0) * GROUND_MESH_DETAIL_FACTOR
-            out = (numpy.clip(val, 0.0, 1.0) * 255.0 + 0.5).astype(numpy.uint8)
-        level.write_bytes_if_changed(png.encode_rgb(numpy.ascontiguousarray(out)), "art", "terrains", name)
-        return level.game_path("art", "terrains", name)
-    except Exception:  # noqa: BLE001 - fall back to the plain detail texture
-        return _rgb_texture(level, src, name, gain=gain if not normal else 1.0)
+            level.write_bytes_if_changed(png.encode_rgb(numpy.ascontiguousarray(rgb)), "art", "terrains", base_name)
+            # a normal map is already signed around (128, 128, 255); the detail slot takes it
+            # verbatim and `detailNormalMapStrength` scales it
+            path = level.game_path("art", "terrains", base_name)
+            return path, path
+        linear = (rgb.astype(numpy.float64) / 255.0) ** 2.2
+        # The BASE slot must be LOW-FREQUENCY, because the detail slot carries the ground's
+        # deviation from the image MEAN and `base + (2*detail - 1)` only reproduces the albedo
+        # where the base is locally that mean. On the terrain that is automatic — its base tier
+        # repeats every 240-410 m, so it is a smooth wash across one 14-68 m detail patch — but
+        # the mesh's base is drawn at `GROUND_UV_M` = 40 m, and putting the full-contrast albedo
+        # there added its contrast TWICE. MEASURED on the shipped grounds: 1.8x the albedo's
+        # sigma and **32.5 % of `extra2` clamped**, 7-8 % of grass/dirt/extra1 — the near-black
+        # and blown-out cream pieces of load #25. Low-passed, the composite clamps 0.0 % and its
+        # sigma lands on the albedo's own (grass 0.068 against 0.069).
+        low = numpy.asarray(Image.fromarray(rgb).resize((BASE_LOWPASS, BASE_LOWPASS), Image.BOX)
+                            .resize((size, size), Image.BILINEAR))
+        level.write_bytes_if_changed(png.encode_rgb(numpy.ascontiguousarray(low)), "art", "terrains", base_name)
+        base_path = level.game_path("art", "terrains", base_name)
+        deviation = 0.5 + (linear - linear.reshape(-1, 3).mean(axis=0)[None, None, :]) * 0.5
+        detail = numpy.clip(deviation * 255.0 + 0.5, 0.0, 255.0).astype(numpy.uint8)
+        detail_name = f"{name}.data.png"
+        level.write_bytes_if_changed(png.encode_rgb(numpy.ascontiguousarray(detail)), "art", "terrains", detail_name)
+        return base_path, level.game_path("art", "terrains", detail_name)
+    except Exception:  # noqa: BLE001 - an odd PNG: ship it flat rather than not at all
+        plain = _rgb_texture(level, src, f"{name}.color.png", gain=gain if not normal else 1.0)
+        return plain, plain
+
+
+def _tex_size(metres, cell):
+    """`*TexSize` for a tier that should repeat every `metres` — in LAYER TEXELS, not metres.
+
+    MEASURED, and it was wrong here from §47 until §49. The terrain shader works in texels:
+    `blendTerrainMaterials` takes `uv = terrainUv * layerSize`, a position in layer texels, and
+    `sampleTextures`/`calculateValue` then sample at `uv / texBaseIdxSize.y` — so the period is
+    `TexSize` TEXELS, i.e. `TexSize x squareSize` metres. Two independent confirmations:
+
+    * the shader arithmetic above (`terrain.h.hlsl`, `terrainImpl.hlsl`);
+    * every shipped vanilla level. `TexSize x squareSize` puts the medians at detail **2.10 m**,
+      macro **40.00 m**, base **2048.00 m**, against BeamNG's own documented 2-8 / 30-80 /
+      128-2048. Read as metres instead, the base tier's median would be 4096 m, twice the
+      documented maximum.
+
+    We were writing metres, so on the 1.75 m grid every tier drew **1.75x too coarse** — grass
+    detail at 24.5 m where the game tiles it at 14.34, rock at 119 m. That also put the cut mesh
+    and the terrain at periods 1.75x apart across their seam, because a mesh's world-planar UVs
+    are in true metres.
+
+    Packed into a `uint2` (`unpackUint2(property.texBaseIdxSizePacked)`), so it is an integer and
+    is rounded here rather than truncated by the engine; at least 1.
+    """
+    return max(1, int(round(float(metres) / max(1e-6, float(cell)))))
 
 
 def _tiling_of(tiling_block, ground):
@@ -522,20 +618,25 @@ def _tiling_of(tiling_block, ground):
     got = terrain_mod.ground_tiling(tiling_block, ground)
     if got is None:
         blend = FALLBACK_LOD_BLEND
-        return dict(FALLBACK_TILE_M), [0.0, 0.0, blend[0], blend[1]], [0.0, 0.0, blend[2], blend[3]], False
+        ramp = [0.0, blend[0], blend[1], blend[3]]
+        return dict(FALLBACK_TILE_M), ramp, list(ramp), False
     repeats, blend = got
     metres = {tier: float(repeats[index]) for tier, index in CS2_TILING_TIER.items()}
-    return metres, [0.0, 0.0, blend[0], blend[1]], [0.0, 0.0, blend[2], blend[3]], True
+    # [d0, midBlendStart, midBlendEnd, farBlendEnd]: `blendDetailMacro` reads near = d0..d1,
+    # middle = d1..d2, far = d2..d3, and the cross-fade above needs exactly those four
+    ramp = [0.0, blend[0], blend[1], blend[3]]
+    return metres, ramp, list(ramp), True
 
 
-def _terrain_materials(level, bundle, names, gain=1.0, rasters=None):
+def _terrain_materials(level, bundle, names, gain=1.0, rasters=None, sharpen=1.0, cell=1.0):
     """`{name: TerrainMaterial}` + the texture set; copies the ground textures into
     `art/terrains/`. Every one of the fifteen `*Tex` slots is filled: BeamNG resolves an
     absent slot to `/` and logs `Missing Terrain texture: /` per material, and the terrain
     draws untextured (load #1).
 
-    Returns `(materials, notes)`; `notes` is the counted approximation list the stage report
-    prints, one line per thing the game's own numbers could not supply (audit §47)."""
+    Returns `(terrain_materials, ground_mesh_materials, notes)` — two dicts, because the two
+    classes must NOT share a file (see the comment at the split). `notes` is the counted
+    approximation list the stage report prints (audit §47/§48)."""
     surfaces_dir = os.path.join(bundle, "terrain", "surfaces")
     tiling_block = (rasters or {}).get("terrainTiling")
     guessed_tiling, missing_height = [], []
@@ -554,76 +655,134 @@ def _terrain_materials(level, bundle, names, gain=1.0, rasters=None):
         # texture packer reads PNG alpha as coverage (load #2: the detail tier vanished close
         # up into purple/green). Vanilla terrain textures are colour type 2, no alpha.
         # the BASE tier carries the ground's colour; MACRO and DETAIL are signed deviations around
-        # mid-gray (`_centre_to_mid`) because that is what `calculateValue` adds them as
+        # half their deviation from it (`_tier_deviation`) so the overlay reproduces a lerp
         albedo = {tier: _rgb_texture(level, albedo_src, f"{level.name}_{source}_{tier}_b.png",
-                                     gain=gain, centre=(tier != "base"))
+                                     gain=gain, deviation=(tier != "base"))
                   for tier in TIERS}
         normal = {tier: _rgb_texture(level, normal_src, f"{level.name}_{source}_{tier}_nm.png") for tier in TIERS}
         # the ground's own relief, so BeamNG's height blend has something to interlock with
-        height = {tier: _height_texture(level, normal_src, f"{level.name}_{source}_{tier}_h.png")
+        height = {tier: _height_texture(level, normal_src, f"{level.name}_{source}_{tier}_h.png",
+                                        sharpen=sharpen)
                   for tier in TIERS}
-        if height["base"] is None:
+        if height["detail"] is None:
             missing_height.append(name)
         pid = level.pid(f"terrain:material:{name}")
         size, detail_distances, macro_distances, from_game = _tiling_of(tiling_block, name)
         if not from_game:
             guessed_tiling.append(name)
         internal = f"{level.name}_{name}"               # globally unique: see run()
-        # The strengths and attenuations stay the vanilla `small_island` numbers: CS2 LERPS
-        # between three full textures where BeamNG ADDS two signed overlays to a base, so there
-        # is no CS2 quantity to port here. APPROXIMATED, once per material, counted below.
+        # The strengths ARE the game's cross-fade, ported exactly rather than guessed. With
+        # `_tier_deviation`'s encoding a tier's strength is its lerp weight, so CS2's
+        # near -> mid -> far cross-fade is a three-way partition of the two overlays:
+        #
+        #   detail = 1 - middle                  full near tiling, gone by midBlendEnd
+        #   macro  = middle * (1 - far)          rises as the near tier goes, gone by farBlendEnd
+        #   base                                 what is left, so the three always sum to 1
+        #
+        # `calculateStrenth(distanceFactor, 1 - atten, s)` =
+        #   lerp(lerp(atten'.x*s.x, s.x, near), lerp(s.y, atten'.y*s.y, far), middle), so
+        #   detail: s = [1, 0], atten = [0, 0] -> lerp(1, 0, middle)          = 1 - middle
+        #   macro:  s = [0, 1], atten = [0, 1] -> lerp(0, 1 - far, middle)    = middle*(1 - far)
+        # and both read the SAME four distances (`blendDetailMacro`: near = d0..d1, middle =
+        # d1..d2, far = d2..d3) = [0, midBlendStart, midBlendEnd, farBlendEnd]. That the one
+        # vector serves both is the check that the mapping is right.
+        #
+        # The vanilla `small_island` numbers this replaced (macro 0.6/0.6, detail 0.85/0.3) were
+        # an approximation on top of a doubled encoding; together they inflated the albedo's
+        # contrast 2.4x and clamped 15.8 % of `extra2` to black. See `_tier_deviation`.
+        #
+        # DECLARED: BeamNG cuts the detail sample at 250 m and the macro at 1000 m whatever the
+        # ramps say (`calculateValue`: `pixelDistance < min(250, ...)` / `min(1000, ...)`), which
+        # is short of CS2's midBlendEnd/farBlendEnd. Invisible by construction — both tiers are
+        # deviations around mid-gray, so a mip that has converged to the tier's mean contributes
+        # exactly zero, and a 14 m repeat is long since mipped flat at 250 m.
         mat = {"name": f"{internal}-{pid}", "internalName": internal, "class": "TerrainMaterial", "persistentId": pid,
                "annotation": name.upper(), "groundmodelName": GROUNDMODEL.get(name, "DIRT"),
-               "detailDistances": detail_distances, "detailDistAtten": [0, 0.9],
-               "macroDistances": macro_distances, "macroDistAtten": [0.35, 1],
-               "baseColorMacroStrength": [0.6, 0.6], "baseColorDetailStrength": [0.85, 0.3],
-               "normalMacroStrength": [0.6, 1.0], "normalDetailStrength": [0.8, 0.3],
-               "roughnessMacroStrength": [0.9, 0.9], "roughnessDetailStrength": [0.9, 0.7]}
+               "detailDistances": detail_distances, "detailDistAtten": [0, 0],
+               "macroDistances": macro_distances, "macroDistAtten": [0, 1],
+               "baseColorMacroStrength": [0, 1], "baseColorDetailStrength": [1, 0],
+               "normalMacroStrength": [0, 1], "normalDetailStrength": [1, 0],
+               "roughnessMacroStrength": [0, 1], "roughnessDetailStrength": [1, 0],
+               "heightMacroStrength": [0, 1], "heightDetailStrength": [1, 0]}
         for tier in TIERS:
             cap = tier.capitalize()
             mat[f"baseColor{cap}Tex"] = albedo[tier] or neutral[("ao", tier)]       # no texture at all: flat white
             mat[f"normal{cap}Tex"] = normal[tier] or neutral[("height", tier)]      # mid gray reads as up
             mat[f"ao{cap}Tex"] = neutral[("ao", tier)]
-            mat[f"height{cap}Tex"] = height[tier] or neutral[("height", tier)]
+            # the base tier is the neutral flat 128 by design: height rides the additive
+            # overlay, so the relief belongs in macro/detail only (`_height_texture`)
+            mat[f"height{cap}Tex"] = (neutral[("height", tier)] if tier == "base"
+                                      else height[tier] or neutral[("height", tier)])
             mat[f"roughness{cap}Tex"] = neutral[("roughness", tier)]
             for group in ("baseColor", "normal", "ao", "height", "roughness"):
-                mat[f"{group}{cap}TexSize"] = size[tier]
+                mat[f"{group}{cap}TexSize"] = _tex_size(size[tier], cell)
         out[f"{internal}-{pid}"] = mat
     # v1.5 Materials for the bake's pre-clipped ground meshes (`terraincut`, bound as
     # ground:<layer> -> <level>_ground_<layer>, one per ground the heightfield paints, plus the
-    # three classic names for an older bake): the same textures composited like the terrain's
-    # tiers, world-planar UVs at csiibundle.bake.terraincut.GROUND_UV_M metres per repeat.
+    # three classic names for an older bake): base map at the mesh's own world-planar UV period
+    # (csiibundle.bake.terraincut.GROUND_UV_M metres), detail map at the ground's near tiling
+    # through `detailScale` — see `_ground_mesh_maps`.
     for gname in sorted(set(list(names) + ["grass", "dirt", "rock"])):
         source = gname if os.path.isfile(os.path.join(surfaces_dir, f"{gname}.png")) else TEXTURE_FALLBACK.get(gname, "grass")
         metres, _dd, _md, _from_game = _tiling_of(tiling_block, gname)
-        albedo = _ground_mesh_texture(level, os.path.join(surfaces_dir, f"{source}.png"), f"{level.name}_{source}_ground_b.png",
-                                      gain=gain, macro_m=metres["macro"], detail_m=metres["detail"])
-        normal = _ground_mesh_texture(level, os.path.join(surfaces_dir, f"{source}_normal.png"), f"{level.name}_{source}_ground_nm.png",
-                                      normal=True, macro_m=metres["macro"], detail_m=metres["detail"])
+        albedo, albedo_detail = _ground_mesh_maps(level, os.path.join(surfaces_dir, f"{source}.png"),
+                                                  f"{level.name}_{source}_ground_b", gain=gain)
+        normal, normal_detail = _ground_mesh_maps(level, os.path.join(surfaces_dir, f"{source}_normal.png"),
+                                                  f"{level.name}_{source}_ground_nm", normal=True)
+        # how many times the near tiling repeats within one mesh UV period; a UV multiplier, so
+        # unlike a baked composite it needs no rounding
+        detail_scale = round(terraincut.GROUND_UV_M / max(1e-6, metres["detail"]), 4)
         mname = f"{level.name}_ground_{gname}"
         stage = {"roughnessFactor": 0.95, "metallicFactor": 0.0}
         if albedo:
             stage["baseColorMap"] = albedo
+            stage["baseColorFactor"] = [1.0, 1.0, 1.0, 1.0]     # blendDetail MULTIPLIES this in
+            if albedo_detail:
+                stage["detailMap"] = albedo_detail
+                stage["detailScale"] = [detail_scale, detail_scale]
+                # 1.0 = `base + (near - base)` = the near tiling exactly (`_tier_deviation`)
+                stage["detailBaseColorMapStrength"] = 1.0
         else:
             stage["baseColorFactor"] = [0.35, 0.4, 0.25, 1.0]
         if normal:
             stage["normalMap"] = normal
+            if normal_detail:
+                stage["detailNormalMap"] = normal_detail
+                stage["detailNormalMapStrength"] = 1.0
+                stage.setdefault("detailScale", [detail_scale, detail_scale])
         # doubleSided: the harness draws its lattice from either side (Blender culls no
         # backfaces) and a sub-cut patch on a portal's cliff can be near-vertical, where "faces
         # up" is a coin toss — both sides must draw
         out[mname] = {"name": mname, "mapTo": mname, "class": "Material", "persistentId": level.pid(f"material:ground:{gname}"),
                       "version": 1.5, "materialTag0": "beamng", "materialTag1": "cs2", "doubleSided": True, "Stages": [stage]}
-    notes = [f"terrain: tier strengths/attenuations are the vanilla small_island numbers for all "
-             f"{len(names)} grounds - APPROXIMATED: CS2 lerps three full tilings, BeamNG adds two "
-             f"signed overlays, so no game quantity maps onto them"]
+    # The ground mesh materials go in their OWN file, NOT beside the TerrainMaterials.
+    # Measured against every shipped vanilla level: `art/terrains/*.materials.json` holds 191
+    # `TerrainMaterial` entries and ZERO plain `Material` entries, and not one vanilla file mixes
+    # the two classes. We had our 7 ground mesh materials in there, which is a convention with no
+    # precedent in the engine's own content — and the cut meshes rendered as flat untextured grey
+    # through loads #19-#21 while three rounds of texture work on them changed nothing visible.
+    # `art/cs2/` is out (the materials stage rewrites that file wholesale, after this one runs) and
+    # `art/shapes/` is out (the mesh compiler writes placeholder materials files there and the cook
+    # stage deletes what it finds), so they get `art/ground/`.
+    notes = [f"terrain: ground meshes get 2 tiers where the terrain gets 3 (a v1.5 material has "
+             f"two texture slots) and their base map runs at the mesh's {terraincut.GROUND_UV_M:.0f} m "
+             f"UV period, not the game's mid tiling - APPROXIMATED for "
+             f"{sum(1 for v in out.values() if v.get('class') == 'Material')} "
+             f"ground mesh material(s); the near tier is exact via detailScale"]
     if guessed_tiling:
         notes.append(f"terrain: no rasters.terrainTiling in this rip - {len(guessed_tiling)} ground(s) "
                      f"fall back to the pre-audit-47 guesses ({', '.join(sorted(guessed_tiling))})")
+    if abs(sharpen - 1.0) > 1e-6:
+        notes.append(f"terrain: terrain_blend_sharpen x{sharpen:g} - NOT PARITY, a declared deviation: "
+                     f"the ground relief is {sharpen:g}x what BeamNG's blend derives, to dissolve the "
+                     f"blocky boundaries our 1.75 m layer grid causes (audit §48.3)")
     if missing_height:
         notes.append(f"terrain: {len(missing_height)} ground(s) ship no height map "
                      f"({', '.join(sorted(missing_height))}) - flat 128, so BeamNG's height blend "
                      f"degenerates to the bilinear ramp for them")
-    return out, notes
+    ground = {k: v for k, v in out.items() if v.get("class") == "Material"}
+    terrain_only = {k: v for k, v in out.items() if v.get("class") != "Material"}
+    return terrain_only, ground, notes
 
 
 STAGE = Stage(STAGE_KEY, "Terrain", enabled, units, run)

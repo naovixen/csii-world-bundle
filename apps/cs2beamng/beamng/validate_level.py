@@ -139,6 +139,7 @@ def check(level_dir, bundle_dir, progress=None):
     mapto = set()
     defined_in = {}                                     # lower-case name -> [relative file, ...]
     stray = []
+    mixed_class_files = []
     shapes_root = os.path.join(art, "shapes")
     if os.path.isdir(art):
         for root, _d, files in os.walk(art):
@@ -153,6 +154,16 @@ def check(level_dir, bundle_dir, progress=None):
                             doc = json.load(handle)
                     except ValueError:
                         continue
+                    # A plain `Material` must NOT share a file with `TerrainMaterial` entries.
+                    # Measured across every shipped vanilla level: art/terrains/*.materials.json
+                    # holds 191 TerrainMaterial and ZERO plain Material entries, and not one
+                    # vanilla file mixes the classes. We shipped 7 ground mesh materials in there
+                    # for three loads; they were DEFINED, so this validator passed, and the cut
+                    # meshes still drew as flat untextured grey. Defined is not the same as
+                    # applied — that is the blind spot this check closes.
+                    classes = {str(m.get("class")) for m in (doc or {}).values() if isinstance(m, dict)}
+                    if "TerrainMaterial" in classes and "Material" in classes:
+                        mixed_class_files.append(rel)
                     for key, mat in (doc or {}).items():
                         if not isinstance(mat, dict):
                             continue
@@ -163,6 +174,11 @@ def check(level_dir, bundle_dir, progress=None):
                                 defined_in.setdefault(label.lower(), []).append(rel)
     duplicates = {n: sorted(set(f)) for n, f in defined_in.items() if len(set(f)) > 1}
     checks["strayMaterialFiles"] = len(stray)
+    checks["mixedClassMaterialFiles"] = len(mixed_class_files)
+    for rel in mixed_class_files[:10]:
+        note(f"{rel}: plain 'Material' entries share a file with 'TerrainMaterial' entries - no vanilla "
+             "level does this (191 TerrainMaterial / 0 Material across the shipped levels); put the "
+             "plain materials in their own art/<dir>/main.materials.json")
     checks["duplicateMaterials"] = len(duplicates)
     for rel in stray[:10]:
         note(f"{rel}: a materials file under art/shapes/ - BeamNG's compiler/importer auto-generated it "
