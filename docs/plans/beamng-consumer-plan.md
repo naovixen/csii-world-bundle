@@ -240,6 +240,40 @@ detail: exact / simplified / off" preset; the report lists collision triangle to
 Each phase ends with its offline gate + commit; in-game loads are the user's. B* = bake side
 (engine-neutral), A* = application, P* = optional producer.
 
+**From A3 onwards every phase carries a PARITY GATE, before the in-game load.** A2 ended with a
+week lost to it: the terrain cut was "fixed" seven times by reasoning about screenshots
+(containment scoring, a rim snap, a sub-cut, a cliff lift, rim skirts, a band lowering, a margin
+ring), each fix causing the next artifact, until the game's own implementation was read and gave
+the rule in half an hour — a stencil prism — and showed the producer had matched it all along
+(audit §46). The parity gate is what stops that recurring, and it is not satisfied by "it looks
+right in Blender": the harness is a consumer with the same licence to be wrong, and it was
+carrying the very defect a screenshot was blaming on the app.
+
+For each phase, before it is called done:
+
+1. **Name the game's counterpart system and read it** — `tools/decomp`, not IL, not our own docs
+   (three of our documented claims have failed a re-check). For A3 that is `BatchInstanceSystem`
+   / `ObjectGeometrySystem` / the tree state and colour-variation paths; for A4 the LOD and
+   culling thresholds; for A5 nothing (it is a build step, not a fidelity one) — say so explicitly
+   rather than skipping the question.
+2. **Write the rule matrix** into `docs/cs2-api-audit.md`: game rule → our behaviour → verdict
+   (`match` / `divergence` / `approximated` / `deliberate deviation`), one row per rule.
+3. **Build a predicate you can sample** where the phase's output admits one, and report the
+   agreement as a number — `tools/check_terrain_vs_game.py` is the model (it asks the game's own
+   question at random points and compares it with what the level draws). A number beats a
+   screenshot, and it is what makes a regression visible later.
+4. **Declare and count every approximation** that remains, in the code that makes it *and* in the
+   build report. **No new tuned constant ships without either a source citation or a counted
+   approximation beside it** — an undeclared approximation is indistinguishable from a bug the
+   moment its artifact appears.
+5. **Delete what the game's rule replaces.** An approximation left in the tree beside the exact
+   rule is the next session's confusion.
+
+`docs/plans/game-parity-sweep.md` carries the same method plus the standing backlog of areas
+(including the two the terrain still owes: the ground-boundary dither and ground-mesh material
+parity). A phase's parity work goes in that backlog if it cannot be finished inside the phase —
+it does not get dropped.
+
 ### B0 — Contracts, packaging, settle the docs
 - Root `pyproject.toml` (setuptools, `package-dir` mapping, `numpy` required, `pywebview`
   optional extra `[gui]`, console script `cs2beamng`); `apps/cs2beamng/` skeleton; keep the
@@ -375,6 +409,12 @@ Each phase ends with its offline gate + commit; in-game loads are the user's. B*
   1 km); `stages/lights.py` (`lights.photometric_lights` → Point/SpotLight, non-shadowing,
   cap); `stages/groundcover.py` (`GroundCover` per splat layer with the bundle's ground
   textures as billboards, toggle).
+- **Parity gate (before the load):** read `BatchInstanceSystem.UpdateObjectInstances`,
+  `ObjectGeometrySystem` and the tree growth/season + colour-variation paths; matrix rows for LOD
+  selection, which mesh state a tree draws, sub-object composition and how `instanceColor*` is
+  derived. Sampleable predicate: for N random instances, does the state/LOD/tint we place match
+  what the game would choose for that entity? Anything left approximated is counted in
+  `report.json`.
 - **Gate:** `report.json` vs budgets; validator; **user in-game load #3** (region → full):
   placement, tree states, tints, lights, grass; **FPS at three viewpoints** recorded → tune
   thresholds/density defaults; repeat with props/foliage/lane-furniture toggles off to confirm
@@ -385,6 +425,10 @@ Each phase ends with its offline gate + commit; in-game loads are the user's. B*
   texture cap defaults per "quality preset": Ultra/High/Medium/Low presets in the UI).
 - `stages/airoads.py` (`--ai-roads`): hidden `road_invisible` `DecalRoad`s from
   `lanegraph.masters ∩ drivable(car)`; count measured in-game.
+- **Parity gate:** the tuning levers are OURS (BeamNG-side), so the matrix here records which
+  numbers are engine tuning and which are fidelity — and no fidelity number moves to buy FPS
+  without saying so in the preset table. Where the game has its own answer (LOD switch distances,
+  cull thresholds, forest density), read it and state the divergence rather than tuning past it.
 - **Gate:** presets documented with measured FPS/load-time on this machine; user sign-off.
 
 ### A5 — "Cook in BeamNG" stage (load time) + advice screen
@@ -401,6 +445,8 @@ Each phase ends with its offline gate + commit; in-game loads are the user's. B*
   cook time or estimate), settings that trade fidelity for FPS, where the level is.
 - Fallback only if `-compilemeshes` proves unusable headless: `csiibeamng/cdae.py`, reader-first
   against the shipped v31 files, round-trip validated.
+- **Parity gate:** none — this phase changes no geometry, material or placement, only how long
+  the first load takes. Recorded here so the question is answered rather than skipped.
 - **Gate:** cook runs on this machine end-to-end; first-load time with and without cook
   recorded; validator green.
 
@@ -422,13 +468,19 @@ Each phase ends with its offline gate + commit; in-game loads are the user's. B*
   path's 14 mm lift is invisible at eye height, and its far-distance shimmer is handled by a
   `nulldetail` cull on marking tiles.
 - **Gate:** each experiment has a before/after table in `docs/plans/beamng-consumer-plan.md`;
-  losers are removed, not left as dead flags.
+  losers are removed, not left as dead flags. An experiment that changes what is DRAWN (E5
+  markings as `DecalRoad`s, E4 buildings-as-forest) also carries the parity check for that layer —
+  a faster wrong picture is still wrong.
 
 ### P1 — Producer (optional): LOD chain rip — gated by measured value
 - `MeshRipSystem` follows `LodProperties` → `<assetId>_LOD<n>` (GltfWriter already names
   them); Settings toggle **`Rip LODs`, default off**; dialog reports the mesh-stage delta. Bake
   skips generated LODs when authored ones exist. Only if A4 shows generated LODs are visibly
   worse than the cost of the rip delta.
+- **Parity gate:** a PRODUCER change, so it needs the stricter form — matrix against
+  `LodProperties`/the game's own LOD selection, and "built, awaiting in-game re-rip" until Naomi
+  has ripped. A producer change cannot be validated against the bundle on disk (CLAUDE.md's
+  staleness non-negotiable).
 
 ## Reuse map (call, don't rewrite)
 

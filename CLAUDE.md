@@ -12,7 +12,9 @@ without any of them. Two consumers do live in this repo, beside the mod, as of 2
 the Blender adapter (`tools/blender_import_bundle.py`) and the **`cs2beamng` BeamNG.drive level
 builder application** (`apps/cs2beamng/`), both built on the engine-neutral `tools/csiibundle/`
 package and its offline **bake** stage (`csiibundle.bake` → `<bundle>/derived/`, contract §13).
-The live plan for that work is `docs/plans/beamng-consumer-plan.md`; `pip install -e .` installs
+The live plan for that work is `docs/plans/beamng-consumer-plan.md` — **every phase from A3 on
+carries a parity gate** (read the game's counterpart system, write the rule matrix, sample a
+predicate, count what stays approximated) before its in-game load; `pip install -e .` installs
 both Python packages (`pyproject.toml` at the root maps them from `tools/` and `apps/`).
 
 ## The spec

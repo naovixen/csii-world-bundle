@@ -9,7 +9,14 @@ decompiled `Game.Simulation.TerrainSystem` produced the actual rule (a stencil p
 **producer had matched it all along**, and replaced all seven inventions with one exact cut that
 agrees with the game's own predicate at 99.98–100 % (audit §46).
 
-That is the pattern to repeat everywhere. This plan is the checklist.
+That is the pattern to repeat everywhere. This plan is the checklist — the standing backlog of
+areas, worked whenever there is room.
+
+**It is also a per-phase obligation.** `docs/plans/beamng-consumer-plan.md` gives every phase from
+**A3 onwards** a *parity gate* that must pass before that phase's in-game load: name and read the
+game's counterpart system, write the rule matrix into `docs/cs2-api-audit.md`, build a samplable
+predicate where the output admits one, count what stays approximated, and delete what the game's
+rule replaces. Parity work a phase cannot finish lands here rather than being dropped.
 
 ## The method, per area
 
