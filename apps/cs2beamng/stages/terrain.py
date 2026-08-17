@@ -97,10 +97,30 @@ FALLBACK_LOD_BLEND = (100.0, 1000.0, 2000.0, 4000.0)
 # luminance 0.2085, median 0.2196, p10 0.1386, p90 0.2344. Restricted to the 26 grass-named ones —
 # which is what this constant calibrates on — mean 0.2147, **median 0.2185**.
 #
-# The value here was 0.16, a guess, and it was 27 % below BeamNG's own grass: every CS2 ground
-# shipped a third darker than the engine expects. `tools/test_ground_albedo.py` re-measures the
-# vanilla content and fails if this constant drifts away from it.
-GRASS_TARGET_LUMINANCE = 0.2185
+# **HELD AT 0.16 BY DECISION (2026-08-17), against that measurement.** §55 moved this to 0.2185
+# — BeamNG's own grass median — and the build that shipped it drew black and cream slabs on the
+# cut faces beside deep terrain. The cause was NOT established: measurement ruled out albedo
+# clipping (0 % of ground texels clip at EITHER value), base/detail composite clipping (~0 % in
+# the built textures), a frozen detail texel on a stretched face (never reaches black), and
+# inverted or downward normals (0 % face downward). What the larger gain does do, measured, is
+# amplify the base/detail mismatch on UV-stretched faces by exactly 1.366x — so it plausibly made
+# a PRE-EXISTING defect louder without being its cause.
+#
+# That pre-existing defect is real and separately filed (audit §60): `bake/terraincut.py` projects
+# UVs from the horizontal plane only, so a vertical cut wall gets UV span only from its horizontal
+# footprint. Measured on the built level, vertical walls run **217.5 m per UV unit against 40.0
+# for flat faces** — a 5.4x stretch, correlating with verticality at +0.800. That is why it shows
+# up on "the side of deep terrain" and gets worse the deeper the cut.
+#
+# Until that is fixed and the look is re-validated, this stays at the value the last accepted
+# build used. The measurement is not withdrawn — `tools/test_ground_albedo.py` still reports
+# BeamNG's anchor every run and the gap to it — it is simply not being acted on yet.
+GRASS_TARGET_LUMINANCE = 0.16
+
+# What the measurement says this should be: the median linear luminance of BeamNG's own 26
+# grass-named vanilla ground albedos. Kept beside the shipped value so the gap is visible in the
+# source rather than only in an audit section.
+MEASURED_GRASS_ANCHOR = 0.2185
 MAX_GAIN = 6.0
 
 

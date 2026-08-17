@@ -56,6 +56,68 @@ LIFT_LADDER = (
 )
 LIFT = dict(LIFT_LADDER)
 
+# -- ordering WITHIN the top rung, from the game's own sort key ---------------------------------
+#
+# `DecalProperties.m_RendererPriority` is the ONLY ordering CS2 states for two decals projecting
+# onto the same surface — highest drawn last (audit §57.2). A decal prefab carries no blend mode
+# at all, so there is nothing else to go on. `areas.py` has ordered surface areas by the
+# equivalent `RenderedArea.m_RendererPriority` since §8b; this is the same rule for the
+# `instance_decal` rung, so both halves of the ladder now come from the game rather than one from
+# the game and one from a guess.
+#
+# **On the reference city it is a NO-OP, and that is a measurement, not an oversight** (audit
+# §58.2): `decalPriority` reads 0 on 17,721 of 17,722 decal instances, with a single instance at
+# 2. So there was never a per-decal ordering here to port, and this exists because the game states
+# the rule and a modded or DLC decal may use the range — not because it fixes anything visible
+# today. The bake counts how many instances it actually separates so a build says so out loud.
+#
+# `instance_decal` is the TOP rung, so unlike `areas.py` this has no rung above it to stay under.
+# The ceiling is instead a bounded headroom: the spread may never exceed a quarter of the gap
+# below it, which keeps the highest-priority decal closer to the paint it sits on than to the
+# area rung underneath. TUNED (the step and the headroom) / CONTRACT (the order).
+INSTANCE_PRIORITY_STEP = 0.0005
+INSTANCE_PRIORITY_CEILING = (LIFT["instance_decal"] - LIFT["area"]) * 0.25
+
+
+def instance_priorities(records):
+    """The distinct `attrs.decalPriority` values among decal records, ascending.
+
+    Records without the attribute are ignored rather than treated as zero — absent means the
+    prefab carries no `DecalProperties`, which is not the same as priority zero (contract §4.2a).
+    """
+    seen = set()
+    for record in records or ():
+        attrs = record.get("attrs") or {}
+        if "decalPriority" in attrs:
+            try:
+                seen.add(int(attrs["decalPriority"]))
+            except (TypeError, ValueError):
+                continue
+    return sorted(seen)
+
+
+def instance_priority_lift(priority, ordered):
+    """Extra metres above the `instance_decal` rung for a decal of this priority.
+
+    By RANK, not by the raw value, for the same reason `areas.priority_lift` is: CS2's priorities
+    are sparse and signed, and scaling by them directly would push a decal metres into the air.
+    Returns 0.0 when the city states no ordering — one distinct value, or none.
+    """
+    ordered = list(ordered or ())
+    if len(ordered) < 2 or priority is None:
+        return 0.0
+    try:
+        rank = ordered.index(int(priority))
+    except (TypeError, ValueError):
+        return 0.0
+    if rank == 0:
+        return 0.0
+    step = INSTANCE_PRIORITY_STEP
+    top = max(len(ordered) - 1, 1)
+    if top * step > INSTANCE_PRIORITY_CEILING:
+        step = INSTANCE_PRIORITY_CEILING / top
+    return rank * step
+
 # The lane bend's PRE-DRAPE offset. NOT a rung of the ladder above and must not be tuned with
 # it: the drape centres each marking's ±half-height search window on the height this produces,
 # so raising it to 0.030 along with the ladder pushed 8 of one region's 4,694 decal vertices out

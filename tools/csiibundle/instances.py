@@ -241,6 +241,21 @@ def placement_lift(record):
     return decals.LIFT["instance_decal"] if record.get("kind") == "decal" else 0.0
 
 
+def decal_priority(record):
+    """`attrs.decalPriority` — the game's sort key for overlapping decals, or `None`.
+
+    `None` means the prefab carries no `DecalProperties` at all, which the contract distinguishes
+    from priority zero; `decals.instance_priority_lift` treats it as "no opinion".
+    """
+    value = (record.get("attrs") or {}).get("decalPriority")
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def is_paint(record):
     """Whether this record is paint rather than a solid — i.e. must not become collision.
 

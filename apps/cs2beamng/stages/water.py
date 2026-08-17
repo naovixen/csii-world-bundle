@@ -44,6 +44,19 @@ WAVES = [{"waveDir": [0, -1], "waveMagnitude": 0.8, "waveSpeed": 2},
          {"waveDir": [0.3, -1.2], "waveMagnitude": 0.5, "waveSpeed": -1.2},
          {"waveDir": [-0.3, -0.8], "waveMagnitude": 0.7, "waveSpeed": 2}]
 
+# BeamNG's own reference wave amplitude for an open sea (small_island's Ocean1). The SHAPE of the
+# swell stays BeamNG's — direction, speed and the three-band table have no counterpart in CS2's
+# compiled water shader — but the AMPLITUDE no longer does: `WaterRenderSystem.ApplyMaterialParams`
+# normalises exactly two wave quantities to 0..1 and hands them to its shader, and those two are
+# portable (audit §56). So this is the reference the game's own multipliers scale:
+#
+#   sea   = REF x saturate(wavesMultiplier)      -> 1.300 saturates to 1.00, so 0.080 (unchanged)
+#   lake  = REF x lakeWavesMultiplier            -> 0.130,                so 0.0104 (was 0.02)
+#
+# The lake number is the visible half: CS2 authors its lakes at a ninth of its sea and we were
+# drawing them at a quarter. TUNED (the reference) / PORTED (both multipliers).
+WAVE_MAGNITUDE_REF = 0.08
+
 
 def enabled(settings):
     return bool(settings.get("water", True))
@@ -130,8 +143,9 @@ def run(ctx, progress):
     if sea is not None:
         obj = {"name": "sea", "class": "WaterPlane", "position": [0.0, 0.0, round(sea["level"], 3)],
                "gridElementSize": 8.0, "gridSize": 400, "Foam": FOAM, "Ripples (texture animation)": RIPPLES,
-               "Waves (vertex undulation)": WAVES, "overallWaveMagnitude": 0.08, "overallRippleMagnitude": 1,
-               "overallFoamOpacity": 1.2}
+               "Waves (vertex undulation)": WAVES,
+               "overallWaveMagnitude": round(WAVE_MAGNITUDE_REF * appearance.sea_wave_scale, 5),
+               "overallRippleMagnitude": 1, "overallFoamOpacity": 1.2}
         obj.update(common)
         level.add(["Level_objects", "water"], obj, key="water:sea")
         progress.advance(1)
@@ -144,7 +158,8 @@ def run(ctx, progress):
                "rotationMatrix": frame.identity_matrix(),
                "scale": [round(max_x - min_x, 2), round(max_z - min_z, 2), round(depth, 2)],
                "Foam": FOAM[:1], "Ripples (texture animation)": RIPPLES, "Waves (vertex undulation)": WAVES,
-               "overallWaveMagnitude": 0.02, "overallRippleMagnitude": 0.5, "overallFoamOpacity": 0.6}
+               "overallWaveMagnitude": round(WAVE_MAGNITUDE_REF * appearance.lake_wave_scale, 5),
+               "overallRippleMagnitude": 0.5, "overallFoamOpacity": 0.6}
         obj.update(common)
         level.add(["Level_objects", "water"], obj, key=f"water:block:{i}")
         progress.advance(1)
@@ -154,6 +169,13 @@ def run(ctx, progress):
     progress.end(f"{'1 WaterPlane + ' if sea else ''}{len(blocks)} WaterBlocks" + (f", {dropped} small pieces dropped" if dropped else ""))
     return {"bodies": len(bodies), "pieces": len(pieces), "blocks": len(blocks), "plane": sea is not None,
             "seaLevel": None if sea is None else round(sea["level"], 2), "dropped": dropped,
+            "seaWaveScale": round(appearance.sea_wave_scale, 4),
+            "lakeWaveScale": round(appearance.lake_wave_scale, 4),
+            # APPROXIMATED unless the game says the wind branch is dead: with
+            # `seaWindAffectWavesDirection` true the wave direction and chaos follow live wind, so
+            # a fixed direction table reproduces one moment rather than the game (audit §58.1).
+            "waveDirection": "exact (game passes no wind)" if appearance.wave_direction_is_exact
+                             else "APPROXIMATED (wind-driven in game; fixed here)",
             "seconds": round(time.monotonic() - started, 1)}
 
 

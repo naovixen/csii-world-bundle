@@ -4194,6 +4194,14 @@ johnson_valley, jungle_rock_island, small_island, template, west_coast_usa):
 ground has been shipping about a third darker than the engine expects. Corrected to **0.2185**, the
 measured anchor.
 
+> **REVERTED 2026-08-17 (§60).** The build that shipped 0.2185 drew black and cream slabs on the
+> cut faces beside deep terrain. The gain is not the cause — four mechanisms were measured and
+> killed, and the real defect is §60's planar cut-mesh UVs — but it does amplify that defect's
+> base/detail mismatch by 1.366×, so the constant is **held at 0.16 by decision** until the UVs are
+> fixed and the look re-validated. The measurement above stands and is not withdrawn;
+> `MEASURED_GRASS_ANCHOR = 0.2185` now sits beside the shipped value in the source, and
+> `tools/test_ground_albedo.py` reports the gap every run instead of enforcing it.
+
 ### 55.3 The predicate
 
 `tools/test_ground_albedo.py` re-measures BeamNG's vanilla content and fails if the constant drifts
@@ -4393,3 +4401,200 @@ built from the *previous* bundle, and Naomi has not looked at it yet. Rebuilding
 two things at once — the albedo target and a whole new rip — so the build on disk is deliberately
 left alone until that look happens. Once it does, the level should be rebuilt from this rip to pick
 up both new fields.
+
+## 59. The consumer halves of the two new fields (2026-08-17)
+
+§56 and §57 shipped `seaWindAffectWavesDirection` and `decalPriority`; §58 measured them and
+corrected what those sections had concluded. This is the work that actually consumes them, and it
+is deliberately shaped by §58's measurements rather than by §56/§57's expectations.
+
+### 59.1 Water: two wave numbers are portable, and the rest is honestly not
+
+`WaterRenderSystem.ApplyMaterialParams` normalises exactly **two** wave quantities to 0..1 before
+handing them to its shader, and those two — and only those two — transfer:
+
+| game | value here | what it becomes |
+|---|---|---|
+| `largeBand0Multiplier = largeBand1Multiplier = saturate(m_WavesMultiplier)` | 1.3 saturates to **1.00** | the sea's amplitude scale |
+| `_LakeWavesMultiplier`, bound verbatim | **0.13** | a lake's amplitude scale |
+
+Everything else in that method is a live camera or wind term (§56), so the *shape* of the swell —
+direction, speed, the three-band table — stays BeamNG's own `small_island` Ocean1 data, declared
+as such. What changes is the amplitude, which is no longer two tuned constants:
+
+    sea  = WAVE_MAGNITUDE_REF x sea_wave_scale    = 0.08 x 1.00   = 0.08    (unchanged)
+    lake = WAVE_MAGNITUDE_REF x lake_wave_scale   = 0.08 x 0.13   = 0.0104  (was 0.02)
+
+**The lake number is the visible half.** CS2 authors its lakes at a ninth of its sea; we were
+drawing them at a quarter, so every lake, pond and reservoir has been about twice as choppy as the
+game makes it. The reference amplitude stays tuned (it is BeamNG's, and there is nothing in CS2 to
+derive it from); both multipliers are ported.
+
+`Appearance` gains `sea_wave_scale`, `lake_wave_scale` and `wave_direction_is_exact`. The last is
+the point of shipping the flag at all: it distinguishes three states rather than two — `False` ⇒ a
+fixed wave direction **is** the game (the wind branch passes 0 for orientation and strength);
+`True` ⇒ direction and chaos follow live wind and any static table approximates one moment;
+`None` ⇒ the bundle predates the field and a consumer cannot tell, which is not the same as calm.
+The water stage reports which of the three it was, so a build states whether its wave direction is
+exact or approximated instead of leaving it to be assumed. On the reference city the flag is
+**true**, so it reports APPROXIMATED.
+
+### 59.2 Decals: the game's sort key, ported knowing it is a no-op here
+
+`decals.instance_priority_lift` gives the `instance_decal` rung the same rank-based ordering
+`areas.py` has applied to surface areas since §8b, from the same game field. Both halves of the
+lift ladder now come from CS2's own `m_RendererPriority` rather than one from the game and one
+from a guess.
+
+**It is expected to do nothing on this city, and the bake counts it rather than assuming it.**
+§58.2 measured `decalPriority` at 0 on 17,721 of 17,722 decals, so `ordered` holds one value and
+every lift is zero. The rule exists because the game states it and a modded or DLC decal may use
+the range — not because it fixes anything visible today — and `decalPriorities` /
+`decalBlocksRanked` in the markings bake's stats say so out loud, because a silent no-op is
+indistinguishable from a bug.
+
+Two design notes worth keeping:
+
+* **Rank, not raw value**, for the same reason `areas.priority_lift` uses rank: CS2's priorities
+  are sparse and signed (−122…42 on areas), and scaling by them directly would push a decal metres
+  into the air. The headroom is a quarter of the gap below the rung, so the top-priority decal
+  stays nearer the paint it sits on than the area rung underneath.
+* **Absent ≠ zero.** `instances.decal_priority` returns `None` where the prefab carries no
+  `DecalProperties`, and `instance_priorities` ignores those rather than counting them as 0 —
+  the distinction the contract draws and the schema note records.
+* The instance file is read **once**: priorities are collected while streaming its 1.2 M records
+  and the rank lifts are applied to the blocks afterwards, before draping. A pre-pass to learn the
+  distinct set would have doubled the read for a field that is constant.
+
+Markings bake product **version 1 → 2**.
+
+## 60. The cut-mesh UVs are a horizontal projection, so vertical walls stretch 5.4x (2026-08-17)
+
+Naomi, on the build that shipped §55's ground-albedo change: *"some textures we fixed on the side
+of deep terrain has regressed"*, with two screenshots showing large flat **black** and flat
+**cream** faces on the cut walls beside a hillside road, against terrain that renders correctly
+beside them.
+
+### 60.1 What was ruled out, by measurement
+
+Four mechanisms were proposed and killed before the real one was found. Recording them because
+each looked convincing and none survived a number:
+
+| hypothesis | measurement | verdict |
+|---|---|---|
+| The larger albedo gain clips bright ground texels to white | Per-ground clipping at **both** gains: max 0.05 % over the seven grounds | **dead** |
+| The built base/detail maps clip in composite | Composite clip in the shipped textures: 0.00 % lo / 0.04 % hi | **dead** |
+| A UV-stretched face freezes the detail texel and goes black | Composite over every possible frozen texel: min **0.029** linear (grass), never ≤ 0 | **dead** |
+| Inverted winding or downward normals leave faces unlit | 0.00 % of normals face downward; steep faces track their geometry at median dot **+0.937**; winding matches the normal on 99.96 % | **dead** |
+
+BeamNG's own log shows no texture errors, and the build validator reported 0 missing files,
+0 unbound materials, 0 stray material files, 0 problems.
+
+**A method note worth keeping.** The verticality and normal-direction measurements were first run
+against the Y axis and produced a confident *negative* correlation, which falsified the correct
+hypothesis. The DAEs declare `<up_axis>Z_UP</up_axis>`. Re-running on the right axis flipped the
+sign to +0.800. Two of the four rows above were re-derived after that catch; the axis of a file is
+part of reading it.
+
+### 60.2 The defect
+
+`tools/csiibundle/bake/terraincut.py:205`:
+
+```python
+uvs = numpy.stack((verts[:, 0] / GROUND_UV_M, verts[:, 2] / GROUND_UV_M), axis=-1)
+```
+
+A **horizontal planar projection with no vertical component**. A vertical wall gets UV span only
+from its horizontal footprint, so its texture stretches by however much taller than wide it is —
+and the deeper the cut, the taller the wall. Measured over all 76,306 cut triangles of the built
+level (Z-up, normals from the DAE):
+
+| face class | n | median m/uv | p95 | max | area |
+|---|---|---|---|---|---|
+| flat, normal up | 59,469 | **40.0** (correct) | 41.9 | 151.4 | 12,652 m² |
+| sloped | 14,559 | 43.6 | 62.4 | 260.4 | 4,113 m² |
+| steep | 1,894 | 76.5 | 151.6 | 260.4 | 1,827 m² |
+| **vertical wall** | 336 | **217.5** | 259.5 | 308.2 | 1,802 m² |
+
+Correlation between verticality and log UV scale: **+0.800**. 1,343 triangles (1.76 %, 3,409 m²)
+are stretched past 2× the intended 40 m/uv.
+
+A 5.4× stretch samples a small patch of a base map that is itself a 16×16 low-pass upsampled to
+2048 — magnified, that is a single smooth blob, which is the flat cream. It explains the loss of
+structure on exactly the surfaces Naomi named. **It does not explain pure black** (§60.1 row 3),
+and that remains open.
+
+### 60.3 What the gain did, and the decision
+
+The gain change is not the cause, but it is not innocent either: measured, it amplifies the
+base/detail mismatch on a stretched face by exactly **1.366×** (mean |error| grass 0.0325 → 0.0443,
+rock 0.0745 → 0.1018). A pre-existing defect got louder.
+
+`GRASS_TARGET_LUMINANCE` is therefore **reverted to 0.16** and held there by decision, with
+`MEASURED_GRASS_ANCHOR = 0.2185` recorded beside it so the gap stays visible in the source.
+`tools/test_ground_albedo.py` no longer *enforces* agreement with BeamNG's content — it re-measures
+the anchor every run, prints the gap, and asserts only that the shipped value is the decided one.
+The measurement is not withdrawn; it is not being acted on until §60.2 is fixed and the look is
+re-validated.
+
+### 60.4 RETRACTED — the planar UV and the heightfield normal are deliberate, and correct
+
+**Do not build the triplanar fix this section originally proposed.** Reading
+`bake/terraincut.py`'s own contract after measuring, rather than before, shows what the mesh is:
+*"one glTF per tile … the ground the consumer's heightfield paints there … **world-planar UVs** at
+`GROUND_UV_M` metres per repeat, **heightfield normals**, bundle frame"*, over clipped ground
+squares at heightfield heights with `flip = nrm.y < 0` — "every ground face looks up".
+
+It is **the terrain surface remnant around a hole**, not a corridor wall. So:
+
+* Its planar `(x, z)` UV is **the same projection BeamNG's own terrain uses** — BeamNG has
+  triplanar only in `sdfTerrain*`, never in `terrain.h.hlsl`. On a steep hillside the heightfield
+  stretches by `1/cos(slope)` and so does the mesh, *by the same factor*. They match. Making the
+  mesh triplanar would make it DIVERGE from the terrain it abuts.
+* Its heightfield normal is what makes it shade **continuously** with that terrain. §60.1's "steep
+  faces sit a median 17.3° from their own face normal" is not a defect — it is smooth shading
+  against flat triangles, which is exactly what the neighbouring heightfield does.
+
+So §60.1's measurements stand as facts and §60.2's interpretation of them was wrong. The 5.4× UV
+figure is real and is simply what a steep heightfield does everywhere, including in the game.
+
+### 60.5 Where the evidence actually points: §49.6, and it is bigger than its own note said
+
+The remaining structural difference is the one already on the books: **the terrain blends up to
+four grounds per pixel and an ordinary mesh draws one per triangle.** §49.6 sized that as "27 % of
+the rim within two squares of a ground boundary". Measured directly off `terrain/splatmap.png`
+(4096², 16.8 M texels, six painted channels plus rock as the remainder):
+
+| | |
+|---|---|
+| dominant ground share, median | 1.000 — but **p25 = 0.545** |
+| texels where the top ground is under 95 % of the mix | **48.20 %** |
+| texels with two or more grounds each above 10 % | **47.80 %** |
+
+**Nearly half the map is a genuine multi-ground blend**, not a quarter of the rim. Every cut-mesh
+triangle landing there paints one flat ground where the terrain beside it blends two or more —
+which is precisely the flat single-colour patches in the screenshots, sitting in correctly blended
+terrain. It also explains why they read as a different ground rather than as a broken texture.
+
+**Not yet confirmed**, and it must be before anything is built: that the specific dark and vivid
+patches are single-ground fills rather than something else. The screenshot sample of the dark band
+came back **(27, 35, 48)** and **(3, 9, 21)** — blue-dominant, i.e. sky ambient with no sun, which
+is a shaded surface and not a black texture. A shaded single-ground patch fits; so do other things.
+
+### 60.6 The fix, not yet built
+
+§49.6's, unchanged and now much better motivated: bake **per-tile opacity masks from the same
+splat weights the terrain blends**, and drive a multi-stage material with them — `Stages` is a
+list, `defaultMat.hlsl` blends stage N over N−1 by `inLayer.opacity`, and vanilla ships 1,073
+four-stage materials. Four stages covers the four grounds the terrain itself blends.
+
+Also noted while in there: 90 orphaned `art/ground/*blend*.dds` files that no material references,
+left by an earlier build.
+
+**A method note, because this section is the case study.** The diagnosis moved three times — albedo
+gain, then planar UVs, then §49.6 — and each move came from a measurement contradicting the last.
+Two of those reversals were self-inflicted: the first from measuring verticality on Y in a `Z_UP`
+file, the second from proposing a fix before reading the module's own contract, which states in its
+first paragraph exactly what the mesh is and why its UVs and normals are what they are. **Read the
+thing you are about to change before measuring it, not after.**
+

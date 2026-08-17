@@ -8,15 +8,25 @@ scene every frame and normalises it, which is what lets its ground albedos be au
 cannot be replayed, and BeamNG has no equivalent metering on terrain. A fixed linear gain on the
 albedo is the right shape of answer and is declared as an approximation.
 
-WHAT THIS GATES. The gain's TARGET is not a matter of taste and it is not CS2's to set: its job is
-to land CS2's grounds where BeamNG's own lighting was authored to receive them, so the authority is
-BeamNG's shipped content. This file measures that content directly — the vanilla levels are zips
-under `content/levels/`, each with `*.materials.json` naming its `TerrainMaterial` base-colour maps
-— and fails if `GRASS_TARGET_LUMINANCE` has drifted away from it.
+WHAT THIS MEASURES. The gain's target is not a matter of taste and it is not CS2's to set: its job
+is to land CS2's grounds where BeamNG's own lighting was authored to receive them, so the authority
+is BeamNG's shipped content. This file measures that content directly — the vanilla levels are zips
+under `content/levels/`, each with `*.materials.json` naming its `TerrainMaterial` base-colour maps.
 
 Measured 2026-08-17 over 149 ground albedos in 15 shipped levels: mean linear luminance 0.2085,
 median 0.2196, p10 0.1386, p90 0.2344; the 26 grass-named ones (what the constant calibrates on)
-mean 0.2147, median 0.2185. The constant was 0.16 — a guess, 27 % below BeamNG's own grass.
+mean 0.2147, median 0.2185.
+
+WHY IT DOES NOT ENFORCE THAT NUMBER. `GRASS_TARGET_LUMINANCE` is deliberately **held at 0.16**,
+27 % below the anchor (audit §55, reverted 2026-08-17). The build that shipped 0.2185 drew black
+and cream slabs on the cut faces beside deep terrain, and the cause was never established — the
+larger gain amplifies the base/detail mismatch on UV-stretched faces by 1.366x, so it plausibly
+made a pre-existing defect louder without being its cause (the defect is §60's planar cut-mesh UVs:
+217.5 m/uv on vertical walls against 40.0 on flat ones).
+
+So this gate reports the gap on every run and asserts only that the shipped value is the one that
+was DECIDED. Changing the constant without changing this file is what it prevents; agreeing with
+BeamNG is what it measures and, for now, deliberately does not require.
 
 Run: `python tools/test_ground_albedo.py`  (system Python + numpy + Pillow; skipped when BeamNG is
 not installed, so it is advisory on a machine without the game and binding on one with it).
@@ -34,15 +44,14 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 LEVELS = os.environ.get("BEAMNG_LEVELS") or \
     r"G:\SteamLibrary\steamapps\common\BeamNG.drive\content\levels"
 
-# How far the constant may sit from BeamNG's own grass median before this is a finding.
-# CHOSEN SO THE VALUE THIS GATE REPLACED FAILS IT: the old tuned 0.16 was 0.0585 below the
-# measured anchor, so a tolerance of 0.07 would have called it healthy and the gate would have
-# been decoration. 0.03 is about a fifth of a stop at this level — tight enough to catch a guess,
-# loose enough that re-measuring on a different BeamNG version does not thrash.
-TOLERANCE = 0.03
+# The value the app deliberately ships, and the only thing this file asserts. Held below the
+# measured anchor pending §60 — see the module docstring. Change one and you must change the
+# other, which is the point.
+DECIDED_TARGET = 0.16
 
-# The constant this gate replaced, kept as its negative control (see `test_negative_control`).
-SUPERSEDED_TARGET = 0.16
+# How far from BeamNG's own grass median counts as "diverged" for the REPORT (not a failure).
+# 0.03 is about a fifth of a stop at this level.
+TOLERANCE = 0.03
 
 FAILED = []
 
@@ -132,21 +141,25 @@ def main():
 
     target = float(stage.GRASS_TARGET_LUMINANCE)
     anchor = float(numpy.median(grass)) if len(grass) >= 5 else float(numpy.median(allv))
-    print(f"  GRASS_TARGET_LUMINANCE = {target:.4f}   BeamNG's own anchor = {anchor:.4f}")
-    check(abs(target - anchor) <= TOLERANCE,
-          f"the gain target tracks BeamNG's own grass (|{target:.4f} - {anchor:.4f}| = "
-          f"{abs(target - anchor):.4f} <= {TOLERANCE})")
-    # The target must sit inside the range the engine's own content occupies, not merely near a
-    # single statistic of it.
-    check(numpy.percentile(allv, 10) <= target <= numpy.percentile(allv, 90),
-          f"the target lies inside the p10-p90 band of vanilla ground albedo "
-          f"({numpy.percentile(allv, 10):.4f}..{numpy.percentile(allv, 90):.4f})")
+    gap = abs(target - anchor)
+    print(f"  GRASS_TARGET_LUMINANCE = {target:.4f}   BeamNG's own anchor = {anchor:.4f}"
+          f"   gap {gap:.4f}")
+    if gap > TOLERANCE:
+        print(f"    DIVERGED by more than {TOLERANCE} - deliberate, pending audit section 60 "
+              f"(planar cut-mesh UVs). Reported, not failed.")
 
-    # Green must be earned: the guess this replaced has to fail the same clause.
-    print("negative control (the gate convicts the value it replaced):")
-    check(abs(SUPERSEDED_TARGET - anchor) > TOLERANCE,
-          f"the superseded 0.16 is convicted (|{SUPERSEDED_TARGET:.4f} - {anchor:.4f}| = "
-          f"{abs(SUPERSEDED_TARGET - anchor):.4f} > {TOLERANCE})")
+    # The one assertion: the shipped value is the decided one. This is what stops the constant
+    # drifting silently while the docstring above still explains a different number.
+    check(abs(target - DECIDED_TARGET) < 1e-9,
+          f"GRASS_TARGET_LUMINANCE is the decided {DECIDED_TARGET} (reads {target})")
+    # The measurement itself must stay live, or the number above is unfalsifiable.
+    check(0.05 <= anchor <= 0.5,
+          f"BeamNG's vanilla ground anchor re-measured this run ({anchor:.4f} from "
+          f"{len(grass) if len(grass) >= 5 else len(allv)} textures)")
+    check(hasattr(stage, "MEASURED_GRASS_ANCHOR")
+          and abs(float(stage.MEASURED_GRASS_ANCHOR) - anchor) <= TOLERANCE,
+          f"the app records the measured anchor beside the shipped value "
+          f"(MEASURED_GRASS_ANCHOR = {getattr(stage, 'MEASURED_GRASS_ANCHOR', None)})")
 
     print()
     if FAILED:

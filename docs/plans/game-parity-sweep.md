@@ -114,6 +114,21 @@ Priority is "how visible is the divergence" × "how likely we invented something
   built: `Stages` is a list, `defaultMat.hlsl` blends stage N over N-1 by `inLayer.opacity`, and
   vanilla ships 1,073 four-stage materials and 38 driving later stages from an `opacityMap`. Bake
   per-tile opacity masks from the same splat weights the terrain blends.
+- **OPEN §60 — the cut mesh's UVs are a horizontal projection, so vertical walls stretch 5.4x.**
+  `bake/terraincut.py:205` is `uv = (x, z) / GROUND_UV_M` with no vertical component, so a wall
+  gets UV span only from its horizontal footprint: measured **217.5 m/uv on vertical faces against
+  40.0 on flat ones**, correlation with verticality **+0.800**, 3,409 m² stretched past 2x. It is
+  why "the side of deep terrain" loses its texture, and it worsens with cut depth.
+  **The game's rule is TRIPLANAR and we already ship it** — `_TriplanarHeightmapBlending` and
+  `_TerrainTriplanarBlendStrengthY` are globals from `TerrainRenderSettingsPrefab`, in the bundle
+  as `rasters.terrainTiling.triplanar*` (**0.25 / 0.75 on this map — NOT the class defaults
+  0.5 / 0.2**), and no consumer reads them. Two limits before building it: BeamNG has triplanar
+  only in `sdfTerrain*`, never in `defaultMat.hlsl`, so a real blend needs the SAME three-stage
+  `inLayer.opacity` mechanism §49.6 needs (dominant-axis projection is only its discrete limit,
+  and most of the mesh is in the transition band); and the weighting curve lives in a compiled
+  shader, so the structure ports but the weights are reconstructed. **Also: BeamNG's own terrain
+  is planar too**, so a triplanar cut mesh could make the seam against the heightfield MORE
+  visible, not less. Sequenced behind confirming whether the black faces survive at gain 0.16.
 - **Rejected, and gone from the tree (§49.5):** `terrain_holes: majority` (over-cuts up to 1.75 m
   past the game's line — Naomi saw it) and `terrain_rim: lower` (lowering the rim to the band floor
   — *"that's a fidelity loss"*, and correct: the game hides with a stencil and never moves ground).
@@ -264,8 +279,16 @@ Priority is "how visible is the divergence" × "how likely we invented something
   a third darker than the engine expects. Corrected to 0.2185.
 - **Predicate:** `tools/test_ground_albedo.py`, whose tolerance (0.03) is chosen so the value it
   replaced FAILS it — the negative control is a clause of the test, not a note beside it.
-- **Visible change**: `cs2_city_fine` rebuilt in place (6 m 45 s, cook clean, validator 0
-  duplicates, ground check 99.79 %) — **awaiting Naomi's in-game look**.
+- **REVERTED to 0.16 by decision (§60).** The build that shipped 0.2185 drew black and cream
+  slabs on the cut faces beside deep terrain. The gain is not the cause — albedo clipping,
+  composite clipping, frozen-detail blackening and inverted normals were each measured and killed
+  — but it amplifies the real defect's base/detail mismatch by 1.366×. The real defect is
+  **§60: `terraincut` projects UVs from the horizontal plane only**, so vertical cut walls run
+  **217.5 m/uv against 40.0** for flat faces (correlation with verticality +0.800), which is why
+  it shows on "the side of deep terrain" and worsens with depth. The measurement is not withdrawn:
+  `MEASURED_GRASS_ANCHOR = 0.2185` sits beside the shipped value and the gate reports the gap.
+- **OPEN:** the pure-black faces are still unexplained; and the triplanar UV fix (vertex split +
+  `terraincut` version bump) is not built.
 
 ### 6. Water — WORKED 2026-08-17 (audit §56); one producer field added, awaiting re-rip
 - **Game:** `WaterRenderSystem.ApplyMaterialParams`, `WaterSystem`, `WaterRenderSettingsPrefab`.

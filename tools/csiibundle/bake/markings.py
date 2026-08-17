@@ -163,7 +163,11 @@ def run(context, progress):
     progress.begin("markings: instance decals", total=total_instances, unit="instances")
     decal_meshes = {}
     decal_blocks_road, decal_blocks_ground = [], []
-    n_decals = n_decal_missing = 0
+    n_decals = n_decal_missing = n_decal_ranked = 0
+    # Collected as we stream (the instance file is read ONCE — 1.2 M records), and turned into
+    # rank lifts after the loop, because a rank needs the whole set and the blocks are not draped
+    # until later anyway.
+    decal_priorities_seen = set()
     seen = 0
     for record in instances.read_instances(bundle):
         seen += 1
@@ -193,15 +197,34 @@ def run(context, progress):
         half = (instances.decal_height(record) or 1.0) * 0.5
         layers = instances.decal_layers(record)
         target = decal_blocks_ground if (layers and "Roads" not in layers) else decal_blocks_road
+        priority = instances.decal_priority(record)
+        if priority is not None:
+            decal_priorities_seen.add(priority)
         for corners, uvs, material, node_matrix in quads:
             world = frames.transform_points(matrix @ node_matrix, corners)
             v, t, uv = _subdivide_quad(world, uvs, DECAL_STEP)
             target.append({"verts": v, "tris": t, "uvs": uv[t], "material": material,
-                           "drape_eps": decals.LIFT["instance_decal"], "half_height": half})
+                           "drape_eps": decals.LIFT["instance_decal"], "half_height": half,
+                           "decal_priority": priority})
         n_decals += 1
     progress.end(f"{n_decals} decal instances as {len(decal_blocks_road) + len(decal_blocks_ground)} blocks "
                  f"({n_decal_missing} without a quad mesh)")
-    stats.update({"decalInstances": n_decals, "decalInstancesNoMesh": n_decal_missing})
+    # The game's own draw order for two decals projecting onto one surface, applied as a rank lift
+    # within the top rung of the ladder (audit §57.2). `areas.py` has done this for surface areas
+    # since §8b; this is the same rule for decal instances, so both halves now come from the game.
+    #
+    # **Expect a no-op, and say so.** Measured on the 2026-08-17 rip (§58.2), `decalPriority` is 0
+    # on 17,721 of 17,722 decals — the city states essentially no ordering, so `ordered` has one
+    # value and every lift is zero. It is counted rather than assumed because a modded or DLC
+    # decal may use the range, and because a silent no-op is indistinguishable from a bug.
+    ordered = sorted(decal_priorities_seen)
+    for block in decal_blocks_road + decal_blocks_ground:
+        bump = decals.instance_priority_lift(block.pop("decal_priority", None), ordered)
+        if bump:
+            block["drape_eps"] += bump
+            n_decal_ranked += 1
+    stats.update({"decalInstances": n_decals, "decalInstancesNoMesh": n_decal_missing,
+                  "decalPriorities": len(ordered), "decalBlocksRanked": n_decal_ranked})
 
     # -- 4. drape -----------------------------------------------------------------------------
     progress.begin("markings: drape", total=None, unit="vertices")
@@ -299,4 +322,5 @@ def _texture_uri_base(out_dir, bundle):
         return None
 
 
-register(Product(PRODUCT_NAME, INPUTS, "markings/", run, options=("ground",)))
+# version 2: decal instances take the game's own `decalPriority` draw order (audit §57.2).
+register(Product(PRODUCT_NAME, INPUTS, "markings/", run, version=2, options=("ground",)))

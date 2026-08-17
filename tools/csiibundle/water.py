@@ -114,8 +114,47 @@ class Appearance(object):
         self.waves_multiplier = float(block.get("wavesMultiplier", 0.0) or 0.0)
         self.lake_waves_multiplier = float(block.get("lakeWavesMultiplier", 0.0) or 0.0)
 
+        # Whether the wind branch of `ApplyMaterialParams` is live at all (audit §56/§58.1).
+        # `None` on a bundle ripped before the field shipped — which is NOT the same as false, so
+        # `wave_direction_is_exact` reports the difference rather than assuming calm.
+        raw = block.get("seaWindAffectWavesDirection")
+        self.sea_wind_affects_waves = None if raw is None else bool(raw)
+
         # The sea DATUM. Not a surface. See the module docstring before using it for anything.
         self.sea_level = block.get("seaLevel")
+
+    # -- the two wave quantities that ARE portable ---------------------------------------------
+
+    @property
+    def sea_wave_scale(self):
+        """The sea's wave-band amplitude, 0..1 — the game's own `saturate(wavesMultiplier)`.
+
+        `ApplyMaterialParams` sets `largeBand0Multiplier = largeBand1Multiplier =
+        saturate(num3)`, so an authored value above 1 never reaches a band: the reference city's
+        1.3 reads **1.0** here. This and `lake_wave_scale` are the only wave numbers the game
+        normalises to 0..1, which is what makes them portable at all — every other term in that
+        method is a live camera or wind quantity (audit §56).
+        """
+        return max(0.0, min(1.0, self.waves_multiplier))
+
+    @property
+    def lake_wave_scale(self):
+        """A lake's wave amplitude, 0..1 — `_LakeWavesMultiplier`, bound verbatim.
+
+        Authored 0.13 on the reference city, i.e. lakes are nearly still where the sea is not.
+        """
+        return max(0.0, min(1.0, self.lake_waves_multiplier))
+
+    @property
+    def wave_direction_is_exact(self):
+        """Whether a consumer's FIXED wave direction reproduces the game, or approximates it.
+
+        `m_SeaWindAffectWavesDirection` false ⇒ the game passes 0 for both the wind orientation
+        and the wind strength, so a fixed direction IS the game. True ⇒ direction and chaos
+        follow live wind and any static choice is an approximation of one moment. `None` ⇒ the
+        bundle predates the field and a consumer cannot tell; treat as approximate and say so.
+        """
+        return self.sea_wind_affects_waves is False
 
     # -- what a PBR renderer needs ------------------------------------------------------------
 
