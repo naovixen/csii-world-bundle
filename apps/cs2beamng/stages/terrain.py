@@ -12,8 +12,10 @@ What is exact and what is a choice:
   arrays flip; `position = [originWorld.x, originWorld.z − (H−1)·cell, offset]`, `squareSize =
   cell` (3.5 m; 1.75 with `terrain_upsample = 2`).
 * **One material per sample** = `splat.dominant_layer` (the visible-share argmax of the game's
-  own splat composite) with `roadbed` stamped from `surface_index`. Names are the bundle's
-  ground names (`rock`, `dirt`, `grass`, `extra1..4`, `roadbed`).
+  own splat composite). Names are the bundle's ground names (`rock`, `dirt`, `grass`,
+  `extra1..4`). There is deliberately **no roadbed material**: the game paints none (its splatmap
+  never sees net or lane data — audit §17 row 2), and stamping one from `surface_index` drew a
+  staircase of squares along every road edge.
 * **Holes** come from `derived/terrain/clip_cells.png`: `contain` (default) punches only faces
   wholly inside a deep clip band, `majority` also the deep-touched ones, `none` never — plus
   every face the bake's `terraincut` meshes replace (`corridor_faces.png`, setting
@@ -136,12 +138,16 @@ def run(ctx, progress):
         if index.shape != heights.shape:
             index = reader.resample_nearest(index, heights.shape)
         layers = index
-    if surface is not None:
-        if "roadbed" not in names:
-            names.append("roadbed")
-        # the same stamp the bake's ground meshes bind per face (`terraincut`: dominant layer +
-        # roadbed), so a mesh in a hole wears what the heightfield beside it wears
-        layers = numpy.where(surface == 1, names.index("roadbed"), layers).astype(numpy.uint8)
+    # NO roadbed material is painted. Validated from source: `TerrainMaterialSystem` computes the
+    # splatmap on the GPU from the height cascade, the water texture, noise and the user brush
+    # (`UpdateSplatmap`) — the whole 1,505-line system contains not one reference to a net, lane,
+    # area or surface component, and the terrain's ground roster is rock/dirt/grass plus four
+    # paintable extras. The in-game "roadbed" look is the splat classifier responding to
+    # machine-graded ground, plus the road mesh and its ~13 %-alpha wear decals on top (audit §17
+    # row 2, re-verified 2026-08-17). Stamping `surface_index == 1` as its own terrain material was
+    # an invention of ours, and because the ids live on the 3.5 m base grid it painted a staircase
+    # of whole squares along every road edge and dug-out — the "square texture" of load #18. The
+    # ground under a road is now whatever the splat says, as in game.
     progress.check()
     # holes (mask decided above)
     holes = 0
@@ -289,7 +295,7 @@ def _albedo_gain(surfaces_dir, user_gain):
     return gain * float(user_gain or 1.0)
 
 
-def _UNUSED_centre_to_mid(rgb):
+def _centre_to_mid(rgb):
     """Shift each channel so its mean is 128 — a SIGNED detail texture.
 
     BeamNG's terrain shader combines the tiers as `base + (2·macro − 1)·mF + (2·detail − 1)·dF`
@@ -369,9 +375,9 @@ def _ground_mesh_texture(level, src, name, gain=1.0, normal=False, size=2048):
         if normal:
             out = detail
         else:
-            macro = numpy.asarray(im.resize((size, size), Image.BILINEAR)).astype(numpy.float64) / 255.0
-            det = detail.astype(numpy.float64) / 255.0
-            base = macro.reshape(-1, 3).mean(axis=0)
+            macro = _centre_to_mid(numpy.asarray(im.resize((size, size), Image.BILINEAR))).astype(numpy.float64) / 255.0
+            det = _centre_to_mid(detail).astype(numpy.float64) / 255.0
+            base = numpy.asarray(im).reshape(-1, 3).mean(axis=0) / 255.0
             val = base[None, None, :] + (macro * 2.0 - 1.0) * GROUND_MESH_MACRO_FACTOR + (det * 2.0 - 1.0) * GROUND_MESH_DETAIL_FACTOR
             out = (numpy.clip(val, 0.0, 1.0) * 255.0 + 0.5).astype(numpy.uint8)
         level.write_bytes_if_changed(png.encode_rgb(numpy.ascontiguousarray(out)), "art", "terrains", name)
@@ -402,7 +408,8 @@ def _terrain_materials(level, bundle, names, gain=1.0):
         # up into purple/green). Vanilla terrain textures are colour type 2, no alpha.
         # the BASE tier carries the ground's colour; MACRO and DETAIL are signed deviations around
         # mid-gray (`_centre_to_mid`) because that is what `calculateValue` adds them as
-        albedo = {tier: _rgb_texture(level, albedo_src, f"{level.name}_{source}_{tier}_b.png", gain=gain)
+        albedo = {tier: _rgb_texture(level, albedo_src, f"{level.name}_{source}_{tier}_b.png",
+                                     gain=gain, centre=(tier != "base"))
                   for tier in TIERS}
         normal = {tier: _rgb_texture(level, normal_src, f"{level.name}_{source}_{tier}_nm.png") for tier in TIERS}
         pid = level.pid(f"terrain:material:{name}")

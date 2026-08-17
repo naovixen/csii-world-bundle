@@ -31,7 +31,8 @@ volumes were skipped this way.
 Outputs (`derived/terraincut/terraincut_<tx>_<tz>.glb`, plus `derived/terrain/corridor_faces.png`):
 
 * one glTF per tile, primitives per ground material `ground:<layer>` — the ground the consumer's
-  heightfield paints there (`splat.dominant_layer` + the roadbed stamp) — world-planar UVs at
+  heightfield paints there (`splat.dominant_layer`; no roadbed, because the game paints none) —
+  world-planar UVs at
   `GROUND_UV_M` metres per repeat, heightfield normals, bundle frame.
 * `corridor_faces.png` — gray8 at FACE resolution `(h−1, w−1)`, 255 where the heightfield square
   is replaced by mesh (punch it), 0 elsewhere.
@@ -52,20 +53,24 @@ from .tiles import TileSink
 
 PRODUCT_NAME = "terraincut"
 INPUTS = ("clipVolumes", "terrain", "terrainFine", "surfaceIndex", "splatmap")
-VERSION = 14         # v13: the EXACT cut (audit §46) — `terrainclip` against the prisms, replacing the
+VERSION = 16         # v13: the EXACT cut (audit §46) — `terrainclip` against the prisms, replacing the
                      #      containment scoring, the rim snap, the sub-cut and the cliff lift of v3-v12
                      # v14: sub-centimetre ribbons dropped (they rendered as hairlines: load #18) and the
                      #      prism construction shared with the Blender harness (`terrainclip.load_prisms`)
+                     # v15: no roadbed stamp — the game paints no roadbed on its terrain (§17 row 2)
+                     # v16: a square losing under MIN_REMOVED_M2 stays with the heightfield
 
 # metres per texture repeat on the ground mesh: the terrain material's MACRO tier period
 GROUND_UV_M = 40.0
 GROUND_FALLBACK = "ground:grass"
 # a kept piece smaller than this is a rounding sliver of the cut, not ground anybody sees
 MIN_PIECE_M2 = 1e-4
-# a square that keeps this fraction of its area is treated as untouched: the cut removed only a
-# rounding sliver, and leaving the square to the heightfield avoids a mesh patch that is visually
-# identical to it but wears a mesh material
-KEEP_WHOLE_FRACTION = 1.0 - 1e-6
+# A square that loses less ground than this is treated as untouched and left to the heightfield.
+# The prism only grazed it — a ribbon a few millimetres wide, which the cut drops anyway
+# (`terrainclip.MIN_WIDTH_M`) — and punching it would trade a terrain-shaded square for a
+# mesh-shaded one over 0.3 % of its area. On the reference city the threshold is the difference
+# between 46,550 punched squares and 43,043.
+MIN_REMOVED_M2 = 0.01
 
 
 def run(context, progress):
@@ -172,7 +177,7 @@ def run(context, progress):
             kept.extend(terrainclip.clip_triangle(tri, local, stats))
         kept = [p for p in kept if abs(terrainclip.polygon_area([(q[0], q[2]) for q in p])) > MIN_PIECE_M2]
         kept_area = sum(abs(terrainclip.polygon_area([(q[0], q[2]) for q in p])) for p in kept)
-        if kept_area >= whole * KEEP_WHOLE_FRACTION:
+        if whole - kept_area < MIN_REMOVED_M2:
             continue                                    # the prism only grazed it: leave it be
         replaced[r, c] = True
         removed_m2 += whole - kept_area
@@ -243,8 +248,10 @@ def _paint_layers(paths, surface, shape, progress):
         try:
             sp = splat_mod.Splat(paths.splatmap, block)
             mapping, _published = splat_mod.channel_mapping(block)
-            stamp = surface if surface is not None and surface.shape == (sp.height, sp.width) else None
-            index, names = splat_mod.dominant_layer(sp, mapping, surface_index=stamp)
+            # no roadbed stamp: the game paints no roadbed material on its terrain (its splatmap
+            # never sees net or lane data — audit §17 row 2), and the consumer's heightfield does
+            # not either, so a mesh in a hole must wear the same grounds the terrain beside it does
+            index, names = splat_mod.dominant_layer(sp, mapping)
             if index.shape != shape:
                 index = reader.resample_nearest(index, shape)
         except Exception as exc:  # noqa: BLE001 - presentation only; grass everywhere beats no product
