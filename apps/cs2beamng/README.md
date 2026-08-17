@@ -5,19 +5,35 @@ of the ripper mod in this repo), bakes the engine-neutral derivatives it needs
 (`csiibundle.bake` → `<bundle>/derived/`), and writes a BeamNG.drive level. Everything long
 runs in a worker **process** with live progress, ETA and Cancel; the UI never computes.
 
-Status (2026-08-16): A0 (shell), A1 (terrain, water, sky, spawn) and A2 (roads/networks,
-markings, areas, skirts, lane furniture, materials + textures) of
-`docs/plans/beamng-consumer-plan.md` are built and **accepted in-game** (region). The
+Status (2026-08-17): **A0, A1 and A2 are SIGNED OFF** — A0 (shell), A1 (terrain, water, sky,
+spawn) and A2 (roads/networks, markings, areas, skirts, lane furniture, materials + textures) of
+`docs/plans/beamng-consumer-plan.md` are built and accepted in-game, region and full city, over
+nineteen loads. Next is the **game-parity sweep** (`docs/plans/game-parity-sweep.md`), which runs
+BEFORE A3: every phase from A3 on carries a parity gate, and the sweep clears the backlog A2 left
+(the ground-boundary dither, ground-mesh material parity). The
 pipeline runs **bake → terrain → water → scene → networks → derived → materials → cook →
 validate**: a lossless 4096² `.ter` with one material per ground and tunnel holes (`contain`),
 water by level band, sky/time from the rip's lighting, a spawn on a road, every network
 segment as 256 m COLLADA tiles with exact collision, the bake's draped/conformed tiles, v1.5
-materials with capped textures, and BeamNG's own headless `-compilemeshes` over the shapes so
+materials with capped textures pre-compressed to mipmapped DDS (BC7/BC5/BC4, the formats
+BeamNG's own cooker would produce, so nothing is cooked on the first load — `pip install
+etcpak`, else PNG), and BeamNG's own headless `-compilemeshes` over the shapes so
 the first load does not parse 2 GB of COLLADA (the cook stage — A5, pulled forward). The
 terrain/road-interface rewrite tried after load #9 (ground at `lane − 0.25`, `touch` holes, rim
 walls) regressed load #10 (walled tunnel mouths, moats beside sunken roads) and was reverted
-2026-08-16; the plan log has the details. Buildings, props, trees (the 1.2 M instances) land
-in A3; performance tuning A4.
+2026-08-16; the plan log has the details.
+
+Trenches and tunnel portals are the **Blender harness's own cut lattice**, placed in holes punched
+out of the heightfield (bake product `terraincut`, setting `terrain_cut`). The consumer adds nothing
+to it — the skirts, margin ring, band lowering and portal-wall cap invented between loads #12 and #16
+each closed one gap and opened another (curtains across tunnel bores, pale bands along every wall,
+12 m spikes behind them) and were all removed 2026-08-17: what the harness draws is what the level
+gets, measured at median 0.005 m against it (audit §45.8). Two follow-ups from the game-decomp validation
+(audit §45, 2026-08-16, awaiting the next rip + load): the terrain stage writes the `.ter`
+from the bundle's fine 1.75 m `terrainFine` raster when the rip carries it (the game's own
+near-camera grading, 8192²), and no COLLADA geometry exceeds 60,000 vertices
+(`dae.split_mesh` — the load-#10 junction shards were the tiles past 65,535). Buildings,
+props, trees (the 1.2 M instances) land in A3; performance tuning A4.
 
 ## Install & run
 
