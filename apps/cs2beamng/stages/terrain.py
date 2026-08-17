@@ -3,11 +3,16 @@ one material per ground, textures from `terrain/surfaces/`, holes from the bake'
 
 What is exact and what is a choice:
 
-* **Heights are lossless.** `maxHeight = 65536 · elevationScale`, `position.z = elevationOffset`,
-  so `stored == the bundle's own 16-bit value` for every untouched sample. Two touches, both
-  contract rules: samples the bake's shallow clip band covers are lowered to the band's floor
-  (`derived/terrain/shallow_floor.png`; §8c "ground never pokes through a carriageway"), and
-  roadbed samples (§8 surface id 1) sink `terrain.ROADBED_SINK` = 0.15 m.
+* **Heights are lossless, and they are already the game's.** `maxHeight = 65536 ·
+  elevationScale`, `position.z = elevationOffset`, so `stored == the bundle's own 16-bit value`
+  for every untouched sample — and CS2's road grading is already IN that value, because
+  `TerrainSystem` renders it into the height cascade and `GetHeightData()` reads the cascade
+  back (audit §51; 98.37 % of covered samples agree with the game's own profile). **One** touch
+  remains: the samples that stand above the carriageway's cross-section are lowered onto it
+  (`derived/terrain/carriageway_ceiling.png`), because the game removes those pixels with a
+  stencil and a heightfield has none — 11,683 of the full city's 2,297,403 covered samples
+  (0.5 %), counted in the stage's report line. The 0.15 m roadbed sink and the clamp to the
+  band FLOOR that used to live here are gone — together they dug a 25 cm trench under every road.
 * **Orientation** is the empirically settled one (`beamng/ter.py`): row 0 south, so the bundle
   arrays flip; `position = [originWorld.x, originWorld.z − (H−1)·cell, offset]`, `squareSize =
   cell` (3.5 m; 1.75 with `terrain_upsample = 2`).
@@ -123,30 +128,34 @@ def run(ctx, progress):
     # float32, in exactly the mesh harness's arithmetic (`build_lattice`: raw -> float32 * scale +
     # offset), so the bake's pre-clipped ground meshes quantise to the same uint16 as this .ter
     heights = raw.astype(numpy.float32) * numpy.float32(scale) + numpy.float32(offset)
-    surface = png.gray_array(paths.surface_index) if paths.surface_index and os.path.isfile(paths.surface_index) else None
-    if surface is not None and surface.shape != heights.shape:
-        # the roadbed ids stay on the 3.5 m base grid by contract; read them onto this grid
-        surface = reader.resample_nearest(surface, heights.shape) if field.fine else None
+    # `terrain/surface_index.png` is deliberately NOT read here any more: nothing in this stage
+    # keys off the roadbed footprint. The game paints no roadbed material (audit §17 row 2), and
+    # since §51 it moves no roadbed height either — the heightmap arrives already graded.
     progress.log(f"terrain: {'fine ' if field.fine else ''}heightmap {size}x{size} @ {cell:.3f} m ({os.path.basename(field.path)}"
                  f"{'' if field.fine or not want_fine else ' - no layers.terrainFine in this rip'}"
                  f"{' - terrain_upsample 1 keeps the base map' if paths.heightmap_fine and not want_fine else ''})")
-    # the ground edits are `terrain.ground_heights` — the same definition the mesh harness and
-    # the bake's pre-clipped ground meshes use, so a mesh in a heightfield hole meets these
-    # samples exactly: roadbed sink (dilated one cell), then the shallow-band clamp
+    # the ground edit is `terrain.ground_heights` — the same definition the mesh harness and the
+    # bake's pre-clipped ground meshes use, so a mesh in a heightfield hole meets these samples
+    # exactly. It is the carriageway clamp and nothing else; see the module docstring.
     lowered = 0
-    floor = numpy.full(heights.shape, numpy.inf, dtype=numpy.float32)
-    floor_path = os.path.join(ctx.derived_dir, "terrain", "shallow_floor.png")
-    if os.path.isfile(floor_path):
-        floor_raw = png.gray_array(floor_path)
-        if floor_raw.shape == heights.shape:
-            has = floor_raw > 0
-            floor[has] = (floor_raw[has].astype(numpy.float64) * scale + offset).astype(numpy.float32)
-    roadbed = (surface == 1) if surface is not None else None
-    sunk = int(terrain_mod.dilate(roadbed, 1).sum()) if roadbed is not None else 0
-    heights, lowered, _drop = terrain_mod.ground_heights(heights, roadbed, floor, terrain_mod.ROADBED_SINK if roadbed is not None else 0.0)
+    worst = 0.0
+    ceiling = numpy.full(heights.shape, numpy.inf, dtype=numpy.float32)
+    ceiling_path = os.path.join(ctx.derived_dir, "terrain", "carriageway_ceiling.png")
+    if os.path.isfile(ceiling_path):
+        ceiling_raw = png.gray_array(ceiling_path)
+        if ceiling_raw.shape == heights.shape:
+            has = ceiling_raw > 0
+            ceiling[has] = (ceiling_raw[has].astype(numpy.float64) * scale + offset).astype(numpy.float32)
+    covered = int(numpy.isfinite(ceiling).sum())
+    heights, lowered, worst = terrain_mod.ground_heights(heights, ceiling)
     punch, holes_mode, corridor_holes = _punch_mask(ctx, settings, size)
     progress.check()
-    progress.end(f"{size}x{size} @ {cell} m, {lowered:,} samples clamped to shallow bands, {sunk:,} roadbed samples sunk")
+    # APPROXIMATION, counted: the game discards these pixels with its road stencil; a heightfield
+    # cannot, so they are lowered onto the game's own carriageway profile top instead. Everything
+    # else keeps the grading CS2 itself baked into the heightmap.
+    progress.end(f"{size}x{size} @ {cell} m, {covered:,} samples under a carriageway, of which "
+                 f"{lowered:,} ({lowered / max(1, covered) * 100:.1f} %) stood over it and were "
+                 f"lowered onto its profile (worst {worst:.2f} m)")
 
     # -- layers ----------------------------------------------------------------------------
     progress.begin("terrain: ground layers", total=None, unit="")
@@ -232,8 +241,10 @@ def run(ctx, progress):
     shared = ctx.shared if ctx.shared is not None else {}
     shared["terrain"] = {"position": position, "squareSize": cell, "maxHeight": max_height, "size": size,
                          "cell": cell, "elevationScale": scale, "elevationOffset": offset}
-    return {"size": size, "squareSize": cell, "materials": len(names), "holes": holes, "clamped": lowered,
-            "roadbedSunk": sunk, "fine": bool(field.fine), "seconds": round(time.monotonic() - started, 1)}
+    return {"size": size, "squareSize": cell, "materials": len(names), "holes": holes,
+            "carriagewaySamples": covered, "carriagewayClamped": lowered,
+            "carriagewayWorstDrop": round(worst, 3),
+            "fine": bool(field.fine), "seconds": round(time.monotonic() - started, 1)}
 
 
 

@@ -132,8 +132,8 @@ def test_hole_mask(tmp):
         check(hit.mean() >= 0.9, f"{hit.mean() * 100:.0f}% of base holes are deep-band faces on the fine grid too")
     else:
         print("        (example bundle has no contained faces; position check not exercised)")
-    check(numpy.isfinite(hm_fine.band_floor).sum() >= numpy.isfinite(hm_base.band_floor).sum(),
-          f"shallow-band samples scale with the grid ({int(numpy.isfinite(hm_fine.band_floor).sum())} vs {int(numpy.isfinite(hm_base.band_floor).sum())})")
+    check(numpy.isfinite(hm_fine.band_ceiling).sum() >= numpy.isfinite(hm_base.band_ceiling).sum(),
+          f"shallow-band samples scale with the grid ({int(numpy.isfinite(hm_fine.band_ceiling).sum())} vs {int(numpy.isfinite(hm_base.band_ceiling).sum())})")
     shutil.rmtree(dst, ignore_errors=True)
 
 
@@ -315,7 +315,9 @@ def test_terraincut(tmp):
     dae_dir = os.path.join(ldir, "art", "shapes", "terraincut")
     text = "".join(open(os.path.join(dae_dir, n), encoding="utf-8").read(200000) for n in os.listdir(dae_dir) if n.endswith(".dae"))
     check("tc_ground_" in text, "tiles bind the level's ground mesh materials")
-    mats = json.load(open(os.path.join(ldir, "art", "terrains", "main.materials.json"), encoding="utf-8"))
+    # `art/ground/`, not `art/terrains/`: §49 moved the ground MESH materials out, because a plain
+    # `Material` under `art/terrains/` is where no vanilla level puts one and BeamNG never bound it.
+    mats = json.load(open(os.path.join(ldir, "art", "ground", "main.materials.json"), encoding="utf-8"))
     check(all(f"tc_ground_{g}" in mats for g in ("grass", "dirt", "rock")), "terrain stage writes the three ground mesh materials")
 
 
@@ -349,18 +351,20 @@ def test_real_fidelity():
     p99_off = float(numpy.percentile(numpy.abs(d[off]), 99))
     check(med_off <= 2 * q + 1e-9, f"away from roads the fine map is the base map: median |d| {med_off:.4f} m (quantum {q:.4f}), p99 {p99_off:.3f} m")
     print(f"        near roads: median |d| {float(numpy.median(numpy.abs(d[~off]))):.3f} m, p99 {float(numpy.percentile(numpy.abs(d[~off]), 99)):.3f} m")
-    # poke-through inside shallow clip bands: samples above the band roof (lane + top), before/after
+    # The over-carriageway residual: samples standing above the game's own road cross-section
+    # (audit §51). These are the ONLY ones `clamp_carriageway` moves, and the finer grid should
+    # resolve the grading better and so leave fewer of them.
     hm_b = terrain.hole_mask(BUNDLE, prefer_fine=False)
     hm_f = terrain.hole_mask(BUNDLE, prefer_fine=True)
     for label, hm in (("base", hm_b), ("fine", hm_f)):
-        floor = hm.band_floor
-        has = numpy.isfinite(floor)
-        over = has & (hm.heights > floor + 0.5 + 0.3)     # above the roof of the everyday band (floor + 0.8)
-        print(f"        {label}: {int(has.sum()):,} samples under a shallow band, {int(over.sum()):,} stand above its roof "
-              f"({over.sum() * hm.cell ** 2:,.0f} m2)")
-    area_b = (numpy.isfinite(hm_b.band_floor) & (hm_b.heights > hm_b.band_floor + 0.8)).sum() * hm_b.cell ** 2
-    area_f = (numpy.isfinite(hm_f.band_floor) & (hm_f.heights > hm_f.band_floor + 0.8)).sum() * hm_f.cell ** 2
-    check(area_f <= area_b, f"poke-through area above the band roof: base {area_b:,.0f} m2 -> fine {area_f:,.0f} m2")
+        has = numpy.isfinite(hm.band_ceiling)
+        over = has & (hm.heights > hm.band_ceiling)
+        print(f"        {label}: {int(has.sum()):,} samples under a carriageway, {int(over.sum()):,} stand over it "
+              f"({over.sum() * hm.cell ** 2:,.0f} m2, {over.sum() / max(1, has.sum()) * 100:.2f}%)")
+    frac_b = (numpy.isfinite(hm_b.band_ceiling) & (hm_b.heights > hm_b.band_ceiling)).sum() / max(1, numpy.isfinite(hm_b.band_ceiling).sum())
+    frac_f = (numpy.isfinite(hm_f.band_ceiling) & (hm_f.heights > hm_f.band_ceiling)).sum() / max(1, numpy.isfinite(hm_f.band_ceiling).sum())
+    check(frac_f <= frac_b + 1e-9,
+          f"over-carriageway residual shrinks on the finer grid: {frac_b * 100:.2f}% -> {frac_f * 100:.2f}%")
 
 
 def main():

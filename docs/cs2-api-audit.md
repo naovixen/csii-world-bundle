@@ -3508,6 +3508,9 @@ global slot cannot follow a per-texel ground. Reverted whole.
   `heightRange` 0.5) biases it to lose against any real neighbour — an engine rule, portable and
   gateable, rather than a preference. Cost to check first: 25 padding materials × 15 texture slots
   against a packer that builds 1024² arrays per slot.
+  **→ SCORED IN §50.8 BEFORE BUILDING: worth ~60 %, not a fix, and worth 0 % where the neighbouring
+  ground's relief is dark. Still the best known move on §50's own merits; not a prerequisite for
+  anything. The residual is BeamNG's domain warp, which only a finer layer texel reaches.**
 * **Cover the rim with the cut mesh** — extend the punch and the mesh by one texel so no drawn
   terrain pixel gathers a hole. Geometry change; risks z-fighting where mesh and terrain coincide.
 * **Punch fewer squares** — a square that loses little area to the cut is punched and replaced
@@ -3520,3 +3523,382 @@ Ruled out by measurement during this session, so a future pass does not re-tread
 cut meshes (they tint black and render correctly), not the ground assignment (`terraincut`'s
 per-triangle ground agrees with the `.ter` at the same texel on **97.8 %** of 19,967 triangles), not
 `extra4` or the albedo gain, and not the §49.6 opacity masks.
+
+## 51. The road/terrain interface: the game already graded the ground, and we were digging it up (2026-08-17)
+
+Game-parity sweep, **area #2** of `docs/plans/game-parity-sweep.md` ("Terrain flattening,
+smoothing and the road interface"). The plan's suspicion was that `ROADBED_SINK = 0.15` — marked
+TUNED, and "a FALLBACK … it guesses a constant against a road surface it never looks at" — had
+the shape of the inventions §46 removed. It did. So did the clamp beside it, which was worse.
+
+### 51.1 What the game actually does
+
+`Game.Simulation.TerrainSystem` does not only *hide* terrain at a road (that is §46's stencil
+prism). It also **grades** it, and the graded result is what the CPU reads back:
+
+* `CullRoadsJob.AddSegment` walks every edge half, node strip and orphan cap of a net whose
+  prefab carries `GeometryFlags.FlattenTerrain`/`ClipTerrain` and emits a `LaneSection`.
+  Its `m_MinOffset` and `m_MaxOffset` both start from the same triple —
+  `(m_EdgeHeights.x|z, m_SurfaceHeight.min, m_EdgeHeights.y|w)`, chosen by which end of the
+  segment this is — and then take `TerrainComposition.m_MinHeightOffset` and
+  `m_MaxHeightOffset` respectively. `m_MiddleSize = saturate(1 − max(width·0.2, 3) / max(1,
+  width))` says how much of the width is flat middle, and `m_WidthOffset =
+  NetUtils.GetTerrainSmoothingWidth(net)` is the apron: **8 m** for a road, 20 m for a waterway,
+  100 m for a taxiway.
+* `CullRoadsCacscadeJob` turns each section into a `LaneDraw`, and `DrawHeightAdjustments`
+  renders the lots, the lanes and the areas — three passes each, over `m_LaneMesh`, a 1×8 grid
+  whose uv.x is the lateral parameter — into **`m_HeightmapCascade`**, on top of the stored
+  heightmap.
+* `UpdateGPUReadback` requests `m_HeightmapCascade` at `baseLod` and writes the result into
+  `m_CPUHeights`, which is exactly what `GetHeightData()` hands out.
+
+So **for an ordinary at-grade road `m_MinOffset == m_MaxOffset` and the height is ASSIGNED, not
+clamped**, and `heightmap.png` arrives with that assignment already in it. The producer's header
+in `TerrainRipSystem` has said so since Phase 6; what nobody had done was hold the consumers to
+it.
+
+The clip band the bundle ships is derived from the *same* triple by `TryGetClipBand`
+(`bottom = cmin(triple) + clipHeightOffset.x − 0.3`, `top = cmax(triple) + clipHeightOffset.y +
+0.3`, the ±0.3 being `GenerateClipDataJob`'s), so inverting the expansion recovers the game's own
+profile bounds from data already on disk. **That is a predicate, and it needs no tuned constant.**
+
+### 51.2 The rule matrix
+
+| # | Game rule | Our behaviour | Verdict |
+|---|---|---|---|
+| 1 | Ground under a road is assigned `lane + (edgeH, surfaceH.min, edgeH)` laterally, rendered into the height cascade, read back by `GetHeightData` | the producer ships that readback verbatim as `heightmap.png` / `heightmap_fine.png` | **match** (producer exact) |
+| 2 | The assignment blends to natural terrain over an 8 m apron (`GetTerrainSmoothingWidth`) | the apron is in the shipped raster; the producer deliberately does not stamp it into `surface_index` | **match** |
+| 3 | `TerrainComposition.m_MinHeightOffset` shifts the assigned profile (merged per composition from each `NetTerrainPiece` by `NetCompositionSystem`) | not shipped; recovered from the measurement as −0.05 m on 99 % of the city's road area | **approximated**, and shipping it is worth ~5 % — §51.5 as written is SUPERSEDED by §51.7 |
+| 4 | Nothing lowers ground to the band FLOOR; the floor is the depth to which the stencil DISCARDS | `clamp_shallow_bands` lowered **100 %** of covered samples to `lane + bottom` | **divergence — deleted** |
+| 5 | Nothing sinks a roadbed footprint by a constant | `ROADBED_SINK = 0.15` on every roadbed sample plus a 1-cell dilation | **divergence — deleted** |
+| 6 | Terrain inside a clip prism is discarded per pixel, shallow band included | shallow bands never carve (§41/§46); the ~1 % that stands over a carriageway is lowered onto the profile top instead | **declared approximation, counted** |
+
+### 51.3 The predicate, and what it measured
+
+`tools/check_roadgrade_vs_game.py` rasterises the shipped shallow bands, recovers `lane`,
+`cmin = bottom + 0.3` and `cmax = top − 0.3` per sample, and asks whether the shipped height
+sits in the game's own profile window. On the 2026-08-16 rip:
+
+| grid | samples under a shallow band | agree with the game's grade |
+|---|---|---|
+| base, 3.5 m | 576,032 (7.06 km²) | **97.10 %** |
+| `terrainFine`, 1.75 m | 2,307,777 (7.07 km²) | **98.37 %** |
+
+with one elevation quantum (0.0625 m) of slack and the §51.5 offset restored. `terrain − lane`
+is −0.250 m at p25, p50 *and* p75 on both grids. Per band class, fine grid:
+
+| cmin | cmax | samples | terrain − lane p5/p50/p95 | in window |
+|---|---|---|---|---|
+| −0.200 | +0.000 | 1,659,302 | −0.260 / −0.250 / −0.051 | 98.9 % |
+| −0.200 | −0.200 | 632,907 | −0.263 / −0.250 / −0.207 | 97.1 % |
+| +0.000 | +0.000 | 12,685 | −0.094 / −0.000 / +0.000 | 92.1 % |
+
+The p95 of the first class lands on the window's own top to the millimetre — the lateral profile
+running from `surfaceHeight.min` in the middle out to `edgeHeight` at the kerb, exactly as
+`AddSegment` builds it.
+
+### 51.4 What the two consumer-side moves were costing
+
+Both consumers applied `ROADBED_SINK` and then `clamp_shallow_bands`, on the same grid the game
+had already graded:
+
+* the sink moved **3,273,135 samples (10.0 km²)** down 0.15 m, and **29.8 % of them were not
+  under any band at all** — the sink's only remaining constituency, and its least defensible;
+* the clamp fired on **100.00 %** of covered samples, not on a rare intrusion: the band test
+  requires `terrain > lane + bottom`, so lowering to `lane + bottom` selects every sample it
+  covers, always. They landed at `lane − 0.500` — **0.30 m below the game's own `cmin` and
+  0.25 m below where CS2 actually grades them**;
+* together: **3,283,410 samples moved, median 0.250 m, p95 0.438 m, 2.4 million m³** of ground
+  dug out from under the city's roads. That is the 25 cm trench at every kerb that BeamNG load #9
+  reported as *"annoying to drive off the road"*, and it is why c426641 (reverted as c32b13a)
+  went looking in the right place with the wrong instrument.
+
+The one edit that ships now, measured on the same 3.5 m grid for a like-for-like comparison:
+**2,617,748 m³ removed by the pair, against 7,371 m³ by `clamp_carriageway`** — a factor of 355.
+Quantising the ceiling raster to the heightmap's own 0.0625 m (required, so the `terraincut` mesh
+and the `.ter` agree bit for bit at the seam) halves it again in practice: the full-city bake
+reports **11,683** samples lowered of 2,297,403 under a carriageway, **0.51 %**.
+
+Both are deleted. `terrain.ROADBED_SINK` and `terrain.clamp_shallow_bands` no longer exist, and
+`tools/test_roadgrade.py` fails if either comes back.
+
+### 51.5 What stays approximated, and counted
+
+> **§51.5's producer item is SUPERSEDED — read §51.7 and §51.8 before acting on it.** Measured
+> afterwards, shipping `m_MinHeightOffset` removes 5 % of the excess volume and 0.03 pp of the
+> affected samples; the residual is the LATERAL PROFILE, and no re-rip resolves it because
+> evaluating a profile needs the lateral POSITION, which no shipped field provides.
+
+* **The over-carriageway residual.** 1.17 % of covered samples on the fine grid (26,910; 82,412
+  m², median excess 0.025 m, max 0.299 m) stand above the carriageway's own cross-section. The
+  game removes exactly those pixels with its stencil; a heightfield engine has none, and deleting
+  the face is the move this repo has rejected twice (at a node the clip fan reaches past the road
+  mesh, so a deleted face there is sky). `terrain.clamp_carriageway` lowers them onto
+  `lane + top − CLIP_BAND_EXPANSION` — the game's own number, only ever downward — and both the
+  app and the harness print the count, the fraction and the worst drop. On the 3.5 m base grid
+  the residual is 1.76 %; the finer grid genuinely halves it, which is now a gate
+  (`tools/test_terrain_fine.py`). The clamp itself fires on fewer than that: the ceiling raster
+  is quantised to the heightmap's own 0.0625 m — it must be, or the `terraincut` mesh and the
+  consumer's grid would not meet bit for bit at the seam — and the median excess is under half a
+  quantum, so the full city lowers **11,683 (0.5 %)**, worst drop 0.31 m.
+* **`m_MinHeightOffset` is not in the bundle.** Row 3: the grade is `baseHeights +
+  m_MinHeightOffset` and the shipped band only brackets `baseHeights`, so the consumer's ceiling
+  is high by that offset (−0.05 m over 99 % of the city's road area, 0 elsewhere). Being *high* is
+  the safe direction — the clamp never digs — but it does mean the clamp leaves up to 5 cm of the
+  residual standing. **Producer item, additive, needs a re-rip:** `TryGetClipBand` already holds
+  `TerrainComposition` and `NetCompositionData`; emitting the `baseHeights` triple and the
+  min/max height offsets on each clip volume record would make the ceiling exact and let the
+  predicate check the grade directly instead of recovering the offset from a median.
+
+### 51.6 Where the code changed
+
+* `tools/csiibundle/terrain.py` — `ROADBED_SINK` gone; `CLIP_BAND_EXPANSION = 0.3` added (the
+  producer's own constant, inverted); `clip_span` records `lane + top − expansion` instead of
+  `lane + bottom`; `clamp_shallow_bands` → `clamp_carriageway`; `ground_heights(native, ceiling)`
+  loses its roadbed arguments; `clip_grid`/`hole_mask`/`build_lattice` carry `band_ceiling`.
+* `csiibundle.bake.terrainmask` v4 — writes `carriageway_ceiling.png` and **deletes** the retired
+  `shallow_floor.png`; `csiibundle.bake.terraincut` v17 consumes it.
+* `apps/cs2beamng/stages/terrain.py` and `tools/blender_import_bundle.py` — one edit, counted in
+  the report line, under an APPROXIMATION comment.
+* Gates: `tools/test_roadgrade.py` (new: the deletions stay deleted, the clamp only lowers, the
+  ceiling is the game's number and carries the crossfall, the clamp is idempotent),
+  `tools/test_clip_cut.py` (the two scanline paths still agree on the ceiling raster),
+  `tools/test_terrain_fine.py` (the residual shrinks on the finer grid).
+* Probe: `tools/check_roadgrade_vs_game.py`, the counterpart to
+  `tools/check_terrain_vs_game.py` — score against the game, not against the other consumer.
+* Two stale gates in the same area, found by this pass and fixed (neither was caused by it, and
+  neither could have failed for the right reason): `test_heightfield` built its surface from the
+  fine raster and compared it against the base map at base-grid coordinates (`from_bundle`
+  gained `prefer_fine=True` with the fine capture), and `test_terrain_fine` looked for the
+  ground MESH materials in `art/terrains/` after §49 moved them to `art/ground/`.
+
+`cs2_city_fine` rebuilt in place, 8 m 14 s, cook 2,220 shapes exit 0, validator 0 problems.
+Terrain stage: `8192x8192 @ 1.75 m, 2,297,403 samples under a carriageway, of which 11,683
+(0.5 %) stood over it and were lowered onto its profile (worst 0.31 m)`.
+
+**Built, not yet loaded in game.** The visible change is that the 25 cm trench under every road
+disappears and the ground meets the kerb where CS2 puts it.
+
+### 51.7 Load #21 follow-up: the residual is the LATERAL PROFILE, not `m_MinHeightOffset` (2026-08-17)
+
+Naomi after loading the rebuilt `cs2_city_fine`: *"curbs are much less annoying and the terrain
+seems level to them in most areas. Large improvement. Small issues where the road now clips ever
+so slightly through the terrain where the roads are not flat / curved. Will a re-rip to get the
+correct figures resolve this?"* — §51.5 had named `m_MinHeightOffset` as the open producer item,
+which made "a re-rip fixes it" the natural reading. **Measured, it does not**, and the real cause
+is a different missing quantity. `tools/check_roadgrade_vs_game.py` grew sections 6–9 for this.
+
+**1. `m_MinHeightOffset` buys almost nothing** (fine grid, scored as ground left standing above
+the cross-section's low point):
+
+| ceiling | left over 0.05 m | volume |
+|---|---|---|
+| `cmax` (today) | 323,253 (14.01 %) | 146,342 m³ |
+| `cmax − 0.05` (the field §51.5 named) | 322,651 (13.98 %) | 139,337 m³ |
+| `cmin` (upper bound, over-clamps the verge) | 0 | 0 |
+
+A 5 % cut in volume and 0.03 pp in count. **The one field is not the answer.**
+
+**2. The residual does not concentrate on curved roads — curvature consumes its margin.** By
+strip shape, the *rate* is flat (vertical sag 13.6–17.5 %, plan bend 9.2–16.4 %, crossfall
+13.9–18.9 %), but the *magnitude* moves: on a flat, straight strip the median sample sits
+−0.050 m below the cross-section's low point, and on a sagging or superelevated one it creeps to
+−0.024 m with p95 rising +0.138 → +0.190 m. Same defect everywhere; closest to breaching where
+the road is not flat, which is exactly what the screenshot report says.
+
+**3. What is actually missing is WHERE ACROSS THE ROAD the sample is.** Section 8 settles which
+end of the band is which, from the geometry rather than by inference: erode the stamped
+carriageway two cells and the interior (221,559 samples) sits at `cmin − 0.05` with p95
+`− 0.005` relative to `cmin` — it never rises above it — while the rim (351,872) climbs to p95
+`+0.158` relative to `cmin` and stops just under `cmax` (p95 `−0.011`). **So `cmin` is the
+asphalt and `cmax` is the kerb/edge, and today's ceiling is the kerb applied across the whole
+footprint — 0.25 m above the road surface in the middle.** It only ever catches ground that is
+already a quarter of a metre proud.
+
+**4. The game's own lateral profile closes it completely, and `middleSize` needs no new field.**
+`AddSegment` builds `middleSize = saturate(1 − max(width·0.2, 3) / max(1, width))` from the same
+trimmed width the shipped clip curves span, so it is recoverable: measured p50 **0.80** at a p50
+width of **16.0 m**, which is `1 − 3.2/16` exactly — a self-check that the curves really do span
+`AddSegment`'s `num`. Evaluating the profile (flat plateau over the central `middleSize`, ramping
+to the edge offset over the outer margin) at each sample's own lateral position:
+
+| ceiling | clamp fires on | ground left above the game's own road surface |
+|---|---|---|
+| `cmax` (today) | 11,428 (1.98 %) | **57,345 samples (9.96 %), p95 0.082 m, max 6.38 m, 62,109 m³** |
+| the game's lateral profile | 77,067 (13.38 %) | **0** |
+
+**5. What the re-rip is actually for.** The profile can be evaluated from shipped data with ONE
+assumption: that the band's `cmin` is the middle entry of `(edgeHeight, surfaceHeight.min,
+edgeHeight)` and `cmax` an edge. Section 8 supports it, but a two-number band genuinely cannot
+express the case where `surfaceHeight.min` lies strictly between the two edge heights — there the
+middle is unrecoverable at any resolution. **Shipping the triple itself (plus `m_MiddleSize` and
+`GetTerrainSmoothingWidth`) retires the assumption; `TryGetClipBand` already holds all of it.**
+That, not `m_MinHeightOffset`, is the producer item — §51.5's naming of the single field is
+superseded.
+
+### 51.8 REJECTED: the profile-aware ceiling. Naomi: *"would this take us further away from being true to the game?"*
+
+It would, and the measurement in §51.7 is what says so — read this before proposing it again.
+
+**The game's grade is already in the raster.** §51.7 section 8: the carriageway INTERIOR sits at
+p95 **−0.005 m** relative to `cmin`. Not approximately where CS2 graded it — exactly there. The
+rim climbing to `cmax` is the profile ramping to the kerb, also exactly right. At almost every
+covered sample the shipped height IS the game's answer.
+
+**So the two ceilings are different kinds of rule:**
+
+* `cmax` is the maximum of the game's whole cross-section. Ground above it cannot be the grade at
+  ANY lateral position — provably wrong whatever `u` is. It is the tightest bound correct data
+  cannot violate, which is exactly why it is safe.
+* The lateral profile is tighter only if our `u` is right, and where `u` is wrong it clamps ground
+  the game placed correctly.
+
+**And the arithmetic says most of what it would move is legal.** The profile clamp fires on
+77,067 samples against today's 11,428; the extra **65,639 all lie in `[profile, cmax]` ⊂
+`[cmin, cmax]`** — the range of values the game's own cross-section produces. ~85 % of what it
+would move is a height CS2 legitimately writes somewhere on that road, and the only thing calling
+it wrong *here* is our estimate of where across the road the sample sits. That estimate is
+weakest precisely where the clamp bites: the rim, where strips overlap, node fans reach past the
+carriageway, and a curved footprint is approximated by a quad cross-section. §51.7 section 6
+agrees — the residual rate is FLAT across sag, bend and crossfall (13.6–17.5 %), where a real
+geometric defect should track curvature.
+
+Same shape as `ROADBED_SINK` and the band-floor clamp: a plausible rule that moves ground the
+game did not move. **Not built.**
+
+**And the re-rip does not rescue it.** Shipping the triple gives the profile's VALUES; evaluating
+it still needs `u`, the same weak link. §51.5's producer item and §51.7's wider version are both
+therefore optional — neither resolves the observed artifact.
+
+**What is left, in order of fidelity:**
+
+1. **The exact game rule: the shallow band is STENCILLED.** CS2 discards every pixel inside it, so
+   there is no terrain under a road to clip through. We already do this exactly for deep bands
+   (`terrainclip`), and it needs no new data. Cost: 7.07 km² of new holes, and **§50's grey rim on
+   every one of them** — which makes §50 the blocker on the real fix here, not a cosmetic aside.
+2. **Terrain resolution** (the open 1a-residual decision). The asphalt→kerb ramp is ~1.5 m wide
+   against 1.75 m samples, so the step is smeared over about one sample and a triangle across it
+   can cut the corner of the asphalt — worse where the road runs oblique to the grid, which is
+   what "not flat / curved" reports. 3.5 → 1.75 m already took the provably-wrong residual
+   1.76 % → 1.17 %.
+3. **Accept it, declared and counted** — which is the state as shipped, and 355× smaller in
+   volume than the pair §51 deleted.
+
+### 50.8 The slot-31 lead, scored before building it: ~60 % better, not a fix — and it does NOT unblock the road interface (2026-08-17)
+
+Naomi, after §51.8: *"take a run at fixing 50 if it would also help solve this issue but only as
+long as it's how the game does it or at least how we'd translate it to beamng."* Two conditions.
+The second is satisfiable; **the first is not**, and scoring §50.6's untried lead first is what
+showed it. `tools/check_terrain_rim.py` is the probe.
+
+**The mechanism, read from the shader rather than inferred.** Two lookups, at DIFFERENT positions:
+
+* the hole test is `clip((1 - layerTex.Load(uv*size - 0.5).r) - 0.0001)`
+  (`material/shadergen/terrainMat.hlsl:89`) — **point-sampled, unwarped**, and `r > 0.9999` is
+  byte 255, which confirms the hole marker;
+* the material lookup is `layerTex.Gather(uv + layerWarp/layerSize)` (line 97) — **warped**,
+  bilinear over a 2×2, then `matId = min(uint4(31,31,31,31), matId)` (`terrainImpl.hlsl:8`).
+
+So a pixel the clip KEEPS can still gather the hole texel as its dominant weight, because
+`calcLayerWarp` moves the gather by up to ±0.5 texel and the clip does not move with it. The
+material array is `TerrainMaterial terrainMaterialDataC[32]` (`terrain.h.hlsl:114`), so slot 31 is
+a real slot — padding to 32 and authoring it IS an engine rule, not a preference. Condition two
+holds.
+
+**But scored, it only gets a third of the way.** Blend weights are `key = saturate(heightMap) +
+matFactor*2` through `calcHeightBlend`, so a zero height map is worth at most 1.0 against a
+`matFactor*2` term spanning 2.0. Over the drawn pixels within half a texel (0.88 m) of a hole:
+
+| slot 31 | mean share of the drawn ground | pixels >50 % slot 31 |
+|---|---|---|
+| undefined, reads slice 0 (today) | 20.21 % | 15.36 % |
+| padded in, ZERO height map | **7.92 %** | **5.15 %** |
+| zero height map, ground relief at its darkest | 19.15 % | 15.00 % |
+| zero height map, **warp off** (not reachable) | **0.00 %** | **0.00 %** |
+
+A ~60 % reduction in the average case, **nothing at all where the neighbouring ground's own
+relief is dark** (it has no height deficit to lose by), and the last row names the cause: the
+domain warp is entirely responsible for the residual. `TERRAIN_LAYER_WARP` is a `#define` in a
+shipped shader and `warpAmp` a literal, so it cannot be reached from our data or our materials.
+The rim is also confined to the half-texel nearest the hole — 0.88 m on the shipped grid — which
+is why it reads as a band rather than a wash.
+
+**Condition one fails, so it was not built.** The road-interface route (§51.8) needs the shallow
+band punched: 7.07 km² of new holes, i.e. this same 0.88 m fringe along **every road edge in the
+city**, at ~8 % strength after the fix instead of ~20 %. Trading a p95 0.08 m height artifact for
+a city-wide fringe is not an improvement, and there is a second, independent blocker on that route
+that §50 does not touch — at a node the clip fan reaches past the road mesh, so a punched face
+there is sky (the reason `contain_faces` refuses to carve a shallow band, recorded twice; not
+re-measured this session).
+
+**What this leaves.** Padding to 32 with a zero height map is still the best known move ON §50's
+own merits and stays the recommendation there — it is faithful, cheap, and removes an undefined
+read. It is simply not a prerequisite for anything, and it does not close the bug. Closing it
+needs the warp neutralised, and the only lever that reaches the warp is **layer texel size**: the
+warp is ±0.5 TEXEL, so a 0.875 m grid halves the fringe in metres exactly as it halves everything
+else in §47's 1a-residual. That is the same open size decision, now with a third reason behind it.
+
+## 52. Can BeamNG take 0.875 m? Yes, at exactly the D3D12 ceiling and past the card's (2026-08-17)
+
+The standing 1a-residual question (§47), now with three reasons behind it (§50.8, §51.8) and so
+worth answering properly rather than as a size preference.
+
+### 52.1 What 0.875 m costs
+
+`playable 14336 m / 0.875 = 16384` samples — and **D3D12's maximum 2D texture dimension is
+16384**. The terrain heightmap is a single `Texture2D` (`terrainMat.hlsl` /
+`calculateTerrainVertexPos`, one `terrainCell.terrainHeightMapSize`), so 0.875 m is *exactly* the
+finest grid the API can express for this map. Nothing below it is reachable at any price.
+
+| grid | cell | heights R16 | layers R8 | GPU total | `.ter` on disk |
+|---|---|---|---|---|---|
+| 4096² | 3.5 m | 32 MiB | 16 MiB | 48 MiB | 48 MiB |
+| 8192² (today) | 1.75 m | 128 MiB | 64 MiB | **192 MiB** | 192 MiB |
+| 16384² | 0.875 m | 512 MiB | 256 MiB | **768 MiB** | 768 MiB |
+
+**Precedent: none.** Vanilla BeamNG's largest terrain is **4096** (`automation_test_track`,
+`italy`, `johnson_valley`); most ship 1024–2048 (`Utah`, `west_coast_usa`, `hirochi_raceway`,
+`derby`, `gridmap_v2` at 2048; `small_island`, `GridMap`, `Industrial`, `template` at 1024). We
+already ship **8192**, double anything the game itself ships; 16384 would be 4× vanilla's largest
+per axis and 16× the samples. The `.ter` format itself is no obstacle (`u32 size`), and no engine
+Lua or binary string caps it — the constraint is the API and the hardware.
+
+**Load time is superlinear.** Measured: `TerrainBlock` 0.8 s at 4096 → **10.2 s at 8192**
+(load #13) — 12.75× for 4× the data. The same curve puts 16384 near two minutes of stall.
+
+**The binding constraint is this machine's VRAM.** RTX 3070, **8192 MiB**, measured 6706 MiB
+already in use at desk idle; load #9's whole diagnosis was VRAM exhaustion on this card at a
+*4096* terrain. Going to 768 MiB of terrain textures adds 576 MiB on top of that.
+
+**Our own build** is fine on RAM but slower: `clip_grid` peaks around 4 GB of float64/int32
+rasters at 16384² (32 GB installed), and the bake's rasterisation scales with the sample count —
+the ~4 min terrainmask/terraincut pass becomes 15–20.
+
+### 52.2 It would be REAL data, not an upsample — and that distinction decides what it buys
+
+`TerrainRipSystem.FineCascade`'s own header: `m_HeightmapCascade` is a four-slice array, all
+4096², and slices `baseLod+1..3` are camera-centred windows of `playable/2^n`, each re-rendered
+by `RenderCascade` as the base heightmap blitted in **plus every lot, lane and area height
+adjustment rasterised at that slice's texel size**. We capture `baseLod+1`: 7168 m at 4096 texels
+= 1.75 m, four camera windows tiling the map → 8192². **`baseLod+2` is 3584 m at 4096 texels =
+0.875 m exactly, sixteen windows → 16384².** Same technique, 4× the windows; a producer change
+and a re-rip, with the capture's existing failure mode (a window that never lands) now having
+sixteen chances instead of four.
+
+That matters because there are two different "0.875 m" options and they buy different things:
+
+| | §50 grey fringe (±0.5 **texel**) | §47 blend blobs (texel-sized) | §51 road clipping (needs height detail) |
+|---|---|---|---|
+| upsample the 1.75 m raster ×2 — no re-rip | halves, 0.88 → 0.44 m | halves | **no change** |
+| capture `baseLod+2` — producer + re-rip | halves | halves | **improves** |
+
+Both pay the same 768 MiB. So if the VRAM is being spent, it should be spent on the real slice;
+upsampling buys two of the three artifacts for the same runtime price.
+
+### 52.3 Verdict
+
+Technically supported, at the exact D3D12 ceiling, with no precedent in any shipped BeamNG level
+and past the comfortable limit of the card this project is being validated on. **Not recommended
+now.** If it is tried, the cheap form of the experiment is a full 16384² build loaded once to see
+whether it even survives — the terrain stage always writes the whole square, so a `region` build
+does not shrink the `.ter` and there is no smaller test.

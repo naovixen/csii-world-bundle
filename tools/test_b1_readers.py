@@ -94,7 +94,7 @@ def example_bundle():
     # hole_mask on the example bundle
     hm = terrain.hole_mask(EXAMPLE)
     check(hm.contain.shape == (heights.shape[0] - 1, heights.shape[1] - 1) and hm.contain.dtype == bool, "hole_mask face resolution")
-    check(hm.deep_touch.shape == hm.contain.shape and hm.band_floor.shape == heights.shape, "hole_mask raster shapes")
+    check(hm.deep_touch.shape == hm.contain.shape and hm.band_ceiling.shape == heights.shape, "hole_mask raster shapes")
     check(not (hm.contain & ~hm.deep_touch).any() or True, "contained faces are a subset of deep-touched (informational)")
 
     # materials.resolve on the example table

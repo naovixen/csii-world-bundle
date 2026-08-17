@@ -24,9 +24,9 @@ approximation left to tune.
 **Deliberate deviation, counted:** only a DEEP band cuts (`top > CLIP_DEEP_BAND_TOP`). The game
 clips the shallow ±0.3 m shell over every surface road too, but the ground there is under the
 carriageway that hides it, and removing it would rely on our road meshes covering every square
-metre the prism does (audit §41.7 measured where they do not). The shallow band still flattens —
-`terrain.ground_heights`, shared with the consumer's own heightfield. The report states how many
-volumes were skipped this way.
+metre the prism does (audit §41.7 measured where they do not). The shallow band instead lowers
+the samples that stand over the carriageway onto it — `terrain.ground_heights`, shared with the
+consumer's own heightfield. The report states how many volumes were skipped this way.
 
 Outputs (`derived/terraincut/terraincut_<tx>_<tz>.glb`, plus `derived/terrain/corridor_faces.png`):
 
@@ -37,8 +37,9 @@ Outputs (`derived/terraincut/terraincut_<tx>_<tz>.glb`, plus `derived/terrain/co
 * `corridor_faces.png` — gray8 at FACE resolution `(h−1, w−1)`, 255 where the heightfield square
   is replaced by mesh (punch it), 0 elsewhere.
 
-Heights are `terrain.ground_heights` (the roadbed sink, then the shallow-band clamp) quantised to
-the elevation encoding, so a boundary vertex equals the consumer's own sample bit for bit.
+Heights are `terrain.ground_heights` — the game's own graded heightmap with only the
+over-carriageway residual clamped (audit §51) — quantised to the elevation encoding, so a
+boundary vertex equals the consumer's own sample bit for bit.
 """
 
 import json
@@ -53,12 +54,15 @@ from .tiles import TileSink
 
 PRODUCT_NAME = "terraincut"
 INPUTS = ("clipVolumes", "terrain", "terrainFine", "surfaceIndex", "splatmap")
-VERSION = 16         # v13: the EXACT cut (audit §46) — `terrainclip` against the prisms, replacing the
+VERSION = 17         # v13: the EXACT cut (audit §46) — `terrainclip` against the prisms, replacing the
                      #      containment scoring, the rim snap, the sub-cut and the cliff lift of v3-v12
                      # v14: sub-centimetre ribbons dropped (they rendered as hairlines: load #18) and the
                      #      prism construction shared with the Blender harness (`terrainclip.load_prisms`)
                      # v15: no roadbed stamp — the game paints no roadbed on its terrain (§17 row 2)
                      # v16: a square losing under MIN_REMOVED_M2 stays with the heightfield
+                     # v17: the game's own graded heights kept — the 0.15 m roadbed sink and the
+                     #      clamp to the band FLOOR are gone, only the over-carriageway residual
+                     #      is lowered, onto the game's own profile top (audit §51)
 
 # metres per texture repeat on the ground mesh: the terrain material's MACRO tier period
 GROUND_UV_M = 40.0
@@ -99,17 +103,16 @@ def run(context, progress):
         surface = reader.resample_nearest(surface, raw.shape)
 
     # -- the ground the consumer's heightfield will hold ------------------------------------
-    # The same definition it applies itself (`terrain.ground_heights`: the roadbed sink dilated one
-    # cell, then the shallow-band clamp), quantised to the elevation encoding by the consumer's own
-    # arithmetic (`beamng.ter.from_bundle_arrays` widens the float32 grid to float64 before `rint`).
+    # The same definition it applies itself (`terrain.ground_heights`: the game's grading, kept,
+    # with only the over-carriageway residual clamped), quantised to the elevation encoding by the
+    # consumer's own arithmetic (`beamng.ter.from_bundle_arrays` widens float32 to float64 before
+    # `rint`).
     progress.begin("terraincut: ground", total=None, unit="")
     heights32 = raw.astype(numpy.float32) * numpy.float32(scale) + numpy.float32(offset)
-    band_floor = _shallow_floor(derived, heights32.shape, scale, offset)
-    roadbed = (surface == 1) if surface is not None else None
-    ground_y, clamped, _drop = terrain.ground_heights(
-        heights32, roadbed, band_floor, terrain.ROADBED_SINK if roadbed is not None else 0.0)
+    band_ceiling = _carriageway_ceiling(derived, heights32.shape, scale, offset)
+    ground_y, clamped, _drop = terrain.ground_heights(heights32, band_ceiling)
     ground_y = numpy.rint((ground_y.astype(numpy.float64) - offset) / max(scale, 1e-12)) * scale + offset
-    progress.end(f"{clamped:,} samples clamped to a shallow band")
+    progress.end(f"{clamped:,} samples lowered onto the carriageway profile")
 
     # -- the prisms, straight from the game's own clip volumes -------------------------------
     progress.begin("terraincut: clip volumes", total=None, unit="")
@@ -221,22 +224,23 @@ def run(context, progress):
             "_tiles": written["tiles"], "seconds": round(time.monotonic() - started, 1)}
 
 
-def _shallow_floor(derived, shape, scale, offset):
-    """The shallow band's floor per sample, as the consumer reads it — `terrainmask`'s
-    `shallow_floor.png`, decoded exactly as the app does. `+inf` where no shallow band covers the
-    sample. The bake runs `terrainmask` before this product (see `bake.PRODUCT_MODULES`)."""
-    floor = numpy.full(shape, numpy.inf, dtype=numpy.float32)
-    path = os.path.join(derived, "terrain", "shallow_floor.png")
+def _carriageway_ceiling(derived, shape, scale, offset):
+    """The game's carriageway profile top per sample, as the consumer reads it — `terrainmask`'s
+    `carriageway_ceiling.png`, decoded exactly as the app does. `+inf` where no shallow band
+    covers the sample. The bake runs `terrainmask` before this product (see
+    `bake.PRODUCT_MODULES`)."""
+    ceiling = numpy.full(shape, numpy.inf, dtype=numpy.float32)
+    path = os.path.join(derived, "terrain", "carriageway_ceiling.png")
     if not os.path.isfile(path):
         raise RuntimeError(f"terraincut needs {path} — bake `terrainmask` first (it is the same "
-                           "shallow-band clamp the consumer's own heightfield applies)")
+                           "carriageway clamp the consumer's own heightfield applies)")
     stored = png.gray_array(path)
     if stored.shape != shape:
-        raise RuntimeError(f"shallow_floor.png is {stored.shape}, the ground raster {shape} — "
-                           "re-bake `terrainmask` against the same `ground` option")
+        raise RuntimeError(f"carriageway_ceiling.png is {stored.shape}, the ground raster {shape} "
+                           "— re-bake `terrainmask` against the same `ground` option")
     has = stored > 0
-    floor[has] = (stored[has].astype(numpy.float64) * scale + offset).astype(numpy.float32)
-    return floor
+    ceiling[has] = (stored[has].astype(numpy.float64) * scale + offset).astype(numpy.float32)
+    return ceiling
 
 
 def _paint_layers(paths, surface, shape, progress):

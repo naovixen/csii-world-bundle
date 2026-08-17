@@ -189,7 +189,18 @@ per-frame stencil pass discards those pixels on screen. `clipvolumes.jsonl` is w
 and a consumer that meshes `heightmap.png` alone walls off every underground network. It is the
 single most visible thing to get wrong in §8. (§8, §8c)
 
-**Only a DEEP clip band may carve; a shallow one flattens and never deletes.** And delete a
+**The ground under a road is already where the game put it — do not adjust it.** CS2's road job
+does not only clip: `CullRoadsJob` grades the ground to
+`lane + (edgeHeight, surfaceHeight.min, edgeHeight)` across the carriageway with an 8 m apron,
+renders that into its height cascade, and reads the cascade back — which is what the producer
+ships. Measured: **98.37 %** of the 2.3M samples a shallow clip band covers already sit inside the
+game's own profile window (audit §51). Sinking the roadbed by a constant, or clamping to the
+band's FLOOR, un-does the game's own answer: this repo did both, and together they removed
+2.4 million m³ of ground from under one city's roads and put a 25 cm trench at every kerb. The one
+defensible edit is the ~1 % that stand *above* the carriageway's cross-section — pixels the game
+removes with its stencil — lowered onto `lane + top − 0.3` from the §8c band. (§8, §8c)
+
+**Only a DEEP clip band may carve; a shallow one never deletes.** And delete a
 face only when a volume contains the **whole face** — testing corners against the *union* of
 volumes reads as contained at a junction where four corners are covered by four different
 volumes while the interior escapes them all, and tears a hole. Report deleted area against

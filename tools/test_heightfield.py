@@ -134,7 +134,10 @@ else:
     if paths.rasters is None or not os.path.isfile(paths.heightmap):
         print("SKIP the real-raster check — no §8 terrain layer")
     else:
-        surface = HeightfieldSurface.from_bundle(BUNDLE)
+        # `prefer_fine=False`: this check compares against `heightmap.png` at BASE-grid
+        # coordinates, so it must build the surface from the same raster. `from_bundle` defaults
+        # to the fine 1.75 m one (the ground a heightfield engine is actually given).
+        surface = HeightfieldSurface.from_bundle(BUNDLE, prefer_fine=False)
         raw = png_reader.gray_array(paths.heightmap).astype(numpy.float64)
         scale = float(paths.rasters.get("elevationScale", 1.0))
         offset = float(paths.rasters.get("elevationOffset", 0.0))

@@ -11,12 +11,27 @@ carriageway. A consumer that meshes the heightmap and stops there gets a city wh
 filled with earth and whose trenches have no walls, and one that deletes everything a prism
 touches gets holes in the open sky. `clip_grid` and `contain_faces` are the two answers.
 
-**Only a DEEP band may carve; a shallow one flattens and never deletes.** This is the
-containment invariant, and it is the correction that matters most here. A ±0.3 m shell over an
-ordinary surface road is not a tunnel — the terrain inside it is under the asphalt that hides
-it, so deleting it opens a hole the road does not fill. `CLIP_DEEP_BAND_TOP` is where the line
-sits. Where a shallow band selects ground, `clamp_shallow_bands` lowers it to that band's own
-floor instead: the same band, including its lateral tilt, with no second opinion.
+**Only a DEEP band may carve; a shallow one never deletes.** This is the containment invariant.
+A ±0.3 m shell over an ordinary surface road is not a tunnel — the terrain inside it is under
+the asphalt that hides it, so deleting it opens a hole the road does not fill.
+`CLIP_DEEP_BAND_TOP` is where the line sits.
+
+**And the ground under a road is already where the game put it.** `TerrainSystem.CullRoadsJob`
+does not only clip: it also GRADES, emitting a `LaneSection` per road piece whose
+`m_MinOffset`/`m_MaxOffset` are the composition's own `(edgeHeight, surfaceHeight.min,
+edgeHeight)` triple, and `DrawHeightAdjustments` renders those into `m_HeightmapCascade` before
+`UpdateGPUReadback` reads the cascade back into `m_CPUHeights`. `GetHeightData()` — and so
+`heightmap.png` — is the graded ground; for an at-grade road min == max, so the height is
+ASSIGNED, not clamped. Measured over the 2,307,777 samples a shallow band covers on the
+2026-08-16 rip's 1.75 m grid, **98.37 %** already sit inside the game's own profile window
+(97.10 % on the 3.5 m base map; audit §51). **A consumer therefore does not adjust these
+heights.** The one thing it may do is the game's own ceiling: `clamp_carriageway` lowers the
+samples that stand above the carriageway's profile top back onto it — pixels the game removes
+with its stencil and a heightfield cannot. On the full city that is **11,683 of 2,297,403
+(0.5 %)**, worst drop 0.31 m. Two tuned constants used to live here (a 0.15 m
+roadbed sink and a clamp to the band FLOOR, `lane − 0.5`); together they moved 3.28M samples a
+median 0.25 m below where CS2 grades them — 2.4 million m³ dug out from under the city's roads
+— and both are gone.
 
 **The terrain is CUT, not scored.** The game hides terrain by rendering the clip volume into a
 stencil and discarding pixels inside it (audit §46), so the hole's boundary is the prism's own
@@ -60,18 +75,12 @@ from . import bezier, reader, terrainclip
 CLIP_SCANLINE_VECTOR_ROWS = 8
 
 
-# How far terrain faces marked roadbed (§8 surface id 1) sink below their sampled height. The
-# game's own clamp direction: its road job pulls ground under a carriageway to the MINIMUM of the
-# road's surface band, below the asphalt top, while a consumer's linearly interpolated (and
-# possibly stride-subsampled) grid crests through it.
-#
-# This is the FALLBACK, not the main clamp. It guesses a constant against a road surface it never
-# looks at, and 0.15 m is smaller than the 0.3 m roof of the band it is guessing about — which is
-# precisely how terrain came through a carriageway once a shallow band stopped carving. Where a
-# clip band covers the cell there is a real lane height to reference and `clamp_shallow_bands`
-# uses it instead, so this now only covers roadbed cells no band reaches: the flattening apron,
-# where nothing better is available. TUNED.
-ROADBED_SINK = 0.15
+# The producer's own `TerrainRipSystem.ClipBandExpansion` — `GenerateClipDataJob` widens a clip
+# volume by this much on both sides AFTER taking the composition's height offsets, so removing it
+# from a shipped band's `top` recovers the game's carriageway profile top,
+# `cmax(edgeHeight, surfaceHeight.min, edgeHeight) + clipHeightOffset.y`. Not a tuned constant:
+# it is one number of the game's, inverted.
+CLIP_BAND_EXPANSION = 0.3
 
 # Ground steeper than this (rise over run) is textured rock instead of grass — the gorge
 # embankments. The game classifies grass/dirt/rock per pixel on the GPU by slope, height and
@@ -125,17 +134,18 @@ def lane_ramp(quad, lane_y):
 
 
 def clip_span(mask, terrain_y, row, lo, hi, lane_y, ramp, bottom, top,
-               refs, ref_value, floor, offset):
+               refs, ref_value, ceiling, offset):
     """Mark one scanline span of a clip quad, and record what the span was marked against.
 
     The body both scanline paths share, so the two cannot drift apart on it —
     `tools/test_clip_cut.py` fuzzes them against each other precisely because they once did.
 
-    `floor`, when given, receives `lane + bottom` for every sample inside the band: the height
-    at which the game's own surviving terrain resumes under this strip. Writing it here rather
-    than re-deriving it later is what keeps `clamp_shallow_bands` definitionally consistent
-    with the band test — the clamp lowers ground to the floor of the very band that selected it,
-    including its lateral tilt, with no second opinion about which station or which side.
+    `ceiling`, when given, receives `lane + top - CLIP_BAND_EXPANSION` for every sample inside
+    the band: the top of the game's own carriageway cross-section under this strip, which is
+    where the game's grading pass leaves the ground at its highest. Writing it here rather than
+    re-deriving it later is what keeps `clamp_carriageway` definitionally consistent with the
+    band test — the clamp uses the ceiling of the very band that selected the sample, including
+    its lateral tilt, with no second opinion about which station or which side.
     """
     if ramp is None:
         lane = lane_y
@@ -151,16 +161,17 @@ def clip_span(mask, terrain_y, row, lo, hi, lane_y, ramp, bottom, top,
     if refs is not None and ref_value >= 0:
         span = refs[row, lo:hi + 1]
         span[inside] = ref_value
-    if floor is not None:
-        span = floor[row, lo:hi + 1]
-        # Lowest floor wins where strips overlap, so a cell claimed by two roads ends up under
+    if ceiling is not None:
+        span = ceiling[row, lo:hi + 1]
+        # Lowest ceiling wins where strips overlap, so a cell claimed by two roads ends up under
         # both of them rather than under whichever was rasterised last. `casting="unsafe"` is
         # only the float64 lane arithmetic landing in the float32 raster, which is deliberate.
-        numpy.minimum(span, lane + bottom, out=span, where=inside, casting="unsafe")
+        numpy.minimum(span, lane + (top - CLIP_BAND_EXPANSION), out=span, where=inside,
+                      casting="unsafe")
 
 
 def fill_clip_quad_rows(mask, terrain_y, width, height, quad, lane_y, bottom, top,
-                         refs, ref_value, offset, row_lo, row_hi, floor=None):
+                         refs, ref_value, offset, row_lo, row_hi, ceiling=None):
     """The even-odd scanline, one row at a time — the reference path `fill_clip_quad` splits
     from. Kept whole rather than folded into a branch so the two can be fuzzed against each
     other; see `tools/test_clip_cut.py`."""
@@ -184,11 +195,11 @@ def fill_clip_quad_rows(mask, terrain_y, width, height, quad, lane_y, bottom, to
             if hi < lo:
                 continue
             clip_span(mask, terrain_y, row, lo, hi, lane_y, ramp, bottom, top,
-                       refs, ref_value, floor, offset)
+                       refs, ref_value, ceiling, offset)
 
 
 def fill_clip_quad(mask, terrain_y, width, height, quad, lane_y, bottom, top,
-                    refs=None, ref_value=-1, offset=0.5, floor=None):
+                    refs=None, ref_value=-1, offset=0.5, ceiling=None):
     """Mark the samples one strip quad clips — even-odd scanline over sample points.
 
     `quad` is four (x, y) points in cell space, where cell (row, col) spans [col, col+1) ×
@@ -219,7 +230,7 @@ def fill_clip_quad(mask, terrain_y, width, height, quad, lane_y, bottom, top,
         return
     if row_hi - row_lo < CLIP_SCANLINE_VECTOR_ROWS:
         fill_clip_quad_rows(mask, terrain_y, width, height, quad, lane_y, bottom, top,
-                             refs, ref_value, offset, row_lo, row_hi, floor)
+                             refs, ref_value, offset, row_lo, row_hi, ceiling)
         return
     lane_y, ramp = lane_ramp(quad, lane_y)
 
@@ -262,7 +273,7 @@ def fill_clip_quad(mask, terrain_y, width, height, quad, lane_y, bottom, top,
             row = int(rows[live[k]])
             lo, hi = int(los[k]), int(his[k])
             clip_span(mask, terrain_y, row, lo, hi, lane_y, ramp, bottom, top,
-                       refs, ref_value, floor, offset)
+                       refs, ref_value, ceiling, offset)
 
 
 def face_footprint_reduce(native, row0, col0, nfr, nfc, stride):
@@ -527,7 +538,7 @@ def clip_grid(bundle_dir, width, height, heights, cell, origin_x, origin_z,
     `floor_override`, when not None, replaces every strip's `bottom` — a diagnostic knob
     (`--clip-floor`) for previewing a producer band-floor change against an existing bundle.
 
-    Returns `(mask, contain, band_count, deep_touch, refs, strip_geo, band_floor)`: the
+    Returns `(mask, contain, band_count, deep_touch, refs, strip_geo, band_ceiling)`: the
     (height, width) bool cut mask over CELL centres; the (height − 1, width − 1) bool deletion
     mask from `contain_faces`; its per-face count of in-band sub-samples, which is the true
     clipped area in `(cell / CLIP_CONTAIN_SAMPLES)²` units; which faces a deep band reaches
@@ -567,17 +578,18 @@ def clip_grid(bundle_dir, width, height, heights, cell, origin_x, origin_z,
                  * elevation_scale + elevation_offset)
     mask = numpy.zeros((height, width), dtype=bool)
 
-    # Where the game's terrain resumes under a SHALLOW band, per cell — +inf where no shallow
-    # band covers it. `clamp_shallow_bands` reads this and nothing else; a deep band writes
-    # nothing here because it is carved instead (`contain_faces`). float32 deliberately: this
-    # is one full-map raster (67 MiB at 4096², against 134 at float64) and it holds a height
-    # around 500 m, where float32 still resolves better than a ten-thousandth of a millimetre.
-    band_floor = numpy.full((height, width), numpy.inf, dtype=numpy.float32)
+    # The top of the game's own carriageway cross-section under a SHALLOW band, per cell —
+    # +inf where no shallow band covers it. `clamp_carriageway` reads this and nothing else; a
+    # deep band writes nothing here because it is carved instead (`contain_faces`). float32
+    # deliberately: this is one full-map raster (67 MiB at 4096², against 134 at float64) and it
+    # holds a height around 500 m, where float32 still resolves better than a ten-thousandth of
+    # a millimetre.
+    band_ceiling = numpy.full((height, width), numpy.inf, dtype=numpy.float32)
 
-    def fill(quad, lane_y, bottom, top, ref_value=-1, floor=None):
+    def fill(quad, lane_y, bottom, top, ref_value=-1, ceiling=None):
         fill_clip_quad(mask, terrain_y, width, height, quad, lane_y, bottom, top,
                         refs=(refs if ref_value >= 0 else None), ref_value=ref_value,
-                        floor=floor)
+                        ceiling=ceiling)
 
     def to_cell(points):
         """World positions to cell space, cell (row, col) centred on (col + .5, row + .5)."""
@@ -630,13 +642,13 @@ def clip_grid(bundle_dir, width, height, heights, cell, origin_x, origin_z,
         strip_geo.append((left_pts, right_pts, lane, bottom, top, carves))
         for i in range(1, steps + 1):
             # The band's two sides, not their mean: see `lane_ramp`. A deep band writes no
-            # floor — it is carved, and a carved cell has no ground left to clamp.
+            # ceiling — it is carved, and a carved cell has no ground left to clamp.
             fill([tuple(left_cells[i - 1]), tuple(right_cells[i - 1]),
                   tuple(right_cells[i]), tuple(left_cells[i])],
                  (float((left_y[i - 1] + left_y[i]) * 0.5),
                   float((right_y[i - 1] + right_y[i]) * 0.5)), bottom, top,
                  ref_value=(strip_index << CLIP_REF_STATION_BITS) | i,
-                 floor=(None if carves else band_floor))
+                 ceiling=(None if carves else band_ceiling))
 
     # -- the deletion mask ----------------------------------------------------------------
     # Each strip in cell space with PER-STATION bounds, so a face block replays only the
@@ -695,70 +707,71 @@ def clip_grid(bundle_dir, width, height, heights, cell, origin_x, origin_z,
     contain, band_count, deep_touch = contain_faces(
         width, height, terrain_y, mask, quad_source, contain_samples(cell),
         CLIP_CONTAIN_BLOCK)
-    return mask, contain, band_count, deep_touch, refs, strip_geo, band_floor
+    return mask, contain, band_count, deep_touch, refs, strip_geo, band_ceiling
 
 
-def clamp_shallow_bands(ground_y, band_floor_w):
-    """Drop ground standing inside a SHALLOW clip band to that band's own floor.
+def clamp_carriageway(ground_y, band_ceiling_w):
+    """Lower ground that stands above the game's own carriageway profile back onto it.
 
-    The counterpart to `contain_faces`' refusal to carve a shallow band, and the reason that
-    refusal does not put terrain through the road. The game discards terrain per pixel inside
-    `(lane + bottom, lane + top)` — for a surface road that shell is only `[-0.5, +0.3]` m, but
-    the top half of it is *above* the carriageway, so terrain kept there wins the depth test
-    against a road running nearly parallel to it. Measured on the 2026-08-12 bundle at
-    `(-435.1, 6859.4)`: 1.9% of the road area with ground over it, median 0.063 m, max
-    **0.303 m** — the band's own roof, to the centimetre, which is what identifies the cause.
+    **This is the only edit a consumer makes to the shipped heights, and it is a declared
+    approximation, not a rule.** The rule is the game's, and the game has already applied it:
+    `TerrainSystem.CullRoadsJob` grades the ground under every road to
+    `lane + (edgeHeight, surfaceHeight.min, edgeHeight)` across the width, that grading is
+    rendered into the height cascade, and `GetHeightData()` reads the cascade back — so
+    `heightmap.png` arrives already graded. Measured on the 2026-08-16 rip, 98.37 % of the
+    2,307,777 samples a shallow band covers on the 1.75 m grid already sit inside the game's
+    own profile window (audit §51).
 
-    Deleting the face instead is the move this repo has already rejected twice (see
-    `contain_faces`): at a node the clip fan reaches past the road mesh, so a deleted face
-    there is sky. Lowering it cannot be: the ground stays, still painted roadbed, and merely
-    sits where the game's own surviving pixels resume — the band floor. That is the rule
-    "never loosen the deletion rule to close an intrusion, move the surface instead".
+    What is left is the 1.17 % that stand ABOVE the carriageway's cross-section — median
+    0.025 m, max 0.299 m, 26,910 samples of that rip, nearly all on the stamped carriageway.
+    In practice the clamp fires on fewer: the ceiling raster is quantised to the heightmap's own
+    0.0625 m (it must be, or the `terraincut` mesh and the consumer's grid would not agree bit
+    for bit at the seam), and the residual's median excess is smaller than half a quantum, so
+    the full-city build lowers **11,683 (0.5 %)**.
+    The game removes those pixels with its stencil (§46); a heightfield engine has no stencil
+    and deleting the face is the move this repo has rejected twice (see `contain_faces`: at a
+    node the clip fan reaches past the road mesh, so a deleted face there is sky). Lowering
+    them onto the profile top is the smallest edit that closes it, it only ever lowers, and its
+    target is the game's own number rather than a tuned constant.
 
-    `lane + bottom` is the game's number and needs no tuned constant of its own, which is the
-    argument for it over the blind `_ROADBED_SINK`: that sink guesses 0.15 m against a road
-    surface it never looks at, and 0.15 < 0.303 is exactly why it failed. The sink still covers
-    roadbed cells no band reaches (the flattening apron), where there is no lane height to
-    reference.
-
-    `band_floor_w` is the windowed floor raster `clip_span` wrote while it rasterised the
-    bands: `lane + bottom` for every cell a shallow band selected, `+inf` everywhere else, with
-    the lateral tilt of `lane_ramp` already in it and the LOWEST floor kept where two strips
-    overlap. Taking it from there rather than re-deriving it from a station reference is the
-    point — the clamp then cannot disagree with the test that chose the cell, which a second
-    derivation (via last-writer-wins refs, over a mean-height lane) demonstrably did.
+    `band_ceiling_w` is the windowed ceiling raster `clip_span` wrote while it rasterised the
+    bands: `lane + top − CLIP_BAND_EXPANSION` for every cell a shallow band selected, `+inf`
+    everywhere else, with the lateral tilt of `lane_ramp` already in it and the LOWEST ceiling
+    kept where two strips overlap. Taking it from there rather than re-deriving it from a
+    station reference is the point — the clamp then cannot disagree with the test that chose
+    the cell, which a second derivation (via last-writer-wins refs, over a mean-height lane)
+    demonstrably did.
 
     Mutates `ground_y` in place. Returns `(vertices lowered, largest drop in metres)`.
     """
-    drop = ground_y - band_floor_w       # +inf floor (no shallow band) never selects
+    drop = ground_y - band_ceiling_w     # +inf ceiling (no shallow band) never selects
     hit = drop > 0.0
     if not hit.any():
         return 0, 0.0
-    ground_y[hit] = band_floor_w[hit]
+    ground_y[hit] = band_ceiling_w[hit]
     return int(hit.sum()), float(drop[hit].max())
 
 
 GROUND_FALLBACK_TILING = 8.0
 
 
-def ground_heights(native_y, roadbed, band_floor, sink=ROADBED_SINK):
-    """The §8 ground a consumer builds from the heightmap, from the raw sampled heights: every
-    sample whose cell touches roadbed — dilated one cell, so the sink bleeds into the smoothing
-    apron instead of tearing a step — drops by `sink`, and then every sample a SHALLOW clip band
-    covers is lowered to that band's floor (`clamp_shallow_bands`). Returns
-    `(ground_y, band_clamped, band_clamp_drop)`; `native_y` is not modified.
+def ground_heights(native_y, band_ceiling):
+    """The §8 ground a consumer builds from the heightmap: the shipped heights, with only the
+    samples standing over a carriageway lowered onto it (`clamp_carriageway`). Returns
+    `(ground_y, clamped, clamp_drop)`; `native_y` is not modified.
+
+    Nothing else is applied. Two constants used to be — a 0.15 m sink on every roadbed sample
+    and a clamp of every band-covered sample to the band FLOOR (`lane − 0.5`) — and audit §51
+    measured what they cost: 3,283,410 samples moved a median 0.25 m below where CS2 grades
+    them, 2.4 million m³ of ground dug out from under the city's roads, which is the 25 cm
+    trench at every kerb that BeamNG load #9 reported. Neither has a counterpart in the game.
 
     This is the one definition shared by the mesh harness (`build_lattice`) and a heightfield
     consumer's own grid, so a mesh cut from the lattice (bake `terraincut`) meets that
     heightfield sample for sample at its boundary."""
-    native_y = numpy.asarray(native_y)
-    if roadbed is not None and sink:
-        sunk = dilate(numpy.asarray(roadbed, dtype=bool), 1)
-        ground_y = native_y - numpy.where(sunk, native_y.dtype.type(sink), native_y.dtype.type(0.0))
-    else:
-        ground_y = native_y.copy()
-    band_clamped, band_clamp_drop = clamp_shallow_bands(ground_y, band_floor)
-    return ground_y, band_clamped, band_clamp_drop
+    ground_y = numpy.asarray(native_y).copy()
+    clamped, clamp_drop = clamp_carriageway(ground_y, band_ceiling)
+    return ground_y, clamped, clamp_drop
 
 
 def ground_tiling(block, ground):
@@ -813,8 +826,8 @@ LatticeMesh = namedtuple("LatticeMesh", (
 def build_lattice(heights, width, height, surface_ids, levels,
                   row0, col0, row1, col1, stride, cell, origin_x, origin_z,
                   elevation_scale, elevation_offset,
-                  cut_grid, contain_raster, band_count_raster, band_floor_raster,
-                  strip_geo, prisms=None, roadbed_sink=None):
+                  cut_grid, contain_raster, band_count_raster, band_ceiling_raster,
+                  strip_geo, prisms=None):
     """Build the §8 ground mesh for one window: vertices, faces, and what each face is.
 
     This is where every other function in this module meets. It returns a `LatticeMesh`, or
@@ -836,10 +849,10 @@ def build_lattice(heights, width, height, surface_ids, levels,
     cut against it by convex subtraction, which is what the game's stencil does per pixel (audit
     §46). Without them the lattice is built uncut — useful only for a bundle with no clip layer.
 
-    `roadbed_sink` defaults to `ROADBED_SINK` and is applied to the lattice ONCE, before any face
-    family is built, so coarse, refined and transition faces all read identical heights.
+    **The heights are the game's own.** `ground_heights` is applied to the lattice ONCE, before
+    any face family is built, so coarse, refined and transition faces all read identical
+    heights — and all it does now is lower the samples that stand over a carriageway onto it.
     """
-    roadbed_sink = ROADBED_SINK if roadbed_sink is None else roadbed_sink
     stray_cells = 0
     # -- the shared native lattice ---------------------------------------------------------
     # The window is nfr×nfc blocks of stride² native cells; the vertex lattice is the native
@@ -918,27 +931,19 @@ def build_lattice(heights, width, height, surface_ids, levels,
                                numpy.minimum(s_cc // stride, nfc - 1)]
         stray_cells = int(stray.sum())
 
-    # -- heights, with the anti-poke sink --------------------------------------------------
-    # The game clamps ground under a carriageway down into the road's surface band; this
-    # lattice linearly interpolates 3.5 m samples, so an interpolated crest can still rise
-    # through the road mesh above. Every vertex whose cell touches roadbed — dilated one
-    # cell, so the sink bleeds into the smoothing apron instead of tearing a step — drops by
-    # the documented sink, applied to the lattice ONCE before any face family is built, so
-    # coarse, refined and transition faces all read identical heights. The refine corridor is
-    # the roadbed dilated 3 cells, so a sunk vertex only ever sits inside a refined block:
-    # the sink cannot move a coarse corner or a fan edge.
-    sink = roadbed_sink if surface_ids is not None else 0.0
-    # Where a SHALLOW band covers the cell there is a real road surface to reference, so the
-    # blind sink is replaced by the band's own floor. This is the other half of "a shallow band
-    # flattens but never carves": without it the kept ground stands up through the carriageway
-    # by as much as the band's roof, 0.3 m. See `clamp_shallow_bands`. Both edits are
-    # `ground_heights` — the ONE definition a heightfield consumer applies to its own grid too,
-    # so a mesh built here meets that heightfield sample for sample (bake `terraincut`).
+    # -- heights, as the game graded them --------------------------------------------------
+    # The heightmap already carries the game's road grading (`clamp_carriageway`), so the only
+    # edit is the residual: samples the game's stencil would have discarded, standing above the
+    # carriageway's own cross-section. That is `ground_heights` — the ONE definition a
+    # heightfield consumer applies to its own grid too, so a mesh built here meets that
+    # heightfield sample for sample (bake `terraincut`). The refine corridor is the roadbed
+    # dilated 3 cells, so a clamped vertex only ever sits inside a refined block: it cannot
+    # move a coarse corner or a fan edge.
     ground_y, band_clamped, band_clamp_drop = ground_heights(
-        native_y, roadbed, band_floor_raster[row0:row0 + lat_h, col0:col0 + lat_w], sink)
+        native_y, band_ceiling_raster[row0:row0 + lat_h, col0:col0 + lat_w])
 
     # -- block-level ground class (0 grass / 2 rock), from the coarse corners --------------
-    # Sampled (unsunk) heights, so the roadbed drop cannot flip a boundary face. Coarse and
+    # Sampled (unclamped) heights, so the road clamp cannot flip a boundary face. Coarse and
     # transition blocks can never be roadbed: a block containing any roadbed cell is refined
     # by construction.
     corner_ys = native_y[::stride, ::stride]  # (nfr+1, nfc+1), exact by lattice construction
@@ -1218,7 +1223,7 @@ def water_surface(lattice, stride, cell, origin_x, origin_z, row0, col0):
 
 # -- the hole mask for a heightmap-native consumer -----------------------------------------------
 
-HoleMask = namedtuple("HoleMask", "contain deep_touch band_count band_floor heights cell "
+HoleMask = namedtuple("HoleMask", "contain deep_touch band_count band_ceiling heights cell "
                                   "origin_x origin_z elevation_scale elevation_offset fine")
 
 
@@ -1236,11 +1241,13 @@ def hole_mask(bundle_dir, floor_override=None, prefer_fine=True):
       Informational (a "majority" hole rule can use `band_count` against
       `CLIP_CONTAIN_SAMPLES²`); the contract's rule is `contain`.
     * `band_count` — `(h−1, w−1)` uint8 count of in-band sub-samples per face.
-    * `band_floor` — `(h, w)` float32 per SAMPLE: the floor of the SHALLOW band that covers
-      the sample (`lane + bottom`), `+inf` where none does. Feed it to `clamp_shallow_bands`
-      with the world heights to lower terrain standing inside a shallow band to the band's own
-      floor — the "flatten, never delete" half of §8c, without which terrain pokes through the
-      carriageway by up to the band's roof (0.303 m measured).
+    * `band_ceiling` — `(h, w)` float32 per SAMPLE: the top of the game's own carriageway
+      cross-section under the SHALLOW band that covers the sample
+      (`lane + top − CLIP_BAND_EXPANSION`), `+inf` where none does. Feed it to
+      `clamp_carriageway` with the world heights to lower the samples that stand over the road
+      back onto it — the pixels the game's stencil discards and a heightfield cannot (audit
+      §51; 11,683 of 2,297,403 on the full city). The heights themselves are already graded by
+      the game and are not otherwise touched.
     * `heights` — `(h, w)` float64 world heights, `cell`, `origin_x/z` (top-left texel centre;
       row 0 north), and the scale/offset, so the caller can write the clamped heights back at
       the bundle's own quantisation; `fine` says whether that grid is the bundle's 1.75 m
@@ -1257,9 +1264,9 @@ def hole_mask(bundle_dir, floor_override=None, prefer_fine=True):
     height, width = raw.shape
     cell, origin_x, origin_z = field.cell, field.origin_x, field.origin_z
     scale, offset = field.elevation_scale, field.elevation_offset
-    _mask, contain, band_count, deep_touch, _refs, _strip_geo, band_floor = clip_grid(
+    _mask, contain, band_count, deep_touch, _refs, _strip_geo, band_ceiling = clip_grid(
         bundle_dir, width, height, raw.reshape(-1), cell, origin_x, origin_z, scale, offset,
         floor_override=floor_override)
     heights = raw.astype(numpy.float64) * scale + offset
-    return HoleMask(contain, deep_touch, band_count, band_floor, heights, cell,
+    return HoleMask(contain, deep_touch, band_count, band_ceiling, heights, cell,
                     float(origin_x), float(origin_z), scale, offset, field.fine)

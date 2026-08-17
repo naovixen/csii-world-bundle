@@ -190,8 +190,6 @@ _DECAL_DRAPE_TINT = decals.LIFT["lane_tint"]
 
 _DRAPE_MISS_WARN = drape.MISS_WARN_FRACTION
 
-_ROADBED_SINK = terrain_math.ROADBED_SINK
-
 # The scene light rig. `clear_scene()` removes Blender's default light along with everything
 # else, so an imported scene would have no lights and no world at all; these put a plain
 # neutral sun and ambient back. White, and deliberately uncalibrated -- the bundle ships
@@ -1837,7 +1835,7 @@ _mask_boundary = terrain_math.mask_boundary
 _transition_fans = terrain_math.transition_fans
 _contain_faces = terrain_math.contain_faces
 _clip_grid = terrain_math.clip_grid
-_clamp_shallow_bands = terrain_math.clamp_shallow_bands
+_clamp_carriageway = terrain_math.clamp_carriageway
 
 
 _splat_mapping = splat_reader.channel_mapping
@@ -2319,7 +2317,7 @@ def build_terrain(bundle_dir, collection, center, radius, clip_floor=None, coars
     # are rasterised here against this heightmap. The layer is mandatory; _clip_grid raises on
     # a bundle without it.
     (cut_grid, contain_raster, band_count_raster, deep_raster,
-     cut_refs, strip_geo, band_floor_raster) = _clip_grid(
+     cut_refs, strip_geo, band_ceiling_raster) = _clip_grid(
         bundle_dir, width, height, heights, cell, origin_x, origin_z, elevation_scale,
         elevation_offset, floor_override=clip_floor)
     # The prisms themselves, for the EXACT cut (audit §46): the game hides terrain by discarding
@@ -2360,7 +2358,7 @@ def build_terrain(bundle_dir, collection, center, radius, clip_floor=None, coars
         heights, width, height, surface_ids, levels,
         row0, col0, row1, col1, stride, cell, origin_x, origin_z,
         elevation_scale, elevation_offset,
-        cut_grid, contain_raster, band_count_raster, band_floor_raster, strip_geo,
+        cut_grid, contain_raster, band_count_raster, band_ceiling_raster, strip_geo,
         prisms=prisms)
     if lattice is None:
         LOG.warn("terrain: the region window is smaller than one face — skipping terrain")
@@ -2561,14 +2559,17 @@ def build_terrain(bundle_dir, collection, center, radius, clip_floor=None, coars
 
     LOG.done(f"terrain:   {nfr}x{nfc} block window of {width}x{height} at {cell:g} m"
              + (f", stride {stride}" if stride > 1 else ""))
-    LOG.step(f"{roadbed_faces} roadbed face(s) (sunk {_ROADBED_SINK:g} m), "
+    LOG.step(f"{roadbed_faces} roadbed face(s), "
              f"{rock_faces} rock face(s), {wet_faces} water face(s), "
              f"{cut_faces} face(s) cut (tunnel portals, trenches and area clips — a shallow "
-             f"surface band flattens but never carves)")
+             f"surface band never carves)")
     if band_clamped:
-        LOG.step(f"{band_clamped} lattice vertex(es) standing inside a shallow surface band "
-                 f"lowered to the band floor, worst drop {band_clamp_drop:.2f} m — the pixels "
-                 f"the game discards there (see _clamp_shallow_bands)")
+        # APPROXIMATION, counted: the heights are the game's own graded ground (audit §51) and
+        # are kept; only the samples standing ABOVE the carriageway's cross-section move, onto
+        # the game's own profile top, because the game discards those pixels with a stencil.
+        LOG.step(f"{band_clamped} lattice vertex(es) standing over a carriageway lowered onto "
+                 f"its profile top, worst drop {band_clamp_drop:.2f} m — the pixels the game "
+                 f"discards there (see _clamp_carriageway)")
     band_samples = int(band_count.sum(dtype=numpy.int64))
     if cut_removed_m2 or band_samples:
         # How much ground the cut removed, against how much the prisms cover — the same sanity

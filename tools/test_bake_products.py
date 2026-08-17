@@ -67,9 +67,11 @@ def example():
         check(all(o.status == "baked" for o in outcomes), f"example world-space products: {[(o.name, o.status) for o in outcomes]}")
         tm = json.load(open(os.path.join(derived, "terrain", "mask.json"), encoding="utf-8"))
         cells = png.gray_array(os.path.join(derived, "terrain", "clip_cells.png"))
-        floor = png.gray_array(os.path.join(derived, "terrain", "shallow_floor.png"))
-        check(list(cells.shape) == tm["faceSize"] and list(floor.shape) == tm["sampleSize"] and floor.dtype == numpy.uint16,
-              f"terrainmask rasters {cells.shape} faces / {floor.shape} samples")
+        ceiling = png.gray_array(os.path.join(derived, "terrain", "carriageway_ceiling.png"))
+        check(list(cells.shape) == tm["faceSize"] and list(ceiling.shape) == tm["sampleSize"] and ceiling.dtype == numpy.uint16,
+              f"terrainmask rasters {cells.shape} faces / {ceiling.shape} samples")
+        check(not os.path.exists(os.path.join(derived, "terrain", "shallow_floor.png")),
+              "the retired shallow_floor.png (the band FLOOR) is removed by the bake")
         check(int((cells == 255).sum()) == tm["counts"]["contain"], "clip_cells 255 count == contain count")
         area_mats = json.load(open(os.path.join(derived, "areas", "materials.json"), encoding="utf-8"))
         check("materials" in area_mats, "areas/materials.json shape")

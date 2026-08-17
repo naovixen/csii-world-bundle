@@ -1246,12 +1246,17 @@ toward +X (east).
     shifted *away* from the road, not onto it). The smoothing apron where terrain slopes to
     meet the road is not included. In-game this ground reads as dirt tinted by the drive
     lanes' ~13%-alpha wear decals (§5B `decal`); consumers texture it as roadbed and give it
-    road physics. **Consumer rule — sink roadbed faces slightly (~0.15 m).** The game clamps
-    the ground under a carriageway to the *minimum* of the road's surface band, below the
-    asphalt top; a consumer rebuilding ground from these 3.5 m samples by linear interpolation
-    will crest through the road meshes between samples. Dropping the faces marked `1` by a
-    small constant is the same clamp direction and keeps ground and carriageway from
-    z-fighting; the reference importer does this (`_ROADBED_SINK`). *(Added 2026-08-07.)*
+    road physics. **Consumer rule — do NOT adjust the heights here.** The game's road job does
+    not merely clip: it *grades*, assigning the ground under a carriageway to
+    `lane + (edgeHeight, surfaceHeight.min, edgeHeight)` across the width, rendering that into
+    its height cascade, and reading the cascade back — so `heightmap.png` arrives with the
+    grading already in it, and a consumer that lowers these samples is undoing the game's own
+    answer. Measured: 98.37 % of the 2.3M samples a shallow clip band covers already sit inside
+    the game's own profile window (audit §51). *An earlier revision of this line prescribed a
+    ~0.15 m sink; that was an invention, and with the clamp beside it removed 2.4 million m³ of
+    ground from under one city's roads.* The only defensible edit is the ~1 % that stand
+    **above** the carriageway's cross-section — pixels the game removes with a stencil — lowered
+    onto `lane + top − 0.3` from the §8c clip band. *(Added 2026-08-07; corrected 2026-08-17.)*
 - **Terrain that the game hides rather than carves** — the ground covering tunnel portals and
   sunken trenches — is **not** in these rasters. It cannot be: the game does not carve it out
   of its heightmap. A trench's ground is merely clamped into `[lane, lane + ElevationLimit·3]`
@@ -2195,7 +2200,7 @@ Products (all optional; a consumer treats an absent product as "compute it yours
 | `lanegeometry` | `lanegeometry/<tile>.glb`, `lanegeometry/instances.jsonl` | non-decal §5B parts: rigid AND level tiles as placements (`{assetId, category, prefab, matrix[16] row-major bundle frame, scale[3], uniform}` — a rigid tile on a grade is a shear no rotation×scale engine can express, so it is baked instead), everything else baked | `laneGeometry`, `lanePrefabs`, `laneMeshes` |
 | `areas` | `areas/<tile>.glb`, `areas/materials.json` | §8b surfaces conformed to the terrain, world-planar UVs (`uv = world × uvScale`), priority lift; one primitive per prefab named `area:<prefab>`, described in `areas/materials.json` (`areas.surface_material`) | `areas`, `areaPrefabs`, `terrain` |
 | `skirts` | `skirts/<tile>.glb` | §4.1 `__base` bands per instance with the bottom ring dropped to the terrain | `instances`, `meshes`, `terrain` |
-| `terrainmask` (v3) | `terrain/clip_cells.png`, `terrain/shallow_floor.png`, `terrain/mask.json` | `clip_cells`: gray8 at heightmap face resolution `(h−1, w−1)`: 0 keep, 128 touched by a deep band, 255 fully contained (a heightmap-native engine punches holes at 255); `shallow_floor`: gray16 per sample in the heightmap's quantisation (0 = none) — the shallow band's floor to clamp ground to (`terrain.clamp_shallow_bands`); `mask.json` sizes/counts (`fine`: which raster). v2's `deep_floor.png`/`deep_footprint.png` (a heightfield-only stand-in that lowered in-band samples) are retired with v3 (2026-08-17): the ground a deep band reaches is `terraincut`'s. | `clipVolumes`, `terrain`, `terrainFine` |
+| `terrainmask` (v4) | `terrain/clip_cells.png`, `terrain/carriageway_ceiling.png`, `terrain/mask.json` | `clip_cells`: gray8 at heightmap face resolution `(h−1, w−1)`: 0 keep, 128 touched by a deep band, 255 fully contained (a heightmap-native engine punches holes at 255); `carriageway_ceiling`: gray16 per sample in the heightmap's quantisation (0 = none) — the top of the game's own road cross-section, `lane + top − 0.3`, to lower ground that stands OVER a carriageway onto (`terrain.clamp_carriageway`); `mask.json` sizes/counts (`fine`: which raster). v2's `deep_floor.png`/`deep_footprint.png` (a heightfield-only stand-in that lowered in-band samples) are retired with v3 (2026-08-17): the ground a deep band reaches is `terraincut`'s. v3's `shallow_floor.png` is retired with v4 (2026-08-17, audit §51): it recorded the band FLOOR, `lane − 0.5`, which is the depth to which the game DISCARDS terrain, not a height it moves ground to — clamping to it dug 2.4 million m³ out from under the city's roads. | `clipVolumes`, `terrain`, `terrainFine` |
 | `terraincut` (v13) | `terraincut/terraincut_<tx>_<tz>.glb`, `terrain/corridor_faces.png`, `terrain/corridor.json` | the terrain around every DEEP clip band, cut EXACTLY the way the game hides it (audit §46: a terrain pixel is drawn unless its 3-D position lies inside the swept prism — `GenerateClipDataJob` → a closed prism mesh → a stencil). Every heightfield square a deep band reaches is cut against the prisms by `csiibundle.terrainclip` (convex subtraction: on one triangle the side walls, floor and roof are all affine in x/z), so the hole's edge follows the prism's curve and ground above the band's roof stays. Primitives `ground:<layer>` — the ground the consumer's heightfield paints there (`splat.dominant_layer` + roadbed) — world-planar UVs at 40 m per repeat, heightfield normals, bundle frame; heights are `terrain.ground_heights` quantised to the elevation encoding, so a boundary vertex equals the consumer's own sample bit for bit. `corridor_faces.png`: gray8 at face resolution, 255 = the square the mesh replaces — the WHOLE hole set, not to be unioned with `terrainmask`'s scored `clip_cells.png`. Deliberate deviation, counted in the report: only a DEEP band cuts (`top > 3 m`); the shallow shell over a surface road still only flattens. Added 2026-08-16, exact since 2026-08-17 | `clipVolumes`, `terrain`, `terrainFine`, `surfaceIndex`, `splatmap` |
 
 The `derived/` tree is a **cache**: delete it and nothing about the bundle is lost; a bake

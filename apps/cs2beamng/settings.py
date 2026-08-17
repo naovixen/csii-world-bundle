@@ -55,7 +55,7 @@ SCHEMA = {
     "view_distance": (4000, "int", "LevelInfo.visibleDistance: the global far cull in metres"),
     "tod_hour": (-1.0, "float", "Time of day in hours 0-24 for the level's sun (-1 = the in-game clock at rip time)"),
     "terrain_brightness": (1.0, "float", "Extra gain on the ground textures (1 = calibrated: CS2 grass to BeamNG's typical grass brightness)"),
-    "terrain_upsample": (2, "choice:1|2", "Terrain grid: 2 = 8192 @ 1.75 m (the rip's fine terrainFine raster when present, else bilinear; the game's own near-camera grading, loaded fine on load #13 once the level's VRAM footprint was trimmed); 1 = 4096 @ 3.5 m (the base heightmap, lighter)"),
+    "terrain_upsample": (2, "choice:1|2", "Terrain grid: 2 = 8192 @ 1.75 m (the rip's fine terrainFine raster when present, else bilinear; the game's own near-camera grading, loaded fine on load #13 once the level's VRAM footprint was trimmed); 1 = 4096 @ 3.5 m (the base heightmap, lighter). There is deliberately no 4: 0.875 m is 16384, exactly D3D12's max 2D texture dimension, 768 MiB of terrain textures against 192, and no vanilla level exceeds 4096 - audit 52 has the numbers and does not recommend it"),
     "terrain_holes": ("contain", "choice:contain|majority|none", "Which clip cells become terrain holes"),
     # NOT A PARITY SETTING - see stages/terrain.HEIGHT_SIGMA and audit §48.3. 1.0 is the value
     # BeamNG's own blend arithmetic derives; above that it is a deliberate deviation that trades

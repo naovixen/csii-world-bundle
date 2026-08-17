@@ -147,21 +147,21 @@ def fuzz_scanline_paths(trials=4000, seed=20260811):
 
         rows_mask = numpy.zeros((h, w), dtype=bool)
         rows_refs = numpy.full((h, w), -1, dtype=numpy.int32)
-        rows_floor = numpy.full((h, w), numpy.inf)
+        rows_ceiling = numpy.full((h, w), numpy.inf)
         if row_hi >= row_lo:
             H["_fill_clip_quad_rows"](rows_mask, terrain, w, h, corner, lane, bottom, top,
-                                      rows_refs, 7, offset, row_lo, row_hi, rows_floor)
+                                      rows_refs, 7, offset, row_lo, row_hi, rows_ceiling)
         both_mask = numpy.zeros((h, w), dtype=bool)
         both_refs = numpy.full((h, w), -1, dtype=numpy.int32)
-        both_floor = numpy.full((h, w), numpy.inf)
+        both_ceiling = numpy.full((h, w), numpy.inf)
         H["_fill_clip_quad"](both_mask, terrain, w, h, corner, lane, bottom, top,
-                             refs=both_refs, ref_value=7, offset=offset, floor=both_floor)
+                             refs=both_refs, ref_value=7, offset=offset, ceiling=both_ceiling)
 
-        # The floor raster carries the lateral ramp, so comparing it is what actually pins the
+        # The ceiling raster carries the lateral ramp, so comparing it is what actually pins the
         # two paths to the same per-sample lane height; the mask alone only sees its sign.
         if not (numpy.array_equal(rows_mask, both_mask)
                 and numpy.array_equal(rows_refs, both_refs)
-                and numpy.allclose(rows_floor, both_floor, equal_nan=True)):
+                and numpy.allclose(rows_ceiling, both_ceiling, equal_nan=True)):
             bad += 1
             if bad <= 3:
                 print(f"  FAIL scanline paths disagree: shape {shape}, offset {offset}, "

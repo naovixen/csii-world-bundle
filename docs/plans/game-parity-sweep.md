@@ -72,8 +72,16 @@ Priority is "how visible is the divergence" × "how likely we invented something
   layer array shares the heightmap's grid, so the only lever is heightfield resolution — and
   `terrain_upsample` has **no headroom left**: already at 2, and refused on a fine rip because the
   fine map *is* 1.75 m. The next step is 0.875 m, the game's own next cascade slice, at a 16384²
-  `.ter` — **768 MB against 192 MB today**. **Decide whether that trade is worth making — it is a
-  size/memory question for Naomi, not a parity question.** Meanwhile §48.4 ships the one
+  `.ter` — **768 MB against 192 MB today**. **ANSWERED IN §52 (2026-08-17), and it is now the one
+  lever behind THREE of this plan's open items** (this blob residual, §50's grey fringe and
+  §51.8's road clipping — all sized in layer texels or in height detail, all halving together).
+  Supported but tight: 14336 / 0.875 = **16384 = exactly D3D12's max 2D texture dimension**, so it
+  is the finest grid the API can express and nothing below it is reachable; no vanilla level goes
+  above 4096 and we already ship 8192; `TerrainBlock` load is superlinear (0.8 s @4096 → 10.2 s
+  @8192); and 768 MiB of terrain textures lands on an 8 GB RTX 3070 already at 6.7 GiB idle whose
+  load #9 failure WAS VRAM exhaustion. It would be real data, not an upsample — `baseLod+2` is
+  0.875 m over a quarter of the playable area, 16 camera windows instead of 4 (producer + re-rip);
+  an upsample costs the same at runtime and buys two of the three. **Recommended: not now.** Meanwhile §48.4 ships the one
   deliberately NON-PARITY lever in the app, `terrain_blend_sharpen` (default 1.0 = faithful),
   which dissolves the blobs into sub-structural interlock rather than removing them. It is
   labelled as such in `settings.py`, under a `NOT PARITY` banner in `stages/terrain.py`, and in
@@ -129,16 +137,53 @@ Priority is "how visible is the divergence" × "how likely we invented something
   smoothness, which would replace the `roughness` neutral 217. Nothing in the game's source names
   that channel — settle it there, from the shader, not from the correlation.
 
-### 2. Terrain flattening, smoothing and the road interface
+### 2. Terrain flattening, smoothing and the road interface — WORKED 2026-08-17 (audit §51); one producer residual open
 - **Game:** `CullRoadsJob` (the `ShiftTerrain` sections, `m_MinOffset`/`m_MaxOffset`,
   `middleSize`, `NetUtils.GetTerrainSmoothingWidth`), `GetHeightData`.
-- **Ask:** our `ground_heights` is a 0.15 m roadbed sink plus a shallow-band clamp — both TUNED
-  CONSTANTS with no counterpart in the game. What does the game actually do to the heightmap under
-  and beside a road, at what width, with what falloff? The shipped `heightmap.png` is already
-  flattened, so the question is whether the consumer should be adjusting it at all.
-- **Suspect:** `ROADBED_SINK = 0.15` is documented as "TUNED" and a "FALLBACK … it guesses a
-  constant against a road surface it never looks at". That is exactly the shape of the inventions
-  §46 removed.
+- **Answered, and the suspicion was right twice over.** The game does not only clip at a road, it
+  **grades**: `AddSegment` emits a `LaneSection` whose min/max offsets are the composition's own
+  `(edgeHeight, surfaceHeight.min, edgeHeight)` triple, `DrawHeightAdjustments` renders those into
+  `m_HeightmapCascade`, and `UpdateGPUReadback` reads that cascade back into `m_CPUHeights` —
+  which is what `GetHeightData()` returns and the producer ships. For an at-grade road min == max,
+  so the height is **assigned**, and `heightmap.png` arrives already graded. The apron is 8 m
+  (`GetTerrainSmoothingWidth`; 20 m waterway, 100 m taxiway). **The answer to "should the consumer
+  be adjusting it at all" is no.**
+- **Both constants deleted.** `ROADBED_SINK = 0.15` moved 3.27M samples (10.0 km²), 29.8 % of them
+  under no band at all; `clamp_shallow_bands` fired on **100 %** of covered samples — the band test
+  requires `terrain > lane + bottom`, so clamping to `lane + bottom` always selects — landing them
+  0.25 m below where CS2 grades. Together 3.28M samples moved, median 0.250 m, **2.4 million m³**
+  dug out from under the city's roads: load #9's *"annoying to drive off the road"*.
+- **Predicate:** `tools/check_roadgrade_vs_game.py` recovers `lane`/`cmin`/`cmax` per sample from
+  the shipped bands (inverting the producer's own ±0.3 expansion) and scores the height against the
+  game's profile window — **98.37 %** agreement on the 1.75 m grid (2,307,777 samples), 97.10 % on
+  the 3.5 m base. Gate: `tools/test_roadgrade.py`.
+- **Approximation that remains, counted:** the 1.17 % (fine grid) standing above the carriageway's
+  own cross-section — pixels the game's stencil discards and a heightfield cannot.
+  `clamp_carriageway` lowers exactly those onto `lane + top − 0.3`, the game's own number, only
+  ever downward. The finer grid halves the residual (1.76 % → 1.17 %), now gated.
+- **Load #21 (audit §51.7/§51.8): the residual is NOT a missing field, and no re-rip fixes it.**
+  Naomi: *"curbs are much less annoying … large improvement. Small issues where the road now clips
+  ever so slightly through the terrain where the roads are not flat / curved."* Measured:
+  `m_MinHeightOffset` would remove 5 % of the excess volume (§51.5's naming of it is superseded);
+  the residual rate is FLAT across sag/bend/crossfall, so curvature consumes the margin rather than
+  causing the defect; and the carriageway interior already sits at p95 **−0.005 m** of the game's
+  own `cmin`, i.e. exactly where CS2 graded it.
+- **REJECTED, and gone from the tree (§51.8): the profile-aware ceiling.** Evaluating the game's
+  lateral profile per sample takes the residual to zero on paper, but 85 % of what it moves
+  (65,639 of 77,067 samples) lies inside `[cmin, cmax]` — heights CS2 legitimately writes somewhere
+  on that cross-section — and the only thing calling them wrong is our estimate of the lateral
+  position, which is weakest at the rim where the clamp bites. `cmax` is the tightest bound correct
+  data cannot violate; the profile is tighter only if `u` is right. Shipping the triple does not
+  help either: evaluating the profile still needs `u`.
+- **OPEN — and §50 is NOT the blocker; that was my over-claim, corrected in §50.8.** The game
+  STENCILS the shallow band, so there is no terrain under a road at all and nothing can clip
+  through it, and we need no new data to cut shallow ones. But scoring §50's fix first (rather than
+  building it) showed the route is worse than the artifact: 7.07 km² of new holes means §50's
+  0.88 m fringe along **every road edge in the city**, and a punched face at a node is sky because
+  the clip fan reaches past the road mesh — a second blocker §50 does not touch. **The one lever
+  that reaches all three of these is terrain resolution** (the 1a-residual decision): BeamNG's warp
+  is ±0.5 TEXEL, the asphalt→kerb ramp is smeared over ~one texel, and the blend constants are
+  2.3–5.8× oversize — all three halve together at 0.875 m.
 
 ### 3. Network composition meshes
 - **Game:** `NetCompositionHelpers.GenerateCompositionMesh`, `CalculateEdgeParameters` /
