@@ -185,15 +185,38 @@ Priority is "how visible is the divergence" × "how likely we invented something
   is ±0.5 TEXEL, the asphalt→kerb ramp is smeared over ~one texel, and the blend constants are
   2.3–5.8× oversize — all three halve together at 0.875 m.
 
-### 3. Network composition meshes
-- **Game:** `NetCompositionHelpers.GenerateCompositionMesh`, `CalculateEdgeParameters` /
-  `CalculateNodeParameters` / `CalculateOrphanParameters`, the vertex shader's Bernstein evaluation.
-- **Status:** ported wholesale and audited at §8/§45, but the deviations list in
-  `NetworkRipSystem.GameMesh.cs`'s header (wind sway, terrain-conform flags, rebuilt normals, the
-  roundabout three-matrix blend) should be re-derived rather than trusted, and the roundabout port
-  is on record as **unexercised by the reference save**.
-- **Ask specifically:** authored normals. Object meshes now transport them; networks still rebuild
-  per face (a documented deliberate deviation). Can the parameter-space bend carry them?
+### 3. Network composition meshes — WORKED 2026-08-17 (audit §53); no geometry change, one residual open
+- **Game:** `BatchMeshHelpers+GenerateBatchMeshJob.GenerateCompositionMesh`,
+  `BatchDataHelpers.Calculate{Edge,Node,Orphan}Parameters`, `BatchInstanceSystem.UpdateNetInstances`,
+  `NetProperty`, the vertex shader's Bernstein evaluation.
+- **The port is exact, and that was re-derived rather than inherited.** Every branch of the
+  per-vertex map, all six scale/bias pairs, both cut planes, the V-density accumulation, the
+  `HalfLength` flip doubling (which squashes normals as well as positions), the height-bounds
+  slicing, and all three curve builders control-point by control-point — **no arithmetic
+  divergence**. §8's and §21's game-rule rows all still hold in the current code.
+- **Three of the four listed deviations were wrong.** Terrain-conform flags and authored normals
+  were already closed (§34/§38 and audit #40 P6) and the plan text had simply not caught up — the
+  port reads `MeshNormal`/`MeshTangent`, applies `SmoothTopNormal`, and rotates by the Jacobian of
+  the placing map, cofactor for the normal and plain for the tangent. **"Wind sway" never existed
+  at all:** `NetProperty` hands a composition batch eight matrices, four syncs and three colours,
+  and no wind. What survives: the roundabout `0x80` three-matrix blend (shader-side, counted), the
+  orthonormalization choice (shader-side, unknowable from C#), and the two `UV0.zw` inputs below.
+- **Hack removed:** `crossZ`/`crossZ2`/`crossZ3` were the game's `UV0.z` cross-anchor, computed
+  correctly in all three branches and **assigned to nothing**; `UV0.w` was never computed. Both are
+  now a comment naming what they are, and the `else if (roundabout)` branch is kept deliberately
+  empty because being an `else if` is what stops a `HalfLength` piece in a roundabout from halving.
+- **Predicate:** `tools/test_net_composition.py` gates the generator's `saturate` — a composition
+  can neither overrun nor fall short of `m_Width`. Centre-band median **1.0000**, p95 1.0068, floor
+  0.9982 over 449 straight segments, 96.2 % within 1 %; the excess at wider bands falls
+  monotonically, which is the node flares (a different, wider composition) and not a mapping error.
+  Carries its own negative control, per `test_node_fan.py`.
+- **Cross-area finding, filed to #4:** the game scales the ENTIRE hanging-lane cubic by local wind
+  SPEED, so in dead calm a wire is straight; our "calm-air drop" is really the shape at wind 1
+  (comment corrected). And `_WindRangeLvlB`/`_WindElasticityLvlB` are authored material properties
+  we do not ship.
+- **OPEN, and deliberately not built:** every approximation counter (`_roundaboutParts`,
+  `_pipelineCompositions`, `_rebuiltFramePieces`, …) is rip-report-only, so no offline pass can say
+  whether the roundabout branch ever fired. Surfacing them in `warnings.jsonl` needs schema 3.
 
 ### 4. Materials: the CS2 shader → PBR mapping
 - **Game:** the surface shaders' own inputs, `TerrainMaterialPropertiesData`, decal properties.

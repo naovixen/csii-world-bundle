@@ -25,9 +25,18 @@ namespace Carto.Systems
     /// ported for the mapping, and the shader's evaluation done here — position from the
     /// Bernstein blend, V from the same blend of the arc tables times the piece's measured
     /// V-per-metre density, exactly the quantity the game stores per vertex.
-    /// Known deviations, deliberate and counted where they can fire: wind sway (not shape), the
-    /// roundabout three-matrix blend weights (0x80 colour bits — shader-side, still approximated
-    /// by the nearer pair), and the <i>orthonormalization choice</i> in the shading frame below.
+    /// Known deviations, deliberate and counted where they can fire: the roundabout three-matrix
+    /// blend weights (0x80 colour bits — shader-side, still approximated by the nearer pair), the
+    /// <i>orthonormalization choice</i> in the shading frame below, and the two per-vertex shader
+    /// inputs a baked-geometry producer has no use for (<c>UV0.z</c>/<c>UV0.w</c>, noted at the
+    /// branch that would compute them).
+    /// <b>Wind sway is NOT one of them</b> (re-derived from source 2026-08-17, audit §53): a
+    /// composition batch is handed <i>no</i> wind input at all — <c>NetProperty</c> is eight
+    /// composition matrices, four syncs, an infoview colour, an outline colour and a LOD fade, and
+    /// nothing else. What sways is per-<i>material</i> (<c>_WindRangeLvlB</c>/
+    /// <c>_WindElasticityLvlB</c>, driven by the global wind field), which is animation over a
+    /// static bundle rather than a network deviation. The one wind term that does move net-domain
+    /// geometry is <c>LaneProperty.HangingDistances</c>, and it lives in the lane path.
     /// The terrain-conforming flags (<c>LowerBottomToTerrain</c>/<c>RaiseTopToTerrain</c>) are no
     /// longer a deviation: they are applied at rip time (§34 raise, §38 clamp — see the
     /// conforming section below). Neither are normals (audit #40 P6): the piece's authored
@@ -763,21 +772,35 @@ namespace Carto.Systems
                 float2 bias7 = new(0.5f, 1f);
                 float2 bias8 = new(1f - (middleOffset / num7), 1f);
                 float2 bias9 = new((0f - middleOffset) / num8, 1f);
-                float crossZ = (piece.m_Offset.x / data.m_Width) + 0.5f;
-                float crossZ2 = 1f + ((piece.m_Offset.x - middleOffset) / num7);
-                float crossZ3 = (piece.m_Offset.x - middleOffset) / num8;
-
+                // The generator computes two more per-vertex quantities here that this port does
+                // not: `v.z` — the piece's OWN cross-anchor in the same xParam coordinate the
+                // position lerp uses (`offset.x/width + 0.5` on an edge or a rail, the half-frame
+                // forms `1 + (offset.x − middleOffset)/leftHalf` and
+                // `(offset.x − middleOffset)/rightHalf` at a node, 0 and 1 at a roundabout's island
+                // and outer edge) — and `v.w`, the pre-rebase along coordinate scaled by 0.5 on an
+                // edge, 20 at a node and 40 at a roundabout. Both go into the vertex's `UV0.zw`
+                // and are read only by the compiled vertex shader, which is not decompilable, so
+                // what they drive is unknown. They cannot be a position term: `m_Position` is
+                // written from `vertex` alone, and this port evaluates the same map on the CPU and
+                // bakes the result. So they are deliberately not computed — a value assigned to
+                // nothing reads as a half-finished port, and this comment is the honest form of it.
+                // (Re-derived from `GenerateCompositionMesh` 2026-08-17, audit §53.)
+                //
                 if (isNode && preserveShape)
                 {
                     float num10 = 0.5f * piece.m_Size.z / data.m_Width;
                     scale4.y *= num10;
                     bias7.y *= num10;
-                    crossZ = 0.5f;
                 }
                 else if (roundabout)
                 {
-                    crossZ2 = 0f;
-                    crossZ3 = 1f;
+                    // Deliberately empty, and load-bearing. The game's branch here sets only the
+                    // `v.z` cross-anchor described above — but the branch itself must stay,
+                    // because being an `else if` is what stops a HalfLength piece inside a
+                    // roundabout composition from taking the halving below. That is the game's own
+                    // else-if chain, and deleting the branch would silently change which pieces
+                    // get `sz *= 2`.
+                    //
                 }
                 else if (halfLength)
                 {

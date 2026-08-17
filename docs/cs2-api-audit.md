@@ -3902,3 +3902,130 @@ and past the comfortable limit of the card this project is being validated on. *
 now.** If it is tried, the cheap form of the experiment is a full 16384² build loaded once to see
 whether it even survives — the terrain stage always writes the whole square, so a `region` build
 does not shrink the `.ter` and there is no smaller test.
+
+## 53. The network composition port, re-derived line by line (2026-08-17)
+
+Game-parity sweep **area #3** (`docs/plans/game-parity-sweep.md`). The plan's instruction for this
+area was not "audit it" — §8 and §21 already did that — but *"the deviations list in
+`NetworkRipSystem.GameMesh.cs`'s header should be re-derived rather than trusted"*, plus one
+specific question about authored normals. Both were worth asking: **the header's list was wrong on
+its first item, and the plan's own question was already answered.**
+
+Authorities, decompiled fresh (`tools/decomp all Game`, 4,331 types):
+`Game.Rendering.BatchMeshHelpers+GenerateBatchMeshJob.GenerateCompositionMesh` (the vertex path,
+`InitializeHeightBounds`/`AddHeightBounds`/`GetHeightBounds`, `GetMaterial`),
+`BatchDataHelpers.Calculate{Edge,Node,Orphan}Parameters` + `CalculateMappingOffsets` +
+`BuildEdgeMatrix` + `BuildCurve`, `BatchInstanceSystem.UpdateNetInstances` (both overloads),
+`Game.Rendering.NetProperty`, `Game.Rendering.NetSubMesh`, `BatchDataSystem`'s net and lane
+property blocks, and `Game.Simulation.Wind`.
+
+### 53.1 The vertex path: no arithmetic divergence
+
+Every branch of `GenerateCompositionMesh`'s per-vertex map was re-read against the port and
+matches: the flip select `select(float4(-1,1,-1,1), float4(1,1,1,-1), bool4(Invert, false,
+FlipMesh, Invert != FlipMesh))` and its application to position, normal **and** tangent `w`; the
+`HalfLength` doubling of the *flip* factor (so a halved piece's normals are squashed on z exactly
+as the game squashes them, not merely its positions); both cut planes at ±0.01 and the emission
+pass applying `frontCut` and `backCut` together where the sizing pass treats them as exclusive;
+the per-range V density measured only over surviving, wholly-non-negative-V triangles and the
+`ceil` rebase on the others; all six `scale`/`bias` pairs; the `preserveShape` rescale
+`num10 = 0.5·size.z/width`; the roundabout `z2 = 0, z3 = 1` override; every matrix-pair selection
+including the roundabout `int8.y − 2` and `int8.x` z-rebases and the centre column's deliberate
+*absence* of one; the `saturate`; and `GetHeightBounds`'s 257-slice
+`clamp(round(z·256/size.z) + 128, 0, 256)`.
+
+The curve builders match too, control point by control point — `CalculateMappingOffsets`, the
+rotated edge's `wzyx` mapping flip, the node's two branches (including matrix 4's asymmetric
+`lerp(leftOffsets(m_Right), rightOffsets(m_Left), 0.5)`), and the orphan's quarter-circle
+`0.2761424` construction with its mirrored far curve.
+
+### 53.2 The rule matrix — what this pass added or changed
+
+| # | Game rule (decompiled source) | Producer | Verdict |
+|---|---|---|---|
+| 1 | **A composition batch is handed no wind input at all.** `NetProperty` is the complete per-instance set: 8 composition matrices, 4 syncs, an infoview colour, an outline colour, a LOD fade. No wind, no terrain, nothing else | The GameMesh header listed "wind sway (not shape)" as a known deviation of this layer | **hack removed** — the deviation did not exist. What sways is per-*material* (`_WindRangeLvlB`/`_WindElasticityLvlB`, driven by the global wind field): animation over a static bundle, not a network divergence. Header corrected |
+| 2 | `LaneProperty.HangingDistances` builds the wire's cubic control set `(d, (d + m_Hanging·length)·⅔, …)` and then multiplies **the whole of it** by the local wind SPEED, `sqrt(lengthsq(Wind.SampleWind))` at each of the curve's four control points | `LaneRipSystem` ships the unscaled base and called it the "calm-air drop" | **approximation, renamed** — the droop is *proportional* to wind, so in dead calm the game draws the wire straight. What we ship is the game's shape at wind speed 1, which is the right choice for a bundle replayed with no weather. Comment corrected to say so |
+| 3 | The generator writes two more per-vertex quantities into `UV0.zw`: **`v.z`**, the piece's own cross-anchor in the same xParam coordinate the position lerp uses (`offset.x/width + 0.5`; the half-frame forms at a node; 0 and 1 at a roundabout's island and outer edge), and **`v.w`**, the pre-rebase along coordinate × 0.5 (edge) / 20 (node) / 40 (roundabout) | The port computed `v.z` under the names `crossZ`/`crossZ2`/`crossZ3` — correctly, in all three branches — **and assigned it to nothing**. `v.w` was never computed | **dead code removed** — a value assigned to nothing reads as a half-finished port. Both are now a comment at the branch that would compute them, naming what they are and why a baked-geometry producer has no use for them (`m_Position` is written from `vertex` alone, so neither can be a position term; what the compiled vertex shader does with them is not readable) |
+| 4 | The roundabout branch of that chain sets **only** those cross-anchors | Deleting the assignments would have left an empty `else if (roundabout)` | **kept, deliberately empty and commented** — the branch is load-bearing: being an `else if` is what stops a `HalfLength` piece inside a roundabout composition from taking the halving below, exactly as the game's own chain does |
+| 5 | Non-roundabout node: `m_CompositionMatrix5 = float4x4.identity` | Port fills slot 5 with `m_Middle` and matrix 4's map | **benign** — extends §21 row 7 (which said this for orphans) to nodes. Every reader of index 5 is behind a `roundabout` test, so the slot is unreachable in this branch; the port's value is the saner one if it ever were hit |
+| 6 | `GetMaterial` merges each piece's material ranges into **one submesh per distinct material** of the whole composition | The assembly emits one primitive per piece-range | **match, achieved downstream** — `GltfWriter` groups by `MaterialId` before writing. Measured on 600 sampled `networks/*.glb` from the 2026-08-16 rip: 794 primitives over 794 distinct materials, merge factor **1.00×** |
+| 7 | `UpdateNetInstances` picks `SubStartNode`/`SubEndNode` instead of `StartNode`/`EndNode` when the edge's and the node's prefabs share no `NetGeometryData.m_MergeLayers` bit | Not modelled | **no divergence** — a lead worth closing rather than a gap. `BatchDataSystem` routes both cases through the *same* `CalculateNodeParameters` on the *same* composition; the only thing the pair distinguishes is which entity's `NodeColor` feeds `NetProperty.InfoviewColor`, and that is only written under `PreCullingFlags.InfoviewColor` |
+| 8 | Terrain conforming moves the vertex and leaves the shading frame alone (the shader has no second frame to rebuild it from) | Same: `world.y` is moved after the normal is rotated | **match by construction** — both ends have the same information. Stated here because it looks like an omission and is not |
+
+### 53.3 The plan's own question was stale: normals already transport
+
+Area #3 asks *"Object meshes now transport authored normals; networks still rebuild per face (a
+documented deliberate deviation). Can the parameter-space bend carry them?"* It can, and it does —
+that landed with audit #40 P6 and the plan text never caught up. The port reads `MeshNormal`/
+`MeshTangent`, flips them with the game's own `float3`/`float4` factors, applies `SmoothTopNormal`
+(flag `0x800`: the authored normal at the piece's top height bound is replaced by `(0,1,0)` before
+the flip), and rotates the result by the **Jacobian of the very map that placed the vertex** —
+`across = (B − A)·scale.x`, `up = (0,1,0)`, `along = lerp(A′(z), B′(z), x)·scale.y`, with the
+normal taking the cofactor `(n.x·up×along + n.y·along×across + n.z·across×up)` and the tangent the
+plain Jacobian. Re-derived today and correct: those are exactly ∂P/∂x, ∂P/∂y, ∂P/∂z of
+`P = lerp(A(z), B(z), x) + (0, y, 0)`. The face rebuild survives only for pieces carrying no
+normal buffer, and is counted (`_rebuiltFramePieces`), as are the authored ones, the pinned-column
+frame fallback and the `SmoothTopNormal` vertices.
+
+The terrain-conform flags are likewise no longer a deviation (§34 raise, §38 clamp). **Of the four
+deviations the plan lists for this area, two were already closed and one never existed.** The list
+that survives is: the roundabout three-matrix blend weights (the `0x80` colour bit — shader-side,
+approximated by the nearer pair, counted as `_roundaboutParts`), the orthonormalization choice in
+the shading frame (shader-side, unknowable from C#; the two coincide wherever the frame is
+orthogonal), and the two unshipped `UV0.zw` inputs above.
+
+### 53.4 The predicate: `saturate` is the invariant, and it holds
+
+`tools/test_net_composition.py`. The generator's last act before writing a vertex is
+`vertex.xz = math.saturate(vertex.xz)`, and the two curves `x` interpolates are the composition's
+own boundaries — so an assembled composition can neither reach past `NetCompositionData.m_Width`
+nor fall short of it. The gate measures exactly that: for every straight segment, the mesh's
+lateral extent in a narrow band about its own centre, over the shipped `attrs.width`.
+
+The band has to be narrow, and the reason is the finding that makes the number readable. A
+`seg_*.glb` carries the edge composition **and both node compositions**, and a node flare is a
+different composition with its own larger width whose boundaries splay toward the junction. So the
+score is reported at four band widths, and a healthy bundle shows the ratio *falling monotonically*
+as the band closes on the segment's middle — a scale/bias error would be flat and wrong at all
+four. On the 2026-08-16 rip, 449 straight segments of 800 sampled:
+
+| band (± fraction of span) | median | p95 | min |
+|---|---|---|---|
+| 0.50 | 1.0357 | 1.3109 | 1.0000 |
+| 0.25 | 1.0079 | 1.1211 | 1.0000 |
+| 0.10 | 1.0019 | 1.0349 | 1.0000 |
+| **0.04** | **1.0000** | 1.0068 | 0.9982 |
+
+96.2 % of centre-band segments are within 1 % of the composition width, and **no segment anywhere
+spans less than 0.9982 of it** — the collapse §42 found on the tram deck would read as a floor far
+below 1. Per `test_node_fan.py`'s lesson the gate carries its own negative control: the same
+scorer re-run over vertices squeezed to 88 % and stretched to 112 % must convict, and the run fails
+if it does not.
+
+Bundle staleness, checked: `networks.jsonl` is 2026-08-16 15:39 and the only producer commit since
+is `d91d68f` (the fine height cascade, a terrain change), so the network layer of the bundle
+answers network questions as the current code would.
+
+### 53.5 Reachable and unread, this domain
+
+- **`_WindRangeLvlB` / `_WindElasticityLvlB`** are `MaterialProperty` entries no game system
+  writes — authored per material, read by the shader against the global wind field. They are not
+  in `materials.json`. Animation parameters, so they change no static geometry, but they are data
+  the design never shipped. **Filed to sweep area #4 (materials), not built here.**
+- **The approximation counters are rip-report-only.** `_roundaboutParts`, `_pipelineCompositions`,
+  `_rebuiltFramePieces`, `_pinnedFrameVerts`, `_unconformedPieces` and the rest are printed by the
+  rip and cannot be read back off disk, so no offline pass can answer "did it fire?" — which is why
+  this section cannot say whether the reference save exercises the roundabout branch. Putting them
+  in `warnings.jsonl` would take a schema 3 (the file's `kind` is a closed `mesh|material|texture`
+  and the §12.1 amnesty is over). **Flagged, deliberately not built.**
+- The 970 meshless network records were checked against the game rather than assumed: 693 cable /
+  105 pipe / 81 waterway are the `NormalLayers`-less compositions §21 row 3 counts, and the 91
+  taxiways are `Game.Net.Marker` edges settled at §44. All 970 carry the centerline form, none
+  dangles, and no `.glb` is orphaned.
+
+### 53.6 Status
+
+Producer edits are comment- and dead-code-only (`NetworkRipSystem.GameMesh.cs` header and the
+cross-anchor branch, `NetworkRipSystem.cs`'s hanging-lane comment); `dotnet build -c Release` is
+clean, 0 warnings. **No geometry changes, so no re-rip is owed** — the gate above already runs
+against the current bundle and passes.

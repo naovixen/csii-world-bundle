@@ -1300,9 +1300,19 @@ namespace Carto.Systems
 
             // The hanging drop is the game's cubic: ends are `HangingLane.m_Distances`, middle
             // handles `(distance + hanging × length) × ⅔` — the quadratic-to-cubic lift of a
-            // parabola, wind sway omitted. The record ships the per-lane distances; the
-            // prefab-level `m_Hanging` factor is in the catalogue, and the consumer builds the
-            // cubic (contract §5B v2 documents the formula).
+            // parabola. The record ships the per-lane distances; the prefab-level `m_Hanging`
+            // factor is in the catalogue, and the consumer builds the cubic (contract §5B v2
+            // documents the formula).
+            //
+            // WIND, stated correctly (re-derived from source 2026-08-17, audit §53). The earlier
+            // wording here — "wind sway omitted" — undersold it. `BatchDataSystem`'s
+            // `LaneProperty.HangingDistances` builds exactly this control set and then multiplies
+            // the WHOLE of it by the local wind SPEED (`sqrt(lengthsq(Wind.SampleWind(...)))` at
+            // each of the curve's four control points). The droop is therefore proportional to
+            // wind, not merely perturbed by it, and in dead calm the game draws the wire straight.
+            // What we ship is the unscaled base — the game's shape at wind speed 1 — which is the
+            // right thing for a bundle a consumer replays with no weather, and it is an
+            // APPROXIMATION of no single frame of the game rather than a faithful snapshot of one.
             //
             float2 hangDistances = float2.zero;
             if (EntityManager.HasComponent<HangingLane>(entity))
