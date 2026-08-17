@@ -47,14 +47,31 @@ Priority is "how visible is the divergence" × "how likely we invented something
   edge; removed. BeamNG's own terrain shader adds macro/detail tiers as `(2t − 1)·factor`, so the
   same dark CS2 albedo in all three tiers rendered `extra2` at (0, 6, 0) black; tiers are now
   centred on mid-gray.
-- **Open:** the per-sample material INDEX is `splat.dominant_layer`'s argmax, but the game blends
-  the six grounds continuously per pixel. At a near-tie the argmax dithers and BeamNG draws a hard
-  checkerboard. Read the splat composite the game actually renders (`COMPOSITE_ORDER`, the shader's
-  own blend) and decide what a one-index-per-sample engine should store — probably the argmax of a
-  smoothed weight field, but MEASURE the alternative against a render before shipping it.
+- **OPEN 1a — the boundary dither (load #19, confirmed by Naomi).** The per-sample material INDEX
+  is `splat.dominant_layer`'s argmax, but the game blends the six grounds continuously per pixel.
+  Where two weights are near-equal the argmax flips sample to sample and BeamNG draws a literal
+  checkerboard of whole squares, each fully one ground. Read the composite the game actually
+  renders (`COMPOSITE_ORDER` and the terrain shader's own blend) and decide what a
+  one-index-per-sample engine should store — the argmax of a SMOOTHED weight field is the obvious
+  candidate, but measure it against a render before shipping it.
+  A second, concrete suspect for the same symptom: BeamNG blends adjacent terrain materials using
+  their **height maps**, and we ship a flat 128 gray for every material at every tier
+  (`NEUTRAL_MAPS`, `height{tier}Tex`) — there is nothing for the blend to work with, where every
+  vanilla level ships real ones. Check what BeamNG's terrain shader does with `heightTex` before
+  assuming which of the two causes the checkerboard; it may be both.
   Also open: `_SplatRockLimit`/`_SplatGrassLimit`/noise mean the game's classification is partly
   procedural and height/slope-driven — does the shipped splatmap already bake that in, or are we
   missing the classifier?
+- **OPEN 1b — the ground meshes do not look like the terrain beside them (load #19).** Every
+  `terraincut` piece wears `<level>_ground_<layer>`, a single texture at
+  `terraincut.GROUND_UV_M` = 40 m per repeat composited from the ground's tiers; the terrain beside
+  it renders base+macro+detail with distance attenuation and a 4 m detail tier. Close to the camera
+  the mesh is a flat pale blur against richly textured ground, which is the "square blocks around
+  every cutout" Naomi photographed — the cut geometry is right, the material is not. Options to
+  weigh AFTER reading how BeamNG composes the terrain tiers: give the mesh material its own
+  detail-scale second UV layer and a matching blend, or drive the mesh from the same three textures
+  at the same three tilings. This is presentation parity between two of OUR materials, so the
+  game's role here is only to say what the terrain should look like.
 
 ### 2. Terrain flattening, smoothing and the road interface
 - **Game:** `CullRoadsJob` (the `ShiftTerrain` sections, `m_MinOffset`/`m_MaxOffset`,
