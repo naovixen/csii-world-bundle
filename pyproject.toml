@@ -18,7 +18,9 @@ dependencies = [
 gui = ["pywebview>=5"]
 # Quadric mesh decimation for generated LODs; without it a numpy vertex-clustering fallback runs.
 lods = ["pyfqmr>=0.2"]
-all = ["pywebview>=5", "pyfqmr>=0.2"]
+# Pre-compressed DDS textures (BC7/BC5/BC4 + mips) so BeamNG never cooks them at load; without it PNGs ship.
+textures = ["etcpak>=0.9"]
+all = ["pywebview>=5", "pyfqmr>=0.2", "etcpak>=0.9"]
 
 [project.scripts]
 cs2beamng = "cs2beamng.cli:main"

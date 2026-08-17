@@ -102,6 +102,55 @@ def test_writer(tmp):
     check(grouped.runs == [("a", 2), ("b", 2)] and len(grouped.tris) == 4, f"group_by_material {grouped.runs}")
 
 
+def test_split(tmp):
+    """`dae.split_mesh`: a geometry over the per-mesh cap becomes several under it, triangles and
+    materials preserved, and the shape's nodes still END in `_a<px>` (load #10 shards)."""
+    from cs2beamng.beamng import dae, validate_level
+
+    print("dae split (per-geometry vertex cap)")
+    rng = numpy.random.default_rng(7)
+    n_v = 150_000
+    verts = rng.random((n_v, 3)) * 200.0
+    normals = numpy.tile([0, 0, 1.0], (n_v, 1))
+    uvs = rng.random((n_v, 2))
+    # a triangle strip through every vertex, plus a second material's fan over the first 3,000
+    strip = numpy.stack([numpy.arange(n_v - 2), numpy.arange(1, n_v - 1), numpy.arange(2, n_v)], axis=1)
+    fan = numpy.stack([numpy.zeros(2_998, int), numpy.arange(1, 2_999), numpy.arange(2, 3_000)], axis=1)
+    tris = numpy.concatenate([strip, fan])
+    mesh = dae.Mesh("big", verts, tris, [("asphalt", len(strip)), ("kerb", len(fan))], normals=normals, uvs=uvs)
+    parts = dae.split_mesh(mesh, 60_000)
+    check(len(parts) >= 3 and all(len(p.verts) <= 60_000 for p in parts), f"{len(parts)} parts, max verts {max(len(p.verts) for p in parts)}")
+    check(sum(len(p.tris) for p in parts) == len(tris), "every triangle kept")
+    # geometry preserved: each part's triangles, mapped back through its own vertex subset, are the originals
+    ok = True
+    world = numpy.concatenate([p.verts[p.tris.ravel()] for p in parts]).reshape(-1, 3, 3)
+    orig = verts[tris.ravel()].reshape(-1, 3, 3).astype(numpy.float32)
+    ok = numpy.allclose(numpy.sort(world.reshape(len(world), -1), axis=0), numpy.sort(orig.reshape(len(orig), -1), axis=0), atol=1e-4)
+    check(ok, "triangle corners preserved (as a multiset)")
+    check([m for p in parts for m, _c in p.runs].count("kerb") == 1 and parts[-1].runs[-1][0] == "kerb", "material runs stay contiguous and ordered")
+    check(dae.split_mesh(dae.Mesh("small", verts[:100], tris[:50], [("asphalt", 50)]), 60_000)[0].name == "small", "a mesh under the cap is returned as is")
+    shape = dae.Shape("big", [(2, parts)])
+    path = os.path.join(tmp, "big.dae")
+    dae.write_shape(path, shape)
+    _root, geoms, nodes = _read_dae(path)
+    check(len(geoms) == len(parts), f"{len(geoms)} geometries written")
+    lod_nodes = [n for n in nodes if n.startswith("big")]
+    check(lod_nodes[0] == "big_a2" and all(n.endswith("_a2") for n in lod_nodes) and "big_p1_a2" in lod_nodes,
+          f"part nodes keep the trailing detail size: {lod_nodes[:3]}")
+    # the validator flags a geometry over the cap
+    over = dae.Mesh("over", verts[:70_000], strip[:60_000], [("asphalt", 60_000)])
+    level_dir = os.path.join(tmp, "over_level")
+    os.makedirs(os.path.join(level_dir, "art", "shapes", "x"), exist_ok=True)
+    dae.write_shape(os.path.join(level_dir, "art", "shapes", "x", "over.dae"), dae.Shape("over", [(2, [over])]))
+    from cs2beamng.beamng.level import Level
+    lvl = Level(level_dir, "over_level", "Over")
+    lvl.add(["Networks"], {"name": "over", "class": "TSStatic", "shapeName": lvl.game_path("art", "shapes", "x", "over.dae"),
+                          "position": [0, 0, 0], "rotationMatrix": [1, 0, 0, 0, 1, 0, 0, 0, 1], "scale": [1, 1, 1]}, key="over")
+    lvl.write_objects()
+    checks, problems = validate_level.check(level_dir, EXAMPLE)
+    check(checks.get("oversizeGeometries") == 1 and any("exceeds" in p for p in problems), f"validator flags the oversize geometry ({checks.get('oversizeGeometries')})")
+
+
 def test_frame():
     from cs2beamng.beamng import dae
 
@@ -142,6 +191,22 @@ def test_materials(tmp):
     check(mat3["Stages"][0].get("opacityFactor") == 0.5 and "diffuseColor" not in mat3["Stages"][0], "factor alpha -> opacityFactor")
     p3 = bm.export_texture(lv, os.path.join(tmp, "t.png"), "opacity", 32) if os.path.isfile(os.path.join(tmp, "t.png")) else None
     check(st["colorPaletteMap"] == "/m.data.png" and st["roughnessMap"] == "/r.data.png" and mat["mapTo"] == "lvl_x", "maps + palette + mapTo")
+    # export_texture is idempotent: a second export of the same source leaves the file (and its
+    # mtime, BeamNG's cooked-cache key) alone; a different cap replaces it
+    src_i = os.path.join(tmp, "idem.png")
+    from PIL import Image as _Image
+    _Image.fromarray(numpy.full((64, 64, 3), 90, numpy.uint8)).save(src_i)
+    p1 = bm.export_texture(lv, src_i, "color", 64)
+    f1 = os.path.join(lv.dir, "art", "textures", os.path.basename(p1))
+    st1 = os.stat(f1)
+    import time as _time
+    _time.sleep(0.05)
+    bm.export_texture(lv, src_i, "color", 64)
+    st2 = os.stat(f1)
+    check(st1.st_mtime_ns == st2.st_mtime_ns and st1.st_size == st2.st_size, "unchanged texture is not rewritten (mtime kept)")
+    bm.export_texture(lv, src_i, "color", 32)
+    st3 = os.stat(f1)
+    check(st3.st_size != st1.st_size, "a different cap replaces the file")
     mat2 = bm.material_v15(lv, "lvl_y", {"alphaMode": "blend", "roughness": 0.3, "metallic": 0.1}, {"baseColor": "/a.color.png"})
     check(mat2.get("translucent") is True and mat2["Stages"][0]["roughnessFactor"] == 0.3 and mat2["Stages"][0]["metallicFactor"] == 0.1,
           "blend -> translucent; scalar factors")
@@ -153,17 +218,58 @@ def test_materials(tmp):
     arr[..., 3] = 30
     with open(src, "wb") as f:
         f.write(png.encode_rgba(arr))
-    p1 = bm.export_texture(lv, src, "color", 32, keep_alpha=False)
-    p2 = bm.export_texture(lv, src, "color", 32, keep_alpha=True)
+    p1 = bm.export_texture(lv, src, "color", 32, keep_alpha=False, dds=False)
+    p2 = bm.export_texture(lv, src, "color", 32, keep_alpha=True, dds=False)
     d1 = open(lv.path("art", "textures", "t.color.png"), "rb").read()
     d2 = open(lv.path("art", "textures", "t_a.color.png"), "rb").read()
     import struct
     check(struct.unpack(">II", d1[16:24]) == (32, 32) and d1[25] == 2, "capped to 32 and written RGB")
     check(struct.unpack(">II", d2[16:24]) == (32, 32) and d2[25] == 6, "keep_alpha writes RGBA")
     check(p1.endswith(".color.png") and p1.startswith("/levels/lvl/art/textures/"), f"game path {p1}")
-    p3 = bm.export_texture(lv, src, "opacity", 32)
+    p3 = bm.export_texture(lv, src, "opacity", 32, dds=False)
     d3 = open(lv.path("art", "textures", "t_o.data.png"), "rb").read()
     check(p3.endswith("_o.data.png") and d3[25] == 0 and struct.unpack(">II", d3[16:24]) == (32, 32), "opacity map = grey of the alpha")
+    # the DDS path (default when etcpak is installed): the cooker's own formats + a full mip chain
+    from cs2beamng.beamng import dds as dds_mod
+    if not dds_mod.available():
+        print("  (etcpak not installed: DDS export untested here)")
+        return
+    from PIL import Image as _Image
+    import io as _io
+    nsrc = os.path.join(tmp, "n.png")
+    narr = numpy.zeros((64, 32, 3), numpy.uint8); narr[..., 0] = 128; narr[..., 1] = 200; narr[..., 2] = 255
+    _Image.fromarray(narr).save(nsrc)
+    gsrc = os.path.join(tmp, "g.png")
+    garr = numpy.broadcast_to((numpy.arange(64) * 4).astype(numpy.uint8), (64, 64)).copy()   # a smooth ramp
+    with open(gsrc, "wb") as f:
+        f.write(png.encode_gray(garr, bit_depth=8))
+    q1 = bm.export_texture(lv, src, "color", 0)
+    q2 = bm.export_texture(lv, src, "opacity", 0)
+    q3 = bm.export_texture(lv, nsrc, "normal", 0)
+    q4 = bm.export_texture(lv, gsrc, "data", 0)
+    q5 = bm.export_texture(lv, src, "data", 0)
+    check(q1.endswith("t.color.dds") and q2.endswith("t_o.data.dds") and q3.endswith("n.normal.dds") and q4.endswith("g.data.dds"),
+          f"dds names {q1} {q2} {q3} {q4}")
+    hdrs = {}
+    for q in (q1, q2, q3, q4, q5):
+        data = open(lv.path(*q.split("/")[3:]), "rb").read()
+        hdrs[q] = dds_mod.read_header(data)
+        im = _Image.open(_io.BytesIO(data)); im.load()
+        hdrs[q] += (numpy.asarray(im.convert("RGBA")),)
+    check(hdrs[q1][:4] == (64, 64, 7, dds_mod.BC7_UNORM_SRGB), f"colour -> BC7 sRGB, 7 mips {hdrs[q1][:4]}")
+    check(hdrs[q2][:4] == (64, 64, 7, dds_mod.BC4_UNORM), f"opacity -> BC4 {hdrs[q2][:4]}")
+    check(hdrs[q3][:4] == (32, 64, 7, dds_mod.BC5_UNORM), f"normal -> BC5, mips to 1x1 from 32x64 {hdrs[q3][:4]}")
+    check(hdrs[q4][:4] == (64, 64, 7, dds_mod.BC4_UNORM), f"grey data -> BC4 {hdrs[q4][:4]}")
+    check(hdrs[q5][:4] == (64, 64, 7, dds_mod.BC7_UNORM), f"RGB data -> BC7 linear {hdrs[q5][:4]}")
+    check(abs(int(hdrs[q1][4][..., 0].mean()) - 200) <= 2 and hdrs[q1][4][..., 3].min() >= 254, "colour BC7 round-trips (alpha forced opaque)")
+    check(abs(int(hdrs[q2][4][..., 0].mean()) - 30) <= 1, "opacity BC4 carries the albedo alpha")
+    check(abs(int(hdrs[q3][4][..., 0].mean()) - 128) <= 1 and abs(int(hdrs[q3][4][..., 1].mean()) - 200) <= 1, "normal BC5 carries R and G")
+    check(numpy.abs(hdrs[q4][4][..., 0].astype(int) - garr.astype(int)).mean() < 2.0, "grey ramp survives BC4")
+    size_ok = len(open(lv.path(*q1.split("/")[3:]), "rb").read()) == 148 + 16 * (256 + 64 + 16 + 4 + 1 + 1 + 1)
+    check(size_ok, "BC7 file = header + 7 mip levels of whole 4x4 blocks")
+    # write-if-changed holds for DDS too
+    f1 = lv.path(*q1.split("/")[3:]); s1 = os.stat(f1); _time.sleep(0.05); bm.export_texture(lv, src, "color", 0); s2 = os.stat(f1)
+    check(s1.st_mtime_ns == s2.st_mtime_ns, "unchanged DDS is not rewritten")
 
 
 def test_example_cube(tmp):
@@ -225,6 +331,7 @@ def main():
     tmp = tempfile.mkdtemp(prefix="cs2beamng_a2_")
     try:
         test_writer(tmp)
+        test_split(tmp)
         test_frame()
         test_materials(tmp)
         test_example_cube(tmp)

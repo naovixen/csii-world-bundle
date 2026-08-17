@@ -109,6 +109,25 @@ class Level:
             json.dump(materials, handle, indent=1, sort_keys=True)
         return path
 
+    def write_bytes_if_changed(self, data, *rel_dst):
+        """Write `data` at `rel_dst` unless the file already holds exactly these bytes — then
+        it is left alone, mtime included. BeamNG cooks every texture the level references into
+        `temp/` on first load and keys that cache on the source file, so a texture rewritten
+        with identical content on every build cost a full re-cook (~5 min of "textures loading
+        in" lag on load #11); an untouched file keeps its cooked copy. Returns True if written."""
+        dst = self.path(*rel_dst)
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        try:
+            if os.path.isfile(dst) and os.path.getsize(dst) == len(data):
+                with open(dst, "rb") as handle:
+                    if handle.read() == data:
+                        return False
+        except OSError:
+            pass
+        with open(dst, "wb") as handle:
+            handle.write(data)
+        return True
+
     def copy_file(self, src, *rel_dst):
         """Copy `src` into the level at `rel_dst`. A real copy, never a hard link: a later stage
         that opens the level's copy for writing must not reach the bundle's original through a

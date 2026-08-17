@@ -261,7 +261,7 @@
 
   function choiceLabel(key, c) {
     if (key === "texture_max") return c === "0" ? "full size" : `${c} px`;
-    if (key === "terrain_upsample") return c === "1" ? "×1 (4096, 3.5 m)" : "×2 (8192, 1.75 m)";
+    if (key === "terrain_upsample") return c === "1" ? "×1 (4096, 3.5 m)" : "×2 (8192, 1.75 m — the rip's fine terrain when present; hung BeamNG once)";
     return c;
   }
 

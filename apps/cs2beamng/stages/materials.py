@@ -1,13 +1,15 @@
 """Stage `materials` — the bake's resolved material table → `art/cs2/main.materials.json` +
-`art/textures/*.png` (capped, suffixed), plus the area-surface materials.
+`art/textures/*.dds` (pre-compressed + mipmapped, capped, suffixed; `.png` without the encoder),
+plus the area-surface materials.
 
 * Every CANONICAL material (the bake's alias map collapses identical texture sets: 4,641 → 1,409
   on the reference city) becomes one v1.5 material named `mapto(level, canonical)`; the shapes
   and tiles bind that name (they map raw names through the same alias table), so BeamNG sees
   ~1.4k materials, not 4.6k.
 * Textures are exported once per (file, size cap) on a process pool: colour maps as sRGB
-  (`.color.png`, alpha kept only for mask/blend materials), normals `.normal.png`, the bake's
-  split roughness/metallic/AO and the colour mask as linear `.data.png`.
+  (`.color.dds`, BC7), normals `.normal.dds` (BC5), the bake's split roughness/metallic/AO and
+  the albedo alpha as linear `.data.dds` (BC4), the colour mask as linear BC7 — the formats
+  BeamNG's own cooker produces, so nothing is cooked at load (`beamng/dds.py`).
 * `area:<prefab>` materials come from `derived/areas/materials.json` (`areas.surface_material`):
   the theme texture + normal, `diffuseColor` tint, scalar roughness/metallic; a texture with a
   real alpha channel gets `alphaTest`.
@@ -77,6 +79,12 @@ def run(ctx, progress):
     level = level_of(ctx)
     settings = ctx.settings
     max_size = int(settings.get("texture_max") or 0)
+    # pre-compressed DDS (BC7/BC5/BC4 + mips, the cooker's own formats) unless the encoder is
+    # missing or the setting turns it off; PNG means BeamNG cooks on the first load of the name
+    use_dds = bool(settings.get("texture_dds", True)) and bm.dds_mod.available()
+    if settings.get("texture_dds", True) and not bm.dds_mod.available():
+        progress.log("materials: etcpak not installed - textures go out as PNG and BeamNG cooks them on first load "
+                     "(pip install etcpak)")
     table_path = os.path.join(ctx.derived_dir, "materials.json")
     if not os.path.isfile(table_path):
         raise RuntimeError("derived/materials.json missing: the bake's materials product has not run")
@@ -99,6 +107,7 @@ def run(ctx, progress):
     progress.begin("materials: textures", total=None, unit="textures")
     jobs = {}                                          # (src, kind, keep_alpha) -> None
     plans = {}                                         # canonical -> {slot: (src, kind, keep_alpha)}
+    ao_cache = {}
     for name in canonical:
         rec = materials.get(name) or {}
         mode = rec.get("alphaMode") or "opaque"
@@ -114,6 +123,8 @@ def run(ctx, progress):
         for slot in ("roughness", "metallic", "ao"):
             rel = (rec.get("derived") or {}).get(slot)
             if rel:
+                if slot == "ao" and not _usable_ao(os.path.join(ctx.derived_dir, rel), ao_cache):
+                    continue
                 plan[slot] = (os.path.join(ctx.derived_dir, rel), "data", False)
         if rec.get("emissive"):
             plan["emissive"] = (os.path.join(ctx.bundle, rec["emissive"]), "color", False)
@@ -124,9 +135,22 @@ def run(ctx, progress):
             jobs.setdefault(job, None)
     job_list = sorted(jobs)
     progress.set_total(len(job_list))
-    exported = _export_all(level, job_list, max_size, ctx.jobs, progress)
+    exported = _export_all(level, job_list, max_size, ctx.jobs, progress, use_dds)
     missing = sum(1 for v in exported.values() if v is None)
-    progress.end(f"{len(job_list)} textures exported ({missing} sources missing)")
+    # art/textures/ is kept across builds so unchanged textures keep their mtime (BeamNG's cooked
+    # cache is keyed on it); what this build did not export is an orphan and goes now
+    keep = {os.path.basename(v) for v in exported.values() if v}
+    tex_dir = level.path(*bm.TEXTURE_SUBDIR)
+    orphans = 0
+    if os.path.isdir(tex_dir):
+        for name in os.listdir(tex_dir):
+            if name not in keep and os.path.isfile(os.path.join(tex_dir, name)):
+                try:
+                    os.remove(os.path.join(tex_dir, name))
+                    orphans += 1
+                except OSError:
+                    pass
+    progress.end(f"{len(job_list)} textures exported ({missing} sources missing, {orphans} orphans removed)")
 
     # -- material objects -------------------------------------------------------------------
     progress.begin("materials: write", total=len(canonical), unit="materials")
@@ -151,11 +175,11 @@ def run(ctx, progress):
             keep_alpha = False
             if tex and os.path.isfile(os.path.join(ctx.bundle, tex)):
                 keep_alpha = _has_alpha(os.path.join(ctx.bundle, tex))
-                maps["baseColor"] = bm.export_texture(level, os.path.join(ctx.bundle, tex), "color", max_size, False, cache)
+                maps["baseColor"] = bm.export_texture(level, os.path.join(ctx.bundle, tex), "color", max_size, False, cache, dds=use_dds)
                 if keep_alpha:
-                    maps["opacity"] = bm.export_texture(level, os.path.join(ctx.bundle, tex), "opacity", max_size, False, cache)
+                    maps["opacity"] = bm.export_texture(level, os.path.join(ctx.bundle, tex), "opacity", max_size, False, cache, dds=use_dds)
             if rec.get("normal_map") and os.path.isfile(os.path.join(ctx.bundle, rec["normal_map"])):
-                maps["normal"] = bm.export_texture(level, os.path.join(ctx.bundle, rec["normal_map"]), "normal", max_size, False, cache)
+                maps["normal"] = bm.export_texture(level, os.path.join(ctx.bundle, rec["normal_map"]), "normal", max_size, False, cache, dds=use_dds)
             arec = {"alphaMode": "mask" if keep_alpha else "opaque", "alphaCutoff": 0.5, "doubleSided": False,
                     "roughness": rec.get("roughness"), "metallic": rec.get("metallic"),
                     "baseColorFactor": rec.get("color") or [1, 1, 1, 1]}
@@ -174,7 +198,30 @@ def run(ctx, progress):
     shared = ctx.shared if ctx.shared is not None else {}
     shared["materials"] = {"aliases": aliases, "canonical": set(canonical_all), "known": set(out)}
     return {"named": len(materials), "canonical": len(canonical), "areaMaterials": area_count,
-            "textures": len(job_list), "texturesMissing": missing, "seconds": round(time.monotonic() - started, 1)}
+            "textures": len(job_list), "texturesMissing": missing, "format": "dds" if use_dds else "png",
+            "seconds": round(time.monotonic() - started, 1)}
+
+
+# The bake splits the §7.1 mask's G channel out as `_ao.png`, and on the reference city that
+# channel is all-zero on 67 % of the masks (mean 11.5/255 over the set) — whatever the game keeps
+# there, it is not an occlusion term a renderer may multiply ambient light by: bound as
+# `ambientOcclusionMap` it painted every retaining wall and tunnel interior pitch black in shadow
+# (loads #9-#14, "the tunnels are closed off"). A map is only bound when it reads like AO — mostly
+# light. Below this mean the slot is left unset (BeamNG's default AO is 1).
+AO_MIN_MEAN = 96.0
+
+
+def _usable_ao(path, cache):
+    if path in cache:
+        return cache[path]
+    ok = False
+    try:
+        arr = png.gray_array(path)
+        ok = bool(arr[::4, ::4].mean() >= AO_MIN_MEAN)
+    except (OSError, ValueError):
+        ok = False
+    cache[path] = ok
+    return ok
 
 
 def _has_alpha(path):
@@ -188,26 +235,26 @@ def _has_alpha(path):
 # -- pool ---------------------------------------------------------------------------------------
 
 def _export_chunk(args):
-    level_dir, level_name, max_size, chunk = args
+    level_dir, level_name, max_size, use_dds, chunk = args
     level = Level(level_dir, level_name, level_name)
     cache = {}
     out = []
     for src, kind, keep_alpha in chunk:
         try:
-            out.append(((src, kind, keep_alpha), bm.export_texture(level, src, kind, max_size, keep_alpha, cache)))
+            out.append(((src, kind, keep_alpha), bm.export_texture(level, src, kind, max_size, keep_alpha, cache, dds=use_dds)))
         except Exception as exc:  # noqa: BLE001 - one bad texture must not stop the stage
             out.append(((src, kind, keep_alpha), None))
             out.append((("__log__", str(src), ""), f"texture {os.path.basename(src)}: {exc!r}"))
     return out
 
 
-def _export_all(level, jobs, max_size, workers, progress):
+def _export_all(level, jobs, max_size, workers, progress, use_dds=True):
     exported = {}
     if not jobs:
         return exported
     chunk_size = 16
     chunks = [jobs[i:i + chunk_size] for i in range(0, len(jobs), chunk_size)]
-    args = [(level.dir, level.name, max_size, c) for c in chunks]
+    args = [(level.dir, level.name, max_size, use_dds, c) for c in chunks]
     if workers and workers > 1 and len(chunks) > 1:
         ctx = multiprocessing.get_context("spawn")
         with ctx.Pool(min(workers, len(chunks))) as pool:

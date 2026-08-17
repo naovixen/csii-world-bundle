@@ -32,6 +32,7 @@ import numpy
 from csiibundle import png
 
 from . import dae
+from . import dds as dds_mod
 
 TEXTURE_SUBDIR = ("art", "textures")
 
@@ -73,42 +74,58 @@ def _cap(arr, max_size):
     return png.downsample_box(arr, factor) if factor > 1 else arr
 
 
-def export_texture(level, src_path, kind, max_size=0, keep_alpha=False, cache=None):
-    """Write `src_path` into the level's `art/textures/` as `<stem>.<kind>.png` (`kind` in
-    color / normal / data) capped at `max_size`. Returns the game path, or None when the source
-    is missing. `cache` (a dict) short-circuits repeats within a build."""
+def export_texture(level, src_path, kind, max_size=0, keep_alpha=False, cache=None, dds=None):
+    """Write `src_path` into the level's `art/textures/` as `<stem>.<kind>.dds` (`kind` in
+    color / normal / data / opacity) capped at `max_size` — a pre-compressed, mipmapped DDS in
+    the format BeamNG's cooker would have chosen (`dds.KIND_FORMAT`), so the game never cooks
+    it. Falls back to `.png` when the encoder is not installed (`dds=None` = auto; False forces
+    PNG). Returns the game path, or None when the source is missing. `cache` (a dict)
+    short-circuits repeats within a build."""
     if not src_path or not os.path.isfile(src_path):
         return None
+    use_dds = dds_mod.available() if dds is None else bool(dds and dds_mod.available())
+    ext = "dds" if use_dds else "png"
     stem = re.sub(r"[^A-Za-z0-9_\-]", "_", os.path.splitext(os.path.basename(src_path))[0])
     if kind == "opacity":                              # the albedo's alpha as a grey map: v1.5's opacityMap
-        name = f"{stem}_o.data.png"
+        name = f"{stem}_o.data.{ext}"
     else:
-        name = f"{stem}.{kind}.png" if not keep_alpha else f"{stem}_a.{kind}.png"
+        name = f"{stem}.{kind}.{ext}" if not keep_alpha else f"{stem}_a.{kind}.{ext}"
     key = (name, int(max_size or 0))
     if cache is not None and key in cache:
         return cache[key]
-    dst = level.path(*TEXTURE_SUBDIR, name)
     game = level.game_path(*TEXTURE_SUBDIR, name)
-    if not os.path.isfile(dst):
-        os.makedirs(os.path.dirname(dst), exist_ok=True)
-        arr, form = _load_any(src_path)
-        arr = _cap(arr, max_size)
-        with open(dst, "wb") as handle:
-            if kind == "opacity":
-                alpha = arr[:, :, 3] if form == "rgba" else (numpy.full(arr.shape[:2], 255, numpy.uint8))
-                handle.write(png.encode_gray(alpha.astype(numpy.uint8), bit_depth=8))
-            elif form == "gray":
-                g = arr
-                if g.dtype != numpy.uint8:
-                    g = (g.astype(numpy.uint32) >> 8).astype(numpy.uint8) if g.max() > 255 else g.astype(numpy.uint8)
-                handle.write(png.encode_gray(g, bit_depth=8))
-            elif keep_alpha:
-                handle.write(png.encode_rgba(arr))
-            else:
-                handle.write(png.encode_rgb(arr))
+    # Encoded every build, WRITTEN only when the bytes differ from what is there: an unchanged
+    # texture keeps its mtime and BeamNG keeps its cooked copy in temp/ (load #11: every first
+    # load re-cooked all 260 textures because the folder was cleared and rewritten each build).
+    # A same-name file with different bytes (another cap, another rip) is replaced, never reused.
+    arr, form = _load_any(src_path)
+    arr = _cap(arr, max_size)
+    if kind == "opacity":
+        alpha = arr[:, :, 3] if form == "rgba" else (numpy.full(arr.shape[:2], 255, numpy.uint8))
+        data = _encode_dds(alpha.astype(numpy.uint8), "opacity") if use_dds else png.encode_gray(alpha.astype(numpy.uint8), bit_depth=8)
+    elif form == "gray":
+        g = arr
+        if g.dtype != numpy.uint8:
+            g = (g.astype(numpy.uint32) >> 8).astype(numpy.uint8) if g.max() > 255 else g.astype(numpy.uint8)
+        data = _encode_dds(g, kind) if use_dds else png.encode_gray(g, bit_depth=8)
+    elif keep_alpha:
+        data = _encode_dds(arr, kind, keep_alpha=True) if use_dds else png.encode_rgba(arr)
+    else:
+        data = _encode_dds(arr, kind if kind != "data" else "data_rgb") if use_dds else png.encode_rgb(arr)
+    level.write_bytes_if_changed(data, *TEXTURE_SUBDIR, name)
     if cache is not None:
         cache[key] = game
     return game
+
+
+def _encode_dds(arr, kind, keep_alpha=False):
+    """The DDS bytes for an exported array: grey -> BC4, normal -> BC5, colour -> BC7 sRGB
+    (alpha kept only when asked), RGB data -> BC7 linear."""
+    rgba = dds_mod.to_rgba(arr, kind if not keep_alpha else "color_alpha")
+    if kind == "color" and rgba.shape[2] == 4 and not keep_alpha:
+        rgba[..., 3] = 255
+    fmt = dds_mod.KIND_FORMAT.get(kind, dds_mod.BC7_UNORM_SRGB)
+    return dds_mod.encode(rgba, fmt)
 
 
 # -- materials -----------------------------------------------------------------------------------

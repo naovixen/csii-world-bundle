@@ -98,11 +98,13 @@ def main(settings, census, queue, cancel_event, hard_cancel=None):
 REPORT_NAME = "cs2beamng_report.json"
 
 
-# Folders every build rewrites from scratch. A tile or texture left over from a previous build
-# (a stage since removed, a region change, a different texture cap) is not referenced by the new
-# object tree, but BeamNG still mounts and compiles it, `export_texture` would reuse a stale
-# texture of the same name, and a stale `.cdae` beside a missing `.dae` is a ghost shape.
-GENERATED_DIRS = (("art", "shapes"), ("art", "textures"))
+# Folders every build rewrites from scratch. A tile left over from a previous build (a stage
+# since removed, a region change) is not referenced by the new object tree, but BeamNG still
+# mounts and compiles it, and a stale `.cdae` beside a missing `.dae` is a ghost shape.
+# art/textures/ is NOT cleared: `export_texture` rewrites a texture only when its bytes change
+# and the materials stage removes the orphans, so an unchanged texture keeps its mtime and
+# BeamNG keeps its cooked copy — clearing it cost a ~5 min re-cook on every first load.
+GENERATED_DIRS = (("art", "shapes"),)
 
 
 def _clear_generated(level_dir, queue):
