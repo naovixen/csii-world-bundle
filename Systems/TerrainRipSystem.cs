@@ -175,14 +175,26 @@ namespace Carto.Systems
         }
 
         /// <summary>
-        /// The event triggered when the system instance is destroyed.
+        /// The event triggered when the system instance is destroyed. A fine capture in flight
+        /// gives the camera back and drops its raster.
         /// </summary>
-        protected override void OnDestroy() { base.OnDestroy(); }
+        protected override void OnDestroy()
+        {
+            FineRun run = _fine;
+            if (run != null) Finish(run, "Fine terrain: the world was unloaded mid-capture; layer omitted", warn: true);
+            ReleaseFine();
+            base.OnDestroy();
+        }
 
         /// <summary>
-        /// The event triggered when the system instance is updated.
+        /// Advance a fine cascade capture in flight (<c>TerrainRipSystem.FineCascade.cs</c>);
+        /// nothing else here runs per frame.
         /// </summary>
-        protected override void OnUpdate() { }
+        protected override void OnUpdate()
+        {
+            FineRun run = _fine;
+            if (run != null) AdvanceFine(run);
+        }
 
         /// <summary>
         /// Rip the terrain layers into <c>terrain/</c>: the final (road-flattened) heightmap, the
@@ -322,6 +334,25 @@ namespace Carto.Systems
                 worldHeights = CaptureWorldHeightmap(out worldBlock, out worldWidth, out worldHeight, report);
             }
 
+            // ---- 4c. The fine cascade capture (TerrainRipSystem.FineCascade.cs), if the pipeline
+            // ran it: the ground the game draws near the camera, at 1.75 m. Written beside the
+            // base heightmap; the block rides rasters.json like worldTerrain's.
+            //
+            ushort[] fineHeights = null;
+            int fineWidth = 0, fineHeight = 0;
+            Dictionary<string, object> fineBlock = null;
+            if (heights && TryGetFineHeights(out fineHeights, out fineWidth, out fineHeight, out double fineCell, out double2 _))
+            {
+                fineBlock = FineRastersBlock();
+                report.AppendLine(_fineReport ?? $"Fine terrain: {fineWidth}x{fineHeight} @ {fineCell:F3} m");
+                report.AppendLine(DescribeFineVersusBase(fineHeights, fineWidth, fineHeight, heightSamples, width, height, scale, surfaceIndex));
+            }
+            else if (heights)
+            {
+                fineHeights = null;
+                report.AppendLine(_fineReport ?? "Fine terrain: not captured (the fine cascade stage did not run); layer omitted");
+            }
+
             // ---- 4b. Surface areas — the pavement patches nothing else carries.
             //
             if (areas) RipSurfaceAreas(outputDirectory, terrainDirectory, report);
@@ -352,6 +383,7 @@ namespace Carto.Systems
             if (worldBlock != null) rasters["worldTerrain"] = worldBlock;
             if (waterBlock != null) rasters["water"] = waterBlock;
             if (tilingBlock != null) rasters["terrainTiling"] = tilingBlock;
+            if (fineBlock != null) rasters["terrainFine"] = fineBlock;
 
             // The sidecar merges like materials.json: a block for a layer this run did not touch
             // survives, so a partial terrain re-rip (one sub-toggle) cannot orphan the layers a
@@ -364,8 +396,11 @@ namespace Carto.Systems
                     var existing = JsonConvert.DeserializeObject<Dictionary<string, object>>(File.ReadAllText(rastersPath));
                     if (existing != null)
                     {
-                        foreach (string block in new[] { "splatmap", "userSplatmap", "worldTerrain", "water", "terrainTiling" })
+                        foreach (string block in new[] { "splatmap", "userSplatmap", "worldTerrain", "water", "terrainTiling", "terrainFine" })
                         {
+                            // A heights re-rip that captured no fine map has had the old file
+                            // removed by the Clean stage; its block must go with it.
+                            if (block == "terrainFine" && heights) continue;
                             if (!rasters.ContainsKey(block) && existing.TryGetValue(block, out object kept))
                                 rasters[block] = kept;
                         }
@@ -403,6 +438,13 @@ namespace Carto.Systems
                     {
                         File.WriteAllBytes(IOUtils.CombinePath(terrainDirectory, "heightmap.png"),
                                            Png.EncodeGray16(FlipRows(heightSamples, width, height), width, height));
+                    }
+                    if (fineHeights != null)
+                    {
+                        // The game's own near-camera ground (the fine cascade capture): same
+                        // encoding, same row convention once flipped.
+                        File.WriteAllBytes(IOUtils.CombinePath(terrainDirectory, "heightmap_fine.png"),
+                                           Png.EncodeGray16(FlipRows(fineHeights, fineWidth, fineHeight), fineWidth, fineHeight));
                     }
                     if (surfaceIndex != null)
                     {
@@ -475,9 +517,65 @@ namespace Carto.Systems
             }
 
             if (clipVolumesNote != null) report.AppendLine(clipVolumesNote);
+
+            // §10: this pass owns the `terrain*` warning kinds. One declaration when the fine
+            // layer was wanted and is not there, so a consumer reading heightmap.png alone knows
+            // it is not looking at a rip that never tried.
+            //
+            if (heights)
+            {
+                List<Dictionary<string, object>> declarations = new();
+                if (fineHeights == null && _fineWarning != null)
+                    declarations.Add(WarningsFile.ByAsset("terrainFine", "terrain/heightmap_fine.png", _fineWarning));
+                WarningsFile.Rewrite(outputDirectory, line => WarningsFile.IsKindPrefixed(line, WarningsFile.TerrainKindPrefix), declarations);
+                if (declarations.Count > 0) report.AppendLine($"Recorded {declarations.Count} gap(s) in {WarningsFile.FileName}");
+            }
+            ReleaseFine();
+
             report.AppendLine($"Output: {terrainDirectory}");
             _log.Info(report.ToString());
             return report.ToString();
+        }
+
+        /// <summary>
+        /// One report line stating how the fine raster relates to the base one — the measurement a
+        /// re-rip can be judged by: away from the flattening footprint the two agree to the
+        /// quantum (the fine slice is the same heightmap blitted in), and the samples that differ
+        /// are the ones the height adjustments touched.
+        /// </summary>
+        private static string DescribeFineVersusBase(ushort[] fine, int fineWidth, int fineHeight,
+                                                     ushort[] baseSamples, int width, int height, float3 scale, byte[] surfaceIndex)
+        {
+            int ratio = fineWidth / Math.Max(1, width);
+            if (ratio < 1 || (ratio * width != fineWidth) || (fineHeight != ratio * height))
+                return $"  fine/base grids are not an integer ratio ({fineWidth}x{fineHeight} vs {width}x{height})";
+            long compared = 0, differ = 0, differOffRoad = 0, differOnRoad = 0;
+            double maxDiff = 0, sumAbs = 0;
+            float quantum = 1f / scale.y;
+            // The base sample (x, z) is a cell centre; the fine texel ratio*x + ratio/2 lies half a
+            // fine texel off it, so a difference under one fine-texel slope is expected noise.
+            int half = ratio / 2;
+            for (int z = 0; z < height; z++)
+            {
+                for (int x = 0; x < width; x++)
+                {
+                    int fx = Math.Min(fineWidth - 1, (x * ratio) + half);
+                    int fz = Math.Min(fineHeight - 1, (z * ratio) + half);
+                    double d = (fine[(fz * fineWidth) + fx] - baseSamples[(z * width) + x]) * quantum;
+                    compared++;
+                    double a = Math.Abs(d);
+                    sumAbs += a;
+                    if (a > maxDiff) maxDiff = a;
+                    if (a > 0.1)
+                    {
+                        differ++;
+                        bool road = surfaceIndex != null && surfaceIndex[(z * width) + x] != 0;
+                        if (road) differOnRoad++; else differOffRoad++;
+                    }
+                }
+            }
+            return $"  fine vs base at {compared:N0} base samples: mean |d| {sumAbs / Math.Max(1, compared):F3} m, max {maxDiff:F2} m, "
+                 + $"{differ:N0} differ by > 0.1 m ({differ * 100.0 / Math.Max(1, compared):F2}%: {differOnRoad:N0} on roadbed, {differOffRoad:N0} off)";
         }
 
         /// <summary>

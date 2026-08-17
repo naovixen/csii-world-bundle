@@ -83,6 +83,7 @@ A key that is absent means the feature is absent — degrade, do not error.
 | `laneGeometry` + `lanePrefabs` + `laneMeshes` | `lanemeshes.jsonl`, `laneprefabs.json`, `lanemeshes/` | geometry drawn *along* a lane: cables, fences, hedges, road markings, wear tint — parts stored once plus per-lane bend parameters | 5B |
 | `terrain` / `water` / `surfaceIndex` | `terrain/*.png` | 16-bit heightmap, water surface level, 8-bit surface ids | 8 |
 | `splatmap` / `userSplatmap` / `surfaces` | `terrain/…` | the ground blend weights and the theme's ground textures | 8 |
+| `terrainFine` | `terrain/heightmap_fine.png` | the ground the game draws near the camera — the heightmap with its road grading at 1.75 m (8192²). Mesh this one when present; absent on rips before 2026-08-16 or when the capture could not run (declared in `warnings.jsonl`) | 8 |
 | `worldTerrain` | `terrain/world_heightmap.png` | the backdrop beyond the playable border. Its absence is a fact about the session, not a failure | 8 |
 | `areas` + `areaPrefabs` | `areas.jsonl`, `areaprefabs.json` | painted ground: driveways, parking pavement, park paths, courts | 8b |
 | `clipVolumes` | `clipvolumes.jsonl` | the volumes that open tunnel portals in your terrain | 8c |

@@ -976,6 +976,8 @@ namespace Carto.Systems
                     report.AppendLine($"  {_elevatedUnconformedPieces} piece placement(s) held clear of the terrain: "
                                     + "an elevated composition with no Low/HighTransition side, which RaiseTopToTerrain "
                                     + "would otherwise pin to the ground far below (the roadbed walk's own rule)");
+                report.AppendLine($"  sampled against the {_conformSource ?? "(no terrain)"} — the game's shader samples the "
+                                + "finest cascade slice covering the vertex, so the fine capture is the closer of the two");
                 report.AppendLine($"  bottom edges (clamp DOWN only — a trench wall's base never lifts, §38): "
                                 + $"{_conformLoweredVerts} vertex(es) buried, {_conformKeptVerts} kept at road level");
                 report.AppendLine($"  top edges (pinned to the terrain both ways — the §34 portal stretch): "

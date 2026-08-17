@@ -69,6 +69,7 @@ namespace Carto
             // （一鍵擷取背後的管線於 OnUpdate 中在階段間推進，且同樣由（暫停模擬的）選項頁面啟動——
             //   與網格及路網擷取相同，故用 MainLoop。）
             updateSystem.UpdateAt<RipOrchestratorSystem>(SystemUpdatePhase.MainLoop);
+            updateSystem.UpdateAt<TerrainRipSystem>(SystemUpdatePhase.MainLoop);
             updateSystem.UpdateBefore<POISystem>(SystemUpdatePhase.GameSimulation);
             updateSystem.UpdateBefore<RasterSystem>(SystemUpdatePhase.GameSimulation);
             updateSystem.UpdateBefore<RouteSystem>(SystemUpdatePhase.GameSimulation);

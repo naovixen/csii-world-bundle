@@ -175,6 +175,9 @@
         "terrain": {
           "$ref": "#/$defs/relPath"
         },
+        "terrainFine": {
+          "$ref": "#/$defs/relPath"
+        },
         "worldTerrain": {
           "$ref": "#/$defs/relPath"
         },
@@ -266,6 +269,10 @@
         },
         "worldTerrain": {
           "description": "Geo-referencing for the backdrop heightmap beyond the playable border (layers.worldTerrain); same elevation decode as the main heightmap (§8).",
+          "$ref": "#/$defs/rasterBlock"
+        },
+        "terrainFine": {
+          "description": "Geo-referencing for the fine near-camera ground raster (layers.terrainFine): the game's finer height-cascade slice, the same heightmap with the lot/lane/area height adjustments rasterised at 1.75 m; same elevation decode as the main heightmap; own grid (§8, added 2026-08-16).",
           "$ref": "#/$defs/rasterBlock"
         },
         "worldWater": {
@@ -576,6 +583,10 @@
         },
         "semantics": {
           "description": "Human-readable statement of what the raster's values mean.",
+          "type": "string"
+        },
+        "source": {
+          "description": "Where the producer read the raster from (e.g. the height-cascade slice), informational.",
           "type": "string"
         },
         "channels": {

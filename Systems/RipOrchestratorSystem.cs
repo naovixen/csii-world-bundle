@@ -276,7 +276,7 @@ namespace Carto.Systems
             }
             else if (plan.Terrain)
             {
-                if (plan.TerrainHeights) staleFiles.AddRange(new[] { "terrain/heightmap.png", "terrain/world_heightmap.png" });
+                if (plan.TerrainHeights) staleFiles.AddRange(new[] { "terrain/heightmap.png", "terrain/heightmap_fine.png", "terrain/world_heightmap.png" });
                 if (plan.TerrainWater) staleFiles.Add("terrain/water_level.png");
                 if (plan.TerrainGround)
                 {
@@ -373,6 +373,21 @@ namespace Carto.Systems
                     Title = "Lane graph",
                     Begin = completed => Instance.LaneRip.BeginRip(directory, completed),
                     Running = () => Instance.LaneRip.IsRipping
+                });
+            }
+
+            // The fine cascade capture steers the game camera over the map for a few frames per
+            // window and reads the 1.75 m cascade slice back (TerrainRipSystem.FineCascade.cs). It
+            // runs BEFORE the network stage so the terrain conforming can sample the same ground
+            // the game shows (§34), and its raster is written by the terrain stage below.
+            //
+            if (plan.Terrain && plan.TerrainHeights)
+            {
+                stages.Add(new Stage
+                {
+                    Title = "Terrain (fine cascade)",
+                    Begin = completed => Instance.TerrainRip.BeginFineCascade(completed),
+                    Running = () => Instance.TerrainRip.IsCapturingFine
                 });
             }
 

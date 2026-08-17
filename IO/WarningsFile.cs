@@ -12,9 +12,10 @@ namespace Carto.IO
     /// The bundle's <c>warnings.jsonl</c> (contract §10), and the one rule that makes it safe for
     /// the rip stages to run in any order: <b>kinds are owned per pass</b>.
     /// <para>
-    /// The file is shared by four writers — the instance pass owns <c>prefab</c> and
+    /// The file is shared by five writers — the instance pass owns <c>prefab</c> and
     /// <c>instance</c>, the mesh pass <c>mesh</c>/<c>material</c>/<c>texture</c>, the lane pass
-    /// <c>lane</c>, and the network pass every kind prefixed <c>network</c>. Each rewrite keeps
+    /// <c>lane</c>, the network pass every kind prefixed <c>network</c>, and the terrain pass
+    /// every kind prefixed <c>terrain</c>. Each rewrite keeps
     /// every line it does not own and replaces every line it does, so re-running one stage
     /// neither doubles another's declarations nor erases them.
     /// </para>
@@ -49,6 +50,9 @@ namespace Carto.IO
 
         /// <summary>The prefix every kind the network stage writes carries.</summary>
         public const string NetworkKindPrefix = "network";
+
+        /// <summary>The prefix every kind the terrain stage writes carries (<c>terrainFine</c>).</summary>
+        public const string TerrainKindPrefix = "terrain";
 
         private static readonly ILog _log = Instance.Log;
 

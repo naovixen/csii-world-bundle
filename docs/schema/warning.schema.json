@@ -12,10 +12,11 @@
   ],
   "properties": {
     "kind": {
-      "description": "What kind of thing is missing. KINDS ARE OWNED PER PASS and each pass rewrites only its own, so a stage re-run cannot erase another stage's declarations: the instance pass owns 'prefab' and 'instance', the mesh pass 'mesh'/'material'/'texture', the lane pass 'lane', and the network pass everything prefixed 'network'. That prefix is load-bearing — a network warning names a cross-section piece that is NOT an assetId in meshes/, so filing it as 'mesh' would let the next mesh rip delete it.",
+      "description": "What kind of thing is missing. KINDS ARE OWNED PER PASS and each pass rewrites only its own, so a stage re-run cannot erase another stage's declarations: the instance pass owns 'prefab' and 'instance', the mesh pass 'mesh'/'material'/'texture', the lane pass 'lane', the network pass everything prefixed 'network', and the terrain pass everything prefixed 'terrain' ('terrainFine': the fine cascade raster was wanted and could not be captured, added 2026-08-16). The network prefix is load-bearing — a network warning names a cross-section piece that is NOT an assetId in meshes/, so filing it as 'mesh' would let the next mesh rip delete it.",
       "enum": [
         "prefab", "instance", "mesh", "material", "texture", "lane",
-        "network", "networkMesh", "networkMaterial", "networkTexture", "networkConform"
+        "network", "networkMesh", "networkMaterial", "networkTexture", "networkConform",
+        "terrainFine"
       ]
     },
     "assetId": {

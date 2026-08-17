@@ -202,10 +202,16 @@ namespace Carto.Systems
         private int2 _conformResolution;
         private float3 _conformScale;
         private float3 _conformOffset;
+        /// <summary>Which raster the conform samples: "fine cascade (1.750 m)" or "base heightmap (3.500 m)".</summary>
+        private string _conformSource;
 
         /// <summary>
-        /// Lazily capture the terrain heightmap for conforming — the same readback the terrain
-        /// layer ships.
+        /// Lazily capture the terrain heightmap for conforming. The game's shader conforms per
+        /// frame against the finest cascade slice covering the vertex (0.875–1.75 m near the
+        /// camera); the fine cascade capture (<c>TerrainRipSystem.FineCascade.cs</c>, run before
+        /// this stage) is that ground at 1.75 m, so it is sampled when present and the base
+        /// 3.5 m readback — the same one the terrain layer ships — otherwise (§34's counted
+        /// approximation, now only when the capture did not run).
         /// </summary>
         private bool EnsureConformTerrain()
         {
@@ -218,10 +224,25 @@ namespace Carto.Systems
                     _conformHeights = Array.Empty<ushort>();
                     return false;
                 }
+                if (Instance.TerrainRip.TryGetFineHeights(out ushort[] fine, out int fineWidth, out int fineHeight,
+                                                          out double fineCell, out double2 fineOriginSW))
+                {
+                    // Same bilinear read: texel (i, j) is centred at originSW + (i, j)·cell, so
+                    // heightmap-space = (world − originSW) / cell — the base map's own
+                    // (world + offset)·scale form with offset = −originSW and scale = 1/cell; the
+                    // elevation encoding is the cascade's, i.e. the base map's.
+                    _conformHeights = fine;
+                    _conformResolution = new int2(fineWidth, fineHeight);
+                    _conformScale = new float3((float)(1.0 / fineCell), heightData.scale.y, (float)(1.0 / fineCell));
+                    _conformOffset = new float3((float)-fineOriginSW.x, heightData.offset.y, (float)-fineOriginSW.y);
+                    _conformSource = $"fine cascade ({fineCell:F3} m)";
+                    return true;
+                }
                 _conformHeights = heightData.heights.ToArray();
                 _conformResolution = new int2(heightData.resolution.x, heightData.resolution.z);
                 _conformScale = heightData.scale;
                 _conformOffset = heightData.offset;
+                _conformSource = $"base heightmap ({1f / heightData.scale.x:F3} m)";
                 return true;
             }
             catch (Exception)

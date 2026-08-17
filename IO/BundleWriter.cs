@@ -59,6 +59,7 @@ namespace Carto.IO
             new("laneMeshes", "lanemeshes/", isDirectory: true),
             new("textures", "textures/", isDirectory: true),
             new("terrain", "terrain/heightmap.png"),
+            new("terrainFine", "terrain/heightmap_fine.png"),
             new("worldTerrain", "terrain/world_heightmap.png"),
             new("surfaceIndex", "terrain/surface_index.png"),
             new("splatmap", "terrain/splatmap.png"),

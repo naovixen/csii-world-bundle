@@ -736,7 +736,7 @@ def validate_bundle(bundle_dir: Path, schema_dir: Path) -> Report:
                 report.error(f"{label}: axis {axis} value {point[axis]} lies outside bundle.json bounds")
 
     # -- raster layers need raster geo-referencing -------------------------------------
-    raster_layers = [k for k in ("terrain", "worldTerrain", "surfaceIndex", "splatmap",
+    raster_layers = [k for k in ("terrain", "terrainFine", "worldTerrain", "surfaceIndex", "splatmap",
                                  "userSplatmap", "water", "worldWater") if k in layers]
     if raster_layers and "rasters" not in manifest:
         report.error(f"bundle.json declares raster layers {raster_layers} but has no 'rasters' block")
@@ -781,6 +781,7 @@ def _check_raster_layers(bundle_dir: Path, manifest: Dict[str, Any], layers: Dic
         ("water", 16, True, ("elevationScale", "elevationOffset")),
         ("worldTerrain", 16, False, ("elevationScale", "elevationOffset")),
         ("worldWater", 16, False, ("elevationScale", "elevationOffset")),
+        ("terrainFine", 16, False, ("elevationScale", "elevationOffset")),
     )
     for key, depth, playable_grid, needed_keys in expectations:
         rel = layers.get(key)
@@ -823,7 +824,7 @@ def _check_raster_layers(bundle_dir: Path, manifest: Dict[str, Any], layers: Dic
 
     # Rasters on their own grid carry their own geo-referencing sub-block (§3), whose `file`
     # and `size` must agree with the layer it describes.
-    for key in ("splatmap", "userSplatmap", "worldTerrain", "worldWater"):
+    for key in ("splatmap", "userSplatmap", "worldTerrain", "worldWater", "terrainFine"):
         rel = layers.get(key)
         if rel is None:
             continue

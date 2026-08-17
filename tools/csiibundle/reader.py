@@ -42,6 +42,7 @@ DEFAULT_LAYERS = {
     "laneMeshes": "lanemeshes/",
     "textures": "textures/",
     "terrain": "terrain/heightmap.png",
+    "terrainFine": "terrain/heightmap_fine.png",
     "surfaceIndex": "terrain/surface_index.png",
     "splatmap": "terrain/splatmap.png",
     "userSplatmap": "terrain/user_splatmap.png",
@@ -110,7 +111,7 @@ def resolve_layers(bundle_dir):
     )
 
 
-TerrainPaths = namedtuple("TerrainPaths", "heightmap surface_index water surfaces splatmap rasters")
+TerrainPaths = namedtuple("TerrainPaths", "heightmap surface_index water surfaces splatmap rasters heightmap_fine")
 
 
 def terrain_paths(bundle_dir):
@@ -120,6 +121,10 @@ def terrain_paths(bundle_dir):
     height range) — without it the heightmap is a picture, not terrain. It lives in the manifest;
     for a pre-manifest bundle the producer wrote the same block to `terrain/rasters.json`, which
     is the fallback here. `rasters` is `None` when neither exists.
+
+    `heightmap_fine` is the path of the optional `layers.terrainFine` raster (§8, 2026-08-16) —
+    the game's near-camera ground at 1.75 m — or `None` when the manifest does not declare it.
+    Consumers that mesh the ground go through `load_heightfield`, which prefers it.
     """
     manifest = load_manifest(bundle_dir)
     rasters = (manifest or {}).get("rasters")
@@ -129,6 +134,7 @@ def terrain_paths(bundle_dir):
             with open(sidecar, encoding="utf-8") as handle:
                 rasters = json.load(handle)
 
+    declared = (manifest or {}).get("layers", {})
     return TerrainPaths(
         heightmap=layer_path(bundle_dir, "terrain", manifest),
         surface_index=layer_path(bundle_dir, "surfaceIndex", manifest),
@@ -136,7 +142,65 @@ def terrain_paths(bundle_dir):
         surfaces=layer_path(bundle_dir, "surfaces", manifest),
         splatmap=layer_path(bundle_dir, "splatmap", manifest),
         rasters=rasters,
+        heightmap_fine=layer_path(bundle_dir, "terrainFine", manifest) if "terrainFine" in declared else None,
     )
+
+
+Heightfield = namedtuple("Heightfield", "raw cell origin_x origin_z elevation_scale elevation_offset fine path")
+
+
+def load_heightfield(bundle_dir, prefer_fine=True):
+    """The ground raster a consumer should mesh: `raw` uint16 rows north-first (row 0 toward −Z),
+    `cell` metres, `(origin_x, origin_z)` the top-left texel centre, the elevation decode, and
+    `fine` — whether this is `layers.terrainFine` (the game's near-camera 1.75 m ground: the
+    same heightmap with the road/lot/area grading rasterised finer, §8) or the 3.5 m base map.
+
+    Contract §8: when the manifest declares `terrainFine` the file MUST exist — a declared layer
+    that is missing is a contract violation, never a fallback. A manifest that does not declare
+    it (a rip older than 2026-08-16, or one whose capture failed and said so in warnings.jsonl)
+    is served the base map, and `fine` is False so the caller can say which ground it built.
+    Returns `None` when the bundle has no terrain layer at all.
+    """
+    from . import png
+    paths = terrain_paths(bundle_dir)
+    if paths.rasters is None or not os.path.isfile(paths.heightmap):
+        return None
+    rasters = paths.rasters
+    scale = float(rasters.get("elevationScale", 1.0))
+    offset = float(rasters.get("elevationOffset", 0.0))
+    if prefer_fine and paths.heightmap_fine is not None:
+        block = rasters.get("terrainFine")
+        if not os.path.isfile(paths.heightmap_fine) or not isinstance(block, dict):
+            raise RuntimeError(f"CONTRACT VIOLATION: bundle.json declares layers.terrainFine but "
+                               f"{paths.heightmap_fine} or rasters.terrainFine is missing (§8)")
+        raw = png.gray_array(paths.heightmap_fine)
+        res = block["resolution"]
+        cell = float(res[0]) if isinstance(res, (list, tuple)) else float(res)
+        origin_x, _, origin_z = (float(v) for v in block["originWorld"])
+        size = block.get("size")
+        if size and (int(size[0]), int(size[1])) != (raw.shape[1], raw.shape[0]):
+            raise RuntimeError(f"CONTRACT VIOLATION: {paths.heightmap_fine} is {raw.shape[1]}x{raw.shape[0]}, "
+                               f"rasters.terrainFine.size says {size}")
+        return Heightfield(raw, cell, origin_x, origin_z, scale, offset, True, paths.heightmap_fine)
+    raw = png.gray_array(paths.heightmap)
+    origin_x, _, origin_z = (float(v) for v in rasters["originWorld"])
+    return Heightfield(raw, float(rasters["resolution"]), origin_x, origin_z, scale, offset, False, paths.heightmap)
+
+
+def resample_nearest(raster, shape):
+    """`raster` (rows, cols[, c]) resampled to `shape` (rows, cols) by nearest sample — for the
+    3.5 m companions of the fine heightfield (surface index, water level) that stay on the base
+    grid by contract and are read by world position; both grids share the same top-left texel
+    centre... up to half a coarse cell (§8: the fine texel centres sit at the coarse cell's
+    quarter points), which is what the `+ 0.5` below expresses."""
+    import numpy
+    src_h, src_w = raster.shape[:2]
+    dst_h, dst_w = int(shape[0]), int(shape[1])
+    if (src_h, src_w) == (dst_h, dst_w):
+        return raster
+    rows = numpy.minimum(((numpy.arange(dst_h) + 0.5) * (src_h / dst_h)).astype(numpy.int64), src_h - 1)
+    cols = numpy.minimum(((numpy.arange(dst_w) + 0.5) * (src_w / dst_w)).astype(numpy.int64), src_w - 1)
+    return raster[rows][:, cols]
 
 
 def schema_version(bundle_dir_or_manifest):
