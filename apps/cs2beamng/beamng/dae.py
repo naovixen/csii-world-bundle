@@ -141,7 +141,11 @@ def write_shape(path, shape):
         f.write('        <node id="start01" name="start01" type="NODE">\n')
         for px, ms in shape.levels:
             for i, m in enumerate(ms):
-                node = f"{sanitize(shape.name)}_a{int(px)}" + (f"_{i}" if i else "")
+                # A detail level with several meshes: every node must still END in `_a<px>` (the
+                # trailing number is the detail size the loader parses), so the part index goes
+                # BEFORE it — `net_3_4_p1_a2`, never `net_3_4_a2_1` (that reads as detail size 1:
+                # a second LOD nobody sees).
+                node = f"{sanitize(shape.name)}" + (f"_p{i}" if i else "") + f"_a{int(px)}"
                 _write_node(f, node, m)
         for i, m in enumerate(shape.collision):
             _write_node(f, f"Colmesh_{sanitize(shape.name)}-{i + 1}", m)
@@ -282,6 +286,66 @@ def _coalesce(runs):
         else:
             out.append((m, c))
     return out
+
+
+# One `<geometry>` (one TSMesh) may not exceed this many vertices. Load #10 (2026-08-16): the
+# full-city level's junctions tore into shards — kerbs across carriageways, long thin triangles
+# spanning the tile — exactly in the tiles whose single geometry passed 65,535 vertices (59 tiles,
+# up to 167k; the torn interchange at (2936, 2240) is `net_11_8`, 94,001), while the accepted
+# region level's largest tile was 62,798 and clean. BeamNG's compiler keeps the whole mesh with
+# 32-bit indices in the .cdae (tools/beamng/probe_cdae.py), so the wrap is downstream of it; the
+# renderer's per-mesh index buffers are the Torque-lineage 16-bit kind. Cap under the limit with
+# room for the compiler's own vertex unsharing (+6 seen on a 154k tile).
+MAX_GEOMETRY_VERTS = 60_000
+
+
+def split_mesh(mesh, max_verts=MAX_GEOMETRY_VERTS):
+    """Partition `mesh` into meshes of at most `max_verts` distinct vertices each, walking the
+    triangles in order (so a material-grouped mesh keeps its runs contiguous) and compacting each
+    part's vertex set. Returns `[mesh]` unchanged when it already fits."""
+    if len(mesh.verts) <= max_verts:
+        return [mesh]
+    tri_mat = numpy.empty(len(mesh.tris), dtype=object)
+    start = 0
+    for m, c in mesh.runs:
+        tri_mat[start:start + c] = m
+        start += c
+    parts = []
+    lo = 0
+    n = len(mesh.tris)
+    while lo < n:
+        # grow the part in blocks; back off with a bisection when a block overshoots
+        hi = min(n, lo + max_verts // 3)                 # a triangle brings at most 3 new vertices: always fits
+        while hi < n:
+            nxt = min(n, hi + max_verts // 3)
+            if len(numpy.unique(mesh.tris[lo:nxt])) > max_verts:
+                a, b = hi, nxt                            # fill up: largest end in [hi, nxt) that fits
+                while b - a > 1:
+                    mid = (a + b) // 2
+                    if len(numpy.unique(mesh.tris[lo:mid])) <= max_verts:
+                        a = mid
+                    else:
+                        b = mid
+                hi = a
+                break
+            hi = nxt
+        if hi <= lo:
+            raise ValueError(f"{mesh.name}: cannot split under {max_verts} vertices")
+        used, inverse = numpy.unique(mesh.tris[lo:hi], return_inverse=True)
+        tris = inverse.reshape(-1, 3)
+        runs = []
+        for m in tri_mat[lo:hi]:
+            if runs and runs[-1][0] == m:
+                runs[-1] = (m, runs[-1][1] + 1)
+            else:
+                runs.append((m, 1))
+        parts.append(Mesh(f"{mesh.name}_p{len(parts)}", mesh.verts[used], tris, runs,
+                          normals=None if mesh.normals is None else mesh.normals[used],
+                          uvs=None if mesh.uvs is None else mesh.uvs[used],
+                          colors=None if mesh.colors is None else mesh.colors[used]))
+        lo = hi
+    parts[0].name = mesh.name
+    return parts
 
 
 def group_by_material(mesh):
