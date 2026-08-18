@@ -7,7 +7,9 @@ and never blocks the caller.
     runner.cancel()                 # sets the cancel event; the worker stops within one chunk;
                                     # a worker that ignores it for HARD_CANCEL_SECONDS is killed
 
-State per stage: status (pending/running/done/failed/cancelled/skipped), the current phase, done
+State per stage: status (pending/running/done/fresh/failed/cancelled/skipped) — `fresh` is a
+stage the worker skipped because nothing it declared had changed, `skipped` one the settings
+turned off — the current phase, done
 / total / unit, elapsed, live rate (EMA), ETA. Overall: elapsed, ETA (live remaining + the
 history-based estimate of every pending stage), fraction. `heartbeatAge` says how long since
 the worker last spoke — the UI shows "worker busy" past a few seconds and the runner declares
@@ -234,12 +236,12 @@ class Runner:
             st["status"] = status
             if status == "running":
                 st["startedAt"] = now
-            elif status in ("done", "failed", "cancelled", "skipped"):
+            elif status in ("done", "fresh", "failed", "cancelled", "skipped"):
                 st["finishedAt"] = now
                 st["summary"] = msg.get("summary")
-                if status == "done" and st.get("total"):
+                if status in ("done", "fresh") and st.get("total"):
                     st["done"] = st["total"]
-                if status == "done":
+                if status in ("done", "fresh"):
                     st["fraction"] = 1.0
         elif kind == "phase":
             st = self._stage(msg["stage"])
@@ -378,7 +380,7 @@ def _refresh_estimates(state, census, now):
         else:
             st["eta"] = 0.0
     total = len([s for s in state["stages"] if s["status"] != "skipped"]) or 1
-    finished = len([s for s in state["stages"] if s["status"] == "done"])
+    finished = len([s for s in state["stages"] if s["status"] in ("done", "fresh")])
     running_frac = sum(s.get("fraction", 0.0) for s in state["stages"] if s["status"] == "running")
     state["overall"] = {
         "elapsed": ((state.get("finishedAt") or now) - state["startedAt"]) if state.get("startedAt") else 0.0,
@@ -411,6 +413,8 @@ def build_headless(args):
     for item in getattr(args, "set", []) or []:
         key, _, raw = item.partition("=")
         values[key] = settings_mod.coerce(key, raw)
+    if getattr(args, "force", False):
+        values["rebuild"] = True
     problems = settings_mod.validate(values)
     if problems:
         for p in problems:

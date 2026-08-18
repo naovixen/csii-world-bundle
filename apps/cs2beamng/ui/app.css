@@ -243,6 +243,7 @@ details.group[open] summary::after { transform: rotate(90deg); }
 }
 .stage.running { border-color: color-mix(in srgb, var(--accent) 60%, var(--line)); }
 .stage.skipped { opacity: 0.45; }
+.stage.fresh { opacity: 0.7; }               /* nothing it reads changed, so it was replayed, not run */
 .stage .icon { grid-row: 1 / span 2; align-self: center; width: 18px; height: 18px; border-radius: 50%; border: 2px solid var(--line-strong); }
 .stage.running .icon { border-color: var(--accent); border-top-color: transparent; animation: spin 0.9s linear infinite; }
 .stage.done .icon { border-color: var(--ok); background: var(--ok); box-shadow: inset 0 0 0 3px var(--bg-elev-2); }
@@ -267,6 +268,7 @@ details.group[open] summary::after { transform: rotate(90deg); }
 .results-table .status-failed { color: var(--danger); }
 .results-table .status-cancelled { color: var(--warn); }
 .results-table .status-skipped { color: var(--text-faint); }
+.results-table .status-fresh { color: var(--text-faint); }
 .result-head { display: flex; align-items: baseline; gap: 12px; margin-bottom: 10px; }
 .result-head b { font-size: 16px; }
 .problem-list { margin: 8px 0 0; padding-left: 18px; font-size: 12.5px; color: var(--text-dim); }

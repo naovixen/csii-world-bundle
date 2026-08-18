@@ -35,6 +35,7 @@ import json
 import os
 import time
 from collections import Counter, defaultdict
+from multiprocessing import Pool
 
 import numpy
 
@@ -46,6 +47,22 @@ INPUTS = ("materials", "textures", "colors", "instances", "meshes")
 
 DEFAULT_PAINT_KINDS = ("tree",)
 DEFAULT_PAINT_VARIANTS = {"tree": 4, "prop": 2, "building": 2, "fence": 2, "poi": 2, "decal": 1}
+
+# Worst 8-bit sRGB channel error, over the texels the albedo actually shows, at which a paint
+# variant stops being worth a texture of its own and ships a `baseColorFactor` instead. MEASURED,
+# not chosen — `tools/measure_paint_factor.py` over all 7,592 (material, variant) pairs of the
+# reference city, 2026-08-18:
+#
+#     maxErr <= 0    31.4 %      <= 8    34.5 %      <= 32   54.5 %
+#     maxErr <= 4    32.9 %      <= 16   39.3 %      <= 64   91.9 %
+#
+# **Nearly a third are EXACTLY zero**: where the colour mask is uniform the tint IS one constant,
+# and the texture was pure waste. The curve is flat from 0 to 8 and then climbs, so 4 takes the
+# free third at a worst case of 1.6 % of one channel on one texel; 16 and 32 buy 6 and 22 more
+# points at errors a viewer can see (the worst pairs are flowerbeds and urns, whose mask touches
+# 4 % of the texture and changes those texels completely). 0 keeps every texture — the A3
+# behaviour — and the setting is `paint_factor_max_error`.
+DEFAULT_FACTOR_MAX_ERROR = 4
 QUANT_STEPS = 31            # colour quantisation for counting distinct sets (1/31 ≈ 8 bits/32)
 
 
@@ -68,6 +85,27 @@ def _linear_to_srgb8(arr):
     a = numpy.clip(arr, 0.0, 1.0)
     s = numpy.where(a <= 0.0031308, a * 12.92, 1.055 * numpy.power(a, 1 / 2.4) - 0.055)
     return numpy.clip(numpy.rint(s * 255.0), 0, 255).astype(numpy.uint8)
+
+
+def _resample_mask(img, h, w):
+    """The colour mask at the albedo's size — box-filtered when it is being shrunk.
+
+    The mask is a per-texel BLEND WEIGHT, so averaging it over the texels that collapse into one
+    is what the collapse means; taking one of them (`_resample_nearest`) makes a hard edge out of
+    a boundary the source resolves smoothly, and the texel then ships fully tinted or fully
+    untinted rather than the mixture. Measured over 40 real (albedo, mask) pairs against tinting
+    at 1024 and averaging afterwards: nearest is 1.441/255 RMS with 0.53 % of channel samples off
+    by more than 4/255, the box filter 0.532/255 and 0.15 %.
+
+    Only for an exact integer shrink on both axes, which is the only case the cap produces;
+    anything else (a mask smaller than its albedo, a non-multiple size) is still nearest, because
+    a box filter has nothing to average there.
+    """
+    if img.shape[0] > h and img.shape[1] > w \
+            and img.shape[0] % h == 0 and img.shape[1] % w == 0 \
+            and img.shape[0] // h == img.shape[1] // w:
+        return png.downsample_box(img, img.shape[0] // h)
+    return _resample_nearest(img, h, w)
 
 
 def _resample_nearest(img, h, w):
@@ -101,6 +139,253 @@ def _kmeans(points, weights, k, iterations=12):
     return centres
 
 
+# -- the parallel phases ---------------------------------------------------------------------------
+#
+# This product is the largest single item in the bake (11m23s of it on the reference city) and
+# was entirely single-threaded on an 8-core machine. Three of its phases are embarrassingly
+# parallel — 841 mask splits, 847 normal checks, the tinted albedos — and every one of them is
+# "read a PNG, do arithmetic on it, write a PNG". The 1.2M-instance colour-set pass stays serial:
+# it is a stream, and a pool over it would only move the file reads around.
+#
+# The jobs are module-level functions taking one tuple, which is what `Pool` (spawn on Windows)
+# needs; the same functions run in-process when `jobs <= 1`, so the serial path is the same code.
+
+def _each(job, args, jobs, progress, chunksize=8):
+    """Run `job` over `args`, yielding results as they arrive and advancing `progress` per item.
+    A pool when it is worth one, the plain loop otherwise; cancellation is honoured between
+    results, which is the same "at least every half second" promise the rest of the bake makes."""
+    if not args:
+        return
+    if jobs > 1 and len(args) > chunksize:
+        with Pool(processes=min(jobs, len(args))) as pool:
+            for result in pool.imap_unordered(job, args, chunksize=chunksize):
+                progress.check()
+                progress.advance()
+                yield result
+    else:
+        for a in args:
+            progress.check()
+            progress.advance()
+            yield job(a)
+
+
+def _split_mask_job(args):
+    """One §7.1 mask -> its metallic (R) and roughness (255 - A) greys. `(rel, outs, error)`."""
+    bundle, derived, rel = args
+    stem = _sha_stem(rel)
+    outs = {"metallic": f"textures/{stem}_metallic.png", "roughness": f"textures/{stem}_roughness.png"}
+    src = os.path.join(bundle, rel)
+    if not os.path.isfile(src):
+        return rel, None, None
+    try:
+        rgba = png.rgba_array(src)
+        png.write_gray(os.path.join(derived, outs["metallic"]), rgba[:, :, 0])
+        png.write_gray(os.path.join(derived, outs["roughness"]), 255 - rgba[:, :, 3])
+    except Exception as exc:  # noqa: BLE001 - one bad texture must not stop the bake
+        return rel, None, repr(exc)
+    return rel, outs, None
+
+
+def _normal_job(args):
+    """One normal map: detect its packing and rebuild it to RGB when it is two-channel.
+    `(rel, entry_or_None, checked, error)`."""
+    bundle, derived, rel = args
+    src = os.path.join(bundle, rel)
+    if not os.path.isfile(src):
+        return rel, None, False, None
+    try:
+        rgba = png.rgba_array(src)
+        stride = max(1, rgba.shape[0] // 64)
+        sample = rgba[::stride, ::stride].reshape(-1, 4).astype(numpy.float64) / 255.0
+        packing = materials.detect_normal_packing(sample)
+        if packing == materials.NORMAL_RGB:
+            return rel, None, True, None
+        f = rgba.astype(numpy.float64) / 255.0
+        x = 2.0 * (f[:, :, 3] if packing == materials.NORMAL_AG else f[:, :, 0]) - 1.0
+        y = 2.0 * f[:, :, 1] - 1.0
+        z = numpy.sqrt(numpy.clip(1.0 - x * x - y * y, 0.0, 1.0))
+        out = numpy.stack([(x + 1) * 0.5, (y + 1) * 0.5, (z + 1) * 0.5, numpy.ones_like(z)], axis=2)
+        out8 = numpy.clip(numpy.rint(out * 255.0), 0, 255).astype(numpy.uint8)
+        dst = f"textures/{_sha_stem(rel)}_normal_rgb.png"
+        png.write_rgba(os.path.join(derived, dst), out8)
+    except Exception as exc:  # noqa: BLE001
+        return rel, None, False, repr(exc)
+    return rel, {"packing": packing, "path": dst}, True, None
+
+
+# The mesh-state suffixes a prefab may ship (§6.1). Every state file of one prefab binds the same
+# materials, so any of them names them; all are read because the base file is not guaranteed.
+STATE_SUFFIXES = ("", "__teen", "__elderly", "__dead", "__stump", "__partial1", "__partial2", "__full")
+
+
+def _asset_materials_job(args):
+    """Every material name this prefab's mesh states bind. `(asset_id, sorted names)`."""
+    meshes_dir, asset_id = args
+    names = set()
+    for suffix in STATE_SUFFIXES:
+        path = os.path.join(meshes_dir, asset_id + suffix + ".glb")
+        if not os.path.isfile(path):
+            continue
+        try:
+            nodes = glb.parse_glb(path)
+        except Exception:  # noqa: BLE001 - a mesh that will not parse names no materials
+            continue
+        for node in nodes or []:
+            for name, _count in node.get("material_runs", []):
+                names.add(name)
+    return asset_id, sorted(names)
+
+
+def _tint_job(args):
+    """One source albedo tinted into every wanted variant.
+    `(base_rel, written, error, {vkey: {"factor", "maxErr", "path"}})`.
+
+    `tints.apply_reference` is the game's §7.2 per-texel `lerp(base, base*c, mask)` in LINEAR
+    light, which is why the albedo is de-gamma'd first and re-encoded after.
+
+    **The tint is a pure per-texel MULTIPLIER.** Each channel's step is
+    `base*(1-w) + base*c*w = base*((1-w) + w*c)`, so the whole chain is `base * M(texel)` with
+    `M` a function of the colour mask and the centre alone — never of the albedo. That is what
+    makes a single `baseColorFactor` per variant a candidate: it costs ZERO textures where a
+    tinted albedo costs a megabyte, and the error it makes is directly measurable against the
+    exact image this function already computes. So both are produced: the constant that minimises
+    the (alpha-weighted) squared error, the worst 8-bit sRGB channel error it makes, and the
+    texture ONLY where that error exceeds `paint_factor_max_error`. A threshold of 0 keeps every
+    texture, which is the pre-2026-08-18 behaviour.
+
+    **Where `M` is constant the error is exactly 0 and nothing needs measuring.** A colour mask
+    that is uniform over the whole texture — 31.4 % of the 7,592 (albedo, variant) pairs on the
+    reference city — makes `M` a single RGB triple, so the "approximation" IS the exact image and
+    the two sRGB encodes that measured the difference between them were 23 minutes of proving a
+    tautology. That case now takes the constant straight from the mask value and never decodes
+    the albedo at all. Where `M` does vary, the approximate image still comes from a 256-entry
+    lookup table per channel rather than a full `power()` over the texture: `base` is uint8 and
+    the constant is constant, so `f(g(v)·c)` has 256 distinct answers, and the LUT is the same
+    arithmetic on the same values — bit-identical output, one encode per pair instead of two.
+    """
+    bundle, derived, base_rel, mask_rel, variants, variant_max, max_error = args
+    try:
+        mask = png.rgba_array(os.path.join(bundle, mask_rel))
+    except Exception as exc:  # noqa: BLE001
+        return base_rel, 0, repr(exc), {}
+    # Uniformity is decided on the FULL-RESOLUTION mask: nearest-resampling a uniform channel
+    # keeps it uniform, so this can only under-claim, never over-claim.
+    if mask.size and bool(numpy.all(mask[:, :, :3].min(axis=(0, 1)) == mask[:, :, :3].max(axis=(0, 1)))):
+        mask_lo = mask[:, :, :3].min(axis=(0, 1)).astype(numpy.float64) / 255.0
+        out = {}
+        for vkey, centre in variants:
+            constant = _uniform_multiplier(mask_lo, [tuple(centre[i]) + (1.0,) for i in range(3)])
+            out[vkey] = {"factor": [round(float(v), 5) for v in constant], "maxErr": 0, "path": None}
+        return base_rel, 0, None, out
+
+    try:
+        base = png.rgba_array(os.path.join(bundle, base_rel))
+    except Exception as exc:  # noqa: BLE001
+        return base_rel, 0, repr(exc), {}
+    h, w = base.shape[:2]
+    factor = 1
+    while max(h, w) // factor > variant_max:
+        factor *= 2
+    if factor > 1:
+        base = png.downsample_box(base, factor)
+        h, w = base.shape[:2]
+    mask_r = _resample_mask(mask, h, w).astype(numpy.float64) / 255.0
+    base_lin = _srgb_to_linear(base[:, :, :3])
+    alpha = base[:, :, 3].astype(numpy.float64) / 255.0
+    visible = alpha > 0.5
+    any_visible = bool(visible.any())
+    written = 0
+    out = {}
+    for vkey, centre in variants:
+        colours = [tuple(centre[i]) + (1.0,) for i in range(3)]
+        multiplier = _tint_multiplier(mask_r[:, :, :3], colours)
+        lo = multiplier.min(axis=(0, 1))
+        if numpy.array_equal(lo, multiplier.max(axis=(0, 1))):
+            # this variant's centre flattened a mask that is not itself flat (every channel it
+            # touches is 1.0): same tautology, same answer
+            out[vkey] = {"factor": [round(float(v), 5) for v in lo], "maxErr": 0, "path": None}
+            continue
+        constant = _best_factor(multiplier, alpha)
+        exact8 = _linear_to_srgb8(base_lin * multiplier)
+        approx8 = _apply_lut(_srgb8_lut(constant), base[:, :, :3])
+        delta = numpy.abs(exact8.astype(numpy.int16) - approx8.astype(numpy.int16))
+        if any_visible:
+            delta = delta[visible]
+        max_err = int(delta.max()) if delta.size else 0
+        rel = f"textures/{_sha_stem(base_rel)}_v{vkey}.png"
+        path = os.path.join(derived, rel)
+        if max_err > int(max_error):
+            # A file already there is reused — the encode is deterministic — UNLESS it is the
+            # wrong size. `variant_max_size` is a shaping option, so changing it re-runs this
+            # product, and a name that does not carry the size would otherwise keep serving the
+            # old cap's pixels for ever.
+            if _png_size(path) != (h, w):
+                png.write_rgba(path, numpy.concatenate([exact8, base[:, :, 3:4]], axis=2))
+                written += 1
+            out[vkey] = {"factor": [round(float(v), 5) for v in constant], "maxErr": max_err, "path": rel}
+        else:
+            out[vkey] = {"factor": [round(float(v), 5) for v in constant], "maxErr": max_err, "path": None}
+    return base_rel, written, None, out
+
+
+def _png_size(path):
+    """`(height, width)` from a PNG's IHDR, or `None` when there is no readable file there."""
+    try:
+        with open(path, "rb") as handle:
+            head = handle.read(24)
+    except OSError:
+        return None
+    if len(head) < 24 or head[:8] != b"\x89PNG\r\n\x1a\n":
+        return None
+    width = int.from_bytes(head[16:20], "big")
+    height = int.from_bytes(head[20:24], "big")
+    return height, width
+
+
+def _uniform_multiplier(weights, colours):
+    """`_tint_multiplier` for a mask that is one value per channel — the same ops, on scalars."""
+    out = numpy.ones(3, dtype=numpy.float64)
+    for i in range(tints.CHANNELS):
+        weight = float(weights[i])
+        colour = numpy.asarray(colours[i][:3], dtype=numpy.float64)
+        out = out * ((1.0 - weight) + weight * colour)
+    return out
+
+
+def _srgb8_lut(constant):
+    """`(3, 256)` uint8: `_linear_to_srgb8(_srgb_to_linear(v) * constant[j])` for every byte `v`.
+
+    The albedo is uint8, so a constant multiplier has only 256 possible answers per channel and
+    the whole `power()` over the texture is a gather. Same function, same inputs, same bits.
+    """
+    lin = _srgb_to_linear(numpy.arange(256, dtype=numpy.uint8))
+    return numpy.stack([_linear_to_srgb8(lin * float(constant[j])) for j in range(3)])
+
+
+def _apply_lut(lut, rgb8):
+    """`(h, w, 3)` uint8 through a per-channel `(3, 256)` table."""
+    return numpy.stack([lut[j][rgb8[:, :, j]] for j in range(3)], axis=2)
+
+
+def _tint_multiplier(mask_rgb, colours):
+    """`M(texel)` — what `tints.apply_reference` amounts to, as a per-texel RGB multiplier."""
+    out = numpy.ones(mask_rgb.shape[:2] + (3,), dtype=numpy.float64)
+    for i in range(tints.CHANNELS):
+        weight = mask_rgb[..., i][..., None]
+        colour = numpy.asarray(colours[i][:3], dtype=numpy.float64)
+        out = out * ((1.0 - weight) + weight * colour)
+    return out
+
+
+def _best_factor(multiplier, weight):
+    """The constant that minimises the weighted squared error against `M`, per channel."""
+    w = weight[..., None]
+    denom = float(w.sum())
+    if denom <= 0.0:
+        return multiplier.reshape(-1, 3).mean(axis=0)
+    return (multiplier * w).reshape(-1, 3).sum(axis=0) / denom
+
+
 # -- the product --------------------------------------------------------------------------------
 
 def run(context, progress):
@@ -110,6 +395,8 @@ def run(context, progress):
     paint_kinds = tuple(options.get("paint_kinds") or DEFAULT_PAINT_KINDS)
     variant_counts = dict(DEFAULT_PAINT_VARIANTS, **(options.get("paint_variants") or {}))
     variant_max = int(options.get("variant_max_size") or 1024)
+    jobs = max(1, int(options.get("jobs") or 1))
+    factor_max_error = int(options.get("paint_factor_max_error", DEFAULT_FACTOR_MAX_ERROR) or 0)
     tex_out = os.path.join(derived, "textures")
     os.makedirs(tex_out, exist_ok=True)
     stats = {}
@@ -134,24 +421,13 @@ def run(context, progress):
     progress.begin("materials: split masks", total=len(mask_paths), unit="masks")
     split_of = {}
     written = 0
-    for i, rel in enumerate(mask_paths):
-        progress.check()
-        src = os.path.join(bundle, rel)
-        stem = _sha_stem(rel)
-        outs = {"metallic": f"textures/{stem}_metallic.png",
-                "roughness": f"textures/{stem}_roughness.png"}
-        if os.path.isfile(src):
-            try:
-                rgba = png.rgba_array(src)
-                png.write_gray(os.path.join(derived, outs["metallic"]), rgba[:, :, 0])
-                png.write_gray(os.path.join(derived, outs["roughness"]), 255 - rgba[:, :, 3])
-                split_of[rel] = outs
-                written += 1
-            except Exception as exc:  # noqa: BLE001 - one bad texture must not stop the bake
-                progress.log(f"mask {rel}: unreadable ({exc!r}), skipped")
-        if i % 25 == 0:
-            progress.advance(min(25, len(mask_paths) - i))
-    progress.end(f"{written} masks split into metallic/roughness")
+    for rel, outs, error in _each(_split_mask_job, [(bundle, derived, rel) for rel in mask_paths], jobs, progress):
+        if error:
+            progress.log(f"mask {rel}: unreadable ({error}), skipped")
+        elif outs:
+            split_of[rel] = outs
+            written += 1
+    progress.end(f"{written} masks split into metallic/roughness ({jobs} worker(s))")
     stats["masksSplit"] = written
 
     # 3. rebuild packed normals -----------------------------------------------------------------
@@ -159,32 +435,15 @@ def run(context, progress):
     progress.begin("materials: normals", total=len(normal_paths), unit="maps")
     rebuilt = {}
     checked = 0
-    for i, rel in enumerate(normal_paths):
-        progress.check()
-        src = os.path.join(bundle, rel)
-        if os.path.isfile(src):
-            try:
-                rgba = png.rgba_array(src)
-                stride = max(1, rgba.shape[0] // 64)
-                sample = rgba[::stride, ::stride].reshape(-1, 4).astype(numpy.float64) / 255.0
-                packing = materials.detect_normal_packing(sample)
-                checked += 1
-                if packing != materials.NORMAL_RGB:
-                    f = rgba.astype(numpy.float64) / 255.0
-                    x = 2.0 * (f[:, :, 3] if packing == materials.NORMAL_AG else f[:, :, 0]) - 1.0
-                    y = 2.0 * f[:, :, 1] - 1.0
-                    z = numpy.sqrt(numpy.clip(1.0 - x * x - y * y, 0.0, 1.0))
-                    out = numpy.stack([(x + 1) * 0.5, (y + 1) * 0.5, (z + 1) * 0.5, numpy.ones_like(z)], axis=2)
-                    out8 = numpy.clip(numpy.rint(out * 255.0), 0, 255).astype(numpy.uint8)
-                    stem = _sha_stem(rel)
-                    dst = f"textures/{stem}_normal_rgb.png"
-                    png.write_rgba(os.path.join(derived, dst), out8)
-                    rebuilt[rel] = {"packing": packing, "path": dst}
-            except Exception as exc:  # noqa: BLE001
-                progress.log(f"normal {rel}: unreadable ({exc!r}), skipped")
-        if i % 25 == 0:
-            progress.advance(min(25, len(normal_paths) - i))
-    progress.end(f"{checked} normal maps checked, {len(rebuilt)} rebuilt from a two-channel packing")
+    for rel, entry, ok, error in _each(_normal_job, [(bundle, derived, rel) for rel in normal_paths], jobs, progress):
+        if error:
+            progress.log(f"normal {rel}: unreadable ({error}), skipped")
+            continue
+        checked += 1 if ok else 0
+        if entry:
+            rebuilt[rel] = entry
+    progress.end(f"{checked} normal maps checked, {len(rebuilt)} rebuilt from a two-channel packing "
+                 f"({jobs} worker(s))")
     stats["normalsRebuilt"] = len(rebuilt)
 
     # 4. paint variants -------------------------------------------------------------------------
@@ -233,71 +492,89 @@ def run(context, progress):
     stats["paintPrefabs"] = len(variants)
 
     # tinted albedos for the paint kinds: which materials belong to which prefab? the .glb says.
+    #
+    # Three passes rather than one nested loop, because the work parallelises at two different
+    # grains and the middle step has to see everything at once. (1) per prefab, parse its `.glb`s
+    # for material names - independent, so a pool; (2) serially invert that into "per SOURCE
+    # ALBEDO, which variant centres are wanted", which is also what keeps two materials sharing a
+    # base texture from racing on the same output file; (3) per source albedo, tint - independent
+    # again, and the phase that reads and writes the megabytes.
     paint_assets = [a for a, v in variants.items() if v["kind"] in paint_kinds]
-    progress.begin("materials: tinted albedos", total=len(paint_assets), unit="prefabs")
     lay = reader.resolve_layers(bundle)
+    progress.begin("materials: prefab materials", total=len(paint_assets), unit="prefabs")
+    materials_of = {}
+    for asset_id, names in _each(_asset_materials_job, [(lay.meshes, a) for a in paint_assets], jobs, progress):
+        materials_of[asset_id] = names
+    progress.end(f"{len(paint_assets)} prefabs of kind {list(paint_kinds)} named their materials")
+
+    # (2) group by source albedo. `out_rel` is a function of the base texture and the variant key
+    # alone, so grouping here is what makes the parallel phase race-free: exactly one job owns
+    # each output file. Where two materials share a base but declare different colour masks the
+    # lexicographically first mask wins for all of them - the serial code had the same collision
+    # and resolved it by iteration order, which was not reproducible.
+    by_base = {}                                    # base_rel -> {"mask": rel, "variants": {vkey: centre}}
     tinted = {}                                     # material -> {variantKey: path}
-    albedo_cache = {}
-    mask_cache = {}
-    textures_written = 0
     for asset_id in paint_assets:
-        progress.check()
-        progress.advance()
-        # every state file of the prefab shares its materials; the base file is enough to name them
-        candidates = [asset_id] + [asset_id + suffix for suffix in ("__teen", "__elderly", "__dead", "__stump",
-                                                                    "__partial1", "__partial2", "__full")]
-        material_names = set()
-        for cand in candidates:
-            path = os.path.join(lay.meshes, cand + ".glb")
-            if not os.path.isfile(path):
-                continue
-            nodes = glb.parse_glb(path)
-            for node in nodes or []:
-                for name, _count in node.get("material_runs", []):
-                    material_names.add(name)
-        for name in sorted(material_names):
+        for name in materials_of.get(asset_id) or ():
             rec = resolved.get(name)
             if not rec or not rec.get("tintable") or not rec.get("baseColor"):
                 continue
             base_rel, mask_rel = rec["baseColor"], rec["colorMask"]
-            if base_rel not in albedo_cache:
-                try:
-                    albedo_cache[base_rel] = png.rgba_array(os.path.join(bundle, base_rel))
-                except Exception:  # noqa: BLE001
-                    albedo_cache[base_rel] = None
-            if mask_rel not in mask_cache:
-                try:
-                    mask_cache[mask_rel] = png.rgba_array(os.path.join(bundle, mask_rel))
-                except Exception:  # noqa: BLE001
-                    mask_cache[mask_rel] = None
-            base = albedo_cache[base_rel]
-            mask = mask_cache[mask_rel]
-            if base is None or mask is None:
-                continue
-            h, w = base.shape[:2]
-            factor = 1
-            while max(h, w) // factor > variant_max:
-                factor *= 2
-            if factor > 1:
-                base = png.downsample_box(base, factor)
-                h, w = base.shape[:2]
-            mask_r = _resample_nearest(mask, h, w).astype(numpy.float64) / 255.0
-            base_lin = _srgb_to_linear(base[:, :, :3])
-            for k, centre in enumerate(variants[asset_id]["variants"]):
-                colours = [tuple(centre[i]) + (1.0,) for i in range(3)]
+            entry = by_base.setdefault(base_rel, {"mask": mask_rel, "variants": {}})
+            if mask_rel and (not entry["mask"] or mask_rel < entry["mask"]):
+                entry["mask"] = mask_rel
+            for centre in variants[asset_id]["variants"]:
                 vkey = hashlib.sha256(json.dumps(centre).encode("utf-8")).hexdigest()[:12]
-                out_rel = f"textures/{_sha_stem(base_rel)}_v{vkey}.png"
-                if out_rel in tinted.setdefault(name, {}).values():
-                    continue
-                out_path = os.path.join(derived, out_rel)
-                if not os.path.isfile(out_path):
-                    tinted_lin = tints.apply_reference(base_lin, mask_r[:, :, :3], colours)
-                    out = numpy.concatenate([_linear_to_srgb8(tinted_lin), base[:, :, 3:4]], axis=2)
-                    png.write_rgba(out_path, out)
-                    textures_written += 1
-                tinted[name][vkey] = out_rel
-    progress.end(f"{textures_written} tinted albedo textures for {len(paint_assets)} prefabs of kind {list(paint_kinds)}")
+                entry["variants"].setdefault(vkey, centre)
+                tinted.setdefault(name, {})[vkey] = f"textures/{_sha_stem(base_rel)}_v{vkey}.png"
+
+    progress.begin("materials: tinted albedos", total=len(by_base), unit="albedos")
+    args = [(bundle, derived, base_rel, e["mask"], sorted(e["variants"].items()), variant_max, factor_max_error)
+            for base_rel, e in sorted(by_base.items())]
+    textures_written = 0
+    failed_bases = set()
+    per_base = {}                                   # base_rel -> {vkey: {"factor", "maxErr", "path"}}
+    for base_rel, count, error, table in _each(_tint_job, args, jobs, progress):
+        if error:
+            progress.log(f"tint {base_rel}: {error}, skipped")
+            failed_bases.add(base_rel)
+            continue
+        textures_written += count
+        per_base[base_rel] = table
+    # A variant whose constant is close enough ships NO texture: the consumer multiplies the
+    # canonical albedo by `factor` instead. Both halves are recorded either way, so the split is
+    # a measured number in the report rather than a claim.
+    factors = {}                                    # material -> {vkey: {"factor", "maxErr"}}
+    as_factor = as_texture = 0
+    for name, table in list(tinted.items()):
+        rec = resolved.get(name) or {}
+        entries = per_base.get(rec.get("baseColor")) or {}
+        keep = {}
+        for vkey in list(table):
+            entry = entries.get(vkey)
+            if entry is None:
+                continue
+            factors.setdefault(name, {})[vkey] = {"factor": entry["factor"], "maxErr": entry["maxErr"]}
+            if entry["path"]:
+                keep[vkey] = entry["path"]
+                as_texture += 1
+            else:
+                as_factor += 1
+        if keep:
+            tinted[name] = keep
+        else:
+            tinted.pop(name)
+    for name in [n for n in tinted if (resolved.get(n) or {}).get("baseColor") in failed_bases]:
+        tinted.pop(name)
+    progress.end(f"{textures_written} tinted albedo textures over {len(by_base)} source albedos for "
+                 f"{len(paint_assets)} prefabs of kind {list(paint_kinds)}: {as_factor} (material, variant) "
+                 f"pairs ship a baseColorFactor and {as_texture} need the texture "
+                 f"(threshold {factor_max_error}/255, {jobs} worker(s))")
     stats["tintedTextures"] = textures_written
+    stats["tintedSourceAlbedos"] = len(by_base)
+    stats["variantsAsFactor"] = as_factor
+    stats["variantsAsTexture"] = as_texture
+    stats["paintFactorMaxError"] = int(factor_max_error)
 
     # 5. write the tables -----------------------------------------------------------------------
     table = {}
@@ -311,6 +588,8 @@ def run(context, progress):
             derived_maps["normalRgb"] = rebuilt[rec["normal"]]["path"]
         if key in tinted:
             derived_maps["variants"] = tinted[key]
+        if key in factors:
+            derived_maps["variantFactors"] = factors[key]
         entry["derived"] = derived_maps
         # tuples are not JSON
         for k2, v2 in list(entry.items()):
@@ -327,4 +606,10 @@ def run(context, progress):
     return stats
 
 
-register(Product(PRODUCT_NAME, INPUTS, "materials.json", run, version=2))
+# version 3: every paint variant records the constant `baseColorFactor` that approximates its
+# per-texel tint and the error that makes, and ships a texture only where the error is too big
+# version 4: the colour mask is box-filtered rather than nearest-sampled when it is shrunk to
+# the albedo's capped size, which moves every tinted texel at a mask boundary (`_resample_mask`)
+register(Product(PRODUCT_NAME, INPUTS, "materials.json", run, version=4,
+                 options=("paint_kinds", "paint_variants", "variant_max_size",
+                          "paint_factor_max_error")))

@@ -2613,7 +2613,6 @@ _AREA_CONFORM_TOLERANCE = area_math.CONFORM_TOLERANCE
 _AREA_MAX_DEPTH = area_math.MAX_DEPTH
 _AREA_PIECES_PER_CELL = area_math.PIECES_PER_CELL
 _AREA_PIECE_BUDGET = area_math.PIECE_BUDGET
-_AREA_DEDUP_MM = area_math.DEDUP_MM
 _AREA_UV_SCALE_FALLBACK = area_math.UV_SCALE_FALLBACK
 _conform_area_triangle = area_math.conform_triangle
 

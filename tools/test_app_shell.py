@@ -376,6 +376,188 @@ def test_headless(tmp):
         check("bake" in doc["stages"] and "validate" in doc["stages"], "report lists bake + validate")
 
 
+# -- the incremental build (A4) --------------------------------------------------------------------
+
+def _stage_modules():
+    """`{stageKey: (stage, [modules])}` — every `cs2beamng` module a stage's `run` can reach.
+
+    The transitive closure matters: `shapes` and `instances` read `trees`, `props`, `buildings`
+    and the two density sliders only through `beamng.placement.admit`, so a scan of the stage
+    file alone would pass a stage that is missing five of its declarations.
+    """
+    import importlib
+    import types
+
+    from cs2beamng.stages import all_stages
+
+    # The stub-stage hook has to come off to see the real ones, and go back on afterwards: the
+    # runner and server checks that follow depend on it (`all_stages` caches per override, so
+    # restoring the variable restores the stubs).
+    stub = os.environ.pop("CS2BEAMNG_STAGE_MODULE", None)
+    try:
+        stages = all_stages()
+    finally:
+        if stub is not None:
+            os.environ["CS2BEAMNG_STAGE_MODULE"] = stub
+
+    out = {}
+    for stage in stages:
+        root = importlib.import_module(stage.run.__module__)
+        reached, pending = {root}, [root]
+        while pending:
+            for value in list(vars(pending.pop()).values()):
+                name = value.__name__ if isinstance(value, types.ModuleType) else getattr(value, "__module__", None)
+                if not isinstance(name, str) or not name.startswith("cs2beamng."):
+                    continue
+                # `cs2beamng.settings` DEFINES the schema (its source names every key once) and
+                # the `cs2beamng.stages` package namespace holds every stage module as an
+                # attribute once they are imported, so following either makes every stage look
+                # like it reads everything. A setting reached through ANOTHER STAGE's helper is
+                # therefore outside this scan — the runtime recorder in pipeline/state.py is
+                # what catches that case, and it is fail-closed.
+                if name in ("cs2beamng.settings", "cs2beamng.stages") or \
+                        (name.startswith("cs2beamng.stages.") and name != root.__name__):
+                    continue
+                child = sys.modules.get(name)
+                if child is not None and child not in reached:
+                    reached.add(child)
+                    pending.append(child)
+        out[stage.key] = (stage, sorted(reached, key=lambda m: m.__name__))
+    return out
+
+
+def test_stage_declarations():
+    """Every setting a stage's own source (or a `cs2beamng` helper it imports) reads by name must
+    be in that stage's `settings_keys`.
+
+    This is the static half of the guard `pipeline/state.py` describes. The failure it exists for
+    is a 25-minute build on 2026-08-18: `paint_kinds` was read but not declared, the bake logged
+    `fresh, skipped`, and 448k props shipped the previous build's untinted albedo with no error
+    anywhere. Same shape one level up now that stages skip too, and the runtime recorder alone
+    would only catch it AFTER a build had already run with the wrong declaration.
+    """
+    import inspect
+    import re
+
+    from cs2beamng import settings as settings_mod
+    from cs2beamng.pipeline import state as state_mod
+
+    print("stage declarations")
+    reads = re.compile(r'settings(?:\.get\(\s*"([a-z_0-9]+)"|\[\s*"([a-z_0-9]+)"\s*\])')
+    for key, (stage, modules) in sorted(_stage_modules().items()):
+        if not state_mod.incremental(stage):
+            continue                                    # not skippable: it always runs, so nothing to declare
+        found = set()
+        for module in modules:
+            try:
+                source = inspect.getsource(module)
+            except (OSError, TypeError):
+                continue
+            found |= {a or b for a, b in reads.findall(source)}
+        # The exemption list is `state.NOT_FIDELITY_SETTINGS` itself, not a copy: this gate and
+        # the runtime recorder must agree, and the one time they did not, the materials stage
+        # could never be recorded (it reads `level_name` to name a paint-variant material).
+        undeclared = sorted((found & set(settings_mod.SCHEMA)) - set(stage.settings_keys)
+                            - state_mod.NOT_FIDELITY_SETTINGS)
+        check(not undeclared, f"stage {key!r} declares every setting it reads"
+              + (f" - reads {undeclared}" if undeclared else ""))
+    # and the fields themselves have to be well formed, or a signature raises mid-build
+    for key, (stage, _mods) in sorted(_stage_modules().items()):
+        bad = [ref for ref in (stage.inputs or ())
+               if not (ref.startswith("layer:") or ref.startswith("derived:") or ref == "level:")]
+        check(not bad, f"stage {key!r} inputs are all layer:/derived:/level: refs" + (f" - {bad}" if bad else ""))
+        unknown = [k for k in stage.settings_keys if k not in settings_mod.SCHEMA]
+        check(not unknown, f"stage {key!r} declares only real settings" + (f" - {unknown}" if unknown else ""))
+
+
+def test_state_codec():
+    """The `ctx.shared` payload survives a JSON round trip — sets, tuple-keyed dicts and all —
+    and a delta composes the way three stages accumulating into one set need it to."""
+    from cs2beamng.pipeline import state as state_mod
+
+    print("state codec")
+    value = {"results": {("a", "", None): {"file": "a.dae", "n": 1}, ("b", "__dead", 2): {"file": "b.dae"}},
+             "used": {"x", "y"}, "plain": [1, 2.5, "z", None], "nested": {"k": {"p", "q"}}}
+    back = state_mod.decode(json.loads(json.dumps(state_mod.encode(value))))
+    check(back == value, "shared payload round-trips through JSON")
+    before = {"materials_used": {"a"}}
+    after = {"materials_used": {"a", "b"}}
+    delta = state_mod.diff_shared(before, after, ("materials_used",))
+    check(delta["materials_used"] == {"b"}, "a set delta is what the stage ADDED, not the whole set")
+    shared = {"materials_used": {"c"}}
+    state_mod.apply_shared(shared, delta)
+    check(shared["materials_used"] == {"b", "c"}, "replaying a set delta unions rather than replaces")
+    variants = state_mod.diff_shared({"v": {"k1": {"m"}}}, {"v": {"k1": {"m", "n"}, "k2": {"o"}}}, ("v",))
+    target = {"v": {"k1": {"m"}}}
+    state_mod.apply_shared(target, variants)
+    check(target["v"] == {"k1": {"m", "n"}, "k2": {"o"}}, "a nested dict-of-sets delta merges per key")
+
+
+def _level_objects(level_dir):
+    from cs2beamng.beamng.level import read_objects
+
+    return sorted((rel, json.dumps(obj, sort_keys=True)) for rel, _n, obj in read_objects(level_dir) if obj)
+
+
+def test_incremental(tmp):
+    """Build the example bundle three times: cold, no-op, and with one setting changed. The
+    no-op must skip every stage AND leave the level byte-identical; the third must re-run only
+    the stages that declare the setting (and whatever declares `after` on them)."""
+    print("incremental rebuild (real stages)")
+    os.environ.pop("CS2BEAMNG_STAGE_MODULE", None)
+    from cs2beamng.cli import main as cli_main
+    from cs2beamng.pipeline import state as state_mod
+
+    out = os.path.join(tmp, "levels", "inc_example")
+    code = cli_main(["build", EXAMPLE, "--out", out, "--set", "jobs=1"])
+    check(code == 0, f"cold build succeeds ({code})")
+    first_objects = _level_objects(out)
+    dae_stamps = {}
+    for root, _dirs, files in os.walk(os.path.join(out, "art", "shapes")):
+        for name in files:
+            full = os.path.join(root, name)
+            dae_stamps[os.path.relpath(full, out)] = os.stat(full).st_mtime_ns
+    check(os.path.isfile(state_mod.state_path(out)), "cold build writes level_state.json")
+
+    code = cli_main(["build", EXAMPLE, "--out", out, "--set", "jobs=1"])
+    check(code == 0, f"no-op rebuild succeeds ({code})")
+    with open(os.path.join(out, "cs2beamng_report.json"), encoding="utf-8") as handle:
+        report = json.load(handle)
+    ran = sorted(k for k, v in report["stages"].items() if not v.get("skipped"))
+    check(set(ran) <= {"bake", "cook"},
+          f"no-op rebuild skips every incremental stage, the validator included (ran {ran})")
+    check(_level_objects(out) == first_objects, "a skipped stage's objects are replayed identically")
+    unchanged = [rel for rel, stamp in dae_stamps.items() if _mtime(out, rel) == stamp]
+    check(len(unchanged) == len(dae_stamps),
+          f"every .dae keeps its mtime, so BeamNG keeps its .cdae ({len(unchanged)}/{len(dae_stamps)})")
+
+    code = cli_main(["build", EXAMPLE, "--out", out, "--set", "jobs=1", "--set", "lod_detail_scale=9.0"])
+    check(code == 0, f"rebuild with a changed setting succeeds ({code})")
+    with open(os.path.join(out, "cs2beamng_report.json"), encoding="utf-8") as handle:
+        report = json.load(handle)
+    ran = sorted(k for k, v in report["stages"].items() if not v.get("skipped"))
+    check("shapes" in ran, f"the stage that declares lod_detail_scale re-runs (ran {ran})")
+    check("instances" in ran, "a stage that declares `after` on it re-runs too")
+    check("materials" in ran, "so does the materials stage, which exports what the shapes bound")
+    check("terrain" not in ran, "a stage that does not read it stays skipped")
+    check("validate" in ran, "the validator re-runs because the level folder moved")
+    check(len(_level_objects(out)) == len(first_objects), "the object tree is still complete after a partial rebuild")
+
+    code = cli_main(["build", EXAMPLE, "--out", out, "--set", "jobs=1", "--force"])
+    with open(os.path.join(out, "cs2beamng_report.json"), encoding="utf-8") as handle:
+        report = json.load(handle)
+    check(code == 0 and not any(v.get("skipped") for v in report["stages"].values()),
+          "--force runs every stage")
+    check(not report.get("stateWarnings"), f"no stage read an undeclared setting {report.get('stateWarnings')}")
+
+
+def _mtime(root, rel):
+    try:
+        return os.stat(os.path.join(root, rel)).st_mtime_ns
+    except OSError:
+        return None
+
+
 def main():
     tmp = tempfile.mkdtemp(prefix="cs2beamng_shell_")
     os.environ["CS2BEAMNG_HOME"] = os.path.join(tmp, "home")
@@ -383,10 +565,13 @@ def main():
     sys.path.insert(0, HERE)
     try:
         test_settings()
+        test_stage_declarations()
+        test_state_codec()
         test_bake_stage_cancel()
         test_runner(tmp)
         test_server(tmp)
         test_headless(tmp)
+        test_incremental(tmp)
     except Exception:  # noqa: BLE001
         traceback.print_exc()
         FAILS.append("exception")

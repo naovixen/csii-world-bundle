@@ -94,11 +94,75 @@ def check(level_dir, bundle_dir, progress=None):
                 missing.append(f"{obj['class']} {obj['name']}: {field} {obj[field]}")
     dae_bad = 0
     dae_files = []
+    seen_dae = set()
     for _rel, _n, obj in objects:
         if obj["class"] == "TSStatic":
             path = resolve(obj.get("shapeName"))
             if path and os.path.isfile(path) and path.lower().endswith(".dae"):
-                dae_files.append((obj["name"], path))
+                if path not in seen_dae:
+                    seen_dae.add(path)
+                    dae_files.append((obj["name"], path))
+
+    # -- the forest (A3) ---------------------------------------------------------------------
+    # Every check below has a load behind it: a `type` with no `TSForestItemData` is silently
+    # dropped, and a `shapeFile` that does not resolve leaves the type in the item data with
+    # nothing to draw. Forest shapes never reach `dae_files` through a TSStatic, so without this
+    # they would skip every check above and below.
+    item_data = {}
+    item_path = os.path.join(level_dir, "art", "forest", "managedItemData.json")
+    if os.path.isfile(item_path):
+        try:
+            with open(item_path, encoding="utf-8") as handle:
+                item_data = json.load(handle) or {}
+        except ValueError:
+            note("art/forest/managedItemData.json: not JSON")
+    for name, entry in item_data.items():
+        if not isinstance(entry, dict):
+            continue
+        path = resolve(entry.get("shapeFile"))
+        if path is None or not os.path.isfile(path):
+            missing.append(f"TSForestItemData {name}: shapeFile {entry.get('shapeFile')}")
+        elif path.lower().endswith(".dae") and path not in seen_dae:
+            seen_dae.add(path)
+            dae_files.append((name, path))
+    forest_dir = os.path.join(level_dir, "forest")
+    forest_items = 0
+    unknown_types = set()
+    if os.path.isdir(forest_dir):
+        for name in sorted(os.listdir(forest_dir)):
+            if not name.endswith(".forest4.json"):
+                continue
+            with open(os.path.join(forest_dir, name), encoding="utf-8") as handle:
+                for number, line in enumerate(handle, 1):
+                    line = line.strip()
+                    if not line:
+                        continue
+                    forest_items += 1
+                    try:
+                        item = json.loads(line)
+                    except ValueError:
+                        note(f"forest/{name}:{number}: not a JSON object")
+                        break
+                    if item.get("type") not in item_data:
+                        unknown_types.add(item.get("type"))
+    checks["forestItems"] = forest_items
+    checks["forestTypes"] = len(item_data)
+    checks["forestUnknownTypes"] = len(unknown_types)
+    for bad in sorted(unknown_types)[:10]:
+        note(f"forest item type {bad!r} has no TSForestItemData - BeamNG drops it silently")
+    if forest_items and not by_class.get("Forest"):
+        note(f"{forest_items} forest items but no Forest object in the level tree")
+
+    # -- budgets -----------------------------------------------------------------------------
+    # Calibrated on the vanilla maxima (plan "Budgets"): 663k forest items, 22k TSStatics, 12.7k
+    # DecalRoads, 2.6k shapes. Over one of these BeamNG does not fail — it stalls the load or
+    # drops frames, which is why they are notes on the build rather than silence.
+    over = _budget_notes(by_class, item_data, dae_files, forest_items)
+    checks["budgets"] = {name: value for name, value, _limit in over}
+    for name, value, limit in over:
+        if limit is not None and value > limit:
+            note(f"budget: {value:,} {name} exceeds the plan's ~{limit:,} "
+                 f"(calibrated on the vanilla levels' own maxima)")
     # full XML parse on a sample (a 10 MB tile takes a second), material-symbol check on all
     for _name, path in dae_files[::max(1, len(dae_files) // 8)][:8]:
         try:
@@ -107,6 +171,54 @@ def check(level_dir, bundle_dir, progress=None):
             dae_bad += 1
             note(f"{path}: not well-formed XML")
     checks["daeFiles"] = len(dae_files)
+
+    # -- what the level MOUNTS (audit §64) -----------------------------------------------------
+    resident = _resident_bytes(level_dir)
+    total_mib = (resident["meshes"] + resident["textures"]) / (1024.0 * 1024.0)
+    checks["resident"] = {"meshMiB": round(resident["meshes"] / (1024.0 * 1024.0), 1),
+                          "textureMiB": round(resident["textures"] / (1024.0 * 1024.0), 1),
+                          "totalMiB": round(total_mib, 1),
+                          "budgetMiB": RESIDENT_BUDGET_MIB,
+                          "cookedShapes": resident["cookedShapes"], "shapes": resident["shapes"]}
+    if total_mib > RESIDENT_BUDGET_MIB:
+        note(f"budget: the level mounts {total_mib:,.0f} MiB "
+             f"({resident['meshes'] / (1024.0 * 1024.0):,.0f} meshes + "
+             f"{resident['textures'] / (1024.0 * 1024.0):,.0f} textures), over the "
+             f"{RESIDENT_BUDGET_MIB:,} MiB an 8 GB card holds without paging - "
+             f"see tools/level_budget.py for where it is")
+
+    # -- collisionType must match what the shape actually carries (A4 2.2) --------------------
+    # `Collision Mesh` uses the shape's `Colmesh_` node; `Visible Mesh*` rasterises the rendered
+    # triangles instead — BeamNG's docs call that "expensive" and "use only when required". A3
+    # wrote `Visible Mesh Final` on all 14,658 object statics while writing a Colmesh_ node into
+    # every one of them, so both halves of the pairing are worth asserting: an object that has a
+    # colmesh and does not use it is the cost we came to remove, and one that asks for a colmesh
+    # it does not have collides with NOTHING.
+    colmesh_cache = {}
+    mismatched_expensive = []
+    mismatched_missing = []
+    for _rel, _n, obj in objects:
+        if obj["class"] != "TSStatic":
+            continue
+        kind = str(obj.get("collisionType") or "")
+        path = resolve(obj.get("shapeName"))
+        if not path or not os.path.isfile(path) or not path.lower().endswith(".dae"):
+            continue
+        if path not in colmesh_cache:
+            colmesh_cache[path] = _has_colmesh(path)
+        if colmesh_cache[path] and kind.startswith("Visible Mesh"):
+            mismatched_expensive.append(obj["name"])
+        elif not colmesh_cache[path] and kind == "Collision Mesh":
+            mismatched_missing.append(obj["name"])
+    checks["collisionTypeMismatch"] = {"visibleMeshWithColmesh": len(mismatched_expensive),
+                                       "collisionMeshWithoutColmesh": len(mismatched_missing)}
+    if mismatched_expensive:
+        note(f"{len(mismatched_expensive):,} TSStatic(s) use a Visible Mesh collider although their shape "
+             f"carries a Colmesh_ node (e.g. {', '.join(mismatched_expensive[:3])}) - the expensive path, "
+             f"with the cheap one already in the file")
+    for bad in mismatched_missing[:10]:
+        problems.append(f"TSStatic {bad}: collisionType 'Collision Mesh' but the shape has no Colmesh_ node, "
+                        f"so it collides with nothing")
     # material texture paths under art/
     art = os.path.join(level_dir, "art")
     material_files = 0
@@ -196,6 +308,9 @@ def check(level_dir, bundle_dir, progress=None):
         for sym in mat_re.findall(head):
             if sym.lower() not in mapto:
                 unbound.setdefault(sym, name)
+    for cover in by_class.get("GroundCover", []):
+        if str(cover.get("material") or "").lower() not in mapto:
+            unbound.setdefault(str(cover.get("material")), cover.get("name"))
     checks["unboundMaterials"] = len(unbound)
     # detail sizes must be positive: BeamNG logs "Shape with invalid detail levels" and draws nothing (load #6)
     bad_detail = 0
@@ -304,6 +419,78 @@ def check(level_dir, bundle_dir, progress=None):
             note(f"terrain under OnGround buildings: only {result['fraction']:.1%} within {GROUND_TOLERANCE} m "
                  f"(median |dz| {result['medianAbs']:.2f} m over {result['sampled']} buildings) - orientation/origin/scale?")
     return checks, problems
+
+
+COLMESH_TAIL_BYTES = 64 * 1024
+
+
+def _has_colmesh(path):
+    """Whether this `.dae` declares a `Colmesh_` node, from the tail of the file.
+
+    The visual scene is written after every `<geometry>`, so the collision nodes are always in
+    the last few hundred bytes; reading the tail keeps this check at a seek per shape instead of
+    a full parse of 2.1 GB of COLLADA.
+    """
+    try:
+        with open(path, "rb") as handle:
+            size = os.fstat(handle.fileno()).st_size
+            handle.seek(max(0, size - COLMESH_TAIL_BYTES))
+            return b"Colmesh_" in handle.read()
+    except OSError:
+        return False
+
+
+def _budget_notes(by_class, item_data, dae_files, forest_items):
+    """`[(name, value, limit_or_None), ...]` — the plan's per-object budgets against this level."""
+    return [
+        ("forest items", forest_items, None),                 # unbounded in practice
+        ("forest types", len(item_data), 5000),
+        ("TSStatics", len(by_class.get("TSStatic", [])), 25000),
+        ("shape files", len(dae_files), 10000),
+        ("lights", len(by_class.get("PointLight", [])) + len(by_class.get("SpotLight", [])), 500),
+        ("WaterBlocks", len(by_class.get("WaterBlock", [])), 200),
+    ]
+
+
+# What a level may mount before an 8 GB card starts paging. A4 shipped 7,248 MiB and ran at 2 FPS,
+# and the symptom that named the cause was alt-tab making it permanently worse — the driver
+# releases the allocations and the level cannot get them all back. 6,144 MiB leaves the card a
+# working margin. OURS, calibrated on the failure rather than on a spec (audit §64).
+RESIDENT_BUDGET_MIB = 6144
+
+
+def _resident_bytes(level_dir):
+    """`{"meshes": bytes, "textures": bytes, "cookedShapes": n, "shapes": n}` — a stat walk.
+
+    What BeamNG mounts, not what is on screen: a shape is loaded whole (every detail level and its
+    collision node) and cooked textures sit in VRAM. `.cdae` when the cook has run, because that
+    is the file the game reads; the `.dae` beside it is the source and is not loaded. The
+    triangles-drawn-at-once half of the budget needs each shape's ladder and lives in
+    `tools/level_budget.py`, which is a minute's work on a full city and does not belong in a
+    stage that runs every build.
+    """
+    meshes = textures = 0
+    shapes = cooked = 0
+    for root, _dirs, files in os.walk(os.path.join(level_dir, "art")):
+        names = set(files)
+        for name in files:
+            path = os.path.join(root, name)
+            stem, ext = os.path.splitext(name)
+            ext = ext.lower()
+            try:
+                size = os.path.getsize(path)
+            except OSError:
+                continue
+            if ext == ".dae":
+                shapes += 1
+                if stem + ".cdae" not in names:
+                    meshes += size            # uncooked: the XML is what gets parsed and kept
+            elif ext == ".cdae":
+                cooked += 1
+                meshes += size
+            elif ext in (".dds", ".png", ".jpg", ".dxt"):
+                textures += size
+    return {"meshes": meshes, "textures": textures, "shapes": shapes, "cookedShapes": cooked}
 
 
 def _ground_check(terrain, bundle_dir, progress):

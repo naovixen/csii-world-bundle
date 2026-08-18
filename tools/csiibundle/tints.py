@@ -86,3 +86,47 @@ def apply_reference(base, mask, colors):
         tint = numpy.asarray(colors[i][:3], dtype=numpy.float64)
         out = out * (1.0 - weight) + (out * tint) * weight
     return out
+
+
+# -- baked paint variants ------------------------------------------------------------------------
+
+# The quantisation the bake counts distinct colour sets at (`bake/materials.py`). It is part of
+# the variant contract: an index computed at any other step would land on a different centre.
+VARIANT_QUANT_STEPS = 31
+
+
+def variant_vector(attrs):
+    """One record's `colorSet` as the 9-vector the bake clusters in: three channels x RGB,
+    quantised to `VARIANT_QUANT_STEPS` and back. Alpha and any fourth channel are dropped."""
+    colours = color_set(attrs)
+    return [round(float(c) * VARIANT_QUANT_STEPS) / VARIANT_QUANT_STEPS
+            for colour in colours[:CHANNELS] for c in colour[:3]]
+
+
+def variant_index(attrs, centres):
+    """Which of `paint_variants.json`'s centres this record's paint belongs to.
+
+    `centres` is the prefab's `variants` list — each a `[[r,g,b], [r,g,b], [r,g,b]]`. Nearest in
+    the same squared distance the bake's k-means assignment used, so a consumer's answer and the
+    bake's `counts` agree. Returns 0 when there are no centres, which is the identity variant.
+    """
+    if not centres:
+        return 0
+    vector = variant_vector(attrs)
+    best, best_d = 0, None
+    for index, centre in enumerate(centres):
+        flat = [float(v) for channel in centre for v in channel[:3]]
+        flat += [1.0] * (len(vector) - len(flat))
+        d = sum((a - b) ** 2 for a, b in zip(vector, flat))
+        if best_d is None or d < best_d:
+            best, best_d = index, d
+    return best
+
+
+def variant_key(centre):
+    """The bake's key for one variant centre — how `materials.json`'s `derived.variants` map is
+    indexed. Must stay `sha256(json.dumps(centre))[:12]` over the ROUNDED centre exactly as the
+    file stores it, so this takes the parsed JSON value and re-serialises it the same way."""
+    import hashlib
+    import json
+    return hashlib.sha256(json.dumps(centre).encode("utf-8")).hexdigest()[:12]

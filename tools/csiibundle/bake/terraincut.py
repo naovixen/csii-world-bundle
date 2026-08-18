@@ -270,7 +270,7 @@ def run(context, progress):
             sink.add(verts, tris[pick], uvs[pick], name, normals=normals)
             tris_out += int(pick.sum())
             materials_used.add(name)
-    written = sink.flush(progress)
+    written = sink.flush(progress, jobs=max(1, int(context.options.get("jobs") or 1)))
     side_tris = plane_tris[0] + plane_tris[2]
     side_area = plane_area[0] + plane_area[2]
     total_area = sum(plane_area)

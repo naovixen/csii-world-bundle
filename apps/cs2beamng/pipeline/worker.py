@@ -4,6 +4,12 @@ Started by `Runner` via `multiprocessing.Process(target=main, ...)`. Everything 
 here; the UI process only reads the queue. A stage that raises records `failed` and the build
 stops (a level with a missing stage is not a level); `Cancelled` records `cancelled` and stops
 cleanly; the final message is `done` with the report or `error` with a traceback.
+
+**Stages are skipped when nothing they read has changed** (A4). `state.py` holds the mechanism;
+what lives here is the loop: fingerprint the stage's declared inputs, compare against
+`level_state.json`, and on a match replay its level objects and its `ctx.shared` delta instead
+of running it. `rebuild` (setting) or `--force` bypasses the lot. A stage that read a setting it
+did not declare is NOT recorded — the report says so and the next build re-runs it.
 """
 
 import json
@@ -13,11 +19,12 @@ import signal
 import time
 import traceback
 
+from csiibundle import reader
 from csiibundle.bake.progress import Cancelled
 
-from ..settings import region_of
-from ..stages import BuildContext, all_stages
-from . import history
+from ..settings import SCHEMA as SETTINGS_SCHEMA, region_of
+from ..stages import BuildContext, all_stages, level_of
+from . import history, state
 from .progress import Heartbeat, QueueProgress
 
 
@@ -47,19 +54,64 @@ def main(settings, census, queue, cancel_event, hard_cancel=None):
                        derived_dir=derived_dir, census=census, region=region_of(settings),
                        report=report, jobs=_jobs(settings), shared={})
     ok = True
+    force = bool(settings.get("rebuild", False))
+    previous = None if force else state.load(level_dir)
+    current = state.new_document(settings)
+    manifest = _manifest(settings["bundle"])
+    skipped = {}
     try:
         os.makedirs(level_dir, exist_ok=True)
         _remove_stale_report(level_dir)               # a killed build must not be explained by the previous one's report
-        _clear_generated(level_dir, queue)            # shapes/textures are rewritten whole: no orphans from an older build
+        if force:
+            _clear_generated(level_dir, queue)        # --force is the "start from nothing" path
         for stage in all_stages():
             if not stage.enabled(settings):
                 queue.put({"t": "stage", "stage": stage.key, "status": "skipped", "at": time.time()})
                 continue
             progress.set_stage(stage.key)
+            sig = reason = None
+            if state.incremental(stage) and not force:
+                try:
+                    sig = state.signature(stage, ctx, manifest, current)
+                    fresh, reason = state.check(previous, stage, sig, level_dir)
+                except (OSError, ValueError) as exc:   # a fingerprint that cannot be taken is not a skip
+                    fresh, reason = False, f"could not fingerprint inputs ({exc!r})"
+                if fresh:
+                    result = state.replay(level_dir, stage.key, level_of(ctx), ctx.shared)
+                    if result is not None:
+                        current["stages"][stage.key] = dict((previous.get("stages") or {})[stage.key])
+                        current["stages"][stage.key]["skippedAt"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+                        _merge_report(report, result)
+                        report["stages"][stage.key] = {"seconds": 0.0, "skipped": True, "reason": reason,
+                                                       "result": result}
+                        skipped[stage.key] = reason
+                        queue.put({"t": "stage", "stage": stage.key, "status": "fresh", "seconds": 0.0,
+                                   "summary": f"unchanged, skipped ({reason})", "at": time.time()})
+                        continue
+                    reason = "replay payload unreadable"
+            if any(str(i).startswith("level:") for i in (stage.inputs or ())):
+                # This stage READS the level folder (`validate` does), and only stages that RUN
+                # call `write_objects` — so anything replayed since the last stage that ran is
+                # still missing from disk, and the one closing write at the end of the build
+                # happens after this stage, not before it. A build where `instances` was replayed
+                # after `derived` ran therefore reported "1,159,098 forest items but no Forest
+                # object in the level tree" on a tree that was in fact complete.
+                #
+                # It has to be HERE and not after each replay: a partial tree written mid-loop
+                # differs from the finished one, so every `items.level.json` would be rewritten
+                # twice and a no-op rebuild would churn the very mtimes this stage fingerprints.
+                level_of(ctx).set_stage(None)
+                level_of(ctx).write_objects()
+            recorder = state.Recorder(settings)
+            stage_ctx = ctx._replace(settings=recorder)
+            level_of(ctx).set_stage(stage.key)
+            before = _shared_snapshot(ctx.shared, stage.shared_keys)
             queue.put({"t": "stage", "stage": stage.key, "status": "running", "at": time.time()})
+            if sig is not None and reason:
+                queue.put({"t": "log", "stage": stage.key, "text": f"re-running: {reason}", "at": time.time()})
             started = time.monotonic()
             try:
-                result = stage.run(ctx, progress) or {}
+                result = stage.run(stage_ctx, progress) or {}
             except Cancelled:
                 queue.put({"t": "stage", "stage": stage.key, "status": "cancelled", "at": time.time()})
                 ok = False
@@ -72,6 +124,7 @@ def main(settings, census, queue, cancel_event, hard_cancel=None):
                 report["failed"] = {"stage": stage.key, "error": repr(exc)}
                 break
             seconds = time.monotonic() - started
+            _merge_report(report, result)
             report["stages"][stage.key] = {"seconds": round(seconds, 1), "result": result}
             per_key = result.pop("_history", None) if isinstance(result, dict) else None
             if per_key:                                   # heterogeneous stages learn per sub-key
@@ -79,8 +132,20 @@ def main(settings, census, queue, cancel_event, hard_cancel=None):
                     history.update(key, u, sec)
             else:
                 history.update(stage.key, stage.units(census, settings), seconds)
+            if sig is not None:
+                _record(level_dir, current, stage, sig, recorder, ctx, before, result, seconds, queue, report)
             queue.put({"t": "stage", "stage": stage.key, "status": "done", "seconds": seconds,
                        "summary": _summary(result), "at": time.time()})
+        # The object tree is rewritten whole from the accumulated `Level`, and only the stages
+        # that RUN call `write_objects` themselves — so after a build where a later stage was
+        # replayed rather than run, the last writer's snapshot is missing everything replayed
+        # after it. One final write closes that: it is the same tree either way.
+        level_of(ctx).set_stage(None)
+        level_of(ctx).write_objects()
+        if skipped:
+            report["skippedStages"] = skipped
+        if ok:
+            state.save(level_dir, current)
         report["status"] = "done" if ok else ("cancelled" if "cancelled" in report else "failed")
         report["finishedAt"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         _write_report(level_dir, report, queue)
@@ -98,12 +163,65 @@ def main(settings, census, queue, cancel_event, hard_cancel=None):
 REPORT_NAME = "cs2beamng_report.json"
 
 
-# Folders every build rewrites from scratch. A tile left over from a previous build (a stage
-# since removed, a region change) is not referenced by the new object tree, but BeamNG still
-# mounts and compiles it, and a stale `.cdae` beside a missing `.dae` is a ghost shape.
-# art/textures/ is NOT cleared: `export_texture` rewrites a texture only when its bytes change
-# and the materials stage removes the orphans, so an unchanged texture keeps its mtime and
-# BeamNG keeps its cooked copy — clearing it cost a ~5 min re-cook on every first load.
+# -- the incremental bookkeeping -------------------------------------------------------------------
+
+def _manifest(bundle_dir):
+    """`bundle.json` read once per build; every stage's layer fingerprints resolve through it."""
+    try:
+        return reader.load_manifest(bundle_dir)
+    except (OSError, ValueError):
+        return None
+
+
+def _shared_snapshot(shared, keys):
+    """A shallow copy of the declared `ctx.shared` entries before a stage runs, so its delta can
+    be worked out afterwards. Sets and dicts are copied one level deep because stages mutate
+    them in place (`materials_used.add(...)`)."""
+    out = {}
+    for key in keys or ():
+        value = (shared or {}).get(key)
+        if isinstance(value, (set, frozenset)):
+            out[key] = set(value)
+        elif isinstance(value, dict):
+            out[key] = {k: (set(v) if isinstance(v, (set, frozenset)) else v) for k, v in value.items()}
+        elif value is not None:
+            out[key] = value
+    return out
+
+
+def _record(level_dir, document, stage, sig, recorder, ctx, before, result, seconds, queue, report):
+    """Record what this stage was built from — unless it read a setting it did not declare, in
+    which case it must re-run next build rather than be trusted (that exact miss cost a
+    25-minute build on 2026-08-18)."""
+    missed = state.undeclared(recorder, stage, SETTINGS_SCHEMA)
+    if missed:
+        text = (f"{stage.key}: reads settings it does not declare {missed} - not recorded, so it re-runs "
+                f"next build. Add them to the stage's settings_keys.")
+        queue.put({"t": "log", "stage": stage.key, "text": text, "at": time.time()})
+        report.setdefault("stateWarnings", []).append(text)
+        return
+    try:
+        delta = state.diff_shared(before, ctx.shared or {}, stage.shared_keys)
+        state.write_payload(level_dir, stage.key, level_of(ctx).stage_objects(stage.key), delta, result)
+    except (OSError, ValueError, TypeError) as exc:
+        text = f"{stage.key}: could not write its replay payload ({exc!r}); it will re-run next build"
+        queue.put({"t": "log", "stage": stage.key, "text": text, "at": time.time()})
+        report.setdefault("stateWarnings", []).append(text)
+        return
+    present = [rel for rel in (stage.outputs or ())
+               if os.path.exists(os.path.join(level_dir, *rel.split("/")))]
+    document["stages"][stage.key] = {"signature": sig, "seconds": round(seconds, 1), "outputs": present,
+                                     "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+
+
+# Folders `--force` / `rebuild` empties before starting. **Only on force** since A4: clearing
+# `art/shapes/` on every build threw away every `.cdae` too, and BeamNG's own compiler is built
+# to reuse them (`compileMeshes.lua`: "existing .cdae will be reused. Delete them beforehand if
+# a clean state is required") — that one `rmtree` was the whole 6m26s cook on a rebuild that
+# changed no geometry. The shape-writing stages now sweep their own orphans at the end instead,
+# which is the pattern art/textures/ already used and whose comment explains why: an unchanged
+# file keeps its mtime, so BeamNG keeps its cooked copy in temp/ (load #11 re-cooked all 260
+# textures on every first load because the folder was cleared and rewritten each build).
 GENERATED_DIRS = (("art", "shapes"),)
 
 
@@ -138,6 +256,25 @@ def _write_report(level_dir, report, queue):
             json.dump(report, handle, indent=1, sort_keys=True, default=str)
     except OSError as exc:
         queue.put({"t": "log", "stage": "system", "text": f"could not write {REPORT_NAME}: {exc}", "at": time.time()})
+
+
+def _merge_report(report, result):
+    """Move a stage's `_report` delta into the report proper, and out of its result.
+
+    A stage that writes straight into `ctx.report` loses that write the moment it is SKIPPED: the
+    replay puts back its objects, its `shared` delta and its result, and nothing else. `validate`
+    did exactly that with `report["validation"]`, so an incremental rebuild dropped the level's
+    verdict from the report while still claiming the stage was fresh. Returning the delta instead
+    makes it part of the replayed payload, which is the one thing a skip is guaranteed to restore.
+    """
+    if isinstance(result, dict):
+        # `get`, not `pop`: the replay payload is written from this same dict a few lines later,
+        # and popping the delta out of it is exactly how the verdict failed to survive a skip the
+        # first time. It costs one duplicate copy under `stages.<key>.result`, which is what makes
+        # the payload self-describing.
+        delta = result.get("_report")
+        if isinstance(delta, dict):
+            report.update(delta)
 
 
 def _summary(result):

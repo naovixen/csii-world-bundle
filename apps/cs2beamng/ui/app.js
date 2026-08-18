@@ -461,7 +461,7 @@
       }
       li.className = "stage " + s.status;
       li.querySelector(".t").textContent = s.title;
-      li.querySelector(".phase").textContent = s.status === "running" && s.phase ? `› ${s.phase}` : (s.status === "skipped" ? "skipped" : "");
+      li.querySelector(".phase").textContent = s.status === "running" && s.phase ? `› ${s.phase}` : (s.status === "skipped" ? "skipped" : s.status === "fresh" ? "unchanged" : "");
       const right = li.querySelector(".right");
       if (s.status === "running") {
         right.innerHTML = `<b>${fmtSec(s.elapsed)}</b> · eta ${fmtSec(s.eta)}`;
@@ -476,9 +476,9 @@
       const fill = bar.querySelector(".fill");
       const hasTotal = s.status === "running" && s.phaseTotal;
       bar.className = "bar" + (s.status === "running" && !hasTotal && !s.estimateSeconds ? " indeterminate" : "") +
-        (s.status === "done" ? " done" : s.status === "failed" ? " failed" : s.status === "cancelled" ? " cancelled" : "");
+        (s.status === "done" || s.status === "fresh" ? " done" : s.status === "failed" ? " failed" : s.status === "cancelled" ? " cancelled" : "");
       const live = (s.phaseFraction !== null && s.phaseFraction !== undefined) ? s.phaseFraction : (s.fraction || 0);
-      const frac = s.status === "done" ? 1 : (s.status === "running" ? live : 0);
+      const frac = (s.status === "done" || s.status === "fresh") ? 1 : (s.status === "running" ? live : 0);
       fill.style.width = `${Math.round(frac * 100)}%`;
       const count = li.querySelector(".count");
       if (s.status === "running" && s.phaseTotal) {

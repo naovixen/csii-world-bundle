@@ -28,10 +28,11 @@ import json
 import math
 import os
 import time
+from collections import Counter
 
 import numpy
 
-from .. import bezier, decals, drape, frames, glb, instances, lanes, reader
+from .. import bezier, decals, drape, frames, glb, instances, lanes, lod, reader
 from . import Product, register
 from .roads import load_road_surface
 from .tiles import TileSink
@@ -113,6 +114,7 @@ def run(context, progress):
     # -- 2. bend the decal parts ------------------------------------------------------------
     progress.begin("markings: bend", total=total_records, unit="lanes")
     sources = {}
+    prefab_lods = {}
     blocks = []
     sink = {"blocks": blocks, "instances": [], "tiles_instanced": 0, "tiles_baked": 0, "decal_dropped": 0}
     bent = skipped_region = missing_prefab = missing_mesh = with_colorset = 0
@@ -141,6 +143,7 @@ def run(context, progress):
             hang = lanes.hang_curve(record, entry, curve_length)
             if record.get("colorSet"):
                 with_colorset += 1
+            prefab_lod = _lane_prefab_min_lod(record.get("prefab"), entry, sources, lay, prefab_lods)
             for index in decal_indices:
                 asset_id = parts[index]["assetId"]
                 if asset_id not in sources:
@@ -150,7 +153,13 @@ def run(context, progress):
                 if source is None:
                     missing_mesh += 1
                     continue
+                # The game's limit is a property of the PREFAB (the min over all its meshes,
+                # `NetLaneGeometryData.m_MinLod`), not of the part being bent, so it is stamped on
+                # whatever blocks this bend produced rather than passed down into `bend_part`.
+                first = len(blocks)
                 lanes.bend_part(parts[index], source, curve, spans, curve_length, width_scale, hang, sink)
+                for block in blocks[first:]:
+                    block["min_lod"] = prefab_lod
             bent += 1
     progress.end(f"{bent} lanes bent into {len(blocks)} marking blocks "
                  f"({skipped_region} outside region, {missing_prefab} no prefab, {missing_mesh} no mesh, "
@@ -160,8 +169,10 @@ def run(context, progress):
 
     # -- 3. instance decals -------------------------------------------------------------------
     total_instances = int(((manifest.get("counts") or {}).get("instances")) or 0) or None
-    progress.begin("markings: instance decals", total=total_instances, unit="instances")
+    # prefiltered to decal records, so the manifest's instance count is not the total
+    progress.begin("markings: instance decals", total=None, unit="decals")
     decal_meshes = {}
+    decal_lods = {}
     decal_blocks_road, decal_blocks_ground = [], []
     n_decals = n_decal_missing = n_decal_ranked = 0
     # Collected as we stream (the instance file is read ONCE — 1.2 M records), and turned into
@@ -169,10 +180,10 @@ def run(context, progress):
     # until later anyway.
     decal_priorities_seen = set()
     seen = 0
-    for record in instances.read_instances(bundle):
+    for record in instances.read_instances(bundle, kind="decal"):
         seen += 1
-        if seen % 20000 == 0:
-            progress.advance(20000)
+        if seen % 2000 == 0:
+            progress.advance(2000)
             progress.check()
         if record.get("kind") != "decal":
             continue
@@ -200,12 +211,13 @@ def run(context, progress):
         priority = instances.decal_priority(record)
         if priority is not None:
             decal_priorities_seen.add(priority)
+        decal_lod = _decal_min_lod(asset_id, quads, decal_lods)
         for corners, uvs, material, node_matrix in quads:
             world = frames.transform_points(matrix @ node_matrix, corners)
             v, t, uv = _subdivide_quad(world, uvs, DECAL_STEP)
             target.append({"verts": v, "tris": t, "uvs": uv[t], "material": material,
                            "drape_eps": decals.LIFT["instance_decal"], "half_height": half,
-                           "decal_priority": priority})
+                           "decal_priority": priority, "min_lod": decal_lod})
         n_decals += 1
     progress.end(f"{n_decals} decal instances as {len(decal_blocks_road) + len(decal_blocks_ground)} blocks "
                  f"({n_decal_missing} without a quad mesh)")
@@ -247,6 +259,7 @@ def run(context, progress):
     # -- 5. tiles -------------------------------------------------------------------------------
     resolved_specs = _material_specs(derived, bundle)
     tile_sink = TileSink(tile, PRODUCT_NAME, out_dir, resolved_specs)
+    lod_histogram = Counter()
     # Winding. A `lanes.part_source` block keeps the part .glb's triangle order in the bundle
     # frame (the X un-mirror flips orientation), so the bundle-frame face order is the REVERSE
     # of that — the same reversal the producer applies when it writes a .glb (§2.2). Draped
@@ -257,11 +270,16 @@ def run(context, progress):
             continue
         material = b["material"] if isinstance(b["material"], str) else str(b["material"])
         tris, uvs = _face_up(b["verts"], b["tris"], b["uvs"])
-        tile_sink.add(b["verts"], tris, uvs, material)
+        min_lod = b.get("min_lod")
+        tile_sink.add(b["verts"], tris, uvs, material, min_lod=min_lod)
+        lod_histogram[255 if min_lod is None else int(min_lod)] += len(tris)
+    stats["minLodTriangles"] = {str(k): int(v) for k, v in sorted(lod_histogram.items())}
+    stats["minLodUnknownTriangles"] = int(lod_histogram.get(255, 0))
     tiles = tile_sink.tiles()
     progress.begin("markings: tiles", total=len(tiles), unit="tiles")
     uri_base = _texture_uri_base(out_dir, bundle)
-    written = tile_sink.flush(progress, texture_uri_base=uri_base)
+    written = tile_sink.flush(progress, texture_uri_base=uri_base,
+                              jobs=max(1, int(options.get("jobs") or 1)))
     progress.end(f"{written['files']} tiles, {written['verts']:,} vertices, {written['tris']:,} triangles")
     stats.update({"tiles": written["files"], "verts": written["verts"], "tris": written["tris"],
                   "_tiles": written["tiles"], "seconds": round(time.monotonic() - started, 1)})
@@ -323,4 +341,53 @@ def _texture_uri_base(out_dir, bundle):
 
 
 # version 2: decal instances take the game's own `decalPriority` draw order (audit §57.2).
-register(Product(PRODUCT_NAME, INPUTS, "markings/", run, version=2, options=("ground",)))
+# -- the game's own draw-distance limit, per lane prefab and per decal instance -------------------
+#
+# CS2 culls a marking by its PREFAB's `NetLaneGeometryData.m_MinLod` (`csiibundle.lod`), which is
+# the min over the prefab's meshes of the flat-thing rule on `Size(bounds).xy` plus that mesh's
+# triangle-area bias. A tile merges thousands of markings, so the limit rides into the tile with
+# each primitive (`TileSink.add(min_lod=...)`) and a consumer rebuilds the visible set per
+# distance. Without this a lane line drawn to 406 m in CS2 is drawn to the whole view distance.
+
+def _lane_prefab_min_lod(prefab, entry, sources, lay, cache):
+    """`NetLaneGeometryData.m_MinLod` for one lane prefab — the min over ALL its parts, decal and
+    non-decal alike, because that is the set the game takes the min over."""
+    if prefab in cache:
+        return cache[prefab]
+    meshes = []
+    for part in entry.get("parts", []) or []:
+        asset_id = part.get("assetId")
+        if not asset_id:
+            continue
+        if asset_id not in sources:
+            path = os.path.join(lay.lane_meshes, asset_id + ".glb")
+            sources[asset_id] = lanes.part_source(glb.parse_glb(path)) if os.path.isfile(path) else None
+        source = sources[asset_id]
+        if source is None or len(source["tris"]) == 0:
+            continue
+        verts = numpy.asarray(source["verts"], dtype=numpy.float64)
+        size = verts.max(axis=0) - verts.min(axis=0)
+        meshes.append((size, lod.surface_area(verts, source["tris"])))
+    answer = lod.lane_min_lod(meshes) if meshes else None
+    cache[prefab] = answer
+    return answer
+
+
+def _decal_min_lod(asset_id, quads, cache):
+    """A placed decal is an OBJECT, so it takes the object rule (`lod.mesh_min_lod`): its own
+    bounds, clamped axis by axis, with the surface-area bias."""
+    if asset_id in cache:
+        return cache[asset_id]
+    lo = hi = None
+    area = 0.0
+    for corners, uvs, _material, node_matrix in quads:
+        pts = frames.transform_points(numpy.asarray(node_matrix, dtype=numpy.float64), corners)
+        lo = pts.min(axis=0) if lo is None else numpy.minimum(lo, pts.min(axis=0))
+        hi = pts.max(axis=0) if hi is None else numpy.maximum(hi, pts.max(axis=0))
+        area += lod.surface_area(pts, numpy.array([[0, 1, 2], [0, 2, 3]], dtype=numpy.int64)) if len(pts) >= 4 else 0.0
+    answer = None if lo is None else lod.mesh_min_lod(hi - lo, area)
+    cache[asset_id] = answer
+    return answer
+
+
+register(Product(PRODUCT_NAME, INPUTS, "markings/", run, version=3, options=("ground", "region")))

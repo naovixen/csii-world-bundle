@@ -923,7 +923,16 @@ Conventions, all frozen in v1:
   their local transforms, one primitive per material.
 - **LODs** — no `MSFT_lod`. LOD *n* > 0 is a scene node named `<assetId>_LOD<n>`; LOD 0 is the
   root node with no suffix. A consumer that ignores LODs renders only the unsuffixed node.
-  `ripOptions.lodCap` says how many were exported.
+  `ripOptions.lodCap` says how many were exported (0 on every rip so far: the producer ships the
+  highest detail level and a consumer generates its own ladder, `csiibundle.bake.lods`).
+- **How far the game draws it is derivable from this file alone** — no bundle field carries it,
+  and none needs to. CS2 computes a mesh's cull distance from **its bounding box and the sum of
+  its triangle areas**, both of which are here; `csiibundle.lod` ports the arithmetic
+  (`RenderingUtils.CalculateLodLimit` and `MeshSystem`'s surface-area bias, audit §62). The rule
+  reduces to *"draw it until its rendering size covers `H / (1080 × levelOfDetail)` pixels"* — the
+  field of view cancels — which is **1.43 px at 1080p** on the game's High preset. A consumer that
+  needs a cull distance should call that rather than invent a global: on the reference city the
+  game's own answer is a median 1,024 m for a prop and 7,301 m for a building.
 - **Materials — the join key is the glTF material's `name`.** It must be a key in
   `materials.json`. The glTF material's own PBR fields are a best-effort approximation for
   standalone viewing; `materials.json` is the authoritative description.
@@ -2192,8 +2201,19 @@ Rules:
 - **Tiles.** World-space products are tiled on a square grid of `options.tile` metres
   (default 256) anchored at bundle-frame `(0, 0)`: `tx = floor(x / tile)`, `tz = floor(z /
   tile)`, `assetId = "<product>_<tx>_<tz>"` (negative indices keep their sign; the id pattern
-  of §4 allows `-`). One primitive per (material, paint variant) per tile. Empty tiles are not
-  written; `products.<name>.tiles` lists the ones that are.
+  of §4 allows `-`). One primitive per (material, paint variant, **draw-distance limit**) per
+  tile. Empty tiles are not written; `products.<name>.tiles` lists the ones that are.
+- **A primitive's material name carries the game's own draw-distance limit** *(2026-08-18,
+  `markings` v3 / `lanegeometry` v2 / `areas` v2)*. A tile merges thousands of separately-culled
+  things into one mesh, so the limit CS2 applies to each of them rides in the glTF material name
+  as a `#L<n>` suffix — `"LaneLine#L135"`, `"LaneLine@v3a1f#L135"` — where `n` is the integer
+  `m_MinLod` `csiibundle.lod` computes for that primitive (the composition rule for a road, the
+  lane rule for a marking or a fence, the per-triangle area rule for paint). The suffix is
+  **optional**: a primitive without one is one the game never distance-culls (`terraincut`, which
+  is the ground) or one with no counterpart in CS2 at all (`skirts`). Parse it with
+  `csiibundle.bake.tiles.split_material_name`, which returns `(material, variant, minLod)`; a
+  consumer that ignores it gets exactly the pre-2026-08-18 behaviour. `#` cannot occur in a CS2
+  material name, which is why this needs no sidecar and no ordering assumption.
 - **Never invents.** Every product is a deterministic function of the bundle and the recorded
   options; the bake refuses a bundle that fails `tools/validate_bundle.py` and inherits every
   §10 declared gap unchanged.

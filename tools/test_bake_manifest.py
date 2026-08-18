@@ -5,8 +5,10 @@ Runs against `docs/example-bundle` copied into a temp dir (so nothing under docs
 stub product registered for the test — the real products arrive in later phases and share this
 machinery. Plain `python tools/test_bake_manifest.py`; stdlib + numpy only.
 """
+import inspect
 import json
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -140,6 +142,23 @@ def main():
 
         # 9. the example bundle itself must not have gained a derived/ dir
         check(not os.path.isdir(os.path.join(EXAMPLE, "derived")), "docs/example-bundle untouched")
+
+        # 10. every option a REAL product reads must be declared in its `Product.options`
+        #
+        # `Product.options` is what makes an option change re-bake that product. An option the
+        # product's code reads but does not declare is a silent no-op: the bake logs
+        # `fresh (inputs unchanged), skipped` and the build ships the previous bytes with no
+        # error anywhere. `paint_kinds` did exactly that on 2026-08-18 - the setting was wired
+        # end to end, the level rebuilt in 25 minutes, and 448k props still drew the untinted
+        # albedo. Same failure shape as the `version` one, and the mechanism existed both times.
+        framework = set(bake_manifest.SHAPING_OPTIONS) | {"jobs"}   # reshape everything / split the work
+        reads = re.compile(r'options\.get\(\s*"([a-z_]+)"')
+        for name, product in bake.products().items():
+            source = inspect.getsource(inspect.getmodule(product.run))
+            undeclared = sorted(set(reads.findall(source)) - framework - set(product.options))
+            check(not undeclared,
+                  f"product {name!r} declares every option it reads"
+                  + (f" - reads {undeclared}, declares {list(product.options)}" if undeclared else ""))
 
     print()
     if failures:

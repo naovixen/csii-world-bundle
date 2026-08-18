@@ -174,8 +174,55 @@ def real():
         check(not os.path.isdir(os.path.join(BUNDLE, "derived")) or True, "real bundle's own derived/ untouched by --derived-dir")
 
 
+def paint_factor():
+    """A paint variant's `baseColorFactor` stand-in (A4 §2.4): the identity it rests on, and the
+    two ends of the distribution.
+
+    The claim is that §7.2's tint is a **pure per-texel multiplier** — `apply_reference` chains
+    `lerp(base, base*c, w)` and each step is `base*((1-w) + w*c)`, so the albedo never enters the
+    factor. If that is wrong, a single constant could not reproduce even the uniform case, and
+    every error figure the bake records would be measuring the wrong thing.
+    """
+    import numpy
+
+    from csiibundle import tints
+    from csiibundle.bake import materials as bake_materials
+
+    print("paint variants as a baseColorFactor")
+    rng = numpy.random.default_rng(7)
+    base = rng.random((32, 32, 3))
+    colours = [(0.6, 0.3, 0.2, 1.0), (0.9, 0.9, 0.5, 1.0), (0.2, 0.4, 0.8, 1.0)]
+
+    # 1. the identity: tint == base * M, whatever the albedo
+    mask = rng.random((32, 32, 3))
+    exact = tints.apply_reference(base, mask, colours)
+    m = bake_materials._tint_multiplier(mask, colours)
+    check(numpy.abs(exact - base * m).max() < 1e-12, "the tint is exactly base x M(texel)")
+    other = rng.random((32, 32, 3))
+    check(numpy.abs(tints.apply_reference(other, mask, colours) - other * m).max() < 1e-12,
+          "and M does not depend on the albedo")
+
+    # 2. a UNIFORM mask: one constant reproduces it exactly, so the texture is pure waste
+    flat = numpy.zeros((32, 32, 3))
+    flat[:, :, 0] = 1.0                                # channel 0 everywhere, nothing else
+    m_flat = bake_materials._tint_multiplier(flat, colours)
+    factor = bake_materials._best_factor(m_flat, numpy.ones((32, 32)))
+    check(numpy.abs(m_flat - factor[None, None, :]).max() < 1e-12,
+          "a uniform colour mask is reproduced by one factor exactly")
+
+    # 3. a mask that SELECTS between two very different colours cannot be: the error must be big
+    split = numpy.zeros((32, 32, 3))
+    split[:16, :, 0] = 1.0
+    split[16:, :, 2] = 1.0
+    m_split = bake_materials._tint_multiplier(split, colours)
+    factor = bake_materials._best_factor(m_split, numpy.ones((32, 32)))
+    worst = float(numpy.abs(m_split - factor[None, None, :]).max())
+    check(worst > 0.2, f"a two-colour mask cannot be one factor (worst {worst:.3f})")
+
+
 def main():
     versions()
+    paint_factor()
     example()
     real()
     print()

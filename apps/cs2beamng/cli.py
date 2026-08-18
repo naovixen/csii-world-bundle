@@ -23,6 +23,8 @@ def _parser():
     build.add_argument("--out", default=None, help="level output directory (default: <BeamNG userfolder>/levels/<name>)")
     build.add_argument("--set", action="append", default=[], metavar="KEY=VALUE", help="override a setting")
     build.add_argument("--settings", default=None, help="settings JSON file")
+    build.add_argument("--force", action="store_true",
+                       help="rebuild every stage, ignoring level_state.json (same as --set rebuild=true)")
     gui = sub.add_parser("gui", help="open the application (the default)")
     gui.add_argument("--browser", nargs="?", const="default", default=None, metavar="NAME",
                      help="open in a browser instead of a native window: chrome, edge, firefox, or default (system); "

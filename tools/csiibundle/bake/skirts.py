@@ -44,30 +44,31 @@ def run(context, progress):
         progress.log("skirts: no terrain layer — bands stay as authored (1 m plinths)")
 
     # pass 1: parent flags
-    progress.begin("skirts: parents", total=total, unit="instances")
+    # the stream is prefiltered to buildings, so the manifest's instance count is not the total
+    progress.begin("skirts: parents", total=None, unit="buildings")
     parents = {}
     seen = 0
-    for record in instances.read_instances(bundle):
+    for record in instances.read_instances(bundle, kind="building"):
         seen += 1
-        if seen % 50000 == 0:
-            progress.advance(50000)
+        if seen % 5000 == 0:
+            progress.advance(5000)
             progress.check()
         if record.get("kind") == "building" and "id" in record:
             parents[record["id"]] = (record.get("attrs") or {}).get("elevationFlags")
     progress.end(f"{len(parents)} building records indexed")
 
     # pass 2: place + drop
-    progress.begin("skirts: place", total=total, unit="instances")
+    progress.begin("skirts: place", total=None, unit="buildings")
     specs = _material_specs(derived, bundle)
     sink = TileSink(tile, PRODUCT_NAME, out_dir, specs)
     skirt_cache = {}
     placed = no_file = not_ground = 0
     verts_dropped = 0
     seen = 0
-    for record in instances.read_instances(bundle):
+    for record in instances.read_instances(bundle, kind="building"):
         seen += 1
-        if seen % 50000 == 0:
-            progress.advance(50000)
+        if seen % 5000 == 0:
+            progress.advance(5000)
             progress.check()
         if record.get("kind") != "building":
             continue
@@ -118,11 +119,12 @@ def run(context, progress):
                  f"{verts_dropped} bottom vertices dropped to the ground")
     tiles = sink.tiles()
     progress.begin("skirts: tiles", total=len(tiles), unit="tiles")
-    written = sink.flush(progress, texture_uri_base=_texture_uri_base(out_dir, bundle))
+    written = sink.flush(progress, texture_uri_base=_texture_uri_base(out_dir, bundle),
+                        jobs=max(1, int(options.get("jobs") or 1)))
     progress.end(f"{written['files']} tiles, {written['tris']:,} triangles")
     return {"placed": placed, "noSkirtFile": no_file, "notOnGround": not_ground, "verticesDropped": verts_dropped,
             "tiles": written["files"], "tris": written["tris"], "_tiles": written["tiles"],
             "seconds": round(time.monotonic() - started, 1)}
 
 
-register(Product(PRODUCT_NAME, INPUTS, "skirts/", run, options=("ground",)))
+register(Product(PRODUCT_NAME, INPUTS, "skirts/", run, options=("ground", "region")))

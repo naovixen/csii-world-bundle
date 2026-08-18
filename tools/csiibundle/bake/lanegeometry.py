@@ -29,7 +29,7 @@ from collections import Counter
 
 import numpy
 
-from .. import bezier, glb, lanes, reader
+from .. import bezier, glb, lanes, lod, reader
 from . import Product, register
 from .markings import _in_region, _material_specs, _texture_uri_base
 from .tiles import TileSink
@@ -72,6 +72,7 @@ def run(context, progress):
 
     progress.begin("lanegeometry: bend", total=total_records, unit="lanes")
     sources = {}
+    prefab_lods = {}
     per_category = Counter()
     placements = []                                # (assetId, category, prefab, matrix)
     baked_blocks = []                              # per-vertex bent tiles
@@ -104,6 +105,9 @@ def run(context, progress):
             width_scale = record.get("widthScale", [1.0, 1.0])
             hang = lanes.hang_curve(record, entry, curve_length)
             sink = {"blocks": [], "instances": [], "tiles_instanced": 0, "tiles_baked": 0, "decal_dropped": 0}
+            # The game's own limit for this fence / cable / kerb: the min over the PREFAB's
+            # meshes (`NetLaneGeometryData.m_MinLod`), stamped on everything this record produces.
+            prefab_lod = _prefab_min_lod(record.get("prefab"), entry, sources, lay, prefab_lods)
             for index in solid:
                 asset_id = parts[index]["assetId"]
                 if asset_id not in sources:
@@ -128,10 +132,12 @@ def run(context, progress):
                     for m_index in numpy.unique(tri_mat):
                         rows = numpy.nonzero(tri_mat == m_index)[0]
                         baked_blocks.append({"verts": world, "tris": src["tris"][rows], "uvs": src["uvs"][rows],
-                                             "material": src["materials"][int(m_index)], "category": category})
+                                             "material": src["materials"][int(m_index)], "category": category,
+                                             "min_lod": prefab_lod})
                     sheared += 1
             for block in sink["blocks"]:
                 block["category"] = category
+                block["min_lod"] = prefab_lod
                 baked_blocks.append(block)
             per_category[category] += 1
             bent += 1
@@ -153,15 +159,39 @@ def run(context, progress):
     # -- baked tiles ----------------------------------------------------------------------------
     specs = _material_specs(derived, bundle)
     tile_sink = TileSink(tile, PRODUCT_NAME, out_dir, specs)
+    lod_histogram = Counter()
     tris_total = 0
     dropped_budget = 0
     tris_by_category = Counter()
-    for block in baked_blocks:
+    dropped_by_category = Counter()
+    # **What the budget spends itself on is the GAME's ranking, not the file's order.** Dropping
+    # blocks as they arrive once a running total is exceeded cuts the city geographically — the
+    # last streets read get no fences at all — which looks like a bug rather than a budget. CS2
+    # already ranks this furniture by how far it draws it (`NetLaneGeometryData.m_MinLod`, the
+    # lane rule in `csiibundle.lod`), so the budget keeps the blocks the game draws FURTHEST and
+    # drops the ones it culls soonest, spread over the whole map. Ties keep the file's own order,
+    # so the result does not depend on the sort being unstable.
+    order = sorted(range(len(baked_blocks)),
+                   key=lambda i: (-(baked_blocks[i].get("min_lod") if baked_blocks[i].get("min_lod")
+                                    is not None else 255), i))
+    kept = set()
+    if max_tris is not None:
+        running = 0
+        for i in order:
+            n = len(baked_blocks[i]["tris"])
+            if n == 0:
+                continue
+            if running + n > int(max_tris):
+                dropped_budget += n
+                dropped_by_category[baked_blocks[i].get("category", "lane")] += n
+                continue
+            running += n
+            kept.add(i)
+    for index, block in enumerate(baked_blocks):
         n = len(block["tris"])
         if n == 0:
             continue
-        if max_tris is not None and tris_total + n > int(max_tris):
-            dropped_budget += n
+        if max_tris is not None and index not in kept:
             continue
         material = block["material"] if isinstance(block["material"], str) else str(block["material"])
         # bundle-frame face order is the reverse of the part .glb's (see markings._face_up's note);
@@ -169,21 +199,57 @@ def run(context, progress):
         tris = numpy.asarray(block["tris"], dtype=numpy.int64)[:, [0, 2, 1]]
         uvs = numpy.asarray(block["uvs"], dtype=numpy.float64)
         uvs = uvs[:, [0, 2, 1]] if uvs.ndim == 3 else uvs
-        tile_sink.add(block["verts"], tris, uvs, material)
+        min_lod = block.get("min_lod")
+        tile_sink.add(block["verts"], tris, uvs, material, min_lod=min_lod)
+        lod_histogram[255 if min_lod is None else int(min_lod)] += n
         tris_total += n
         tris_by_category[block.get("category", "lane")] += n
     tiles = tile_sink.tiles()
     progress.begin("lanegeometry: tiles", total=len(tiles), unit="tiles")
-    written = tile_sink.flush(progress, texture_uri_base=_texture_uri_base(out_dir, bundle))
+    written = tile_sink.flush(progress, texture_uri_base=_texture_uri_base(out_dir, bundle),
+                              jobs=max(1, int(options.get("jobs") or 1)))
     progress.end(f"{written['files']} tiles, {written['tris']:,} triangles baked "
                  f"({dropped_budget:,} dropped by lane_max_tris)" if max_tris else
                  f"{written['files']} tiles, {written['tris']:,} triangles baked")
     if dropped_budget:
-        progress.log(f"lanegeometry: {dropped_budget:,} triangles dropped by lane_max_tris={max_tris}")
+        progress.log(f"lanegeometry: {dropped_budget:,} triangles dropped by lane_max_tris={max_tris} "
+                     f"(the lowest `m_MinLod` first — what CS2 culls soonest): "
+                     + ", ".join(f"{k} {v:,}" for k, v in sorted(dropped_by_category.items())))
     return {"lanes": bent, "byCategory": dict(per_category), "placements": len(placements),
             "placementsUniform": uniform_count, "shearedTiles": sheared, "bakedTris": written["tris"],
             "bakedTrisByCategory": dict(tris_by_category), "droppedTris": dropped_budget,
+            "droppedTrisByCategory": dict(dropped_by_category), "laneMaxTris": max_tris,
             "tiles": written["files"], "_tiles": written["tiles"], "seconds": round(time.monotonic() - started, 1)}
 
 
-register(Product(PRODUCT_NAME, INPUTS, "lanegeometry/", run))
+def _prefab_min_lod(prefab, entry, sources, lay, cache):
+    """`NetLaneGeometryData.m_MinLod` for one lane prefab: the min over ALL its part meshes of the
+    flat-thing rule on `Size(bounds).xy` with that mesh's triangle-area bias (`csiibundle.lod`).
+
+    The same function as `markings._lane_prefab_min_lod` and for the same reason — the two
+    products split one catalogue between them (decal parts / solid parts) but the game's limit is
+    a property of the whole prefab, so both take the min over every part.
+    """
+    if prefab in cache:
+        return cache[prefab]
+    meshes = []
+    for part in entry.get("parts", []) or []:
+        asset_id = part.get("assetId")
+        if not asset_id:
+            continue
+        if asset_id not in sources:
+            path = os.path.join(lay.lane_meshes, asset_id + ".glb")
+            sources[asset_id] = lanes.part_source(glb.parse_glb(path)) if os.path.isfile(path) else None
+        source = sources[asset_id]
+        if source is None or len(source["tris"]) == 0:
+            continue
+        verts = numpy.asarray(source["verts"], dtype=numpy.float64)
+        meshes.append((verts.max(axis=0) - verts.min(axis=0), lod.surface_area(verts, source["tris"])))
+    answer = lod.lane_min_lod(meshes) if meshes else None
+    cache[prefab] = answer
+    return answer
+
+
+# version 2: tile primitives carry the game's per-primitive draw-distance limit (`#L<n>`)
+register(Product(PRODUCT_NAME, INPUTS, "lanegeometry/", run, version=2,
+                 options=("lane_parts", "lane_max_tris", "region")))

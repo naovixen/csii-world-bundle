@@ -120,12 +120,37 @@ def polygon_area(poly):
     return 0.5 * s
 
 
+# Below this the three points are collinear in plan — the plane through them is vertical and
+# `y = p·x + q·z + r` cannot express it. The direct solve divides by exactly this quantity, so it
+# hands those cases back to `lstsq`, which answers with the minimum-norm fit it always did.
+PLAN_DEGENERATE = 1e-12
+
+
 def plane_through(points):
     """Affine `(p, q, r)` with `y ≈ p·x + q·z + r` fitted through `(x, y, z)` points.
 
     Exact for three points (the terrain triangle's own plane) and least-squares for four (the
     station quad's lane surface, whose corners are near-coplanar but need not be exactly so).
+
+    **Three points take the closed form.** `clip_triangle` and `band_halfplanes` call this 1.72
+    million times on a full-city cut, and a 3×3 system through `numpy.linalg.lstsq` — an SVD, two
+    array builds and a `numpy.ones` per call — was 71 s of the product's 128 s. Three points
+    determine the plane exactly, so there is nothing for a least-squares solver to do: the normal
+    is `(p1-p0) × (p2-p0)`, and its Y component is twice the signed plan area, which is the same
+    quantity the degenerate case turns on. Four points still need the fit and still get it.
     """
+    if len(points) == 3:
+        (x0, y0, z0), (x1, y1, z1), (x2, y2, z2) = (
+            (float(q[0]), float(q[1]), float(q[2])) for q in points)
+        ux, uy, uz = x1 - x0, y1 - y0, z1 - z0
+        vx, vy, vz = x2 - x0, y2 - y0, z2 - z0
+        nx = uy * vz - uz * vy
+        ny = uz * vx - ux * vz          # = 2 * signed plan area
+        nz = ux * vy - uy * vx
+        if abs(ny) > PLAN_DEGENERATE:
+            p = -nx / ny
+            q = -nz / ny
+            return p, q, y0 - p * x0 - q * z0
     pts = numpy.asarray(points, dtype=numpy.float64)
     a = numpy.stack((pts[:, 0], pts[:, 2], numpy.ones(len(pts))), axis=-1)
     sol, *_ = numpy.linalg.lstsq(a, pts[:, 1], rcond=None)

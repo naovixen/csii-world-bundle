@@ -30,7 +30,37 @@ class Level:
         self._groups = {}          # tuple(path) -> list of objects (dicts) in order
         self._group_meta = {}      # tuple(path) -> extra fields on the SimGroup itself
         self._ids = set()
+        self._stage = None         # which build stage is adding right now (pipeline/state.py)
+        self._by_stage = {}        # stage key -> [[group path, object], ...] it added
         os.makedirs(self.dir, exist_ok=True)
+
+    # -- stage attribution ---------------------------------------------------------------------
+    #
+    # Every stage appends to this one tree and each rewrites `main/` whole, so a stage the worker
+    # SKIPS would silently drop its objects from the level. `set_stage` tags what each stage adds
+    # and `replay` puts a skipped one's objects back, byte for byte (persistentIds included, so
+    # a rebuild stays a diff).
+
+    def set_stage(self, key):
+        self._stage = key
+
+    def stage_objects(self, key):
+        """`[[group path, object], ...]` this stage added, in order."""
+        return self._by_stage.get(key) or []
+
+    def replay(self, key, entries):
+        """Re-add a skipped stage's objects. The dicts already carry their persistentId and
+        `__parent`, so this is an append, not a re-derivation."""
+        for path, obj in entries:
+            path = self.group(tuple(path))
+            pid = obj.get("persistentId")
+            if pid in self._ids:
+                raise ValueError(f"replay of stage {key!r}: duplicate persistentId for {obj.get('name')!r}")
+            if pid:
+                self._ids.add(pid)
+            self._groups[path].append(dict(obj))
+        self._by_stage[key] = [[list(p), o] for p, o in entries]
+        return len(entries)
 
     # -- ids and paths -------------------------------------------------------------------------
 
@@ -67,16 +97,22 @@ class Level:
         self._ids.add(obj["persistentId"])
         obj["__parent"] = path[-1] if path else "MissionGroup"
         self._groups[path].append(obj)
+        self._by_stage.setdefault(self._stage, []).append([list(path), obj])
         return obj
 
     def write_objects(self):
-        """Write `main/**/items.level.json`. Returns the number of objects written."""
+        """Write `main/**/items.level.json`. Returns the number of objects written.
+
+        The tree is still rewritten WHOLE — a group a build no longer produces must not survive —
+        but file by file and **only where the bytes differ**, and the sweep of what is no longer
+        produced happens after. `rmtree` + rewrite touched every mtime on every build, which is
+        exactly what made the validator (whose input is the level folder) unable to tell a no-op
+        rebuild from a real one.
+        """
         main = self.path("main")
-        if os.path.isdir(main):
-            shutil.rmtree(main)                          # the tree is rewritten whole: no stale groups from an older build
         os.makedirs(main, exist_ok=True)
         root = {"name": "MissionGroup", "class": "SimGroup", "persistentId": self.pid("MissionGroup"), "enabled": "1"}
-        _write_lines(os.path.join(main, "items.level.json"), [root])
+        files = {os.path.join(main, "items.level.json"): [root]}
         count = 0
         # every group's own file lists its child groups first (BeamNG's order), then its objects
         by_parent = {}
@@ -92,10 +128,25 @@ class Level:
             children.extend(self._groups.get(path, []))
             if not children:
                 continue
-            directory = os.path.join(main, "MissionGroup", *path)
-            os.makedirs(directory, exist_ok=True)
-            _write_lines(os.path.join(directory, "items.level.json"), children)
+            files[os.path.join(main, "MissionGroup", *path, "items.level.json")] = children
             count += len(self._groups.get(path, []))
+        for full, objects in files.items():
+            os.makedirs(os.path.dirname(full), exist_ok=True)
+            _write_lines_if_changed(full, objects)
+        # anything under main/ this build did not produce is a group that no longer exists
+        for root_dir, dirs, names in os.walk(main, topdown=False):
+            for name in names:
+                full = os.path.join(root_dir, name)
+                if full not in files:
+                    try:
+                        os.remove(full)
+                    except OSError:
+                        pass
+            for name in dirs:
+                try:
+                    os.rmdir(os.path.join(root_dir, name))      # only succeeds when it is empty
+                except OSError:
+                    pass
         return count
 
     # -- materials, textures, info -------------------------------------------------------------
@@ -151,11 +202,19 @@ class Level:
         return path
 
 
-def _write_lines(path, objects):
-    with open(path, "w", encoding="utf-8", newline="\n") as handle:
-        for obj in objects:
-            handle.write(json.dumps(obj, separators=(",", ":"), ensure_ascii=False))
-            handle.write("\n")
+def _write_lines_if_changed(path, objects):
+    """One `items.level.json` — one JSON object per line — written only when it differs."""
+    raw = "".join(json.dumps(obj, separators=(",", ":"), ensure_ascii=False) + "\n" for obj in objects).encode("utf-8")
+    try:
+        if os.path.isfile(path) and os.path.getsize(path) == len(raw):
+            with open(path, "rb") as handle:
+                if handle.read() == raw:
+                    return False
+    except OSError:
+        pass
+    with open(path, "wb") as handle:
+        handle.write(raw)
+    return True
 
 
 def read_objects(level_dir):

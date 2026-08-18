@@ -315,7 +315,7 @@ Priority is "how visible is the divergence" × "how likely we invented something
   (the game hits the same problem and solves it in an unreadable shader); the depth-based
   appearance is the game's verbatim; `seaLevel` is already documented as a datum.
 
-### 7. Instances: trees, props, buildings — WORKED 2026-08-17 (audit §57.1); one gap filed, not built
+### 7. Instances: trees, props, buildings — WORKED 2026-08-17 (audit §57.1); the gap it filed was CLOSED 2026-08-18 by §62, see area 9
 - **Game:** `Game.Rendering.RenderingUtils` (`CalculateLodParameters`/`CalculateLod`/
   `CalculateLodLimit`), `BatchInstanceSystem`, `BatchDataSystem`.
 - **The LOD rule is exact and now derived**: `asint(x) >> 23` is the IEEE-754 exponent, so the
@@ -328,6 +328,10 @@ Priority is "how visible is the divergence" × "how likely we invented something
   generating the ladder is right; leaving the THRESHOLDS to a tuned global is not. The BeamNG app
   culls with `cull_px` (6/10/16/24 across presets) where CS2 states a **per-prefab** answer the
   rule above converts to a real distance.
+  > **CLOSED 2026-08-18 (§62.3), and it never needed the producer.** `m_MinLod`'s inputs are the
+  > mesh's own bounds and its triangle area, both of which the `.glb` already carries;
+  > `csiibundle.lod` recomputes the game's answer per prefab, and `cull_px` is DELETED (a floor of
+  > 10 px over a per-shape 1.6 px is the same tuned global wearing a new name).
 - **Not re-litigated:** tree state → mesh choice (§15), sub-object composition (§10), the
   `colorSet` colour-variation path (§7.2, §44) — settled earlier, re-checked for contradictions.
 
@@ -350,6 +354,27 @@ Priority is "how visible is the divergence" × "how likely we invented something
   `RenderedArea.m_RendererPriority` takes **13 distinct values from −122 to 42** on the same city.
   The field still belongs in the bundle — it is the game's own answer and a modded asset may use
   the range — it simply unblocks nothing.
+
+### 9. Objects: LOD thresholds, mesh state, paint, lights — WORKED 2026-08-18 as the **A3 parity gate** (audit §62); two residuals open
+- **Game:** `Game.Rendering.BatchInstanceSystem.UpdateObjectInstances`, `BatchDataHelpers`,
+  `Game.Prefabs.ObjectInitializeSystem` / `MeshSystem`, `Game.Rendering.PreCullingSystem`,
+  `MeshColorSystem`. **`ObjectGeometrySystem` does not exist** — the plan named it, the type list
+  has no such thing; the object side is spread over the five above.
+- **§57.1's filed producer gap is CLOSED without a producer change.** The LOD limit's two inputs
+  are `MathUtils.Size(renderPrefab.bounds)` and `Geometry.CalcSurfaceArea()` — both are the
+  `.glb`'s own vertices. `tools/csiibundle/lod.py` ports the whole chain; the fov cancels, so
+  CS2's rule is "draw it until its rendering size covers 1.43 px at 1080p" on the game's High
+  preset. Measured over all 5,591 meshes: median cull 1,024 m for a prop, 7,301 m for a building.
+- **Groundcover has no counterpart at all** — no `GroundCover`, `DetailMesh` or grass prefab in
+  `Game.dll`. Kept as declared BeamNG dressing, default changed to OFF.
+- **Residual 1 (consumer, not built): the 1,896 emissive colour slots.** Neon signs, traffic
+  signals, brake lamps. They are material state, not lights (`csiibundle.lights.is_colour_slot`),
+  and BeamNG's counterpart is the `nightEmissive`/`nightEmissiveColor` pair — 1,426 vanilla
+  `TSStatic`s carry exactly that. A city rebuilt without them has dark signs and unlit signals.
+- **Residual 2 (producer, small): `ObjectGeometryData.m_Flags`.** `GetRenderingSize`'s human and
+  `Standing` shrinks need them, and so would a collision policy taken from `GeometryFlags.Physical`
+  / `WalkThrough` / `LowCollisionPriority` rather than from the record's `kind`. Both are small
+  effects and both currently err in a safe direction; filed, not built.
 
 ## Working agreements (from CLAUDE.md's non-negotiables)
 

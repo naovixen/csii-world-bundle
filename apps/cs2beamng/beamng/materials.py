@@ -37,6 +37,32 @@ from . import dds as dds_mod
 
 TEXTURE_SUBDIR = ("art", "textures")
 
+# Per-kind edge caps, because one cap for every map is one cap too few. CALIBRATED on
+# `west_coast_usa`'s own DDS headers — BeamNG's biggest shipped level, 0.58 GiB of textures
+# against A3's 5.72 GiB:
+#
+#   colour  185 of 256 files are <= 512
+#   data    391 of 470 files are <= 256   (roughness/metallic carry almost no high frequency)
+#   normal  512-1024
+#
+# `opacity` is the albedo's OWN alpha channel re-exported as a grey map, so it takes the colour
+# cap: it is a coverage mask cut at the albedo's scale, and dropping it to the data cap is what
+# turns a tree's leaf cut-outs blocky. `emissive` is a colour map. The keys are settings names;
+# `caps_from_settings` resolves them.
+KIND_CAP_SETTING = {"color": "texture_max", "normal": "texture_max_normal",
+                    "data": "texture_max_data", "opacity": "texture_max"}
+
+
+def caps_from_settings(settings):
+    """`{kind: edge cap}` from the settings, falling back to the colour cap for anything the
+    settings do not name (an old settings file that only has `texture_max`)."""
+    colour = int(settings.get("texture_max") or 0)
+    out = {}
+    for kind, key in KIND_CAP_SETTING.items():
+        value = settings.get(key, colour)
+        out[kind] = int(colour if value is None else value)
+    return out
+
 
 def mapto(level_name, raw_name):
     """The material name a `.dae` binds and `main.materials.json` `mapTo`s: level-prefixed."""
@@ -75,6 +101,20 @@ def _cap(arr, max_size):
     return png.downsample_box(arr, factor) if factor > 1 else arr
 
 
+def texture_name(src_path, kind, keep_alpha=False, use_dds=True):
+    """The file name `export_texture` writes for this source, without touching a pixel.
+
+    Split out so a build can decide "this one is already exported" from the source's mtime and
+    size alone (`stages/materials._reusable`): BC7-encoding 5,684 textures and throwing every
+    byte away because the file already held them cost 2m17s of every rebuild.
+    """
+    ext = "dds" if use_dds else "png"
+    stem = re.sub(r"[^A-Za-z0-9_\-]", "_", os.path.splitext(os.path.basename(src_path or ""))[0])
+    if kind == "opacity":                              # the albedo's alpha as a grey map: v1.5's opacityMap
+        return f"{stem}_o.data.{ext}"
+    return f"{stem}.{kind}.{ext}" if not keep_alpha else f"{stem}_a.{kind}.{ext}"
+
+
 def export_texture(level, src_path, kind, max_size=0, keep_alpha=False, cache=None, dds=None):
     """Write `src_path` into the level's `art/textures/` as `<stem>.<kind>.dds` (`kind` in
     color / normal / data / opacity) capped at `max_size` — a pre-compressed, mipmapped DDS in
@@ -85,12 +125,7 @@ def export_texture(level, src_path, kind, max_size=0, keep_alpha=False, cache=No
     if not src_path or not os.path.isfile(src_path):
         return None
     use_dds = dds_mod.available() if dds is None else bool(dds and dds_mod.available())
-    ext = "dds" if use_dds else "png"
-    stem = re.sub(r"[^A-Za-z0-9_\-]", "_", os.path.splitext(os.path.basename(src_path))[0])
-    if kind == "opacity":                              # the albedo's alpha as a grey map: v1.5's opacityMap
-        name = f"{stem}_o.data.{ext}"
-    else:
-        name = f"{stem}.{kind}.{ext}" if not keep_alpha else f"{stem}_a.{kind}.{ext}"
+    name = texture_name(src_path, kind, keep_alpha, use_dds)
     key = (name, int(max_size or 0))
     if cache is not None and key in cache:
         return cache[key]

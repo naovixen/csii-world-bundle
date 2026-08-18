@@ -2,7 +2,7 @@
 
     blender --background --python tools/blender_import_level.py -- --level <levels/cs2_city> \
         --center <X> <Y> --radius 250 [--products networks,markings,lanegeometry,holewalls] \
-        [--no-terrain] [--ter other.ter] --save out.blend
+        [--no-terrain] [--no-forest] [--forest-max N] [--ter other.ter] --save out.blend
 
 Reads what BeamNG reads — the level folder, nothing from the bundle — so a render answers
 "what will the game draw here" for the parts Blender can show: the `.ter` heightfield with its
@@ -12,6 +12,11 @@ triangles reader — sources/accessors, `<vertices>`, per-input offsets, node ma
 the level's v1.5 materials wired as Principled BSDF: `baseColorMap` (+ `opacityMap` as alpha,
 `alphaTest`/`translucent` → blend), `diffuseColor` when there is no map. Center/radius are
 BeamNG world x/y (= bundle x/z). Terrain material colours are flat stand-ins per ground name.
+
+**Forest items too** (A3): `forest/*.forest4.json` + `art/forest/managedItemData.json`, one mesh
+datablock per type and a linked duplicate per item. Without them the oracle shows an empty city,
+because a forest item is referenced by no `TSStatic`. Only the NEAREST detail level of a shape is
+imported - a shape with an LOD ladder writes one node per level.
 
 Companion of `tools/blender_import_bundle.py` (the producer-side truth): import the same
 region from both and compare — the difference is the app's doing. Frame: BeamNG is Z-up
@@ -26,7 +31,7 @@ import time
 
 import bpy
 import numpy
-from mathutils import Vector
+from mathutils import Matrix, Vector
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), "apps"))
@@ -48,7 +53,8 @@ def log(msg):
 
 def parse_args():
     argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
-    opts = {"level": None, "center": None, "radius": 250.0, "products": None, "terrain": True, "save": None, "ter": None}
+    opts = {"level": None, "center": None, "radius": 250.0, "products": None, "terrain": True,
+            "save": None, "ter": None, "forest": True, "forest_max": 40000}
     i = 0
     while i < len(argv):
         a = argv[i]
@@ -62,6 +68,10 @@ def parse_args():
             opts["products"] = set(argv[i + 1].split(",")); i += 2
         elif a == "--no-terrain":
             opts["terrain"] = False; i += 1
+        elif a == "--no-forest":
+            opts["forest"] = False; i += 1
+        elif a == "--forest-max":
+            opts["forest_max"] = int(argv[i + 1]); i += 2
         elif a == "--ter":
             # diagnostic: another level's .ter (same size/origin) in place of this level's — the
             # A/B of a terrain-stage change against the shapes that did not change
@@ -280,14 +290,105 @@ def import_tiles(tiles, materials, level_dir, center, radius):
         except Exception as exc:  # noqa: BLE001
             log(f"{name}: dae read failed: {exc!r}")
             continue
-        for node_name, verts, normals, uvs, tris, runs, matrix in parts:
-            if "Colmesh" in node_name or "bb_autobillboard" in node_name or "nulldetail" in node_name:
-                continue
+        for node_name, verts, normals, uvs, tris, runs, matrix in _nearest_detail(parts):
             v = verts @ matrix[:3, :3].T + matrix[:3, 3] + numpy.asarray(pos)
             _mesh_object(f"{name}:{node_name}", v, tris, runs, uvs, product)
         imported += 1
     log(f"{imported} shape tiles imported")
     return imported
+
+
+DETAIL_RE = re.compile(r"_a(\d+)$")
+
+
+def _nearest_detail(parts):
+    """The parts of ONE detail level - the largest `_a<px>` - with the collider and the
+    imposter/null placeholders dropped. A shape with an LOD ladder writes a node per level, and
+    importing all of them stacks three copies of the same tree on top of each other."""
+    keep = [p for p in parts
+            if "Colmesh" not in p[0] and "bb_autobillboard" not in p[0] and "nulldetail" not in p[0]]
+    sizes = [int(m.group(1)) for m in (DETAIL_RE.search(p[0]) for p in keep) if m]
+    if not sizes:
+        return keep
+    nearest = max(sizes)
+    out = []
+    for part in keep:
+        m = DETAIL_RE.search(part[0])
+        if m is None or int(m.group(1)) == nearest:
+            out.append(part)
+    return out
+
+
+def import_forest(level_dir, center, radius, limit):
+    """Place the level's `forest/*.forest4.json` items - the A3 stage's whole output, which no
+    `TSStatic` references and which the oracle would otherwise show as an empty city.
+
+    Every item of one type shares ONE mesh datablock (Blender linked duplicates), so a region
+    with 18k trees is 18k objects over a few hundred meshes rather than 18k meshes.
+    """
+    item_path = os.path.join(level_dir, "art", "forest", "managedItemData.json")
+    forest_dir = os.path.join(level_dir, "forest")
+    if not os.path.isfile(item_path) or not os.path.isdir(forest_dir):
+        log("no forest in this level")
+        return 0
+    with open(item_path, encoding="utf-8") as handle:
+        item_data = json.load(handle) or {}
+    cx, cy = center
+    cache = {}
+    placed = skipped = 0
+    for name in sorted(os.listdir(forest_dir)):
+        if not name.endswith(".forest4.json"):
+            continue
+        with open(os.path.join(forest_dir, name), encoding="utf-8") as handle:
+            for line in handle:
+                line = line.strip()
+                if not line:
+                    continue
+                item = json.loads(line)
+                pos = item["pos"]
+                if abs(pos[0] - cx) > radius or abs(pos[1] - cy) > radius:
+                    continue
+                if placed >= limit:
+                    skipped += 1
+                    continue
+                meshes = _forest_meshes(cache, level_dir, item_data, item["type"])
+                if not meshes:
+                    continue
+                scale = float(item.get("scale") or 1.0)
+                rot = numpy.asarray(item["rotationMatrix"], dtype=numpy.float64).reshape(3, 3)
+                for mesh, local in meshes:
+                    obj = bpy.data.objects.new(f"{item['type']}:{placed}", mesh)
+                    m = numpy.eye(4)
+                    m[:3, :3] = rot @ local[:3, :3] * scale
+                    m[:3, 3] = numpy.asarray(pos) + rot @ (local[:3, 3] * scale)
+                    # a mathutils.Matrix, NOT a list of numpy rows: Blender takes the
+                    # assignment silently and leaves the object at the origin
+                    obj.matrix_world = Matrix([[float(v) for v in row] for row in m])
+                    obj["cs2_product"] = "forest"
+                    bpy.context.scene.collection.objects.link(obj)
+                placed += 1
+    log(f"{placed} forest items placed ({len(cache)} types, {skipped} beyond --forest-max {limit})")
+    return placed
+
+
+def _forest_meshes(cache, level_dir, item_data, type_name):
+    """`[(mesh datablock, node matrix), ...]` for one forest type, read once and reused."""
+    if type_name in cache:
+        return cache[type_name]
+    entry = item_data.get(type_name) or {}
+    path = resolve(level_dir, entry.get("shapeFile"))
+    out = []
+    if path and os.path.isfile(path):
+        try:
+            for node_name, verts, _n, uvs, tris, runs, matrix in _nearest_detail(read_dae(path)):
+                obj = _mesh_object(f"forestproto:{type_name}:{node_name}", verts, tris, runs, uvs, "forest")
+                mesh = obj.data
+                bpy.data.objects.remove(obj)               # keep the datablock, drop the prototype
+                out.append((mesh, numpy.asarray(matrix, dtype=numpy.float64)))
+        except Exception as exc:  # noqa: BLE001
+            log(f"forest type {type_name}: dae read failed: {exc!r}")
+    cache[type_name] = out
+    return out
 
 
 def _material(name):
@@ -422,6 +523,8 @@ def main():
     tiles = tiles_in_region(level_dir, objects, opts["center"], opts["radius"], opts["products"])
     log(f"{len(tiles)} shape tiles meet the region")
     import_tiles(tiles, materials, level_dir, opts["center"], opts["radius"])
+    if opts["forest"]:
+        import_forest(level_dir, opts["center"], opts["radius"], opts["forest_max"])
     wire_materials(materials, level_dir)
     if opts["save"]:
         bpy.ops.wm.save_as_mainfile(filepath=os.path.abspath(opts["save"]))

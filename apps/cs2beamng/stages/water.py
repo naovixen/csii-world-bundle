@@ -208,4 +208,7 @@ def _appearance_fields(appearance):
             "wetDarkening": 0.3, "wetDepth": 0.5, "viscosity": 0.001, "density": 1}
 
 
-STAGE = Stage(STAGE_KEY, "Water", enabled, units, run)
+INPUTS = ("layer:water", "layer:terrain", "layer:terrainFine")
+SETTINGS = ("water", "terrain_upsample")
+
+STAGE = Stage(STAGE_KEY, "Water", enabled, units, run, inputs=INPUTS, settings_keys=SETTINGS)

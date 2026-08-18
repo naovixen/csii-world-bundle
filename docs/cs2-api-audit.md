@@ -4715,3 +4715,729 @@ not a different UV.
   texel**, and **no material in the level has a lime `baseColorFactor`**. So it is a DDS-only
   texture (the `art/textures/` BC7 set) or engine state. It is a handful of small spots, it is a
   different defect from the slabs, and it is now bounded rather than guessed at.
+
+## 62. A3 parity gate — objects: the LOD threshold is portable after all, and groundcover has no counterpart (2026-08-18)
+
+The parity gate for phase **A3** (`docs/plans/beamng-consumer-plan.md`: shapes, instance
+placement, lights, groundcover). Method as the plan states it — name the game's counterpart and
+read it, write the rule matrix, build a sampleable predicate, count every approximation, delete
+what the game's rule replaces.
+
+### 62.1 The counterpart systems, and one that does not exist
+
+The plan named `BatchInstanceSystem` / `ObjectGeometrySystem` / "the tree state and colour-variation
+paths". **There is no `ObjectGeometrySystem` in `Game.dll`** — a `list` over every type finds
+`Game.Areas.GeometrySystem` and `Game.Net.GeometrySystem` and nothing for objects. Saying so
+explicitly rather than skipping the question, as the method asks: the object side is spread over
+
+| what it decides | the system that decides it |
+|---|---|
+| which sub-mesh an instance draws | `Game.Rendering.BatchInstanceSystem.UpdateObjectInstances` + `BatchDataHelpers.Calculate*SubMeshData` |
+| the per-prefab bounds, LOD limit and sub-mesh flags | `Game.Prefabs.ObjectInitializeSystem` (+ `BuildingInitializeSystem` for the lot clamp) |
+| a mesh's own LOD limit and bias | `Game.Prefabs.MeshSystem`, `Game.Rendering.RenderingUtils` |
+| whether it is drawn at this distance at all | `Game.Rendering.PreCullingSystem` (`CalculateMaxLod >= bounds.m_MinLod`) |
+| what colour it is | `Game.Rendering.MeshColorSystem` |
+| what growth state a tree is in | `Game.Simulation.TreeGrowthSystem` → `Game.Objects.Tree` |
+| grass, detail meshes, groundcover | **nothing. CS2 has no such system** — see §62.5 |
+
+### 62.2 The rule matrix
+
+| # | the game's rule (source) | our behaviour | verdict |
+|---|---|---|---|
+| 1 | `UpdateObjectInstances` walks the prefab's `SubMesh` buffer and draws every entry whose `m_Flags` are satisfied by the instance's computed `subMeshFlags` | the producer exports one documented state per variant file and `csiibundle.instances.mesh_candidates` walks the same `Require<State>` ladder, best first, falling back only where the file is absent (§6.1: absence means the game has no such variant either) | **match** |
+| 2 | `BatchDataHelpers.CalculateTreeSubMeshData(tree, growthScaleData)` returns `RequireTeen/Adult/Elderly/Dead/Stump` from `Tree.m_State` | shipped as `attrs.treeState`; the shapes stage binds the matching `__state` file | **match** |
+| 3 | the same call's `out scale` is a √-lerp between the prefab's per-stage `GrowthScaleData` sizes, applied to the instance transform | the producer calls the game's own function and ships the answer as `attrs.growthScale`; `instances.growth_scale` multiplies the linear part only | **match** |
+| 4 | `MeshData.m_MinLod = CalculateLodLimit(GetRenderingSize(MathUtils.Size(renderPrefab.bounds)), m_LodBias)`, and `MeshSystem` sets `m_LodBias -= log2(sqrt(clamp(surfaceArea / boxArea, 1e-6, 1)))` where `surfaceArea = Geometry.CalcSurfaceArea()` — the plain sum of triangle areas | **`csiibundle.lod` ports all of it and recomputes it from the `.glb`** — see §62.3 | **match** (was "filed, not built" in §57.1) |
+| 5 | the object is drawn while `CalculateLod(d²) >= m_MinLod`, i.e. out to `2^((128 − L)/6) · levelOfDetail · 540 / tan(fov/2)` | ported, then multiplied by one declared global `lod_detail_scale` (default 6) because CS2's own answer is a median 1,024 m for a prop over 1.2M objects | **deliberate deviation**, counted, `1.0` restores the game |
+| 6 | `GetRenderingSize` shrinks a human object's x by 3 and lerps a `Standing` object's footprint towards `m_LegSize`, both gated on `surfaceArea <= 0` | not applied — both need `ObjectGeometryData` flags the bundle does not ship | **approximated**; both only ever *shrink* the size, so our threshold errs towards drawing further |
+| 7 | `LodProperties.m_Bias` adds an authored bias for a prefab that ships an LOD chain | not applied; the producer ships `lodCap 0`, so no such prefab reaches the bundle | **match** (vacuous); the argument exists in `lod.lod_bias` for a future field |
+| 8 | `MeshColorSystem` resolves each instance's paint from `PseudoRandomSeed`, the palette's probabilities and the season filters into a `MeshColor` buffer | the producer ships the game's **resolved answer** as `attrs.colorSet` — no re-derivation anywhere | **match** |
+| 9 | §7.2 applies it as `lerp(base, base × colorSet[i], colorMask[i])` per channel | a `TSStatic` gets `instanceColor`/`1`/`2` and the material keeps its `colorPaletteMap`; a forest item cannot carry colour, so it binds a bake-tinted albedo | **match** for TSStatics, **approximated** for the forest (§62.4) |
+| 10 | `CustomMeshColor` overrides the resolved set wholesale when the player painted the thing | shipped as the same `attrs.colorSet` with `colorCustom: true`; consumers treat both identically, which is what the game does | **match** |
+| 11 | the game batches everything through one path and never distinguishes a tree from a tower block | `beamng.placement` splits forest vs `TSStatic` on BeamNG's own limits (one scalar scale, no per-item colour, 22k vanilla `TSStatic` maximum) | **deliberate deviation** — no game counterpart, and the file says so |
+| 12 | a punctual light's `position`/`rotation` are object-frame unless `boneIndex` says otherwise | placed through the instance transform; bone-space entries skipped and counted (`lights.bone_space`) | **match** / **approximated** for the bone-space entries |
+| 13 | CS2's lights cast shadows | none of ours does | **deliberate deviation**, counted |
+| 14 | 1,896 emissive **colour slots** (neon signs, traffic signals, brake lamps) switch a mesh's emission between `color` and `colorOff` | not applied to any material | **approximated**, counted; filed in the parity backlog |
+| 15 | nothing in `Game.dll` draws grass, detail meshes or groundcover | `groundcover` synthesises billboard cards | **deliberate deviation**, and now **off by default** — §62.5 |
+
+### 62.3 The headline: §57.1's filed producer gap does not need the producer
+
+§57.1 filed the LOD thresholds as "needs a producer change and a re-rip, so nothing here can
+validate it", because `MeshData.m_MinLod` is nowhere in the bundle. Reading one level further up
+shows why that was too pessimistic. `ObjectInitializeSystem` computes the whole thing from
+
+```
+float3 @float = MathUtils.Size(renderPrefab.bounds);      // the MESH's bounding box
+…
+@float = min(@float, max(min(@float.yzx, @float.zxy) * 8f, max(@float.yzx, @float.zxy) * 4f));
+renderingSize = RenderingUtils.GetRenderingSize(@float);  // = csum(@float) / 3
+componentData.m_MinLod = (byte)RenderingUtils.CalculateLodLimit(renderingSize, componentData.m_LodBias);
+```
+
+and `MeshSystem` computes the bias from `prefab.surfaceArea`, which
+`Colossal.AssetPipeline.Geometry.CalcSurfaceArea()` defines as the plain sum of triangle areas over
+the prefab's meshes. **Both inputs are the `.glb`'s own vertices.** So the per-prefab answer CS2
+states is recoverable from a bundle that ships no LOD field at all, and `tools/csiibundle/lod.py`
+is that port — `calculate_lod_limit` bit for bit (the `asint >> 23` exponent trick included),
+`rendering_size` with the 8×/4× clamp, `surface_area`, `lod_bias`, `cull_distance`.
+
+Two further results fall out:
+
+* **The field of view cancels.** Substituting `lodFactor = levelOfDetail · 540 / tan(fov/2)` into a
+  projection gives, at the cull distance, `px = H / (1080 · levelOfDetail)` — no fov term left. CS2's
+  rule is therefore **"draw it until its rendering size covers 1.43 pixels at 1080p"** on the game's
+  own High preset (`levelOfDetail` 0.7; 0.5/0.35/0.25 for Medium/Low/Very Low, slider 0.10–1.00).
+  That is directly comparable with a Torque detail size, which is the projected pixel size of the
+  shape's bounding-sphere radius — `lod.game_detail_px` is the conversion.
+* **What that means in metres, measured over all 5,591 meshes of the reference city** (the fov only
+  moves the metres, never the pixels):
+
+  | kind | meshes | CS2 cull distance p10 / p50 / p90 | its threshold in Torque px, p50 | surface-area bias p50 / p90 |
+  |---|---|---|---|---|
+  | tree | 195 | 362 / **3,650** / 10,325 m | 1.30 | 0.00 / 0.54 |
+  | prop | 3,194 | 456 / **1,024** / 3,650 m | 1.63 | 0.16 / 0.66 |
+  | building | 2,111 | 3,252 / **7,301** / 23,178 m | 2.59 | 0.70 / 1.85 |
+  | decal | 76 | 575 / 1,825 / 4,097 m | 2.26 | 0.50 / 0.50 |
+
+  A median building drawn to **7.3 km** is why a CS2 city reads as full to the horizon, and it is
+  also why reproducing the rule exactly is not what a BeamNG build wants over 1.2 million objects.
+  So the deviation is **one global multiplier** — `lod_detail_scale`, default 6.0, `1.0` = CS2
+  exactly — and every shape keeps the game's *relative* answer: the bounds clamp, and the
+  surface-area bias that drops a sparse fence a full stop before a solid block of the same size.
+  **`cull_px` is deleted** — the rule replaced it. The build report prints the multiplier, the
+  median CS2 distance per kind, and the median distance the level actually ships.
+
+**Deleted, per the method's step 5:** `cull_px`, the tuned 6/10/16/24 global §57.1 named. It was
+briefly kept "as a floor", which is the trap the step exists to catch — a floor of 10 px over a
+per-shape answer of 1.6 px is the old global wearing a new name, and it would have made
+`lod_detail_scale` inert for every prop. The setting, its UI row and its four preset entries are
+gone; `lod_detail_scale` is the one handle A4 tunes.
+
+### 62.4 The sampleable predicate, and what it measures
+
+`tools/check_instances_vs_game.py` reads a **built level back off disk** — its `.dae` detail nodes,
+its `forest/*.forest4.json`, its `managedItemData.json`, its `TSStatic`s — and scores each of these
+against the game's rule recomputed from the bundle:
+
+* a record this build admits is placed exactly once;
+* the mesh state is the one `CalculateTreeSubMeshData` picks;
+* the position is the contract's `T · R · S · diag(−1,1,1)` conjugated into BeamNG axes;
+* the drawn size is `growthScale` times the record's own scale;
+* the `nulldetail` px is the game's threshold recomputed from the source mesh, times
+  `lod_detail_scale`;
+* a `TSStatic` carries the record's own `colorSet` exactly;
+* a forest item's paint is its prefab's nearest baked centre — reported as the **median channel
+  error**, which is the size of the approximation rather than a pass/fail.
+
+Two numbers are already measured offline and are gates in `tools/test_a3_objects.py`:
+
+* **the frame** — `stages.instances._transform` reproduces `csiibundle.frames`' own
+  `P · T · R · S · P⁻¹` to **2.4e-15** over 300 random transforms, and the rotation keeps
+  determinant +1 (no second mirror anywhere);
+* **the paint variant** — `tints.variant_index` lands on the centre the bake's own k-means counted
+  the record under for **99.9987 %** of 1,138,589 coloured instances on the reference city (15
+  records, all on a tie).
+
+### 62.5 Groundcover has no counterpart, so it is off by default now
+
+The plan asked for `GroundCover` per splat layer. Before building it, the question the method
+demands was asked: what does CS2 do here? **Nothing.** `Game.dll` has no `GroundCover`, no
+`DetailMesh`, no grass prefab and no detail-mesh renderer; the only thing that draws ground is
+`TerrainMaterialSystem`, and §61 established that its detail comes from a triplanar shader tier,
+not from geometry.
+
+So `groundcover` is BeamNG dressing with nothing to be faithful to. It stays — BeamNG's ground
+reads flat at driving height where CS2's never has to, because CS2's camera is never at 1.5 m —
+but **the default changes from on to off**, every quality preset turns it off, the stage's
+docstring opens by saying it is not a fidelity feature, and its report entry is a
+`deliberateDeviations` rather than an `approximations`. The blades themselves are synthesised
+(a deterministic 2×2 card atlas tinted to the layer's own mean albedo), which is the honest
+description; the plan's "the bundle's ground textures as billboards" was not.
+
+### 62.6 The forest's untinted props: measured, and the default changed because of it
+
+The first full-city build of the day shipped `paint_kinds` at its old default (`tree`), and its
+report said **448,204 forest items drew an untinted albedo**. That number is only actionable with
+a second one — *how wrong is untinted?* — so it was measured rather than argued about.
+
+`derived/paint_variants.json` holds each prefab's k-means centres as multipliers on the atlas
+colour, so the distance of a centre from white **is** the size of the error an untinted draw makes.
+Over the reference city:
+
+| kind | centres | instances | max-channel deviation from white, p50 / p90 | instance-weighted mean |
+|---|---|---|---|---|
+| tree | 278 | 686,641 | 0.707 / 0.742 | 0.626 |
+| prop | 4,239 | 448,425 | **0.534** / 0.742 | 0.387 |
+| building | 1,680 | 7,546 | 0.589 / 0.806 | 0.567 |
+
+A median prop's strongest channel is multiplied by **0.47**, not 1.0. That is the failure mode
+`csiibundle.tints` opens with — *"CS2 authors every tintable surface DESATURATED"* — so untinted
+props are not a subtle divergence, they are the grey-city defect on 448k objects. **`paint_kinds`
+now defaults to `tree,prop`** (the `low` preset keeps `tree`, where the point is throughput). The
+cost is bake time and roughly 2.8k more tinted albedo textures, which the 15k texture budget
+absorbs.
+
+Worth stating as the general shape: *"N objects take an approximation" is not a finding until the
+approximation's size is measured.* 448,204 sounds alarming and 0.534 is what makes it one.
+
+Changing that default then exposed **a second instance of a failure mode this repo has already
+been bitten by once**. The rebuild with `paint_kinds=tree,prop` took its usual 25 minutes, exited
+0, validated clean — and shipped the same untinted props, because the bake had logged
+`materials: fresh (inputs unchanged), skipped`. `Product.options` is what makes an option change
+re-bake a product, and `materials` declared none of the three it reads (`paint_kinds`,
+`paint_variants`, `variant_max_size`); `lods` and `lanegeometry` were the same. The mechanism was
+there, the declaration was not — exactly the shape of the `VERSION`-literal no-op §61 recorded,
+where a changelog line was added without bumping the version and the level rebuilt from the old
+bytes with no error anywhere.
+
+Both are now gated the same way: `tools/test_bake_manifest.py` reads each registered product's own
+source, extracts every `options.get("…")` key, subtracts the framework's (`tile`/`diagonal`/
+`region`, checked by `_same_options`, and `jobs`, which only splits the work), and fails if the
+remainder is not in `Product.options`. **The rule to carry: a silent no-op is worse than an error,
+and a mechanism that must be remembered will be forgotten — gate the declaration, not the
+discipline.**
+
+### 62.7 What A3 leaves approximated, with counts
+
+Every one of these is emitted in `report.json` by the stage that makes it, as the method requires.
+
+| approximation | why no exact answer | counted as |
+|---|---|---|
+| `lod_detail_scale` (default 6× closer than CS2) | the game's own thresholds over 1.2M objects are not a BeamNG level | every shape; the report prints CS2's median distance beside ours |
+| the LOD1/LOD2/imposter switch points | CS2 ships **no LOD chain** for these prefabs (`lodCap 0`), so there is no rule to port; the ratios are vanilla BeamNG's own spacing | shapes with more than one level |
+| `GetRenderingSize`'s human/`Standing` shrinks | need `ObjectGeometryData` flags the bundle does not ship | not countable without the flags; the direction of the error is stated instead |
+| a forest item's paint | a BeamNG forest item carries no per-item colour | every forest item, plus the measured median channel error |
+| a forest item whose kind is outside the bake's `paint_kinds` | `paint_kinds` now defaults to `tree,prop` (§62.6); a kind outside it draws the atlas colour | counted per build |
+| `TSForestItemData` wind / rigidity / mass | CS2 states nothing about wind for a placed object; the values are the vanilla levels' medians | every forest type |
+| the light cap | a dynamic light is BeamNG's most expensive per-frame object, and the city has **176,799** | the ones not placed |
+| light shadows | ours cast none, CS2's do | every placed light |
+| the 1,896 emissive colour slots | not applied to any material yet | all of them; filed in the parity backlog |
+
+## 63. A4 parity gate — tiles: CS2 does not distance-cull roads, and it culls a lane line at 256 m (2026-08-18)
+
+The parity gate for phase **A4** (`docs/plans/beamng-consumer-plan.md`; the phase plan is the
+performance pass: build time first, then the level). Same method as §62 — name the game's
+counterpart and read it, write the rule matrix, build a sampleable predicate, count every
+approximation — plus the distinction this phase's plan adds and which turned out to be the whole
+story: **which numbers are fidelity and which are engine tuning.**
+
+### 63.1 The counterpart systems
+
+A3 asked the question of the 1.2 M placed objects. A4 asks it of everything the build MERGES into
+world tiles, which A3 shipped at one always-on detail level: 2 px on a 256 m tile, which it only
+falls below at about 85 km.
+
+| what it decides | the system that decides it |
+|---|---|
+| how far a road/rail composition is drawn | `Game.Prefabs.NetCompositionHelpers.CalculateMinLod` |
+| how far an EDGE is drawn, given three compositions | `Game.Rendering.PreCullingSystem` — `min(edge, startNode, endNode)` of their `m_MinLod` |
+| how far a lane marking / fence / cable is drawn | `NetLaneGeometryData.m_MinLod`, filled by `Game.Prefabs.NetInitializeSystem` |
+| how far painted ground is drawn | `Game.Areas.GeometrySystem.CalculateGeometry`, **per triangle** |
+| which of those is then visible this frame | `PreCullingSystem` / `Game.Rendering.AreaBatchSystem` — `CalculateLod(d²) >= m_MinLod` |
+| the arithmetic under all of them | `Game.Rendering.RenderingUtils` |
+| a LOD *chain* for any of it | **nothing. CS2 has none for tiles either** — the same `lodCap 0` §62 found for objects |
+
+### 63.2 The rule matrix
+
+| # | the game's rule (source) | our behaviour | verdict | fidelity or tuning |
+|---|---|---|---|---|
+| 1 | `GetRenderingSize(float2 size)` = `GetRenderingSize(float3(size, cmax(size·(8,4))))` — a flat thing gets a synthetic depth of eight times its width | `lod.rendering_size_2d`, ported | **match** | fidelity |
+| 2 | `GetRenderingSize(float3)` is `csum/3` with **no clamp**; the axis clamp §62 ported belongs to `ObjectInitializeSystem`, not to the helper | `lod.rendering_size_raw` is the helper, `lod.rendering_size` keeps the object clamp — two functions, because mixing them is a silent factor on every road | **match** | fidelity |
+| 3 | `CalculateMinLod(composition)` = `CalculateLodLimit(GetRenderingSize(float2(m_Width, Size(m_HeightRange))), mean of the pieces' MeshData.m_LodBias)` | `lod.composition_min_lod`; width from the segment record's `attrs.width`, height range from the assembled mesh capped at the width, bias 0 | **match** on the rule, **approximated** on two inputs (both bounded on the draw-further side) | fidelity |
+| 4 | an edge is culled on `min` of its three compositions — the most generous | one assembled mesh per segment, so the per-segment number already is that minimum | **match** | fidelity |
+| 5 | `NetLaneGeometryData.m_MinLod` = min over the prefab's `NetLaneMeshInfo` meshes of `CalculateLodLimit(GetRenderingSize(Size(bounds).xy), m_LodBias)` — **`.xy`, never the length** | `lod.lane_min_lod`, computed per lane prefab over ALL its parts (both bake products split one catalogue but the game takes the min over the whole prefab) | **match** | fidelity |
+| 6 | `GeometrySystem` per area triangle: `CalculateLodLimit(GetRenderingSize(float3(4·d1, nodeDistance, 4·d2)), AreaGeometryData.m_LodBias)`, `d1 ≤ d2` the two nearest distances from a chosen centre to the area's own boundary, the centre picked from up to four candidates by "furthest from the boundary wins" | `lod.area_triangle_min_lods`, ported verbatim, candidate order included; `nodeDistance` is `AreaUtils.GetMinNodeDistance(Surface) = 0.75`; `m_LodBias` is 0 | **match** on the rule, **approximated** on the bias (not shipped — §8b says so explicitly) | fidelity |
+| 7 | the limit is then `drawn while CalculateLod(d²) >= m_MinLod`, i.e. out to `2^((128−L)/6) · levelOfDetail · 540 / tan(fov/2)` | ported (`lod.cull_distance`), then multiplied by the one declared `lod_detail_scale` the object shapes already use | **deliberate deviation**, counted, `1.0` restores the game | **tuning** |
+| 8 | a tile is drawn while ANYTHING in it is | each tile's `nulldetail` is its most generous primitive's distance | **match** | fidelity |
+| 9 | CS2 ships no LOD chain for a composition, a lane mesh or an area | each tile gets a ladder whose **content per level is the game's own visible set at that distance** and whose **spacing** is BeamNG's (`tilelod.RATIOS`, the same 1.5/6/24 the object shapes use) | **deliberate deviation** on the spacing; the content is the game's | content fidelity, spacing **tuning** |
+| 10 | terrain is never distance-culled | `terraincut` tiles carry no limit and stay always-on | **match** | fidelity |
+| 11 | a building foundation skirt does not exist in CS2 | `skirts` tiles carry no limit and stay always-on | **no counterpart**, stated | — |
+| 12 | nothing — CS2 has no collision concept for a placed object | `collisionType` moves from `Visible Mesh Final` to `Collision Mesh` wherever the shape carries a `Colmesh_` node | **no counterpart**; a pure engine correction — see §63.4 | **tuning** |
+| 13 | nothing — CS2's textures are virtual-textured, and its budget is not BeamNG's | per-kind texture caps calibrated on `west_coast_usa`'s own DDS headers | **no counterpart**; calibrated, not guessed — §63.5 | **tuning** |
+
+### 63.3 The headline: the rule says roads are drawn forever, and paint is not
+
+Substituting the game's own constants into rule 3 for an ordinary 16 m road with a 1 m height
+range:
+
+```
+renderingSize = (16 + 1 + max(8·16, 4·1)) / 3 = 48.33 m/px
+m_MinLod      = 128 − floor(6·log2(48.33)) = 95
+cull distance = 2^((128−95)/6) · 0.7 · 540 / tan(22.5°) = 41,298 m
+```
+
+**41 km.** Because the synthetic depth is eight times the width, the rule effectively says "draw a
+16 m road until its width subtends 0.18 px". CS2 does not distance-cull roads on any real map, and
+the 9.27 M network triangles A4 set out to reduce are **the game's own answer**, not an oversight.
+That is a fidelity number and it does not move to buy frames.
+
+The same arithmetic on the things that are not roads is a different story:
+
+| thing | `renderingSize` | `m_MinLod` | CS2 draws it to | at `lod_detail_scale` 6 |
+|---|---|---|---|---|
+| 16 m road, 1 m height range | 48.3 | 95 | **41,298 m** | 6,883 m |
+| 3 m footpath (as an area) | 4.25 | 116 | **3,650 m** | 608 m |
+| 15 cm lane line, 4 m tile | 0.46 | 135 | **256 m** | 43 m |
+
+So the ladder is worth roughly an order of magnitude on the 1.59 M marking triangles and nothing
+on the roads — and the honest place the FPS budget is actually bought in A4 is the texture caps
+(§63.5) and the collider change (§63.4), not the tile geometry. The build report says exactly this
+per product (`lod.tilesNeverCulled`, `lod.gameNullMetresMedian`), so the number is on record
+rather than assumed.
+
+**A tile that the rule never culls gets one level and says so.** `beamng/tilelod.py` refuses to
+invent bands where the game has none; three copies of the same mesh would be three times the file
+for nothing.
+
+### 63.4 A defect, not a tuning knob: 14,658 objects on the expensive collider
+
+Every `TSStatic` A3 wrote carried `collisionType: "Visible Mesh Final"`. BeamNG's own
+documentation ranks the options: *"Visible Mesh Final — uses rendered mesh polygons
+intentionally. Use only when required"* and *"expensive"*, against *"Collision Mesh — uses
+dedicated collision meshes from the shape. **Recommended**"*. The shapes stage has written a
+`Colmesh_<name>` node into every collidable shape since A2 — a trunk cylinder for a tree, the
+decimated LOD1 hull where it is thin enough, a padded box otherwise — and then nothing used it.
+
+Fixed in `stages/instances._add_static`, keyed on the shape's own `collider` result rather than
+re-deriving the policy, and **`validate_level` now asserts the pairing both ways**: a shape with a
+`Colmesh_` node bound by a `Visible Mesh*` static is the cost we came to remove, and a static
+asking for `Collision Mesh` from a shape that has none collides with nothing at all. The
+derived/network tiles keep `Visible Mesh Final` deliberately: they have no colmesh, and the
+visible road surface *is* the collision surface there.
+
+### 63.5 The texture caps are calibrated, not chosen
+
+A3 shipped **5.72 GiB** of textures in 5,684 files against `west_coast_usa`'s **0.58 GiB** in
+1,163 — ten times BeamNG's own biggest level, on a card already sitting at 6.7 of 8 GB, and VRAM
+exhaustion is what killed load #9. Reading that level's own DDS headers gives the calibration:
+
+| kind | vanilla distribution | our cap |
+|---|---|---|
+| colour | 185 of 256 files are ≤ 512 | **512** |
+| data (roughness / metallic / the CS2 colour mask) | **391 of 470** are ≤ 256 | **256** |
+| normal | 512–1024 | **512** |
+
+`opacity` takes the *colour* cap rather than the data cap: it is the albedo's own alpha channel
+re-exported as a grey map, and dropping a tree's leaf cut-outs to 256 is visible where dropping
+its roughness is not. Stated because it is the one place the table is not followed.
+
+### 63.6 Paint variants: a third of the tinted albedos were reproducible by one number
+
+§7.2's palette tint is applied per texel — `lerp(base, base × colorSet[i], colorMask[i])` chained
+over three channels — and a forest item cannot carry per-instance colour, so the bake writes one
+**tinted albedo** per (source albedo, clustered colour-set centre). The reference city's derived
+cache holds **6,374** of them, and at a 512 px BC7 cap that is ~2.1 GiB of textures on top of the
+base set. That is what made `paint_kinds=tree,prop` unaffordable.
+
+Reading the chain rather than assuming it: each step is
+`base·(1 − wᵢ) + base·cᵢ·wᵢ = base·((1 − wᵢ) + wᵢ·cᵢ)`, so the whole thing is
+
+```
+tinted(texel) = base(texel) × M(texel),    M = Π ((1 − wᵢ) + wᵢ·cᵢ)
+```
+
+— **`M` is a function of the colour mask and the centre alone, never of the albedo.** A single
+`baseColorFactor` per variant is therefore a candidate that costs *zero* textures, and the error
+it makes is exactly measurable against the image the bake already computes.
+
+`tools/measure_paint_factor.py`, over all **7,592 (material, variant) pairs** of the reference
+city (worst 8-bit sRGB channel error over the texels the albedo actually shows, against the
+alpha-weighted least-squares constant):
+
+| max error | pairs shipping a factor | | max error | pairs |
+|---|---|---|---|---|
+| **0** | **31.4 %** | | 16 | 39.3 % |
+| 2 | 32.2 % | | 24 | 44.7 % |
+| **4** | **32.9 %** | | 32 | 54.5 % |
+| 8 | 34.5 % | | 64 | 91.9 % |
+
+**Nearly a third are exactly zero.** Where a prefab's colour mask is uniform — one channel, one
+value, the whole surface — the per-texel tint *is* one constant, and the texture was pure waste.
+The curve is flat from 0 to 8 and then climbs, which is what makes the choice easy rather than a
+compromise: **the default threshold is 4** (1.6 % of one channel on one texel, below any visible
+step), it takes the free third, and `paint_factor_max_error` moves it with the table above as the
+cost. 0 restores A3 exactly.
+
+The worst pairs are worth naming because they show what the other two thirds are: flowerbeds and
+urns, whose mask touches **4.4 %** of the texture and changes those texels completely (max error
+240 of 255). A constant either washes the planter in the flower colour or leaves the flowers grey;
+those keep their texture, and correctly.
+
+Both halves are recorded per (material, variant) in `derived/materials.json`
+(`derived.variantFactors` = `{factor, maxErr}` for every variant, `derived.variants` = a path only
+where the texture was needed), so the split is a measured number in the build report rather than a
+claim.
+
+### 63.7 The sampleable predicate
+
+`tools/check_tiles_vs_game.py` reads the shipped `.dae`'s own `nulldetail<px>` and `_a<px>` detail
+nodes back off disk and scores them against the game's rule **recomputed from the bake's tiles**,
+whose primitive material names carry each primitive's `m_MinLod` (`csiibundle.bake.tiles`
+`MIN_LOD_MARK`, `#L<n>`). Nothing is taken from the build report, so it compares the level against
+CS2 and not against the build that produced it. It reports, per product: the fraction of tiles
+whose threshold agrees, the fraction of triangles that carry a game limit at all, CS2's own median
+draw distance, and what the far level keeps.
+
+`tools/test_bake_products.py` gates the multiplier identity §63.6 rests on (the tint is
+`base × M`, `M` independent of the albedo; a uniform mask is one constant exactly; a two-colour
+mask cannot be). `tools/test_lod.py` is the unit gate for the LOD rules themselves — every expression above is checked
+against the game's arithmetic written out by hand, including the two numbers that a guess got
+wrong (a 3 m footpath is drawn to 3,650 m, not to a few hundred; a lane mesh's *size* term ignores
+its length but its *bias* does not, because `MeshSystem` derives the bias from the full 3D box).
+
+### 63.8 Measured on the rebuild (2026-08-18, `cs2_city_fine`, areas + skirts on)
+
+A full build of the reference city — 1h40m, validator clean (its one line is the shape-count
+budget note, 10,279 against the plan's ~10,000).
+
+| | A3 | A4 | |
+|---|---|---|---|
+| `art/textures/` | **5.72 GiB** / 5,684 files | **2.20 GiB** / 9,140 files | and the A4 figure now *includes* every prop paint variant, which A3's did not |
+| object `collisionType` | `Visible Mesh Final` x 14,658 | `Collision Mesh` x 14,658 | every one of them had a `Colmesh_` node already |
+| forest | 188 MiB, all collidable | 178 MiB, 141,521 items non-collidable across 200 of 4,951 types | the height threshold, declared |
+| paint variants | one texture each | **2,471 as a `baseColorFactor`, 4,288 as a texture** | §63.6 |
+| no-op rebuild | ~14 min | **1m44s** | and 34,965 of 34,965 files byte-for-byte unmoved |
+
+The tile ladders, per product — `keeps` is the share of a tile's triangles the coarsest level
+still draws, so it is what the ladder bought at distance:
+
+| product | tiles | levels/tile | far level keeps | CS2's own median null distance |
+|---|---|---|---|---|
+| `areas` | 731 | 2.34 | **41.6 %** | 46,356 m |
+| `markings` | 1,114 | 2.56 | 60.9 % | 5,795 m |
+| `lanegeometry` | 692 | 1.76 | 59.1 % | 3,252 m |
+| `networks` | 1,024 | 1.40 | 82.5 % | 46,356 m |
+| `skirts`, `terraincut` | 626 + 82 | 1.00 | 100 % | none — no counterpart / it is the ground |
+
+Networks keeping 82.5 % is §63.3 restated as a measurement: the rule really does draw roads to
+the horizon, and the 12.5M triangles they ship are the game's answer.
+
+`tools/check_tiles_vs_game.py` scores **100.00 %** on every question for all three marked
+products (150 tiles sampled each): the shipped `nulldetail`, the LOD level count, and the share
+of triangles carrying a game limit at all.
+
+### 63.9 Two defects the A4 checks found in the CHECKS, not in the level
+
+Both are worth recording because a predicate that is wrong about the level is the failure a
+parity gate can least afford — and §62 signed A3 off with both of them live.
+
+* **`check_instances_vs_game.py` joined a record to its object by POSITION.** That is not a
+  unique key: an extraction-area placeholder (`Ore_Area_Placeholder`, `Agriculture_…`) sits at
+  the exact coordinate of the industrial hub it belongs to (7 pairs), and in the forest a
+  sub-object sits at its parent's (`Clothesline01_Clt` on `Clothesline01`) while two pieces of
+  street furniture can share a centimetre. The probe scored the neighbour's colour and the
+  neighbour's mesh state against the record, reporting 7 colour and 3 state divergences **in a
+  level that had neither**. The join is now the record id — `_add_static` writes it into every
+  object's name — and the forest question became "is an item of the expected state here", which
+  still fails if the level placed the wrong one. All nine questions: **100 %**.
+* **The materials stage swept its orphan textures in the middle of the stage**, before the 88
+  §8b area-surface textures were exported a few lines below — so every build deleted them and
+  wrote them straight back, and BeamNG re-cooked all 88 on every first load. Found by the no-op
+  A/B: 34,965 files identical, 89 mtimes moved, all of them these. The sweep moved to the end of
+  the stage and the area surfaces joined the texture ledger.
+
+### 63.10 What A4 leaves approximated, with counts
+
+| approximation | why no exact answer | counted as |
+|---|---|---|
+| a composition's `m_HeightRange` | the bundle ships a segment's `width` but not its composition's height range; the assembled mesh's vertical extent capped at the width is a bounded over-estimate | every segment; the direction (draw further) is stated |
+| a composition's mean piece `m_LodBias` | the bundle ships assembled segment meshes, not the piece list | every segment; a positive bias only pulls the distance in, so 0 draws at least as far |
+| `AreaGeometryData.m_LodBias` | §8b ships it as deliberately absent | every area triangle |
+| the LOD *spacing* on a tile | CS2 ships no LOD chain for tiles either | tiles with more than one level |
+| `lod_detail_scale` on a tile threshold | the same declared multiplier the object shapes use | every tile; the report prints CS2's own median beside ours |
+| the per-kind texture caps | no counterpart: CS2 virtual-textures its materials | every exported texture; the report prints the level's texture bytes |
+| the forest collidable height threshold | CS2 has no collision concept for a placed object; BeamNG's guidance is to disable it for small decorative items | forest types under the threshold, and the items behind them |
+| a forest item's `rotationMatrix` precision | 4 dp is 0.6 mm of arc at 10 m | every forest item |
+| a paint variant shipped as a `baseColorFactor` | §7.2 is per texel; one constant is a further approximation on top of the k-means clustering — but only where the measured error is under `paint_factor_max_error`, and for 31.4 % of pairs it is exactly zero | the split, per build (`paintVariantKinds`) |
+
+## 64. A5 — the build was 100 minutes and the level was 2 FPS, and neither cause was where it looked (2026-08-18)
+
+A4's level **looks right** and runs at 2 FPS on an RTX 3070 — 10–12 on the lowest quality preset,
+and worse after alt-tabbing back in. Two symptoms narrowed it before a line was changed. Lowering
+the in-game preset barely helps, because those settings change shading, shadow resolution and
+texture LOD, not mesh residency or batch count: everything that costs here is baked into the
+level's own numbers and the user's slider cannot reach it. And "worse after alt-tab" is not a
+leak — alt-tab makes the driver release GPU allocations, and a working set larger than VRAM then
+pages continuously and never recovers.
+
+A full build took **100 minutes**, 84 of them in the bake, so the first half of this is about
+being able to iterate at all.
+
+### 64.1 The bake: 83.7 min → 13.2 min, measured per product
+
+| product | before | after | what it was |
+|---|---:|---:|---|
+| `areas` | 2,999.5 s | **33.2 s** | the ground sampled one point at a time through numpy |
+| `materials` | 1,390.9 s | **297.2 s** | an error measured that was provably zero, at 4× the resolution that ships |
+| `lods` | 233.9 s | 173.2 s | — |
+| `terraincut` | 128.6 s | **57.3 s** | a 3-point plane fitted with `numpy.linalg.lstsq` |
+| `markings` | 98.0 s | 91.8 s | tile flush pooled |
+| `terrainmask` | 75.6 s | 78.3 s | still serial — the scanline rasteriser, `terrain.clip_span` |
+| `lanegeometry` | 73.6 s | 51.0 s | tile flush pooled |
+| `skirts` | 24.4 s | 13.2 s | 1.2 M JSON records decoded to keep 7,820 |
+| **total** | **83.7 min** | **13.2 min** | |
+
+**The area conform was 60 % of the whole bake and none of it was conforming.** Every split of an
+area triangle samples three edge midpoints and a centroid, and each of those went
+`memoised_sampler → GroundSurface.height → height_many`, which for a SINGLE point allocated two
+1-element arrays, ran the full vectorised `_sample` twice (once per diagonal of the `envelope`),
+then `stack` + `nanmax` inside an `errstate` block. 162 µs per point, ~15 million times.
+`HeightfieldSurface._sample_one` is the same arithmetic in plain Python floats — 3.2 µs, **51×**,
+and `tools/test_ground_scalar.py` asserts it is **bit-identical** to the vectorised path over
+30,000 points of the real 8192² raster on both diagonals. The conform then parallelises per
+record (24,457 independent records, `imap` so the merge is the serial answer), and the whole
+product went 2,999.5 s → 33.2 s, **90×**.
+
+**The memo was an undeclared approximation, and it was what stopped the parallelisation.** It
+keyed on position rounded to a millimetre and sampled at the CALLER's point, so two points 0.4 mm
+apart shared an answer and whichever arrived first decided it for both — the layer's output
+depended on the order of `areas.jsonl`, and a chunk-local cache could never reproduce a global
+one. With the scalar path a query costs 3 µs and the quantisation buys nothing, so it is gone:
+the memo keys on the point itself and is now identical to no cache at all. Same 5,416,363 pieces
+as before, 611 of 731 tiles byte-identical, and **1,546 of 5,416,363 triangles moved (0.029 %)**,
+balanced in and out — the ones that had been taking a neighbour's height. Measured: the retired
+rounding was worth a mean of 0.014 mm and up to 8 mm on the map's steepest cliff.
+
+**`terraincut` fitted a three-point plane with an SVD.** `terrainclip.plane_through` is called
+1.72 million times per cut and went through `numpy.linalg.lstsq` — two array builds, a
+`numpy.ones` and a least-squares solve to answer a question with one exact answer. The closed form
+(the triangle's normal; its Y component is twice the signed plan area, which is the same quantity
+the degenerate case already turns on) is not only faster but a **better fit**: worst residual
+2.9e-9 m against lstsq's 2.3e-6 over 50,000 random triangles, and 5.0e-10 against 8.1e-9 on
+realistic terrain cells. 128.6 s → 57.3 s.
+
+**`bake/materials` measured an error it could prove was zero.** A4 computed both the exact
+per-texel tint and its constant `baseColorFactor` approximation for all 7,592 pairs, in float64,
+to measure the difference — but the tint is `base × M(texel)`, so where the colour mask is uniform
+`M` is one RGB triple and the "approximation" IS the exact image. That is 31.4 % of pairs, and
+they now take the constant straight from the mask value and never decode the albedo at all. Where
+`M` does vary, the approximate image comes from a 256-entry LUT per channel instead of a `power()`
+over the texture (`base` is uint8 and the constant is constant, so there are 256 possible
+answers) — one encode per pair instead of two, bit-identical. **Every stat was unchanged**: 2,497
+pairs on a factor and 5,095 on a texture, exactly as before.
+
+**And the bake was writing 1024² tinted albedos that the level caps at 512** — 4× the sRGB encode
+for texels nothing ships, and 3.3 GB of `derived/textures`. `variant_max_size` now follows the
+level's own cap. 894.6 s → 297.2 s *including* writing 3,906 new PNGs, and 1.9 GB on disk. One
+(material, variant) pair of 7,592 changed side, towards shipping a factor. Baking smaller also
+exposed that the colour mask was NEAREST-resampled on the way down; it is a blend weight and
+averaging it is what the collapse means, so it is box-filtered now — measured against tinting at
+1024 and averaging afterwards, that moves the difference from 1.441/255 RMS (0.53 % of channel
+samples off by more than 4) to **0.532/255 (0.15 %)**.
+
+Two smaller ones, both shared: `TileSink.flush` welds and writes each tile independently and now
+does it on a pool (four products, byte-identical at 1 worker and 7), and `reader.read_jsonl` takes
+a raw-text prefilter so a pass that wants buildings does not JSON-decode 1.2 M records to find
+7,820 — a **superset** filter, so the caller's own test still runs and the result cannot change.
+
+### 64.2 The level stages: `derived` 3.1 min → 42.7 s, `networks` 78 s → 18.0 s
+
+Both were serial loops over tiles that read one file and write one file. Pooled per tile with
+`imap`, so the level's object list — and therefore a rebuild's `main/` diff — does not depend on
+which worker finished first. Full build: **100 min → ~32 min** with the cook, which is unchanged
+at ~11 min and is BeamNG's own compiler.
+
+### 64.3 "Visible Mesh Final" does not mean the final LOD
+
+This one would have cost the whole of §64.4 if it had gone the other way, so it was settled from
+the engine binary before anything was decimated. BeamNG's `TSStatic` collision enum, in
+`BeamNG.drive.x64.exe`:
+
+```
+Collision Mesh      | Specifically designated "collision" meshes.
+Visible Mesh        | Rendered mesh polygons: to be fixed
+Visible Mesh Final  | Rendered mesh polygons: wont fix
+```
+
+beside the load-time warning *"Performance: Mesh is using visible collision: {} - If that is
+intentional, please switch the mesh to 'Visible Mesh Final'"*. **"Final" is an intent tag, not a
+detail level** — the two options rasterise the same thing and the second one only says the author
+means it, which suppresses the warning. Which detail: BeamNG's own resource checker measures a
+shape's "Visible Mesh ColPolys" at `mFixedDetail = true; setCurrentDetail(0)`, i.e. detail 0, and
+the physics collision is built once at load (`updatePhysicsCollision`) rather than following the
+visible level. Confirmed against this project's own history: `levelsPerTile` has been 1.4 since A4,
+so 40 % of road tiles already have a far level that drops triangles — if collision came from the
+last detail, those roads would already have holes, and loads #11–#17 drove on them.
+
+**So decimating the far levels does not touch collision, and the nearest level is never
+decimated.**
+
+### 64.4 The ladder read as a ladder and was not one
+
+`networks` on the A4 build: `gameNullMetresMedian` **46,355.8 m**, `levelsPerTile` **1.4**,
+`meanTrianglesKeptAtFarLevel` **0.8246**. The switches were spaced at `far/ratio` off the game's
+own null distance, which for a road composition is 46 km — so LOD 1 fired at 7.7 km and LOD 2 at
+31 km, both outside any view distance the app ships, and the one level that did land inside kept
+82.5 % of its triangles.
+
+The anchor moves to `min(far, view_distance)` — **tuning** — while `nullPx` keeps answering the
+game's question, so the tile still disappears exactly where CS2 stops drawing it — **fidelity**.
+And that immediately exposes the second half: inside a 4 km view distance CS2 culls almost none of
+this, so every level's CONTENT is identical and the A4 ladder's de-duplication collapsed them back
+to one. Real levels therefore need real simplification, which is where `csiibundle.decimate` comes
+in, at the object shapes' own long-standing ratios (25 %, 6 %).
+
+**And `lod_detail_scale` belongs to the null threshold, not to the ladder.** It is declared as
+"how many times CLOSER than CS2 an object is culled", and Torque compares a detail's stored size
+against the shape's REAL projected size — so multiplying the ladder's sizes by it moves every
+switch in by that factor as well. On the A4 ladder that was invisible, because `far` was 46 km and
+`far/detail_scale` still landed past the view distance. Anchored at the view distance it was not
+invisible at all: with `detail_scale` 10 the coarsest level stopped being used at 267 m and the
+level had a **hole beyond it**. `tools/level_budget.py` reported 35,097 triangles inside a 4 km
+view, which is not a level — the build report said nothing, because from its side the ladder was
+fine. The ladder is now spaced on the ratios alone, normalised so the coarsest level's size is the
+tile's projected size AT the anchor: with (1.5, 6, 24) and 4 km that is full detail inside 250 m,
+LOD 1 to 1 km, LOD 2 to 4 km, and the tile still nulls at 4,627 m — the game's 46 km divided by
+the declared 10×. `tools/test_tile_lod.py` asserts those distances rather than the pixel sizes,
+which is what makes the arithmetic checkable.
+
+**A tile the game never culls still gets a ladder.** `skirts` and `terraincut` carry no
+per-primitive limit at all, so `far` is infinite and A4 gave them a single always-on level — which
+left `skirts` at 1.13 M triangles inside a 4 km view, the second largest item in the level and the
+only product the first A5 ladder did not touch. "Never culled" is a statement about CONTENT and
+says nothing about how finely that content has to be described at 3 km, so `nullPx` stays None (it
+never disappears, exactly as the game has it) and the BeamNG-side detail ladder is built anyway.
+
+**The decimator's UV bin had to scale with the mesh.** `vertex_cluster` keeps vertices in
+different coarse UV bins apart so a texture seam does not smear — but a world-planar UV is the
+world position times `colossal_UVScale`, so a 256 m area tile spans tens of repeats and the fixed
+0.125 bin separated almost every vertex from its neighbour. Measured on the first A5 build:
+`areas` reached 39 % of its target ratio and `markings` 33 %, against `networks`' 22 %. The bin is
+now at least the mesh's own UV range over `UV_BINS_PER_MESH`, so an atlased mesh (range ~1) keeps
+exactly the old constant and a world-planar one can actually merge.
+
+**A tiled world cannot be decimated naively.** `vertex_cluster` takes its grid origin from the
+mesh's own minimum corner and searches its cell size per mesh, so two adjacent tiles cluster on
+two different grids and every shared boundary vertex is averaged differently in each — a crack the
+length of every tile edge. `tilelod.boundary_pins` marks every vertex within 2 m of the tile edge
+(a rule both neighbours compute identically, because tile geometry is written relative to the tile
+centre) and `vertex_cluster` gives each pinned vertex a cluster of its own, so it comes out exactly
+where it went in. `tools/test_tile_lod.py` builds two real adjacent tiles and asserts their shared
+boundary vertex sets come out **identical** — and that unpinned they do not, so the pins are shown
+to be load-bearing rather than assumed to be.
+
+### 64.5 Where the bytes are, measured — `tools/level_budget.py`
+
+The build report never showed the two numbers that decide whether a level runs, so there is now a
+tool that reads them off the level on disk: resident mesh + texture bytes, and the triangles drawn
+at once (each object's detail level **at its own distance**, not its full count). It also re-reads
+BeamNG's own levels out of `content/levels/*.zip`, because a budget invented from first principles
+is a guess and those are levels that demonstrably run.
+
+The A4 level, uncooked (`.dae` bytes; the cooked figure is ~76 % of this):
+
+| | MiB | | this | west_coast_usa |
+|---|---:|---|---:|---:|
+| object shapes | 3,187 | shape files | 10,279 | 2,608 |
+| lane furniture | 1,429 | TSStatics | 18,927 | 22,067 |
+| networks | 1,065 | forest types | 4,951 | 226 |
+| areas / markings / skirts | 1,002 | forest items | 1,163,938 | 133,375 |
+| textures (.dds) | 2,216 | materials | 8,220 | 586 |
+| **resident total** | **9,141** | | | |
+
+Two A4 assumptions were wrong and are worth recording: cutting `visibleDistance` is not the
+obvious lever (4,000 m is already **4× more conservative** than west_coast_usa's 15,667), and the
+TSStatic count is in budget. What is out of budget is the count of distinct THINGS — 22× the
+forest types, 14× the materials, 4× the shape files — and half of the 3,187 MiB of object shapes
+sits in **199 signature buildings** at 8–32 MiB each.
+
+### 64.6 What the knobs bought, measured on the same city
+
+`performance` preset (`high` plus the four knobs that cost residency rather than fidelity):
+`lane_furniture_categories fence`, `lane_max_tris 4,000,000`, `paint_variants_tree 2` /
+`paint_variants_prop 1`, `texture_max_variant 256`, `forest_min_items 10`, `forest_shadows off`,
+`collision_furniture off`, `lod_detail_scale 10`.
+
+| | A4 | A5 | |
+|---|---:|---:|---|
+| resident meshes (`.cdae`) | 5,088 MiB | **3,906 MiB** | −23 % |
+| resident textures | 2,160 MiB | **1,083 MiB** | −50 % |
+| terrain textures (still `.png`) | 235 MiB | 235 MiB | — |
+| **resident total** | **7,248 MiB** | **5,225 MiB** | **−28 %** |
+| triangles drawn at 4 km | 7,661,692 | **1,469,467** | **−81 %** |
+| shape files | 10,279 | 8,104 | |
+| forest types | 4,951 | 3,186 | |
+| materials | 8,220 | 6,031 | |
+| TSStatics | 18,927 | 18,517 | |
+| full build (with cook) | 100 min | **19 min** | |
+| no-op rebuild | 1m44s | **53 s** | |
+
+The 7,661,692 figure is A4's own ladder measured properly — each object at the detail level that
+applies at ITS distance. The plan's 29.9 M was the same tiles at full detail; both are true and
+the smaller one is the number that was actually being drawn.
+
+**Where the remaining 5.2 GiB is, and why it is not 4.2.** `cs2` object shapes are 2,224 MiB of
+the 3,906 — 57 % — and **half of that sits in 199 signature buildings** at 8–32 MiB each
+(`InternationalAirport01` 32.3 MiB, `MedicalUniversity01` 32.2, `USSW_Hospital_16x14` 28.3). Those
+are CS2's own meshes for landmarks placed once or twice, and nothing in A5 touches them: cutting
+them means cutting the fidelity of exactly the buildings a player looks at. It is the honest floor
+of this approach and the first thing to revisit if the load still pages.
+
+### 64.7 Two defects the A5 work found in the BUILD, not in the level
+
+* **A replayed stage was invisible on disk until after `validate` ran.** Only stages that RUN call
+  `level.write_objects()`, and the one final write closing that gap sits after the stage loop —
+  i.e. after `validate`, whose input IS the level folder. A build where `instances` was replayed
+  after `derived` ran therefore reported *"1,159,098 forest items but no Forest object in the
+  level tree"* on a tree that was in fact complete. The tree is now written as soon as anything is
+  replayed; `write_objects` only writes files whose bytes differ, so it costs nothing.
+* **A skipped `validate` dropped its own verdict from the report.** The stage wrote
+  `ctx.report["validation"]` directly, and a replay restores a stage's objects, its `shared` delta
+  and its result — nothing else. So an incremental rebuild left `cs2beamng_report.json` with no
+  validation block while still reporting the stage as fresh. A stage now returns a `_report` delta
+  that the worker merges, which puts it inside the replayed payload; `get`, not `pop`, because the
+  payload is written from the same dict a few lines later (which is how the first attempt at this
+  failed).
+* **`forest_min_items` folded thin types into a shape this build had not declared.** The untinted
+  shape always exists, but a build that never places it writes no `TSForestItemData` for it — and
+  BeamNG drops a forest type with items and no item data silently. Caught by `validate_level` on
+  the first A5 build, one type and two items. Merging now happens only into a type already being
+  declared.
+
+### 64.8 The load said memory, and it was not the meshes — it was RUNTIME IMPOSTERS
+
+The A5 level loaded and ran at 60–80 FPS looking one way, 10–20 panning, and collapsed to 1–2 FPS
+after a few minutes of driving with **system RAM at ~100 % of 32 GB**. That is not the VRAM story
+§64 opened with, and none of the resident-bytes work would ever have fixed it: `beamng.log` names
+the cause outright.
+
+```
+ 64.28|I|Imposter| Creating imposters for: '/levels/cs2_city_fine/art/shapes/cs2/…'
+   …  2,652 distinct shapes, still going at 903 s …
+723.41|E|d3d12u::GenericImage::create| D3D12: CreateResource failed for generic image …
+417.14|I|libbeamng.engine.staticCollision| Loaded Static Collision … Tris: 89,096,868, Memory: 3720.81MB
+417.14|I|collisionCache| 7349 unique meshes, 1,035,444 instances … using 3062.80mb
+422.15|I|GELua.levelLoading| Level loaded in 396.982s: … objects 373.484s … physics 17.799s
+```
+
+**BeamNG builds an imposter atlas at RUNTIME**, rendering the shape from every angle the first
+time it comes into view, and keeps it. The `imposters` setting put a `bb_autobillboard` node on
+**every object shape — 4,245 of 4,245** — so the engine spent 14 minutes of play generating
+atlases for `NA_MailboxWall01`, `NA_ChimneyResidentialSmall01` and `ClothesDryer01`, one per
+shape, never releasing them, until D3D12 started refusing allocations. That is precisely the
+reported symptom: fine while the view is still, a stall whenever new shapes enter it, and
+monotonically worse the more of the map you have seen.
+
+The shipped levels do not do this: **82 of west_coast_usa's 2,608 shapes carry one (3.1 %)**,
+102 of italy's (7.2 %), 22 of johnson_valley's (4.4 %). We were at 100 %.
+
+`imposter_min_metres` gates it on the mechanism's own question — a billboard replaces the MESH
+beyond the mesh's null distance, so it is worth an atlas only where the mesh is still drawn near
+the edge of the view distance. Three quarters of `view_distance` (3,000 m at the shipped 4,000)
+puts **153 of 4,245 shapes over the line — 3.6 %**, inside the vanilla band, and it scales with
+the setting rather than being a constant that means different things at 2 km and 8 km.
+
+Two numbers from the same log are still open and are the next things to look at if this is not
+enough:
+
+* **`objects 373.484s`** of a 396.982 s load. Imposter generation starts at 64 s and runs right
+  through it, so much of this should go with them — but it needs re-measuring, not assuming.
+* **static collision 3,720 MB, of which 3,062 MB is 1,035,444 forest instances** (89.1 M
+  triangles, `collisionCache` saving another 2,585 MB by sharing). That is `collision_trees`
+  doing what it is asked to; it is a fixed cost, not a growing one, and it is the largest single
+  block after the imposters.
+
+**And a counting mistake worth recording**: the first pass at this read the first 200 KB of each
+`.dae` looking for `bb_autobillboard` and reported 2,747. A COLLADA scene is the LAST section of
+the file, so that grep saw only the shapes small enough to fit — it missed every large building
+and undercounted 4,245 as 2,747. Read the tail, or the whole file.

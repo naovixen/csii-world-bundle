@@ -269,6 +269,14 @@ def check_control():
         return
     clean = score_window(cx, cz, RADIUS, only=only)
     hurt = score_window(cx, cz, RADIUS, amputate=set(CONTROL_SEGMENTS), only=only)
+    if not clean or not hurt:
+        # The control segments exist but none of their NODE clip volumes falls whole inside the
+        # window (`score_window` skips a strip that crosses its edge rather than scoring a lie).
+        # Same situation as an absent segment: say the gate is unproven, do not crash on max().
+        print(f"  control segments {', '.join(CONTROL_SEGMENTS)} have no node strip inside "
+              f"the {label} window — the gate above is UNPROVEN on this city")
+        failures += 1
+        return
     clean_worst = max(r[1] for r in clean)
     hurt_worst = max(r[1] for r in hurt)
     print(f"  {len(clean)} strips on {', '.join(CONTROL_SEGMENTS)}: shipped worst gap "

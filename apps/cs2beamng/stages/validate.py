@@ -38,11 +38,20 @@ def run(ctx, progress):
             checks, problems = validate_level.check(level, ctx.bundle, progress)
         else:
             checks = {"note": "level validator not built yet (A1)"}
-    ctx.report["validation"] = {"problems": problems, "checks": checks}
     progress.end(f"{len(problems)} problem(s)")
     for p in problems[:20]:
         progress.log(f"validate: {p}")
-    return {"problems": len(problems), "checks": checks}
+    # `_report` is merged into the report by the worker and travels in the replay payload, so a
+    # SKIPPED validate still leaves its verdict in `cs2beamng_report.json` — writing straight to
+    # `ctx.report` did not (see `pipeline/worker._merge_report`).
+    return {"problems": len(problems), "checks": checks,
+            "_report": {"validation": {"problems": problems, "checks": checks}}}
 
 
-STAGE = Stage("validate", "Validate level", enabled, units, run)
+# This stage's input is THE LEVEL FOLDER, not the bundle: it is fresh exactly when nothing the
+# build wrote has moved since the run that produced the verdict now in the report. That is a
+# stat walk (`state.level_fingerprint`) and it is self-verifying, which "every earlier stage was
+# skipped" would not have been - the bake and the cook are outside the skip mechanism entirely,
+# and a hand-edited level file is outside all of it.
+# version 2: the resident-bytes budget, and the verdict survives a skip
+STAGE = Stage("validate", "Validate level", enabled, units, run, inputs=("level:",), version=2)

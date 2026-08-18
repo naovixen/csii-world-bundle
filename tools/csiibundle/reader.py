@@ -215,14 +215,22 @@ def schema_version(bundle_dir_or_manifest):
 
 # -- record streams ---------------------------------------------------------------------------
 
-def read_jsonl(path):
+def read_jsonl(path, contains=None):
     """Stream one JSON Lines layer, yielding a dict per record.
 
     Blank lines are skipped; nothing is buffered. A full city's `instances.jsonl` is over a
     million records, so this stays a generator all the way to the caller.
+
+    `contains` is a raw-text prefilter: a line without that substring is skipped without being
+    parsed. It is a **superset** filter — every line that could match is still decoded, and the
+    caller still applies its own test to what comes back — so it changes what this costs and
+    never what it yields. Decoding 1.2 M records to keep the buildings was 22 s of the skirts
+    product; the substring test is a hundredth of that.
     """
     with open(path, encoding="utf-8") as handle:
         for line in handle:
+            if contains is not None and contains not in line:
+                continue
             line = line.strip()
             if line:
                 yield json.loads(line)

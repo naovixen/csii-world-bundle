@@ -45,8 +45,26 @@ cs2beamng                   # the application
 cs2beamng gui --browser     # force the browser
 python -m cs2beamng         # the same
 
-cs2beamng build [bundle] --out DIR [--set key=value ...] [--settings file.json]
+cs2beamng build [bundle] --out DIR [--set key=value ...] [--settings file.json] [--force]
 ```
+
+## Rebuilds are incremental (A4)
+
+A stage is **skipped when nothing it reads has changed**. Each declares its bundle layers, its
+bake products and the settings its output depends on (`stages/__init__.py`), the worker
+fingerprints them into `level_state.json` beside the build report, and a skipped stage's level
+objects and shared state are replayed from `cs2beamng_state/` so the level is identical either
+way. Below that, `.dae` files, `items.level.json` files and textures are written **only when
+their bytes differ**, which is what lets BeamNG reuse its own `.cdae` and cooked-texture caches:
+the cook stage compiles only the shapes that actually changed, and returns without starting the
+engine when none did.
+
+`--force` (or `--set rebuild=true`) rebuilds everything from scratch.
+
+**The failure mode this must not have is a silent stale skip**, so: the worker wraps the settings
+in a recorder and refuses to record any stage that read a setting it did not declare (it re-runs
+next build, and the report says so); `tools/test_app_shell.py` fails the suite on the same
+condition statically; and a stage that raises is never recorded.
 
 Headless `build` uses the same runner and stages as the UI, with a terminal renderer; exit
 code 0 on success, 1 on failure/cancel, 2 for bad settings. Ctrl-C cancels cleanly.

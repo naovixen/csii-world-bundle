@@ -19,7 +19,7 @@ Everything else is this repo's own harness.
 
 ### `csiibundle/`
 
-Twenty-two modules plus `__init__` and the `bake/` subpackage, ~8,000 lines, **no `bpy` anywhere** — `python -c "import csiibundle"` under a
+Twenty-three modules plus `__init__` and the `bake/` subpackage, ~8,000 lines, **no `bpy` anywhere** — `python -c "import csiibundle"` under a
 plain system Python is part of the gate. Dependencies: the standard library plus `numpy`.
 
 ```python
@@ -160,6 +160,42 @@ matters, compare the **scene** instead: dump every object's `matrix_world`, ever
 vertex/loop/UV digest and every `FLOAT4X4` attribute from both `.blend` files and diff those.
 It is a thirty-line script and it is the reason the extraction's results are facts.
 
+### `check_instances_vs_game.py`
+
+`python tools/check_instances_vs_game.py <bundle> <level_dir> [samples]` — the A3 parity
+predicate (audit §62.4). Reads a **built BeamNG level back off disk** and scores it against the
+game's own rules recomputed from the bundle: the mesh state `CalculateTreeSubMeshData` picks, the
+`nulldetail` px `CalculateLodLimit` gives for that mesh's bounds and triangle area, the instance
+transform §2.2 states, the `colorSet` a `TSStatic` must carry, and how far a forest item's baked
+paint variant is from its own colour. Non-zero exit if an exact question disagrees.
+`tools/check_terrain_vs_game.py` is the same idea for the ground.
+
+### `check_tiles_vs_game.py`
+
+`python tools/check_tiles_vs_game.py <bundle> <level_dir> [--samples N]` — the A4 parity
+predicate (audit §63.6). The same question as `check_instances_vs_game.py`, asked of the merged
+world **tiles**: roads, lane markings, painted areas and roadside furniture, which A3 shipped at
+one always-on detail level. Reads each shipped `.dae`'s own `nulldetail<px>` and `_a<px>` nodes
+back off disk and scores them against the game's rule recomputed from the bake's tiles — whose
+primitive material names carry each primitive's `m_MinLod` as `#L<n>`
+(`csiibundle.bake.tiles.MIN_LOD_MARK`). Reports, per product, the fraction of tiles whose
+threshold agrees, the fraction of triangles carrying a game limit at all, CS2's own median draw
+distance and what the far LOD level keeps. Non-zero exit on any disagreement.
+
+**The headline it exists to record:** the rule says CS2 draws a 16 m road to **41 km** and a 15 cm
+lane line to **256 m**. The tile ladder is worth an order of magnitude on paint and nothing on
+roads, and that is the game's answer rather than an oversight.
+
+### `measure_paint_factor.py`
+
+`python tools/measure_paint_factor.py [bundle] [--limit N] [--json out.json]` — what a per-variant
+`baseColorFactor` would cost against a baked tinted albedo (A4 §2.4). §7.2's tint is a **pure
+per-texel multiplier** (`base · Π((1−wᵢ) + wᵢ·cᵢ)`, independent of the albedo), so replacing it by
+one constant per variant costs zero textures where a tinted albedo costs 1.33 MiB. This measures
+the error in 8-bit sRGB per (material, variant) — max, p99, mean, and how much of the texture the
+colour mask touches at all — so the threshold comes from the distribution rather than a guess.
+Writes nothing into the bundle.
+
 ### `probe_point.py`, `inspect_glb.py`, `colour_model.py`
 
 - **`probe_point.py`** — ends arguments about *which* patch of ground is being looked at. Pick a
@@ -194,6 +230,8 @@ correctly. Run them with plain `python`.
 | `test_b1_readers.py` | `lanes.part_source`, `splat.dominant_layer`, `water.bodies`, `terrain.hole_mask`, `materials.resolve`/`texture_set_key`, the instances skirt/density helpers |
 | `test_bake_products.py` | the bake products `materials` (resolved table, aliases, split masks, paint variants) and `lods` (LOD glbs parse, LOD2 carries COLOR_0) on the example bundle + a real region |
 | `test_bake_manifest.py` | the bake framework — `derived.json` validates against `docs/schema/derived.schema.json`, staleness is per product from input fingerprints, cancel is honoured between chunks |
+| `test_lod.py` | `csiibundle.lod` — CS2's own LOD arithmetic (audit §62): `CalculateLodLimit` bit for bit against `128 − floor(6·log₂ m)`, `cull_distance` inverting `CalculateLod`, the 8×/4× rendering-size clamp, the `MeshSystem` surface-area bias, and the claim that the field of view cancels out of the pixel answer |
+| `test_a3_objects.py` | the A3 object stages — the instance transform against `csiibundle.frames`' own composition (2.4e-15), the forest-vs-`TSStatic` rule, a written `.dae`'s detail ladder and null threshold, a `.forest4.json` line against vanilla's exact key set, `instanceColor*`, the light cap and cone angles, and that `groundcover` is off by default |
 
 ---
 

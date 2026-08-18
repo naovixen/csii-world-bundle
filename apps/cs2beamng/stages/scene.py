@@ -230,4 +230,9 @@ def _pick_spawn(ctx, progress):
     return frame.to_beamng(x, y, z), (dx, dz)
 
 
-STAGE = Stage(STAGE_KEY, "Sky, spawn and level info", enabled, units, run)
+INPUTS = ("layer:grading", "layer:lanes", "layer:terrain", "layer:terrainFine")
+SETTINGS = ("view_distance", "tod_hour", "ai_roads", "level_title", "terrain_upsample")
+OUTPUTS = ("info.json",)
+
+STAGE = Stage(STAGE_KEY, "Sky, spawn and level info", enabled, units, run, inputs=INPUTS,
+              settings_keys=SETTINGS, outputs=OUTPUTS)

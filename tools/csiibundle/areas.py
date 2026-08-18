@@ -45,6 +45,8 @@ which is where every layer of ground paint is ordered against every other.
 
 import math
 
+from . import lod
+
 import numpy
 
 from . import decals
@@ -70,7 +72,6 @@ MAX_DEPTH = 12
 # paints, whatever the triangulation happens to look like.
 PIECES_PER_CELL = 256
 PIECE_BUDGET = (64, 65536)  # (floor, ceiling) on that scaling
-DEDUP_MM = 1.0              # quantise world (x, y) to this before reusing a ray-cast
 
 # `RenderedArea.m_UVScale`'s own field default, used only when the bundle predates §8b
 # carrying the per-prefab value. World position times this is the UV.
@@ -264,23 +265,42 @@ def conform_triangle(tri, cell, sample, counters):
     return out
 
 
-def memoised_sampler(surface, dedup_mm=DEDUP_MM):
-    """A ground lookup over a `csiibundle.drape.ProjectionSurface`, memoised on rounded position.
+_MISS = object()
+
+
+def memoised_sampler(surface):
+    """A ground lookup over a `csiibundle.drape.ProjectionSurface`, memoised on the EXACT point.
 
     Conformance re-samples the same ground constantly — every split shares its edge midpoints
-    with a neighbour, and adjacent area records share their boundary nodes — so the memo is what
-    makes the layer affordable. Quantising to a millimetre is far below anything the answer
-    depends on and turns "the same point" into a dict key. Returns a callable `(x, y) -> height
-    or None`, Z-up like the surface itself.
+    with its sibling, every child re-samples what its parent already asked, and adjacent area
+    records share their boundary nodes — so the memo is what keeps the layer affordable when a
+    query is expensive (a consumer draping against a triangle soup, `drape.TriangleSoupSurface`).
+    Returns a callable `(x, y) -> height or None`, Z-up like the surface itself.
+
+    **The key is the point itself, not the point rounded to a millimetre.** The rounding was
+    there when one heightfield query cost 160 µs and near-duplicates were worth collapsing; with
+    the scalar path (`drape.HeightfieldSurface._sample_one`, 3 µs) it bought nothing and cost two
+    real things. It was an undeclared approximation — two points 0.4 mm apart shared an answer
+    and whichever arrived first decided it for both, worth a measured mean of 0.014 mm and up to
+    8 mm of height on the map's steepest cliff. And it made the layer's output depend on the
+    ORDER of the records file, which is what stopped the conform from being split across worker
+    processes: a chunk-local cache cannot answer like a global one. Keyed on the point, the memo
+    is a pure function of its argument — identical to no cache at all, so any partition of the
+    work gives the same bytes, and the ground is sampled where the geometry actually is.
+
+    The sharing that mattered survives: a shared edge midpoint is `(p + q) * 0.5` computed from
+    the same two floats by both neighbours, and a shared boundary node is the same number read
+    twice out of the same file. Those are exact repeats, and exact repeats are what this catches.
     """
     cache = {}
-    scale = 1000.0 / dedup_mm
+    get = cache.get
 
     def ground_at(x, y):
-        key = (round(x * scale), round(y * scale))
-        if key not in cache:
-            cache[key] = surface.height(x, y) if surface is not None else None
-        return cache[key]
+        key = (x, y)
+        hit = get(key, _MISS)
+        if hit is _MISS:
+            hit = cache[key] = surface.height(x, y) if surface is not None else None
+        return hit
 
     return ground_at
 
@@ -293,9 +313,11 @@ def build_pieces(records, cell, sample, center=None, radius=None, lift=AREA_LIFT
     ground lookup (see `memoised_sampler`); `cell` is the terrain grid's own spacing.
     `center`/`radius` filter by the area's centroid in bundle-frame metres.
 
-    Returns `(pieces, stats)`. `pieces` is `{prefab: {"verts": [...], "faces": [...]}}` with
-    vertices already in the Z-up frame and lifted by `lift`; `stats` carries the counts a caller
-    reports, plus `counters` from the conformance itself.
+    Returns `(pieces, stats)`. `pieces` is `{prefab: {"verts", "faces", "minLod"}}` with
+    vertices already in the Z-up frame and lifted by `lift` and `minLod` running parallel to
+    `faces` (the game's own per-triangle draw-distance limit, inherited by every sub-triangle the
+    conform produces); `stats` carries the counts a caller reports, plus `counters` from the
+    conformance itself.
 
     **Two frame details, and both matter.** Bundle `(x, y, z)` becomes Z-up `(x, z, y)`, which
     flips handedness (§2.2), so every triangle's winding is REVERSED to keep it facing up — an
@@ -326,7 +348,13 @@ def build_pieces(records, cell, sample, center=None, radius=None, lift=AREA_LIFT
                 continue
 
         prefab = record.get("prefab")
-        sink = pieces.setdefault(prefab, {"verts": [], "faces": []})
+        sink = pieces.setdefault(prefab, {"verts": [], "faces": [], "minLod": []})
+        # The game culls an area PER TRIANGLE, and by how WIDE the paint is there rather than by
+        # how big the triangle is (`lod.area_triangle_min_lods`, ported from
+        # `Game.Areas.GeometrySystem`). The limit is computed on the record's own polygon before
+        # the conform subdivides it, and every conformed sub-triangle inherits its parent's — the
+        # subdivision is a fidelity step for the terrain, not a change to what the game draws.
+        tri_min_lod = lod.area_triangle_min_lods([(n[0], n[2]) for n in nodes], triangles)
         piece_lift = lift + (priority_lift(
             int(((catalogue or {}).get(prefab) or {}).get("rendererPriority") or 0), ordered)
             if ordered else 0.0)
@@ -336,7 +364,7 @@ def build_pieces(records, cell, sample, center=None, radius=None, lift=AREA_LIFT
             if hit is None:
                 stats["missed"] += 1
             corners.append((n[0], n[2], (n[1] if hit is None else hit)))
-        for tri in triangles:
+        for tri_index, tri in enumerate(triangles):
             if max(tri) >= len(nodes) or min(tri) < 0:
                 stats["dropped_bad"] += 1
                 continue
@@ -348,6 +376,7 @@ def build_pieces(records, cell, sample, center=None, radius=None, lift=AREA_LIFT
                 base = len(sink["verts"])
                 sink["verts"].extend((p[0], p[1], p[2] + piece_lift) for p in piece)
                 sink["faces"].append((base, base + 1, base + 2))
+                sink["minLod"].append(tri_min_lod[tri_index] if tri_index < len(tri_min_lod) else 255)
         stats["placed"] += 1
         if progress is not None:
             progress(stats["placed"])

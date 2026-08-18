@@ -78,14 +78,20 @@ def sanitize(name):
 
 
 def write_shape(path, shape):
-    """Write `shape` as a `.dae`. Returns `{materials: [...], triangles: n, vertices: n}`.
+    """Write `shape` as a `.dae`. Returns `{materials, triangles, vertices, changed}`.
 
-    A `.cdae` beside the `.dae` (the cook stage's, or BeamNG's own compiler's) is what the
-    game loads in preference to parsing the XML, so one left over from a previous build would
-    ship the OLD geometry: it is removed here, before the new `.dae` lands."""
-    stale = os.path.splitext(path)[0] + ".cdae"
-    if os.path.isfile(stale):
-        os.remove(stale)
+    **Written only when the bytes differ** — the pattern `Level.write_bytes_if_changed` uses for
+    textures, and for the same reason one level down. A `.cdae` beside the `.dae` is what the
+    game (and `compileMeshes.lua`) loads in preference to parsing the XML, and BeamNG's own
+    compiler is built to reuse it: *"keep in mind that existing .cdae will be reused. Delete
+    them beforehand if a clean state is required."* Deleting it unconditionally is what made a
+    no-op rebuild pay the full 6m26s cook, so the `.cdae` goes **only on the path where the
+    `.dae` actually changed** — where keeping it really would ship the old geometry.
+
+    The document is built into a sibling temp file rather than a buffer because the float
+    arrays go out through `ndarray.tofile`, which needs a real file handle; that is also what
+    keeps a 300k-vertex tile at a couple of seconds.
+    """
     meshes = []
     seen_ids = set()
     names_used = {}
@@ -108,7 +114,8 @@ def write_shape(path, shape):
     tri_total = sum(len(m.tris) for m in meshes)
     vert_total = sum(len(m.verts) for m in meshes)
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
-    with open(path, "w", encoding="utf-8", newline="\n") as f:
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8", newline="\n") as f:
         f.write('<?xml version="1.0" encoding="utf-8"?>\n')
         f.write('<COLLADA xmlns="http://www.collada.org/2005/11/COLLADASchema" version="1.4.1">\n')
         f.write("  <asset>\n    <contributor><authoring_tool>cs2beamng</authoring_tool></contributor>\n"
@@ -151,7 +158,54 @@ def write_shape(path, shape):
             _write_node(f, f"Colmesh_{sanitize(shape.name)}-{i + 1}", m)
         f.write("        </node>\n      </node>\n    </visual_scene>\n  </library_visual_scenes>\n")
         f.write('  <scene><instance_visual_scene url="#Scene"/></scene>\n</COLLADA>\n')
-    return {"materials": materials, "triangles": tri_total, "vertices": vert_total}
+    changed = _replace_if_changed(tmp, path)
+    if changed:
+        stale = os.path.splitext(path)[0] + ".cdae"
+        if os.path.isfile(stale):
+            os.remove(stale)                       # this one WOULD ship the old geometry
+    return {"materials": materials, "triangles": tri_total, "vertices": vert_total, "changed": changed}
+
+
+def _replace_if_changed(tmp, path):
+    """Move `tmp` onto `path`, or drop it when the two hold the same bytes. True if it moved."""
+    try:
+        if os.path.isfile(path) and os.path.getsize(path) == os.path.getsize(tmp):
+            with open(path, "rb") as old, open(tmp, "rb") as new:
+                while True:
+                    a, b = old.read(1 << 20), new.read(1 << 20)
+                    if a != b:
+                        break
+                    if not a:
+                        os.remove(tmp)
+                        return False
+    except OSError:
+        pass
+    os.replace(tmp, path)
+    return True
+
+
+def sweep_orphans(directory, keep):
+    """Delete the `.dae`/`.cdae` in `directory` whose stem is not in `keep`, and return how many.
+
+    The counterpart of not clearing `art/shapes/` up front any more (`pipeline/worker.py`
+    `GENERATED_DIRS`): a shape a previous build wrote and this one does not is still mounted and
+    compiled by BeamNG, and a `.cdae` with no `.dae` beside it is a ghost shape. Sweeping at the
+    END of the stage that owns the directory keeps every *surviving* file's mtime, which is what
+    lets both BeamNG's mesh compiler and its texture cooker reuse their work.
+    """
+    if not os.path.isdir(directory):
+        return 0
+    removed = 0
+    for name in os.listdir(directory):
+        stem, ext = os.path.splitext(name)
+        if ext not in (".dae", ".cdae") or stem in keep:
+            continue
+        try:
+            os.remove(os.path.join(directory, name))
+            removed += 1
+        except OSError:
+            pass
+    return removed
 
 
 def _geometry_id(mesh):

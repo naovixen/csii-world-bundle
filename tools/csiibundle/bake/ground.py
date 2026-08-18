@@ -10,21 +10,52 @@ Until it is measured, `envelope` answers conservatively for each product's own f
   ground is invisible, one that stops short shows sky under the building.
 
 `diagonal` is `nw_se`, `ne_sw`, or `envelope`; `mode` is `max`/`min` for the envelope case.
+
+**An envelope decodes the raster ONCE and both diagonals share the decoded array.** The two
+`HeightfieldSurface`s differ only in which way they split a quad, not in the heights they split;
+building each from `from_bundle` decoded the 8192² fine map twice and kept two float64 copies of
+it — 1 GiB per ground, which is what stopped the areas conform from being parallelised at all.
+`from_heights` is the same door for a worker process handed the array through shared memory.
 """
 
-from .. import drape
+from .. import drape, reader
 
 
 class GroundSurface(drape.ProjectionSurface):
     def __init__(self, bundle_dir, diagonal="envelope", mode="max", prefer_fine=True):
+        field = reader.load_heightfield(bundle_dir, prefer_fine=prefer_fine) if bundle_dir else None
+        if field is None:
+            self.mode, self.a, self.b, self.present = mode, None, None, False
+            return
+        import numpy
+        heights = field.raw.astype(numpy.float64) * field.elevation_scale + field.elevation_offset
+        self._init(heights, field.cell, field.origin_x, field.origin_z, diagonal, mode)
+        self.fine = field.fine
+
+    @classmethod
+    def from_heights(cls, heights, cell, origin_x, origin_y, diagonal="envelope", mode="max"):
+        """A ground over an already-decoded `(rows, cols)` float64 array, row 0 north.
+
+        The array is NOT copied — both diagonals reference it — so a worker process can attach a
+        `multiprocessing.shared_memory` block and pay for the raster once for the whole pool.
+        """
+        self = cls.__new__(cls)
+        self._init(heights, cell, origin_x, origin_y, diagonal, mode)
+        return self
+
+    def _init(self, heights, cell, origin_x, origin_y, diagonal, mode):
         self.mode = mode
+        make = drape.HeightfieldSurface
         if diagonal == "envelope":
-            self.a = drape.HeightfieldSurface.from_bundle(bundle_dir, diagonal="nw_se", prefer_fine=prefer_fine)
-            self.b = drape.HeightfieldSurface.from_bundle(bundle_dir, diagonal="ne_sw", prefer_fine=prefer_fine)
+            self.a = make(heights, cell, origin_x, origin_y, diagonal="nw_se")
+            self.b = make(heights, cell, origin_x, origin_y, diagonal="ne_sw")
+            # the same array, not a copy: `asarray` on a float64 ndarray is a no-op
+            assert self.b.heights is self.a.heights
         else:
-            self.a = drape.HeightfieldSurface.from_bundle(bundle_dir, diagonal=diagonal, prefer_fine=prefer_fine)
+            self.a = make(heights, cell, origin_x, origin_y, diagonal=diagonal)
             self.b = None
-        self.present = self.a is not None
+        self.present = True
+        self.fine = None
 
     @property
     def cell(self):
@@ -44,6 +75,27 @@ class GroundSurface(drape.ProjectionSurface):
         return out
 
     def height(self, x, y, ceiling=4000.0):
+        """The ground at one point, `None` off the raster.
+
+        Scalars take a plain-Python path straight through `HeightfieldSurface._sample_one`: the
+        conform asks this tens of millions of times and going via `height_many` cost two
+        1-element allocations, two full vectorised samples, a `stack` and a `nanmax` inside an
+        `errstate` block for every one of them. The envelope rule is the same rule the array
+        path applies — `nanmax`/`nanmin` ignore a NaN, so one diagonal missing the raster and
+        the other hitting it answers with the hit.
+        """
+        if self.a is None:
+            return None
+        if isinstance(x, (float, int)) and isinstance(y, (float, int)):
+            ha = self.a._sample_one(x, y)
+            if self.b is None:
+                return ha
+            hb = self.b._sample_one(x, y)
+            if ha is None:
+                return hb
+            if hb is None:
+                return ha
+            return max(ha, hb) if self.mode == "max" else min(ha, hb)
         import numpy
         out = self.height_many(numpy.array([x], float), numpy.array([y], float), ceiling)
         return None if numpy.isnan(out[0]) else float(out[0])

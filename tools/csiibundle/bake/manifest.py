@@ -151,8 +151,13 @@ def record_product(document, name, path, inputs, seconds, tiles=None, stats=None
 
 # -- staleness ----------------------------------------------------------------------------------
 
-# Options whose change makes every product a different cache. Others (e.g. jobs) do not.
-SHAPING_OPTIONS = ("tile", "diagonal", "region")
+# Options whose change makes EVERY product a different cache. Others (e.g. jobs) do not, and
+# `region` is deliberately not one of them any more (2026-08-18): it was, and so a build that
+# crossed the region/full-city boundary re-baked `materials` too — 7.5 minutes of work on a
+# product that walks all materials and all instances and has never read `region` in its life.
+# A product that DOES read it declares it in its own `Product.options`, and the gate in
+# `tools/test_bake_manifest.py` fails the suite if one reads it without declaring it.
+SHAPING_OPTIONS = ("tile", "diagonal")
 
 
 def _same_options(recorded, wanted):

@@ -27,6 +27,15 @@ import numpy
 # than this fraction of the texture stay separate even in the same cell. TUNED.
 UV_BIN = 0.125
 
+# ...but a fixed bin is a fraction of ONE texture repeat, and a world-planar UV is not a texture
+# coordinate in that sense: an area or road tile's UV is its world position times the prefab's
+# `colossal_UVScale`, so a 256 m tile spans tens of repeats and the fixed bin separated almost
+# every vertex from its neighbour — clustering could not merge anything. Measured on the first A5
+# build: `areas` reached 39 % of its target ratio and `markings` 33 %, against `networks`' 22 %.
+# The bin is therefore at least the mesh's own UV range divided by this, so the same amount of
+# merging is allowed whatever the repeat count; an atlased mesh (range ~1) keeps `UV_BIN` exactly.
+UV_BINS_PER_MESH = 8.0
+
 # Cell search bounds as fractions of the mesh's bounding-box diagonal. TUNED.
 CELL_MIN_FRACTION = 0.002
 CELL_MAX_FRACTION = 0.5
@@ -91,11 +100,20 @@ def merge_runs(parts):
 
 # -- vertex clustering --------------------------------------------------------------------------
 
-def vertex_cluster(verts, tris, uvs=None, normals=None, cell=1.0, uv_bin=UV_BIN):
+def vertex_cluster(verts, tris, uvs=None, normals=None, cell=1.0, uv_bin=UV_BIN, pinned=None):
     """Snap vertices to a grid of `cell` metres and merge those that share a cell (and a UV bin).
 
     Returns `(verts, normals, uvs, tris)` with degenerate and duplicate faces removed. Positions,
     normals and UVs of a cluster are its members' means (normals renormalised).
+
+    **`pinned` is what makes this safe on a tiled world.** The grid's origin is the mesh's own
+    minimum corner and its cell size is searched per mesh (`_cluster_to_ratio`), so two adjacent
+    tiles cluster on two different grids: a vertex on their shared edge is averaged one way in
+    one tile and another way in the other, and the seam opens. A `pinned` boolean per vertex puts
+    each of those vertices in a cluster of its own, so its position comes out EXACTLY as it went
+    in and both tiles still agree on it. The caller decides which vertices those are — for a
+    world tile it is a band around the tile boundary, a rule both neighbours compute identically
+    from world position (`beamng/tilelod.boundary_pins`).
     """
     verts = numpy.asarray(verts, dtype=numpy.float64)
     tris = numpy.asarray(tris, dtype=numpy.int64)
@@ -106,8 +124,16 @@ def vertex_cluster(verts, tris, uvs=None, normals=None, cell=1.0, uv_bin=UV_BIN)
     columns = [keys[:, 0], keys[:, 1], keys[:, 2]]
     if uvs is not None and uv_bin:
         uv = numpy.asarray(uvs, dtype=numpy.float64)
-        columns.append(numpy.floor(uv[:, 0] / uv_bin).astype(numpy.int64))
-        columns.append(numpy.floor(uv[:, 1] / uv_bin).astype(numpy.int64))
+        span = float(numpy.nanmax(uv) - numpy.nanmin(uv)) if uv.size else 0.0
+        bin_size = max(float(uv_bin), span / UV_BINS_PER_MESH) if span > 0 else float(uv_bin)
+        columns.append(numpy.floor(uv[:, 0] / bin_size).astype(numpy.int64))
+        columns.append(numpy.floor(uv[:, 1] / bin_size).astype(numpy.int64))
+    if pinned is not None:
+        pins = numpy.asarray(pinned, dtype=bool)
+        # -1 for everything free, its own index for everything pinned: a column no two pinned
+        # vertices share, and one that never separates two free ones.
+        columns.append(numpy.where(pins, numpy.arange(len(verts), dtype=numpy.int64),
+                                   numpy.int64(-1)))
     composite = numpy.stack(columns, axis=1)
     _, first, inverse = numpy.unique(composite, axis=0, return_index=True, return_inverse=True)
     inverse = inverse.reshape(-1)
@@ -150,7 +176,7 @@ def vertex_cluster(verts, tris, uvs=None, normals=None, cell=1.0, uv_bin=UV_BIN)
     return new_verts, new_normals, new_uvs, new_tris
 
 
-def _cluster_to_ratio(verts, tris, uvs, normals, ratio, iterations=12):
+def _cluster_to_ratio(verts, tris, uvs, normals, ratio, iterations=12, pinned=None):
     """Binary-search the cluster cell so the face count lands near `ratio` of the input."""
     verts = numpy.asarray(verts, dtype=numpy.float64)
     if len(tris) < 4:
@@ -161,7 +187,7 @@ def _cluster_to_ratio(verts, tris, uvs, normals, ratio, iterations=12):
     best = None
     for _ in range(iterations):
         mid = (lo + hi) * 0.5
-        result = vertex_cluster(verts, tris, uvs, normals, cell=mid)
+        result = vertex_cluster(verts, tris, uvs, normals, cell=mid, pinned=pinned)
         count = len(result[3])
         if best is None or abs(count - target) < abs(len(best[3]) - target):
             best = result
@@ -235,6 +261,35 @@ def lod_ladder(mesh, targets=(0.25, 0.06), backend="auto"):
              "levels": [int(len(level["tris"])) for level in levels],
              "dropped_runs": dropped}
     return levels, stats
+
+
+def cluster_mesh(mesh, ratio, pinned=None):
+    """One `{verts, normals, uvs, tris, material_runs}` mesh clustered to about `ratio` of its
+    triangles, per material run, with `pinned` (per vertex of the WHOLE mesh) held in place.
+
+    The run split is what keeps a material boundary from smearing; `pinned` is indexed on the
+    merged mesh and is re-indexed into each run here, so a caller computes it once from the
+    mesh's own vertices.
+    """
+    verts = numpy.asarray(mesh["verts"], dtype=numpy.float64)
+    tris = numpy.asarray(mesh["tris"], dtype=numpy.int64)
+    pins = None if pinned is None else numpy.asarray(pinned, dtype=bool)
+    parts = []
+    cursor = 0
+    for name, count in mesh.get("material_runs") or [(None, len(tris))]:
+        t = tris[cursor:cursor + count]
+        cursor += count
+        if len(t) == 0:
+            continue
+        used, inverse = numpy.unique(t.ravel(), return_inverse=True)
+        sub_v = verts[used]
+        sub_n = None if mesh.get("normals") is None else numpy.asarray(mesh["normals"])[used]
+        sub_uv = None if mesh.get("uvs") is None else numpy.asarray(mesh["uvs"])[used]
+        sub_pin = None if pins is None else pins[used]
+        out_v, out_n, out_uv, out_t = _cluster_to_ratio(sub_v, inverse.reshape(-1, 3), sub_uv,
+                                                        sub_n, ratio, pinned=sub_pin)
+        parts.append((name, out_v, out_n, out_uv, out_t))
+    return merge_runs(parts)
 
 
 def vertex_albedo(mesh, sampler):

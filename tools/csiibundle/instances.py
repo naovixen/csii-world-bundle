@@ -105,9 +105,16 @@ TREE_STATE_SUFFIX = {
 FULLNESS_STEPS = ((66, "__full"), (33, "__partial2"), (0, "__partial1"))
 
 
-def read_instances(bundle_dir):
-    """Stream `instances.jsonl`. A generator — a full city is over a million records."""
-    return reader.read_jsonl(reader.layer_path(bundle_dir, "instances"))
+def read_instances(bundle_dir, kind=None):
+    """Stream `instances.jsonl`. A generator — a full city is over a million records.
+
+    `kind` narrows the stream to one `kind` ("building", "decal", "tree", "prop") the cheap way:
+    a line that does not contain that word cannot be a record of that kind, so it is never
+    parsed. The caller must still test `record["kind"]` — the prefilter is a superset (a prop
+    whose brand is the word "building" survives it), which is exactly what keeps it exact.
+    """
+    return reader.read_jsonl(reader.layer_path(bundle_dir, "instances"),
+                             contains=None if kind is None else f'"{kind}"')
 
 
 def mesh_candidates(record):

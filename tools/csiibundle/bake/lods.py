@@ -164,4 +164,4 @@ def run(context, progress):
     return stats
 
 
-register(Product(PRODUCT_NAME, INPUTS, "lods/", run))
+register(Product(PRODUCT_NAME, INPUTS, "lods/", run, options=("lod_targets", "lod_backend", "region")))

@@ -277,7 +277,11 @@ def run(ctx, progress):
                  f"albedo gain x{albedo_gain:.2f}")
     shared = ctx.shared if ctx.shared is not None else {}
     shared["terrain"] = {"position": position, "squareSize": cell, "maxHeight": max_height, "size": size,
-                         "cell": cell, "elevationScale": scale, "elevationOffset": offset}
+                         "cell": cell, "elevationScale": scale, "elevationOffset": offset,
+                         # what the ground is painted with: `grounds` are the bundle's own layer
+                         # names, `layers` the level-prefixed TerrainMaterial internalNames that
+                         # a GroundCover's `layer` field has to match
+                         "grounds": list(grounds), "layers": list(names)}
     return {"size": size, "squareSize": cell, "materials": len(names), "holes": holes,
             "carriagewaySamples": covered, "carriagewayClamped": lowered,
             "carriagewayWorstDrop": round(worst, 3),
@@ -833,4 +837,15 @@ def _terrain_materials(level, bundle, names, gain=1.0, rasters=None, sharpen=1.0
     return terrain_only, ground, notes
 
 
-STAGE = Stage(STAGE_KEY, "Terrain", enabled, units, run)
+# What this stage is a function of, for the worker's per-stage skip (pipeline/state.py). The
+# §8 rasters plus the bake's terrain product (the carriageway ceiling, the corridor faces and
+# the clip cells the punch is read from); `terrain_brightness` and `terrain_blend_sharpen` are
+# in the list because they change the ground textures this stage writes, not just its heights.
+INPUTS = ("layer:terrain", "layer:terrainFine", "layer:surfaceIndex", "layer:splatmap",
+          "layer:userSplatmap", "layer:surfaces", "layer:water", "derived:terrain")
+SETTINGS = ("terrain_upsample", "terrain_holes", "terrain_cut", "terrain_brightness",
+            "terrain_blend_sharpen")
+OUTPUTS = ("art/terrains/main.materials.json",)
+
+STAGE = Stage(STAGE_KEY, "Terrain", enabled, units, run, inputs=INPUTS, settings_keys=SETTINGS,
+              outputs=OUTPUTS, shared_keys=("terrain",))

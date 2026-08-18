@@ -31,6 +31,7 @@ curve is twice as bad as the nearest rule. Run `tools/test_drape_pick.py` before
 of this from a static reading.
 """
 
+import math
 import os
 
 import numpy
@@ -136,6 +137,8 @@ class HeightfieldSurface(ProjectionSurface):
         `ceiling` is accepted for protocol compatibility and ignored: a heightfield is a single
         surface, so there is never more than one hit to choose between.
         """
+        if isinstance(x, (float, int)) and isinstance(y, (float, int)):
+            return self._sample_one(x, y)           # the scalar path — see `_sample_one`
         scalar = numpy.isscalar(x) and numpy.isscalar(y)
         out = self._sample(numpy.atleast_1d(numpy.asarray(x, dtype=numpy.float64)),
                            numpy.atleast_1d(numpy.asarray(y, dtype=numpy.float64)))
@@ -191,6 +194,56 @@ class HeightfieldSurface(ProjectionSurface):
                               se + (sw - se) * (1.0 - u) + (ne - se) * (1.0 - v))
 
         return numpy.where(inside | on_edge, out, numpy.nan)
+
+    def _sample_one(self, x, y):
+        """`_sample` for ONE point, in plain Python floats — bit-identical, no allocation.
+
+        The area conform (`areas.conform_triangle`) asks for one point at a time, tens of
+        millions of times: three edge midpoints and a centroid per split, per split, per source
+        triangle. Through the vectorised path each of those allocated two 1-element arrays, ran
+        the full `_sample` (twice over, once per diagonal of an `envelope` ground), and stacked
+        and `nanmax`-ed the pair inside an `errstate` context — about 50 µs of overhead for
+        4 array elements of work, which was 60 % of the whole bake.
+
+        This is the SAME arithmetic in the same order on the same float64 values, so it must
+        agree to the last bit; `tools/test_ground_scalar.py` asserts exactly that over random
+        points on both diagonals and is the gate on any edit here. Keep the two in step: a
+        divergence here silently moves every conformed height in the level.
+        """
+        heights = self.heights
+        rows, cols = heights.shape
+        fc = (float(x) - self.origin_x) / self.cell
+        fr = (self.origin_y - float(y)) / self.cell
+        try:
+            c0 = math.floor(fc)
+            r0 = math.floor(fr)
+        except (ValueError, OverflowError):     # NaN or infinity: the array path answers NaN
+            return None
+        # `inside | on_edge` in one test: a query exactly on the last row/column belongs to the
+        # last cell, and anything else off the raster has no ground.
+        if c0 < 0 or r0 < 0 or c0 > cols - 1 or r0 > rows - 1:
+            return None
+        if c0 > cols - 2:
+            c0 = max(cols - 2, 0)
+        if r0 > rows - 2:
+            r0 = max(rows - 2, 0)
+        u = fc - c0
+        v = fr - r0
+        u = 0.0 if u < 0.0 else (1.0 if u > 1.0 else u)      # 0 at the west edge of the cell
+        v = 0.0 if v < 0.0 else (1.0 if v > 1.0 else v)      # 0 at the north edge
+
+        nw = heights.item(r0, c0)
+        ne = heights.item(r0, c0 + 1)
+        sw = heights.item(r0 + 1, c0)
+        se = heights.item(r0 + 1, c0 + 1)
+
+        if self.diagonal == "nw_se":
+            if u >= v:
+                return nw + (ne - nw) * u + (se - ne) * v
+            return nw + (se - sw) * u + (sw - nw) * v
+        if u + v <= 1.0:
+            return nw + (ne - nw) * u + (sw - nw) * v
+        return se + (sw - se) * (1.0 - u) + (ne - se) * (1.0 - v)
 
 
 def drape_block(block, road_surface, counters, ground_surface=None):

@@ -48,6 +48,8 @@ Modules, roughly in the order a consumer needs them
 ``glbwrite``  the inverse of `glb`: arrays back to a §6-shaped `.glb` (the bake's tiles)
 ``decimate``  generated LOD chains (quadric via optional `pyfqmr`, else vertex clustering)
 ``collision`` simple colliders: thickness rule, box, trunk cylinder, wind vertex colours
+``lod``       CS2's own LOD arithmetic, ported: how far the game draws a mesh, from that
+              mesh's bounds and triangle area alone (audit §62)
 ``bake``      the offline second stage: `python -m csiibundle.bake` writes `derived/` (§13)
 
 **Minimum viable consumer**: `reader` + `frames` + `instances` + `glb` places every building,
@@ -66,11 +68,11 @@ prop and tree correctly. Then, in rough order of how wrong the result looks with
 """
 
 from . import (areas, bezier, collision, colour, decals, decimate, drape, frames, glb,
-               glbwrite, instances, lanegraph, lanes, lights, materials, networks, png, reader,
-               splat, terrain, tints, water)
+               glbwrite, instances, lanegraph, lanes, lights, lod, materials, networks, png,
+               reader, splat, terrain, tints, water)
 
 __all__ = ["areas", "bezier", "collision", "colour", "decals", "decimate", "drape", "frames",
-           "glb", "glbwrite", "instances", "lanegraph", "lanes", "lights", "materials",
+           "glb", "glbwrite", "instances", "lanegraph", "lanes", "lights", "lod", "materials",
            "networks", "png", "reader", "splat", "terrain", "tints", "water"]
 
 # Bundle schema version this package reads. `reader.schema_version` reports what a bundle on
