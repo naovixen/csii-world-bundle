@@ -24,7 +24,12 @@ CLAUDE.md — the terrain cut cost seven guesses before someone read `TerrainSys
 
 ---
 
-## A6.0 The GPU is still running out of memory — 8,193 failed allocations
+## A6.0 The GPU is still running out of memory — 131,073 failed allocations
+
+> **STATUS 2026-08-18** — instrument recalibrated and committed (`80f50d7`, audit §65). The
+> chosen cut (both texture caps 512 → 256) is BUILT INTO THE LEVEL and the level mounts
+> **4,685 MiB**, down from 5,224. The preset change is deliberately UNCOMMITTED until a load
+> validates it. **Gate: `grep "CreateResource failed" beamng.log` → `totalFailures`. Zero.**
 
 ### What is measured
 
@@ -93,6 +98,13 @@ loaded, and shrinking it shrinks both.
 ---
 
 ## A6.1 Bushes collide, and they are wearing a tree's trunk
+
+> **STATUS 2026-08-18 — DONE in code, `4b6745f`, audit §66. NOT YET IN THE BUILT LEVEL.**
+> The rule is confirmed from source (`TreeObject` adds `Game.Objects.Tree`, `PlantObject`
+> does not), `csiibundle.instances.is_tree` is the shared predicate, and both call sites
+> follow it. The trunk-fit question was measured and deliberately NOT fixed: the name branch
+> fires 0 times in 32, the fallback is wrong for 5 prefabs = 4.5 % of tree items, declared as
+> `treeTrunkCylinderFit`. The Blender adapter did not have this problem after all.
 
 ### What is measured
 
