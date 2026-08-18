@@ -1,17 +1,87 @@
-# A6 — three fidelity defects from the A5 load
+# A6 — one live regression and four fidelity defects from the A5 loads
 
-A5 closed the performance work (audit §64): the build is 19 minutes, the level mounts 5.2 GiB, and
-the imposter fix held in game. What is left is fidelity. Three defects, reported 2026-08-18 after
-the load:
+A5 closed most of the performance work (audit §64): the build is 19 minutes, the level mounts
+5.2 GiB, and **the imposter fix held** — 153 imposter builds this session against 2,652, and the
+1–2 FPS collapse is gone. What is left is one performance item that is NOT fixed, and four
+fidelity ones. Reported 2026-08-18 across two loads:
 
+0. **The GPU still runs out of memory.** FPS decays 40–60 → 15 over 30 minutes. Not the same
+   cause as the A5 one, and not fixed by it.
 1. **Bushes collide.** Only trees should, and only their trunks.
 2. **Buildings lose their windows a few hundred metres out** while the building itself is still
    drawn — they read as construction sites.
 3. **Some buildings render at wrong contrast or completely black.**
+4. **Vegetation stands in the carriageway.** Asked for explicitly as a playability deviation, not
+   a fidelity fix.
 
 Everything below the horizontal rule in each section is measured, not assumed. Where a rule is
 still open it says so; **none of these should be fixed by inventing a consumer-side rule** (see
 CLAUDE.md — the terrain cut cost seven guesses before someone read `TerrainSystem`).
+
+---
+
+## A6.0 The GPU is still running out of memory — 8,193 failed allocations
+
+### What is measured
+
+The imposter fix held: **153 `Creating imposters for:` lines this session**, exactly the number the
+gate allows, against 2,652 before. The load went 396.982 s → **252.468 s** (`objects` 373.484 →
+228.942). And yet:
+
+```
+  0.61|D|platform|  Physical memory: 31.92 GB
+  5.46|I|d3d12|     Dedicated video memory: 8018 MB
+329.84|E|d3d12u::GenericImage::create| D3D12: CreateResource failed for generic image
+      (dim=Tex2D, w=64, h=64, mips=7, format=98, hr=0x8007000e, totalFailures=5)
+   …  totalFailures 17, 33, 65, 513, 8193 …
+2105.36|E|d3d12u::GenericImage::create| … totalFailures=8193 …
+```
+
+`hr=0x8007000e` is **E_OUTOFMEMORY**, and the log prints only on a power-of-two backoff — so those
+20 lines are **8,193+ failed GPU allocations**, starting the moment loading finishes (329 s) and
+still going at 35 minutes. Each one "leaves the image empty" and the engine retries. That is the
+decay: not a leak in our data, but a card that has nothing left to give.
+
+**The level mounts 5,225 MiB** (3,906 meshes + 1,318 textures, `validate.checks.resident`) on an
+**8,018 MB** card — and BeamNG needs the rest for its own render targets, shadow cascades, the
+vehicle and the UI. Note from the same log that the UI canvas is **3440×1440**: this machine is
+ultrawide 1440p, which is 3.2× the pixels of the 1080p `level_budget.py` assumes, and a deferred
+G-buffer plus cascades at that size is not a rounding error. `RESIDENT_BUDGET_MIB = 6144` passed
+this level at 5,225 and should not have.
+
+**It grows as you explore**, which is why it takes 30 minutes: BeamNG loads a shape's buffers the
+first time it is drawn and does not evict, so the 5,225 MiB is only fully paid once you have seen
+the whole map. That matches the report exactly, and it means the fix is *total* footprint, not
+what is on screen.
+
+### The levers, with the numbers already in hand
+
+| | MiB | |
+|---|---:|---|
+| `cs2` object shapes | 2,224 | **half of it in 199 signature buildings** at 8–32 MiB each |
+| networks | 787 | |
+| areas / lanegeometry / skirts / markings / terraincut | 895 | |
+| textures `.dds` | 1,083 | `texture_max` is 512; 256 would take roughly three quarters of it |
+| textures `.png` (terrain) | 235 | still uncooked, unlike every other texture in the level |
+
+Two more, not yet costed: dropping LOD2 from object shapes (each shape carries LOD0+LOD1+LOD2 =
+131 % of LOD0), and `terrain_upsample` 2 → 1 (8192 → 4096; audit §52 has the terrain-texture
+numbers).
+
+### The work
+
+1. **Re-calibrate `RESIDENT_BUDGET_MIB` against the failure, not against a guess** — it is ours,
+   it let this through, and it should be a function of the card and the render resolution rather
+   than a constant. Say so in `validate_level`.
+2. Then buy the ~2 GB back, cheapest fidelity first: the texture cap before the buildings.
+3. **Take the number from the log, not from a feeling**: `grep "CreateResource failed"
+   beamng.log` and read `totalFailures`. Zero is the gate. FPS is the symptom; that counter is
+   the measurement.
+
+### The trap
+
+Do not spend anything on `objects 228.942s` until this is settled — it is the same data being
+loaded, and shrinking it shrinks both.
 
 ---
 
@@ -201,18 +271,76 @@ count DOWN.
 
 ---
 
+## A6.4 Vegetation standing in the carriageway
+
+Asked for directly, and framed correctly when it was asked: *"It would be less 1 to 1 but would
+make the city more driveable."* This is a **declared deviation**, not a fidelity fix — it goes in
+the report's approximations block with its count, like every other one.
+
+### What is measured
+
+Sampling the 169,239 `car` and `parking` lane polylines from `lanes.jsonl` (1,523,047 stations,
+~4 m apart) and testing every vegetation item against them:
+
+```
+9,594 of 686,641 vegetation items stand within 2.0 m of a drivable lane centre  (1.4 %)
+   of which 4,890 are TREES (growth) and 4,704 are plants/bushes/grass
+
+  1,854 of 314,222 ( 0.6 %) plant pd_Long_Grass        433 of  7,855 ( 5.5 %) tree  FloridaPalmTree01
+  1,123 of  34,217 ( 3.3 %) tree  CoconutPalmTree01    417 of  9,404 ( 4.4 %) plant PlantPot02
+  1,073 of  63,521 ( 1.7 %) tree  VFP_LiveOakTree      332 of  4,967 ( 6.7 %) plant FlowerBushCity01
+    837 of 122,651 ( 0.7 %) tree  OakTree01            275 of  5,381 ( 5.1 %) plant GreenBushCity02
+```
+
+**1.4 % is the whole cost of the deviation** — it is a thin band, not a swathe, and dropping it
+removes 9,594 obstacles from the road while leaving 98.6 % of the city's planting alone.
+
+### Before building it: is this even ours?
+
+Worth thirty minutes first, because the answer changes the fix. CS2 does not normally leave a tree
+in a road — so either the rip is placing them wrongly, or CS2 hides them at render time, or they
+genuinely are at the kerb and our lane polyline is not where the kerb is. Check in this order:
+
+1. **Is our 2 m the right test?** A lane is ~3–3.5 m wide, so 2 m from the centre is just past the
+   lane edge; some of these are legitimately kerbside plantings and clipping them would be wrong.
+   Sweep the threshold (1.0 / 1.5 / 2.0 / 2.5 m) and look at the curve before choosing.
+2. **Does CS2 cull vegetation over a network?** `Game.Simulation`'s vegetation systems and the
+   `Owner`/`Attached` links are where that would live. If the game has such a rule, port it and
+   this stops being a deviation at all.
+3. **Only then** the consumer-side clip.
+
+### The work
+
+* the rule belongs in `csiibundle` (both consumers place vegetation), reading the lane layer the
+  app already loads;
+* a setting — `foliage_road_clearance` in metres, 0 = off — because it is a deviation and the user
+  must be able to turn it off;
+* counted in the report's `approximations` with the threshold and the item count, per the
+  non-negotiable: *every approximation is declared and counted*.
+
+### The gate
+
+drive a long road and a roundabout; the count in the report; and the 98.6 % that must NOT move.
+
+---
+
 ## Order
 
-**A6.1 first** — it is the only one whose rule is already in hand, it is small, and it pays back
-memory as well as fidelity. **A6.3 second**: it is the most visible defect and hypothesis 1 is a
-half-hour read of a shader. **A6.2 last** — it needs the game's culling rule read properly, and it
-is the only one of the three that costs performance to fix.
+**A6.0 first** — it is a live regression, it is the one the user is actually feeling, and every
+other item here is cosmetic beside it. **A6.1 second**: its rule is in hand, it is small, and it
+also cuts the 3,062 MB of forest collision. **A6.4 third** (cheap, asked for, and it interacts
+with A6.1 — both are decisions about which vegetation to keep). **A6.3** next: the most visible
+defect, and hypothesis 1 is a half-hour read of a shader. **A6.2 last** — it needs the game's
+culling rule read properly, and it is the only item here that *costs* VRAM to fix, which A6.0
+says we do not have.
 
 ## Not in scope, but adjacent and known
 
-* `objects 373.484s` of a 396.982 s load (`beamng.log`). Imposter generation ran right through
-  that window and should have taken most of it with it — re-measure on the next load before
-  spending anything on it.
+* **181 `engine::WaterObject::initTextures| Texture missing:` errors** — one per `WaterBlock`
+  (the level has 180) and the name in the message is EMPTY. Our water objects are asking for a
+  texture we never name. Small, but it is 181 failed texture inits at load and nobody has looked.
+* `objects` is 228.942 s of a 252.468 s load, down from 373.484 s of 396.982 s once the imposters
+  went. Still four minutes. See A6.0's trap before spending anything on it.
 * 235 MiB of terrain textures still ship as `.png` and are cooked at first load, unlike every
   other texture in the level.
 * `bake/terrainmask` (78 s) is the last serial bake product; `terrain.clip_span` is 2.37 M numpy
