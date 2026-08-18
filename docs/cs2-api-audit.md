@@ -5441,3 +5441,87 @@ enough:
 `.dae` looking for `bb_autobillboard` and reported 2,747. A COLLADA scene is the LAST section of
 the file, so that grep saw only the shapes small enough to fit — it missed every large building
 and undercounted 4,245 as 2,747. Read the tail, or the whole file.
+
+## 65. A6.0 — the budget that let it through was never calibrated, and it is 4.5x vanilla's biggest (2026-08-18)
+
+A5 gated the runtime imposters and the 1–2 FPS collapse went. What did not go is the card running
+out: the same session's log ends at **`totalFailures=131073`** — 131,073 D3D12 `CreateResource`
+failures with `hr=0x8007000e` (E_OUTOFMEMORY), starting at 329 s (72 s after "Level loaded") and
+still arriving at 2,105 s. The A6 plan quoted 8,193 from a line partway down; the tail is sixteen
+times that. The failing allocations are **tiny** — 64×64 and 128×128, formats 80/83/98/99 =
+BC4/BC5/BC7, which are our own shipped DDS. The card is not fragmented, it is full.
+
+`validate_level` passed this level. That is the finding.
+
+### What the budget was
+
+`RESIDENT_BUDGET_MIB = 6144`, a flat constant, with a comment saying it was "calibrated on the
+failure rather than on a spec". It was not calibrated on anything measurable. Extending
+`tools/level_budget.py --vanilla` to measure what the shipped levels **mount** (it counted their
+objects but never their bytes) puts a number on it for the first time:
+
+| level | mesh MiB | texture MiB | resident MiB |
+|---|---:|---:|---:|
+| **west_coast_usa** | 818 | 624 | **1,375** |
+| automation_test_track | 168 | 752 | 921 |
+| italy | 260 | 561 | 821 |
+| johnson_valley | 80 | 715 | 795 |
+| east_coast_usa | 86 | 556 | 642 |
+
+The biggest level BeamNG ships mounts **1,375 MiB**. The old constant was **4.5x** it. A5 shipped
+**5,224 MiB — 3.8x** it. (That vanilla column is a LOWER bound: a shipped level also draws on the
+shared `content/` archives, which ours does not, so the comparison flatters vanilla — which makes
+a budget derived from it conservative, not optimistic.)
+
+### What replaced it
+
+A constant was the wrong *shape*. What a level may mount depends on the card and on how much of
+it the renderer has already spent, which scales with resolution — and this machine is not the
+reference one: `beamng.log` says **8,018 MiB** (RTX 3070) at **3440×1440**, which is 2.4x the
+pixels of the 1080p the tooling assumed. `resident_budget_mib(vram, pixels)` derives it from two
+real anchors — vanilla's biggest level, and BeamNG's own printed DX12 floor ("7.83 GB VRAM meets
+the 5.50 GB minimum") — minus a declared ~100 MiB/Mpixel for the deferred G-buffer and post chain.
+Both inputs are **read from the user's own `beamng.log`** rather than assumed, falling back to the
+reference card only when there is no log.
+
+**It brackets rather than pretends.** west_coast_usa mounting 1,375 MiB on a minimum-spec card
+proves *at least* that fits, not that it is the ceiling — so the function returns a lower bound
+(3,473 MiB here), `resident_failure_mib` returns the measured upper one (5,224 MiB), and the note
+says which side of the bracket a level is on. Between them is honestly labelled unknown, and the
+only thing that narrows it is a load that reports zero failures.
+
+### The levers, re-measured — three of the plan's five were wrong
+
+| lever | plan said | measured | |
+|---|---|---:|---|
+| `texture_max`/`_normal` 512 → 256 | "roughly three quarters" of 1,083 | **−497 MiB** | 5,166 of 7,661 DDS are already 256; colour −282, normal −215 |
+| terrain `.png` → cooked DDS | 235 MiB to reclaim | **−0 MiB** | 105 files, 24 at 2048² + 80 at 1024²; PNG on disk 235 MiB ≈ BC in VRAM 235 MiB. It is a first-load **cook stall**, not residency |
+| drop LOD2 from object shapes | LOD0+1+2 = 131 % of LOD0 | **−147 MiB** | 131 % confirmed exactly (400 shapes, all 3 levels); but the LAST level is only 6.6 % of triangles — the 31 % is nearly all LOD1 |
+| "half of it in 199 signature buildings at 8–32 MiB" | | **long tail** | only 46 files ≥ 8 MiB (594 MiB); the top 199 are 1,234 MiB of 2,224 |
+| runtime imposters | (A5, thought closed) | **190 MiB** | 4,555 cached atlases, all 256×128, in `temp/`. Built 62–155 s, well before the 329 s onset. Not the cause |
+
+And the mesh side, which is 3,906 MiB of the 5,224 — **so textures alone cannot reach the budget
+even at zero**:
+
+| group | MiB | draw tris | B/tri |
+|---|---:|---:|---:|
+| cs2 objects | 2,224 | 30.0 M | 70.2 |
+| networks | 787 | 13.1 M | 63.0 |
+| areas | 339 | 7.0 M | 50.5 |
+| lanegeometry | 281 | 4.6 M | 64.1 |
+| skirts | 141 | 1.6 M | 91.9 |
+| markings | 129 | 2.0 M | 67.7 |
+
+**There is no free geometry.** The `.dae` streams are already minimal — POSITION, NORMAL and one
+TEXCOORD, no tangents and no second UV set — so 66 B/triangle overall is poor vertex sharing
+across hard edges and UV seams, not padding to delete. Within `cs2`, 1,232 base shapes hold
+1,847 MiB and 3,002 paint variants hold 377 MiB.
+
+### Where this leaves it
+
+The cheapest cut — both texture caps to 256, **−497 MiB** — takes the level from 5,224 to
+**4,727 MiB**: out of "known to fail" and into the unmeasured band, without touching geometry.
+Whether that is *enough* is exactly what the bracket says nobody knows, and the gate is not FPS:
+
+    grep "CreateResource failed" beamng.log     # totalFailures. Zero is the gate.
+

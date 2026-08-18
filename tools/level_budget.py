@@ -298,7 +298,20 @@ def radius_hint(rel, shape, tile=256.0):
 
 
 def measure_vanilla(install_dir):
-    """Re-read the shipped levels' own counts out of `content/levels/*.zip`."""
+    """Re-read the shipped levels' own counts out of `content/levels/*.zip`.
+
+    Includes what each level MOUNTS — mesh and texture bytes, the same accounting `measure` runs
+    over a built level, so `RESIDENT_BUDGET_MIB` can be set against levels that demonstrably run
+    rather than against a number someone chose. A shape counts once: the `.cdae` when there is
+    one, the `.dae` only when there is no cooked file beside it, exactly as `file_bytes` does.
+
+    DECLARED APPROXIMATION — this is a LOWER BOUND on what a vanilla level mounts. A shipped level
+    also draws shapes and textures from the shared `content/` archives (common props, vegetation,
+    the sky), and those bytes are resident too but are not in the level's own zip. Ours ships
+    every byte it uses inside the level, so the comparison is unfair in vanilla's favour: the real
+    vanilla figure is higher than this by however much it borrows, which makes a budget derived
+    from it conservative rather than optimistic.
+    """
     out = {}
     levels_dir = os.path.join(install_dir, "content", "levels")
     for file_name in sorted(os.listdir(levels_dir)):
@@ -307,11 +320,21 @@ def measure_vanilla(install_dir):
         path = os.path.join(levels_dir, file_name)
         name = os.path.splitext(file_name)[0]
         row = {"shapeFiles": 0, "tsStatics": 0, "forestTypes": 0, "forestItems": 0,
-               "materials": 0, "visibleDistance": None}
+               "materials": 0, "visibleDistance": None,
+               "meshBytes": 0, "textureBytes": 0, "residentTotal": 0}
         try:
             with zipfile.ZipFile(path) as archive:
+                # a `.dae` whose `.cdae` is also in the archive is the source file and is not
+                # loaded; collect the cooked stems first so the second pass can skip it
+                cooked_stems = {os.path.splitext(i.filename.lower())[0]
+                                for i in archive.infolist() if i.filename.lower().endswith(".cdae")}
                 for info in archive.infolist():
                     lower = info.filename.lower()
+                    stem, ext = os.path.splitext(lower)
+                    if ext == ".cdae" or (ext == ".dae" and stem not in cooked_stems):
+                        row["meshBytes"] += info.file_size
+                    elif ext in (".dds", ".png", ".jpg"):
+                        row["textureBytes"] += info.file_size
                     if lower.endswith(".dae") or lower.endswith(".cdae"):
                         row["shapeFiles"] += 1
                     elif lower.endswith("items.level.json"):
@@ -331,6 +354,7 @@ def measure_vanilla(install_dir):
                         row["materials"] += count_entries(archive.read(info))
         except (zipfile.BadZipFile, OSError):
             continue
+        row["residentTotal"] = row["meshBytes"] + row["textureBytes"]
         out[name] = row
     return out
 

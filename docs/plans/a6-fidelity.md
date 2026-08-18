@@ -33,12 +33,12 @@ gate allows, against 2,652 before. The load went 396.982 s → **252.468 s** (`o
   5.46|I|d3d12|     Dedicated video memory: 8018 MB
 329.84|E|d3d12u::GenericImage::create| D3D12: CreateResource failed for generic image
       (dim=Tex2D, w=64, h=64, mips=7, format=98, hr=0x8007000e, totalFailures=5)
-   …  totalFailures 17, 33, 65, 513, 8193 …
-2105.36|E|d3d12u::GenericImage::create| … totalFailures=8193 …
+   …  totalFailures 17, 33, 65, 513, 8193, 16385, 32769, 65537 …
+2105.36|E|d3d12u::GenericImage::create| … totalFailures=131073 …
 ```
 
 `hr=0x8007000e` is **E_OUTOFMEMORY**, and the log prints only on a power-of-two backoff — so those
-20 lines are **8,193+ failed GPU allocations**, starting the moment loading finishes (329 s) and
+20 lines are **131,073 failed GPU allocations**, starting the moment loading finishes (329 s) and
 still going at 35 minutes. Each one "leaves the image empty" and the engine retries. That is the
 decay: not a leak in our data, but a card that has nothing left to give.
 
@@ -54,29 +54,32 @@ first time it is drawn and does not evict, so the 5,225 MiB is only fully paid o
 the whole map. That matches the report exactly, and it means the fix is *total* footprint, not
 what is on screen.
 
-### The levers, with the numbers already in hand
+### The levers — MEASURED 2026-08-18, and three of the five estimates were wrong (audit §65)
 
-| | MiB | |
+`RESIDENT_BUDGET_MIB` is now `resident_budget_mib(vram, pixels)`, derived from vanilla's biggest
+level and BeamNG's own DX12 floor, with both inputs read out of the user's `beamng.log`. It
+**brackets**: 3,473 MiB is known to fit on this machine, 5,224 MiB is known to fail, and the band
+between is honestly unknown. A5's 5,224 is exactly on the failure line.
+
+The real calibration, which had never been taken: **west_coast_usa, the biggest level BeamNG
+ships, mounts 1,375 MiB.** The old constant was 4.5x that; A5 shipped 3.8x it.
+
+| lever | measured | |
 |---|---:|---|
-| `cs2` object shapes | 2,224 | **half of it in 199 signature buildings** at 8–32 MiB each |
-| networks | 787 | |
-| areas / lanegeometry / skirts / markings / terraincut | 895 | |
-| textures `.dds` | 1,083 | `texture_max` is 512; 256 would take roughly three quarters of it |
-| textures `.png` (terrain) | 235 | still uncooked, unlike every other texture in the level |
+| `texture_max` + `texture_max_normal` 512 → 256 | **−497 MiB** | colour −282, normal −215. 5,166 of 7,661 DDS are ALREADY 256, which is why the "three quarters of 1,083" estimate was high |
+| terrain `.png` → DDS | **−0 MiB** | PNG on disk 235 MiB ≈ BC in VRAM 235 MiB. Not a residency lever at all — it is a first-load cook stall |
+| drop LOD2 | **−147 MiB** | the 1.31x is exact, but the last level is only 6.6 % of triangles; the 31 % is nearly all LOD1 |
+| runtime imposters | **190 MiB** | 4,555 cached 256x128 atlases, built 62–155 s — before the 329 s onset. Not the cause |
+| paint variants | 377 MiB | 3,002 variant shapes against 1,232 base shapes holding 1,847 MiB |
 
-Two more, not yet costed: dropping LOD2 from object shapes (each shape carries LOD0+LOD1+LOD2 =
-131 % of LOD0), and `terrain_upsample` 2 → 1 (8192 → 4096; audit §52 has the terrain-texture
-numbers).
+**Meshes are 3,906 MiB of the 5,224, so textures alone cannot reach the budget even at zero** —
+cs2 objects 2,224, networks 787, areas 339, lanegeometry 281, skirts 141, markings 129. And there
+is no free geometry to reclaim: the `.dae` streams are already POSITION + NORMAL + one TEXCOORD,
+no tangents, no second UV. 66 B/triangle is poor vertex sharing across hard edges, not padding.
 
-### The work
-
-1. **Re-calibrate `RESIDENT_BUDGET_MIB` against the failure, not against a guess** — it is ours,
-   it let this through, and it should be a function of the card and the render resolution rather
-   than a constant. Say so in `validate_level`.
-2. Then buy the ~2 GB back, cheapest fidelity first: the texture cap before the buildings.
-3. **Take the number from the log, not from a feeling**: `grep "CreateResource failed"
-   beamng.log` and read `totalFailures`. Zero is the gate. FPS is the symptom; that counter is
-   the measurement.
+So the cheapest cut, both texture caps to 256, moves 5,224 → **4,727 MiB**: out of "known to
+fail" and into the unmeasured band, with no geometry touched. Anything beyond that costs visible
+fidelity, which makes it a decision rather than a fix.
 
 ### The trap
 

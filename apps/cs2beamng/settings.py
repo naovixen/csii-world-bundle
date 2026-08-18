@@ -62,6 +62,9 @@ SCHEMA = {
     "forest_min_items": (10, "int", "A forest TYPE holding fewer items than this is merged into its prefab's untinted type instead of getting a shape, a material set and an entry of its own. BeamNG loads every type whole whether it has one item or ten thousand; on the reference city 2,864 of 4,951 types hold 10 items or fewer, 7,641 items between them - 0.7 % of the forest, for 58 % of the types. 0 keeps every type"),
     "lane_max_tris": (0, "int", "Triangle budget for BAKED lane furniture (the sheared fence/cable tiles that cannot be instanced), 0 = no budget. What goes first is what CS2 itself culls FIRST - the drop order is the game's own per-lane `m_MinLod`, so the budget spends itself on the furniture the game draws furthest"),
     "paint_factor_max_error": (4, "int", "How far a paint variant may drift, in 8-bit sRGB channels, before it gets a texture of its own instead of a baseColorFactor. CS2's colorSet tint is a pure per-texel multiply, so where the colour mask is uniform ONE constant reproduces it exactly and costs no texture at all; where the mask selects three different colours across the surface it cannot, and the bake writes the tinted albedo. 0 keeps every texture (the A3 behaviour). MEASURED over all 7,592 (material, variant) pairs of the reference city: 31.4 % are EXACTLY reproducible by a constant, 32.9 % within 4, 39.3 % within 16, 54.5 % within 32. tools/measure_paint_factor.py prints the distribution for your own city"),
+    "gpu_vram_mib": (0, "int", "Dedicated VRAM of the card the level is FOR, in MiB (0 = read it from your own beamng.log, and fall back to 8018). What a level may mount is a function of this and of the render resolution, not a constant - see beamng.validate_level.resident_budget_mib"),
+    "render_width": (0, "int", "Render width the level is FOR (0 = read it from beamng.log, fall back to 1920). Every pixel above 1080p takes VRAM back off the level for the deferred G-buffer and the post chain"),
+    "render_height": (0, "int", "Render height the level is FOR (0 = read it from beamng.log, fall back to 1080)"),
     "tile_size": (256, "int", "World tile size for roads/markings/areas (metres)"),
     "view_distance": (4000, "int", "LevelInfo.visibleDistance: the global far cull in metres"),
     "tod_hour": (-1.0, "float", "Time of day in hours 0-24 for the level's sun (-1 = the in-game clock at rip time)"),
@@ -105,6 +108,7 @@ GROUPS = [
                   "view_distance", "tod_hour", "terrain_brightness", "tile_size", "terrain_upsample", "terrain_holes", "terrain_blend_sharpen", "forest_shadows", "tree_wind"]),
     ("Collision", ["collision_preset", "collision_buildings", "collision_props", "collision_trees",
                    "collision_furniture", "collision_skirts", "collision_paint"]),
+    ("Target machine", ["gpu_vram_mib", "render_width", "render_height"]),
     ("Process", ["jobs", "rebuild", "keep_partial", "cook", "beamng_exe", "ui_browser", "quality_preset"]),
 ]
 

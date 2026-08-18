@@ -31,7 +31,7 @@ GROUND_PASS_FRACTION = 0.97
 GROUND_MIN_SAMPLES = 50          # fewer buildings than this say nothing (the example bundle has 2)
 
 
-def check(level_dir, bundle_dir, progress=None):
+def check(level_dir, bundle_dir, progress=None, settings=None):
     problems = []
     checks = {}
     level_name = os.path.basename(os.path.normpath(level_dir))
@@ -172,20 +172,36 @@ def check(level_dir, bundle_dir, progress=None):
             note(f"{path}: not well-formed XML")
     checks["daeFiles"] = len(dae_files)
 
-    # -- what the level MOUNTS (audit §64) -----------------------------------------------------
+    # -- what the level MOUNTS (audit §64, recalibrated §65) -----------------------------------------------------
     resident = _resident_bytes(level_dir)
     total_mib = (resident["meshes"] + resident["textures"]) / (1024.0 * 1024.0)
+    vram_mib, pixels, target_source = _render_target(settings)
+    budget_mib = resident_budget_mib(vram_mib, pixels)
+    failure_mib = resident_failure_mib(vram_mib, pixels)
     checks["resident"] = {"meshMiB": round(resident["meshes"] / (1024.0 * 1024.0), 1),
                           "textureMiB": round(resident["textures"] / (1024.0 * 1024.0), 1),
                           "totalMiB": round(total_mib, 1),
-                          "budgetMiB": RESIDENT_BUDGET_MIB,
+                          "budgetMiB": round(budget_mib),
+                          "failureMiB": round(failure_mib),
+                          "budgetVramMiB": vram_mib,
+                          "budgetPixels": pixels,
+                          "budgetSource": target_source,
+                          "vanillaMaxMiB": VANILLA_MAX_RESIDENT_MIB,
+                          "vanillaRatio": round(total_mib / VANILLA_MAX_RESIDENT_MIB, 2),
                           "cookedShapes": resident["cookedShapes"], "shapes": resident["shapes"]}
-    if total_mib > RESIDENT_BUDGET_MIB:
+    if total_mib > budget_mib:
+        where = ("AT OR OVER the measured failure point" if total_mib >= failure_mib
+                 else "in the unmeasured band between what is known to fit and what is known "
+                      "to fail")
         note(f"budget: the level mounts {total_mib:,.0f} MiB "
              f"({resident['meshes'] / (1024.0 * 1024.0):,.0f} meshes + "
-             f"{resident['textures'] / (1024.0 * 1024.0):,.0f} textures), over the "
-             f"{RESIDENT_BUDGET_MIB:,} MiB an 8 GB card holds without paging - "
-             f"see tools/level_budget.py for where it is")
+             f"{resident['textures'] / (1024.0 * 1024.0):,.0f} textures) on a "
+             f"{vram_mib:,} MiB card at {pixels / 1.0e6:.2f} Mpixel ({target_source}) - "
+             f"{where}. Known to fit: {budget_mib:,.0f} MiB. Known to fail: "
+             f"{failure_mib:,.0f} MiB, where D3D12 failed 131,073 texture creates in one "
+             f"session. This level is {total_mib / VANILLA_MAX_RESIDENT_MIB:.1f}x the "
+             f"{VANILLA_MAX_RESIDENT_MIB:,} MiB of west_coast_usa, the biggest level BeamNG "
+             f"ships - see tools/level_budget.py for where the bytes are")
 
     # -- collisionType must match what the shape actually carries (A4 2.2) --------------------
     # `Collision Mesh` uses the shape's `Colmesh_` node; `Visible Mesh*` rasterises the rendered
@@ -452,11 +468,146 @@ def _budget_notes(by_class, item_data, dae_files, forest_items):
     ]
 
 
-# What a level may mount before an 8 GB card starts paging. A4 shipped 7,248 MiB and ran at 2 FPS,
-# and the symptom that named the cause was alt-tab making it permanently worse — the driver
-# releases the allocations and the level cannot get them all back. 6,144 MiB leaves the card a
-# working margin. OURS, calibrated on the failure rather than on a spec (audit §64).
-RESIDENT_BUDGET_MIB = 6144
+# -- what a level may MOUNT ------------------------------------------------------------------
+# OURS. BeamNG publishes no budget, so this is derived, and every term is either measured or
+# declared. It was a flat 6,144 MiB until A6: the A5 build passed that at 5,224 MiB and then ran
+# the card dry anyway — 131,073 failed D3D12 allocations (`hr=0x8007000e`, E_OUTOFMEMORY) in one
+# session, starting the moment loading finished and still going 35 minutes later, on textures as
+# small as 64x64. A constant was the wrong SHAPE: what a level may mount depends on the card it
+# runs on, and on how much of that card the renderer has already spent on render targets, which
+# scales with resolution. The old number was not calibrated on anything — it is 4.5x the biggest
+# level BeamNG ships.
+#
+# Two anchors, both real:
+#
+#   * `tools/level_budget.py --vanilla` measures every level in the install. On BeamNG 0.39 the
+#     biggest, `west_coast_usa`, mounts 1,375 MiB (818 MiB of shapes + 624 MiB of textures).
+#     That is a LOWER bound — a shipped level also draws on the shared `content/` archives, which
+#     ours does not — so a budget derived from it is conservative in vanilla's favour, not
+#     optimistic. A5 shipped 3.8x it.
+#   * BeamNG's own DirectX 12 floor, printed at startup: "7.83 GB VRAM meets the 5.50 GB
+#     minimum". The engine expects its own levels to run on a 5,632 MiB card.
+#
+# Together: on a card at the engine's minimum, about 1,375 MiB of level content fits beside
+# everything else the renderer needs. Every MiB of card above that minimum is a MiB more content
+# it can hold; every pixel above the 1080p that budget is implicitly quoted at takes some back
+# for the deferred G-buffer and the post chain.
+VANILLA_MAX_RESIDENT_MIB = 1375        # west_coast_usa, measured 2026-08-18 (BeamNG 0.39)
+BEAMNG_DX12_MIN_VRAM_MIB = 5632        # the engine's own printed "5.50 GB minimum"
+REFERENCE_PIXELS = 1920 * 1080         # the resolution the vanilla anchor is quoted at
+
+# DECLARED APPROXIMATION — this one term is an estimate, not a measurement. BeamNG's deferred
+# targets are named in `lua/ge/client` (`deferred`, `matinfo`, `lightinfo`, `ssao`, velocity,
+# backBuffer, the post chain's own) but their FORMATS are set in the native renderer and are not
+# readable from the install, so their exact bytes per pixel cannot be read off disk. 100 MiB per
+# megapixel is roughly a dozen full-resolution targets averaging four bytes a pixel plus the
+# half-resolution chains. It is second order here and deliberately so: it moves the budget by
+# 288 MiB across the whole span from 1080p to 3440x1440, so being wrong by a factor of two moves
+# it less than the texture cap does. If it ever stops being second order, measure it.
+RENDER_TARGET_MIB_PER_MPIXEL = 100.0
+
+# The reference machine, used when the caller does not say. Not a recommendation — it is this
+# project's own test card (RTX 3070, 8 GB) at the resolution the vanilla anchor is quoted at.
+REFERENCE_VRAM_MIB = 8018
+
+
+def resident_budget_mib(vram_mib=REFERENCE_VRAM_MIB, pixels=REFERENCE_PIXELS):
+    """What a level is KNOWN to be able to mount on a `vram_mib` card at `pixels` pixels, in MiB.
+
+    This is a LOWER bound on the true ceiling, and deliberately so. `west_coast_usa` mounting
+    1,375 MiB on a card at the engine's minimum proves that at least 1,375 MiB fits there — not
+    that 1,375 MiB is all that fits. BeamNG does not size its levels to the limit of its own
+    minimum spec, so the real ceiling is somewhere above what this returns.
+
+    The other end is known too, and `resident_failure_mib` is it: 5,224 MiB on an 8,018 MiB card
+    at 3440x1440 failed hard. So for that machine the true ceiling is somewhere in
+    [3,473, 5,224) MiB, and the only way to narrow it is a load that reports zero failed
+    allocations. Build under this and it fits; between this and the failure line it is unknown.
+    """
+    headroom = max(0.0, float(vram_mib) - BEAMNG_DX12_MIN_VRAM_MIB)
+    extra_mpixels = (float(pixels) - REFERENCE_PIXELS) / 1.0e6
+    budget = VANILLA_MAX_RESIDENT_MIB + headroom - RENDER_TARGET_MIB_PER_MPIXEL * extra_mpixels
+    # a card below the engine's own minimum still has to hold SOMETHING; the floor is well under
+    # vanilla's median rather than zero, and the note that follows will be loud either way
+    return max(384.0, budget)
+
+
+# The other end of the bracket: what is KNOWN to fail, scaled the same way. A5's `cs2_city_fine`
+# mounted 5,224 MiB on an 8,018 MiB card at 3440x1440 and D3D12 failed 131,073 texture creates in
+# one session. Anything at or above this on an equivalent machine is not a risk, it is the
+# measured failure. MEASURED, one point — narrow it by loading and reading `totalFailures`.
+FAILURE_RESIDENT_MIB = 5224
+FAILURE_VRAM_MIB = 8018
+FAILURE_PIXELS = 3440 * 1440
+
+
+def resident_failure_mib(vram_mib=REFERENCE_VRAM_MIB, pixels=REFERENCE_PIXELS):
+    """The measured failure point, moved to another card and resolution on the same terms."""
+    delta_vram = float(vram_mib) - FAILURE_VRAM_MIB
+    delta_mpixels = (float(pixels) - FAILURE_PIXELS) / 1.0e6
+    return max(resident_budget_mib(vram_mib, pixels) + 1.0,
+               FAILURE_RESIDENT_MIB + delta_vram - RENDER_TARGET_MIB_PER_MPIXEL * delta_mpixels)
+
+
+def _render_target(settings):
+    """`(vram_mib, pixels, source)` — the machine the budget is derived for.
+
+    Settings win when set; otherwise the numbers are READ, not assumed. BeamNG prints both at
+    startup, in the log the user's own last session left behind:
+
+        Dedicated video memory: 8018 MB
+        AntialiasLevel: 0, ... Resolution: 3440x1440, wideScreen: false
+
+    which is the difference between a budget for this machine and a budget for a machine we
+    imagined. Both are MiB despite the "MB" - the same line's byte count, 8407482368, is 8018
+    times 1024 squared exactly. Falls back to the reference card at 1080p, declared as such in
+    the note, when there is no log and no setting.
+    """
+    settings = settings or {}
+    vram = int(settings.get("gpu_vram_mib") or 0)
+    width = int(settings.get("render_width") or 0)
+    height = int(settings.get("render_height") or 0)
+    if vram and width and height:
+        return vram, width * height, "from settings"
+
+    log_vram = log_pixels = None
+    path = _newest_beamng_log()
+    if path:
+        try:
+            with open(path, encoding="utf-8", errors="replace") as handle:
+                for line in handle:
+                    if log_vram is None:
+                        found = re.search(r"Dedicated video memory:\s*(\d+)\s*MB", line)
+                        if found:
+                            log_vram = int(found.group(1))
+                    if log_pixels is None:
+                        found = re.search(r"Resolution:\s*(\d+)x(\d+)", line)
+                        if found:
+                            log_pixels = int(found.group(1)) * int(found.group(2))
+                    if log_vram is not None and log_pixels is not None:
+                        break
+        except OSError:
+            pass
+
+    vram = vram or log_vram or REFERENCE_VRAM_MIB
+    pixels = (width * height) or log_pixels or REFERENCE_PIXELS
+    if log_vram or log_pixels:
+        return vram, pixels, "read from beamng.log"
+    return vram, pixels, "reference card, no beamng.log found"
+
+
+def _newest_beamng_log():
+    """The most recently written `beamng.log` in the user's BeamNG folder, or `None`."""
+    base = os.path.join(os.path.expanduser("~"), "AppData", "Local", "BeamNG", "BeamNG.drive")
+    if not os.path.isdir(base):
+        return None
+    newest = None
+    for entry in os.listdir(base):
+        path = os.path.join(base, entry, "beamng.log")
+        if os.path.isfile(path):
+            if newest is None or os.path.getmtime(path) > os.path.getmtime(newest):
+                newest = path
+    return newest
 
 
 def _resident_bytes(level_dir):

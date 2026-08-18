@@ -35,7 +35,7 @@ def run(ctx, progress):
         except ImportError:
             validate_level = None                       # the level validator lands in A1
         if validate_level is not None:
-            checks, problems = validate_level.check(level, ctx.bundle, progress)
+            checks, problems = validate_level.check(level, ctx.bundle, progress, ctx.settings)
         else:
             checks = {"note": "level validator not built yet (A1)"}
     progress.end(f"{len(problems)} problem(s)")
@@ -54,4 +54,6 @@ def run(ctx, progress):
 # skipped" would not have been - the bake and the cook are outside the skip mechanism entirely,
 # and a hand-edited level file is outside all of it.
 # version 2: the resident-bytes budget, and the verdict survives a skip
-STAGE = Stage("validate", "Validate level", enabled, units, run, inputs=("level:",), version=2)
+# version 3: that budget is derived from the card and the render resolution (A6.0)
+STAGE = Stage("validate", "Validate level", enabled, units, run, inputs=("level:",),
+               settings_keys=("gpu_vram_mib", "render_width", "render_height"), version=3)
