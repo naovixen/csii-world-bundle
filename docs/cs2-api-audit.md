@@ -5525,3 +5525,85 @@ Whether that is *enough* is exactly what the bracket says nobody knows, and the 
 
     grep "CreateResource failed" beamng.log     # totalFailures. Zero is the gate.
 
+
+## 66. A6.1 — the `tree` kind is all vegetation, and the game says which half is a tree (2026-08-18)
+
+### The rule, read from the game rather than inferred
+
+`Game.Prefabs`, decompiled:
+
+```
+TreeObject.GetPrefabComponents     -> PlantData, TreeData, GrowthScaleData
+TreeObject.GetArchetypeComponents  -> Plant, Tree, Color, UpdateFrame, Decoration
+PlantObject.GetPrefabComponents    -> PlantData
+PlantObject.GetArchetypeComponents -> Plant, UpdateFrame
+```
+
+**Every tree is a plant; only a tree gets `Game.Objects.Tree`** — the struct holding `m_State`
+and `m_Growth`. The producer writes `attrs.growth` inside exactly that component's lookup
+(`InstanceRipSystem`: `if (_trees.TryGetComponent(entity, out Tree tree))`), so **the presence of
+the key is the game's own discriminator**, at both ends of the bundle. The A6 plan inferred this
+from the evidence; this confirms it from source.
+
+Two traps, both live:
+
+* **Do not match names.** `VFP_EvergreenBushWildLarge` (8,806 items) HAS growth, so CS2 treats it
+  as a tree; `GreenBushWildAdult01`, `GreenBushWildTeen01` and `GreenBushWildElderly01` carry
+  growth-stage words in their names and are plants. A name match gets both backwards.
+* **Do not test the value.** A sapling's growth is `0.0`, which is falsy. `"growth" in attrs` is
+  the test; `attrs.get("growth")` quietly reclassifies the youngest trees as shrubs.
+
+`csiibundle.instances.is_tree` / `vegetation_kind` is the one predicate, so both consumers answer
+the same. Measured over the reference city, and reproducing the plan's numbers exactly:
+
+| | items | prefabs |
+|---|---:|---:|
+| `kind: tree` | 686,641 | 75 |
+| …of which TREE (has growth) | 310,454 | 32 |
+| …of which PLANT | 376,187 | 43 |
+
+**No prefab is ever classified both ways** (0 of 75), which is what makes one flag per shape exact
+rather than a majority vote — and it is what you would expect, since the distinction is
+`TreeObject` vs `PlantObject` on the prefab.
+
+The largest plants are `pd_Long_Grass` (314,222), `PlantPot02` (9,404), `FlowerBushCity02`
+(7,188), `FlowerPot02` (5,889) and the `GreenBushCity*` / `GardenBed*` families.
+
+### What it fixes
+
+A plant now ships `collidable: false` whatever its height (`stages/instances`) and gets **no
+collider at all** (`stages/shapes._collider`) rather than a `trunk_cylinder` fitted to something
+with no trunk. The old rule was `FOREST_COLLIDABLE_MIN_HEIGHT = 0.5` — a height guess, which is
+why a 1.5 m city hedge was solid.
+
+### The defect one step along, measured and NOT fixed
+
+The plan asked whether `trunk_cylinder` actually finds a trunk. Measured over all 32 tree prefabs:
+
+* **`_trunk_group`'s name branch never fires.** It prefers a material run named
+  trunk/bark/stem/wood, and CS2's material names are hashed asset ids —
+  `lvl_OakTreeAdult01_c8092af6126c5f75a4854176fc394c76`. **0 of 32** match, so every tree falls
+  through to the geometric fallback (lowest band, smallest horizontal footprint).
+* That fallback is **right for 27 of 32**: `OakTree01` gets a 0.40 m cylinder under an 8.11 m
+  canopy (ratio 0.05), and the median ratio is 0.08.
+* It is **wrong for 5**, where the lowest band is not the trunk — `Mangr0be_Tree` 0.63,
+  `FlowerBushWild01` 0.83, `FlowerBushWild02` 0.75, `SpruceTree01` 0.57 (branches sweep the
+  ground), `VFP_ChannelIslandsPoppyWild` 0.83. That is **13,879 of 310,454 tree items — 4.5 %**.
+
+Not fixed, deliberately: CS2 has no collision for a planted object at all, so there is no rule to
+port and anything here would be invented. It is now **declared and counted** instead — every
+shape row carries `trunkRatio`, and the report's `approximations.treeTrunkCylinderFit` names it
+with its count.
+
+### And one thing the plan expected that is not there
+
+"the Blender adapter has the same bush problem" — it does not. `tools/blender_import_bundle.py`
+uses `tree` only as a `--kinds` filter and for `growthScale`; it makes no collision or trunk
+decision, because Blender has no physics. The shared predicate is there when it needs it.
+
+### Also fixed: two stale tests A5 left failing
+
+`tools/test_a3_objects.py` asserted every shape carries an imposter and that `nullPx` is always
+divided by the imposter's reach. A5's `imposter_min_metres` gate made that false by design — 3.6 %
+of shapes earn one now — so both checks had been failing since. They now assert the ordering
+where there IS an imposter, plus the gate itself. 82/82.

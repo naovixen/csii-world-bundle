@@ -26,6 +26,7 @@ import os
 import shutil
 import sys
 import tempfile
+import types
 import xml.etree.ElementTree as ET
 
 import numpy
@@ -192,15 +193,29 @@ def test_shapes_and_instances():
               f"the distinct detail sizes strictly decrease {distinct} (a split level repeats one)")
         check(null_px is not None and all(px > null_px for px in details),
               f"every detail sits above nulldetail{null_px}")
-        check(billboard is not None and billboard > null_px,
-              f"the imposter ({billboard} px) takes over above the null threshold ({null_px} px)")
+        # A5 gated the imposter on `imposter_min_metres` (three quarters of the view distance
+        # when 0), so most shapes correctly have NO billboard now — 3.6 % of the reference city
+        # against 100 % before. The invariant is the ordering WHERE there is one, plus the gate
+        # itself; asserting every shape has one is what this checked before the gate existed.
+        check(billboard is None or billboard > null_px,
+              f"any imposter ({billboard} px) takes over above the null threshold ({null_px} px)")
+        imposters = report["imposters"]
+        check(imposters["shapes"] <= imposters["ofShapes"],
+              f"{imposters['shapes']} of {imposters['ofShapes']} shapes earned an imposter "
+              f"(past {imposters['minMetres']:,.0f} m)")
         check(any(n.startswith("Colmesh_") for n in names), "a collider is present")
         check("base00" in names and "start01" in names, "the vanilla node hierarchy")
 
         row = next(iter(shared["shapes"]["results"].values()))
-        expected = max(1, round(row["gamePx"] * 6.0 / shapes_stage.IMPOSTER_REACH))
+        # `nullPx` is the game's own px times `lod_detail_scale`, divided by the imposter's reach
+        # ONLY when this shape earned an imposter — the billboard is what carries it the rest of
+        # the way, so a shape without one stops at the mesh threshold itself
+        scaled = row["gamePx"] * 6.0
+        expected = max(1, round(scaled / shapes_stage.IMPOSTER_REACH if row.get("billboardPx")
+                                else scaled))
         check(abs(row["nullPx"] - expected) <= 1,
-              f"the null threshold is the game's {row['gamePx']:.2f} px x 6 / imposter reach")
+              f"the null threshold is the game's {row['gamePx']:.2f} px x 6"
+              f"{' / imposter reach' if row.get('billboardPx') else ' (no imposter)'}")
 
         # -- placement
         report2 = instances_stage.run(ctx, Progress())
@@ -444,6 +459,63 @@ def test_variant_index_matches_the_bake():
     check(len(set(keys)) == len(keys), "variant keys are distinct")
 
 
+def test_tree_vs_plant():
+    """A6.1 — the `tree` kind is ALL vegetation, and only `is_tree` is CS2's tree.
+
+    The rule is the game's own archetype construction, not a name or a height:
+    `TreeObject.GetArchetypeComponents` adds `Game.Objects.Tree`, `PlantObject` does not, and
+    the producer writes `attrs.growth` inside exactly that component's lookup.
+    """
+    print("tree vs plant (A6.1)")
+    from csiibundle import instances as bundle_instances
+    from cs2beamng.stages import shapes as shapes_stage
+
+    oak = {"kind": "tree", "attrs": {"growth": 0.796, "treeState": "Adult"}}
+    sapling = {"kind": "tree", "attrs": {"growth": 0.0}}          # falsy, and still a tree
+    bush = {"kind": "tree", "attrs": {}}
+    grass = {"kind": "tree"}                                       # no attrs at all
+    prop = {"kind": "prop", "attrs": {}}
+
+    check(bundle_instances.is_tree(oak), "a grown tree is a tree")
+    check(bundle_instances.is_tree(sapling),
+          "growth 0.0 is a SAPLING, not a shrub (a truth test would misread it)")
+    check(not bundle_instances.is_tree(bush), "a bush carries no growth")
+    check(not bundle_instances.is_tree(grass), "a record with no attrs is not a tree")
+    check(bundle_instances.vegetation_kind(oak) == "tree", "vegetation_kind: tree")
+    check(bundle_instances.vegetation_kind(bush) == "plant", "vegetation_kind: plant")
+    check(bundle_instances.vegetation_kind(prop) is None, "vegetation_kind: a prop is not planting")
+
+    # the collider follows it: a plant gets nothing, a tree still gets its trunk
+    options = {"collide": {"tree": True}, "collision_preset": "simplified",
+               "colmesh_max_tris": 1000}
+    mesh = types.SimpleNamespace(
+        verts=numpy.array([[0., 0., 0.], [1., 0., 0.], [0., 1., 0.], [0., 0., 4.]]),
+        tris=numpy.array([[0, 1, 2], [0, 1, 3]]), runs=[("bark", 2)])
+    plant_cols, plant_kind = shapes_stage._collider("p", mesh, mesh, "tree", options, is_tree=False)
+    tree_cols, tree_kind = shapes_stage._collider("t", mesh, mesh, "tree", options, is_tree=True)
+    check(plant_cols == () and plant_kind == "plant", "a plant gets no collider at all")
+    check(len(tree_cols) == 1 and tree_kind == "trunk", "a tree still gets its trunk cylinder")
+
+    # and on the real city, the split is per PREFAB — no asset is ever classified both ways,
+    # which is what lets one flag per shape be exact rather than a vote
+    bundle = real_bundle()
+    if bundle:
+        by_asset = {}
+        both = 0
+        for record in bundle_instances.read_instances(bundle, kind="tree"):
+            if record.get("kind") != "tree":
+                continue
+            kind = bundle_instances.vegetation_kind(record)
+            asset = record.get("assetId")
+            seen = by_asset.setdefault(asset, kind)
+            if seen != kind:
+                both += 1
+        trees = sum(1 for k in by_asset.values() if k == "tree")
+        check(both == 0, f"no prefab is both a tree and a plant ({both} disagreed)")
+        check(trees and trees < len(by_asset),
+              f"{trees} tree prefabs and {len(by_asset) - trees} plant prefabs")
+
+
 def main():
     test_frame()
     test_placement()
@@ -454,6 +526,7 @@ def main():
     test_groundcover_default()
     test_real_bundle_lod()
     test_variant_index_matches_the_bake()
+    test_tree_vs_plant()
     print()
     if FAILS:
         print(f"{len(FAILS)} of {CHECKS} FAILED:")

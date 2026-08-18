@@ -122,7 +122,13 @@ def scan_demand(ctx, progress):
         entry = demand.get((asset, suffix))
         if entry is None:
             entry = demand[(asset, suffix)] = {"kind": kind, "count": 0, "forest": False,
-                                               "static": False, "variants": {}}
+                                               "static": False, "variants": {}, "tree": False}
+        # `kind == "tree"` is ALL vegetation; only `is_tree` is the game's own tree (see
+        # `csiibundle.instances.is_tree`). Measured per prefab on the reference city, no asset
+        # is ever classified both ways, so one flag per demand entry is exact rather than a
+        # majority vote.
+        if kind == "tree" and bundle_instances.is_tree(record):
+            entry["tree"] = True
         entry["count"] += 1
         entry["forest"] = entry["forest"] or forest
         entry["static"] = entry["static"] or not forest
@@ -166,7 +172,7 @@ def _shape_job(args):
     """Worker: one `(asset, suffix, variant)` -> a written `.dae` plus the numbers the report and
     the instances stage need. Returns `(key, result_dict)`; `result_dict["error"]` on failure."""
     (bundle, derived_dir, out_dir, level_name, asset, suffix, variant, variant_key, kind,
-     options, aliases, tinted) = args
+     options, aliases, tinted, is_tree) = args
     source = asset + suffix
     try:
         nodes = glb.parse_glb(os.path.join(bundle, "meshes", source + ".glb"))
@@ -192,7 +198,22 @@ def _shape_job(args):
     # the collider comes off LOD 1 where the bake generated one — `collision.colmesh_from_lod`
     # is written for the ~25 % level, and a 20k-triangle building shell is not a collider
     colliders, collider_kind = _collider(shape_name, base_mesh,
-                                         ladder[1] if len(ladder) > 1 else base_mesh, kind, options)
+                                         ladder[1] if len(ladder) > 1 else base_mesh, kind, options,
+                                         is_tree)
+    # How well the trunk search actually found a trunk. `_trunk_group` prefers a material run
+    # NAMED for one, and on a CS2 bundle that branch never fires — the game's material names are
+    # hashed asset ids (`lvl_OakTreeAdult01_c8092af6...`), so all 32 tree prefabs of the reference
+    # city fall through to the geometric fallback. That fallback is right for most of them
+    # (OakTree01: a 0.40 m cylinder under an 8.11 m canopy) and wrong where the lowest band is
+    # not the trunk — a spruce whose branches sweep the ground, or a wide shrub CS2 counts as a
+    # tree. MEASURED, not fixed: 5 of 32 prefabs and 4.5 % of tree items, declared in the report.
+    trunk_ratio = None
+    if collider_kind == "trunk" and len(colliders) == 1:
+        cyl = numpy.asarray(colliders[0].verts, dtype=numpy.float64)
+        base_v = numpy.asarray(base_mesh.verts, dtype=numpy.float64)
+        canopy = 0.5 * float(max(numpy.ptp(base_v[:, 0]), numpy.ptp(base_v[:, 1])))
+        trunk = 0.5 * float(max(numpy.ptp(cyl[:, 0]), numpy.ptp(cyl[:, 1])))
+        trunk_ratio = round(trunk / canopy, 3) if canopy > 1e-6 else None
 
     # `gameCullMetres` divided by the declared `lod_detail_scale` is how far THIS level draws the
     # mesh; an imposter only earns its atlas past `imposter_min_metres`.
@@ -209,6 +230,9 @@ def _shape_job(args):
     return (asset, suffix, variant), {
         "file": shape_name + ".dae",
         "changed": bool(written.get("changed")),
+        # the game's tree/plant split (`csiibundle.instances.is_tree`), carried to the instances
+        # stage so a forest type made from a bush does not ship collidable
+        "tree": bool(is_tree) if kind == "tree" else None,
         "variantKey": variant_key,
         "radius": round(radius, 4),
         "renderingSize": round(lod.rendering_size(size), 4),
@@ -224,6 +248,7 @@ def _shape_job(args):
         "vertices": written["vertices"],
         "materials": sorted(materials_used),
         "collider": collider_kind,
+        "trunkRatio": trunk_ratio,
         "lods": lod_stats,
     }
 
@@ -320,15 +345,23 @@ def _lod_levels(derived_dir, source, shape_name, base_mesh, null_px, aliases, ti
     return fixed, stats, meshes
 
 
-def _collider(shape_name, base_mesh, lod_mesh, kind, options):
+def _collider(shape_name, base_mesh, lod_mesh, kind, options, is_tree=True):
     """The collision policy, in the plan's order: trunk cylinder for a tree, the decimated LOD
     when it is thick enough, a padded box otherwise. `()` when this class does not collide.
 
     `base_mesh` is LOD 0 — the trunk search wants its material runs — and `lod_mesh` is what the
     colmesh is cut from (LOD 1 when the bake generated one, else LOD 0).
+
+    `is_tree` splits the `tree` kind, which is ALL vegetation: 376,187 of the reference city's
+    686,641 planted items are grass, bushes, flower pots and garden beds, and CS2 builds them
+    from `PlantObject`, not `TreeObject` (`csiibundle.instances.is_tree`). A plant does not
+    collide — you drive through a hedge and over long grass — and it certainly does not get a
+    trunk, which is what fitting `trunk_cylinder` to a thing with no trunk was doing.
     """
     if not options["collide"].get(kind, False):
         return (), "none"
+    if kind == "tree" and not is_tree:
+        return (), "plant"
     verts = lod_mesh.verts
     tris = lod_mesh.tris
     if kind == "tree":
@@ -388,13 +421,14 @@ def run(ctx, progress):
             index_out = index if tinted else None
             jobs.setdefault((asset, suffix, index_out),
                             (ctx.bundle, ctx.derived_dir, out_dir, level.name, asset, suffix,
-                             index_out, key if tinted else None, entry["kind"], options, aliases, tinted))
+                             index_out, key if tinted else None, entry["kind"], options, aliases,
+                             tinted, entry["tree"]))
         # the UNTINTED shape: what a TSStatic binds (it keeps `colorPaletteMap` and carries its
         # own `instanceColor*`), and what a prefab with no baked variants gets
         if entry["static"] or not wanted:
             jobs.setdefault((asset, suffix, None),
                             (ctx.bundle, ctx.derived_dir, out_dir, level.name, asset, suffix,
-                             None, None, entry["kind"], options, aliases, {}))
+                             None, None, entry["kind"], options, aliases, {}, entry["tree"]))
     jobs = list(jobs.values())
 
     progress.begin("shapes: writing .dae", total=len(jobs), unit="shapes")
@@ -478,6 +512,12 @@ def _material_tables(ctx, level):
     return aliases, by_variant
 
 
+# A trunk collider wider than this share of the shape's own canopy is not a trunk. OURS — CS2
+# has no collision for a planted object at all — and it is a REPORTING threshold only: nothing
+# behaves differently either side of it, it decides when the build says so out loud.
+TRUNK_WIDE_RATIO = 0.5
+
+
 def _report(results, demand, scan_stats, options, errors, started, progress, rewritten=0, orphans=0):
     rows_by_pair = {}
     for (asset, suffix, _variant), row in results.items():
@@ -511,6 +551,9 @@ def _report(results, demand, scan_stats, options, errors, started, progress, rew
     colliders = {}
     for row in results.values():
         colliders[row["collider"]] = colliders.get(row["collider"], 0) + 1
+    # trunk cylinders that are really canopy cylinders — see `trunkRatio` in `_shape_job`
+    trunk_ratios = [r["trunkRatio"] for r in results.values() if r.get("trunkRatio") is not None]
+    trunk_wide = sum(1 for r in trunk_ratios if r > TRUNK_WIDE_RATIO)
     return {
         "shapes": len(results),
         "shapesRewritten": rewritten,
@@ -520,6 +563,10 @@ def _report(results, demand, scan_stats, options, errors, started, progress, rew
         "scan": scan_stats,
         "triangles": sum(r["triangles"] for r in results.values()),
         "colliders": colliders,
+        "trunkFit": {"shapes": len(trunk_ratios), "wide": trunk_wide,
+                     "medianRatio": (round(sorted(trunk_ratios)[len(trunk_ratios) // 2], 3)
+                                     if trunk_ratios else None),
+                     "ratio": TRUNK_WIDE_RATIO},
         "imposters": {"shapes": sum(1 for r in results.values() if r.get("billboardPx")),
                       "ofShapes": len(results),
                       "minMetres": round(options["imposter_min_metres"], 1),
@@ -539,6 +586,21 @@ def _report(results, demand, scan_stats, options, errors, started, progress, rew
                 "why": "CS2 ships no LOD chain for these prefabs (lodCap 0), so there is no game "
                        "rule to port; the ratios are vanilla BeamNG's spacing",
                 "count": sum(1 for r in results.values() if r["lods"]["levels"] > 1),
+            },
+            "treeTrunkCylinderFit": {
+                "what": "a tree whose trunk collider is wider than "
+                        f"{TRUNK_WIDE_RATIO:.0%} of its own canopy - the trunk search found the "
+                        "canopy instead",
+                "why": "CS2 has no collision for a planted object, so there is no rule to port. "
+                       "`collision._trunk_group` prefers a material run NAMED trunk/bark/stem, "
+                       "and on a CS2 bundle that branch never fires - the game's material names "
+                       "are hashed asset ids - so every tree falls through to the geometric "
+                       "fallback (lowest band, smallest footprint). That is right for a clean "
+                       "bole and wrong where the lowest band is not the trunk: a spruce whose "
+                       "branches sweep the ground, or a wide shrub CS2 counts as a tree because "
+                       "it carries growth. MEASURED on the reference city: 5 of 32 tree prefabs, "
+                       "4.5 % of tree items",
+                "count": trunk_wide,
             },
             "renderingSizeSpecialCases": {
                 "what": "the human-object and Standing-leg shrinks in GetRenderingSize",
@@ -562,6 +624,8 @@ SETTINGS = ("trees", "props", "buildings", "foliage_density", "prop_density", "r
             "collision_preset", "collision_buildings", "collision_props", "collision_trees")
 OUTPUTS = ("art/shapes/cs2",)
 
+# version 2: the tree/plant split (A6.1) - a plant gets no collider and no trunk cylinder, and
+# every shape row carries `tree` and `trunkRatio`
 STAGE = Stage(STAGE_KEY, "Object shapes", enabled, units, run, inputs=INPUTS, settings_keys=SETTINGS,
               outputs=OUTPUTS,
-              shared_keys=("shapes", "materials_used", "materials_variants_used"))
+              shared_keys=("shapes", "materials_used", "materials_variants_used"), version=2)

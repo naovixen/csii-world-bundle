@@ -171,6 +171,43 @@ def growth_scale(record):
     return value if value > 0.0 else 1.0
 
 
+def is_tree(record):
+    """Whether CS2 considers this record a TREE, as opposed to any other planting.
+
+    **The `tree` kind is all vegetation, not trees.** On the reference city it covers 686,641
+    items over 75 prefabs, and 376,187 of those items are `pd_Long_Grass`, `FlowerBushCity02`,
+    `PlantPot01`, `Flowerbed01` and friends. A consumer that treats the kind as "tree" gives a
+    kerb planter a trunk and makes a hedge solid.
+
+    THE GAME'S OWN RULE, read from `Game.Prefabs` rather than inferred:
+
+        TreeObject.GetArchetypeComponents  -> Plant, Tree, Color, UpdateFrame, Decoration
+        PlantObject.GetArchetypeComponents -> Plant, UpdateFrame
+
+    Every tree is a plant; only a tree gets `Game.Objects.Tree`, which is the struct holding
+    `m_State` and `m_Growth`. The producer writes `attrs.growth` inside exactly that component's
+    `TryGetComponent` (`InstanceRipSystem`), so **the key's presence is the game's own
+    discriminator** — not a heuristic, and not a name match.
+
+    Do NOT match names, and do NOT test the value. A name match gets
+    `VFP_EvergreenBushWildLarge` (8,806 items) backwards — it HAS growth, so CS2 treats it as a
+    tree whatever it is called. And a sapling's growth is 0.0, which is falsy, so a truth test
+    would quietly reclassify the youngest trees as shrubs.
+    """
+    return "growth" in (record.get("attrs") or {})
+
+
+def vegetation_kind(record):
+    """`"tree"`, `"plant"`, or `None` for a record that is not vegetation at all.
+
+    The three-way answer both consumers want: `kind == "tree"` says "this is planting", and
+    `is_tree` splits it the way the game does.
+    """
+    if record.get("kind") != "tree":
+        return None
+    return "tree" if is_tree(record) else "plant"
+
+
 # `attrs.state` values whose buildings the game does not draw at all. CONTRACT (§4, D4).
 NOT_DRAWN_STATES = ("construction",)
 

@@ -205,6 +205,17 @@ def run(ctx, progress):
                 "why": "the bake tints only `paint_kinds` (default trees); widen it to cover props",
                 "count": untinted_forest,
             },
+            "forestPlantsDoNotCollide": {
+                "what": "a forest type built from a CS2 `PlantObject` (bush, hedge, flower pot, "
+                        "garden bed, long grass) ships collidable:false whatever its height",
+                "why": "the `tree` kind is ALL vegetation - 376,187 of the reference city's "
+                       "686,641 planted items are plants, not trees. CS2's own archetypes split "
+                       "them: `TreeObject` adds `Tree`, `PlantObject` does not, and the producer "
+                       "writes `attrs.growth` inside exactly that component's lookup, so this is "
+                       "the GAME's rule (csiibundle.instances.is_tree), not a height guess. A "
+                       "plant is driven through, and it has no trunk to fit a cylinder to",
+                "count": forest_stats.get("plant", 0),
+            },
             "forestCollidableThreshold": {
                 "what": f"a forest type whose shape is under {FOREST_COLLIDABLE_MIN_HEIGHT} m tall "
                         f"ships collidable:false",
@@ -432,12 +443,13 @@ def _flush(forest_dir, lines):
 def _write_item_data(level, types, settings, collide):
     """`art/forest/managedItemData.json` — one `TSForestItemData` per placed type.
 
-    Returns `{"types", "collidable", "tooShort", "policyOff", "itemsNotCollidable"}` — the
-    collision hygiene split the report declares.
+    Returns `{"types", "collidable", "tooShort", "policyOff", "plant", "itemsNotCollidable"}` —
+    the collision hygiene split the report declares.
     """
     shadows = bool(settings.get("forest_shadows", True))
     document = {}
-    stats = {"types": 0, "collidable": 0, "tooShort": 0, "policyOff": 0, "itemsNotCollidable": 0}
+    stats = {"types": 0, "collidable": 0, "tooShort": 0, "policyOff": 0, "plant": 0,
+             "itemsNotCollidable": 0}
     for name, (row, kind) in sorted(types.items()):
         entry = {"name": name, "internalName": name, "class": "TSForestItemData",
                  "persistentId": level.pid("forestItem:" + name),
@@ -449,6 +461,13 @@ def _write_item_data(level, types, settings, collide):
         collidable = bool(collide.get(kind))
         if not collidable:
             stats["policyOff"] += 1
+        elif row.get("tree") is False:
+            # `kind == "tree"` is ALL vegetation. CS2 builds a bush, a flower pot and a patch of
+            # long grass from `PlantObject`, which never gets the `Tree` component
+            # (`csiibundle.instances.is_tree`) — so this is the GAME's split, not a height guess,
+            # and it holds regardless of how tall the shape happens to be.
+            collidable = False
+            stats["plant"] += 1
         elif _shape_height(row) < FOREST_COLLIDABLE_MIN_HEIGHT:
             collidable = False
             stats["tooShort"] += 1
@@ -495,4 +514,4 @@ OUTPUTS = ("forest",)
 # version 4: `forest_min_items` folds a thin colour-variant type into its untinted twin —
 # only into a type this build is already declaring, or the items land on a type BeamNG drops
 STAGE = Stage(STAGE_KEY, "Trees, props and buildings", enabled, units, run, inputs=INPUTS,
-              settings_keys=SETTINGS, outputs=OUTPUTS, after=("shapes",), version=4)
+              settings_keys=SETTINGS, outputs=OUTPUTS, after=("shapes",), version=5)

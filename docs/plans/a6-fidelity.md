@@ -1,8 +1,8 @@
-# A6 — one live regression and four fidelity defects from the A5 loads
+# A6 — one live regression and six fidelity defects from the A5 loads
 
 A5 closed most of the performance work (audit §64): the build is 19 minutes, the level mounts
 5.2 GiB, and **the imposter fix held** — 153 imposter builds this session against 2,652, and the
-1–2 FPS collapse is gone. What is left is one performance item that is NOT fixed, and four
+1–2 FPS collapse is gone. What is left is one performance item that is NOT fixed, and six
 fidelity ones. Reported 2026-08-18 across two loads:
 
 0. **The GPU still runs out of memory.** FPS decays 40–60 → 15 over 30 minutes. Not the same
@@ -13,6 +13,10 @@ fidelity ones. Reported 2026-08-18 across two loads:
 3. **Some buildings render at wrong contrast or completely black.**
 4. **Vegetation stands in the carriageway.** Asked for explicitly as a playability deviation, not
    a fidelity fix.
+5. **Areas float above the ground you drive on, and paint over the roads.** Reported 2026-08-18;
+   two independent consumer-side causes, both measured below.
+6. **A lot of prop locations are floating / off.** Reported 2026-08-18. The transform is exact —
+   the cause is that we place a building's props after dropping the building.
 
 Everything below the horizontal rule in each section is measured, not assumed. Where a rule is
 still open it says so; **none of these should be fixed by inventing a consumer-side rule** (see
@@ -327,13 +331,260 @@ drive a long road and a roundabout; the count in the report; and the 98.6 % that
 
 ---
 
+## A6.5 Areas float above the ground you drive on, and paint over the roads
+
+Reported 2026-08-18: *"I can't seem to drive on areas, the car gets stuck. Also, the areas seem to
+render above roads causing clipping and a lot of roads to become covered."* Two symptoms, two
+independent causes, both consumer-side. **No re-rip is needed** — every field this wants
+(`decalLayers`) already ships in the bundle and is already read into the bake's catalogue.
+
+**Do not "fix" this by giving the paint a collider.** `stages/derived` states the rule and it is
+right: *paint is a projection lifted millimetres above a surface that already collides — a
+collider there is a lip that catches wheels*. `collision_paint` is `false` in the shipped level
+and the Areas `TSStatic`s are `collisionType: "None"`, which is correct. The car is not catching
+on the paint; it is driving on ground the paint is hiding. The fix is to put the paint back on the
+ground, not to make the paint solid.
+
+### Cause 1 — the conform targets the MAX of both triangulations, and BeamNG draws one of them
+
+`bake/ground.GroundSurface` conforms areas to `diagonal="envelope", mode="max"` — the upper
+envelope of the two ways a heightfield square can be split. Its own docstring says why, and says
+what is missing: *which one is a fact about the engine we measure in-game, not a choice we make.
+Until it is measured, `envelope` answers conservatively.* **It was never measured.** `max(A, B)`
+is >= both triangulations by construction, so the paint stands above the drawn and driven ground
+everywhere by that square's twist.
+
+Measured on `cs2_city_fine` (built 2026-08-18, `terrain_upsample 2`, areas baked `ground: fine`),
+2,107,650 area triangle centroids from the 60 largest area tiles, against the same 8192² / 1.75 m
+raster the level's `.ter` is built from:
+
+| paint minus … | p50 | p75 | p90 | p95 | p99 | >0.05 m | >0.15 m |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| `max` envelope (what the bake conforms to) | +0.021 | +0.022 | +0.023 | +0.028 | +0.055 | 1.2 % | 0.2 % |
+| `nw_se` triangulation | +0.022 | +0.036 | +0.116 | +0.249 | +0.729 | 18.9 % | 8.0 % |
+| `ne_sw` triangulation | +0.022 | +0.042 | +0.179 | +0.379 | +0.998 | 22.3 % | 11.3 % |
+| the level's own `.ter`, sampled bilinearly | +0.030 | +0.073 | +0.204 | +0.342 | +0.693 | 33.3 % | 14.0 % |
+
+Read the first row first: **against the envelope the conform is exact** — the whole distribution is
+the `decals.LIFT_LADDER` `area` rung (0.020) plus the `rendererPriority` rank lift, and nothing
+else. `conform_triangle` is doing precisely what it was asked. The error is entirely the choice of
+target surface.
+
+And it is not the terrain stage's: the shipped `.ter` is **bit-identical to the bundle's fine
+raster** over all 67,072,362 solid samples (every percentile of `ter − bundleFine` is +0.0000;
+|Δ| > 0.05 m on 0.02 %, which is `terrain.clamp_carriageway`). The driven ground *is* the bundle
+raster. Whichever single triangulation BeamNG picks, the paint is a sheet floating over it — a
+metre over it at p99 — and since the paint does not collide, the car drops through the visible
+plaza onto relief the plaza was hiding. That is the "gets stuck".
+
+**The instrument already exists and the plan already named it.** `beamng-consumer-plan.md:381`:
+*"optional Lua `getTerrainHeight` probe settles the diagonal"*; `bake/__main__.py` already takes
+`--diagonal nw_se|ne_sw|envelope`; `tools/beamng/probe_ter.py` is the same shape of in-game probe
+that settled the `.ter` orientation on 3,800 road nodes. The app hard-codes `"envelope"` in two
+places (`stages/bake.py:132`, `pipeline/census.py:101`).
+
+**Test two hypotheses, not one.** Torque-derived terrain does not necessarily split every square
+the same way — a per-square (checkerboard, or height-dependent) split is possible. Sample enough
+adjacent squares that an alternating pattern would show, or the probe will "confirm" a uniform
+diagonal that only held on the squares it happened to hit.
+
+`bake/skirts.py` takes `mode="min"` for the mirror reason and inherits the same fix.
+
+### Cause 2 — `decalLayers` is read and then never used
+
+`areas.surface_entry` puts `decal_layers` in the catalogue (`csiibundle/areas.py:118`) and
+**nothing reads it**. So every area is conformed to the terrain across its whole polygon,
+including wherever a road happens to be, and lifted above it.
+
+CS2 does not do that. `decalLayers` is the game's own mask for which surfaces a projection lands
+on (`docs/bundle-schema.md` §4.2: *a decal whose `decalLayers` is `["Roads"]` must not be painted
+across the wall behind it*). In this bundle:
+
+| `decalLayers` | prefabs | paint | of which over a carriageway |
+|---|---:|---:|---:|
+| `["Terrain"]` | 34 | 11,440,503 m² | **472,957 m²** |
+| `["Terrain", "Roads"]` | 6 | 1,059,171 m² | 36,491 m² |
+
+509,448 m² — 4.1 % of the 12.5 M m² of paint in the 636 tiles that carry both areas and
+networks — lies over a road surface in plan, and 93 % of that belongs to prefabs the game masks
+off roads entirely. Where it overlaps at grade (398,970 m², excluding bridges and tunnels at
+|Δ| > 1 m) the paint stands **proud of the carriageway over 298,895 m², 74.9 % of the overlap**:
+p50 +0.052, p75 +0.178, p90 +0.278, p99 +0.616 m. Worst offenders, all of them `["Terrain"]`:
+
+```
+159,645 m² over roads / 1,293,114 m² total   Concrete_Surface_01
+ 68,094 m² over roads / 1,955,614 m² total   Pavement_Surface_01
+ 45,671 m² over roads /   517,003 m² total   Farming … GrassCrop1_GreenFaded_Overlay_Surface
+ 25,488 m² over roads / 1,472,353 m² total   Pavement_Surface_02
+ 25,387 m² over roads /   324,835 m² total   Sand_Surface_02
+```
+
+Even for the 6 prefabs that *do* target Roads, the game composites by projection onto the road
+mesh and cannot z-fight; we lift by 2 cm above the **terrain**, and the `LIFT_LADDER`'s bottom
+rung is the terrain — it has no rung for "the carriageway", which stands above the terrain.
+
+**The precedent is in the same package.** `bake/markings.py:209-211` already picks its target from
+`instances.decal_layers(record)` — `decal_blocks_ground` when `Roads` is absent, `decal_blocks_road`
+when it is present — and `bake/roads.load_road_surface` already builds the road
+`TriangleSoupSurface` an areas product would drape onto. Areas simply never called it.
+
+### The work
+
+* **Settle the diagonal first** — it is the larger of the two errors and it changes what "conform"
+  means for every ground product. In-game probe → `ground.py` stops guessing → the app stops
+  hard-coding `"envelope"`. Once it is known, `mode="max"`/`"min"` is not conservative, it is
+  wrong, and both areas and skirts take the measured diagonal.
+* **Use `decal_layers` in `bake/areas.py`**, the way `bake/markings.py` already does: a
+  `["Terrain"]` area is *clipped* where a road surface is on top of it, not lifted over it; an
+  area that includes `Roads` drapes onto the upper of the two surfaces.
+* **Count both**, per the non-negotiable: m² of paint clipped off carriageways, m² draped onto
+  them, and — until the diagonal is settled — the residual float the envelope is still adding.
+
+### The gate
+
+* re-run both measurements above: paint − the real triangulation must collapse to the lift ladder
+  (p90 <= 0.03 m, matching today's envelope row), and `["Terrain"]` paint over a carriageway must
+  be 0 m²;
+* drive a parking lot, a plaza and a farm field — the symptom is a car that sits low and catches on
+  nothing you can see;
+* drive a road that a lot surface abuts, and look along it at a grazing angle, which is what makes
+  a 0.3 m sheet cover "a lot of roads".
+
+### Adjacent, not measured
+
+0.61 % of area triangles sit over a `.ter` square marked `255` (hole). Those depend on a
+`terraincut` mesh being present underneath; nobody has checked that they all are.
+
+---
+
+## A6.6 Floating props — we drop the building and place its props anyway
+
+### The transform is not the bug, and that was worth proving first
+
+Every mechanism that could move a prop was checked and cleared before anything else was looked
+at, because "the placement maths is wrong" is the expensive wrong answer here:
+
+| checked | result |
+|---|---|
+| `pos` is world-space for a sub-object | contract §4.1, and it holds: `pos.y − attrs.elevation` equals the terrain under the prop for **99.1 %** of the 392,155 props carrying `elevation` (median 0.004 m) |
+| the shipped `.ter` matches the bundle terrain under props | median difference **0.000 m**, p1/p99 both 0.00, over all 504,116 props |
+| the level's own positions match the records | `check_instances_vs_game.py` on 4,000 sampled records: position **100.0000 %**, mesh state 100 %, drawn size 100 % |
+| `stages/instances._transform` vs the shared `csiibundle.frames` formula | identical to 1e-15 on 400 records once `growthScale` (which the app folds in and `instance_matrix` deliberately does not) is accounted for |
+| glTF node hierarchy | `glb.parse_glb` returns accumulated WORLD matrices and `shapes._collect` applies them — sub-parts are not stacked at the origin |
+| generated LOD levels drifting out of frame | 120 shapes sampled, **0** with a level centre more than 5 % of the shape's own size off LOD 0 |
+| BeamNG snapping forest items to terrain on load | it does not; `core_terrain.getTerrainHeight` appears only in `util/forestGenerator.lua`, the authoring tool, never in the load path |
+
+**A gap the harness has, and it is real:** `check_instances_vs_game.py` prints "the position is
+`T(pos)` conjugated into BeamNG axes" and **never checks the rotation**, even though its own table
+claims `T·R·S·diag(-1,1,1)` as the question. Rotation is not the cause here (a wrong rotation
+turns a prop in place, it cannot lift it, and position is exact), but the probe should not be
+read as having cleared it. Adding `R` to that row is part of the work below.
+
+### What is actually measured
+
+**A sub-object is placed even when the owner it hangs off was dropped.** `stages/shapes` and
+`stages/instances` decide per record; nothing asks whether the record's `parent` survived. Over
+the 1,191,478 records this build admits, following `parent` transitively:
+
+| the owner was dropped because… | orphans | owners | ≥0.5 m up | ≥5 m up | worst |
+|---|---:|---:|---:|---:|---:|
+| **its prefab did not resolve** (`warnings.jsonl` `kind: "prefab"`) | **6,656** | 19 | 2,816 (42 %) | 2,419 | **292.5 m** |
+| its mesh yielded no geometry (`kind: "mesh"`) | 5,806 | 86 | 742 (13 %) | 168 | 12.9 m |
+| `attrs.state == "construction"` — **undeclared** | 59 | 6 | 47 (80 %) | 45 | 85.0 m |
+
+3,605 of the 12,521 orphans stand clear of the ground, 993 of them more than 50 m up. They are
+not scattered: **19 unresolved buildings account for 6,656 of them**, so each one is a whole
+lot's planting and a whole roof's kit hanging in the sky at once —
+
+```
+690 children  unresolved_2554423   at (2442, -1010)     584  unresolved_2495283  at (3460, 509)
+506 children  unresolved_2495288   at (1125,  -957)     428  unresolved_2554594  at (4970, 2958)
+```
+
+Rendered through `tools/blender_import_level.py` at (2455, −990) — the level as BeamNG reads it,
+not the bundle — that is a row of `NA_LindenTree01` and a strip of rooftop decking floating in
+clear sky at 819 m over a downtown with no tower under them. `GardenLight01`, `LightpolePark02/04`
+and `StreetlightSingle02` are the next most numerous, which is why it reads as *props*.
+
+### The rule, and where it comes from
+
+This is **not** a rule to port from CS2 — the game had those prefabs and drew the buildings; the
+prefab failed to resolve **at rip time**, and §10 is the contract for exactly that: the producer
+declares what it could not deliver, in `warnings.jsonl`. So the rule is a consumer's obligation
+against a **declared gap**, not an invention:
+
+> A record whose owner was not placed because the producer declared it undeliverable is not
+> placeable either. Drop it, count it, and name the owner.
+
+**The two owner classes must not be treated alike, and the warning kind is the discriminator:**
+
+* `kind: "prefab"` — *"managed prefab did not resolve; instances kept with placement only"*. The
+  building is genuinely absent. Its children are unsupported. **Drop them.**
+* `kind: "mesh"` — *"none of N sub-mesh(es) yielded geometry"*. The prefab resolved and simply has
+  no geometry of its own: these are `ParkingLot02..14`, `CampfireSite01/02`, `ChirperPark03`,
+  `AmericanFootballField01` — a lot **is** its paving, and the paving ships in the `areas` layer.
+  Its 5,806 children are the lot's lamps, benches and planting, median height 0.00 m above
+  terrain. **Keep them**; dropping these would delete real park furniture, which is why a blanket
+  "no owner, no draw" rule is wrong.
+
+The 59 construction-state orphans are a third case and the only undeclared one. §4's own text says
+the site is not empty — *"the crane and site fence are real entities with their own prefabs"* —
+so its children are meant to be drawn; but 45 of these 59 are more than 5 m up, i.e. they are the
+finished building's roof kit rather than the site's. Decide it from `attrs.elevationFlags` /
+ownership, not from a height threshold, and declare whichever way it goes.
+
+**Check before building**: confirm that a `kind: "prefab"` warning really does mean the whole
+prefab is missing rather than one LOD of it, by reading the producer site that emits it
+(`Systems/InstanceRipSystem` / `IO/BundleWriter`) — the wording is a producer's, and A6 has one
+precedent already of a doc's claim failing a thirty-second re-check.
+
+### The remedy at source, which is cheaper than any of this
+
+All 19 offenders are `unresolved_*` — **unowned asset packs** (the same cause as the grey area
+surfaces of audit §36). Enabling those packs in CS2 and re-ripping removes the gap entirely, and
+brings back 19 real buildings the level is missing today rather than merely hiding their props.
+The consumer fix is still required — a bundle is allowed to declare a gap and we must survive one
+— but the ask goes to Naomi first, and the two are independent.
+
+### The work
+
+* `csiibundle.instances`: `undeliverable_owners(bundle_dir)` — the ids whose owner carries a
+  `kind: "prefab"` warning — and a `placeable(record, undeliverable)` predicate that walks
+  `parent` transitively (depth is 3 at most in this city, but a stacked sub-object of a
+  sub-object is legal). Shared, because `tools/blender_import_bundle.py` draws the same floating
+  trees today.
+* `apps/cs2beamng/beamng/placement.admit`: a new `"orphan"` reason beside `baked` / `state` /
+  `kind` / `region` / `density`, so the shapes pass and the instances pass reach it identically —
+  the file's whole point.
+* The report: an `approximations` entry naming the count, the owner assets, and the fact that the
+  underlying gap is the producer's declared one, per the non-negotiable that every approximation
+  is declared and counted.
+* `tools/check_instances_vs_game.py`: add the rotation column it already claims, and a row for
+  "no placed record hangs off an undeliverable owner".
+
+### The gate
+
+* the count: **6,656 records dropped, 5,806 park-furniture records kept**, and 0 placed records
+  with an undeliverable ancestor;
+* re-render (2455, −990) through `blender_import_level.py`: the tree line at 819 m is gone and the
+  park below it is not;
+* `tools/level_budget.py` — this only ever REMOVES geometry, so drawn triangles must not rise.
+
+---
+
 ## Order
 
 **A6.0 first** — it is a live regression, it is the one the user is actually feeling, and every
 other item here is cosmetic beside it. **A6.1 second**: its rule is in hand, it is small, and it
 also cuts the 3,062 MB of forest collision. **A6.4 third** (cheap, asked for, and it interacts
-with A6.1 — both are decisions about which vegetation to keep). **A6.3** next: the most visible
-defect, and hypothesis 1 is a half-hour read of a shader. **A6.2 last** — it needs the game's
+with A6.1 — both are decisions about which vegetation to keep). **A6.5** next — it is the second thing the user has
+actually felt, its larger half is one in-game probe the plan has owed since A2, and its smaller
+half is a field the bake already loads and forgot to read. **A6.6 alongside A6.1** — its
+investigation is finished, the rule is written, it is one predicate in `csiibundle` plus one
+reason string, and it only ever removes geometry, so it cannot make A6.0 worse. Ask Naomi for the
+asset-pack enable + re-rip at the same time, since that half is hers and runs in parallel.
+**A6.3** after that: the most visible defect, and hypothesis 1 is a half-hour read of a shader.
+**A6.2 last** — it needs the game's
 culling rule read properly, and it is the only item here that *costs* VRAM to fix, which A6.0
 says we do not have.
 
