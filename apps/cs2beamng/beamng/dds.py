@@ -45,7 +45,10 @@ _BLOCK_BYTES = {BC7_UNORM_SRGB: 16, BC7_UNORM: 16, BC5_UNORM: 16, BC4_UNORM: 8}
 
 # texture kind (the materials stage's vocabulary) -> DXGI format
 KIND_FORMAT = {"color": BC7_UNORM_SRGB, "normal": BC5_UNORM, "data": BC4_UNORM, "opacity": BC4_UNORM,
-               "data_rgb": BC7_UNORM}
+               "data_rgb": BC7_UNORM,
+               # CS2's colour mask, converted into BeamNG's palette semantics: linear, and its
+               # ALPHA is load-bearing (the tint coverage), so it must survive the encode
+               "colormask": BC7_UNORM}
 
 
 def available():
@@ -161,6 +164,7 @@ def to_rgba(arr, kind):
     out = arr.astype(numpy.uint8, copy=True)
     if kind in ("color", "normal", "data_rgb"):
         out[..., 3] = 255                                   # no stray coverage in an opaque map
+    # "colormask" deliberately keeps its alpha — see KIND_FORMAT
     return out
 
 

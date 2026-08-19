@@ -572,6 +572,67 @@ def test_road_clearance():
               f"(a deviation, so it must stay small)")
 
 
+def test_color_palette():
+    """A6.3 — CS2's colour mask converted into BeamNG's palette semantics.
+
+    Both sides implemented literally from their own sources: CS2 from `docs/bundle-schema.md`
+    §7.2, BeamNG from `shaders/common/material/shadergen/shadergen.h.hlsl::getColorPalette`.
+    The old export forced the mask's alpha to 255, which is why an untinted texel rendered BLACK.
+    """
+    print("colour palette (A6.3)")
+    from cs2beamng.beamng.materials import _colormask_rgba
+
+    def cs2(base, mask, colours):
+        t = numpy.asarray(base, dtype=numpy.float64)
+        for i in range(3):
+            t = t * (1.0 - mask[i]) + (t * numpy.asarray(colours[i])) * mask[i]
+        return t
+
+    def beamng(base, mask_rgba, colours):
+        s = numpy.asarray(mask_rgba, dtype=numpy.float64).copy()
+        s[:3] = s[:3] / (s[0] + s[1] + s[2] + 1e-10)
+        a = s[3]
+        s[:3] *= a
+        palette = sum(s[i] * numpy.asarray(colours[i]) for i in range(3)) + (1.0 - a)
+        return numpy.asarray(base, dtype=numpy.float64) * palette
+
+    base = [0.55, 0.50, 0.47]
+    colours = [[0.90, 0.30, 0.20], [0.20, 0.55, 0.85], [0.0, 0.0, 0.0]]
+
+    worst = 0.0
+    for m in ([0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1], [0.3, 0, 0], [0, 0.75, 0],
+              [0, 0, 0.5], [0.05, 0, 0]):
+        mask = numpy.asarray(m, dtype=numpy.float64)
+        conv = _colormask_rgba((mask * 255).round().astype(numpy.uint8).reshape(1, 1, 3), "rgb")
+        worst = max(worst, float(numpy.abs(beamng(base, conv[0, 0] / 255.0, colours)
+                                           - cs2(base, mask, colours)).max()))
+    check(worst < 0.002,
+          f"a DISJOINT mask reproduces CS2's tint exactly (worst {worst:.5f}, the alpha's own step)")
+
+    # the bug this replaces: alpha forced to 255 makes an untinted texel BLACK
+    black = beamng(base, [0.0, 0.0, 0.0, 1.0], colours)
+    check(float(numpy.abs(black).max()) < 1e-9,
+          "the OLD alpha-255 export renders an untinted texel pure black (the reported defect)")
+    conv = _colormask_rgba(numpy.zeros((1, 1, 3), numpy.uint8), "rgb")
+    check(int(conv[0, 0, 3]) == 0, "an untinted texel now carries alpha 0 - no tint, not black")
+    conv = _colormask_rgba(numpy.array([[[255, 0, 0]]], numpy.uint8), "rgb")
+    check(int(conv[0, 0, 3]) == 255, "a fully tinted texel carries alpha 255")
+    conv = _colormask_rgba(numpy.array([[[200, 100, 0]]], numpy.uint8), "rgb")
+    check(int(conv[0, 0, 3]) == 255, "alpha saturates rather than wrapping")
+
+    # and the material must actually switch the palette on
+    from cs2beamng.beamng import materials as bm
+
+    class _L:
+        name = "lvl"
+        def game_path(self, *p): return "/" + "/".join(p)
+        def pid(self, k): return k
+    stage = bm.material_v15(_L(), "m", {"tintable": True}, {"colorMask": "/t.dds"})
+    stage0 = stage["Stages"][0] if "Stages" in stage else stage
+    check(stage0.get("paletteBaseColor") is True,
+          "a tintable material sets paletteBaseColor - without it the palette applies to nothing")
+
+
 def main():
     test_frame()
     test_placement()
@@ -584,6 +645,7 @@ def main():
     test_variant_index_matches_the_bake()
     test_tree_vs_plant()
     test_road_clearance()
+    test_color_palette()
     print()
     if FAILS:
         print(f"{len(FAILS)} of {CHECKS} FAILED:")

@@ -136,7 +136,9 @@ def run(ctx, progress):
         if rec.get("emissive"):
             plan["emissive"] = (os.path.join(ctx.bundle, rec["emissive"]), "color", False)
         if rec.get("colorMask") and rec.get("tintable"):
-            plan["colorMask"] = (os.path.join(ctx.bundle, rec["colorMask"]), "data", False)
+            # "colormask", not "data": the export converts CS2's mask into BeamNG's palette
+            # semantics and the ALPHA it writes is the tint coverage (`_colormask_rgba`)
+            plan["colorMask"] = (os.path.join(ctx.bundle, rec["colorMask"]), "colormask", False)
         plans[name] = plan
         for job in plan.values():
             jobs.setdefault(job, None)
@@ -240,6 +242,24 @@ def run(ctx, progress):
             "orphanTexturesRemoved": orphans,
             "textureCaps": caps, "textureBytes": _texture_bytes(level),
             "format": "dds" if use_dds else "png",
+            "approximations": {
+                "colorMaskChannelOverlap": {
+                    "what": "a colour-mask texel where TWO OR MORE of CS2's tint channels are "
+                            "non-zero is mixed by BeamNG where CS2 multiplies",
+                    "why": "CS2 applies three INDEPENDENT lerps (bundle §7.2) and BeamNG's "
+                           "`getColorPalette` normalises the mask RGB into a simplex, so it can "
+                           "only ever BLEND between the three palette colours. Where one channel "
+                           "is active the conversion in `beamng.materials._colormask_rgba` is "
+                           "EXACT (worst error 0.001, which is the alpha's own 8-bit step); "
+                           "where two are, no alpha can reproduce a product with a mix. §7.2 "
+                           "states the channels are authored disjoint and MEASUREMENT AGREES: "
+                           "over 254 masks and 521.7 M texels, 39.0 % carry any tint at all and "
+                           "only 1.76 % of THOSE have two channels (median mask 0.29 %, 32 masks "
+                           "none at all)",
+                    "count": None,
+                    "value": 0.0176,
+                },
+            },
             "seconds": round(time.monotonic() - started, 1)}
 
 
@@ -520,6 +540,9 @@ SETTINGS = ("texture_max", "texture_max_normal", "texture_max_data", "texture_dd
 OUTPUTS = ("art/cs2/main.materials.json", "art/textures")
 
 # version 2: per-kind texture caps (A4 2.1)
+# version 2: CS2's colour mask is converted into BeamNG's palette semantics and
+# `paletteBaseColor` is set, so the tint is applied at all and an untinted texel is not black
+# (A6.3)
 STAGE = Stage(STAGE_KEY, "Materials and textures", enabled, units, run, inputs=INPUTS,
               settings_keys=SETTINGS, outputs=OUTPUTS, shared_keys=("materials",),
-              after=("shapes", "networks", "derived"), version=2)
+              after=("shapes", "networks", "derived"), version=3)

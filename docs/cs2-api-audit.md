@@ -5747,3 +5747,72 @@ so it removes exactly what obstructs driving.
 over. It accounts for 275 of the 4,890 trees within 2 m. This deviation is the other ~94 %, and
 it is a choice rather than a port. Both are reported separately, because conflating them would
 hide which of the two removed a given tree.
+
+## 69. A6.3 — SOLVED: BeamNG's palette is not CS2's tint, and the mask's ALPHA is the tint (2026-08-18)
+
+The plan listed three hypotheses and told me to read the shader rather than infer from renders.
+BeamNG ships its shader source, so this is read, not guessed —
+`shaders/common/material/shadergen/shadergen.h.hlsl::getColorPalette`:
+
+```hlsl
+colorPaletteSample.rgb /= (r + g + b + 1e-10);      // NORMALISED to a simplex — a selector
+colorPaletteSample.a = 1 - pow(1 - saturate(a), …); // the ALPHA is the tint COVERAGE
+colorPaletteSample.rgb *= colorPaletteSample.a;
+colorPaletteSample.a    = 1 - colorPaletteSample.a;
+colorPalette  = r*alphaDouble(toLinearColor(instanceColors[0]))
+              + g*… + b*…
+              + a*float4(1,1,1,1);                  // the UNTINTED remainder is WHITE
+baseColor *= (flags & MATERIAL_LAYER_FLAG_paletteBaseColor) ? colorPalette.rgb : 1;
+```
+
+**Hypothesis 1 was wrong in its mechanism**: BeamNG multiplies too, exactly as CS2 does — it is
+not a replace. The real difference is *where the weight lives*. CS2 (§7.2) applies three
+INDEPENDENT lerps whose weights are the mask's R, G and B, and ignores alpha. BeamNG uses RGB
+only to CHOOSE among the three palette colours and takes the amount of tint from **alpha**.
+
+### Why buildings were black, derived and then reproduced numerically
+
+`export_texture` shipped the mask as kind `data_rgb`, and `dds.to_rgba` forces `out[…, 3] = 255`
+for that kind — "no stray coverage in an opaque map". So **every texel had coverage 1**, and the
+white untinted remainder contributed nothing. Where CS2's mask says `(0,0,0)` — meaning *do not
+tint* — BeamNG computes weights `(0,0,0)` with remainder `0`:
+
+```
+mask (0,0,0)   CS2 wants [0.55 0.50 0.47]   old export gives [0. 0. 0.]   <- PURE BLACK
+mask (0.3,0,0) CS2 wants [0.534 0.395 0.357] old export gives [0.495 0.150 0.094]  <- full tint
+```
+
+Both reported symptoms from one cause. And it is not a rare corner: measured over 254 masks and
+**521.7 M texels, 39.0 % carry any tint channel at all** — so **61 % of every tintable surface was
+being multiplied by zero.**
+
+### The fix, and it is exact
+
+`beamng.materials._colormask_rgba` sets **alpha = clamp(R + G + B)** and keeps RGB (BeamNG
+normalises it into the one-hot selector). With one channel `i` active, CS2 gives
+`lerp(1, c_i, m_i)` and BeamNG then computes `m_i·c_i + (1 − m_i)·1` — the same thing. Verified
+against both formulas implemented literally: **worst error 0.00108 over the disjoint cases, which
+is the alpha's own 8-bit step.** A new export kind `colormask` (BC7 with alpha, linear) carries
+it, because `data_rgb` exists precisely to throw alpha away.
+
+`material_v15` now also sets **`paletteBaseColor: True`**. Without it the shader takes
+`baseColor *= 1` and the palette is applied to nothing at all; we had been relying on whatever
+the material compiler defaults it to.
+
+### The residual, declared
+
+Where two mask channels overlap, BeamNG can only MIX where CS2 MULTIPLIES, and no alpha fixes
+that (`mask (1,1,0)`: CS2 0.099, BeamNG 0.303). §7.2 says the channels are authored disjoint and
+**measurement agrees**: of the 39.0 % of texels carrying any tint, only **1.76 %** have two
+channels — median mask 0.29 %, and 32 of 254 masks have none at all. Declared as
+`approximations.colorMaskChannelOverlap`.
+
+### Still open, and deliberately not guessed
+
+`getColorPalette` calls `toLinearColor(unpackColor(instanceColors[i]))`, so BeamNG treats the
+`instanceColor*` we write as **sRGB** and gamma-decodes it. If `attrs.colorSet` is a LINEAR
+multiplier — which is how §7.2 and `blender_import_bundle.apply_color_tints` use it — then our
+values are being decoded once too often and every tint lands too dark. That is the plan's
+hypothesis 3, and it was previously invisible because the tint was not reaching the surface at
+all. **Test it on the next load, now that the palette works**; do not pre-emptively gamma-encode
+on a guess.

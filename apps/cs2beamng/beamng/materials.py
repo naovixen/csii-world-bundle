@@ -110,7 +110,9 @@ def texture_name(src_path, kind, keep_alpha=False, use_dds=True):
     """
     ext = "dds" if use_dds else "png"
     stem = re.sub(r"[^A-Za-z0-9_\-]", "_", os.path.splitext(os.path.basename(src_path or ""))[0])
-    if kind == "opacity":                              # the albedo's alpha as a grey map: v1.5's opacityMap
+    if kind == "colormask":
+        data = _encode_dds(_colormask_rgba(arr, form), "colormask", keep_alpha=True) if use_dds             else png.encode_rgba(_colormask_rgba(arr, form))
+    elif kind == "opacity":                              # the albedo's alpha as a grey map: v1.5's opacityMap
         return f"{stem}_o.data.{ext}"
     return f"{stem}.{kind}.{ext}" if not keep_alpha else f"{stem}_a.{kind}.{ext}"
 
@@ -154,6 +156,44 @@ def export_texture(level, src_path, kind, max_size=0, keep_alpha=False, cache=No
     return game
 
 
+def _colormask_rgba(arr, form):
+    """CS2's colour mask, converted into the semantics BeamNG's palette actually implements.
+
+    THE TWO ARE NOT THE SAME MAP, and shipping CS2's straight through is why buildings render
+    wrong. Read from `shaders/common/material/shadergen/shadergen.h.hlsl::getColorPalette`:
+
+        rgb  = rgb / (r + g + b)                    # NORMALISED to a simplex - a selector
+        cov  = a                                    # the ALPHA is how much tint applies at all
+        rgb *= cov ;  rest = 1 - cov
+        palette = SUM rgb[i] * linear(instanceColor[i]) + rest * float3(1,1,1)
+        baseColor *= palette
+
+    CS2's mask (bundle §7.2) is three INDEPENDENT lerp weights and its alpha means nothing:
+
+        t = lerp(t, t * colorSet[i], mask[i])   for i in R, G, B
+
+    So BeamNG's RGB is only a *chooser* and its ALPHA carries the weight. We exported the mask as
+    `data_rgb`, which forces alpha to 255 — coverage 1 on every texel, so the white "untinted"
+    remainder contributes nothing. Wherever CS2's mask says (0,0,0) — the MEDIAN texel on 234 of
+    400 measured masks — the palette evaluates to (0,0,0) and the surface renders BLACK; wherever
+    it says (0.3,0,0) the normalisation makes it a full-strength tint instead of a 30 % one.
+
+    The conversion is EXACT while the channels are authored disjoint, which §7.2 states they are:
+    with one channel `i` active, CS2 gives `lerp(1, c_i, m_i)`, and setting `alpha = r + g + b`
+    makes BeamNG compute `m_i * c_i + (1 - m_i) * 1` — the same thing. Where two channels overlap
+    BeamNG can only mix where CS2 multiplies, and no alpha can fix that; it is declared in the
+    report as `colorMaskOverlap` with its count.
+    """
+    rgba = numpy.zeros(arr.shape[:2] + (4,), dtype=numpy.uint8)
+    if form == "gray":
+        rgba[..., 0] = arr if arr.dtype == numpy.uint8 else arr.astype(numpy.uint8)
+    else:
+        rgba[..., :3] = arr[..., :3]
+    total = rgba[..., :3].astype(numpy.uint16).sum(axis=2)
+    rgba[..., 3] = numpy.minimum(total, 255).astype(numpy.uint8)
+    return rgba
+
+
 def _encode_dds(arr, kind, keep_alpha=False):
     """The DDS bytes for an exported array: grey -> BC4, normal -> BC5, colour -> BC7 sRGB
     (alpha kept only when asked), RGB data -> BC7 linear."""
@@ -190,6 +230,11 @@ def material_v15(level, name, rec, maps, pid_key=None):
         stage["emissiveFactor"] = [float(v) for v in factor[:3]]
     if maps.get("colorMask") and rec.get("tintable"):
         stage["colorPaletteMap"] = maps["colorMask"]
+        # Without this the shader takes `baseColor *= 1` and the palette is applied to NOTHING
+        # (`getColorPalette`: `baseColor *= (flags & MATERIAL_LAYER_FLAG_paletteBaseColor) ?
+        # colorPalette.rgb : 1`). Set explicitly rather than relying on whatever the material
+        # compiler defaults it to when a `colorPaletteMap` is present.
+        stage["paletteBaseColor"] = True
     if maps.get("opacity"):
         stage["opacityMap"] = maps["opacity"]           # v1.5 reads opacity from here, not from the albedo's alpha
     factor = rec.get("baseColorFactor")
