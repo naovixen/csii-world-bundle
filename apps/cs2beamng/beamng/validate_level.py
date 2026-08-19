@@ -174,12 +174,19 @@ def check(level_dir, bundle_dir, progress=None, settings=None):
 
     # -- what the level MOUNTS (audit §64, recalibrated §65) -----------------------------------------------------
     resident = _resident_bytes(level_dir)
-    total_mib = (resident["meshes"] + resident["textures"]) / (1024.0 * 1024.0)
+    reduction, reduction_source = _texture_reduction()
+    # the engine drops `reduction` mip levels off every texture, so the bytes it actually holds
+    # are 4^-reduction of what the level ships
+    texture_mib = resident["textures"] / (1024.0 * 1024.0) / float(4 ** max(0, reduction))
+    total_mib = resident["meshes"] / (1024.0 * 1024.0) + texture_mib
     vram_mib, pixels, target_source = _render_target(settings)
     budget_mib = resident_budget_mib(vram_mib, pixels)
     failure_mib = resident_failure_mib(vram_mib, pixels)
     checks["resident"] = {"meshMiB": round(resident["meshes"] / (1024.0 * 1024.0), 1),
-                          "textureMiB": round(resident["textures"] / (1024.0 * 1024.0), 1),
+                          "textureShippedMiB": round(resident["textures"] / (1024.0 * 1024.0), 1),
+                          "textureMiB": round(texture_mib, 1),
+                          "textureReduction": reduction,
+                          "textureReductionSource": reduction_source,
                           "totalMiB": round(total_mib, 1),
                           "budgetMiB": round(budget_mib),
                           "failureMiB": round(failure_mib),
@@ -195,7 +202,7 @@ def check(level_dir, bundle_dir, progress=None, settings=None):
                       "to fail")
         note(f"budget: the level mounts {total_mib:,.0f} MiB "
              f"({resident['meshes'] / (1024.0 * 1024.0):,.0f} meshes + "
-             f"{resident['textures'] / (1024.0 * 1024.0):,.0f} textures) on a "
+             f"{texture_mib:,.0f} textures, {reduction_source}) on a "
              f"{vram_mib:,} MiB card at {pixels / 1.0e6:.2f} Mpixel ({target_source}) - "
              f"{where}. Known to fit: {budget_mib:,.0f} MiB. Known to fail: "
              f"{failure_mib:,.0f} MiB, where D3D12 failed 131,073 texture creates in one "
@@ -547,6 +554,47 @@ def resident_failure_mib(vram_mib=REFERENCE_VRAM_MIB, pixels=REFERENCE_PIXELS):
     delta_mpixels = (float(pixels) - FAILURE_PIXELS) / 1.0e6
     return max(resident_budget_mib(vram_mib, pixels) + 1.0,
                FAILURE_RESIDENT_MIB + delta_vram - RENDER_TARGET_MIB_PER_MPIXEL * delta_mpixels)
+
+
+def _texture_reduction():
+    """`(level, source)` — BeamNG's own `textureReductionLevel`, which DIVIDES texture VRAM by 4^n.
+
+    Read from source (`lua/ge/extensions/core/settings/textureQuality.lua`):
+
+        Lowest -> textureReductionLevel = 2      (two mips dropped: 1/16 the bytes)
+        Low    -> 1                              (1/4)
+        Normal and above -> 0                    (as shipped)
+
+    **This is the variable the resident budget was blind to.** `_resident_bytes` counts what the
+    level holds ON DISK, and a level shipping 717 MiB of textures occupies ~45 MiB of them at
+    Lowest and all 717 at Normal. So the same level has two footprints an order of magnitude
+    apart depending on a setting the budget never read — which is why one session survived 20
+    minutes and the next started failing 47 seconds after loading with nothing changed in the
+    level at all.
+
+    `onApply` calls `reloadTextures()`, so CHANGING it mid-session reloads every texture: that is
+    a VRAM spike, and it is what preceded the failures on 2026-08-19, not the pause menu.
+    """
+    base = os.path.join(os.path.expanduser("~"), "AppData", "Local", "BeamNG", "BeamNG.drive")
+    if not os.path.isdir(base):
+        return 0, "assumed Normal (no BeamNG userfolder)"
+    newest = None
+    for entry in os.listdir(base):
+        path = os.path.join(base, entry, "settings", "game-settings.json")
+        if os.path.isfile(path) and (newest is None or os.path.getmtime(path) > os.path.getmtime(newest)):
+            newest = path
+    if newest is None:
+        return 0, "assumed Normal (no game-settings.json)"
+    try:
+        with open(newest, encoding="utf-8", errors="replace") as handle:
+            found = re.search(r'"textureReductionLevel"\s*:\s*(\d+)', handle.read())
+    except OSError:
+        return 0, "assumed Normal (game-settings.json unreadable)"
+    if not found:
+        return 0, "assumed Normal (not set)"
+    level = int(found.group(1))
+    return level, f"textureReductionLevel {level} " + {0: "(Normal+)", 1: "(Low)", 2: "(Lowest)"}.get(
+        level, "(custom)")
 
 
 def _render_target(settings):

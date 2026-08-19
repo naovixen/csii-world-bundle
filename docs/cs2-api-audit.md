@@ -6155,3 +6155,65 @@ Measured canopy half-widths: `OakTree01` and `VFP_LiveOakTree` **8.11 m**, `EU_A
 a road reads as tree-covered from above while nothing stands in the driving line. Clipping every
 overlapping canopy is 25,743 trees (8.3 %); Naomi chose the trunk rule — fix what the car can hit,
 leave what merely shades it.
+
+## 76. RETRACTION — the resident budget was blind to `textureReductionLevel`, and §71's "1,016x" is confounded (2026-08-19)
+
+Naomi: *"i upped the settings for mesh and texture to high from the lowest"*. That is a variable
+none of A6.0's measurements accounted for, and it invalidates a claim.
+
+### What the setting does, from source
+
+`lua/ge/extensions/core/settings/textureQuality.lua`:
+
+```lua
+M.qualityLevels.Lowest["$pref::Video::textureReductionLevel"] = 2   -- two mips dropped: 1/16 the bytes
+M.qualityLevels.Low   ["$pref::Video::textureReductionLevel"] = 1   -- 1/4
+M.qualityLevels.Normal["$pref::Video::textureReductionLevel"] = 0   -- as shipped
+M.onApply = function() reloadTextures() end                          -- "can be a slow operation"
+```
+
+**So the same level has two texture footprints an order of magnitude apart depending on a setting
+the budget never read.** This level ships 717 MiB of textures; at Lowest it holds **45 MiB** of
+them. `_resident_bytes` counts bytes ON DISK, so `validate_level` was comparing a number that
+could be 16x the truth against the card.
+
+Now read (`_texture_reduction`, from the user's own `game-settings.json`) and applied. On this
+machine, currently `textureReductionLevel 2 (Lowest)`:
+
+```
+meshes 3,955 MiB + textures 45 MiB (of 717 shipped) = 4,000 MiB   [was reported as 4,672]
+```
+
+**At Lowest, meshes are 99 % of residency.** Every byte of A6.0's texture work is worth ~37 MiB
+there and the full ~540 MiB only at Normal+. The lever table of §65 is correct only at Normal.
+
+### The retraction
+
+§71 reported `totalFailures` **131,073 → 129** as a "1,016x improvement" from the texture cut.
+**That attribution does not survive this.** At reduction 2 the cut saved about 37 MiB of actual
+VRAM, which cannot plausibly account for a thousandfold change; the two sessions were far more
+likely at different reduction levels. The logs that would settle it have rotated away, so **it
+cannot now be determined**, and the honest position is that the improvement is confounded between
+our change and a settings change, in unknown proportion.
+
+What still stands, because it is independent of texture level: **A6.1's collision fall was exact**
+(1,035,444 → 659,257 instances = the plant count to the item), and the level does mount far less
+than it did.
+
+### And a second correction
+
+§71 said the last 129 failures were "the pause menu, not driving". `textureQuality.onApply` calls
+`reloadTextures()` — Naomi's quality change at 898 s and 963 s reloaded **every texture in the
+level**, and the failures followed. The menu open at 1,452 s was the trigger that found an
+already-full card, not the cause.
+
+### Where it leaves A6.0
+
+The most recent session (settings raised) shows **65 failures starting 47 s after load** — 64x64
+again, the signature of a genuinely full card, against 131,073 before. So:
+
+* **at Lowest**, 4,000 MiB is comfortable and the 15 FPS in the screenshots is a DRAW cost, not a
+  memory one;
+* **at Normal+**, 4,672 MiB is over the line, and the remaining levers are **meshes**, which are
+  3,955 MiB of it. More texture capping cannot help at either setting — at Lowest it is already
+  divided by 16, and at Normal it has already been cut once.
