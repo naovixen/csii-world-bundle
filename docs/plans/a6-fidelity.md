@@ -26,9 +26,9 @@ CLAUDE.md — the terrain cut cost seven guesses before someone read `TerrainSys
 
 ## A6.0 The GPU is still running out of memory — 131,073 failed allocations
 
-> **STATUS 2026-08-18** — instrument recalibrated and committed (`80f50d7`, audit §65). The
-> chosen cut (both texture caps 512 → 256) is BUILT INTO THE LEVEL and the level mounts
-> **4,685 MiB**, down from 5,224. The preset change is deliberately UNCOMMITTED until a load
+> **STATUS** — instrument recalibrated (`80f50d7` + `d502f17`, audit §65). The chosen cut
+> (both texture caps 512 → 256) is BUILT INTO THE LEVEL and the level mounts **4,685 MiB**,
+> down from 5,224. The preset change is deliberately UNCOMMITTED until a load
 > validates it. **Gate: `grep "CreateResource failed" beamng.log` → `totalFailures`. Zero.**
 
 ### What is measured
@@ -99,7 +99,10 @@ loaded, and shrinking it shrinks both.
 
 ## A6.1 Bushes collide, and they are wearing a tree's trunk
 
-> **STATUS 2026-08-18 — DONE in code, `4b6745f`, audit §66. NOT YET IN THE BUILT LEVEL.**
+> **STATUS — DONE and BUILT INTO THE LEVEL (`4b6745f`, audit §66).** 84 forest types now ship
+> as plants (non-collidable) against 188 tree types keeping their trunk cylinder, and 517,708
+> forest items no longer collide. The dividend to look for is `beamng.log`'s static-collision
+> block, which was 3,720 MB over 1,035,444 instances.
 > The rule is confirmed from source (`TreeObject` adds `Game.Objects.Tree`, `PlantObject`
 > does not), `csiibundle.instances.is_tree` is the shared predicate, and both call sites
 > follow it. The trunk-fit question was measured and deliberately NOT fixed: the name branch
