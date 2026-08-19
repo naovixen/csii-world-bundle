@@ -5976,3 +5976,123 @@ wrong instrument (the first was `FOREST_COLLIDABLE_MIN_HEIGHT`, §66).
 docstring and never compared rotation. Added: both writers ship `rotationMatrix` as a flat 9, and
 against the built level it is **100.0000 % over 3,903 sampled records** — so rotation is confirmed
 correct, which is what the plan expected but had no right to assume.
+
+## 73. A6.5 — the terrain diagonal is SW-NE, settled offline, and it never needed an in-game probe (2026-08-19)
+
+`bake/ground.GroundSurface` conformed every ground product to `diagonal="envelope"` — the upper
+envelope of both ways a heightfield square can be split — and its own docstring said why: *which
+one is a fact about the engine we measure in-game, not a choice we make. Until it is measured,
+`envelope` answers conservatively.* It was never measured, and the plan had owed the probe since
+A2.
+
+**It did not need one.** `tools/beamng/probe_ter.py` had already settled the `.ter` *orientation*
+offline, on the observation that vanilla `DecalRoad` nodes lie on the terrain — median |err|
+**0.020 m** over 3,800 nodes. That is an order of magnitude under what the diagonal question
+needs, so the same nodes answer it. `tools/beamng/probe_diagonal.py` samples each node inside its
+own square under every hypothesis:
+
+| level | discriminating samples | `sw_ne` | `nw_se` | bilinear | envelope max (the bake) |
+|---|---:|---:|---:|---:|---:|
+| west_coast_usa | 139 | **0.0000** | 0.0387 | 0.0201 | 0.0273 |
+| Utah | 109 | **0.0000** | 0.0360 | 0.0192 | 0.0248 |
+| Industrial | 105 | **0.0000** | 0.0374 | 0.0184 | 0.0173 |
+| johnson_valley | 504 | **0.0000** | 0.0317 | 0.0163 | 0.0001 |
+| east_coast_usa | 233 | **0.0000** | 0.0357 | 0.0187 | 0.0169 |
+| jungle_rock_island | 242 | **0.0000** | 0.0349 | 0.0174 | 0.0000 |
+
+Unanimous, and **exact rather than merely preferred**: on `east_coast_usa` `sw_ne`'s p90 and p99
+are 0.0000 too. The plan's warning about a per-square ALTERNATING (checkerboard) split is tested
+and **falsified** — it never beats `sw_ne` and is clearly worse on three levels.
+
+Only a twisted square away from both diagonals can discriminate, so the probe filters to those
+and prints how many survived; `small_island`, `hirochi_raceway` and `derby` yield too few and say
+so rather than voting.
+
+### The frame trap, which nearly shipped inverted
+
+`probe_diagonal.py` works in the `.ter`'s frame, where **row 0 is SOUTH** (`probe_ter`'s finding).
+`csiibundle.drape.HeightfieldSurface` has **row 0 NORTH**. A diagonal named by the two corners it
+joins is therefore the OTHER name in the other frame:
+
+```
+the probe's `sw_ne` (h00 -> h11)  ==  the bake's `ne_sw`
+```
+
+The measured split is the bake's **`ne_sw`**, not its `nw_se`. Both names are world-compass and
+the probe prints the `--diagonal` value to pass, so the translation cannot be misread.
+
+### And `decalLayers` is finally read
+
+`bake/markings.py` has picked its drape target from `instances.decal_layers` since A2 —
+`decal_blocks_ground` when `Roads` is absent, `decal_blocks_road` when present. `bake/areas.py`
+never called it, so terrain-only paint (34 of 40 prefabs, 11.4 M m²) was conformed across roads
+and then lifted above them: **472,957 m² over a carriageway**, standing proud of it over 74.9 % of
+the at-grade overlap. `_clip_roads` drops those pieces, bounded to within 1 m above the paint so
+bridges and tunnels are excluded exactly as the measurement excluded them.
+
+It runs in the PARENT after the conform, not inside `build_pieces`: the road soup is far too large
+to ship into every conform worker, and the parent is the only place both surfaces exist at once.
+Declared approximation — the cut follows the conform's own sub-cell piece boundaries, not the kerb.
+
+## 74. A6.5 and A6.2 measured after the build — one gate met, one 95 % met, one blind (2026-08-19)
+
+### Gate 1 — the conform, MET
+
+Paint minus the surface BeamNG actually draws, over 2,305,136 area-triangle centroids:
+
+| | p50 | p75 | p90 | p95 | p99 | >0.05 m | >0.15 m |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| **now, against `ne_sw`** | **+0.021** | **+0.022** | **+0.023** | +0.029 | +0.059 | 1.37 % | 0.23 % |
+| before, against `nw_se` | +0.022 | +0.036 | +0.116 | +0.249 | +0.729 | 18.9 % | 8.0 % |
+| before, against `ne_sw` | +0.022 | +0.042 | +0.179 | +0.379 | +0.998 | 22.3 % | 11.3 % |
+
+The whole distribution has collapsed to the `decals.LIFT_LADDER` `area` rung plus the priority
+lift, and nothing else — which is what the plan asked for (p90 ≤ 0.03 m). The paint now sits on
+the ground the car drives on.
+
+### Gate 2 — `["Terrain"]` paint over a carriageway, 95 % met
+
+**379,892 m² clipped over 27 prefabs**, against the plan's at-grade baseline of 398,970 m².
+**18,871 m² remains** — 4.7 % of the baseline and 0.12 % of the level's 15.4 M m² of paint:
+
+```
+11,882 m2  Concrete_Surface_01   (was 159,645 m2 over roads — 93 % gone)
+ 3,554 m2  Grass_Surface_01
+ 2,099 m2  Forestry_Surface_01
+```
+
+The gate says 0 m², so strictly it is not met. But the residual is the declared approximation
+behaving exactly as declared: **the road sits a median 0.013 m above what remains** (p90 0.062).
+These are pieces whose CENTROID is off the carriageway while their extent overlaps it — coplanar
+with the road to within a centimetre, not a sheet floating over it. Clipping them would need an
+any-vertex test, which over-clips at the kerb and opens a terrain seam between paint and road;
+that is a second consumer-side invention to chase 5 %, and it is not being made.
+
+### Gate 3 — drawn triangles, and the instrument is BLIND to what A6.2 changed
+
+`tools/level_budget.py --screen-height 1440`: **1,827,374 drawn triangles against A5's
+1,801,779 — up 1.4 %**, nowhere near the doubling the plan set as the revisit threshold. The
+`cs2` row is **21,789 triangles over 11,656 statics, unchanged to the triangle**.
+
+**Unchanged is the finding, not the reassurance.** `level_budget` counts TSStatics, and 94 % of
+props are placed as FOREST items — so the one number the plan named as A6.2's gate cannot see
+A6.2. Raising prop reach from 105 m to 262 m moves work into BeamNG's forest renderer, which this
+tool does not model at all. **A6.2's cost is unmeasured and only a load will show it**; if the
+frame time moves, `lod_detail_scale_prop` is the knob, and 5.0 or 6.0 are the next rungs
+(measured: 4,552 and 3,130 props in reach of spawn against 8,231 at 4.0).
+
+### And two bugs of my own, both silent
+
+The `decalLayers` clip shipped once reporting `0 m², 0 pieces, 0 prefabs` and a clean build.
+`reader.load_area_prefabs` returns the RAW §8c entries — camelCase `decalLayers` — while
+`areas.surface_entry` renames it to `decal_layers`; reading only the latter matched nothing on all
+40 prefabs, and the "no layers declared" branch treats a prefab as paint-anywhere. Separately,
+`height` is the SCALAR api on every `ProjectionSurface` and returns `None` for arrays
+(`height_many` is the vectorised one), so even with the right key the test would have read as "no
+road anywhere". Both are fixed, and the stage now says out loud when NO prefab declares
+terrain-only layers — the state that must never be silent.
+
+**The gate script hit the identical two bugs**, which is the only reason either was found: a
+`height`-on-arrays crash exposed the API error, and gate 2's first run reported a triumphant
+`PASS` off `0 of 40 area prefabs are ['Terrain']-only`. A gate that measures nothing passes
+everything.

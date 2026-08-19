@@ -184,7 +184,17 @@ evidence is consistent with it but it is inference, not the source.
 
 ## A6.2 Buildings lose their windows at ~105 m — the construction-site look
 
-> **STATUS — the RULE IS FOUND (audit §70); the fix is deliberately DEFERRED.**
+> **STATUS — BUILT** (`83c2905`, audit §70 + §74). `lod_detail_scale_prop` = 4.0 takes props
+> from 105 m to **262 m**, chosen off a measured curve (8,231 props in reach of spawn against
+> 884). It costs DRAWN TRIANGLES, not residency, so the reason this was deferred was wrong.
+> **Gate 3 is BLIND to it**: `level_budget` counts TSStatics and 94 % of props are FOREST
+> items, so its 1.4 % rise (1,827,374 vs 1,801,779) measures nothing about this change. Only
+> a load will show the cost; `lod_detail_scale_prop` 5.0/6.0 are the next rungs down.
+>
+> The game's own sub-object rule is NOT ported and that is structural: BeamNG holds detail
+> thresholds per SHAPE, ownership is per INSTANCE.
+>
+> **The rule as found (audit §70):**
 > `PreCullingSystem.RelativeCullingJob` is a HYBRID, neither of the two outcomes below: a
 > sub-object takes its **owner's bounds** for the distance but keeps its **own `m_MinLod`**, and
 > `CalculateLod` has no size term — so the owner buys the building's extent, not an order of
@@ -391,9 +401,14 @@ drive a long road and a roundabout; the count in the report; and the 98.6 % that
 
 ## A6.5 Areas float above the ground you drive on, and paint over the roads
 
-> **STATUS — NOT STARTED. This is the next item, and its larger half is Naomi's.** The diagonal
-> cannot be settled from disk: it needs the in-game `getTerrainHeight` probe the plan names. The
-> smaller half (`decal_layers` in `bake/areas.py`) is buildable without it.
+> **STATUS — BUILT, and the diagonal needed no in-game probe after all** (`83c2905`,
+> `a9ec823`; audit §73, §74). BeamNG splits **SW-NE** = the bake's `ne_sw`, measured OFFLINE
+> off vanilla road nodes on six levels, exact to 0.0000 m; the checkerboard hypothesis is
+> falsified. **Gate 1 MET**: paint minus the real triangulation is p90 **+0.023 m**, collapsed
+> to the lift ladder (was +0.116/+0.179). **Gate 2 95 % met**: 379,892 m² clipped, 18,871 m²
+> left — and the road sits a median **13 mm** above that residual, i.e. coplanar, not
+> floating. The clip shipped once clipping NOTHING (wrong key, wrong api) and reported a
+> clean 0; both bugs are fixed and a silent zero is now impossible.
 
 Reported 2026-08-18: *"I can't seem to drive on areas, the car gets stuck. Also, the areas seem to
 render above roads causing clipping and a lot of roads to become covered."* Two symptoms, two
