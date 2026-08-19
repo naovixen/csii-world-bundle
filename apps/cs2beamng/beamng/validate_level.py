@@ -553,26 +553,33 @@ def _render_target(settings):
     """`(vram_mib, pixels, source)` — the machine the budget is derived for.
 
     Settings win when set; otherwise the numbers are READ, not assumed. BeamNG prints both at
-    startup, in the log the user's own last session left behind:
+    startup, in the logs the user's own sessions leave behind:
 
         Dedicated video memory: 8018 MB
         AntialiasLevel: 0, ... Resolution: 3440x1440, wideScreen: false
 
     which is the difference between a budget for this machine and a budget for a machine we
-    imagined. Both are MiB despite the "MB" - the same line's byte count, 8407482368, is 8018
-    times 1024 squared exactly. Falls back to the reference card at 1080p, declared as such in
-    the note, when there is no log and no setting.
+    imagined. Both are MiB despite the "MB" — the same line's byte count, 8407482368, is 8018
+    times 1024 squared exactly.
+
+    Reads the ROTATED logs too, newest first, and takes each number from the newest log that
+    actually carries it. A session that started and quit without opening a window prints the
+    VRAM and never prints a resolution — that happened on 2026-08-19 07:49 and the budget
+    silently fell back to 1080p while still claiming it had read the log, which is worse than
+    not reading it. `source` now names each half separately, so a fallback says so.
     """
     settings = settings or {}
     vram = int(settings.get("gpu_vram_mib") or 0)
     width = int(settings.get("render_width") or 0)
     height = int(settings.get("render_height") or 0)
-    if vram and width and height:
-        return vram, width * height, "from settings"
+    pixels = width * height
+    if vram and pixels:
+        return vram, pixels, "from settings"
 
     log_vram = log_pixels = None
-    path = _newest_beamng_log()
-    if path:
+    for path in _beamng_logs():
+        if log_vram is not None and log_pixels is not None:
+            break
         try:
             with open(path, encoding="utf-8", errors="replace") as handle:
                 for line in handle:
@@ -587,27 +594,46 @@ def _render_target(settings):
                     if log_vram is not None and log_pixels is not None:
                         break
         except OSError:
-            pass
+            continue
 
-    vram = vram or log_vram or REFERENCE_VRAM_MIB
-    pixels = (width * height) or log_pixels or REFERENCE_PIXELS
-    if log_vram or log_pixels:
-        return vram, pixels, "read from beamng.log"
-    return vram, pixels, "reference card, no beamng.log found"
+    parts = []
+    if vram:
+        parts.append("card from settings")
+    elif log_vram:
+        vram, _ = log_vram, parts.append("card from beamng.log")
+    else:
+        vram, _ = REFERENCE_VRAM_MIB, parts.append("REFERENCE card, no beamng.log")
+    if pixels:
+        parts.append("resolution from settings")
+    elif log_pixels:
+        pixels, _ = log_pixels, parts.append("resolution from beamng.log")
+    else:
+        pixels, _ = REFERENCE_PIXELS, parts.append("REFERENCE 1080p, no resolution logged")
+    return vram, pixels, ", ".join(parts)
 
 
-def _newest_beamng_log():
-    """The most recently written `beamng.log` in the user's BeamNG folder, or `None`."""
+def _beamng_logs():
+    """Every `beamng*.log` under the user's BeamNG folder, newest first.
+
+    BeamNG rotates them (`beamng.log`, `beamng.1.log`, …), and the newest is not always the most
+    informative — a session that quit before opening a window logs almost nothing.
+    """
     base = os.path.join(os.path.expanduser("~"), "AppData", "Local", "BeamNG", "BeamNG.drive")
+    found = []
     if not os.path.isdir(base):
-        return None
-    newest = None
+        return found
     for entry in os.listdir(base):
-        path = os.path.join(base, entry, "beamng.log")
-        if os.path.isfile(path):
-            if newest is None or os.path.getmtime(path) > os.path.getmtime(newest):
-                newest = path
-    return newest
+        folder = os.path.join(base, entry)
+        if not os.path.isdir(folder):
+            continue
+        for name in os.listdir(folder):
+            if re.match(r"^beamng(\.\d+)?\.log$", name):
+                path = os.path.join(folder, name)
+                try:
+                    found.append((os.path.getmtime(path), path))
+                except OSError:
+                    continue
+    return [path for _mtime, path in sorted(found, reverse=True)]
 
 
 def _resident_bytes(level_dir):
