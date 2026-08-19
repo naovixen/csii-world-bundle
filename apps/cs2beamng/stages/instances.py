@@ -121,7 +121,7 @@ def run(ctx, progress):
     # The road-clearance deviation, as the shapes stage computed it. Read from `shared` rather
     # than recomputed so the two passes cannot disagree — and a SKIPPED shapes stage replays its
     # shared delta, so this is present either way.
-    clipped = set((ctx.shared.get("shapes") or {}).get("roadClipped") or ())
+    dropped = set((ctx.shared.get("shapes") or {}).get("droppedRecords") or ())
 
     progress.begin("instances: placing", total=units(ctx.census, settings), unit="instances")
     for record in bundle_instances.read_instances(ctx.bundle):
@@ -129,7 +129,7 @@ def run(ctx, progress):
         if counts["records"] % 25000 == 0:
             progress.advance(25000)
             progress.check()
-        if not placement.keep(record, settings, ctx.region, clipped):
+        if not placement.keep(record, settings, ctx.region, dropped):
             continue
         counts["kept"] += 1
         asset = record["assetId"]
@@ -518,4 +518,4 @@ OUTPUTS = ("forest",)
 # version 4: `forest_min_items` folds a thin colour-variant type into its untinted twin —
 # only into a type this build is already declaring, or the items land on a type BeamNG drops
 STAGE = Stage(STAGE_KEY, "Trees, props and buildings", enabled, units, run, inputs=INPUTS,
-              settings_keys=SETTINGS, outputs=OUTPUTS, after=("shapes",), version=6)
+              settings_keys=SETTINGS, outputs=OUTPUTS, after=("shapes",), version=7)

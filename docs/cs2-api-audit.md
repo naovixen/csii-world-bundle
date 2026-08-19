@@ -5921,3 +5921,58 @@ the counter doubled every few minutes for 35 minutes.
 *just* over the line on this machine, where 5,224 MiB was far over it. The known-good bound is
 still 3,473 MiB and the next cut only needs to be small — the remaining levers are LOD2 (−147 MiB,
 §65) and the paint variants (377 MiB total), neither of which touches base geometry.
+
+## 72. A6.6 — the orphan discriminator is not `kind`, and the plan's own caution caught it (2026-08-19)
+
+The plan proposed dropping the children of any owner carrying a `warnings.jsonl` `kind: "prefab"`
+entry, and told me to confirm first that such a warning really means the whole prefab is missing.
+It does not always. `InstanceRipSystem.InstanceDeclarations` emits that kind for **two** gaps:
+
+| kind | reason | assetId | means |
+|---|---|---|---|
+| `prefab` | *managed prefab did not resolve* | `unresolved_<n>` | **absent** — an unowned asset pack |
+| `prefab` | *prefab has no SubMesh buffer, so no mesh is produced* | the real name | it EXISTS, with no mesh of its own |
+| `mesh` | *none of N sub-mesh(es) yielded geometry* | the real name | same |
+
+On the reference city that is **87 absent against 117 that exist without geometry**. Keying on
+`kind` alone would have deleted the children of prefabs that are genuinely there — and those
+children are the ones the plan explicitly says to keep: the lamps, benches and planting of
+`ParkingLot02..14`, `CampfireSite01/02`, `AmericanFootballField01`, whose own paving ships in the
+`areas` layer.
+
+`reader.read_declared_gaps` cannot answer this either: it collapses to `{assetId: reason}`, last
+line wins, and **an absent prefab carries a mesh warning too** — so the collapse loses exactly the
+fact that matters. `instances.absent_prefabs` reads the layer directly instead.
+
+### Measured
+
+`instances.orphans_of_absent_owners` walks `parent` transitively (depth 4 at most here, 96 % of it
+depth 2) over 1,216,299 records in 7 s:
+
+```
+87 absent prefabs declared  ->  6,714 orphans over 22 absent owners
+                                5,806 children of exists-without-geometry owners KEPT
+```
+
+### The construction case, decided by measurement rather than by height
+
+The plan flagged 59 construction-state orphans as the one undeclared class, and worried that "45
+of these 59 are more than 5 m up, i.e. they are the finished building's roof kit". Measured, it is
+**7 sites with 14 children**, and they are:
+
+```
+7  ConstructionCrane01__stack_last      2  Chair02   2  GardenBench01   1  GardenBench04
+1  BikeRack03                           1  BikeRack02
+```
+
+**The tall ones are the crane.** §4 states the crane and site fence are real entities with their
+own prefabs, so these are kept — and a height threshold would have deleted precisely the object
+the contract says is real. This is the second time in A6 that a height rule turned out to be the
+wrong instrument (the first was `FOREST_COLLIDABLE_MIN_HEIGHT`, §66).
+
+### And the harness gap is closed
+
+`tools/check_instances_vs_game.py` has always claimed "position, rotation, size and mesh" in its
+docstring and never compared rotation. Added: both writers ship `rotationMatrix` as a flat 9, and
+against the built level it is **100.0000 % over 3,903 sampled records** — so rotation is confirmed
+correct, which is what the plan expected but had no right to assume.

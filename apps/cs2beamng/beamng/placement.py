@@ -126,13 +126,18 @@ def density_fraction(kind, settings):
     return max(0.0, min(1.0, float(settings.get(key, 100) or 0) / 100.0))
 
 
-def admit(record, settings, region=None, clipped=None):
+def admit(record, settings, region=None, clipped=None, orphans=None):
     """`None` if this record is placed, else the short reason it is not.
 
     The whole admission test in one place: baked elsewhere, drawn at all, wanted by the settings,
     inside the region, surviving its density slider, clear of the carriageway. Pure, so the
     shapes stage and the instances stage reach the same answer without carrying a list of 1.2
     million decisions between them — and one function, so the two passes cannot drift apart.
+
+    `orphans` is the set of record ids whose owner the producer declared ABSENT
+    (`csiibundle.instances.orphans_of_absent_owners`) — a building we could not deliver, whose
+    props we would otherwise place in mid-air. Not a CS2 rule: an obligation against a declared
+    gap (§10).
 
     `clipped` is the set of record ids `foliage_road_clearance` removed, computed ONCE per build
     (`csiibundle.roadclear`) and handed to both passes. A set rather than a live query because
@@ -153,12 +158,14 @@ def admit(record, settings, region=None, clipped=None):
         return "density"
     if clipped and record.get("id") in clipped:
         return "roadclear"
+    if orphans and record.get("id") in orphans:
+        return "orphan"
     return None
 
 
-def keep(record, settings, region=None, clipped=None):
+def keep(record, settings, region=None, clipped=None, orphans=None):
     """Whether this record is placed at all — `admit` as a yes/no."""
-    return admit(record, settings, region, clipped) is None
+    return admit(record, settings, region, clipped, orphans) is None
 
 
 def road_clipped(bundle, settings, region=None):

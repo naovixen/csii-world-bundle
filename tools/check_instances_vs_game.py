@@ -51,6 +51,9 @@ NULL_RE = re.compile(r"^nulldetail(\d+)$")
 BILLBOARD_RE = re.compile(r"^bb_autobillboard(\d+)$")
 TOLERANCE_POSITION = 0.002          # metres; the level writes 3 decimal places
 TOLERANCE_SCALE = 2e-4
+# a forest item's rotationMatrix is rounded to 4 dp (`stages/instances.ROTATION_DP`), which
+# is 1e-4 of a unit vector; a TSStatic's to 6. The coarser one sets the tolerance.
+TOLERANCE_ROTATION = 2e-4
 
 
 def main(argv):
@@ -248,6 +251,12 @@ def _check_state_and_scale(bundle, settings, forest, statics, samples, results):
     where = {"total": 0, "agree": 0}
     size = {"total": 0, "agree": 0}
     found = {"total": 0, "agree": 0}
+    # A6.6: this function's own docstring has always claimed "position, rotation, size and mesh",
+    # and rotation was never actually compared. A wrong rotation turns a prop in place, so it
+    # could not have caused the floating-props defect — but the probe must not be READ as having
+    # cleared it, so here it is. Both writers ship `rotationMatrix` as a flat 9 (`stages/instances`
+    # at 4 dp for a forest item, 6 for a TSStatic), so the tolerance is the coarser of the two.
+    turn = {"total": 0, "agree": 0}
     mesh_dir = os.path.join(bundle, "meshes")
     have = {}
     for record in kept:
@@ -291,24 +300,33 @@ def _check_state_and_scale(bundle, settings, forest, statics, samples, results):
             else:
                 state["agree"] += int(_shape_base(placed[1]) == expected)
 
-        # -- where, and at what size
+        # -- where, at what size, and TURNED WHICH WAY
+        flat = [rotation[0][0], rotation[0][1], rotation[0][2],
+                rotation[1][0], rotation[1][1], rotation[1][2],
+                rotation[2][0], rotation[2][1], rotation[2][2]]
         where["total"] += 1
         if placed[0] == "forest":
             item = placed[2]
             where["agree"] += int(max(abs(a - b) for a, b in zip(item["pos"], position)) <= TOLERANCE_POSITION)
             size["total"] += 1
             size["agree"] += int(abs(item["scale"] - sum(scale) / 3.0) <= TOLERANCE_SCALE)
+            shipped = item.get("rotationMatrix")
         else:
             obj = placed[2]
             where["agree"] += int(max(abs(a - b) for a, b in zip(obj["position"], position)) <= TOLERANCE_POSITION)
             size["total"] += 1
             size["agree"] += int(max(abs(a - b) for a, b in zip(obj["scale"], scale)) <= TOLERANCE_SCALE)
+            shipped = obj.get("rotationMatrix")
+        if shipped and len(shipped) == 9:
+            turn["total"] += 1
+            turn["agree"] += int(max(abs(a - b) for a, b in zip(shipped, flat)) <= TOLERANCE_ROTATION)
 
     results["a record this build admits is placed"] = dict(
         found, exact=False, note=f"{found['total'] - found['agree']} unplaced = the prefab ships no mesh at all")
     results["the mesh state is the one CalculateTreeSubMeshData picks"] = dict(state)
     results["the position is T(pos) conjugated into BeamNG axes"] = dict(where)
     results["the drawn size is the game's growthScale x the record's scale"] = dict(size)
+    results["the rotation is the record's own R, in BeamNG axes"] = dict(turn)
 
 
 def _check_lod(bundle, shapes, settings, results):

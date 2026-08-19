@@ -633,6 +633,78 @@ def test_color_palette():
           "a tintable material sets paletteBaseColor - without it the palette applies to nothing")
 
 
+def test_orphans_of_absent_owners():
+    """A6.6 - a record whose owner the producer declared ABSENT is not placed either.
+
+    The discriminator is the trap: `InstanceRipSystem` emits `kind: "prefab"` for BOTH "managed
+    prefab did not resolve" (absent) and "prefab has no SubMesh buffer" (exists, no geometry), so
+    keying on `kind` alone would delete real park furniture.
+    """
+    print("orphans of absent owners (A6.6)")
+    from csiibundle import instances as bundle_instances
+    from cs2beamng.beamng import placement
+
+    root = tempfile.mkdtemp()
+    try:
+        warnings = [
+            {"kind": "prefab", "assetId": "unresolved_7",
+             "reason": "managed prefab did not resolve; instances kept with placement only"},
+            # the same asset ALSO carries a mesh warning - `read_declared_gaps` collapses these
+            # to the LAST one and loses the fact that the prefab is absent
+            {"kind": "mesh", "assetId": "unresolved_7",
+             "reason": "none of 1 sub-mesh(es) yielded geometry"},
+            {"kind": "mesh", "assetId": "ParkingLot02",
+             "reason": "none of 1 sub-mesh(es) yielded geometry"},
+            {"kind": "prefab", "assetId": "CampfireSite01",
+             "reason": "prefab has no SubMesh buffer, so no mesh is produced"},
+        ]
+        with open(os.path.join(root, "warnings.jsonl"), "w", encoding="utf-8") as fh:
+            for row in warnings:
+                print(json.dumps(row), file=fh)
+        absent = bundle_instances.absent_prefabs(root)
+        check(absent == {"unresolved_7"},
+              "only the unresolved prefab is ABSENT (got %s)" % sorted(absent))
+
+        records = [
+            {"id": 1, "kind": "building", "assetId": "unresolved_7", "pos": [0, 0, 0]},
+            {"id": 2, "kind": "prop", "assetId": "Lamp", "parent": 1, "pos": [0, 90, 0]},
+            {"id": 3, "kind": "prop", "assetId": "Bench", "parent": 2, "pos": [0, 90, 1]},
+            {"id": 4, "kind": "building", "assetId": "ParkingLot02", "pos": [9, 0, 0]},
+            {"id": 5, "kind": "prop", "assetId": "Lamp", "parent": 4, "pos": [9, 0, 1]},
+            {"id": 6, "kind": "prop", "assetId": "Lamp", "pos": [20, 0, 0]},
+        ]
+        with open(os.path.join(root, "instances.jsonl"), "w", encoding="utf-8") as fh:
+            for row in records:
+                print(json.dumps(row), file=fh)
+
+        ids, stats = bundle_instances.orphans_of_absent_owners(root)
+        check(ids == {2, 3},
+              "the absent owner's children go, TRANSITIVELY (got %s)" % sorted(ids))
+        check(5 not in ids, "a car park that merely has no geometry KEEPS its lamp")
+        check(6 not in ids, "a free-standing prop is untouched")
+        check(stats["owners"] == 1 and stats["orphans"] == 2, "counted: %s" % stats)
+
+        settings = {"trees": True, "props": True, "buildings": True}
+        rec2 = {"id": 2, "kind": "prop", "attrs": {}}
+        check(placement.admit(rec2, settings, None, None, ids) == "orphan",
+              "placement.admit names the orphan reason")
+        check(placement.admit(rec2, settings, None, None, set()) is None,
+              "and admits it when nothing was orphaned")
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+    bundle = real_bundle()
+    if bundle:
+        ids, stats = bundle_instances.orphans_of_absent_owners(bundle)
+        check(stats["absentPrefabs"] > 0 and stats["orphans"] == len(ids),
+              "%s orphans over %s absent owners (%s absent prefabs declared)"
+              % (format(stats["orphans"], ","), stats["owners"], stats["absentPrefabs"]))
+        check(stats["orphans"] < stats["withParent"] * 0.05,
+              "%s is a small share of the %s records with a parent - this only ever removes "
+              "what cannot stand up"
+              % (format(stats["orphans"], ","), format(stats["withParent"], ",")))
+
+
 def main():
     test_frame()
     test_placement()
@@ -643,6 +715,7 @@ def main():
     test_groundcover_default()
     test_real_bundle_lod()
     test_variant_index_matches_the_bake()
+    test_orphans_of_absent_owners()
     test_tree_vs_plant()
     test_road_clearance()
     test_color_palette()

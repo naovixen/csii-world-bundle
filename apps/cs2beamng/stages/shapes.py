@@ -87,9 +87,11 @@ def scan_demand(ctx, progress):
     """One pass over `instances.jsonl`: which `(assetId, state)` the build places, how many of
     each, which paint variants are wanted, and whether the placement is forest or TSStatic.
 
-    Returns `(demand, stats, clipped)` where `demand` is
-    `{(asset_id, suffix): {"kind", "count", "forest", "variants": {index: count}}}` and `clipped`
-    is the set of record ids the road-clearance deviation removed, for the instances stage.
+    Returns `(demand, stats, dropped)` where `demand` is
+    `{(asset_id, suffix): {"kind", "count", "forest", "variants": {index: count}}}` and `dropped`
+    is the union of the record ids the road-clearance deviation removed and those orphaned by an
+    absent owner — both are per-RECORD decisions the later passes must reach identically, and one
+    set is enough because `admit` tests membership either way.
     """
     settings = ctx.settings
     region = ctx.region
@@ -100,7 +102,11 @@ def scan_demand(ctx, progress):
     demand = {}
     stats = {"records": 0, "kept": 0, "noMesh": 0, "skippedBaked": 0, "skippedState": 0,
              "skippedKind": 0, "skippedDensity": 0, "skippedRegion": 0,
-             "skippedRoadclear": 0}                                     # `placement.admit`'s reasons
+             "skippedRoadclear": 0, "skippedOrphan": 0}                 # `placement.admit`'s reasons
+    # A6.6 — records whose owner the producer declared ABSENT (§10). Computed once here beside
+    # the road clearance and handed to the other passes through `shared`.
+    orphans, orphan_stats = bundle_instances.orphans_of_absent_owners(ctx.bundle)
+    stats["orphans"] = orphan_stats
     # The road-clearance deviation, computed ONCE here and handed to the instances stage through
     # `shared` — one spatial pass over the lane layer instead of two, and the two passes cannot
     # reach different answers because they consult the same set.
@@ -115,7 +121,7 @@ def scan_demand(ctx, progress):
         # ONE admission test for both passes: `placement.admit` names the reason so this stage
         # can break the count down without restating the rule (they drifted apart the moment
         # they were two functions)
-        reason = placement.admit(record, settings, region, clipped)
+        reason = placement.admit(record, settings, region, clipped, orphans)
         if reason is not None:
             stats["skipped" + reason.capitalize()] += 1
             continue
@@ -146,7 +152,7 @@ def scan_demand(ctx, progress):
                 entry["variants"][index] = entry["variants"].get(index, 0) + 1
         stats["kept"] += 1
     progress.end(f"{stats['kept']:,} of {stats['records']:,} records over {len(demand):,} mesh states")
-    return demand, stats, clipped
+    return demand, stats, clipped | orphans
 
 
 def _state_suffix(record, asset, mesh_dir, have):
@@ -395,7 +401,7 @@ def run(ctx, progress):
     started = time.monotonic()
     level = level_of(ctx)
     settings = ctx.settings
-    demand, scan_stats, clipped = scan_demand(ctx, progress)
+    demand, scan_stats, dropped = scan_demand(ctx, progress)
 
     variants = _paint_variants(ctx)
     aliases, tinted_by_variant = _material_tables(ctx, level)
@@ -469,7 +475,7 @@ def run(ctx, progress):
         if key:
             variant_used.setdefault(key, set()).update(value["materials"])
     shared["shapes"] = {"dir": SHAPES_SUBDIR, "results": results, "demand": demand,
-                        "variants": variants, "roadClipped": sorted(clipped),
+                        "variants": variants, "droppedRecords": sorted(dropped),
                         "options": {k: v for k, v in options.items() if k != "collide"}}
     return _report(results, demand, scan_stats, options, errors, started, progress, rewritten, orphans)
 
@@ -610,6 +616,23 @@ def _report(results, demand, scan_stats, options, errors, started, progress, rew
                        "4.5 % of tree items",
                 "count": trunk_wide,
             },
+            "orphansOfAbsentOwners": {
+                "what": "a record whose owner the producer declared ABSENT is not placed either",
+                "why": "not a CS2 rule — the game had those prefabs and drew the buildings. It is "
+                       "a consumer's obligation against a DECLARED gap (§10): the prefab did not "
+                       "resolve at rip time (an unowned asset pack), so we drop the building and "
+                       "would otherwise place its props in mid-air — 6,714 records on the "
+                       "reference city, up to 292 m up, 695 of them hanging off ONE absent tower. "
+                       "Only the absent class is dropped: a prefab that exists WITHOUT GEOMETRY "
+                       "keeps its 5,806 children (the lamps and benches of car parks and sports "
+                       "pitches, whose own surface ships in the `areas` layer), and a construction "
+                       "site keeps its children too — measurement says they are the "
+                       "ConstructionCrane01 and the site's benches, which §4 states are real. "
+                       "THE REMEDY AT SOURCE IS CHEAPER: enable those asset packs in CS2 and "
+                       "re-rip, which brings the buildings back instead of hiding their props",
+                "count": (scan_stats.get("orphans") or {}).get("orphans", 0),
+                "owners": (scan_stats.get("orphans") or {}).get("owners", 0),
+            },
             "foliageRoadClearance": {
                 "what": f"a TREE standing within "
                         f"{(scan_stats.get('roadclear') or {}).get('clearance', 0):.2f} m of a "
@@ -651,9 +674,10 @@ SETTINGS = ("trees", "props", "buildings", "foliage_density", "prop_density", "r
             "collision_preset", "collision_buildings", "collision_props", "collision_trees")
 OUTPUTS = ("art/shapes/cs2",)
 
+# version 4: orphans of absent owners are not placed (A6.6)
 # version 3: the road-clearance deviation (A6.4)
 # version 2: the tree/plant split (A6.1) - a plant gets no collider and no trunk cylinder, and
 # every shape row carries `tree` and `trunkRatio`
 STAGE = Stage(STAGE_KEY, "Object shapes", enabled, units, run, inputs=INPUTS, settings_keys=SETTINGS,
               outputs=OUTPUTS,
-              shared_keys=("shapes", "materials_used", "materials_variants_used"), version=3)
+              shared_keys=("shapes", "materials_used", "materials_variants_used"), version=4)

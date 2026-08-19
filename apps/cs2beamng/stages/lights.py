@@ -74,7 +74,7 @@ def run(ctx, progress):
     # the road-clearance deviation, as the shapes stage computed it — a light parented to a tree
     # that was not placed must not be placed either, which is the whole point of one admission
     # test for every pass
-    clipped = set((ctx.shared.get("shapes") or {}).get("roadClipped") or ())
+    dropped = set((ctx.shared.get("shapes") or {}).get("droppedRecords") or ())
     for record in bundle_instances.read_instances(ctx.bundle):
         scanned += 1
         if scanned % 25000 == 0:
@@ -83,7 +83,7 @@ def run(ctx, progress):
         entries = by_prefab.get(record["assetId"])
         if not entries:
             continue
-        if not placement.keep(record, settings, ctx.region, clipped):
+        if not placement.keep(record, settings, ctx.region, dropped):
             continue
         for index, entry in enumerate(entries):
             candidates.append((_priority(record, entry, index), record, entry, index))
