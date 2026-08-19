@@ -290,7 +290,7 @@ namespace Carto.Systems
             }
             if (plan.Terrain && plan.TerrainAreas)
             {
-                staleFiles.AddRange(new[] { "areas.jsonl", "areaprefabs.json" });
+                staleFiles.AddRange(new[] { "areas.jsonl", "areaprefabs.json", "districts.jsonl" });
             }
             if (plan.Vector)
             {

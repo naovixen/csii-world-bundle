@@ -255,12 +255,19 @@ def run(ctx, progress):
     ter_mod.write_ter(level.path(ter_name), h16, l8, names)
     ter_mod.write_terrain_json(level.path(f"{level.name}.terrain.json"), level.name, level.game_path(ter_name), size, names)
     position = [origin_x, origin_z - (size - 1) * cell, pos_z]
-    level.add(["Level_objects"], {
+    minimap = _write_minimap(level, ctx.bundle, heights, layers, grounds, paths, scale, cell)
+    block = {
         "name": "theTerrain", "class": "TerrainBlock",
         "position": position, "squareSize": cell, "maxHeight": max_height,
         "terrainFile": level.game_path(ter_name),
         "materialTextureSet": f"{level.name}_TerrainTextureSet",
-    })
+    }
+    if minimap:
+        # `uiNavi.minimapFromTerrainBlock` reads THIS field and nothing else when `info.json`
+        # carries no `minimap` array — and no level BeamNG ships carries one, so the vanilla
+        # mechanism is the one to port. `west_coast_usa` sets it to a 2048 px PNG.
+        block["minimapImage"] = level.game_path(minimap).lstrip("/")
+    level.add(["Level_objects"], block)
     albedo_gain = _albedo_gain(os.path.join(bundle, "terrain", "surfaces"), settings.get("terrain_brightness", 1.0))
     sharpen = float(settings.get("terrain_blend_sharpen") or 1.0)
     materials, ground_materials, notes = _terrain_materials(level, bundle, grounds, gain=albedo_gain,
@@ -283,11 +290,78 @@ def run(ctx, progress):
                          # a GroundCover's `layer` field has to match
                          "grounds": list(grounds), "layers": list(names)}
     return {"size": size, "squareSize": cell, "materials": len(names), "holes": holes,
+            "minimap": minimap,
             "carriagewaySamples": covered, "carriagewayClamped": lowered,
             "carriagewayWorstDrop": round(worst, 3),
             "fine": bool(field.fine), "seconds": round(time.monotonic() - started, 1)}
 
 
+
+
+MINIMAP_SIZE = 2048
+
+
+def _write_minimap(level, bundle, heights, layers, grounds, paths, scale, cell):
+    """`<name>_minimap.png` — the top-down ground image `TerrainBlock.minimapImage` names.
+
+    The old dashboard/navigation map (`uiNavi.lua:354`) builds its tile from this field:
+    `size = (blockSize, blockSize, maxHeight)`, `offset = (pos.x, pos.y + blockSize, 0)`. That
+    `+ blockSize` is a TOP-LEFT convention — row 0 of the image is the NORTH edge of the block,
+    which is also row 0 of the bundle's own rasters, so the array goes out unflipped. (The `.ter`
+    is the one that flips; see `beamng/ter.py`.)
+
+    The pixels are the terrain's own dominant ground, coloured by each ground texture's mean
+    albedo and shaded by the heightfield's slope, with water tinted over it. It is the same
+    information the level draws, at 7 m per pixel — not a render, and not pretending to be one.
+    The minimap APP does not use this at all: it draws the navgraph as vectors (audit A7.0).
+    """
+    from csiibundle import png as png_mod
+
+    if heights is None or not heights.size:
+        return None
+    step = max(1, heights.shape[0] // MINIMAP_SIZE)
+    h = heights[::step, ::step].astype(numpy.float32)
+    index = layers[::step, ::step][:h.shape[0], :h.shape[1]]
+    palette = _ground_palette(os.path.join(bundle, "terrain", "surfaces"), grounds)
+    rgb = palette[numpy.clip(index, 0, len(palette) - 1)].astype(numpy.float32)
+
+    metres = float(cell) * step
+    dzdx = numpy.gradient(h, metres, axis=1)
+    dzdy = -numpy.gradient(h, metres, axis=0)
+    nx, ny, nz = -dzdx, -dzdy, numpy.ones_like(h)
+    norm = numpy.sqrt(nx * nx + ny * ny + nz * nz)
+    shade = numpy.clip((nx * -0.5 + ny * 0.5 + nz * 0.707) / norm, 0.0, 1.0)
+    rgb *= (0.55 + 0.55 * shade)[..., None]
+
+    if paths.water and os.path.isfile(paths.water):
+        # the water raster is on the BASE grid; the heights may have been upsampled, so it is
+        # resampled to the height grid before subsampling rather than sliced to fit
+        water = png_mod.gray_array(paths.water)
+        if water.shape != heights.shape:
+            water = reader.resample_nearest(water, heights.shape)
+        level_raw = water[::step, ::step].astype(numpy.float32)[:h.shape[0], :h.shape[1]] * scale
+        wet = (level_raw > 0) & (level_raw > h)
+        rgb[wet] = numpy.array([38.0, 86.0, 140.0]) * (0.6 + 0.6 * shade[wet])[..., None]
+
+    rgba = numpy.concatenate([rgb, numpy.full(h.shape + (1,), 255.0)], axis=-1)
+    name = f"{level.name}_minimap.png"
+    level.write_bytes_if_changed(png_mod.encode_rgba(numpy.clip(rgba, 0, 255).astype(numpy.uint8)), name)
+    return name
+
+
+def _ground_palette(surfaces_dir, grounds):
+    """`(N, 3)` uint8 — the mean albedo of each ground's own texture, or a neutral grey."""
+    out = []
+    for ground in grounds:
+        path = os.path.join(surfaces_dir, f"{ground}.png")
+        colour = (128.0, 128.0, 128.0)
+        if os.path.isfile(path):
+            try:
+                colour = tuple(_read_rgb(path).reshape(-1, 3).mean(axis=0))
+            except Exception:  # noqa: BLE001 - a palette is cosmetic; never fail a build for one
+                pass
+        out.append(colour)
+    return numpy.asarray(out or [(128.0, 128.0, 128.0)], dtype=numpy.float64)
 
 
 def _punch_mask(ctx, settings, size):
@@ -847,5 +921,7 @@ SETTINGS = ("terrain_upsample", "terrain_holes", "terrain_cut", "terrain_brightn
             "terrain_blend_sharpen")
 OUTPUTS = ("art/terrains/main.materials.json",)
 
+# version 2: the block carries `minimapImage` and the stage writes the 2048 px `<name>_minimap.png`
+# it names (A7.2) - the old dashboard map drew nothing without it
 STAGE = Stage(STAGE_KEY, "Terrain", enabled, units, run, inputs=INPUTS, settings_keys=SETTINGS,
-              outputs=OUTPUTS, shared_keys=("terrain",))
+              outputs=OUTPUTS, shared_keys=("terrain",), version=2)

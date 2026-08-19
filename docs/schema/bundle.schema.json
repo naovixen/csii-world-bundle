@@ -77,6 +77,10 @@
    "type": "number",
    "exclusiveMinimum": 0
   },
+  "leftHandTraffic": {
+   "description": "Whether the city drives on the LEFT (Game's `Instance.City.leftHandTraffic`). The game already uses this bit to pick sub-meshes and to orient a lane, so the bundle described its RESULT everywhere and never the bit itself; a consumer laying out traffic would otherwise have to infer it from which side of a two-way segment its with-flow lanes lie on. Added 2026-08-19 (A7 W3) and OPTIONAL: a bundle ripped before it simply omits it.",
+   "type": "boolean"
+  },
   "counts": {
    "description": "Element counts. A consumer may use these to pre-allocate and to detect truncated bundles.",
    "type": "object",
@@ -122,6 +126,11 @@
      "minimum": 0
     },
     "areas": {
+     "type": "integer",
+     "minimum": 0
+    },
+    "districts": {
+     "description": "Records in districts.jsonl.",
      "type": "integer",
      "minimum": 0
     },
@@ -204,6 +213,11 @@
     },
     "areaPrefabs": {
      "$ref": "#/$defs/relPath"
+    },
+    "districts": {
+     "description": "The player's named districts (§8d) — the only PLACE names a CS2 city contains. `attrs.name` on a segment is a street and `attrs.brand` on a building is a business; neither says where in the city you are.",
+     "type": "string",
+     "const": "districts.jsonl"
     },
     "clipVolumes": {
      "$ref": "#/$defs/relPath"

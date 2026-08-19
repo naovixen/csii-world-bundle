@@ -68,6 +68,7 @@ namespace Carto.IO
             new("water", "terrain/water_level.png"),
             new("areas", "areas.jsonl"),
             new("areaPrefabs", "areaprefabs.json"),
+            new("districts", "districts.jsonl"),
             new("clipVolumes", "clipvolumes.jsonl"),
             new("grading", "grading.json"),
             new("vector", "vector/", isDirectory: true),
@@ -203,7 +204,7 @@ namespace Carto.IO
 
             // ---- 3. Record layers: counts and bounds in one pass each.
             Aabb bounds = Aabb.Empty;
-            long instanceCount = 0, networkCount = 0, areaCount = 0, clipCount = 0;
+            long instanceCount = 0, networkCount = 0, areaCount = 0, clipCount = 0, districtCount = 0;
 
             if (layers.ContainsKey("instances"))
             {
@@ -220,6 +221,13 @@ namespace Carto.IO
             if (layers.ContainsKey("clipVolumes"))
             {
                 clipCount = ScanClipVolumes(Utils.IOUtils.CombinePath(outputDirectory, "clipvolumes.jsonl"), ref bounds);
+            }
+            if (layers.ContainsKey("districts"))
+            {
+                // Same record shape as an area's, so the same scanner. A district is drawn on the
+                // ground the city already covers, so it cannot grow the bounds in practice — it
+                // goes through Encapsulate anyway rather than being trusted not to (§3).
+                districtCount = ScanAreas(Utils.IOUtils.CombinePath(outputDirectory, "districts.jsonl"), ref bounds);
             }
 
             // The lane layers carry world-space geometry too, and must contribute to bounds —
@@ -279,6 +287,7 @@ namespace Carto.IO
             if (layers.ContainsKey("lanes")) counts["lanes"] = laneCount;
             if (layers.ContainsKey("laneGeometry")) counts["laneGeometry"] = laneGeometryCount;
             if (layers.ContainsKey("areas")) counts["areas"] = areaCount;
+            if (layers.ContainsKey("districts")) counts["districts"] = districtCount;
             if (layers.ContainsKey("clipVolumes")) counts["clipVolumes"] = clipCount;
 
             Dictionary<string, object> manifest = new()
@@ -313,6 +322,9 @@ namespace Carto.IO
                 ["max"] = new[] { Ceil3(bounds.MaxX), Ceil3(bounds.MaxY), Ceil3(bounds.MaxZ) }
             };
             manifest["mapSize"] = snapshot.MapSize;
+            // Which side the city drives on. Additive, so it stays schema 2 (§12.1's closed-object
+            // amnesty is over for CLOSED objects; the manifest root is open).
+            manifest["leftHandTraffic"] = snapshot.LeftHandTraffic;
             manifest["counts"] = counts;
             manifest["layers"] = layers;
             if (rasters != null) manifest["rasters"] = rasters;

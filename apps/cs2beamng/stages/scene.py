@@ -239,7 +239,7 @@ def _pick_spawn(ctx, progress):
 
 
 INPUTS = ("layer:grading", "layer:lanes", "layer:terrain", "layer:terrainFine")
-SETTINGS = ("view_distance", "tod_hour", "ai_roads", "level_title", "terrain_upsample")
+SETTINGS = ("view_distance", "tod_hour", "level_title", "terrain_upsample")
 OUTPUTS = ("info.json",)
 
 # version 2: the spawn sphere's `rotationMatrix` goes through `frame.basis_flat` like every other

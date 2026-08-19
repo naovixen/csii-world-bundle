@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://erohs.github.io/csii-world-bundle/schema/district.schema.json",
+  "title": "CS2 World Bundle district record (contract section 8d)",
+  "description": "One line of districts.jsonl (JSON Lines): a player-drawn district polygon and the name the player typed on it. THIS IS THE ONLY SOURCE OF PLACE NAMES IN A CS2 CITY — a network segment's attrs.name is a STREET and a building's attrs.brand is a BUSINESS, and neither answers 'where in the city am I'. A district is an area entity with the same Game.Areas Node/Triangle grid buffers as section 8b's surfaces, but it paints nothing and is never rendered, which is why it is a layer of its own rather than a kind inside areas.jsonl (that layer's query demands Game.Areas.Surface). The name comes from the game's own NameSystem.GetRenderedLabelName, the same call the vanilla vector export makes. A city with no districts drawn ships an empty file, not a missing layer.",
+  "type": "object",
+  "required": ["id", "name", "nodes", "triangles", "centroid"],
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "description": "Producer-local unique identifier (the ECS entity index).",
+      "type": "integer",
+      "minimum": 0
+    },
+    "name": {
+      "description": "The district's rendered label — what the player typed, or the game's generated default. MAY BE EMPTY: a district whose name the name system cannot resolve ships an empty string rather than being dropped, and the rip report counts them, so a consumer never has to guess whether an absent name means an absent district.",
+      "type": "string"
+    },
+    "nodes": {
+      "description": "The polygon's corners as bundle-frame world positions (section 2.1) — NOT mesh-frame mirrored. At least 3.",
+      "type": "array",
+      "minItems": 3,
+      "items": { "$ref": "#/$defs/vec3" }
+    },
+    "triangles": {
+      "description": "The game's own triangulation: index triplets into this record's own 'nodes'. Identical encoding to section 8b.",
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "array",
+        "minItems": 3,
+        "maxItems": 3,
+        "items": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "centroid": {
+      "description": "The mean of 'nodes', in the bundle frame. Free to carry and it is what most consumers actually want: a consumer placing one marker per district (a fast-travel point, a map label) never has to triangulate the polygon. It is the node mean and NOT the area centroid, so a district with an uneven node distribution has it pulled toward the denser side; use the triangles when that matters.",
+      "$ref": "#/$defs/vec3"
+    }
+  },
+  "$defs": {
+    "vec3": {
+      "type": "array",
+      "items": { "type": "number" },
+      "minItems": 3,
+      "maxItems": 3
+    }
+  }
+}

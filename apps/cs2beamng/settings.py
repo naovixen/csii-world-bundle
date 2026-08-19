@@ -45,7 +45,12 @@ SCHEMA = {
     "lights_max": (25000, "int", "Maximum dynamic lights (needs Advanced Lighting in BeamNG)"),
     "water": (True, "bool", "Water planes/blocks"),
     "groundcover": (False, "bool", "Billboard grass over the ground paint. NOT a fidelity feature - CS2 has no grass, detail-mesh or groundcover system at all, so the blades are synthesised BeamNG dressing for a camera at driving height (audit 62)"),
-    "ai_roads": (False, "bool", "Hidden AI roads from the lane graph (experimental)"),
+    "ai_roads": (True, "bool", "The AI NAVGRAPH: invisible DecalRoads built from the lane graph. NOT cosmetic and not experimental - `map.lua` builds `map.getMap().nodes` from DecalRoads and BeamNGWaypoints and NOTHING ELSE, so with this off the minimap app draws nothing, a big-map waypoint produces no route and the ground-marker arrows never appear (audit A7.0). west_coast_usa ships 1,299 of these on `road_invisible`"),
+    "navgraph_max_width": (0.0, "float", "Clamp a navgraph node's road width, in metres (0 = the width measured from CS2's own lane offsets). BeamNG merges two navgraph nodes when they are closer than the LARGER of their radii, and that test is 3-D (map.lua:1188), so a 24 m road's node reaches 12 m downwards and can weld a bridge deck into the street beneath it. `tools/check_navgraph_vs_game.py` counts what would weld; on the reference city nothing does at 0"),
+    "navgraph_taxiways": (False, "bool", "Put airport taxiways in the navgraph too, at drivability 0.3 (roads and highways are always in it; pathways, trams, rails, waterways, cables and pipes never are)"),
+    "pois": (True, "bool", "Fast-travel points - the big map's \"Quicktravel Points\" group. Derived from the densest road cells unless `poi_file` names your own list"),
+    "poi_file": (None, "path", "JSON list of your own fast-travel points: [{\"name\": \"Vice City Beach\", \"at\": [4820, 1660], \"description\": \"...\"}]. `at` is BeamNG-frame X/Y (what the big map shows); add \"frame\": \"bundle\" for bundle X/Z. Each is snapped onto the road network"),
+    "poi_max": (8, "int", "How many fast-travel points to derive when `poi_file` names fewer. Vanilla levels ship 3 (italy) to 9 (west_coast_usa)"),
     # how much
     "foliage_density": (100, "int", "Percent of trees kept (deterministic subset)"),
     "prop_density": (100, "int", "Percent of props kept"),
@@ -105,7 +110,8 @@ SCHEMA = {
 GROUPS = [
     ("Where", ["bundle", "output", "level_name", "level_title", "region"]),
     ("What", ["buildings", "networks", "trees", "props", "markings", "areas", "skirts", "terrain_cut", "lane_furniture",
-              "lane_furniture_categories", "water", "groundcover", "lights", "lights_max", "ai_roads"]),
+              "lane_furniture_categories", "water", "groundcover", "lights", "lights_max", "ai_roads", "navgraph_max_width",
+              "navgraph_taxiways", "pois", "poi_file", "poi_max"]),
     ("How much", ["foliage_density", "prop_density", "texture_max", "texture_max_normal", "texture_max_data",
                   "texture_max_variant", "texture_dds", "generate_lods", "tile_lod", "imposters",
                   "imposter_min_metres", "lod_detail_scale", "lod_detail_scale_prop",

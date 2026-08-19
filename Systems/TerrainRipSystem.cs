@@ -84,6 +84,9 @@ namespace Carto.Systems
         /// <summary>The query for terrain-clipping areas.</summary>
         EntityQuery _clipAreaQuery;
 
+        /// <summary>The query for the player's named districts (§8d).</summary>
+        EntityQuery _districtQuery;
+
         // Stamp tallies for the report.
         int _edgesStamped, _nodesStamped, _orphansStamped, _skippedForm, _skippedNoFlatten, _skippedWaterway;
         int _cutEdges, _cutNodes, _cutOrphans, _cutAreas, _cutRoundaboutTransitions;
@@ -160,6 +163,27 @@ namespace Carto.Systems
                 All = new ComponentType[]
                 {
                     ComponentType.ReadOnly<Game.Areas.Clip>(),
+                    ComponentType.ReadOnly<Game.Areas.Node>(),
+                    ComponentType.ReadOnly<Game.Areas.Triangle>()
+                },
+                None = new ComponentType[]
+                {
+                    ComponentType.ReadOnly<Game.Common.Deleted>(),
+                    ComponentType.ReadOnly<Game.Tools.Temp>()
+                }
+            });
+
+            // The player's own districts. A district IS an area — the same Node/Triangle grid
+            // buffers as a surface — but it paints nothing and is never rendered, so it has never
+            // reached `areas.jsonl` (whose query demands `Game.Areas.Surface`). What it carries
+            // that nothing else in the bundle does is a NAME the player typed, which is the only
+            // place-name a CS2 city contains (contract §8d).
+            //
+            _districtQuery = GetEntityQuery(new EntityQueryDesc()
+            {
+                All = new ComponentType[]
+                {
+                    ComponentType.ReadOnly<Game.Areas.District>(),
                     ComponentType.ReadOnly<Game.Areas.Node>(),
                     ComponentType.ReadOnly<Game.Areas.Triangle>()
                 },
@@ -357,6 +381,11 @@ namespace Carto.Systems
             //
             if (areas) RipSurfaceAreas(outputDirectory, terrainDirectory, report);
             else report.AppendLine("Painted surfaces deselected — areas.jsonl and areaprefabs.json untouched.");
+
+            // ---- 4c. Districts — the only place-names the city contains.
+            //
+            if (areas) RipDistricts(outputDirectory, report);
+            else report.AppendLine("Painted surfaces deselected — districts.jsonl untouched.");
 
             // ---- 5. Encode and write everything off the main thread.
             //
@@ -756,6 +785,103 @@ namespace Carto.Systems
                           heightData.heights[(z1 * heightData.resolution.x) + x1], tx), tz);
 
             return (raw / heightData.scale.y) - heightData.offset.y;
+        }
+
+        /// <summary>
+        /// Rip the player's named districts into <c>districts.jsonl</c>. Contract §8d.
+        /// <b>Why this layer exists.</b> A CS2 city has exactly one source of PLACE names, and
+        /// this is it: `attrs.name` on a network segment is a STREET name, `attrs.brand` on a
+        /// building is a business, and neither says where in the city you are. A district is a
+        /// player-drawn polygon with a player-typed label, and the game itself uses it that way —
+        /// <c>Address</c> resolves a building's district through <c>CurrentDistrict</c> and
+        /// <c>NameSystem.GetRenderedLabelName</c>, which is what the vanilla vector export
+        /// already ships (<c>Systems/AreaSystem.cs</c>). It never reached the bundle because
+        /// <c>areas.jsonl</c>'s query demands <c>Game.Areas.Surface</c> and a district paints
+        /// nothing.
+        /// <para>
+        /// Emitted with the same geometry encoding as §8b — world-position nodes and index
+        /// triangles off the game's own area grid — plus a centroid, so a consumer that only
+        /// wants "where is Downtown" does not have to triangulate anything.
+        /// </para>
+        /// </summary>
+        /// <param name="outputDirectory">The bundle root.</param>
+        /// <param name="report">The report to note results in.</param>
+        private void RipDistricts(string outputDirectory, StringBuilder report)
+        {
+            var districts = _districtQuery.ToEntityArray(Unity.Collections.Allocator.TempJob);
+            int written = 0, skippedEmpty = 0, unnamed = 0;
+
+            try
+            {
+                using StreamWriter writer = Carto.IO.BundleFile.CreateText(
+                    IOUtils.CombinePath(outputDirectory, "districts.jsonl"));
+
+                foreach (Entity entity in districts)
+                {
+                    DynamicBuffer<Game.Areas.Node> nodes = EntityManager.GetBuffer<Game.Areas.Node>(entity, true);
+                    DynamicBuffer<Game.Areas.Triangle> triangles = EntityManager.GetBuffer<Game.Areas.Triangle>(entity, true);
+                    if ((nodes.Length < 3) || (triangles.Length == 0))
+                    {
+                        skippedEmpty++;
+                        continue;
+                    }
+
+                    // The label the PLAYER typed, through the game's own name system — the same
+                    // call the vanilla vector export makes for a district.
+                    string name = Instance.Name.GetLabelName(entity);
+                    if (string.IsNullOrEmpty(name)) unnamed++;
+
+                    var record = new Dictionary<string, object>
+                    {
+                        ["id"] = entity.Index,
+                        ["name"] = name ?? string.Empty
+                    };
+
+                    double[][] nodeArray = new double[nodes.Length][];
+                    double cx = 0.0, cy = 0.0, cz = 0.0;
+                    for (int i = 0; i < nodes.Length; i++)
+                    {
+                        float3 position = nodes[i].m_Position;
+                        nodeArray[i] = BundlePrecision.Vector(position);
+                        cx += position.x;
+                        cy += position.y;
+                        cz += position.z;
+                    }
+                    record["nodes"] = nodeArray;
+                    record["centroid"] = new[]
+                    {
+                        Math.Round(cx / nodes.Length, 3),
+                        Math.Round(cy / nodes.Length, 3),
+                        Math.Round(cz / nodes.Length, 3)
+                    };
+
+                    int[][] triangleArray = new int[triangles.Length][];
+                    for (int i = 0; i < triangles.Length; i++)
+                    {
+                        int3 indices = triangles[i].m_Indices;
+                        triangleArray[i] = new[] { indices.x, indices.y, indices.z };
+                    }
+                    record["triangles"] = triangleArray;
+
+                    writer.WriteLine(JsonConvert.SerializeObject(record));
+                    written++;
+                }
+            }
+            catch (Exception ex)
+            {
+                _log.Error(ex);
+                report.AppendLine($"Districts failed: {ex.Message}");
+                return;
+            }
+            finally
+            {
+                districts.Dispose();
+            }
+
+            report.AppendLine($"Districts: {written} written to districts.jsonl"
+                              + ((skippedEmpty > 0) ? $", {skippedEmpty} with no geometry skipped" : string.Empty)
+                              + ((unnamed > 0) ? $", {unnamed} carry no label" : string.Empty)
+                              + ((written == 0) ? " — this city has no districts drawn" : string.Empty));
         }
 
         /// <summary>

@@ -1773,6 +1773,45 @@ every portal, trench and tunnel exactly as they do in-game.
 
 ---
 
+### 8d. Districts — `districts.jsonl` *(added 2026-08-19, see §12.3)*
+
+**The only PLACE names a CS2 city contains.** A network segment's `attrs.name` is a *street*
+("Hyacinth Street") and a building's `attrs.brand` is a *business* ("OceanportPharmaceuticals");
+neither answers "where in the city am I". A district is a polygon the player drew and a label the
+player typed, and the game itself treats it as the place name — `Domain/Address.cs` resolves a
+building's district through `CurrentDistrict` and `NameSystem.GetRenderedLabelName`, which is
+exactly what Carto's vanilla vector export already ships.
+
+A district IS an area entity: `Game.Areas.District` with the same `Node`/`Triangle` grid buffers
+as §8b's surfaces. It is a layer of its own rather than a `kind` inside `areas.jsonl` because it
+**paints nothing and is never rendered**, so §8b's query (which demands `Game.Areas.Surface`)
+has never seen one, and because a consumer wanting place names wants no part of the pavement
+layer's prefab catalogue and drape rules.
+
+```json
+{"id": 664231, "name": "Vice City Beach",
+ "nodes": [[4820.1, 12.0, 1660.4], …],
+ "triangles": [[0,1,2], [0,2,3], …],
+ "centroid": [4791.2, 11.8, 1702.6]}
+```
+
+* **`name` may be empty.** A district whose label the name system cannot render ships `""`
+  rather than being dropped, and the rip report counts them — so an absent name never has to be
+  read as an absent district.
+* **Geometry is §8b's encoding verbatim**: bundle-frame world positions, and index triplets into
+  this record's own `nodes`. A district is a footprint, not a surface; nothing about it is drawn.
+* **`centroid` is the NODE mean**, not the area centroid, and it is free to carry because the
+  producer already has the buffer in hand. A consumer placing one marker per district — a map
+  label, a fast-travel point — never has to triangulate anything. Where the node distribution is
+  uneven it is pulled toward the denser side; use the triangles when that matters.
+* **An empty file is normal.** Most cities have no districts drawn, and the layer is still
+  declared so a consumer can tell "no districts" from "not ripped".
+
+The layer is written by the surface-area stage (`TerrainRipSystem.RipDistricts`), so it follows
+**Rip Terrain**'s painted-surfaces switch and is left untouched by a rip that does not run it.
+
+---
+
 ## 9. `vector/`
 
 The unchanged vanilla Carto export — GeoJSON, Shapefile, GeoTIFF, exactly as Carto has always
@@ -2104,6 +2143,24 @@ manifest's `schema` const; the only bundles carrying the broken intermediate for
 valid under either version.
 
 ### 12.3 Amendments to `schema: 2`
+
+**`leftHandTraffic` and `layers.districts` added (2026-08-19), and neither takes `schema: 3`.**
+
+`docs/plans/a7-navigation.md` proposed taking the districts layer to `schema: 3`. That was wrong
+and §12 already said so in its own words: *"Within `schema: 1`, the producer may … add a new
+layer key, or add a new optional manifest key that a v1 consumer can safely ignore."* Both
+changes are exactly those two cases, and the reasoning §12.3 sets out below for `layers.grading`
+applies unchanged. `bundle.json`'s root object is `additionalProperties: false`, so both are
+named in `docs/schema/bundle.schema.json` deliberately — the producer-side typo guard, not a
+consumer-compatibility boundary.
+
+* **`leftHandTraffic`** (boolean, optional): whether the city drives on the left,
+  `Instance.City.leftHandTraffic`. The game has always used the bit — `MeshRipSystem` picks
+  `RequireLeftHandTraffic` sub-meshes with it and `NetworkSystem` orients a lane with it — so the
+  bundle described its RESULT everywhere and never the bit. A consumer laying out traffic could
+  only recover it by measuring which side of a two-way segment its with-flow lanes lie on
+  (`csiibundle.navgraph` still does, for bundles ripped before this).
+* **`layers.districts`** → §8d.
 
 **`layers.grading` added (2026-08-12), and it does not take `schema: 3`.**
 

@@ -5,7 +5,9 @@ Structural: every `items.level.json` line parses and names a `class`; `persisten
 unique; `TerrainBlock.terrainFile`, `TSStatic.shapeName`, forest `shapeFile`s and material
 texture paths exist; every `.dae` parses as XML; the `.ter` header, size and layer indices agree
 with `.terrain.json`; exactly one `TerrainBlock` and one `LevelInfo`; at least one
-`SpawnSphere`; `info.json` names an existing spawn.
+`SpawnSphere`; `info.json` names an existing spawn, every `spawnPoints` entry resolves to one and
+every `preview` it names exists; at least one drivable `DecalRoad` (without which BeamNG's whole
+navigation layer — minimap, routing, ground markers — is silently dead).
 
 Physical: the `.ter` height under sampled `OnGround` buildings equals `instances.ground_level`
 (`pos.y − attrs.elevation`) within `GROUND_TOLERANCE` — the one check that catches a wrong
@@ -443,6 +445,36 @@ def check(level_dir, bundle_dir, progress=None, settings=None):
             default = info.get("defaultSpawnPointName")
             if default and default not in spawn_names:
                 note(f"info.json defaultSpawnPointName {default!r} is not a SpawnSphere")
+            # Every quick-travel point: `core/levels.lua:531` logs an error and drops a
+            # `spawnPoints` entry whose `objectname` does not resolve, so a typo costs the POI
+            # silently. Its `preview` is worse than silent — `levels.lua:147` substitutes the
+            # LEVEL preview through `imageExistsDefault`, so a broken path ships a plausible
+            # wrong thumbnail rather than an error (A7.4).
+            points = info.get("spawnPoints") or []
+            checks["spawnPoints"] = len(points)
+            for entry in points if isinstance(points, list) else []:
+                if not isinstance(entry, dict):
+                    note("info.json spawnPoints holds a non-object entry")
+                    continue
+                name = entry.get("objectname")
+                if name is None:
+                    continue          # levels.lua's own auto-inserted default carries none
+                if name not in spawn_names:
+                    note(f"info.json spawnPoints objectname {name!r} is not a SpawnSphere - "
+                         f"the quick-travel point is dropped with a log line and nothing else")
+                preview = entry.get("preview")
+                if preview and not os.path.isfile(os.path.join(level_dir, *str(preview).split("/"))):
+                    note(f"info.json spawnPoints preview {preview!r} does not exist - BeamNG "
+                         f"silently substitutes the level preview for it")
+            # the navgraph is what the minimap, the route line and the ground markers all read
+            roads = by_class.get("DecalRoad", [])
+            drivable = [r for r in roads if float(r.get("drivability") or 0) > 0]
+            checks["navgraph"] = {"decalRoads": len(roads), "drivable": len(drivable),
+                                  "nodes": sum(len(r.get("nodes") or ()) for r in drivable)}
+            if not drivable:
+                note("no DecalRoad with drivability > 0: `map.getMap()` will be EMPTY, so the "
+                     "minimap draws nothing, a waypoint produces no route and the ground-marker "
+                     "arrows never appear (audit A7.0). Build with `ai_roads true`")
     else:
         note("no info.json")
 
@@ -493,6 +525,13 @@ def _budget_notes(by_class, item_data, dae_files, forest_items):
         # city); 60,000 is ~11 s of load and where the walk reaches 1/3 of the whole city.
         ("lights", len(by_class.get("PointLight", [])) + len(by_class.get("SpotLight", [])), 60000),
         ("WaterBlocks", len(by_class.get("WaterBlock", [])), 200),
+        # NOT a vanilla maximum either. `west_coast_usa` carries 12,752 DecalRoads over a 2,048 m
+        # square; ours cover 14,336 m, 49x the area, so per-metre-of-road the comparison is the
+        # one that matters and the absolute count is not. What a navgraph road costs is one entry
+        # in `map.lua`'s node table and one pass of its merge/T-junction/X-junction resolution at
+        # LOAD, all of it O(n log n) on a kd-tree; the limit is where that load pass starts to be
+        # felt, not where it renders wrong. 40,000 is ~3x vanilla's biggest.
+        ("DecalRoads", len(by_class.get("DecalRoad", [])), 40000),
     ]
 
 

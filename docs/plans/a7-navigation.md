@@ -1,5 +1,12 @@
 # A7 — navigation: the minimap, the spawn, and fast travel
 
+> **STATUS — ALL SEVEN ITEMS BUILT, 2026-08-19 (audit §84).** The consumer side is measured
+> against the bundle on disk and awaits Naomi's load; the two producer changes are "built,
+> awaiting in-game re-rip". **Read "AS BUILT" at the foot of this file before this text** — the
+> junction rule W1 proposes was built, measured and replaced, and three properties of the lane
+> layer this plan did not know about (`SideConnection`, `Invert`, longitudinal chaining) are what
+> the implementation actually turns on.
+
 Three symptoms reported on the 2026-08-19 load of `cs2_city_fine`:
 
 1. **The minimap does not work** — it draws nothing.
@@ -384,3 +391,127 @@ on this bundle 0.0 % of road car-lane endpoints meet a `connection` endpoint wit
 something else (its sampled members sit 200–1,000 m above the roads). Fix the docstring in
 step 1 — a wrong claim in the module a new consumer reads first is how the next five days get
 spent.
+
+---
+
+## AS BUILT — 2026-08-19, all seven items (audit §84)
+
+Every item in the order table above is built. What follows records where the plan was right,
+where it was wrong, and what the code actually does, so the plan and the repo do not drift.
+
+### 1–2. The navgraph — `csiibundle/navgraph.py` + the `navgraph` stage
+
+Built as planned in shape, **not** in the junction rule.
+
+**W1's hub collapse is not in the code.** The plan said: weld car-lane endpoints, take the
+centroid of each cluster as a hub, extend every incident centerline into it. It was built first
+and measured out. Three findings, in the order they arrived:
+
+1. Matching a segment's averaged **centerline endpoint** to a junction node matched **7.9 %** of
+   segment ends. A centerline endpoint is in the middle of the carriageway; a junction lane's
+   endpoint is on a lane. Median gap 4.51 m. The match has to be per LANE — and then it is
+   **90.8 %** at 5 cm and flat out to 50 cm, so the tolerance sweep the plan asked for found
+   nothing to tune.
+2. Clustering by shared junction *owner* over-merges: hubs chain into blobs with a **median
+   horizontal extent of 33 m and a maximum of 896 m**, and 1,422 of them over 60 m. One motorway
+   interchange becomes a star of half-kilometre straight lines. Bridging per LANE instead is
+   better but still leaves a 33 m median and an 896 m maximum.
+3. So there is no hub at all. Each **junction lane** becomes its own connector road whose two
+   terminal nodes are set to the two segments' own centerline ends — the join is exact by
+   construction, and **CS2's turn restrictions survive as graph topology** instead of being
+   collapsed away, which the plan listed as an accepted approximation and is now not one.
+
+**Three things the plan did not know about the lane layer**, each of which would have produced a
+plausible wrong graph, and each answered by a flag the game itself sets:
+
+* **`SideConnection`** — 25,811 of the 52,974 segment-owned car lanes are driveway stubs. The plan
+  would have averaged them into the carriageway. The flag is the game's answer; a length threshold
+  would have been ours.
+* **`Invert`** — a lane's direction relative to its segment. It is what makes `lanesLeft` /
+  `lanesRight` a read rather than a guess, and what orients the spine.
+* **Longitudinal chaining** — a segment's lanes are split at interior nodes as well as stacked
+  laterally. A 120 m 4-lane road ships twelve lanes: six lateral offsets across one midpoint
+  split. The centerline is built from the longest **chain** of welded lanes plus one lateral
+  offset, not from averaging polylines.
+
+**Direct joints**, which the plan did not anticipate: 1,383 places where two segments abut with no
+turning movement between them (an asset change, a bridge abutment). Without them the graph falls
+into 133 components instead of 35.
+
+Emitted: **6,667 segment roads + 9,569 connectors + 1,383 joints = 17,619 `DecalRoad`s, 56,012
+nodes, 96.65 % in one connected component.** Every vanilla field copied verbatim from
+`west_coast_usa`'s AI-helper roads, `useSubdivisions: false`, `speedLimit` in m/s, and
+`autoJunction: false` on every elevated or tunnel segment.
+
+**Node width is not the open knob the plan expected.** It is measured from the lateral spread of
+the segment's own carriageway lanes plus one half-lane, rather than taken from `attrs.width` (which
+includes the pavements). `navgraph_max_width` exists and defaults to **0 — no clamp** — because the
+false-weld check finds nothing to clamp: 2,936 node pairs sit inside a merge radius and **none**
+across more than 3 m of height.
+
+### 3 + 7. Fast travel — `poi` stage, and the tiers reordered
+
+Tier 1 (`poi_file`) and tier 2 (derived) as planned. **Tier 3 shipped too**, because item 7's
+producer change is in the same commit: where a rip carries `districts.jsonl` the stage uses CS2's
+own district names ahead of anything derived, and where it does not it says so in its report
+rather than quietly falling back.
+
+The derived tier names a point after the **street name the `navgraph` stage rode along on the
+road** as a Torque dynamic field (`cs2Street`), not after the road's own `seg_<id>` name. A
+fast-travel point called "seg_2331850" is worse than none.
+
+### 4. The minimap image — moved into the `terrain` stage
+
+The plan put it in `scene`. It belongs in `terrain`: that stage already holds the heightmap, the
+dominant-ground index and the water raster, and it owns the `TerrainBlock` the `minimapImage` field
+goes on. A later stage mutating another stage's object dict would be lost the moment the terrain
+stage was skipped and replayed. 2048 px, ground colour by each ground texture's mean albedo,
+hillshaded, water tinted.
+
+### 6. `leftHandTraffic` — shipped, and the consumer no longer needs it
+
+`bundle.json` now carries it (**built, awaiting in-game re-rip**). But the consumer-side inference
+the plan called a fallback turned out to be a **measurement**, not a guess: the lanes running with
+a two-way segment sit to one side of the ones running against it, with the sign convention
+calibrated against CS2's own `TurnRight`/`TurnLeft` flags. The vote is 5,735 to 1. A first attempt
+that inferred it from turn *lengths* was discarded on measurement (9.88 m against 9.82 m — no
+signal).
+
+### The correction the plan owed the codebase, corrected
+
+The plan said `lanegraph.py`'s module docstring calls `connection` lanes the turning movements.
+It does not — it says *node-owned* lanes are, which is correct and is now confirmed (40,708
+node-owned `car` lanes bridge two road segments within 5 cm). The wrong claim was the comment on
+`DRIVABLE_KINDS`. Both have been rewritten, and the docstring now states the owner/kind
+distinction explicitly instead of leaving it to be re-derived.
+
+### Versioning — the plan was wrong and §12 already said so
+
+The plan said `districts.jsonl` "needs schema 3". It does not. §12: *"Within `schema: 1`, the
+producer may … add a new layer key, or add a new optional manifest key that a v1 consumer can
+safely ignore."* Both `layers.districts` and `leftHandTraffic` are exactly those cases. Recorded in
+`docs/bundle-schema.md` §12.3.
+
+### What is measured, and what still needs a load
+
+Measured offline, against the bundle on disk:
+
+| gate | result |
+|---|---|
+| `check_navgraph_vs_game.py` coverage | 4,000/4,000 sampled drivable lane points have an edge within half their road |
+| connectivity | 17,028/17,619 roads in one component (96.65 %) |
+| false welds across height | 0 of 2,936 in-radius node pairs |
+| direction / speed vs CS2 | 6,664/6,667 and 6,667/6,667 |
+| `tools/test_app_shell.py` | 133/133 |
+| `tools/validate_bundle.py` | VALID, 1 known warning |
+
+**Still needs Naomi's load** (per `rebuild-the-level-before-committing`): the minimap actually
+drawing and matching the road under the car; a big-map waypoint routing along roads with the
+ground-marker arrows staying on the carriageway through junctions and never dropping off a bridge
+into the street below; the "Quicktravel Points" group listing the POIs and putting the car on the
+road facing along it; and traffic keeping to its side. `beamng.log` should report a non-zero
+`map.lua` node count within 20 % of 56,012, and no `Road … centerline to edge distance exceeding
+20m` warnings (that message only comes from the `useSubdivisions` branch, which we never take).
+
+**Neither producer change can be validated by any of the above.** `leftHandTraffic` and
+`districts.jsonl` are "built, awaiting in-game re-rip".

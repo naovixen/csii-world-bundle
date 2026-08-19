@@ -6950,3 +6950,163 @@ reader no next question; the concentration is the next question.
 only the observation that 11 GB of 31.9 GB is survivable and this machine is doing it while its
 graphics preset sits at Basic Lighting and Lowest textures (§82) — which is very likely a
 consequence, not a coincidence.
+
+---
+
+## 84. A7 — the level had no navgraph, and that is one defect behind three symptoms (2026-08-19)
+
+Three things were reported on the 2026-08-19 load: the minimap draws nothing, a waypoint gives no
+route, and there is nowhere to fast-travel to. The first two are **one** defect. `lua/ge/map.lua`
+builds `map.getMap().nodes` from `BeamNGWaypoint` objects, `DecalRoad`s with `drivability > 0`,
+and `map.json` — **and nothing else**. Our roads are `TSStatic` meshes; the level shipped no
+`DecalRoad`, no `BeamNGWaypoint` and no `map.json`, so the graph was empty, and
+
+* `ui/apps/minimap/roads.lua:17` (`local mapNodes = map.getMap().nodes`) had nothing to draw. **The
+  minimap app draws roads as VECTORS FROM THE NAVGRAPH, not from an image** — which is why no
+  amount of texture work would ever have fixed it;
+* `core/groundMarkers.lua:283` (`if not map.getMap().nodes[w]`) could produce no route;
+* `freeroam/bigMapMode.lua:239` had no map data.
+
+`west_coast_usa` ships 12,752 `DecalRoad`s, 1,299 of them **pure AI helpers** on a level-local
+`road_invisible` material, alongside 826 `BeamNGWaypoint`s and a 21.7 kB `map.json`. A navgraph of
+a few thousand invisible roads is not a deviation; it is what a BeamNG level *is*.
+
+### The lane layer had four traps in it, and all four were load-bearing
+
+The geometry has to come from `lanes.jsonl`: only 970 of 8,259 network records carry a
+`centerline`, and the 7,289 with a mesh do not. Reading that layer naively fails four ways, and
+each has an exact answer in the game's own data:
+
+| what looked true | what is true |
+|---|---|
+| a segment's `car` lanes are its carriageway | **25,811 of 52,974 are `SideConnection`** — 10 m driveway hooks across the pavement at lateral offsets outside the road. CS2's own flag, not a length threshold |
+| the lanes lie side by side | they are stacked laterally **AND chained longitudinally**. A 120 m 4-lane 'Medium Road' ships twelve: six lateral offsets (0, −1.5, −3, −6, −7.5, −9 m) across a split at its midpoint. Averaging all twelve as polylines gives a diagonal |
+| lane direction has to be guessed | **`Invert` is the lane's direction relative to its segment.** 5,733 segments carry lanes both ways |
+| `connection` lanes are the junctions | **0.0 %** of 3,000 sampled road car-lane endpoints meet a `connection` endpoint within 5 cm; **62.1 %** meet another `car` endpoint from a different owner. `connection` lanes sit at y = 721–1612 m against the roads' 508–594 m: air corridors and transit links. **The junctions are node-owned `car` lanes** |
+
+A note on where that last claim actually lived: the plan attributed it to `lanegraph`'s module
+docstring, which in fact says *node-owned* lanes are the turning movements — and that is correct
+and now confirmed (40,708 node-owned `car` lanes bridge two road segments' lane ends within 5 cm).
+The wrong claim was the comment on `DRIVABLE_KINDS`. Both have been rewritten so the distinction
+between owner and kind is stated rather than left to be re-derived.
+
+### The graph, and the one that was built first and thrown away
+
+`tools/csiibundle/navgraph.py` (shared: a route graph is not a BeamNG idea) emits three kinds of
+edge and **invents no node position at all**:
+
+* **6,667 segment roads** — each segment's carriageway spine, offset laterally onto the
+  carriageway centre by the length-weighted mean of its own lanes' offsets;
+* **9,569 connectors** — a node-owned `car` lane bridging two *different* segment ends, with its
+  two terminal nodes set to those segments' own end points, so the join is exact by construction.
+  Movements sharing an end pair are averaged into one; a pair with movements one way only stays
+  one-way, so CS2's turn restrictions survive as topology;
+* **1,383 joints** — where two segments abut with no turning movement at all (an asset change, a
+  bridge abutment). Without them the graph falls apart at 4,424 lane-end pairs.
+
+17,619 roads, 56,012 nodes, **96.65 % in one connected component** over 35 components, 571 dead
+ends. Comparable to `west_coast_usa`'s 59,557 nodes over 1/49th of the area.
+
+**The hub collapse the plan proposed was built first and measured out.** Extending every
+centerline into one centroid per junction chains hubs through shared junction owners into blobs
+with a **median horizontal extent of 33 m and a maximum of 896 m** — one motorway interchange
+becomes a star of half-kilometre straight lines. The numbers are in the module docstring so nobody
+rebuilds it. The intermediate attempt (match the averaged centerline END to a junction node) is
+worth recording too: it matched **7.9 %** of segment ends, because a centerline endpoint is in the
+middle of the carriageway and a junction lane's endpoint is on a lane — a median 4.51 m apart. The
+match has to be made per LANE, and then it is 90.8 % at 5 cm and flat out to 50 cm.
+
+### Which side the city drives on — measured, not assumed
+
+`map.lua:148` reads `info.json`'s `roadRules`, and `rightHandDrive` there means the **steering
+wheel** is on the right, i.e. traffic drives on the **left** (map.lua:630 puts the `+` forward
+lanes leftmost when it is set; `automation_test_track` is the one vanilla level that sets it).
+
+The producer now ships `Instance.City.leftHandTraffic` in `bundle.json` (**built, awaiting
+in-game re-rip**). Until a rip carries it, `navgraph.py` measures it: the lanes running with a
+two-way segment sit to one side of the ones running against it, and which side that is IS the
+rule. The sign convention is calibrated against CS2's own lane flags rather than assumed — over
+21,192 flagged junction lanes a `TurnRight` sweeps a **negative** cross product of (east, north)
+on 95.3 % and a `TurnLeft` a positive one on 91.3 %. The vote on the reference city is **5,735
+segments to 1**: right-hand traffic.
+
+A first attempt inferred it from turn *lengths* (a near-side turn is tighter) and was discarded on
+measurement: median `TurnRight`-only lane 9.88 m against `TurnLeft`-only 9.82 m — no signal.
+
+### The oracle, and what it says
+
+`tools/check_navgraph_vs_game.py` — bundle only, no level needed, so it runs before a build:
+
+```
+OK  every drivable lane point has a navgraph edge within half its road: 4,000/4,000 = 100.00%
+OK  the drivable network is one connected component:                   17,028/17,619 = 96.65%
+OK  no two navgraph nodes weld across a height difference:              2,936/2,936 = 100.00%
+OK  a segment road's direction agrees with attrs.direction:             6,664/6,667 = 99.96%
+OK  a segment road carries CS2's own speed limit:                       6,667/6,667 = 100.00%
+```
+
+The false-weld check is the one with a load behind it: `mergeOverlappingNodes` (map.lua:1188)
+broad-phases in 2-D but tests `squaredDistance < square(max(r1, r2))` in **3-D**, so a 24 m road's
+node reaches 12 m *downwards*. Every road built from an `elevated` or `tunnel` segment therefore
+ships `autoJunction: false`, exactly as `west_coast_usa`'s overpasses do. 2,936 node pairs sit
+inside a merge radius and none of them across more than 3 m of height.
+
+**The three direction disagreements are not a defect and are recorded as such.** They are alleys
+marked `twoway` in `attrs.direction` with no lane running back. `attrs.direction` is the ASSET's
+authored property; `Invert` is what the game's own traffic uses. The lanes win.
+
+### The minimap image is a different mechanism, and it is secondary
+
+The minimap *app* needs no image. The old dashboard/navigation map does: `ui/uiNavi.lua:354`
+(`minimapFromTerrainBlock`) reads **`TerrainBlock.minimapImage`** and builds
+`{size: (blockSize, blockSize, maxHeight), offset: (pos.x, pos.y + blockSize, 0)}`.
+`west_coast_usa` sets it to a 2048 px PNG; `core/levels.lua:170` allows an `info.json` `minimap`
+array to override it and **no shipped level uses that**, so the vanilla mechanism is the one
+ported. The `terrain` stage now writes `<name>_minimap.png` — the dominant ground index coloured
+by each ground texture's mean albedo, hillshaded, water tinted — and names it on the block. That
+`+ blockSize` is a top-left convention: row 0 is the NORTH edge, which is row 0 of the bundle's
+rasters too, so nothing flips.
+
+### The spawn was never a defect, and A7.3 is a retraction
+
+The plan's first draft called the spawn "a service courtyard between buildings" on the evidence of
+156 instances within 40 m — trash containers, mailboxes, a garden bench, a parasol. Those are the
+dressing of a normal urban street. The car appeared to be inside a building because the buildings
+were **14.24° off their own roads** (§78). `_pick_spawn` is deliberately unchanged: a stricter
+candidate set would have been a consumer-side rule invented to close an artefact with a different
+cause.
+
+### Fast travel — the contract was exact and we already shipped half of it
+
+`core/levels.lua:531` walks `info.json`'s `spawnPoints` and emits one POI per entry whose
+`objectname` resolves, under `bigMapPoiProvider`'s `type_spawnPoint = "Quicktravel Points"`. Three
+tiers now compose: an authored `poi_file`, then **CS2's own districts** (the new §8d layer), then
+derived seeds from the densest road cells named by their commonest street.
+
+`preview` is the trap: `levels.lua:147` runs it through `imageExistsDefault` and **silently
+substitutes the level preview**, so a broken path ships a plausible wrong thumbnail rather than an
+error. `validate_level` now checks it, along with every `objectname` resolving and the level
+carrying at least one drivable `DecalRoad` at all.
+
+### The districts layer, and a correction to the plan's own versioning
+
+CS2 has real, player-named districts and Carto has always read them for its vector export
+(`Systems/AreaSystem.cs`), but they never reached the bundle: `areas.jsonl`'s query demands
+`Game.Areas.Surface` and a district paints nothing. `TerrainRipSystem.RipDistricts` now emits
+`districts.jsonl` (§8d) — name, polygon, triangles, centroid. **They are the only PLACE names a
+CS2 city contains**: `attrs.name` on a segment is a street, `attrs.brand` on a building is a
+business, and neither says where in the city you are.
+
+The plan said this "needs schema 3". **It does not**, and §12 already said so in its own words:
+*"Within `schema: 1`, the producer may … add a new layer key, or add a new optional manifest key
+that a v1 consumer can safely ignore."* Both `layers.districts` and `leftHandTraffic` are exactly
+those cases; §12.3 records it.
+
+### Status
+
+Consumer side (`csiibundle.navgraph`, the `navgraph`/`poi` stages, the minimap, the validator
+checks, the `lanegraph` corrections) is **built and measured against the bundle on disk**; 133/133
+app-shell checks pass and `validate_bundle` is still VALID with its one known warning. Producer
+side (`leftHandTraffic`, `districts.jsonl`) is **built, awaiting an in-game re-rip** — no result
+from the current bundle can validate either, and the `poi` stage says so in its own report when it
+finds no `districts.jsonl`.

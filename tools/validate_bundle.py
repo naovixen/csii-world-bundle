@@ -7,7 +7,7 @@ consumer author runs to confirm a bundle they were handed is well-formed.
 
 It does two jobs:
 
-  1. Structural — validates every declared layer against docs/schema/*.schema.json (fifteen
+  1. Structural — validates every declared layer against docs/schema/*.schema.json (sixteen
      documents as of 2026-08-14, one per layer), using a small built-in evaluator for the JSON
      Schema subset those files use.
   2. Semantic — the cross-file invariants a schema cannot state: every assetId resolves to a
@@ -45,7 +45,7 @@ SCHEMA_NAMES = (
     "bundle", "instance", "network", "materials",
     "lane", "lanemesh", "laneprefabs",
     "colors", "lights",
-    "area", "areaprefabs", "clipvolume",
+    "area", "areaprefabs", "clipvolume", "district",
     "warning", "surfaceindex", "grading",
 )
 
@@ -674,6 +674,7 @@ def validate_bundle(bundle_dir: Path, schema_dir: Path) -> Report:
 
     # -- surface areas and clip volumes (§8b / §8c, optional) --------------------------
     area_count = _check_areas(bundle_dir, layers, schemas, seen_ids, report)
+    district_count = _check_districts(bundle_dir, layers, schemas, report)
     clip_count = _check_clip_volumes(bundle_dir, layers, schemas, report)
 
     # -- the remaining documented layers (§5A, §7.2, §8, §10) --------------------------
@@ -701,6 +702,7 @@ def validate_bundle(bundle_dir: Path, schema_dir: Path) -> Report:
         ("lanes", "lanes", _count_records(_resolve_layer(bundle_dir, layers, "lanes"))),
         ("laneGeometry", "laneGeometry", len(lanes)),
         ("areas", "areas", area_count),
+        ("districts", "districts", district_count),
         ("clipVolumes", "clipVolumes", clip_count),
     ):
         if layer_key in layers:
@@ -957,6 +959,60 @@ def _check_areas(bundle_dir: Path, layers: Dict[str, str], schemas: Dict[str, Va
         )
 
     report.note(f"{records} surface areas over {len(catalogue)} area prefabs (§8b)")
+    return records
+
+
+def _check_districts(bundle_dir: Path, layers: Dict[str, str], schemas: Dict[str, Validator],
+                     report: "Report") -> int:
+    """§8d — the player's named districts. Same geometry contract as §8b, plus a name.
+
+    An EMPTY file is legal and expected: most cities have no districts drawn. What is not legal
+    is a triangle that does not index its own nodes, or a centroid that is not the node mean —
+    the second is checked because a consumer placing a map label reads the centroid and nothing
+    else, so a wrong one is invisible until a marker lands in the sea.
+    """
+    path = _resolve_layer(bundle_dir, layers, "districts")
+    if path is None or not path.is_file():
+        return 0
+    records = 0
+    unnamed = 0
+    with path.open(encoding="utf-8") as handle:
+        for line_no, line in enumerate(handle, start=1):
+            line = line.strip()
+            if not line:
+                continue
+            label = f"districts.jsonl line {line_no}"
+            try:
+                record = json.loads(line)
+            except ValueError as exc:
+                report.error(f"{label}: not valid JSON ({exc})")
+                continue
+            records += 1
+            for err in schemas["district"].validate(record):
+                report.error(f"{label}: {err}")
+            nodes = record.get("nodes")
+            triangles = record.get("triangles")
+            if not isinstance(nodes, list) or not isinstance(triangles, list):
+                continue
+            if not record.get("name"):
+                unnamed += 1
+            for tri in triangles:
+                if (not isinstance(tri, list) or len(tri) != 3
+                        or any(not _is_int(i) or i < 0 or i >= len(nodes) for i in tri)):
+                    report.error(f"{label}: triangle {tri!r} does not index its {len(nodes)} nodes")
+                    break
+            centroid = record.get("centroid")
+            if isinstance(centroid, list) and len(centroid) == 3 and nodes:
+                for axis in range(3):
+                    mean = sum(float(n[axis]) for n in nodes) / len(nodes)
+                    if abs(mean - float(centroid[axis])) > 0.01:
+                        report.error(f"{label}: centroid[{axis}] is {centroid[axis]} but the node "
+                                     f"mean is {mean:.3f}; §8d defines it as the node mean")
+                        break
+    if unnamed:
+        report.note(f"{unnamed} of {records} districts carry no label — the name system could not "
+                    f"render one; the polygon is still exact")
+    report.note(f"{records} districts (§8d)")
     return records
 
 

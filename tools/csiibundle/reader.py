@@ -50,6 +50,7 @@ DEFAULT_LAYERS = {
     "water": "terrain/water_level.png",
     "areas": "areas.jsonl",
     "areaPrefabs": "areaprefabs.json",
+    "districts": "districts.jsonl",
     "clipVolumes": "clipvolumes.jsonl",
     "grading": "grading.json",
     "warnings": "warnings.jsonl",

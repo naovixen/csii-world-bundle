@@ -33,6 +33,19 @@ namespace Carto.IO
         /// <summary>The playable map edge length in metres.</summary>
         public double MapSize;
 
+        /// <summary>
+        /// Whether this city drives on the LEFT (<c>Instance.City.leftHandTraffic</c>).
+        /// <para>
+        /// The game already uses it to pick sub-meshes (<c>MeshRipSystem</c>'s
+        /// <c>RequireLeftHandTraffic</c>) and to orient a lane
+        /// (<c>NetworkSystem.cs:896</c>), so the bundle described the RESULT of the bit
+        /// everywhere and never the bit. A consumer that has to lay out traffic can only infer
+        /// it from which side of a two-way segment its with-flow lanes lie on, which is
+        /// measurable but is an inference; this is the answer.
+        /// </para>
+        /// </summary>
+        public bool LeftHandTraffic;
+
         /// <summary>The <c>geo</c> block (contract §2.3).</summary>
         public Dictionary<string, object> Geo;
 
@@ -77,6 +90,7 @@ namespace Carto.IO
                 City = Instance.City?.cityName ?? string.Empty,
                 Map = (Instance.GameMode == global::Game.GameMode.Game) ? Instance.Map?.mapName : null,
                 MapSize = Instance.Terrain.playableArea.x,
+                LeftHandTraffic = Instance.City?.leftHandTraffic ?? false,
                 Geo = BuildGeo(options),
                 // Live-settings fallback for the standalone finalize button; the orchestrated
                 // pipeline overwrites both with the plan's actual values.

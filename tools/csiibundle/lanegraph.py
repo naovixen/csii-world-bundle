@@ -31,6 +31,12 @@ movements THROUGH a junction — the connections that make the graph a graph —
 a lane out for an owner that does not resolve. `by_owner()` groups the owner-less under `None`;
 `attach_networks()` yields `None` for the ~78% that are not edge-owned, which is normal.
 
+**That is about the OWNER and not about the `kind`, and the two were conflated in this module
+until A7 measured them apart.** The junction movements are node-owned **`car`** lanes — 40,708 of
+them bridge two different road segments' lane ends within 5 cm on the reference city — and they
+are what makes the drivable graph connected. `kind == "connection"` is something else entirely;
+see `DRIVABLE_KINDS` below for what it turned out to be.
+
 **The other four fields are what a simulation actually needs**, and every one of them is
 optional so a consumer must handle absence:
 
@@ -43,6 +49,13 @@ optional so a consumer must handle absence:
   lane a vehicle can occupy, drawing lane lines wants only the masters. `masters()` filters.
 * `curviness` — how much the lane bends, on CS2's own scale, carried rather than recomputed.
 
+**For a ROUTE graph, use `csiibundle.navgraph` instead of this module.** It answers "what is the
+road network, as roads, with a node shared wherever two roads meet?" — the segment centerlines,
+the turning movements between them and the connectivity — where this one hands back the lane
+records as they are. It also documents the three traps in this layer that cost a day to find:
+`SideConnection` marks a driveway stub, `Invert` is a lane's direction relative to its segment,
+and a segment's car lanes are stacked laterally AND chained longitudinally.
+
 Positions are bundle-frame metres (X east, Y up, Z north). Convert with `csiibundle.frames`.
 """
 
@@ -54,8 +67,17 @@ from . import reader
 # unrecognised value should still be carried rather than dropped. CONTRACT.
 KINDS = ("car", "track", "pedestrian", "parking", "connection", "other")
 
-# The kinds a vehicle can occupy — what a traffic or routing consumer wants. `connection` is in
-# because a junction's turning movements are drivable; `pedestrian` and `parking` are not.
+# The kinds a vehicle can occupy — what a traffic or routing consumer wants. `pedestrian` and
+# `parking` are not.
+#
+# **`connection` is NOT the road junctions**, though this module said it was until A7 measured it
+# (audit A7.1, 2026-08-19). Of 3,000 sampled road car-lane endpoints, **0.0 % have a `connection`
+# endpoint within 5 cm** (0.2 % within 0.5 m) while **62.1 % have another `car` endpoint from a
+# different owner** there; sampled `connection` lanes sit at y = 721–1612 m against the roads'
+# 508–594 m. They are air corridors and transit links. THE JUNCTIONS ARE `car` LANES, owned by a
+# net node — which is what `csiibundle.navgraph` builds the drivable graph from. `connection` is
+# kept in this tuple because a transit consumer wants it and because the set is a statement about
+# what a vehicle occupies, not about what a road junction is.
 DRIVABLE_KINDS = ("car", "track", "connection")
 
 

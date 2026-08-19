@@ -83,7 +83,9 @@ def _resolve(override):
     from . import validate as _validate    # noqa: WPS433
     stages = [_bake.STAGE]
     # materials runs AFTER every stage that binds a material, so it exports only what is used
-    for name in ("terrain", "water", "scene", "shapes", "networks", "derived", "instances", "lights", "groundcover", "materials", "cook"):
+    # `navgraph` and `poi` come after `scene` (they read and extend the `info.json` it writes)
+    # and `poi` after `navgraph` (it snaps onto the DecalRoads the navgraph stage shipped)
+    for name in ("terrain", "water", "scene", "shapes", "networks", "derived", "instances", "lights", "navgraph", "poi", "groundcover", "materials", "cook"):
         try:
             module = __import__(f"{__name__}.{name}", fromlist=["STAGE"])
         except ModuleNotFoundError as exc:
