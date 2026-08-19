@@ -6096,3 +6096,62 @@ terrain-only layers — the state that must never be silent.
 `height`-on-arrays crash exposed the API error, and gate 2's first run reported a triumphant
 `PASS` off `0 of 40 area prefabs are ['Terrain']-only`. A gate that measures nothing passes
 everything.
+
+## 75. Three defects from the 2026-08-19 load — a 1.3 km collision box, no nits, no lights (2026-08-19)
+
+Reported: *"still many areas with trees over the road"*, *"I still get stuck in terrain / areas
+e.g. the airport"*, *"the lights in the map do not work at all, they don't turn on at night"*.
+Three independent causes, two of them mine.
+
+### The airport is a solid box a kilometre wide
+
+`InternationalAirport01`'s `Colmesh_` is **8 vertices spanning 1,343.8 × 1,244.6 × 82.3 m**.
+Driving onto the airport puts the car inside an invisible solid block — which is the report
+exactly, and it is not "stuck in terrain" at all.
+
+`stages/shapes._collider` fell back to the shape's own bounding box whenever the decimated LOD
+exceeded `colmesh_max_tris` (20,000). Measured over the level's 4,149 colmeshes:
+
+```
+1,407 are 8-vertex BOXES        median footprint 1.6 m   p90 6.5 m
+   34 of those are over  20 m
+   15 over 100 m,  7 over 200 m,  3 over 400 m
+```
+
+So the fallback is right for 1,373 of 1,407 and catastrophic for 34: the airport, the harbour
+(448 m), `NuclearPowerPlant01` (535 m), `Oracle_Park` (251 m), `MedicalUniversity01` (160 m).
+**Past about a building's own footprint a box stops approximating the object and becomes a wall
+round a district**, so `BOX_COLLIDER_MAX_METRES = 20` now lets the triangle cap give way instead —
+a few thousand collision triangles cost far less than a trap. OURS (CS2 has no collision for a
+placed object), declared as `oversizedBoxColliders`.
+
+### The city never lit up, and enabling lights would not have fixed it
+
+Two independent causes, and only one was the obvious one:
+
+* `lights: false` in the `performance` preset, so the stage never ran and the level tree holds
+  **zero** `PointLight`/`SpotLight` objects.
+* **2,373 materials ship an `emissiveMap` and an `emissiveFactor` with NO
+  `emissiveIntensityNits`.** v1.5 wants a physical intensity; a layer without one takes
+  `MATERIAL_LAYER_FLAG2_REMOVETHIS_emissiveNoNits` and is scaled by the global
+  `emissiveFallbackIntensity` against the last frame's exposure (`defaultMat.hlsl:237`,
+  `permutationsV0.h.hlsl:244`) — an exposure-relative legacy path, not a light. Every lit window
+  in the city was on it.
+
+Vanilla's own value for a lit building window is **200 nits** (`west_coast_usa`'s `highrise`); its
+brightest emissive is 4,000. Found the same way `paletteBaseColor` was (§69): read what vanilla
+sets, not what the field is called.
+
+### The tree rule measured the wrong distance
+
+`foliage_road_clearance` was 1.5 m — the *vehicle* envelope, a car's flank sitting ~0.95 m off the
+lane centre. But **a lane is ~3.5 m wide, so its EDGE is 1.75 m off the centre**, and a trunk
+radius reaches it at ~2.25 m: trunks were still standing inside the carriageway. Now 2.5 m, which
+is 6,389 trees (2.06 %) against 3,466.
+
+**And it clips by trunk position, not canopy** — now a recorded choice rather than an oversight.
+Measured canopy half-widths: `OakTree01` and `VFP_LiveOakTree` **8.11 m**, `EU_AlderTree01` 7.35,
+`NA_HickoryTree01` 6.40. A tree whose trunk is 7 m off the road still hangs over it, which is how
+a road reads as tree-covered from above while nothing stands in the driving line. Clipping every
+overlapping canopy is 25,743 trees (8.3 %); Naomi chose the trunk rule — fix what the car can hit,
+leave what merely shades it.
