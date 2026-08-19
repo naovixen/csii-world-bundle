@@ -202,7 +202,8 @@ def _shape_job(args):
     size = hi - lo
     radius = 0.5 * float(numpy.linalg.norm(size))
     game_px = lod.game_detail_px(radius, size, area, level_of_detail=options["level_of_detail"])
-    null_px = max(1.0, game_px * float(options["detail_scale"]))
+    detail_scale = _detail_scale(kind, options)
+    null_px = max(1.0, game_px * detail_scale)
 
     shape_name = placement.shape_key(asset, suffix, variant)
     base_mesh = dae.group_by_material(dae.merge_meshes(shape_name, parts))
@@ -231,7 +232,7 @@ def _shape_job(args):
     # `gameCullMetres` divided by the declared `lod_detail_scale` is how far THIS level draws the
     # mesh; an imposter only earns its atlas past `imposter_min_metres`.
     reach_m = lod.cull_distance(lod.mesh_min_lod(size, area),
-                                options["level_of_detail"]) / max(options["detail_scale"], 1e-6)
+                                options["level_of_detail"]) / max(detail_scale, 1e-6)
     wants_imposter = options["imposters"] and reach_m >= options["imposter_min_metres"]
     billboard_px = null_px if wants_imposter else None
     final_null = (null_px / IMPOSTER_REACH) if wants_imposter else null_px
@@ -358,6 +359,26 @@ def _lod_levels(derived_dir, source, shape_name, base_mesh, null_px, aliases, ti
     return fixed, stats, meshes
 
 
+def _detail_scale(kind, options):
+    """How many times closer than CS2 this level culls a shape of `kind`.
+
+    One global multiplier over two things whose own distances differ by 12.7x is the A6.2 defect:
+    it preserves the ratio and destroys the relationship. `lod_detail_scale_prop` gives props
+    their own rate; 0 keeps the single global number, so this is inert unless asked for.
+
+    THE GAME'S OWN RULE IS NOT THIS, and is worth stating where the deviation lives.
+    `PreCullingSystem.RelativeCullingJob` culls a sub-object at the distance to its OWNER's bounds
+    while keeping the sub-object's own `m_MinLod` — so CS2 buys a facade prop its building's own
+    extent, tens of metres, not an order of magnitude (audit §70). That half is NOT ported, and
+    the reason is structural rather than a shortcut: BeamNG carries detail thresholds in the
+    SHAPE file, one per prefab, and ownership is per INSTANCE — the same prop stands both
+    free-standing and bolted to a tower — so there is no per-instance threshold to put it in.
+    """
+    if kind == "prop" and options.get("detail_scale_prop"):
+        return float(options["detail_scale_prop"])
+    return float(options["detail_scale"])
+
+
 def _collider(shape_name, base_mesh, lod_mesh, kind, options, is_tree=True):
     """The collision policy, in the plan's order: trunk cylinder for a tree, the decimated LOD
     when it is thick enough, a padded box otherwise. `()` when this class does not collide.
@@ -411,6 +432,9 @@ def run(ctx, progress):
     options = {
         "level_of_detail": lod.DEFAULT_LEVEL_OF_DETAIL,
         "detail_scale": float(settings.get("lod_detail_scale", 6.0) or 6.0),
+        # A6.2: props are given up at their own rate. 0 = the global one, so nothing changes
+        # unless it is asked for.
+        "detail_scale_prop": float(settings.get("lod_detail_scale_prop") or 0.0),
         "generate_lods": bool(settings.get("generate_lods", True)),
         "imposters": bool(settings.get("imposters", True)),
         "imposter_min_metres": (float(settings.get("imposter_min_metres") or 0)
@@ -586,9 +610,25 @@ def _report(results, demand, scan_stats, options, errors, started, progress, rew
                       "minMetres": round(options["imposter_min_metres"], 1),
                       "vanillaShare": "west_coast_usa 3.1 %, italy 7.2 %, johnson_valley 4.4 %"},
         "detailScale": options["detail_scale"],
+        "detailScaleProp": options.get("detail_scale_prop") or options["detail_scale"],
         "levelOfDetail": options["level_of_detail"],
         "drawDistance": summary,
         "approximations": {
+            "lodDetailScalePerKind": {
+                "what": "a PROP's cull threshold uses `lod_detail_scale_prop` instead of the "
+                        "global multiplier",
+                "why": "CS2 draws a median prop to 1,024 m and a median building to 13,008 m, a "
+                       "factor of 12.7, and one global divisor preserves that ratio while "
+                       "destroying the relationship - at 105 m a window frame is plainly visible "
+                       "where at CS2's 1,024 m it is sub-pixel, so facades read as construction "
+                       "sites (A6.2). DECLARED TUNING: the game has no per-kind divisor. The "
+                       "game's actual sub-object rule - cull at the OWNER's bounds, keep your own "
+                       "m_MinLod (audit §70) - is NOT ported, because BeamNG holds detail "
+                       "thresholds per SHAPE and ownership is per INSTANCE",
+                "count": sum(1 for pair, entry in demand.items()
+                             if entry.get("kind") == "prop" and pair in rows_by_pair),
+                "value": options.get("detail_scale_prop") or options["detail_scale"],
+            },
             "lodDetailScale": {
                 "what": "every shape's cull threshold is CS2's own, multiplied by lod_detail_scale",
                 "why": "CS2 draws a median prop to 1 km and a median building to 7.3 km over 1.2M "
@@ -670,14 +710,15 @@ INPUTS = ("layer:instances", "layer:meshes", "derived:lods", "derived:materials.
 SETTINGS = ("trees", "props", "buildings", "foliage_density", "prop_density", "region",
             "foliage_road_clearance",
             "generate_lods", "imposters", "imposter_min_metres", "view_distance",
-            "lod_detail_scale", "tree_wind",
+            "lod_detail_scale", "lod_detail_scale_prop", "tree_wind",
             "collision_preset", "collision_buildings", "collision_props", "collision_trees")
 OUTPUTS = ("art/shapes/cs2",)
 
+# version 5: props take their own detail scale (A6.2)
 # version 4: orphans of absent owners are not placed (A6.6)
 # version 3: the road-clearance deviation (A6.4)
 # version 2: the tree/plant split (A6.1) - a plant gets no collider and no trunk cylinder, and
 # every shape row carries `tree` and `trunkRatio`
 STAGE = Stage(STAGE_KEY, "Object shapes", enabled, units, run, inputs=INPUTS, settings_keys=SETTINGS,
               outputs=OUTPUTS,
-              shared_keys=("shapes", "materials_used", "materials_variants_used"), version=4)
+              shared_keys=("shapes", "materials_used", "materials_variants_used"), version=5)

@@ -29,7 +29,9 @@ import numpy
 from .. import areas as area_rules
 from .. import reader
 from . import Product, register
+from . import ground as ground_mod
 from .ground import GroundSurface
+from .roads import load_road_surface
 from .tiles import TileSink
 
 PRODUCT_NAME = "areas"
@@ -124,6 +126,71 @@ def _publish(heights):
     return block, (block.name, list(heights.shape), str(heights.dtype))
 
 
+# -- decalLayers: keep terrain-only paint OFF the carriageway (A6.5) ----------------------------
+
+# How far above a piece a road surface may sit and still count as "on top of it". A bridge is
+# metres up and the paint under it is real; a carriageway that a plaza runs into is centimetres.
+ROAD_AT_GRADE_M = 1.0
+# and how far BELOW, so a road that is a hair under the lifted paint still counts as covering it
+# (the paint carries `AREA_LIFT` plus its priority rung — 2 cm and up — by construction).
+ROAD_UNDER_TOLERANCE_M = 0.30
+
+
+def _clip_roads(pieces, catalogue, road, ground, progress):
+    """Drop the paint of `["Terrain"]`-only prefabs where a road surface is on top of it.
+
+    **CS2's own mask, not a rule of ours.** `decalLayers` is what the game targets a projection
+    at (§4.2), and a surface whose layers are `["Terrain"]` is never painted onto roads. We
+    conformed every area across its whole polygon regardless and then LIFTED it above the
+    terrain, so on the reference city 472,957 m² of terrain-only paint lay over a carriageway and
+    stood proud of it over three quarters of the overlap — which is what buries roads at a
+    grazing angle.
+
+    `bake/markings.py` has picked its target from the same field since A2
+    (`decal_blocks_ground` vs `decal_blocks_road`); areas simply never called it.
+
+    Runs in the PARENT, after the conform, because the road soup is far too large to ship into
+    every conform worker and this is the only place both surfaces exist at once. Vectorised over
+    all of a prefab's pieces at once.
+
+    DECLARED APPROXIMATION: the cut follows the conform's own piece boundaries (sub-cell, so
+    <= 1.75 m on the fine raster), not the kerb, so the edge is ragged by up to one piece. And
+    the test is per-CENTROID, so a piece straddling a kerb goes whole or stays whole.
+    """
+    if road is None or not getattr(road, "count", 0):
+        return pieces, {"prefabs": 0, "pieces": 0, "area": 0.0, "kept": 0}
+    stats = {"prefabs": 0, "pieces": 0, "area": 0.0, "kept": 0}
+    out = {}
+    for prefab, (verts, min_lods) in pieces.items():
+        entry = (catalogue or {}).get(prefab) or {}
+        layers = tuple(entry.get("decal_layers") or ())
+        if not layers or "Roads" in layers:
+            out[prefab] = (verts, min_lods)          # the game DOES paint these onto roads
+            continue
+        tri = verts.reshape(-1, 3, 3)
+        centroid = tri.mean(axis=1)
+        road_z = road.height(centroid[:, 0], centroid[:, 1])
+        delta = road_z - centroid[:, 2]
+        covered = (~numpy.isnan(road_z)) & (delta <= ROAD_AT_GRADE_M) & (delta >= -ROAD_UNDER_TOLERANCE_M)
+        if not covered.any():
+            out[prefab] = (verts, min_lods)
+            continue
+        edge1 = tri[covered, 1, :2] - tri[covered, 0, :2]
+        edge2 = tri[covered, 2, :2] - tri[covered, 0, :2]
+        stats["area"] += float(numpy.abs(edge1[:, 0] * edge2[:, 1] - edge1[:, 1] * edge2[:, 0]).sum()) * 0.5
+        stats["pieces"] += int(covered.sum())
+        stats["prefabs"] += 1
+        keep = ~covered
+        stats["kept"] += int(keep.sum())
+        if not keep.any():
+            continue                                  # the whole surface was carriageway
+        out[prefab] = (tri[keep].reshape(-1, 3), min_lods[keep])
+    if stats["pieces"]:
+        progress.log(f"areas: decalLayers - {stats['area']:,.0f} m2 of terrain-only paint clipped "
+                     f"off carriageways ({stats['pieces']:,} pieces over {stats['prefabs']} prefabs)")
+    return out, stats
+
+
 def run(context, progress):
     bundle = context.bundle_dir
     derived = context.derived
@@ -131,7 +198,7 @@ def run(context, progress):
     region = options.get("region")
     tile = float(options.get("tile", 256.0))
     jobs = max(1, int(options.get("jobs") or 1))
-    diagonal = options.get("diagonal", "envelope")
+    diagonal = options.get("diagonal", ground_mod.MEASURED_DIAGONAL)
     prefer_fine = options.get("ground", "fine") == "fine"
     out_dir = os.path.join(derived, PRODUCT_NAME)
     os.makedirs(out_dir, exist_ok=True)
@@ -198,6 +265,10 @@ def run(context, progress):
                        numpy.concatenate(m) if len(m) > 1 else m[0])
               for prefab, (v, m) in merged.items()}
     del merged
+    # the game's `decalLayers` mask, applied here because this is where both surfaces exist
+    road, road_stats = load_road_surface(bundle, region, progress)
+    pieces, clip_stats = _clip_roads(pieces, catalogue, road, None, progress)
+    del road
     progress.end(f"{stats['placed']} areas -> {sum(len(m) for _, m in pieces.values()):,} pieces "
                  f"({stats['skipped_region']} outside region, {stats['missed']} node lookups missed, "
                  f"worst unconformed {stats['counters']['worst']:.3f} m)")
@@ -237,8 +308,23 @@ def run(context, progress):
             "missedLookups": stats["missed"], "worstUnconformed": round(stats["counters"]["worst"], 4),
             "tiles": written["files"], "tris": written["tris"], "_tiles": written["tiles"],
             "minLodTriangles": {str(k): int(v) for k, v in sorted(lod_histogram.items())},
+            "roadClip": {
+                "what": "paint of a `[\"Terrain\"]`-only prefab is dropped where a road surface "
+                        "is on top of it",
+                "why": "CS2's own `decalLayers` mask (§4.2) - the game never paints those onto "
+                       "roads. We conformed across the whole polygon and then lifted it, so on "
+                       "the reference city 472,957 m2 of terrain-only paint lay over a "
+                       "carriageway and stood proud of it over three quarters of the overlap. "
+                       "`bake/markings.py` has read the same field since A2. APPROXIMATE at the "
+                       "conform's own piece boundaries (sub-cell), not at the kerb",
+                "m2": round(clip_stats["area"], 1), "pieces": clip_stats["pieces"],
+                "prefabs": clip_stats["prefabs"], "atGradeMetres": ROAD_AT_GRADE_M,
+            },
+            "diagonal": diagonal,
             "jobs": jobs, "seconds": round(time.monotonic() - started, 1)}
 
 
+# version 3: the MEASURED terrain diagonal (was the `envelope`, which floats), and CS2's own
+#            `decalLayers` mask keeps terrain-only paint off the carriageway (A6.5)
 # version 2: tile primitives carry the game's per-triangle draw-distance limit (`#L<n>`)
-register(Product(PRODUCT_NAME, INPUTS, "areas/", run, version=2, options=("ground", "region")))
+register(Product(PRODUCT_NAME, INPUTS, "areas/", run, version=3, options=("ground", "region")))

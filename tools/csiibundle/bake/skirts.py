@@ -19,7 +19,7 @@ import numpy
 
 from .. import frames, glb, instances, reader
 from . import Product, register
-from .ground import GroundSurface
+from .ground import MEASURED_DIAGONAL, GroundSurface
 from .markings import _in_region, _material_specs, _texture_uri_base
 from .tiles import TileSink
 
@@ -39,7 +39,10 @@ def run(context, progress):
     manifest = context.manifest or {}
     total = int(((manifest.get("counts") or {}).get("instances")) or 0) or None
 
-    ground = GroundSurface(bundle, options.get("diagonal", "envelope"), mode="min", prefer_fine=options.get("ground", "fine") == "fine")
+    # the measured diagonal, so `mode` is inert: with one triangulation there is no envelope
+    # to take the MIN of, and taking one was only ever a hedge against not knowing (audit §73)
+    ground = GroundSurface(bundle, options.get("diagonal", MEASURED_DIAGONAL), mode="min",
+                           prefer_fine=options.get("ground", "fine") == "fine")
     if not ground.present:
         progress.log("skirts: no terrain layer — bands stay as authored (1 m plinths)")
 

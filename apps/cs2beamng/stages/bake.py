@@ -10,6 +10,7 @@ shows "bake › markings: drape …" with its own bar.
 import re
 import time
 
+from csiibundle.bake import ground as bake_ground
 from csiibundle.bake import runner as bake_runner
 from csiibundle.bake.progress import Cancelled, Progress
 
@@ -129,7 +130,8 @@ def run(ctx, progress):
     categories = [c.strip() for c in str(settings.get("lane_furniture_categories") or "fence,cable,lane").split(",") if c.strip()]
     options = {
         "tile": float(settings.get("tile_size") or 256),
-        "diagonal": "envelope",
+        # MEASURED, not hard-coded conservatism: BeamNG splits SW-NE (audit §73)
+        "diagonal": bake_ground.MEASURED_DIAGONAL,
         "region": region_of(settings),
         "jobs": ctx.jobs,
         "lane_parts": categories,

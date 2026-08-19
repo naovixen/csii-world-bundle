@@ -15,6 +15,7 @@ import math
 import os
 
 from csiibundle import reader
+from csiibundle.bake import ground as ground_mod
 from csiibundle.bake import manifest as bake_manifest
 from csiibundle.bake import products as bake_products
 
@@ -98,7 +99,8 @@ def take(values):
     out["derived"]["present"] = doc is not None
     if os.path.isdir(bundle):
         try:
-            options = {"tile": float(values.get("tile_size") or 256), "diagonal": "envelope", "region": region}
+            options = {"tile": float(values.get("tile_size") or 256),
+                       "diagonal": ground_mod.MEASURED_DIAGONAL, "region": region}
             report = bake_manifest.status_report(doc, bake_products(), bundle, options)
             out["derived"]["products"] = {k: {"status": s, "reason": r} for k, (s, r) in report.items()}
         except Exception as exc:  # noqa: BLE001

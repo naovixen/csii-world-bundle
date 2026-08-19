@@ -27,7 +27,9 @@ from .progress import Cancelled, Progress
 # None (whole bundle) or {"centerX", "centerZ", "radius"} in bundle-frame metres.
 DEFAULT_OPTIONS = {
     "tile": 256.0,
-    "diagonal": "envelope",
+    # MEASURED: BeamNG splits SW-NE (`ground.MEASURED_DIAGONAL`, audit §73). Was "envelope",
+    # which is >= both triangulations by construction and floated every ground product.
+    "diagonal": "ne_sw",
     "region": None,
     "jobs": 1,
     # Which §8 raster is "the ground": "fine" = layers.terrainFine (1.75 m) when the bundle has
