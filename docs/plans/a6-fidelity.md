@@ -1,9 +1,11 @@
-# A6 — one live regression and six fidelity defects from the A5 loads
+# A6 — one live regression and nine defects from the A5 and 2026-08-19 loads
 
 A5 closed most of the performance work (audit §64): the build is 19 minutes, the level mounts
 5.2 GiB, and **the imposter fix held** — 153 imposter builds this session against 2,652, and the
-1–2 FPS collapse is gone. What is left is one performance item that is NOT fixed, and six
-fidelity ones. Reported 2026-08-18 across two loads:
+1–2 FPS collapse is gone. What is left is one performance item that is NOT fixed, and nine
+more — seven fidelity, one whole layer that never worked, and one serialisation bug under all
+of them. Reported 2026-08-18 across two loads, A6.7 on 2026-08-19, and A6.8/A6.9
+out of the 2026-08-19 11:27 load:
 
 0. **The GPU still runs out of memory.** FPS decays 40–60 → 15 over 30 minutes. Not the same
    cause as the A5 one, and not fixed by it.
@@ -17,6 +19,17 @@ fidelity ones. Reported 2026-08-18 across two loads:
    two independent consumer-side causes, both measured below.
 6. **A lot of prop locations are floating / off.** Reported 2026-08-18. The transform is exact —
    the cause is that we place a building's props after dropping the building.
+7. **They are STILL floating or misaligned.** Reported 2026-08-19 after A6.6 shipped. Different
+   cause, and not a placement one at all — but not the one this plan first wrote down either:
+   **the generated LOD files were written without their source node's transform**, so 670 shapes
+   teleported up to 75.9 m the moment they switched level, colliders included. Fixed, together
+   with the ladder that put the switch there.
+8. **Every `rotationMatrix` in the level is the transpose of the rotation it means.** Found while
+   proving A6.9's spot cones point the wrong way; it is one flatten helper, it is not confined to
+   lights, and it goes first.
+9. **The lights do not work, and the emissive never lights up.** Reported 2026-08-19 after the
+   `149601a` load. Five independent defects, four of them ours and all five measured below; the
+   "only 500 of thousands" is our own `lights_max`, and neither engine's rule is a static cap.
 
 Everything below the horizontal rule in each section is measured, not assumed. Where a rule is
 still open it says so; **none of these should be fixed by inventing a consumer-side rule** (see
@@ -544,6 +557,17 @@ when it is present — and `bake/roads.load_road_surface` already builds the roa
 > decided by measurement: 7 sites, 14 children, and the tall ones are the `ConstructionCrane01`
 > that §4 says is real — a height threshold would have deleted it. The harness rotation column is
 > added and reads **100.0000 %**.
+>
+> **VERIFIED IN THE BUILT LEVEL, 2026-08-19 (A6.7's investigation).** Walking the 10:14 build's
+> `main/MissionGroup` and `forest/` and matching every object back to a bundle record: of the
+> ~5,900 descendants of the 12 `unresolved_*` owners, **0 are placed**, and the deliberate keeps
+> are all still there — `CampfireSite02` 916 of 964, `ChirperPark03` 698 of 738, `ParkingLot13`
+> 657 of 711, the two `Agriculture_Area_Placeholder` 637, `AmericanFootballField01` 216.
+> **A6.6 is not the residual, and no other orphan class is either**: counting every level group
+> AND every other forest item as a supporter, **568 of 1,146,441 forest items** (0.05 %) stand
+> more than 3 m above the terrain with nothing under them, and they are buoys, moored boats,
+> bridge-pillar tops and the lights on a radio mast — all correct. **The props Naomi is still
+> seeing float are A6.7.**
 
 ### The transform is not the bug, and that was worth proving first
 
@@ -658,7 +682,738 @@ The consumer fix is still required — a bundle is allowed to declare a gap and 
 
 ---
 
+## A6.7 The props do not move — the building under them does, 56 m out
+
+> **STATUS — BUILT, and the cause was a DEFECT, not the tuning this section first diagnosed**
+> (audit §77). The half below that says "the level never draws LOD 0" is right; the half that says
+> the LOD1 SURFACE is a metre out was measured across a frame mismatch and is **retracted** — see
+> *The correction* below. What was actually wrong:
+>
+> **`bake/lods` wrote every generated level with its vertices in the NODE's local frame, and
+> `glbwrite` writes identity nodes.** LOD 0 is placed by the node matrix and the LODs were not, so
+> the two disagree by exactly that transform. **791 of 4,453 mesh-bearing nodes carry one** (166
+> of them a rotation), which is **670 shapes and 39,565 placements** whose geometry TELEPORTED at
+> the switch — straight out of the shipped `.dae`, `Mangr0be_Tree__elderly` jumps **9.0 m** at
+> 17.6 m from the camera (10,886 of them), `NA_ResidentialLow03_L5_2x6` **7.0 m**, and
+> `Amazon_Warehouse` **75.9 m** (those are centre shifts; the worst VERTEX moves further still —
+> `NA_ResidentialLow01_L5_2x6` rotates as well as translates, 4.1 m at the centre and 29.1 m at
+> the corner). **And it was a collision defect too**: the colmesh is cut from
+> LOD 1, so **628 shapes / 5,870 placements** carried an invisible collider up to 29 m off the
+> building you can see. Fixed by `_flatten` (+ the unrotated normals in `_collect`, the same
+> oversight one file along), gated in `tools/test_bake_products.py`, and verified after a re-bake:
+> the LOD centres now agree with LOD 0's to the centimetre.
+>
+> **The ladder is replaced as well, because it was still built from the wrong number.** Each
+> level now takes its switch point from its own MEASURED displacement
+> (`decimate.level_displacement` → `lod.displacement_switch_px`), not from a multiple of the
+> shape's cull threshold. Budget: `lod_switch_error_px`, default **6 px**, measured at **+0 % to
+> +16 %** drawn triangles over 1.16 M placements (1 px would be +384 % to +630 %). No residency
+> cost either way — every level was already in the `.dae` and already mounted.
+>
+> **MEASURED ON THE REBUILT LEVEL (13:24, cook on).** In the shipped `.dae`, every generated
+> level now sits on its LOD 0 — `Mangr0be_Tree__elderly` 9.0 m → **0.48 m**,
+> `NA_ResidentialLow03_L5_2x6` 7.0 → **0.05 m**, `NA_ResidentialLow01_L5_2x6` 4.1 → **0.09 m**,
+> `Amazon_Warehouse` 75.9 → **0.13 m**, colliders with them — and what is left is the decimation
+> itself, which is what the ladder now budgets: **every level ships at 6.0 px of error** (p50
+> 6.00, p90 6.01 on 4,228 shapes; 523 LOD1s are identical to LOD 0 and are drawn everywhere).
+> `level_budget` on the level that ships: drawn triangles **1,482,557** against A5's 1,469,467
+> (**+0.9 %**) and resident **4,675 MiB** against 4,685 — the two numbers the gate asks not to
+> move, and they did not. (Those are from the spawn; the simulated downtown cost of the deferrals
+> is +16 % to +21 %, which `level_budget`'s single viewpoint does not see.)
+>
+> **THE FIRST BUILD OF THIS WAS A REGRESSION AND IS CORRECTED** (13:24 → `stages/shapes` v8).
+> The switch rule shipped working in BOTH directions, so a level whose surface measured close to
+> LOD 0's was allowed NEARER than the ladder had ever put it: **2,586 of 2,903 prop shapes
+> (335,072 placements) and 615 of 1,057 building shapes** moved in, a streetlight drawing its
+> 24-triangle level from **13.1 m** and a window guard from 7.9 m. Naomi's load: *"made things
+> worse … cranes rotated and floating, highrises all diagonal"*. **A surface distance is not a
+> visual error for thin or small geometry** — flattening a lamp post's tube moves its surface
+> 0.06 m and destroys the object — and the ratio ladder, whatever else is wrong with it, was
+> protecting that by keying off the shape's SIZE. The ladder is now the **ceiling**: the
+> measurement may only DEFER a level, never advance it, so this can only be an improvement on
+> what was there, and `test_a3_objects.test_switch_points_only_ever_defer` gates the direction.
+>
+> **And vegetation is exempt** (v9). Applying the rule to it deferred 262 of 268 tree shapes over
+> **1,346,600 placements** for **+24 %** drawn triangles in a forest — and the reason to decline
+> that is not only the cost: the rule's input is a SURFACE DISTANCE, and moving a canopy's leaves
+> 0.3 m measures the same as moving a wall 0.3 m while reading as nothing at all. The metric does
+> not know the difference, so vegetation keeps the ladder until someone measures foliage error
+> properly. **Measured cost of what ships** (1.16 M placements; the two densest forest
+> neighbourhoods and the two densest downtown ones): at 8 px **+0 %, +0 % forest and +16 %, +21 %
+> downtown**, 1,004 shapes deferred. 6 px is +30 %/+39 % downtown and 4 px +51 %/+67 %, so the
+> default moves to 8 px — every gross case is deferred 16x either way, and A6.0 says the card is
+> the constraint.
+>
+> **AWAITING NAOMI'S LOAD**, and the commit waits with it.
+
+### The correction — what the tables below actually measured
+
+The displacement figures in this section were taken by comparing the source mesh in WORLD space
+against the generated level file in its own space, i.e. **across the very frame mismatch that
+turned out to be the defect**. They therefore measure the node offset, not the decimator. In one
+frame the same shapes come out an order of magnitude smaller:
+
+| shape | as tabled below | frame-consistent | its node offset (worst vertex) |
+|---|---:|---:|---:|
+| `NA_ResidentialLow03_L5_2x6` | 6.640 m | **0.060 m** | 7.00 m |
+| `NA_ResidentialLow01_L5_2x6` | 4.580 m | **0.377 m** | 29.12 m |
+| `USSW_ResidentialMedium_L1_2x4` | 4.517 m | **0.114 m** | 5.66 m |
+
+Over the whole bundle the real LOD1 distribution is **p50 0.018 m, p90 0.550 m, p99 6.167 m**
+(LOD2: 0.057 / 2.030 / 8.290), with **603 of 4,261 shapes whose LOD1 is geometrically identical to
+LOD 0**. So **do not quote** the "1.315 m / 30.9 px against 0.024 m / 2.9 px" headline or the
+rooftop-support table: both are contaminated. What survives is the SHAPE of the finding — a
+building's generated level is an order of magnitude further out than a prop's, and one ladder of
+ratios cannot serve both — which is why the switch rule was replaced anyway.
+
+Everything from here to the end of the section is the original 2026-08-19 investigation, kept
+because its reasoning about the ladder stands and its numbers show exactly how a frame mismatch
+reads when you are not looking for one.
+
+### What is measured
+
+**The ladder is entirely ours.** `stages/shapes` already declares it — `lodLadderSwitchPoints`,
+*"CS2 ships no LOD chain for these prefabs (lodCap 0), so there is no game rule to port; the
+ratios are vanilla BeamNG's spacing"* — with `count: 4228` and **no cost**. This is that cost.
+
+Switch distances, from the build's own `drawDistance` block and `LADDER_RATIOS`. Each level is
+used from its own pixel size upward, so level *n* reaches `ourCull / ratio`:
+
+| kind | CS2 culls at | this level culls at | LOD0 to | LOD1 to | LOD2 to |
+|---|---:|---:|---:|---:|---:|
+| building | 13,008 m | 1,332 m | **55.5 m** | 222 m | 888 m |
+| tree | 4,097 m | 422 m | 17.6 m | 70 m | 282 m |
+| prop | 1,024 m | 262 m | 10.9 m | 44 m | 175 m |
+
+What each level costs the geometry — p95 distance from the generated level's surface to the LOD0
+surface, instance-median over all 4,100 shapes (`decimate` targets 24.5 % and 6.4 % of the
+triangles; a median building goes 5,097 → 1,326 → 351):
+
+| kind | median shape | LOD1 displacement | LOD2 displacement |
+|---|---:|---:|---:|
+| **building** | 33.28 m | **1.315 m** (4.0 % of the shape) | **2.804 m** (8.4 %) |
+| tree | 9.30 m | 0.378 m (4.1 %) | 0.378 m (4.1 %) |
+| **prop** | 1.56 m | **0.024 m** (1.5 %) | **0.067 m** (4.3 %) |
+| decal | 6.71 m | 0.000 m | 0.000 m |
+
+Put the two tables together with `lod.screen_px`, the repo's own projection, and the defect is one
+line — **the error at the moment each level takes over**:
+
+```
+building LOD1   1.315 m at  55.5 m  =  30.9 px      prop LOD1   0.024 m at 10.9 m  =  2.9 px
+building LOD2   2.804 m at 222.0 m  =  16.5 px      prop LOD2   0.067 m at 43.7 m  =  2.0 px
+tree     LOD1   0.378 m at  17.6 m  =  28.0 px
+```
+
+A building's LOD1 error is only sub-pixel beyond **1,715 m**; we start drawing it at 55.5 m. The
+props standing on it are inside 3 px throughout. **Ten to one — that mismatch is the defect.**
+
+And the consequence, measured directly. 171,842 rooftop props (a child whose local Y is in the top
+40 % of an owner over 4 m tall), distance from the prop to the nearest point of its owner's
+surface, against each level of the owner in turn:
+
+| owner drawn at | p50 | p90 | p99 | > 1 m | > 2 m | > 4 m |
+|---|---:|---:|---:|---:|---:|---:|
+| LOD0 (the bundle) | 0.30 m | 0.68 | 1.32 | 4,952 (2.9 %) | **617 (0.4 %)** | 160 |
+| LOD1 (from 55.5 m) | 0.40 m | 1.87 | 7.89 | 28,966 (16.9 %) | **16,052 (9.3 %)** | 8,189 |
+| LOD2 (from 222 m) | 0.58 m | 2.74 | 10.25 | 49,471 (28.8 %) | **23,720 (13.8 %)** | 10,892 |
+
+### What this clears, so nobody looks there again
+
+Everything A6.6 cleared was re-checked against the shipped bundle **and** the built level, and
+three more mechanisms with it. All hold:
+
+| checked | result |
+|---|---|
+| the bundle's own sub-object geometry | **0** of 171,842 rooftop props overhang their owner's XZ footprint box; transforming each prop's own bbox corners into the owner's frame, 46 of 407,232 overhang by more than 1 m and 43 of those are billboards on a wall |
+| a second orphan class (owner is a prop, a network, or nothing) | 189 records hang off a prop that is not placed and **0 of them reach the level**; counting every level group AND every other forest item as a supporter, 568 of 1,146,441 forest items stand >3 m above the terrain unsupported, and they are buoys, moored boats, bridge-pillar tops and the lights on a radio mast |
+| shape origin / scale drift through the bake | the level's `.dae` bbox equals the bundle `.glb` bbox for every shape sampled; **every non-vegetation forest type ships `scale: 1.0`** (only trees carry `growthScale`) |
+| the terrain the props stand on | `terrainFine − heightmap` at 1,190,757 prop and tree positions: median **0.000 m**, \|Δ\| > 0.25 m on 2.2 % — `terrain_upsample 2` is not moving the ground under them |
+| forest rotation | 292,299 of 1,146,441 items carry a non-yaw rotation and it is written in full, so the writer is not flattening anything |
+
+**One genuine LOD0 residual, and it is small and separate.** 1,219 props stand more than 3 m from
+any surface of their owner at their own height *and* more than 1.5 m above the terrain **even at
+LOD0** — concentrated on about 24 instances of signature and modded assets (`asset_4f0b85f7` 79,
+`USSW_PoliceHeadquarters` 58, `Prison01` 50, `Amazon_Warehouse` 45, the `CargoHarbor01` group
+33–37 each, `IncinerationPlant01` 15). Rendered from the level at (2835, 144) through
+`tools/blender_import_level.py` it is a rooftop duct run that leaves the roof and crosses a street
+on nothing. **Whether CS2 draws it that way too is not established** — these are Paradox-mods
+assets and a duct bridging two wings of one complex is a thing a modder does. Do not fold it into
+A6.7's fix: it is 0.3 % of the rooftop props and it needs its own half hour against the game.
+
+### A separate finding on the way past: nobody knows which decimator ran
+
+`pyfqmr` is **not installed** in this environment, so `decimate.lod_ladder(backend="auto")` fell
+back to the numpy vertex clusterer its own docstring calls *"crude"*. `bake/lods.py:73` throws
+away `lod_ladder`'s resolved `stats["backend"]` and `:135` writes the **requested** option
+instead, so `derived.json` says `"backend": "auto"` and the build report repeats it. A build
+cannot tell you which of two algorithms shaped every LOD in the level.
+
+**It is not the cause, and that was worth measuring before assuming it.** Installing `pyfqmr` and
+re-decimating the busiest buildings gives the same error, not a better one (p95 displacement, m):
+
+```
+                                       L1 cluster  L1 quadric   L2 cluster  L2 quadric
+NA_ResidentialLow03_L5_2x6                  6.640       6.265        5.407       6.265
+NA_ResidentialLow01_L5_2x6                  4.580       4.629        3.186       4.629
+USSW_ResidentialMedium_L1_2x4               4.517       4.562        4.511       4.562
+NA_CommercialLow01_L5_5x6                   3.414       3.423        3.096       3.423
+instance-weighted mean over the 6 busiest    3.210       3.110        3.066       3.110
+```
+
+(Two of the six — `USSW_BonusResidentialMedium01_L1_3x2`, `EU_ResidentialLowWaterfront01_L5_2x6` —
+came back from `pyfqmr` at 0.000, i.e. **unreduced**, so the quadric column flatters itself; and it
+took 222 s for six shapes against the clusterer's 226 s for all 4,262.) A CS2 residential block is
+3,295 triangles of which most are balconies, dormers and window reveals; taking 75 % of them away
+removes metre-sized features whatever the algorithm. **So the answer is to switch later, not to
+decimate better.** Record the resolved backend anyway — an undeclared approximation is
+indistinguishable from a bug once its artefact appears.
+
+### The rule, and it is the repo's own instrument
+
+There is no CS2 counterpart to port: the game has no LOD chain here. But the repo already owns the
+right rule for *this* question and already uses it for the cull distance — **a level may be used
+where its own error is under a pixel**. `lod.calculate_lod_limit` is that idea and `lod.screen_px`
+is the projection. The invented `(1.5, 6.0, 24.0)` is a fixed multiple of the shape's *cull*
+threshold, and that threshold is a statement about the shape's SIZE, not about its LOD's ERROR —
+which is exactly why one constant lands at 30.9 px for a building and 2.9 px for a prop.
+
+So: **derive each level's switch distance from that level's measured displacement**, the same way
+`nullPx` is derived from the mesh's bounds and area. The bake already builds both meshes; it only
+has to measure the distance between them and ship it.
+
+### The work — as built
+
+* **`bake/lods._flatten`** (the defect, and it was not in the plan): each node's own transform is
+  applied to the level's vertices and normals before it is written, because `glbwrite` emits
+  identity nodes. `tools/test_bake_products.py` gates it by bounding box.
+* **`stages/shapes._collect`**: the node's rotation is applied to its NORMALS too — 166 nodes were
+  lit by an unrotated normal at every level, LOD 0 included.
+* `csiibundle.decimate` / `bake/lods`: measure each generated level's displacement from LOD 0 (p95
+  of level→LOD0 nearest distance, area-weighted) into `derived/lods/lods.json` beside its triangle
+  count, **and record the resolved backend** instead of the requested one. It is a sidecar rather
+  than `derived.json` because it is one row per prefab mesh state and the manifest is a staleness
+  document; the aggregate distribution does go into the manifest.
+* `stages/shapes._lod_levels`: each threshold comes from that error rather than from
+  `LADDER_RATIOS` — a level is allowed from the distance at which its displacement is worth
+  `lod_switch_error_px`, floored at `nullPx * COARSEST_SWITCH_RATIO` so the ladder still ends. A
+  shape whose LOD1 is geometrically identical keeps it to the horizon; a building whose LOD1 is a
+  metre out keeps LOD0 until a metre stops showing. **The budget is not a pixel**: measured over
+  1.16 M placements from the four densest viewpoints, 1 px costs +384 % to +630 % drawn triangles,
+  4 px +1 % to +61 %, **6 px +0 % to +16 %**, 8 px −2 % to +2 %. 6 ships, and the presets run 3
+  (ultra) to 16 (low).
+* Declare it: `lodLadderSwitchPoints` gains the displacement distribution and the count of shapes
+  whose switch moved, so the approximation is counted as well as declared.
+* `pyproject.toml` already has the `[lods]` extra; the build should **say** which backend it took
+  rather than silently taking one. **Do not just install `pyfqmr` and rebuild** — it was installed
+  and removed again during this investigation precisely because of the timing above: 37 s per
+  shape against the clusterer's 0.05 s would turn the 226-second LOD bake into roughly forty
+  hours, for no measured gain. `derived/lods/lods.json` and `derived.json` now both say
+  **`"backend": "cluster"`** on this machine.
+
+**The measurement's own trap, worth keeping.** `decimate.distance_to_surface` is
+point-to-SURFACE, not point-to-vertex (a CS2 wall is two triangles across ten metres, so
+nearest-vertex answers the distance to a corner). Its first version ranked candidate triangles by
+`|p − centroid| − circumradius` and took the best twelve **without checking** — and a big
+triangle's circumradius bound is deeply negative everywhere, so a dozen of them crowd out the
+small triangle the point is sitting on. Worst error on this bundle: **16.9 m**, which is the size
+of the very effect being measured. The shipped version proves each answer against the k-th bound
+and redoes exhaustively what it cannot prove; `tools/test_lod.py` gates that exact case.
+
+**The interim, if the error-driven rule is too much for one session**: per-kind `LADDER_RATIOS`,
+buildings at `(1.5, 3.0, 6.0)` — LOD0 to 222 m, which covers every distance these screenshots were
+taken at. Simulated over 4,100 shapes and 1.19 M placements from four viewpoints, drawn triangles
+go 3.95 / 12.18 / 7.54 / 9.81 M → 4.89 / 19.71 / 8.18 / 11.99 M, i.e. **+24 % to +62 %**, with
+residency unchanged. `(1.5, 2.0, 4.0)` (LOD0 to 333 m) is +73 % to +92 %; buildings at LOD0
+everywhere is 2.6–5.3x and is not a candidate.
+
+### The gate
+
+* re-run the rooftop-support table above against the level's **actual** detail levels: `> 2 m` must
+  come back to LOD0's 0.4 %, not LOD1's 9.3 %;
+* `tools/level_budget.py` — this ADDS drawn triangles and nothing else. Take the number against the
+  1,469,467 A5 left, and take `validate.checks.resident` too, which must not move at all;
+* the same free-camera shots Naomi took: a roof at 60 m, 150 m and 300 m, before and after. The
+  duct runs and the rooftop kit must sit on the roof at all three.
+
+### It also re-opens half of A6.2
+
+A6.2 raised a prop's cull distance from 105 m to 262 m because façades read as construction sites.
+That was right, but it cannot have been the whole cause: **at 56 m the building itself drops to a
+level whose surface is 1.3 m out**, and window reveals, mullions and balconies are exactly the
+metre-and-under features that go first. Re-shoot A6.2's 150 / 300 / 600 m gate after this lands,
+before spending anything more on `lod_detail_scale_prop`.
+
+---
+
+## A6.8 Every `rotationMatrix` we write is the transpose of the rotation it means
+
+> **BUILT 2026-08-19 (audit §78), and it was the defect behind "rotations are still completely
+> off".** `rotationMatrix` is one field on `SceneObject`, so the same serialisation carries every
+> `TSStatic`, every forest item, every light and the spawn sphere. **BeamNG reads the nine floats
+> as three basis vectors in groups of three; we wrote the standard matrix row by row, which is the
+> transpose — i.e. the inverse rotation.**
+>
+> Re-measured independently before building (the reading below reproduced exactly), and then
+> settled a fourth way that needs no BeamNG data at all: **CS2 builds a building facing its
+> street**, so over 6,000 buildings within 40 m of a lane, the angle to the nearest lane is a
+> median **0.01°** under the correct reading and **14.24°** under the one that shipped (94.2 %
+> against 19.1 % within 5°). On a north-south grid the transpose is invisible, which is why whole
+> districts looked right and the diagonal ones were scrambled.
+>
+> `beamng.frame.basis_flat` is now the one place the ordering lives; `_add_static`,
+> `_forest_line`, `lights._world` and `heading_matrix` all go through it, the Blender level
+> importer transposes on the way in, and the harness compares through it instead of agreeing with
+> itself. Gate: `test_a3_objects.test_rotation_matrix_is_basis_vectors`, anchored on vanilla
+> SpotLights. **Verified on the rebuilt level: 16,768 statics near a lane, median 0.10° off the
+> street.** The forest question the plan raised is answered too — 2.48 M vanilla forest items say
+> the loader reads it the same way (0.987 against 0.908, and 84 % of items on a slope tip downhill
+> as terrain-normal alignment requires, against 50 % = no signal).
+
+### What is measured
+
+Two independent vanilla witnesses, neither of them ours:
+
+```
+4,138 vanilla SpotLights      element[5] (group 1's z) <= -0.9 on 3,417   -> lights point DOWN
+                              element[7] (column 1's z) >= +0.9 on 2,788   -> the exact mirror: UP
+26 vanilla TSStatic barriers  mean |alignment of group 1 with the barrier line| = 0.951
+   laid end to end            mean |alignment of column 1 with the same line|   = 0.562
+```
+
+A tunnel light cannot point up and a barrier cannot sit across its own line, so the reading is
+settled: **elements (0,1,2) are the object's X axis, (3,4,5) its Y axis, (6,7,8) its Z axis**, and
+a spot light's beam is its **+Y**.
+
+And our composed matrix is a standard column-basis matrix, which the light data proves directly:
+the true beam direction of our 75 street lights sits at elements **(1,4,7)** on 75 of 75, not at
+(3,4,5). `stages/instances._quat_rows` returns the standard rotation (columns = basis vectors),
+`_swap_yz` conjugates it correctly into BeamNG axes, and then `_add_static`, `_forest_line` and
+`_light_object` all flatten it **row by row**.
+
+### Why the city still looks broadly right, and why that is not reassurance
+
+For a pure yaw the transpose is a yaw of **−θ** — still upright, still axis-aligned on a grid,
+just facing the mirrored direction. The meshes themselves are mirrored on X by the bundle→BeamNG
+axis conversion, and the bundle frame (x east, y up, z north) is left-handed against BeamNG's
+right-handed one, so a yaw-only object is *self-consistent* under both wrongs at once. A light has
+no mesh to mirror — only a direction — which is why it is the light cones that exposed it.
+
+**The harness cannot see this.** `check_instances_vs_game.py`'s new rotation column compares the
+level's matrix against `_transform`'s output — the same function that produced it — so its
+100.0000 % is a statement about our own consistency, not about the game. That is the second time
+a probe has read 100 % on a question it was not actually asking.
+
+### The work — as built
+
+* one shared flatten in `beamng/frame`: `basis_flat`, `[m00,m10,m20, m01,m11,m21, m02,m12,m22]`,
+  called by `_add_static`, `_forest_line`, `lights._world` and `heading_matrix` (the spawn sphere
+  was mirrored too, so the car spawned facing the wrong way down its own lane);
+* **ANSWERED — the forest loader reads it the same way**, measured on 2.48 M vanilla forest items
+  (§78): elongated types laid in runs score 0.987 against 0.908, and of 23,966 items on a slope,
+  84 % tip downhill under the groups reading — which is what aligning to the terrain normal does —
+  against 50 %, i.e. no signal, under the other. The original caution, which was right to insist
+  on it: `.forest4.json` is read by a
+  different loader than `items.level.json`, and a tree is yaw-only and upright, so no vanilla
+  forest file can distinguish the two readings. The non-vegetation forest items — props — are
+  where it matters. Find a vanilla `.forest4.json` holding an asymmetric item in a line and run
+  the barrier test above on it; if it comes out the other way, the forest keeps its own flatten
+  and that is declared.
+* re-check A6.7's residual afterwards: a rooftop duct placed at an exact position but with the
+  inverse of its rotation reads as *"the props are misaligned"*, which is the report we have.
+
+### The gate
+
+* the barrier test, run against our own level: for a run of fence or lane-furniture items laid
+  along a line, group 1 must align with the line;
+* the same free-camera shots as A6.7 — a building whose entrance faced the wrong street now faces
+  the right one;
+* drawn triangles and residency must not move by a single byte; this changes nine numbers per
+  object and nothing else.
+
+---
+
+## A6.9 The lights — five defects, and neither engine's rule is a cap of 500
+
+> **BUILT 2026-08-19 (audit §79), AWAITING A LOAD.** D1, D3, D5 and the cap are in;
+> D4 landed in A6.8; **D2 turned out not to be a defect** — vanilla ships every one of its
+> 21 levels the same way. See "The work — as built" at the end of this section for what
+> the investigation below got wrong. Originally reported as *"none of them are working and I'm
+> unable to see the emissive lights; apparently only 500 of them out of the thousands are
+> rendering."* Both halves are real and they are **five separate defects**, four of them ours:
+>
+> | # | defect | reach |
+> |---|---|---:|
+> | **D1** | every emissive material ships `emissiveFactor [0,0,0]` — the map is multiplied by **zero** | 2,373 materials, **166,545 instances** |
+> | **D2** | the lights are `nightLight`s and the level is permanently at **13:05** | all 500 |
+> | **D3** | `intensity` is written in CS2's authored Lux, not BeamNG's candela; no `brightness` at all | all 500, ~1,500x too dim |
+> | **D4** | `rotationMatrix` is serialised transposed, so every spot cone aims somewhere random | 482 spots (and see A6.8) |
+> | **D5** | the 1,896 colour slots — CS2's own emissive drive — are read and never applied | 1,380 reach the city |
+>
+> **The "500" is ours alone.** CS2 keeps all 176,799 of its punctual lights in the world and draws
+> at most `RenderingSystem.maxLightCount` = **2,048 per frame** (1,024/2,048/4,096/8,192 by
+> quality), nearest-first by a range-relative distance with an adaptive reject distance
+> (`Game.Effects.LightCullingSystem`). BeamNG 0.39 does the same job in the engine — clustered
+> shading with frustum, size, occlusion and **importance** culling plus flare substitution for
+> what it drops. A static author-time cap of 500 is neither engine's rule, and it is the only
+> reason 99.7 % of the city's lights are absent.
+
+### D1 — the emissive map is multiplied by zero
+
+Every one of the 2,373 emissive materials in the built level:
+
+```
+emissiveMap present            2,373
+emissiveIntensityNits  200.0   2,373      (149601a, correct)
+emissiveFactor      [0, 0, 0]  2,373      <- the map never contributes anything
+```
+
+BeamNG's shader is `inLayer.emissive = max(0, ld.emissive) … ; inLayer.emissive *= emissiveMapSample`
+(`shaders/common/material/shadergen/defaultMat.hlsl:236,369`), so a zero factor is a zero
+emission whatever the nits. **`149601a`'s nits fix was multiplied by zero and could not have
+worked.**
+
+The cause is a two-file handshake and both halves look right on their own:
+
+* `csiibundle/materials.py:427` — `entry.get("emissiveFactor") or (0.0, 0.0, 0.0)`. **The bundle
+  has no `emissiveFactor` field at all** (966 materials carry `emissive`; the key does not exist
+  on any of the 4,676), so every resolved record gets `(0.0, 0.0, 0.0)`.
+* `beamng/materials.py:235` — `rec.get("emissiveFactor") or [1.0, 1.0, 1.0]`. The fallback was
+  written for `None`; a non-empty tuple of zeros is **truthy**, so it never fires.
+
+166,545 instances draw an emissive material — 140,690 props, 21,846 trees, 4,009 buildings. Every
+lamp lens, sign face and lit window in the city is currently black.
+
+### D2 — they are night lights, and the level is permanently at 13:05
+
+`nightLight` is not an invention: **3,063 of vanilla's 5,033 lights carry it**, and
+`lua/ge/extensions/core/environment.lua:561` reads it —
+
+```lua
+if getObjectFieldBoolFast(obj, "nightLight") == true then addNightLightUnique(obj, …) end
+…
+for _, data in ipairs(nightLights.lights) do setLightEnabledSafe(lightObj, night) end
+```
+
+`night` is `isNightTime(tod.time)` = `time ∈ (0.25, 0.75)`. The level ships
+
+```
+TimeOfDay  time 0.0451  startTime 0.0451  animate "0"  play false     -> 13:05, and it never moves
+```
+
+and the load confirms the consequence in one line:
+
+```
+343.245|I|GELua.core_environment.environment.nightLights|
+        Registered 500 night lights, 0 night emissive TSStatics and 0 day/night intensity lights
+```
+
+All 500 registered, all 500 disabled, permanently. `tod_hour` is `-1` = the CS2 clock at rip
+time, and the rip was taken in the afternoon. **Nothing else about the light stage could have
+shown up in that load** — D3 and D4 are invisible behind this one.
+
+Note the second and third numbers too: **0 night-emissive TSStatics** — BeamNG's own material
+day/night mechanism is there and we use none of it (D5) — and 0 day/night intensity lights.
+
+Vanilla also writes `isEnabled: false` on a night light (2,987 of 3,063); we write `true`, so
+ours are lit for the seconds between load and the environment refresh, and then go out.
+
+### D3 — the photometry: wrong unit, no `brightness`, three orders of magnitude too dim
+
+**BeamNG's units, from its own editor** (`editor/inspector.lua:1999-2050`,
+`editor/lightClassConverter.lua:35-42`): `intensity` is stored **in a class-specific engine unit
+— lumens for a PointLight, candelas for a SpotLight** — `brightness` is *"the actual render
+value"*, and the engine keeps the two in sync. The only valid `intensityUnit` strings are
+`lm` / `cd` / `ev` / `w`.
+
+Measured over all 5,033 vanilla lights, the sync constant is exact:
+
+```
+intensity / brightness = 5000.0   for all 4,047 lights carrying both   (point: after /4pi)
+SpotLight   median intensity 15,000 cd   brightness 3.0     range p50 15 m
+PointLight  median intensity  5,000 lm   brightness 0.0796
+```
+
+We write `intensity: 5.0` or `10.0`, `intensityUnit: "Lux"` — not one of the four — and **no
+`brightness` at all**. 10 cd against vanilla's 15,000.
+
+**The right number is already in the bundle and it needs no approximation.** `LightEffect`'s own
+arithmetic (decompiled, `Game.Prefabs.Effects.LightEffect`):
+
+```csharp
+ComputeLightIntensity()  => LightUtils.ConvertLuxToCandela(m_Intensity, m_LuxAtDistance)   // lux * d^2
+ComputeLightFinalColor() => m_Color.linear * ComputeLightIntensity()
+                            * CorrelatedColorTemperatureToRGB(m_ColorTemperature) * m_LightDimmer
+```
+
+so **`finalColor.a` in `lights.json` IS the light's intensity in candela** — the authored
+`intensity` is a near-constant 10 Lux (627 of 638 entries) and `m_LuxAtDistance`, which the
+bundle does not ship, is what actually varies. Verified on the file: `intensity 10, range 5` →
+`finalColor.a 250` = 10 x 5², CS2's own default `m_LuxAtDistance = 5f`.
+
+| | CS2 `finalColor.a` (cd) | what it is |
+|---|---:|---|
+| `WallLightShortRange01` (34,006) | 48 | a wall lamp |
+| `GardenLight01` (3,705) | 90 | a garden bollard |
+| `VFP_CoconutPalmTree01-Illuminated` (43,282) | 250 | palm uplighting |
+| `StreetlightSingle01/02/03` (16,039) | 1,562.5 | the road lighting |
+| `Oracle_Park` floodlights | 16,000 | a stadium |
+
+Percentiles over all 176,799: p1 36, p50 250, p90 1,562, p99 2,890 cd. That is a physically
+sensible spread, it is the game's own resolved value, and it maps **unit for unit**:
+
+```
+SpotLight :  intensity = finalColor.a                 brightness = finalColor.a / 5000
+PointLight:  intensity = finalColor.a * 4*pi          brightness = finalColor.a / 5000
+```
+
+### D4 — every spot cone points somewhere random
+
+Vanilla spot lights point **down**; ours point everywhere:
+
+```
+element[5] of rotationMatrix, all 4,138 vanilla SpotLights:  <= -0.9 on 3,417   (down)
+element[5] of rotationMatrix, our 482:                        uniform over [-1, +1]
+```
+
+The direction is not lost — it is in the wrong place in the array. Taking elements **(1, 4, 7)**
+instead of (3, 4, 5) on our own 75 street lights gives `z = -0.996` on **75 of 75**, and every
+other class comes out right at the same time:
+
+| our lights | (1,4,7).z | what CS2 says it should be |
+|---|---:|---|
+| range 18 — `StreetlightSingle*` | **-0.996** | down |
+| range 12 — `RoofLight*` | **-1.000** | down |
+| range 6 — `LightpolePark01` | **-1.000** | down |
+| range 4 — `WallLight*` | **-0.707** | 45° down |
+| range 30 — palm uplights | **+1.000** | up |
+
+(CS2 lights shine along their local **+Z**; `StreetlightSingle02`'s entry quaternion takes +Z to
+`(0, -0.996, +0.087)` in the bundle frame — straight down.) So the composed matrix is right and
+**the serialisation is transposed**. That is A6.8, and it is not confined to lights.
+
+### D5 — the 1,896 colour slots are CS2's emissive drive, and BeamNG has the same mechanism
+
+`csiibundle/lights.py` already says these are *"emissive material state, not light sources"*, and
+that is exactly right — but it files them as having no counterpart, and the stage counts them as
+an approximation. **BeamNG has the counterpart, in the same shader we are already writing into.**
+
+The game's side, decompiled:
+
+```csharp
+// Game.Prefabs.MeshSystem — the buffer the producer reads
+dynamicBuffer5[n] = new ProceduralLight {
+    m_Color  = float4(mapping.color.linear.rgb,    mapping.intensity * 100f),   // kIntensityMultiplier
+    m_Color2 = float4(mapping.colorOff.linear.rgb, mapping.intensity * 100f), … }
+
+// Game.Rendering.ProceduralEmissiveSystem
+float4 value = math.lerp(proceduralLight.m_Color, proceduralLight.m_Color2, lightState.m_Color);
+value.w *= lightState.m_Intensity;                       // 0 = fully ON, 1 = fully OFF
+```
+
+and `EmissiveProperties.SingleLightMapping.materialId` is the join: **a slot drives one material
+of the mesh.** So the bundle's `color` is the lit colour, `colorOff` the unlit one, and **the
+alpha is the emissive intensity x 100** — which is why every slot's `color` and `colorOff` share
+an alpha. (Purposes, on the placed meshes: NeonSign p50 alpha 20, DecorativeLight p50 500.)
+
+BeamNG's counterpart is three fields we already emit into:
+
+* `emissiveFactor` = the slot's lit RGB (D1's zero becomes CS2's own colour);
+* `emissiveIntensityNits` from the slot's alpha (declared tuning — see the work below);
+* `instanceEmissive: true` on the material plus `nightEmissive` / `nightEmissiveColor` on the
+  TSStatic, which is exactly `lerp(color, colorOff, night)`: `environment.lua:585-616` writes
+  `instanceColor` to the night colour at night and `(0,0,0)` by day, and `defaultMat.hlsl:253`
+  multiplies the emissive by it. Vanilla's `trafficLight` and `floodlight` materials are built
+  precisely this way (`instanceEmissive: true`, nits 5,000 and 4,000).
+
+**The join is measurable and it nearly always works by ordinal.** Of the 781 slot-carrying
+meshes whose `.glb` is in the bundle:
+
+| slots : emissive materials | meshes | |
+|---|---:|---|
+| 1 : 1 | 232 | exact |
+| 2 : 2 | 407 | exact |
+| 2 : 1 | 129 | ambiguous |
+| 6 or 4 : 1 | 13 | ambiguous |
+
+**639 of 781 (81.8 %) match one for one.** 672 of the 966 emissive materials in the bundle sit on
+a slot-carrying mesh and can take CS2's own colour; the other 294 — building window sheets,
+mostly — get a declared default.
+
+**And the vehicle question answers itself.** Splitting the 1,896 slots by whether any instance
+references their mesh:
+
+```
+1,380 slots on meshes the city actually places   — NeonSign 1,095, DecorativeLight 160,
+                                                   EffectSource 53, traffic signals 34, None 29
+  516 slots on meshes nothing places             — every Headlight/BrakeLight/TurnSignal, and
+                                                   127 DecorativeLight on vehicles and boats
+vehicle-purpose slots on a placed mesh:  0
+```
+
+Both rip queries already drop `Vehicle` (audit: agents and markers excluded), so no headlight or
+brake lamp can reach the level. `purpose` is still the right thing to *state* in the report, but
+it has nothing to exclude.
+
+### The performance answer: neither engine caps at author time, and the free tier is enormous
+
+**BeamNG 0.39 ships a clustered light pipeline built for exactly this** (strings and tooltips out
+of `Bin64/BeamNG.drive.x64.exe`, presets in `lua/ge/extensions/core/settings/clusteredQuality.lua`):
+
+| mechanism | what it does | Normal preset |
+|---|---|---|
+| frustum + size cull | *"lights smaller than this fraction of the screen height are dropped"* | `minLightScreenSize` 0.02 |
+| occlusion cull | *"drop lights whose volume sits fully behind the visible geometry"* | on |
+| **importance cull** | *"colour x brightness x camera exposure x apparent screen size below the floor… **night exposure is far higher so a high daytime floor still keeps all lights at night***" | on |
+| flares | *"draw a cheap glow sprite in place of lights too small to shade"* | `lightFlares` true |
+| shadows | *"budgeted, not every light updates every frame"* | `shadowMaxCasters` 64 |
+
+That is the same architecture as `LightCullingSystem`: keep everything, cull and rank per frame.
+So the design is **not** "pick 500 at build time" — it is "ship the lights and let the engine rank
+them", with an author-time budget only where the *scene-graph* cost bites.
+
+Measured, so the budget is a number and not a feeling:
+
+```
+176,799 punctual lights on 176 placed prefabs (638 catalogue entries, 2 skipped for bone space)
+  by kind:  prop 133,006   tree 43,692   building 101
+  by class: 43,282 palm uplights (range 30, 250 cd, 2 per tree) = 24 % of the whole count
+            59,669 wall lamps    (range  4, 48-96 cd)           = 34 %
+            17,847 street lights (range 18, 1,562 cd)           = 10 %  <- the ones that matter
+
+lights within R of a lit place    R=100 m   R=200 m   R=500 m
+                           p50        272       918     5,040
+                           p90        557     1,766     8,060
+                           p99        907     2,527    10,651
+```
+
+A 90° frustum sees roughly a quarter of those, so **~1,300 lights in view at p50 and ~2,700 at
+p99 out to 500 m — the same order as CS2's own 2,048/frame cap**, and against vanilla's 4,053
+lights in a whole level. That is at the edge, but it is the edge the engine was built for.
+
+Load cost is measured too: the last load put **482 SpotLights up in 0.090 s** (0.19 ms each)
+against 18,517 TSStatics in 154 s (8 ms each). All 176,799 would add ~33 s to a 252 s load.
+
+**The two real risks, both nameable:**
+
+1. **`nightLight` does not scale.** `refreshnightLightsObjects` walks every `LightBase` *and*
+   every `TSStatic` through `scenetree.findObject`, and `setNightLightsEnabled` walks the
+   registered list again on **every** day/night transition. At 500 it is free; at 176,799 it is a
+   Lua loop of that size twice a day. Either shard it (only the lights worth switching carry
+   `nightLight`) or drop it and let the importance cull do the daylight work — the engine's own
+   tooltip says that is what it is for.
+2. **`nightEmissive` collides with the palette.** It drives `instanceColor` slot 0, and A6.3's fix
+   put the building tint on `instanceColor 0/1/2`; with a `colorPaletteMap` present the shader
+   resolves the palette from all three and `shadergen.h.hlsl:178` multiplies the emissive by
+   *that*. Writing `(0,0,0)` into slot 0 by day would break the tint. So `nightEmissive` belongs
+   on non-tintable emissive shapes only, until the tint moves.
+
+### The work — as built (2026-08-19, audit §79)
+
+**D1, D3, D5 and the cap are BUILT; D4 landed in A6.8; D2 turned out not to be a defect.**
+
+1. **D1 — built.** `csiibundle.materials.resolve` returns `None` for an `emissiveFactor` the
+   bundle does not carry instead of substituting `(0, 0, 0)`, and `beamng.materials.material_v15`
+   tests `is None` rather than truthiness. `test_bake_products` gates it: no material may carry an
+   all-zero factor. 166,545 instances stop being multiplied by zero.
+2. **D2 — investigated and CLOSED as not-a-defect.** Vanilla ships every one of its 21 levels at a
+   DAYTIME hour with `play: false`, with 3,063 night lights registered and 2,987 of them
+   `isEnabled: false` — which is exactly what we shipped. The plan's premise ("the level is stuck
+   at 13:05, so the lights are permanently off") is true of vanilla too; the player moves the time
+   and `environment.lua` re-runs `applynightLightsState`. So `tod_hour` keeps its default, we now
+   write `isEnabled: false` beside `nightLight` as vanilla does (ours were lit for the seconds
+   between load and the first transition), and the **build report says the built hour and names
+   `tod_hour`** when that hour is a daytime one. The 21:00 screenshot is a screenshot instruction.
+3. **D3 — built, exactly.** `csiibundle.lights.candela(entry)` is `finalColor.a x intensityScale`,
+   with the authored `intensity` as the fallback only when `finalColor` is absent;
+   `stages.lights._light_object` writes `intensity` in the CLASS's own unit (`cd` for a spot,
+   `4*pi*cd` lumens for a point) **and** the `brightness` the renderer uses, at BeamNG's own exact
+   5,000:1 ratio — measured on all 4,047 vanilla lights that carry both, and the ratio is fixed by
+   the class, not by `intensityUnit`. The module docstring's old "use `color` x `intensity`"
+   advice is retracted in place. Gated in `test_a3_objects.test_lights`.
+4. **D4 — landed in A6.8** as one flatten helper, as predicted.
+5. **D5 — built, both halves, and the re-rip landed (audit §81).** `bake.materials._emissive_slots`
+   writes CS2's own lit colour into `emissiveFactor` and `alpha x 10` nits into a new
+   `emissiveNits`; the join runs BEFORE the dedup because `texture_set_key` includes both.
+   `AppearanceRipSystem.ReadLights` ships the game's own `materialId`/`layerId` and
+   `glb.primitive_materials` is the slot-indexed list to join it against, so **on the 2026-08-19
+   rip 765 of 778 meshes join exactly and NOTHING is ambiguous** (785 materials); the 13 left name
+   a material LAYER, which the bundle has no counterpart for, and are all vehicles. The ordinal
+   path is kept for an older bundle and reports itself when it runs.
+
+   **One correction the new data forced:** 115 slots are authored with intensity **0** — every one
+   the unlit face of a billboard — and `material_v15` tested the nits for falsiness, so a real
+   zero would have taken the flat 200 fallback. `is None` now, the same distinction D1 was. It
+   changes nothing on this city (none of the 115 carries an emissive map) and is gated.
+
+   **Two things the investigation had wrong.** `nightEmissive` is not "for non-tintable shapes
+   only" — it is unusable, measured: **all 639 joined shapes carry a `colorPaletteMap` material**,
+   so `instanceColor` slot 0 is the palette's own channel on every one of them and writing
+   `(0, 0, 0)` into it by day would black out the building tint. And 12 materials are contested
+   (five neon frames share a texture set across three sign colours); first-in-sorted-order wins
+   and the rest are counted.
+6. **The cap — built.** `lights_max` 500 → **25,000**, and the ranking is BeamNG's own importance
+   metric (`luminance x candela x range`, the engine's tooltip with exposure and distance factored
+   out) instead of reach alone. The old rank was the real defect: the city's 43,282 palm uplights
+   outrank its 17,847 street lights by reach, so **a cap of 500 placed no street light at all**.
+   25,000 is the measured knee — the smallest cap that takes every street light, before the palm
+   uplighting starts arriving at 50,000.
+
+### The gate — as it stands
+
+* `grep "Registered .* night lights" beamng.log` — must now read 25,000, not 500. **`night
+  emissive TSStatics` stays 0 and that is now a measurement, not an omission** (see D5 above).
+* a screenshot at **21:00** of a lit street, a neon frontage and a motel sign — set the time in
+  game, the level ships at the rip's hour by design;
+* `tools/level_budget.py`: lights add no residency and no triangles, so `validate.checks.resident`
+  and drawn triangles must not move. What moves is frame time, and the number to take is BeamNG's
+  own clustered-shading panel — *"lights in scene / lights sent gpu / importance culled"*;
+* the spot cones: element[5] of a `StreetlightSingle*`'s matrix must be <= -0.9 (A6.8's gate,
+  which this depends on).
+
+---
+
 ## Order
+
+> **ALL OF A6.0–A6.9 IS NOW BUILT, ON A FRESH RIP (2026-08-19 16:32, audit §81).** Both producer
+> changes the plan was waiting on landed and are verified in the output: A6.9/D5's `materialId`
+> (1,416 slots carry it, 462 carry a `layerId`, none neither) and A6.4's `attrs.overridden`
+> (33,511 instances). The level `cs2_city_fine` was rebuilt in place from that rip and awaits ONE
+> load. The order below is kept because it records why each item went where it did.
+>
+> **What the re-rip changed by itself:**
+>
+> * **A6.9/D5's ordinal guess is retired.** 765 of 778 meshes join by the game's own key, **zero
+>   ambiguous** (was 639 by ordinal with 142 ambiguous); 785 materials take CS2's own emission.
+>   The 13 left name a material LAYER and are all vehicles.
+> * **A6.4 went live with no consumer change** — `should_draw` already read the field. **33,106
+>   instances the game does not draw are no longer placed.**
+> * The asset packs were NOT enabled (89 unresolved prefabs, unchanged), so A6.6's orphan rule
+>   still carries them: 7,629 identified, 6,964 skipped.
+>
+> **What that load has to answer, and nothing else can:**
+>
+> 1. **A6.0** — still the only open item, and it moved the WRONG WAY. 129 failed allocations at
+>    24.6 min on the last load; the level now mounts **4,282 MiB** (4,003 → 4,063 for A6.3's colour
+>    masks, then → 4,282 for the bigger rip's 201 extra meshes), which is **3.1x**
+>    `west_coast_usa` and still inside the unmeasured band — fits at 3,473, known to fail at 5,224.
+>    Gate: `grep "CreateResource failed" beamng.log`.
+> 2. **A6.3, for the first time.** It shipped NOTHING until today — audit §80: the conversion was
+>    written into the naming function and the stage version was never bumped, so the built level
+>    carried zero `colorPaletteMap` and not one mask file. It now carries 1,398 and 724. Whatever
+>    the buildings looked like on the last load was NOT A6.3.
+> 3. **A6.9's emissive half at a NIGHT hour.** The level ships at 13:05 by design (vanilla ships
+>    all 21 of its levels by day); move the time past 18:00 in game, or rebuild with
+>    `tod_hour 21`. Nothing about the 25,000 lights or the neon can be judged at 13:05.
+> 4. **A6.7 and A6.8's own gates**, which have never had a load: a roof at 60/150/300 m, and a
+>    building square with its street.
+> 5. **Frame time with 25,000 lights** — BeamNG's clustered-shading panel (*"lights in scene /
+>    lights sent gpu / importance culled"*), which is the one number the cap default was set
+>    without.
+>
+> **The one producer-side thing still outstanding is A6.6's asset-pack enable** — 89 prefabs still
+> do not resolve, and their 7,629 orphans are dropped rather than drawn. That is a settings change
+> in the game, not code.
 
 **A6.0 first** — it is a live regression, it is the one the user is actually feeling, and every
 other item here is cosmetic beside it. **A6.1 second**: its rule is in hand, it is small, and it
@@ -673,6 +1428,37 @@ asset-pack enable + re-rip at the same time, since that half is hers and runs in
 **A6.2 last** — it needs the game's
 culling rule read properly, and it is the only item here that *costs* VRAM to fix, which A6.0
 says we do not have.
+
+**A6.8 goes first of everything, A6.0 included.** It is one flatten helper, it costs nothing at
+all, and until it lands every orientation in the level — objects, forest, lights — is the inverse
+of the one intended, so any screenshot taken to judge another item is taken against a level that
+is wrong in a way nobody is looking for. It also has to land before A6.9's spot cones can be
+judged, and it may take a bite out of A6.7's residual.
+
+**A6.9's D1 next, ahead of A6.7.** Two lines, no rebuild of anything but `materials`, and it
+turns 166,545 instances from black to lit; it is the single largest visible change available in
+this document for the least work. **D2 with it** — a `tod_hour` decision, one line, and without it
+neither D1 nor anything else about the lights can be seen at all. D3 and D4 follow immediately
+(they are small and they are exact ports); **D5 and the cap are the real piece of work**, and the
+cap in particular wants a load and BeamNG's own clustered-shading panel before the default moves
+far. Ask Naomi for the re-rip that lands `materialId` at the same time as A6.6's asset-pack
+enable — both are producer changes and they ride one rip.
+
+**A6.7 is BUILT (2026-08-19, audit §77) and is awaiting a load.** What it turned out to be is not
+what this section first wrote down — the generated LOD files were being written without their
+source node's transform, so 670 shapes and their colliders teleported at the switch — and the
+switch rule was replaced in the same pass. **Its load is still worth taking before A6.8**, because
+the two are independent and A6.7's own gate (a roof at 60/150/300 m) reads on a level that still
+has A6.8's inverted rotations: an object in the RIGHT PLACE facing the WRONG WAY is A6.8, an
+object in the wrong place is not A6.7 any more. The original reasoning for the queue jump, kept
+because it still explains the ordering against A6.2:
+
+**A6.7 jumps the queue, above everything except A6.0.** It is what Naomi is actually reporting
+now, its investigation is finished, it costs **no residency at all** (the levels are already in
+the shapes and already mounted — only which one is drawn changes), and it re-opens half of A6.2,
+so doing A6.2 before it would tune against a moving target. Take the interim per-kind ratios first
+if the error-driven rule looks long: it is one constant, one rebuild and one load, and the gate is
+`level_budget`'s drawn-triangle number against A5's 1,469,467.
 
 ## Not in scope, but adjacent and known
 

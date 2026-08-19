@@ -355,7 +355,11 @@ def import_forest(level_dir, center, radius, limit):
                 if not meshes:
                     continue
                 scale = float(item.get("scale") or 1.0)
-                rot = numpy.asarray(item["rotationMatrix"], dtype=numpy.float64).reshape(3, 3)
+                # the stored nine floats are the item's own axes in groups of three
+                # (`beamng.frame.basis_flat`), so the rotation matrix is their TRANSPOSE —
+                # reading them row-major turns every item by the inverse of its own rotation,
+                # which is what made this importer agree with a level that was wrong (A6.8)
+                rot = numpy.asarray(item["rotationMatrix"], dtype=numpy.float64).reshape(3, 3).T
                 for mesh, local in meshes:
                     obj = bpy.data.objects.new(f"{item['type']}:{placed}", mesh)
                     m = numpy.eye(4)

@@ -542,9 +542,17 @@ OUTPUTS = ("art/cs2/main.materials.json", "art/textures")
 # version 2: per-kind texture caps (A4 2.1)
 # version 4: emissive materials carry `emissiveIntensityNits`, without which the map
 #            takes an exposure-relative legacy path and the city never lights up
-# version 2: CS2's colour mask is converted into BeamNG's palette semantics and
-# `paletteBaseColor` is set, so the tint is applied at all and an untinted texel is not black
-# (A6.3)
+# version 5: CS2's colour mask is converted into BeamNG's palette semantics and
+#            `paletteBaseColor` is set, so the tint is applied at all and an untinted texel is
+#            not black (A6.3) - the changelog line said "version 2" and the literal stayed 4, so
+#            a rebuild on an unchanged bundle reported `fresh, skipped` and shipped none of it;
+#            AND the conversion itself was written into `texture_name` rather than
+#            `export_texture`, so every colormask export raised NameError and the level carried
+#            zero `colorPaletteMap` (fixed 2026-08-19 with A6.9)
+# version 6: an emissive material takes the colour and nits of its mesh's own CS2 colour slot
+#            where the bake could join one, instead of white at a flat 200 (A6.9/D5)
+# version 7: a joined slot of ZERO nits is honoured rather than falling back to the flat 200 -
+#            115 slots say zero and every one is the UNLIT face of a billboard (A6.9/D5)
 STAGE = Stage(STAGE_KEY, "Materials and textures", enabled, units, run, inputs=INPUTS,
               settings_keys=SETTINGS, outputs=OUTPUTS, shared_keys=("materials",),
-              after=("shapes", "networks", "derived"), version=4)
+              after=("shapes", "networks", "derived"), version=7)

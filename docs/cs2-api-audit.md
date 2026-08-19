@@ -6217,3 +6217,736 @@ again, the signature of a genuinely full card, against 131,073 before. So:
 * **at Normal+**, 4,672 MiB is over the line, and the remaining levers are **meshes**, which are
   3,955 MiB of it. More texture capping cannot help at either setting — at Lowest it is already
   divided by 16, and at Normal it has already been cut once.
+## 77. A6.7 — the LOD levels were written without their node transform, and the ladder was built from the wrong number (2026-08-19)
+
+Naomi's report was *"they are STILL floating or misaligned"* after A6.6 shipped. A6.7's
+investigation had concluded the props were fine and the BUILDING moved: a generated LOD1 surface
+a p95 of 1.315 m off LOD 0's, switching in at 55.5 m, 30.9 px of error. **That conclusion was
+right about the building and wrong about why**, and the difference matters because one of the two
+is a defect and the other is a tuning knob.
+
+### The defect: `glbwrite` emits identity nodes, and the bake handed it node-LOCAL vertices
+
+`bake/lods` read each source node with `glb.parse_glb` — which returns `verts` in the node's own
+frame plus the node's `matrix` — decimated the vertices, and wrote them straight back out.
+`glbwrite.write_glb` writes **every node with an identity transform** (documented, and the one
+glTF shape the bake proves it round-trips). So the level file's geometry sat at the node's local
+origin while LOD 0, read from the producer mesh by `stages/shapes._collect`, was placed by the
+node matrix. The two disagree by exactly the node transform.
+
+Measured on the reference bundle: **791 of 4,453 mesh-bearing nodes carry a translation over a
+centimetre and 166 carry a rotation**, the largest being `Amazon_Warehouse` at 75.9 m. That is
+**670 shapes and 39,565 placements** whose geometry TELEPORTED the moment it switched level.
+Straight out of the shipped `.dae` files, detail-node centres in shape-local metres:
+
+```
+Mangr0be_Tree__elderly     LOD0 (-0.08, -0.11, -1.45)   LOD1/2 (-0.61, 0.21, 7.54)    9.0 m up
+NA_ResidentialLow03_L5_2x6 LOD0 (-0.01, -8.07,  3.94)   LOD1/2 ( 0.03,-1.08, 3.93)    7.0 m across
+NA_ResidentialLow01_L5_2x6 LOD0 ( 0.45, -4.55,  4.18)   LOD1/2 ( 0.34,-0.45, 4.25)    4.1 m across
+Amazon_Warehouse           LOD0 (-9.66, 43.26, 11.17)   LOD1/2 (62.34,67.39,11.18)   75.9 m across
+```
+
+A `Mangr0be_Tree__elderly` switches at 17.6 m and there are **10,886 of them**. A building
+switches at 55.5 m. That is the floating, and it is why it appeared as you backed away.
+
+**It was also a collision defect, which nobody had connected to it.** `_collider` cuts the
+colmesh from LOD 1 (`collision.colmesh_from_lod` is written for the ~25 % level), so the collider
+inherited the same displacement: **628 shapes, 5,870 placements** carried an invisible mesh
+collider up to 29 m away from the building you can see — `Colmesh_NA_ResidentialLow01_L5_2x6` sits
+at the LOD1 centre in the shipped file, 4.1 m off the visible wall.
+
+The fix is `bake/lods._flatten`: apply each node's own matrix to its vertices (and rotate its
+normals — the matrix is rigid on every bundle mesh, no node carries a scale) before decimating, so
+the derived file is self-contained and every consumer reads it exactly as it reads a producer
+mesh. Verified after the re-bake: LOD1 centres now agree with LOD 0's to the centimetre on all
+three shapes above. `tools/test_bake_products.py` gained the gate (`_same_frame`).
+
+A second, smaller instance of the same oversight: `stages/shapes._collect` applied the node matrix
+to positions and passed the normals through **unrotated**, so the 166 rotated nodes were lit by
+the wrong normal at every level including LOD 0. Fixed in the same pass.
+
+### The correction to A6.7's own measurements
+
+The plan's displacement table was measured by comparing the source mesh in WORLD space against
+the level file in its own space — across the very mismatch above — so it measured the node offset,
+not the decimator. Re-measured in one frame, the shapes the plan tabled come out an order of
+magnitude smaller:
+
+```
+shape                          plan (mixed)   frame-consistent   node offset
+NA_ResidentialLow03_L5_2x6            6.640              0.060         7.00 m
+NA_ResidentialLow01_L5_2x6            4.580              0.377        29.12 m
+USSW_ResidentialMedium_L1_2x4         4.517              0.114         5.66 m
+```
+
+Over the whole bundle the real distribution is **p50 0.018 m, p90 0.550 m, p99 6.167 m** for LOD1
+and 0.057 / 2.030 / 8.290 for LOD2, with **603 shapes whose LOD1 is geometrically identical to
+LOD 0**. So the rooftop-support table (`> 2 m` on 9.3 % of rooftop props at LOD1) and the "30.9 px
+against 2.9 px" headline are both contaminated and should not be quoted; the ten-to-one ratio
+between a building's and a prop's error survives in kind, at a fifth of the magnitude.
+
+### The tuning knob, which is still worth having
+
+The ladder was `LADDER_RATIOS = (1.5, 6.0, 24.0)` — fixed multiples of the shape's own CULL
+threshold. That threshold is a statement about the shape's SIZE, and a generated level's error has
+nothing to do with its size, so one ladder cannot serve both a building whose LOD1 is 6 m out and
+a prop whose LOD1 is 2 cm out. `bake/lods` now measures each level's **displacement** (p95 of the
+distance from the level's surface back to LOD 0's, area-weighted,
+`decimate.level_displacement`) and `stages/shapes` derives the switch point from it through
+`lod.displacement_switch_px`:
+
+    error_px = detail_size * displacement / radius        (the fov and the viewport cancel)
+
+so a level is allowed from the distance at which its own error is worth `lod_switch_error_px`
+pixels, floored at the coarsest rung. A level identical to LOD 0 is then drawn from any distance
+at all, and a level a metre out waits until a metre stops showing.
+
+**Where it actually bites is the tail, and that is worth saying plainly.** Through the old ladder
+the MEDIAN building showed 2.8 px of LOD1 error and the median prop 2.4 px — the median case was
+never the problem. The spread is: 603 shapes at zero and the worst at 37 m, and it is the coarse
+tail that is visible. A per-kind ratio (the interim this plan proposed) would have moved the
+median case for no gain and still mistuned the tail; a per-shape rule spends the budget where the
+error is.
+
+**The pixel budget is ours and is declared as a budget.** Simulated over 1.16 M placements from
+the four densest viewpoints, against the ratio ladder: 1 px is **+384 % to +630 %** drawn
+triangles, 2 px +9 % to +321 %, 4 px +1 % to +61 %, **6 px +0 % to +16 %**, 8 px −2 % to +2 %. Six
+is the knee and it is nearly free, because the rule gives back as much as it spends: the 603
+identical LOD1s pay for the buildings that now keep LOD 0 four times further out. The default is
+6, and the presets run 3 (ultra) to 16 (low).
+
+### The instrument, and the trap inside it
+
+`decimate.distance_to_surface` is point-to-SURFACE, not point-to-vertex — a CS2 wall is two
+triangles across ten metres, so nearest-vertex answers the distance to a corner. It ranks
+triangles by the distance to their bounding box (a lower bound) and tests the best twelve exactly.
+**The first version ranked by `|p − centroid| − circumradius` and did not check the ranking**, and
+that was measurably wrong: a big triangle's circumradius bound is deeply negative everywhere, so a
+dozen of them crowd out the small triangle the point sits on. Worst error on the reference bundle:
+**16.9 m**. The shipped version proves each answer — every triangle outside the chosen set bounds
+at or above the k-th smallest, so when that is already ≥ the distance found, none can beat it —
+and redoes exhaustively what it cannot prove. `tools/test_lod.py` gates exactly that case.
+
+Cost: the `lods` bake goes 226 s → 341 s across seven workers, for the whole bundle.
+
+### THE RULE SHIPPED IN BOTH DIRECTIONS, AND THAT WAS A REGRESSION
+
+Naomi's load of the 13:24 build: *"this has not worked, and made things worse, even more buildings
+rotations are off, residential buildings rotated on their plot the wrong direction, warehouses
+rotated into the ocean, cranes rotated and floating, highrises / apartments all diagonal along the
+street."*
+
+The switch rule was written to work both ways — a level whose surface is a centimetre from LOD 0's
+was allowed NEARER than the ladder put it, on the reasoning that it has "earned" the place.
+Measured on that build, that is what it did to the city:
+
+| kind | shapes whose level came NEARER | placements | pushed further | worst |
+|---|---:|---:|---:|---:|
+| prop | **2,586 of 2,903** | 335,072 | 309 | 509 m earlier |
+| building | **615 of 1,057** | 4,102 | 437 | 1,821 m earlier |
+| tree | 6 of 268 | 10,496 | 262 | 2.7 m earlier |
+
+Read off the shipped shapes, `StreetlightSingle02` drew its **24-triangle** level (of 440) from
+**13.1 m**, and `EU_WindowGuard01` its 24-triangle level from **7.9 m** — on the very façade props
+A6.2 had just spent a build rescuing. The city was being drawn as vertex-clustered stumps at
+arm's length.
+
+**Why the measurement did not see it, which is the lesson.** A surface distance is not a visual
+error for thin or small geometry. Collapsing a lamp post's tube to a box moves its surface by
+0.06 m and destroys the object; `StreetlightSingle02`'s LOD2 measures 0.061 m one-sided and
+0.102 m two-sided, and both numbers say "fine". The old ratio ladder was never a good estimate of
+error — but by keying off the shape's SIZE it was implicitly protecting exactly the geometry a
+distance metric is blind to.
+
+**So the rule is one-directional now (`stages/shapes` v8): the ladder is the CEILING and the
+measurement may only say "not yet".** A level too far out of shape to keep the ladder's place gets
+deferred; everything else keeps the spacing the level has always had, and nothing can come nearer
+than what has already been looked at. Cost, re-simulated with the clamp: **+0 % to +24 %** drawn
+triangles at 6 px (1,453 of 4,229 shapes deferred), against +384 % to +630 % at 1 px.
+`tools/test_a3_objects.test_switch_points_only_ever_defer` gates the direction.
+
+**Vegetation is exempt from it as well (v9), and the reason is the same lesson one step on.**
+Applied to trees the rule deferred 262 of 268 shapes over 1,346,600 placements — +24 % drawn
+triangles in a forest — because a canopy's decimated leaves measure 0.3 m from the original just
+as a moved wall does. One reads as nothing and the other as a fault; a surface distance cannot
+tell them apart, so vegetation keeps the ladder until foliage error is measured properly.
+
+With that exemption the cost is only where the change is wanted. Re-measured over 1.16 M
+placements from the two densest FOREST neighbourhoods and the two densest DOWNTOWN ones:
+
+| budget | forest | downtown | shapes deferred |
+|---:|---|---|---:|
+| 4 px | +1 %, +0 % | +51 %, +67 % | 1,568 |
+| 6 px | +0 %, +0 % | +30 %, +39 % | 1,191 |
+| **8 px** | **+0 %, +0 %** | **+16 %, +21 %** | **1,004** |
+
+8 px ships: the worst offenders (a residential block whose LOD1 is metres out) are deferred 16x
+either way, and A6.0 says the card is the constraint downtown.
+
+The frame fix above is untouched by this and stands: the child-prop test settles it independently
+— placing a building's mesh with its node matrix applied puts its own children a median **0.00 m**
+from its surface, against 1.4-2.2 m without.
+
+### What the 13:24 build said before the clamp
+
+Every generated level now sits on its LOD 0 in the shipped `.dae` — `Mangr0be_Tree__elderly`
+9.0 m → 0.48 m, `NA_ResidentialLow03_L5_2x6` 7.0 → 0.05 m, `Amazon_Warehouse` 75.9 → 0.13 m, and
+each shape's colmesh with them — and every level ships at **6.0 px** of error (p50 6.00, p90 6.01
+over 4,228 shapes; 523 LOD1s identical to LOD 0 and drawn everywhere). `level_budget` on the
+level that ships: drawn triangles **1,482,557** against A5's 1,469,467 (+0.9 %), resident **4,675
+MiB** against 4,685. In the shipped shapes **0 levels are drawn nearer than the ladder** and the
+536 vegetation levels sit exactly on it, while 664 LOD1s and 663 LOD2s are deferred (median 2.91x
+and 1.67x further out, worst 14.08x) over 7,376 building and 199,215 prop placements — which is
+A6.7's actual fix, now costing what it should and nothing else. Build 9m43s.
+
+### Also recorded now: which decimator ran
+
+`bake/lods` wrote the REQUESTED backend (`"auto"`) into `derived.json`, so no build could say
+which of two algorithms shaped its LODs. It now records the resolved one — **`cluster` on this
+machine**, `pyfqmr` not being installed — in both `derived.json` and the new
+`derived/lods/lods.json`, which also carries every asset's per-level triangle count and
+displacement.
+
+### Still open
+
+The 1,219 props that stand more than 3 m from any surface of their owner **at LOD 0** (audit note
+in the plan: `asset_4f0b85f7`, `USSW_PoliceHeadquarters`, `Prison01`, the `CargoHarbor01` group)
+are untouched by this and still need their own half hour against the game.
+## 78. A6.8 — `rotationMatrix` is the object's own axes, and we were writing the transpose (2026-08-19)
+
+Naomi's load of the A6.7 build, with screenshots: *"rotations are still completely off"* — and the
+pictures show it exactly. The roads, kerbs, pavements and the paved lots are all square with the
+street grid; the BUILDINGS standing on those lots sit at 20–45° to them, overhanging their own
+paving. Whatever is wrong is in the per-object rotation, not in the geometry, the terrain or the
+lots — all of which are drawn from their own vertices with no rotation field at all.
+
+### The rule, measured three ways on BeamNG's own levels
+
+`rotationMatrix` is nine floats on `SceneObject`, so the same serialisation carries every
+`TSStatic`, every forest item, every light and the spawn sphere. **Elements (0,1,2) are the
+object's X axis, (3,4,5) its Y axis, (6,7,8) its Z axis** — the axes themselves, in groups of
+three. Writing a standard rotation matrix out row by row stores the TRANSPOSE, which for a
+rotation is its INVERSE.
+
+Measured over the 21 shipped levels, nothing of ours involved:
+
+| witness | as groups | row-major (what we shipped) |
+|---|---|---|
+| 4,138 vanilla **SpotLights**: which way is +Y? | **DOWN on 3,417**, up on 40 | down on 227, **UP on 2,788** |
+| 13,885 vanilla **barriers/guardrails/fences** laid end to end: does the item's long axis lie along the run? | **0.982** | 0.933 |
+| 153,490 elongated **forest** items, same test (a different loader, so checked separately) | **0.987** | 0.908 |
+| 23,966 forest items on a measurable slope: does the item's own Z tip DOWNHILL, as aligning to the terrain normal does? | **84 %** | 50 %, i.e. no signal |
+
+A tunnel light does not shine at the ceiling. The reading is settled, and it is the same for
+`items.level.json` and for `.forest4.json`.
+
+### And the city itself agrees, independently of BeamNG
+
+CS2 builds a building facing the road it fronts, so the streets can adjudicate without reference
+to any file format. Over 6,000 buildings within 40 m of a lane, the angle between the building's
+own axis and the nearest lane direction (folded into 0–45°):
+
+```
+R    (the axes are the matrix's COLUMNS)   median 0.01 deg   94.2 % within 5 deg
+R^T  (what the level shipped)              median 14.24 deg  19.1 % within 5 deg
+```
+
+**A median building was 14° off its own street**, and up to 45° — which is precisely the
+screenshot. For a building on a north-south grid the transpose is invisible (a yaw of −θ where
+θ is 0 or 90°), which is why whole districts looked right and the diagonal ones looked scrambled,
+and why this survived every load until now.
+
+### Why nothing caught it
+
+* `check_instances_vs_game.py`'s rotation column compared the level's matrix against the same
+  row-major flatten that wrote it — our own consistency, not the game's rule. It read
+  **100.0000 %** while the level was storing inverse rotations. That is the second probe in this
+  audit to score 100 % on a question it was not asking.
+* `tools/blender_import_level.py` read the field row-major too, so rendering the level through it
+  reproduced the level's own error and agreed with it.
+* `frame.py`'s docstring asserted "row-major 3×3 whose COLUMNS are the object's axes", with a
+  claim of a bit-for-bit check against `small_island`'s spawn matrices. Two matrices that are
+  transposes of each other are bit-for-bit identical in their nine values — the check could not
+  have distinguished them.
+
+### What changed
+
+`beamng/frame.basis_flat` is now the single place the ordering is written, and every writer goes
+through it: `stages/instances._add_static` and `._forest_line`, `stages/lights._world`,
+`frame.heading_matrix` (so the spawn sphere too — the car was spawning facing the mirror of its
+lane). `tools/blender_import_level.py` transposes on the way in, and
+`check_instances_vs_game.py` compares through `basis_flat` so it can no longer agree with a
+level that is wrong by the convention.
+
+The gate is `tools/test_a3_objects.test_rotation_matrix_is_basis_vectors`, and it is the only
+non-circular one available: it reads vanilla SpotLights out of the installed game and fails
+unless the groups reading points them down.
+
+**Verified end to end on the rebuilt level**, reading its own files back: 16,768 placed statics
+near a lane now sit a median **0.10°** off the street (81.2 % within 5°; the residual is props and
+signage, which have no reason to be square with a road). `check_instances_vs_game` scores position,
+mesh state, drawn size and rotation at 100.0000 % — but that last figure now means something,
+because the convention behind it is anchored against the game.
+
+---
+
+## 79. A6.9 — the lights: four defects fixed, and neither engine's rule is a cap of 500 (2026-08-19)
+
+A6.9 as investigated named five defects. D4 turned out to be A6.8 and landed there. This section
+records what the other four were, what they are now, and the two things the investigation got
+wrong that only building it could find.
+
+### D1 — the emissive map was multiplied by zero, and it was a two-file handshake
+
+`materials.json` carries **no `emissiveFactor` on any of its 4,676 materials** — checked, the key
+does not exist. That is not a gap: `MaterialRipSystem` writes it only when the surface's
+`_EmissiveColor` is non-black, and CS2 does not drive emission from a static surface property at
+all. It drives it per-instance from the render prefab's `ProceduralLight` buffer, which is
+`lights.json`'s colour slots (D5).
+
+Both halves of the handshake looked right on their own:
+
+* `csiibundle.materials.resolve` substituted `(0.0, 0.0, 0.0)` for the absent field;
+* `beamng.materials.material_v15` fell back to `[1, 1, 1]` on a FALSY factor.
+
+A tuple of three zeros is truthy. So the fallback never fired, and BeamNG's
+`inLayer.emissive *= emissiveMapSample` (`defaultMat.hlsl:369`) multiplied all 2,373 emissive
+materials in the level by zero — **166,545 instances**, every lamp lens, sign face and lit window
+in the city. `149601a`'s nits fix was multiplied by that zero and could not have worked.
+
+`resolve` now returns `None` and the consumer tests `is None`. The gate is in
+`test_bake_products`: no material may carry an all-zero `emissiveFactor`.
+
+### D3 — `finalColor.a` is the candela, and `intensity` never was
+
+We wrote CS2's authored `intensity` straight into BeamNG's field, with `intensityUnit: "Lux"` —
+not one of the four strings BeamNG's editor accepts — and **no `brightness` at all**. 10 cd
+against vanilla's median SpotLight of 15,000.
+
+BeamNG's two fields, measured over all 5,033 lights in its 21 shipped levels:
+
+```
+SpotLight   intensity / brightness = 5,000.00   on all 2,747 that carry both   (candela)
+PointLight  intensity / brightness = 62,831.86  on all 849                     (= 4*pi * 5,000, lumens)
+```
+
+The ratio is fixed by the CLASS, not by `intensityUnit`: a SpotLight labelled `lm` still stores
+candela on all 449 of them. The label is the editor's display unit; the stored number is the
+engine's.
+
+CS2's side is exact and needs no approximation. `LightEffect.ComputeLightFinalColor` is
+`m_Color.linear * ConvertLuxToCandela(m_Intensity, m_LuxAtDistance) * CCT(...) * m_LightDimmer`,
+and Unity multiplies all four channels of a `Color` while the temperature term's alpha is 1 — so
+**`finalColor.a` is the candela the renderer is handed**. The authored `intensity` is 10 on 627 of
+the 638 catalogue entries; what varies is `m_LuxAtDistance`, which the bundle does not ship. The
+per-placement `intensityScale` (`Effect.m_Intensity`) multiplies it, exactly as
+`LightCullingSystem` does (`m_Color = m_Scale * m_Intensity`).
+
+`csiibundle.lights.candela` is the rule, shared, and the module docstring's old advice ("use
+`color` x `intensity` x blackbody") is retracted in place.
+
+### D2 — nothing was wrong with the night lights except that nobody could see them
+
+The investigation read `Registered 500 night lights` plus a level clock stuck at 13:05 as a defect
+of ours. Measured against vanilla, it is **vanilla's own behaviour**:
+
+```
+21 shipped levels: TimeOfDay play=false on ALL of them, and every shipped hour is DAYTIME
+                   (time 0.08 .. 0.20, i.e. around midday; 0 = noon)
+5,033 lights:      3,063 carry nightLight, and 2,987 of those ship isEnabled: false
+```
+
+Vanilla ships its levels by day with every night light registered and disabled, exactly as we do,
+and the player moves the time — `environment.lua` re-runs `applynightLightsState` on the change.
+So the default stays at the rip's hour, `isEnabled: false` is now written beside `nightLight` as
+vanilla writes it (without it ours are lit for the seconds between load and the first transition),
+and the build **says so in the report** when the built hour is a daytime one, with the `tod_hour`
+knob named. What could not be judged at 13:05 was never going to be; that is a screenshot
+instruction, not a code change.
+
+### D5 — the colour slots are the emissive drive, and the join is measurable
+
+`EmissiveProperties.SingleLightMapping` names a **materialId**; `MeshSystem` writes
+`m_Color = float4(color.linear.rgb, mapping.intensity * kIntensityMultiplier)` with
+`kIntensityMultiplier = 100f`, multi lights first and single lights after;
+`ProceduralEmissiveSystem` resolves the pair as `lerp(color, colorOff, state)`. So a slot is one
+material's lit colour and strength — and **`colorOff` is black on all 1,896 slots**, so CS2's
+"off" is off.
+
+`csiibundle.bake.materials._emissive_slots` joins them. The slots are keyed by RENDER prefab
+(`<object>_Mesh`) where everything else in the bundle is keyed by the object prefab; 959 of 960
+carry the suffix and 781 resolve to a `.glb`. Against those meshes' emissive materials in `.glb`
+primitive order — which is the order of CS2's own `MeshMaterial` buffer:
+
+| slots : emissive materials | meshes | |
+|---|---:|---|
+| 2 : 2 | 407 | exact |
+| 1 : 1 | 232 | exact |
+| 2 : 1 | 129 | ambiguous, skipped |
+| 6 or 4 : 1 | 13 | ambiguous, skipped |
+
+**639 of 781 (81.8 %), 652 materials, 126,212 placed instances.** The result reads right on
+inspection: street lamps and wall lights take a warm white at 600 nits, neon signs their own
+colours at 200, the botanic garden orange at 5,000, the airport teal at 1,000.
+
+**The producer now ships the game's own key.** `AppearanceRipSystem.ReadLights` reads
+`EmissiveProperties` off the render prefab and writes `materialId` (or `layerId` for the multi
+lights, which come first in the buffer). `glb.primitive_materials` gives the slot-indexed material
+list to join it against — one primitive per `MeshMaterial` entry, in buffer order
+(`MeshRipSystem`), and `GltfWriter.NormalizePrimitives` logged zero dropped primitives on the
+reference rip, so the correspondence holds. Built and deployed, **awaiting an in-game re-rip**;
+until then the ordinal path runs and the bake reports which one it used.
+
+**The nits are the one declared tuning.** CS2's alpha is exact, but the physical unit its own
+shader reads it in is not knowable from the managed assemblies. The scale is calibrated against
+the consumer's measurable band instead: over all 22 materials in BeamNG's 21 levels that state
+`emissiveIntensityNits` the range is 200 (`west_coast_usa`'s lit windows and tunnel) to 10,000,
+median 5,000 (`trafficLight`). At **10 nits per unit** the whole placed spread lands inside it
+with the medians on top of each other, and the ratios between CS2's own classes are preserved
+whatever the constant becomes.
+
+**Two findings the investigation did not have.**
+
+1. **12 materials are contested.** Five neon sign frames share one texture set across three
+   different sign colours; the first mesh in sorted order wins and the rest are counted. There is
+   no per-instance emissive colour in the level format to give them each their own.
+2. **`nightEmissive` is unusable, and it is not a judgement call.** It drives `instanceColor`
+   slot 0, and `shadergen.h.hlsl::getColorPalette` resolves the palette — and multiplies the
+   emissive by it — from all three slots whenever a `colorPaletteMap` is present. Measured: **all
+   639 shapes the join reaches carry a `colorPaletteMap` material**, and 565 also carry a
+   non-identity `colorSet` channel 0. Writing `(0, 0, 0)` into slot 0 by day would black out the
+   building tint instead of the sign. So the emissives are always-on, and the level's
+   `night emissive TSStatics` count stays 0 with a measurement behind it rather than an omission.
+
+### The cap — 500 was not small, it was ranking the wrong lights
+
+Neither engine caps at author time. CS2 keeps all 176,799 punctual lights in the world and draws
+at most `RenderingSystem.maxLightCount` = 2,048 per frame, nearest-first by a range-relative
+distance with an adaptive reject distance (`Game.Effects.LightCullingSystem`). BeamNG 0.39 does
+the same job in the engine — clustered shading with frustum, size (`minLightScreenSize` 0.02 at
+Normal), occlusion and importance culling, plus a flare sprite for what it drops. So an
+author-time cap buys scene-graph cost and nothing else, and the scene-graph cost is measured: the
+last load put 482 SpotLights up in 0.090 s, 0.19 ms each, against 8 ms for a TSStatic.
+
+The rank was the real defect. A5 ranked by reach alone, and the city's 43,282 **palm uplights**
+(range 30 m, 250 cd) outrank its 17,847 **street lights** (range 18 m, 1,562 cd) on that measure —
+so at a cap of 500 not one street light was placed.
+
+BeamNG states its own metric in the engine binary: *"drop lights whose **color times brightness
+times the camera exposure times the apparent screen size** falls below the floor."* Exposure is
+one number per frame and cancels; apparent screen size is `range / distance` and the distance is
+common at author time. What is left is `luminance(colour) x candela x range`, which is now
+`stages.lights._importance`, tie-broken by the stable per-instance hash so a bigger cap is still
+a superset. Ranked that way, on the reference city:
+
+```
+cap    500  ->  the industrial poles and a stadium         min 2,890 cd
+cap  5,000  ->  the commercial poles as well               min 1,440 cd
+cap 25,000  ->  EVERY street light in the city             min   900 cd
+cap 50,000  ->  the palm uplighting starts arriving        min   250 cd
+```
+
+**25,000 is the knee**, and it is the new default — the smallest cap that takes all the road
+lighting, before 24 % of the city's lights (none of which light a road) start consuming it. It
+costs ~4.7 s of load and no residency or triangles at all. The ladder above is in the code for a
+machine that cannot take it.
+
+**The one thing a load still has to answer** is frame time, and the number to take is BeamNG's own
+clustered-shading panel: *"lights in scene / lights sent gpu (frustum + size culled) / importance
+culled"*. At a small cap the subset is the brightest classes and they are not spread evenly over
+the map; that is declared in the report.
+
+---
+
+## 80. A6.3 shipped nothing — the colour mask never reached the level, twice over (2026-08-19)
+
+Found while building A6.9, in the build log of the level A6.9 was being verified on. It is two
+independent mistakes in one commit (`199f084`, this morning), either of which alone would have
+been enough to make the whole of A6.3 invisible.
+
+**1. The conversion was written into the naming function.**
+
+```python
+def texture_name(src_path, kind, keep_alpha=False, use_dds=True):
+    ...
+    if kind == "colormask":
+        data = _encode_dds(_colormask_rgba(arr, form), ...)      # `arr` and `form` are not here
+```
+
+`arr` and `form` are `export_texture`'s locals. `texture_name` takes a path and returns a string.
+So **every `colormask` export raised `NameError("name 'arr' is not defined")`** — 724 of them in
+one build — the materials stage caught it per texture and carried on, and `export_texture` never
+ran `_colormask_rgba` at all because the branch was not in it.
+
+The built level was checked and it is total: **zero of its 6,107 materials carry a
+`colorPaletteMap`, and there is not one `*.colormask.*` file in `art/textures/`.** Not a wrong
+tint — no tint, and no mask.
+
+**2. The stage's version literal was never bumped.** The changelog line was written as
+`# version 2:` beside a literal that stayed `4`, so even with the code fixed a rebuild on an
+unchanged bundle reports `Materials and textures  fresh  unchanged, skipped` and ships the old
+bytes with no error anywhere. That is the exact failure `terraincut` v18 had (§61), and the
+`versions()` gate written for it only ever covered the BAKE products.
+
+### What changed
+
+* The branch moved to `export_texture`, before the `form == "gray"` test — a single-channel mask
+  is still a colour mask and has to take the conversion too.
+* `materials` stage version 4 → 6, with the changelog corrected in place.
+* **`test_a3_objects` now exports a mask** rather than only testing `_colormask_rgba` in memory:
+  `texture_name("colormask")` must return a name rather than raise, `export_texture` must write
+  bytes, and the bytes must carry coverage in alpha (255 on a tinted texel, 0 on an untinted one).
+  The existing A6.3 checks all passed throughout — they tested the arithmetic, and the arithmetic
+  was right.
+* **`test_bake_products.versions()` now covers the app's stages too**, matching each
+  `# version N:` comment against the `version=` literal. All eleven agree as of this commit.
+
+### The lesson, and it is the third time
+
+A6.3's own test suite scored 99/99 on a fix that shipped nothing. Every check was on the
+transform; none was on the path from the transform to the file. **A unit test on the rule is not a
+test that the rule reaches the level** — the same gap as §61 (a product whose version literal was
+never bumped) and §78 (a probe that compared the level against the code that wrote it). The cheap
+instrument in each case is the same: read the thing that was built, not the thing that computes it.
+
+---
+
+## 81. The 2026-08-19 16:32 re-rip — the ordinal guess is retired and A6.4 goes live (2026-08-19)
+
+A full rip on the producer as built today (`generatedAt 2026-08-19T15:29:46Z`, every layer
+rewritten 15:58–16:32). It is a bigger city than the 08-17 reference: 5,792 meshes (was 5,591),
+4,784 materials (4,676), 1,283,502 instances (1,216,299), 680,629 lanes (633,768).
+
+Bundle **VALID** against all 15 schemas, 1 warning (the standing advisory-`parent` one).
+
+### Both producer changes landed, and both are checked in the output rather than by mtime
+
+**A6.9/D5 — `materialId`.** Every one of the 1,878 colour slots carries an id: **1,416
+`materialId`** (0 or 1) and **462 `layerId`**, none without. The multi-before-single ordering the
+join depends on is therefore real and readable. The consequence for the join:
+
+```
+                        2026-08-17 rip          2026-08-19 rip
+by the game's own id              0                     765
+by ordinal                      639                       0
+AMBIGUOUS                       142                       0
+on a material layer only          -                      13   (all vehicles)
+without a .glb                  179                     190
+materials taking CS2's emission 652                     785
+```
+
+**765 of 778, and zero ambiguous.** The 18.2 % guess the section was written around is gone, and
+the 13 that remain are not failures — a `layerId` names a material LAYER, which the bundle has no
+counterpart for, and all 62 such meshes in the city are vehicles.
+
+**A6.4 — `attrs.overridden`.** 33,511 instances carry it (25,421 trees, 7,685 props, 405 decals):
+CS2's `Game.Common.Overridden`, the mark on vegetation something was built over. The consumer
+already called `should_draw`, so it went live with no consumer change at all — the build's
+`skippedState` is **33,106**, which is the 33,511 less the 405 decals (a decal takes the baked
+path). That is A6.4's whole point: 33,106 plants and props the game does not draw are no longer
+placed in the carriageway or anywhere else.
+
+The 89 unresolved asset-pack prefabs are unchanged, so the pack enable did not happen; A6.6's
+orphan rule handles them as before — 7,629 orphans over 28 owners identified, **6,964 skipped**.
+
+### One correction to A6.9/D5, found on the new data
+
+115 slots are authored with **intensity 0** — every one of them a `NeonSign` on `slot: 1`, the
+UNLIT face of a billboard. `material_v15` tested the nits with `if nits else EMISSIVE_NITS`, so a
+legitimate zero would have fallen back to the flat 200 and lit all of them. Fixed to `is None`,
+which is the same falsy-versus-absent distinction D1 itself was. **On this city it changes
+nothing** — none of the 115 materials carries an emissive map, so no emissive fields were ever
+written for them — but it is gated now (`test_a3_objects`) rather than true by luck.
+
+### The level, rebuilt in place
+
+```
+                        08-17 bundle + A6.9      08-19 bundle + A6.9
+lights placed                 25,000                   25,000   (of 184,517 in the city)
+brightness == cd/5000    25,000 / 25,000          25,000 / 25,000
+emissive materials             2,489                    2,444   (0 with an all-zero factor)
+colorPaletteMap                1,398                    1,515
+colormask files                  724                      771
+triangles drawn            1,482,557                1,479,807
+resident (validate)        4,063 MiB                4,282 MiB
+```
+
+Triangles drawn did not move, which is the A6.9 gate — a light costs none. **Residency went the
+other way**, 4,063 → 4,282 MiB, entirely from the bigger rip (4,173 MiB of meshes against 3,958);
+the level is now **3.1x** `west_coast_usa` and still inside A6.0's unmeasured band (fits at 3,473,
+known to fail at 5,224). That is A6.0's number, not A6.9's, and it is the one thing the next load
+still has to answer.
+
+### The version gate, widened again
+
+`test_bake_products.versions()` matched `# vNN:` only, which covered three bake products of nine.
+Broadened to `# v(ersion) N:` and it immediately found `markings`, whose literal went to 3 in A5
+(`610998d`, the per-prefab `m_MinLod`) with no changelog line to match. Entry added. All nine
+products and all eleven app stages now agree.
+
+---
+
+## 82. The lights cannot light anything — BeamNG is set to Basic Lighting (2026-08-19)
+
+Naomi's load of the A6.9 build: *"lights are showing. However, they dont have any effect on the
+worlds lighting, they're just 'bright' textures. The game is also incredibly laggy and i'm using
+up a lot more memory. Unsure what the memory usage is but if it's the lights then we should
+disable them as they're useless."*
+
+Three separate claims, and the log and the settings file answer all three without a guess.
+
+### 1. "Bright textures with no lighting" — both halves are exactly right, and neither is a bug
+
+**The bright textures are A6.9's D1 and D5 working.** An emissive material is a material property:
+it needs no light source, no renderer path and no time of day. 2,444 of them now ship a non-zero
+`emissiveFactor` and CS2's own nits, so lamp lenses, sign faces and lit windows are bright. That is
+the whole of what was expected to be visible at midday.
+
+**The lights genuinely do not light, and the cause is in `game-settings.json`:**
+
+```
+/$pref/lightManager             = "Basic Lighting"
+/$pref/Reflect/deferredLighting = False
+/$pref/Video/ShaderQualityGroup = "Low"
+/$pref/Video/textureReductionLevel = 2      (Lowest)
+```
+
+BeamNG has two lighting managers, and its own documentation strings say what the difference is:
+*"With **Basic Lighting**, we do not have a prepass texture to lookup per-pixel depth and therefore
+cannot use our rendering techniques that depend on it"*, and a material field is *"determines if the
+material should receive lights in Basic Lighting. **Has no effect in Advanced Lighting**"*. Advanced
+Lighting is the deferred path — the z+normals prepass into a g-buffer that every local point and
+spot light is shaded from, and the substrate the whole clustered pipeline (frustum, size,
+occlusion, importance culling, flare substitution) sits on.
+
+**On this profile a local light is not dim, or culled, or mis-aimed. It is not shaded at all.**
+Everything A6.9 did to the photometry is correct and none of it can appear. The load confirms the
+lights themselves are fine: `Registered 25000 night lights, 0 night emissive TSStatics and 0
+day/night intensity lights` — the count is exactly what the build placed.
+
+*(The second reason they were dark is the one the build report already printed: they carry
+`nightLight` and the level ships at 12:01, so `environment.lua` had them disabled anyway. Two
+independent reasons, and fixing the clock would not have helped.)*
+
+### 2. "A lot more memory" — measured, and it is not the lights
+
+Rebuilt the same level with `lights false` and compared the validator's own resident figure:
+
+```
+                     25,000 lights        0 lights
+resident              4,282 MiB           4,282 MiB      <- IDENTICAL
+  meshes              4,173 MiB           4,173 MiB
+  textures              110 MiB             110 MiB
+items.level.json         23.5 MiB            10.5 MiB    <- the only thing that moved
+```
+
+**Removing every light changed the mounted bytes by zero**, which is what the A6.9 gate predicted:
+a light has no mesh and no texture. What it cost was 13.0 MiB of scene-graph JSON (544 bytes each)
+and ~5 s of load at the measured 0.19 ms per object.
+
+The memory is the LEVEL, and it went up because the rip did: 4,003 → 4,063 MiB (A6.3's colour masks
+finally reaching disk, §80) → **4,282 MiB** (the 2026-08-19 rip's 201 extra meshes, §81). That is
+**3.1x `west_coast_usa`** on an 8,018 MiB card, inside A6.0's unmeasured band — known to fit at
+3,473, known to fail at 5,224. The load shows the pressure directly: 16 `CreateResource failed`
+with `hr=0x8007000e` (E_OUTOFMEMORY) at t=355 s, all of them 64x32 mip-6 imposter tiles.
+
+That is A6.0's number and A6.0's problem. It is also almost certainly WHY the profile is on Basic
+Lighting and Lowest textures in the first place — the settings were turned down to survive it.
+
+### 3. What changed
+
+* **`validate_level` now reads the lighting path** (`_light_manager`) and fails the level with a
+  note when it places local lights onto a Basic Lighting profile. Nothing about the level itself
+  can reveal this: the level is correct, the renderer is the wrong one for it. The check belongs
+  beside the resident budget, which reads the card out of `beamng.log` for the same reason.
+* **`lights` is off in this build** and the 25,000 objects are gone from the level.
+
+**The lights are not "useless" — they are unshippable to a Basic Lighting profile.** Switching
+BeamNG to Advanced Lighting makes every one of them work, and that is the only thing that will;
+but Advanced Lighting also costs a g-buffer at 4.95 Mpixel on a card that is already the binding
+constraint. Until A6.0 is solved, lights off is the right build for this machine, and the build now
+says which of the two it is instead of leaving it to a screenshot.
+
+---
+
+## 83. Where the 11 GB is — and Naomi is right that it is not the rip (2026-08-19)
+
+*"The extra size of the rip couldn't be the reason my memory went up to almost 11000? before it
+was sitting much lower."* Correct, and the numbers say so.
+
+### It is not the rip, and it is certainly not the lights
+
+```
+                          08-17 bundle build      08-19 bundle build     delta
+mesh bytes                   3,958 MiB               4,173 MiB           +215
+```
+
+**+215 MiB of 4,173 — 5 %.** The 08-19 rip is a bigger city (5,792 meshes against 5,591) but it
+cannot move a total by GB. And the lights are zero: rebuilding the identical level with
+`lights false` left resident at **4,282 MiB either way**; only `items.level.json` moved,
+23.5 → 10.5 MiB.
+
+### 11 GB is SYSTEM RAM, and nothing in this repo had ever measured it
+
+The machine reports `Physical memory: 31.92 GB`, `Dedicated VRAM: 8018 MB`, `Shared system RAM:
+16343 MB`. Two different numbers have been called "the budget" and neither is the process's
+working set:
+
+| number | what it is | value |
+|---|---|---:|
+| `validate.checks.resident` | VRAM side, textures at `textureReductionLevel 2` | 4,282 MiB |
+| `level_budget` RESIDENT TOTAL | the asset bytes BeamNG READS off disk | 5,926 MiB |
+| the level folder | everything shipped, `.dae` sources included | 11,803 MiB |
+
+Neither counts the collision BVH (4,428,499 triangles), the 1,184,286 forest item transforms, the
+6,171 materials, or BeamNG's own baseline with a CEF UI. **~5.9 GB of asset bytes plus those
+structures is an 11 GB working set without anything being wrong.**
+
+### Where the bytes are, and the answer is 100 buildings
+
+`meshes cs2` is 2,419 MiB of the 4,173. Split by what mounts it:
+
+```
+1,171 shapes placed only as TSStatics    1,977 MiB      <- 82 %
+3,118 shapes mounted as FOREST types       442 MiB      <- 18 %, for 1,184,286 items
+```
+
+**The forest is not the problem** — 1.18 M items cost 442 MiB, because they share 3,118 shapes.
+The buildings are, and they are not evenly spread:
+
+```
+top  20 of the 1,171 TSStatic shapes     377 MiB
+top 100                                  966 MiB      <- half of all object mesh bytes
+top 300                                1,484 MiB
+
+MedicalUniversity01   26.1 MiB      Kinsman_Plaza                  22.7 MiB
+InternationalAirport01 25.6 MiB     NA_ResidentialHighSignature03  22.4 MiB
+USSW_Hospital_16x14   22.8 MiB      OfficeHighSignature02          22.4 MiB
+```
+
+**A shape is mounted WHOLE the moment one instance of it is in view** — LOD0, the generated LOD1
+and LOD2, and its collision mesh. So the cost is carried by the shape LIST, not the instance
+count, and one landmark the city places once costs 26 MiB exactly as if it placed a thousand.
+That is why "there are more instances now" was never going to explain it.
+
+`level_budget` now prints this section. It could report 4,173 MiB and 8,178 shapes and give a
+reader no next question; the concentration is the next question.
+
+### Two things on disk that are pure waste
+
+* **`temp/levels/cs2_city_fine` holds 9,047 cooked `.cdae` (4,998 MiB) where the level has 4,289.**
+  BeamNG never removes a cooked shape whose source has gone, so every rebuild since 2026-08-18 has
+  left its dead shapes behind. Not a RAM cost — the engine only loads what the level references —
+  but 2.5 GB of disk and worth clearing between builds.
+* The level ships 5,452 MiB of `.dae` beside 4,173 MiB of `.cdae`. **Checked: all 4,289 `.cdae`
+  are newer than their `.dae`, so BeamNG loads none of the sources** — and vanilla ships both too
+  (`west_coast_usa`: 1,654 MiB `.dae` against 780 MiB `.cdae`). Disk only.
+
+### The comparison that matters
+
+`west_coast_usa`, the biggest level BeamNG ships, mounts **780 MiB of `.cdae`**. This level mounts
+**4,173 MiB — 5.4x** — with 3.1x the shape files and 8.9x the forest items. A6.0's band (fits at
+3,473, fails at 5,224) was derived for VRAM; on the system-RAM side there is no band at all yet,
+only the observation that 11 GB of 31.9 GB is survivable and this machine is doing it while its
+graphics preset sits at Basic Lighting and Lowest textures (§82) — which is very likely a
+consequence, not a coincidence.

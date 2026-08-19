@@ -43,6 +43,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(HERE), "apps"))
 from csiibundle import glb, instances as bundle_instances, lod, tints  # noqa: E402
 from cs2beamng.beamng import placement  # noqa: E402
 from cs2beamng.beamng.level import read_objects  # noqa: E402
+from cs2beamng.beamng import frame  # noqa: E402
 from cs2beamng.stages.instances import _transform  # noqa: E402
 from cs2beamng.stages.shapes import IMPOSTER_REACH  # noqa: E402
 
@@ -301,9 +302,12 @@ def _check_state_and_scale(bundle, settings, forest, statics, samples, results):
                 state["agree"] += int(_shape_base(placed[1]) == expected)
 
         # -- where, at what size, and TURNED WHICH WAY
-        flat = [rotation[0][0], rotation[0][1], rotation[0][2],
-                rotation[1][0], rotation[1][1], rotation[1][2],
-                rotation[2][0], rotation[2][1], rotation[2][2]]
+        # through the SAME serialisation the writers use (`beamng.frame.basis_flat`): the stored
+        # nine floats are the object's own axes in groups of three, and flattening the matrix
+        # row-major here would agree with a level that stored the inverse rotation - which it did
+        # until A6.8. This row still only proves our own consistency; the convention itself is
+        # anchored against vanilla in `test_a3_objects.test_rotation_matrix_is_basis_vectors`.
+        flat = frame.basis_flat(rotation)
         where["total"] += 1
         if placed[0] == "forest":
             item = placed[2]

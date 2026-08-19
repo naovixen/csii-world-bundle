@@ -397,7 +397,8 @@ def resolve(entry, material_id=None, water_appearance=None):
      "metallicSource": ("mask", "R") | None,      "roughnessSource": ("mask", "A", "invert") | None,
      "aoSource": ("mask", "G") | None,             # advisory (§7.1) — a consumer may ignore it
      "baseColorFactor": (r, g, b, a),  # 1,1,1,1 unless textureless (tint or substitute)
-     "emissiveFactor": (r, g, b),
+     "emissiveFactor": (r, g, b) | None,   # None = the bundle carries none (the usual case)
+     "emissiveNits": float | None,         # set by `bake.materials` from the mesh's colour slot
      "roughness": float | None, "metallic": float | None,   # factors when there is no mask
      "alphaMode": "opaque"|"mask"|"blend", "alphaCutoff": float, "doubleSided": bool,
      "flags": [...], "tintable": bool}
@@ -424,7 +425,19 @@ def resolve(entry, material_id=None, water_appearance=None):
         "roughnessSource": None,
         "aoSource": None,
         "baseColorFactor": tuple(float(v) for v in (flat or (1.0, 1.0, 1.0, 1.0)))[:4],
-        "emissiveFactor": tuple(float(v) for v in (entry.get("emissiveFactor") or (0.0, 0.0, 0.0)))[:3],
+        # `None` when the bundle carries none, and it carries none on ANY material of the
+        # reference city: `MaterialRipSystem` writes the key only when the surface's
+        # `_EmissiveColor` is non-black, and CS2 does not drive emission that way — it drives it
+        # per-instance through the mesh's colour slots (`bake.materials` resolves those below).
+        # This used to substitute `(0, 0, 0)`, which is truthy, so every consumer's own
+        # "no factor -> (1,1,1)" fallback was silently defeated and 2,373 BeamNG materials
+        # multiplied their emissive map by ZERO. A missing factor is missing, not black.
+        "emissiveFactor": (tuple(float(v) for v in entry["emissiveFactor"])[:3]
+                           if entry.get("emissiveFactor") else None),
+        # Emissive luminance in nits, when a colour slot has been joined to this material
+        # (`bake.materials`); `None` otherwise. Engine-neutral: it is CS2's own
+        # `SingleLightMapping.intensity x kIntensityMultiplier`, scaled once, declared there.
+        "emissiveNits": None,
         "roughness": None,
         "metallic": None,
         "alphaMode": (entry.get("alphaMode") or "opaque").lower(),
@@ -482,5 +495,6 @@ def texture_set_key(resolved):
             bool(resolved.get("doubleSided")),
             tuple(round(float(v), 4) for v in resolved.get("baseColorFactor") or ()),
             tuple(round(float(v), 4) for v in resolved.get("emissiveFactor") or ()),
+            None if resolved.get("emissiveNits") is None else round(float(resolved["emissiveNits"]), 3),
             None if resolved.get("roughness") is None else round(float(resolved["roughness"]), 4),
             None if resolved.get("metallic") is None else round(float(resolved["metallic"]), 4))

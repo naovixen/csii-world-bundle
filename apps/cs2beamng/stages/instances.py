@@ -33,7 +33,7 @@ import time
 
 from csiibundle import instances as bundle_instances, tints
 
-from ..beamng import placement
+from ..beamng import frame, placement
 from . import Stage, level_of
 
 STAGE_KEY = "instances"
@@ -309,9 +309,7 @@ def _swap_yz(matrix):
 def _forest_line(type_name, position, rotation, scale):
     """One `.forest4.json` line. A forest item carries ONE scalar scale, so a record that needed
     three would not have reached here (`placement.wants_forest`)."""
-    flat = [rotation[0][0], rotation[0][1], rotation[0][2],
-            rotation[1][0], rotation[1][1], rotation[1][2],
-            rotation[2][0], rotation[2][1], rotation[2][2]]
+    flat = frame.basis_flat(rotation)
     item = {"ctxid": 0,
             "pos": [round(v, 4) for v in position],
             "rotationMatrix": [round(v, ROTATION_DP) for v in flat],
@@ -327,9 +325,7 @@ def _add_static(level, record, name, row, kind, position, rotation, scale, colli
     section records of one stacked instance deliberately share it (§4.1), so `id` alone would
     collide on a stack.
     """
-    flat = [rotation[0][0], rotation[0][1], rotation[0][2],
-            rotation[1][0], rotation[1][1], rotation[1][2],
-            rotation[2][0], rotation[2][1], rotation[2][2]]
+    flat = frame.basis_flat(rotation)
     obj = {"name": f"{name}_{record['id']}_{ordinal}",
            "class": "TSStatic",
            "shapeName": level.game_path("art", "shapes", "cs2", row["file"]),
@@ -517,5 +513,8 @@ OUTPUTS = ("forest",)
 
 # version 4: `forest_min_items` folds a thin colour-variant type into its untinted twin —
 # only into a type this build is already declaring, or the items land on a type BeamNG drops
+# version 8: `rotationMatrix` is written as the object's own axes in groups of three - it
+# was flattened row-major, i.e. every TSStatic and forest item carried the INVERSE of its
+# rotation, which is why buildings stood diagonally on their own plots (A6.8)
 STAGE = Stage(STAGE_KEY, "Trees, props and buildings", enabled, units, run, inputs=INPUTS,
-              settings_keys=SETTINGS, outputs=OUTPUTS, after=("shapes",), version=7)
+              settings_keys=SETTINGS, outputs=OUTPUTS, after=("shapes",), version=8)

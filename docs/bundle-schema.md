@@ -1046,7 +1046,7 @@ lights likewise, on 1,184 sub-meshes covering 153,548 instances.
 
 // lights.json — a procedural (emissive-material) entry and a punctual (HDRP light) entry
 { "StreetlightSingle02_Mesh": [
-    { "slot": 0, "color": [1,0.87,0.68,1], "colorOff": [0,0,0,1],
+    { "slot": 0, "materialId": 1, "color": [1,0.87,0.68,1], "colorOff": [0,0,0,1],
       "purpose": "StreetLight", "responseSpeed": 0.5, "animation": -1 } ],
   "StreetlightSingle02": [
     { "kind": "punctual", "effect": "Streetlight Spot", "position": [0, 8.2, 1.1],
@@ -1158,10 +1158,23 @@ store one", which the P8 split above had already disproved for half the layer. I
 the only family that existed when it was written.)*
 
 - **Procedural** entries genuinely have no position, and none is invented. The light *is* the
-  emissive material: it binds to a **material slot** (`slot`), and its place in the world is
-  wherever the geometry using that material is. Place each emitter at the centroid of the
-  primitive using the corresponding material in the same `.glb`. Inventing a transform here
-  would be inventing data, on the same grounds as §5.1.
+  emissive material, and it names which one. `slot` is the entry's index in the game's
+  `ProceduralLight` buffer; **`materialId`** *(added 2026-08-19)* is
+  `EmissiveProperties.SingleLightMapping.materialId` — the mesh's own material slot, which is the
+  position of the primitive using it in the same `.glb` (`MeshRipSystem` writes one primitive per
+  `MeshMaterial` entry, in buffer order). **`layerId`** appears instead on a multi-light entry
+  (`MultiLightMapping`), which drives a material *layer* the bundle has no counterpart for; the
+  multi lights come FIRST in the buffer, so a low `slot` may carry either. An entry with neither
+  is from a rip before that date, and a consumer falls back to matching a mesh's slots against its
+  emissive materials in primitive order — exact on 81.8 % of the reference city's slot-carrying
+  meshes and a guess on the rest.
+
+  **What the entry says is the emission.** `color` is the LIT colour and `colorOff` the unlit one,
+  both linear; **both share an alpha, and the alpha is the intensity** —
+  `MeshSystem` writes `float4(color.linear.rgb, mapping.intensity * 100f)` with
+  `EmissiveProperties.kIntensityMultiplier = 100f`, and `ProceduralEmissiveSystem` resolves the
+  pair as `lerp(color, colorOff, state)`. On the reference city `colorOff` is black on all 1,896
+  slots. Inventing a transform here would be inventing data, on the same grounds as §5.1.
 - **Punctual** entries (`kind: "punctual"`) **do** carry a position, because the game stores
   one: they are HDRP lights on `EffectPrefab` entities, placed by
   `EffectSource.EffectSettings`. Use the shipped `position`/`rotation` — relative to the

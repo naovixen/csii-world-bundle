@@ -341,6 +341,9 @@ def _texture_uri_base(out_dir, bundle):
 
 
 # version 2: decal instances take the game's own `decalPriority` draw order (audit §57.2).
+# version 3: every block carries the game's own draw-distance limit - `m_MinLod` per lane prefab
+# and per decal instance - so a tile can be culled the way CS2 culls it (A5, `610998d`; the
+# literal was bumped and this line was not, which is why the version gate could not see it).
 # -- the game's own draw-distance limit, per lane prefab and per decal instance -------------------
 #
 # CS2 culls a marking by its PREFAB's `NetLaneGeometryData.m_MinLod` (`csiibundle.lod`), which is

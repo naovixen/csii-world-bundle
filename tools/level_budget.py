@@ -247,6 +247,15 @@ def measure(level_dir, view_distance, spawn=None, screen_height=1080.0):
         "spawn": list(spawn_xy),
         "meshBytes": dict(mesh_bytes),
         "meshBytesTotal": sum(mesh_bytes.values()),
+        # WHERE the mesh bytes are, not just how many. A shape is mounted WHOLE the moment one
+        # instance of it is in view — every LOD and its collision mesh — so the cost is carried by
+        # the shape LIST, not the instance count, and it is never evenly spread. On the reference
+        # city the heaviest 100 of 4,289 shapes are half of all object mesh bytes and the biggest
+        # single one is 26 MiB. Nothing in this report said that until 2026-08-19, so "the level
+        # is too big" had no next question (audit §83).
+        "heaviestShapes": sorted(((s["bytes"], name) for name, s in shapes.items()),
+                                 reverse=True)[:20],
+        "shapeBytesTop100": sum(sorted((s["bytes"] for s in shapes.values()), reverse=True)[:100]),
         "textureBytes": dict(texture_bytes),
         "textureBytesTotal": sum(texture_bytes.values()),
         "residentTotal": sum(mesh_bytes.values()) + sum(texture_bytes.values()),
@@ -374,6 +383,15 @@ def report(result, compare=None):
         add(f"    textures {ext:<18} {value / MIB:8.0f}")
     add(f"    {'RESIDENT TOTAL':<27}{result['residentTotal'] / MIB:8.0f}")
     add("")
+    top100 = result.get("shapeBytesTop100") or 0
+    if top100:
+        share = 100.0 * top100 / max(1, result["meshBytesTotal"])
+        add(f"  the heaviest shapes — a shape is mounted WHOLE for one instance in view")
+        add(f"    top 100 of {result['shapeFiles']:,} shape files{top100 / MIB:16.0f} MiB "
+            f"({share:.0f} % of all mesh bytes)")
+        for value, name in (result.get("heaviestShapes") or [])[:8]:
+            add(f"    {name[:44]:<44}{value / MIB:8.1f} MiB")
+        add("")
     add("  triangles inside the view distance")
     for group, value in sorted(result["trianglesInView"].items(), key=lambda kv: -kv[1]):
         add(f"    {group:<27}{value:>12,}  ({result['staticsInView'].get(group, 0)} statics)")

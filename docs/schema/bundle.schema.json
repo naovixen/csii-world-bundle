@@ -1,821 +1,832 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://erohs.github.io/csii-world-bundle/schema/bundle.schema.json",
-  "title": "CS2 World Bundle manifest (bundle.json)",
-  "description": "The manifest at the root of a CS2 World Bundle. Fully specifies the coordinate frame, geo-referencing and layer index, so a consumer needs no game and no producer code.",
-  "type": "object",
-  "required": [
-    "schema",
-    "generator",
-    "generatedAt",
-    "city",
-    "frame",
-    "geo",
-    "bounds",
-    "mapSize",
-    "counts",
-    "layers"
-  ],
-  "additionalProperties": false,
-  "properties": {
-    "schema": {
-      "description": "Bundle contract version. Frozen at 2 (2026-08-09; see bundle-schema.md §12.2).",
-      "const": 2
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "$id": "https://erohs.github.io/csii-world-bundle/schema/bundle.schema.json",
+ "title": "CS2 World Bundle manifest (bundle.json)",
+ "description": "The manifest at the root of a CS2 World Bundle. Fully specifies the coordinate frame, geo-referencing and layer index, so a consumer needs no game and no producer code.",
+ "type": "object",
+ "required": [
+  "schema",
+  "generator",
+  "generatedAt",
+  "city",
+  "frame",
+  "geo",
+  "bounds",
+  "mapSize",
+  "counts",
+  "layers"
+ ],
+ "additionalProperties": false,
+ "properties": {
+  "schema": {
+   "description": "Bundle contract version. Frozen at 2 (2026-08-09; see bundle-schema.md §12.2).",
+   "const": 2
+  },
+  "generator": {
+   "description": "Producer identification, e.g. \"csii-world-bundle 1.0.16\".",
+   "type": "string",
+   "minLength": 1
+  },
+  "generatedAt": {
+   "description": "Export wall-clock time, ISO 8601 UTC (…Z).",
+   "type": "string",
+   "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$"
+  },
+  "game": {
+   "description": "Game build the bundle was ripped from. Diagnostic only; consumers must not branch on it.",
+   "type": "object",
+   "additionalProperties": false,
+   "properties": {
+    "name": {
+     "type": "string"
     },
-    "generator": {
-      "description": "Producer identification, e.g. \"csii-world-bundle 1.0.16\".",
-      "type": "string",
-      "minLength": 1
+    "version": {
+     "type": "string"
     },
-    "generatedAt": {
-      "description": "Export wall-clock time, ISO 8601 UTC (…Z).",
-      "type": "string",
-      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$"
+    "mode": {
+     "description": "Game stage at export time.",
+     "enum": [
+      "Game",
+      "Editor",
+      "MainMenu",
+      "Other"
+     ]
+    }
+   }
+  },
+  "city": {
+   "description": "City name, as displayed in game. May be empty in the map editor.",
+   "type": "string"
+  },
+  "map": {
+   "description": "Map name, as displayed in game.",
+   "type": "string"
+  },
+  "frame": {
+   "$ref": "#/$defs/frame"
+  },
+  "geo": {
+   "$ref": "#/$defs/geo"
+  },
+  "bounds": {
+   "description": "Axis-aligned bounds of all exported content, in the bundle frame.",
+   "$ref": "#/$defs/bounds"
+  },
+  "mapSize": {
+   "description": "Playable map extent in metres (edge length of the square map).",
+   "type": "number",
+   "exclusiveMinimum": 0
+  },
+  "counts": {
+   "description": "Element counts. A consumer may use these to pre-allocate and to detect truncated bundles.",
+   "type": "object",
+   "required": [
+    "meshes",
+    "materials",
+    "textures",
+    "instances",
+    "networkSegments"
+   ],
+   "additionalProperties": false,
+   "properties": {
+    "meshes": {
+     "type": "integer",
+     "minimum": 0
     },
-    "game": {
-      "description": "Game build the bundle was ripped from. Diagnostic only; consumers must not branch on it.",
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "name": {
-          "type": "string"
-        },
-        "version": {
-          "type": "string"
-        },
-        "mode": {
-          "description": "Game stage at export time.",
-          "enum": [
-            "Game",
-            "Editor",
-            "MainMenu",
-            "Other"
-          ]
-        }
+    "materials": {
+     "type": "integer",
+     "minimum": 0
+    },
+    "textures": {
+     "type": "integer",
+     "minimum": 0
+    },
+    "instances": {
+     "type": "integer",
+     "minimum": 0
+    },
+    "networkSegments": {
+     "type": "integer",
+     "minimum": 0
+    },
+    "warnings": {
+     "type": "integer",
+     "minimum": 0
+    },
+    "lanes": {
+     "type": "integer",
+     "minimum": 0
+    },
+    "laneGeometry": {
+     "type": "integer",
+     "minimum": 0
+    },
+    "areas": {
+     "type": "integer",
+     "minimum": 0
+    },
+    "clipVolumes": {
+     "type": "integer",
+     "minimum": 0
+    }
+   }
+  },
+  "layers": {
+   "description": "Layer index. Presence of a key means the layer was exported; absence means it was not. Every value is a bundle-root-relative POSIX path; values ending in '/' are directories.",
+   "type": "object",
+   "additionalProperties": false,
+   "properties": {
+    "instances": {
+     "$ref": "#/$defs/relPath"
+    },
+    "networks": {
+     "$ref": "#/$defs/relPath"
+    },
+    "lanes": {
+     "$ref": "#/$defs/relPath"
+    },
+    "laneGeometry": {
+     "$ref": "#/$defs/relPath"
+    },
+    "lanePrefabs": {
+     "$ref": "#/$defs/relPath"
+    },
+    "materials": {
+     "$ref": "#/$defs/relPath"
+    },
+    "colors": {
+     "$ref": "#/$defs/relPath"
+    },
+    "lights": {
+     "$ref": "#/$defs/relPath"
+    },
+    "meshes": {
+     "$ref": "#/$defs/relDir"
+    },
+    "networkMeshes": {
+     "$ref": "#/$defs/relDir"
+    },
+    "laneMeshes": {
+     "$ref": "#/$defs/relDir"
+    },
+    "textures": {
+     "$ref": "#/$defs/relDir"
+    },
+    "terrain": {
+     "$ref": "#/$defs/relPath"
+    },
+    "terrainFine": {
+     "$ref": "#/$defs/relPath"
+    },
+    "worldTerrain": {
+     "$ref": "#/$defs/relPath"
+    },
+    "surfaceIndex": {
+     "$ref": "#/$defs/relPath"
+    },
+    "splatmap": {
+     "$ref": "#/$defs/relPath"
+    },
+    "userSplatmap": {
+     "$ref": "#/$defs/relPath"
+    },
+    "surfaces": {
+     "$ref": "#/$defs/relDir"
+    },
+    "water": {
+     "$ref": "#/$defs/relPath"
+    },
+    "worldWater": {
+     "$ref": "#/$defs/relPath"
+    },
+    "areas": {
+     "$ref": "#/$defs/relPath"
+    },
+    "areaPrefabs": {
+     "$ref": "#/$defs/relPath"
+    },
+    "clipVolumes": {
+     "$ref": "#/$defs/relPath"
+    },
+    "grading": {
+     "$ref": "#/$defs/relPath"
+    },
+    "vector": {
+     "$ref": "#/$defs/relDir"
+    },
+    "warnings": {
+     "$ref": "#/$defs/relPath"
+    }
+   }
+  },
+  "rasters": {
+   "description": "Geo-referencing and value semantics of the raster layers. Required if any raster layer is present in 'layers'.",
+   "type": "object",
+   "additionalProperties": false,
+   "properties": {
+    "resolution": {
+     "description": "Raster cell size in metres.",
+     "type": "number",
+     "exclusiveMinimum": 0
+    },
+    "size": {
+     "description": "Raster dimensions in cells, [width, height].",
+     "type": "array",
+     "items": {
+      "type": "integer",
+      "exclusiveMinimum": 0
+     },
+     "minItems": 2,
+     "maxItems": 2
+    },
+    "originWorld": {
+     "description": "Bundle-frame world position of the raster's top-left cell centre. Row 0 runs toward -Z (south).",
+     "$ref": "#/$defs/vec3"
+    },
+    "elevationUnits": {
+     "const": "m"
+    },
+    "elevationScale": {
+     "description": "Metres of world height per stored unit of the elevation rasters: worldY = value * elevationScale + elevationOffset. Required when a terrain layer is declared.",
+     "type": "number",
+     "exclusiveMinimum": 0
+    },
+    "elevationOffset": {
+     "description": "World height of elevation-raster value 0, in metres.",
+     "type": "number"
+    },
+    "noData": {
+     "description": "Sentinel value for cells with no data.",
+     "type": "number"
+    },
+    "splatmap": {
+     "description": "Geo-referencing for the ground-blend weight map (layers.splatmap), on its own grid (§8).",
+     "$ref": "#/$defs/rasterBlock"
+    },
+    "userSplatmap": {
+     "description": "Geo-referencing for the player-painted surface weights (layers.userSplatmap) (§8).",
+     "$ref": "#/$defs/rasterBlock"
+    },
+    "worldTerrain": {
+     "description": "Geo-referencing for the backdrop heightmap beyond the playable border (layers.worldTerrain); same elevation decode as the main heightmap (§8).",
+     "$ref": "#/$defs/rasterBlock"
+    },
+    "terrainFine": {
+     "description": "Geo-referencing for the fine near-camera ground raster (layers.terrainFine): the game's finer height-cascade slice, the same heightmap with the lot/lane/area height adjustments rasterised at 1.75 m; same elevation decode as the main heightmap; own grid (§8, added 2026-08-16).",
+     "$ref": "#/$defs/rasterBlock"
+    },
+    "worldWater": {
+     "description": "Geo-referencing for the backdrop water raster (layers.worldWater); same value semantics as the main water raster (§8).",
+     "$ref": "#/$defs/rasterBlock"
+    },
+    "water": {
+     "description": "Authored water appearance (WaterRenderSettingsPrefab), applied verbatim by the game. Added 2026-08-09 (audit #40 P4) so a consumer need not guess how water looks. seaLevel is the sea datum, not the water surface - see its own description.",
+     "type": "object",
+     "additionalProperties": false,
+     "required": [
+      "semantics",
+      "seaLevel"
+     ],
+     "properties": {
+      "semantics": {
+       "description": "Prose statement of what these values are and the game's one bind-time transform.",
+       "type": "string"
+      },
+      "prefab": {
+       "description": "The settings prefab these came from.",
+       "type": "string"
+      },
+      "seaLevel": {
+       "description": "WaterSystem.SeaLevel, world metres: the sea datum the simulation and renderer work against, NOT the playable water surface. Do not seat water on it - read the water raster (layers.water) instead. A map whose water is all inland leaves this far from any surface in the city (§8, WATER-2).",
+       "type": "number"
+      },
+      "waterColor": {
+       "description": "Linear RGBA.",
+       "type": "array",
+       "items": {
+        "type": "number"
+       },
+       "minItems": 4,
+       "maxItems": 4
+      },
+      "scatteringColor": {
+       "description": "Linear RGBA.",
+       "type": "array",
+       "items": {
+        "type": "number"
+       },
+       "minItems": 4,
+       "maxItems": 4
+      },
+      "absorptionDistance": {
+       "description": "Metres.",
+       "type": "number"
+      },
+      "maxRefractionDistance": {
+       "description": "Metres.",
+       "type": "number"
+      },
+      "smoothnessClose": {
+       "description": "0..1.",
+       "type": "number"
+      },
+      "smoothnessDistant": {
+       "description": "0..1. The game binds min(distant, close).",
+       "type": "number"
+      },
+      "smoothnessRange": {
+       "description": "[start, distance] camera metres.",
+       "type": "array",
+       "items": {
+        "type": "number"
+       },
+       "minItems": 2,
+       "maxItems": 2
+      },
+      "ambientScattering": {
+       "description": "0..1.",
+       "type": "number"
+      },
+      "heightScattering": {
+       "description": "0..1.",
+       "type": "number"
+      },
+      "displacementScattering": {
+       "description": "0..1.",
+       "type": "number"
+      },
+      "directLightTipScattering": {
+       "description": "0..1.",
+       "type": "number"
+      },
+      "directLightBodyScattering": {
+       "description": "0..1.",
+       "type": "number"
+      },
+      "foamAmount": {
+       "description": "0..1.",
+       "type": "number"
+      },
+      "foamFadeRange": {
+       "description": "[start, distance] camera metres.",
+       "type": "array",
+       "items": {
+        "type": "number"
+       },
+       "minItems": 2,
+       "maxItems": 2
+      },
+      "causticsIntensity": {
+       "description": "0..1.",
+       "type": "number"
+      },
+      "causticsPlaneDistance": {
+       "description": "Metres.",
+       "type": "number"
+      },
+      "wavesMultiplier": {
+       "description": "Scalar.",
+       "type": "number"
+      },
+      "lakeWavesMultiplier": {
+       "description": "Scalar.",
+       "type": "number"
+      },
+      "minWaterAmountForWaves": {
+       "description": "Metres of water depth.",
+       "type": "number"
+      },
+      "ripplesWindSpeed": {
+       "description": "Scalar.",
+       "type": "number"
+      },
+      "ripplesChaos": {
+       "description": "Scalar.",
+       "type": "number"
+      },
+      "seaWindAffectWavesDirection": {
+       "description": "Whether sea wind steers the wave direction at all. When false, WaterSystem.ApplyMaterialParams passes 0 for both the wind orientation and the wind strength, so the whole wind branch is inert and a consumer reproducing calm water is reproducing the game exactly. Written by the producer since audit §56; the schema's additionalProperties:false made every bundle carrying it INVALID until 2026-08-19.",
+       "type": "boolean"
       }
+     }
     },
-    "city": {
-      "description": "City name, as displayed in game. May be empty in the map editor.",
-      "type": "string"
+    "terrainTiling": {
+     "description": "Authored ground texture tiling (TerrainRenderSettingsPrefab). Added 2026-08-09 (audit #40 P5): without it a consumer guesses metres-per-repeat and every ground pixel smears or moires.",
+     "type": "object",
+     "additionalProperties": false,
+     "required": [
+      "semantics",
+      "playableArea",
+      "layers"
+     ],
+     "properties": {
+      "semantics": {
+       "description": "Prose statement of how tiling maps to world metres.",
+       "type": "string"
+      },
+      "prefab": {
+       "description": "The settings prefab these came from.",
+       "type": "string"
+      },
+      "playableArea": {
+       "description": "[x, z] metres the terrain UV spans.",
+       "type": "array",
+       "items": {
+        "type": "number"
+       },
+       "minItems": 2,
+       "maxItems": 2
+      },
+      "layers": {
+       "description": "Per ground layer, keyed by the names used in terrain/surfaces/ and the splatmap channel map.",
+       "type": "object",
+       "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+         "tiling",
+         "metresPerRepeat"
+        ],
+        "properties": {
+         "tiling": {
+          "description": "[near, mid, far] texture repeats across the playable area.",
+          "type": "array",
+          "items": {
+           "type": "number"
+          },
+          "minItems": 3,
+          "maxItems": 3
+         },
+         "metresPerRepeat": {
+          "description": "[near, mid, far] metres per repeat, precomputed as playableArea.x / tiling.",
+          "type": "array",
+          "items": {
+           "type": "number"
+          },
+          "minItems": 3,
+          "maxItems": 3
+         },
+         "lodBlend": {
+          "description": "[midStart, midEnd, farStart, farEnd] camera metres.",
+          "type": "array",
+          "items": {
+           "type": "number"
+          },
+          "minItems": 4,
+          "maxItems": 4
+         }
+        }
+       }
+      },
+      "extras": {
+       "description": "Per extra paint layer (extra1 .. extra4; all four are paintable — the user splatmap packs two 4-bit weights per channel).",
+       "type": "object",
+       "additionalProperties": {
+        "type": "object",
+        "additionalProperties": true,
+        "description": "Extra paint layer parameters (dirtOverride, splatRange, blurDepth, heightOffset). Extras tile with the grass layer."
+       }
+      },
+      "triplanarHeightMapBlending": {
+       "description": "Scalar.",
+       "type": "number"
+      },
+      "triplanarBlendStrengthY": {
+       "description": "Scalar.",
+       "type": "number"
+      }
+     }
+    }
+   }
+  },
+  "ripOptions": {
+   "description": "Provenance: the rip options actually in force for this export.",
+   "type": "object",
+   "additionalProperties": false,
+   "properties": {
+    "meshSource": {
+     "description": "Where mesh geometry came from. 'stub' means placeholder geometry was substituted; instance transforms are still authoritative.",
+     "enum": [
+      "runtime",
+      "offline",
+      "mixed",
+      "stub"
+     ]
     },
-    "map": {
-      "description": "Map name, as displayed in game.",
-      "type": "string"
+    "lodCap": {
+     "description": "Highest LOD index exported per mesh. 0 = LOD0 only.",
+     "type": "integer",
+     "minimum": 0
     },
-    "frame": {
-      "$ref": "#/$defs/frame"
+    "textureSizeCap": {
+     "description": "Longest texture edge in pixels after downscaling. 0 = uncapped. Negative means textures were deselected for the run, so materials carry tints and scalars only (2026-08-09).",
+     "type": "integer",
+     "minimum": -1
     },
-    "geo": {
-      "$ref": "#/$defs/geo"
+    "includeSubObjects": {
+     "type": "boolean"
     },
-    "bounds": {
-      "description": "Axis-aligned bounds of all exported content, in the bundle frame.",
-      "$ref": "#/$defs/bounds"
+    "includeVector": {
+     "type": "boolean"
     },
-    "mapSize": {
-      "description": "Playable map extent in metres (edge length of the square map).",
+    "meshLimit": {
+     "description": "Most-used prefabs whose meshes were exported. 0 = uncapped. A capped rip declares every capped-off prefab in warnings.jsonl (contract SS10). Added 2026-08-09.",
+     "type": "integer",
+     "minimum": 0
+    }
+   }
+  }
+ },
+ "$defs": {
+  "vec3": {
+   "type": "array",
+   "items": {
+    "type": "number"
+   },
+   "minItems": 3,
+   "maxItems": 3
+  },
+  "rasterBlock": {
+   "description": "Geo-referencing for a raster that lives on its own grid rather than the main terrain grid. Same conventions: originWorld is the top-left cell centre, row 0 runs toward -Z.",
+   "type": "object",
+   "required": [
+    "file",
+    "size",
+    "resolution",
+    "originWorld"
+   ],
+   "additionalProperties": false,
+   "properties": {
+    "file": {
+     "description": "The raster this block geo-references, matching the corresponding layers value.",
+     "$ref": "#/$defs/relPath"
+    },
+    "size": {
+     "description": "Raster dimensions in cells, [width, height].",
+     "type": "array",
+     "items": {
+      "type": "integer",
+      "exclusiveMinimum": 0
+     },
+     "minItems": 2,
+     "maxItems": 2
+    },
+    "resolution": {
+     "description": "Cell size in metres, [x, z].",
+     "type": "array",
+     "items": {
       "type": "number",
       "exclusiveMinimum": 0
+     },
+     "minItems": 2,
+     "maxItems": 2
     },
-    "counts": {
-      "description": "Element counts. A consumer may use these to pre-allocate and to detect truncated bundles.",
-      "type": "object",
-      "required": [
-        "meshes",
-        "materials",
-        "textures",
-        "instances",
-        "networkSegments"
-      ],
-      "additionalProperties": false,
-      "properties": {
-        "meshes": {
-          "type": "integer",
-          "minimum": 0
-        },
-        "materials": {
-          "type": "integer",
-          "minimum": 0
-        },
-        "textures": {
-          "type": "integer",
-          "minimum": 0
-        },
-        "instances": {
-          "type": "integer",
-          "minimum": 0
-        },
-        "networkSegments": {
-          "type": "integer",
-          "minimum": 0
-        },
-        "warnings": {
-          "type": "integer",
-          "minimum": 0
-        },
-        "lanes": {
-          "type": "integer",
-          "minimum": 0
-        },
-        "laneGeometry": {
-          "type": "integer",
-          "minimum": 0
-        },
-        "areas": {
-          "type": "integer",
-          "minimum": 0
-        },
-        "clipVolumes": {
-          "type": "integer",
-          "minimum": 0
-        }
-      }
+    "originWorld": {
+     "description": "Bundle-frame world position of the raster's top-left cell centre.",
+     "$ref": "#/$defs/vec3"
     },
-    "layers": {
-      "description": "Layer index. Presence of a key means the layer was exported; absence means it was not. Every value is a bundle-root-relative POSIX path; values ending in '/' are directories.",
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "instances": {
-          "$ref": "#/$defs/relPath"
-        },
-        "networks": {
-          "$ref": "#/$defs/relPath"
-        },
-        "lanes": {
-          "$ref": "#/$defs/relPath"
-        },
-        "laneGeometry": {
-          "$ref": "#/$defs/relPath"
-        },
-        "lanePrefabs": {
-          "$ref": "#/$defs/relPath"
-        },
-        "materials": {
-          "$ref": "#/$defs/relPath"
-        },
-        "colors": {
-          "$ref": "#/$defs/relPath"
-        },
-        "lights": {
-          "$ref": "#/$defs/relPath"
-        },
-        "meshes": {
-          "$ref": "#/$defs/relDir"
-        },
-        "networkMeshes": {
-          "$ref": "#/$defs/relDir"
-        },
-        "laneMeshes": {
-          "$ref": "#/$defs/relDir"
-        },
-        "textures": {
-          "$ref": "#/$defs/relDir"
-        },
-        "terrain": {
-          "$ref": "#/$defs/relPath"
-        },
-        "terrainFine": {
-          "$ref": "#/$defs/relPath"
-        },
-        "worldTerrain": {
-          "$ref": "#/$defs/relPath"
-        },
-        "surfaceIndex": {
-          "$ref": "#/$defs/relPath"
-        },
-        "splatmap": {
-          "$ref": "#/$defs/relPath"
-        },
-        "userSplatmap": {
-          "$ref": "#/$defs/relPath"
-        },
-        "surfaces": {
-          "$ref": "#/$defs/relDir"
-        },
-        "water": {
-          "$ref": "#/$defs/relPath"
-        },
-        "worldWater": {
-          "$ref": "#/$defs/relPath"
-        },
-        "areas": {
-          "$ref": "#/$defs/relPath"
-        },
-        "areaPrefabs": {
-          "$ref": "#/$defs/relPath"
-        },
-        "clipVolumes": {
-          "$ref": "#/$defs/relPath"
-        },
-        "grading": {
-          "$ref": "#/$defs/relPath"
-        },
-        "vector": {
-          "$ref": "#/$defs/relDir"
-        },
-        "warnings": {
-          "$ref": "#/$defs/relPath"
-        }
-      }
+    "semantics": {
+     "description": "Human-readable statement of what the raster's values mean.",
+     "type": "string"
     },
-    "rasters": {
-      "description": "Geo-referencing and value semantics of the raster layers. Required if any raster layer is present in 'layers'.",
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "resolution": {
-          "description": "Raster cell size in metres.",
-          "type": "number",
-          "exclusiveMinimum": 0
-        },
-        "size": {
-          "description": "Raster dimensions in cells, [width, height].",
-          "type": "array",
-          "items": {
-            "type": "integer",
-            "exclusiveMinimum": 0
-          },
-          "minItems": 2,
-          "maxItems": 2
-        },
-        "originWorld": {
-          "description": "Bundle-frame world position of the raster's top-left cell centre. Row 0 runs toward -Z (south).",
-          "$ref": "#/$defs/vec3"
-        },
-        "elevationUnits": {
-          "const": "m"
-        },
-        "elevationScale": {
-          "description": "Metres of world height per stored unit of the elevation rasters: worldY = value * elevationScale + elevationOffset. Required when a terrain layer is declared.",
-          "type": "number",
-          "exclusiveMinimum": 0
-        },
-        "elevationOffset": {
-          "description": "World height of elevation-raster value 0, in metres.",
-          "type": "number"
-        },
-        "noData": {
-          "description": "Sentinel value for cells with no data.",
-          "type": "number"
-        },
-        "splatmap": {
-          "description": "Geo-referencing for the ground-blend weight map (layers.splatmap), on its own grid (§8).",
-          "$ref": "#/$defs/rasterBlock"
-        },
-        "userSplatmap": {
-          "description": "Geo-referencing for the player-painted surface weights (layers.userSplatmap) (§8).",
-          "$ref": "#/$defs/rasterBlock"
-        },
-        "worldTerrain": {
-          "description": "Geo-referencing for the backdrop heightmap beyond the playable border (layers.worldTerrain); same elevation decode as the main heightmap (§8).",
-          "$ref": "#/$defs/rasterBlock"
-        },
-        "terrainFine": {
-          "description": "Geo-referencing for the fine near-camera ground raster (layers.terrainFine): the game's finer height-cascade slice, the same heightmap with the lot/lane/area height adjustments rasterised at 1.75 m; same elevation decode as the main heightmap; own grid (§8, added 2026-08-16).",
-          "$ref": "#/$defs/rasterBlock"
-        },
-        "worldWater": {
-          "description": "Geo-referencing for the backdrop water raster (layers.worldWater); same value semantics as the main water raster (§8).",
-          "$ref": "#/$defs/rasterBlock"
-        },
-        "water": {
-          "description": "Authored water appearance (WaterRenderSettingsPrefab), applied verbatim by the game. Added 2026-08-09 (audit #40 P4) so a consumer need not guess how water looks. seaLevel is the sea datum, not the water surface - see its own description.",
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "semantics",
-            "seaLevel"
-          ],
-          "properties": {
-            "semantics": {
-              "description": "Prose statement of what these values are and the game's one bind-time transform.",
-              "type": "string"
-            },
-            "prefab": {
-              "description": "The settings prefab these came from.",
-              "type": "string"
-            },
-            "seaLevel": {
-              "description": "WaterSystem.SeaLevel, world metres: the sea datum the simulation and renderer work against, NOT the playable water surface. Do not seat water on it - read the water raster (layers.water) instead. A map whose water is all inland leaves this far from any surface in the city (§8, WATER-2).",
-              "type": "number"
-            },
-            "waterColor": {
-              "description": "Linear RGBA.",
-              "type": "array",
-              "items": {
-                "type": "number"
-              },
-              "minItems": 4,
-              "maxItems": 4
-            },
-            "scatteringColor": {
-              "description": "Linear RGBA.",
-              "type": "array",
-              "items": {
-                "type": "number"
-              },
-              "minItems": 4,
-              "maxItems": 4
-            },
-            "absorptionDistance": {
-              "description": "Metres.",
-              "type": "number"
-            },
-            "maxRefractionDistance": {
-              "description": "Metres.",
-              "type": "number"
-            },
-            "smoothnessClose": {
-              "description": "0..1.",
-              "type": "number"
-            },
-            "smoothnessDistant": {
-              "description": "0..1. The game binds min(distant, close).",
-              "type": "number"
-            },
-            "smoothnessRange": {
-              "description": "[start, distance] camera metres.",
-              "type": "array",
-              "items": {
-                "type": "number"
-              },
-              "minItems": 2,
-              "maxItems": 2
-            },
-            "ambientScattering": {
-              "description": "0..1.",
-              "type": "number"
-            },
-            "heightScattering": {
-              "description": "0..1.",
-              "type": "number"
-            },
-            "displacementScattering": {
-              "description": "0..1.",
-              "type": "number"
-            },
-            "directLightTipScattering": {
-              "description": "0..1.",
-              "type": "number"
-            },
-            "directLightBodyScattering": {
-              "description": "0..1.",
-              "type": "number"
-            },
-            "foamAmount": {
-              "description": "0..1.",
-              "type": "number"
-            },
-            "foamFadeRange": {
-              "description": "[start, distance] camera metres.",
-              "type": "array",
-              "items": {
-                "type": "number"
-              },
-              "minItems": 2,
-              "maxItems": 2
-            },
-            "causticsIntensity": {
-              "description": "0..1.",
-              "type": "number"
-            },
-            "causticsPlaneDistance": {
-              "description": "Metres.",
-              "type": "number"
-            },
-            "wavesMultiplier": {
-              "description": "Scalar.",
-              "type": "number"
-            },
-            "lakeWavesMultiplier": {
-              "description": "Scalar.",
-              "type": "number"
-            },
-            "minWaterAmountForWaves": {
-              "description": "Metres of water depth.",
-              "type": "number"
-            },
-            "ripplesWindSpeed": {
-              "description": "Scalar.",
-              "type": "number"
-            },
-            "ripplesChaos": {
-              "description": "Scalar.",
-              "type": "number"
-            }
-          }
-        },
-        "terrainTiling": {
-          "description": "Authored ground texture tiling (TerrainRenderSettingsPrefab). Added 2026-08-09 (audit #40 P5): without it a consumer guesses metres-per-repeat and every ground pixel smears or moires.",
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "semantics",
-            "playableArea",
-            "layers"
-          ],
-          "properties": {
-            "semantics": {
-              "description": "Prose statement of how tiling maps to world metres.",
-              "type": "string"
-            },
-            "prefab": {
-              "description": "The settings prefab these came from.",
-              "type": "string"
-            },
-            "playableArea": {
-              "description": "[x, z] metres the terrain UV spans.",
-              "type": "array",
-              "items": {
-                "type": "number"
-              },
-              "minItems": 2,
-              "maxItems": 2
-            },
-            "layers": {
-              "description": "Per ground layer, keyed by the names used in terrain/surfaces/ and the splatmap channel map.",
-              "type": "object",
-              "additionalProperties": {
-                "type": "object",
-                "additionalProperties": false,
-                "required": [
-                  "tiling",
-                  "metresPerRepeat"
-                ],
-                "properties": {
-                  "tiling": {
-                    "description": "[near, mid, far] texture repeats across the playable area.",
-                    "type": "array",
-                    "items": {
-                      "type": "number"
-                    },
-                    "minItems": 3,
-                    "maxItems": 3
-                  },
-                  "metresPerRepeat": {
-                    "description": "[near, mid, far] metres per repeat, precomputed as playableArea.x / tiling.",
-                    "type": "array",
-                    "items": {
-                      "type": "number"
-                    },
-                    "minItems": 3,
-                    "maxItems": 3
-                  },
-                  "lodBlend": {
-                    "description": "[midStart, midEnd, farStart, farEnd] camera metres.",
-                    "type": "array",
-                    "items": {
-                      "type": "number"
-                    },
-                    "minItems": 4,
-                    "maxItems": 4
-                  }
-                }
-              }
-            },
-            "extras": {
-              "description": "Per extra paint layer (extra1 .. extra4; all four are paintable — the user splatmap packs two 4-bit weights per channel).",
-              "type": "object",
-              "additionalProperties": {
-                "type": "object",
-                "additionalProperties": true,
-                "description": "Extra paint layer parameters (dirtOverride, splatRange, blurDepth, heightOffset). Extras tile with the grass layer."
-              }
-            },
-            "triplanarHeightMapBlending": {
-              "description": "Scalar.",
-              "type": "number"
-            },
-            "triplanarBlendStrengthY": {
-              "description": "Scalar.",
-              "type": "number"
-            }
-          }
-        }
-      }
+    "source": {
+     "description": "Where the producer read the raster from (e.g. the height-cascade slice), informational.",
+     "type": "string"
     },
-    "ripOptions": {
-      "description": "Provenance: the rip options actually in force for this export.",
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "meshSource": {
-          "description": "Where mesh geometry came from. 'stub' means placeholder geometry was substituted; instance transforms are still authoritative.",
-          "enum": [
-            "runtime",
-            "offline",
-            "mixed",
-            "stub"
-          ]
-        },
-        "lodCap": {
-          "description": "Highest LOD index exported per mesh. 0 = LOD0 only.",
-          "type": "integer",
-          "minimum": 0
-        },
-        "textureSizeCap": {
-          "description": "Longest texture edge in pixels after downscaling. 0 = uncapped. Negative means textures were deselected for the run, so materials carry tints and scalars only (2026-08-09).",
-          "type": "integer",
-          "minimum": -1
-        },
-        "includeSubObjects": {
-          "type": "boolean"
-        },
-        "includeVector": {
-          "type": "boolean"
-        },
-        "meshLimit": {
-          "description": "Most-used prefabs whose meshes were exported. 0 = uncapped. A capped rip declares every capped-off prefab in warnings.jsonl (contract SS10). Added 2026-08-09.",
-          "type": "integer",
-          "minimum": 0
+    "channels": {
+     "description": "Channel-to-meaning map, e.g. {\"R\": \"dirt\", \"G\": \"grass\"} plus derived entries like base/baseWeight (§8). R is dirt and G is grass — a bundle with these inverted predates audit SPLAT-3. B and A each pack TWO 4-bit weights (extra1:extra2 and extra3:extra4); the nested `packed` object names the nibbles and gives the decode — see audit SPLAT-6.",
+     "type": "object",
+     "additionalProperties": {
+      "oneOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "object",
+        "additionalProperties": {
+         "type": "string"
         }
-      }
-    }
-  },
-  "$defs": {
-    "vec3": {
-      "type": "array",
-      "items": {
-        "type": "number"
+       }
+      ]
+     }
+    },
+    "channelProvenance": {
+     "description": "How firmly each channel assignment is established: per-channel strings, or one string for the whole map.",
+     "oneOf": [
+      {
+       "type": "string"
       },
-      "minItems": 3,
-      "maxItems": 3
-    },
-    "rasterBlock": {
-      "description": "Geo-referencing for a raster that lives on its own grid rather than the main terrain grid. Same conventions: originWorld is the top-left cell centre, row 0 runs toward -Z.",
-      "type": "object",
-      "required": [
-        "file",
-        "size",
-        "resolution",
-        "originWorld"
-      ],
-      "additionalProperties": false,
-      "properties": {
-        "file": {
-          "description": "The raster this block geo-references, matching the corresponding layers value.",
-          "$ref": "#/$defs/relPath"
-        },
-        "size": {
-          "description": "Raster dimensions in cells, [width, height].",
-          "type": "array",
-          "items": {
-            "type": "integer",
-            "exclusiveMinimum": 0
-          },
-          "minItems": 2,
-          "maxItems": 2
-        },
-        "resolution": {
-          "description": "Cell size in metres, [x, z].",
-          "type": "array",
-          "items": {
-            "type": "number",
-            "exclusiveMinimum": 0
-          },
-          "minItems": 2,
-          "maxItems": 2
-        },
-        "originWorld": {
-          "description": "Bundle-frame world position of the raster's top-left cell centre.",
-          "$ref": "#/$defs/vec3"
-        },
-        "semantics": {
-          "description": "Human-readable statement of what the raster's values mean.",
-          "type": "string"
-        },
-        "source": {
-          "description": "Where the producer read the raster from (e.g. the height-cascade slice), informational.",
-          "type": "string"
-        },
-        "channels": {
-          "description": "Channel-to-meaning map, e.g. {\"R\": \"dirt\", \"G\": \"grass\"} plus derived entries like base/baseWeight (§8). R is dirt and G is grass — a bundle with these inverted predates audit SPLAT-3. B and A each pack TWO 4-bit weights (extra1:extra2 and extra3:extra4); the nested `packed` object names the nibbles and gives the decode — see audit SPLAT-6.",
-          "type": "object",
-          "additionalProperties": {
-            "oneOf": [
-              { "type": "string" },
-              { "type": "object", "additionalProperties": { "type": "string" } }
-            ]
-          }
-        },
-        "channelProvenance": {
-          "description": "How firmly each channel assignment is established: per-channel strings, or one string for the whole map.",
-          "oneOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "object",
-              "additionalProperties": {
-                "type": "string"
-              }
-            }
-          ]
-        },
-        "unrepresentable": {
-          "description": "Channel meanings the source texture cannot carry (§8 userSplatmap).",
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        },
-        "blend": {
-          "description": "How to combine the channels (§8): composite over `base` in channel order, each at saturate(w / 255 * splatMultiplier)^splatPower. Not a partition — normalising the weights renders the map wrong.",
-          "type": "string"
-        },
-        "splatMultiplier": {
-          "description": "Shader shaping constant applied to splat weights (§8).",
-          "type": "number"
-        },
-        "splatPower": {
-          "description": "Shader shaping constant applied to splat weights (§8).",
-          "type": "number"
-        }
+      {
+       "type": "object",
+       "additionalProperties": {
+        "type": "string"
+       }
       }
+     ]
     },
-    "bounds": {
-      "type": "object",
-      "required": [
-        "min",
-        "max"
-      ],
-      "additionalProperties": false,
-      "properties": {
-        "min": {
-          "$ref": "#/$defs/vec3"
-        },
-        "max": {
-          "$ref": "#/$defs/vec3"
-        }
-      }
+    "unrepresentable": {
+     "description": "Channel meanings the source texture cannot carry (§8 userSplatmap).",
+     "type": "array",
+     "items": {
+      "type": "string"
+     }
     },
-    "relPath": {
-      "description": "Bundle-root-relative POSIX path to a file. No leading slash, no '..' segment.",
-      "type": "string",
-      "pattern": "^(?!/)(?!.*(^|/)\\.\\.(/|$))[A-Za-z0-9._\\-/]+[^/]$"
+    "blend": {
+     "description": "How to combine the channels (§8): composite over `base` in channel order, each at saturate(w / 255 * splatMultiplier)^splatPower. Not a partition — normalising the weights renders the map wrong.",
+     "type": "string"
     },
-    "relDir": {
-      "description": "Bundle-root-relative POSIX path to a directory, with a trailing slash.",
-      "type": "string",
-      "pattern": "^(?!/)(?!.*(^|/)\\.\\.(/|$))[A-Za-z0-9._\\-/]+/$"
+    "splatMultiplier": {
+     "description": "Shader shaping constant applied to splat weights (§8).",
+     "type": "number"
     },
-    "frame": {
-      "description": "The coordinate frame of every position in this bundle. Stated literally so consumers convert deterministically.",
-      "type": "object",
-      "required": [
-        "units",
-        "handedness",
-        "up",
-        "axes",
-        "meshFrame"
-      ],
-      "additionalProperties": false,
-      "properties": {
-        "units": {
-          "const": "m"
-        },
-        "handedness": {
-          "description": "CS2/Unity world space is left-handed.",
-          "const": "left"
-        },
-        "up": {
-          "const": "Y"
-        },
-        "axes": {
-          "const": "X=east,Y=up,Z=north"
-        },
-        "meshFrame": {
-          "description": "glTF mandates a right-handed frame, so mesh payloads are stored converted. Instance transforms, bounds and rasters are NOT converted — they are raw bundle-frame values.",
-          "type": "object",
-          "required": [
-            "handedness",
-            "conversion",
-            "windingReversed"
-          ],
-          "additionalProperties": false,
-          "properties": {
-            "handedness": {
-              "const": "right"
-            },
-            "conversion": {
-              "description": "Applied to every vertex position, normal and tangent when writing meshes/*.glb and networks/*.glb.",
-              "const": "negate-x"
-            },
-            "windingReversed": {
-              "description": "Triangle winding was reversed to compensate for the mirror, so glTF front faces stay counter-clockwise.",
-              "const": true
-            },
-            "note": {
-              "type": "string"
-            }
-          }
-        }
-      }
-    },
-    "geo": {
-      "description": "World-to-geographic anchoring. Applies to instance positions, mesh placements and rasters alike.",
-      "type": "object",
-      "required": [
-        "crs",
-        "originLatLon",
-        "originWorld",
-        "north"
-      ],
-      "additionalProperties": false,
-      "properties": {
-        "crs": {
-          "description": "Target CRS, e.g. \"EPSG:32651\", \"EPSG:4326\" or \"custom-TM\".",
-          "type": "string",
-          "minLength": 1
-        },
-        "projection": {
-          "enum": [
-            "TransverseMercator",
-            "UTM",
-            "WGS84"
-          ]
-        },
-        "tmParams": {
-          "description": "Transverse-Mercator parameters, present when projection is TransverseMercator or UTM.",
-          "type": "object",
-          "additionalProperties": false,
-          "properties": {
-            "ellipsoid": {
-              "type": "string"
-            },
-            "semiMajor": {
-              "type": "number"
-            },
-            "inverseFlattening": {
-              "type": "number"
-            },
-            "originLon": {
-              "type": "number"
-            },
-            "originLat": {
-              "type": "number"
-            },
-            "falseEasting": {
-              "type": "number"
-            },
-            "falseNorthing": {
-              "type": "number"
-            },
-            "scaleFactor": {
-              "type": "number"
-            },
-            "utmZone": {
-              "type": "integer",
-              "minimum": 1,
-              "maximum": 60
-            },
-            "hemisphere": {
-              "enum": [
-                "N",
-                "S"
-              ]
-            },
-            "toWgs84": {
-              "description": "Helmert transform, 7 parameters (dx,dy,dz,rx,ry,rz,ds). All zero when none applies.",
-              "type": "array",
-              "items": {
-                "type": "number"
-              },
-              "minItems": 7,
-              "maxItems": 7
-            }
-          }
-        },
-        "originLatLon": {
-          "description": "[latitude, longitude] in WGS84 of the point given by originWorld.",
-          "type": "array",
-          "items": {
-            "type": "number"
-          },
-          "minItems": 2,
-          "maxItems": 2
-        },
-        "originProjected": {
-          "description": "[easting, northing] in 'crs' of the point given by originWorld.",
-          "type": "array",
-          "items": {
-            "type": "number"
-          },
-          "minItems": 2,
-          "maxItems": 2
-        },
-        "originWorld": {
-          "description": "Bundle-frame position that originLatLon / originProjected refer to. Normally [0,0,0].",
-          "$ref": "#/$defs/vec3"
-        },
-        "north": {
-          "description": "Degrees to rotate the bundle's +Z axis, counter-clockwise about +Y, to reach geographic north. 0 means +Z already points north.",
-          "type": "number",
-          "minimum": -360,
-          "maximum": 360
-        }
-      }
+    "splatPower": {
+     "description": "Shader shaping constant applied to splat weights (§8).",
+     "type": "number"
     }
+   }
+  },
+  "bounds": {
+   "type": "object",
+   "required": [
+    "min",
+    "max"
+   ],
+   "additionalProperties": false,
+   "properties": {
+    "min": {
+     "$ref": "#/$defs/vec3"
+    },
+    "max": {
+     "$ref": "#/$defs/vec3"
+    }
+   }
+  },
+  "relPath": {
+   "description": "Bundle-root-relative POSIX path to a file. No leading slash, no '..' segment.",
+   "type": "string",
+   "pattern": "^(?!/)(?!.*(^|/)\\.\\.(/|$))[A-Za-z0-9._\\-/]+[^/]$"
+  },
+  "relDir": {
+   "description": "Bundle-root-relative POSIX path to a directory, with a trailing slash.",
+   "type": "string",
+   "pattern": "^(?!/)(?!.*(^|/)\\.\\.(/|$))[A-Za-z0-9._\\-/]+/$"
+  },
+  "frame": {
+   "description": "The coordinate frame of every position in this bundle. Stated literally so consumers convert deterministically.",
+   "type": "object",
+   "required": [
+    "units",
+    "handedness",
+    "up",
+    "axes",
+    "meshFrame"
+   ],
+   "additionalProperties": false,
+   "properties": {
+    "units": {
+     "const": "m"
+    },
+    "handedness": {
+     "description": "CS2/Unity world space is left-handed.",
+     "const": "left"
+    },
+    "up": {
+     "const": "Y"
+    },
+    "axes": {
+     "const": "X=east,Y=up,Z=north"
+    },
+    "meshFrame": {
+     "description": "glTF mandates a right-handed frame, so mesh payloads are stored converted. Instance transforms, bounds and rasters are NOT converted — they are raw bundle-frame values.",
+     "type": "object",
+     "required": [
+      "handedness",
+      "conversion",
+      "windingReversed"
+     ],
+     "additionalProperties": false,
+     "properties": {
+      "handedness": {
+       "const": "right"
+      },
+      "conversion": {
+       "description": "Applied to every vertex position, normal and tangent when writing meshes/*.glb and networks/*.glb.",
+       "const": "negate-x"
+      },
+      "windingReversed": {
+       "description": "Triangle winding was reversed to compensate for the mirror, so glTF front faces stay counter-clockwise.",
+       "const": true
+      },
+      "note": {
+       "type": "string"
+      }
+     }
+    }
+   }
+  },
+  "geo": {
+   "description": "World-to-geographic anchoring. Applies to instance positions, mesh placements and rasters alike.",
+   "type": "object",
+   "required": [
+    "crs",
+    "originLatLon",
+    "originWorld",
+    "north"
+   ],
+   "additionalProperties": false,
+   "properties": {
+    "crs": {
+     "description": "Target CRS, e.g. \"EPSG:32651\", \"EPSG:4326\" or \"custom-TM\".",
+     "type": "string",
+     "minLength": 1
+    },
+    "projection": {
+     "enum": [
+      "TransverseMercator",
+      "UTM",
+      "WGS84"
+     ]
+    },
+    "tmParams": {
+     "description": "Transverse-Mercator parameters, present when projection is TransverseMercator or UTM.",
+     "type": "object",
+     "additionalProperties": false,
+     "properties": {
+      "ellipsoid": {
+       "type": "string"
+      },
+      "semiMajor": {
+       "type": "number"
+      },
+      "inverseFlattening": {
+       "type": "number"
+      },
+      "originLon": {
+       "type": "number"
+      },
+      "originLat": {
+       "type": "number"
+      },
+      "falseEasting": {
+       "type": "number"
+      },
+      "falseNorthing": {
+       "type": "number"
+      },
+      "scaleFactor": {
+       "type": "number"
+      },
+      "utmZone": {
+       "type": "integer",
+       "minimum": 1,
+       "maximum": 60
+      },
+      "hemisphere": {
+       "enum": [
+        "N",
+        "S"
+       ]
+      },
+      "toWgs84": {
+       "description": "Helmert transform, 7 parameters (dx,dy,dz,rx,ry,rz,ds). All zero when none applies.",
+       "type": "array",
+       "items": {
+        "type": "number"
+       },
+       "minItems": 7,
+       "maxItems": 7
+      }
+     }
+    },
+    "originLatLon": {
+     "description": "[latitude, longitude] in WGS84 of the point given by originWorld.",
+     "type": "array",
+     "items": {
+      "type": "number"
+     },
+     "minItems": 2,
+     "maxItems": 2
+    },
+    "originProjected": {
+     "description": "[easting, northing] in 'crs' of the point given by originWorld.",
+     "type": "array",
+     "items": {
+      "type": "number"
+     },
+     "minItems": 2,
+     "maxItems": 2
+    },
+    "originWorld": {
+     "description": "Bundle-frame position that originLatLon / originProjected refer to. Normally [0,0,0].",
+     "$ref": "#/$defs/vec3"
+    },
+    "north": {
+     "description": "Degrees to rotate the bundle's +Z axis, counter-clockwise about +Y, to reach geographic north. 0 means +Z already points north.",
+     "type": "number",
+     "minimum": -360,
+     "maximum": 360
+    }
+   }
   }
+ }
 }

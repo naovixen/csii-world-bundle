@@ -81,6 +81,11 @@ def run(ctx, progress):
         hour = float(override) % 24.0
     # BeamNG's TimeOfDay: 0 = NOON, 0.5 = midnight (environment.lua: time = (s/86400 - 0.5) % 1)
     tod_time = (hour / 24.0 - 0.5) % 1.0
+    # The `lights` stage needs the hour: its objects carry BeamNG's `nightLight`, which
+    # `environment.lua` enables only while `time` is inside (0.25, 0.75) — and the level ships
+    # `play: false`, as every vanilla level does, so this hour is the only one it is ever seen at.
+    if ctx.shared is not None:
+        ctx.shared["scene"] = {"todHour": hour, "todTime": tod_time}
     lat = float(clock.get("latitude") or manifest.get("geo", {}).get("latitude") or 45.0)
     lon = float(clock.get("longitude") or manifest.get("geo", {}).get("longitude") or 0.0)
     day = int(clock.get("day") or 172)
@@ -146,6 +151,9 @@ def run(ctx, progress):
             "defaultSpawnPointName": SPAWN_NAME if spawns else ""}
     level.write_info(info)
     return {"visibleDistance": view, "sunAzimuth": round(azimuth, 1), "sunElevation": round(elevation, 1),
+            # the `lights` stage reads this: `nightLight` objects are dark unless the clock is
+            # inside `environment.lua`'s (0.25, 0.75) night window, and the clock does not move
+            "todHour": round(hour, 3), "todTime": round(tod_time, 4),
             "spawn": spawns[0]["position"] if spawns else None, "seconds": round(time.monotonic() - started, 1)}
 
 
@@ -234,5 +242,10 @@ INPUTS = ("layer:grading", "layer:lanes", "layer:terrain", "layer:terrainFine")
 SETTINGS = ("view_distance", "tod_hour", "ai_roads", "level_title", "terrain_upsample")
 OUTPUTS = ("info.json",)
 
+# version 2: the spawn sphere's `rotationMatrix` goes through `frame.basis_flat` like every other
+# SceneObject - it was flattened row-major, so the car spawned facing the mirror of the lane it
+# was placed on (A6.8)
+# version 3: the built hour is published to `shared["scene"]`, because the `lights` stage has to
+# say whether its night lights can be seen at it (A6.9/D2)
 STAGE = Stage(STAGE_KEY, "Sky, spawn and level info", enabled, units, run, inputs=INPUTS,
-              settings_keys=SETTINGS, outputs=OUTPUTS)
+              settings_keys=SETTINGS, outputs=OUTPUTS, version=3)

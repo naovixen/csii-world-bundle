@@ -22,9 +22,14 @@ traffic signals, which reads as "the night looks wrong" rather than as a missing
 
 **Two colour fields, and they are not interchangeable.** `color` is the authored filter, in
 0..1; `finalColor` (photometric entries only) is the game's resolved value with intensity folded
-in and is NOT normalised — the sample below reaches 243.4. Use `color` × `intensity` ×
-blackbody(`temperature`) to build a light, and treat `finalColor` as the producer's own
-cross-check.
+in and is NOT normalised — the sample below reaches 243.4. Use `color` × blackbody(`temperature`)
+for the light's HUE and `candela()` for its STRENGTH.
+
+***Do not build a light from `intensity`.*** *(Corrected 2026-08-19, A6.9/D3 — this said "use
+`color` × `intensity` × blackbody(`temperature`)", and a consumer that did got every light in the
+city at the same brightness, three orders of magnitude too dim.)* `intensity` is authored **lux at
+an unshipped distance** and is 10 on 627 of the 638 entries; `finalColor.a` is the resolved
+candela and is what the renderer is handed. `candela()` is the whole rule.
 
 Positions and rotations are **in the object frame**, in the bundle frame's axes; place them
 through the same instance matrix as the mesh (`csiibundle.frames`).
@@ -125,6 +130,108 @@ def colour_slots(catalogue):
         for entry in entries or ():
             if is_colour_slot(entry):
                 yield prefab, entry
+
+
+def candela(entry):
+    """A punctual light's resolved intensity in **candela**, or `None` if it cannot be had.
+
+    **`intensity` is not it, and the bundle's own `intensityUnit` says so: every one of the 638
+    entries on the reference city is `Lux`, and lux is an illuminance at a distance, not a light.
+    627 of them carry the same authored `intensity` of 10.** What varies is
+    `LightEffect.m_LuxAtDistance`, which the bundle does not ship — so reconstructing the light
+    from `intensity` alone gives one number for the whole city.
+
+    `finalColor.a` IS the resolved value. Decompiled (`Game.Prefabs.Effects.LightEffect`):
+
+        ComputeLightIntensity()  => LightUtils.ConvertLuxToCandela(m_Intensity, m_LuxAtDistance)
+        ComputeLightFinalColor() => m_Color.linear * ComputeLightIntensity()
+                                    * CorrelatedColorTemperatureToRGB(m_ColorTemperature)
+                                    * m_LightDimmer
+
+    Unity multiplies all FOUR channels of a `Color`, and the temperature term's alpha is 1, so
+    the alpha that survives is `intensity_cd * m_Color.a * m_LightDimmer` — the candela the
+    renderer is actually handed. Verified against the file: `intensity 10, range 5` gives
+    `finalColor.a 250` = 10 x 5^2, CS2's own default `m_LuxAtDistance = 5`.
+
+    `intensityScale` (the per-placement `Effect.m_Intensity`) multiplies it, exactly as
+    `LightCullingSystem` does: `m_Color = m_Scale * m_Intensity`, where `m_Scale` is
+    `finalColor.rgb`.
+
+    Percentiles over the reference city's 176,799 placed lights: p1 36, p50 250, p90 1,562,
+    p99 2,890 cd — a wall lamp 48, a garden bollard 90, a street light 1,562, a stadium 16,000.
+
+    The authored `intensity` is the fallback and only the fallback: it is the right number when
+    the unit really is `Candela`, and a wrong-by-orders-of-magnitude one otherwise, which is why
+    it is used only when `finalColor` is absent.
+    """
+    if not isinstance(entry, dict):
+        return None
+    scale = float(entry.get("intensityScale") or 1.0)
+    final = entry.get("finalColor")
+    if isinstance(final, (list, tuple)) and len(final) >= 4:
+        return max(0.0, float(final[3])) * scale
+    intensity = entry.get("intensity")
+    if intensity is None:
+        return None
+    return max(0.0, float(intensity)) * scale
+
+
+# CS2 keys a colour slot by its RENDER prefab (`<object>_Mesh`); every other layer of the bundle
+# — `meshes/`, `instances.jsonl`'s `assetId`, `materials.json` — keys by the OBJECT prefab.
+# 959 of the reference city's 960 slot-carrying keys carry the suffix and 781 of them resolve to
+# a `.glb` on disk.
+_MESH_SUFFIX = "_Mesh"
+
+
+def slot_asset_id(prefab_key):
+    """The `assetId` (mesh/instance key) a colour slot's `lights.json` key refers to."""
+    if prefab_key and prefab_key.endswith(_MESH_SUFFIX):
+        return prefab_key[:-len(_MESH_SUFFIX)]
+    return prefab_key
+
+
+def slots_by_asset(catalogue):
+    """`{assetId: [slot, ...]}` — every colour slot, keyed the way the rest of the bundle is
+    keyed and ordered by `slot`, which is the `ProceduralLight` buffer index.
+
+    **The buffer's order is not arbitrary and a consumer joining on it needs to know why.**
+    `Game.Prefabs.MeshSystem` fills it MULTI lights first (`EmissiveProperties.m_MultiLights`,
+    which name a `layerId`) and SINGLE lights after (`m_SingleLights`, which name a
+    `materialId`), so `slot` is a position in that concatenation. The bundle ships neither id
+    today — `AppearanceRipSystem.ReadLights` writes `slot: i` and nothing else — so a consumer
+    joins by ordinal against the mesh's emissive materials and declares the residue.
+    """
+    out = {}
+    for prefab, entries in (catalogue or {}).items():
+        slots = [e for e in entries or () if is_colour_slot(e)]
+        if slots:
+            out.setdefault(slot_asset_id(prefab), []).extend(slots)
+    for key, slots in out.items():
+        slots.sort(key=lambda e: int(e.get("slot") or 0))
+    return out
+
+
+def slot_emission(entry):
+    """`(rgb, nits_unscaled)` for one colour slot — its LIT colour and CS2's own intensity.
+
+    `color` is the lit state and `colorOff` the unlit one; **`colorOff` is black on all 1,896
+    slots of the reference city**, so "off" really is off and a consumer needs only the lit half.
+    Both share an alpha, and the alpha is the intensity: `MeshSystem` writes
+    `m_Color = float4(color.linear.rgb, mapping.intensity * kIntensityMultiplier)` with
+    `kIntensityMultiplier = 100f`, and `ProceduralEmissiveSystem` resolves the pair as
+    `lerp(m_Color, m_Color2, state); value.w *= state.m_Intensity`.
+
+    The returned intensity is CS2's raw `intensity x 100` in its own units — 5 or 20 for a
+    NeonSign, 500 for a DecorativeLight, 60 for an EffectSource, 0 on the 111 slots that are
+    authored to emit nothing. Converting it to a physical unit is the consumer's job and is
+    declared where it happens.
+    """
+    if not isinstance(entry, dict):
+        return None
+    colour = entry.get("color")
+    if not isinstance(colour, (list, tuple)) or len(colour) < 4:
+        return None
+    return tuple(max(0.0, float(c)) for c in colour[:3]), max(0.0, float(colour[3]))
 
 
 def cone_angles(entry):

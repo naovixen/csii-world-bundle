@@ -20,10 +20,29 @@ answer — the bounds clamp and the surface-area bias that make a sparse fence d
 solid block of the same size. The report states the multiplier, the median draw distance per
 kind at it, and the game's own median beside it.
 
+## Where the generated levels take over is derived from what they COST
+
 The rest of the ladder — where LOD1 and LOD2 take over, and where an imposter does — has no game
 counterpart at all: CS2 ships no LOD chain for these prefabs (`lodCap 0`), so the bake generates
-one and the switch points are ours. They are geometric multiples of the shape's own null
-threshold, so they scale with it rather than being absolute metres.
+one and the switch points are ours. They used to be geometric multiples of the shape's own null
+threshold, and a null threshold is a statement about the shape's SIZE — while a generated level's
+error has nothing to do with its size. Measured over the reference bundle, a LOD1's displacement
+from LOD 0 runs from **0 m on 603 shapes to 37 m on the worst**, p50 0.018 m and p99 6.167 m; no
+single multiple of a size can serve both ends of that, and the coarse half of it is what reads as
+a roof moving under props that have not moved at all (A6.7).
+
+So each level's threshold is the ladder's — **or further out**, when its own measured
+displacement says it has no business being drawn that near
+(`bake/lods` → `lod.displacement_switch_px`, budgeted by `lod_switch_error_px`).
+
+**One direction only.** The first cut of this let the rule pull a level NEARER too, on the
+reasoning that a level a centimetre from LOD 0 has earned it; that shipped 2,586 of 2,903 prop
+shapes and 615 of 1,057 building shapes onto decimated geometry closer than the ladder had ever
+put them, and the city came back "cranes rotated and floating, highrises all diagonal". Surface
+distance is not visual error for thin or small geometry — a tenth of a metre across a crane boom
+is geometrically nothing and visually the whole object — and the ratio ladder was protecting
+exactly that by keying off the shape's SIZE. So the ladder stays as the ceiling and the
+measurement is only allowed to say "not yet".
 """
 
 import json
@@ -35,6 +54,7 @@ import time
 import numpy
 
 from csiibundle import collision, glb, instances as bundle_instances, lod, tints
+from csiibundle.bake import lods as bake_lods
 
 from ..beamng import dae, placement
 from . import Stage, level_of
@@ -42,11 +62,43 @@ from . import Stage, level_of
 STAGE_KEY = "shapes"
 SHAPES_SUBDIR = "cs2"
 
-# The LOD ladder above the null threshold, as multiples of it. Each level is used from its own
-# pixel size upward, so LOD2 (coarsest) sits just above `nulldetail` and LOD0 furthest up.
-# OURS — CS2 has no LOD chain for objects; the ratios are the vanilla BeamNG spacing (3-5x
-# between consecutive details across the shipped shapes read in A2).
+# The ladder, as multiples of the shape's null threshold, coarsest first — vanilla BeamNG's
+# spacing read in A2. It is no longer what DECIDES a switch point (the measured displacement is,
+# below) but it is still the CEILING on one, and the last rung is still the floor.
+#
+# **The displacement rule may only ever DEFER a level, never advance it**, and that is the whole
+# lesson of the 13:24 build. Allowing it both ways looked principled — a level whose surface is
+# a centimetre from LOD 0's has "earned" a nearer place — and it put 2,586 of 2,903 prop shapes
+# (335,072 placements) and 615 of 1,057 building shapes onto their decimated level NEARER than
+# before, a prop by up to 509 m and a building by 1,821 m. Naomi's load came back "even more
+# buildings rotations are off, warehouses rotated into the ocean, cranes rotated and floating,
+# highrises all diagonal": a vertex-clustered LOD of a crane lattice or a balcony run is a
+# handful of skewed triangles, and SURFACE DISTANCE DOES NOT SEE THAT — a 0.1 m error on a 0.2 m
+# boom is geometrically tiny and visually total. The ratio ladder was implicitly protecting thin
+# and small geometry by tying the switch to the shape's SIZE, and only the deferring half of the
+# new rule is an improvement on it.
 LADDER_RATIOS = (1.5, 6.0, 24.0)
+
+# How many pixels of surface error a generated level is allowed to show at the moment it takes
+# over (`lod.displacement_switch_px`). DECLARED TUNING and the one number in the ladder that is a
+# BUDGET rather than a measurement: fidelity would ask for about a pixel, and a pixel is not
+# affordable, because a CS2 residential block is 3,295 triangles of balconies, dormers and window
+# reveals and taking three quarters of them away moves the surface metres whatever the decimator
+# (A6.7 measured the quadric backend against the clusterer and got the same error).
+#
+# MEASURED over 1.16 M placements, from the two densest FOREST neighbourhoods and the two densest
+# BUILDING ones, against the ladder it defers from (vegetation exempt, see `_lod_levels`):
+#
+#   4 px  +1 %, +0 % forest   +51 %, +67 % downtown   1,568 of 4,229 shapes deferred
+#   6 px  +0 %, +0 %          +30 %, +39 %            1,191
+#   8 px  +0 %, +0 %          +16 %, +21 %            1,004
+#
+# Holding a building at LOD 0 further out is bought in drawn triangles and nothing else, and it
+# is bought downtown, where the card is already the constraint (A6.0 is open and the level mounts
+# 4,675 MiB). 8 px defers every gross case — the worst offenders go 16x further out either way —
+# and costs half of what 6 does, so it is what ships by default. `settings` exposes it, the
+# presets run 4 to 20, and the report states the pixel error every level actually ships with.
+DEFAULT_SWITCH_ERROR_PX = 8.0
 
 # An imposter takes over where the mesh would have been culled and runs for this many times more
 # distance before nothing is drawn. OURS, and the reason it is worth having: it buys back part
@@ -185,7 +237,7 @@ def _shape_job(args):
     """Worker: one `(asset, suffix, variant)` -> a written `.dae` plus the numbers the report and
     the instances stage need. Returns `(key, result_dict)`; `result_dict["error"]` on failure."""
     (bundle, derived_dir, out_dir, level_name, asset, suffix, variant, variant_key, kind,
-     options, aliases, tinted, is_tree) = args
+     options, aliases, tinted, is_tree, displacement) = args
     source = asset + suffix
     try:
         nodes = glb.parse_glb(os.path.join(bundle, "meshes", source + ".glb"))
@@ -208,7 +260,8 @@ def _shape_job(args):
     shape_name = placement.shape_key(asset, suffix, variant)
     base_mesh = dae.group_by_material(dae.merge_meshes(shape_name, parts))
     levels, lod_stats, ladder = _lod_levels(derived_dir, source, shape_name, base_mesh, null_px,
-                                            aliases, tinted, level_name, options)
+                                            radius, displacement, kind, aliases, tinted,
+                                            level_name, options)
     # the collider comes off LOD 1 where the bake generated one — `collision.colmesh_from_lod`
     # is written for the ~25 % level, and a 20k-triangle building shell is not a collider
     colliders, collider_kind = _collider(shape_name, base_mesh,
@@ -284,7 +337,15 @@ def _collect(nodes, aliases, tinted, level_name):
         lo = numpy.minimum(lo, world.min(axis=0))
         hi = numpy.maximum(hi, world.max(axis=0))
         area += lod.surface_area(world, node["tris"])
-        local, normals = dae.glb_to_local(world, node["normals"])
+        # the node's rotation belongs to its normals as much as to its positions: 166 of the
+        # reference bundle's 4,453 mesh-bearing nodes carry one (a boat lying on its side), and
+        # lighting them by the unrotated normal is a shading bug with no visible geometry to
+        # blame. The matrix is rigid on every bundle mesh, so a plain rotation is the whole
+        # inverse transpose.
+        normals_in = node["normals"]
+        if normals_in is not None:
+            normals_in = numpy.asarray(normals_in, dtype=numpy.float64) @ matrix[:3, :3].T
+        local, normals = dae.glb_to_local(world, normals_in)
         runs = []
         for name, count in node["material_runs"]:
             bound = _bound_material(name, aliases, tinted, level_name)
@@ -316,10 +377,30 @@ def _bound_material(raw, aliases, tinted, level_name):
     return bm.mapto(level_name, canonical)
 
 
-def _lod_levels(derived_dir, source, shape_name, base_mesh, null_px, aliases, tinted, level_name, options):
-    """`[(px, [Mesh]), ...]` nearest-first: LOD 0 plus whatever the bake generated."""
-    ratios = list(LADDER_RATIOS)
+# Vegetation keeps the ladder, and the deferral rule does not apply to it. MEASURED: it is 262 of
+# 268 tree shapes over 1,346,600 placements, +24 % drawn triangles in a forest for a change nobody
+# asked for — and the reason to decline it is not only the cost. The rule's input is a SURFACE
+# DISTANCE, and a canopy is a cloud of alpha-tested cards: moving its leaves 0.3 m measures the
+# same as moving a wall 0.3 m and reads as nothing at all, where the wall reads as a fault. The
+# metric does not know the difference, so vegetation is left where A6.1 and the ladder had it.
+# OURS, declared, and reversible the moment someone measures foliage error properly.
+DISPLACEMENT_RULE_KINDS = ("building", "prop", "decal")
+
+
+def _lod_levels(derived_dir, source, shape_name, base_mesh, null_px, radius, displacement,
+                kind, aliases, tinted, level_name, options):
+    """`[(px, [Mesh]), ...]` nearest-first: LOD 0 plus whatever the bake generated, each with the
+    threshold its own measured displacement earns it.
+
+    A detail's size in a Torque shape is the projected pixel size of the bounding-sphere radius
+    at which that detail STARTS being used, so the size written on level *n* is where level *n+1*
+    takes over — and that is the moment level *n+1*'s error appears on screen. `radius` and
+    `displacement` are both in the mesh's own metres (the bundle's node matrices are rigid, so a
+    node-local metre is a world metre), which is what makes the ratio between them a pure pixel
+    count.
+    """
     meshes = [base_mesh]
+    generated = []
     stats = {"levels": 1, "triangles": [len(base_mesh.tris)]}
     if options["generate_lods"]:
         for level in (1, 2):
@@ -336,26 +417,51 @@ def _lod_levels(derived_dir, source, shape_name, base_mesh, null_px, aliases, ti
             if len(mesh.tris) == 0:
                 continue
             meshes.append(mesh)
+            generated.append(level)
             stats["levels"] += 1
             stats["triangles"].append(len(mesh.tris))
-    # The COARSEST mesh takes the smallest threshold, whatever the ladder's length: Torque picks
-    # the first detail whose size is <= the current pixel size, so a shape whose only detail sat
-    # high would vanish in the gap between `nulldetail` and that detail.
+    floor = max(2.0, null_px * LADDER_RATIOS[0])
+    # one threshold per mesh, nearest first: each generated level's switch point, and the floor
+    # for the coarsest mesh, which has to hold the last band before `nulldetail`. The ladder's
+    # own value for this rung is the CEILING — the measured error may push a level further out,
+    # never nearer than the spacing that has always been there.
+    thresholds = []
+    shipped = []
+    exempt = kind not in DISPLACEMENT_RULE_KINDS
+    for index, level in enumerate(generated):
+        metres = None
+        if displacement and len(displacement) >= level and not exempt:
+            metres = displacement[level - 1]
+        ceiling = max(2.0, null_px * LADDER_RATIOS[min(len(meshes) - 1 - index, len(LADDER_RATIOS) - 1)])
+        # `metres` is None for an exempt kind and for a level the bake did not measure; the
+        # switch helper answers with its ceiling, which the clamp turns back into the ladder
+        earned = lod.displacement_switch_px(radius, metres, options["switch_error_px"])
+        px = max(floor, min(ceiling, earned))
+        thresholds.append(px)
+        shipped.append({"level": level, "metres": None if metres is None else round(metres, 4),
+                        "ladderPx": int(round(ceiling)), "exempt": exempt,
+                        "deferred": bool(px < ceiling - 0.5)})
+    thresholds.append(floor)
     # `split_mesh` caps every <geometry> at MAX_GEOMETRY_VERTS: BeamNG's per-mesh index buffers
     # wrap past 65,535 and the shape shards in-game (load #10). A hospital reached 68,856.
-    levels = [(max(2, int(round(null_px * ratio))), dae.split_mesh(mesh))
-              for ratio, mesh in zip(ratios, reversed(meshes))]
-    levels.sort(key=lambda pair: -pair[0])
-    # the ladder must strictly decrease or Torque reads two details as one
     fixed = []
-    for px, ms in levels:
+    for px, mesh in zip(thresholds, meshes):
+        px = int(round(px))
+        # the ladder must strictly decrease or Torque reads two details as one
         if fixed and px >= fixed[-1][0]:
             px = fixed[-1][0] - 1
         if px < 2:
             continue
-        fixed.append((px, ms))
+        fixed.append((px, dae.split_mesh(mesh)))
     stats["detailSizes"] = [px for px, _ms in fixed]
     stats["splitGeometries"] = sum(len(ms) for _px, ms in fixed) - len(fixed)
+    # what each generated level actually ships with: the threshold above it (where it takes over)
+    # and the pixels its displacement covers there — the approximation, counted
+    for index, entry in enumerate(shipped):
+        entry["px"] = stats["detailSizes"][index] if index < len(stats["detailSizes"]) else None
+        entry["errorPx"] = (round(lod.displacement_error_px(radius, entry["metres"], entry["px"]), 2)
+                            if entry["metres"] is not None and entry["px"] else None)
+    stats["switches"] = shipped
     return fixed, stats, meshes
 
 
@@ -440,6 +546,17 @@ def run(ctx, progress):
     out_dir = level.path("art", "shapes", SHAPES_SUBDIR)
     os.makedirs(out_dir, exist_ok=True)
 
+    # What each generated level COST, measured by the bake (`bake/lods`): the p95 distance from
+    # the level's surface back to LOD 0's, per asset. Its absence is not a fallback to the old
+    # ratio ladder - it means the derived cache predates the measurement, and the switch points
+    # would silently go back to being a function of the shape's size.
+    lod_index = bake_lods.load_index(ctx.derived_dir) if settings.get("generate_lods", True) else {}
+    if settings.get("generate_lods", True) and not lod_index:
+        raise RuntimeError(
+            f"{bake_lods.INDEX_NAME} is missing from {ctx.derived_dir}: the LOD switch points are "
+            "derived from each level's measured displacement, so the `lods` bake product must be "
+            "re-baked (it is version 2 or later that writes it)")
+
     options = {
         "level_of_detail": lod.DEFAULT_LEVEL_OF_DETAIL,
         "detail_scale": float(settings.get("lod_detail_scale", 6.0) or 6.0),
@@ -453,6 +570,8 @@ def run(ctx, progress):
         "collision_preset": str(settings.get("collision_preset") or "simplified"),
         "colmesh_max_tris": 20000,
         "tree_wind": bool(settings.get("tree_wind", False)),
+        # A6.7: how many pixels of surface error a generated level may show where it takes over
+        "switch_error_px": float(settings.get("lod_switch_error_px") or DEFAULT_SWITCH_ERROR_PX),
         "collide": _collision_policy(settings),
     }
 
@@ -470,13 +589,14 @@ def run(ctx, progress):
             jobs.setdefault((asset, suffix, index_out),
                             (ctx.bundle, ctx.derived_dir, out_dir, level.name, asset, suffix,
                              index_out, key if tinted else None, entry["kind"], options, aliases,
-                             tinted, entry["tree"]))
+                             tinted, entry["tree"], _displacement(lod_index, asset, suffix)))
         # the UNTINTED shape: what a TSStatic binds (it keeps `colorPaletteMap` and carries its
         # own `instanceColor*`), and what a prefab with no baked variants gets
         if entry["static"] or not wanted:
             jobs.setdefault((asset, suffix, None),
                             (ctx.bundle, ctx.derived_dir, out_dir, level.name, asset, suffix,
-                             None, None, entry["kind"], options, aliases, {}, entry["tree"]))
+                             None, None, entry["kind"], options, aliases, {}, entry["tree"],
+                             _displacement(lod_index, asset, suffix)))
     jobs = list(jobs.values())
 
     progress.begin("shapes: writing .dae", total=len(jobs), unit="shapes")
@@ -513,6 +633,13 @@ def run(ctx, progress):
                         "variants": variants, "droppedRecords": sorted(dropped),
                         "options": {k: v for k, v in options.items() if k != "collide"}}
     return _report(results, demand, scan_stats, options, errors, started, progress, rewritten, orphans)
+
+
+def _displacement(lod_index, asset, suffix):
+    """The bake's per-level displacement for one mesh state, in metres, or `None` per level when
+    the bake did not generate that level (a mesh too small to decimate keeps only LOD 0)."""
+    entry = lod_index.get(asset + suffix) or {}
+    return entry.get("displacement")
 
 
 def _absorb(key, value, results, errors, progress):
@@ -574,6 +701,53 @@ BOX_COLLIDER_MAX_METRES = 20.0
 TRUNK_WIDE_RATIO = 0.5
 
 
+def _switch_summary(results):
+    """What the displacement rule actually did, per generated level: the distribution of the
+    measured error, the thresholds it produced, and how many shapes it FLOORED - a floored level
+    is one too crude to earn a place at this pixel budget, so it is drawn only in the last band
+    before the shape disappears and the shape effectively keeps LOD 0 instead. Counting them is
+    the honest way to see what the budget bought."""
+    per_level = {}
+    exempted = 0
+    for row in results.values():
+        for entry in (row["lods"].get("switches") or []):
+            if entry.get("exempt"):
+                exempted += 1
+                continue
+            if entry.get("metres") is None:
+                continue
+            bucket = per_level.setdefault(entry["level"], {"metres": [], "px": [], "error": [],
+                                                          "deferred": 0, "factor": []})
+            bucket["metres"].append(entry["metres"])
+            bucket["px"].append(entry["px"] or 0)
+            bucket["error"].append(entry["errorPx"] or 0.0)
+            if entry.get("deferred"):
+                bucket["deferred"] += 1
+                if entry.get("px"):
+                    bucket["factor"].append(entry["ladderPx"] / max(entry["px"], 1e-6))
+    out = {"exemptLevels": exempted}
+    for level, bucket in sorted(per_level.items()):
+        metres = sorted(bucket["metres"])
+        error = sorted(bucket["error"])
+
+        def at(values, fraction):
+            return round(values[min(len(values) - 1, int(fraction * len(values)))], 4)
+
+        factor = sorted(bucket["factor"])
+        out[f"LOD{level}"] = {
+            "shapes": len(metres),
+            "metresP50": at(metres, 0.5), "metresP90": at(metres, 0.9), "metresMax": at(metres, 1.0),
+            "errorPxP50": at(error, 0.5), "errorPxP90": at(error, 0.9),
+            "identical": sum(1 for m in metres if m <= 1e-6),
+            # the only shapes this rule changes: the ones whose level was too far out of shape to
+            # keep the ladder's place, and how many times further out it went
+            "deferred": bucket["deferred"],
+            "deferredMedianFactor": (round(factor[len(factor) // 2], 2) if factor else None),
+            "deferredMaxFactor": (round(factor[-1], 2) if factor else None),
+        }
+    return out
+
+
 def _report(results, demand, scan_stats, options, errors, started, progress, rewritten=0, orphans=0):
     rows_by_pair = {}
     for (asset, suffix, _variant), row in results.items():
@@ -604,12 +778,20 @@ def _report(results, demand, scan_stats, options, errors, started, progress, rew
         progress.log(f"shapes: {kind} - {bucket['shapes']} shapes, CS2 draws the median one to "
                      f"{summary[kind]['gameCullMedian']:,.0f} m, this level to "
                      f"{summary[kind]['ourCullMedian']:,.0f} m")
+    switch_summary = _switch_summary(results)
     colliders = {}
     for row in results.values():
         colliders[row["collider"]] = colliders.get(row["collider"], 0) + 1
     # trunk cylinders that are really canopy cylinders — see `trunkRatio` in `_shape_job`
     trunk_ratios = [r["trunkRatio"] for r in results.values() if r.get("trunkRatio") is not None]
     trunk_wide = sum(1 for r in trunk_ratios if r > TRUNK_WIDE_RATIO)
+    for name, entry in switch_summary.items():
+        if not isinstance(entry, dict) or "deferred" not in entry:
+            continue
+        progress.log(f"shapes: {name} is DEFERRED past the ladder on {entry['deferred']:,} of "
+                     f"{entry['shapes']:,} shapes (median {entry['deferredMedianFactor']}x further "
+                     f"out, worst {entry['deferredMaxFactor']}x); the rest keep the ladder's own "
+                     f"place, which no shape now takes NEARER than")
     return {
         "shapes": len(results),
         "shapesRewritten": rewritten,
@@ -654,10 +836,26 @@ def _report(results, demand, scan_stats, options, errors, started, progress, rew
                 "count": len(results), "value": options["detail_scale"],
             },
             "lodLadderSwitchPoints": {
-                "what": "where LOD1/LOD2/the imposter take over",
+                "what": "where LOD1/LOD2 take over: the distance at which that level's own "
+                        f"measured displacement from LOD 0 is worth "
+                        f"{options['switch_error_px']:.0f} px",
                 "why": "CS2 ships no LOD chain for these prefabs (lodCap 0), so there is no game "
-                       "rule to port; the ratios are vanilla BeamNG's spacing",
+                       "rule to port. The ladder used to be fixed multiples of the shape's CULL "
+                       "threshold, and that threshold is a statement about the shape's SIZE, not "
+                       "about its LOD's ERROR: a LOD1's displacement runs from 0 m on 603 of "
+                       "4,261 shapes to 37 m on the worst, so one multiple cannot serve both ends "
+                       "and the coarse end reads as a roof moving under props that have not moved "
+                       "(A6.7). Each level now takes its threshold from its own displacement, "
+                       "measured by the bake as the p95 distance from the generated surface back "
+                       "to LOD 0's. The PIXEL BUDGET is still ours: "
+                       "about a pixel is what fidelity would ask for and costs +384 % to +630 % "
+                       "drawn triangles (measured over 1.16 M placements from four viewpoints), "
+                       "where 6 px costs +0 % to +16 %, so `lod_switch_error_px` is a declared "
+                       "budget and not a measurement",
                 "count": sum(1 for r in results.values() if r["lods"]["levels"] > 1),
+                "value": options["switch_error_px"],
+                "kinds": list(DISPLACEMENT_RULE_KINDS),
+                "displacement": switch_summary,
             },
             "treeTrunkCylinderFit": {
                 "what": "a tree whose trunk collider is wider than "
@@ -740,10 +938,16 @@ INPUTS = ("layer:instances", "layer:meshes", "derived:lods", "derived:materials.
 SETTINGS = ("trees", "props", "buildings", "foliage_density", "prop_density", "region",
             "foliage_road_clearance",
             "generate_lods", "imposters", "imposter_min_metres", "view_distance",
-            "lod_detail_scale", "lod_detail_scale_prop", "tree_wind",
+            "lod_detail_scale", "lod_detail_scale_prop", "lod_switch_error_px", "tree_wind",
             "collision_preset", "collision_buildings", "collision_props", "collision_trees")
 OUTPUTS = ("art/shapes/cs2",)
 
+# version 9: vegetation keeps the ladder (the rule's metric says nothing useful about a canopy,
+# and applying it held 1,346,600 tree placements at full geometry for +24 % triangles)
+# version 8: that rule may only DEFER a level, never advance it - allowing both directions put
+# 2,586 of 2,903 prop shapes and 615 of 1,057 building shapes onto decimated geometry NEARER than
+# the ladder ever had (a streetlight's 24-triangle level from 13 m), and the load came back worse
+# version 7: a generated level's switch point comes from its measured displacement (A6.7)
 # version 6: an oversized shape keeps a mesh collider instead of a box that traps the car
 # version 5: props take their own detail scale (A6.2)
 # version 4: orphans of absent owners are not placed (A6.6)
@@ -752,4 +956,4 @@ OUTPUTS = ("art/shapes/cs2",)
 # every shape row carries `tree` and `trunkRatio`
 STAGE = Stage(STAGE_KEY, "Object shapes", enabled, units, run, inputs=INPUTS, settings_keys=SETTINGS,
               outputs=OUTPUTS,
-              shared_keys=("shapes", "materials_used", "materials_variants_used"), version=6)
+              shared_keys=("shapes", "materials_used", "materials_variants_used"), version=9)

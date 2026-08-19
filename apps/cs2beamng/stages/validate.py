@@ -55,5 +55,8 @@ def run(ctx, progress):
 # and a hand-edited level file is outside all of it.
 # version 2: the resident-bytes budget, and the verdict survives a skip
 # version 3: that budget is derived from the card and the render resolution (A6.0)
+# version 4: the level is checked against the LIGHTING PATH the user's BeamNG is set to - a local
+#            light is shaded only by the deferred renderer, and under `Basic Lighting` every one
+#            of them costs load time and scene memory and lights nothing (A6.9, audit §82)
 STAGE = Stage("validate", "Validate level", enabled, units, run, inputs=("level:",),
-               settings_keys=("gpu_vram_mib", "render_width", "render_height"), version=3)
+               settings_keys=("gpu_vram_mib", "render_width", "render_height"), version=4)

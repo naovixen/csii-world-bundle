@@ -39,7 +39,10 @@ SCHEMA = {
     "skirts": (True, "bool", "Building foundation skirts"),
     "terrain_cut": (True, "bool", "Pre-clipped ground meshes at trenches and tunnel portals (the heightfield is punched there and the bake's cut lattice placed in the hole - the Blender cut, in-game)"),
     "lights": (False, "bool", "Street and building lights (dynamic lights are expensive)"),
-    "lights_max": (500, "int", "Maximum dynamic lights"),
+    # Needs BeamNG on ADVANCED lighting. Basic Lighting has no g-buffer prepass and shades no
+    # point or spot light at all, so on that profile every placed light is pure cost (audit §82);
+    # `validate` reads the user's own `game-settings.json` and says so.
+    "lights_max": (25000, "int", "Maximum dynamic lights (needs Advanced Lighting in BeamNG)"),
     "water": (True, "bool", "Water planes/blocks"),
     "groundcover": (False, "bool", "Billboard grass over the ground paint. NOT a fidelity feature - CS2 has no grass, detail-mesh or groundcover system at all, so the blades are synthesised BeamNG dressing for a camera at driving height (audit 62)"),
     "ai_roads": (False, "bool", "Hidden AI roads from the lane graph (experimental)"),
@@ -56,6 +59,7 @@ SCHEMA = {
     "imposter_min_metres": (0, "int", "Only give an imposter to a shape this level still DRAWS beyond this distance; 0 derives it as three quarters of `view_distance`. BeamNG builds an imposter atlas at RUNTIME, by rendering the shape from every angle the first time it comes into view - so one per shape is one atlas held in memory and a stall when you pan. A4/A5 gave one to EVERY object shape - 4,245 of 4,245 - against west_coast_usa's 82 of 2,608 (3.1 %), italy's 102 (7.2 %) and johnson_valley's 22 (4.4 %); `beamng.log` showed 2,652 of them still being generated 14 minutes into the session, and the memory climbing with them. A billboard is worth an atlas for a landmark still drawn at the edge of the view distance and not for a mailbox culled at 80 m"),
     "lod_detail_scale": (6.0, "float", "How many times CLOSER than CS2 an object is culled. Every shape's threshold is the game's own answer for that mesh (bounds + triangle area, csiibundle.lod); this is the one global multiplier on it. 1 = CS2 exactly, which draws a median prop to 1 km and a median building to 7.3 km over 1.2M objects"),
     "lod_detail_scale_prop": (0.0, "float", "The same multiplier as `lod_detail_scale` but for PROPS only; 0 = use the global one. WHY IT IS SEPARATE (A6.2): CS2 draws a median prop to 1,024 m and a median building to 13,008 m - a factor of 12.7 - and one global divisor preserves that ratio while destroying the RELATIONSHIP. At the game's 1,024 m a window frame is sub-pixel and losing it costs nothing; at 1,024/10 = 105 m it is plainly visible, and the building it is bolted to is still drawn to 1,332 m, so facades read as construction sites. 472,141 of 504,116 props (94 %) are parented to something. DECLARED TUNING: CS2 has no per-kind divisor, so this has no counterpart in the game - it exists because BeamNG cannot draw what CS2 draws and the two kinds must be given up at different rates"),
+    "lod_switch_error_px": (8.0, "float", "How many PIXELS of surface error a generated LOD level may show at the moment it takes over. Each level's displacement from LOD 0 is measured by the bake (p95 of the distance from its surface back to the original's, in metres) and the switch threshold is derived from it, so a level that is geometrically identical keeps its place to the horizon and a level that is a metre out waits until a metre stops showing. WHY IT IS NOT 1 (A6.7): the ladder used to be fixed multiples of the shape's CULL threshold, which is a statement about its SIZE - and a level's error is not. A LOD1's displacement runs from 0 m on 603 of 4,261 shapes to 37 m on the worst (p50 0.018, p99 6.167), so one multiple cannot serve both ends and the coarse end reads as a roof moving under props that have not moved. Deriving from the error fixes the RATIO for nothing; the absolute level is a triangle budget. MEASURED over 1.16M placements from the four densest viewpoints: 1 px costs +384 % to +630 % drawn triangles, 4 px +1 % to +61 %, 6 px +0 % to +16 %, 8 px -2 % to +2 % - a CS2 residential block is 3,295 triangles of balconies and window reveals that no decimator keeps at 25 %, so a tight budget buys the buildings back at full price. DECLARED TUNING: CS2 has no LOD chain for these prefabs at all (lodCap 0), so there is no game rule to port. Smaller = more faithful and more triangles: MEASURED against the ladder over 1.16M placements, 8 px costs +16 % to +21 % drawn triangles in the two densest DOWNTOWN neighbourhoods and 0 % in the two densest forest ones, 6 px +30 % to +39 %, 4 px +51 % to +67 %. VEGETATION IS EXEMPT and keeps the ladder - the rule's input is a surface distance and a canopy is a cloud of alpha cards, so it measured 262 of 268 tree shapes as needing full geometry twice as far out, +24 % triangles in a forest, for a defect nobody reported. ONE DIRECTION ONLY: this may push a level FURTHER out than the vanilla ladder puts it, never nearer. The first cut allowed both, and a level measuring close to LOD 0 came NEARER on 2,586 of 2,903 prop shapes - a streetlight's 24-triangle level from 13.1 m - which loaded as 'cranes rotated and floating, highrises all diagonal'. A surface distance is not a visual error for thin geometry: flattening a lamp post's tube moves its surface 0.06 m and destroys the object"),
     "paint_kinds": ("tree,prop", "str", "Which record kinds get baked colorSet variants (comma separated). A forest item carries no per-instance colour, so a kind left out of this draws its prefab's UNTINTED albedo - and CS2 authors every tintable surface desaturated, so that is visibly wrong, not subtle: the reference city's prop centres sit a median 0.534 from white in their strongest channel over 448k instances. Costs bake time and textures"),
     "paint_variants_tree": (2, "int", "How many baked colorSet centres a TREE prefab gets. Every extra centre is another shape file and another set of materials, and a forest item is drawn at its nearest centre either way: on the reference city the variant system alone makes 6,759 of the level's 8,220 materials and 879 MiB of its shape files. 4 was the A3 value; 2 keeps the split between the light and dark half of a prefab's palette, which is what reads at distance"),
     "paint_variants_prop": (1, "int", "How many baked colorSet centres a PROP prefab gets. 1 is the prefab's mean colour — props are small, seen at distance and in bulk, and their palettes are narrower than the trees'"),
@@ -105,6 +109,7 @@ GROUPS = [
     ("How much", ["foliage_density", "prop_density", "texture_max", "texture_max_normal", "texture_max_data",
                   "texture_max_variant", "texture_dds", "generate_lods", "tile_lod", "imposters",
                   "imposter_min_metres", "lod_detail_scale", "lod_detail_scale_prop",
+                  "lod_switch_error_px",
                   "paint_kinds", "paint_factor_max_error", "paint_variants_tree", "paint_variants_prop",
                   "forest_min_items", "lane_max_tris", "foliage_road_clearance",
                   "view_distance", "tod_hour", "terrain_brightness", "tile_size", "terrain_upsample", "terrain_holes", "terrain_blend_sharpen", "forest_shadows", "tree_wind"]),
@@ -120,13 +125,15 @@ PRESETS = {
               "paint_variants_tree": 4, "paint_variants_prop": 2, "forest_min_items": 0,
               "lane_max_tris": 0, "tile_lod": True,
               "lane_furniture": True, "lights": True, "groundcover": False, "forest_shadows": True,
-              "collision_preset": "exact", "lod_detail_scale": 3.0, "view_distance": 8000},
+              "collision_preset": "exact", "lod_detail_scale": 3.0, "lod_switch_error_px": 4.0,
+              "view_distance": 8000},
     "high": {"foliage_density": 100, "prop_density": 100, "texture_max": 512, "texture_max_normal": 512,
              "texture_max_data": 256, "texture_max_variant": 256, "generate_lods": True,
              "paint_variants_tree": 2, "paint_variants_prop": 1, "forest_min_items": 10,
              "lane_max_tris": 0, "tile_lod": True,
              "lane_furniture": True, "lights": False, "groundcover": False, "forest_shadows": True,
-             "collision_preset": "simplified", "lod_detail_scale": 6.0, "view_distance": 4000},
+             "collision_preset": "simplified", "lod_detail_scale": 6.0, "lod_switch_error_px": 6.0,
+             "view_distance": 4000},
     # Everything `high` ships, plus the knobs that cost residency rather than geometry — see
     # `docs/cs2-api-audit.md` §64 and §65. The two texture caps came down to 256 in A6.0: at 512
     # this preset mounted 5,224 MiB, which is the MEASURED point at which an 8 GB card at
@@ -143,6 +150,7 @@ PRESETS = {
                     "lights": True, "groundcover": False, "forest_shadows": False,
                     "collision_furniture": False, "collision_preset": "simplified",
                     "lod_detail_scale": 10.0, "lod_detail_scale_prop": 4.0,
+                    "lod_switch_error_px": 8.0,
                     "view_distance": 4000},
     "medium": {"foliage_density": 60, "prop_density": 70, "texture_max": 256, "texture_max_normal": 256,
                "texture_max_data": 256, "texture_max_variant": 256, "generate_lods": True,
@@ -150,13 +158,14 @@ PRESETS = {
                "lane_max_tris": 3000000, "tile_lod": True,
                "lane_furniture": True, "lane_furniture_categories": "fence", "lights": False,
                "groundcover": False, "forest_shadows": False, "collision_preset": "simplified",
-               "lod_detail_scale": 10.0, "view_distance": 3000},
+               "lod_detail_scale": 10.0, "lod_switch_error_px": 12.0, "view_distance": 3000},
     "low": {"foliage_density": 30, "prop_density": 40, "texture_max": 256, "texture_max_normal": 256,
             "texture_max_data": 128, "texture_max_variant": 128, "generate_lods": True,
             "paint_kinds": "tree", "paint_variants_tree": 1, "paint_variants_prop": 1,
             "forest_min_items": 50, "lane_max_tris": 1000000, "tile_lod": True,
             "lane_furniture": False, "lights": False, "groundcover": False, "forest_shadows": False,
-            "collision_preset": "simplified", "lod_detail_scale": 16.0, "markings": True,
+            "collision_preset": "simplified", "lod_detail_scale": 16.0,
+            "lod_switch_error_px": 20.0, "markings": True,
             "areas": False, "skirts": False, "view_distance": 2000},
 }
 

@@ -28,8 +28,13 @@ SCHEMA = os.path.join(REPO, "docs", "schema", "derived.schema.json")
 failures = []
 
 
-def check(cond, msg):
-    (print("ok:  ", msg) if cond else (failures.append(msg), print("FAIL:", msg)))
+def check(cond, msg, quiet=False):
+    if cond:
+        if not quiet:
+            print("ok:  ", msg)
+    else:
+        failures.append(msg)
+        print("FAIL:", msg)
 
 
 def versions():
@@ -43,11 +48,57 @@ def versions():
         src = os.path.join(REPO, "tools", "csiibundle", "bake", f"{name}.py")
         if not os.path.isfile(src):
             continue
-        entries = [int(v) for v in re.findall(r"#\s*v(\d+):", open(src, encoding="utf-8").read())]
+        # BOTH changelog styles the bake products use - `# v18:` (terraincut) and
+        # `# version 6:` (materials). The narrow pattern silently covered three products of nine.
+        entries = [int(v) for v in re.findall(r"#\s*v(?:ersion)?\s*(\d+):",
+                                              open(src, encoding="utf-8").read())]
         if not entries:
             continue
         check(prod.version == max(entries),
               f"{name}: VERSION={prod.version} matches its newest changelog entry v{max(entries)}")
+
+    # The APP's stages have exactly the same property and the same failure, and until 2026-08-19
+    # nothing checked them: A6.3's materials-stage entry was written as "# version 2" beside a
+    # literal that stayed 4, so the whole colour-palette fix reported `fresh, skipped` on every
+    # rebuild of an unchanged bundle. Their changelog style is `# version N:`.
+    sys.path.insert(0, os.path.join(REPO, "apps"))
+    from cs2beamng.stages import all_stages                    # noqa: PLC0415
+    for stage in sorted(all_stages(), key=lambda st: st.key):
+        src = os.path.join(REPO, "apps", "cs2beamng", "stages", f"{stage.key}.py")
+        if not os.path.isfile(src):
+            continue
+        entries = [int(v) for v in re.findall(r"#\s*version\s+(\d+):", open(src, encoding="utf-8").read())]
+        if not entries:
+            continue
+        check(stage.version == max(entries),
+              f"stage {stage.key}: version={stage.version} matches its newest changelog entry "
+              f"version {max(entries)}")
+
+
+def _same_frame(source_nodes, level_nodes):
+    """A generated level must be placed where LOD 0 is placed. `glbwrite` emits identity nodes,
+    so the bake applies each source node's own transform to the vertices before writing; if it
+    ever stops, the two bounding boxes part company and 670 shapes of the reference city
+    teleport up to 75.9 m the moment they switch level (A6.7)."""
+    def world_bounds(nodes):
+        lo = numpy.array([numpy.inf] * 3)
+        hi = -lo
+        for node in nodes or []:
+            if len(node["tris"]) == 0:
+                continue
+            m = numpy.asarray(node["matrix"], dtype=numpy.float64)
+            v = numpy.asarray(node["verts"], dtype=numpy.float64) @ m[:3, :3].T + m[:3, 3]
+            lo = numpy.minimum(lo, v.min(axis=0))
+            hi = numpy.maximum(hi, v.max(axis=0))
+        return lo, hi
+
+    slo, shi = world_bounds(source_nodes)
+    llo, lhi = world_bounds(level_nodes)
+    if not numpy.isfinite(slo).all() or not numpy.isfinite(llo).all():
+        return False
+    # a decimated level shrinks a little; it must not MOVE - a tenth of the shape is generous
+    tolerance = 0.1 * max(float(numpy.max(shi - slo)), 1e-6)
+    return bool((numpy.abs(llo - slo) <= tolerance).all() and (numpy.abs(lhi - shi) <= tolerance).all())
 
 
 def example():
@@ -66,6 +117,13 @@ def example():
         check(mats["schema"].startswith("csiibundle.bake.materials/") and "materials" in mats and "aliases" in mats, "materials.json shape")
         for key, entry in mats["materials"].items():
             check(entry["canonical"] in mats["materials"] and "derived" in entry and entry["alphaMode"] in ("opaque", "mask", "blend"), f"{key} entry")
+        # A6.9/D1: an ABSENT emissive factor must stay absent. Substituting (0,0,0) for it is
+        # what multiplied every emissive map in the level by zero, because a tuple of zeros is
+        # truthy and defeated every consumer's own "no factor -> white" fallback.
+        for key, entry in mats["materials"].items():
+            check(entry.get("emissiveFactor") is None or any(entry["emissiveFactor"]),
+                  f"{key} has no all-zero emissiveFactor", quiet=True)
+        check(True, "no material carries an all-zero emissiveFactor (A6.9/D1)")
         pv = json.load(open(os.path.join(derived, "paint_variants.json"), encoding="utf-8"))
         check("prefabs" in pv, "paint_variants.json shape")
         lods = sorted(glob.glob(os.path.join(derived, "lods", "*.glb")))
@@ -77,6 +135,15 @@ def example():
             check(level in (1, 2) and nodes[0]["name"] == base, f"{os.path.basename(f)} node named by base id ({nodes[0]['name']}, level {level})")
             if level == 2:
                 check(nodes[0]["colors"] is not None, "LOD2 carries COLOR_0 (vertex albedo)")
+            source = glb.parse_glb(os.path.join(bundle, "meshes", base + ".glb"))
+            check(_same_frame(source, nodes),
+                  f"{os.path.basename(f)} is in the SOURCE's world frame, not the node's local one")
+        index = json.load(open(os.path.join(derived, "lods", "lods.json"), encoding="utf-8"))
+        check(index.get("backend") in ("cluster", "quadric"),
+              f"lods.json records the RESOLVED decimator, not the requested one: {index.get('backend')}")
+        check(all(isinstance(entry.get("displacement"), list) and entry["displacement"]
+                  for entry in index["assets"].values()),
+              "every baked asset carries its levels' measured displacement")
         # a second run is fresh, product-wise
         outcomes = run(bundle, only=["materials", "lods"], progress=Progress())
         check(all(o.status == "fresh" for o in outcomes), "second run fresh")

@@ -38,10 +38,15 @@ import numpy
 from csiibundle import decimate, lod
 from csiibundle.bake.tiles import split_material_name
 
-# Where LOD 1 and LOD 2 take over, as multiples of the tile's null threshold. The same spacing
-# the object shapes use (`stages/shapes.LADDER_RATIOS`), read off the vanilla BeamNG shapes in
-# A2. OURS — coarsest first, so a level's size is `ratio * null_px` and its content is what the
-# game draws at `nullDistance / ratio`.
+# Where LOD 1 and LOD 2 take over, as multiples of the tile's null threshold, read off the
+# vanilla BeamNG shapes in A2. OURS — coarsest first, so a level's size is `ratio * null_px` and
+# its content is what the game draws at `nullDistance / ratio`.
+#
+# The OBJECT shapes no longer use ratios (`stages/shapes` derives each level's switch point from
+# its measured displacement, A6.7) and a tile does not need to: a tile's levels are exact SUBSETS
+# — the geometry that survives is bit-identical to LOD 0's and what goes is what the game had
+# already stopped drawing — so a tile level's displacement is zero by construction and there is
+# no error to budget.
 RATIOS = (1.5, 6.0, 24.0)
 
 # A tile nothing culls (every primitive draws past the horizon) keeps the old always-on

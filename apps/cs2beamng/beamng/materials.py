@@ -110,9 +110,7 @@ def texture_name(src_path, kind, keep_alpha=False, use_dds=True):
     """
     ext = "dds" if use_dds else "png"
     stem = re.sub(r"[^A-Za-z0-9_\-]", "_", os.path.splitext(os.path.basename(src_path or ""))[0])
-    if kind == "colormask":
-        data = _encode_dds(_colormask_rgba(arr, form), "colormask", keep_alpha=True) if use_dds             else png.encode_rgba(_colormask_rgba(arr, form))
-    elif kind == "opacity":                              # the albedo's alpha as a grey map: v1.5's opacityMap
+    if kind == "opacity":                                # the albedo's alpha as a grey map: v1.5's opacityMap
         return f"{stem}_o.data.{ext}"
     return f"{stem}.{kind}.{ext}" if not keep_alpha else f"{stem}_a.{kind}.{ext}"
 
@@ -141,6 +139,14 @@ def export_texture(level, src_path, kind, max_size=0, keep_alpha=False, cache=No
     if kind == "opacity":
         alpha = arr[:, :, 3] if form == "rgba" else (numpy.full(arr.shape[:2], 255, numpy.uint8))
         data = _encode_dds(alpha.astype(numpy.uint8), "opacity") if use_dds else png.encode_gray(alpha.astype(numpy.uint8), bit_depth=8)
+    elif kind == "colormask":
+        # BEFORE the `form == "gray"` branch: a single-channel mask is still a colour mask, and
+        # the conversion has to run on it too. (This branch was written into `texture_name` by
+        # mistake in `199f084`, where `arr`/`form` do not exist — so every `colormask` export
+        # raised NameError, no mask reached the level at all, and A6.3's fix was in the build
+        # report and nowhere else. 724 textures on the reference city.)
+        rgba = _colormask_rgba(arr, form)
+        data = _encode_dds(rgba, "colormask", keep_alpha=True) if use_dds else png.encode_rgba(rgba)
     elif form == "gray":
         g = arr
         if g.dtype != numpy.uint8:
@@ -206,9 +212,11 @@ def _encode_dds(arr, kind, keep_alpha=False):
 
 # -- materials -----------------------------------------------------------------------------------
 
-# Physical emissive intensity for a material that carries an emissive map, in nits. Vanilla's
-# own value for a lit building window is 200 (`west_coast_usa`'s `highrise`), and its brightest
-# emissive is 4,000. OURS only in the sense that the bundle carries no nits to port.
+# Physical emissive intensity, in nits, for a material that carries an emissive map and whose
+# mesh has NO colour slot to say otherwise (314 of the reference city's 966). Vanilla's own value
+# for a lit building window is 200 (`west_coast_usa`'s `highrise`); measured over all 22 vanilla
+# materials that state nits the band is 200 .. 10,000 with a median of 5,000. OURS only in the
+# sense that these particular materials have nothing in the bundle to port.
 EMISSIVE_NITS = 200.0
 
 
@@ -232,17 +240,30 @@ def material_v15(level, name, rec, maps, pid_key=None):
         stage["metallicFactor"] = float(rec["metallic"])
     if maps.get("emissive"):
         stage["emissiveMap"] = maps["emissive"]
-        factor = rec.get("emissiveFactor") or [1.0, 1.0, 1.0]
-        stage["emissiveFactor"] = [float(v) for v in factor[:3]]
+        # `is None`, NOT falsiness. `csiibundle.materials.resolve` used to substitute a
+        # `(0, 0, 0)` tuple for the absent field, which is truthy, so this fallback never fired
+        # and `defaultMat.hlsl:369`'s `inLayer.emissive *= emissiveMapSample` multiplied every
+        # one of the 2,373 emissive maps in the level by zero. The nits fix below was multiplied
+        # by that zero and could not have worked.
+        factor = rec.get("emissiveFactor")
+        if factor is None:
+            factor = [1.0, 1.0, 1.0]
+        stage["emissiveFactor"] = [round(float(v), 6) for v in factor[:3]]
         # WITHOUT THIS THE MAP DOES NOTHING USEFUL AT NIGHT. v1.5 wants a physical intensity;
         # a layer that has none takes `MATERIAL_LAYER_FLAG2_REMOVETHIS_emissiveNoNits` and is
         # scaled by the global `emissiveFallbackIntensity` against the last frame's exposure
         # (`defaultMat.hlsl`, `permutationsV0.h.hlsl`) — an exposure-relative legacy path, not a
         # light. We shipped 2,373 emissive materials with no nits at all, which is why the city
         # never lit up. 200 nits is VANILLA'S OWN value for a lit building window
-        # (`west_coast_usa`'s `highrise`); its brightest sign uses 4,000. DECLARED TUNING: CS2
-        # states emissive strength in its own units and the bundle does not carry nits.
-        stage["emissiveIntensityNits"] = EMISSIVE_NITS
+        # (`west_coast_usa`'s `highrise`); its brightest sign uses 4,000. Where the bake joined a
+        # colour slot to this material the value is CS2's own (`emissiveNits`); the flat fallback
+        # is for the materials no slot reaches.
+        # `is None`, and for the same reason as the factor above: **a joined slot may legitimately
+        # say ZERO.** 115 of the reference city's slots do - every one of them the UNLIT face of a
+        # billboard (`NeonSign`, slot 1), which CS2 authors to emit nothing. Falling back on
+        # falsiness would light all of them at 200 nits.
+        nits = rec.get("emissiveNits")
+        stage["emissiveIntensityNits"] = EMISSIVE_NITS if nits is None else round(float(nits), 1)
     if maps.get("colorMask") and rec.get("tintable"):
         stage["colorPaletteMap"] = maps["colorMask"]
         # Without this the shader takes `baseColor *= 1` and the palette is applied to NOTHING

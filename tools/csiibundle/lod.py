@@ -321,6 +321,50 @@ def mesh_min_lod(size, area, authored_bias=0.0):
     return calculate_lod_limit(rendering_size(size), lod_bias(size, area, authored_bias))
 
 
+# A level whose measured displacement is zero may be shown at any distance - it IS the geometry
+# it replaces - so its switch threshold is infinite. This stands in for that infinity: a shape's
+# bounding-sphere radius never covers ten thousand pixels of any real viewport, so a detail at
+# this size is "always". OURS, and it is a representation, not a tuning knob.
+SWITCH_CEILING_PX = 10000.0
+
+
+def displacement_switch_px(radius, displacement, error_px, ceiling=SWITCH_CEILING_PX):
+    """The Torque detail size at which a level whose surface is `displacement` metres from the
+    one it replaces may take over — the threshold that keeps its on-screen error at `error_px`.
+
+    A Torque detail size is the projected pixel size of the shape's bounding-sphere radius, so at
+    the moment a level takes over, a feature `displacement` metres long covers
+
+        error_px = detail_size * displacement / radius
+
+    pixels — the viewport height and the field of view cancel exactly, the same way they do in
+    `game_detail_px`, so this is real pixels on whatever screen the level is played on. Inverting
+    it gives the threshold, and that is the whole rule: **a level is allowed from the distance at
+    which its own error is worth about `error_px` pixels**.
+
+    What this replaces is a fixed multiple of the shape's CULL threshold, and the difference is
+    A6.7: a cull threshold is a statement about the shape's SIZE, and a generated level's error
+    is not. At one decimation ratio the measured displacement over a CS2 city runs from zero on
+    603 of 4,261 shapes to 37 m on the worst, so no multiple of a size can serve both ends, and
+    the coarse end is what reads in-game as a roof moving under props that have not moved.
+
+    `error_px` is TUNED and belongs to the caller: a pixel is what fidelity would ask for, and on
+    that city it measured at +384 % to +630 % drawn triangles against the ratio ladder, where 6 px
+    costs +0 % to +16 %. The number that ships is a budget decision and is declared as one.
+    """
+    if displacement is None or displacement <= 0.0:
+        return float(ceiling)
+    return min(float(ceiling), float(error_px) * float(radius) / float(displacement))
+
+
+def displacement_error_px(radius, displacement, detail_px):
+    """The inverse: how many pixels a level's displacement covers at the threshold it is actually
+    given. Reporting this beside a switch point is what makes the approximation countable."""
+    if radius <= 0.0:
+        return 0.0
+    return float(detail_px) * float(displacement) / float(radius)
+
+
 def screen_px(world_length, distance, screen_height=REFERENCE_SCREEN_HEIGHT, fov_degrees=45.0):
     """The projected height in pixels of `world_length` at `distance`. Torque's
     `SceneRenderState::projectRadius` and Unity's projection are the same expression."""

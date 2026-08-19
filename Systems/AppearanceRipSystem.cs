@@ -238,8 +238,11 @@ namespace Carto.Systems
         /// index are the light's own data and are exact. The <i>position</i> is not exported,
         /// because CS2 does not store one for these: a procedural light binds to a material slot
         /// (<c>EmissiveProperties.SingleLightMapping.materialId</c>) and its place in the world is
-        /// wherever the geometry using that material is. A consumer places each emitter at the
-        /// centroid of the primitive using the corresponding material in the same <c>.glb</c>.
+        /// wherever the geometry using that material is. <b>That id is now shipped</b> as
+        /// <c>materialId</c> (and <c>layerId</c> for the multi lights, which come first in the
+        /// buffer), so a consumer joins a slot to its material outright instead of matching them
+        /// by ordinal — the ordinal is exact on 639 of the reference city's 781 slot-carrying
+        /// meshes and a guess on the other 142.
         /// Inventing a transform here would be inventing data, on the same grounds as §5.1.
         /// (A previous version also read <c>LightEffectData</c> off this mesh entity for a range
         /// and temperature — audit P8's latent bug: the component only ever exists on an
@@ -253,12 +256,36 @@ namespace Carto.Systems
             DynamicBuffer<ProceduralLight> buffer = EntityManager.GetBuffer<ProceduralLight>(mesh, true);
             List<object> emitters = new(buffer.Length);
 
+            // The authored mapping, which is where the JOIN lives and the ECS buffer does not
+            // carry it. `MeshSystem` fills the buffer m_MultiLights FIRST and m_SingleLights
+            // after, so slot `i` is `m_MultiLights[i]` while `i` is under the multi count and
+            // `m_SingleLights[i - multiCount]` beyond it — and those two name different things:
+            // a MultiLightMapping names a `layerId` (a material layer of the mesh), a
+            // SingleLightMapping names a `materialId` (one material of the mesh, which is the
+            // game's own answer to "where is this emissive light"). Without them a consumer can
+            // only match slots to emissive materials by ordinal, which works on 81.8 % of the
+            // reference city's slot-carrying meshes and is a guess on the rest.
+            //
+            List<EmissiveProperties.MultiLightMapping> multi = null;
+            List<EmissiveProperties.SingleLightMapping> single = null;
+            if (EntityManager.HasComponent<PrefabData>(mesh)
+                && Instance.Prefab.TryGetPrefab(EntityManager.GetComponentData<PrefabData>(mesh),
+                                                out PrefabBase meshPrefab)
+                && meshPrefab.TryGet(out EmissiveProperties emissive))
+            {
+                multi = emissive.m_MultiLights;
+                single = emissive.m_SingleLights;
+            }
+
+            int multiCount = multi?.Count ?? 0;
+
             for (int i = 0; i < buffer.Length; i++)
             {
                 ProceduralLight light = buffer[i];
                 Dictionary<string, object> emitter = new()
                 {
-                    // The slot is the join to the mesh: the light is wherever this material is.
+                    // The slot is the buffer index — the game's own light id, and what
+                    // `LightState` is indexed by.
                     //
                     ["slot"] = i,
                     ["color"] = Channel(light.m_Color),
@@ -266,6 +293,15 @@ namespace Carto.Systems
                     ["purpose"] = light.m_Purpose.ToString(),
                     ["responseSpeed"] = System.Math.Round(light.m_ResponseSpeed, 4)
                 };
+
+                if ((i < multiCount) && (multi[i] != null))
+                {
+                    emitter["layerId"] = multi[i].layerId;
+                }
+                else if ((single != null) && (i - multiCount < single.Count) && (single[i - multiCount] != null))
+                {
+                    emitter["materialId"] = single[i - multiCount].materialId;
+                }
 
                 if (light.m_AnimationIndex >= 0) emitter["animation"] = light.m_AnimationIndex;
 

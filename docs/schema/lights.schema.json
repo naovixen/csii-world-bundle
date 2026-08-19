@@ -1,147 +1,182 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://erohs.github.io/csii-world-bundle/schema/lights.schema.json",
-  "title": "CS2 World Bundle lights (lights.json, contract section 7.2)",
-  "description": "A flat object whose values are arrays of light entries. ONE FILE, TWO RECORD SHAPES, and they are keyed differently and placed by opposite rules — a consumer that treats them uniformly makes every light or none. PROCEDURAL entries (no 'kind') are emissive-material behaviours keyed by SUB-MESH assetId (the glTF node name inside the owning prefab's .glb) and carry no position, because the light IS the material: place each at the centroid of the primitive using that material slot. PUNCTUAL entries ('kind': 'punctual') are HDRP lights on EffectPrefab entities keyed by the OBJECT prefab's assetId (joining instances.jsonl and meshes/) and DO carry a position — use it, do not fall back to the centroid rule, which would move every streetlamp to the middle of its pole. On the reference city: 1,878 procedural slots against 654 punctual lights, over 1,186 keys, and no key mixes the two.",
-  "type": "object",
-  "additionalProperties": {
-    "type": "array",
-    "items": { "$ref": "#/$defs/light" }
-  },
-  "$defs": {
-    "rgba": {
-      "description": "Linear RGBA.",
-      "type": "array",
-      "items": { "type": "number" },
-      "minItems": 4,
-      "maxItems": 4
-    },
-    "light": {
-      "type": "object",
-      "additionalProperties": false,
-      "oneOf": [
-        {
-          "title": "Procedural (emissive-material) entry",
-          "required": ["slot", "color", "colorOff", "purpose", "responseSpeed"],
-          "not": { "required": ["kind"] }
-        },
-        {
-          "title": "Punctual (HDRP light) entry",
-          "required": ["kind", "effect", "position", "rotation", "parentMesh", "range"]
-        }
-      ],
-      "properties": {
-        "slot": {
-          "description": "Procedural only. Index into the owning sub-mesh's ProceduralLight buffer, and the join to the geometry: the emitter belongs wherever the primitive using the corresponding material slot is. This is the whole of its placement — inventing a transform here would be inventing data.",
-          "type": "integer",
-          "minimum": 0
-        },
-        "color": {
-          "description": "The light's authored colour, linear RGBA. On a procedural entry this is the LIT colour; on a punctual entry it is the authored LightEffect colour before photometry.",
-          "$ref": "#/$defs/rgba"
-        },
-        "colorOff": {
-          "description": "Procedural only. The UNLIT colour. 'responseSpeed' is how fast the emitter crosses between the two, which is what makes a day/night cycle look right rather than switching.",
-          "$ref": "#/$defs/rgba"
-        },
-        "purpose": {
-          "description": "Procedural only. CS2's ProceduralLight.m_Purpose name, verbatim — 'NeonSign', 'TrafficLight_Red', 'BrakeLight', 'Headlight_LowBeam', … 47 distinct values on the reference city. An OPEN game enum: match what you know and ignore the rest.",
-          "type": "string"
-        },
-        "responseSpeed": {
-          "description": "Procedural only. How fast the emitter crosses between 'color' and 'colorOff'.",
-          "type": "number"
-        },
-        "animation": {
-          "description": "Procedural only. ProceduralLight.m_AnimationIndex, emitted only when >= 0 (an absent key means no animation). Which curve the game drives the emitter's blink or sweep with; the curves themselves are not exported.",
-          "type": "integer",
-          "minimum": 0
-        },
-        "kind": {
-          "description": "Present, and only ever 'punctual', on a real HDRP light. Its absence is what marks a procedural entry.",
-          "const": "punctual"
-        },
-        "effect": {
-          "description": "Punctual only. Name of the EffectPrefab this light came from.",
-          "type": "string"
-        },
-        "position": {
-          "description": "Punctual only. Position in metres IN THE OBJECT FRAME — not relative to any sub-mesh. (Corrected 2026-08-14: this said 'relative to the sub-mesh named by parentMesh when >= 0'. A sweep of every reader of Effect.m_ParentMesh finds three, and not one of them places the light: EffectTransformSystem uses it for COLOUR only, SubObjectSystem for sub-object elevation flags, BuildingInitializeSystem for fire SFX. The light's transform comes from GetEffectTransform, which branches on m_BoneIndex — see 'boneIndex'.) Bundle frame axes (section 2.1); NOT mesh-frame converted, so do not negate x.",
-          "type": "array",
-          "items": { "type": "number" },
-          "minItems": 3,
-          "maxItems": 3
-        },
-        "rotation": {
-          "description": "Punctual only. Rotation as a unit quaternion [x, y, z, w], same frame as 'position'.",
-          "type": "array",
-          "items": { "type": "number" },
-          "minItems": 4,
-          "maxItems": 4
-        },
-        "parentMesh": {
-          "description": "Punctual only. WHICH SUB-MESH'S COLOUR THIS LIGHT TAKES, not where it sits: it pairs with 'colorChannel', and EffectTransformSystem reads it only as an index into the owner's MeshColor buffer (guarded by parentMesh >= 0 and buffer length). It is EffectSource.m_ParentMesh verbatim and is OVERLOADED across the game's other uses, so it is not a plain index: 0 is by far the commonest value, -1 means none, a value > 0 that exceeds the prefab's sub-mesh count is a ProceduralBone CONNECTION ID (RenderingUtils.FindBoneIndex), and other negatives are authored values the game itself cannot resolve (-1001 occurs on a modded asset in the reference city; FindBoneIndex requires boneID > 0, so the game falls back to the object frame). Do not index a sub-mesh array with it without bounds-checking.",
-          "type": "integer"
-        },
-        "boneIndex": {
-          "description": "Punctual only, and present ONLY when the light rides an animated procedural bone (Effect.m_BoneIndex.x >= 0, resolved by the game at prefab initialise). ITS PRESENCE CHANGES WHAT 'position' MEANS: FindBoneIndex transforms position and rotation into that bone's bind-pose space, so an entry carrying this key is NOT in the object frame and a consumer placing it there puts the light in the wrong spot. [boneIndex, subMesh]: the first is the index into the owner's BoneHistory buffer (an animation the bundle does not carry), the second the sub-mesh whose transform is applied after it, or -1. A static consumer either composes the bind pose or skips these; on the reference city at most 4 of 654 punctual lights can take one — the three bicycles and one park asset whose parentMesh exceeds their prefab's sub-mesh count.",
-          "type": "array",
-          "items": { "type": "integer" },
-          "minItems": 2,
-          "maxItems": 2
-        },
-        "range": {
-          "description": "Punctual only. LightEffectData.m_Range in metres — how far the light reaches, which is what the game culls on.",
-          "type": "number",
-          "minimum": 0
-        },
-        "intensityScale": {
-          "description": "Punctual only. Per-placement multiplier on the prefab's intensity. Emitted only when it differs from 1.",
-          "type": "number"
-        },
-        "finalColor": {
-          "description": "Punctual only. The RESOLVED colour the renderer is handed: authored colour x photometric intensity x temperature x dimmer, linear HDR (so components may exceed 1). Prefer this over recomputing from 'color' + 'intensity' + 'temperature'.",
-          "$ref": "#/$defs/rgba"
-        },
-        "colorChannel": {
-          "description": "Punctual only. When present, this light takes the OWNING INSTANCE's colorSet channel (0, 1 or 2) instead of its authored colour — the game swaps it in per instance, so a consumer baking 'finalColor' into every copy gets one colour where the city shows several.",
-          "type": "integer",
-          "minimum": 0,
-          "maximum": 2
-        },
-        "type": {
-          "description": "Punctual only. Game.Rendering.LightType name — 'Point', 'Spot', 'Directional', 'Area'. Open; only Point and Spot occur on the reference city.",
-          "type": "string"
-        },
-        "intensity": {
-          "description": "Punctual only. Photometric intensity in the unit named by 'intensityUnit'.",
-          "type": "number"
-        },
-        "intensityUnit": {
-          "description": "Punctual only. HDRP LightUnit name — 'Lux', 'Lumen', 'Candela', 'Nits', 'Ev100'. Open, and it is NOT constant across bundles: the reference city reads 'Lux' throughout while contract section 7.2's worked example shows 'Lumen'. Convert; do not assume.",
-          "type": "string"
-        },
-        "temperature": {
-          "description": "Punctual only. Colour temperature in kelvin, emitted only when the light actually uses one (m_UseColorTemperature). Absent means the authored colour stands alone.",
-          "type": "number"
-        },
-        "spotShape": {
-          "description": "Punctual, Spot only. HDRP SpotLightShape name ('Cone', 'Pyramid', 'Box').",
-          "type": "string"
-        },
-        "spotAngle": {
-          "description": "Punctual, Spot only. Outer cone angle in degrees.",
-          "type": "number"
-        },
-        "innerSpotPercentage": {
-          "description": "Punctual, Spot only. Where the falloff starts, as a percentage of the outer angle.",
-          "type": "number"
-        },
-        "areaShape": {
-          "description": "Punctual, Area only. HDRP AreaLightShape name ('Rectangle', 'Tube', 'Disc').",
-          "type": "string"
-        }
-      }
-    }
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "$id": "https://erohs.github.io/csii-world-bundle/schema/lights.schema.json",
+ "title": "CS2 World Bundle lights (lights.json, contract section 7.2)",
+ "description": "A flat object whose values are arrays of light entries. ONE FILE, TWO RECORD SHAPES, and they are keyed differently and placed by opposite rules — a consumer that treats them uniformly makes every light or none. PROCEDURAL entries (no 'kind') are emissive-material behaviours keyed by SUB-MESH assetId (the glTF node name inside the owning prefab's .glb) and carry no position, because the light IS the material: place each at the centroid of the primitive using that material slot. PUNCTUAL entries ('kind': 'punctual') are HDRP lights on EffectPrefab entities keyed by the OBJECT prefab's assetId (joining instances.jsonl and meshes/) and DO carry a position — use it, do not fall back to the centroid rule, which would move every streetlamp to the middle of its pole. On the reference city: 1,878 procedural slots against 654 punctual lights, over 1,186 keys, and no key mixes the two.",
+ "type": "object",
+ "additionalProperties": {
+  "type": "array",
+  "items": {
+   "$ref": "#/$defs/light"
   }
+ },
+ "$defs": {
+  "rgba": {
+   "description": "Linear RGBA.",
+   "type": "array",
+   "items": {
+    "type": "number"
+   },
+   "minItems": 4,
+   "maxItems": 4
+  },
+  "light": {
+   "type": "object",
+   "additionalProperties": false,
+   "oneOf": [
+    {
+     "title": "Procedural (emissive-material) entry",
+     "required": [
+      "slot",
+      "color",
+      "colorOff",
+      "purpose",
+      "responseSpeed"
+     ],
+     "not": {
+      "required": [
+       "kind"
+      ]
+     }
+    },
+    {
+     "title": "Punctual (HDRP light) entry",
+     "required": [
+      "kind",
+      "effect",
+      "position",
+      "rotation",
+      "parentMesh",
+      "range"
+     ]
+    }
+   ],
+   "properties": {
+    "slot": {
+     "description": "Procedural only. Index into the owning sub-mesh's ProceduralLight buffer, and the join to the geometry: the emitter belongs wherever the primitive using the corresponding material slot is. This is the whole of its placement — inventing a transform here would be inventing data.",
+     "type": "integer",
+     "minimum": 0
+    },
+    "materialId": {
+     "description": "Procedural only, and the game's own join. EmissiveProperties.SingleLightMapping.materialId — the owning sub-mesh's MATERIAL SLOT, which is the position of the primitive using it in the same .glb (MeshRipSystem writes one primitive per MeshMaterial entry, in buffer order). Present since 2026-08-19; an entry without it is from an older rip, and a consumer falls back to matching a mesh's slots against its emissive materials in primitive order — exact on 81.8 % of the reference city's slot-carrying meshes and a guess on the rest. Mutually exclusive with layerId.",
+     "type": "integer"
+    },
+    "layerId": {
+     "description": "Procedural only. EmissiveProperties.MultiLightMapping.layerId — this entry drives a material LAYER rather than one material, and the bundle has no layer concept, so a mesh-material consumer skips it and counts it. The multi lights come FIRST in the ProceduralLight buffer, so a low 'slot' may carry either id. Mutually exclusive with materialId.",
+     "type": "integer"
+    },
+    "color": {
+     "description": "The light's authored colour, linear RGBA. On a procedural entry this is the LIT colour; on a punctual entry it is the authored LightEffect colour before photometry.",
+     "$ref": "#/$defs/rgba"
+    },
+    "colorOff": {
+     "description": "Procedural only. The UNLIT colour. 'responseSpeed' is how fast the emitter crosses between the two, which is what makes a day/night cycle look right rather than switching.",
+     "$ref": "#/$defs/rgba"
+    },
+    "purpose": {
+     "description": "Procedural only. CS2's ProceduralLight.m_Purpose name, verbatim — 'NeonSign', 'TrafficLight_Red', 'BrakeLight', 'Headlight_LowBeam', … 47 distinct values on the reference city. An OPEN game enum: match what you know and ignore the rest.",
+     "type": "string"
+    },
+    "responseSpeed": {
+     "description": "Procedural only. How fast the emitter crosses between 'color' and 'colorOff'.",
+     "type": "number"
+    },
+    "animation": {
+     "description": "Procedural only. ProceduralLight.m_AnimationIndex, emitted only when >= 0 (an absent key means no animation). Which curve the game drives the emitter's blink or sweep with; the curves themselves are not exported.",
+     "type": "integer",
+     "minimum": 0
+    },
+    "kind": {
+     "description": "Present, and only ever 'punctual', on a real HDRP light. Its absence is what marks a procedural entry.",
+     "const": "punctual"
+    },
+    "effect": {
+     "description": "Punctual only. Name of the EffectPrefab this light came from.",
+     "type": "string"
+    },
+    "position": {
+     "description": "Punctual only. Position in metres IN THE OBJECT FRAME — not relative to any sub-mesh. (Corrected 2026-08-14: this said 'relative to the sub-mesh named by parentMesh when >= 0'. A sweep of every reader of Effect.m_ParentMesh finds three, and not one of them places the light: EffectTransformSystem uses it for COLOUR only, SubObjectSystem for sub-object elevation flags, BuildingInitializeSystem for fire SFX. The light's transform comes from GetEffectTransform, which branches on m_BoneIndex — see 'boneIndex'.) Bundle frame axes (section 2.1); NOT mesh-frame converted, so do not negate x.",
+     "type": "array",
+     "items": {
+      "type": "number"
+     },
+     "minItems": 3,
+     "maxItems": 3
+    },
+    "rotation": {
+     "description": "Punctual only. Rotation as a unit quaternion [x, y, z, w], same frame as 'position'.",
+     "type": "array",
+     "items": {
+      "type": "number"
+     },
+     "minItems": 4,
+     "maxItems": 4
+    },
+    "parentMesh": {
+     "description": "Punctual only. WHICH SUB-MESH'S COLOUR THIS LIGHT TAKES, not where it sits: it pairs with 'colorChannel', and EffectTransformSystem reads it only as an index into the owner's MeshColor buffer (guarded by parentMesh >= 0 and buffer length). It is EffectSource.m_ParentMesh verbatim and is OVERLOADED across the game's other uses, so it is not a plain index: 0 is by far the commonest value, -1 means none, a value > 0 that exceeds the prefab's sub-mesh count is a ProceduralBone CONNECTION ID (RenderingUtils.FindBoneIndex), and other negatives are authored values the game itself cannot resolve (-1001 occurs on a modded asset in the reference city; FindBoneIndex requires boneID > 0, so the game falls back to the object frame). Do not index a sub-mesh array with it without bounds-checking.",
+     "type": "integer"
+    },
+    "boneIndex": {
+     "description": "Punctual only, and present ONLY when the light rides an animated procedural bone (Effect.m_BoneIndex.x >= 0, resolved by the game at prefab initialise). ITS PRESENCE CHANGES WHAT 'position' MEANS: FindBoneIndex transforms position and rotation into that bone's bind-pose space, so an entry carrying this key is NOT in the object frame and a consumer placing it there puts the light in the wrong spot. [boneIndex, subMesh]: the first is the index into the owner's BoneHistory buffer (an animation the bundle does not carry), the second the sub-mesh whose transform is applied after it, or -1. A static consumer either composes the bind pose or skips these; on the reference city at most 4 of 654 punctual lights can take one — the three bicycles and one park asset whose parentMesh exceeds their prefab's sub-mesh count.",
+     "type": "array",
+     "items": {
+      "type": "integer"
+     },
+     "minItems": 2,
+     "maxItems": 2
+    },
+    "range": {
+     "description": "Punctual only. LightEffectData.m_Range in metres — how far the light reaches, which is what the game culls on.",
+     "type": "number",
+     "minimum": 0
+    },
+    "intensityScale": {
+     "description": "Punctual only. Per-placement multiplier on the prefab's intensity. Emitted only when it differs from 1.",
+     "type": "number"
+    },
+    "finalColor": {
+     "description": "Punctual only. The RESOLVED colour the renderer is handed: authored colour x photometric intensity x temperature x dimmer, linear HDR (so components may exceed 1). Prefer this over recomputing from 'color' + 'intensity' + 'temperature'.",
+     "$ref": "#/$defs/rgba"
+    },
+    "colorChannel": {
+     "description": "Punctual only. When present, this light takes the OWNING INSTANCE's colorSet channel (0, 1 or 2) instead of its authored colour — the game swaps it in per instance, so a consumer baking 'finalColor' into every copy gets one colour where the city shows several.",
+     "type": "integer",
+     "minimum": 0,
+     "maximum": 2
+    },
+    "type": {
+     "description": "Punctual only. Game.Rendering.LightType name — 'Point', 'Spot', 'Directional', 'Area'. Open; only Point and Spot occur on the reference city.",
+     "type": "string"
+    },
+    "intensity": {
+     "description": "Punctual only. Photometric intensity in the unit named by 'intensityUnit'.",
+     "type": "number"
+    },
+    "intensityUnit": {
+     "description": "Punctual only. HDRP LightUnit name — 'Lux', 'Lumen', 'Candela', 'Nits', 'Ev100'. Open, and it is NOT constant across bundles: the reference city reads 'Lux' throughout while contract section 7.2's worked example shows 'Lumen'. Convert; do not assume.",
+     "type": "string"
+    },
+    "temperature": {
+     "description": "Punctual only. Colour temperature in kelvin, emitted only when the light actually uses one (m_UseColorTemperature). Absent means the authored colour stands alone.",
+     "type": "number"
+    },
+    "spotShape": {
+     "description": "Punctual, Spot only. HDRP SpotLightShape name ('Cone', 'Pyramid', 'Box').",
+     "type": "string"
+    },
+    "spotAngle": {
+     "description": "Punctual, Spot only. Outer cone angle in degrees.",
+     "type": "number"
+    },
+    "innerSpotPercentage": {
+     "description": "Punctual, Spot only. Where the falloff starts, as a percentage of the outer angle.",
+     "type": "number"
+    },
+    "areaShape": {
+     "description": "Punctual, Area only. HDRP AreaLightShape name ('Rectangle', 'Tube', 'Disc').",
+     "type": "string"
+    }
+   }
+  }
+ }
 }

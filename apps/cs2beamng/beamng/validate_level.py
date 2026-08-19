@@ -159,6 +159,18 @@ def check(level_dir, bundle_dir, progress=None, settings=None):
     # drops frames, which is why they are notes on the build rather than silence.
     over = _budget_notes(by_class, item_data, dae_files, forest_items)
     checks["budgets"] = {name: value for name, value, _limit in over}
+
+    # A local light needs the DEFERRED renderer. Read the profile the level will actually be
+    # loaded on and say so, because nothing about the level itself can reveal this (§82).
+    placed_lights = len(by_class.get("PointLight", [])) + len(by_class.get("SpotLight", []))
+    manager, manager_source = _light_manager()
+    checks["lightManager"] = {"manager": manager, "source": manager_source, "lights": placed_lights}
+    if placed_lights and manager and "basic" in manager.lower():
+        note(f"lighting: {placed_lights:,} local lights are placed, and BeamNG is set to "
+             f"{manager!r} ({manager_source}) - the BASIC (forward) renderer, which has no "
+             f"g-buffer prepass and shades no point or spot light at all. They will cost load "
+             f"time and scene memory and light NOTHING. Switch BeamNG to Advanced Lighting, or "
+             f"build with `lights false`")
     for name, value, limit in over:
         if limit is not None and value > limit:
             note(f"budget: {value:,} {name} exceeds the plan's ~{limit:,} "
@@ -470,7 +482,16 @@ def _budget_notes(by_class, item_data, dae_files, forest_items):
         ("forest types", len(item_data), 5000),
         ("TSStatics", len(by_class.get("TSStatic", [])), 25000),
         ("shape files", len(dae_files), 10000),
-        ("lights", len(by_class.get("PointLight", [])) + len(by_class.get("SpotLight", [])), 500),
+        # NOT a vanilla maximum, and deliberately not one. Vanilla's biggest level carries 4,053
+        # lights, but a light is culled per frame by the engine (frustum, size, occlusion,
+        # importance - `clusteredQuality.lua`), not per level, and CS2 does the same with a
+        # 2,048/frame cap of its own; what a level pays for one it does not draw is scene-graph
+        # cost, measured at 0.19 ms of load each. So the limit is the point past which the load
+        # cost and `environment.lua`'s per-transition Lua walk over every registered night light
+        # start to be felt, not the point past which it renders wrong. A6.9 raised the placement
+        # default to 25,000 (the smallest cap that takes every street light in the reference
+        # city); 60,000 is ~11 s of load and where the walk reaches 1/3 of the whole city.
+        ("lights", len(by_class.get("PointLight", [])) + len(by_class.get("SpotLight", [])), 60000),
         ("WaterBlocks", len(by_class.get("WaterBlock", [])), 200),
     ]
 
@@ -595,6 +616,50 @@ def _texture_reduction():
     level = int(found.group(1))
     return level, f"textureReductionLevel {level} " + {0: "(Normal+)", 1: "(Low)", 2: "(Lowest)"}.get(
         level, "(custom)")
+
+
+def _light_manager():
+    """`(name, source)` — the lighting path the user's BeamNG is set to render with.
+
+    **A local light does nothing at all under `Basic Lighting`, and the level cannot tell.**
+    BeamNG has two lighting managers and the preference names which is live. Advanced Lighting is
+    the deferred path: a z+normals prepass into a g-buffer, which every local point and spot light
+    is shaded from, and which the clustered pipeline (frustum/size/occlusion/importance culling,
+    flare substitution) sits on top of. Basic Lighting has no prepass at all — the engine's own
+    documentation says so, twice: *"With Basic Lighting, we do not have a prepass texture to
+    lookup per-pixel depth and therefore cannot use our rendering techniques that depend on it"*,
+    and a material field is described as *"determines if the material should receive lights in
+    Basic Lighting. Has no effect in Advanced Lighting."*
+
+    So on a Basic Lighting profile our 25,000 SpotLights are 13 MiB of scene graph and ~5 s of
+    load that can never light one pixel. That is not a defect in the lights and no amount of
+    photometry fixes it — it is the wrong renderer for them, and the only thing the build can
+    honestly do is SAY SO before the load rather than after it (2026-08-19, audit §82).
+
+    `$pref::lightManager` and `$pref::Reflect::deferredLighting` both carry it; either being set
+    to the basic path is enough.
+    """
+    base = os.path.join(os.path.expanduser("~"), "AppData", "Local", "BeamNG", "BeamNG.drive")
+    if not os.path.isdir(base):
+        return None, "no BeamNG userfolder"
+    newest = None
+    for entry in os.listdir(base):
+        path = os.path.join(base, entry, "settings", "game-settings.json")
+        if os.path.isfile(path) and (newest is None or os.path.getmtime(path) > os.path.getmtime(newest)):
+            newest = path
+    if newest is None:
+        return None, "no game-settings.json"
+    try:
+        with open(newest, encoding="utf-8", errors="replace") as handle:
+            raw = handle.read()
+    except OSError:
+        return None, "game-settings.json unreadable"
+    found = re.search(r'"lightManager"\s*:\s*"([^"]+)"', raw)
+    deferred = re.search(r'"deferredLighting"\s*:\s*(true|false)', raw, re.I)
+    name = found.group(1) if found else None
+    if name is None and deferred is not None:
+        name = "Advanced Lighting" if deferred.group(1).lower() == "true" else "Basic Lighting"
+    return name, "game-settings.json"
 
 
 def _render_target(settings):

@@ -22,6 +22,7 @@ Checks, in the order the build runs them:
 """
 
 import json
+import math
 import os
 import shutil
 import sys
@@ -42,10 +43,11 @@ FAILS = []
 CHECKS = 0
 
 
-def check(cond, what):
+def check(cond, what, quiet=False):
     global CHECKS
     CHECKS += 1
-    print(("  ok    " if cond else "  FAIL  ") + what)
+    if not quiet or not cond:
+        print(("  ok    " if cond else "  FAIL  ") + what)
     if not cond:
         FAILS.append(what)
 
@@ -375,8 +377,20 @@ def test_lights():
             objects = [o for o in _level_objects(level_dir) if o.get("class") in ("PointLight", "SpotLight")]
             check(len(objects) == report["lights"], "every reported light is in the level tree")
             check(all(o["castShadows"] is False for o in objects), "no placed light casts a shadow")
-        check("emissiveColourSlots" in report.get("approximations", {}),
-              "the unported colour slots are counted")
+            # A6.9/D2: vanilla writes `isEnabled: false` on 2,987 of its 3,063 night lights, and
+            # `environment.lua` only refreshes the set on a day/night TRANSITION.
+            check(all(o["isEnabled"] is False for o in objects), "a night light ships disabled")
+            # A6.9/D3: the photometry. `intensity` in the CLASS's unit and the `brightness` the
+            # renderer actually uses, in BeamNG's own exact 5,000:1 ratio.
+            for obj in objects:
+                cd = obj["intensity"] / (4.0 * math.pi) if obj["class"] == "PointLight" else obj["intensity"]
+                check(abs(cd / 5000.0 - obj["brightness"]) < 1e-4,
+                      f"{obj['class']} brightness is intensity/5000 in candela", quiet=True)
+                check(obj["intensityUnit"] in ("cd", "lm"),
+                      "intensityUnit is one of BeamNG's four, not CS2's Lux", quiet=True)
+            check(True, "every light carries BeamNG's own units and a brightness")
+        check("emissiveSlotsAlwaysOn" in report.get("approximations", {}),
+              "the colour slots' day/night switch is declared as the residual")
     finally:
         shutil.rmtree(level_dir, ignore_errors=True)
 
@@ -433,6 +447,113 @@ def test_real_bundle_lod():
           f"every threshold is a plausible pixel size ({min(pixels):.2f}..{max(pixels):.2f})")
     median = sorted(pixels)[len(pixels) // 2]
     check(1.0 < median < 4.0, f"the median mesh is drawn to about {median:.2f} px - CS2's own 1.43 px scale")
+
+
+BEAMNG_INSTALL = r"G:\SteamLibrary\steamapps\common\BeamNG.drive"
+
+
+def test_rotation_matrix_is_basis_vectors():
+    """`rotationMatrix` holds the object's OWN AXES in groups of three, not a row-major matrix.
+
+    The only non-circular gate in the rotation chain: it asks BeamNG's own shipped levels, not
+    our writers. A tunnel's spot light points at the road, so reading the field as groups must
+    put a vanilla SpotLight's +Y DOWN — and reading it row-major puts it up, which is what our
+    level shipped for months (A6.8, audit §78)."""
+    print("rotationMatrix is the object's basis vectors (vanilla-anchored)")
+    from cs2beamng.beamng import frame
+
+    # 1. the serialisation itself, on a rotation whose axes are unmistakable: a +90 deg yaw
+    yaw = [[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]]      # columns are the axes
+    flat = frame.basis_flat(yaw)
+    check(flat[0:3] == [0.0, 1.0, 0.0], f"group 0 is the object's X axis ({flat[0:3]})")
+    check(flat[3:6] == [-1.0, 0.0, 0.0], f"group 1 is its Y axis ({flat[3:6]})")
+    check(flat[6:9] == [0.0, 0.0, 1.0], f"group 2 is its Z axis ({flat[6:9]})")
+    east = frame.heading_matrix(1.0, 0.0)
+    check(east[3:6] == [1.0, 0.0, 0.0], f"an object facing east has +Y east ({east[3:6]})")
+
+    # 2. the convention, against BeamNG's own levels
+    levels = os.path.join(BEAMNG_INSTALL, "content", "levels")
+    if not os.path.isdir(levels):
+        print("  ..  vanilla levels absent, the anchor is skipped")
+        return
+    import zipfile
+    groups_down = columns_down = total = 0
+    for name in sorted(f for f in os.listdir(levels) if f.endswith(".zip"))[:6]:
+        with zipfile.ZipFile(os.path.join(levels, name)) as z:
+            for entry in [n for n in z.namelist() if n.endswith(".level.json")]:
+                for line in z.read(entry).splitlines():
+                    line = line.strip()
+                    if not line.startswith(b'{') or b'"SpotLight"' not in line:
+                        continue
+                    try:
+                        obj = json.loads(line)
+                    except Exception:  # noqa: BLE001
+                        continue
+                    m = obj.get("rotationMatrix")
+                    if obj.get("class") != "SpotLight" or not m or len(m) != 9:
+                        continue
+                    total += 1
+                    groups_down += int(m[5] <= -0.9)      # group 1 (+Y) points down
+                    columns_down += int(m[7] <= -0.9)     # column 1 (+Y) points down
+    if not total:
+        print("  ..  no vanilla SpotLights found, the anchor is skipped")
+        return
+    check(total > 100, f"{total:,} vanilla SpotLights read from the first levels on disk")
+    check(groups_down > 10 * max(columns_down, 1),
+          f"read as GROUPS {groups_down:,} of {total:,} point down; read row-major {columns_down:,} do")
+
+
+def test_switch_points_only_ever_defer():
+    """The A6.7 regression, as a gate: a measured displacement may push a generated level FURTHER
+    out than the ladder puts it, never nearer.
+
+    Allowing both directions is what shipped 2,586 of 2,903 prop shapes onto their decimated
+    geometry closer than the ladder ever had — a streetlight's 24-triangle level from 13 m — and
+    the level came back "cranes rotated and floating, highrises all diagonal". Surface distance is
+    not visual error for thin geometry, and the ladder's size-keyed spacing is what protects it,
+    so the rule is one-directional by construction and this proves it stays that way."""
+    print("LOD switch points defer, never advance")
+    from cs2beamng.stages import shapes as shapes_stage
+    from cs2beamng.beamng import dae
+    from csiibundle import glbwrite
+
+    box_v = numpy.array([[0.0, 0, 0], [4, 0, 0], [4, 0, 6], [0, 0, 6],
+                         [0, 3, 0], [4, 3, 0], [4, 3, 6], [0, 3, 6]])
+    box_t = numpy.array([[0, 1, 2], [0, 2, 3], [4, 5, 6], [4, 6, 7],
+                         [0, 1, 5], [0, 5, 4], [2, 3, 7], [2, 7, 6]])
+    mesh = dae.Mesh("box", box_v, box_t, [("mat", len(box_t))])
+    with tempfile.TemporaryDirectory() as tmp:
+        os.makedirs(os.path.join(tmp, "lods"), exist_ok=True)
+        for level in (1, 2):
+            glbwrite.write_glb(os.path.join(tmp, "lods", f"src_LOD{level}.glb"),
+                               [{"name": "box", "primitives": [
+                                   {"verts": box_v, "normals": None, "uvs": None,
+                                    "tris": box_t[:4 if level == 1 else 2], "material": "mat"}]}])
+        options = {"generate_lods": True, "switch_error_px": 6.0}
+        moved = 0
+        for null_px in (3.0, 9.0, 40.0):
+            for metres in (None, 0.0, 0.001, 0.5, 5.0):
+                levels, stats, meshes = shapes_stage._lod_levels(
+                    tmp, "src", "shape", mesh, null_px, 8.0, [metres, metres],
+                    "building", {}, {}, "level", options)
+                sizes = stats["detailSizes"]
+                ladder = [max(2, int(round(null_px * r)))
+                          for r in reversed(shapes_stage.LADDER_RATIOS[:len(meshes)])]
+                check(len(meshes) == 3, f"nullPx {null_px}: the two generated levels loaded")
+                check(all(got <= want + 0.5 for got, want in zip(sizes, ladder)),
+                      f"nullPx {null_px}, displacement {metres}: {sizes} never above the ladder {ladder}")
+                check(all(a > b for a, b in zip(sizes, sizes[1:])),
+                      f"nullPx {null_px}, displacement {metres}: {sizes} strictly decreases")
+                if any(got < want - 0.5 for got, want in zip(sizes, ladder)):
+                    moved += 1
+        check(moved > 0, f"and a level that IS out of shape is deferred ({moved} of 15 cases)")
+        # vegetation is exempt by kind, and exempt means exactly the ladder
+        _levels, veg, _m = shapes_stage._lod_levels(
+            tmp, "src", "shape", mesh, 9.0, 8.0, [5.0, 5.0], "tree", {}, {}, "level", options)
+        ladder = [max(2, int(round(9.0 * r)))
+                  for r in reversed(shapes_stage.LADDER_RATIOS[:len(veg["triangles"])])]
+        check(veg["detailSizes"] == ladder,
+              f"a tree keeps the ladder exactly ({veg['detailSizes']} == {ladder})")
 
 
 def test_variant_index_matches_the_bake():
@@ -632,6 +753,53 @@ def test_color_palette():
     check(stage0.get("paletteBaseColor") is True,
           "a tintable material sets paletteBaseColor - without it the palette applies to nothing")
 
+    # A6.9/D5: the emissive nits come from the joined slot, INCLUDING when the slot says zero.
+    # 115 of the reference city's slots do, and every one is the unlit face of a billboard; a
+    # falsy test would light all of them at the flat fallback.
+    lit = bm.material_v15(_L(), "m", {"emissiveNits": 5000.0}, {"emissive": "/e.dds"})
+    lit0 = lit["Stages"][0] if "Stages" in lit else lit
+    check(lit0.get("emissiveIntensityNits") == 5000.0, "a joined slot's nits are used")
+    off = bm.material_v15(_L(), "m", {"emissiveNits": 0.0}, {"emissive": "/e.dds"})
+    off0 = off["Stages"][0] if "Stages" in off else off
+    check(off0.get("emissiveIntensityNits") == 0.0,
+          "a slot authored to emit NOTHING stays at zero, not the flat fallback")
+    none = bm.material_v15(_L(), "m", {}, {"emissive": "/e.dds"})
+    none0 = none["Stages"][0] if "Stages" in none else none
+    check(none0.get("emissiveIntensityNits") == bm.EMISSIVE_NITS and
+          none0.get("emissiveFactor") == [1.0, 1.0, 1.0],
+          "a material no slot reaches takes the declared fallback, white at 200 nits")
+
+    # AND THE MASK MUST REACH THE LEVEL. `199f084` wrote the conversion into `texture_name`, the
+    # NAMING function, where `arr` does not exist: every `colormask` export raised NameError, all
+    # 724 masks were dropped, and the built level carried ZERO `colorPaletteMap` - so the whole of
+    # A6.3 was in the build report and nowhere else. `material_v15` alone cannot see that.
+    try:
+        name = bm.texture_name("/src/abc.png", "colormask", use_dds=False)
+        ok = name.endswith(".colormask.png")
+    except Exception as exc:                                            # noqa: BLE001
+        name, ok = repr(exc), False
+    check(ok, f"texture_name('colormask') returns a name rather than raising ({name})")
+
+    written = {}
+
+    class _LW(_L):
+        def write_bytes_if_changed(self, data, *parts):
+            written[parts[-1]] = data
+
+    src = os.path.join(tempfile.mkdtemp(), "mask.png")
+    from csiibundle import png as _png
+    with open(src, "wb") as h:
+        h.write(_png.encode_rgb(numpy.array([[[200, 100, 0], [0, 0, 0]]], numpy.uint8)))
+    out = bm.export_texture(_LW(), src, "colormask", dds=False)
+    check(bool(out) and written, f"a colormask actually exports ({out})")
+    if written:
+        tmp = os.path.join(tempfile.mkdtemp(), "out.png")
+        with open(tmp, "wb") as h:
+            h.write(next(iter(written.values())))
+        back = _png.rgba_array(tmp)
+        check(back.shape[2] == 4 and int(back[0, 0, 3]) == 255 and int(back[0, 1, 3]) == 0,
+              "the exported mask carries the tint coverage in ALPHA (255 tinted, 0 untinted)")
+
 
 def test_orphans_of_absent_owners():
     """A6.6 - a record whose owner the producer declared ABSENT is not placed either.
@@ -714,6 +882,8 @@ def main():
     test_lights()
     test_groundcover_default()
     test_real_bundle_lod()
+    test_rotation_matrix_is_basis_vectors()
+    test_switch_points_only_ever_defer()
     test_variant_index_matches_the_bake()
     test_orphans_of_absent_owners()
     test_tree_vs_plant()
