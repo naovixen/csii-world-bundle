@@ -26,6 +26,14 @@ CLAUDE.md — the terrain cut cost seven guesses before someone read `TerrainSys
 
 ## A6.0 The GPU is still running out of memory — 131,073 failed allocations
 
+> **MEASURED ON NAOMI'S LOAD, 2026-08-19 08:03 — a 1,016x improvement, but NOT zero.**
+> `totalFailures` **131,073 → 129**, onset 329 s → **1,477 s** (24.6 min in), and it PLATEAUED —
+> nothing further in the last 3 minutes of a 28-minute session. The failing allocations changed
+> character too: all ten are **1024x1024** BC7, where before they were 64x64. So the card now
+> survives loading and 24 minutes of driving and then briefly cannot find room for a large
+> texture. **The gate was zero, so this is not closed** — but it brackets the true ceiling to just
+> under the 4,685 MiB this level mounts.
+>
 > **STATUS** — instrument recalibrated (`80f50d7` + `d502f17`, audit §65). The chosen cut
 > (both texture caps 512 → 256) is BUILT INTO THE LEVEL and the level mounts **4,685 MiB**,
 > down from 5,224. The preset change is deliberately UNCOMMITTED until a load
@@ -99,6 +107,11 @@ loaded, and shrinking it shrinks both.
 
 ## A6.1 Bushes collide, and they are wearing a tree's trunk
 
+> **MEASURED ON NAOMI'S LOAD, 2026-08-19 — the gate is met EXACTLY.** `collisionCache` went
+> **1,035,444 → 659,257 instances**, a fall of **376,187 — precisely the plant count**. Static
+> collision **3,720.81 → 3,311.52 MB** (−409 MB) and **89.1 M → 78.6 M triangles**. The plan asked
+> for "roughly the plant share"; it is the plant share to the item.
+>
 > **STATUS — DONE and BUILT INTO THE LEVEL (`4b6745f`, audit §66).** 84 forest types now ship
 > as plants (non-collidable) against 188 tree types keeping their trunk cylinder, and 517,708
 > forest items no longer collide. The dividend to look for is `beamng.log`'s static-collision
@@ -171,6 +184,16 @@ evidence is consistent with it but it is inference, not the source.
 
 ## A6.2 Buildings lose their windows at ~105 m — the construction-site look
 
+> **STATUS — the RULE IS FOUND (audit §70); the fix is deliberately DEFERRED.**
+> `PreCullingSystem.RelativeCullingJob` is a HYBRID, neither of the two outcomes below: a
+> sub-object takes its **owner's bounds** for the distance but keeps its **own `m_MinLod`**, and
+> `CalculateLod` has no size term — so the owner buys the building's extent, not an order of
+> magnitude. The plan's second branch is therefore the operative one: the defect is
+> `lod_detail_scale` being a single global multiplier over two things whose distances differ
+> 12.7x. **Not built yet on purpose** — this is the one A6 item that COSTS residency and drawn
+> triangles, and the level is at 4,685 MiB inside the unmeasured band. Do it after a load returns
+> `totalFailures` 0.
+
 ### What is measured
 
 The shapes stage already prints the cause, and has since A4:
@@ -234,6 +257,15 @@ the game's own predicates; extend it.
 
 ## A6.3 Some buildings render at wrong contrast, or black
 
+> **STATUS — SOLVED (`199f084`, audit §69).** Read from BeamNG's own shader, not inferred.
+> Hypothesis 1 was wrong in its MECHANISM — BeamNG multiplies exactly as CS2 does — but right
+> that the paths differ: CS2's mask RGB are three independent lerp weights, BeamNG's RGB only
+> CHOOSES among the three colours and the **ALPHA** is the tint amount. We shipped the mask as
+> `data_rgb`, which forces alpha to 255, so an untinted texel `(0,0,0)` evaluated to
+> **pure black** — and 61 % of tintable texels are untinted. Fixed exactly (alpha = R+G+B, worst
+> error 0.001) plus `paletteBaseColor`, which was never set at all. Hypothesis 3 (colour space)
+> is still open and now testable — see §69's last section.
+
 ### What is measured
 
 Buildings do **not** go through the bake's tinted-albedo path (`paint_kinds` is `tree,prop`).
@@ -295,7 +327,7 @@ count DOWN.
 
 ## A6.4 Vegetation standing in the carriageway
 
-> **STATUS 2026-08-18 — question 2 ANSWERED, and it is partly ours (audit §67).** CS2 *does* hide
+> **STATUS — BUILT (`868e2c8`, audit §67 + §68).** Question 2 answered, and it is partly ours. CS2 *does* hide
 > vegetation something was built over: `Game.Common.Overridden` leaves `PreCullingSystem`'s mask at
 > `BoundsMask.Debug`, never ORing in the mesh layers. The producer had never read the component.
 > `attrs.overridden` + `should_draw` are built (**awaiting an in-game re-rip**) and both consumers

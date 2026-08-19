@@ -5816,3 +5816,108 @@ values are being decoded once too often and every tint lands too dark. That is t
 hypothesis 3, and it was previously invisible because the tint was not reaching the surface at
 all. **Test it on the next load, now that the palette works**; do not pre-emptively gamma-encode
 on a guess.
+
+## 70. A6.2 — the game's sub-object rule is a HYBRID, and neither of the plan's two outcomes (2026-08-18)
+
+The plan posed it as a fork — *does CS2 cull a sub-object independently of its owner, or with it?*
+— with a different fix behind each. The answer is neither, and it is in
+`Game.Rendering.PreCullingSystem.RelativeCullingJob`:
+
+```csharp
+private void UpdateCulling(Entity entity, Entity parent)
+{
+    ref CullingInfo valueRW = ref m_CullingInfoData.GetRefRW(entity).ValueRW;
+    if (m_CullingInfoData.TryGetComponent(parent, out var componentData))
+    {
+        valueRW.m_Bounds = componentData.m_Bounds;          // the OWNER's bounds
+    }
+    …
+    float num  = RenderingUtils.CalculateMinDistance(valueRW.m_Bounds, m_CameraPosition, …);
+    int   num2 = RenderingUtils.CalculateLod(num * num, m_LodParameters);
+    …compared against valueRW.m_MinLod                       // the SUB-OBJECT's own threshold
+}
+```
+
+**The distance comes from the owner; the threshold stays the sub-object's own.** A window prop is
+evaluated at the distance to the *building's* bounding box, then tested against the *prop's*
+`m_MinLod`. The chunk feeding this job takes `Owner` (or `CurrentVehicle`), which confirms the
+audit's long-standing note that `Owner`, not `Attached`, is the ownership link.
+
+And the two helpers are size-independent, which settles what the owner's bounds actually buy
+(`RenderingUtils`):
+
+```csharp
+CalculateMinDistance: num = length(max(0, max(bounds.min - cam, -(bounds.max - cam))))  // nearest
+                            point of the AABB, then a view-direction correction
+CalculateLod(dSq, p):  (255 - (asint((dSq*p.y)^3) >> 23)) & 0xFF                        // distance ONLY
+```
+
+`CalculateLod` takes no size term at all. So inheriting the owner's bounds does not raise the
+prop's threshold — it only measures the distance to the **nearest point of the building's box**
+instead of to the prop. That is worth roughly the building's own extent (tens of metres), not an
+order of magnitude.
+
+**So the plan's second branch is the operative one.** CS2 genuinely culls a prop far nearer than
+its building — the shapes stage already prints the game's own answer, a median 1,024 m against
+13,008 m, a factor of 12.7 — and at 1,024 m a window frame is sub-pixel, so losing it costs
+nothing. `lod_detail_scale` divides BOTH by 10, which preserves the ratio and destroys the
+relationship: the prop dies at 105 m, where it is plainly visible, while its building lives to
+1,332 m. The defect is the single global multiplier, not a missing rule.
+
+### The fix, and why it is NOT being made yet
+
+Two parts, one exact and one declared tuning:
+
+1. **Port the owner-bounds rule** into `csiibundle.lod` — exact, the game's own, and the bundle
+   already carries what it needs (94 % of props have a `parent`, and the owner's bounds are in
+   the mesh layer). Worth the owner's extent.
+2. **A per-kind detail scale**, so props are not divided by the same 10 as buildings. This is
+   tuning with no counterpart in the game and must be declared and counted, with the note that
+   ownership is per-INSTANCE while the threshold is per-PREFAB — a prefab placed both
+   free-standing and on a building has to take one answer for both.
+
+**Deferred deliberately.** This is the one A6 item that *costs* residency and drawn triangles,
+and A6.0 says we do not have either to spend: the level currently sits at 4,685 MiB, inside the
+unmeasured band between 3,473 (known to fit) and 5,224 (known to fail). Raising prop reach adds
+drawn triangles on top of the 1.8 M already measured at this resolution. **Do this after a load
+returns `totalFailures` 0**, and take `tools/level_budget.py` before and after — the plan's own
+gate says if the triangle count doubles, the ratio needs revisiting rather than shipping.
+
+## 71. A6.0 and A6.1 measured in game — 131,073 failures became 129, and the collision fall is exact (2026-08-19)
+
+Naomi loaded the level built with A6.0's texture cut and A6.1's tree/plant split (session 08:03,
+28 minutes). Both gates read off `beamng.log` rather than off FPS.
+
+### A6.1 — met exactly
+
+```
+before   collisionCache … 1,035,444 instances     Static Collision 3,720.81 MB, 89,096,868 tris
+after    collisionCache …   659,257 instances     Static Collision 3,311.52 MB, 78,563,632 tris
+```
+
+**1,035,444 − 659,257 = 376,187 — precisely the plant count** (§66). Not "roughly the plant
+share", the plant share to the item. −409 MB of system memory and −10.5 M collision triangles for
+a change whose purpose was fidelity.
+
+### A6.0 — a 1,016x improvement, and not closed
+
+```
+before   onset  329 s (72 s after load)   …  totalFailures=131,073 at 2,105 s, still climbing
+after    onset 1,477 s (24.6 min in)      …  totalFailures=129 at 1,485 s, then NOTHING for 3 min
+```
+
+Three things changed, not one:
+
+* the **count**: 131,073 → **129**;
+* the **onset**: from 72 s after loading finished to 24.6 minutes into driving;
+* the **character**: every one of the ten failures is a **1024x1024** BC7, where before they were
+  64x64 and 128x128. A card that cannot find room for a 64x64 texture is out; a card that briefly
+  cannot place a 1 MB texture after 24 minutes is at the edge.
+
+And it **plateaued** — no further failures in the last three minutes of the session, where before
+the counter doubled every few minutes for 35 minutes.
+
+**The gate was zero, so A6.0 stays open.** What this buys is a much tighter bracket: 4,685 MiB is
+*just* over the line on this machine, where 5,224 MiB was far over it. The known-good bound is
+still 3,473 MiB and the next cut only needs to be small — the remaining levers are LOD2 (−147 MiB,
+§65) and the paint variants (377 MiB total), neither of which touches base geometry.
