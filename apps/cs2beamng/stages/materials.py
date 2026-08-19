@@ -540,9 +540,11 @@ SETTINGS = ("texture_max", "texture_max_normal", "texture_max_data", "texture_dd
 OUTPUTS = ("art/cs2/main.materials.json", "art/textures")
 
 # version 2: per-kind texture caps (A4 2.1)
+# version 4: emissive materials carry `emissiveIntensityNits`, without which the map
+#            takes an exposure-relative legacy path and the city never lights up
 # version 2: CS2's colour mask is converted into BeamNG's palette semantics and
 # `paletteBaseColor` is set, so the tint is applied at all and an untinted texel is not black
 # (A6.3)
 STAGE = Stage(STAGE_KEY, "Materials and textures", enabled, units, run, inputs=INPUTS,
               settings_keys=SETTINGS, outputs=OUTPUTS, shared_keys=("materials",),
-              after=("shapes", "networks", "derived"), version=3)
+              after=("shapes", "networks", "derived"), version=4)

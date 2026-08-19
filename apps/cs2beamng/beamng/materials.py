@@ -206,6 +206,12 @@ def _encode_dds(arr, kind, keep_alpha=False):
 
 # -- materials -----------------------------------------------------------------------------------
 
+# Physical emissive intensity for a material that carries an emissive map, in nits. Vanilla's
+# own value for a lit building window is 200 (`west_coast_usa`'s `highrise`), and its brightest
+# emissive is 4,000. OURS only in the sense that the bundle carries no nits to port.
+EMISSIVE_NITS = 200.0
+
+
 def material_v15(level, name, rec, maps, pid_key=None):
     """One v1.5 material object. `name` is the final (mapTo) name; `rec` the bake's resolved
     record; `maps` the exported game paths: {baseColor, normal, roughness, metallic,
@@ -228,6 +234,15 @@ def material_v15(level, name, rec, maps, pid_key=None):
         stage["emissiveMap"] = maps["emissive"]
         factor = rec.get("emissiveFactor") or [1.0, 1.0, 1.0]
         stage["emissiveFactor"] = [float(v) for v in factor[:3]]
+        # WITHOUT THIS THE MAP DOES NOTHING USEFUL AT NIGHT. v1.5 wants a physical intensity;
+        # a layer that has none takes `MATERIAL_LAYER_FLAG2_REMOVETHIS_emissiveNoNits` and is
+        # scaled by the global `emissiveFallbackIntensity` against the last frame's exposure
+        # (`defaultMat.hlsl`, `permutationsV0.h.hlsl`) — an exposure-relative legacy path, not a
+        # light. We shipped 2,373 emissive materials with no nits at all, which is why the city
+        # never lit up. 200 nits is VANILLA'S OWN value for a lit building window
+        # (`west_coast_usa`'s `highrise`); its brightest sign uses 4,000. DECLARED TUNING: CS2
+        # states emissive strength in its own units and the bundle does not carry nits.
+        stage["emissiveIntensityNits"] = EMISSIVE_NITS
     if maps.get("colorMask") and rec.get("tintable"):
         stage["colorPaletteMap"] = maps["colorMask"]
         # Without this the shader takes `baseColor *= 1` and the palette is applied to NOTHING

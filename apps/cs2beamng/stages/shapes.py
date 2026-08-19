@@ -406,12 +406,23 @@ def _collider(shape_name, base_mesh, lod_mesh, kind, options, is_tree=True):
             {"verts": base_mesh.verts, "tris": base_mesh.tris, "material_runs": base_mesh.runs},
             up_axis=2)
         return (dae.Mesh(f"Colmesh_{shape_name}", cyl_v, cyl_t, [(base_mesh.runs[0][0], len(cyl_t))]),), "trunk"
-    if options["collision_preset"] == "exact" or len(tris) <= options["colmesh_max_tris"]:
+    lo, hi = collision.bounds(base_mesh.verts)      # the box is LOD 0's, never a decimated hull's
+    footprint = max(float(hi[0] - lo[0]), float(hi[1] - lo[1]))
+    # A PADDED BOX IS ONLY A STAND-IN WHILE IT IS SMALL. Over the triangle cap the collider used
+    # to fall back to the shape's bounding box unconditionally, and on the median shape that box
+    # is 1.6 m across and perfectly reasonable. On `InternationalAirport01` it is
+    # 1,344 x 1,245 x 82 m — an invisible solid block a kilometre wide, and driving onto the
+    # airport puts the car inside it. That is the reported "the car gets stuck in the airport",
+    # and 34 shapes carry a box over 20 m: the harbour, the power plant, a stadium, a ballpark.
+    # Past that size a box stops approximating the building and becomes a wall round a district,
+    # so the triangle cap gives way instead: a few thousand collision triangles cost far less
+    # than a trap.
+    oversized = footprint > BOX_COLLIDER_MAX_METRES
+    if options["collision_preset"] == "exact" or len(tris) <= options["colmesh_max_tris"] or oversized:
         mesh = collision.colmesh_from_lod({"verts": verts, "tris": tris})
         if mesh is not None:
             return (dae.Mesh(f"Colmesh_{shape_name}", mesh["verts"], mesh["tris"],
-                             [(base_mesh.runs[0][0], len(mesh["tris"]))]),), "mesh"
-    lo, hi = collision.bounds(base_mesh.verts)      # the box is LOD 0's, never a decimated hull's
+                             [(base_mesh.runs[0][0], len(mesh["tris"]))]),),                    ("mesh_oversized" if oversized and len(tris) > options["colmesh_max_tris"] else "mesh")
     box_v, box_t = collision.colbox(lo, hi)
     return (dae.Mesh(f"Colmesh_{shape_name}", box_v, box_t, [(base_mesh.runs[0][0], len(box_t))]),), "box"
 
@@ -550,6 +561,13 @@ def _material_tables(ctx, level):
     return aliases, by_variant
 
 
+# How wide a padded BOX collider may be before it is a trap rather than an approximation.
+# OURS: CS2 has no collision for a placed object, so there is no rule to port. 20 m is about the
+# footprint of a single building, which is the largest thing a box still resembles; measured over
+# the reference city, 1,373 of 1,407 boxes are under it (median 1.6 m, p90 6.5 m) and the 34 above
+# it are the airport, the harbour, the power plant and a handful of stadiums.
+BOX_COLLIDER_MAX_METRES = 20.0
+
 # A trunk collider wider than this share of the shape's own canopy is not a trunk. OURS — CS2
 # has no collision for a planted object at all — and it is a REPORTING threshold only: nothing
 # behaves differently either side of it, it decides when the build says so out loud.
@@ -656,6 +674,18 @@ def _report(results, demand, scan_stats, options, errors, started, progress, rew
                        "4.5 % of tree items",
                 "count": trunk_wide,
             },
+            "oversizedBoxColliders": {
+                "what": f"a shape whose footprint is over {BOX_COLLIDER_MAX_METRES:.0f} m keeps a "
+                        f"MESH collider even past the triangle cap, instead of a padded box",
+                "why": "a padded box is a fine stand-in at the median shape's 1.6 m and a trap at "
+                       "1,344 m: `InternationalAirport01`'s box was 1,344 x 1,245 x 82 m, an "
+                       "invisible solid block a kilometre wide, and driving onto the airport put "
+                       "the car inside it. 34 of 1,407 boxes were over 20 m - the harbour, the "
+                       "power plant, stadiums. CS2 has no collision for a placed object, so the "
+                       "20 m is OURS and is declared here",
+                "count": sum(1 for r in results.values() if r.get("collider") == "mesh_oversized"),
+                "value": BOX_COLLIDER_MAX_METRES,
+            },
             "orphansOfAbsentOwners": {
                 "what": "a record whose owner the producer declared ABSENT is not placed either",
                 "why": "not a CS2 rule — the game had those prefabs and drew the buildings. It is "
@@ -714,6 +744,7 @@ SETTINGS = ("trees", "props", "buildings", "foliage_density", "prop_density", "r
             "collision_preset", "collision_buildings", "collision_props", "collision_trees")
 OUTPUTS = ("art/shapes/cs2",)
 
+# version 6: an oversized shape keeps a mesh collider instead of a box that traps the car
 # version 5: props take their own detail scale (A6.2)
 # version 4: orphans of absent owners are not placed (A6.6)
 # version 3: the road-clearance deviation (A6.4)
@@ -721,4 +752,4 @@ OUTPUTS = ("art/shapes/cs2",)
 # every shape row carries `tree` and `trunkRatio`
 STAGE = Stage(STAGE_KEY, "Object shapes", enabled, units, run, inputs=INPUTS, settings_keys=SETTINGS,
               outputs=OUTPUTS,
-              shared_keys=("shapes", "materials_used", "materials_variants_used"), version=5)
+              shared_keys=("shapes", "materials_used", "materials_variants_used"), version=6)

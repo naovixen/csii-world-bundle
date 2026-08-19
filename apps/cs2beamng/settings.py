@@ -140,7 +140,7 @@ PRESETS = {
                     "generate_lods": True, "paint_variants_tree": 2, "paint_variants_prop": 1,
                     "forest_min_items": 10, "lane_max_tris": 4000000, "tile_lod": True,
                     "lane_furniture": True, "lane_furniture_categories": "fence",
-                    "lights": False, "groundcover": False, "forest_shadows": False,
+                    "lights": True, "groundcover": False, "forest_shadows": False,
                     "collision_furniture": False, "collision_preset": "simplified",
                     "lod_detail_scale": 10.0, "lod_detail_scale_prop": 4.0,
                     "view_distance": 4000},
