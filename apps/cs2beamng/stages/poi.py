@@ -137,7 +137,10 @@ def run(ctx, progress):
     progress.end(f"{placed} quick-travel point(s): {len(authored)} authored, "
                  f"{len(districts)} from CS2 districts, {len(derived)} derived")
 
-    added = _patch_info(level, entries)
+    added, replaced = _patch_info(level, entries)
+    if replaced:
+        progress.log(f"poi: replaced {replaced} quick-travel entr(y/ies) left in info.json by an "
+                     f"earlier build - their SpawnSpheres are not in this level")
     for entry in entries:
         progress.log(f"poi: {entry['translationId']!r} -> {entry['objectname']}")
     if not authored and not districts and derived:
@@ -340,11 +343,19 @@ def _derive(network, want, avoid):
 # -- info.json -----------------------------------------------------------------------------------
 
 def _patch_info(level, entries):
-    """Add `spawnPoints` entries beside the ones `scene` wrote, keeping its default spawn first.
+    """REPLACE the quick-travel entries in `info.json`, keeping the `scene` stage's own spawn.
 
-    `levels.lua:160` inserts its OWN default entry when no `spawnPoints` member has an
-    `objectname` matching `defaultSpawnPointName`, so the scene stage's entry has to survive
-    this merge intact or the big map grows a nameless duplicate.
+    Appending was wrong and the level caught it on the first real build: the `scene` stage
+    rewrites `info.json` whole when it runs, but a build where it is SKIPPED leaves the previous
+    build's file in place — so this stage appended a second set beside the first, and the six
+    `SpawnSphere`s behind the older set were gone (the object tree is rewritten per build, so a
+    stage's objects are only what THIS run added). `levels.lua:544` logs an error and drops such
+    an entry, which is silent in the big map.
+
+    This stage owns every `spawnPoints` entry except the default spawn, so the list is rebuilt
+    rather than extended: the entry naming `defaultSpawnPointName` survives, everything else is
+    replaced by what this run actually placed. That makes a stale entry impossible rather than
+    detectable, and it is self-healing on a level built by an older version.
     """
     path = level.path("info.json")
     if not os.path.isfile(path):
@@ -354,12 +365,13 @@ def _patch_info(level, entries):
             info = json.load(handle)
         except ValueError:
             return 0
-    existing = list(info.get("spawnPoints") or [])
-    have = {e.get("objectname") for e in existing}
-    added = [e for e in entries if e["objectname"] not in have]
-    info["spawnPoints"] = existing + added
+    default = info.get("defaultSpawnPointName")
+    kept = [e for e in (info.get("spawnPoints") or [])
+            if isinstance(e, dict) and e.get("objectname") and e["objectname"] == default]
+    dropped = len(info.get("spawnPoints") or []) - len(kept)
+    info["spawnPoints"] = kept + [e for e in entries if e["objectname"] != default]
     level.write_info(info)
-    return len(added)
+    return len(info["spawnPoints"]) - len(kept), dropped
 
 
 def _slug(text):
@@ -385,5 +397,8 @@ INPUTS = ("layer:lanes", "layer:networks")
 SETTINGS = ("pois", "poi_file", "poi_max", "ai_roads", "region")
 OUTPUTS = ("info.json",)
 
+# version 2: `info.json`'s spawnPoints are REPLACED, not appended to. Appending left six entries
+# naming SpawnSpheres a later build no longer placed, which `levels.lua` drops with a log line and
+# nothing visible - caught by this repo's own level validator on the first real build.
 STAGE = Stage(STAGE_KEY, "Fast-travel points", enabled, units, run, inputs=INPUTS,
-              settings_keys=SETTINGS, outputs=OUTPUTS, after=("scene", "navgraph"), version=1)
+              settings_keys=SETTINGS, outputs=OUTPUTS, after=("scene", "navgraph"), version=2)
