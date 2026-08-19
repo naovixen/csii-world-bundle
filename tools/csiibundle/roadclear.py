@@ -14,8 +14,14 @@ it is real but it is not the same question.
 **Only what COLLIDES is worth removing.** A plant (`instances.is_tree` false — a bush, a flower
 pot, long grass) is driven straight through once a consumer stops giving it collision, so
 removing it costs fidelity and buys no drivability. The default rule therefore clips trees only:
-on the reference city that is 3,466 items at 1.5 m — **1.12 % of trees, 0.50 % of all planting** —
-against 8,303 if plants were included for no gain.
+on the reference city that is 6,389 items at 2.5 m — **2.06 % of trees** — and plants would add
+nothing but fidelity loss.
+
+**It clips by TRUNK POSITION, not canopy, and that is a choice.** An `OakTree01` has an 8.11 m
+canopy half-width, so a tree whose trunk is 7 m off the road still hangs right over it — which is
+why a road can look tree-covered from above while nothing is in the driving line. Clipping every
+overlapping canopy would take 25,743 trees (8.3 %) against 6,389 (2.1 %) for the trunk rule.
+Chosen 2026-08-19: fix what the car can hit, leave what merely shades it.
 
 **There is no natural threshold in the data, and the sweep is why we know.** Trees per 0.25 m
 band from the lane centre are almost flat from 0.5 m out to 5 m (667, 682, 709, 675, 685, 739,
@@ -37,7 +43,7 @@ DRIVABLE_KINDS = ("car", "parking")
 
 # The deviation's default, in metres. See the module docstring: the vehicle envelope, not a
 # discovered edge in the data.
-DEFAULT_CLEARANCE_M = 1.5
+DEFAULT_CLEARANCE_M = 2.5
 
 
 class PointGrid:
