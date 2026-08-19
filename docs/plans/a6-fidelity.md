@@ -391,6 +391,10 @@ drive a long road and a roundabout; the count in the report; and the 98.6 % that
 
 ## A6.5 Areas float above the ground you drive on, and paint over the roads
 
+> **STATUS — NOT STARTED. This is the next item, and its larger half is Naomi's.** The diagonal
+> cannot be settled from disk: it needs the in-game `getTerrainHeight` probe the plan names. The
+> smaller half (`decal_layers` in `bake/areas.py`) is buildable without it.
+
 Reported 2026-08-18: *"I can't seem to drive on areas, the car gets stuck. Also, the areas seem to
 render above roads causing clipping and a lot of roads to become covered."* Two symptoms, two
 independent causes, both consumer-side. **No re-rip is needed** — every field this wants
@@ -516,6 +520,15 @@ when it is present — and `bake/roads.load_road_surface` already builds the roa
 ---
 
 ## A6.6 Floating props — we drop the building and place its props anyway
+
+> **STATUS — DONE and BUILT INTO THE LEVEL (`9baf422`, audit §72).** 6,714 orphans identified over
+> 22 absent owners, 6,378 actually skipped (the rest were already skipped for an earlier reason —
+> `admit` returns the first). **The proposed discriminator was wrong and the plan's own "check
+> before building" caught it**: `kind: "prefab"` covers 87 absent prefabs AND 2 that exist without
+> geometry, and `read_declared_gaps` collapses the distinction away. The construction case was
+> decided by measurement: 7 sites, 14 children, and the tall ones are the `ConstructionCrane01`
+> that §4 says is real — a height threshold would have deleted it. The harness rotation column is
+> added and reads **100.0000 %**.
 
 ### The transform is not the bug, and that was worth proving first
 
