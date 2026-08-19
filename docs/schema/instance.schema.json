@@ -4,7 +4,12 @@
   "title": "CS2 World Bundle instance record",
   "description": "One line of instances.jsonl. The file is JSON Lines: one complete JSON object per line, no enclosing array, so a huge city streams. This schema validates a single line.",
   "type": "object",
-  "required": ["assetId", "kind", "pos", "rot"],
+  "required": [
+    "assetId",
+    "kind",
+    "pos",
+    "rot"
+  ],
   "additionalProperties": false,
   "properties": {
     "id": {
@@ -23,7 +28,14 @@
     },
     "kind": {
       "description": "Coarse class, for consumers that treat foliage or decals differently. Closed set in schema 2.",
-      "enum": ["building", "prop", "tree", "fence", "decal", "poi"]
+      "enum": [
+        "building",
+        "prop",
+        "tree",
+        "fence",
+        "decal",
+        "poi"
+      ]
     },
     "pos": {
       "description": "World position in bundle-frame metres (left-handed, X=east, Y=up, Z=north).",
@@ -36,19 +48,70 @@
     "scale": {
       "description": "Per-axis scale. Omitted means [1,1,1].",
       "$ref": "#/$defs/vec3",
-      "default": [1, 1, 1]
+      "default": [
+        1,
+        1,
+        1
+      ]
     },
     "attrs": {
       "description": "Semantic attributes. Free-form: a consumer must ignore keys it does not know, and must not require any key to be present. The documented keys below are the ones the producer emits when available.",
       "type": "object",
       "properties": {
-        "name": { "type": "string" },
-        "category": { "type": "string" },
-        "zone": { "type": "string" },
-        "zoning": { "type": "string" },
-        "theme": { "type": "string" },
-        "brand": { "type": "string" },
-        "level": { "type": "integer" },
+        "address": {
+          "description": "[district, street, number].",
+          "type": "array",
+          "items": {
+            "type": [
+              "string",
+              "number",
+              "null"
+            ]
+          },
+          "minItems": 3,
+          "maxItems": 3
+        },
+        "brand": {
+          "type": "string"
+        },
+        "category": {
+          "type": "string"
+        },
+        "colorCustom": {
+          "description": "True when colorSet is a player-painted override rather than the game's random variation.",
+          "type": "boolean"
+        },
+        "colorSet": {
+          "description": "The paint this instance was drawn with: three linear RGBA channels (CS2 ColorSet), selected per texel by the material's colorMask map (section 7.1/7.2). This is the game's resolved answer, not an index into colors.json.",
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 3,
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "minItems": 4,
+            "maxItems": 4
+          }
+        },
+        "decalHeight": {
+          "description": "For kind 'decal': the height in metres of the volume the marking was projected through - what a consumer needs to re-project the producer's flat quad onto a cambered or sloped surface. Not a thickness. See contract section 4.2a.",
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "decalLayers": {
+          "description": "For kind 'decal': which surfaces the game projects this decal onto. CS2 DecalLayers names: 'Terrain', 'Roads', 'Buildings', 'Vehicles', 'Creatures', 'Other'. See contract section 4.2a. Open - ignore what you do not recognise.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
+        },
+        "decalPriority": {
+          "description": "For kind 'decal': DecalProperties.m_RendererPriority - the game's own sort key for two decals projecting onto the same surface, highest drawn last. A decal prefab carries no blend mode, so this is the ONLY ordering CS2 states; a consumer that cannot depth-sort projectors uses it to build a geometric lift ladder instead of guessing one. Absent means the prefab carries no decal properties, not priority zero. See contract section 4.2a.",
+          "type": "integer"
+        },
         "elevation": {
           "description": "How far the object stands above the terrain (or water) surface, in metres. Signed - negative means buried. Absent for objects sitting flat on the ground. This is NOT the ground's own height: ground level is pos[1] - elevation.",
           "type": "number"
@@ -56,31 +119,10 @@
         "elevationFlags": {
           "description": "CS2 ElevationFlags names: 'Stacked', 'OnGround', 'Lowered', 'OnAttachedParent'. 'Lowered' marks a deliberate below-ground placement. Open - ignore what you do not recognise.",
           "type": "array",
-          "items": { "type": "string" },
+          "items": {
+            "type": "string"
+          },
           "uniqueItems": true
-        },
-        "decalLayers": {
-          "description": "For kind 'decal': which surfaces the game projects this decal onto. CS2 DecalLayers names: 'Terrain', 'Roads', 'Buildings', 'Vehicles', 'Creatures', 'Other'. See contract section 4.2a. Open - ignore what you do not recognise.",
-          "type": "array",
-          "items": { "type": "string" },
-          "uniqueItems": true
-        },
-        "decalPriority": {
-          "description": "For kind 'decal': DecalProperties.m_RendererPriority - the game's own sort key for two decals projecting onto the same surface, highest drawn last. A decal prefab carries no blend mode, so this is the ONLY ordering CS2 states; a consumer that cannot depth-sort projectors uses it to build a geometric lift ladder instead of guessing one. Absent means the prefab carries no decal properties, not priority zero. See contract section 4.2a.",
-          "type": "integer"
-        },
-        "decalHeight": {
-          "description": "For kind 'decal': the height in metres of the volume the marking was projected through - what a consumer needs to re-project the producer's flat quad onto a cambered or sloped surface. Not a thickness. See contract section 4.2a.",
-          "type": "number",
-          "exclusiveMinimum": 0
-        },
-        "height": {
-          "description": "True height in metres, measured from the mesh bounds. Metadata attributes never override this.",
-          "type": "number"
-        },
-        "storey": { "type": "integer" },
-        "state": {
-          "enum": ["normal", "construction", "abandoned", "condemned", "destroyed"]
         },
         "growth": {
           "description": "Tree growth stage, 0..1.",
@@ -93,29 +135,43 @@
           "type": "number",
           "exclusiveMinimum": 0
         },
-        "colorSet": {
-          "description": "The paint this instance was drawn with: three linear RGBA channels (CS2 ColorSet), selected per texel by the material's colorMask map (section 7.1/7.2). This is the game's resolved answer, not an index into colors.json.",
-          "type": "array",
-          "minItems": 3,
-          "maxItems": 3,
-          "items": {
-            "type": "array",
-            "items": { "type": "number" },
-            "minItems": 4,
-            "maxItems": 4
-          }
+        "height": {
+          "description": "True height in metres, measured from the mesh bounds. Metadata attributes never override this.",
+          "type": "number"
         },
-        "colorCustom": {
-          "description": "True when colorSet is a player-painted override rather than the game's random variation.",
-          "type": "boolean"
+        "level": {
+          "type": "integer"
         },
-        "season": { "type": "string" },
-        "address": {
-          "description": "[district, street, number].",
-          "type": "array",
-          "items": { "type": ["string", "number", "null"] },
-          "minItems": 3,
-          "maxItems": 3
+        "name": {
+          "type": "string"
+        },
+        "overridden": {
+          "description": "Present and true when CS2 marks this object `Game.Common.Overridden` - something was built over it. THE GAME DOES NOT DRAW IT: `Game.Rendering.PreCullingSystem` leaves such an entity's culling mask at `BoundsMask.Debug` and never ORs in the prefab's mesh layers, and `BoundsMask` carries an explicit `NotOverridden` bit. The entity still exists and still carries its transform. Absent means not overridden; a consumer should ask `csiibundle.instances.should_draw`.",
+          "const": true
+        },
+        "season": {
+          "type": "string"
+        },
+        "state": {
+          "enum": [
+            "normal",
+            "construction",
+            "abandoned",
+            "condemned",
+            "destroyed"
+          ]
+        },
+        "storey": {
+          "type": "integer"
+        },
+        "theme": {
+          "type": "string"
+        },
+        "zone": {
+          "type": "string"
+        },
+        "zoning": {
+          "type": "string"
         }
       }
     }
@@ -123,13 +179,17 @@
   "$defs": {
     "vec3": {
       "type": "array",
-      "items": { "type": "number" },
+      "items": {
+        "type": "number"
+      },
       "minItems": 3,
       "maxItems": 3
     },
     "quat": {
       "type": "array",
-      "items": { "type": "number" },
+      "items": {
+        "type": "number"
+      },
       "minItems": 4,
       "maxItems": 4
     },

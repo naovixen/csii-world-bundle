@@ -5607,3 +5607,71 @@ decision, because Blender has no physics. The shared predicate is there when it 
 divided by the imposter's reach. A5's `imposter_min_metres` gate made that false by design — 3.6 %
 of shapes earn one now — so both checks had been failing since. They now assert the ordering
 where there IS an imposter, plus the gate itself. 82/82.
+
+## 67. A6.4 groundwork — CS2 does not draw an `Overridden` object, and the producer never checked (2026-08-18)
+
+The A6 plan asked, before building any consumer-side clip for vegetation in the carriageway,
+whether the defect is even ours: *"CS2 does not normally leave a tree in a road — so either the
+rip is placing them wrongly, or CS2 hides them at render time."* **It hides them.**
+
+### The rule, from source
+
+`Game.Common.Overridden` is what CS2 marks an object that something else was built over.
+`Game.Rendering.PreCullingSystem` tests it at two sites — the object path and the net-lane path —
+and both read the same way:
+
+```csharp
+bool flag4 = chunk.Has(ref m_OverriddenType);
+...
+reference2.m_Mask = BoundsMask.Debug;
+if (!flag4 && (!flag3 || m_EditorMode))
+{
+    MeshLayer layers2 = componentData.m_Layers;
+    reference2.m_Mask |= CommonUtils.GetBoundsMask(...);   // the real render layers
+}
+```
+
+An overridden entity's culling mask **stays `BoundsMask.Debug` and never gains the prefab's mesh
+layers**. `BoundsMask` even carries an explicit `NotOverridden = 0x80` bit. The entity still
+exists and still has its transform — the game simply does not render it.
+
+`Game.Objects.ResetOverriddenSystem` corroborates it from the other side: an overridden TREE has
+its state flags stripped and `m_Growth` set to 0.
+
+**The producer never read `Overridden` at all** — a `grep` over `Systems/` finds only an unrelated
+string in `GradingWriter`. So we have been shipping objects the game does not draw.
+
+### The bundle already on disk agrees, and bounds the claim
+
+`ResetOverriddenSystem`'s reset gives a testable signature on the CURRENT bundle — an overridden
+tree reads as `growth == 0.0` with no `treeState` — so the hypothesis is testable without a re-rip
+(the fix needs one; the test does not). Against the 1,523,047 `car`/`parking` lane stations:
+
+| | near a lane (≤2 m) | away |
+|---|---:|---:|
+| trees | 4,890 | 305,564 |
+| …growth 0 and no state | 275 | 5,448 |
+| **rate** | **5.6 %** | **1.8 %** |
+
+**3.2x enriched near roads** — the mechanism is real and live. But it accounts for only **275 of
+the 4,890** trees standing in a carriageway, so **`Overridden` is not the whole explanation** and
+A6.4 remains mostly a declared deviation. Two separate things, both true:
+
+1. a producer fidelity gap — we draw what the game hides — worth fixing on its own merits, for
+   props and lanes as much as trees;
+2. the other ~94 %, which are ordinary grown trees genuinely close to a lane centre, and still
+   need the plan's threshold sweep before anything is clipped.
+
+### What was built (awaiting an in-game re-rip)
+
+* producer: `InstanceRipSystem` takes a `ComponentLookup<Game.Common.Overridden>` and ships
+  `attrs.overridden: true`. Shipped as an attribute rather than dropped from the rip — the bundle
+  describes the city, and the consumer seam already exists.
+* `csiibundle.instances.should_draw` returns False for it, beside the `construction` rule.
+* **Both consumers get it for free**: `beamng.placement.admit` and `blender_import_bundle` both
+  already call `should_draw`. Nothing in either consumer needed changing.
+* `docs/schema/instance.schema.json` documents the attribute. `attrs` is an open object, so this
+  is additive and the schema stays **2**.
+
+An older bundle has no such key and reduces to the construction rule — correct, not a silent
+fallback: that bundle genuinely does not know. **Built, awaiting in-game re-rip.**

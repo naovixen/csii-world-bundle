@@ -292,6 +292,17 @@ count DOWN.
 
 ## A6.4 Vegetation standing in the carriageway
 
+> **STATUS 2026-08-18 — question 2 ANSWERED, and it is partly ours (audit §67).** CS2 *does* hide
+> vegetation something was built over: `Game.Common.Overridden` leaves `PreCullingSystem`'s mask at
+> `BoundsMask.Debug`, never ORing in the mesh layers. The producer had never read the component.
+> `attrs.overridden` + `should_draw` are built (**awaiting an in-game re-rip**) and both consumers
+> get it free — they already call `should_draw`.
+>
+> **But it explains only 275 of the 4,890** trees in a carriageway (the signature is 3.2x enriched
+> near lanes: 5.6 % against 1.8 %). The other ~94 % are ordinary grown trees genuinely close to a
+> lane centre, so **question 1 — the threshold sweep — is still open and still the next step**, and
+> A6.4 remains mostly a declared deviation.
+
 Asked for directly, and framed correctly when it was asked: *"It would be less 1 to 1 but would
 make the city more driveable."* This is a **declared deviation**, not a fidelity fix — it goes in
 the report's approximations block with its count, like every other one.

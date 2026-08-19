@@ -1,4 +1,4 @@
-using Carto.Domain;
+﻿using Carto.Domain;
 using Carto.IO;
 using Carto.Utils;
 using Colossal.Logging;
@@ -177,6 +177,7 @@ namespace Carto.Systems
         ComponentLookup<Game.Buildings.Building> _buildings;
         ComponentLookup<Tree> _trees;
         ComponentLookup<Plant> _plants;
+        ComponentLookup<Game.Common.Overridden> _overridden;
         ComponentLookup<Game.Objects.Elevation> _elevations;
         ComponentLookup<Game.Objects.Stack> _stacks;
         BufferLookup<Game.Rendering.MeshColor> _meshColors;
@@ -201,6 +202,7 @@ namespace Carto.Systems
             _buildings = GetComponentLookup<Game.Buildings.Building>(true);
             _trees = GetComponentLookup<Tree>(true);
             _plants = GetComponentLookup<Plant>(true);
+            _overridden = GetComponentLookup<Game.Common.Overridden>(true);
             _elevations = GetComponentLookup<Game.Objects.Elevation>(true);
             _stacks = GetComponentLookup<Game.Objects.Stack>(true);
             _meshColors = GetBufferLookup<Game.Rendering.MeshColor>(true);
@@ -232,6 +234,7 @@ namespace Carto.Systems
             _attachments.Update(this);
             _buildings.Update(this);
             _trees.Update(this);
+            _overridden.Update(this);
             _plants.Update(this);
             _elevations.Update(this);
             _stacks.Update(this);
@@ -1420,6 +1423,19 @@ namespace Carto.Systems
                     }
                 }
             }
+
+            // THE GAME DOES NOT DRAW AN OVERRIDDEN OBJECT. `Game.Common.Overridden` is what CS2
+            // marks a tree, prop or lane that something else was built over, and
+            // `Game.Rendering.PreCullingSystem` leaves such an entity's culling mask at
+            // `BoundsMask.Debug` — it never ORs in the prefab's real mesh layers, at either of
+            // the two sites that test it. `BoundsMask` even carries a `NotOverridden` bit. The
+            // object still exists, still has its transform, and is simply not rendered.
+            //
+            // Shipped as an attribute rather than dropped from the rip: the bundle describes the
+            // city, and `csiibundle.instances.should_draw` is where a consumer asks whether to
+            // draw a record — the same seam `state: "construction"` already uses.
+            //
+            if (_overridden.HasComponent(entity)) record.Attributes["overridden"] = true;
 
             if (_trees.TryGetComponent(entity, out Tree tree))
             {

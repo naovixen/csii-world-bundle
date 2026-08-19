@@ -215,11 +215,26 @@ NOT_DRAWN_STATES = ("construction",)
 def should_draw(record):
     """Whether the game draws this record's own mesh at all.
 
-    False only for `state: "construction"`, where CS2 skips the building and draws the site's
-    own crane and fence entities instead — which the bundle ships separately as ordinary
-    records. See the module docstring for every state's rule.
+    False for two reasons:
+
+    * `state: "construction"`, where CS2 skips the building and draws the site's own crane and
+      fence entities instead — which the bundle ships separately as ordinary records. See the
+      module docstring for every state's rule.
+    * `attrs.overridden`, which is CS2's `Game.Common.Overridden`: the mark on a tree, prop or
+      lane that something else was built over. `Game.Rendering.PreCullingSystem` leaves such an
+      entity's culling mask at `BoundsMask.Debug` and never ORs in the prefab's real mesh
+      layers, at both of the two sites that test it — and `BoundsMask` carries an explicit
+      `NotOverridden` bit. The entity still exists and still has a transform; the game simply
+      does not render it. This is where the tree standing in a carriageway comes from.
+
+    REQUIRES A RIP CARRYING `attrs.overridden` (producer, 2026-08-18). An older bundle has no
+    such key, so this reduces to the construction rule and nothing changes — which is correct,
+    not a silent fallback: the older bundle genuinely does not know.
     """
-    return (record.get("attrs") or {}).get("state") not in NOT_DRAWN_STATES
+    attrs = record.get("attrs") or {}
+    if attrs.get("overridden"):
+        return False
+    return attrs.get("state") not in NOT_DRAWN_STATES
 
 
 def ground_level(record):
