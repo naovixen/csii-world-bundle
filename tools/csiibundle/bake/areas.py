@@ -157,19 +157,29 @@ def _clip_roads(pieces, catalogue, road, ground, progress):
     <= 1.75 m on the fine raster), not the kerb, so the edge is ragged by up to one piece. And
     the test is per-CENTROID, so a piece straddling a kerb goes whole or stays whole.
     """
+    stats = {"prefabs": 0, "pieces": 0, "area": 0.0, "kept": 0,
+             "terrainOnlyPrefabs": 0, "roadTris": int(getattr(road, "count", 0) or 0)}
     if road is None or not getattr(road, "count", 0):
-        return pieces, {"prefabs": 0, "pieces": 0, "area": 0.0, "kept": 0}
-    stats = {"prefabs": 0, "pieces": 0, "area": 0.0, "kept": 0}
+        progress.log("areas: decalLayers - no road surface, nothing to clip")
+        return pieces, stats
     out = {}
     for prefab, (verts, min_lods) in pieces.items():
         entry = (catalogue or {}).get(prefab) or {}
-        layers = tuple(entry.get("decal_layers") or ())
+        # `reader.load_area_prefabs` hands back the RAW §8c entries, so the key is camelCase
+        # `decalLayers`. `areas.surface_entry` renames it to `decal_layers`, and reading only
+        # that name is how the first cut of this silently clipped NOTHING and reported 0 m2 as
+        # though nothing needed clipping. Accept both, and count how many prefabs matched so a
+        # zero can never again be mistaken for "no work to do".
+        layers = tuple(entry.get("decalLayers") or entry.get("decal_layers") or ())
         if not layers or "Roads" in layers:
             out[prefab] = (verts, min_lods)          # the game DOES paint these onto roads
             continue
+        stats["terrainOnlyPrefabs"] += 1
         tri = verts.reshape(-1, 3, 3)
         centroid = tri.mean(axis=1)
-        road_z = road.height(centroid[:, 0], centroid[:, 1])
+        # `height` is the SCALAR api on every ProjectionSurface and returns None for arrays;
+        # `height_many` is the vectorised one. Getting this wrong reads as "no road anywhere".
+        road_z = road.height_many(centroid[:, 0], centroid[:, 1])
         delta = road_z - centroid[:, 2]
         covered = (~numpy.isnan(road_z)) & (delta <= ROAD_AT_GRADE_M) & (delta >= -ROAD_UNDER_TOLERANCE_M)
         if not covered.any():
@@ -188,6 +198,14 @@ def _clip_roads(pieces, catalogue, road, ground, progress):
     if stats["pieces"]:
         progress.log(f"areas: decalLayers - {stats['area']:,.0f} m2 of terrain-only paint clipped "
                      f"off carriageways ({stats['pieces']:,} pieces over {stats['prefabs']} prefabs)")
+    elif not stats["terrainOnlyPrefabs"]:
+        # LOUD, because a silent zero here is indistinguishable from a working clip with nothing
+        # to do — which is exactly how the first cut of this shipped
+        progress.log("areas: decalLayers - NO prefab declared terrain-only layers; the catalogue "
+                     "may not carry `decalLayers` at all, so nothing was clipped")
+    else:
+        progress.log(f"areas: decalLayers - {stats['terrainOnlyPrefabs']} terrain-only prefabs, "
+                     f"none of them over a carriageway")
     return out, stats
 
 
@@ -318,7 +336,9 @@ def run(context, progress):
                        "`bake/markings.py` has read the same field since A2. APPROXIMATE at the "
                        "conform's own piece boundaries (sub-cell), not at the kerb",
                 "m2": round(clip_stats["area"], 1), "pieces": clip_stats["pieces"],
-                "prefabs": clip_stats["prefabs"], "atGradeMetres": ROAD_AT_GRADE_M,
+                "prefabs": clip_stats["prefabs"],
+                "terrainOnlyPrefabs": clip_stats["terrainOnlyPrefabs"],
+                "roadTris": clip_stats["roadTris"], "atGradeMetres": ROAD_AT_GRADE_M,
             },
             "diagonal": diagonal,
             "jobs": jobs, "seconds": round(time.monotonic() - started, 1)}
@@ -327,4 +347,6 @@ def run(context, progress):
 # version 3: the MEASURED terrain diagonal (was the `envelope`, which floats), and CS2's own
 #            `decalLayers` mask keeps terrain-only paint off the carriageway (A6.5)
 # version 2: tile primitives carry the game's per-triangle draw-distance limit (`#L<n>`)
-register(Product(PRODUCT_NAME, INPUTS, "areas/", run, version=3, options=("ground", "region")))
+# version 4: the decalLayers clip actually reads the catalogue's own key and the
+#            vectorised query, both of which the first cut got wrong (it clipped 0 m2)
+register(Product(PRODUCT_NAME, INPUTS, "areas/", run, version=4, options=("ground", "region")))
