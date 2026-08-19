@@ -159,6 +159,10 @@ def main(argv):
     winner = min(results, key=results.get)
     runner = sorted(results.values())[1]
     print(f"\n  winner: {winner} (median {results[winner]:.4f} m); next best {runner:.4f} m")
+    if winner in BAKE_NAME:
+        print(f"  -> pass `--diagonal {BAKE_NAME[winner]}` to the bake. THE COMPASS NAME FLIPS: "
+              f"this probe's row 0 is SOUTH, the bake's is NORTH, so the same split has the "
+              f"other two-corner name there.")
     if results[winner] > 0.5 * runner:
         print("  INCONCLUSIVE — the winner is not clearly better than the next hypothesis")
     return 0
