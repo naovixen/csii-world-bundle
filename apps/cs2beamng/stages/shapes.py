@@ -87,8 +87,9 @@ def scan_demand(ctx, progress):
     """One pass over `instances.jsonl`: which `(assetId, state)` the build places, how many of
     each, which paint variants are wanted, and whether the placement is forest or TSStatic.
 
-    Returns `(demand, stats)` where `demand` is
-    `{(asset_id, suffix): {"kind", "count", "forest", "variants": {index: count}}}`.
+    Returns `(demand, stats, clipped)` where `demand` is
+    `{(asset_id, suffix): {"kind", "count", "forest", "variants": {index: count}}}` and `clipped`
+    is the set of record ids the road-clearance deviation removed, for the instances stage.
     """
     settings = ctx.settings
     region = ctx.region
@@ -98,7 +99,13 @@ def scan_demand(ctx, progress):
     forest_allowed = True
     demand = {}
     stats = {"records": 0, "kept": 0, "noMesh": 0, "skippedBaked": 0, "skippedState": 0,
-             "skippedKind": 0, "skippedDensity": 0, "skippedRegion": 0}      # `placement.admit`'s reasons
+             "skippedKind": 0, "skippedDensity": 0, "skippedRegion": 0,
+             "skippedRoadclear": 0}                                     # `placement.admit`'s reasons
+    # The road-clearance deviation, computed ONCE here and handed to the instances stage through
+    # `shared` — one spatial pass over the lane layer instead of two, and the two passes cannot
+    # reach different answers because they consult the same set.
+    clipped, clip_stats = placement.road_clipped(ctx.bundle, settings, region)
+    stats["roadclear"] = clip_stats
     progress.begin("shapes: which meshes the city places", total=units(ctx.census, settings), unit="instances")
     for record in bundle_instances.read_instances(ctx.bundle):
         stats["records"] += 1
@@ -108,7 +115,7 @@ def scan_demand(ctx, progress):
         # ONE admission test for both passes: `placement.admit` names the reason so this stage
         # can break the count down without restating the rule (they drifted apart the moment
         # they were two functions)
-        reason = placement.admit(record, settings, region)
+        reason = placement.admit(record, settings, region, clipped)
         if reason is not None:
             stats["skipped" + reason.capitalize()] += 1
             continue
@@ -139,7 +146,7 @@ def scan_demand(ctx, progress):
                 entry["variants"][index] = entry["variants"].get(index, 0) + 1
         stats["kept"] += 1
     progress.end(f"{stats['kept']:,} of {stats['records']:,} records over {len(demand):,} mesh states")
-    return demand, stats
+    return demand, stats, clipped
 
 
 def _state_suffix(record, asset, mesh_dir, have):
@@ -388,7 +395,7 @@ def run(ctx, progress):
     started = time.monotonic()
     level = level_of(ctx)
     settings = ctx.settings
-    demand, scan_stats = scan_demand(ctx, progress)
+    demand, scan_stats, clipped = scan_demand(ctx, progress)
 
     variants = _paint_variants(ctx)
     aliases, tinted_by_variant = _material_tables(ctx, level)
@@ -462,7 +469,8 @@ def run(ctx, progress):
         if key:
             variant_used.setdefault(key, set()).update(value["materials"])
     shared["shapes"] = {"dir": SHAPES_SUBDIR, "results": results, "demand": demand,
-                        "variants": variants, "options": {k: v for k, v in options.items() if k != "collide"}}
+                        "variants": variants, "roadClipped": sorted(clipped),
+                        "options": {k: v for k, v in options.items() if k != "collide"}}
     return _report(results, demand, scan_stats, options, errors, started, progress, rewritten, orphans)
 
 
@@ -602,6 +610,24 @@ def _report(results, demand, scan_stats, options, errors, started, progress, rew
                        "4.5 % of tree items",
                 "count": trunk_wide,
             },
+            "foliageRoadClearance": {
+                "what": f"a TREE standing within "
+                        f"{(scan_stats.get('roadclear') or {}).get('clearance', 0):.2f} m of a "
+                        f"drivable lane centre is not placed",
+                "why": "A DECLARED DEVIATION, asked for, not a fidelity rule - CS2 clears objects "
+                       "when a road is BUILT and whatever survives in the save is what the city "
+                       "contains, so there is no game rule to port. Trees only: a bush or a "
+                       "flower pot is driven straight through once it stops colliding (A6.1), so "
+                       "removing it would cost fidelity and buy no drivability. The distance is "
+                       "the VEHICLE ENVELOPE, not an edge found in the data - the sweep showed "
+                       "trees per 0.25 m band are almost FLAT from 0.5 m out to 5 m, so there is "
+                       "no natural threshold to prefer. `foliage_road_clearance` 0 turns it off. "
+                       "Separately and always on, CS2's own `Overridden` rule removes what the "
+                       "game itself does not draw (instances.should_draw)",
+                "count": (scan_stats.get("roadclear") or {}).get("clipped", 0),
+                "value": (scan_stats.get("roadclear") or {}).get("clearance", 0),
+                "ofTrees": (scan_stats.get("roadclear") or {}).get("trees", 0),
+            },
             "renderingSizeSpecialCases": {
                 "what": "the human-object and Standing-leg shrinks in GetRenderingSize",
                 "why": "both need ObjectGeometryData flags the bundle does not ship; both only "
@@ -619,13 +645,15 @@ def _report(results, demand, scan_stats, options, errors, started, progress, rew
 INPUTS = ("layer:instances", "layer:meshes", "derived:lods", "derived:materials.json",
           "derived:paint_variants.json")
 SETTINGS = ("trees", "props", "buildings", "foliage_density", "prop_density", "region",
+            "foliage_road_clearance",
             "generate_lods", "imposters", "imposter_min_metres", "view_distance",
             "lod_detail_scale", "tree_wind",
             "collision_preset", "collision_buildings", "collision_props", "collision_trees")
 OUTPUTS = ("art/shapes/cs2",)
 
+# version 3: the road-clearance deviation (A6.4)
 # version 2: the tree/plant split (A6.1) - a plant gets no collider and no trunk cylinder, and
 # every shape row carries `tree` and `trunkRatio`
 STAGE = Stage(STAGE_KEY, "Object shapes", enabled, units, run, inputs=INPUTS, settings_keys=SETTINGS,
               outputs=OUTPUTS,
-              shared_keys=("shapes", "materials_used", "materials_variants_used"), version=2)
+              shared_keys=("shapes", "materials_used", "materials_variants_used"), version=3)

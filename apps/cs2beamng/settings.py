@@ -62,6 +62,7 @@ SCHEMA = {
     "forest_min_items": (10, "int", "A forest TYPE holding fewer items than this is merged into its prefab's untinted type instead of getting a shape, a material set and an entry of its own. BeamNG loads every type whole whether it has one item or ten thousand; on the reference city 2,864 of 4,951 types hold 10 items or fewer, 7,641 items between them - 0.7 % of the forest, for 58 % of the types. 0 keeps every type"),
     "lane_max_tris": (0, "int", "Triangle budget for BAKED lane furniture (the sheared fence/cable tiles that cannot be instanced), 0 = no budget. What goes first is what CS2 itself culls FIRST - the drop order is the game's own per-lane `m_MinLod`, so the budget spends itself on the furniture the game draws furthest"),
     "paint_factor_max_error": (4, "int", "How far a paint variant may drift, in 8-bit sRGB channels, before it gets a texture of its own instead of a baseColorFactor. CS2's colorSet tint is a pure per-texel multiply, so where the colour mask is uniform ONE constant reproduces it exactly and costs no texture at all; where the mask selects three different colours across the surface it cannot, and the bake writes the tinted albedo. 0 keeps every texture (the A3 behaviour). MEASURED over all 7,592 (material, variant) pairs of the reference city: 31.4 % are EXACTLY reproducible by a constant, 32.9 % within 4, 39.3 % within 16, 54.5 % within 32. tools/measure_paint_factor.py prints the distribution for your own city"),
+    "foliage_road_clearance": (1.5, "float", "DECLARED DEVIATION, 0 = off. Drop a TREE standing within this many metres of a drivable lane centre, so the city can be driven. CS2 has no such rule - it clears objects when a road is BUILT and whatever survives is what the city contains - so this is playability, not fidelity, and it is counted in the report. Trees only: a bush or a flower pot is driven straight through once it stops colliding (A6.1), so removing it would cost fidelity and buy nothing. 1.5 m is the VEHICLE ENVELOPE, not an edge found in the data - a car is ~1.9 m wide so its flank sits ~0.95 m off the lane centre, and a ~0.4 m trunk radius reaches it at ~1.35 m. The sweep found no natural threshold to prefer: trees per 0.25 m band are almost flat from 0.5 m out to 5 m. On the reference city 1.5 m drops 3,466 items - 1.12 % of trees, 0.50 % of all planting"),
     "gpu_vram_mib": (0, "int", "Dedicated VRAM of the card the level is FOR, in MiB (0 = read it from your own beamng.log, and fall back to 8018). What a level may mount is a function of this and of the render resolution, not a constant - see beamng.validate_level.resident_budget_mib"),
     "render_width": (0, "int", "Render width the level is FOR (0 = read it from beamng.log, fall back to 1920). Every pixel above 1080p takes VRAM back off the level for the deferred G-buffer and the post chain"),
     "render_height": (0, "int", "Render height the level is FOR (0 = read it from beamng.log, fall back to 1080)"),
@@ -104,7 +105,7 @@ GROUPS = [
                   "texture_max_variant", "texture_dds", "generate_lods", "tile_lod", "imposters",
                   "imposter_min_metres", "lod_detail_scale",
                   "paint_kinds", "paint_factor_max_error", "paint_variants_tree", "paint_variants_prop",
-                  "forest_min_items", "lane_max_tris",
+                  "forest_min_items", "lane_max_tris", "foliage_road_clearance",
                   "view_distance", "tod_hour", "terrain_brightness", "tile_size", "terrain_upsample", "terrain_holes", "terrain_blend_sharpen", "forest_shadows", "tree_wind"]),
     ("Collision", ["collision_preset", "collision_buildings", "collision_props", "collision_trees",
                    "collision_furniture", "collision_skirts", "collision_paint"]),
@@ -125,17 +126,23 @@ PRESETS = {
              "lane_max_tris": 0, "tile_lod": True,
              "lane_furniture": True, "lights": False, "groundcover": False, "forest_shadows": True,
              "collision_preset": "simplified", "lod_detail_scale": 6.0, "view_distance": 4000},
-    # The preset the A5 measurements were taken on: everything `high` ships, plus the four knobs
-    # that cost residency rather than fidelity — see `docs/cs2-api-audit.md` §64.
-    "performance": {"foliage_density": 100, "prop_density": 100, "texture_max": 512,
-                    "texture_max_normal": 512, "texture_max_data": 256, "texture_max_variant": 256,
+    # Everything `high` ships, plus the knobs that cost residency rather than geometry — see
+    # `docs/cs2-api-audit.md` §64 and §65. The two texture caps came down to 256 in A6.0: at 512
+    # this preset mounted 5,224 MiB, which is the MEASURED point at which an 8 GB card at
+    # 3440x1440 starts refusing allocations (131,073 of them in one session). 256 takes 497 MiB
+    # off — 282 colour, 215 normal, measured over all 7,661 DDS — without touching a triangle,
+    # which is why it goes first. It does put colour below vanilla practice (185 of
+    # west_coast_usa's 256 colour maps are 512 or smaller, so some ARE 512); the geometry is
+    # worth more than the texel, and `high` still ships 512 for looking at things up close.
+    "performance": {"foliage_density": 100, "prop_density": 100, "texture_max": 256,
+                    "texture_max_normal": 256, "texture_max_data": 256, "texture_max_variant": 256,
                     "generate_lods": True, "paint_variants_tree": 2, "paint_variants_prop": 1,
                     "forest_min_items": 10, "lane_max_tris": 4000000, "tile_lod": True,
                     "lane_furniture": True, "lane_furniture_categories": "fence",
                     "lights": False, "groundcover": False, "forest_shadows": False,
                     "collision_furniture": False, "collision_preset": "simplified",
                     "lod_detail_scale": 10.0, "view_distance": 4000},
-    "medium": {"foliage_density": 60, "prop_density": 70, "texture_max": 512, "texture_max_normal": 256,
+    "medium": {"foliage_density": 60, "prop_density": 70, "texture_max": 256, "texture_max_normal": 256,
                "texture_max_data": 256, "texture_max_variant": 256, "generate_lods": True,
                "paint_variants_tree": 2, "paint_variants_prop": 1, "forest_min_items": 25,
                "lane_max_tris": 3000000, "tile_lod": True,

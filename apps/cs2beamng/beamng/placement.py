@@ -126,13 +126,18 @@ def density_fraction(kind, settings):
     return max(0.0, min(1.0, float(settings.get(key, 100) or 0) / 100.0))
 
 
-def admit(record, settings, region=None):
+def admit(record, settings, region=None, clipped=None):
     """`None` if this record is placed, else the short reason it is not.
 
     The whole admission test in one place: baked elsewhere, drawn at all, wanted by the settings,
-    inside the region, surviving its density slider. Pure, so the shapes stage and the instances
-    stage reach the same answer without carrying a list of 1.2 million decisions between them —
-    and one function, so the two passes cannot drift apart.
+    inside the region, surviving its density slider, clear of the carriageway. Pure, so the
+    shapes stage and the instances stage reach the same answer without carrying a list of 1.2
+    million decisions between them — and one function, so the two passes cannot drift apart.
+
+    `clipped` is the set of record ids `foliage_road_clearance` removed, computed ONCE per build
+    (`csiibundle.roadclear`) and handed to both passes. A set rather than a live query because
+    the spatial test is vectorised over the whole layer — asking it 1.2 million times one record
+    at a time would be the same answer several orders of magnitude slower.
     """
     if is_baked(record):
         return "baked"
@@ -146,9 +151,58 @@ def admit(record, settings, region=None):
     if kind in ("tree", "prop") and not bundle_instances.density_keep(
             record, density_fraction(kind, settings)):
         return "density"
+    if clipped and record.get("id") in clipped:
+        return "roadclear"
     return None
 
 
-def keep(record, settings, region=None):
+def keep(record, settings, region=None, clipped=None):
     """Whether this record is placed at all — `admit` as a yes/no."""
-    return admit(record, settings, region) is None
+    return admit(record, settings, region, clipped) is None
+
+
+def road_clipped(bundle, settings, region=None):
+    """The set of record ids `foliage_road_clearance` removes, plus the counts for the report.
+
+    Returns `(ids, stats)`; an empty set and a zeroed stats block when the setting is 0 (off),
+    without reading the lane layer at all. DECLARED DEVIATION — see `csiibundle.roadclear`.
+    """
+    from csiibundle import reader, roadclear
+
+    clearance = float(settings.get("foliage_road_clearance") or 0.0)
+    stats = {"clearance": clearance, "laneStations": 0, "trees": 0, "clipped": 0}
+    if clearance <= 0.0:
+        return set(), stats
+    lanes_path = reader.layer_path(bundle, "lanes")
+    if not lanes_path:
+        return set(), stats
+    points = roadclear.lane_points(reader.read_jsonl(lanes_path))
+    stats["laneStations"] = int(len(points))
+    if not len(points):
+        return set(), stats
+    grid = roadclear.PointGrid(points, clearance)
+
+    ids = set()
+    batch = []
+    for record in bundle_instances.read_instances(bundle, kind="tree"):
+        if record.get("kind") != "tree" or not bundle_instances.is_tree(record):
+            continue
+        stats["trees"] += 1
+        batch.append(record)
+        if len(batch) >= 100000:
+            _absorb_clipped(batch, grid, clearance, ids)
+            batch = []
+    _absorb_clipped(batch, grid, clearance, ids)
+    stats["clipped"] = len(ids)
+    return ids, stats
+
+
+def _absorb_clipped(batch, grid, clearance, ids):
+    from csiibundle import roadclear
+
+    if not batch:
+        return
+    hit = roadclear.obstructing(batch, grid, clearance)
+    for record, blocked in zip(batch, hit):
+        if blocked and record.get("id") is not None:
+            ids.add(record["id"])

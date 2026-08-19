@@ -516,6 +516,62 @@ def test_tree_vs_plant():
               f"{trees} tree prefabs and {len(by_asset) - trees} plant prefabs")
 
 
+def test_road_clearance():
+    """A6.4 — the declared road-clearance deviation.
+
+    Not a game rule: CS2 clears objects when a road is BUILT, and whatever survives in the save
+    is what the city contains. So the gate is that it is OFF when asked to be off, that it only
+    ever touches trees, and that the numbers it reports are the numbers it acted on.
+    """
+    print("road clearance (A6.4)")
+    from csiibundle import roadclear
+    from cs2beamng.beamng import placement
+
+    # the grid must agree with a brute-force answer — it replaces scipy, which the Blender
+    # adapter cannot import
+    rng = numpy.random.default_rng(3)
+    pts = rng.uniform(-200, 200, size=(4000, 2))
+    qs = rng.uniform(-200, 200, size=(1500, 2))
+    for radius in (0.75, 1.5, 3.0):
+        brute = numpy.array([bool(((pts - q) ** 2).sum(axis=1).min() <= radius ** 2) for q in qs])
+        check(bool((roadclear.PointGrid(pts, radius).within(qs, radius) == brute).all()),
+              f"PointGrid matches brute force at r={radius}")
+    check(not roadclear.PointGrid(numpy.zeros((0, 2)), 1.0).within(qs, 1.0).any(),
+          "an empty lane layer clips nothing")
+
+    # only trees, and only within the clearance
+    grid = roadclear.PointGrid(numpy.array([[0.0, 0.0]]), 2.0)
+    tree_near = {"kind": "tree", "attrs": {"growth": 0.5}, "pos": [1.0, 0.0, 0.0], "id": 1}
+    tree_far = {"kind": "tree", "attrs": {"growth": 0.5}, "pos": [9.0, 0.0, 0.0], "id": 2}
+    bush_near = {"kind": "tree", "attrs": {}, "pos": [1.0, 0.0, 0.0], "id": 3}
+    prop_near = {"kind": "prop", "attrs": {}, "pos": [1.0, 0.0, 0.0], "id": 4}
+    hit = roadclear.obstructing([tree_near, tree_far, bush_near, prop_near], grid, 2.0)
+    check(list(hit) == [True, False, False, False],
+          "clips the near TREE only - a bush is driven through, a prop is not planting")
+    check(not roadclear.obstructing([tree_near], grid, 0.0).any(), "clearance 0 clips nothing")
+
+    # the admission seam carries it, and names it
+    settings = {"trees": True, "props": True, "buildings": True}
+    check(placement.admit(tree_near, settings, None, {1}) == "roadclear",
+          "placement.admit names the road-clearance reason")
+    check(placement.admit(tree_near, settings, None, set()) is None,
+          "and admits the same record when nothing was clipped")
+
+    # off means the lane layer is never even read
+    ids, stats = placement.road_clipped("/nonexistent-bundle", {"foliage_road_clearance": 0})
+    check(ids == set() and stats["laneStations"] == 0,
+          "clearance 0 short-circuits before touching the bundle")
+
+    bundle = real_bundle()
+    if bundle:
+        ids, stats = placement.road_clipped(bundle, {"foliage_road_clearance": 1.5})
+        check(stats["clipped"] == len(ids), f"{stats['clipped']:,} clipped ids, all distinct")
+        share = stats["clipped"] / max(stats["trees"], 1)
+        check(0 < share < 0.05,
+              f"{stats['clipped']:,} of {stats['trees']:,} trees = {share:.2%} "
+              f"(a deviation, so it must stay small)")
+
+
 def main():
     test_frame()
     test_placement()
@@ -527,6 +583,7 @@ def main():
     test_real_bundle_lod()
     test_variant_index_matches_the_bake()
     test_tree_vs_plant()
+    test_road_clearance()
     print()
     if FAILS:
         print(f"{len(FAILS)} of {CHECKS} FAILED:")

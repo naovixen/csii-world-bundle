@@ -5675,3 +5675,75 @@ A6.4 remains mostly a declared deviation. Two separate things, both true:
 
 An older bundle has no such key and reduces to the construction rule — correct, not a silent
 fallback: that bundle genuinely does not know. **Built, awaiting in-game re-rip.**
+
+## 68. A6.4 — the clearance sweep found no threshold, and A6.1 halved the deviation first (2026-08-18)
+
+### The sweep, which was supposed to show where kerbside planting begins
+
+The plan asked for the curve before choosing a number, on the reasonable theory that some of the
+9,594 items within 2 m of a lane are legitimate kerbside plantings and clipping them would be
+wrong. **The curve is flat.** Trees per 0.25 m band from a drivable lane centre:
+
+```
+  0.00-0.25 m    190 ######
+  0.25-0.50 m    543 ##################
+  0.50-0.75 m    667 ######################
+  0.75-1.00 m    682 #######################
+  1.00-1.25 m    709 ########################
+  1.25-1.50 m    675 ######################
+  1.50-1.75 m    685 #######################
+  1.75-2.00 m    739 #########################
+  2.00-2.25 m    703 #######################
+  ...
+  4.75-5.00 m  1,097 #####################################
+```
+
+A line's buffer has constant area per band, so a uniform scatter gives a flat histogram — which
+is what this is, rising only gently out to 5 m. **There is no trough at the centreline and no
+peak at the kerb**, so nothing in the data marks where the carriageway ends and planting begins.
+The mild deficit in the first two bands is the only structure, and it is consistent with some
+clearing having happened when the roads were built.
+
+**So the threshold is a judgement, and is documented as one.** The default 1.5 m is the vehicle
+envelope, not a discovered edge: a passenger car is ~1.9 m wide, so its flank sits ~0.95 m off the
+lane centre, and this city's median tree trunk radius of ~0.4 m reaches it at ~1.35 m.
+
+| clearance | trees clipped | of trees |
+|---|---:|---:|
+| 1.0 m | 2,082 | 0.67 % |
+| **1.5 m** | **3,466** | **1.12 %** |
+| 2.0 m | 4,890 | 1.58 % |
+
+### A6.1 halved the deviation before a single item was clipped
+
+The plan costed this at 9,594 items, 4,704 of them plants. But **A6.1 made plants
+non-collidable**, so a bush, a flower pot or a patch of long grass in the carriageway is now
+driven straight through: removing it would cost fidelity and buy no drivability. The rule
+therefore clips **trees only**, which is 3,466 items — **1.12 % of trees, 0.50 % of all
+planting** — against 8,303 if plants were included for nothing.
+
+Tying the deviation to collision is what keeps it honest: it exists to make the city driveable,
+so it removes exactly what obstructs driving.
+
+### What was built
+
+* `csiibundle.roadclear` — the shared rule, **numpy only**. `csiibundle` is imported by the
+  Blender adapter and Blender's Python has no scipy, so `PointGrid` is a uniform spatial hash
+  with a vectorised ragged-range gather instead of `cKDTree`. Verified against scipy on three
+  synthetic sets and on the real 1,523,047-station lane cloud: **0 disagreements**, and faster
+  (0.3 s against 0.8 s).
+* `placement.road_clipped` computes the id set **once per build**; `placement.admit` takes it and
+  names `roadclear` as the reason. The shapes stage computes it and publishes it through
+  `shared`; the instances stage and the lights stage read the same set.
+* `lights` was reaching `placement.keep` **without** it, so a light parented to a clipped tree
+  would have survived — exactly the drift one admission test exists to prevent. Fixed, and it
+  now declares `after=("shapes",)`.
+* `foliage_road_clearance` (metres, 0 = off, default 1.5), declared and counted in the report's
+  `approximations.foliageRoadClearance` with its threshold and its count.
+
+### Not the same question as `Overridden`
+
+§67's rule is CS2's own and is always on: the game does not draw an object something was built
+over. It accounts for 275 of the 4,890 trees within 2 m. This deviation is the other ~94 %, and
+it is a choice rather than a port. Both are reported separately, because conflating them would
+hide which of the two removed a given tree.
