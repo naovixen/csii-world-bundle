@@ -7450,7 +7450,8 @@ list has no `.items()` and it would have raised.
 
 **It selected the same shapes anyway, and that is a property of the key domain rather than luck.**
 Every one of the 968 extra prefabs is a colour slot keyed `*_Mesh`, and **0 of the 1,283,502
-instances in the bundle carry a `_Mesh` prefab id** - such a key can never match a shape's asset.
+instances in the 2026-08-19 16:32 rip carry a `_Mesh` prefab id** (re-measured on the 2026-08-20
+08:46 rip: 0 of 1,282,980, and the same 218 of 1,186) - such a key can never match a shape's asset.
 So `lightNone: 194` in the 2026-08-19 22:57 build is what the corrected predicate also gives, and
 the load of it stands.
 
