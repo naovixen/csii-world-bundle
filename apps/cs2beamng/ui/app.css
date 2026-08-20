@@ -250,8 +250,8 @@ input[type="checkbox"] { accent-color: var(--accent); width: 16px; height: 16px;
 .cost-row .cost-name { font-size: 12.5px; color: var(--text-dim); flex: 1; }
 .cost-row .cost-value { font-size: 15px; font-weight: 650; font-variant-numeric: tabular-nums; }
 .cost-row .cost-of { font-size: 11.5px; color: var(--text-faint); }
-.cost-row .cost-note { font-size: 11px; color: var(--text-faint); }
-.cost-row .cost-basis { font-style: italic; }
+.cost-row .cost-note { font-size: 11px; color: var(--text-faint); font-style: italic; }
+.cost-row .cost-advice { font-size: 11.5px; color: var(--text-dim); margin-top: 2px; }
 .cost-bar { position: relative; height: 12px; }
 .cost-bar .fill { background: linear-gradient(90deg, var(--ok), color-mix(in srgb, var(--ok) 70%, var(--accent))); }
 .cost-mark { position: absolute; top: -3px; bottom: -3px; width: 2px; background: var(--text-dim); border-radius: 1px; }
@@ -259,10 +259,124 @@ input[type="checkbox"] { accent-color: var(--accent); width: 16px; height: 16px;
 .cost-row.close .cost-value { color: var(--warn); }
 .cost-row.over .fill { background: var(--danger); }
 .cost-row.over .cost-value { color: var(--danger); }
-.cost-row .cost-advice { color: var(--text); }
 .cost-warn { margin-top: 9px; padding: 7px 10px; border-radius: var(--radius-s); font-size: 11.5px;
   border: 1px solid color-mix(in srgb, var(--warn) 50%, var(--line));
   background: color-mix(in srgb, var(--warn) 10%, transparent); color: var(--text-dim); }
+
+/* A figure the app cannot arrive at yet says what it is waiting for. An empty bar would read as
+   "nothing to worry about", which is a promise, and the one thing this meter must never make. */
+.cost-waiting { margin-bottom: 10px; padding: 8px 10px; border-radius: var(--radius-s); font-size: 11.5px;
+  border: 1px dashed var(--line); color: var(--text-faint); }
+.cost-waiting.working::before { content: ""; display: inline-block; width: 8px; height: 8px; margin-right: 7px;
+  border-radius: 50%; background: var(--accent); animation: cost-pulse 1.4s ease-in-out infinite; }
+@keyframes cost-pulse { 0%, 100% { opacity: 0.25; } 50% { opacity: 1; } }
+
+/* The estimator's own score. It is small and permanent on purpose: a meter nobody can check
+   against a measurement is a meter nobody can trust. */
+.cost-score { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; margin-top: 9px;
+  font-size: 11px; color: var(--text-faint); }
+.cost-score-k { text-transform: uppercase; letter-spacing: 0.06em; }
+.cost-score-v { font-variant-numeric: tabular-nums; }
+
+.cost-approx { margin-top: 8px; font-size: 11px; color: var(--text-faint); }
+.cost-approx > summary { cursor: pointer; }
+.cost-approx-item { display: flex; flex-direction: column; gap: 1px; margin: 7px 0 0 12px;
+  padding-left: 9px; border-left: 2px solid var(--line); }
+.cost-approx-what { color: var(--text-dim); }
+.cost-approx-measured { font-variant-numeric: tabular-nums; font-style: italic; }
+
+/* ---- the map (E3) -------------------------------------------------------------------------- */
+/* One drawing surface, two things on top of it: the region's patch, and the fast-travel points.
+   Square, because the picture is — the bundle's rasters are, and so is the region the build
+   keeps. Everything over it is positioned in PERCENTAGES, so the box can be any size and the
+   georeference maths never has to know how big it ended up. */
+.mapview {
+  position: relative; width: 100%; aspect-ratio: 1 / 1; margin: 8px 0;
+  border: 1px solid var(--line-strong); border-radius: var(--radius-s);
+  background: var(--bg); overflow: hidden; touch-action: none; cursor: crosshair;
+}
+.mapview img { display: block; width: 100%; height: 100%; object-fit: cover; user-select: none; }
+.mapview svg { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.map-pins { position: absolute; inset: 0; }
+.map-note {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  padding: 0 22px; text-align: center; font-size: 12px; color: var(--text-faint);
+}
+.mapview.ready .map-note { display: none; }
+.mapview:not(.ready) { cursor: default; }
+
+.region-shape { fill: color-mix(in srgb, var(--accent) 16%, transparent); stroke: var(--accent); stroke-width: 0.4; }
+.map-pin {
+  position: absolute; transform: translate(-50%, -50%); cursor: grab; touch-action: none;
+  display: flex; align-items: center; justify-content: center;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.5);
+}
+.map-pin.dragging { cursor: grabbing; }
+/* A focused marker has to be findable on a picture of a city — the ring is the same one every
+   focused control here gets, and the arrow keys move whatever is wearing it. */
+.map-pin:focus { outline: none; }
+.map-pin:focus-visible, .map-pin:focus {
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 55%, transparent), 0 1px 4px rgba(0,0,0,0.5);
+  z-index: 2;
+}
+.poi-n { cursor: pointer; }
+.region-centre { width: 15px; height: 15px; border-radius: 50%; background: var(--accent); border: 2px solid #fff; }
+
+/* THE TIP IS THE PLACE. A region's centre is a dot and sits ON its coordinate; a fast-travel pin
+   is a teardrop and must POINT at one, which is a different anchor and was the wrong one until
+   2026-08-20 — the pin's tip sat about 7 px west and 21 px south of the point it named.
+
+   Why it went wrong is worth writing down, because it will happen to the next teardrop too. The
+   pin was one element carrying both `rotate: -45deg` and `transform: translate(-50%, -70%)`, and
+   CSS composes those as rotate THEN transform — so the offset was itself rotated 45°, sending
+   the pin diagonally away from its own anchor. Percentages of a box are also the wrong units for
+   this: what has to land on the coordinate is one CORNER of a rotated square, which is
+   `s x sqrt(2) / 2` below the square's centre and not any fraction of its height.
+
+   So the pin is two elements. The WRAPPER is unrotated, sized to cover the shape (which is what
+   takes the drag, the focus and the click), and `translate(-50%, -100%)` puts its BOTTOM CENTRE
+   on the coordinate. The teardrop inside is offset by MARGINS, which are applied before any
+   transform and are therefore not rotated: half its width to the left, and lifted by the
+   0.2071 x s that the rotation drops its corner past its own box. */
+.poi-pin {
+  width: 30px; height: 30px; transform: translate(-50%, -100%);
+  background: none; border: 0; box-shadow: none;
+}
+.poi-pin-body {
+  position: absolute; left: 50%; bottom: 0;
+  width: 20px; height: 20px; margin-left: -10px; margin-bottom: 4.14px;
+  display: flex; align-items: center; justify-content: center; line-height: 1;
+  border-radius: 50% 50% 50% 0; rotate: -45deg;
+  background: var(--warn); border: 2px solid #fff; color: #23272e;
+  font-size: 10px; font-weight: 700;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.5);
+}
+.poi-pin-body > span { rotate: 45deg; }            /* upright, inside a teardrop that is not */
+.poi-pin:focus-visible, .poi-pin:focus { box-shadow: none; }
+.poi-pin:focus-visible .poi-pin-body, .poi-pin:focus .poi-pin-body {
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 55%, transparent), 0 1px 4px rgba(0,0,0,0.5);
+}
+
+.region-body, .poi-body { margin-top: 4px; }
+.region-readout { font-size: 12px; color: var(--text-dim); font-variant-numeric: tabular-nums; }
+.region-radius { display: flex; align-items: center; gap: 10px; }
+.region-radius .k { font-size: 12px; color: var(--text-dim); white-space: nowrap; }
+.region-radius input[type="range"] { flex: 1; }
+.region-radius .val { font-size: 12px; font-variant-numeric: tabular-nums; min-width: 52px; text-align: right; }
+
+.poi-list { display: flex; flex-direction: column; gap: 4px; }
+.poi-row { display: flex; align-items: center; gap: 8px; }
+.poi-n {
+  width: 20px; height: 20px; flex: none; border-radius: 50%; background: var(--warn); color: #23272e;
+  font-size: 10px; font-weight: 700; display: flex; align-items: center; justify-content: center;
+}
+.poi-row .poi-name { flex: 1; min-width: 0; }
+.poi-at { font-size: 11.5px; color: var(--text-faint); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.poi-actions { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
+.poi-suggest { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 8px; }
+.poi-suggest-k { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-faint); }
+.poi-offer { cursor: pointer; color: var(--text-dim); }
+.poi-offer:hover { border-color: var(--accent); color: var(--text); }
 
 /* ---- the settings sidebar ------------------------------------------------------------------ */
 /* A sidebar rather than tabs because this list is going to grow: a tab row has a fixed width, so

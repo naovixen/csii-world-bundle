@@ -17,6 +17,7 @@
     build: null,             // last state from SSE
     lastSeq: 0,
     resultsFor: null,        // finishedAt of the build whose results are on screen
+    score: null,             // the last build's estimated-vs-actual, from its report
     commitSeq: 0,            // ordering token for /api/settings responses
     controls: new Map(),     // key -> {input, row, apply(value), detect}
     paneKeys: new Set(),     // the controls the CONTENT PANE built, dropped when it rebuilds
@@ -27,6 +28,7 @@
     paneBuilt: false,
     events: null,
     censusTimer: null,
+    estimateTimer: null,     // the poll that waits for a background estimate refresh
     logLines: 0,
   };
 
@@ -105,8 +107,18 @@
     renderNav();
     renderDetected(payload.detected, payload.canBrowse);
     renderCost();
+    awaitEstimate(payload.estimate);
     updateDependencies(payload.values);
     $("startBtn").disabled = (payload.problems || []).length > 0 || (app.build && app.build.status === "running");
+  }
+
+  /* The two slow halves of the estimate are worked out on a background thread, so the answer
+     arrives after the response that said it was coming. Ask again while it is still working —
+     the server memoises, so a poll that finds it done costs one settings round trip. */
+  function awaitEstimate(est) {
+    clearTimeout(app.estimateTimer);
+    if (!est || est.ready || !["index", "reading"].includes(est.waiting)) return;
+    app.estimateTimer = setTimeout(loadSettings, est.waiting === "index" ? 3000 : 800);
   }
 
   const PRESET_ORDER = ["ultra", "high", "performance", "medium", "low"];
@@ -405,8 +417,16 @@
      every setting rather than of any one of them. Two shapes: a BAR for a figure with a budget
      it can exceed, and a TILE for a figure with none. Every one of them states how it was
      arrived at, in its own words, under the number: an estimate nobody can weigh is an estimate
-     nobody can trust. The bars arrive with the estimator; the tiles are here today, and an
-     empty bar in the meantime would be a promise the app cannot keep. */
+     nobody can trust. A figure the app cannot yet arrive at says WHAT IT IS WAITING FOR instead
+     of showing an empty bar, which would be a promise it cannot keep. */
+  const WAITING = {
+    "no bundle": "Point the app at your city's export and this fills in.",
+    bake: "The first build prepares your city's textures and shapes; the video memory figure needs them.",
+    index: "Reading which shapes your city places — about twenty seconds, once per export.",
+    reading: "Measuring your city's textures.",
+    error: "This could not be worked out for these settings.",
+  };
+
   function renderCost() {
     const host = $("costMeter");
     const est = (app.settings && app.settings.estimate) || null;
@@ -421,6 +441,11 @@
     host.appendChild(head);
 
     for (const row of (est && est.rows) || []) host.appendChild(buildCostBar(row));
+    if (est && !est.ready) {
+      const busy = est.waiting === "index" || est.waiting === "reading";
+      host.appendChild(el("div", "cost-waiting" + (busy ? " working" : ""),
+        WAITING[est.waiting] || "Video memory cannot be worked out yet."));
+    }
 
     const tiles = el("div", "cost-tiles");
     const seconds = expectedSeconds();
@@ -434,6 +459,33 @@
       budget ? `of level, at ${(budget.pixels / 1e6).toFixed(2)} Mpixel` : "run BeamNG once so it logs a card",
       budget ? null : "warn"));
     host.appendChild(tiles);
+
+    /* What the last build actually weighed, beside what this said it would. The estimator's
+       own score: without it nobody can tell a meter that is drifting from one that is right. */
+    if (app.score) {
+      const line = el("div", "cost-score");
+      line.appendChild(el("span", "cost-score-k", "Last build"));
+      for (const [key, label] of [["total", "in all"], ["mesh", "shapes"], ["texture", "textures"]]) {
+        const row = app.score[key];
+        if (!row) continue;
+        line.appendChild(el("span", "cost-score-v",
+          `${label} ${fmtInt(row.estimatedMiB)} estimated, ${fmtInt(row.actualMiB)} MiB actual`));
+      }
+      host.appendChild(line);
+    }
+
+    if (est && (est.approximations || []).length) {
+      const note = el("details", "cost-approx");
+      note.appendChild(el("summary", "", `What this figure cannot know (${est.approximations.length})`));
+      for (const a of est.approximations) {
+        const item = el("div", "cost-approx-item");
+        item.appendChild(el("span", "cost-approx-what", a.what));
+        if (a.why) item.appendChild(el("span", "cost-approx-why", a.why));
+        if (a.measured) item.appendChild(el("span", "cost-approx-measured", a.measured));
+        note.appendChild(item);
+      }
+      host.appendChild(note);
+    }
 
     if (budget && budget.lighting && /basic/i.test(budget.lighting)) {
       host.appendChild(el("div", "cost-warn",
@@ -477,18 +529,20 @@
       bar.appendChild(mark);
     }
     line.appendChild(bar);
-    const note = el("div", "cost-note");
-    note.appendChild(el("span", "cost-basis", row.basis || ""));
+    line.appendChild(el("div", "cost-note", row.basis || ""));
+    /* The advice is its own line and not a tail on the basis: one says where the number came
+       from and the other says what to do about it, and run together they read as neither. */
     if (row.advice) {
-      note.appendChild(el("span", "cost-advice", " " + row.advice));
+      const advice = el("div", "cost-advice");
+      advice.appendChild(document.createTextNode(row.advice + " "));
       if (row.section) {
         const jump = el("button", "linkish", "What should I change?");
         jump.type = "button";
         jump.onclick = () => showSection(row.section);
-        note.appendChild(jump);
+        advice.appendChild(jump);
       }
+      line.appendChild(advice);
     }
-    line.appendChild(note);
     return line;
   }
 
@@ -644,6 +698,7 @@
   function buildControl(spec) {
     if (!spec) return el("div", "");
     if (spec.control === "region") return buildRegionControl(spec);
+    if (spec.control === "poi") return buildPoiControl(spec);
     const key = spec.key;
     const row = el("div", "setting");
     const name = el("div", "name", spec.label);
@@ -801,43 +856,444 @@
     return row;
   }
 
+  // ---- the map (E3) ---------------------------------------------------------------------------
+
+  /* ONE drawing surface, two things on top of it. `region` is three numbers in bundle metres and
+     the fast-travel points are a list of more of them, and nobody knows their city's
+     coordinates — so both are picked on a picture of the city instead (plan §3.6/§3.7). The
+     picture and its georeference come from `/api/map`; everything drawn over it is placed by the
+     one conversion below, which is the one the rasters block documents.
+
+     Neither control shipped before the other on purpose: a circle widget now and a point widget
+     later would have shared nothing. */
+
+  function mapState() {
+    if (!app.map) {
+      app.map = { doc: null, waiting: "drawing", surfaces: new Set(), timer: null };
+      loadMap();
+    }
+    return app.map;
+  }
+
+  async function loadMap() {
+    const doc = await api("/api/map");
+    const state = app.map || (app.map = { surfaces: new Set() });
+    state.doc = doc && doc.ready ? doc : null;
+    state.waiting = doc && doc.ready ? null : (doc && doc.waiting) || "drawing";
+    clearTimeout(state.timer);
+    if (!state.doc) state.timer = setTimeout(loadMap, 2500);
+    for (const surface of state.surfaces) surface.refresh();
+  }
+
+  /* A map surface: the picture, an SVG for the region shape, and a layer of pins. `place` puts a
+     world point on it and `locate` reads one back, both through the georeference the server
+     sent — pixel (0,0) is the NORTH-WEST corner and bundle Z runs north, which is the one sign
+     that catches everybody. */
+  function buildMapSurface({ onClick, onReady } = {}) {
+    const root = el("div", "mapview");
+    const img = document.createElement("img");
+    img.alt = "";
+    img.draggable = false;
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("viewBox", "0 0 100 100");
+    svg.setAttribute("preserveAspectRatio", "none");
+    const pins = el("div", "map-pins");
+    const note = el("div", "map-note", "");
+    root.appendChild(img);
+    root.appendChild(svg);
+    root.appendChild(pins);
+    root.appendChild(note);
+
+    const surface = {
+      root, svg, pins,
+      world: null,
+      place(x, z) {                                  // bundle metres -> percentages of the box
+        const w = surface.world;
+        if (!w) return { left: 50, top: 50 };
+        const span = w.pixels * w.metresPerPixel;
+        return { left: ((x - w.originX) / span) * 100, top: ((w.originZ - z) / span) * 100 };
+      },
+      locate(event) {                                // a pointer event -> bundle metres
+        const w = surface.world;
+        const box = root.getBoundingClientRect();
+        if (!w || !box.width) return null;
+        const span = w.pixels * w.metresPerPixel;
+        const fx = Math.min(1, Math.max(0, (event.clientX - box.left) / box.width));
+        const fy = Math.min(1, Math.max(0, (event.clientY - box.top) / box.height));
+        return [w.originX + fx * span, w.originZ - fy * span];
+      },
+      metres(pixels) {                               // a length on screen, in bundle metres
+        const w = surface.world;
+        const box = root.getBoundingClientRect();
+        if (!w || !box.width) return 0;
+        return pixels * (w.pixels * w.metresPerPixel) / box.width;
+      },
+      refresh() {
+        const state = app.map || {};
+        surface.world = state.doc ? state.doc.world : null;
+        root.classList.toggle("ready", !!state.doc);
+        if (state.doc) {
+          if (img.getAttribute("src") !== state.doc.image) img.setAttribute("src", state.doc.image);
+          note.textContent = "";
+        } else {
+          note.textContent = state.waiting === "no bundle"
+            ? "Point the app at your city's export and the map appears here."
+            : "Drawing your city — the ground, the coast and every road. About twenty seconds, once.";
+        }
+        if (onReady) onReady();
+      },
+    };
+    if (onClick) {
+      root.addEventListener("pointerdown", (event) => {
+        if (event.target.closest(".map-pin") || !surface.world) return;
+        const at = surface.locate(event);
+        if (at) onClick(at, event);
+      });
+    }
+    mapState().surfaces.add(surface);
+    // NOT refreshed here. `onReady` has to be a constructor argument, because a map already
+    // drawn for this bundle is ready before the caller gets the surface back and a callback
+    // attached one line later never fires at all — but calling it from inside the constructor
+    // runs the caller's draw code against half its own variables, which is a dead-zone throw
+    // that takes the whole control off the screen. So the caller refreshes when it is built.
+    return surface;
+  }
+
+  /* A pin that can be dragged. `onMove` runs while it moves and `onDrop` once, at the end —
+     the snap is a round trip to the server and must not fire sixty times a second. */
+  function makeDraggable(node, surface, onMove, onDrop) {
+    node.addEventListener("pointerdown", (event) => {
+      if (!surface.world) return;
+      event.preventDefault();
+      node.setPointerCapture(event.pointerId);
+      node.classList.add("dragging");
+      const move = (e) => { const at = surface.locate(e); if (at) onMove(at); };
+      const up = (e) => {
+        node.releasePointerCapture(event.pointerId);
+        node.classList.remove("dragging");
+        node.removeEventListener("pointermove", move);
+        node.removeEventListener("pointerup", up);
+        const at = surface.locate(e);
+        if (at && onDrop) onDrop(at);
+      };
+      node.addEventListener("pointermove", move);
+      node.addEventListener("pointerup", up);
+    });
+  }
+
+  /* A marker moves with the arrow keys as well as with a pointer, because a map that can only be
+     used with a mouse is a map some people cannot use at all. One press is one PIXEL of the map
+     as drawn — so the step means the same thing at any size of window — and Shift is ten of them.
+     The move itself is free; `onSettle` fires once the keys stop, which is where the snap and
+     the save belong (snapping on every press would fight the person pressing).
+
+     BOTH of these need the node to SURVIVE the gesture. A marker rebuilt on each move loses its
+     pointer capture and its keyboard focus mid-gesture, which is exactly why the fast-travel pins
+     could not be dragged: they were recreated on every redraw. Markers are made once and moved. */
+  const SETTLE_MS = 500;
+
+  function makeArrowMovable(node, surface, get, onMove, onSettle) {
+    let settling = null;
+    node.tabIndex = 0;
+    node.addEventListener("keydown", (event) => {
+      const delta = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[event.key];
+      if (!delta || !surface.world) return;
+      event.preventDefault();
+      const step = surface.metres(event.shiftKey ? 10 : 1);
+      const at = get();
+      onMove([at[0] + delta[0] * step, at[1] - delta[1] * step]);   // screen down is south
+      clearTimeout(settling);
+      settling = setTimeout(() => onSettle(get()), SETTLE_MS);
+    });
+    node.addEventListener("blur", () => {
+      if (settling) { clearTimeout(settling); settling = null; onSettle(get()); }
+    });
+  }
+
   /* `region` is a string ("X Z R", empty = the whole city) and reads as one. As a control it is
-     a choice — all of it, or a disc round a point — so it is built as one. The map that makes
-     those three numbers answerable is E3; until it exists they are at least labelled. */
+     a choice — all of it, or a patch of it — so it is built as one, and the patch is dragged on
+     the map rather than typed. The shape drawn is a SQUARE because a square is what every stage
+     that reads a region keeps; the setting's own name says disc, and the name is what is wrong. */
   function buildRegionControl(spec) {
-    const row = rowShell(spec);
+    const row = rowShell(spec, "regionrow");
     const ctl = el("div", "ctl region");
     const mode = document.createElement("select");
     mode.appendChild(new Option("The whole city", "all"));
     mode.appendChild(new Option("Part of it", "part"));
-    const input = document.createElement("input");
-    input.type = "text";
-    input.spellcheck = false;
-    input.placeholder = "X Z radius, in metres — e.g. 2994 1853 200";
-    input.className = "region-value";
-    const sync = () => {
-      const part = mode.value === "part";
-      input.hidden = !part;
-      row.classList.toggle("region-part", part);
-    };
-    mode.addEventListener("change", () => {
-      sync();
-      if (mode.value === "all") commit("region", "");
-      else input.focus();
-    });
-    input.addEventListener("change", () => commit("region", input.value.trim()));
-    const apply = (v) => {
-      const text = (v === null || v === undefined) ? "" : String(v);
-      input.value = text;
-      mode.value = text.trim() ? "part" : "all";
-      sync();
-    };
     ctl.appendChild(mode);
-    ctl.appendChild(input);
-    input.id = "in_region";
+    const readout = el("span", "region-readout", "");
+    ctl.appendChild(readout);
     row.appendChild(ctl);
     row.appendChild(el("div", "help", spec.blurb));
-    setControl("region", { input, row, apply, detect: null });
+
+    const body = el("div", "region-body");
+    const surface = buildMapSurface({
+      onClick: (at) => { current = [at[0], at[1], current[2]]; push(); },
+      onReady: () => draw(),
+    });
+    const shape = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+    shape.setAttribute("class", "region-shape");
+    surface.svg.appendChild(shape);
+    const handle = el("div", "map-pin region-centre");
+    handle.title = "Drag, or focus and use the arrow keys, to move the middle of the patch";
+    handle.setAttribute("role", "application");
+    handle.setAttribute("aria-label", "The middle of the patch to build");
+    surface.pins.appendChild(handle);
+    body.appendChild(surface.root);
+
+    const radius = document.createElement("input");
+    radius.type = "range";
+    radius.min = 200; radius.max = 7000; radius.step = 100;
+    const radiusRow = el("div", "region-radius");
+    radiusRow.appendChild(el("span", "k", "How far across"));
+    radiusRow.appendChild(radius);
+    const radiusVal = el("span", "val", "");
+    radiusRow.appendChild(radiusVal);
+    body.appendChild(radiusRow);
+    row.appendChild(body);
+
+    let current = [0, 0, 1000];
+    let pushing = null;
+
+    function draw() {
+      const part = mode.value === "part";
+      body.hidden = !part;
+      row.classList.toggle("region-part", part);
+      const [x, z, r] = current;
+      readout.textContent = part
+        ? `${Math.round(x)}, ${Math.round(z)} · ${(2 * r / 1000).toFixed(1)} km across`
+        : "";
+      radius.value = String(Math.min(7000, Math.max(200, Math.round(r))));
+      radiusVal.textContent = `${(2 * r / 1000).toFixed(1)} km`;
+      const at = surface.place(x, z);
+      handle.style.left = `${at.left}%`;
+      handle.style.top = `${at.top}%`;
+      const w = surface.world;
+      if (w) {
+        const span = w.pixels * w.metresPerPixel;
+        const side = (2 * r / span) * 100;
+        shape.setAttribute("x", String(at.left - side / 2));
+        shape.setAttribute("y", String(at.top - side / 2));
+        shape.setAttribute("width", String(side));
+        shape.setAttribute("height", String(side));
+      }
+      shape.style.display = part ? "" : "none";
+      handle.style.display = part ? "" : "none";
+    }
+
+    const push = () => {                             // one commit per gesture, not per pixel
+      draw();
+      clearTimeout(pushing);
+      pushing = setTimeout(() => {
+        commit("region", `${Math.round(current[0])} ${Math.round(current[1])} ${Math.round(current[2])}`);
+      }, 180);
+    };
+
+    makeDraggable(handle, surface,
+      (at) => { current = [at[0], at[1], current[2]]; draw(); },
+      () => push());
+    makeArrowMovable(handle, surface,
+      () => [current[0], current[1]],
+      (at) => { current = [at[0], at[1], current[2]]; draw(); },
+      () => push());
+    surface.refresh();
+    radius.addEventListener("input", () => { current[2] = Number(radius.value); draw(); });
+    radius.addEventListener("change", () => { current[2] = Number(radius.value); push(); });
+    mode.addEventListener("change", () => {
+      if (mode.value === "all") { draw(); commit("region", ""); return; }
+      if (!current[2]) current[2] = 1000;
+      push();
+    });
+
+    const apply = (v) => {
+      const text = (v === null || v === undefined) ? "" : String(v).trim();
+      const parts = text.replace(/,/g, " ").split(/\s+/).map(Number).filter((n) => !Number.isNaN(n));
+      if (parts.length === 3) current = parts;
+      mode.value = text ? "part" : "all";
+      draw();
+    };
+    setControl("region", { input: mode, row, apply, detect: null });
+    return row;
+  }
+
+  /* The fast-travel editor. `poi_file` used to be a path to a file you wrote by hand, in a format
+     documented only in its own help text; it is still a path, and the app writes the file (plan
+     §3.7), so `--set poi_file=` and a headless build are unchanged.
+
+     CLICK THE MAP TO ADD ONE. That is the gesture, and the button beside the list does the same
+     thing in the middle of the map for anybody who would rather not aim. Every point is SNAPPED
+     onto the road network by the server — the same network the build snaps against, so what you
+     place is what you get — and it arrives named after the street it landed on, which is a better
+     start than "Point 3" even when you rename it. Renaming and removing are in the list below,
+     where a list belongs; the pin is only where the place is.
+
+     A pin can be moved afterwards by dragging it or, with it focused, by the arrow keys. Both
+     need the pin ELEMENT to survive the gesture, so pins are made once and moved rather than
+     rebuilt on every change — rebuilding them is what stopped the drag working at all, because
+     the node holding the pointer capture was thrown away on the first move event. */
+  function buildPoiControl(spec) {
+    const row = rowShell(spec, "poirow");
+    row.appendChild(el("div", "help", spec.blurb));
+    const body = el("div", "poi-body");
+    const surface = buildMapSurface({ onReady: () => adopt(), onClick: (at) => addAt(at) });
+    body.appendChild(surface.root);
+    const list = el("div", "poi-list");
+    body.appendChild(list);
+    const actions = el("div", "poi-actions");
+    const add = el("button", "btn small", "Add a point");
+    add.type = "button";
+    actions.appendChild(add);
+    const hint = el("span", "faint", "");
+    actions.appendChild(hint);
+    body.appendChild(actions);
+    const suggestBox = el("div", "poi-suggest");
+    body.appendChild(suggestBox);
+    row.appendChild(body);
+
+    let points = [];
+    const pins = [];                                 // one stable node per point, never rebuilt
+    const rows = [];
+
+    /* The server normalises the list (it is the thing that writes the file), so what comes back
+       is what is stored and what the build will read. It goes into the cached map document as
+       well as into this closure: the pane can be rebuilt from under us — switching sections does
+       exactly that — and a fresh editor reads its points from there. */
+    async function save() {
+      const payload = await api("/api/poi", { method: "POST", body: { points } });
+      if (payload && payload.points) {
+        points = payload.points;
+        if ((app.map || {}).doc) app.map.doc.points = points.map((p) => ({ ...p }));
+      }
+      draw();
+      if (payload && payload.values) renderSettings(payload);
+    }
+
+    async function snap(at) {
+      const out = await api("/api/poi/snap", { method: "POST", body: { at } });
+      return out && out.at ? out : { at, name: null };
+    }
+
+    function adopt() {                               // the stored points arrive with the map
+      const doc = (app.map || {}).doc;
+      if (doc && doc.points && !points.length) points = doc.points.map((p) => ({ ...p }));
+      draw();
+    }
+
+    async function addAt(at) {
+      const landed = await snap(at);
+      points.push({ name: landed.name || `Point ${points.length + 1}`, at: landed.at });
+      await save();
+      const line = rows[points.length - 1];
+      if (line) { line.name.focus(); line.name.select(); }
+    }
+
+    /* Reconcile rather than rebuild: the nodes that exist keep existing and only their contents
+       move. That is what lets a pin hold focus while the arrow keys walk it across the city, and
+       what lets a name being typed survive a redraw. */
+    function draw() {
+      while (pins.length < points.length) pins.push(makePin(pins.length));
+      while (pins.length > points.length) pins.pop().node.remove();
+      while (rows.length < points.length) rows.push(makeRow(rows.length));
+      while (rows.length > points.length) rows.pop().line.remove();
+      points.forEach((point, index) => {
+        const at = surface.place(point.at[0], point.at[1]);
+        const pin = pins[index].node;
+        pin.style.left = `${at.left}%`;
+        pin.style.top = `${at.top}%`;
+        pin.title = `${point.name} — drag it, or use the arrow keys`;
+        pin.setAttribute("aria-label", `Fast-travel point ${index + 1}, ${point.name}`);
+        const line = rows[index];
+        if (document.activeElement !== line.name) line.name.value = point.name || "";
+        line.where.textContent = `${Math.round(point.at[0])}, ${Math.round(point.at[1])}`;
+      });
+      hint.textContent = points.length
+        ? "Click the map for another. Arrow keys move a selected pin; it lands on the nearest road."
+        : "Click anywhere on the map to put one there.";
+      drawSuggestions((app.map || {}).doc);
+    }
+
+    function makePin(index) {
+      // Two elements, not one: the wrapper is what is placed and what takes the gestures, and
+      // the teardrop inside it is what is rotated. See `.poi-pin` in app.css — the tip has to
+      // land on the coordinate, and a rotation composes with a percentage offset in a way that
+      // sends it somewhere else entirely.
+      const node = el("div", "map-pin poi-pin");
+      const teardrop = el("div", "poi-pin-body");
+      teardrop.appendChild(el("span", "", String(index + 1)));
+      node.appendChild(teardrop);
+      node.setAttribute("role", "application");
+      // moving is free; the snap and the save happen once the gesture ends, because snapping
+      // after every arrow press would drag the point back out from under the person moving it
+      const where = () => (points[index] ? points[index].at : [0, 0]);
+      const move = (to) => {
+        if (!points[index]) return;
+        points[index].at = [Math.round(to[0]), Math.round(to[1])];
+        draw();
+      };
+      const settle = async () => {
+        if (!points[index]) return;
+        points[index].at = (await snap(points[index].at)).at;
+        save();
+      };
+      makeDraggable(node, surface, move, (to) => { move(to); settle(); });
+      makeArrowMovable(node, surface, where, move, settle);
+      node.addEventListener("click", () => {                  // the pin is the place, not the name
+        const line = rows[index];
+        if (line) { line.name.focus(); line.name.select(); }
+      });
+      surface.pins.appendChild(node);
+      return { node };
+    }
+
+    function makeRow(index) {
+      const line = el("div", "poi-row");
+      const badge = el("span", "poi-n", String(index + 1));
+      badge.title = "Show this one on the map";
+      badge.onclick = () => { if (pins[index]) pins[index].node.focus(); };
+      line.appendChild(badge);
+      const name = document.createElement("input");
+      name.type = "text";
+      name.className = "poi-name";
+      name.setAttribute("aria-label", "The name of this fast-travel point");
+      name.addEventListener("change", () => {
+        if (!points[index]) return;
+        points[index].name = name.value.trim();
+        save();
+      });
+      line.appendChild(name);
+      const where = el("span", "poi-at", "");
+      line.appendChild(where);
+      const drop = el("button", "btn small ghost", "Remove");
+      drop.type = "button";
+      drop.onclick = () => { points.splice(index, 1); save(); };
+      line.appendChild(drop);
+      list.appendChild(line);
+      return { line, name, where };
+    }
+
+    function drawSuggestions(doc) {
+      suggestBox.innerHTML = "";
+      const taken = new Set(points.map((p) => p.name));
+      const offers = ((doc && doc.suggestions) || []).filter((s) => !taken.has(s.name)).slice(0, 8);
+      if (!offers.length) return;
+      suggestBox.appendChild(el("span", "poi-suggest-k", "Busiest places"));
+      for (const offer of offers) {
+        const chip = el("button", "chip poi-offer", offer.name);
+        chip.type = "button";
+        chip.title = `${offer.description} — click to make it one of yours`;
+        chip.onclick = () => { points.push({ name: offer.name, at: offer.at.slice() }); save(); };
+        suggestBox.appendChild(chip);
+      }
+    }
+
+    add.onclick = () => {
+      const world = ((app.map || {}).doc || {}).world;
+      const span = world ? world.pixels * world.metresPerPixel : 0;
+      addAt(world ? [world.originX + span / 2, world.originZ - span / 2] : [0, 0]);
+    };
+
+    surface.refresh();
+    setControl("poi_file", { input: add, row, apply: () => {}, detect: null });
     return row;
   }
 
@@ -1108,6 +1564,8 @@
     if (st.error) body.appendChild(el("div", "banner danger", st.error));
     try {
       const rep = await api("/api/report");
+      const score = rep && rep.report && rep.report.estimate && rep.report.estimate.score;
+      if (score) { app.score = score; renderCost(); }
       const problems = rep && rep.report && rep.report.validation && rep.report.validation.problems;
       if (problems && problems.length) {
         body.appendChild(el("div", "muted", `${problems.length} validation problem(s):`));

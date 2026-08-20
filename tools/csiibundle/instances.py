@@ -533,6 +533,20 @@ def _stable_unit(value):
     return int.from_bytes(digest, "little") / float(1 << 64)
 
 
+def density_rank(record):
+    """The density fraction this record survives at: it is kept iff `rank < fraction`.
+
+    The subset rule turned inside out. `density_keep` answers "is this one in at 60 %"; this
+    answers "at what setting does this one come in", which is what lets a consumer decide a
+    whole prefab's fate for EVERY slider position from one pass over the layer instead of one
+    pass per position (`cs2beamng.pipeline.meshindex`: a shape ships iff its lowest-ranked
+    instance is below the slider). Monotone, so the two are the same rule seen from either end.
+    """
+    state = (record.get("attrs") or {}).get("treeState")
+    weight = DENSITY_WEIGHT.get(state, 1.0)
+    return _stable_unit(record.get("id")) / weight
+
+
 def density_keep(record, fraction):
     """Whether to keep this record at foliage/prop density `fraction` (0..1).
 
@@ -543,9 +557,7 @@ def density_keep(record, fraction):
         return True
     if fraction <= 0.0:
         return False
-    state = (record.get("attrs") or {}).get("treeState")
-    weight = DENSITY_WEIGHT.get(state, 1.0)
-    return _stable_unit(record.get("id")) < fraction * weight
+    return density_rank(record) < fraction
 
 
 def object_radius(bounds_min, bounds_max, scale=None):

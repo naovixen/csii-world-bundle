@@ -71,8 +71,16 @@ def run(ctx, progress):
         return {"segments": 0, "tiles": 0}
     records = [r for r in reader.read_jsonl(lay.networks) if r.get("kind") == "segment" and r.get("assetId") and r.get("pos")]
     if ctx.region:
-        cx, cz, rr = float(ctx.region["centerX"]), float(ctx.region["centerZ"]), float(ctx.region["radius"]) + REACH
-        records = [r for r in records if (r["pos"][0] - cx) ** 2 + (r["pos"][2] - cz) ** 2 <= rr * rr]
+        # A SQUARE, like every other stage that reads a region (`beamng.placement.in_region`,
+        # `stages/derived._tile_in_region`, `stages/water._intersects`). This was a circle until
+        # 2026-08-20, so a region build kept a square of buildings and a disc of roads and the
+        # corners of the area had houses and no streets. Nothing shrinks: a circle is inside its
+        # square, so this only ever adds the segments that were missing. Found when the settings
+        # screen's map picker had to draw the region and there were two shapes to draw.
+        cx, cz = float(ctx.region["centerX"]), float(ctx.region["centerZ"])
+        rr = float(ctx.region["radius"]) + REACH
+        records = [r for r in records
+                   if abs(r["pos"][0] - cx) <= rr and abs(r["pos"][2] - cz) <= rr]
 
     # -- bucket by tile of the segment origin (bundle frame x, z) -------------------------------
     buckets = defaultdict(list)

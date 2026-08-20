@@ -112,6 +112,28 @@ def mip_count(width, height):
     return n
 
 
+HEADER_BYTES = 148
+
+
+def encoded_bytes(width, height, fmt):
+    """How many bytes `encode` writes for a `width` x `height` texture in `fmt`, WITHOUT encoding
+    it: the 148-byte header plus every mip level's blocks.
+
+    A block-compressed level is a fixed size for its dimensions - `ceil(w/4) * ceil(h/4)` blocks
+    of `_BLOCK_BYTES[fmt]` - so the file size is arithmetic, not a measurement. That is what lets
+    the cost meter state the texture half of a level's VRAM as COMPUTED rather than modelled
+    (`pipeline/estimate.py`): the same mip walk `encode` performs, over the same formats, without
+    reading a pixel. Verified byte-for-byte against a real build's 7,716 DDS files (2026-08-20).
+    """
+    block = _BLOCK_BYTES[fmt]
+    total = HEADER_BYTES
+    while True:
+        total += ((width + 3) // 4) * ((height + 3) // 4) * block
+        if width == 1 and height == 1:
+            return total
+        width, height = max(1, width // 2), max(1, height // 2)
+
+
 def header(width, height, mips, fmt, linear_size):
     """The 148-byte DDS + DX10 header the cooker writes (flags 0xa1007, caps 0x401008)."""
     flags = DDSD_CAPS | DDSD_HEIGHT | DDSD_WIDTH | DDSD_PIXELFORMAT | DDSD_LINEARSIZE

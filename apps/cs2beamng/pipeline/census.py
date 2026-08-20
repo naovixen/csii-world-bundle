@@ -11,11 +11,9 @@ ETA. `take()` returns a JSON-able dict:
      "totalSeconds": s | None, "warnings": [...]}
 """
 
-import math
 import os
 
 from csiibundle import reader
-from csiibundle.bake import ground as ground_mod
 from csiibundle.bake import manifest as bake_manifest
 from csiibundle.bake import products as bake_products
 
@@ -92,7 +90,10 @@ def take(values):
     out["region"] = region
     map_size = float(manifest.get("mapSize") or 14336.0)
     if region:
-        out["scale"] = min(1.0, math.pi * region["radius"] ** 2 / (map_size * map_size))
+        # The SQUARE the stages actually keep (`beamng.placement.in_region`), not the disc the
+        # setting's name suggests. A circle's area is pi/4 of its square's, so every stage's ETA
+        # was 27 % short on a region build for as long as this said `math.pi`.
+        out["scale"] = min(1.0, 4.0 * region["radius"] ** 2 / (map_size * map_size))
 
     # derived cache freshness per product (cheap fingerprints)
     derived = bake_manifest.derived_dir(bundle)

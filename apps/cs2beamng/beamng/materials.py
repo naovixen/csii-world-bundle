@@ -25,6 +25,7 @@ only when a material needs it; everything else is written RGB or grey (an unused
 read as coverage by more than one BeamNG loader — the terrain packer already bit us).
 """
 
+import json
 import os
 import re
 
@@ -105,6 +106,127 @@ def _cap(arr, max_size):
     while max(h, w) // factor > int(max_size):
         factor *= 2
     return png.downsample_box(arr, factor) if factor > 1 else arr
+
+
+def capped_size(width, height, max_size):
+    """The dimensions `_cap` produces for a `width` x `height` source, without loading it.
+
+    The same halving walk, and `png.downsample_box` floors, so this is what the exported file
+    measures. Split out for the cost meter, which sizes every texture from its PNG header
+    (`pipeline/estimate.py`) and must agree with the export to the pixel or its "computed" claim
+    is a modelled one wearing a better word.
+    """
+    if not max_size:
+        return width, height
+    factor = 1
+    while max(height, width) // factor > int(max_size):
+        factor *= 2
+    if factor <= 1:
+        return width, height
+    return max(1, width // factor), max(1, height // factor)
+
+
+def dxgi_format(kind, keep_alpha=False, grey=False):
+    """The DXGI format `export_texture` encodes this (kind, source) as.
+
+    `export_texture`'s branches in one function, so the meter cannot pick a different block size
+    from the exporter: opacity is always the albedo's alpha as BC4; a colour mask is always the
+    converted RGBA as BC7; a GREY source takes its kind's format directly (BC4 for `data`); and
+    an RGB `data` source goes out as `data_rgb`, which is BC7 rather than BC4 - the one case
+    where the block size doubles and a naive table would be half the truth.
+    """
+    if kind == "opacity":
+        return dds_mod.KIND_FORMAT["opacity"]
+    if kind == "colormask":
+        return dds_mod.KIND_FORMAT["colormask"]
+    if grey or keep_alpha:
+        return dds_mod.KIND_FORMAT[kind]
+    return dds_mod.KIND_FORMAT[kind if kind != "data" else "data_rgb"]
+
+
+# -- the texture plan, shared by the build and the estimate --------------------------------------
+#
+# `stages/materials` builds these to EXPORT them; `pipeline/estimate` builds the same ones to
+# SIZE them. Two copies of the walk would be two answers to "which textures does this level
+# ship", and the meter's whole value is that it cannot disagree with the build.
+
+def plan_canonical(bundle, derived_dir, table, names):
+    """`{canonical: {slot: (src, kind, keep_alpha)}}` for the named canonical materials.
+
+    The slots a v1.5 material can carry, resolved to source paths: the albedo (plus its alpha as
+    a separate opacity map where the material cuts or blends), the normal (the bake's rebuilt RGB
+    one where it made one), the split roughness and metallic, the emissive, and CS2's colour mask
+    where the material is tintable. No occlusion slot - the mask's G is not AO (audit 54).
+    """
+    materials = table.get("materials") or {}
+    rebuilt = table.get("normalsRebuilt") or {}
+    plans = {}
+    for name in names:
+        rec = materials.get(name) or {}
+        mode = rec.get("alphaMode") or "opaque"
+        plan = {}
+        if rec.get("baseColor"):
+            plan["baseColor"] = (os.path.join(bundle, rec["baseColor"]), "color", False)
+            if mode != "opaque":
+                plan["opacity"] = (os.path.join(bundle, rec["baseColor"]), "opacity", False)
+        normal_rel = rebuilt.get(name) or rec.get("normal")
+        if normal_rel:
+            base = derived_dir if normal_rel.endswith("_normal_rgb.png") else bundle
+            plan["normal"] = (os.path.join(base, normal_rel), "normal", False)
+        for slot in ("roughness", "metallic"):
+            rel = (rec.get("derived") or {}).get(slot)
+            if rel:
+                plan[slot] = (os.path.join(derived_dir, rel), "data", False)
+        if rec.get("emissive"):
+            plan["emissive"] = (os.path.join(bundle, rec["emissive"]), "color", False)
+        if rec.get("colorMask") and rec.get("tintable"):
+            # "colormask", not "data": the export converts CS2's mask into BeamNG's palette
+            # semantics and the ALPHA it writes is the tint coverage (`_colormask_rgba`)
+            plan["colorMask"] = (os.path.join(bundle, rec["colorMask"]), "colormask", False)
+        plans[name] = plan
+    return plans
+
+
+def variant_albedo(derived_dir, rec, vkey):
+    """The bake's tinted albedo for one (material, variant), or None where it baked a factor.
+
+    A variant is the canonical material with this file in place of the atlas albedo; where the
+    bake measured one constant multiply as reproducing the tint inside `paint_factor_max_error`
+    it wrote no texture at all, and that pair costs nothing.
+    """
+    rel = ((rec.get("derived") or {}).get("variants") or {}).get(vkey)
+    if not rel:
+        return None
+    path = os.path.join(derived_dir, rel)
+    return path if os.path.isfile(path) else None
+
+
+def plan_areas(bundle, derived_dir, has_alpha=None):
+    """`[(src, kind, keep_alpha), ...]` for the 8b area-surface materials.
+
+    `has_alpha(path)` decides whether a surface's albedo also ships its alpha as an opacity map;
+    the build passes its own real test, the estimate passes a cheaper one.
+    """
+    path = os.path.join(derived_dir, "areas", "materials.json")
+    if not os.path.isfile(path):
+        return []
+    try:
+        with open(path, encoding="utf-8") as handle:
+            doc = json.load(handle)
+    except (OSError, ValueError):
+        return []
+    jobs = []
+    for _raw, rec in (doc.get("materials") or {}).items():
+        tex = rec.get("texture")
+        if tex and os.path.isfile(os.path.join(bundle, tex)):
+            src = os.path.join(bundle, tex)
+            jobs.append((src, "color", False))
+            if has_alpha is not None and has_alpha(src):
+                jobs.append((src, "opacity", False))
+        normal = rec.get("normal_map")
+        if normal and os.path.isfile(os.path.join(bundle, normal)):
+            jobs.append((os.path.join(bundle, normal), "normal", False))
+    return jobs
 
 
 def texture_name(src_path, kind, keep_alpha=False, use_dds=True):

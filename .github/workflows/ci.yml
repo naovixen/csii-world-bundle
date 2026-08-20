@@ -56,6 +56,11 @@ jobs:
           python tools/test_normal_packing.py
       - name: App shell gate (runner / server / SSE / cancel / dead worker)
         run: python tools/test_app_shell.py
+      # The real-build tier of this one cannot run here (it needs a level someone built); it
+      # says so and skips. The arithmetic and selection tiers are the ones that catch a
+      # regression in the sizing, and they need nothing but the checkout.
+      - name: Cost estimate gate (DDS sizing, the mesh index, every figure's basis)
+        run: python tools/test_estimate.py
       - name: The generated settings reference is current
         run: python tools/gen_docs.py --check
       - name: A1 gate (.ter, level tree, validator, water bands, terrain/scene stages)

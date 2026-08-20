@@ -217,7 +217,7 @@ SECTIONS = [
     {
         "id": "navigation", "group": "Level", "label": "Navigation",
         "tagline": "The minimap, routes and fast travel",
-        "blocks": [(None, ["ai_roads", "navgraph_taxiways", "pois", "poi_max"])],
+        "blocks": [(None, ["ai_roads", "navgraph_taxiways", "pois", "poi_max", "poi_file"])],
     },
     {
         "id": "advanced", "group": "Build", "label": "Advanced", "tagline": "Build and tuning",
@@ -280,7 +280,7 @@ PARENT_OFF = {"collision_preset": "off"}
 # sections: a tuning ceiling belongs with the tuning numbers even though it does nothing while
 # the layer it caps is off. These grey out; they do not indent, and they never switch a parent
 # off - a person in Advanced is not looking at the switch they would be turning off.
-NEEDS = {"lights_max": "lights", "beamng_exe": "cook"}
+NEEDS = {"lights_max": "lights", "beamng_exe": "cook", "poi_file": "pois"}
 
 # Settings with no control of their own, and the thing on screen that now sets each. They keep
 # their `--set` name and their entry in the reference page; what they lose is a box nobody could
@@ -290,14 +290,13 @@ DRIVEN_BY = {
     "terrain_cut": "the Roads and rails switch",
     "trees": "the Trees slider, which turns them off at zero",
     "props": "the Props slider, which turns them off at zero",
-    "poi_file": "the fast-travel point editor",
     "ui_section": "the sidebar, which remembers where you were",
 }
 
 # What a key looks like on screen where its type alone does not say. Everything absent falls
 # back on its SCHEMA kind (see `control_of`).
 CONTROLS = {
-    "region": "region",                          # a map and a circle (E3); three numbers until then
+    "region": "region",                          # a patch dragged on the map of the city
     "foliage_density": "percent",                # zero reads "off", and turns the stage off
     "prop_density": "percent",
     "view_distance": "distance",
@@ -305,7 +304,7 @@ CONTROLS = {
     "lane_furniture_categories": "categories",   # a fixed set of answers is a set of checkboxes
     "paint_kinds": "categories",                 # ...and not a comma-separated string to guess at
     "collision_preset": "segmented",
-    "poi_file": "poi",                           # the editor (E3)
+    "poi_file": "poi",                           # the map, the list and the snap (E3)
 }
 
 # Every free-text box whose set of valid answers is FIXED AND KNOWN, as that set. A box a person
@@ -434,7 +433,7 @@ LABELS = {
     "terrain_cut": "Cut the ground at tunnels",
     "trees": "Trees on or off",
     "props": "Props on or off",
-    "poi_file": "Fast-travel point file",
+    "poi_file": "Your own fast-travel points",
     "ui_section": "Last settings section",
 }
 
@@ -529,7 +528,7 @@ BLURBS = {
     "terrain_cut": "Open the ground at trenches and tunnel mouths and drop the cut mesh into the hole.",
     "trees": "Whether any planting is placed at all.",
     "props": "Whether any small street objects are placed at all.",
-    "poi_file": "The file holding the fast-travel points you named.",
+    "poi_file": "Places you name and put on the map yourself, instead of the ones picked for you.",
     "ui_section": "Which part of the settings you had open. Remembered between sessions.",
 }
 

@@ -975,6 +975,91 @@ def _mtime(root, rel):
         return None
 
 
+def test_mapview():
+    """E3 - the map's two conversions, and the one that has to survive a frame change.
+
+    Everything the picker produces is read back by something else: the region string by
+    `settings.region_of` and every stage's own test, the point list by `stages.poi._read_poi_file`
+    on the far side of a bundle->BeamNG frame change. A pin that lands somewhere else in the built
+    level than it sat on the map is the whole feature failing silently, so the round trip is the
+    gate and not the pixels.
+    """
+    from cs2beamng import settings as settings_mod
+    from cs2beamng.pipeline import mapview
+    from cs2beamng.stages import poi as poi_stage
+    from csiibundle.bake.progress import Progress
+
+    print("the map, the region and the points (E3)")
+
+    # -- the georeference: a pixel is a place, and a place is a pixel ---------------------------
+    world = {"originX": -7166.25, "originZ": 7166.25, "metresPerPixel": 14.0, "pixels": 1024}
+    span = world["pixels"] * world["metresPerPixel"]
+
+    def to_fraction(x, z):
+        return ((x - world["originX"]) / span, (world["originZ"] - z) / span)
+
+    def to_world(fx, fy):
+        return (world["originX"] + fx * span, world["originZ"] - fy * span)
+
+    north_west = (world["originX"], world["originZ"])
+    south_east = (world["originX"] + span, world["originZ"] - span)
+    check(to_fraction(*north_west) == (0.0, 0.0), "the map's top-left pixel is the NORTH-WEST corner")
+    check(to_fraction(*south_east) == (1.0, 1.0), "...and its bottom-right is the south-east one")
+    middle = to_world(0.5, 0.5)
+    back = to_fraction(*middle)
+    check(abs(back[0] - 0.5) < 1e-9 and abs(back[1] - 0.5) < 1e-9, "a place round-trips to its own pixel")
+
+    # -- the region string the picker writes is the one every stage reads -----------------------
+    written = f"{round(middle[0])} {round(middle[1])} {1500}"
+    parsed = settings_mod.region_of({"region": written})
+    check(parsed and round(parsed["centerX"]) == round(middle[0]) and parsed["radius"] == 1500,
+          f"the picker's region string parses to the place it was dragged to ({written})")
+    check(not settings_mod.validate({"bundle": EXAMPLE, "output": "x", "level_name": "a",
+                                     "foliage_density": 100, "prop_density": 100,
+                                     "region": written}),
+          "...and passes the validator the CLI uses")
+
+    # -- the points survive the frame change ----------------------------------------------------
+    home = os.environ["CS2BEAMNG_HOME"]
+    points = [{"name": "The keys, bottom-left", "at": [-2861.5, -6398.6], "description": "south"},
+              {"name": "Docks", "at": [4820.0, 1660.3]}]
+    path, clean = mapview.save_pois(EXAMPLE, points)
+    check(len(clean) == 2 and path.startswith(home), "the app writes the point file into its own folder")
+    read = poi_stage._read_poi_file(path, Progress())
+    check(len(read) == 2, f"the build reads back every point the app wrote ({len(read)})")
+    # bundle (x, y=up, z=north) -> BeamNG (x, y=north): the pin's X/Z become the map's X/Y, and a
+    # transposition here puts every fast-travel point somewhere else in the level.
+    check([p["at_beamng"] for p in read] == [(-2861.5, -6398.6), (4820.0, 1660.3)],
+          f"...at the same places, through the frame change: {[p['at_beamng'] for p in read]}")
+    _p, rounded = mapview.save_pois(EXAMPLE, [{"name": "n", "at": [1.234567, -2.987654]}])
+    check(rounded[0]["at"] == [1.2, -3.0], "a point is stored to a tenth of a metre, which is a road")
+    check([p["name"] for p in read] == [p["name"] for p in points], "...with their names")
+    _path, empty = mapview.save_pois(EXAMPLE, [{"at": [1, 2]}, {"name": "no place"}])
+    check(empty == [], "a point with no name or no place is not stored")
+    mapview.save_pois(EXAMPLE, [])                     # leave nothing behind for the next run
+
+    # -- the snap, and the street name that rides along with it ---------------------------------
+    # A point arrives CALLED something because the map already knows every street; the name is an
+    # index into a table beside the samples, and an off-by-one there names every point wrong.
+    samples = os.path.join(tempfile.mkdtemp(prefix="cs2beamng_samples_"), "s.npy")
+    mapview._save_samples(samples, [(10.0, 0.0, 20.0, "Hickory Lane"),
+                                    (30.0, 0.0, 40.0, None),
+                                    (50.0, 0.0, 60.0, "Empire Street")],
+                          ["Hickory Lane", "Empire Street"])
+    import numpy
+
+    rows = numpy.load(samples)
+    check(rows.shape == (3, 3), f"the snap's samples are (N, 3): x, z and a name index {rows.shape}")
+    check([int(r[2]) for r in rows] == [0, -1, 1],
+          "...with an index per row, and -1 where the road has no name")
+
+    # -- and it says what it is waiting for rather than throwing --------------------------------
+    check(mapview.load(os.path.join(REPO, "nowhere")) is None, "no map for a folder that is not a bundle")
+    nowhere = mapview.snap(os.path.join(REPO, "nowhere"), (1.0, 2.0))
+    check(nowhere["snapped"] is False and nowhere["at"] == [1.0, 2.0],
+          "a snap with no map leaves the point where it was put, and says it did not snap")
+
+
 def main():
     tmp = tempfile.mkdtemp(prefix="cs2beamng_shell_")
     os.environ["CS2BEAMNG_HOME"] = os.path.join(tmp, "home")
@@ -983,6 +1068,7 @@ def main():
     try:
         test_settings()
         test_settings_metadata()
+        test_mapview()
         test_frozen_streams()
         test_modinstall(tmp)
         test_stage_declarations()

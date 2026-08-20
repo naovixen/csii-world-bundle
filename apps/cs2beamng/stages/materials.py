@@ -99,7 +99,6 @@ def run(ctx, progress):
         table = json.load(handle)
     materials = table.get("materials") or {}
     aliases = table.get("aliases") or {}
-    rebuilt = table.get("normalsRebuilt") or {}
     canonical_all = sorted({v.get("canonical") or k for k, v in materials.items()})
     used = (ctx.shared or {}).get("materials_used")
     if used:
@@ -114,32 +113,11 @@ def run(ctx, progress):
     # -- texture jobs -----------------------------------------------------------------------
     progress.begin("materials: textures", total=None, unit="textures")
     jobs = {}                                          # (src, kind, keep_alpha) -> None
-    plans = {}                                         # canonical -> {slot: (src, kind, keep_alpha)}
-    for name in canonical:
-        rec = materials.get(name) or {}
-        mode = rec.get("alphaMode") or "opaque"
-        plan = {}
-        if rec.get("baseColor"):
-            plan["baseColor"] = (os.path.join(ctx.bundle, rec["baseColor"]), "color", False)
-            if mode != "opaque":
-                plan["opacity"] = (os.path.join(ctx.bundle, rec["baseColor"]), "opacity", False)
-        normal_rel = rebuilt.get(name) or rec.get("normal")
-        if normal_rel:
-            base = ctx.derived_dir if normal_rel.endswith("_normal_rgb.png") else ctx.bundle
-            plan["normal"] = (os.path.join(base, normal_rel), "normal", False)
-        # No occlusion slot: the mask's G is not AO (audit §54), so the bake no longer splits it
-        # and nothing here may wire one.
-        for slot in ("roughness", "metallic"):
-            rel = (rec.get("derived") or {}).get(slot)
-            if rel:
-                plan[slot] = (os.path.join(ctx.derived_dir, rel), "data", False)
-        if rec.get("emissive"):
-            plan["emissive"] = (os.path.join(ctx.bundle, rec["emissive"]), "color", False)
-        if rec.get("colorMask") and rec.get("tintable"):
-            # "colormask", not "data": the export converts CS2's mask into BeamNG's palette
-            # semantics and the ALPHA it writes is the tint coverage (`_colormask_rgba`)
-            plan["colorMask"] = (os.path.join(ctx.bundle, rec["colorMask"]), "colormask", False)
-        plans[name] = plan
+    # The slot walk lives in `beamng.materials` because the cost meter runs the same one to SIZE
+    # what this stage EXPORTS (`pipeline/estimate`); two copies would be two answers to "which
+    # textures does this level ship". No occlusion slot: the mask's G is not AO (audit §54).
+    plans = bm.plan_canonical(ctx.bundle, ctx.derived_dir, table, canonical)
+    for plan in plans.values():
         for job in plan.values():
             jobs.setdefault(job, None)
     # paint variants ride the same export: same plan with the bake's tinted albedo swapped in for

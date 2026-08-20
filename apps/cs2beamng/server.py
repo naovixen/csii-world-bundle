@@ -17,6 +17,10 @@ Endpoints (all under the token — see below):
     POST /api/settings            {values: {key: value}} -> merged, coerced, validated, saved
     POST /api/preset              {name} -> applied and saved; "custom" restores the remembered set
     GET  /api/census              census for the current settings (cached by fingerprint)
+    GET  /api/map                 the settings screen's map: georeference, suggestions, points
+    GET  /api/map.png             the map picture itself (drawn once per bundle, then cached)
+    POST /api/poi                 {points: [...]} -> stored, and `poi_file` pointed at them
+    POST /api/poi/snap            {at: [x, z]} -> the nearest drivable point, in bundle metres
     POST /api/start               start a build with the current settings
     POST /api/cancel              cancel the running build
     GET  /api/report              the last build's report (or the report file in the level dir)
@@ -51,6 +55,7 @@ from .pipeline.worker import REPORT_NAME
 
 UI_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ui")
 STATE_INTERVAL = 0.5
+INDEX_RECHECK_SECONDS = 5.0
 CONTENT_TYPES = {".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8",
                  ".js": "application/javascript; charset=utf-8", ".svg": "image/svg+xml",
                  ".png": "image/png", ".ico": "image/x-icon", ".json": "application/json; charset=utf-8"}
@@ -72,6 +77,15 @@ class AppServer:
         self._census = None
         self._census_key = None
         self._planned = None
+        self._estimate = None              # (settings fingerprint, index identity) -> the estimate
+        self._index = None                 # the mesh index for the current bundle, once scanned
+        self._index_bundle = None
+        self._index_thread = None
+        self._warming = None               # the thread resolving a bundle's texture plan
+        self._index_checked = 0.0          # when the in-memory index was last re-validated
+        self._map = None                   # the map view document for the current bundle
+        self._map_bundle = None
+        self._map_thread = None
         self._lock = threading.RLock()
         self._httpd = None
         self._thread = None
@@ -130,7 +144,210 @@ class AppServer:
                 "presetChanged": settings_mod.preset_changes(values, base),
                 "presetInfo": settings_mod.PRESET_INFO, "problems": settings_mod.validate(values),
                 "detected": settings_mod.detected(values), "canBrowse": self.pick_folder is not None,
+                # E4: what this level will cost the machine, recomputed on every settings change
+                # (~50 ms once the bundle's texture plan is warm) and never a placeholder.
+                "estimate": self.estimate(values),
                 "mod": self.mod_state(), "version": __version__}
+
+    # -- the cost estimate ----------------------------------------------------------------------
+
+    def estimate(self, values):
+        """The cost estimate for these settings, memoised on them and on the mesh index.
+
+        Two pieces of it are too slow for a request thread and both are done on a background
+        one, with the meter saying what it is waiting for meanwhile: the mesh index is a 20 s
+        pass over the instance layer (once per bundle), and the texture plan is ~1 s of path
+        joins and PNG headers (once per bundle, again whenever a recolouring setting moves).
+        Everything else is 50 ms and runs here. A meter that blocked the settings page for
+        twenty seconds would be a worse answer than no meter.
+        """
+        index = self._mesh_index(values.get("bundle"))
+        key = (json.dumps(values, sort_keys=True, default=str), id(index))
+        with self._lock:
+            if self._estimate is not None and self._estimate[0] == key:
+                return self._estimate[1]
+        out = self._compute_estimate(values, index, key, warm_only=True)
+        if out.get("waiting") == "reading":
+            self._in_background(self._compute_estimate, values, index, key)
+        return out
+
+    def _compute_estimate(self, values, index, key, warm_only=False):
+        from .pipeline import estimate as estimate_mod                # noqa: PLC0415
+
+        try:
+            out = estimate_mod.take(values, self._census, index, warm_only=warm_only)
+        except Exception as exc:                                      # noqa: BLE001 - never blank the page
+            out = {"ready": False, "waiting": "error", "error": str(exc), "rows": []}
+        if out.get("waiting") != "reading":                           # a refusal is not an answer
+            with self._lock:
+                self._estimate = (key, out)
+        return out
+
+    def _in_background(self, target, *args):
+        """Run one slow refresh off the request thread; one at a time, newest wins."""
+        with self._lock:
+            if self._warming is not None and self._warming.is_alive():
+                return
+            thread = threading.Thread(target=target, args=args, daemon=True,
+                                      name="cs2beamng-estimate")
+            self._warming = thread
+        thread.start()
+
+    def _mesh_index(self, bundle):
+        """The mesh index for this bundle: the stored one, else a background scan and None.
+
+        The one held in memory is re-checked against the bundle's own bytes every few seconds
+        rather than on every request - the check is a scandir of two directories, and a re-rip
+        into the same folder has to invalidate it or the meter would go on describing the city
+        that used to be there.
+        """
+        from .pipeline import meshindex                               # noqa: PLC0415 - lazy: numpy
+
+        if not bundle or not os.path.isfile(os.path.join(bundle, "bundle.json")):
+            return None
+        now = time.monotonic()
+        with self._lock:
+            fresh = self._index is not None and self._index_bundle == bundle
+            due = now - self._index_checked > INDEX_RECHECK_SECONDS
+            if fresh and not due:
+                return self._index
+            running = self._index_thread is not None and self._index_thread.is_alive()
+        if fresh:
+            with self._lock:
+                self._index_checked = now
+            if meshindex.key_for(bundle) == self._index.get("key"):
+                return self._index
+            with self._lock:                                          # the bundle moved under it
+                self._index, self._index_bundle = None, None
+        if running:
+            # a scan is already reading the layer; asking the disk whether it has finished costs
+            # a scandir of ~14,000 entries against the very disk it is reading
+            return None
+        stored = meshindex.load(bundle)
+        if stored is not None:
+            with self._lock:
+                self._index, self._index_bundle = stored, bundle
+                self._index_checked = now
+            return stored
+        thread = threading.Thread(target=self._scan_index, args=(bundle,), daemon=True,
+                                  name="cs2beamng-meshindex")
+        with self._lock:
+            self._index_thread = thread
+        thread.start()
+        return None
+
+    def _scan_index(self, bundle):
+        from .pipeline import meshindex                               # noqa: PLC0415
+
+        try:
+            doc = meshindex.build(bundle, cancelled=self.stopped.is_set)
+        except Exception:                                             # noqa: BLE001 - diagnostics only
+            doc = None
+        if doc is not None:
+            with self._lock:
+                self._index, self._index_bundle = doc, bundle
+                self._index_checked = time.monotonic()
+                self._estimate = None
+
+    # -- the map (E3) ---------------------------------------------------------------------------
+
+    def map_view(self):
+        """The map document for the current bundle, or what it is waiting for.
+
+        Drawn once per bundle on a background thread (~16 s: a 4,096 heightmap, the splat, and a
+        pass over the lane layer for the roads), then served from the cache. The page needs the
+        georeference as well as the picture, because everything it draws on top — a region circle,
+        a fast-travel pin — is in bundle metres and has to land on the right pixel.
+        """
+        from .pipeline import mapview                                 # noqa: PLC0415 - lazy: numpy
+
+        with self._lock:
+            bundle = self.values.get("bundle")
+        if not bundle or not os.path.isfile(os.path.join(bundle, "bundle.json")):
+            return {"ready": False, "waiting": "no bundle"}
+        with self._lock:
+            if self._map is not None and self._map_bundle == bundle:
+                return self._map_payload(self._map)
+            running = self._map_thread is not None and self._map_thread.is_alive()
+        if running:
+            return {"ready": False, "waiting": "drawing"}
+        stored = mapview.load(bundle)
+        if stored is not None:
+            with self._lock:
+                self._map, self._map_bundle = stored, bundle
+            return self._map_payload(stored)
+        thread = threading.Thread(target=self._draw_map, args=(bundle,), daemon=True,
+                                  name="cs2beamng-mapview")
+        with self._lock:
+            self._map_thread = thread
+        thread.start()
+        return {"ready": False, "waiting": "drawing"}
+
+    def _map_payload(self, doc):
+        """The document as the page wants it: no disk paths, and the points it has to draw."""
+        from .pipeline import mapview                                 # noqa: PLC0415
+
+        with self._lock:
+            bundle = self.values.get("bundle")
+            region = self.values.get("region")
+        return {"ready": True, "world": doc["world"], "suggestions": doc.get("suggestions") or [],
+                "image": f"/api/map.png?t={self.token}&k={doc.get('key')}",
+                "points": mapview.load_pois(bundle), "region": region}
+
+    def _draw_map(self, bundle):
+        from .pipeline import mapview                                 # noqa: PLC0415
+
+        try:
+            doc = mapview.build(bundle, cancelled=self.stopped.is_set)
+        except Exception:                                             # noqa: BLE001 - never fatal
+            doc = None
+        if doc is not None:
+            with self._lock:
+                self._map, self._map_bundle = doc, bundle
+
+    def map_image(self):
+        """The cached PNG's bytes, or None."""
+        from .pipeline import mapview                                 # noqa: PLC0415
+
+        with self._lock:
+            bundle = self.values.get("bundle")
+            doc = self._map if self._map_bundle == bundle else None
+        doc = doc or (mapview.load(bundle) if bundle else None)
+        if not doc:
+            return None
+        try:
+            with open(doc["image"], "rb") as handle:
+                return handle.read()
+        except OSError:
+            return None
+
+    def snap_point(self, at):
+        from .pipeline import mapview                                 # noqa: PLC0415
+
+        with self._lock:
+            bundle = self.values.get("bundle")
+        if not bundle or not at or len(at) < 2:
+            return {"at": list(at or [0, 0])[:2], "snapped": False}
+        return mapview.snap(bundle, at)
+
+    def save_points(self, points):
+        """Store the user's fast-travel points and point `poi_file` at them.
+
+        The setting keeps its name and its meaning — a path to a JSON list — so a headless build
+        is unchanged and `--set poi_file=...` still overrides. What the app takes over is the
+        writing of it (plan §3.7). An empty list clears the setting rather than leaving it
+        pointing at an empty file, which the build would read as "you asked for none".
+        """
+        from .pipeline import mapview                                 # noqa: PLC0415
+
+        with self._lock:
+            bundle = self.values.get("bundle")
+        if not bundle:
+            return {"ok": False, "error": "no bundle"}
+        path, clean = mapview.save_pois(bundle, points)
+        payload = self.update_settings({"poi_file": path if clean else None})
+        payload["points"] = clean
+        return payload
 
     def mod_state(self):
         """What the app can tell the user about the producer half: is the ripper mod installed,
@@ -383,6 +600,14 @@ class _Handler(BaseHTTPRequestHandler):
                 return self._json(self.app.settings_payload())
             if path == "/api/census":
                 return self._json(self.app.census(force="force" in query))
+            if path == "/api/map":
+                return self._json(self.app.map_view())
+            if path == "/api/map.png":
+                image = self.app.map_image()
+                if image is None:
+                    return self._json({"error": "no map yet"}, HTTPStatus.NOT_FOUND)
+                # keyed by the bundle's own fingerprint in the query, so a re-rip is a new URL
+                return self._bytes(image, "image/png", cache="public, max-age=31536000, immutable")
             if path == "/api/report":
                 return self._json({"report": self.app.report()})
             return self._json({"error": "not found"}, HTTPStatus.NOT_FOUND)
@@ -407,6 +632,10 @@ class _Handler(BaseHTTPRequestHandler):
                 if name not in settings_mod.PRESETS:
                     return self._json({"error": f"unknown preset {name!r}"}, HTTPStatus.BAD_REQUEST)
                 return self._json(self.app.apply_preset(name))
+            if path == "/api/poi":
+                return self._json(self.app.save_points(body.get("points") or []))
+            if path == "/api/poi/snap":
+                return self._json(self.app.snap_point(body.get("at") or []))
             if path == "/api/start":
                 payload, status = self.app.start_build()
                 return self._json(payload, status)
@@ -468,6 +697,14 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(data)))
         self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(data)
+
+    def _bytes(self, data, content_type, cache="no-store"):
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", cache)
         self.end_headers()
         self.wfile.write(data)
 

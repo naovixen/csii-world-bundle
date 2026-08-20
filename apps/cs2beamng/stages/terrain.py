@@ -315,53 +315,32 @@ def _write_minimap(level, bundle, heights, layers, grounds, paths, scale, cell):
     information the level draws, at 7 m per pixel — not a render, and not pretending to be one.
     The minimap APP does not use this at all: it draws the navgraph as vectors (audit A7.0).
     """
-    from csiibundle import png as png_mod
+    from csiibundle import groundmap, png as png_mod
 
     if heights is None or not heights.size:
         return None
     step = max(1, heights.shape[0] // MINIMAP_SIZE)
     h = heights[::step, ::step].astype(numpy.float32)
     index = layers[::step, ::step][:h.shape[0], :h.shape[1]]
-    palette = _ground_palette(os.path.join(bundle, "terrain", "surfaces"), grounds)
-    rgb = palette[numpy.clip(index, 0, len(palette) - 1)].astype(numpy.float32)
+    palette = groundmap.ground_palette(os.path.join(bundle, "terrain", "surfaces"), grounds)
 
-    metres = float(cell) * step
-    dzdx = numpy.gradient(h, metres, axis=1)
-    dzdy = -numpy.gradient(h, metres, axis=0)
-    nx, ny, nz = -dzdx, -dzdy, numpy.ones_like(h)
-    norm = numpy.sqrt(nx * nx + ny * ny + nz * nz)
-    shade = numpy.clip((nx * -0.5 + ny * 0.5 + nz * 0.707) / norm, 0.0, 1.0)
-    rgb *= (0.55 + 0.55 * shade)[..., None]
-
+    surface = None
     if paths.water and os.path.isfile(paths.water):
         # the water raster is on the BASE grid; the heights may have been upsampled, so it is
         # resampled to the height grid before subsampling rather than sliced to fit
         water = png_mod.gray_array(paths.water)
         if water.shape != heights.shape:
             water = reader.resample_nearest(water, heights.shape)
-        level_raw = water[::step, ::step].astype(numpy.float32)[:h.shape[0], :h.shape[1]] * scale
-        wet = (level_raw > 0) & (level_raw > h)
-        rgb[wet] = numpy.array([38.0, 86.0, 140.0]) * (0.6 + 0.6 * shade[wet])[..., None]
+        surface = water[::step, ::step].astype(numpy.float32)[:h.shape[0], :h.shape[1]] * scale
 
+    # The picture itself is `csiibundle.groundmap`, because the settings screen's map view draws
+    # the same one from the same bundle and two copies of it would drift apart in appearance
+    # with nothing to catch them.
+    rgb = groundmap.ground_image(h, index, palette, float(cell) * step, surface)
     rgba = numpy.concatenate([rgb, numpy.full(h.shape + (1,), 255.0)], axis=-1)
     name = f"{level.name}_minimap.png"
     level.write_bytes_if_changed(png_mod.encode_rgba(numpy.clip(rgba, 0, 255).astype(numpy.uint8)), name)
     return name
-
-
-def _ground_palette(surfaces_dir, grounds):
-    """`(N, 3)` uint8 — the mean albedo of each ground's own texture, or a neutral grey."""
-    out = []
-    for ground in grounds:
-        path = os.path.join(surfaces_dir, f"{ground}.png")
-        colour = (128.0, 128.0, 128.0)
-        if os.path.isfile(path):
-            try:
-                colour = tuple(_read_rgb(path).reshape(-1, 3).mean(axis=0))
-            except Exception:  # noqa: BLE001 - a palette is cosmetic; never fail a build for one
-                pass
-        out.append(colour)
-    return numpy.asarray(out or [(128.0, 128.0, 128.0)], dtype=numpy.float64)
 
 
 def _punch_mask(ctx, settings, size):
@@ -541,11 +520,9 @@ def _height_texture(level, src, name, sharpen=1.0):
 
 def _read_rgb(path):
     """(h, w, 3) uint8 from an 8-bit RGB or RGBA PNG (the theme textures are either)."""
-    try:
-        return png.rgba_array(path)[:, :, :3]
-    except ValueError:
-        from PIL import Image  # noqa: WPS433 - only for the RGB (colour type 2) case
-        return numpy.asarray(Image.open(path).convert("RGB"))
+    from csiibundle import groundmap  # noqa: WPS433 - shared with the settings screen's map view
+
+    return groundmap.read_rgb(path)
 
 
 def _linear_luminance(rgb8):

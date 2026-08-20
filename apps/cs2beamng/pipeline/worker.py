@@ -154,6 +154,7 @@ def main(settings, census, queue, cancel_event, hard_cancel=None):
         if skipped:
             report["skippedStages"] = skipped
         if ok:
+            _score_estimate(report, settings, census, queue)
             state.save(level_dir, current)
         report["status"] = "done" if ok else ("cancelled" if "cancelled" in report else "failed")
         report["finishedAt"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
@@ -167,6 +168,50 @@ def main(settings, census, queue, cancel_event, hard_cancel=None):
             queue.close()
         except Exception:  # noqa: BLE001
             pass
+
+
+def _score_estimate(report, settings, census, queue):
+    """Score the cost meter against what the build actually wrote, and learn from the difference.
+
+    This is the line that keeps the estimator honest. The meter tells a person, before an hour
+    and a half of building, how much video memory the level will want; the validator then
+    MEASURES the same bytes off the finished level. Printing the two side by side is the only
+    thing that can catch an estimate drifting away from the thing it estimates - an estimator
+    nobody scores is an estimator nobody can trust.
+
+    It runs at the END rather than the start because the bake writes the derived products the
+    texture half is enumerated from: on a first build there is nothing to size until the bake
+    has run, and the derived tree the build used is the one that is there now.
+    """
+    from . import estimate as estimate_mod, meshindex
+
+    measured = ((report.get("validation") or {}).get("checks") or {}).get("resident")
+    if not measured or float(measured.get("totalMiB") or 0) < estimate_mod.LEARN_FLOOR_MIB:
+        return                                            # too small to score, let alone learn from
+    try:
+        index = meshindex.load(settings["bundle"])
+        if index is None:
+            queue.put({"t": "log", "stage": "system", "at": time.time(),
+                       "text": "estimate: indexing the city's shapes so the cost meter has a "
+                               "baseline (one pass, kept for next time)"})
+            index = meshindex.build(settings["bundle"])
+        estimated = estimate_mod.take(settings, census, index)
+        score = estimate_mod.score(estimated, measured)
+    except Exception as exc:                              # noqa: BLE001 - a report line, never a failure
+        queue.put({"t": "log", "stage": "system", "text": f"estimate: not scored ({exc!r})",
+                   "at": time.time()})
+        return
+    if not score:
+        return
+    report["estimate"] = {"predicted": {k: v for k, v in estimated.items() if k != "coefficients"},
+                          "score": score}
+    for name in ("mesh", "texture", "total"):
+        row = score.get(name)
+        if row:
+            queue.put({"t": "log", "stage": "system", "at": time.time(),
+                       "text": f"estimate: {name} {row['estimatedMiB']:,.0f} MiB estimated, "
+                               f"{row['actualMiB']:,.0f} MiB actual ({row['errorPercent']:+.1f} %)"})
+    estimate_mod.observe(estimated, measured)
 
 
 REPORT_NAME = "cs2beamng_report.json"
