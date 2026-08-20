@@ -118,6 +118,11 @@ CROSS_REFERENCES = [
     "the number above", "the one above", "the setting above", "as above", "the slider sets",
     "the same again", "the same for", "the same as the", "follows the", "the box above",
     "the switch above", "listed above", "shown above",
+    # ...and the same shapes pointing the other way, which is exactly what I reached for while
+    # writing text the rule was not yet being enforced on ("the width rule below").
+    "the number below", "the one below", "the setting below", "the box below",
+    "the switch below", "rule below", "listed below", "shown below", "the map above",
+    "the promotion above",
 ]
 
 BANNED_WORDS = [
@@ -125,10 +130,38 @@ BANNED_WORDS = [
     "calibrated", "decompil", "prefab", "heightmap", "navgraph", "splat", "imposter atlas",
     "triangle budget", "p95", "p99", "colorset", "shader", "g-buffer", "mipmap",
 ]
-# CamelCase and all-caps runs that are real words to a user, not identifiers.
-CAPS_OK = {"BeamNG", "CS2", "II", "A", "I"}
+# CamelCase and all-caps runs that are real words to a user, not identifiers. Kept SHORT and
+# argued one by one: `AI` and `UI` are ordinary English now, and X/Y/Z are the axes a region is
+# written in, which somebody using `--set region=` has to be told. A file-format acronym is NOT
+# on this list - `DDS`, `PNG`, `JSON` and `GLB` read as code to the person this rule is for, and
+# a line that needs one is a line that needs rewriting.
+CAPS_OK = {"BeamNG", "CS2", "II", "A", "I", "AI", "UI", "X", "Y", "Z"}
 CODE_EXTENSIONS = (".dae", ".cdae", ".ter", ".png", ".dds", ".json", ".lua", ".py", ".exe",
                    ".glb", ".zip", ".md")
+
+
+# Shapes that mean something to us and nothing to a reader: our own document references, the
+# in-game loads we numbered, the phase labels of this project's plans, and statistics vocabulary.
+# A measurement is welcome on the reference page - "most of BeamNG's own colour maps are 512 or
+# smaller" is useful - as long as it is STATED rather than CITED.
+WORKING_NOTES = [
+    (r"\baudit\b", "an audit reference"),
+    (r"§\s*\d+", "a section mark"),
+    (r"\b[A-Z]\d+(?:\.\d+)+\b", "a plan phase label (like A6.7)"),
+    (r"\bload #\d+", "an in-game load number"),
+    (r"\bp\d{2}\b", "a percentile"),
+    (r"\b(?:MEASURED|DECLARED|CALIBRATED|TUNED)\b", "our own shouting"),
+    (r"\breference city\b", "the reference city"),
+    (r"\bcommit [0-9a-f]{7}", "a commit hash"),
+    (r"\b\d{4}-\d{2}-\d{2}\b", "a date"),
+]
+
+
+def working_note_problems(text, what):
+    """Where this string cites our notes instead of explaining the setting (empty = it explains)."""
+    import re
+
+    return [f"{what}: {why}" for pattern, why in WORKING_NOTES if re.search(pattern, text)]
 
 
 def cross_reference_problems(text, what):
@@ -223,12 +256,33 @@ def test_settings_metadata():
         problems += plain_language_problems(settings_mod.LABELS[key], f"{key} label")
         problems += plain_language_problems(settings_mod.BLURBS[key], f"{key} blurb")
     check(not problems, f"outside Advanced, no label or blurb reads like code ({len(problems)}): {problems[:6]}")
+    # E5: and the SAME rule on `help`. It is the CLI's own one-liner and it is printed on the
+    # generated reference page, so it is user-facing text that the label/blurb gate never saw -
+    # `view_distance` was still introducing itself as `LevelInfo.visibleDistance` there. What
+    # leaves a help string is not deleted: the measured half of it moves into `DETAILS`.
+    helps = []
+    for key in (k for k in keys if not settings_mod.is_technical(k)):
+        helps += plain_language_problems(settings_mod.SCHEMA[key][2], f"{key} help")
+    check(not helps, f"outside Advanced, no help string reads like code ({len(helps)}): {helps[:6]}")
+    # ...and the LONG form, everywhere including Advanced. `DETAILS` is the only text on the
+    # reference page with room to ramble, and it used to ramble at US: audit section numbers,
+    # in-game load numbers, phase labels, percentiles and the reference city's own counts. Every
+    # one of those already lives in the code that makes the decision, with the workings; on a
+    # page a person reads it is a citation to a document they do not have.
+    notes = []
+    for key in keys:
+        notes += working_note_problems(settings_mod.DETAILS.get(key, ""), f"{key} detail")
+    check(not notes, f"no long explanation cites our own working notes ({len(notes)}): {notes[:6]}")
+    over = {k: len(v) for k, v in settings_mod.DETAILS.items() if len(v) > 700}
+    check(not over, f"every long explanation stays a few sentences (<=700 chars); over: {over}")
     check(any(settings_mod.is_technical(k) for k in keys), "the Advanced section is marked technical")
     crossed = []
     for key in keys:                                   # this one applies EVERYWHERE, jargon or not
         crossed += cross_reference_problems(settings_mod.LABELS[key], f"{key} label")
         crossed += cross_reference_problems(settings_mod.BLURBS[key], f"{key} blurb")
-    check(not crossed, f"no label or blurb leans on a neighbouring control ({len(crossed)}): {crossed[:6]}")
+        # ...and the long form, which is read on a page where nothing is above or below anything
+        crossed += cross_reference_problems(settings_mod.DETAILS.get(key, ""), f"{key} detail")
+    check(not crossed, f"nothing written about a setting leans on a neighbouring control ({len(crossed)}): {crossed[:6]}")
     echoes = [k for k in keys if _norm(settings_mod.BLURBS[k]).startswith(_norm(settings_mod.LABELS[k]))]
     check(not echoes, f"no blurb opens by repeating its own label: {echoes}")
 
@@ -248,6 +302,17 @@ def test_settings_metadata():
           "a fixed answer set is drawn as checkboxes")
     check(all(k in settings_mod.SCHEMA and v in settings_mod.SCHEMA for k, v in settings_mod.SUBSET_OF.items()),
           "SUBSET_OF relates real settings")
+    # E6: the sentence and the behaviour. `DRIVEN_BY` tells a person what sets this key and
+    # `DRIVES` is what actually does it; a key driven by a rule nobody wrote, or a rule driving a
+    # key that still claims a control, is the two of them disagreeing.
+    driven_targets = {target for target, _rule in settings_mod.DRIVES.values()}
+    check(driven_targets <= set(settings_mod.DRIVEN_BY),
+          f"everything a rule drives is declared as having no control: "
+          f"{sorted(driven_targets - set(settings_mod.DRIVEN_BY))}")
+    check(all(k in settings_mod.SCHEMA for k in settings_mod.DRIVES), "DRIVES is keyed on real settings")
+    check(settings_mod.driven_changes({"networks": False}) == {"terrain_cut": False}
+          and settings_mod.driven_changes({"networks": False, "terrain_cut": True}) == {},
+          "driven_changes fills in what you did not say and leaves what you did")
     check(all(k in settings_mod.SUBSET_OF.values() for k in settings_mod.PARENT_OFF),
           "PARENT_OFF only names keys that are somebody's parent")
     # a child is laid out under its parent, so the indent it is drawn with is not a lie
@@ -543,6 +608,28 @@ def test_server(tmp):
         t1 = time.monotonic()
         status, census2 = client.call("GET", "/api/census")
         check(status == 200 and (time.monotonic() - t1) < 0.5, "census is cached")
+
+        # -- E6: the settings with no control of their own, set by the one that drives them -----
+        # The rule lives in the APP, so it is asserted through the app's own API. `--set` does
+        # not pass through here and stays literal.
+        status, payload = client.call("POST", "/api/settings", {"values": {"networks": False}})
+        check(payload["values"]["terrain_cut"] is False,
+              "roads off takes the ground cut with it - nothing to see in the hole")
+        status, payload = client.call("POST", "/api/settings", {"values": {"networks": True}})
+        check(payload["values"]["terrain_cut"] is True, "...and roads back on brings it back")
+        status, payload = client.call("POST", "/api/settings", {"values": {"foliage_density": 0}})
+        check(payload["values"]["trees"] is False,
+              "a density slider at zero turns its kind off, rather than keeping none of it")
+        status, payload = client.call("POST", "/api/settings", {"values": {"foliage_density": 40}})
+        check(payload["values"]["trees"] is True, "...and above zero turns it back on")
+        status, payload = client.call("POST", "/api/settings", {"values": {"prop_density": 0}})
+        check(payload["values"]["props"] is False and payload["values"]["trees"] is True,
+              "each slider drives its own kind and no other")
+        status, payload = client.call("POST", "/api/settings",
+                                      {"values": {"networks": False, "terrain_cut": True}})
+        check(payload["values"]["terrain_cut"] is True,
+              "naming both halves means both halves: the rule fills in, it does not overrule")
+        client.call("POST", "/api/settings", {"values": {"networks": True, "prop_density": 100}})
 
         status, payload = client.call("POST", "/api/start")
         check(status == 200 and payload["ok"], "POST /api/start")

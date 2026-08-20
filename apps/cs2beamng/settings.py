@@ -22,11 +22,11 @@ SETTINGS_FILE = "settings.json"
 # key -> (default, kind, help). kind: bool | int | float | str | path | choice:a|b|c
 SCHEMA = {
     # where
-    "bundle": (None, "path", "Bundle directory (default: the CS2 ModsData export for this OS)"),
+    "bundle": (None, "path", "Bundle directory. The app finds the ripper mod's own export folder by itself; this overrides it"),
     "output": (None, "path", "Levels directory to write into (default: the BeamNG userfolder levels/)"),
     "level_name": ("cs2_city", "str", "Level folder name (lowercase, underscores)"),
     "level_title": ("CS2 City", "str", "Level title shown in BeamNG"),
-    "region": (None, "str", "Build a disc of the city instead of all of it: X Z radius, in bundle metres"),
+    "region": (None, "str", "Build one square patch of the city instead of all of it: X Z half-width, in bundle metres"),
     # what
     "trees": (True, "bool", "Trees (forest)"),
     "props": (True, "bool", "Props, fences, points of interest"),
@@ -47,17 +47,17 @@ SCHEMA = {
     "groundcover": (False, "bool", "Billboard grass over the ground paint. BeamNG dressing, not CS2 fidelity - CS2 has no grass system"),
     "ai_roads": (True, "bool", "The invisible road network the AI, the minimap and route-finding use. Off = no minimap and no routes"),
     "navgraph_max_width": (0.0, "float", "Clamp a navgraph node's road width, in metres (0 = the width CS2's own lane offsets give)"),
-    "navgraph_taxiways": (False, "bool", "Put airport taxiways in the navgraph too, at low drivability"),
+    "navgraph_taxiways": (False, "bool", "Let routes run across the apron and the taxiways too, slowly"),
     "pois": (True, "bool", "Fast-travel points on the big map, derived from the densest road cells"),
-    "poi_file": (None, "path", "Your own fast-travel points as a JSON list, instead of the derived ones"),
-    "poi_max": (8, "int", "How many fast-travel points to derive when `poi_file` names fewer. Vanilla levels ship 3 (italy) to 9 (west_coast_usa)"),
+    "poi_file": (None, "path", "The file holding the fast-travel points you named, instead of the ones picked for you"),
+    "poi_max": (8, "int", "How many busy places to pick out for you when you have named fewer of your own"),
     # how much
     "foliage_density": (100, "int", "Percent of trees kept (deterministic subset)"),
     "prop_density": (100, "int", "Percent of props kept"),
     "texture_max": (512, "choice:256|512|1024|2048|0", "Colour texture edge cap in pixels (0 = full size). Also caps the emissive and opacity maps"),
-    "texture_max_normal": (512, "choice:256|512|1024|2048|0", "NORMAL map edge cap in pixels (0 = full size). Vanilla runs 512-1024"),
+    "texture_max_normal": (512, "choice:256|512|1024|2048|0", "How large a surface-bumpiness picture may be, in pixels (0 = as large as it came)"),
     "texture_max_data": (256, "choice:128|256|512|1024|0", "Edge cap for data maps in pixels: roughness, metallic and the CS2 colour mask"),
-    "texture_dds": (True, "bool", "Ship textures pre-compressed as DDS so BeamNG never cooks them on first load; off = PNG"),
+    "texture_dds": (True, "bool", "Compress the textures during the build, so the game never has to on the first load"),
     "generate_lods": (True, "bool", "Generate LOD chains for every shape"),
     "tile_lod": (True, "bool", "Give the merged world tiles (roads, markings, areas, skirts, furniture) a real LOD chain"),
     "imposters": (True, "bool", "Engine-generated billboard imposters (bb_autobillboard)"),
@@ -65,9 +65,9 @@ SCHEMA = {
     "lod_detail_scale": (6.0, "float", "How many times closer than CS2 an object is culled. 1 = exactly what the game draws"),
     "lod_detail_scale_prop": (0.0, "float", "The same multiplier as lod_detail_scale but for PROPS only; 0 = use the global one"),
     "lod_switch_error_px": (8.0, "float", "How many pixels of surface error a generated LOD may show when it takes over. Smaller = truer, heavier"),
-    "paint_kinds": ("tree,prop", "str", "Which kinds get baked colour variants; a kind left out draws its prefab's untinted albedo"),
-    "paint_variants_tree": (2, "int", "How many baked colour variants a TREE prefab gets. Each one is another shape and material set"),
-    "paint_variants_prop": (1, "int", "How many baked colour variants a PROP prefab gets. 1 is the prefab's mean colour"),
+    "paint_kinds": ("tree,prop", "str", "Which sorts of object take their colour from your city; the rest draw an untinted one"),
+    "paint_variants_tree": (2, "int", "How many shades each kind of plant comes in. Every shade is another copy to draw"),
+    "paint_variants_prop": (1, "int", "How many shades each kind of small object comes in. One is its average colour"),
     "texture_max_variant": (256, "choice:128|256|512|1024|0", "Colour cap for a paint variant's tinted albedo, separately from the main colour cap"),
     "forest_min_items": (10, "int", "Merge a forest type holding fewer items than this into its prefab's plain type. 0 keeps every type"),
     "lane_max_tris": (0, "int", "Triangle budget for baked lane furniture, 0 = no budget. What goes first is what CS2 culls first"),
@@ -77,9 +77,9 @@ SCHEMA = {
     "render_width": (0, "int", "Render width the level is for (0 = read it from beamng.log)"),
     "render_height": (0, "int", "Render height the level is FOR (0 = read it from beamng.log, fall back to 1080)"),
     "tile_size": (256, "int", "World tile size for roads/markings/areas (metres)"),
-    "view_distance": (4000, "int", "LevelInfo.visibleDistance: the global far cull in metres"),
+    "view_distance": (4000, "int", "The distance in metres past which nothing is drawn at all"),
     "tod_hour": (-1.0, "float", "Time of day in hours 0-24 for the level's sun (-1 = the in-game clock at rip time)"),
-    "terrain_brightness": (1.0, "float", "Extra gain on the ground textures (1 = calibrated: CS2 grass to BeamNG's typical grass brightness)"),
+    "terrain_brightness": (1.0, "float", "Lighten or darken the ground. One leaves it as your city has it"),
     "terrain_upsample": (2, "choice:1|2", "Terrain grid: 2 = 8192 at 1.75 m (the game's own near-camera detail); 1 = 4096 at 3.5 m, lighter"),
     "terrain_holes": ("contain", "choice:contain|majority|none", "Which clip cells become terrain holes"),
     # NOT A PARITY SETTING - see stages/terrain.HEIGHT_SIGMA and audit §48.3. 1.0 is the value
@@ -131,37 +131,219 @@ SCHEMA = {
 # 31 of the 78 help strings had grown into audit notes of up to 2,320 characters, which is the
 # right amount of detail in the wrong place: every control printed its essay, always.
 DETAILS = {
-    'terrain_cut': "Pre-clipped ground meshes at trenches and tunnel portals (the heightfield is punched there and the bake's cut lattice placed in the hole - the Blender cut, in-game)",
-    'groundcover': "Billboard grass over the ground paint. NOT a fidelity feature - CS2 has no grass, detail-mesh or groundcover system at all, so the blades are synthesised BeamNG dressing for a camera at driving height (audit 62)",
-    'ai_roads': "The AI NAVGRAPH: invisible DecalRoads built from the lane graph. NOT cosmetic and not experimental - `map.lua` builds `map.getMap().nodes` from DecalRoads and BeamNGWaypoints and NOTHING ELSE, so with this off the minimap app draws nothing, a big-map waypoint produces no route and the ground-marker arrows never appear (audit A7.0). west_coast_usa ships 1,299 of these on `road_invisible`",
-    'navgraph_max_width': "Clamp a navgraph node's road width, in metres (0 = the width measured from CS2's own lane offsets). BeamNG merges two navgraph nodes when they are closer than the LARGER of their radii, and that test is 3-D (map.lua:1188), so a 24 m road's node reaches 12 m downwards and can weld a bridge deck into the street beneath it. `tools/check_navgraph_vs_game.py` counts what would weld; on the reference city nothing does at 0",
-    'navgraph_taxiways': "Put airport taxiways in the navgraph too, at drivability 0.3 (roads and highways are always in it; pathways, trams, rails, waterways, cables and pipes never are)",
-    'pois': "Fast-travel points - the big map's \"Quicktravel Points\" group. Derived from the densest road cells unless `poi_file` names your own list",
-    'poi_file': "JSON list of your own fast-travel points: [{\"name\": \"Vice City Beach\", \"at\": [4820, 1660], \"description\": \"...\"}]. `at` is BeamNG-frame X/Y (what the big map shows); add \"frame\": \"bundle\" for bundle X/Z. Each is snapped onto the road network",
-    'texture_max': "COLOUR texture edge cap in pixels (0 = full size). Calibrated on BeamNG's own biggest level: 185 of west_coast_usa's 256 colour maps are 512 or smaller. Also the cap for the emissive and opacity maps, which are the albedo's own resolution",
-    'texture_max_data': "DATA map edge cap in pixels (roughness, metallic, the CS2 colour mask). 391 of west_coast_usa's 470 data maps are 256 or smaller - a roughness gradient carries almost no high-frequency detail",
-    'texture_dds': "Ship textures pre-compressed as mipmapped DDS (BC7/BC5/BC4, what BeamNG's cooker would make) so the game never cooks them on first load; off = PNG",
-    'tile_lod': "Give the merged world tiles (roads, markings, areas, skirts, furniture) a real LOD chain. Each level still holds exactly what CS2 draws at its distance, but the switch distances are anchored to `view_distance` instead of the game's own null distance - which for a road is 46 km, so every switch fell outside any view distance we ship and 82.5 % of a networks tile's triangles survived to its far level. Off = the A4 ladder",
-    'imposter_min_metres': "Only give an imposter to a shape this level still DRAWS beyond this distance; 0 derives it as three quarters of `view_distance`. BeamNG builds an imposter atlas at RUNTIME, by rendering the shape from every angle the first time it comes into view - so one per shape is one atlas held in memory and a stall when you pan. A4/A5 gave one to EVERY object shape - 4,245 of 4,245 - against west_coast_usa's 82 of 2,608 (3.1 %), italy's 102 (7.2 %) and johnson_valley's 22 (4.4 %); `beamng.log` showed 2,652 of them still being generated 14 minutes into the session, and the memory climbing with them. A billboard is worth an atlas for a landmark still drawn at the edge of the view distance and not for a mailbox culled at 80 m",
-    'lod_detail_scale': "How many times CLOSER than CS2 an object is culled. Every shape's threshold is the game's own answer for that mesh (bounds + triangle area, csiibundle.lod); this is the one global multiplier on it. 1 = CS2 exactly, which draws a median prop to 1 km and a median building to 7.3 km over 1.2M objects",
-    'lod_detail_scale_prop': "The same multiplier as `lod_detail_scale` but for PROPS only; 0 = use the global one. WHY IT IS SEPARATE (A6.2): CS2 draws a median prop to 1,024 m and a median building to 13,008 m - a factor of 12.7 - and one global divisor preserves that ratio while destroying the RELATIONSHIP. At the game's 1,024 m a window frame is sub-pixel and losing it costs nothing; at 1,024/10 = 105 m it is plainly visible, and the building it is bolted to is still drawn to 1,332 m, so facades read as construction sites. 472,141 of 504,116 props (94 %) are parented to something. DECLARED TUNING: CS2 has no per-kind divisor, so this has no counterpart in the game - it exists because BeamNG cannot draw what CS2 draws and the two kinds must be given up at different rates",
-    'lod_switch_error_px': "How many PIXELS of surface error a generated LOD level may show at the moment it takes over. Each level's displacement from LOD 0 is measured by the bake (p95 of the distance from its surface back to the original's, in metres) and the switch threshold is derived from it, so a level that is geometrically identical keeps its place to the horizon and a level that is a metre out waits until a metre stops showing. WHY IT IS NOT 1 (A6.7): the ladder used to be fixed multiples of the shape's CULL threshold, which is a statement about its SIZE - and a level's error is not. A LOD1's displacement runs from 0 m on 603 of 4,261 shapes to 37 m on the worst (p50 0.018, p99 6.167), so one multiple cannot serve both ends and the coarse end reads as a roof moving under props that have not moved. Deriving from the error fixes the RATIO for nothing; the absolute level is a triangle budget. MEASURED over 1.16M placements from the four densest viewpoints: 1 px costs +384 % to +630 % drawn triangles, 4 px +1 % to +61 %, 6 px +0 % to +16 %, 8 px -2 % to +2 % - a CS2 residential block is 3,295 triangles of balconies and window reveals that no decimator keeps at 25 %, so a tight budget buys the buildings back at full price. DECLARED TUNING: CS2 has no LOD chain for these prefabs at all (lodCap 0), so there is no game rule to port. Smaller = more faithful and more triangles: MEASURED against the ladder over 1.16M placements, 8 px costs +16 % to +21 % drawn triangles in the two densest DOWNTOWN neighbourhoods and 0 % in the two densest forest ones, 6 px +30 % to +39 %, 4 px +51 % to +67 %. VEGETATION IS EXEMPT and keeps the ladder - the rule's input is a surface distance and a canopy is a cloud of alpha cards, so it measured 262 of 268 tree shapes as needing full geometry twice as far out, +24 % triangles in a forest, for a defect nobody reported. ONE DIRECTION ONLY: this may push a level FURTHER out than the vanilla ladder puts it, never nearer. The first cut allowed both, and a level measuring close to LOD 0 came NEARER on 2,586 of 2,903 prop shapes - a streetlight's 24-triangle level from 13.1 m - which loaded as 'cranes rotated and floating, highrises all diagonal'. A surface distance is not a visual error for thin geometry: flattening a lamp post's tube moves its surface 0.06 m and destroys the object",
-    'paint_kinds': "Which record kinds get baked colorSet variants (comma separated). A forest item carries no per-instance colour, so a kind left out of this draws its prefab's UNTINTED albedo - and CS2 authors every tintable surface desaturated, so that is visibly wrong, not subtle: the reference city's prop centres sit a median 0.534 from white in their strongest channel over 448k instances. Costs bake time and textures",
-    'paint_variants_tree': "How many baked colorSet centres a TREE prefab gets. Every extra centre is another shape file and another set of materials, and a forest item is drawn at its nearest centre either way: on the reference city the variant system alone makes 6,759 of the level's 8,220 materials and 879 MiB of its shape files. 4 was the A3 value; 2 keeps the split between the light and dark half of a prefab's palette, which is what reads at distance",
-    'paint_variants_prop': "How many baked colorSet centres a PROP prefab gets. 1 is the prefab's mean colour — props are small, seen at distance and in bulk, and their palettes are narrower than the trees'",
-    'texture_max_variant': "COLOUR cap for a PAINT VARIANT's tinted albedo, separately from `texture_max`. A variant is the same texture as its prefab's canonical albedo with a colour multiplied through it, and it is only ever seen on foliage and props in bulk; the buildings and roads that are looked at up close keep `texture_max`",
-    'forest_min_items': "A forest TYPE holding fewer items than this is merged into its prefab's untinted type instead of getting a shape, a material set and an entry of its own. BeamNG loads every type whole whether it has one item or ten thousand; on the reference city 2,864 of 4,951 types hold 10 items or fewer, 7,641 items between them - 0.7 % of the forest, for 58 % of the types. 0 keeps every type",
-    'lane_max_tris': "Triangle budget for BAKED lane furniture (the sheared fence/cable tiles that cannot be instanced), 0 = no budget. What goes first is what CS2 itself culls FIRST - the drop order is the game's own per-lane `m_MinLod`, so the budget spends itself on the furniture the game draws furthest",
-    'paint_factor_max_error': "How far a paint variant may drift, in 8-bit sRGB channels, before it gets a texture of its own instead of a baseColorFactor. CS2's colorSet tint is a pure per-texel multiply, so where the colour mask is uniform ONE constant reproduces it exactly and costs no texture at all; where the mask selects three different colours across the surface it cannot, and the bake writes the tinted albedo. 0 keeps every texture (the A3 behaviour). MEASURED over all 7,592 (material, variant) pairs of the reference city: 31.4 % are EXACTLY reproducible by a constant, 32.9 % within 4, 39.3 % within 16, 54.5 % within 32. tools/measure_paint_factor.py prints the distribution for your own city",
-    'foliage_road_clearance': "DECLARED DEVIATION, 0 = off. Drop a TREE standing within this many metres of a drivable lane centre, so the city can be driven. CS2 has no such rule - it clears objects when a road is BUILT and whatever survives is what the city contains - so this is playability, not fidelity, and it is counted in the report. Trees only: a bush or a flower pot is driven straight through once it stops colliding (A6.1), so removing it would cost fidelity and buy nothing. 2.5 m clears the CARRIAGEWAY, not the vehicle: a lane is ~3.5 m wide so its edge is 1.75 m off the centre, and a trunk radius of up to ~0.5 m reaches it at ~2.25 m. The first cut used 1.5 m - the vehicle envelope - and left trunks standing inside the lane edge. The sweep found no natural threshold to prefer: trees per 0.25 m band are almost flat from 0.5 m out to 5 m, so this is a judgement and is documented as one. On the reference city 2.5 m drops 6,389 items - 2.06 % of trees - against 3,466 at 1.5 m. IT CLIPS BY TRUNK POSITION, NOT CANOPY: an OakTree01 has an 8.11 m canopy half-width, so branches still overhang a road whose trunk line is clear. Clipping every overlapping canopy would take 25,743 trees (8.3 %) and is a deliberate non-choice",
-    'gpu_vram_mib': "Dedicated VRAM of the card the level is FOR, in MiB (0 = read it from your own beamng.log, and fall back to 8018). What a level may mount is a function of this and of the render resolution, not a constant - see beamng.validate_level.resident_budget_mib",
-    'render_width': "Render width the level is FOR (0 = read it from beamng.log, fall back to 1920). Every pixel above 1080p takes VRAM back off the level for the deferred G-buffer and the post chain",
-    'terrain_upsample': "Terrain grid: 2 = 8192 @ 1.75 m (the rip's fine terrainFine raster when present, else bilinear; the game's own near-camera grading, loaded fine on load #13 once the level's VRAM footprint was trimmed); 1 = 4096 @ 3.5 m (the base heightmap, lighter). There is deliberately no 4: 0.875 m is 16384, exactly D3D12's max 2D texture dimension, 768 MiB of terrain textures against 192, and no vanilla level exceeds 4096 - audit 52 has the numbers and does not recommend it",
-    'terrain_blend_sharpen': "Ground-boundary interlock, x the derived amount (1 = faithful; 2-3 dissolves the blocky material boundaries our 1.75 m layer grid causes, at the cost of a rougher blend than the game's)",
-    'lod0_min_triangles': "...but never where that would leave the shape SHIPPING fewer triangles than this, whatever its measured displacement says. A p95 SURFACE distance cannot see that a decimation opened an object up: flattening a 5 cm sign post moves its surface 3 mm, so NA_ParkingSign01 measured 0.0032 m against the 0.10 m threshold and shipped as 4 triangles - a panel with no post, at every distance - and NA_CommercialLow01_L5_4x3 shipped 381 triangles of facade you can see through. THE RATIO SAYS NOTHING: Five_Luxe_JBR_ keeps 24 % of its triangles and that building keeps 25 %; 59,389 triangles is still a tower and 381 is a hole. MEASURED over the reference city's 3,338 promoted shapes: a floor of 1,000 shipped triangles protects 2,941 of them for 26 % of the triangles the promotion saved, and every heavy shape it exists for is still promoted. 0 = no floor, the A8/P2 behaviour",
-    'collision_lights': "Street lights, lampposts and every other LIGHT-BEARING prop collide. Off by default: a lamppost is 0.4-3.2 m across so the footprint rule does not catch it, and a 10 m pole that stops a car dead is the one piece of street furniture you hit most. WHICH PREFABS: the ones CS2's own `lights.json` gives a photometric light to - 218 of the 1,186 entries in it, being 44 lamps (Lightpole/WallLight/Streetlight/GardenLight), 115 floodlit billboards, the vehicles, and none of the 12 traffic lights - so this is the game's own answer to 'is this a lamp' and not a name match. The billboards ride along with the lamps and are declared in audit 88 rather than exempted by name",
-    'rebuild': "Rebuild every stage from scratch, ignoring level_state.json (what `cs2beamng build --force` sets). Off = a stage whose declared inputs and settings are unchanged is skipped and its objects replayed, which is what makes a no-op rebuild seconds instead of 14 minutes",
-    'cook': "Compile the level's shapes to .cdae with BeamNG's headless mesh compiler after the build (skipped when BeamNG is running or not found)",
+    'ai_roads':
+        "The road network the game's own systems drive on: the minimap, the route "
+        "line to a waypoint, the arrows on the ground and the traffic all read it and "
+        "nothing else. With it off the minimap is blank, a big-map waypoint produces "
+        "no route, and nothing but you uses the roads. It is invisible either way — "
+        "it is not what you see, it is what the game knows.",
+    'collision_lights':
+        "Lampposts, floodlights and every other prop that carries a light "
+        "become solid. It is off by default because a lamppost is thin enough "
+        "to slip past the narrow-object rule, and a 10 m pole that stops a car "
+        "dead is the one piece of street furniture you hit most. Which props "
+        "count is the game's own answer: the ones your city gives a real "
+        "light to.",
+    'cook':
+        "Compiles the level's shapes into the form BeamNG loads, at the end of the build "
+        "instead of the first time you play. It adds minutes here and saves more than "
+        "that later. Skipped automatically if BeamNG is running or cannot be found.",
+    'foliage_road_clearance':
+        "Removes a tree whose trunk stands within this distance of the "
+        "middle of a drivable lane, so you can actually drive the city. "
+        "Your city has no such rule — it clears the ground when a road "
+        "is BUILT and lives with whatever grew back — so this is "
+        "playability rather than accuracy, and the build report counts "
+        "what it removed. 2.5 m clears the carriageway rather than the "
+        "car: a lane is about 3.5 m wide and a trunk can be half a "
+        "metre thick. It goes by the trunk, not the branches, so a "
+        "canopy can still overhang a road. Trees only — you drive "
+        "through a bush without noticing. 0 turns it off.",
+    'forest_min_items':
+        "A kind of plant with fewer than this many placed is folded in with "
+        "its plain, untinted version instead of being its own kind. BeamNG "
+        "loads a kind whole whether it has one member or ten thousand, and a "
+        "city ends up with thousands of kinds holding a handful each — more "
+        "than half of them, for well under a percent of the planting. 0 keeps "
+        "every one.",
+    'gpu_vram_mib':
+        "How much memory the graphics card this level is built for has. 0 reads "
+        "it from your own BeamNG log. It changes nothing about the level; it is "
+        "what the cost meter measures against, so set it if you are building for "
+        "a machine that is not this one.",
+    'groundcover':
+        "Blades of grass standing over the ground, for a camera at driving height. "
+        "Your city has nothing of the kind — Cities: Skylines II has no grass "
+        "system at all — so this is not reproducing anything, it is dressing, and "
+        "it is off by default for that reason.",
+    'imposter_min_metres':
+        "A shape this level stops drawing nearer than this gets no "
+        "billboard. 0 works it out as three quarters of how far you can "
+        "see. It matters because BeamNG builds each billboard while you "
+        "play, by rendering the shape from every angle the first time it "
+        "comes into view — so every one is a pause when you pan and a "
+        "picture held in memory afterwards. Worth it for a landmark still "
+        "drawn at the edge of the view; not for a mailbox that disappears "
+        "at 80 m.",
+    'lane_max_tris':
+        "A ceiling on the fences and cables that have to be built into the road "
+        "tiles rather than placed as copies. What goes first is what your city "
+        "itself gives up first, so the budget is spent on the furniture the game "
+        "draws furthest away. 0 is no ceiling.",
+    'lod0_min_triangles':
+        "A floor under the promotion: never drop the full-detail "
+        "version if that would leave the shape with fewer triangles than "
+        "this. The measurement the promotion uses is how far the surface "
+        "moved, and that cannot tell that a reduction has opened an object "
+        "up — flattening a sign's post moves its surface a few millimetres "
+        "and leaves a panel floating with no post. A floor protects the "
+        "thin things without giving back the saving on the heavy ones. 0 "
+        "removes it.",
+    'lod_detail_scale':
+        "Your city draws a typical small object to about a kilometre and a "
+        "typical building to several. Faithful, and far more than BeamNG will "
+        "carry. This divides every shape's own distance by the same amount; 1 "
+        "draws exactly what the game draws.",
+    'lod_detail_scale_prop':
+        "The same divisor for small objects alone; 0 makes them share "
+        "the global one. It is separate because your city draws "
+        "buildings roughly twelve times further than props, and one "
+        "divisor keeps that ratio while ruining what it means: a window "
+        "frame is invisible at the distance the game drops it and "
+        "plainly missing at a tenth of that, while the building it "
+        "belongs to is still there. Most props are attached to "
+        "something, so the two have to be given up at different rates.",
+    'lod_switch_error_px':
+        "How wrong a reduced version of a shape may look, in pixels on "
+        "screen, at the moment it takes over from the one before it. Each "
+        "reduced version is measured against the original, so one that is "
+        "identical keeps its place to the horizon and one that is a metre "
+        "out waits until a metre stops showing. Smaller is truer and costs "
+        "drawn triangles — and it costs them downtown, where the card is "
+        "already working hardest. Plants are exempt and keep a fixed "
+        "ladder: the measurement is a surface distance and a canopy is a "
+        "cloud of leaves, so it asks for full detail twice as far out for "
+        "a problem nobody reported.",
+    'navgraph_max_width':
+        "How wide the game may consider a road when it joins one road to "
+        "another. 0 uses the width your own lanes give. It exists because "
+        "BeamNG joins two road points when they are closer than the wider "
+        "of the two, and that test includes height — so a very wide road "
+        "reaches downwards and can weld a bridge deck into the street "
+        "underneath it. In a typical city nothing does at 0.",
+    'navgraph_taxiways':
+        "Puts airport taxiways into the road network too, at a low speed so "
+        "routes prefer real roads. Roads and highways are always in it; "
+        "footpaths, trams, rails, waterways, cables and pipes never are.",
+    'paint_factor_max_error':
+        "How far a recoloured copy may drift from the real thing before "
+        "it is given a texture of its own rather than a single colour "
+        "multiplied over the original. Where a surface is tinted all "
+        "over, one colour reproduces it exactly and costs no texture at "
+        "all; where the tint picks out three different parts, it "
+        "cannot. About a third of a city's recolourings come out "
+        "free at this setting. 0 gives every one its own texture.",
+    'paint_kinds':
+        "Your city paints its own objects — the same bench in four colours, the "
+        "same tree in a dozen greens. This chooses which sorts get that treatment. "
+        "A sort left out draws the untinted original, and because the game authors "
+        "those washed out on purpose, leaving one out is visibly wrong rather than "
+        "subtle. It costs build time and textures.",
+    'paint_variants_prop':
+        "How many shades each kind of small object comes in. 1 is its "
+        "average colour, which is usually enough: props are small, seen in "
+        "bulk and at distance, and their colours vary less than the "
+        "planting's.",
+    'paint_variants_tree':
+        "How many shades each kind of plant comes in. Every extra shade is "
+        "another copy of the shape and another set of textures, and it is "
+        "the single biggest source of both in a finished level — the "
+        "shades alone can be most of its materials. 2 keeps the light and "
+        "the dark half of a plant's range apart, which is what you can "
+        "actually see at distance.",
+    'poi_file':
+        "The file the fast-travel points you place are kept in. The app writes it for "
+        "you as you place them on the map; the setting is still a path, so you can "
+        "point it at a list of your own or share one. Each point is put onto the "
+        "nearest road wherever it started.",
+    'poi_max':
+        "How many busy places to pick out for you when you have named fewer of your "
+        "own. The levels BeamNG ships carry between three and nine; a big map with "
+        "forty markers on it is an index rather than a menu.",
+    'pois':
+        "The places you can jump straight to from the big map. Yours if you have named "
+        "any, otherwise the busiest parts of your road network, named after the street "
+        "they are on.",
+    'rebuild':
+        "Runs every stage again from nothing instead of skipping the ones whose inputs "
+        "have not changed. Skipping is what makes a second build of the same city take "
+        "seconds rather than a quarter of an hour, so leave this off unless you have "
+        "reason to distrust what is on disk. `cs2beamng build --force` is the same "
+        "thing.",
+    'render_width':
+        "The width the level is built for. 0 reads it from your own BeamNG log. "
+        "Every pixel above 1080p takes memory back off the level for the game's "
+        "own render targets, which is why the cost meter asks.",
+    'terrain_blend_sharpen':
+        "How sharply one ground meets another. 1 is what the game's own "
+        "blend works out. Higher hides the blocky edges our coarser "
+        "ground grid can leave, at the price of a harder join than the "
+        "game would draw.",
+    'terrain_brightness':
+        "Lightens or darkens the ground. 1 is not neutral — it is the "
+        "amount that lands your city's grounds where BeamNG's lighting "
+        "expects them, worked out against the grounds BeamNG's own levels "
+        "ship. Anything else is your eye rather than either game's.",
+    'terrain_cut':
+        "Where a road runs in a trench or into a tunnel mouth, the ground is "
+        "opened up and a piece of ground cut to fit is dropped into the hole. "
+        "Without it the terrain closes over the trench and the road disappears "
+        "into a hill.",
+    'terrain_upsample':
+        "How finely the ground is shaped. Fine is the same detail the game "
+        "itself uses near the camera and is worth having if the memory is "
+        "there; standard is half as fine in each direction and a quarter of "
+        "the cost. There is deliberately no finer option: the next step up is "
+        "the largest texture the graphics API allows, four times the memory, "
+        "and finer than any level BeamNG ships.",
+    'texture_dds':
+        "Compresses the textures during the build, in the format the game would "
+        "have used. Without it the game compresses them itself the first time you "
+        "load the level, one at a time, on the main thread — which is a minute or "
+        "more of stuttering on a big city. Leave it on.",
+    'texture_max':
+        "The largest a colour picture may be. It is the main cost your card "
+        "carries, and the cost meter moves most when this does. 512 is in line "
+        "with what BeamNG's own biggest level ships, where most colour maps are "
+        "512 or smaller. It also caps the glow and cut-out maps, which are the "
+        "same picture's own resolution.",
+    'texture_max_data':
+        "The largest a picture describing shine, roughness or metal may be. "
+        "These carry almost no fine detail — a roughness gradient is smooth "
+        "by nature — and most of the ones in BeamNG's own biggest level are "
+        "256 or smaller. This is the cheapest place to save memory.",
+    'texture_max_normal':
+        "The largest a surface-bumpiness picture may be. This is the tier "
+        "that carries brick, plank and groove relief, and it is the one "
+        "worth spending on after the colour map; BeamNG's own levels run "
+        "these between 512 and 1024.",
+    'texture_max_variant':
+        "The largest a recoloured copy may be, separately from the colour "
+        "cap. A recoloured copy is the same picture with a colour "
+        "multiplied through it and it is only ever seen on planting and "
+        "props in bulk, so it can be smaller than the buildings and roads "
+        "you look at up close.",
+    'tile_lod':
+        "Gives the merged road, marking, area, foundation and furniture tiles reduced "
+        "versions of their own. Each one still holds exactly what your city draws at "
+        "that distance, but the distances are measured against how far you can see "
+        "rather than against your city's own — which for a road is tens of "
+        "kilometres, so without this almost none of a road tile is ever given up.",
+    'view_distance':
+        "The distance past which nothing is drawn at all. Every shape has its "
+        "own distance worked out from what your city does with it; this is the "
+        "ceiling over all of them, which makes it the one number that moves the "
+        "whole cost at once.",
 }
 
 
@@ -276,10 +458,12 @@ SUBSET_OF = {
 # The value a parent takes when the last thing under it is switched off.
 PARENT_OFF = {"collision_preset": "off"}
 
-# Gated by another setting but NOT laid out beneath it, because the two live in different
-# sections: a tuning ceiling belongs with the tuning numbers even though it does nothing while
-# the layer it caps is off. These grey out; they do not indent, and they never switch a parent
-# off - a person in Advanced is not looking at the switch they would be turning off.
+# Gated by another setting but NOT OWNED by it. Two reasons a pair lands here rather than in
+# SUBSET_OF: the two live in different sections (a tuning ceiling belongs with the tuning numbers
+# even though it does nothing while the layer it caps is off), or the child is not one of the
+# parent's SWITCHES and so cannot be the last of them - emptying your own list of fast-travel
+# points asks for the derived ones, not for no fast travel at all. These grey out; they do not
+# indent, and they never switch a parent off.
 NEEDS = {"lights_max": "lights", "beamng_exe": "cook", "poi_file": "pois"}
 
 # Settings with no control of their own, and the thing on screen that now sets each. They keep
@@ -292,6 +476,43 @@ DRIVEN_BY = {
     "props": "the Props slider, which turns them off at zero",
     "ui_section": "the sidebar, which remembers where you were",
 }
+
+# ...and the rule that drives them (plan §6). `DRIVEN_BY` above is the SENTENCE; this is the
+# behaviour, in one place, so the two cannot say different things.
+#
+#   * `terrain_cut` follows `networks`. Cutting the ground open at a trench or a tunnel mouth is
+#     not a thing a person wants separately - it is how the roads there get their ground - and
+#     with the roads off the hole has nothing in it.
+#   * A density slider at zero turns its kind OFF rather than keeping none of it. "0 % of trees"
+#     and "no trees" are the same level; saying it twice lets the two disagree, and a report that
+#     says a stage kept 0 of 376,187 items has done the work of deciding that 376,187 times.
+#
+# `{key: (driven, rule)}`, applied by `server.update_settings` - which is the APP. `--set` never
+# passes through it and stays literal, so a headless build does exactly and only what it was
+# told, and `--set terrain_cut=true networks=false` is still a thing a person may ask for.
+DRIVES = {
+    "networks": ("terrain_cut", bool),
+    "foliage_density": ("trees", lambda v: int(v or 0) > 0),
+    "prop_density": ("props", lambda v: int(v or 0) > 0),
+}
+
+
+def driven_changes(incoming):
+    """The extra `{key: value}` these changes imply, minus anything the caller set itself.
+
+    A caller that names both halves means both halves: the rule fills in the one you did not
+    mention, it does not overrule the one you did.
+    """
+    out = {}
+    for key, value in (incoming or {}).items():
+        rule = DRIVES.get(key)
+        if rule is None:
+            continue
+        driven, decide = rule
+        if driven not in incoming:
+            out[driven] = decide(value)
+    return out
+
 
 # What a key looks like on screen where its type alone does not say. Everything absent falls
 # back on its SCHEMA kind (see `control_of`).
@@ -449,7 +670,7 @@ BLURBS = {
     "level_name": "The name of the folder your level is written into. Letters, digits and dashes.",
     "level_title": "The name shown in the level list once it is built.",
     # world
-    "region": "Build the whole city, or one circle of it. A smaller piece builds far faster.",
+    "region": "Build the whole city, or one square patch of it. A smaller piece builds far faster.",
     "buildings": "Houses, offices, factories and everything else your city has built.",
     "networks": "Road, rail and path surfaces, and the ground opened up at trenches and tunnels.",
     "foliage_density": "How much of the planting to keep. At zero none of it is placed at all.",

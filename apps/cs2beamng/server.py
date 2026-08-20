@@ -384,6 +384,11 @@ class AppServer:
                     values[key] = settings_mod.coerce(key, raw)
                 except (TypeError, ValueError) as exc:
                     errors.append(str(exc))
+            # E6: the settings that have no control of their own, set by the one that drives
+            # them (`settings.DRIVES`). It happens HERE, in the app, and not in `coerce` or the
+            # CLI: `--set` is a person saying exactly what they want and must stay literal.
+            for key, value in settings_mod.driven_changes(incoming or {}).items():
+                values[key] = value
             # ANY quality setting moving puts the row on Custom - not just the ones a preset
             # happens to name. Before this, changing `terrain_holes` or `tile_size` left the
             # row reading "High" while the level was no longer what High builds. What is NOT a

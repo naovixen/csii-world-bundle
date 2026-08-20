@@ -177,7 +177,7 @@ cs2beamng                 # the app, if you change your mind</code></pre>
   </div>
   <div class="row">
     <label for="b_region">Only part of it</label>
-    <input id="b_region" type="text" placeholder='X Z radius in metres, e.g. 2994 1853 400'>
+    <input id="b_region" type="text" placeholder='X Z half-width in metres, e.g. 2994 1853 400'>
   </div>
   <div class="row" id="extraRows"></div>
   <div class="out">
@@ -271,7 +271,9 @@ so every light in the level is pure cost. Switch to Advanced Lighting, or leave 
     const row = document.createElement("div");
     row.className = "row";
     const label = document.createElement("label");
-    label.textContent = key.replace(/_/g, " ");
+    // the name the application shows, not the key with its underscores knocked out
+    label.textContent = spec.label || key.replace(/_/g, " ");
+    label.title = spec.blurb || spec.help || "";
     label.htmlFor = "x_" + key;
     const input = document.createElement("input");
     input.id = "x_" + key;
