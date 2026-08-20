@@ -109,7 +109,15 @@ def main(argv=None):
 
     size = sum(os.path.getsize(os.path.join(r, f))
                for r, _d, fs in os.walk(folder) for f in fs)
+    exe = os.path.join(folder, "cs2beamng" + (".exe" if sys.platform.startswith("win") else ""))
     print(f"built {folder}  ({size / 1048576:.0f} MiB)")
+    # PyInstaller leaves an IDENTICALLY NAMED bootloader stub in its work directory, and that
+    # one is not runnable: `_internal/` is only ever assembled in the dist folder, so running it
+    # gets "Failed to load Python DLL .../build/cs2beamng/_internal/python313.dll". Print the
+    # one to run, and name the other, or the two folders are told apart by trial and error.
+    print(f"run it: {exe}")
+    print(f"        (not the one in {BUILD}{os.sep}cs2beamng - that is PyInstaller's scratch "
+          f"copy with no _internal beside it, and it fails with 'Failed to load Python DLL')")
     if args.no_zip:
         return 0
     out = os.path.join(DIST, f"cs2beamng-{version()}-{platform_tag()}.zip")

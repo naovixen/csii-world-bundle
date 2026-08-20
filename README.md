@@ -155,6 +155,10 @@ python -m cs2beamng           # the same, without the console script on PATH
 python tools/build_exe.py     # dist/cs2beamng-<version>-<platform>.zip
 ```
 
+The frozen app is `dist/cs2beamng/cs2beamng.exe`. PyInstaller also leaves an identically named
+bootloader stub in its scratch directory, `build/cs2beamng/` — that one has no `_internal/`
+beside it and fails with *"Failed to load Python DLL"*. `build_exe.py` prints the path to run.
+
 The level is written to `%LOCALAPPDATA%\BeamNG\BeamNG.drive\current\levels\<level_name>\`
 (Linux/macOS paths are detected too) with a `cs2beamng_report.json` beside it. The first build
 also bakes the bundle's `derived/` cache (≈ 15 min for a full city); later builds re-bake only
