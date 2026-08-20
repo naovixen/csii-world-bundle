@@ -22,7 +22,7 @@ import traceback
 from csiibundle import reader
 from csiibundle.bake.progress import Cancelled
 
-from ..settings import SCHEMA as SETTINGS_SCHEMA, region_of
+from ..settings import SCHEMA as SETTINGS_SCHEMA, app_dir, region_of
 from ..stages import BuildContext, all_stages, level_of
 from . import history, state
 from .progress import Heartbeat, QueueProgress
@@ -61,6 +61,7 @@ def main(settings, census, queue, cancel_event, hard_cancel=None):
     skipped = {}
     try:
         os.makedirs(level_dir, exist_ok=True)
+        _write_settings(level_dir, settings, queue)   # first, so an interrupted build still says what it was
         _remove_stale_report(level_dir)               # a killed build must not be explained by the previous one's report
         if force:
             _clear_generated(level_dir, queue)        # --force is the "start from nothing" path
@@ -161,6 +162,7 @@ def main(settings, census, queue, cancel_event, hard_cancel=None):
 
 
 REPORT_NAME = "cs2beamng_report.json"
+SETTINGS_NAME = "cs2beamng_settings.json"   # written first, never removed: see _write_settings
 
 
 # -- the incremental bookkeeping -------------------------------------------------------------------
@@ -234,6 +236,50 @@ def _clear_generated(level_dir, queue):
                 queue.put({"t": "log", "stage": "", "text": f"cleared {'/'.join(parts)}/ from the previous build", "at": time.time()})
             except OSError as exc:
                 queue.put({"t": "log", "stage": "", "text": f"could not clear {'/'.join(parts)}/: {exc}", "at": time.time()})
+
+
+def _write_settings(level_dir, settings, queue):
+    """`cs2beamng_settings.json` — every schema key this build ran with, written FIRST.
+
+    The report carries the settings too, but it is written last and deleted at the start of the
+    next build, so an interrupted or killed run leaves a level nobody can reproduce. It has
+    happened twice: on 2026-08-19 the settings behind `cs2_city_fine` had to be reconstructed out
+    of the per-stage results (terrain size, texture caps, collider counts), which recovers most of
+    them and guesses the rest. This file is small, it is written before any stage runs, and it is
+    never removed - a level folder now says what made it whatever else happens to the build.
+    """
+    try:
+        os.makedirs(level_dir, exist_ok=True)
+        recorded = {key: settings.get(key, default)
+                    for key, (default, _kind, _help) in SETTINGS_SCHEMA.items()}
+        payload = {"schema": "cs2beamng.settings/1",
+                   "startedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                   "settings": recorded}
+        paths = [os.path.join(level_dir, SETTINGS_NAME)]
+        # ...and a copy outside the level, so deleting or rebuilding the folder cannot take the
+        # last record of it with them
+        keep = os.path.join(app_dir(), "levels")
+        os.makedirs(keep, exist_ok=True)
+        paths.append(os.path.join(keep, f"{settings.get('level_name')}.json"))
+        for path in paths:
+            # Unchanged settings must not rewrite the file: `validate` fingerprints the level
+            # FOLDER, so a new mtime here alone would re-run it on every no-op build.
+            if _same_settings(path, recorded):
+                continue
+            with open(path, "w", encoding="utf-8", newline="\n") as handle:
+                json.dump(payload, handle, indent=1, sort_keys=True, default=str)
+    except OSError as exc:
+        queue.put({"t": "log", "stage": "system",
+                   "text": f"could not write {SETTINGS_NAME}: {exc}", "at": time.time()})
+
+
+def _same_settings(path, recorded):
+    try:
+        with open(path, encoding="utf-8") as handle:
+            existing = json.load(handle)
+    except (OSError, ValueError):
+        return False
+    return isinstance(existing, dict) and existing.get("settings") == recorded
 
 
 def _remove_stale_report(level_dir):

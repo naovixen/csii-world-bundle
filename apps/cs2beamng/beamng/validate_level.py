@@ -7,7 +7,9 @@ texture paths exist; every `.dae` parses as XML; the `.ter` header, size and lay
 with `.terrain.json`; exactly one `TerrainBlock` and one `LevelInfo`; at least one
 `SpawnSphere`; `info.json` names an existing spawn, every `spawnPoints` entry resolves to one and
 every `preview` it names exists; at least one drivable `DecalRoad` (without which BeamNG's whole
-navigation layer — minimap, routing, ground markers — is silently dead).
+navigation layer — minimap, routing, ground markers — is silently dead), and those roads run
+through `beamng.map_lua` — a port of the load-time navgraph build — because a level whose roads
+crash `map.lua` never opens at all (audit A7.5).
 
 Physical: the `.ter` height under sampled `OnGround` buildings equals `instances.ground_level`
 (`pos.y − attrs.elevation`) within `GROUND_TOLERANCE` — the one check that catches a wrong
@@ -24,7 +26,7 @@ import numpy
 
 from csiibundle import instances as instances_mod, reader
 
-from . import dae as dae_mod, ter as ter_mod
+from . import dae as dae_mod, map_lua, ter as ter_mod
 from .level import read_objects
 
 GROUND_TOLERANCE = 0.5
@@ -92,7 +94,7 @@ def check(level_dir, bundle_dir, progress=None, settings=None):
     for _rel, _n, obj in objects:
         for field in ("terrainFile", "shapeName", "minimapImage"):
             path = resolve(obj.get(field))
-            if path is not None and not os.path.isfile(path):
+            if path is not None and not _shape_present(path):
                 missing.append(f"{obj['class']} {obj['name']}: {field} {obj[field]}")
     dae_bad = 0
     dae_files = []
@@ -122,9 +124,11 @@ def check(level_dir, bundle_dir, progress=None, settings=None):
         if not isinstance(entry, dict):
             continue
         path = resolve(entry.get("shapeFile"))
-        if path is None or not os.path.isfile(path):
+        if path is None or not _shape_present(path):
             missing.append(f"TSForestItemData {name}: shapeFile {entry.get('shapeFile')}")
-        elif path.lower().endswith(".dae") and path not in seen_dae:
+        elif path.lower().endswith(".dae") and path not in seen_dae and os.path.isfile(path):
+            # `_shape_present` above accepts a cooked shape whose SOURCE was dropped; only a
+            # source that is really there can be XML-parsed below.
             seen_dae.add(path)
             dae_files.append((name, path))
     forest_dir = os.path.join(level_dir, "forest")
@@ -159,7 +163,13 @@ def check(level_dir, bundle_dir, progress=None, settings=None):
     # Calibrated on the vanilla maxima (plan "Budgets"): 663k forest items, 22k TSStatics, 12.7k
     # DecalRoads, 2.6k shapes. Over one of these BeamNG does not fail — it stalls the load or
     # drops frames, which is why they are notes on the build rather than silence.
-    over = _budget_notes(by_class, item_data, dae_files, forest_items)
+    # What actually SHIPS as a shape. `keep_dae: false` drops the sources the engine never loads
+    # (A8/P7), so counting `.dae` alone would read a level with 8,164 shapes as having none.
+    checks["cookedShapes"] = sum(1 for _r, _d, fs in os.walk(os.path.join(level_dir, "art"))
+                                 for f in fs if f.lower().endswith(".cdae"))
+    over = _budget_notes(by_class, item_data,
+                         dae_files if len(dae_files) >= checks["cookedShapes"]
+                         else [(None, None)] * checks["cookedShapes"], forest_items)
     checks["budgets"] = {name: value for name, value, _limit in over}
 
     # A local light needs the DEFERRED renderer. Read the profile the level will actually be
@@ -177,8 +187,10 @@ def check(level_dir, bundle_dir, progress=None, settings=None):
         if limit is not None and value > limit:
             note(f"budget: {value:,} {name} exceeds the plan's ~{limit:,} "
                  f"(calibrated on the vanilla levels' own maxima)")
-    # full XML parse on a sample (a 10 MB tile takes a second), material-symbol check on all
-    for _name, path in dae_files[::max(1, len(dae_files) // 8)][:8]:
+    # A sampled full XML parse (a 10 MB tile takes a second), over whatever sources SURVIVE —
+    # `keep_dae: false` drops every one whose `.cdae` is current, and then there is nothing to
+    # parse and nothing wrong with that.
+    for _name, path in (dae_files[::max(1, len(dae_files) // 8)][:8] if dae_files else ()):
         try:
             ET.parse(path)
         except ET.ParseError:
@@ -475,6 +487,28 @@ def check(level_dir, bundle_dir, progress=None, settings=None):
                 note("no DecalRoad with drivability > 0: `map.getMap()` will be EMPTY, so the "
                      "minimap draws nothing, a waypoint produces no route and the ground-marker "
                      "arrows never appear (audit A7.0). Build with `ai_roads true`")
+            else:
+                # ...and having roads is not the same as having a graph map.lua can build. It
+                # crashes the LOAD on a configuration the builder must never emit (audit A7.5),
+                # so the level is asked the question here rather than the game.
+                rules = info.get("roadRules") if isinstance(info.get("roadRules"), dict) else {}
+                map_stats, risks = map_lua.check(
+                    drivable, right_hand_drive=bool(rules.get("rightHandDrive")))
+                checks["navgraph"].update(map_stats)
+                if risks:
+                    example = risks[0]
+                    note(f"{len(risks)} navgraph node{'s' if len(risks) != 1 else ''} take"
+                         f"{'' if len(risks) != 1 else 's'} map.lua's optimiser into its "
+                         f"unguarded lane compare (map.lua:459): the load dies with "
+                         f"'attempt to compare nil with string' and the level never opens. "
+                         f"First is {example['node']} between {example['between'][0]} and "
+                         f"{example['between'][1]} - road {example['road']}, chord "
+                         f"{example['chord']}")
+                elif map_stats["chords"]:
+                    note(f"{map_stats['chords']} navgraph nodes sit on a triangle (a degree-2 "
+                         f"node whose two neighbours are already linked). None of them ties "
+                         f"map.lua's ten edge fields today, so none crashes the load, but the "
+                         f"emitted graph is meant to be simple and this says it is not")
     else:
         note("no info.json")
 
@@ -655,6 +689,21 @@ def _texture_reduction():
     level = int(found.group(1))
     return level, f"textureReductionLevel {level} " + {0: "(Normal+)", 1: "(Low)", 2: "(Lowest)"}.get(
         level, "(custom)")
+
+
+def _shape_present(path):
+    """Whether a referenced file is actually there — counting a `.dae` as present when only its
+    COOKED `.cdae` is.
+
+    `shapeName` always names the `.dae`, but the engine loads the `.cdae` beside it and never the
+    source, which is why `keep_dae: false` can drop 5.4 GB of sources (A8/P7). Vanilla does the
+    same: 182 of BeamNG's 6,361 shipped `.cdae` have no `.dae` at all. Checking only the literal
+    path called every one of those shapes missing.
+    """
+    if os.path.isfile(path):
+        return True
+    stem, ext = os.path.splitext(path)
+    return ext.lower() == ".dae" and os.path.isfile(stem + ".cdae")
 
 
 def _light_manager():

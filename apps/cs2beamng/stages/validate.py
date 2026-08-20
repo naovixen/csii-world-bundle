@@ -58,5 +58,10 @@ def run(ctx, progress):
 # version 4: the level is checked against the LIGHTING PATH the user's BeamNG is set to - a local
 #            light is shaded only by the deferred renderer, and under `Basic Lighting` every one
 #            of them costs load time and scene memory and lights nothing (A6.9, audit §82)
+# version 5: a shape whose `.dae` source was dropped counts as PRESENT when its cooked `.cdae` is
+#            there, which is what the engine actually loads (A8/P7)
+# version 6: `map.lua`'s own node build is run over the level's OWN `DecalRoad`s and the build
+#            FAILS on a triangle - the shape that reaches map.lua:459's unguarded `lanes`
+#            compare and takes the game down before the level opens (A7.5, audit §85)
 STAGE = Stage("validate", "Validate level", enabled, units, run, inputs=("level:",),
-               settings_keys=("gpu_vram_mib", "render_width", "render_height"), version=4)
+               settings_keys=("gpu_vram_mib", "render_width", "render_height"), version=6)

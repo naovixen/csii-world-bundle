@@ -553,6 +553,9 @@ OUTPUTS = ("art/cs2/main.materials.json", "art/textures")
 #            where the bake could join one, instead of white at a flat 200 (A6.9/D5)
 # version 7: a joined slot of ZERO nits is honoured rather than falling back to the flat 200 -
 #            115 slots say zero and every one is the UNLIT face of a billboard (A6.9/D5)
+# version 8: A8/P1 - the colour mask takes the colour cap like every other map. `colormask` was
+#            missing from `KIND_CAP_SETTING`, which means UNCAPPED, so 767 of 771 masks shipped
+#            at 1024 against everything else's 256: 1,025 MiB, 58 % of all texture bytes
 STAGE = Stage(STAGE_KEY, "Materials and textures", enabled, units, run, inputs=INPUTS,
               settings_keys=SETTINGS, outputs=OUTPUTS, shared_keys=("materials",),
-              after=("shapes", "networks", "derived"), version=7)
+              after=("shapes", "networks", "derived"), version=8)

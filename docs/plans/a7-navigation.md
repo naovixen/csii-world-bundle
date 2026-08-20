@@ -1,11 +1,18 @@
 # A7 — navigation: the minimap, the spawn, and fast travel
 
-> **STATUS — ALL SEVEN ITEMS BUILT, 2026-08-19 (audit §84).** The consumer side is measured
-> against the bundle on disk and awaits Naomi's load; the two producer changes are "built,
-> awaiting in-game re-rip". **Read "AS BUILT" at the foot of this file before this text** — the
-> junction rule W1 proposes was built, measured and replaced, and three properties of the lane
-> layer this plan did not know about (`SideConnection`, `Invert`, longitudinal chaining) are what
-> the implementation actually turns on.
+> **STATUS — CLOSED, VALIDATED IN GAME 2026-08-20.** All seven items were built (audit §84), and
+> the loads after that found two more — both fixed and measured: `map.lua` crashed on a triangle
+> we shipped (**§85**, A7.5), and the route ran onto an overpass with no ramp (**§86**, A7.6).
+> Naomi loaded the 2026-08-19 22:15 build and reported the navigation good.
+>
+> **The two PRODUCER changes are still "built, awaiting in-game re-rip"**, and no consumer load
+> can settle them: `leftHandTraffic` and `districts.jsonl` need a fresh rip, not a fresh build.
+> They are the only thing this plan leaves open.
+>
+> **Read "AS BUILT" at the foot of this file before this text** — the junction rule W1 proposes
+> was built, measured and replaced, and three properties of the lane layer this plan did not know
+> about (`SideConnection`, `Invert`, longitudinal chaining) are what the implementation actually
+> turns on.
 
 Three symptoms reported on the 2026-08-19 load of `cs2_city_fine`:
 
@@ -505,7 +512,9 @@ Measured offline, against the bundle on disk:
 | `tools/test_app_shell.py` | 133/133 |
 | `tools/validate_bundle.py` | VALID, 1 known warning |
 
-**Still needs Naomi's load** (per `rebuild-the-level-before-committing`): the minimap actually
+**VALIDATED IN GAME 2026-08-20** — everything this paragraph asked for was seen and reported
+good, on the 2026-08-19 22:15 build (through the two defects A7.5 and A7.6 fixed on the way).
+What it asked for: the minimap actually
 drawing and matching the road under the car; a big-map waypoint routing along roads with the
 ground-marker arrows staying on the carriageway through junctions and never dropping off a bridge
 into the street below; the "Quicktravel Points" group listing the POIs and putting the car on the
@@ -515,3 +524,81 @@ road facing along it; and traffic keeping to its side. `beamng.log` should repor
 
 **Neither producer change can be validated by any of the above.** `leftHandTraffic` and
 `districts.jsonl` are "built, awaiting in-game re-rip".
+
+---
+
+## A7.5 — the load, and the crash it found (2026-08-19)
+
+The load happened, and it ended before the level opened:
+
+```
+*** FATAL LUA ERROR: [string "lua/ge/map.lua"]:459: attempt to compare nil with string
+```
+
+Full analysis in **audit §85**. In short: `optimizeNodes` composes a replacement edge without a
+`lanes` field and hands it to `edgeCompare`, whose `lanes` test is the one of ten carrying no
+guard. It only gets there through a degree-2 node whose two neighbours are already linked — a
+triangle — and we shipped 331 of them, 9 tying on all nine guarded fields.
+
+Two of ours caused it, and the first also fragmented the graph:
+
+1. a connector's terminal nodes carried the *pair's minimum* width, so they never merged with the
+   segment end they sat exactly on (`map.lua:1211` compares radii as well as positions): 9,738
+   wrong-width terminal nodes, and the graph BeamNG had at optimiser time stood in 692 pieces;
+2. the emitted set was not a simple graph: 874 self-loop connectors, 1,245 zero-length joints,
+   962 connector/joint pairs across one node pair.
+
+Both are fixed in `csiibundle.navgraph` (terminal widths, then `_simple_graph`), which is where
+they belong — the rule is about the graph, not about BeamNG. 17,619 roads → 15,393; triangles
+331 → **0**; components at optimiser time 692 → 35, largest 13.8 % → 96.5 %; lane coverage
+unchanged at 4,000/4,000.
+
+| gate | result |
+|---|---|
+| `tools/test_navgraph_map.py` (new) | 10/10, including 0 triangles on the emitted `DecalRoad`s |
+| `check_navgraph_vs_game.py` | 6/6 questions OK, the sixth being map.lua's own build |
+| `validate_level.py` | now runs the port over the built level and fails the build on a triangle |
+
+**The connectivity number in the A7.1 table above was measured on the wrong node identity**
+(coordinate equality, not the consumer's merge) and read 96.65 % while BeamNG's own graph was in
+692 pieces. `_components` now uses `_terminal_clusters`, the same identity as the rule.
+
+**Seen on the 2026-08-20 load**: everything A7.1's paragraph lists, none of which this crash had
+allowed to be seen.
+
+**BUILT AND REBUILT 2026-08-19 21:30.** `cs2_city_fine` in place, 14m55s, `status: done`,
+validator 0 problems, cook 7,883/7,883. The validator now reads the port over the level's OWN
+`DecalRoad`s: `{"decalRoads": 15393, "mapNodes": 32494, "endNodesMerged": 18703, "chords": 0,
+"crashRisks": 0}`. Resident 3,381.7 MiB, unchanged from A8. `lights` off, `groundcover` on,
+`foliage_density` 60 / `prop_density` 100.
+
+
+---
+
+## A7.6 - the route onto an overpass (2026-08-19)
+
+The load worked; the navigation put the route on a viaduct above the car, with no ramp. **Not a
+false edge** - every link-creating pass in `map.lua` was ported and measured first
+(`mergeOverlappingNodes`, `resolveTJunctions`, `resolveXJunctions`, `mergeNodesToLines`) and
+between them they made 2 vertical joins, both between a segment and its own connectors.
+
+It was `startPosLinks` (map.lua:2871): an edge whose RADIUS covers the car costs exactly zero, so
+the `wZ = 4` height bias never runs and a wide carriageway's 13 m radius reaches a deck 7 m up.
+31 of 112,030 sampled road points, 3 sites, all 26 m roads under 7-8 m of clearance.
+
+Fixed by `_clearance_clamp`: a segment's emitted half-width is capped at the distance to the
+nearest road at a different height. 19 segments clamped, worst 13.32 m of width, stacked coverage
+31 -> 0, connectivity and lane coverage unchanged. Full analysis in audit 86.
+
+---
+
+## CLOSED — 2026-08-20
+
+Naomi loaded the 2026-08-19 22:15 build of `cs2_city_fine` and reported the navigation good. That
+closes A7.0-A7.5 as planned, plus the crash and the overpass route the loads found: the minimap
+draws, a waypoint routes along the roads, and the quicktravel points put the car on a road facing
+along it.
+
+Left open, and not by anything a load can decide: **`leftHandTraffic` and `districts.jsonl` are
+producer changes awaiting a re-rip**. Until one happens the level is built from a bundle that
+predates them, so the flag reads its default and the POI names come from the fallback.

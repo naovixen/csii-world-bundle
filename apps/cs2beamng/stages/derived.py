@@ -90,6 +90,16 @@ def run(ctx, progress):
     summary = {}
     for product, (toggle, group, coll_setting, shadows) in PRODUCTS.items():
         if not settings.get(toggle, True):
+            # A PRODUCT TURNED OFF MUST ALSO HAVE ITS SHAPES REMOVED. `Level.write_objects`
+            # already sweeps a group this build did not produce, so the `TSStatic`s go — but the
+            # SHAPE FILES they pointed at are swept only by `sweep_orphans`, which this `continue`
+            # skipped. `lane_furniture: false` therefore left 284 MiB of `art/shapes/lanegeometry`
+            # on disk on any level that had once been built with it on, and said nothing (A8/P5).
+            removed = dae.sweep_orphans(level.path("art", "shapes", product), set())
+            if removed:
+                progress.log(f"derived: {product} is off — removed {removed} shape file(s) an "
+                             f"earlier build left behind")
+            summary[product] = {"disabled": True, "shapesRemoved": removed}
             continue
         folder = os.path.join(ctx.derived_dir, product)
         if not os.path.isdir(folder):

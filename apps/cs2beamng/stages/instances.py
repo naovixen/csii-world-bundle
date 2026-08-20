@@ -44,6 +44,12 @@ STAGE_KEY = "instances"
 # surface there.
 COLLISION_TYPE = "Collision Mesh"
 
+# The two `collider` values that mean the shape carries NO `Colmesh_` node: the policy said no
+# (`none`), or `collision_lights` took a light-bearing prefab's collider off (`lightNone`, audit
+# §88). Naming `Collision Mesh` on either is a TSStatic that collides with nothing, which the
+# level validator now calls out - so both paths that decide collision read this one tuple.
+NO_COLLIDER = ("none", "lightNone")
+
 # SimGroup granularity for TSStatics, in metres. Vanilla levels group by district; a kilometre
 # keeps each `items.level.json` a few hundred lines on a city map. OURS.
 GROUP_METRES = 1000.0
@@ -72,6 +78,25 @@ NO_SHADOW_DETAIL_SIZE = 100000
 # (0.30-0.35 m): anything this short is driven OVER, not into. The collision settings still win
 # in the other direction; this can only ever remove collision, never add it.
 FOREST_COLLIDABLE_MIN_HEIGHT = 0.5
+
+# And below this horizontal FOOTPRINT in metres, whatever its height. Height alone was the wrong
+# instrument and it let through exactly what Naomi asked to have removed: a fire hydrant is 0.97 m
+# tall and a road sign 2.2 m, so both cleared the height rule and both stopped a car dead.
+#
+# Measured over all 2,928 collidable types of the reference city, `max(x_extent, z_extent)` from
+# the shape's own bounds: < 0.40 m takes 50 types, < 0.60 m takes 165, **< 0.80 m takes 442**, and
+# < 1.00 m takes 659. At 0.80 the list is what it should be — NA_FireHydrant01 (0.46),
+# NA_OnewaySign01 (0.49), NA_ParkingSign01 (0.54), NA_TrafficLightCar01 (0.56), Trashbin01-04
+# (0.49-0.73), NA_MailboxStand01-04 (0.30-0.66), SignSidewaySmall01/02 (0.78), GardenLight01 (0.13)
+# — and nothing survives below it that a car should stop against.
+#
+# **One exception this rule gets wrong, declared rather than special-cased: `Bollard01`/`02` are
+# 0.24 m and a bollard exists precisely to stop a vehicle.** Exempting them means matching a name,
+# which is not a property of the object and which this repo has a standing rule against; if
+# driving through a bollard turns out to matter, the fix is a property the bundle carries, not a
+# string. THE NUMBER IS OURS — CS2 has no collision concept for a placed object at all — so it is
+# declared here, counted in the report as `tooThin`, and exposed as a setting.
+FOREST_COLLIDABLE_MIN_FOOTPRINT = 0.8
 
 # Decimal places on a forest item's `rotationMatrix`. 4 dp is 1e-4 of a unit vector = 0.6 mm of
 # arc at 10 m, well under a texel of anything, and it is ~20 % off a 188 MiB file that BeamNG
@@ -230,6 +255,20 @@ def run(ctx, progress):
                 "value": FOREST_COLLIDABLE_MIN_HEIGHT,
                 "items": forest_stats.get("itemsNotCollidable", 0),
             },
+            "forestFootprintThreshold": {
+                "what": f"a forest type whose shape is under "
+                        f"{settings.get('collision_min_footprint', FOREST_COLLIDABLE_MIN_FOOTPRINT)} m "
+                        f"ACROSS ships collidable:false whatever its height - road signs, "
+                        f"hydrants, bins, mailbox stands, bollards, traffic lights",
+                "why": "height alone let through the very things it was meant to catch (a hydrant "
+                       "is 0.97 m tall, a road sign 2.2 m); what decides whether a car should stop "
+                       "is the FOOTPRINT. OURS - CS2 states nothing about collision for a placed "
+                       "object. KNOWN WRONG for bollards, which are 0.24 m across and exist to "
+                       "stop vehicles; exempting them would mean matching a name",
+                "count": forest_stats.get("tooThin", 0),
+                "value": float(settings.get("collision_min_footprint",
+                                            FOREST_COLLIDABLE_MIN_FOOTPRINT) or 0.0),
+            },
             "forestRotationPrecision": {
                 "what": f"a forest item's rotationMatrix is written at {ROTATION_DP} decimal places",
                 "why": "1e-4 of a unit vector is 0.6 mm of arc at 10 m; the file is parsed line by "
@@ -338,7 +377,8 @@ def _add_static(level, record, name, row, kind, position, rotation, scale, colli
            # **Recommended**"; "Visible Mesh Final - uses rendered mesh polygons intentionally.
            # Use only when required", and "expensive". A3 shipped 14,658 statics on the expensive
            # one while carrying the cheap one in the file unused.
-           "collisionType": COLLISION_TYPE if row.get("collider", "none") != "none" else "None",
+           "collisionType": ("None" if row.get("collider", "none") in NO_COLLIDER
+                             else COLLISION_TYPE),
            "decalType": "None",
            "useInstanceRenderData": True,
            "annotation": ANNOTATION.get(kind, "OBSTACLES")}
@@ -448,8 +488,11 @@ def _write_item_data(level, types, settings, collide):
     """
     shadows = bool(settings.get("forest_shadows", True))
     document = {}
-    stats = {"types": 0, "collidable": 0, "tooShort": 0, "policyOff": 0, "plant": 0,
+    stats = {"types": 0, "collidable": 0, "tooShort": 0, "tooThin": 0, "policyOff": 0,
+             "noCollider": 0, "plant": 0,
              "itemsNotCollidable": 0}
+    min_footprint = float(settings.get("collision_min_footprint",
+                                       FOREST_COLLIDABLE_MIN_FOOTPRINT) or 0.0)
     for name, (row, kind) in sorted(types.items()):
         entry = {"name": name, "internalName": name, "class": "TSForestItemData",
                  "persistentId": level.pid("forestItem:" + name),
@@ -468,9 +511,17 @@ def _write_item_data(level, types, settings, collide):
             # and it holds regardless of how tall the shape happens to be.
             collidable = False
             stats["plant"] += 1
+        elif row.get("collider") in NO_COLLIDER:
+            # The shape carries no collision mesh at all - `collision_lights` off takes every
+            # light-bearing prefab out - so a collidable forest type would name nothing.
+            collidable = False
+            stats["noCollider"] = stats.get("noCollider", 0) + 1
         elif _shape_height(row) < FOREST_COLLIDABLE_MIN_HEIGHT:
             collidable = False
             stats["tooShort"] += 1
+        elif _shape_footprint(row) < min_footprint:
+            collidable = False
+            stats["tooThin"] += 1
         if collidable:
             stats["collidable"] += 1
         else:
@@ -496,6 +547,19 @@ def _forest_bytes(forest_dir):
     return {"files": files, "bytes": total, "mib": round(total / (1 << 20), 1)}
 
 
+def _shape_footprint(row):
+    """The shape's larger HORIZONTAL extent in metres — glTF X and Z, since §2.2 keeps Y up.
+
+    Not `TSForestItemData.radius`, which is a bounding SPHERE and therefore dominated by height on
+    exactly the thin, tall things this is meant to catch: a palm tree reads 6.42 m and a pier
+    16.76, while a 2.2 m road sign reads over 1 m on a 0.5 m post.
+    """
+    lo, hi = row.get("boundsMin"), row.get("boundsMax")
+    if not lo or not hi or len(lo) < 3 or len(hi) < 3:
+        return float("inf")                            # unknown footprint never loses its collider
+    return max(float(hi[0]) - float(lo[0]), float(hi[2]) - float(lo[2]))
+
+
 def _shape_height(row):
     """The shape's own height in metres — glTF Y, which §2.2 keeps as up. Bounds come from the
     shapes stage, which measured them in the mesh's own space."""
@@ -508,13 +572,19 @@ def _shape_height(row):
 INPUTS = ("layer:instances", "layer:meshes", "derived:paint_variants.json")
 SETTINGS = ("trees", "props", "buildings", "foliage_density", "prop_density", "region",
             "collision_preset", "collision_buildings", "collision_props", "collision_trees",
+            "collision_min_footprint", "collision_lights",
             "forest_shadows", "forest_min_items", "foliage_road_clearance")
 OUTPUTS = ("forest",)
 
 # version 4: `forest_min_items` folds a thin colour-variant type into its untinted twin —
 # only into a type this build is already declaring, or the items land on a type BeamNG drops
+# version 10: a forest type and a TSStatic both follow the SHAPE's `collider` - `collision_lights`
+# off leaves a lamp with no `Colmesh_` node, and naming one anyway is an object that collides with
+# nothing (`NO_COLLIDER`, audit §88)
+# version 9: A8/P4 - a forest type narrower than `collision_min_footprint` ships
+# collidable:false whatever its height, because height let through every road sign and hydrant
 # version 8: `rotationMatrix` is written as the object's own axes in groups of three - it
 # was flattened row-major, i.e. every TSStatic and forest item carried the INVERSE of its
 # rotation, which is why buildings stood diagonally on their own plots (A6.8)
 STAGE = Stage(STAGE_KEY, "Trees, props and buildings", enabled, units, run, inputs=INPUTS,
-              settings_keys=SETTINGS, outputs=OUTPUTS, after=("shapes",), version=8)
+              settings_keys=SETTINGS, outputs=OUTPUTS, after=("shapes",), version=10)

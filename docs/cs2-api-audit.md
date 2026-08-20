@@ -7110,3 +7110,453 @@ app-shell checks pass and `validate_bundle` is still VALID with its one known wa
 side (`leftHandTraffic`, `districts.jsonl`) is **built, awaiting an in-game re-rip** — no result
 from the current bundle can validate either, and the `poi` stage says so in its own report when it
 finds no `districts.jsonl`.
+
+---
+
+## 85. A7.5 — the navgraph loaded, and `map.lua` died on it (2026-08-19)
+
+`ai_roads` was turned on for the first time and the level never opened:
+
+```
+274.20757|E|GameEngineLua| *** FATAL LUA ERROR: [string "lua/ge/map.lua"]:459: attempt to compare nil with string
+(1) Lua upvalue 'edgeCompare' at line 459 of chunk 'lua/ge/map.lua'
+  a = {outPos, inNode:conn_2059580_0_2059608_11, speedLimit:33.33, ... }        -- no `lanes`
+  b = {lanes:-+, drivability:1, speedLimit:33.33, inNode:conn_2059580_0_2059608_13, ... }
+(2) Lua upvalue 'optimizeNodes' at line 2000
+  path = {1:conn_2059580_0_2059608_11, 2:...12, 3:...13, 4:...11}               -- a 3-cycle
+```
+
+**It is a BeamNG bug, and our data is what walks into it.** Both halves matter, and neither is
+the whole answer.
+
+### Their half
+
+`edgeCompare` (map.lua:432-467) compares ten fields in order and guards nine of them —
+`(a.speedLimit or 0)`, `(a.type or '')`, `(a.noMerge and 1 or 0)`. The tenth:
+
+```lua
+elseif a.lanes ~= b.lanes then
+  return a.lanes < b.lanes            -- map.lua:459, no `or ''`
+```
+
+`optimizeNodes` calls it with an edge it built itself. When it drops a degree-2 node whose two
+neighbours are **already linked**, it composes the replacement edge (map.lua:1985-1997) out of
+`drivability`, `speedLimit`, `oneWay`, the four in/out positions and radii, and `type` — and
+**never copies `lanes`**. So that edge's `lanes` is nil, the chord's is a string (every DecalRoad
+edge gets one: `autoLanes: false` composes it from `lanesLeft`/`lanesRight`, and when it is not
+set `getEdgeLaneConfig` derives one from the node radii — map.lua:705), and the load dies the
+moment the nine guarded fields tie. Vanilla never reaches it because vanilla rarely has a
+triangle whose three edges are attribute-identical. We had 331 triangles, 9 of them tying.
+
+We cannot patch the game's Lua. What a level can do is never hand it that shape.
+
+### Our half, and it is two defects
+
+**1. A terminal node did not carry the width of the thing it joined.** A connector took
+`min(width of the two segments)` for every node, so a 3.5 m turning movement ending exactly on a
+6.5 m road's centerline end sat 0 m away from it — and stayed a **different node**, because
+`mergeOverlappingNodes(endNodesOnly)` fuses two terminal nodes only when they are within 0.1 m
+**and their radii agree to within 0.1 m** (map.lua:1209-1211). 9,738 of the reference city's
+terminal nodes were the wrong width. That is also the second, quieter defect it caused: the graph
+BeamNG built stood in **692 components with the largest holding 13.8 %** of the nodes when its
+optimiser ran. `csiibundle.navgraph`'s own component count said 96.3 % — it was measuring
+coordinate equality, which is not the node identity the consumer has, and it now uses the same
+`_terminal_clusters` the rest of the module does.
+
+**2. The emitted set was not a simple graph.** 874 connectors began and ended on the same node
+(two segment ends CS2 placed at one point, with a turning movement between them: a self-loop),
+1,245 joints were zero length, and 962 connector/joint pairs ran between the same two ends.
+`map.nodes[a].links[b]` holds exactly one edge, so a second road between one pair is not a second
+edge — it is the first one silently replaced, and the two of them together (one direct, one
+through an interior node) are precisely the triangle above.
+
+### The fix, and what it cost
+
+`csiibundle.navgraph` now gives a connector's or joint's terminal node the width of the segment
+end it is snapped onto, and runs `_simple_graph` before returning: terminal nodes clustered by the
+consumer's own merge rule, then no self-loop and one road per node pair. **A segment road is never
+dropped** — a CS2 ring road legitimately begins and ends at one node, and two segments sharing a
+pair are a divided carriageway.
+
+| | roads | map nodes | triangles | raising | components | largest |
+|---|---|---|---|---|---|---|
+| as loaded | 17,619 | 34,584 | 331 | **9** | 692 | 13.8 % |
+| terminal widths only | 17,619 | 32,857 | 321 | 5 | — | — |
+| widths + simple graph | **15,393** | 32,494 | **0** | **0** | 35 | 96.5 % |
+
+2,114 self-loops and 112 duplicates dropped. Coverage of the game's own car lanes is unchanged at
+**4,000/4,000**, and connectivity after *both* of BeamNG's merges is unchanged too (96.51 % →
+96.49 %) — the 13.8 % was an intermediate state the later radius merge repairs, which is why it
+was never visible as a symptom and why the crash was the only thing that surfaced it.
+
+### The instrument, in three layers
+
+`beamng/map_lua.py` ports `loadJsonDecalMap`'s DecalRoad branch, `mergeOverlappingNodes(true)` and
+the one `optimizeNodes` branch that can raise. It reproduces 9 raising configurations on the level
+that crashed and reports 0 on the rebuilt one. It is wired in three places, and the third is the
+only one that is a statement about the level:
+
+* `tools/check_navgraph_vs_game.py` — a sixth parity question, offline, before a build;
+* `apps/cs2beamng/beamng/validate_level.py` — over the built level's own `DecalRoad`s;
+* `tools/test_navgraph_map.py` — the gate, which asserts on `stages.navgraph.decal_road`'s
+  output rather than on the graph, after §80's lesson.
+
+The gate is on **`chords`**, not on `crashRisks`: which node of a merge group survives and in
+which order `next()` walks a table are Lua hash-order details the port does not reproduce, so
+"no triangle ties today" is luck and "no triangle" is a property.
+
+### The minimap implementation itself — re-read against 0.39.4, and it stands
+
+`ui/apps/minimap/roads.lua` iterates `map.getMap().nodes`, and for every link draws a **line from
+node to node**, coloured `drivability >= 0.9 ? road : > 0.25 ? low : lowest`, skipping
+`data.hiddenInNavi`. There is no image path for roads in that app at all, so invisible
+`DecalRoad`s are the mechanism and not a workaround for one. `uiNavi.lua:360` still reads
+`TerrainBlock.minimapImage` for the old navigation map, which the `terrain` stage still writes.
+Our `hiddenInNavi: false` and `drivability` 1.0 / 0.3 are read exactly as intended.
+
+
+### Rebuilt, and the level itself says 0
+
+`cs2_city_fine` rebuilt in place 2026-08-19 21:30, 14m55s, `status: done`, validator **0
+problems** - with `lights` off, `groundcover` on, `foliage_density` 60 / `prop_density` 100 and
+cook on (those settings had to be reconstructed; see below). The validator's own `navgraph` block,
+read off the 15,393 `DecalRoad`s that are IN the level rather than off the graph they came from:
+
+```json
+{"decalRoads": 15393, "drivable": 15393, "nodes": 51197,
+ "mapNodes": 32494, "endNodesMerged": 18703, "chords": 0, "crashRisks": 0}
+```
+
+Resident 3,381.7 MiB (A8's 3,382, unchanged - a navgraph is not a mesh). **Awaiting Naomi's
+load**: nothing here says the minimap DRAWS, only that the load can now reach it.
+
+### The settings behind a level must survive the build that made it
+
+Reconstructing them cost an hour. `cs2beamng_report.json` was the only per-level record, and the
+worker writes it LAST and `_remove_stale_report`s it FIRST - so the interrupted 20:41 build left a
+level folder nobody could reproduce. Most of it came back out of `cs2beamng_state/*.state.json`
+(terrain size and square size, texture caps, collider counts, imposter `minMetres`, `detailScale`)
+plus `docs/plans/a8-performance.md`'s record of which levers were built; the rest Naomi supplied.
+`pipeline/worker._write_settings` now writes every schema key to
+`<level>/cs2beamng_settings.json` **and** `~/.cs2beamng/levels/<level>.json` before stage one, and
+removes neither. It skips the write when the settings are unchanged, because `validate`
+fingerprints the level FOLDER and a fresh mtime alone would re-run it on every no-op build.
+
+
+---
+
+## 86. A7.6 - the route onto an overpass with no ramp (2026-08-19)
+
+Reported on the load that A7.5 made possible: *"the navigation is directing me onto an overpass,
+however, it's above me and not at the on ramp so i cannot physically get to it."*
+
+### What it was not, measured rather than assumed
+
+The obvious reading is a false edge - a bridge welded to the street beneath it. So every
+mechanism in `map.lua` that can CREATE a link the level did not ship was ported and run over the
+level's own 15,393 `DecalRoad`s, in `linkMap`'s order:
+
+| pass | links created | across more than 3 m of height |
+|---|---:|---:|
+| `mergeOverlappingNodes()` (map.lua:1211, `dist < max(r1, r2)`) | - | **2**, both a segment and its own connectors at one ramp |
+| `resolveTJunctions` (a degree-1 node grafted onto an edge) | 3 | 0 |
+| `resolveXJunctions` (two crossing edges, `< min(r1, r2) * 0.5`) | 221 | 0 |
+| `mergeNodesToLines` (a node spliced into an edge, `< min(radius, node radius)`) | 1,810 | 0 |
+
+**The graph was not falsely connected.** `autoJunction: false` on every elevated segment is doing
+its job, and had the search stopped at the first plausible cause it would have clamped a width or
+widened a threshold and closed nothing.
+
+### What it was: the radius is read as "the car is on this road"
+
+`startPosLinks` (map.lua:2829) picks where a route BEGINS. Its cost for a candidate edge:
+
+```lua
+tmpVec:setScaled(max(0, 1 - max(nodeRadius[n1id], nodeRadius[n2id]) / (tmpVec:length() + 1e-30)))
+costs[key] = square(square(tmpVec.x) + square(tmpVec.y) + square(wZ * tmpVec.z))   -- map.lua:2871
+```
+
+`tmpVec` is the vector from the edge to the car. It is scaled by `max(0, 1 - R/|d|)`, so **an edge
+whose radius covers the car costs exactly zero** - and the `wZ = 4` height bias on the very next
+line multiplies a zero. Two roads that both cover the car are tied, and the router may begin the
+route on either of them.
+
+A navgraph node's radius is its road's half-width; that is BeamNG's own convention, and
+`numOfLanesFromRadius` (map.lua:542) inverts it to count lanes. A CS2 26 m carriageway therefore
+claims a 13 m radius, and a viaduct 7 m above the street is well inside it. Three other readers
+take the same "inside the radius" reading - `mergeOverlappingNodes`, `mergeNodesToLines`,
+`resolveXJunctions` - so this is the invariant the whole graph model rests on and not a quirk of
+one function.
+
+**Measured on the level as loaded: 31 of 112,030 sampled road points (0.03 %) sat inside the
+radius of a road 3 m or more above or below them.** Three sites, every one a 26 m carriageway
+under 7-8 m of clearance:
+
+```
+dz 7.0 m  seg_2059397 / seg_2059315  under seg_1705288 (radius 13.3)  at [-3044, 1829, 538]
+dz 7.0 m  seg_2059417                under seg_2402997 (radius 10.8)  at [-3959, 5700, 535]
+dz 8.1 m  seg_2059415                under seg_2402352 (radius 10.8)  at [-4014, 5678, 536]
+```
+
+Vanilla does not hit this because its AI roads are narrow - `west_coast_usa`'s 1,299 invisible
+roads run a median width of 6 m and a maximum of 19 - so a deck is outside the radius and its
+cost is non-zero. Ours are the game's own carriageway widths, which is right, and that is exactly
+what makes a wide road reach a deck.
+
+### The fix, and it is the engine's own invariant
+
+`csiibundle.navgraph._clearance_clamp`: **a segment's emitted half-width is capped at the distance
+to the nearest road at a different height**, less a 0.5 m margin, floored at one lane's half-width.
+It never widens a road and it is a SEGMENT-level cap, so a connector's terminal node keeps
+matching the segment end it joins - A7.5's other invariant, which a per-node clamp would break.
+
+| | roads | clamped | worst | stacked coverage | components | largest | lane coverage |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| A7.5 | 15,393 | - | - | **31 points / 3 sites** | 35 | 96.5 % | 4,000/4,000 |
+| A7.6 | 15,412 | 19 | 13.32 m | **0** | 35 | 96.5 % | 4,000/4,000 |
+
+**DECLARED APPROXIMATION**: those 19 segments' widths are understated, by up to 13.3 m on a 26 m
+carriageway. `widthClearanceClamped` and `widthClearanceWorst` carry it into the build report, and
+the note beside them says what it buys.
+
+`navgraph.stacked_coverage` is the predicate, `check_navgraph_vs_game.py` asks it as a seventh
+parity question, and `tools/test_navgraph_map.py` gates on it. Roads that share a terminal node or
+a SEGMENT are exempt - a ramp climbing away from the road it joins is stacked over it within a few
+metres of the junction, and a route starting on either of two roads you can drive between is not a
+wrong route. That exemption is `_false_welds`' own, not a new one.
+
+
+---
+
+## 87. A8/P2's LOD0 promotion was deleting the object, not the detail (2026-08-19)
+
+Two loads' worth of reports, one cause. *"It's not rendering the post but rendering the sign on
+top of it, which makes it look floating"* and *"some buildings not rendering their windows - a
+hole, you can see into or through the building."*
+
+### What the level shipped
+
+```json
+NA_ParkingSign01   "lods": {"lod0Promoted": true, "lod0Triangles": 22, "triangles": [4, 4],
+                            "switches": [{"metres": 0.0032}]}
+NA_CommercialLow01_L5_4x3   lod0Triangles 1,514 -> ships 381
+LightpoleCommercial01       lod0Triangles   472 -> ships 119
+```
+
+**22 triangles became 4.** Four triangles is one quad - the sign's panel, with the post gone, at
+every distance, because LOD 0 was dropped outright. 381 triangles is a facade that no longer
+closes its window openings.
+
+### Why the rule could not see it
+
+`lod0_max_error` (A8/P2) drops LOD 0 where the bake's measured p95 displacement says LOD 1's
+SURFACE is nowhere meaningfully away from it. Flattening a 5 cm post moves its surface **3 mm**,
+so `NA_ParkingSign01` measured 0.0032 m against a 0.10 m threshold and was promoted with room to
+spare. That is the same trap `lod_switch_error_px`'s own note describes - *"a surface distance is
+not a visual error for thin geometry: flattening a lamp post's tube moves its surface 0.06 m and
+destroys the object"* - reached through the other lever. The exemption that note earned was
+written per KIND (`DISPLACEMENT_RULE_KINDS`), and props and buildings are not exempt.
+
+### The instrument, and the first choice of it was wrong
+
+**A ratio says nothing.** `Five_Luxe_JBR_` keeps 24 % of its triangles and
+`NA_CommercialLow01_L5_4x3` keeps 25 %; one is still a tower and the other is a hole.
+
+**A floor on LOD 0's count is nearly right and lets buildings through**: 1,000 protected 2,358
+shapes for 10 % of the saving and left that 1,514-triangle building promoted.
+
+**The count that matters is the one that SHIPS.** `lod0_min_triangles` (default 1,000) is a floor
+on the promoted mesh: 59,389 triangles is plenty to stay closed, 381 is not, 4 is a panel.
+
+| floor on shipped triangles | shapes protected | of the promotion's saving |
+|---|---:|---:|
+| 500 | 2,648 | 12 % |
+| **1,000** | **2,941** | **26 %** |
+| 2,000 | 3,150 | 42 % |
+
+Every heavy shape the promotion exists for is still promoted - `Five_Luxe_JBR_` 243,371 ->
+59,389, `ParkingHall01` 231,552 -> 58,210. Exposed as a setting so the threshold is not buried
+(P4's own convention); `0` restores A8/P2.
+
+### What the windows were NOT, measured before the fix
+
+The window report was checked against three structural hypotheses first, and all three were
+false. It matters because each would have been a different fix:
+
+* **LOD 1 drops the window material** - 0 of 1,500 shapes. Only 2 lose any material run at all,
+  neither a window.
+* **The material does not resolve in the level** - 0 of 7,617 material references from shapes.
+  Windows dedupe to ONE canonical material for the whole city (`1win_02338c52...`, bound by 1,271
+  building shapes), which reads as "88 window materials for 1,271 buildings" and is the dedup
+  working, not a loss.
+* **The textures are missing** - all four maps present on disk.
+
+The shipped `.dae` binds `1win_...` on 3 of its 7 geometries, so the triangles were always there.
+What was not there was enough of them.
+
+
+### And the shell really does open — measured
+
+An edge used by exactly one triangle is a hole rim. CS2 buildings are facade shells, so LOD 0
+already has some; what the decimation does to the *fraction* is the point:
+
+| shape | LOD 0 | LOD 1 |
+|---|---|---|
+| `NA_CommercialLow01_L5_4x3` | 1,514 tris, 672 open edges (25.8 %) | 381 tris, 484 open edges (**59.5 %**) |
+| `EU_ResidentialLow02_L1_3x2` | 855 tris, 323 (22.4 %) | 217 tris, 184 (**44.1 %**) |
+| `Cemetery01` | 16,746 tris, 4,660 (17.0 %) | 4,303 tris, 2,977 (**38.0 %**) |
+
+Triangles fall 4x while the absolute count of open edges barely falls — so the decimator is
+spending its budget on the small closed features (the window reveals) and leaving their rims
+behind. That is the hole, and it is why the shape reads as "you can see into the building".
+
+**A rising open-edge fraction is the sharper instrument** and the one to reach for if the
+triangle floor proves too blunt; it needs the bake to measure it per level, which the triangle
+count does not.
+
+## 88. `collision_lights` - a lamppost renders and is not solid (2026-08-19)
+
+Asked for directly. The discriminator is the game's own: `lights.json` is keyed by prefab, and
+`csiibundle.lights.photometric_lights` splits a real light source from a colour slot (emissive
+material state). **218 prefabs own a photometric light**, of the 1,186 in `lights.json`, and no
+name is matched. What is in the 218, measured:
+
+```
+lamps                      44 prefabs   Lightpole* 13, WallLight* 22, Streetlight* 6, GardenLight* 3
+lit billboards            115           BillboardHuge/Large/Medium and their wall-mounted twins
+vehicles and the rest       59           cars, buses, aircraft, bicycles, WarningLight*
+traffic lights               0           all 12 are colour slots, which is what the split is for
+```
+
+**The billboards are the part a one-line description would hide**: an ad board is lit by a real
+floodlight, so it owns a photometric light and this rule takes its collision along with the
+lamps'. On the reference city that is 261 items of the 154,496 the rule touches, and the
+wall-mounted ones sit on a wall that still collides - declared here rather than exempted by name.
+
+180 of the 218 are placed in the reference city, and the build reports them as
+`colliders.lightNone: 194` shapes (one prefab can demand more than one state). Those shapes ship
+with no collision mesh at all and their forest types follow the shape rather than being decided
+again. Default OFF: `collision_min_footprint` does not catch a lamppost (0.4-3.2 m across) and a
+10 m pole that stops a car dead is the piece of street furniture a driver hits most.
+
+### The predicate was wrong, and the level it built is unaffected - measured (2026-08-20)
+
+`_light_bearing` handed `photometric_lights` **one prefab's entry list** where it takes the whole
+catalogue, and tested the returned **generator** for truth. A generator object is always truthy,
+so the set was every prefab in `lights.json` - 1,186 - and the "1,186 prefabs carry a photometric
+light" this section opened with was that same wrong count read back as if it were a measurement.
+Two defects in one line, and the second hid the first: had the generator ever been iterated, a
+list has no `.items()` and it would have raised.
+
+**It selected the same shapes anyway, and that is a property of the key domain rather than luck.**
+Every one of the 968 extra prefabs is a colour slot keyed `*_Mesh`, and **0 of the 1,283,502
+instances in the bundle carry a `_Mesh` prefab id** - such a key can never match a shape's asset.
+So `lightNone: 194` in the 2026-08-19 22:57 build is what the corrected predicate also gives, and
+the load of it stands.
+
+### ...and a TSStatic of one still claimed a collision mesh (2026-08-20)
+
+`lightNone` is a second sentinel for "this shape has no `Colmesh_` node", and only the FOREST path
+learned about it. The TSStatic path tested `collider != "none"`, so a light-bearing prefab placed
+as a static named `collisionType: "Collision Mesh"` over a shape with no collision mesh in it -
+an object that collides with nothing while paying for the lookup. `stages.instances.NO_COLLIDER`
+is now the one tuple both paths read.
+
+**It never reached the shipped level** - every light-bearing prefab in the reference city is
+forest-placed, and the build's own validator reports 0 such statics (its single problem is the
+budget band). It reached `test_a1_level`, whose headless build of the example bundle puts that
+bundle's one light-bearing prefab down as a TSStatic; the validator caught it there, on the
+check A5 added for exactly this (`610998d`).
+
+Fixed to `frozenset(prefab for prefab, _entry in photometric_lights(catalogue))`, and
+`test_a3_objects` now gates both directions on the example bundle's own light-bearing prefab -
+the collider present with `collision_lights` on, absent and counted with it off. That check is
+what would have caught it, and the old predicate happened never to be wrong about that one
+prefab, which is why the gate has to assert the OFF case rather than just tolerate it.
+
+## 89. A8 built — resident 4,282 → 3,382 MiB, and it is now under the "known to fit" line (2026-08-19)
+
+The approved half of `docs/plans/a8-performance.md` (items 1, 2, 5-trees-only, 6, 7, 8, 9),
+measured on the level before and after.
+
+```
+                          before        after      delta
+validate resident       4,282 MiB    3,382 MiB     -900   (-21 %)
+  meshes                4,173        3,332         -841
+  textures (at Lowest)    110           49          -61
+textures SHIPPED        1,753          790         -963
+triangles drawn     1,479,807    1,293,041     -186,766   (-13 %)
+forest items        1,181,394      909,286     -272,108   (-23 %)
+colliding types         2,928        2,476         -452
+level folder on disk   11,803 MiB   4,518 MiB   -7,285
+BeamNG temp/            4,998 MiB   3,843 MiB   -1,155
+vanilla ratio            3.11x        2.46x
+```
+
+**3,382 MiB is under A6.0's measured "known to fit" line of 3,473**, which no build has been since
+the band was derived. A6.0 is not closed — that line is a VRAM figure and the 11 GB Naomi reported
+is system RAM, which still has no instrument (§83, P8) — but it is the first build on the right
+side of the only bound that was ever measured.
+
+### What each lever actually returned
+
+**P1, the colour mask cap — 963 MiB, and it was a defect.** `KIND_CAP_SETTING` did not name
+`colormask`, so `caps.get("colormask", 0)` read as UNCAPPED: 767 of 771 masks shipped at
+1024 x 1024 beside 256-pixel albedos they exist to select against. Adding one entry took the
+shipped texture set from 1,753 to 790 MiB. The gate is now "every exported kind has a cap
+setting", which is the general form of the bug rather than the instance.
+
+**P5, lane furniture — 284 MiB and 186,766 triangles, and turning it off did nothing until it was
+fixed.** `stages/derived` skipped a disabled product with a bare `continue`, and only
+`sweep_orphans` removes shape files — so `lane_furniture: false` left all 284 MiB of
+`art/shapes/lanegeometry` exactly where it was. `Level.write_objects` had swept the TSStatics, so
+the level looked right and mounted the bytes anyway: **an off switch that removed the references
+and kept the payload.** Every product now sweeps its own folder when it is turned off.
+
+**P3 density, trees only — 272,108 items.** `foliage_density` 100 → 60, `prop_density` left at
+100 as asked. This is the frame-time lever, not the memory one: the 3,104 types stay mounted, and
+what goes is `.forest4.json` bytes, broadphase entries and per-frame culling candidates.
+
+**P4, the footprint collision rule — 452 types.** `tooThin: 441` plus the shifts around it: 2,928
+collidable types → 2,476. Hydrants, road signs, traffic lights, bins, mailbox stands and garden
+lights stop being solid; **bollards do too, and that is declared, not hidden.**
+
+**P2, LOD 0 promotion — ~557 MiB of object meshes** (`cs2` 2,419 → 1,862). At `lod0_max_error`
+0.10 m it reached the shapes whose LOD 1 is measurably indistinguishable and **left every landmark
+alone**, which is what the threshold was chosen for: `MedicalUniversity01` is still 26.1 MiB and
+the top 100 shapes are still 964 MiB, because their LOD 1 error is above 0.10 m. The remaining
+concentration is untouched and is the extra to consider next.
+
+**P7 — 7,285 MiB of disk.** 7,883 `.dae` sources removed (4,348 MiB) and 281 stale cooked shapes
+swept out of BeamNG's `temp/` (284 MiB); the rest is the lane furniture and the masks. Neither is
+a RAM saving.
+
+### Three things the pass broke and had to fix, all the same shape
+
+Every one was an instrument that keyed on the `.dae` and read a level without sources as empty:
+
+1. **`validate_level` reported 21 missing files** — `shapeName` names the `.dae` and the engine
+   loads the `.cdae`. `_shape_present` now accepts either, which is what vanilla does (182 of its
+   6,361 cooked shapes have no source).
+2. **`level_budget` reported 0 shapes, 0 MiB and 0 triangles** — the exact P8 blindness the plan
+   warned about, in the tool the plan nominates as its own gate. It now keys on either file.
+3. **The detail ladder is only in the XML**, so with the sources gone the triangle count was
+   unrecoverable at any price. The cook now writes `shape_ladders.json` (811 KiB, 7,883 shapes)
+   from the sources *before* it deletes them, and `level_budget` falls back to it. Without that,
+   `keep_dae: false` would have silently retired the drawn-triangle gate this project has used
+   since A5.
+
+**The lesson is §80's again, one level up.** A6.3 passed 99/99 on a fix that reached no file;
+here three instruments passed on a level they could no longer see. A tool that reads a build
+must be tested against the build the settings can actually produce, not only the default one.
+
+### Still open
+
+* **`cs2` draws 18,439 triangles across 12,448 statics — 1.5 each**, unchanged by any of this and
+  still not credible. P8 stands: the drawn-triangle gate may be blind to every object in the
+  level, exactly as §74 found for A6.2's.
+* **System RAM has no instrument.** Every figure here is bytes on disk.
+* `ai_roads` is off, so `map.getMap()` is empty and the minimap draws nothing — A7's item, now
+  surfaced by A7's own validator check rather than by a load.
+
+---

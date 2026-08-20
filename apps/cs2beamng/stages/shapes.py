@@ -262,11 +262,18 @@ def _shape_job(args):
     levels, lod_stats, ladder = _lod_levels(derived_dir, source, shape_name, base_mesh, null_px,
                                             radius, displacement, kind, aliases, tinted,
                                             level_name, options)
-    # the collider comes off LOD 1 where the bake generated one — `collision.colmesh_from_lod`
-    # is written for the ~25 % level, and a 20k-triangle building shell is not a collider
-    colliders, collider_kind = _collider(shape_name, base_mesh,
-                                         ladder[1] if len(ladder) > 1 else base_mesh, kind, options,
-                                         is_tree)
+    # The collider comes off LOD 1 where the bake generated one — `collision.colmesh_from_lod` is
+    # written for the ~25 % level, and a 20k-triangle building shell is not a collider. **WHICH
+    # ENTRY OF THE LADDER THAT IS MOVED IN A8**: with `lod0_max_error` promoting LOD 1 to the top
+    # detail, LOD 1 is `ladder[0]` and `ladder[1]` is LOD 2 — taking index 1 blindly would hand
+    # every promoted shape a collider two levels coarse than intended.
+    lod1_mesh = (ladder[0] if lod_stats.get("lod0Promoted")
+                 else (ladder[1] if len(ladder) > 1 else base_mesh))
+    if asset in options.get("no_collide", ()):
+        colliders, collider_kind = (), "lightNone"
+    else:
+        colliders, collider_kind = _collider(shape_name, base_mesh, lod1_mesh, kind, options,
+                                             is_tree)
     # How well the trunk search actually found a trunk. `_trunk_group` prefers a material run
     # NAMED for one, and on a CS2 bundle that branch never fires — the game's material names are
     # hashed asset ids (`lvl_OakTreeAdult01_c8092af6...`), so all 32 tree prefabs of the reference
@@ -386,6 +393,42 @@ def _bound_material(raw, aliases, tinted, level_name):
 # OURS, declared, and reversible the moment someone measures foliage error properly.
 DISPLACEMENT_RULE_KINDS = ("building", "prop", "decal")
 
+# A8/P2. Metres of measured surface error at which LOD 1 REPLACES LOD 0 rather than following it.
+# 0 disables. LOD 0 is ~66 % of a shape's bytes and a shape is mounted whole for one instance in
+# view, so where the decimator's own p95 displacement says LOD 1 is nowhere further than this from
+# the surface it replaces, those bytes buy nothing on screen. Measured on the reference city:
+# 0.05 m reaches 2,947 shapes for 282 MiB, **0.10 m reaches 3,375 for 387 MiB**, 0.50 m reaches
+# 3,683 for 585 MiB. 0.10 is four times tighter than the point where the error starts landing on
+# landmarks (`InternationalAirport01` is 0.42 m), and the figure is a p95, so 5 % of a promoted
+# surface is further out than it.
+LOD0_MAX_ERROR_DEFAULT = 0.10
+
+# ...and the shape is kept whole when the promotion would leave it SHIPPING fewer triangles than
+# this, whatever its displacement says.
+#
+# A8/P2's promotion exists to save BYTES, and a shape with no triangles has no bytes to save. The
+# same decimation ratio means two different things at the two ends of the range: `Five_Luxe_JBR_`
+# goes 243,371 -> 59,389 triangles (24 % kept) and is still a tower; `NA_ParkingSign01` goes
+# **22 -> 4** (18 % kept) and 4 triangles is one quad — the sign's panel, with its post gone, which
+# is what "the sign floats and the post is not rendered, even up close" was.
+#
+# A p95 SURFACE distance cannot see that. Flattening a 5 cm post moves its surface 3 mm, so
+# `NA_ParkingSign01` measured 0.0032 m against a 0.10 m threshold and was promoted with room to
+# spare — the exact failure `lod_switch_error_px`'s own note warns about ("a surface distance is
+# not a visual error for thin geometry"), reached by the other lever.
+#
+# THE COUNT THAT MATTERS IS THE ONE THAT SHIPS, not LOD 0's. The ratio says nothing: `Five_Luxe_JBR_`
+# keeps 24 % of its triangles and `NA_CommercialLow01_L5_4x3` keeps 25 %, and one is still a tower
+# while the other is a facade with 381 triangles — not enough to keep its window openings closed,
+# which is "you can see into the building". 59,389 triangles is plenty; 381 is not, and 4 is a
+# sign's panel with no post.
+#
+# MEASURED over the reference city's 3,338 promoted shapes: a floor of 1,000 SHIPPED triangles
+# protects 2,941 of them for **26 % of the triangles the promotion saved**, and every one of the
+# heavy shapes it exists for — Five_Luxe_JBR_ 243,371 -> 59,389, ParkingHall01 231,552 -> 58,210 —
+# is still promoted. A floor on LOD 0's count instead let this building through at 1,514.
+LOD0_MIN_TRIANGLES = 1000
+
 
 def _lod_levels(derived_dir, source, shape_name, base_mesh, null_px, radius, displacement,
                 kind, aliases, tinted, level_name, options):
@@ -401,7 +444,7 @@ def _lod_levels(derived_dir, source, shape_name, base_mesh, null_px, radius, dis
     """
     meshes = [base_mesh]
     generated = []
-    stats = {"levels": 1, "triangles": [len(base_mesh.tris)]}
+    stats = {"levels": 1, "triangles": [len(base_mesh.tris)], "lod0Promoted": False}
     if options["generate_lods"]:
         for level in (1, 2):
             path = os.path.join(derived_dir, "lods", f"{source}_LOD{level}.glb")
@@ -420,6 +463,40 @@ def _lod_levels(derived_dir, source, shape_name, base_mesh, null_px, radius, dis
             generated.append(level)
             stats["levels"] += 1
             stats["triangles"].append(len(mesh.tris))
+
+    # A8/P2 — DROP LOD 0 where LOD 1 is measurably indistinguishable from it.
+    #
+    # A shape is mounted WHOLE for one instance in view, and LOD 0 is ~66 % of its bytes
+    # (measured over 200 shapes and again over the 60 heaviest). Where the decimator's own
+    # recorded displacement says LOD 1's surface is nowhere meaningfully away from LOD 0's, those
+    # bytes buy nothing: the ladder simply starts one rung coarser, LOD 2 becomes the only
+    # generated level, and every switch threshold below is computed exactly as before.
+    #
+    # `displacement[0]` is the p95 distance from LOD 1's surface back to LOD 0's, in the mesh's
+    # own metres. On the reference city at 0.10 m this reaches 3,375 of 4,165 shapes and saves
+    # ~387 MiB; `Five_Luxe_JBR_` goes 243,371 -> 59,389 triangles at 8 cm of error.
+    #
+    # `exempt` kinds keep LOD 0 unconditionally, for the same reason they are exempt from the
+    # displacement switch rule: a 24-triangle lamp-post LOD measures 0.06 m out and is visually
+    # total, so a distance is not a fair test of it (A6.7).
+    promote = float(options.get("lod0_max_error") or 0.0)
+    keep_small = int(options.get("lod0_min_triangles") or 0)
+    if (promote > 0.0 and generated and generated[0] == 1 and len(meshes) > 1
+            and kind in DISPLACEMENT_RULE_KINDS
+            and displacement and displacement[0] is not None
+            and float(displacement[0]) <= promote
+            and len(meshes[1].tris) >= keep_small):
+        stats["lod0Promoted"] = True
+        stats["lod0Triangles"] = len(base_mesh.tris)
+        meshes = meshes[1:]                  # LOD 1 is now the shape's own top detail
+        generated = generated[1:]            # ...so only LOD 2 is still a GENERATED level
+        stats["levels"] -= 1
+        stats["triangles"] = stats["triangles"][1:]
+    elif (promote > 0.0 and generated and generated[0] == 1 and len(meshes) > 1
+          and kind in DISPLACEMENT_RULE_KINDS and displacement
+          and displacement[0] is not None and float(displacement[0]) <= promote):
+        stats["lod0KeptSmall"] = len(meshes[1].tris)      # too few triangles to survive the drop
+
     floor = max(2.0, null_px * LADDER_RATIOS[0])
     # one threshold per mesh, nearest first: each generated level's switch point, and the floor
     # for the coarsest mesh, which has to hold the last band before `nulldetail`. The ladder's
@@ -572,7 +649,17 @@ def run(ctx, progress):
         "tree_wind": bool(settings.get("tree_wind", False)),
         # A6.7: how many pixels of surface error a generated level may show where it takes over
         "switch_error_px": float(settings.get("lod_switch_error_px") or DEFAULT_SWITCH_ERROR_PX),
+        # A8/P2: metres of measured surface error at which LOD 1 replaces LOD 0 outright
+        "lod0_max_error": float(settings.get("lod0_max_error", LOD0_MAX_ERROR_DEFAULT) or 0.0),
+        # ...and never on a shape this small, whatever the measured displacement says
+        "lod0_min_triangles": int(settings.get("lod0_min_triangles", LOD0_MIN_TRIANGLES)
+                                  if settings.get("lod0_min_triangles") is not None
+                                  else LOD0_MIN_TRIANGLES),
         "collide": _collision_policy(settings),
+        # A prefab CS2 gives a photometric light to is a LAMP, and `collision_lights` says
+        # whether one is solid. The set is the game's own answer to "is this a lamp" - see the
+        # setting's help - and it is empty when lamps are allowed to collide.
+        "no_collide": _light_bearing(ctx.bundle) if not settings.get("collision_lights") else frozenset(),
     }
 
     jobs = {}
@@ -650,6 +737,32 @@ def _absorb(key, value, results, errors, progress):
         results[key] = value
     if (len(results) + len(errors)) % 200 == 0:
         progress.check()
+
+
+def _light_bearing(bundle_dir):
+    """Every prefab CS2 gives a photometric light to — the lamps, from the game's own data.
+
+    `lights.json` is keyed by prefab and holds two kinds of entry: a photometric light (a real
+    source) and a colour slot (emissive material state — a neon sign, a traffic signal's red).
+    Only the first makes something a lamp, and `csiibundle.lights.photometric_lights` is the
+    split. On the reference city that is **218 prefabs of the 1,186 in `lights.json`**: 44 lamps
+    (every `Lightpole*`, `WallLight*`, `Streetlight*`, `GardenLight*`), 115 floodlit billboards,
+    the vehicles, and none of the 12 traffic lights — which is why this is the discriminator
+    rather than a name match (CLAUDE.md, and the tree/plant lesson behind it). The billboards are
+    the part a name match would never have produced, and they are declared in audit §88 rather
+    than exempted.
+    """
+    from csiibundle import lights as lights_mod
+
+    try:
+        catalogue = lights_mod.load(bundle_dir)
+    except (OSError, ValueError):
+        return frozenset()
+    # `photometric_lights` takes the CATALOGUE and yields `(prefab, entry)`. Handing it one
+    # prefab's entry LIST and testing the generator for truth is true for every prefab in
+    # `lights.json` — 1,186 of them rather than the 218 that own a light — which is what this
+    # line did until it was measured (audit §88).
+    return frozenset(prefab for prefab, _entry in lights_mod.photometric_lights(catalogue))
 
 
 def _collision_policy(settings):
@@ -792,8 +905,20 @@ def _report(results, demand, scan_stats, options, errors, started, progress, rew
                      f"{entry['shapes']:,} shapes (median {entry['deferredMedianFactor']}x further "
                      f"out, worst {entry['deferredMaxFactor']}x); the rest keep the ladder's own "
                      f"place, which no shape now takes NEARER than")
+    promoted = [r for r in results.values() if (r.get("lods") or {}).get("lod0Promoted")]
+    kept_small = [r for r in results.values() if (r.get("lods") or {}).get("lod0KeptSmall")]
+    if kept_small:
+        smallest = min(int(r["lods"]["lod0KeptSmall"]) for r in kept_small)
+        progress.log(f"shapes: LOD0 is KEPT on {len(kept_small):,} shapes that measured within "
+                     f"{options.get('lod0_max_error')} m of their LOD1 but hold fewer than "
+                     f"{options.get('lod0_min_triangles'):,} triangles once promoted (smallest "
+                     f"{smallest}) - a surface distance cannot see a decimation that opened the "
+                     f"object up, and 381 triangles is a facade you can see through. "
+                     f"{len(promoted):,} shapes were still promoted")
     return {
         "shapes": len(results),
+        "lod0Promoted": len(promoted),
+        "lod0KeptSmall": len(kept_small),
         "shapesRewritten": rewritten,
         "orphansRemoved": orphans,
         "failed": len(errors),
@@ -938,12 +1063,25 @@ INPUTS = ("layer:instances", "layer:meshes", "derived:lods", "derived:materials.
 SETTINGS = ("trees", "props", "buildings", "foliage_density", "prop_density", "region",
             "foliage_road_clearance",
             "generate_lods", "imposters", "imposter_min_metres", "view_distance",
-            "lod_detail_scale", "lod_detail_scale_prop", "lod_switch_error_px", "tree_wind",
-            "collision_preset", "collision_buildings", "collision_props", "collision_trees")
+            "lod_detail_scale", "lod_detail_scale_prop", "lod_switch_error_px", "lod0_max_error", "lod0_min_triangles",
+            "tree_wind",
+            "collision_preset", "collision_buildings", "collision_props", "collision_trees",
+            "collision_lights")
 OUTPUTS = ("art/shapes/cs2",)
 
+# version 13: a prefab CS2 gives a photometric light to ships NO collider while `collision_lights`
+# is off - it renders and a car drives through it (audit §88)
+# version 12: ...and that floor is on the count the shape SHIPS, not on LOD 0's. A ratio says
+# nothing (a tower and a hole both keep ~25 %), and a floor on LOD 0's count left the
+# 1,514-triangle facade promoted to 381
+# version 11: `lod0_min_triangles` - version 10's promotion is REFUSED where it would leave the
+# shape too small to stay closed, whatever its p95 displacement measured; flattening a 5 cm sign
+# post moves its surface 3 mm, so a 22-triangle sign shipped as 4 and a facade as 381 (audit §87)
 # version 9: vegetation keeps the ladder (the rule's metric says nothing useful about a canopy,
 # and applying it held 1,346,600 tree placements at full geometry for +24 % triangles)
+# version 10: A8/P2 - LOD 0 is DROPPED where the decimator's own measured displacement says LOD 1
+# is within `lod0_max_error` of it, so the shape's own top detail becomes LOD 1 and the ladder
+# starts one rung coarser; LOD 0 is ~66 % of a shape's bytes and a shape is mounted whole
 # version 8: that rule may only DEFER a level, never advance it - allowing both directions put
 # 2,586 of 2,903 prop shapes and 615 of 1,057 building shapes onto decimated geometry NEARER than
 # the ladder ever had (a streetlight's 24-triangle level from 13 m), and the load came back worse
@@ -956,4 +1094,4 @@ OUTPUTS = ("art/shapes/cs2",)
 # every shape row carries `tree` and `trunkRatio`
 STAGE = Stage(STAGE_KEY, "Object shapes", enabled, units, run, inputs=INPUTS, settings_keys=SETTINGS,
               outputs=OUTPUTS,
-              shared_keys=("shapes", "materials_used", "materials_variants_used"), version=9)
+              shared_keys=("shapes", "materials_used", "materials_variants_used"), version=13)

@@ -88,6 +88,17 @@ SCHEMA = {
     "terrain_blend_sharpen": (1.0, "float", "Ground-boundary interlock, x the derived amount (1 = faithful; 2-3 dissolves the blocky material boundaries our 1.75 m layer grid causes, at the cost of a rougher blend than the game's)"),
     "forest_shadows": (True, "bool", "Forest items cast shadows"),
     "tree_wind": (False, "bool", "Synthesise wind vertex colours for trees"),
+    # A8/P2: metres of measured surface error at which LOD 1 replaces LOD 0 outright. 0 = keep
+    # every LOD 0. See `stages.shapes.LOD0_MAX_ERROR_DEFAULT` for the measurement behind 0.10.
+    "lod0_max_error": (0.10, "float", "Drop LOD0 where LOD1 is within this many metres of it"),
+    "lod0_min_triangles": (1000, "int", "...but never where that would leave the shape SHIPPING fewer triangles than this, whatever its measured displacement says. A p95 SURFACE distance cannot see that a decimation opened an object up: flattening a 5 cm sign post moves its surface 3 mm, so NA_ParkingSign01 measured 0.0032 m against the 0.10 m threshold and shipped as 4 triangles - a panel with no post, at every distance - and NA_CommercialLow01_L5_4x3 shipped 381 triangles of facade you can see through. THE RATIO SAYS NOTHING: Five_Luxe_JBR_ keeps 24 % of its triangles and that building keeps 25 %; 59,389 triangles is still a tower and 381 is a hole. MEASURED over the reference city's 3,338 promoted shapes: a floor of 1,000 shipped triangles protects 2,941 of them for 26 % of the triangles the promotion saved, and every heavy shape it exists for is still promoted. 0 = no floor, the A8/P2 behaviour"),
+    # A8/P7. `sweep_temp` is free and on. `keep_dae` is ON BY DEFAULT and that is deliberate:
+    # dropping the sources saves 5.4 GB of DISK and no RAM, and the NEXT build has to rewrite
+    # every `.dae` it deleted, which makes the cook recompile all of them (~9 min on the full
+    # city). Turn it off for a build you are shipping, not for one you are iterating on.
+    "sweep_temp": (True, "bool", "Delete cooked shapes in BeamNG's temp/ that this level no longer has"),
+    "keep_dae": (True, "bool", "Keep .dae sources beside the cooked .cdae (off saves ~5 GB, forces a full recook next build)"),
+
     # collision
     "collision_preset": ("simplified", "choice:exact|simplified|off", "Collision detail"),
     "collision_buildings": (True, "bool", "Buildings collide"),
@@ -96,6 +107,10 @@ SCHEMA = {
     "collision_furniture": (True, "bool", "Fences and lane furniture collide"),
     "collision_skirts": (True, "bool", "Foundation skirts collide"),
     "collision_paint": (False, "bool", "Markings and painted surfaces collide (not recommended)"),
+    # A8/P4: below this horizontal footprint a forest type ships collidable:false whatever its
+    # height. See `stages.instances.FOREST_COLLIDABLE_MIN_FOOTPRINT`.
+    "collision_min_footprint": (0.8, "float", "Props narrower than this (metres) do not collide"),
+    "collision_lights": (False, "bool", "Street lights, lampposts and every other LIGHT-BEARING prop collide. Off by default: a lamppost is 0.4-3.2 m across so the footprint rule does not catch it, and a 10 m pole that stops a car dead is the one piece of street furniture you hit most. WHICH PREFABS: the ones CS2's own `lights.json` gives a photometric light to - 218 of the 1,186 entries in it, being 44 lamps (Lightpole/WallLight/Streetlight/GardenLight), 115 floodlit billboards, the vehicles, and none of the 12 traffic lights - so this is the game's own answer to 'is this a lamp' and not a name match. The billboards ride along with the lamps and are declared in audit 88 rather than exempted by name"),
     # process
     "jobs": (0, "int", "Worker processes for parallel stages (0 = CPU count - 1)"),
     "rebuild": (False, "bool", "Rebuild every stage from scratch, ignoring level_state.json (what `cs2beamng build --force` sets). Off = a stage whose declared inputs and settings are unchanged is skipped and its objects replayed, which is what makes a no-op rebuild seconds instead of 14 minutes"),
@@ -115,12 +130,13 @@ GROUPS = [
     ("How much", ["foliage_density", "prop_density", "texture_max", "texture_max_normal", "texture_max_data",
                   "texture_max_variant", "texture_dds", "generate_lods", "tile_lod", "imposters",
                   "imposter_min_metres", "lod_detail_scale", "lod_detail_scale_prop",
-                  "lod_switch_error_px",
+                  "lod_switch_error_px", "lod0_max_error", "lod0_min_triangles", "sweep_temp", "keep_dae",
                   "paint_kinds", "paint_factor_max_error", "paint_variants_tree", "paint_variants_prop",
                   "forest_min_items", "lane_max_tris", "foliage_road_clearance",
                   "view_distance", "tod_hour", "terrain_brightness", "tile_size", "terrain_upsample", "terrain_holes", "terrain_blend_sharpen", "forest_shadows", "tree_wind"]),
     ("Collision", ["collision_preset", "collision_buildings", "collision_props", "collision_trees",
-                   "collision_furniture", "collision_skirts", "collision_paint"]),
+                   "collision_furniture", "collision_skirts", "collision_paint",
+                   "collision_min_footprint", "collision_lights"]),
     ("Target machine", ["gpu_vram_mib", "render_width", "render_height"]),
     ("Process", ["jobs", "rebuild", "keep_partial", "cook", "beamng_exe", "ui_browser", "quality_preset"]),
 ]

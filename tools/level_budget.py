@@ -125,6 +125,28 @@ def screen_px(radius, distance, screen_height=1080.0, fov_degrees=45.0):
     return float(radius / (distance * half) * (screen_height * 0.5))
 
 
+# Written by the build beside the shapes (`beamng.dae.write_ladder_index`) so that the detail
+# ladder survives `keep_dae: false`. Without it a level whose `.dae` sources were dropped can
+# report its BYTES but not one triangle it draws — which is the gate this whole tool exists for.
+LADDER_INDEX = "shape_ladders.json"
+_LADDERS = {}
+
+
+def _ladder_from_sidecar(level_dir, rel):
+    """`(levels, collision)` for a shape whose `.dae` is gone, from the build's own index."""
+    if level_dir not in _LADDERS:
+        path = os.path.join(level_dir, LADDER_INDEX)
+        try:
+            with open(path, encoding="utf-8") as handle:
+                _LADDERS[level_dir] = json.load(handle).get("shapes") or {}
+        except (OSError, ValueError):
+            _LADDERS[level_dir] = {}
+    entry = _LADDERS[level_dir].get(rel)
+    if not entry:
+        return None, None
+    return {int(px): int(t) for px, t in (entry.get("levels") or {}).items()}, int(entry.get("collision") or 0)
+
+
 def file_bytes(path):
     """What the game loads for this shape: the `.cdae` when the cook has run, else the `.dae`."""
     cooked = os.path.splitext(path)[0] + ".cdae"
@@ -155,16 +177,31 @@ def measure(level_dir, view_distance, spawn=None, screen_height=1080.0):
     # -- shapes: bytes and the detail ladder -----------------------------------------------
     shapes = {}
     shapes_root = os.path.join(level_dir, "art", "shapes")
+    # Keyed on the SOURCE path even when only the cooked file is there. `keep_dae: false` drops
+    # every `.dae` whose `.cdae` is current (A8/P7), and a scan that keys on `.dae` alone then
+    # reports a level with 8,164 shapes as having none — which is what this did on the first A8
+    # build, and it is exactly the P8 blindness the plan warned about in its own instrument.
     for root, _dirs, files in os.walk(shapes_root):
         for file_name in files:
-            if not file_name.endswith(".dae"):
+            lower = file_name.lower()
+            if lower.endswith(".cdae"):
+                if os.path.isfile(os.path.join(root, file_name[:-5] + ".dae")):
+                    continue                           # the source is there; it is scanned below
+                full = os.path.join(root, file_name[:-5] + ".dae")
+            elif lower.endswith(".dae"):
+                full = os.path.join(root, file_name)
+            else:
                 continue
-            full = os.path.join(root, file_name)
             rel = os.path.relpath(full, level_dir).replace("\\", "/")
             size, cooked = file_bytes(full)
-            levels, collision = scan_dae(full)
+            # the detail ladder and the collision count come out of the XML; with the source
+            # dropped they are UNKNOWN rather than zero, and are reported as such
+            levels, collision = (scan_dae(full) if os.path.isfile(full)
+                                 else _ladder_from_sidecar(level_dir, rel))
             shapes[rel] = {"bytes": size, "cooked": cooked, "levels": levels,
                            "collision": collision, "group": group_of(rel)}
+
+    unknown_ladders = set()
 
     # -- objects ---------------------------------------------------------------------------
     statics = []
@@ -201,6 +238,9 @@ def measure(level_dir, view_distance, spawn=None, screen_height=1080.0):
         if distance > view_distance:
             continue
         radius = radius_hint(rel, shape)
+        if shape["levels"] is None:
+            unknown_ladders.add(shape["group"])
+            continue
         in_view[shape["group"]] += detail_at(shape["levels"], radius, max(distance, 1.0),
                                              screen_height)
         drawn[shape["group"]] += 1
@@ -268,7 +308,9 @@ def measure(level_dir, view_distance, spawn=None, screen_height=1080.0):
         "forestItems": forest_items,
         "forestTypes": forest_types,
         "materials": materials,
-        "collisionTriangles": sum(s["collision"] for s in shapes.values()),
+        "collisionTriangles": sum(s["collision"] or 0 for s in shapes.values()),
+        # the groups whose `.dae` sources were dropped, so their ladders could not be read
+        "unknownLadders": sorted(unknown_ladders),
     }
 
 
@@ -396,6 +438,10 @@ def report(result, compare=None):
     for group, value in sorted(result["trianglesInView"].items(), key=lambda kv: -kv[1]):
         add(f"    {group:<27}{value:>12,}  ({result['staticsInView'].get(group, 0)} statics)")
     add(f"    {'TOTAL':<27}{result['trianglesInViewTotal']:>12,}")
+    if result.get("unknownLadders"):
+        add(f"    NOT COUNTED — the `.dae` sources were dropped, so these groups' detail ladders")
+        add(f"    could not be read: {', '.join(result['unknownLadders'])}. Build with `keep_dae`")
+        add(f"    to measure them.")
     add("")
     reference = compare.get("west_coast_usa") or {}
     add(f"  counts                        this   west_coast_usa")

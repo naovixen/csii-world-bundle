@@ -126,33 +126,10 @@ def run(ctx, progress):
         if i % 2000 == 0:
             progress.advance(2000)
             progress.check()
-        nodes = [list(frame.to_beamng(x, y, z)) + [round(float(w), 3)] for x, y, z, w in road.nodes]
         if region is not None and not _in_region(road, region):
             dropped += 1
             continue
-        obj = dict(VANILLA_FIELDS)
-        obj.update({
-            "name": road.key, "class": "DecalRoad", "material": MATERIAL,
-            "position": [round(v, 4) for v in nodes[0][:3]],
-            "nodes": [[round(v, 4) for v in n] for n in nodes],
-            "drivability": DRIVABILITY.get(road.category, 1.0),
-            "oneWay": bool(road.oneway),
-            "lanesLeft": int(road.lanes_left),
-            "lanesRight": int(road.lanes_right),
-            # reading (4): an elevated road or a tunnel must not have its INTERIOR nodes welded
-            # into whatever it crosses. Its two end nodes still merge exactly, which is what
-            # keeps it attached to its own ramps.
-            "autoJunction": not road.elevated,
-        })
-        # A DYNAMIC FIELD, not a DecalRoad property: Torque's `SimObject::setDataField` keeps
-        # anything it does not recognise as one, so this rides along without the engine caring.
-        # It is CS2's own street name for this road, and it is what the `poi` stage names a
-        # derived fast-travel point after - the alternative was a sidecar file for one string.
-        if road.name:
-            obj["cs2Street"] = road.name
-        if road.speed_kph:
-            obj["speedLimit"] = round(float(road.speed_kph) / 3.6, 3)     # km/h -> m/s
-        level.add([GROUP], obj)
+        level.add([GROUP], decal_road(road))
         emitted += 1
     progress.advance(len(graph.roads) % 2000)
 
@@ -171,6 +148,40 @@ def run(ctx, progress):
     return {"roads": emitted, "droppedOutsideRegion": dropped, "leftHandTraffic": bool(left_hand),
             "trafficSideSource": source, "stats": graph.stats, "notes": graph.notes,
             "seconds": round(time.monotonic() - started, 1)}
+
+
+def decal_road(road):
+    """One `csiibundle.navgraph.Road` as the `DecalRoad` object this stage writes.
+
+    Every reader of this level's navgraph — the build, `tools/check_navgraph_vs_game.py`'s
+    map.lua question and `tools/test_navgraph_map.py` — goes through this one function, because
+    the thing that has to be crash-free is the object that reaches the level and not the graph it
+    came from (audit §80: a rule that passes its own unit test and never reaches the level).
+    """
+    nodes = [list(frame.to_beamng(x, y, z)) + [round(float(w), 3)] for x, y, z, w in road.nodes]
+    obj = dict(VANILLA_FIELDS)
+    obj.update({
+        "name": road.key, "class": "DecalRoad", "material": MATERIAL,
+        "position": [round(v, 4) for v in nodes[0][:3]],
+        "nodes": [[round(v, 4) for v in n] for n in nodes],
+        "drivability": DRIVABILITY.get(road.category, 1.0),
+        "oneWay": bool(road.oneway),
+        "lanesLeft": int(road.lanes_left),
+        "lanesRight": int(road.lanes_right),
+        # reading (4): an elevated road or a tunnel must not have its INTERIOR nodes welded
+        # into whatever it crosses. Its two end nodes still merge exactly, which is what
+        # keeps it attached to its own ramps.
+        "autoJunction": not road.elevated,
+    })
+    # A DYNAMIC FIELD, not a DecalRoad property: Torque's `SimObject::setDataField` keeps
+    # anything it does not recognise as one, so this rides along without the engine caring.
+    # It is CS2's own street name for this road, and it is what the `poi` stage names a
+    # derived fast-travel point after - the alternative was a sidecar file for one string.
+    if road.name:
+        obj["cs2Street"] = road.name
+    if road.speed_kph:
+        obj["speedLimit"] = round(float(road.speed_kph) / 3.6, 3)         # km/h -> m/s
+    return obj
 
 
 def _in_region(road, region):
@@ -252,10 +263,15 @@ def _patch_info(level, extra):
     return True
 
 
+# version 2: `csiibundle.navgraph` now gives a terminal node the width of the segment
+# end it joins and emits a SIMPLE graph (no self-loop, one road per node pair) - the
+# two properties `map.lua` needs and the fix for the FATAL LUA ERROR of audit A7.5.
+# version 3: a node's radius no longer reaches a road stacked over or under it, which is
+# what let a route start on an overpass the car could not get to (audit A7.6).
 INPUTS = ("layer:lanes", "layer:networks")
 SETTINGS = ("ai_roads", "navgraph_max_width", "navgraph_taxiways", "region")
 OUTPUTS = ("art/road/main.materials.json",)
 
 STAGE = Stage(STAGE_KEY, "AI navgraph (minimap and routing)", enabled, units, run, inputs=INPUTS,
               settings_keys=SETTINGS, outputs=OUTPUTS, shared_keys=("navgraph",),
-              after=("scene",), version=1)
+              after=("scene",), version=3)

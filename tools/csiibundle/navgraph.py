@@ -46,8 +46,41 @@ Two kinds of edge, and **no invented node position anywhere**:
   connector, and a pair with movements in only one direction stays one-way — so CS2's turn
   restrictions survive as graph topology rather than being collapsed away.
 
-Measured on the 2026-08-19 16:32 reference city: 6,667 segment roads and 10,070 connectors,
-~69k nodes, **96.3 % of segments in one connected component** over 29 components.
+Measured on the 2026-08-19 16:32 reference city: 15,393 roads (6,667 segments, 8,676 connectors,
+50 joints), 51,197 nodes, **96.5 % of them in one connected component** over 35 components.
+
+## Three properties of the emitted set that are not optional
+
+Each was paid for by an in-game load — the first two by the `*** FATAL LUA ERROR` that ended one
+(`lua/ge/map.lua:459`, audit A7.5), the third by a route up an overpass with no ramp under it
+(A7.6). All three are properties of the *consumer's* graph model rather than of ours, which is
+why they are enforced here and not in a consumer:
+
+* **A terminal node carries the width of the thing it joins.** A connector's or a joint's first
+  and last node take the width of the *segment end* they are snapped onto, not the pair's
+  minimum. A consumer decides node identity by merging coincident terminal nodes, and the merge
+  it performs compares radii as well as positions (map.lua:1211) — so a 3.5 m connector ending
+  on a 6.5 m road's centerline end sat 0 m away from it and still stayed a *different node*.
+  Measured on the reference city: 9,738 terminal nodes were the wrong width, and the graph
+  BeamNG built out of them stood in **692 pieces with the largest holding 13.8 %** of the nodes
+  at the point its optimiser ran, against 35 / 96.5 % once the widths matched.
+* **It is a SIMPLE graph.** At most one road per unordered pair of nodes, and none whose two
+  ends are the same node. `map.nodes[a].links[b]` holds exactly one edge and every walk over it
+  skips `a == b`, so a second road between one pair is not a second edge — it is the first one
+  silently replaced, and the pair of them is a triangle waiting for the optimiser. A turning
+  movement from a junction back to itself is not a movement.
+* **A node's radius does not reach a road at a different height.** The radius is the road's
+  half-width, and four separate readers take "inside the radius" to mean "on this road" — most
+  sharply `startPosLinks` (map.lua:2871), which costs a candidate start edge `max(0, 1 - R/|d|)`,
+  so an edge whose radius covers the car costs **exactly zero** and the `wZ = 4` height bias in
+  the very next line never runs. A 27 m carriageway claims a 13.5 m radius and a viaduct 7 m
+  above it is well inside that, so the router is entitled to start the route on the deck. See
+  `_clearance_clamp` and `stacked_coverage`.
+
+Neither drops anything a route needs: a dropped duplicate leaves the same two nodes joined by
+the road that carried the geometry, and a dropped self-loop joined nothing. Measured cost on the
+reference city: 2,114 self-loops and 112 duplicates out of 17,619 roads, and connectivity after
+the consumer's own merges is unchanged (96.51 % → 96.49 % of nodes in the largest component).
 
 The alternative — collapsing each junction to one hub node and running every centerline into it
 — was built first and measured: the hubs chain through shared junction owners into blobs with a
@@ -72,7 +105,14 @@ from a bug once its artefact appears):
   They are turning movements into something outside the drivable set (a parking lot, a
   pedestrian path) and are not emitted.
 * `widthClamped` — segments whose carriageway half-width was reduced to `max_width / 2`.
+* `widthClearanceClamped` / `widthClearanceWorst` — segments whose emitted width was capped so
+  their radius stops short of a road stacked over or under them, and the largest such reduction
+  in metres. Those roads' widths are UNDERSTATED by that much; 19 segments on the reference city,
+  worst 13.3 m.
 * `speedInferred` — segments with no `attrs.limit`; the consumer is left to auto-calculate.
+* `selfLoopsDropped` / `duplicateEdgesDropped` — what the simple-graph rule above removed. Not
+  approximations so much as arithmetic, but they are road records that existed and no longer do,
+  so they are counted where every other such number is.
 """
 
 import math
@@ -94,6 +134,25 @@ OPTIONAL_CATEGORIES = ("taxiway",)
 # `docs/plans/a7-navigation.md` (the matched fraction is flat from 5 cm to 50 cm, so the
 # tolerance is not doing any work and nothing is being welded that is not already coincident).
 WELD_TOLERANCE = 0.05
+
+# When are two roads' terminal nodes THE SAME NODE? Not a question this module gets to answer by
+# itself: a consumer keys its edges on node ids, and the ids come from ITS merge of coincident
+# terminal nodes. The two numbers below are the tightest such merge in evidence — BeamNG's
+# `mergeOverlappingNodes(endNodesOnly)`, `lua/ge/map.lua:1209-1211`, which fuses two terminal
+# nodes when they are within 0.1 m in 3-D **and** their radii agree to within 0.1 m. A looser
+# consumer merge only fuses more, and `_simple_graph` is sound under any superset of this.
+NODE_MERGE_DISTANCE = 0.1
+NODE_MERGE_RADIUS = 0.1
+
+# A road stacked over another by more than this is a DIFFERENT DECK, not the same road on a
+# slope. 3 m is below any clearance a city gives a bridge and above any grade change within one
+# carriageway; `_clearance_clamp` uses it to decide which neighbours a node's radius may not
+# reach, and `tools/check_navgraph_vs_game.py` uses the same number for its false-weld question.
+STACKED_CLEARANCE = 3.0
+
+# How much of a gap `_clearance_clamp` leaves between a node's radius and the deck it must not
+# claim. Small on purpose: the constraint is "does not reach", not "keeps its distance".
+CLEARANCE_MARGIN = 0.5
 
 # Half of CS2's own car lane width, used to turn a set of lane centre offsets into a carriageway
 # half-width. MEASURED: lateral offsets inside a segment step by 1.5 m and 3.0 m, and the outer
@@ -161,6 +220,7 @@ def build(bundle_dir, categories=DEFAULT_CATEGORIES, weld_tolerance=WELD_TOLERAN
             spines[sid] = spine
     stats["segmentsWithoutCenterline"] = len(seg_lanes) - len(spines)
 
+
     roads = []
     ends = {}                       # (sid, 0|1) -> end point of the emitted centerline
     end_lane_points = []            # every carriageway lane endpoint AT a segment end
@@ -208,9 +268,15 @@ def build(bundle_dir, categories=DEFAULT_CATEGORIES, weld_tolerance=WELD_TOLERAN
     stats["joints"] = len(joints)
     stats.update(conn_stats)
     stats["endsWithNoJunction"] = sum(1 for key in ends if key not in touched)
+
+    roads, clearance_stats = _clearance_clamp(roads)
+    stats.update(clearance_stats)
+    roads, simple_stats = _simple_graph(roads)
+    stats.update(simple_stats)
     stats["roads"] = len(roads)
     stats["nodes"] = sum(len(r.nodes) for r in roads)
-    stats["connectors"] = len(connectors)
+    stats["connectors"] = sum(1 for r in roads if r.kind == "connector")
+    stats["joints"] = sum(1 for r in roads if r.kind == "joint")
 
     stats.update(_components(roads))
     notes = _notes(stats, max_width)
@@ -524,15 +590,238 @@ def _connectors(junction_lanes, end_points, end_keys, ends, attrs, spines, toler
         line = _simplify(line, simplify)
         widths = [spines[s].width for s, _k in (x, y) if s in spines]
         width = min(widths) if widths else 2.0 * LANE_HALF_WIDTH
+        # The two terminal nodes take the width of the segment end they were snapped onto, so a
+        # consumer's radius-aware node merge fuses them with it (see the module docstring).
+        node_widths = _terminal_widths(len(line), width, spines, x, y)
         limits = [attrs[s].get("limit") for s, _k in (x, y) if attrs.get(s, {}).get("limit")]
         elevated = any(attrs.get(s, {}).get("form") in ("elevated", "tunnel") for s, _k in (x, y))
         roads.append(Road(
             key=f"conn_{x[0]}_{x[1]}_{y[0]}_{y[1]}", kind="connector", segment=x[0],
             name=attrs.get(x[0], {}).get("name"), category=attrs.get(x[0], {}).get("category"),
-            nodes=[(p[0], p[1], p[2], width) for p in line],
+            nodes=[(p[0], p[1], p[2], w) for p, w in zip(line, node_widths)],
             oneway=oneway, lanes_left=0 if oneway else 1, lanes_right=1,
             speed_kph=min(limits) if limits else None, elevated=elevated))
     return roads, stats
+
+
+def _clearance_clamp(roads, clearance=STACKED_CLEARANCE, margin=CLEARANCE_MARGIN, step=4.0):
+    """A node's radius may not reach a road at a different height. `(roads, stats)`.
+
+    ## Why this is not a tuning knob
+
+    A navgraph node's radius is its road's half-width — BeamNG's own convention, and the one
+    `numOfLanesFromRadius` (map.lua:542) inverts to count lanes. Every consumer of the graph then
+    reads that radius as *the extent of this road*, and asks whether a position is inside it:
+
+    * `startPosLinks` (map.lua:2871) costs a candidate start edge `max(0, 1 - R/|d|)` — so an edge
+      whose radius covers the car costs **exactly zero**, and the `wZ = 4` height bias in the next
+      line never runs. Two roads that both cover the car are tied, and the router may begin the
+      route on either;
+    * `mergeOverlappingNodes` welds two nodes closer than `max(r1, r2)` in 3-D (map.lua:1211);
+    * `mergeNodesToLines` splices a node into an edge within `min(radius, node radius)`, in 3-D;
+    * `resolveXJunctions` joins two crossing edges within `min(r1, r2) * 0.5`, in 3-D.
+
+    All four assume a road's radius describes ground the road actually occupies. A 27 m highway
+    claims a 13.5 m radius, and a viaduct 7 m above it is well inside that — so the engine is
+    entitled to conclude a car on the street is on the deck. It is the reading that put a route up
+    onto an overpass with no ramp under it (audit A7.6).
+
+    ## What it compares, and the first cut got this wrong
+
+    A car is not on the centerline; it is anywhere on the **surface**, out to the half-width. So
+    the constraint is between one road's centerline (which is where its radius is measured from)
+    and every other road's SURFACE (which is where a car can be). Measuring centerline to
+    centerline — the first cut — left a deck whose radius still reached the kerb lane beneath it,
+    and the defect survived the rebuild.
+
+    It runs over every emitted road, not just the segments: half the roads stacked over something
+    are ramps, and a segment clamped only against other segments still reaches them.
+
+    Terminal nodes stay consistent: every road ending on one node takes that node's smallest
+    clamped width, so the terminal-width invariant that makes a junction ONE node (A7.5) holds.
+    A road is never widened and never goes below one lane's half-width.
+    """
+    stats = {"widthClearanceClamped": 0, "widthClearanceWorst": 0.0}
+    if len(roads) < 2:
+        return roads, stats
+    from scipy.spatial import cKDTree
+
+    clusters = _terminal_clusters(roads)
+    ends = [frozenset(pair) for pair in clusters]
+    owned = [_road_segments(road.key) for road in roads]
+    half = [0.5 * max(n[3] for n in road.nodes) for road in roads]
+
+    centres, centre_owner, skins, skin_owner = [], [], [], []
+    for index, road in enumerate(roads):
+        line = _resample(numpy.asarray([n[:3] for n in road.nodes], dtype=numpy.float64), step)
+        centres.append(line)
+        centre_owner.append(numpy.full(len(line), index, dtype=numpy.int64))
+        skin = _surface(road, step)
+        skins.append(skin)
+        skin_owner.append(numpy.full(len(skin), index, dtype=numpy.int64))
+    centres = numpy.concatenate(centres)
+    centre_owner = numpy.concatenate(centre_owner)
+    skins = numpy.concatenate(skins)
+    skin_owner = numpy.concatenate(skin_owner)
+
+    radii = numpy.asarray([half[i] for i in centre_owner])
+    tree = cKDTree(skins)
+    limit = {}
+    for point_index, hits in enumerate(tree.query_ball_point(centres, radii)):
+        if not hits:
+            continue
+        i = int(centre_owner[point_index])
+        point = centres[point_index]
+        for skin_index in hits:
+            j = int(skin_owner[skin_index])
+            if i == j or (ends[i] & ends[j]) or (owned[i] & owned[j]):
+                continue
+            if abs(point[1] - skins[skin_index][1]) <= clearance:
+                continue
+            gap = float(numpy.linalg.norm(point - skins[skin_index]))
+            if gap < limit.get(i, numpy.inf):
+                limit[i] = gap
+
+    if not limit:
+        return roads, stats
+    cap = {}
+    for i, gap in limit.items():
+        capped = max(LANE_HALF_WIDTH, gap - margin)
+        if capped < half[i]:
+            cap[i] = capped
+    if not cap:
+        return roads, stats
+
+    # One width per terminal node, so a junction is still ONE node after the consumer's merge
+    # (A7.5). A node's cap is the tightest any road ending there was given.
+    node_cap = {}
+    for i in range(len(roads)):
+        this = cap.get(i, numpy.inf)
+        for node in clusters[i]:
+            node_cap[node] = min(node_cap.get(node, this), this)
+
+    out = []
+    for i, road in enumerate(roads):
+        this = cap.get(i, numpy.inf)
+        first, last = clusters[i]
+        limits = [this] * len(road.nodes)
+        limits[0] = min(this, node_cap.get(first, numpy.inf))
+        limits[-1] = min(this, node_cap.get(last, numpy.inf))
+        # never widen: every node keeps its own width unless its cap is tighter
+        nodes = [(n[0], n[1], n[2], min(n[3], 2.0 * capped))
+                 for n, capped in zip(road.nodes, limits)]
+        if all(new[3] == old[3] for new, old in zip(nodes, road.nodes)):
+            out.append(road)
+            continue
+        stats["widthClearanceClamped"] += 1
+        stats["widthClearanceWorst"] = round(
+            max(stats["widthClearanceWorst"],
+                max(old[3] - new[3] for old, new in zip(road.nodes, nodes))), 2)
+        out.append(road._replace(nodes=nodes))
+    return out, stats
+
+
+def _road_segments(key):
+    """The `networks.jsonl` segment ids a road's key names. `seg_<id>` -> one; `conn_<a>_<i>_<b>_<j>`
+    and `joint_...` -> two, and NOT the end indices `<i>`/`<j>`, which are 0 and 1 on half the
+    roads in the level and would make every other pair look adjacent."""
+    parts = key.split("_")
+    if parts[0] == "seg":
+        return frozenset(parts[1:2])
+    if parts[0] in ("conn", "joint") and len(parts) == 5:
+        return frozenset((parts[1], parts[3]))
+    return frozenset()
+
+
+def _surface(road, step):
+    """A road's DRIVABLE SURFACE, sampled: the centerline and both kerbs.
+
+    A car is not on the centerline. It is anywhere within the half-width, which is the whole point
+    of the radius — so a question about where a car can be has to be asked of the surface, and
+    asking it of the centerline is what let `_clearance_clamp`'s first cut pass while the defect
+    was still in the level.
+    """
+    centre = _resample(numpy.asarray([n[:3] for n in road.nodes], dtype=numpy.float64), step)
+    if len(centre) < 2:
+        return centre
+    half = 0.5 * max(n[3] for n in road.nodes)
+    flat = centre.copy()
+    flat[:, 1] = 0.0                                   # the lateral frame is horizontal
+    _tangents, normals = _frame(flat)
+    return numpy.concatenate((centre, centre + normals * half, centre - normals * half))
+
+
+def stacked_coverage(roads, clearance=STACKED_CLEARANCE, step=4.0):
+    """Every place a car ON one road can stand INSIDE the radius of a road at a different height.
+
+    `[{road, other, gap, radius, height, at}, ...]`, and it should be empty. This is the predicate
+    `_clearance_clamp` exists to satisfy, checked on the emitted roads rather than on the spines
+    it was computed from, and it is the offline form of "the route started on the overpass above
+    me": a consumer that decides *which road a car is on* by asking whether the car is inside a
+    node's radius answers with the deck (audit A7.6).
+
+    The car's side is sampled as a SURFACE and the deck's as a centerline, because those are the
+    two things the engine compares — a position, and a road's radius about its own line.
+
+    Roads that share a terminal node, or a SEGMENT, are exempt. A ramp climbing away from the road
+    it joins is stacked over it within a few metres of the junction, and a route that starts on
+    either of two roads you can actually drive between is not a wrong route.
+    """
+    if len(roads) < 2:
+        return []
+    from scipy.spatial import cKDTree
+
+    clusters = [frozenset(pair) for pair in _terminal_clusters(roads)]
+    owned = [_road_segments(road.key) for road in roads]
+    half = numpy.asarray([0.5 * max(n[3] for n in road.nodes) for road in roads])
+    centres, centre_owner, surfaces, surface_owner = [], [], [], []
+    for index, road in enumerate(roads):
+        centre = _resample(numpy.asarray([n[:3] for n in road.nodes], dtype=numpy.float64), step)
+        centres.append(centre)
+        centre_owner.append(numpy.full(len(centre), index, dtype=numpy.int64))
+        skin = _surface(road, step)
+        surfaces.append(skin)
+        surface_owner.append(numpy.full(len(skin), index, dtype=numpy.int64))
+    centres = numpy.concatenate(centres)
+    centre_owner = numpy.concatenate(centre_owner)
+    surfaces = numpy.concatenate(surfaces)
+    surface_owner = numpy.concatenate(surface_owner)
+
+    tree = cKDTree(centres)
+    out = []
+    for point_index, near in enumerate(tree.query_ball_point(surfaces, float(half.max()))):
+        i = int(surface_owner[point_index])
+        for centre_index in near:
+            j = int(centre_owner[centre_index])
+            if i == j or (clusters[i] & clusters[j]) or (owned[i] & owned[j]):
+                continue
+            height = abs(float(surfaces[point_index][1] - centres[centre_index][1]))
+            if height <= clearance:
+                continue
+            gap = float(numpy.linalg.norm(surfaces[point_index] - centres[centre_index]))
+            if gap < half[j]:
+                out.append({"road": roads[i].key, "other": roads[j].key, "gap": gap,
+                            "radius": float(half[j]), "height": height,
+                            "at": [round(float(v), 1) for v in surfaces[point_index]]})
+    return out
+
+
+def _terminal_widths(count, width, spines, x, y):
+    """`[w0, ..., wN]` for a connector or joint: the interior keeps `width`, the two terminal
+    nodes take the width of the segment end each is snapped onto.
+
+    A road's terminal node sits at exactly `ends[x]` / `ends[y]`, which is where that segment's
+    own road ends too — but a consumer that decides node identity by merging coincident terminal
+    nodes compares their RADII as well (BeamNG: `map.lua:1211`, `abs(r1 - r2) < 0.1`). Handing it
+    the pair's minimum width leaves the wider of the two segments a different node at the same
+    coordinate, which is how a junction ends up as a triangle rather than a point.
+    """
+    out = [width] * max(count, 2)
+    for index, end in ((0, x), (-1, y)):
+        spine = spines.get(end[0])
+        if spine is not None:
+            out[index] = spine.width
+    return out
 
 
 def _sq(delta):
@@ -557,6 +846,12 @@ def _joints(end_points, end_keys, ends, attrs, spines, tolerance):
     there is nothing to turn. Their carriageway lanes weld to each other directly instead
     (measured: 4,424 lane-end pairs on the reference city), and without this the graph falls into
     pieces at every one of them.
+
+    Most of what this emits does not survive `_simple_graph`, and that is the point: 1,245 of the
+    reference city's 1,383 joints are ZERO LENGTH — the two segments' centerline ends are the same
+    coordinate, so the pair is one node and a road between them joins nothing — and another 88 run
+    between a pair a connector already covers. The 50 that remain are the ones doing the work: two
+    ends a metre or two apart that nothing else ties together.
     """
     if not end_points:
         return []
@@ -573,12 +868,13 @@ def _joints(end_points, end_keys, ends, attrs, spines, tolerance):
     for x, y in sorted(pairs):
         a, b = ends[x], ends[y]
         width = min(spines[x[0]].width, spines[y[0]].width)
+        wa, wb = _terminal_widths(2, width, spines, x, y)
         limits = [attrs[s].get("limit") for s, _k in (x, y) if attrs.get(s, {}).get("limit")]
         elevated = any(attrs.get(s, {}).get("form") in ("elevated", "tunnel") for s, _k in (x, y))
         roads.append(_Joint(
             key=f"joint_{x[0]}_{x[1]}_{y[0]}_{y[1]}", kind="joint", segment=x[0],
             name=attrs.get(x[0], {}).get("name"), category=attrs.get(x[0], {}).get("category"),
-            nodes=[(a[0], a[1], a[2], width), (b[0], b[1], b[2], width)],
+            nodes=[(a[0], a[1], a[2], wa), (b[0], b[1], b[2], wb)],
             oneway=False, lanes_left=1, lanes_right=1,
             speed_kph=min(limits) if limits else None, elevated=elevated, key_pair=(x, y)))
     return roads
@@ -665,13 +961,98 @@ def _simplify(points, tolerance):
 
 # -- reporting ---------------------------------------------------------------------------------
 
+def _terminal_clusters(roads, distance=NODE_MERGE_DISTANCE, radius=NODE_MERGE_RADIUS):
+    """`[(a, b), ...]` — the node each road's first and last node belongs to, one entry per road.
+
+    The node identity a consumer will have: coincident terminal nodes fused, transitively, by the
+    merge documented on `NODE_MERGE_DISTANCE`. Everything downstream that asks "is this one node
+    or two?" — the simple-graph rule, the component count — has to ask it here, or the two
+    answers disagree about the same graph.
+    """
+    from scipy.spatial import cKDTree
+
+    points = numpy.asarray([node[:3] for road in roads for node in (road.nodes[0], road.nodes[-1])],
+                           dtype=numpy.float64)
+    radii = numpy.asarray([0.5 * road.nodes[i][3] for road in roads for i in (0, -1)],
+                          dtype=numpy.float64)
+    parent = list(range(len(points)))
+
+    def find(a):
+        while parent[a] != a:
+            parent[a] = parent[parent[a]]
+            a = parent[a]
+        return a
+
+    for i, j in cKDTree(points).query_pairs(distance):
+        if abs(radii[i] - radii[j]) < radius:
+            ra, rb = find(i), find(j)
+            if ra != rb:
+                parent[rb] = ra
+    return [(find(2 * i), find(2 * i + 1)) for i in range(len(roads))]
+
+
+def _simple_graph(roads, distance=NODE_MERGE_DISTANCE, radius=NODE_MERGE_RADIUS):
+    """Make the emitted set a SIMPLE graph on the nodes a consumer will actually have.
+
+    `(roads, stats)`. Terminal nodes are clustered by the consumer merge documented on
+    `NODE_MERGE_DISTANCE` — within `distance` in 3-D and with radii within `radius`, transitively
+    — and then:
+
+    * a **connector or joint whose two ends land in one cluster** is a self-loop. It joins a node
+      to itself, which is not an edge in any graph a consumer keys on node pairs, and it is what
+      turns into a closed 3-cycle the moment the merge runs. Dropped.
+    * **a second road between one pair of clusters** is not a second edge. Whichever arrives last
+      replaces the first in `links`, and the pair of them (one direct, one through an interior
+      node) is the triangle whose middle node BeamNG's `optimizeNodes` walks into
+      `map.lua:459`. One is kept — the one carrying the geometry — and the rest dropped.
+
+    **A segment road is never dropped**: it is the road network itself, a segment CS2 modelled as
+    a closed ring legitimately begins and ends at one node, and two segments sharing a node pair
+    are a divided carriageway, not a duplicate. Connectors and joints are what this thins, and a
+    dropped one always leaves its two nodes joined by the road that kept the turn's shape.
+    """
+    stats = {"selfLoopsDropped": 0, "duplicateEdgesDropped": 0}
+    if not roads:
+        return roads, stats
+    ends = _terminal_clusters(roads, distance, radius)
+
+    # A segment first, then the road carrying the most geometry: where a stub and a real turning
+    # path join the same two nodes, the turn's shape is the one worth keeping.
+    order = sorted(range(len(roads)),
+                   key=lambda i: (roads[i].kind != "segment", -len(roads[i].nodes), roads[i].key))
+    taken = {}
+    keep = [False] * len(roads)
+    for i in order:
+        road = roads[i]
+        a, b = ends[i]
+        if road.kind != "segment":
+            if a == b:
+                stats["selfLoopsDropped"] += 1
+                continue
+            pair = (min(a, b), max(a, b))
+            if pair in taken:
+                stats["duplicateEdgesDropped"] += 1
+                continue
+            taken[pair] = road.key
+        else:
+            taken.setdefault((min(a, b), max(a, b)), road.key)
+        keep[i] = True
+    return [road for i, road in enumerate(roads) if keep[i]], stats
+
+
 def _components(roads):
     """Connected-component sizes over the emitted graph.
 
-    Two roads are joined where they share a terminal node coordinate — which, by construction, a
-    segment and its connectors do exactly. A navgraph in many pieces routes nowhere, and the size
-    of the largest component is the one number that says whether the junction join worked at all.
+    Two roads are joined where their terminal nodes are THE SAME NODE — `_terminal_clusters`, the
+    consumer's own merge, and not a coordinate match. The difference is not academic: on the
+    reference city a coordinate match calls this graph 96 % connected and the graph BeamNG builds
+    out of it stood in 692 pieces, because a 3.5 m connector and the 6.5 m road it ended on were
+    two nodes at one coordinate. A navgraph in many pieces routes nowhere, and the size of the
+    largest component is the one number that says whether the junction join worked at all.
     """
+    if not roads:
+        return {"components": 0, "largestComponent": 0, "largestComponentFraction": 0.0}
+    ends = _terminal_clusters(roads)
     parent = {}
 
     def find(x):
@@ -685,11 +1066,11 @@ def _components(roads):
         if ra != rb:
             parent[ra] = rb
 
-    for road in roads:
-        union(_key(road.nodes[0][:3]), _key(road.nodes[-1][:3]))
+    for a, b in ends:
+        union(a, b)
     sizes = defaultdict(int)
-    for road in roads:
-        sizes[find(_key(road.nodes[0][:3]))] += 1
+    for a, _b in ends:
+        sizes[find(a)] += 1
     ordered = sorted(sizes.values(), reverse=True)
     total = sum(ordered)
     return {"components": len(ordered), "largestComponent": ordered[0] if ordered else 0,
@@ -721,6 +1102,20 @@ def _notes(stats, max_width):
     if stats.get("speedInferred"):
         notes.append(f"navgraph: {stats['speedInferred']:,} segments ship no attrs.limit; the "
                      f"consumer is left to auto-calculate a speed for them")
+    if stats.get("widthClearanceClamped"):
+        notes.append(f"navgraph: APPROXIMATION - {stats['widthClearanceClamped']:,} segments had "
+                     f"their width capped so their node radius stops short of a road stacked "
+                     f"over or under them (worst {stats.get('widthClearanceWorst', 0)} m); their "
+                     f"width is understated by that much, and without it a consumer that asks "
+                     f"'is the car inside this radius' answers with the deck overhead")
+    if stats.get("selfLoopsDropped"):
+        notes.append(f"navgraph: {stats['selfLoopsDropped']:,} connectors/joints dropped as "
+                     f"SELF-LOOPS - both ends land on one node once coincident terminal nodes "
+                     f"merge, so they join nothing (map.lua:459 crashed on the 3-cycle they make)")
+    if stats.get("duplicateEdgesDropped"):
+        notes.append(f"navgraph: {stats['duplicateEdgesDropped']:,} connectors/joints dropped as "
+                     f"DUPLICATE edges - a second road between one pair of nodes is not a second "
+                     f"edge; the one carrying the turn's geometry is kept")
     if stats.get("joints"):
         notes.append(f"navgraph: {stats['joints']:,} joints where two segments abut with no "
                      f"turning movement between them (an asset change or a bridge abutment, not "

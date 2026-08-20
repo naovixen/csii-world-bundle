@@ -75,7 +75,8 @@ code 0 on success, 1 on failure/cancel, 2 for bad settings. Ctrl-C cancels clean
 |---|---|
 | settings (every knob, presets, per-OS detection) | `settings.py`, persisted at `~/.cs2beamng/settings.json` (`CS2BEAMNG_HOME` overrides) |
 | stage rate history (drives the first ETA) | `~/.cs2beamng/history.json`, seeded from `pipeline/history.py` |
-| the build report | `<levels>/<level_name>/cs2beamng_report.json` — settings, per-stage seconds/results, validation |
+| the build report | `<levels>/<level_name>/cs2beamng_report.json` — settings, per-stage seconds/results, validation. Written **last**, and cleared at the start of the next build, so a killed run leaves none |
+| what a level was built with | `<levels>/<level_name>/cs2beamng_settings.json`, and a copy at `~/.cs2beamng/levels/<level_name>.json`. Written **first**, never removed — the report is not a record of the settings when the build does not finish, and twice it has not |
 | the derived cache | `<bundle>/derived/` (contract §13); re-baked per product only when its inputs changed |
 | local UI server | `server.py`: `http://127.0.0.1:<port>/?t=<token>` — token-gated JSON API + SSE `/events` |
 

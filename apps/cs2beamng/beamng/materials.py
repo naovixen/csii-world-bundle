@@ -49,8 +49,14 @@ TEXTURE_SUBDIR = ("art", "textures")
 # cap: it is a coverage mask cut at the albedo's scale, and dropping it to the data cap is what
 # turns a tree's leaf cut-outs blocky. `emissive` is a colour map. The keys are settings names;
 # `caps_from_settings` resolves them.
+# EVERY exported kind must appear here. A kind that is missing gets `caps.get(kind, 0)` = 0 =
+# UNCAPPED, silently, and `colormask` was missing from A6.3 (2026-08-19) until A8: 767 of the
+# level's 771 masks shipped at 1024 x 1024 while every colour and normal map beside them was
+# capped at 256, which was 1,025 MiB — 58 % of ALL the level's texture bytes — for a map whose
+# only job is to select per texel against a 256-pixel albedo.
 KIND_CAP_SETTING = {"color": "texture_max", "normal": "texture_max_normal",
-                    "data": "texture_max_data", "opacity": "texture_max"}
+                    "data": "texture_max_data", "opacity": "texture_max",
+                    "colormask": "texture_max"}
 
 
 def caps_from_settings(settings):

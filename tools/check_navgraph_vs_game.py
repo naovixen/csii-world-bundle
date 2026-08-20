@@ -11,6 +11,8 @@ cannot be judged by looking at it; every question below is answered against the 
 | does it weld two roads the game keeps apart? | two navgraph nodes a consumer's radius merge would join, more than `VERTICAL_SEPARATION` apart in height, name a bridge welded to the street under it |
 | are the directions the game's? | `attrs.direction` on the segment vs the emitted `oneway` |
 | are the speeds the game's? | `attrs.limit` on the segment vs the emitted `speed_kph` |
+| can a consumer tell which of two stacked roads the car is on? | `startPosLinks` costs an edge whose radius covers the car at ZERO, so no node's radius may reach a road at a different height |
+| can the consumer's load-time graph build survive it? | `beamng.map_lua`, a port of `lua/ge/map.lua`: no node may sit on a triangle its optimiser walks into `map.lua:459` |
 
 Usage:
 
@@ -82,6 +84,8 @@ def main(argv):
     _connectivity(graph, results)
     _false_welds(graph, results)
     _attributes(bundle, graph, results)
+    _stacked(graph, results)
+    _map_lua(graph, results)
 
     print()
     failed = 0
@@ -172,6 +176,50 @@ def _coverage(bundle, graph, samples, seed, results):
     results["every drivable lane point has a navgraph edge within half its road"] = {
         "total": total, "agree": agree, "exact": False, "pass": 1.0 - COVERAGE_FAIL,
         "note": note}
+
+
+def _stacked(graph, results):
+    """Can a consumer that asks "is the car inside this road's radius" answer with the deck?
+
+    Every reader of a navgraph node's radius — BeamNG has four — reads it as the extent of the
+    road. `startPosLinks` (map.lua:2871) is the sharpest: an edge whose radius covers the car
+    costs exactly zero, so a viaduct wide enough to reach the street beneath it is as good a place
+    to start a route as the street. That is a route onto an overpass with no ramp (audit A7.6).
+    """
+    hits = navgraph_mod.stacked_coverage(graph.roads)
+    sites = {(round(h["at"][0] / 50), round(h["at"][2] / 50)) for h in hits}
+    note = f"{len(sites)} site(s)"
+    if hits:
+        worst = max(hits, key=lambda h: h["radius"])
+        note += (f"; worst {worst['road']} sits {worst['gap']:.1f} m from {worst['other']}, "
+                 f"radius {worst['radius']:.1f}, {worst['height']:.1f} m of height, at "
+                 f"{worst['at']}")
+    results["no road point sits inside the radius of a road at another height"] = {
+        "total": graph.stats["roads"], "agree": graph.stats["roads"] - len(sites), "note": note}
+
+
+def _map_lua(graph, results):
+    """Can the consumer's own load-time graph build even survive this? (`beamng.map_lua`.)
+
+    The one question here whose answer is a crash rather than a wrong number. BeamNG's
+    `optimizeNodes` walks a degree-2 node whose neighbours are already linked into an edge
+    comparison it cannot make (`map.lua:459`), so the load ends with `*** FATAL LUA ERROR` and
+    the level never opens. This asks the port whether any such node exists, on the roads the
+    `navgraph` stage would write from THIS graph.
+    """
+    try:
+        from cs2beamng.beamng import map_lua
+        from cs2beamng.stages.navgraph import decal_road
+    except ImportError:                          # the app is not installed; this question is its
+        return                                   # own, and the bundle-level ones still stand
+    stats, risks = map_lua.check([decal_road(road) for road in graph.roads])
+    note = (f"{stats['mapNodes']:,} map nodes, {stats['endNodesMerged']:,} terminal nodes merged, "
+            f"{stats['chords']} triangles")
+    if risks:
+        note += (f"; first {risks[0]['node']} - road {risks[0]['road']}, chord "
+                 f"{risks[0]['chord']}")
+    results["map.lua can build a graph from these roads without raising"] = {
+        "total": stats["mapNodes"], "agree": stats["mapNodes"] - stats["chords"], "note": note}
 
 
 def _connectivity(graph, results):

@@ -80,8 +80,11 @@ def test_frame():
     print("frame")
     check(frame.to_beamng(1.0, 2.0, 3.0) == (1.0, 3.0, 2.0), "bundle (x, up, north) -> beamng (x, north, up)")
     check(frame.to_bundle(*frame.to_beamng(1.0, 2.0, 3.0)) == (1.0, 2.0, 3.0), "round trip")
-    # vanilla small_island spawn_south: rotationMatrix [0.0825,0.9966,0,-0.9966,0.0825,0,0,0,1]
-    m = frame.heading_matrix(0.996590674, 0.0825054049)
+    # vanilla small_island spawn_south: rotationMatrix [0.0825,0.9966,0,-0.9966,0.0825,0,0,0,1].
+    # Its second triple IS the object's +Y, so the heading it encodes points WEST — and the +x
+    # this line passed until 2026-08-20 only reproduced the file because the pre-§78 flatten
+    # wrote the transpose, which for this matrix is the same nine numbers reordered.
+    m = frame.heading_matrix(-0.996590674, 0.0825054049)
     want = [0.0825054049, 0.996590674, 0, -0.996590674, 0.0825054049, 0, 0, 0, 1]
     check(all(abs(a - b) < 1e-6 for a, b in zip(m, want)), "heading_matrix reproduces the vanilla spawn matrix")
     m = frame.heading_matrix(0.0, 1.0)

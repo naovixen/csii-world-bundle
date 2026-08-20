@@ -144,6 +144,10 @@ def _stage_ctx(bundle, level_dir, settings=None, region=None, shared=None):
             "foliage_density": 100, "prop_density": 100, "generate_lods": False, "imposters": True,
             "lod_detail_scale": 6.0, "collision_preset": "simplified",
             "collision_buildings": True, "collision_props": True, "collision_trees": True,
+            # the example bundle's one prefab OWNS a photometric light, so `collision_lights`
+            # decides whether it ships a collider at all (audit 88); the off case is checked
+            # explicitly below rather than left to this default
+            "collision_lights": True,
             "forest_shadows": True, "tree_wind": False, "lights": True, "lights_max": 5,
             "groundcover": False}
     base.update(settings or {})
@@ -206,6 +210,21 @@ def test_shapes_and_instances():
               f"{imposters['shapes']} of {imposters['ofShapes']} shapes earned an imposter "
               f"(past {imposters['minMetres']:,.0f} m)")
         check(any(n.startswith("Colmesh_") for n in names), "a collider is present")
+
+        # A8/88: a prefab CS2 gives a PHOTOMETRIC light to is a lamp, and with `collision_lights`
+        # off it ships no collision mesh at all. The discriminator is the game's own, and the
+        # example bundle's cube owns a light - so the same shape must lose its Colmesh here.
+        lamp_dir = tempfile.mkdtemp(prefix="a3-lamp-")
+        try:
+            lamp_ctx = _stage_ctx(EXAMPLE, lamp_dir, {"collision_lights": False})
+            lamp_report = shapes_stage.run(lamp_ctx, Progress())
+            lamp_names = _detail_nodes(os.path.join(lamp_dir, "art", "shapes", "cs2", files[0]))[3]
+            check(not any(n.startswith("Colmesh_") for n in lamp_names),
+                  "collision_lights off takes the collider off a light-bearing prefab")
+            check(lamp_report["colliders"].get("lightNone") == lamp_report["shapes"],
+                  f"...and the report counts it ({lamp_report['colliders']})")
+        finally:
+            shutil.rmtree(lamp_dir, ignore_errors=True)
         check("base00" in names and "start01" in names, "the vanilla node hierarchy")
 
         row = next(iter(shared["shapes"]["results"].values()))
@@ -801,6 +820,42 @@ def test_color_palette():
               "the exported mask carries the tint coverage in ALPHA (255 tinted, 0 untinted)")
 
 
+def test_a8_performance_rules():
+    """A8 — the two new predicates, both of which remove something a viewer can see."""
+    print("A8 performance rules")
+    from cs2beamng.beamng import materials as bm
+    from cs2beamng.stages import instances as inst
+    from cs2beamng.stages import shapes as shp
+
+    # P1: EVERY exported kind must be capped. A kind missing from the table reads as 0 = uncapped,
+    # which is how 767 colour masks shipped at 1024 beside 256-pixel albedos for 1,025 MiB.
+    caps = bm.caps_from_settings({"texture_max": 256, "texture_max_normal": 128,
+                                  "texture_max_data": 64})
+    check(caps.get("colormask") == 256, f"the colour mask takes the colour cap ({caps.get('colormask')})")
+    missing = [k for k in ("color", "normal", "data", "opacity", "colormask")
+               if k not in bm.KIND_CAP_SETTING]
+    check(not missing, f"every exported texture kind has a cap setting (missing: {missing})")
+
+    # P4: the footprint predicate. Height alone passed a hydrant (0.46 m across, 0.97 m tall).
+    hydrant = {"boundsMin": [-0.23, 0.0, -0.23], "boundsMax": [0.23, 0.97, 0.23]}
+    sign = {"boundsMin": [-0.27, 0.0, -0.05], "boundsMax": [0.27, 2.13, 0.05]}
+    kiosk = {"boundsMin": [-1.2, 0.0, -1.2], "boundsMax": [1.2, 2.4, 1.2]}
+    check(inst._shape_footprint(hydrant) < 0.8, "a fire hydrant is under the footprint threshold")
+    check(inst._shape_footprint(sign) < 0.8, "a road sign is under it, though it is 2.13 m TALL")
+    check(inst._shape_height(sign) > inst.FOREST_COLLIDABLE_MIN_HEIGHT,
+          "...and the HEIGHT rule alone would have kept its collider - the defect A8 fixes")
+    check(inst._shape_footprint(kiosk) >= 0.8, "a 2.4 m kiosk keeps its collider")
+    check(inst._shape_footprint({}) == float("inf"),
+          "an unmeasurable shape NEVER loses its collider")
+
+    # P2: promotion is gated on the MEASURED displacement, and vegetation is exempt from it for
+    # the same reason it is exempt from the switch rule (a lamp-post LOD measures 0.06 m and is
+    # visually total, A6.7).
+    check(shp.LOD0_MAX_ERROR_DEFAULT > 0, "LOD0 promotion has a default threshold")
+    check("tree" not in shp.DISPLACEMENT_RULE_KINDS,
+          "vegetation is exempt from the displacement rule, so it never loses LOD 0")
+
+
 def test_orphans_of_absent_owners():
     """A6.6 - a record whose owner the producer declared ABSENT is not placed either.
 
@@ -885,6 +940,7 @@ def main():
     test_rotation_matrix_is_basis_vectors()
     test_switch_points_only_ever_defer()
     test_variant_index_matches_the_bake()
+    test_a8_performance_rules()
     test_orphans_of_absent_owners()
     test_tree_vs_plant()
     test_road_clearance()
