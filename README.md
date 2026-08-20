@@ -21,14 +21,18 @@ Two downloads, or one — the app can install the mod for you.
 | | |
 | --- | --- |
 | **[⬇ The app](../../releases/latest)** | `cs2beamng-<version>-windows-x64.zip`. Unzip, run `cs2beamng.exe`. No Python, no install. |
-| **[⬇ The ripper mod](../../releases/latest)** | `CartoRipper-<version>-cs2-<gameversion>.zip`. Unzip the `Carto` folder into `…\AppData\LocalLow\Colossal Order\Cities Skylines II\Mods\` — or press **Install the ripper mod** in the app. |
+| **[⬇ The ripper mod](../../releases/latest)** | `CartoRipper-<version>-cs2-<gameversion>.zip`. Unzip the `Carto` folder into `…\AppData\LocalLow\Colossal Order\Cities Skylines II\Mods\` — or let `cs2beamng.exe` do it (below). |
 
 Windows will say *"Windows protected your PC"* the first time, because the build is not
 code-signed: **More info → Run anyway**. Each asset ships a `.sha256` beside it.
 
 ### Three steps
 
-1. **Install the ripper mod** — the button in the app, or unzip it yourself.
+1. **Install the ripper mod** — `cs2beamng.exe` ships this zip beside itself and offers an
+   **Install the ripper mod** button in its Bundle card, until the mod is there. That button
+   exists in the downloaded app only: running from a source checkout or a `pip install` there is
+   no zip to unpack, and the app says so and links here instead. Either way, unzipping the
+   `Carto` folder yourself does the same job.
 2. **Rip your city** — in the game: **Options → Carto → Ripper → Rip World**. About 28 minutes for
    a full city; untick *Rip Objects* and *Rip Terrain* for a ~5 minute roads-only pass. The bundle
    is written to the game's own `ModsData\Carto\` folder.

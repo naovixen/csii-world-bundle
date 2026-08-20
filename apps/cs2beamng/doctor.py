@@ -47,8 +47,12 @@ def collect():
         fix = "In CS2: Options -> Carto -> Ripper -> Rip World."
         from . import modinstall
         if modinstall.installed_version() is None and modinstall.mods_dir():
-            fix = ("The ripper mod is not installed. Run the app and press 'Install the ripper "
-                   "mod', or unzip it into " + str(modinstall.install_dir()) + ".")
+            # only the packaged app ships the zip, so only it can offer the button; anywhere
+            # else this must say the thing the reader can actually do
+            how = ("Run the app and press 'Install the ripper mod', or unzip it into "
+                   if modinstall.available() else
+                   "Download CartoRipper-*.zip from the releases page and unzip it into ")
+            fix = "The ripper mod is not installed. " + how + str(modinstall.install_dir()) + "."
         # `bundle.json` is the manifest and the ripper writes it LAST, so a folder full of layer
         # files without one is a rip that is still running or was interrupted - which is a
         # different thing to say than "you have never ripped".
