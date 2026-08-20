@@ -7561,3 +7561,86 @@ must be tested against the build the settings can actually produce, not only the
   surfaced by A7's own validator check rather than by a load.
 
 ---
+
+## 90. The re-rip, and a rip that was older than the code with no commit to show for it (2026-08-20)
+
+Naomi ripped at **08:46**, and the bundle arrived without `leftHandTraffic` and without
+`districts.jsonl` - the two producer items A7 had been carrying as "built, awaiting in-game
+re-rip".
+
+### The staleness check said the bundle was fresh, and it was wrong
+
+`git log --since='2026-08-20 08:46' -- Systems IO Domain` lists **nothing**, which is the check
+CLAUDE.md prescribes and it reads as "no producer change post-dates this rip". The deployed
+`Carto.dll` was dated **2026-08-19 15:06** - hours BEFORE `17d4f58` (19:12) added both items. The
+mod deploys on `dotnet build`, not on commit, so **a rip can be older than the code with no commit
+between them to show it**. That is the same mechanism as the documented false positive, running
+the other way: `ac4f80f`'s `materialId` (committed 18:22) WAS in that rip, because the code was
+live at 15:06 and committed three hours later. 1,878 slots carry it.
+
+**The check that settles it is the pair the rule already names**: the DLL's own mtime, and
+something the rip emitted. Here all three agreed - DLL 15:06, no `leftHandTraffic` key, no
+`districts.jsonl` on disk.
+
+Rebuilt and deployed at 08:54; Naomi re-ripped at 09:35 and both items are in the output.
+
+### `leftHandTraffic` - and BeamNG's flag means the opposite of what its name suggests
+
+`bundle.json` now carries `leftHandTraffic: false`, and the navgraph stage reports
+`trafficSideSource: "bundle.json leftHandTraffic"` rather than falling back to its own
+measurement - which agrees with it (5,735 two-way segments put the with-flow lanes right, 1 left).
+
+The level writes `info.json` `roadRules: {"rightHandDrive": false}`, and that is **not** an
+inversion. `map.lua` computes `legalSide = map.getRoadRules().rightHandDrive and -1 or 1`, and of
+the 20 levels BeamNG ships, the two right-driving American cities carry `roadRules` with NO
+`rightHandDrive` key (`east_coast_usa`, `west_coast_usa`: `{"turnOnRed": true}`) while
+`automation_test_track` alone sets it **true**. So the absent/false state IS right-hand traffic,
+and `rightHandDrive` names the SIDE THE WHEEL IS ON in the UK sense, not the side of the road.
+
+### `districts.jsonl` ships, and it is empty because the city has none
+
+```
+Districts: 0 written to districts.jsonl - this city has no districts drawn
+```
+
+The producer's own report line, from the query it was written with (`District` + `Node` +
+`Triangle`, minus `Deleted`/`Temp`). Nothing is broken: a district is a polygon the player drew
+and a label the player typed, and this city has neither. **A7.4's tier 3 therefore has nothing to
+read**, and the fast-travel points fall through to tier 2 - 8 derived cells named for their
+commonest street (`Bramblewood Street`, `Driftwood Highway`, ...). Tier 1 (`poi_file`) is the
+lever for the names Naomi actually used for these places; no algorithm produces "the town left of
+the lake".
+
+### The resident number moved 900 MiB and the level did not change
+
+|  | the validated build (08-19 22:15) | this build (08-20 09:23) |
+|---|---:|---:|
+| meshes | 3,482.8 MiB | 3,466.5 |
+| textures, RESIDENT | 197.5 | **789.3** |
+| textures, SHIPPED | 790.1 | 789.3 |
+| `textureReductionLevel` | 1 (Low) | **0 (Normal+)** |
+| total | 3,680 | **4,256** |
+
+**The level ships the same texture bytes to within 1 MiB.** What changed is the BeamNG texture
+setting the instrument reads out of `beamng.log`: at Low the resident estimate is a quarter of the
+shipped bytes, at Normal+ it is all of them. Meshes went slightly DOWN, tracking the smaller city.
+So the whole 576 MiB is a graphics setting, and reading it as a regression from the rebuild would
+have been the mistake this table exists to prevent. It also puts the level 3.1x vanilla's biggest
+rather than 2.7x, and closer to the 5,224 MiB known-to-fail line - `textureReductionLevel` is the
+cheapest lever there is if that band ever bites.
+
+### And §82's blocker is gone
+
+`validate.checks.lightManager` now reads **`Advanced Lighting 1.5`** from `game-settings.json`,
+where §82 found `Basic Lighting` and that is why `lights` was turned off (a local light under
+Basic costs load time and scene memory and lights nothing). A6.9's street lights would now
+actually light the city; the setting is still off, and turning it on is a decision, not a fix.
+
+### The build
+
+41m04s, `status: done`, one validator problem (the budget band above). `crashRisks: 0` and
+`chords: 0` on map.lua's own node build over the level's 15,393 `DecalRoad`s;
+`collisionTypeMismatch: {collisionMeshWithoutColmesh: 0, visibleMeshWithColmesh: 0}`, which is the
+check that caught §88's TSStatic sentinel on the example bundle; `lightNone: 196` shapes, the
+corrected predicate landing where the old one did, as measured. 903,371 forest items over 3,105
+types, 8 POIs, 88 segments width-clamped by A7.6's rule (worst 13.57 m).
