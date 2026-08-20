@@ -20,6 +20,7 @@ from csiibundle.bake import manifest as bake_manifest
 from csiibundle.bake import products as bake_products
 
 from .. import settings as settings_mod
+from .bakeopts import bake_options
 from . import history
 
 
@@ -99,8 +100,9 @@ def take(values):
     out["derived"]["present"] = doc is not None
     if os.path.isdir(bundle):
         try:
-            options = {"tile": float(values.get("tile_size") or 256),
-                       "diagonal": ground_mod.MEASURED_DIAGONAL, "region": region}
+            # the SAME options the bake stage will pass, or every product that declares one
+            # beyond tile/diagonal/region reads as stale forever (`bakeopts.bake_options`)
+            options = bake_options(values)
             report = bake_manifest.status_report(doc, bake_products(), bundle, options)
             out["derived"]["products"] = {k: {"status": s, "reason": r} for k, (s, r) in report.items()}
         except Exception as exc:  # noqa: BLE001

@@ -31,7 +31,9 @@ it reads has changed (`pipeline/state.py` has the whole mechanism and its three 
 
 A stage that reads the built LEVEL rather than the bundle declares the single input `"level:"`
 (the validator does): its fingerprint is a stat walk of the level folder, minus the two files
-the build writes about itself.
+the build writes about itself. `"shapes:"` is the narrower one for a stage that is a function of
+the written shapes alone (the cook is): a stat walk of `art/shapes/**/*.{dae,cdae}`, which does
+not move when a texture or the terrain does.
 """
 
 import importlib

@@ -9,7 +9,9 @@ cleanly; the final message is `done` with the report or `error` with a traceback
 what lives here is the loop: fingerprint the stage's declared inputs, compare against
 `level_state.json`, and on a match replay its level objects and its `ctx.shared` delta instead
 of running it. `rebuild` (setting) or `--force` bypasses the lot. A stage that read a setting it
-did not declare is NOT recorded — the report says so and the next build re-runs it.
+did not declare is NOT recorded — the report says so and the next build re-runs it. Nor is one
+that returns `_norecord`, which is how a stage says "I gave up for a reason the level cannot
+see" (the cook, when BeamNG is running or absent).
 """
 
 import json
@@ -133,7 +135,13 @@ def main(settings, census, queue, cancel_event, hard_cancel=None):
                     history.update(key, u, sec)
             else:
                 history.update(stage.key, stage.units(census, settings), seconds)
-            if sig is not None:
+            # A stage that did not do its work because the MACHINE was not ready for it — no
+            # BeamNG installed, the game already running, a level outside the userfolder — must
+            # not have that recorded as the state of the level. `cook` bails on all three; caching
+            # "skipped, BeamNG was running" would leave the shapes uncooked for good, because
+            # closing the game changes nothing this stage declares.
+            norecord = bool(result.pop("_norecord", False)) if isinstance(result, dict) else False
+            if sig is not None and not norecord:
                 _record(level_dir, current, stage, sig, recorder, ctx, before, result, seconds, queue, report)
             queue.put({"t": "stage", "stage": stage.key, "status": "done", "seconds": seconds,
                        "summary": _summary(result), "at": time.time()})

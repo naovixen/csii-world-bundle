@@ -446,6 +446,13 @@ it does not get dropped.
   magnitude on paint and nothing on roads — a fidelity finding, recorded rather than tuned past.
   `tools/check_tiles_vs_game.py` is the predicate; `tools/measure_paint_factor.py` is the
   measurement §2.4 asked for before choosing a threshold.
+  **Amended 2026-08-20:** `cook` was the one stage A4 left out of the skip mechanism — it
+  compiled only what changed, but still paid its tail on every build (a `scan_dae` of every
+  `.dae` to rebuild `shape_ladders.json`, 4.4 GiB of XML on the reference city) and still
+  reported itself `done`, which is why a no-op rebuild looked like it had no cache. It declares
+  the new `shapes:` input now (a stat walk of `art/shapes/**/*.{dae,cdae}`) and the ladder index
+  is merged rather than rewritten; a bail-out for an environmental reason — no BeamNG, one
+  already running, a level outside the userfolder — returns `_norecord` so it is never cached.
 
 ### A5 — "Cook in BeamNG" stage (load time) + advice screen
 - `stages/cook.py` — **built 2026-08-16 (pulled forward after load #9's 210 s stall)**: locates

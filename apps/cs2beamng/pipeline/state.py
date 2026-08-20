@@ -12,7 +12,8 @@ format.
 `Stage` (see `..stages`) carries four optional fields beside `enabled` / `units` / `run`:
 
 * `inputs` — what it reads: `"layer:<manifestKey>"` for a bundle layer, `"derived:<relpath>"`
-  for a bake product. `None` (the default) means **not incremental**: the stage always runs.
+  for a bake product, `"level:"` for the whole built level folder and `"shapes:"` for its
+  `.dae`/`.cdae` alone. `None` (the default) means **not incremental**: the stage always runs.
 * `settings_keys` — the settings whose values change its output.
 * `outputs` — level-relative paths that must still exist for a skip to be legal (a user who
   deleted `art/shapes/` gets a rebuild, not a level referencing files that are gone).
@@ -125,8 +126,11 @@ def signature(stage, ctx, manifest=None, document=None):
             inputs[ref] = bake_manifest.fingerprint_path(os.path.join(ctx.derived_dir, ref.split(":", 1)[1]))
         elif ref == "level:":
             inputs[ref] = level_fingerprint(ctx.level_dir)
+        elif ref == "shapes:":
+            inputs[ref] = shapes_fingerprint(ctx.level_dir)
         elif not ref.startswith("layer:"):
-            raise ValueError(f"{stage.key}: input {ref!r} must start with 'layer:', 'derived:' or be 'level:'")
+            raise ValueError(f"{stage.key}: input {ref!r} must start with 'layer:', 'derived:' or be "
+                             f"'level:'/'shapes:'")
     # An upstream stage this one consumes: its signature IS the input. `materials` exports only
     # what `shapes`/`networks`/`derived` bound, and none of that shows up in its own layers.
     after = {}
@@ -171,6 +175,45 @@ def level_fingerprint(level_dir):
             names.append(os.path.relpath(os.path.join(root, name), base).replace(os.sep, "/"))
     digest = hashlib.sha256(chr(10).join(sorted(names)).encode("utf-8")).hexdigest()
     return {"kind": "level", "count": count, "bytes": total, "maxMtimeNs": newest, "names": digest}
+
+
+SHAPE_DIR = ("art", "shapes")
+SHAPE_SUFFIXES = (".dae", ".cdae")
+
+
+def shapes_fingerprint(level_dir):
+    """A fingerprint of the level's COLLADA sources AND their cooked counterparts — the input of
+    the one stage that is a function of the written shapes rather than of the bundle (`cook`).
+
+    `level:` would do the job, but it moves on every texture, every `items.level.json` and every
+    terrain write, so the cook could never be skipped for the reason it actually cares about:
+    whether a `.dae` still has a current `.cdae` beside it. Both suffixes are in the digest —
+    the `.dae` because a rewritten shape must be recompiled, the `.cdae` because a user who
+    deleted `art/shapes/**/*.cdae` must get a recook and not a level that ships raw XML.
+
+    The stage WRITES `.cdae`, so a build that compiled anything leaves a fingerprint different
+    from the one it was checked against and the next build re-runs the stage. That build finds
+    nothing to compile, changes nothing, and records the settled fingerprint; the one after it
+    skips. Converging one build late costs a directory walk and only ever happens after a build
+    that really did change geometry.
+    """
+    count = total = newest = 0
+    names = []
+    base = os.path.abspath(os.path.join(level_dir, *SHAPE_DIR))
+    for root, _dirs, files in os.walk(base):
+        for name in files:
+            if not name.lower().endswith(SHAPE_SUFFIXES):
+                continue
+            try:
+                st = os.stat(os.path.join(root, name))
+            except OSError:
+                continue
+            count += 1
+            total += int(st.st_size)
+            newest = max(newest, int(st.st_mtime_ns))
+            names.append(os.path.relpath(os.path.join(root, name), base).replace(os.sep, "/"))
+    digest = hashlib.sha256(chr(10).join(sorted(names)).encode("utf-8")).hexdigest()
+    return {"kind": "shapes", "count": count, "bytes": total, "maxMtimeNs": newest, "names": digest}
 
 
 def _plain(value):

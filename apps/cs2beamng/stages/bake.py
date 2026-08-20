@@ -10,11 +10,10 @@ shows "bake › markings: drape …" with its own bar.
 import re
 import time
 
-from csiibundle.bake import ground as bake_ground
 from csiibundle.bake import runner as bake_runner
 from csiibundle.bake.progress import Cancelled, Progress
 
-from ..settings import region_of
+from ..pipeline.bakeopts import bake_options
 from . import Stage
 
 _START = re.compile(r"^(\w+): .*, baking$")
@@ -127,31 +126,7 @@ def units(census, settings):
 def run(ctx, progress):
     settings = ctx.settings
     only = _wanted_products(settings)
-    categories = [c.strip() for c in str(settings.get("lane_furniture_categories") or "fence,cable,lane").split(",") if c.strip()]
-    options = {
-        "tile": float(settings.get("tile_size") or 256),
-        # MEASURED, not hard-coded conservatism: BeamNG splits SW-NE (audit §73)
-        "diagonal": bake_ground.MEASURED_DIAGONAL,
-        "region": region_of(settings),
-        "jobs": ctx.jobs,
-        "lane_parts": categories,
-        "paint_kinds": [k.strip() for k in str(settings.get("paint_kinds") or "tree").split(",") if k.strip()],
-        "paint_variants": {"tree": int(settings.get("paint_variants_tree", 2) or 1),
-                           "prop": int(settings.get("paint_variants_prop", 1) or 1)},
-        "lane_max_tris": int(settings.get("lane_max_tris") or 0) or None,
-        "paint_factor_max_error": int(settings.get("paint_factor_max_error", 4) or 0),
-        # A tinted albedo the bake writes at 1024 and this build then caps at `texture_max` is
-        # 4x the sRGB encode for texels the level never sees — 7 minutes of the bake on the
-        # reference city. Bake them at the size that ships. The bake box-filters the SOURCE
-        # albedo before tinting either way, so this moves that filter one step earlier rather
-        # than adding one; the colour mask is nearest-resampled to the same size, which is where
-        # the (measured, sub-percent) difference comes from.
-        "variant_max_size": int(settings.get("texture_max_variant")
-                               or settings.get("texture_max") or 0) or 1024,
-        # the ground the level will have: the fine 1.75 m raster only when the .ter is built from
-        # it (terrain_upsample 2 = 8192); the paint must be conformed to the same surface
-        "ground": "fine" if int(settings.get("terrain_upsample") or 1) == 2 else "base",
-    }
+    options = bake_options(settings, jobs=ctx.jobs)
     estimates = (ctx.census or {}).get("estimates", {})
     weights = {name: (estimates.get(f"bake/{name}") or {}).get("seconds") for name in only}
     tracker = _StageProgress(progress, weights)

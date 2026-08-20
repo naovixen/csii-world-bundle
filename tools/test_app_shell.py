@@ -708,8 +708,8 @@ def test_stage_declarations():
     # and the fields themselves have to be well formed, or a signature raises mid-build
     for key, (stage, _mods) in sorted(_stage_modules().items()):
         bad = [ref for ref in (stage.inputs or ())
-               if not (ref.startswith("layer:") or ref.startswith("derived:") or ref == "level:")]
-        check(not bad, f"stage {key!r} inputs are all layer:/derived:/level: refs" + (f" - {bad}" if bad else ""))
+               if not (ref.startswith("layer:") or ref.startswith("derived:") or ref in ("level:", "shapes:"))]
+        check(not bad, f"stage {key!r} inputs are all layer:/derived:/level:/shapes: refs" + (f" - {bad}" if bad else ""))
         unknown = [k for k in stage.settings_keys if k not in settings_mod.SCHEMA]
         check(not unknown, f"stage {key!r} declares only real settings" + (f" - {unknown}" if unknown else ""))
 
@@ -737,6 +737,78 @@ def test_state_codec():
     check(target["v"] == {"k1": {"m", "n"}, "k2": {"o"}}, "a nested dict-of-sets delta merges per key")
 
 
+def test_cook_state(tmp):
+    """The cook's own two pieces: the `shapes:` fingerprint it is skipped on, and the ladder
+    index it no longer rebuilds from scratch.
+
+    Both are guards on the same failure. The fingerprint must move for a rewritten `.dae` and a
+    DELETED `.cdae` (a user who cleared the cooked shapes has to get a recook, not a level that
+    ships raw XML), and stay still for anything else in the level. The index must carry over the
+    shapes this cook is not compiling — re-reading them cost 4.4 GiB of XML per build — and keep
+    the entry of a shape whose source a `keep_dae: false` build removed, which is the one case
+    the index exists for and the one a whole-file rewrite silently emptied.
+    """
+    from cs2beamng.beamng import budget as budget_mod
+    from cs2beamng.pipeline import state as state_mod
+    from cs2beamng.stages import cook as cook_mod
+
+    print("cook state (shapes: fingerprint, ladder index)")
+    level = os.path.join(tmp, "cooklevel")
+    shapes = os.path.join(level, "art", "shapes", "cs2")
+    os.makedirs(shapes, exist_ok=True)
+
+    def write_dae(stem, tris):
+        with open(os.path.join(shapes, stem + ".dae"), "w", encoding="utf-8", newline="\n") as handle:
+            handle.write('<?xml version="1.0" encoding="utf-8"?>\n<COLLADA>\n  <library_geometries>\n'
+                         f'    <geometry id="{stem}-mesh">\n      <triangles count="{tris}"/>\n'
+                         "    </geometry>\n  </library_geometries>\n  <library_visual_scenes>\n"
+                         f'    <node id="{stem}_a100" name="{stem}_a100" type="NODE">\n'
+                         f'      <instance_geometry url="#{stem}-mesh"/>\n'
+                         "    </node>\n  </library_visual_scenes>\n</COLLADA>\n")
+
+    for stem, tris in (("a", 10), ("b", 20)):
+        write_dae(stem, tris)
+        with open(os.path.join(shapes, stem + ".cdae"), "wb") as handle:
+            handle.write(b"cooked")
+    base = state_mod.shapes_fingerprint(level)
+    with open(os.path.join(level, "info.json"), "w", encoding="utf-8") as handle:
+        handle.write("{}")
+    check(state_mod.shapes_fingerprint(level) == base, "a write outside art/shapes/ does not move the fingerprint")
+    os.remove(os.path.join(shapes, "b.cdae"))
+    check(state_mod.shapes_fingerprint(level) != base, "deleting a .cdae moves it, so a cleared level is recooked")
+
+    with open(os.path.join(shapes, "b.cdae"), "wb") as handle:
+        handle.write(b"cooked")
+    count, rescanned = cook_mod._write_ladder_index(level, os.path.join(level, "art", "shapes"),
+                                                    rescan=[os.path.join(shapes, "a.dae"), os.path.join(shapes, "b.dae")])
+    check((count, rescanned) == (2, 2), f"a cold index scans every shape ({count}, {rescanned})")
+    ladder = os.path.join(level, budget_mod.LADDER_INDEX)
+    with open(ladder, encoding="utf-8") as handle:
+        indexed = json.load(handle)["shapes"]
+    check(set(indexed) == {"art/shapes/cs2/a.dae", "art/shapes/cs2/b.dae"}, f"both shapes indexed ({sorted(indexed)})")
+    check(indexed["art/shapes/cs2/a.dae"]["levels"] == {"100": 10}, "the ladder is read out of the .dae")
+
+    write_dae("b", 30)                                   # only this one moved: only this one is re-read
+    count, rescanned = cook_mod._write_ladder_index(level, os.path.join(level, "art", "shapes"),
+                                                    rescan=[os.path.join(shapes, "b.dae")])
+    check((count, rescanned) == (2, 1), f"only the compiled shape is re-scanned ({count}, {rescanned})")
+    with open(ladder, encoding="utf-8") as handle:
+        indexed = json.load(handle)["shapes"]
+    check(indexed["art/shapes/cs2/b.dae"]["levels"] == {"100": 30}, "the re-scanned shape carries its new numbers")
+
+    os.remove(os.path.join(shapes, "a.dae"))             # what `keep_dae: false` leaves behind
+    count, rescanned = cook_mod._write_ladder_index(level, os.path.join(level, "art", "shapes"), rescan=())
+    with open(ladder, encoding="utf-8") as handle:
+        indexed = json.load(handle)["shapes"]
+    check("art/shapes/cs2/a.dae" in indexed and rescanned == 0,
+          f"a dropped .dae keeps its entry while the .cdae is there ({sorted(indexed)}, rescanned {rescanned})")
+    os.remove(os.path.join(shapes, "a.cdae"))
+    cook_mod._write_ladder_index(level, os.path.join(level, "art", "shapes"), rescan=())
+    with open(ladder, encoding="utf-8") as handle:
+        indexed = json.load(handle)["shapes"]
+    check("art/shapes/cs2/a.dae" not in indexed, "a shape that is gone from the level leaves the index")
+
+
 def _level_objects(level_dir):
     from cs2beamng.beamng.level import read_objects
 
@@ -762,6 +834,11 @@ def test_incremental(tmp):
             full = os.path.join(root, name)
             dae_stamps[os.path.relpath(full, out)] = os.stat(full).st_mtime_ns
     check(os.path.isfile(state_mod.state_path(out)), "cold build writes level_state.json")
+    # `cook` is incremental now, but this level is not under a BeamNG userfolder so the stage
+    # bails — and a bail-out is `_norecord`. Recording it would skip the cook for good on the day
+    # the level moves somewhere the compiler can see, because nothing it declares would move.
+    check("cook" not in (state_mod.load(out) or {}).get("stages", {}),
+          "a cook that bailed for an environmental reason records no state")
 
     code = cli_main(["build", EXAMPLE, "--out", out, "--set", "jobs=1"])
     check(code == 0, f"no-op rebuild succeeds ({code})")
@@ -910,6 +987,7 @@ def main():
         test_modinstall(tmp)
         test_stage_declarations()
         test_state_codec()
+        test_cook_state(tmp)
         test_bake_stage_cancel()
         test_runner(tmp)
         test_server(tmp)
