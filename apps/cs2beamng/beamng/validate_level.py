@@ -909,3 +909,17 @@ def _ground_check(terrain, bundle_dir, progress):
     return {"sampled": int(arr.size), "fraction": float((arr <= GROUND_TOLERANCE).mean()),
             "medianAbs": float(numpy.median(arr)), "p95Abs": float(numpy.percentile(arr, 95)),
             "meanSigned": float(numpy.mean(dz))}
+
+
+# -- public wrappers, for `cs2beamng doctor` and the UI's "target machine" line ----------------
+# Same readers the validator uses, so what the app SAYS about this machine and what it BUDGETS
+# for it can never drift apart.
+
+def render_target(settings=None):
+    """`(vram_mib, pixels, source)` for this machine - settings first, then the BeamNG logs."""
+    return _render_target(settings or {})
+
+
+def light_manager():
+    """`(profile_name, source)` - "Advanced Lighting" / "Basic Lighting" from game-settings.json."""
+    return _light_manager()

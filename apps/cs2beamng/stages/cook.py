@@ -50,18 +50,11 @@ import time
 
 from csiibundle.bake.progress import Cancelled
 
-# `tools/` is on the path for the app's own tests and CLI; the ladder index is written in the
-# format `level_budget` reads, and importing it is how the two stay in step.
-try:
-    import level_budget                                            # noqa: PLC0415
-except ImportError:                                                # pragma: no cover
-    import os as _os
-    import sys as _sys
-    _sys.path.insert(0, _os.path.join(_os.path.dirname(_os.path.dirname(_os.path.dirname(
-        _os.path.dirname(_os.path.abspath(__file__))))), "tools"))
-    import level_budget                                            # noqa: PLC0415
-
 from .. import settings as settings_mod
+# The ladder index is written in the format `budget` reads, and importing it is how the two stay
+# in step. It used to be `tools/level_budget.py` reached through a __file__ climb, which meant a
+# non-editable `pip install .` could not import this stage at all.
+from ..beamng import budget as level_budget
 from . import Stage
 
 STAGE_KEY = "cook"

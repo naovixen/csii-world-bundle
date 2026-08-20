@@ -430,10 +430,13 @@ Library/ilpp.pid
 obj/
 bin/
 
-# Python packaging (pip install -e .)
+# Python packaging (pip install -e .) and the PyInstaller build
 *.egg-info/
 build/
 dist/
+# The ripper mod's zip, staged here by tools/build_exe.py --mod so the app can install it.
+# It is a build artifact of the C# half; never commit game-adjacent binaries.
+packaging/mod/
 
 # Bake caches must never be committed (they live beside a bundle, but a test may point one anywhere)
 derived/

@@ -40,13 +40,25 @@
         <div class="path-row">
           <input type="text" id="in_bundle" data-key="bundle" spellcheck="false" placeholder="…\ModsData\Carto">
           <button class="btn small browse" data-for="bundle" hidden>Browse</button>
-          <select class="detected" data-for="bundle" hidden></select>
+          <button class="btn small ghost" id="rescanBtn" title="Look again for a bundle, a levels folder and BeamNG">Rescan</button>
         </div>
+        <div class="detect" id="bundleDetect"></div>
       </div>
+      <div class="callout" id="modCallout" hidden></div>
       <div class="census" id="census">
         <div class="census-empty muted">No bundle loaded.</div>
       </div>
       <div class="derived" id="derived"></div>
+    </section>
+
+    <!-- the handful of things a person must actually supply, and what the level will cost -->
+    <section class="card" id="levelCard">
+      <header class="card-head">
+        <h2>Level</h2>
+        <span class="muted" id="levelStatus"></span>
+      </header>
+      <div id="levelBasics"></div>
+      <div class="cost" id="costMeter"></div>
     </section>
 
     <section class="card" id="settingsCard">
@@ -54,8 +66,19 @@
         <h2>Settings</h2>
         <div class="segmented" id="presets" role="group" aria-label="Quality preset"></div>
       </header>
+      <div class="preset-info" id="presetInfo"></div>
       <div class="problems" id="settingsProblems" hidden></div>
-      <div id="settingsGroups"></div>
+      <div class="settings-body">
+        <nav class="settings-nav" id="settingsNav" aria-label="Settings sections">
+          <input type="search" id="settingsSearch" class="nav-search" spellcheck="false"
+                 placeholder="Search settings…" aria-label="Search every setting">
+          <div class="nav-list" id="navList" role="tablist"></div>
+          <div class="nav-foot">
+            <button class="nav-item nav-reference" type="button" id="referenceBtn">Full settings reference</button>
+          </div>
+        </nav>
+        <div class="settings-pane" id="settingsPane" role="tabpanel"></div>
+      </div>
     </section>
   </div>
 

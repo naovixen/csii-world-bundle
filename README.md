@@ -6,17 +6,61 @@
     </picture>
 </p>
 
-# Carto
+# Carto — Cities: Skylines II world ripper
 
-**Carto** is a Cities: Skylines II mod designed to extract in-game spatial data and convert it into widely used geospatial file formats.
+**Rip your Cities: Skylines II city — the real meshes, materials, terrain and every one of its
+1.2 million objects — and build it into a BeamNG.drive level you can drive.**
 
-## Features
+This is a fork of [Carto](https://github.com/taipei-native/Carto), whose vector/raster geodata
+export it keeps intact (see [Geodata export](#geodata-export-upstream-carto) below).
 
-* **Vector data export** – Export buildings, districts, map tiles, pathways, POIs, roads, routes, tracks, zoning cells, and more.
-* **Raster data export** – Export terrain elevation and water depth.
-* **Attribute-rich output** – Includes object attributes such as names, direction, and other metadata.
-* **Multiple file formats** – Supports GeoJSON and ESRI Shapefile for vector data; GeoTIFF for raster data.
-* **Projection support** – Uses WGS84 / UTM (EPSG: 326xx / 327xx) by default. Custom Transverse Mercator projections are also supported.
+## Get it
+
+Two downloads, or one — the app can install the mod for you.
+
+| | |
+| --- | --- |
+| **[⬇ The app](../../releases/latest)** | `cs2beamng-<version>-windows-x64.zip`. Unzip, run `cs2beamng.exe`. No Python, no install. |
+| **[⬇ The ripper mod](../../releases/latest)** | `CartoRipper-<version>-cs2-<gameversion>.zip`. Unzip the `Carto` folder into `…\AppData\LocalLow\Colossal Order\Cities Skylines II\Mods\` — or press **Install the ripper mod** in the app. |
+
+Windows will say *"Windows protected your PC"* the first time, because the build is not
+code-signed: **More info → Run anyway**. Each asset ships a `.sha256` beside it.
+
+### Three steps
+
+1. **Install the ripper mod** — the button in the app, or unzip it yourself.
+2. **Rip your city** — in the game: **Options → Carto → Ripper → Rip World**. About 28 minutes for
+   a full city; untick *Rip Objects* and *Rip Terrain* for a ~5 minute roads-only pass. The bundle
+   is written to the game's own `ModsData\Carto\` folder.
+3. **Build the level** — open the app, check it found your bundle and your BeamNG folder, pick a
+   quality preset, press **Build level**. Then start BeamNG and pick your city.
+
+`cs2beamng doctor` (or the app's own detection panel) says what it found on your machine and what
+is missing, with the fix for each.
+
+### Command line
+
+Same settings, same stages, same level:
+
+```
+pipx install csii-world-tools            # or: pip install csii-world-tools
+cs2beamng doctor
+cs2beamng build [bundle] --out <levels>/<name> [--preset high] [--region "X Z R"] [--set key=value ...]
+cs2beamng budget <level_dir>             # what a built level costs: resident bytes, triangles drawn
+```
+
+Every setting, its default and what was measured to arrive at it:
+[`docs/settings.md`](docs/settings.md). The app shows **nine** of them by default and hides the
+other seventy behind *Show advanced*.
+
+### What you need
+
+| Thing | Why |
+| --- | --- |
+| Cities: Skylines II 1.6+ | Your city, and the mod that rips it. |
+| BeamNG.drive | Where the level goes. Turn on **Advanced Lighting** if you want street lights — Basic Lighting shades no point or spot light at all. |
+| ~30 GB of disk | The bundle, its bake cache, and the level. |
+| 8 GB of VRAM | For a full city at the `performance` preset. Less than that: `medium`, `low`, or build one district with `--region`. |
 
 ## World Ripper (this fork)
 
@@ -57,11 +101,25 @@ vector/raster export is unaffected. A reference consumer lives at
 bundle); it doubles as the readable reference implementation of the contract's consumer-side
 algorithms.
 
-## Installation
+## Geodata export (upstream Carto)
 
-Carto is available exclusively via [Paradox Mods](https://mods.paradoxplaza.com/mods/87428/Windows), the official distribution platform. You can install it through the in-game mod browser, their website, or via [Skyve](https://github.com/JadHajjar/Skyve).
+The fork keeps every bit of upstream Carto's vector and raster export, unchanged and beside the
+ripper:
 
-## Getting Started
+* **Vector data** – buildings, districts, map tiles, pathways, POIs, roads, routes, tracks,
+  zoning cells and more, as GeoJSON or ESRI Shapefile.
+* **Raster data** – terrain elevation and water depth, as GeoTIFF.
+* **Attribute-rich output** – names, direction and other metadata on every feature.
+* **Projection support** – WGS84 / UTM (EPSG 326xx / 327xx) by default; custom Transverse
+  Mercator projections too.
+
+**Only want the geodata?** Install *upstream* Carto from
+[Paradox Mods](https://mods.paradoxplaza.com/mods/87428/Windows) — through the in-game mod
+browser, their website, or [Skyve](https://github.com/JadHajjar/Skyve). That mod page is
+upstream's; this fork is distributed from [its own releases](../../releases/latest) and is not on
+Paradox Mods.
+
+### Using it
 
 1. Load a save, start a new game, or open the editor.
 2. Open **Options** and select **Carto** from the sidebar.
@@ -74,33 +132,42 @@ Carto is available exclusively via [Paradox Mods](https://mods.paradoxplaza.com/
 
 See the [Tutorials](https://github.com/taipei-native/Carto/wiki/Tutorial) for making maps with QGIS, and the [User Manual](https://github.com/taipei-native/Carto/wiki) for detailed documentation.
 
-## Ripping the world and building a BeamNG.drive level
+## Building from source
 
-1. In-game: **Options → Carto → Ripper → Rip World** (a full city takes ~28 min; untick
-   *Rip Objects* / *Rip Terrain* for a ~5 min networks-only rip). The bundle lands in
-   `…\AppData\LocalLow\Colossal Order\Cities Skylines II\ModsData\Carto\`.
-2. Install the consumer tools once (Python ≥ 3.10, from a clone of this repo):
-   ```
-   pip install -e .          # csiibundle (reader + bake) and the cs2beamng app
-   pip install -e .[gui]     # optional: a native window instead of your default browser
-   ```
-3. Launch the app:
-   ```
-   cs2beamng                 # opens the UI (native window, or your browser at http://127.0.0.1:<port>/?t=…)
-   cs2beamng gui --browser   # always the browser
-   python -m cs2beamng       # the same, without the console script on PATH
-   ```
-   The app finds the bundle and your BeamNG userfolder by itself; pick a quality preset,
-   optionally a region (`X Z R` in bundle metres) and press **Build level**. Progress, ETA,
-   log and a Cancel button are on screen; the level is written to
-   `%LOCALAPPDATA%\BeamNG\BeamNG.drive\current\levels\<level_name>\` (Linux/macOS paths are
-   detected too) with a `cs2beamng_report.json` beside it. The first build also bakes the
-   bundle's `derived/` cache (≈ 15 min for a full city); later builds re-bake only what changed.
-4. Headless / scripted:
-   ```
-   cs2beamng build [bundle] --out <levels>/<name> [--set foliage_density=60 --set region="2994 1853 200"] [--settings my.json]
-   ```
-   Details, settings and the architecture: [`apps/cs2beamng/README.md`](apps/cs2beamng/README.md).
+You do not need this to use either half — [the releases](../../releases/latest) carry both, and
+`pipx install csii-world-tools` gives you the command line. This is for working on it.
+
+**The app** (Python ≥ 3.11):
+
+```
+pip install -e .              # csiibundle (reader + bake) and the cs2beamng app
+pip install -e ".[all]"       # + native window, DDS textures, fast LOD decimation
+pip install -e ".[build]"     # + PyInstaller, for the standalone build
+
+cs2beamng                     # the UI: native window, or your browser at http://127.0.0.1:<port>/?t=…
+cs2beamng gui --browser       # always the browser
+python -m cs2beamng           # the same, without the console script on PATH
+
+python tools/build_exe.py     # dist/cs2beamng-<version>-<platform>.zip
+```
+
+The level is written to `%LOCALAPPDATA%\BeamNG\BeamNG.drive\current\levels\<level_name>\`
+(Linux/macOS paths are detected too) with a `cs2beamng_report.json` beside it. The first build
+also bakes the bundle's `derived/` cache (≈ 15 min for a full city); later builds re-bake only
+what changed. Architecture and stage detail: [`apps/cs2beamng/README.md`](apps/cs2beamng/README.md).
+
+**The mod** needs the [CS2 Modding Toolchain](https://cs2.paradoxwikis.com/Modding) — it compiles
+against the game's own assemblies, which is also why no CI can build it:
+
+```
+dotnet build -c Release              # Mod.targets deploys it to your CS2 Mods folder
+pwsh tools/release_mod.ps1 -Tag v0.2.0 -Upload    # build, package and attach it to a release
+```
+
+**Releasing:** tag `vX.Y.Z` and push. `.github/workflows/release.yml` builds the app for Windows
+and Linux, the wheel and the sdist, and opens a **draft** release. Then run `release_mod.ps1` to
+attach the mod, or `python tools/build_exe.py --mod <zip>` to ship the mod *inside* the app so
+there is only one download.
 
 ## API Integration
 

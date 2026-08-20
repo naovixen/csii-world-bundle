@@ -37,16 +37,34 @@ props, trees (the 1.2 M instances) land in A3; performance tuning A4.
 
 ## Install & run
 
-```
-pip install -e .            # from the repo root; installs csiibundle + cs2beamng
-pip install -e .[gui]       # + pywebview for a native window (else: your default browser)
+Users get a zip from [the releases page](../../../../releases/latest) — `cs2beamng.exe`, no Python.
+From a checkout:
 
-cs2beamng                   # the application
-cs2beamng gui --browser     # force the browser
-python -m cs2beamng         # the same
-
-cs2beamng build [bundle] --out DIR [--set key=value ...] [--settings file.json] [--force]
 ```
+pip install -e .              # csiibundle + cs2beamng
+pip install -e ".[all]"       # + native window (pywebview), DDS (etcpak), fast LODs (pyfqmr)
+
+cs2beamng                     # the application
+cs2beamng gui --browser       # force the browser
+python -m cs2beamng           # the same
+
+cs2beamng doctor              # what this machine offers, and the fix for what is missing
+cs2beamng build [bundle] --out DIR [--preset high] [--region "X Z R"] [--set key=value ...] [--settings file.json] [--force]
+cs2beamng budget LEVEL_DIR    # resident bytes and triangles drawn, against BeamNG's own levels
+```
+
+`python tools/build_exe.py` produces the standalone zip (needs `pip install -e ".[build]"`); it
+freezes two executables out of one analysis — `cs2beamng.exe` windowed for the double-click and
+`cs2beamng-cli.exe` with a console for the commands above.
+
+### The settings
+
+79 of them, and the UI shows **nine**: the paths, the level name, how much of the city, the
+quality preset, lights, collision and the cook. The rest are behind *Show advanced*, grouped as
+before, and every one of them is still `--set`-able. Each control carries one sentence of help;
+the measured argument behind a default — what it cost, what the alternative did — is behind
+*why* on the row, and generated into [`docs/settings.md`](../../docs/settings.md) by
+`tools/gen_docs.py` (CI fails if that file drifts from `settings.py`).
 
 ## Rebuilds are incremental (A4)
 

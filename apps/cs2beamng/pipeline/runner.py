@@ -405,6 +405,15 @@ def build_headless(args):
             for key, value in json.load(handle).items():
                 if key in settings_mod.SCHEMA:
                     values[key] = value
+    if getattr(args, "preset", None):
+        try:
+            values = settings_mod.apply_preset(values, args.preset)
+        except KeyError:
+            print(f"settings: unknown preset {args.preset!r} "
+                  f"(one of: {', '.join(sorted(settings_mod.PRESETS))})", file=sys.stderr)
+            return 2
+    if getattr(args, "region", None) is not None:
+        values["region"] = args.region
     if getattr(args, "bundle", None):
         values["bundle"] = os.path.abspath(args.bundle)
     if getattr(args, "out", None):

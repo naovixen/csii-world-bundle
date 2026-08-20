@@ -11,6 +11,15 @@ requires-python = ">=3.10"
 license = { text = "MIT" }
 dependencies = [
     "numpy>=1.24",
+    # Not optional in practice: `beamng/materials.py` and `stages/terrain.py` need it for the
+    # PNG kinds csiibundle's own decoders deliberately do not handle (palette, colour-type 2).
+    "pillow>=9",
+    # `cKDTree` — the navgraph's junction welding, the POI snap and `map_lua`'s node merge all
+    # ask "what is within r of this point" over hundreds of thousands of points. NOTE for the
+    # Blender adapter: Blender's Python has no scipy, which is why `roadclear.py` and
+    # `terrain.py` are deliberately numpy-only. `csiibundle.navgraph` is NOT numpy-only and the
+    # adapter must not import it.
+    "scipy>=1.10",
 ]
 
 [project.optional-dependencies]
@@ -21,6 +30,8 @@ lods = ["pyfqmr>=0.2"]
 # Pre-compressed DDS textures (BC7/BC5/BC4 + mips) so BeamNG never cooks them at load; without it PNGs ship.
 textures = ["etcpak>=0.9"]
 all = ["pywebview>=5", "pyfqmr>=0.2", "etcpak>=0.9"]
+# Building the standalone application zips (tools/build_exe.py).
+build = ["pyinstaller>=6.6"]
 
 [project.scripts]
 cs2beamng = "cs2beamng.cli:main"

@@ -13,9 +13,9 @@ Endpoints (all under the token — see below):
     GET  /static/<file>           app.css, app.js
     GET  /events?since=<seq>      SSE: `state` every 0.5 s (no log), `log` deltas, `bye` on quit
     GET  /api/state               the runner state incl. the log (polling fallback)
-    GET  /api/settings            {values, schema, groups, presets, problems, detected, canBrowse}
+    GET  /api/settings            {values, schema, sections, basics, presets, problems, detected, canBrowse}
     POST /api/settings            {values: {key: value}} -> merged, coerced, validated, saved
-    POST /api/preset              {name} -> preset applied and saved
+    POST /api/preset              {name} -> applied and saved; "custom" restores the remembered set
     GET  /api/census              census for the current settings (cached by fingerprint)
     POST /api/start               start a build with the current settings
     POST /api/cancel              cancel the running build
@@ -110,10 +110,50 @@ class AppServer:
     def settings_payload(self):
         with self._lock:
             values = dict(self.values)
+        # `quality_preset` names the preset last applied, or "custom" once the values have been
+        # made the user's own. In the second case the base to count badges against comes from
+        # the remembered custom snapshot - the preset they started from.
+        custom = settings_mod.load_custom()
+        base = values.get("quality_preset")
+        if base == "custom":
+            base = (custom or {}).get("base")
         return {"values": values, "schema": settings_mod.schema_for_ui(), "groups": settings_mod.GROUPS,
-                "presets": settings_mod.PRESETS, "problems": settings_mod.validate(values),
+                "basic": settings_mod.BASIC,
+                # E1: the redesigned screen's own model - the basics strip, the sidebar, and
+                # what drives the settings that no longer have a control of their own.
+                "basics": settings_mod.BASICS, "sections": settings_mod.sections_for_ui(),
+                "drivenBy": settings_mod.DRIVEN_BY, "presets": settings_mod.PRESETS,
+                "subsetOf": settings_mod.SUBSET_OF, "parentOff": settings_mod.PARENT_OFF,
+                "needs": settings_mod.NEEDS,
+                "choiceSets": settings_mod.CHOICE_SETS, "units": settings_mod.UNITS,
+                "presetBase": base, "hasCustom": custom is not None,
+                "presetChanged": settings_mod.preset_changes(values, base),
+                "presetInfo": settings_mod.PRESET_INFO, "problems": settings_mod.validate(values),
                 "detected": settings_mod.detected(values), "canBrowse": self.pick_folder is not None,
-                "version": __version__}
+                "mod": self.mod_state(), "version": __version__}
+
+    def mod_state(self):
+        """What the app can tell the user about the producer half: is the ripper mod installed,
+        and can this build install it for them (D4.3 — the release exe ships the zip beside
+        itself; a source checkout does not)."""
+        from . import modinstall
+
+        try:
+            return {"installed": modinstall.installed_version(), "bundled": modinstall.bundled_version(),
+                    "canInstall": modinstall.available(), "dir": modinstall.install_dir()}
+        except Exception as exc:                                # noqa: BLE001 - never break the page
+            return {"installed": None, "bundled": None, "canInstall": False, "dir": None,
+                    "error": str(exc)}
+
+    def install_mod(self):
+        """Unpack the bundled ripper mod into the CS2 mods folder."""
+        from . import modinstall
+
+        try:
+            target = modinstall.install()
+        except Exception as exc:                                # noqa: BLE001 - reported to the page
+            return {"ok": False, "error": str(exc), "mod": self.mod_state()}
+        return {"ok": True, "dir": target, "mod": self.mod_state()}
 
     def update_settings(self, incoming):
         errors = []
@@ -127,11 +167,44 @@ class AppServer:
                     values[key] = settings_mod.coerce(key, raw)
                 except (TypeError, ValueError) as exc:
                     errors.append(str(exc))
-            if "quality_preset" not in (incoming or {}) and any(k in settings_mod.PRESETS["high"] for k in incoming or {}):
+            # ANY quality setting moving puts the row on Custom - not just the ones a preset
+            # happens to name. Before this, changing `terrain_holes` or `tile_size` left the
+            # row reading "High" while the level was no longer what High builds. What is NOT a
+            # quality choice is the basics strip (naming your level folder is not a quality) and
+            # the two keys that only decide where this window is.
+            quality = set(settings_mod.quality_keys())
+            touched = [k for k in (incoming or {}) if k in quality]
+            # the base is what the values descended from BEFORE this change - read it while
+            # `quality_preset` still names a preset, or it is "custom" by the time it is asked
+            base = self._preset_base()
+            if touched and "quality_preset" not in (incoming or {}):
                 values["quality_preset"] = "custom"
             self.values = values
             try:
                 settings_mod.save(values)
+                if touched:
+                    settings_mod.save_custom(values, base)
+            except OSError as exc:
+                errors.append(f"could not save settings: {exc}")
+        payload = self.settings_payload()
+        payload["errors"] = errors
+        return payload
+
+    def _preset_base(self):
+        """The named preset the current values descend from; the caller holds the lock."""
+        base = self.values.get("quality_preset")
+        if base in settings_mod.PRESETS:
+            return base
+        return (settings_mod.load_custom() or {}).get("base")
+
+    def apply_custom(self):
+        """Put the user's own settings back. The preset row offers this at all times, so
+        looking at what another preset does costs nothing and loses nothing."""
+        errors = []
+        with self._lock:
+            self.values = settings_mod.apply_custom(self.values)
+            try:
+                settings_mod.save(self.values)
             except OSError as exc:
                 errors.append(f"could not save settings: {exc}")
         payload = self.settings_payload()
@@ -329,6 +402,8 @@ class _Handler(BaseHTTPRequestHandler):
                 return self._json(self.app.update_settings(body.get("values") or {}))
             if path == "/api/preset":
                 name = body.get("name")
+                if name == "custom":
+                    return self._json(self.app.apply_custom())
                 if name not in settings_mod.PRESETS:
                     return self._json({"error": f"unknown preset {name!r}"}, HTTPStatus.BAD_REQUEST)
                 return self._json(self.app.apply_preset(name))
@@ -344,6 +419,8 @@ class _Handler(BaseHTTPRequestHandler):
                     return self._json({"error": "no native folder picker in a browser"}, HTTPStatus.NOT_IMPLEMENTED)
                 picked = self.app.pick_folder(body.get("current") or None)
                 return self._json({"path": picked})
+            if path == "/api/installmod":
+                return self._json(self.app.install_mod())
             if path == "/api/quit":
                 self._json({"ok": True})
                 threading.Thread(target=self._quit_later, daemon=True).start()

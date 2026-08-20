@@ -1,0 +1,316 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark light">
+<title>cs2beamng — drive your Cities: Skylines II city in BeamNG.drive</title>
+<meta name="description" content="Rip a Cities: Skylines II city — meshes, materials, terrain, 1.2M objects — and build it into a BeamNG.drive level you can drive.">
+<style>
+:root {
+  --bg: #0f1115; --bg-elev: #161a21; --bg-elev-2: #1c212a;
+  --line: #262c37; --line-strong: #343c4a;
+  --text: #e6e9ef; --text-dim: #9aa4b5; --text-faint: #66708a;
+  --accent: #4f8cff; --accent-2: #7bb0ff; --ok: #3ddc84; --warn: #f5b942; --danger: #ff5c5c;
+  --radius: 14px; --radius-s: 8px;
+  --font: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
+  --mono: ui-monospace, "Cascadia Code", "JetBrains Mono", Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #f3f5f8; --bg-elev: #ffffff; --bg-elev-2: #f6f8fb;
+    --line: #e2e6ed; --line-strong: #cbd2dd;
+    --text: #151a22; --text-dim: #4b5566; --text-faint: #8791a3;
+    --accent: #2f6fe4; --accent-2: #2559bd;
+  }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--bg); color: var(--text); font-family: var(--font);
+  line-height: 1.6; -webkit-font-smoothing: antialiased;
+}
+.wrap { max-width: 880px; margin: 0 auto; padding: 0 20px; }
+header.hero { padding: 64px 0 40px; border-bottom: 1px solid var(--line); }
+h1 { font-size: clamp(30px, 5vw, 44px); line-height: 1.15; margin: 0 0 12px; letter-spacing: -0.02em; }
+h1 .sub { display: block; font-size: 0.45em; color: var(--text-dim); font-weight: 500; letter-spacing: 0; margin-top: 10px; }
+h2 { font-size: 22px; margin: 44px 0 12px; letter-spacing: -0.01em; }
+h3 { font-size: 15px; margin: 24px 0 6px; }
+p { margin: 0 0 14px; color: var(--text-dim); }
+p.lead { font-size: 17px; color: var(--text); }
+a { color: var(--accent-2); }
+code, kbd { font-family: var(--mono); font-size: 0.9em; background: var(--bg-elev-2); padding: 1px 5px; border-radius: 4px; }
+pre { background: var(--bg-elev-2); border: 1px solid var(--line); border-radius: var(--radius-s); padding: 12px 14px; overflow-x: auto; }
+pre code { background: none; padding: 0; }
+.downloads { display: flex; flex-wrap: wrap; gap: 12px; margin: 26px 0 10px; }
+.dl {
+  display: block; text-decoration: none; color: inherit; flex: 1 1 300px;
+  background: var(--bg-elev); border: 1px solid var(--line-strong); border-radius: var(--radius);
+  padding: 16px 18px; transition: border-color 0.15s, transform 0.15s;
+}
+.dl:hover { border-color: var(--accent); transform: translateY(-1px); }
+.dl .what { font-weight: 650; font-size: 15px; }
+.dl .who { color: var(--text-faint); font-size: 12.5px; margin-top: 4px; }
+.dl.primary { border-color: var(--accent); background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 12%, var(--bg-elev)), var(--bg-elev)); }
+ol.steps { counter-reset: step; list-style: none; padding: 0; margin: 18px 0; }
+ol.steps > li { position: relative; padding: 0 0 0 44px; margin: 0 0 22px; }
+ol.steps > li::before {
+  counter-increment: step; content: counter(step);
+  position: absolute; left: 0; top: 0; width: 28px; height: 28px; border-radius: 50%;
+  background: var(--accent); color: #fff; font-weight: 700; font-size: 14px;
+  display: grid; place-items: center;
+}
+ol.steps > li b { color: var(--text); }
+.note {
+  border-left: 3px solid var(--warn); background: color-mix(in srgb, var(--warn) 8%, transparent);
+  padding: 10px 14px; border-radius: 0 var(--radius-s) var(--radius-s) 0; margin: 16px 0;
+  font-size: 14px; color: var(--text-dim);
+}
+.note b { color: var(--text); }
+table { width: 100%; border-collapse: collapse; margin: 14px 0; font-size: 14px; }
+th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { color: var(--text-faint); font-weight: 600; font-size: 12.5px; text-transform: uppercase; letter-spacing: 0.04em; }
+/* command builder */
+.builder { background: var(--bg-elev); border: 1px solid var(--line); border-radius: var(--radius); padding: 18px; margin: 16px 0; }
+.builder .row { display: grid; grid-template-columns: 180px 1fr; gap: 10px 14px; align-items: center; margin-bottom: 10px; }
+@media (max-width: 620px) { .builder .row { grid-template-columns: 1fr; } }
+.builder label { font-size: 13.5px; color: var(--text); }
+.builder input, .builder select {
+  width: 100%; background: var(--bg); color: var(--text); border: 1px solid var(--line-strong);
+  border-radius: var(--radius-s); padding: 7px 10px; font: inherit; font-size: 13.5px;
+}
+.builder input[type="checkbox"] { width: auto; }
+.out { position: relative; margin-top: 14px; }
+.out pre { margin: 0; padding-right: 84px; white-space: pre-wrap; word-break: break-all; }
+.copy {
+  position: absolute; top: 8px; right: 8px; background: var(--accent); color: #fff; border: 0;
+  border-radius: var(--radius-s); padding: 5px 12px; font: inherit; font-size: 12.5px; cursor: pointer;
+}
+footer { margin: 56px 0 40px; padding-top: 20px; border-top: 1px solid var(--line); color: var(--text-faint); font-size: 13px; }
+.muted { color: var(--text-faint); font-size: 13px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="hero">
+  <h1>Drive your Cities&nbsp;II city.
+    <span class="sub">Rip a Cities: Skylines II city — the real meshes, materials, terrain and every one of its
+    1.2 million objects — and build it into a BeamNG.drive level.</span>
+  </h1>
+
+  <div class="downloads">
+    <a class="dl primary" href="https://github.com/erohs/csii-world-bundle/releases/latest">
+      <div class="what">⬇ Download the app</div>
+      <div class="who">Windows and Linux · unzip and run · no Python needed</div>
+    </a>
+    <a class="dl" href="https://github.com/erohs/csii-world-bundle/releases/latest">
+      <div class="what">⬇ Download the ripper mod</div>
+      <div class="who">The Cities: Skylines II mod that exports your city — or let the app install it</div>
+    </a>
+  </div>
+  <p class="muted">Local and personal use. The ripper extracts assets from <em>your own</em> copy of the
+  game so you can use them in software you own; do not publish or redistribute what it produces.</p>
+</header>
+
+<h2>Three steps</h2>
+<ol class="steps">
+  <li>
+    <b>Install the ripper mod.</b> Open the app and press <b>Install the ripper mod</b> — it knows
+    where Cities: Skylines II keeps its mods and puts it there. (Or unzip <code>CartoRipper-*.zip</code>
+    into <code>…\AppData\LocalLow\Colossal Order\Cities Skylines II\Mods\</code> yourself.)
+  </li>
+  <li>
+    <b>Rip your city.</b> In the game: <b>Options → Carto → Ripper → Rip World</b>. A full city takes
+    about 28 minutes; untick <em>Rip Objects</em> and <em>Rip Terrain</em> for a five-minute
+    roads-only pass. The bundle lands in the game's own <code>ModsData</code> folder, where the app
+    looks for it.
+  </li>
+  <li>
+    <b>Build the level.</b> Open the app, check it found your bundle and your BeamNG folder, pick a
+    quality preset, press <b>Build level</b>. First build of a full city is a couple of hours —
+    later ones only rebuild what changed. Then start BeamNG and pick your city.
+  </li>
+</ol>
+
+<div class="note">
+  <b>“Windows protected your PC”.</b> The app is not code-signed, so Windows SmartScreen warns about
+  it the first time. Click <b>More info → Run anyway</b>. Every release also ships a
+  <code>.sha256</code> file if you would rather check the download yourself.
+</div>
+
+<h2>What you need</h2>
+<table>
+  <tr><th>Thing</th><th>Why</th></tr>
+  <tr><td>Cities: Skylines II</td><td>Your city, and the mod that rips it. Version 1.6 or newer.</td></tr>
+  <tr><td>BeamNG.drive</td><td>Where the level goes. Turn on <b>Advanced Lighting</b> if you want street lights — Basic Lighting never shades a point or spot light.</td></tr>
+  <tr><td>~30 GB of disk</td><td>The bundle, its bake cache and the level. A full city's level is a few GB.</td></tr>
+  <tr><td>8 GB of VRAM</td><td>For a full city at the <code>performance</code> preset. Less than that, use <code>medium</code> or <code>low</code>, or build one district with a region.</td></tr>
+</table>
+
+<h2>Prefer the command line?</h2>
+<p>
+  Everything the app does, <code>cs2beamng-cli</code> does — same settings, same stages, same level.
+  Install it with pipx (no clone, no virtualenv of your own):
+</p>
+<pre><code>pipx install csii-world-tools
+cs2beamng doctor          # what it found on this machine, and what is missing
+cs2beamng                 # the app, if you change your mind</code></pre>
+<p>Build a command below; every setting has a <code>--set</code> name, and
+  <a href="https://github.com/erohs/csii-world-bundle/blob/main/docs/settings.md">the reference lists all 79</a>.</p>
+
+<div class="builder" id="builder">
+  <div class="row">
+    <label for="b_bundle">Bundle folder</label>
+    <input id="b_bundle" type="text" placeholder="leave empty to use the CS2 export it finds by itself">
+  </div>
+  <div class="row">
+    <label for="b_out">Level folder</label>
+    <input id="b_out" type="text" placeholder="leave empty for your BeamNG levels folder">
+  </div>
+  <div class="row">
+    <label for="b_name">Level name</label>
+    <input id="b_name" type="text" placeholder="cs2_city">
+  </div>
+  <div class="row">
+    <label for="b_preset">Quality</label>
+    <select id="b_preset"></select>
+  </div>
+  <div class="row">
+    <label for="b_region">Only part of it</label>
+    <input id="b_region" type="text" placeholder='X Z radius in metres, e.g. 2994 1853 400'>
+  </div>
+  <div class="row" id="extraRows"></div>
+  <div class="out">
+    <pre><code id="cmd">cs2beamng build</code></pre>
+    <button class="copy" id="copyBtn" type="button">Copy</button>
+  </div>
+  <p class="muted" id="presetNote"></p>
+</div>
+
+<h2>When something is wrong</h2>
+<h3>The app says it found no bundle</h3>
+<p>Either the mod is not installed, or the rip has not finished — the bundle's manifest
+(<code>bundle.json</code>) is written last, so a folder full of files without one means a rip is
+still running or was interrupted. <code>cs2beamng doctor</code> says which.</p>
+<h3>BeamNG loads the level and the ground is grey / textures are missing</h3>
+<p>Close BeamNG and build again with <b>Compile shapes after the build</b> on: the level ships
+pre-compiled meshes and pre-compressed textures, and that stage is skipped while the game is
+running.</p>
+<h3>It runs, then gets worse the longer I play</h3>
+<p>That is the level not fitting in VRAM. Use the <code>performance</code> or <code>medium</code>
+preset, or build a region instead of the whole city. The app reads your card and resolution out of
+BeamNG's own log and tells you what a level may mount on it.</p>
+<h3>Street lights do nothing</h3>
+<p>BeamNG's <b>Basic Lighting</b> has no depth prepass and shades no point or spot light at all,
+so every light in the level is pure cost. Switch to Advanced Lighting, or leave lights off.</p>
+
+<h2>How it works</h2>
+<p>
+  The mod walks your loaded city in-engine and writes a documented, engine-neutral
+  <b>CS2 World Bundle</b>: real vertex and index buffers, materials and textures, the terrain
+  heightmap and splats, the lane graph, and a transform and attributes for every instance. The app
+  reads that bundle through its published contract and writes a BeamNG level — terrain, water, sky,
+  roads, markings, buildings, props, 1.2 M placements, an AI navgraph, collision.
+  Neither half knows anything about the other beyond the bundle.
+</p>
+<p>
+  Where the two games disagree, the rule is taken from the game's own decompiled implementation
+  rather than invented; where no rule exists, the approximation is declared and counted in the
+  build report. The
+  <a href="https://github.com/erohs/csii-world-bundle/blob/main/docs/bundle-schema.md">bundle schema</a>,
+  a <a href="https://github.com/erohs/csii-world-bundle/tree/main/docs/schema">JSON Schema per layer</a>
+  and an <a href="https://github.com/erohs/csii-world-bundle/tree/main/docs/example-bundle">example bundle</a>
+  are all in the repository, so another consumer can be written against them without reading a line
+  of the mod.
+</p>
+
+<footer>
+  <a href="https://github.com/erohs/csii-world-bundle">Source</a> ·
+  <a href="https://github.com/erohs/csii-world-bundle/releases">Releases</a> ·
+  <a href="https://github.com/erohs/csii-world-bundle/blob/main/docs/settings.md">Settings reference</a> ·
+  <a href="https://github.com/erohs/csii-world-bundle/issues">Issues</a><br>
+  MIT. A fork of <a href="https://github.com/taipei-native/Carto">Carto</a>, which does the
+  geodata half. Not affiliated with Colossal Order, Paradox Interactive or BeamNG GmbH.
+</footer>
+
+</div>
+
+<script>
+(async () => {
+  // The command builder reads the SAME settings list the app ships (generated by
+  // tools/gen_docs.py), so it can never offer a setting that does not exist.
+  const cmd = document.getElementById("cmd");
+  const fields = {
+    bundle: document.getElementById("b_bundle"),
+    out: document.getElementById("b_out"),
+    name: document.getElementById("b_name"),
+    preset: document.getElementById("b_preset"),
+    region: document.getElementById("b_region"),
+  };
+  let data = null;
+  try {
+    data = await (await fetch("settings.json")).json();
+  } catch (_) {
+    data = { presets: { ultra: "", high: "", performance: "", medium: "", low: "" }, settings: [] };
+  }
+  const order = ["ultra", "high", "performance", "medium", "low"];
+  for (const name of order.filter((n) => n in data.presets)) {
+    const opt = new Option(name, name);
+    fields.preset.appendChild(opt);
+  }
+  fields.preset.value = "high";
+
+  // a couple of extra toggles people ask for, taken from the real schema
+  const extras = ["lights", "cook", "foliage_density"];
+  const host = document.getElementById("extraRows");
+  host.style.display = "block";
+  const extraInputs = {};
+  for (const key of extras) {
+    const spec = (data.settings || []).find((s) => s.key === key);
+    if (!spec) continue;
+    const row = document.createElement("div");
+    row.className = "row";
+    const label = document.createElement("label");
+    label.textContent = key.replace(/_/g, " ");
+    label.htmlFor = "x_" + key;
+    const input = document.createElement("input");
+    input.id = "x_" + key;
+    if (spec.kind === "bool") { input.type = "checkbox"; input.checked = !!spec.default; }
+    else { input.type = "number"; input.value = spec.default; }
+    input.dataset.default = String(spec.default);
+    row.appendChild(label); row.appendChild(input);
+    host.appendChild(row);
+    extraInputs[key] = { input, spec };
+  }
+
+  function render() {
+    const parts = ["cs2beamng build"];
+    const quote = (s) => (/\s/.test(s) ? `"${s}"` : s);
+    if (fields.bundle.value.trim()) parts.push(quote(fields.bundle.value.trim()));
+    if (fields.out.value.trim() || fields.name.value.trim()) {
+      const base = fields.out.value.trim() || "<levels>";
+      const name = fields.name.value.trim() || "cs2_city";
+      parts.push("--out", quote(base.replace(/[\\/]$/, "") + "/" + name));
+    }
+    if (fields.preset.value !== "high") parts.push("--preset", fields.preset.value);
+    if (fields.region.value.trim()) parts.push("--region", quote(fields.region.value.trim()));
+    for (const [key, { input, spec }] of Object.entries(extraInputs)) {
+      const value = spec.kind === "bool" ? input.checked : Number(input.value);
+      if (String(value) !== input.dataset.default) parts.push("--set", `${key}=${value}`);
+    }
+    cmd.textContent = parts.join(" ");
+    document.getElementById("presetNote").textContent = data.presets[fields.preset.value] || "";
+  }
+  for (const el of Object.values(fields)) el.addEventListener("input", render);
+  for (const { input } of Object.values(extraInputs)) input.addEventListener("input", render);
+  document.getElementById("copyBtn").addEventListener("click", async () => {
+    await navigator.clipboard.writeText(cmd.textContent);
+    const b = document.getElementById("copyBtn");
+    b.textContent = "Copied";
+    setTimeout(() => { b.textContent = "Copy"; }, 1200);
+  });
+  render();
+})();
+</script>
+</body>
+</html>

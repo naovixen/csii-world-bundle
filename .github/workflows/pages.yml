@@ -1,0 +1,56 @@
+# The front door: site/ published to GitHub Pages.
+#
+# Deliberately NOT the whole `docs/` folder — that is the project's working notes (the API audit
+# is 7,000 lines) and is written for whoever is building this, not for someone who wants to drive
+# their city. `site/` is one self-contained page: the three steps, the downloads, and a command
+# builder for the CLI.
+#
+# `site/settings.json` is generated from `cs2beamng.settings`, so the builder cannot offer a
+# setting the app does not have. The job regenerates it and fails if the checked-in copy is stale.
+name: pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "site/**"
+      - "apps/cs2beamng/settings.py"
+      - "tools/gen_docs.py"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Generated docs are current
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e .
+          python tools/gen_docs.py --check
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - id: deploy
+        uses: actions/deploy-pages@v4

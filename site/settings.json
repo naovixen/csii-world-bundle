@@ -1,0 +1,656 @@
+{
+ "version": "0.1.0",
+ "basic": [
+  "bundle",
+  "output",
+  "level_name",
+  "level_title",
+  "region",
+  "buildings",
+  "networks",
+  "trees",
+  "props",
+  "markings",
+  "areas",
+  "skirts",
+  "terrain_cut",
+  "lane_furniture",
+  "water",
+  "lights",
+  "ai_roads",
+  "pois",
+  "groundcover",
+  "foliage_density",
+  "prop_density",
+  "texture_max",
+  "view_distance",
+  "collision_preset",
+  "cook"
+ ],
+ "presets": {
+  "ultra": "Everything, full-size textures, longest view. Hours to build, and only an ultra card runs it.",
+  "high": "Everything at 512 px. The default, and what the reference city is validated at.",
+  "performance": "Everything, smaller textures and fewer drawn triangles. For an 8 GB card at high resolution.",
+  "medium": "60 % of the trees, 70 % of the props, 3 km view. A mid-range card.",
+  "low": "Roads, buildings and a third of the foliage. What runs on a laptop."
+ },
+ "settings": [
+  {
+   "key": "bundle",
+   "kind": "path",
+   "default": null,
+   "help": "Bundle directory (default: the CS2 ModsData export for this OS)",
+   "tier": "basic"
+  },
+  {
+   "key": "output",
+   "kind": "path",
+   "default": null,
+   "help": "Levels directory to write into (default: the BeamNG userfolder levels/)",
+   "tier": "basic"
+  },
+  {
+   "key": "level_name",
+   "kind": "str",
+   "default": "cs2_city",
+   "help": "Level folder name (lowercase, underscores)",
+   "tier": "basic"
+  },
+  {
+   "key": "level_title",
+   "kind": "str",
+   "default": "CS2 City",
+   "help": "Level title shown in BeamNG",
+   "tier": "basic"
+  },
+  {
+   "key": "region",
+   "kind": "str",
+   "default": null,
+   "help": "Build a disc of the city instead of all of it: X Z radius, in bundle metres",
+   "tier": "basic"
+  },
+  {
+   "key": "trees",
+   "kind": "bool",
+   "default": true,
+   "help": "Trees (forest)",
+   "tier": "basic"
+  },
+  {
+   "key": "props",
+   "kind": "bool",
+   "default": true,
+   "help": "Props, fences, points of interest",
+   "tier": "basic"
+  },
+  {
+   "key": "buildings",
+   "kind": "bool",
+   "default": true,
+   "help": "Buildings",
+   "tier": "basic"
+  },
+  {
+   "key": "networks",
+   "kind": "bool",
+   "default": true,
+   "help": "Roads, rails and other network meshes",
+   "tier": "basic"
+  },
+  {
+   "key": "markings",
+   "kind": "bool",
+   "default": true,
+   "help": "Road markings and painted decals (pre-draped)",
+   "tier": "basic"
+  },
+  {
+   "key": "lane_furniture",
+   "kind": "bool",
+   "default": true,
+   "help": "Roadside furniture: fences, hedges, cables",
+   "tier": "basic"
+  },
+  {
+   "key": "lane_furniture_categories",
+   "kind": "str",
+   "default": "fence,cable,lane",
+   "help": "Furniture categories to include",
+   "tier": "advanced"
+  },
+  {
+   "key": "areas",
+   "kind": "bool",
+   "default": true,
+   "help": "Painted surfaces (parking lots, paths)",
+   "tier": "basic"
+  },
+  {
+   "key": "skirts",
+   "kind": "bool",
+   "default": true,
+   "help": "Building foundation skirts",
+   "tier": "basic"
+  },
+  {
+   "key": "terrain_cut",
+   "kind": "bool",
+   "default": true,
+   "help": "Cut the ground open at trenches and tunnel portals and drop the exact cut mesh into the hole",
+   "tier": "basic"
+  },
+  {
+   "key": "lights",
+   "kind": "bool",
+   "default": false,
+   "help": "Street and building lights (dynamic lights are expensive)",
+   "tier": "basic"
+  },
+  {
+   "key": "lights_max",
+   "kind": "int",
+   "default": 25000,
+   "help": "Maximum dynamic lights (needs Advanced Lighting in BeamNG)",
+   "tier": "advanced"
+  },
+  {
+   "key": "water",
+   "kind": "bool",
+   "default": true,
+   "help": "Water planes/blocks",
+   "tier": "basic"
+  },
+  {
+   "key": "groundcover",
+   "kind": "bool",
+   "default": false,
+   "help": "Billboard grass over the ground paint. BeamNG dressing, not CS2 fidelity - CS2 has no grass system",
+   "tier": "basic"
+  },
+  {
+   "key": "ai_roads",
+   "kind": "bool",
+   "default": true,
+   "help": "The invisible road network the AI, the minimap and route-finding use. Off = no minimap and no routes",
+   "tier": "basic"
+  },
+  {
+   "key": "navgraph_max_width",
+   "kind": "float",
+   "default": 0.0,
+   "help": "Clamp a navgraph node's road width, in metres (0 = the width CS2's own lane offsets give)",
+   "tier": "advanced"
+  },
+  {
+   "key": "navgraph_taxiways",
+   "kind": "bool",
+   "default": false,
+   "help": "Put airport taxiways in the navgraph too, at low drivability",
+   "tier": "advanced"
+  },
+  {
+   "key": "pois",
+   "kind": "bool",
+   "default": true,
+   "help": "Fast-travel points on the big map, derived from the densest road cells",
+   "tier": "basic"
+  },
+  {
+   "key": "poi_file",
+   "kind": "path",
+   "default": null,
+   "help": "Your own fast-travel points as a JSON list, instead of the derived ones",
+   "tier": "advanced"
+  },
+  {
+   "key": "poi_max",
+   "kind": "int",
+   "default": 8,
+   "help": "How many fast-travel points to derive when `poi_file` names fewer. Vanilla levels ship 3 (italy) to 9 (west_coast_usa)",
+   "tier": "advanced"
+  },
+  {
+   "key": "foliage_density",
+   "kind": "int",
+   "default": 100,
+   "help": "Percent of trees kept (deterministic subset)",
+   "tier": "basic"
+  },
+  {
+   "key": "prop_density",
+   "kind": "int",
+   "default": 100,
+   "help": "Percent of props kept",
+   "tier": "basic"
+  },
+  {
+   "key": "texture_max",
+   "kind": "choice",
+   "default": 512,
+   "help": "Colour texture edge cap in pixels (0 = full size). Also caps the emissive and opacity maps",
+   "tier": "basic",
+   "choices": [
+    "256",
+    "512",
+    "1024",
+    "2048",
+    "0"
+   ]
+  },
+  {
+   "key": "texture_max_normal",
+   "kind": "choice",
+   "default": 512,
+   "help": "NORMAL map edge cap in pixels (0 = full size). Vanilla runs 512-1024",
+   "tier": "advanced",
+   "choices": [
+    "256",
+    "512",
+    "1024",
+    "2048",
+    "0"
+   ]
+  },
+  {
+   "key": "texture_max_data",
+   "kind": "choice",
+   "default": 256,
+   "help": "Edge cap for data maps in pixels: roughness, metallic and the CS2 colour mask",
+   "tier": "advanced",
+   "choices": [
+    "128",
+    "256",
+    "512",
+    "1024",
+    "0"
+   ]
+  },
+  {
+   "key": "texture_dds",
+   "kind": "bool",
+   "default": true,
+   "help": "Ship textures pre-compressed as DDS so BeamNG never cooks them on first load; off = PNG",
+   "tier": "advanced"
+  },
+  {
+   "key": "generate_lods",
+   "kind": "bool",
+   "default": true,
+   "help": "Generate LOD chains for every shape",
+   "tier": "advanced"
+  },
+  {
+   "key": "tile_lod",
+   "kind": "bool",
+   "default": true,
+   "help": "Give the merged world tiles (roads, markings, areas, skirts, furniture) a real LOD chain",
+   "tier": "advanced"
+  },
+  {
+   "key": "imposters",
+   "kind": "bool",
+   "default": true,
+   "help": "Engine-generated billboard imposters (bb_autobillboard)",
+   "tier": "advanced"
+  },
+  {
+   "key": "imposter_min_metres",
+   "kind": "int",
+   "default": 0,
+   "help": "Only give an imposter to a shape still drawn beyond this distance; 0 = 3/4 of the view distance",
+   "tier": "advanced"
+  },
+  {
+   "key": "lod_detail_scale",
+   "kind": "float",
+   "default": 6.0,
+   "help": "How many times closer than CS2 an object is culled. 1 = exactly what the game draws",
+   "tier": "advanced"
+  },
+  {
+   "key": "lod_detail_scale_prop",
+   "kind": "float",
+   "default": 0.0,
+   "help": "The same multiplier as lod_detail_scale but for PROPS only; 0 = use the global one",
+   "tier": "advanced"
+  },
+  {
+   "key": "lod_switch_error_px",
+   "kind": "float",
+   "default": 8.0,
+   "help": "How many pixels of surface error a generated LOD may show when it takes over. Smaller = truer, heavier",
+   "tier": "advanced"
+  },
+  {
+   "key": "paint_kinds",
+   "kind": "str",
+   "default": "tree,prop",
+   "help": "Which kinds get baked colour variants; a kind left out draws its prefab's untinted albedo",
+   "tier": "advanced"
+  },
+  {
+   "key": "paint_variants_tree",
+   "kind": "int",
+   "default": 2,
+   "help": "How many baked colour variants a TREE prefab gets. Each one is another shape and material set",
+   "tier": "advanced"
+  },
+  {
+   "key": "paint_variants_prop",
+   "kind": "int",
+   "default": 1,
+   "help": "How many baked colour variants a PROP prefab gets. 1 is the prefab's mean colour",
+   "tier": "advanced"
+  },
+  {
+   "key": "texture_max_variant",
+   "kind": "choice",
+   "default": 256,
+   "help": "Colour cap for a paint variant's tinted albedo, separately from the main colour cap",
+   "tier": "advanced",
+   "choices": [
+    "128",
+    "256",
+    "512",
+    "1024",
+    "0"
+   ]
+  },
+  {
+   "key": "forest_min_items",
+   "kind": "int",
+   "default": 10,
+   "help": "Merge a forest type holding fewer items than this into its prefab's plain type. 0 keeps every type",
+   "tier": "advanced"
+  },
+  {
+   "key": "lane_max_tris",
+   "kind": "int",
+   "default": 0,
+   "help": "Triangle budget for baked lane furniture, 0 = no budget. What goes first is what CS2 culls first",
+   "tier": "advanced"
+  },
+  {
+   "key": "paint_factor_max_error",
+   "kind": "int",
+   "default": 4,
+   "help": "How far a paint variant may drift, in 8-bit channels, before it gets a texture of its own",
+   "tier": "advanced"
+  },
+  {
+   "key": "foliage_road_clearance",
+   "kind": "float",
+   "default": 2.5,
+   "help": "Declared deviation: drop a tree standing this close to a lane centre so the city can be driven. 0 = off",
+   "tier": "advanced"
+  },
+  {
+   "key": "gpu_vram_mib",
+   "kind": "int",
+   "default": 0,
+   "help": "Dedicated VRAM of the card the level is for, in MiB (0 = read it from your own beamng.log)",
+   "tier": "advanced"
+  },
+  {
+   "key": "render_width",
+   "kind": "int",
+   "default": 0,
+   "help": "Render width the level is for (0 = read it from beamng.log)",
+   "tier": "advanced"
+  },
+  {
+   "key": "render_height",
+   "kind": "int",
+   "default": 0,
+   "help": "Render height the level is FOR (0 = read it from beamng.log, fall back to 1080)",
+   "tier": "advanced"
+  },
+  {
+   "key": "tile_size",
+   "kind": "int",
+   "default": 256,
+   "help": "World tile size for roads/markings/areas (metres)",
+   "tier": "advanced"
+  },
+  {
+   "key": "view_distance",
+   "kind": "int",
+   "default": 4000,
+   "help": "LevelInfo.visibleDistance: the global far cull in metres",
+   "tier": "basic"
+  },
+  {
+   "key": "tod_hour",
+   "kind": "float",
+   "default": -1.0,
+   "help": "Time of day in hours 0-24 for the level's sun (-1 = the in-game clock at rip time)",
+   "tier": "advanced"
+  },
+  {
+   "key": "terrain_brightness",
+   "kind": "float",
+   "default": 1.0,
+   "help": "Extra gain on the ground textures (1 = calibrated: CS2 grass to BeamNG's typical grass brightness)",
+   "tier": "advanced"
+  },
+  {
+   "key": "terrain_upsample",
+   "kind": "choice",
+   "default": 2,
+   "help": "Terrain grid: 2 = 8192 at 1.75 m (the game's own near-camera detail); 1 = 4096 at 3.5 m, lighter",
+   "tier": "advanced",
+   "choices": [
+    "1",
+    "2"
+   ]
+  },
+  {
+   "key": "terrain_holes",
+   "kind": "choice",
+   "default": "contain",
+   "help": "Which clip cells become terrain holes",
+   "tier": "advanced",
+   "choices": [
+    "contain",
+    "majority",
+    "none"
+   ]
+  },
+  {
+   "key": "terrain_blend_sharpen",
+   "kind": "float",
+   "default": 1.0,
+   "help": "Ground-boundary interlock, x the derived amount. 1 = faithful; 2-3 hides the blocky material edges",
+   "tier": "advanced"
+  },
+  {
+   "key": "forest_shadows",
+   "kind": "bool",
+   "default": true,
+   "help": "Forest items cast shadows",
+   "tier": "advanced"
+  },
+  {
+   "key": "tree_wind",
+   "kind": "bool",
+   "default": false,
+   "help": "Synthesise wind vertex colours for trees",
+   "tier": "advanced"
+  },
+  {
+   "key": "lod0_max_error",
+   "kind": "float",
+   "default": 0.1,
+   "help": "Drop LOD0 where LOD1 is within this many metres of it",
+   "tier": "advanced"
+  },
+  {
+   "key": "lod0_min_triangles",
+   "kind": "int",
+   "default": 1000,
+   "help": "...but never where that leaves the shape shipping fewer triangles than this. 0 = no floor",
+   "tier": "advanced"
+  },
+  {
+   "key": "sweep_temp",
+   "kind": "bool",
+   "default": true,
+   "help": "Delete cooked shapes in BeamNG's temp/ that this level no longer has",
+   "tier": "advanced"
+  },
+  {
+   "key": "keep_dae",
+   "kind": "bool",
+   "default": true,
+   "help": "Keep .dae sources beside the cooked .cdae (off saves ~5 GB, forces a full recook next build)",
+   "tier": "advanced"
+  },
+  {
+   "key": "collision_preset",
+   "kind": "choice",
+   "default": "simplified",
+   "help": "Collision detail",
+   "tier": "basic",
+   "choices": [
+    "exact",
+    "simplified",
+    "off"
+   ]
+  },
+  {
+   "key": "collision_buildings",
+   "kind": "bool",
+   "default": true,
+   "help": "Buildings collide",
+   "tier": "advanced"
+  },
+  {
+   "key": "collision_props",
+   "kind": "bool",
+   "default": true,
+   "help": "Props collide",
+   "tier": "advanced"
+  },
+  {
+   "key": "collision_trees",
+   "kind": "bool",
+   "default": true,
+   "help": "Trees collide (trunk)",
+   "tier": "advanced"
+  },
+  {
+   "key": "collision_furniture",
+   "kind": "bool",
+   "default": true,
+   "help": "Fences and lane furniture collide",
+   "tier": "advanced"
+  },
+  {
+   "key": "collision_skirts",
+   "kind": "bool",
+   "default": true,
+   "help": "Foundation skirts collide",
+   "tier": "advanced"
+  },
+  {
+   "key": "collision_paint",
+   "kind": "bool",
+   "default": false,
+   "help": "Markings and painted surfaces collide (not recommended)",
+   "tier": "advanced"
+  },
+  {
+   "key": "collision_min_footprint",
+   "kind": "float",
+   "default": 0.8,
+   "help": "Props narrower than this (metres) do not collide",
+   "tier": "advanced"
+  },
+  {
+   "key": "collision_lights",
+   "kind": "bool",
+   "default": false,
+   "help": "Street lights and every other light-bearing prop collide. Off: a 10 m pole stops a car dead",
+   "tier": "advanced"
+  },
+  {
+   "key": "jobs",
+   "kind": "int",
+   "default": 0,
+   "help": "Worker processes for parallel stages (0 = CPU count - 1)",
+   "tier": "advanced"
+  },
+  {
+   "key": "rebuild",
+   "kind": "bool",
+   "default": false,
+   "help": "Rebuild every stage from scratch, ignoring what the last build recorded",
+   "tier": "advanced"
+  },
+  {
+   "key": "keep_partial",
+   "kind": "bool",
+   "default": false,
+   "help": "Keep a partially built level after cancel",
+   "tier": "advanced"
+  },
+  {
+   "key": "cook",
+   "kind": "bool",
+   "default": true,
+   "help": "Compile the shapes with BeamNG's own compiler after the build, so the first load is fast",
+   "tier": "basic"
+  },
+  {
+   "key": "beamng_exe",
+   "kind": "path",
+   "default": null,
+   "help": "BeamNG executable (auto-detected when empty)",
+   "tier": "advanced"
+  },
+  {
+   "key": "quality_preset",
+   "kind": "choice",
+   "default": "high",
+   "help": "Quality preset last applied",
+   "tier": "advanced",
+   "choices": [
+    "ultra",
+    "high",
+    "performance",
+    "medium",
+    "low",
+    "custom"
+   ]
+  },
+  {
+   "key": "ui_browser",
+   "kind": "choice",
+   "default": "window",
+   "help": "Where the UI opens: a native window, a named browser, or the system default",
+   "tier": "advanced",
+   "choices": [
+    "window",
+    "chrome",
+    "edge",
+    "firefox",
+    "default"
+   ]
+  },
+  {
+   "key": "ui_section",
+   "kind": "choice",
+   "default": "world",
+   "help": "The settings section the UI opens on (remembered between sessions)",
+   "tier": "advanced",
+   "choices": [
+    "world",
+    "collision",
+    "textures",
+    "navigation",
+    "advanced"
+   ]
+  }
+ ]
+}

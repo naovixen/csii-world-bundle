@@ -1,0 +1,131 @@
+# Release: the APP half. Tag `vX.Y.Z` and this builds the standalone application for Windows and
+# Linux, the wheel and sdist, and opens a GitHub release with them attached.
+#
+# The MOD half is not here and cannot be: `Carto.csproj` imports the CS2 modding toolchain from
+# $CSII_TOOLPATH and references the game's own assemblies, and a GitHub runner has neither (nor
+# may they be redistributed). It is built locally and uploaded onto this same release:
+#
+#     pwsh tools/release_mod.ps1 -Tag v0.2.0 -Upload
+#
+# Do that BEFORE announcing the release: `release.yml` marks the release as a draft precisely so
+# the mod can be attached to it first, and the app rebuilt with the mod inside it if you want the
+# one-download experience.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "tag to build (must already exist)"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  wheel:
+    name: wheel + sdist
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install --upgrade pip build
+      - run: python -m build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheel
+          path: dist/*
+
+  app:
+    name: app / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          # `all` brings the accelerators INTO the build: etcpak (DDS, else BeamNG cooks every
+          # texture on first load), pyfqmr (LOD decimation), pywebview (the native window).
+          python -m pip install -e ".[all,build]"
+      - name: Build
+        run: python tools/build_exe.py
+      - name: Smoke test the frozen build
+        shell: bash
+        run: |
+          set -e
+          case "${{ matrix.os }}" in
+            windows-latest) exe="dist/cs2beamng/cs2beamng-cli.exe" ;;
+            *)              exe="dist/cs2beamng/cs2beamng-cli" ;;
+          esac
+          "$exe" --version
+          # `doctor` exits 1 on a runner (no CS2 bundle), so only its output is checked: what
+          # matters is that the frozen build can import the whole app and read this machine.
+          "$exe" doctor || true
+          "$exe" doctor | grep -q "cs2beamng"
+          # The real test of the freeze: a build spawns worker PROCESSES, and in a frozen app a
+          # spawn re-executes the exe. Without freeze_support() this hangs or forks forever.
+          "$exe" build docs/example-bundle --out "${RUNNER_TEMP}/cs2_example" --set jobs=2
+          test -f "${RUNNER_TEMP}/cs2_example/cs2beamng_report.json"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: app-${{ matrix.os }}
+          path: |
+            dist/*.zip
+            dist/*.zip.sha256
+
+  publish:
+    name: draft the release
+    needs: [wheel, app]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: assets
+      - name: Flatten
+        run: find assets -type f -print
+      - name: Draft the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          gh release create "$TAG" \
+            --draft \
+            --title "cs2beamng $TAG" \
+            --generate-notes \
+            --notes-file .github/release-notes-header.md \
+            $(find assets -type f | tr '\n' ' ')
+      - name: Say what is still missing
+        run: |
+          echo "::notice::Draft release created. The RIPPER MOD is not attached - it cannot be"
+          echo "::notice::built on CI. Run: pwsh tools/release_mod.ps1 -Tag <tag> -Upload"
+
+  pypi:
+    name: publish to PyPI
+    needs: [wheel]
+    # Opt-in: set the repository variable PUBLISH_TO_PYPI to "true" once the project name is
+    # claimed and trusted publishing is configured for this repo. Until then a release must not
+    # fail because PyPI is not set up.
+    if: vars.PUBLISH_TO_PYPI == 'true'
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write            # trusted publishing - no API token stored anywhere
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: wheel
+          path: dist
+      - uses: pypa/gh-action-pypi-publish@release/v1

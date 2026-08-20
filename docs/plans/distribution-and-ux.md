@@ -1,5 +1,46 @@
 # Distribution & first-run UX — D1–D5
 
+> **BUILT 2026-08-20.** D1–D5 are implemented; what is left is the parts only a human can do:
+> tag a release, run `tools/release_mod.ps1` on the machine with the toolchain, turn on Pages,
+> claim the PyPI name, and look at the new default screen.
+>
+> **Three corrections to the plan below, found by building it:**
+>
+> 1. **D1.1 — `level_budget` went to `cs2beamng/beamng/budget.py`, not to `csiibundle`.** It
+>    imports `cs2beamng.beamng.level` to read a built level, so putting it in the engine-neutral
+>    package would have inverted the dependency. `tools/level_budget.py` is a shim;
+>    `cs2beamng budget <level_dir>` is the supported way to run it.
+> 2. **A THIRD undeclared dependency: scipy.** The wheel gate caught it the moment it ran —
+>    `csiibundle/navgraph.py`, `beamng/map_lua.py` and `stages/poi.py` use
+>    `scipy.spatial.cKDTree` in seven places, all from the A7 navgraph work, and nothing declared
+>    it. Now in `dependencies`. **Note for the Blender adapter:** Blender's Python has no scipy,
+>    which is exactly why `roadclear.py` and `terrain.py` are deliberately numpy-only.
+>    `csiibundle.navgraph` is now *not* numpy-only, and the adapter must not import it.
+> 3. **D2 was rebuilt once after the first look at it** (feedback, 2026-08-20). Three things
+>    were wrong with the first cut, and the third was the interesting one:
+>    * **The export checkboxes belong on the front screen.** They are the first thing anyone
+>      changes and the whole point of the tool. BASIC went from 9 controls to 25 — the fourteen
+>      What switches, plus the four `How much` knobs a preset visibly moves. Their *parameters*
+>      (`lights_max`, `poi_max`, `navgraph_max_width`) stay advanced: "do I want lights" is a
+>      decision, "how many at most" is a tuning number.
+>    * **No accordions.** Categories are headings now, in both panels. A control you have to
+>      open a dropdown to find is a control you do not know exists.
+>    * **"The presets don't seem to affect anything."** They affected 12–20 settings every time —
+>      and every one of them was behind *Show advanced*, so pressing a preset moved a highlight
+>      and nothing else. Fixed by the first item, plus: the rows a preset changed now flash, and
+>      it says how many it changed where you cannot see them. A control that is off screen is a
+>      control that did not happen, as far as the person pressing the button is concerned.
+>    * Related: **the same setting appeared to be listed twice**, because 12 help strings open by
+>      repeating their own label ("Painted surfaces" / *Painted surfaces (parking lots, paths)*).
+>      The help is right for `docs/settings.md`, where there is no label; in the UI the echo is
+>      now stripped — 7 hidden, 5 trimmed to what they add, checked over all 79.
+> 4. **The frozen build found two more of its own**, neither visible from the source: `etcpak`
+>    needs `archspec`'s data files (without them it raises on import, and the app silently falls
+>    back to shipping PNGs), and excluding `unittest` from the freeze killed the navgraph stage
+>    through `scipy` → `numpy.testing`. Both are fixed in `packaging/cs2beamng.spec`, with the
+>    reason written next to each. This is the argument for the D3 gate being *run the exe*, not
+>    *build the exe*.
+
 **Goal:** a person who has never opened this repo can (1) download the ripper mod from a GitHub
 release and drop it in, (2) download one app file and double-click it, (3) see the settings that
 matter and nothing else, and press **Build level**.

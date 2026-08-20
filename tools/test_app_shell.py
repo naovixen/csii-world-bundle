@@ -74,6 +74,235 @@ def test_settings():
     d = settings_mod.detected()
     check(isinstance(d.get("bundles"), list) and "platform" in d, "detected() returns lists")
 
+    # -- D2: the basic panel, and help that fits on one line ------------------------------------
+    # The point of the tiering is that the default screen stays small. A "basic" list that grows
+    # to thirty keys is the problem it was made to solve, so the ceiling is checked, not just the
+    # membership.
+    check(all(k in settings_mod.SCHEMA for k in settings_mod.BASIC), "every BASIC key is a real setting")
+    check(len(settings_mod.BASIC) == len(set(settings_mod.BASIC)), "BASIC has no duplicates")
+    check(len(settings_mod.BASIC) <= settings_mod.BASIC_MAX,
+          f"BASIC stays under {settings_mod.BASIC_MAX} controls (it has {len(settings_mod.BASIC)})")
+    long_help = {k: len(v[2]) for k, v in settings_mod.SCHEMA.items() if len(v[2]) > 120}
+    check(not long_help, f"every help string is one sentence (<=120 chars); over: {long_help}")
+    check(all(k in settings_mod.SCHEMA for k in settings_mod.DETAILS), "DETAILS only describes real settings")
+    check(sorted(settings_mod.PRESET_INFO) == sorted(settings_mod.PRESETS), "every preset has a description")
+    # A fresh install names a preset in `quality_preset` and must actually BE on it, or the app
+    # opens claiming a preset it is not on - and, since E2, showing a badge for a setting the
+    # user never touched. This found `lod_switch_error_px` at 8.0 against high's 6.0.
+    named = settings_mod.SCHEMA["quality_preset"][0]
+    shipped = settings_mod.defaults()
+    off = {k: (shipped[k], v) for k, v in settings_mod.PRESETS[named].items() if shipped[k] != v}
+    check(not off, f"the shipped defaults ARE the {named} preset; off: {off}")
+    tiers = {e["key"]: e["tier"] for e in ui}
+    check(set(tiers) == set(settings_mod.SCHEMA) and set(tiers.values()) <= {"basic", "advanced"},
+          "schema_for_ui tiers every key")
+    check(all(tiers[k] == "basic" for k in settings_mod.BASIC), "the BASIC keys are tiered basic")
+    check(all(("detail" in e) == (e["key"] in settings_mod.DETAILS) for e in ui),
+          "schema_for_ui ships a detail exactly where DETAILS has one")
+
+
+# -- E1: the settings metadata the redesigned screen is built from --------------------------------
+#
+# Three things are checked, and the third is the one that matters. The partition ("every key
+# lands in exactly one place") is what keeps a setting from being silently dropped by a layout
+# change. The lengths keep a one-line blurb one line. The LANGUAGE check is the gate on the
+# actual complaint - the settings read like variable names - and it is mechanical on purpose: a
+# rule a person applies by eye is a rule that decays the first time somebody is in a hurry.
+
+# Words and shapes that have no business in a control's label or blurb. Identifiers, our own
+# research vocabulary, and the section numbers of an audit nobody reading this screen has read.
+# Text that only makes sense after reading the control NEXT to it. A setting reached through
+# search arrives with no neighbours, and search is now a first-class route into the settings, so
+# "the number above" is a description that works only where it happens to be laid out.
+CROSS_REFERENCES = [
+    "the number above", "the one above", "the setting above", "as above", "the slider sets",
+    "the same again", "the same for", "the same as the", "follows the", "the box above",
+    "the switch above", "listed above", "shown above",
+]
+
+BANNED_WORDS = [
+    "audit", "measured", "declared", "parity", "deviation", "vanilla", "reference city",
+    "calibrated", "decompil", "prefab", "heightmap", "navgraph", "splat", "imposter atlas",
+    "triangle budget", "p95", "p99", "colorset", "shader", "g-buffer", "mipmap",
+]
+# CamelCase and all-caps runs that are real words to a user, not identifiers.
+CAPS_OK = {"BeamNG", "CS2", "II", "A", "I"}
+CODE_EXTENSIONS = (".dae", ".cdae", ".ter", ".png", ".dds", ".json", ".lua", ".py", ".exe",
+                   ".glb", ".zip", ".md")
+
+
+def cross_reference_problems(text, what):
+    """Where this string leans on a neighbouring control to be understood (empty = it stands)."""
+    low = text.lower()
+    return [f"{what}: refers to another control ({phrase!r})"
+            for phrase in CROSS_REFERENCES if phrase in low]
+
+
+def plain_language_problems(text, what):
+    """Why this string does not read as plain English, as a list of reasons (empty = it does).
+
+    NOT applied to the Advanced section, which keeps its jargon on purpose: somebody changing an
+    LOD switch budget needs to be told that is what they are changing, and the plain-English
+    paraphrase of it says less rather than more. The length, the sentence and the
+    cross-reference rules still apply there — only the vocabulary is let through.
+    """
+    import re
+
+    out = []
+    low = text.lower()
+    if "§" in text or "`" in text:
+        out.append(f"{what}: a section mark or a backtick")
+    for word in BANNED_WORDS:
+        if word in low:
+            out.append(f"{what}: the word {word!r}")
+    for ext in CODE_EXTENSIONS:
+        if ext in low:
+            out.append(f"{what}: the file extension {ext!r}")
+    if re.search(r"[A-Za-z]_[A-Za-z]", text):
+        out.append(f"{what}: an identifier with an underscore")
+    if re.search(r"[A-Za-z]\.[A-Za-z]", text):
+        out.append(f"{what}: a dotted identifier")
+    for token in re.findall(r"[A-Za-z][A-Za-z0-9]*", text):
+        if token in CAPS_OK or token.islower() or token[1:].islower():
+            continue
+        out.append(f"{what}: the identifier-looking word {token!r}")
+    if re.search(r"\d[, ]\d{3}", text):
+        out.append(f"{what}: a figure out of the research")
+    if "%" in text or "#" in text:
+        out.append(f"{what}: a per-cent or a hash")
+    if re.search(r"20\d\d-\d\d-\d\d", text):
+        out.append(f"{what}: a date")
+    return out
+
+
+def _norm(text):
+    return "".join(c for c in str(text).lower() if c.isalnum())
+
+
+def test_settings_metadata():
+    """E1 - `SECTIONS`, `LABELS`, `BLURBS`, `CONTROLS`: the partition, the lengths, the words."""
+    from cs2beamng import settings as settings_mod
+
+    print("settings metadata (E1)")
+    keys = list(settings_mod.SCHEMA)
+
+    # -- the partition: basics strip, one sidebar section, or driven by another control ---------
+    placed = {}
+    for key in keys:
+        placed.setdefault(settings_mod.section_of(key), []).append(key)
+    listed = [k for s in settings_mod.SECTIONS for _t, ks in s["blocks"] for k in ks]
+    check(sorted(listed) == sorted(set(listed)), "no key is in two sidebar sections")
+    check(all(k in settings_mod.SCHEMA for k in listed + settings_mod.BASICS),
+          "every key a section or the basics strip names is a real setting")
+    everywhere = set(listed) | set(settings_mod.BASICS)
+    driven = [k for k in keys if k not in everywhere]
+    check(sorted(driven) == sorted(settings_mod.DRIVEN_BY),
+          f"DRIVEN_BY names exactly the keys with no control: {sorted(set(driven) ^ set(settings_mod.DRIVEN_BY))}")
+    check(len(placed.get("basics", [])) == len(settings_mod.BASICS) and sum(len(v) for v in placed.values()) == len(keys),
+          "every key lands in exactly one place")
+    ids = [s["id"] for s in settings_mod.SECTIONS]
+    check(len(ids) == len(set(ids)) and all(s.get("group") and s.get("label") for s in settings_mod.SECTIONS),
+          "every section has a unique id, a group and a label")
+    section_choice = settings_mod.SCHEMA["ui_section"][1].split(":", 1)[1].split("|")
+    check(section_choice == ids, "ui_section offers exactly the sections that exist")
+
+    # -- labels and blurbs: one for every key, one line each ------------------------------------
+    check(sorted(settings_mod.LABELS) == sorted(keys), "every key has a label, and no label is orphaned")
+    check(sorted(settings_mod.BLURBS) == sorted(keys), "every key has a blurb, and no blurb is orphaned")
+    long_blurbs = {k: len(v) for k, v in settings_mod.BLURBS.items() if len(v) > 100}
+    check(not long_blurbs, f"every blurb is one line (<=100 chars); over: {long_blurbs}")
+    long_labels = {k: len(v) for k, v in settings_mod.LABELS.items() if len(v) > 34}
+    check(not long_labels, f"every label fits a nav column (<=34 chars); over: {long_labels}")
+    unsentenced = [k for k, v in settings_mod.BLURBS.items()
+                   if not v[:1].isupper() or not v.rstrip().endswith(".")]
+    check(not unsentenced, f"every blurb is a sentence: {unsentenced}")
+
+    # -- the language --------------------------------------------------------------------------
+    problems = []
+    for key in (k for k in keys if not settings_mod.is_technical(k)):
+        problems += plain_language_problems(settings_mod.LABELS[key], f"{key} label")
+        problems += plain_language_problems(settings_mod.BLURBS[key], f"{key} blurb")
+    check(not problems, f"outside Advanced, no label or blurb reads like code ({len(problems)}): {problems[:6]}")
+    check(any(settings_mod.is_technical(k) for k in keys), "the Advanced section is marked technical")
+    crossed = []
+    for key in keys:                                   # this one applies EVERYWHERE, jargon or not
+        crossed += cross_reference_problems(settings_mod.LABELS[key], f"{key} label")
+        crossed += cross_reference_problems(settings_mod.BLURBS[key], f"{key} blurb")
+    check(not crossed, f"no label or blurb leans on a neighbouring control ({len(crossed)}): {crossed[:6]}")
+    echoes = [k for k in keys if _norm(settings_mod.BLURBS[k]).startswith(_norm(settings_mod.LABELS[k]))]
+    check(not echoes, f"no blurb opens by repeating its own label: {echoes}")
+
+    # -- units, subsets, and no box a person cannot fill in --------------------------------------
+    kinds = {k: settings_mod.control_of(k) for k in keys}
+    bare = [k for k, c in kinds.items()
+            if c == "number" and k not in settings_mod.UNITS
+            and settings_mod.section_of(k) not in ("basics", "driven")]
+    check(not bare, f"every number control says what it is measured in: {bare}")
+    check(all(k in settings_mod.SCHEMA and kinds[k] == "number" for k in settings_mod.UNITS),
+          "UNITS only labels number controls")
+    # A free-text box whose valid answers are a known, fixed set is a box a person cannot fill
+    # in without already knowing the answer. There must be none of them left on screen.
+    guessy = [k for k, c in kinds.items() if c == "text" and settings_mod.section_of(k) not in ("basics", "driven")]
+    check(not guessy, f"no free-text box is left where the answers are a fixed set: {guessy}")
+    check(all(kinds[k] == "categories" for k in settings_mod.CHOICE_SETS),
+          "a fixed answer set is drawn as checkboxes")
+    check(all(k in settings_mod.SCHEMA and v in settings_mod.SCHEMA for k, v in settings_mod.SUBSET_OF.items()),
+          "SUBSET_OF relates real settings")
+    check(all(k in settings_mod.SUBSET_OF.values() for k in settings_mod.PARENT_OFF),
+          "PARENT_OFF only names keys that are somebody's parent")
+    # a child is laid out under its parent, so the indent it is drawn with is not a lie
+    misplaced = []
+    for section in settings_mod.SECTIONS:
+        for _title, block in section["blocks"]:
+            for at, key in enumerate(block):
+                parent = settings_mod.SUBSET_OF.get(key)
+                if parent and parent not in block[:at]:
+                    misplaced.append(key)
+    check(not misplaced, f"every subset is laid out after its parent, in the same block: {misplaced}")
+
+    # -- controls ------------------------------------------------------------------------------
+    known = {"switch", "choice", "path", "text", "number", "percent", "distance", "clock",
+             "categories", "segmented", "region", "poi"}
+    check(set(kinds.values()) <= known, f"every control kind is one the UI can draw: {set(kinds.values()) - known}")
+    check(all(k in settings_mod.SCHEMA for k in settings_mod.CONTROLS), "CONTROLS only overrides real settings")
+    check(all(k in settings_mod.SCHEMA for k in settings_mod.RANGES), "RANGES only sizes real settings")
+    check(all(kinds[k] in ("percent", "distance") for k in settings_mod.RANGES),
+          "a range belongs to a slider")
+    check(all(k in settings_mod.RANGES for k in settings_mod.ZERO_LABEL),
+          "a zero label belongs to a slider that reaches zero")
+
+    # -- E2's gate: a new section is a DATA change ------------------------------------------------
+    # Adding one must touch nothing but `SECTIONS` — not the schema, not the layout, not the
+    # setting that remembers where you were. Adding one here and reading it back out is the same
+    # test as doing it on a scratch branch, minus the branch.
+    extra = {"id": "weather", "group": "Level", "label": "Weather", "tagline": "Rain and cloud",
+             "blocks": [(None, ["water"])]}
+    real, real_schema = settings_mod.SECTIONS, settings_mod.SCHEMA["ui_section"]
+    try:
+        settings_mod.SECTIONS = real + [extra]
+        settings_mod.SCHEMA["ui_section"] = (real_schema[0],
+                                             "choice:" + "|".join(s["id"] for s in settings_mod.SECTIONS),
+                                             real_schema[2])
+        served = settings_mod.sections_for_ui()
+        check(served[-1]["id"] == "weather" and served[-1]["blocks"] == [{"title": None, "keys": ["water"]}],
+              "a section added to SECTIONS is served with no other edit")
+        check(settings_mod.coerce("ui_section", "weather") == "weather",
+              "...and the sidebar can remember it")
+    finally:
+        settings_mod.SECTIONS, settings_mod.SCHEMA["ui_section"] = real, real_schema
+
+    # -- what the page is served -----------------------------------------------------------------
+    payload = settings_mod.sections_for_ui()
+    check([s["id"] for s in payload] == ids and
+          [k for s in payload for b in s["blocks"] for k in b["keys"]] == listed,
+          "sections_for_ui ships the sections whole")
+    ui = {e["key"]: e for e in settings_mod.schema_for_ui()}
+    check(all(ui[k]["label"] == settings_mod.LABELS[k] and ui[k]["blurb"] == settings_mod.BLURBS[k]
+              and ui[k]["section"] == settings_mod.section_of(k) and ui[k]["control"] == kinds[k]
+              for k in keys), "schema_for_ui carries the label, blurb, control and section")
+    check(all(("drivenBy" in ui[k]) == (k in settings_mod.DRIVEN_BY) for k in keys),
+          "schema_for_ui says what drives a key exactly where something does")
+
 
 def test_bake_stage_cancel():
     """The bake reports a cancelled product as an outcome; the stage must turn that into
@@ -252,6 +481,7 @@ class Client:
 
 
 def test_server(tmp):
+    from cs2beamng import settings as settings_mod
     from cs2beamng.server import AppServer
 
     print("server")
@@ -286,12 +516,26 @@ def test_server(tmp):
         check(payload["canBrowse"] is False, "no folder picker outside a native window")
         status, payload = client.call("POST", "/api/settings", {"values": {"foliage_density": "42", "nope": 1}})
         check(payload["values"]["foliage_density"] == 42 and payload["values"]["quality_preset"] == "custom",
-              "POST /api/settings coerces and marks the preset custom")
+              "POST /api/settings coerces, and ANY quality change puts the row on Custom")
+        check(payload["presetBase"] == "high" and payload["presetChanged"] == ["foliage_density"],
+              f"the payload keeps the base and says what moved off it ({payload['presetChanged']})")
+        check(payload["hasCustom"] is True, "the custom settings are remembered the moment there are any")
+        check([s["id"] for s in payload["sections"]] == [s["id"] for s in settings_mod.SECTIONS],
+              "E2: the payload carries the sidebar")
+        # naming your level folder is not a quality choice and must not move the row
+        _s, named = client.call("POST", "/api/settings", {"values": {"level_title": "Whatever"}})
+        check(named["values"]["quality_preset"] == "custom", "a basics-strip change leaves the row where it is")
         check(any("nope" in e for e in payload["errors"]), "unknown key reported")
         status, payload = client.call("POST", "/api/settings", raw_body=b"{not json")
         check(status == 400, "malformed body -> 400, not silently ignored")
         status, payload = client.call("POST", "/api/preset", {"name": "low"})
         check(payload["values"]["quality_preset"] == "low" and payload["values"]["foliage_density"] == 30, "preset applied")
+        check(payload["presetChanged"] == [], "a freshly applied preset has nothing moved off it")
+        # ...and Custom comes back to what the user had, which is the point of it always being there
+        status, back = client.call("POST", "/api/preset", {"name": "custom"})
+        check(status == 200 and back["values"]["quality_preset"] == "custom"
+              and back["values"]["foliage_density"] == 42,
+              f"Custom restores the remembered settings ({back['values']['foliage_density']})")
         status, payload = client.call("POST", "/api/preset", {"name": "bogus"})
         check(status == 400, "unknown preset -> 400")
         status, census = client.call("GET", "/api/census")
@@ -551,6 +795,102 @@ def test_incremental(tmp):
     check(not report.get("stateWarnings"), f"no stage read an undeclared setting {report.get('stateWarnings')}")
 
 
+# -- distribution (D3/D4): the frozen build and the in-app mod installer -------------------------
+
+def test_frozen_streams():
+    """A double-clicked windowed build has no console: `sys.stdout` is None and the first
+    `print()` anywhere in the pipeline raises. `cs2beamng._frozen_streams` gives it a log file
+    instead. Tested by simulation, because the failure only exists in a frozen build."""
+    import cs2beamng
+
+    print("frozen build: streams with no console")
+    real_out, real_err, real_frozen = sys.stdout, sys.stderr, getattr(sys, "frozen", None)
+    replaced = wrote = False
+    log = os.path.join(os.environ["CS2BEAMNG_HOME"], "cs2beamng.log")
+    try:
+        # Nothing may call check() in here: it prints, and printing is exactly what is being
+        # redirected — the results would land in the log file instead of the terminal.
+        sys.stdout = sys.stderr = None
+        sys.frozen = True
+        cs2beamng._frozen_streams()
+        replaced = sys.stdout is not None and sys.stderr is not None
+        print("hello from a build with no console", file=sys.stdout)     # must not raise
+        sys.stdout.flush()
+        wrote = os.path.isfile(log) and "no console" in open(log, encoding="utf-8").read()
+    finally:
+        try:
+            sys.stdout.close()
+        except Exception:  # noqa: BLE001
+            pass
+        sys.stdout, sys.stderr = real_out, real_err
+        if real_frozen is None:
+            del sys.frozen
+        else:
+            sys.frozen = real_frozen
+    check(replaced, "stdout and stderr are replaced when there is no console")
+    check(wrote, f"what the pipeline prints lands in {log}")
+    # unfrozen it must do nothing at all
+    cs2beamng._frozen_streams()
+    check(sys.stdout is real_out, "unfrozen, it leaves the streams alone")
+
+
+def test_modinstall(tmp):
+    """The app installs the ripper mod itself when a release build shipped the zip beside it.
+    What is checked here is the contract: a zip missing the Burst library is refused, a bad
+    checksum is refused, and a good one replaces the folder rather than merging into it."""
+    import zipfile
+
+    from cs2beamng import modinstall
+
+    print("mod installer")
+    root = os.path.join(tmp, "modinstall")
+    os.makedirs(root, exist_ok=True)
+
+    good = os.path.join(root, "CartoRipper-9.9.9-cs2-1.6.zip")
+    with zipfile.ZipFile(good, "w") as archive:
+        archive.writestr("Carto/Carto.dll", b"dll")
+        archive.writestr("Carto/Carto_win_x86_64.dll", b"burst")
+        archive.writestr("Carto/HOW-TO-INSTALL.txt", b"read me")
+    thin = os.path.join(root, "CartoRipper-thin.zip")
+    with zipfile.ZipFile(thin, "w") as archive:
+        archive.writestr("Carto/Carto.dll", b"dll")          # no Burst library
+
+    target = os.path.join(root, "Mods", "Carto")
+    real_install_dir = modinstall.install_dir
+    modinstall.install_dir = lambda: target
+    try:
+        try:
+            modinstall.install(thin)
+            check(False, "a zip without the Burst library is refused")
+        except ValueError as exc:
+            check("Carto_win_x86_64.dll" in str(exc), "a zip without the Burst library is refused")
+
+        with open(good + ".sha256", "w", encoding="utf-8") as handle:
+            handle.write("0" * 64 + "  wrong\n")
+        try:
+            modinstall.install(good)
+            check(False, "a zip that does not match its sha256 is refused")
+        except ValueError as exc:
+            check("sha256" in str(exc), "a zip that does not match its sha256 is refused")
+        os.remove(good + ".sha256")
+
+        os.makedirs(target, exist_ok=True)
+        with open(os.path.join(target, "Carto_win_x86_64.dll"), "w", encoding="utf-8") as handle:
+            handle.write("a Burst library from an older build")
+        with open(os.path.join(target, "stale.dll"), "w", encoding="utf-8") as handle:
+            handle.write("left over")
+
+        where = modinstall.install(good, version="9.9.9")
+        check(os.path.isfile(os.path.join(where, "Carto.dll")), "the mod is unpacked")
+        check(not os.path.isfile(os.path.join(where, "stale.dll")),
+              "the folder is REPLACED, not merged (a stale Burst library is neither version)")
+        check(open(os.path.join(where, "Carto_win_x86_64.dll"), encoding="utf-8").read() == "burst",
+              "the new Burst library won")
+        check(modinstall.installed_version() == "9.9.9", "the installed version is stamped and read back")
+    finally:
+        modinstall.install_dir = real_install_dir
+
+
 def _mtime(root, rel):
     try:
         return os.stat(os.path.join(root, rel)).st_mtime_ns
@@ -565,6 +905,9 @@ def main():
     sys.path.insert(0, HERE)
     try:
         test_settings()
+        test_settings_metadata()
+        test_frozen_streams()
+        test_modinstall(tmp)
         test_stage_declarations()
         test_state_codec()
         test_bake_stage_cancel()
