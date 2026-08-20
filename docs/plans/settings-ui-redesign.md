@@ -386,6 +386,18 @@ entirely and live in `docs/settings.md`, which is already generated from `DETAIL
 already gated by CI. The *why* disclosure disappears from the settings panel; the sidebar
 carries one permanent link to that page. Someone tuning a build wants a page they can read and search, not 79 popovers.
 
+**Revised 2026-08-20, on reading the generated page.** "Not softened" was the right instinct
+aimed at the wrong text. What `DETAILS` actually held was our WORKING NOTES — audit section
+numbers, in-game load numbers, plan phase labels like `A6.7`, percentiles, and the reference
+city's own counts — and none of that means anything to a reader who does not have the documents
+it cites. Every one of those arguments already lives, in more detail and with the workings, in
+the code that makes the decision; `DETAILS` was a third copy pointed at the wrong audience.
+So the long form is now **what the setting does and what moving it costs, in a few sentences**,
+and a measurement is welcome in it as long as it is *stated* rather than *cited* ("most of
+BeamNG's own colour maps are 512 or smaller" — yes; "audit §55" — no). 35 entries, 14,786
+characters of notes down to 10,766 of explanation, and a gate (`WORKING_NOTES` in
+`tools/test_app_shell.py`) that rejects the citation shapes so they cannot come back.
+
 ---
 
 ## 6. Behaviour changes this implies
@@ -412,11 +424,11 @@ These are real changes, not presentation, so each is called out:
 | --- | --- | --- |
 | **E1** ✅ | Settings metadata: `SECTIONS` (id, group, label, keys), and per key a plain `label`, a plain `blurb` and a control kind. This becomes the UI's source of truth; `GROUPS` stays for the docs. | Test: every key in exactly one section; every key has a label and a blurb; blurb ≤ 100 chars; no blurb contains an identifier, a `§`, or a research figure (a word-list check, run in CI) |
 | **E2** ✅ | The shell: basics strip, cost meter, preset row, the data-driven sidebar (groups, badges, search, keyboard, the narrow-window fallback), flat lists, no accordions. The 7fr/5fr rebalance. | The screen is looked at; a section added to `SECTIONS` in a scratch branch appears with no other edit |
-| **E3** | Real controls: furniture checkboxes, the map view, the region picker, the fast-travel editor. | A region picked on the map builds the same level as the equivalent `--set region=` |
-| **E4** | The estimator (`estimate.py`) and the meter. | `tools/test_estimate.py`: the texture half is exact against a real build's DDS bytes; the mesh half is within a stated tolerance of the reference city's measured resident bytes; and every figure carries a basis |
-| **E5** | The plain-language rewrite; `DETAILS` out of the UI and into the docs. | The word-list check from E1, plus `gen_docs --check` |
-| **E6** | The behaviour changes of §6. | A build with `foliage_density=0` ships no forest and skips the stage; a build with `networks=false` has no cut |
-| **E7** | Docs and site: `docs/settings.md` regenerated with the new labels, the site's command builder updated. | CI |
+| **E3** ✅ | Real controls: furniture checkboxes, the map view, the region picker, the fast-travel editor. | A region picked on the map builds the same level as the equivalent `--set region=` |
+| **E4** ✅ | The estimator (`estimate.py`) and the meter. | `tools/test_estimate.py`: the texture half is exact against a real build's DDS bytes; the mesh half is within a stated tolerance of the reference city's measured resident bytes; and every figure carries a basis |
+| **E5** ✅ | The plain-language rewrite; `DETAILS` out of the UI and into the docs. | The word-list check from E1, plus `gen_docs --check` |
+| **E6** ✅ | The behaviour changes of §6. | A build with `foliage_density=0` ships no forest and skips the stage; a build with `networks=false` has no cut |
+| **E7** ✅ | Docs and site: `docs/settings.md` regenerated with the new labels, the site's command builder updated. | CI |
 
 E1 and E2 are one sitting. E4 is the biggest piece and is independent of E3 — it can land first
 if the meter matters more than the map.
@@ -513,6 +525,259 @@ header and the basis under every figure, in place of one grey run-on line; **`be
 filled in when it is found**, like the bundle and the levels folder, instead of leaving an empty
 box beside a line saying it had been found; and **§3.6's map is deferred to §3.7's**, above.
 
+### E3 — BUILT 2026-08-20
+
+One drawing surface, two things on top of it, exactly as §3.6 insisted: `pipeline/mapview.py`
+draws the city once per bundle (16–22 s: the heightmap, the splat's dominant ground, the water
+raster, and a pass over the lane layer for the roads) and the page places everything over it
+through the one georeference the server sends. The region's patch and the fast-travel points are
+two overlays on that surface, built together, neither shipping before the other.
+
+**The picture is the level's own minimap.** `csiibundle/groundmap.py` now holds the recipe —
+ground colour by dominant layer, slope shading, water tinted over — and `stages/terrain`'s
+`_write_minimap` and the map view both call it, so the settings screen and the level cannot
+drift apart in appearance. Roads go over it from the lane paths: white for a road, amber for a
+highway, the same `car`-lanes-on-a-road-or-highway-segment definition `stages/poi` snaps against.
+
+**The region picker is a square, and making it one was a code change.** `region` is documented as
+a disc; `beamng.placement.in_region`, `stages/derived._tile_in_region` and `stages/water` all
+test a SQUARE; `stages/networks` tested a CIRCLE; and `pipeline/census` scaled its ETAs by a
+circle's area. A picker has to draw one shape, and drawing a shape the build does not keep is
+the invented-rule failure this repo exists not to repeat — so `stages/networks` now tests the
+square too. **Nothing shrinks**: a circle is inside its square, so the only change is the segments
+that were missing from the corners of a region build, where the level had houses and no streets.
+The census's `math.pi` became `4.0`, which was making every stage's ETA 27 % short on a region
+build. The setting's own help and blurb now say square patch and half-width.
+**This is a build-output change and wants an in-game look at a region build.**
+
+**The fast-travel editor replaces a path with a list.** `poi_file` leaves `DRIVEN_BY` — where it
+had been claiming to be "set by the fast-travel point editor" that did not yet exist — and takes
+its place in Navigation as its own control: the map, a numbered list with editable names, and
+the busiest places offered as chips you can accept. The app writes the file
+(`~/.cs2beamng/pois/<bundle>.json`, keyed per bundle, because a point is a place in a city and
+not a property of a level folder) and points the setting at it, so `--set poi_file=` and a
+headless build are unchanged. Every point is snapped by the server onto the same road network
+the build snaps against, and the suggestions come from `stages.poi._derive` itself — accepting
+one must not move it.
+
+**CLICK THE MAP TO ADD ONE**, revised 2026-08-20 on the first look at it. §3.7 said *Add* drops a
+point in the middle and you drag it onto a road; in the hand that reads as a puzzle, and the drag
+did not work at all (see finding 4). Clicking the map where you want the point is the gesture;
+the *Add a point* button does the same thing in the middle for anybody who would rather not aim;
+renaming and removing are in the list, where a list belongs. A new point **arrives named after
+the street it landed on** — the map already knows every street name, so it rides along in the
+snap's own answer (a `(N, 3)` sample array whose third column indexes a name table) and "Meadow
+Street" is a better start than "Point 3" even when you rename it.
+
+**Both markers are keyboard-movable.** A map that can only be used with a mouse is a map some
+people cannot use at all. The region's centre and every fast-travel pin take focus and move under
+the arrow keys — one press is one PIXEL of the map as drawn, so the step means the same thing at
+any window size, and Shift is ten of them. The move itself is free and the snap-and-save fires
+once the keys stop (500 ms) or focus leaves: snapping after every press would drag the point back
+out from under the person moving it.
+
+**What the build found that the plan did not say:**
+
+1. **`NEEDS` needed a second meaning.** `poi_file` is gated by `pois` but is not one of its
+   *switches*: emptying your own list asks for the derived points, not for no fast travel. Under
+   `SUBSET_OF` the "last child off turns the parent off" rule would have switched fast travel off
+   when you deleted your last point. It is in `NEEDS`, whose comment now names both reasons a
+   pair lands there.
+2. **A map surface must not call back into its caller while the caller is still building.**
+   Passing `onReady` as a constructor argument was right (a cached map is ready before the caller
+   gets the surface, so a callback attached one line later never fires); calling it from inside
+   the constructor was not — it ran the caller's draw code against its own not-yet-declared
+   variables and took the whole control off the screen. The caller refreshes when it is built.
+3. **The snap cannot re-read the layer.** The first cut derived its point set on demand: 5.8 s
+   for the first drag. The map build already walks every lane, so it saves the midpoints beside
+   the picture and the snap is 0.6 s cold and instant after.
+4. **A marker rebuilt on every change cannot be dragged, and cannot hold focus.** The pins were
+   recreated by each redraw, so the first `pointermove` of a drag destroyed the very node holding
+   the pointer capture — the drag was dead on arrival and looked like a CSS problem. Keyboard
+   movement has the same requirement for the same reason. The pins are now made once and moved;
+   the list rows too, so a name being typed survives a redraw. It is the one structural rule this
+   surface has: **reconcile, never rebuild.**
+5. **A teardrop is anchored by its TIP, and a rotation moves the tip.** The pin was one element
+   carrying both `rotate: -45deg` and `transform: translate(-50%, -70%)`; CSS composes those as
+   rotate-then-transform, so the offset was itself rotated 45° and the tip landed about 7 px west
+   and 21 px south of the place it was naming. Percentages were the wrong units for it either
+   way: what has to sit on the coordinate is one CORNER of a rotated square, which is
+   `s·√2/2` below that square's centre and not a fraction of anything. The pin is now a wrapper
+   (unrotated, `translate(-50%, -100%)`, and the thing that takes the drag and the focus) with
+   the teardrop inside it offset by MARGINS, which are applied before transforms and so are not
+   rotated. Measured on three pins afterwards: within half a pixel in both axes.
+
+The gate is `test_mapview` in `tools/test_app_shell.py` (15 checks): the georeference round-trips
+a place to its own pixel and back, the region string the picker writes parses to where it was
+dragged and passes the CLI's own validator, and — the one that matters — the point list the app
+writes is read back by `stages.poi._read_poi_file` at the same places *through the bundle→BeamNG
+frame change*, which is where a transposition would put every fast-travel point somewhere else in
+the level and nothing else would notice.
+
+### E4 — BUILT 2026-08-20
+
+The meter is live and it is the number that decides whether a level runs: **what it mounts**,
+predicted as exactly the quantity `beamng.validate_level._resident_bytes` measures off the
+finished level, so the meter and the build's own verdict cannot disagree about what they are
+counting. `pipeline/estimate.py` + `pipeline/meshindex.py`, and `tools/test_estimate.py` gates it
+(41 checks).
+
+**The texture half is exact — measured, not claimed.** Every texture the build will write is
+enumerated through `beamng.materials.plan_canonical` / `plan_areas`, which the materials stage
+was refactored onto so that there is one walk and not two; each source's dimensions come out of
+its PNG header, the cap is `capped_size` (what `_cap` produces, without loading), the format is
+`dxgi_format` (`export_texture`'s own branches), and the file size is `dds.encoded_bytes` — the
+same mip walk `encode` performs. Against the 2026-08-20 build of the reference city: **all 7,730
+exported textures sized to the byte, worst error 0, and none of them unnamed** — which is also
+the proof that the refactor changed nothing, since those files were written by the code it
+replaced. The gate re-runs both comparisons against any built level it finds on the machine.
+
+**The mesh half is exact about WHICH shapes and calibrated about what they weigh.**
+`meshindex` makes one permissive pass over `instances.jsonl` (20.9 s, 1.28 M records, cached per
+bundle in `~/.cs2beamng/meshindex/`) through `placement.admit` itself, and records per shape the
+things every settings combination can be read back out of: its kind, the density slider position
+at which its first instance survives, the 512 m cells it occupies, and its source glTF and LOD
+bytes. Read back at the reference settings it reproduces the shapes stage's own 40 s
+`scan_demand` **exactly** — 4,156 shapes, 2,014.4 MiB of source, from a 53 ms read. What a
+source byte becomes once cooked is a per-group ratio in `history.json` beside the stage rates
+(1.02 buildings / 0.65 props / 1.03 trees / 1.31 networks / 1.52 areas / 1.59 markings / 1.53
+foundations / 1.86 terrain cut / 1.28 ground textures), blended towards the user's own builds
+afterwards.
+
+**What the plan assumed and what was actually true:**
+
+1. **"the census already counts" the shipped shapes — it does not.** §4.1 said which shapes ship
+   "follows from the kind switches, the density sliders and the variant counts, all of which the
+   census already counts". The census counts `meshes: 5781` and nothing per kind, and which of
+   those 5,781 a city places is a pass over 1.28 M instance records. Hence `meshindex`, which is
+   the piece this plan did not know it needed and is most of E4's weight.
+2. **`density_keep` reversed is exact, and cheap.** The slider looked like it would have to be
+   modelled per shape. It does not: the rule is `stable_unit(id) < fraction * weight`, so the
+   fraction at which a shape's first instance appears is one number per shape and the answer at
+   *every* slider position is `rank < fraction`. `csiibundle.instances.density_rank` is that rule
+   from the other end and `density_keep` now calls it, so the two cannot drift.
+3. **A paint variant is a whole second shape, not just a second texture** — and how many of them
+   there are is a fact recorded per PREFAB by the bake, not the setting read back. §3/§4 treated
+   the recolouring settings as a texture cost. They are also geometry: a variant is another
+   `.cdae` of the same mesh bound to a tinted material. Reading `paint_variants_tree` instead of
+   the bake's own centre list got the count wrong twice over in one direction and once in the
+   other — the setting is a ceiling on a palette that may hold fewer (274 tree shapes counted
+   where the build wrote 253), a single albedo shared by several prefabs carries more variant
+   keys than the setting names (10 texture files lost), and the index's key is the prefab plus
+   its state suffix while the centres are keyed by the prefab alone (205 counted, 253 written).
+   All three were found by asking which files on disk the enumeration could not name.
+4. **The region is not one shape.** `stages/networks` keeps a segment whose centre is in a
+   **circle**; `placement.in_region` and `stages/derived` keep what meets a **square**; and the
+   census's `scale` uses the circle for all of them. They differ by 4/π. The estimate reproduces
+   each stage's own test rather than averaging them — but the disagreement itself is a real
+   finding and is not E4's to fix.
+5. **`texture_max_variant` is not dead** (it reaches the bake as `variant_max_size`), which the
+   first read of it suggested; the variant albedos are capped at bake time and then again by the
+   colour cap at export.
+
+**The three states the meter can be in, and none of them is a placeholder.** No bundle; no bake
+yet (the texture plan is enumerated from the bake's own table, so before the first bake there is
+nothing to size); and *reading*, while the two slow pieces run on a background thread. The slow
+pieces are the index (20 s, once per bundle) and the texture plan (~1 s, once per bundle and
+again whenever a recolouring setting moves). Everything else is **53 ms**, so the bar tracks a
+slider live. A cold start paints in 332 ms and the number lands ~3 s later.
+
+**What E4 did NOT claim, and what the next build settled.** The mesh coefficients were fitted on
+the one build available — eight ratios against eight measured groups — so the +0.2 % the gate
+reports on THAT build is an exact fit by construction and a *regression* gate, not a validation.
+The test says so in its own output. `pipeline/worker` takes the estimate at the end of every
+build, prints `estimated / actual / error` per half in the log and the report, blends the
+difference back into the ratios, and the screen carries the last build's score under the meter
+permanently. Builds under 64 MiB are neither scored nor learned from — a `.cdae` carries a header
+and a material table whatever it holds, so a one-shape test level measures that overhead and
+would otherwise rewrite the calibration with its own noise.
+
+**Scored on a build it was not fitted to, 2026-08-20 evening** — a different level, with the
+recolouring settings changed, so a different texture plan (507 MiB against the reference build's
+789) and a different shape set:
+
+    mesh     3,410 MiB estimated, 3,435 MiB actual   -0.7 %
+    texture    523 MiB estimated,   507 MiB actual   +3.2 %
+    total    3,934 MiB estimated, 3,942 MiB actual   -0.2 %
+
+The mesh half held under 1 % on settings it had never seen, which is what §8's biggest open risk
+was waiting for. The texture half's +3.2 % is the declared upper bound doing exactly what it
+says: every material the bake resolved is counted, including the ones no shape binds.
+
+The residual, separated from the cook ratios rather than absorbed into them: against the copies
+the level really holds, the cook ratios are 1.024 / 0.653 / 1.030 exactly, and what the estimate
+gets wrong is **17 of 4,272 shapes** (+5.9 MiB of 2,068, +5.7 % of the tree group, +0.3 % of all
+shapes) — recoloured copies too thinly placed for `forest_min_items` to give a type of their own.
+That is a declared approximation with a number on it, not a coefficient tuned until the total
+came out right. Total on the reference build: **4,276 MiB estimated, 4,256 measured, +0.5 %**.
+
+**Drawn triangles is not shipped.** §4.1 wanted a second bar. Video memory is the figure the
+failure threshold is expressed in and the one that decides whether a level runs; a triangle bar
+would need per-shape LOD ladders and a viewpoint, and calibrating it honestly is its own piece
+of work. A smaller honest meter beats a complete dishonest one (§8), so the meter ships one bar,
+three tiles and the six declared approximations behind *What this figure cannot know*.
+
+### E5, E6 and E7 — BUILT 2026-08-20
+
+**E5 — the rewrite reached a layer it had missed.** The plain-language gate ran on `LABELS` and
+`BLURBS`, which E1 wrote from scratch and which have been clean since. It never ran on
+`SCHEMA`'s own `help` — the CLI's one-liner — and E7 then started printing that on the reference
+page, so `view_distance` was still introducing itself as `LevelInfo.visibleDistance` to the very
+reader §5 is about. The gate now covers `help` under the same rule and in the same scope
+(everything but Advanced), and it caught **thirteen** settings; ten needed rewriting.
+
+Nothing was softened away. Every measured claim that left a help string moved into `DETAILS`,
+where the arguments live — four settings had no `DETAILS` entry at all, so `poi_max`'s "vanilla
+ships 3 to 9", `texture_max_normal`'s calibration against BeamNG's own levels, what
+`view_distance` actually is, and why `terrain_brightness: 1` is calibrated rather than neutral
+would have been lost rather than moved. The word list itself grew by argument rather than by
+convenience: `AI`, `UI` and the axis letters `X`/`Y`/`Z` are ordinary English and are now
+allowed; a FILE-FORMAT acronym is not, and a line that needs `DDS` or `JSON` in it is a line
+that needs rewriting.
+
+**E6 — two behaviour changes, one rule, one home.** `settings.DRIVES` is the rule and
+`settings.DRIVEN_BY` is the sentence about it, and a test asserts they name the same keys:
+
+* **`terrain_cut` follows `networks`.** Cutting the ground open at a trench is how the roads
+  there get their ground; with the roads off the hole has nothing in it.
+* **A density slider at zero turns its kind off.** "0 % of trees" and "no trees" are the same
+  level, and saying it in two settings lets the two disagree.
+
+It is applied in `server.update_settings` — **the app**, not `coerce` and not the CLI. `--set`
+never passes through it, so a headless build still does exactly and only what it was told and
+`--set networks=false terrain_cut=true` is still a thing a person may ask for. Naming both
+halves in the same change means both halves: the rule fills in what you did not say and does not
+overrule what you did.
+
+**And the gates found a build defect the redesign had created.** E4's completeness check —
+"the estimate names every texture the build wrote" — failed on the evening's build with **490
+unnamed files**, all of them paint variants, on a build whose settings said `paint_kinds: None`.
+The cause was in `stages/bake.py`: the option was read as
+`str(settings.get("paint_kinds") or "tree")`, so **clearing every recolouring box quietly went on
+recolouring the trees**. A default belongs in `SCHEMA` — it is `"tree,prop"` there — and not in a
+fallback that fires on a legitimate value and overrules it. Empty now means none.
+
+Note where the defect came from: the state became REACHABLE when E2 turned `paint_kinds` from a
+comma-separated string into a set of checkboxes (§1's "a free-text box is a design failure
+whenever the set of valid answers is known"). Before that you would have had to type an empty
+string to find it. Making a setting easy to reach is also making its edge cases easy to reach,
+and the gate that caught this one was looking at something else entirely.
+**This is a build-output change and wants an in-game look** — on a level built with the boxes
+cleared, which now ships no tinted copies at all.
+
+**E7 — the reference page is laid out like the application.** `gen_docs` was still generating
+from `GROUPS` and `SCHEMA.help`: filing categories and a one-liner written for a page with no
+labels on it, which is the shape the redesign replaced. It now walks `settings.section_of` —
+so the page's headings ARE the screen's, including the two buckets a section list does not have
+(what you must supply, and what has no control of its own) — and every entry leads with the
+plain name the application shows, carries its `--set` name beside it, says which control sets it
+where it has none, and keeps the long form behind the same disclosure. `help` earns a line only
+where it says more than the blurb does; printing "Buildings" under "Houses, offices, factories
+and everything else your city has built" is noise, and a reference page that repeats itself is
+one people stop reading. `site/settings.json` carries `label`, `blurb` and `section` too, so the
+command builder shows a person the same words the app does instead of the raw key with its
+underscores knocked out.
+
 ---
 
 ## 8. Risks and open questions
@@ -523,16 +788,27 @@ box beside a line saying it had been found; and **§3.6's map is deferred to §3
   basis; estimated-vs-actual is shown after every build; the CI gate scores it against a real
   measurement. If the mesh half cannot be made to hold within tolerance, ship the texture bar
   and the build time alone and say so — a smaller honest meter beats a complete dishonest one.
+  **CLOSED 2026-08-20 evening.** The texture half is arithmetic and byte-exact; the mesh ratios,
+  which were the whole of the remaining risk, were then scored on a build they were not fitted to
+  — different level, different recolouring settings, different shape set — and came in at
+  **−0.7 %** (total −0.2 %). One independent point is not a guarantee, but it is no longer an
+  unmeasured claim, and every build from here adds another and says so on screen.
 * **The map view is the scope risk.** It is a heightmap, a set of centrelines and a circle, but
   it is also the first drawing surface in this UI. If E3 runs long, the region picker can ship
   as three labelled number fields with the map following later; the fast-travel editor cannot —
   a list of named points with coordinates is still far better than a JSON path.
+  **CLOSED by E3**: the fallback was not needed. The surface is a server-drawn PNG plus a
+  georeference, so the page holds no geometry and the browser draws four DOM nodes over an
+  image — and the risk that did materialise was not the drawing but the *shape*: the region had
+  two of them in the pipeline, and a picker cannot draw two.
 * **The sidebar has to earn its width.** It costs ~170 px of a panel that was already tight, which is why the layout rebalances to 7fr/5fr and why the narrow-window fallback exists. If the content pane still feels cramped in practice, the next move is the three-column layout (bundle/level left, settings centre, build/log right) rather than taking the nav away.
 * **Does turning trees off at 0 % surprise anyone?** It is what was asked for and it is what a
   slider at zero should mean. The label reads "Trees — off" at 0 rather than "0 %".
 * **`region` on the basics strip or in the World section?** It is on the strip in this plan because it
   changes the build more than any other single input, and because the meter needs it. Worth
-  revisiting once the map exists.
+  revisiting once the map exists. **Settled in E2** — it heads the World section, and E3's map
+  confirms it: the control is now a picture the height of the pane, which is not a thing that
+  belongs in a strip of paths.
 
 ---
 
