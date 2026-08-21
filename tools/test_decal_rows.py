@@ -24,8 +24,6 @@ import os
 import sys
 
 import numpy
-
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from csiibundle import bezier as bezier_math
 from csiibundle import decals as decal_rules
 from csiibundle import lanes as lane_math
@@ -302,4 +300,15 @@ else:
     if worst[1]:
         print(f"     worst overshoot {worst[0] * 1000:.1f} mm on {worst[1]}")
 
-sys.exit(1 if failures else 0)
+if __name__ == "__main__":
+    sys.exit(1 if failures else 0)
+
+
+def gate():
+    """pytest entry point (tools/conftest.py).
+
+    This file is still a script: its body runs at import, and `check()` counts what failed
+    rather than raising. So the gate reads the counter. Phase 4 turns the body into real
+    per-claim pytest functions, at which point this goes away.
+    """
+    assert failures == 0, f"{failures} check(s) failed — see the captured output above"

@@ -1,0 +1,36 @@
+         310406 function calls (280870 primitive calls) in 0.375 seconds
+
+   Ordered by: cumulative time
+   List reduced from 1123 to 28 due to restriction <28>
+
+   ncalls  tottime  percall  cumtime  percall filename:lineno(function)
+        1    0.000    0.000    0.375    0.375 E:\csii-world-bundle\tools\csiibundle\bake\__main__.py:68(main)
+        1    0.000    0.000    0.304    0.304 E:\csii-world-bundle\tools\csiibundle\bake\runner.py:87(run)
+        1    0.002    0.002    0.101    0.101 E:\csii-world-bundle\tools\csiibundle\bake\terraincut.py:127(run)
+      314    0.007    0.000    0.083    0.000 E:\csii-world-bundle\tools\csiibundle\terrainclip.py:248(clip_triangle)
+    59/20    0.000    0.000    0.082    0.004 <frozen importlib._bootstrap>:1349(_find_and_load)
+    51/12    0.000    0.000    0.082    0.007 <frozen importlib._bootstrap>:1304(_find_and_load_unlocked)
+    49/11    0.000    0.000    0.077    0.007 <frozen importlib._bootstrap>:911(_load_unlocked)
+    37/11    0.000    0.000    0.076    0.007 <frozen importlib._bootstrap_external>:1020(exec_module)
+   124/23    0.001    0.000    0.071    0.003 <frozen importlib._bootstrap>:480(_call_with_frames_removed)
+    38/11    0.000    0.000    0.071    0.006 {built-in method builtins.exec}
+    64/47    0.000    0.000    0.059    0.001 <frozen importlib._bootstrap>:1390(_handle_fromlist)
+     11/5    0.000    0.000    0.059    0.012 {built-in method builtins.__import__}
+        2    0.000    0.000    0.058    0.029 E:\csii-world-bundle\tools\csiibundle\bake\__init__.py:70(products)
+       16    0.000    0.000    0.058    0.004 C:\Python313\Lib\importlib\__init__.py:71(import_module)
+       16    0.000    0.000    0.058    0.004 <frozen importlib._bootstrap>:1375(_gcd_import)
+        9    0.000    0.000    0.058    0.006 E:\csii-world-bundle\tools\csiibundle\bake\manifest.py:145(save)
+        1    0.000    0.000    0.057    0.057 E:\csii-world-bundle\tools\csiibundle\bake\lods.py:220(run)
+        1    0.000    0.000    0.053    0.053 E:\csii-world-bundle\tools\csiibundle\bake\lods.py:128(_process_file)
+      112    0.041    0.000    0.041    0.000 {method '__exit__' of '_io._IOBase' objects}
+       37    0.000    0.000    0.037    0.001 <frozen importlib._bootstrap_external>:1093(get_code)
+        2    0.000    0.000    0.036    0.018 E:\csii-world-bundle\tools\csiibundle\decimate.py:560(level_displacement)
+        2    0.002    0.001    0.035    0.018 E:\csii-world-bundle\tools\csiibundle\decimate.py:423(distance_to_surface)
+        1    0.000    0.000    0.031    0.031 E:\csii-world-bundle\tools\csiibundle\bake\terrainmask.py:40(run)
+        1    0.000    0.000    0.027    0.027 E:\csii-world-bundle\tools\csiibundle\bake\materials.py:1(<module>)
+        1    0.000    0.000    0.026    0.026 E:\csii-world-bundle\tools\csiibundle\terrain.py:1501(hole_mask)
+     2617    0.019    0.000    0.026    0.000 E:\csii-world-bundle\tools\csiibundle\terrainclip.py:204(clean_polygon)
+        1    0.000    0.000    0.025    0.025 C:\Python313\Lib\multiprocessing\__init__.py:1(<module>)
+        1    0.001    0.001    0.025    0.025 E:\csii-world-bundle\tools\csiibundle\terrain.py:604(clip_grid)
+
+

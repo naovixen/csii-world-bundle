@@ -6,12 +6,7 @@ two triangles sharing an edge cut it at the same points (the watertightness that
 snap).
 """
 
-import os
-import sys
-
 import numpy
-
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from csiibundle import terrainclip as tc
 
 FAILED = []
@@ -213,3 +208,8 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+def gate():
+    """pytest entry point (tools/conftest.py); the same run as `python tools/test_terrainclip.py`."""
+    assert main() in (None, 0)

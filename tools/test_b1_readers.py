@@ -10,7 +10,6 @@ import sys
 import numpy
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, HERE)
 from csiibundle import (  # noqa: E402
     glb,
     instances,
@@ -227,3 +226,8 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main())
+
+
+def gate():
+    """pytest entry point (tools/conftest.py); the same run as `python tools/test_b1_readers.py`."""
+    assert main() in (None, 0)

@@ -1614,7 +1614,6 @@ def main():
     tmp = tempfile.mkdtemp(prefix="cs2beamng_shell_")
     os.environ["CS2BEAMNG_HOME"] = os.path.join(tmp, "home")
     os.environ["CS2BEAMNG_STAGE_MODULE"] = "cs2beamng_stub_stages"
-    sys.path.insert(0, HERE)
     try:
         test_settings()
         test_settings_metadata()
@@ -1646,3 +1645,8 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main())
+
+
+def gate():
+    """pytest entry point (tools/conftest.py); the same run as `python tools/test_app_shell.py`."""
+    assert main() in (None, 0)

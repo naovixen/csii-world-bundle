@@ -1,0 +1,9 @@
+<!--
+  Stops the root Directory.Build.props reaching the test projects. MSBuild imports the NEAREST
+  Directory.Build.props and stops, so an empty one here is the whole mechanism.
+
+  It has to stop. The root file exists to make the MOD compile: net48 against the game's own BCL
+  taken from CSII_MANAGEDPATH, with implicit framework references and the reference-assembly
+  packages turned off. A net8.0 test project inheriting any of that has no BCL at all.
+-->
+<Project />

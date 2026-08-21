@@ -16,7 +16,6 @@ import tempfile
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, HERE)
 import validate_bundle  # noqa: E402  (the repo's stdlib schema evaluator)
 from csiibundle import bake  # noqa: E402
 from csiibundle.bake import manifest as bake_manifest  # noqa: E402
@@ -183,3 +182,8 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main())
+
+
+def gate():
+    """pytest entry point (tools/conftest.py); the same run as `python tools/test_bake_manifest.py`."""
+    assert main() in (None, 0)

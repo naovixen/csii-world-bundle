@@ -26,8 +26,6 @@ import tempfile
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
 EXAMPLE = os.path.join(REPO, "docs", "example-bundle")
-sys.path.insert(0, os.path.join(REPO, "apps"))
-sys.path.insert(0, HERE)
 
 FAILS = []
 CHECKS = 0
@@ -561,3 +559,8 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main())
+
+
+def gate():
+    """pytest entry point (tools/conftest.py); the same run as `python tools/test_estimate.py`."""
+    assert main() in (None, 0)

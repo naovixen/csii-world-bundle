@@ -10,7 +10,6 @@ import sys
 import numpy
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, HERE)
 from csiibundle import collision, decimate, glb  # noqa: E402
 
 failures = []
@@ -191,3 +190,8 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main())
+
+
+def gate():
+    """pytest entry point (tools/conftest.py); the same run as `python tools/test_lod_collision.py`."""
+    assert main() in (None, 0)

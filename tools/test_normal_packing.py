@@ -31,8 +31,6 @@ import os
 import sys
 
 import numpy
-
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from csiibundle import materials
 from csiibundle import png as png_reader
 
@@ -237,5 +235,17 @@ if FAILURES:
     print(f"FAILED: {len(FAILURES)}")
     for name in FAILURES:
         print(f"  - {name}")
-    sys.exit(1)
-print("all checks passed")
+    if __name__ == "__main__":
+        sys.exit(1)
+else:
+    print("all checks passed")
+
+
+def gate():
+    """pytest entry point (tools/conftest.py).
+
+    This file is still a script: its body runs at import, and `check()` counts what failed
+    rather than raising. So the gate reads the counter. Phase 4 turns the body into real
+    per-claim pytest functions, at which point this goes away.
+    """
+    assert not FAILURES, f"{len(FAILURES)} check(s) failed — see the captured output above"

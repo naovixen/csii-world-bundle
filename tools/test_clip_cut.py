@@ -52,8 +52,6 @@ import random
 import sys
 
 import numpy
-
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from csiibundle import bezier as bezier_math
 from csiibundle import terrain as terrain_math
 
@@ -545,3 +543,8 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main())
+
+
+def gate():
+    """pytest entry point (tools/conftest.py); the same run as `python tools/test_clip_cut.py`."""
+    assert main() in (None, 0)

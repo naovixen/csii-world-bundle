@@ -623,7 +623,7 @@ Each phase records here what landed and what it found, so this document stays th
 
 | Phase | Status |
 | --- | --- |
-| 0 — Guardrails and baselines | not started |
+| 0 — Guardrails and baselines | **DONE** 2026-08-21 — see below |
 | 1 — The three defects | not started |
 | 2 — One implementation of every shared rule | not started |
 | 3 — One stage framework | not started |
@@ -636,3 +636,82 @@ Each phase records here what landed and what it found, so this document stays th
 | 10 — Performance | not started |
 | 11 — Comment, naming and structure | not started |
 | 12 — Documentation | not started |
+
+### Phase 0 — DONE 2026-08-21
+
+Commits: `156a90e` (the plan into the repo), `28d894d` (lint, format, gates), and this one.
+
+**Built**
+
+* `upstream-files.txt` — 92 upstream paths, derived from the tree at `43a05fb` (the last commit
+  by Carto's author) intersected with HEAD. Both the exemption list and the don't-touch line.
+* `tools/check_limits.py` + `tools/limits-allowlist.txt` — the 400-line / 60-line gate. Python
+  by `ast`, C# and JS by brace matching over a string- and comment-blanked copy. **A stale
+  allowlist entry is an error**, so the list can only shrink.
+* `tools/check_ruff_debt.py` + `tools/ruff-debt.txt` — the same shrink-only property for the one
+  ruff rule family (`ARG`) that Phases 2 and 3 own. 62 entries.
+* `ruff` at 100 columns, whole tree formatted, `ruff check` clean. `.editorconfig` for both
+  languages. C# analyzers with `TreatWarningsAsErrors`, upstream exempted per file the way
+  Roslyn wants it.
+* `tools/conftest.py` + `[tool.pytest.ini_options]` — `pytest` runs **all 31 test files** where
+  CI ran 13 and 18 ran nowhere. 35 `sys.path` bootstraps in nine spellings deleted; a
+  `bundle_dir` fixture over `csiibundle.bake.locate` (with a `CS2_BUNDLE_DIR` override) and a
+  `needs_rip` marker that skips and says where it looked.
+* `tests/Carto.Tests` — the producer's first automated check, 19 tests, linking the game-free
+  sources by `<Compile Include>`.
+* `docs/baselines/` — the golden bundle digest (16,991 files, 5.51 GB, per-layer counts), the
+  level report and budget, and `profile.md`: the rip's ten stage timings, the build's measured
+  rates, the level's resident MiB and drawn triangles, and what has no baseline and why.
+* `ci.yml` — a `gates` job, a `mod` job, `pytest` once instead of thirteen commands, and
+  `Systems/ IO/ Domain/ tests/` finally in the `paths:` filter.
+
+**Found while building it** — each its own concern, all fixed here except where noted:
+
+1. **The mod was compiling against the Python app's PyInstaller output.** `AssemblySearchPaths`
+   puts `{CandidateAssemblyFiles}` first and the SDK's default globs swept `dist/`, so
+   `netstandard` resolved out of `dist/cs2beamng/_internal/pythonnet/runtime/`. It built, which
+   is why nobody noticed. Fixed by excluding the build outputs from the mod's globs and pinning
+   the reference by `HintPath`.
+2. **`ruff format` reformats fenced Python inside Markdown** and collapsed the aligned comment
+   columns in `docs/consumer-guide.md`. Markdown is excluded; the docs were reverted.
+3. **RUF005 turned numpy broadcasting into list concatenation.**
+   `rng.normal(0, 1.5, (200, 3)) + [0, 4.5, 0]` became a list splat in
+   `tools/test_lod_collision.py`. `test_lod_collision` caught it. The rule is retired with the
+   reason in `pyproject.toml` — a cosmetic rule that rewrites `+` has no place here.
+4. **`test_node_fan.py` failed its own negative control** on this city, and had done since
+   before this work. The control hard-coded two segment `assetId`s from an older save; on the
+   current city they carry no node strip in the window, so the gate was UNPROVEN and the file
+   failed. It now falls back to discovering its own segments from the bundle, the way
+   `dense_windows` already chose its clusters: 0.40 m → 17.83 m in the road-junction window.
+5. **`test_terrain_blend.py` would have made CI permanently red.** It deliberately fails when
+   no bundle is present ("a silent skip is how a gate stops being a gate") — correct intent,
+   but CI never has a bundle. Split into a third outcome: `UNPROVEN` is printed by name, and
+   **enforced as a failure the moment a bundle IS present**, which is when unmeasured means the
+   rip did not carry the layer.
+6. **The audit's "five game-free files" is three.** `BundleManifest.cs` takes an `Options`,
+   which opens `using Carto.Utils`, which opens `Unity.Entities`, `Unity.Burst` and
+   `Colossal.Mathematics`; `BundleWriter.cs` follows it out, taking a `BundleManifest`. And
+   `Unity.Mathematics` **is not on NuGet**, so `GltfWriter`, `BundlePrecision` and
+   `BaseSkirtBuilder` cannot be linked either. `Carto.Tests` covers `Png.cs`, `BundleFile.cs`
+   and `RipWarning.cs`.
+7. **`RipSurfaceAreas` is 135 lines, not the 461 the audit recorded** (`TerrainRipSystem.cs:903`
+   to :1037). Phase 9's split still stands — it writes `areas.jsonl` and has nothing to do with
+   terrain — but the number was wrong.
+
+**Numbers that changed from the plan's**
+
+`ruff format` expands dense one-liners, so the fork is **83,387 lines**, not 75,031, and **68**
+files breach the 400-line ceiling, not 57. The file count is unchanged at 187, and the
+pre-format count was exactly the audit's 57 / 14 / 43, which is how the boundary was confirmed
+correct. The allowlist is seeded at 305 entries (68 files + 237 functions).
+
+**Deliberate deferrals, each with an owner**
+
+* `ARG` findings (62 ledger entries) — Phases 2 and 3.
+* C# naming (`IDE1006`) stays a suggestion — Phase 11 promotes it to a warning.
+* `IDE0005` (unnecessary using) cannot be a build gate: the SDK only runs it with
+  `GenerateDocumentationFile`, which would light up `CS1591` across upstream Carto.
+* Nullable stays off project-wide; it cannot be scoped by `.editorconfig` the way a diagnostic
+  can, and fork files opt in one at a time as Phase 9 splits them.
+* Seven test files are still module-level scripts whose body runs at import. Phase 4 owns them.
+

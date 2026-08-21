@@ -6,13 +6,9 @@ and the two algebraic identities the module's docstring claims (the exponent red
 fov cancellation). Run: `python tools/test_lod.py`.
 """
 
-import math
-import os
-import sys
-
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-
 import itertools
+import math
+import sys
 
 from csiibundle import lod
 
@@ -414,3 +410,8 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main())
+
+
+def gate():
+    """pytest entry point (tools/conftest.py); the same run as `python tools/test_lod.py`."""
+    assert main() in (None, 0)

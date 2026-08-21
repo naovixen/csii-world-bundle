@@ -25,11 +25,8 @@ crash; it routed the car onto an overpass it could not get to.
 """
 
 import os
-import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, HERE)
-sys.path.insert(0, os.path.join(os.path.dirname(HERE), "apps"))
 
 from cs2beamng.beamng import map_lua  # noqa: E402
 from csiibundle import navgraph as navgraph_mod  # noqa: E402
@@ -272,3 +269,8 @@ def main():
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+def gate():
+    """pytest entry point (tools/conftest.py); the same run as `python tools/test_navgraph_map.py`."""
+    assert main() in (None, 0)

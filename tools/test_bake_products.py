@@ -13,7 +13,6 @@ import tempfile
 import numpy
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, HERE)
 import validate_bundle  # noqa: E402
 from csiibundle import glb, png  # noqa: E402
 from csiibundle.bake import products as _products  # noqa: E402
@@ -68,7 +67,6 @@ def versions():
     # nothing checked them: A6.3's materials-stage entry was written as "# version 2" beside a
     # literal that stayed 4, so the whole colour-palette fix reported `fresh, skipped` on every
     # rebuild of an unchanged bundle. Their changelog style is `# version N:`.
-    sys.path.insert(0, os.path.join(REPO, "apps"))
     from cs2beamng.stages import all_stages
 
     for stage in sorted(all_stages(), key=lambda st: st.key):
@@ -461,3 +459,8 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main())
+
+
+def gate():
+    """pytest entry point (tools/conftest.py); the same run as `python tools/test_bake_products.py`."""
+    assert main() in (None, 0)

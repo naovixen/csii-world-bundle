@@ -22,14 +22,9 @@ rasterises and what you stand on), and material runs survive the decimation.
 Run: `python tools/test_tile_lod.py`  (system Python + numpy; no bundle needed).
 """
 
-import os
 import sys
 
 import numpy
-
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "apps"))
-
 from cs2beamng.beamng import dae, tilelod
 from csiibundle import decimate, lod
 
@@ -282,4 +277,15 @@ else:
     print("  note  this mesh produced a single level, so the run check had nothing to look at")
 
 print("test_tile_lod: " + ("FAILED" if failures else "OK"))
-sys.exit(1 if failures else 0)
+if __name__ == "__main__":
+    sys.exit(1 if failures else 0)
+
+
+def gate():
+    """pytest entry point (tools/conftest.py).
+
+    This file is still a script: its body runs at import, and `check()` counts what failed
+    rather than raising. So the gate reads the counter. Phase 4 turns the body into real
+    per-claim pytest functions, at which point this goes away.
+    """
+    assert failures == 0, f"{failures} check(s) failed — see the captured output above"

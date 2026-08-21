@@ -37,8 +37,6 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
 EXAMPLE = os.path.join(REPO, "docs", "example-bundle")
 NS = "{http://www.collada.org/2005/11/COLLADASchema}"
-sys.path.insert(0, os.path.join(REPO, "tools"))
-sys.path.insert(0, os.path.join(REPO, "apps"))
 
 FAILS = []
 CHECKS = 0
@@ -1272,3 +1270,8 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main())
+
+
+def gate():
+    """pytest entry point (tools/conftest.py); the same run as `python tools/test_a3_objects.py`."""
+    assert main() in (None, 0)

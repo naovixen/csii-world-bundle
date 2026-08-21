@@ -47,7 +47,7 @@
       how `netstandard` came to resolve out of `dist/cs2beamng/_internal/pythonnet/runtime/`.
       (Found by refactor Phase 0, 2026-08-21.)
     -->
-    <DefaultItemExcludes>$(DefaultItemExcludes);tools\**;dist\**;build\**;site\**;apps\**;packaging\**</DefaultItemExcludes>
+    <DefaultItemExcludes>$(DefaultItemExcludes);tools\**;tests\**;dist\**;build\**;site\**;apps\**;packaging\**</DefaultItemExcludes>
     <DisableImplicitFrameworkReferences>true</DisableImplicitFrameworkReferences>
     <!--
       Also required. For a net48 target the SDK restores Microsoft.NETFramework.ReferenceAssemblies,

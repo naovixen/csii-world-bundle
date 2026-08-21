@@ -16,12 +16,9 @@ import io
 import json
 import shutil
 import struct
-import sys
 import tempfile
 import unittest
 from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import make_example_bundle
 from validate_bundle import DEFAULT_SCHEMA_DIR, read_glb, validate_bundle
@@ -980,3 +977,7 @@ class BundleContractTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+# No `gate()` here. This file is unittest.TestCase-based, and pytest collects TestCase methods
+# natively whatever `python_functions` says — so every case is already a separate pytest test,
+# which is better than one gate. It is the shape Phase 4 is moving the others towards.

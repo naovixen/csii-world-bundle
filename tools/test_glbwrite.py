@@ -10,7 +10,6 @@ import tempfile
 import numpy
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, HERE)
 import validate_bundle  # noqa: E402
 from csiibundle import glb, glbwrite  # noqa: E402
 
@@ -158,3 +157,8 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main())
+
+
+def gate():
+    """pytest entry point (tools/conftest.py); the same run as `python tools/test_glbwrite.py`."""
+    assert main() in (None, 0)

@@ -17,12 +17,9 @@ Pure arithmetic, no bundle needed. The measured agreement against a real city is
 `tools/check_roadgrade_vs_game.py` (98.37 % of 2,307,777 covered samples on the 2026-08-16 rip).
 """
 
-import os
 import sys
 
 import numpy
-
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from csiibundle import terrain
 
 FAILED = []
@@ -169,3 +166,8 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main())
+
+
+def gate():
+    """pytest entry point (tools/conftest.py); the same run as `python tools/test_roadgrade.py`."""
+    assert main() in (None, 0)

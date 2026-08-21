@@ -31,6 +31,7 @@ Run: `python tools/test_net_composition.py`  (system Python + numpy; skipped whe
 on disk).
 """
 
+import itertools
 import json
 import os
 import pathlib
@@ -39,11 +40,6 @@ import struct
 import sys
 
 import numpy
-
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-
-import itertools
-
 from inspect_glb import read_glb
 
 BUNDLE = os.environ.get("CARTO_BUNDLE") or os.path.expandvars(
@@ -255,3 +251,8 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main())
+
+
+def gate():
+    """pytest entry point (tools/conftest.py); the same run as `python tools/test_net_composition.py`."""
+    assert main() in (None, 0)

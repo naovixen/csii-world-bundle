@@ -40,8 +40,6 @@ import zipfile
 
 import numpy
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "apps"))
-
 LEVELS = (
     os.environ.get("BEAMNG_LEVELS")
     or r"G:\SteamLibrary\steamapps\common\BeamNG.drive\content\levels"
@@ -194,3 +192,8 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main())
+
+
+def gate():
+    """pytest entry point (tools/conftest.py); the same run as `python tools/test_ground_albedo.py`."""
+    assert main() in (None, 0)

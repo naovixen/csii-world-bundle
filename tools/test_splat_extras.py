@@ -35,8 +35,7 @@ import os
 import sys
 
 import numpy
-
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import pytest
 from csiibundle import png as png_reader
 from csiibundle import splat as splat_reader
 
@@ -178,3 +177,9 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main())
+
+
+@pytest.mark.needs_rip
+def gate():
+    """pytest entry point (tools/conftest.py); the same run as `python tools/test_splat_extras.py`."""
+    assert main() in (None, 0)

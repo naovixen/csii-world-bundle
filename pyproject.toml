@@ -122,3 +122,18 @@ ignore = [
 
 [tool.ruff.format]
 docstring-code-format = false
+
+# ---------------------------------------------------------------------------------------------
+# Tests. Before this the runner was "the thirteen commands ci.yml happens to list"; 18 of the 31
+# test files ran nowhere at all. `pytest` runs them all, and tools/conftest.py says what they
+# can assume.
+#
+# `python_functions = ["gate"]` is deliberate and explained in tools/conftest.py: these files
+# predate pytest and already use `test_<claim>()` for internal helpers that take positional
+# arguments. Collecting `gate` gives one test per file and leaves the helpers alone.
+[tool.pytest.ini_options]
+testpaths = ["tools"]
+python_files = ["test_*.py"]
+python_functions = ["gate"]
+python_classes = []
+addopts = "-ra --strict-markers"

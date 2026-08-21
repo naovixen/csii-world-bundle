@@ -37,8 +37,7 @@ import struct
 import sys
 
 import numpy
-
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import pytest
 from csiibundle import bezier as bezier_math
 from csiibundle import decals as decal_rules
 
@@ -438,3 +437,9 @@ def _jsonl(path):
 
 if __name__ == "__main__":
     sys.exit(main())
+
+
+@pytest.mark.needs_rip
+def gate():
+    """pytest entry point (tools/conftest.py); the same run as `python tools/test_drape_pick.py`."""
+    assert main() in (None, 0)

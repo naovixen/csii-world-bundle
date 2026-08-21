@@ -1,0 +1,66 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    The producer's first automated check. Until refactor Phase 0 there was none: ci.yml's
+    `paths:` filter never named Systems/, IO/ or Domain/, so a C# change could not fail
+    anything, and the only way to learn a rip system was broken was to launch the game.
+
+    It cannot reference Carto.dll. That assembly targets net48 and links the game's Unity BCL
+    and Game.dll by absolute path out of a Steam install, so it neither restores nor loads
+    anywhere but this machine, and CI has no copy of Cities: Skylines II.
+
+    So the files come in by SOURCE, one <Compile Include> at a time, and the list is
+    deliberately short: only files that touch no game type at all. That is the honest boundary —
+    a file that needs Game.dll cannot be tested here, and pretending otherwise with a mock would
+    test the mock. Everything else stays "built, awaiting in-game re-rip", which is the wording
+    the refactor plan requires for producer work.
+  -->
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>disable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <IsPackable>false</IsPackable>
+    <AssemblyName>Carto.Tests</AssemblyName>
+    <RootNamespace>Carto.Tests</RootNamespace>
+    <!-- The mod's own sources define their namespaces; nothing implicit, to match net48. -->
+    <ImplicitUsings>disable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <!--
+      The linked-in mod sources were written for net48 and use APIs .NET 8 has obsoleted or
+      narrowed. These are the ones that are not defects in net48 and must not be "fixed" here,
+      because this project is not their target framework:
+        SYSLIB0011  BinaryFormatter — not used, but the analyzer scans the whole compilation
+        CS1591      missing XML doc, if a doc file is ever generated
+    -->
+    <NoWarn>$(NoWarn);SYSLIB0011;CS1591</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />
+    <PackageReference Include="xunit" Version="2.9.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
+    <!-- Png.cs deflates through SharpZipLib; the game ships it, NuGet has the same library. -->
+    <PackageReference Include="SharpZipLib" Version="1.4.2" />
+    <!-- BundleWriter's JSON idiom. The game ships Newtonsoft too. -->
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!--
+      The game-free files, by source. Adding one here is a claim that it references no game
+      type; the build is what checks the claim.
+    -->
+    <Compile Include="..\..\IO\Png.cs" Link="mod\Png.cs" />
+    <Compile Include="..\..\IO\BundleFile.cs" Link="mod\BundleFile.cs" />
+    <!--
+      NOT BundleManifest.cs, though the audit listed it as game-free. `BuildGeo` takes an
+      `Options`, and Options.cs opens `using Carto.Utils`, which opens Unity.Entities,
+      Unity.Burst and Colossal.Mathematics. The build is what found that; the list above is
+      what the compiler will actually accept. BundleWriter.cs follows it out: `WriteManifest`
+      takes a BundleManifest.
+    -->
+    <Compile Include="..\..\Domain\RipWarning.cs" Link="mod\RipWarning.cs" />
+  </ItemGroup>
+
+</Project>

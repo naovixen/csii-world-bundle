@@ -40,9 +40,7 @@ import pathlib
 import sys
 
 import numpy
-
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-
+import pytest
 from inspect_glb import read_accessor, read_glb
 
 BUNDLE = os.environ.get("CARTO_BUNDLE") or os.path.expandvars(
@@ -259,54 +257,76 @@ def check_paved():
     )
 
 
-def check_control():
-    """The gate must FAIL on a bundle that has the defect. Otherwise green means nothing."""
-    global failures
-    label, cx, cz = WINDOWS[0]
-    only = set()
-    ids = {}
+def _segment_asset_ids(ids):
+    """{record id: assetId} for the network segments carrying these clip-volume ids."""
+    found = {}
     with open(os.path.join(BUNDLE, "networks.jsonl"), encoding="utf-8") as handle:
         for line in handle:
             if not line.strip():
                 continue
             record = json.loads(line)
-            if record.get("assetId") in CONTROL_SEGMENTS:
-                ids[record["assetId"]] = record["id"]
-                only.add(record["id"])
-    missing = [s for s in CONTROL_SEGMENTS if s not in ids]
-    if missing:
-        # Segment entity ids come from the save, so a different city has different ones. Say so
-        # rather than passing a control that never ran.
+            if record.get("id") in ids:
+                found[record["id"]] = record["assetId"]
+    return found
+
+
+def _control_candidates():
+    """Windows to try the control in, the named one first.
+
+    The §41.9 pair is tried first so the control reproduces the ORIGINAL defect wherever the
+    save still has those segments. Segment entity ids come from the save, though, so on any
+    other city they are absent or land nowhere near the width transition — and a control that
+    silently cannot run is exactly the failure mode this test exists to prevent. So every other
+    scored window is a fallback, with its own segments read from the bundle the same way
+    `dense_windows` reads its clusters.
+    """
+    yield WINDOWS[0], CONTROL_SEGMENTS
+    for label, cx, cz in tuple(WINDOWS[1:]) + tuple(dense_windows(DENSE_WINDOWS)):
+        yield (label, cx, cz), None
+
+
+def check_control():
+    """The gate must FAIL on a bundle that has the defect. Otherwise green means nothing."""
+    global failures
+    unproven = []
+    for (label, cx, cz), named in _control_candidates():
+        rows = score_window(cx, cz, RADIUS)
+        if not rows:
+            unproven.append(f"{label}: no node strip wholly inside the window")
+            continue
+        only = {row[0] for row in rows}
+        assets = _segment_asset_ids(only)
+        if named is not None:
+            only = {rid for rid, asset in assets.items() if asset in named}
+            assets = {rid: asset for rid, asset in assets.items() if asset in named}
+            if not only:
+                unproven.append(
+                    f"{label}: control segments {', '.join(named)} have no node strip here"
+                )
+                continue
+        amputate = set(assets.values())
+        clean = [row for row in rows if row[0] in only]
+        hurt = score_window(cx, cz, RADIUS, amputate=amputate, only=only)
+        if not clean or not hurt:
+            unproven.append(f"{label}: the amputated run scored nothing")
+            continue
+        clean_worst = max(row[1] for row in clean)
+        hurt_worst = max(row[1] for row in hurt)
         print(
-            f"  control segments absent from this bundle ({', '.join(missing)}) — "
-            f"the gate above is UNPROVEN on this city"
+            f"  {label}: {len(clean)} strips on {len(amputate)} segment(s) — shipped worst gap "
+            f"{clean_worst:.2f} m, amputated worst gap {hurt_worst:.2f} m"
         )
-        failures += 1
-        return
-    clean = score_window(cx, cz, RADIUS, only=only)
-    hurt = score_window(cx, cz, RADIUS, amputate=set(CONTROL_SEGMENTS), only=only)
-    if not clean or not hurt:
-        # The control segments exist but none of their NODE clip volumes falls whole inside the
-        # window (`score_window` skips a strip that crosses its edge rather than scoring a lie).
-        # Same situation as an absent segment: say the gate is unproven, do not crash on max().
-        print(
-            f"  control segments {', '.join(CONTROL_SEGMENTS)} have no node strip inside "
-            f"the {label} window — the gate above is UNPROVEN on this city"
+        if hurt_worst >= CONTROL_MIN_GAP:
+            print(f"        the gate sees the defect ({CONTROL_MIN_GAP:.2f} m threshold)")
+            return
+        unproven.append(
+            f"{label}: amputation reached only {hurt_worst:.2f} m "
+            f"(< {CONTROL_MIN_GAP:.2f} m), so the defect would not have been seen"
         )
-        failures += 1
-        return
-    clean_worst = max(r[1] for r in clean)
-    hurt_worst = max(r[1] for r in hurt)
-    print(
-        f"  {len(clean)} strips on {', '.join(CONTROL_SEGMENTS)}: shipped worst gap "
-        f"{clean_worst:.2f} m, amputated worst gap {hurt_worst:.2f} m"
-    )
-    if hurt_worst < CONTROL_MIN_GAP:
-        print(
-            f"        FAIL: amputating the outer geometry did not reproduce the defect "
-            f"({hurt_worst:.2f} m < {CONTROL_MIN_GAP:.2f} m) — this test cannot see it"
-        )
-        failures += 1
+    print("        FAIL: no window on this city could prove the gate:")
+    for line in unproven:
+        print(f"          {line}")
+    failures += 1
 
 
 def main():
@@ -323,3 +343,9 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main())
+
+
+@pytest.mark.needs_rip
+def gate():
+    """pytest entry point (tools/conftest.py); the same run as `python tools/test_node_fan.py`."""
+    assert main() in (None, 0)

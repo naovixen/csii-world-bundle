@@ -28,8 +28,6 @@ import tempfile
 import numpy
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, HERE)
-sys.path.insert(0, os.path.join(os.path.dirname(HERE), "apps"))
 EXAMPLE = os.path.join(os.path.dirname(HERE), "docs", "example-bundle")
 BUNDLE = os.path.join(
     os.environ.get("USERPROFILE", ""),
@@ -567,3 +565,8 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main())
+
+
+def gate():
+    """pytest entry point (tools/conftest.py); the same run as `python tools/test_terrain_fine.py`."""
+    assert main() in (None, 0)

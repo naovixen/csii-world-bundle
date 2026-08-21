@@ -23,10 +23,8 @@ import tempfile
 import zlib
 
 import numpy
-from PIL import Image
-
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from csiibundle import png as png_reader
+from PIL import Image
 
 BUNDLE = os.path.expandvars(
     r"%USERPROFILE%\AppData\LocalLow\Colossal Order"
@@ -256,4 +254,15 @@ ok = _ds.tolist() == [[2, 4], [10, 12]]
 print(("ok  " if ok else "FAIL") + "  downsample_box 4x4 -> 2x2 block means")
 failures += 0 if ok else 1
 
-sys.exit(1 if failures else 0)
+if __name__ == "__main__":
+    sys.exit(1 if failures else 0)
+
+
+def gate():
+    """pytest entry point (tools/conftest.py).
+
+    This file is still a script: its body runs at import, and `check()` counts what failed
+    rather than raising. So the gate reads the counter. Phase 4 turns the body into real
+    per-claim pytest functions, at which point this goes away.
+    """
+    assert failures == 0, f"{failures} check(s) failed — see the captured output above"

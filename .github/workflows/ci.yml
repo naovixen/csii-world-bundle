@@ -1,31 +1,64 @@
-# Consumer-side CI: the Python packages (csiibundle + cs2beamng) on the three desktop OSes.
-# The C# mod is not built here (it needs the CS2 modding toolchain and the game's assemblies).
+# CI for both halves of the repo.
 #
-# Every test below self-skips the parts that need a real rip; what runs on CI is the offline
-# gate suite plus a headless `cs2beamng build` of docs/example-bundle — the A0 acceptance.
+# Until refactor Phase 0 this file watched only `tools/**` and `apps/**`, so a change to
+# Systems/, IO/ or Domain/ could not fail anything — including compilation. The producer now has
+# a paths entry and a test project of its own, and the Python side runs `pytest` once instead of
+# the thirteen commands someone remembered to list (18 of 31 test files ran nowhere at all).
+#
+# The C# MOD is still not built here and cannot be: Carto.dll targets net48 against the game's
+# own Unity BCL and Game.dll, by absolute path out of a Steam install. `tests/Carto.Tests` links
+# the game-free sources by <Compile Include> instead, which is why it builds on a runner.
 name: ci
 
 on:
   push:
     branches: [main]
-    paths:
+    paths: &watched
       - "tools/**"
       - "apps/**"
+      - "tests/**"
+      - "Systems/**"
+      - "IO/**"
+      - "Domain/**"
       - "docs/example-bundle/**"
       - "docs/schema/**"
       - "pyproject.toml"
+      - ".editorconfig"
+      - "upstream-files.txt"
+      - "Directory.Build.props"
+      - "Directory.Build.targets"
+      - "Carto.csproj"
       - ".github/workflows/ci.yml"
   pull_request:
-    paths:
-      - "tools/**"
-      - "apps/**"
-      - "docs/example-bundle/**"
-      - "docs/schema/**"
-      - "pyproject.toml"
-      - ".github/workflows/ci.yml"
+    paths: *watched
   workflow_dispatch:
 
 jobs:
+  # Style, size and lint-debt. OS-independent, so once rather than across the matrix.
+  gates:
+    name: gates (lint, format, size, lint debt)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # `check_limits.py --verify-upstream` reads the tree at the fork point (43a05fb) to
+          # re-derive upstream-files.txt from authorship. A shallow clone has no such object.
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install --upgrade pip && python -m pip install ruff
+      - name: ruff (lint)
+        run: python -m ruff check
+      - name: ruff (format is idempotent)
+        run: python -m ruff format --check
+      - name: The upstream boundary still matches git authorship
+        run: python tools/check_limits.py --verify-upstream
+      - name: No file over 400 lines, no function over 60 (allowlist shrinks only)
+        run: python tools/check_limits.py
+      - name: Lint debt has not grown (ledger shrinks only)
+        run: python -m pip install ruff && python tools/check_ruff_debt.py
+
   python:
     name: ${{ matrix.os }} / py${{ matrix.python }}
     runs-on: ${{ matrix.os }}
@@ -42,31 +75,14 @@ jobs:
       - name: Install
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e . pillow
-      - name: Offline gates (csiibundle)
-        run: |
-          python tools/test_bundle_contract.py
-          python tools/test_glbwrite.py
-          python tools/test_bake_manifest.py
-          python tools/test_lod_collision.py
-          python tools/test_b1_readers.py
-          python tools/test_soup_surface.py
-          python tools/test_bake_products.py
-          python tools/test_png_decode.py
-          python tools/test_normal_packing.py
-      - name: App shell gate (runner / server / SSE / cancel / dead worker)
-        run: python tools/test_app_shell.py
-      # The real-build tier of this one cannot run here (it needs a level someone built); it
-      # says so and skips. The arithmetic and selection tiers are the ones that catch a
-      # regression in the sizing, and they need nothing but the checkout.
-      - name: Cost estimate gate (DDS sizing, the mesh index, every figure's basis)
-        run: python tools/test_estimate.py
+          python -m pip install -e . pillow pytest
+      # One command, all 31 test files. Anything that needs a real rip is marked `needs_rip` and
+      # skips here, naming where it looked; anything that merely has MORE to say with a bundle
+      # present reports "awaiting a rip" and still runs its offline half, by design.
+      - name: pytest
+        run: python -m pytest -q
       - name: The generated settings reference is current
         run: python tools/gen_docs.py --check
-      - name: A1 gate (.ter, level tree, validator, water bands, terrain/scene stages)
-        run: python tools/test_a1_level.py
-      - name: A2 gate (COLLADA writer, materials v1.5, frame)
-        run: python tools/test_a2_dae.py
       - name: Headless build of the example bundle
         shell: bash
         run: |
@@ -76,6 +92,19 @@ jobs:
       - name: Working tree is clean (no test wrote into the repo)
         shell: bash
         run: git status --porcelain && test -z "$(git status --porcelain)"
+
+  # The producer's only automated check. It cannot load the game's assemblies, so it links the
+  # sources that touch no game type; adding a file to that list is a claim the compiler checks.
+  mod:
+    name: Carto.Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+      - name: dotnet test
+        run: dotnet test tests/Carto.Tests -c Release --nologo
 
   # The gate that the editable install cannot give: `pip install .` builds a WHEEL, so anything
   # the app reaches through a path relative to the checkout is simply absent. Two real defects
