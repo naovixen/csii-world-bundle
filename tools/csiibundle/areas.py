@@ -46,6 +46,7 @@ which is where every layer of ground paint is ordered against every other.
 import math
 
 from . import decals, lod
+from . import region as region_rule
 
 # Lift above the terrain grid, below everything that stands on the area. The rung is
 # `decals.LIFT_LADDER`'s, where every layer of ground paint is ordered against every other; the
@@ -345,7 +346,8 @@ def build_pieces(
         if radius is not None and center is not None:
             cx = sum(n[0] for n in nodes) / len(nodes)
             cz = sum(n[2] for n in nodes) / len(nodes)
-            if math.hypot(cx - center[0], cz - center[1]) > radius:
+            box = {"centerX": center[0], "centerZ": center[1], "radius": radius}
+            if not region_rule.contains(cx, cz, box):
                 stats["skipped_region"] += 1
                 continue
 

@@ -49,7 +49,7 @@ def _parse(argv):
         type=float,
         metavar=("X", "Z", "R"),
         default=None,
-        help="bundle-frame disc to limit world-space products to",
+        help="bundle-frame square (centre and half-width) to limit world-space products to",
     )
     parser.add_argument(
         "--jobs", type=int, default=1, help="worker processes for products that can use them"

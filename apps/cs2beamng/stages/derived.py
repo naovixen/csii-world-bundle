@@ -40,6 +40,7 @@ import time
 
 import numpy
 from csiibundle import glb, lod
+from csiibundle import region as region_rule
 from csiibundle.bake.tiles import MIN_LOD_MARK, split_material_name
 
 from ..beamng import dae, frame, tilelod
@@ -287,10 +288,9 @@ def _ground_mapto(level, mat):
 def _tile_intersects(name, tile, region):
     m = TILE_RE.match(name)
     tx, tz = int(m.group("tx")), int(m.group("tz"))
-    x0, x1 = tx * tile, (tx + 1) * tile
-    z0, z1 = tz * tile, (tz + 1) * tile
-    cx, cz, r = float(region["centerX"]), float(region["centerZ"]), float(region["radius"])
-    return not (x1 < cx - r or x0 > cx + r or z1 < cz - r or z0 > cz + r)
+    return region_rule.intersects_box(
+        region, tx * tile, tz * tile, (tx + 1) * tile, (tz + 1) * tile
+    )
 
 
 # The five product toggles are read through a variable (`settings.get(toggle, True)`), so they

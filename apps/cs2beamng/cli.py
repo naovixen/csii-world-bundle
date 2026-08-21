@@ -47,7 +47,8 @@ def _parser():
         "--region",
         default=None,
         metavar='"X Z R"',
-        help="build a disc of the city instead of all of it, in bundle metres",
+        help="build a square patch of the city instead of all of it, in bundle metres: "
+        "the centre and the HALF-WIDTH",
     )
     build.add_argument(
         "--set", action="append", default=[], metavar="KEY=VALUE", help="override a setting"

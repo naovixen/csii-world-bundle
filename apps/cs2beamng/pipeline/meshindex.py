@@ -38,6 +38,7 @@ import os
 import time
 
 from csiibundle import instances as bundle_instances
+from csiibundle import region as region_rule
 
 from .. import settings as settings_mod
 from ..beamng import placement
@@ -294,10 +295,8 @@ def select(doc, values):
 
 
 def _region_cells(region):
-    """The 512 m cells a region square touches — `placement.in_region` is a square test."""
-    radius = float(region["radius"])
-    x0, x1 = float(region["centerX"]) - radius, float(region["centerX"]) + radius
-    z0, z1 = float(region["centerZ"]) - radius, float(region["centerZ"]) + radius
+    """The 512 m cells the region box touches (`csiibundle.region`)."""
+    x0, x1, z0, z1 = region_rule.bounds(region)
     out = set()
     cx = int(x0 // CELL_METRES)
     while cx <= int(x1 // CELL_METRES):

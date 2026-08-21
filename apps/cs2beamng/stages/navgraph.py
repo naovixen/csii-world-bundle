@@ -57,6 +57,7 @@ import time
 import numpy
 from csiibundle import navgraph as navgraph_mod
 from csiibundle import reader
+from csiibundle import region as region_rule
 
 from ..beamng import frame
 from . import Stage, level_of
@@ -205,12 +206,8 @@ def decal_road(road):
 
 
 def _in_region(road, region):
-    """A road is kept when any node is inside the build region (bundle-frame X/Z circle)."""
-    cx, cz, r = region["centerX"], region["centerZ"], region["radius"]
-    for x, _y, z, _w in road.nodes:
-        if (x - cx) ** 2 + (z - cz) ** 2 <= r * r:
-            return True
-    return False
+    """A road is kept when any node is inside the build region box (`csiibundle.region`)."""
+    return any(region_rule.contains(x, z, region) for x, _y, z, _w in road.nodes)
 
 
 def _write_invisible_material(level):
@@ -304,6 +301,9 @@ def _patch_info(level, extra):
 # version 2: `csiibundle.navgraph` now gives a terminal node the width of the segment
 # end it joins and emits a SIMPLE graph (no self-loop, one road per node pair) - the
 # two properties `map.lua` needs and the fix for the FATAL LUA ERROR of audit A7.5.
+# version 4: the build region is a SQUARE (`csiibundle.region`). It was a disc here while every
+# other placement stage used a square, so a region build had AI roads only in the inscribed
+# circle — no routing and no minimap in the corners that had buildings and streets.
 # version 3: a node's radius no longer reaches a road stacked over or under it, which is
 # what let a route start on an overpass the car could not get to (audit A7.6).
 INPUTS = ("layer:lanes", "layer:networks")
@@ -321,5 +321,5 @@ STAGE = Stage(
     outputs=OUTPUTS,
     shared_keys=("navgraph",),
     after=("scene",),
-    version=3,
+    version=4,
 )

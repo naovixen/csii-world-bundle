@@ -10,6 +10,7 @@ instrument, before and after (`docs/plans/refactor.md`, principle 10).
 | `cs2_city_fine-report-2026-08-20.json` | the built level's own report — **its `settings` block is the input to every consumer-phase rebuild** (refactor Rule 6), and its `validation` block is the 0-problem baseline. |
 | `cs2_city_fine-budget-2026-08-20.txt` | `cs2beamng budget` — resident MiB and triangles actually drawn. |
 | `bake-example-cprofile-2026-08-21.txt` | a cProfile of the example-bundle bake. **Not a performance baseline** — see below. |
+| `cs2_city_fine-report-after-phase1.json` | the same level rebuilt after refactor Phase 1 (`cook: true`, 16 m 03 s). Every validation check matches the baseline; `cs2beamng budget` came out **byte-identical**, which is why there is no "after" budget file. |
 | `profile.md` | the numbers themselves, and what instrument produced each. |
 
 ## What the digest deliberately excludes

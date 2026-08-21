@@ -33,6 +33,7 @@ from collections import Counter
 import numpy
 
 from .. import bezier, decals, drape, frames, glb, instances, lanes, lod, reader
+from .. import region as region_rule
 from . import Product, register
 from .roads import load_road_surface
 from .tiles import TileSink
@@ -54,9 +55,9 @@ DECAL_STEP = 2.0
 
 
 def _in_region(x, z, region):
-    if not region:
-        return True
-    return (x - region["centerX"]) ** 2 + (z - region["centerZ"]) ** 2 <= region["radius"] ** 2
+    """The region box. Kept as a name here because `skirts.py` and `lanegeometry.py` import it;
+    refactor Phase 2 points those at `csiibundle.region` directly and this goes away."""
+    return region_rule.contains(x, z, region)
 
 
 def _subdivide_quad(corners, uvs, step):

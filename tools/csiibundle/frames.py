@@ -185,6 +185,42 @@ def to_zup_transform(matrix):
     return out
 
 
+def decompose(matrix):
+    """A `(4, 4)` world matrix as `(position, rotation 3x3 row-major, scale)`, all plain lists.
+
+    For a consumer whose object format takes the three separately — BeamNG's `TSStatic` and
+    `.forest4.json` both do — rather than a matrix. Written here so that consumer can build the
+    matrix with `instances.instance_matrix` (which folds in the growth scale and the decal lift)
+    and still get the fields it needs, instead of recomposing the transform by hand and losing
+    one of them.
+
+    Each scale component is the length of the corresponding COLUMN, and the rotation is the
+    linear part with those lengths divided out. That is exact for a `T · R · S` product, which
+    is what §2.2 builds. It also means a non-unit quaternion — 6.9 % of the reference city's
+    records store one, off unity by ~2e-6 — arrives here as a scale slightly off 1.0 rather than
+    being silently renormalised away, which is the diagnostic `quat_matrix` exists to preserve.
+
+    A negative determinant is not handled: the bundle stores no negative scale (checked over
+    400,000 records of the reference city) and §2.2's mirror is a separate factor that a
+    consumer divides out through `mesh_basis`. A reflection reaching here would come back as
+    three positive scales and an improper rotation, so it is refused rather than approximated.
+    """
+    matrix = numpy.asarray(matrix, dtype=numpy.float64)
+    linear = matrix[:3, :3]
+    scale = numpy.linalg.norm(linear, axis=0)
+    if numpy.linalg.det(linear) <= 0.0:
+        raise ValueError(
+            "decompose() takes a proper transform; this one reflects "
+            f"(det {float(numpy.linalg.det(linear)):.6g}). Divide the mesh basis out first."
+        )
+    rotation = linear / scale
+    return (
+        [float(v) for v in matrix[:3, 3]],
+        [[float(v) for v in row] for row in rotation],
+        [float(v) for v in scale],
+    )
+
+
 def transform_points(matrix, points):
     """Apply a `(4, 4)` matrix to an `(N, 3)` array of points. Returns `(N, 3)` float64.
 

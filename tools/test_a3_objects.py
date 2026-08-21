@@ -102,6 +102,43 @@ def test_frame():
     check(pos == [1.0, 3.0, 2.0], "the position is the Y/Z swap and nothing else")
 
 
+def test_decal_lift_and_the_quaternion():
+    print("the transform folds in the §4.2a lift, and lets a non-unit quaternion through")
+    from cs2beamng.stages import instances as stage
+
+    # §4.2a: a decal instance is coplanar paint and MUST be lifted clear of the surface it
+    # paints over, or it z-fights with it. No decal reaches `_transform` today —
+    # `placement.BAKED_KINDS` sends them to `bake/markings`, which applies the lift as the
+    # drape's epsilon — so this pins a LATENT trap: the day a decal does reach here, it arrives
+    # lifted, because the transform is the shared one rather than a copy that forgot.
+    from csiibundle import decals
+
+    lift = decals.LIFT["instance_decal"]
+    lifted, _r, _s = stage._transform({"pos": [1, 2, 3], "kind": "decal"})
+    check(
+        abs(lifted[2] - (2.0 + lift)) < 1e-12 and lifted[:2] == [1.0, 3.0],
+        f"a decal is lifted by exactly {lift} m, on the up axis only",
+    )
+    plain, _r, _s = stage._transform({"pos": [1, 2, 3], "kind": "prop"})
+    check(plain == [1.0, 3.0, 2.0], "and nothing else is lifted at all")
+    check(
+        lift > decals.LIFT["area"] > decals.LIFT["lane_marking"],
+        "the ladder still puts decal instances above the areas they stand on",
+    )
+
+    # A stored non-unit quaternion is a signal, not noise: `frames.quat_matrix` deliberately
+    # does not renormalise, and the app's old `_quat_rows` did, which discarded it. It should
+    # arrive as a scale off 1.0.
+    k = 1.001
+    half = 0.7071067811865476
+    _p, _r, off = stage._transform({"pos": [0, 0, 0], "rot": [0.0, half * k, 0.0, half * k]})
+    # The deviation lands on the two axes the turn acts on, at k^2 - 1, and not on the third.
+    check(
+        abs(max(off) - k**2) < 1e-5 and abs(min(off) - 1.0) < 1e-12,
+        f"a non-unit quaternion reaches the scale rather than being renormalised away ({off})",
+    )
+
+
 # -- the placement rule ---------------------------------------------------------------------------
 
 
@@ -1243,6 +1280,7 @@ def test_orphans_of_absent_owners():
 
 def main():
     test_frame()
+    test_decal_lift_and_the_quaternion()
     test_placement()
     test_shapes_and_instances()
     test_forest_path()

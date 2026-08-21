@@ -1013,7 +1013,8 @@
   /* `region` is a string ("X Z R", empty = the whole city) and reads as one. As a control it is
      a choice — all of it, or a patch of it — so it is built as one, and the patch is dragged on
      the map rather than typed. The shape drawn is a SQUARE because a square is what every stage
-     that reads a region keeps; the setting's own name says disc, and the name is what is wrong. */
+     that reads a region keeps (`csiibundle.region`). The setting's own name says "radius", which
+     reads as a disc; it is a half-width, and the name is what is wrong. */
   function buildRegionControl(spec) {
     const row = rowShell(spec, "regionrow");
     const ctl = el("div", "ctl region");

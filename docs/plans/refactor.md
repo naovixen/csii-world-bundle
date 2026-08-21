@@ -624,13 +624,13 @@ Each phase records here what landed and what it found, so this document stays th
 | Phase | Status |
 | --- | --- |
 | 0 — Guardrails and baselines | **DONE** 2026-08-21 — see below |
-| 1 — The three defects | not started |
-| 2 — One implementation of every shared rule | not started |
+| 1 — The three defects | **DONE** 2026-08-21 — one of the three was not live; see below |
+| 2 — One implementation of every shared rule | pre-flight verified; blocked on the Phase 1 rebuild |
 | 3 — One stage framework | not started |
 | 4 — Split `csiibundle` and `tools/` | not started |
 | 5 — The app and its UI | not started |
 | 6 — The Blender adapter | not started |
-| 7 — One rip-stage framework | not started |
+| 7 — One rip-stage framework | **in progress** — extractions and the typed outcome done; see below |
 | 8 — The IO writer layer | not started |
 | 9 — Split the rip systems | not started |
 | 10 — Performance | not started |
@@ -698,6 +698,11 @@ Commits: `156a90e` (the plan into the repo), `28d894d` (lint, format, gates), an
    to :1037). Phase 9's split still stands — it writes `areas.jsonl` and has nothing to do with
    terrain — but the number was wrong.
 
+**The formatting was proved behaviour-preserving, not assumed to be.** `ruff format` touched 150
+files including the whole bake. Baking `docs/example-bundle` at `5b7e212` (the commit before
+Phase 0) and at HEAD, in two worktrees, gives 16 identical files out of 16 — the only difference
+in `materials.json` is its own `generatedAt` timestamp, one second apart.
+
 **Numbers that changed from the plan's**
 
 `ruff format` expands dense one-liners, so the fork is **83,387 lines**, not 75,031, and **68**
@@ -714,4 +719,185 @@ correct. The allowlist is seeded at 305 entries (68 files + 237 functions).
 * Nullable stays off project-wide; it cannot be scoped by `.editorconfig` the way a diagnostic
   can, and fork files opt in one at a time as Phase 9 splits them.
 * Seven test files are still module-level scripts whose body runs at import. Phase 4 owns them.
+
+### Phase 1 — DONE 2026-08-21
+
+Three defects, and the plan understated one of them by a factor of six.
+
+**1. The app never applied the §4.2a decal lift — and that was LATENT, not live.**
+
+The plan's claim is half right. `stages/instances.py:_transform` did reimplement the §2.2
+composition in plain Python and did leave the lift out. But `placement.BAKED_KINDS` is
+`("decal",)`, so **a decal record never reaches that function**: `bake/markings.py:250` places
+decal quads itself, deliberately without the lift in the matrix — its comment says "bundle
+frame, no lift: the drape sets the height" — and hands `decals.LIFT["instance_decal"]` to the
+drape as `drape_eps`. Every record that does reach `_transform` (building, tree, prop) has a
+lift of 0.0.
+
+Measured rather than argued: rebuilding `cs2_city_fine` through the new code and matching 8,646
+TSStatics to the bundle record at their own unambiguous (x, z) gives a worst vertical delta of
+**0.000000000 m**. Nothing was sitting coplanar; nothing moved.
+
+The fix stands anyway, because the duplicate transform is real and principle 1 owns it: the app
+now calls `csiibundle.instances.instance_matrix`, and `frames.decompose` is new — engine-neutral,
+returning the three fields a `TSStatic` needs from one matrix. The trap is closed rather than
+survived: the day a decal does reach `_transform`, it arrives lifted.
+
+What DID change is the quaternion. The copy renormalised; `frames.quat_matrix` deliberately does
+not, because a stored non-unit quaternion is a signal about the producer. **6.9 % of records
+store one**, off unity by ~2e-6, and it now arrives as a scale a hair off 1.0 instead of being
+corrected away. Checked against 400,000 records before the change: position identical to 0.0,
+rotation and scale within 3.8e-6 — which is exactly that effect — and no negative scales
+anywhere.
+
+**2. The region was a disc in SIX places, not one.** The plan named `bake/roads.py` and said
+"every other stage uses a square". Counted:
+
+| Disc | Square |
+| --- | --- |
+| `csiibundle/areas.py:348` — the surface areas | `beamng/placement.in_region` |
+| `bake/areas.py` — the centre/radius threaded to it | `stages/derived._tile_intersects` |
+| `bake/roads.py` — the road surface markings drape onto | `stages/water._intersects` |
+| `bake/markings.py:_in_region` — and via imports, skirts and lane geometry | `pipeline/meshindex` |
+| `bake/lods.py` — which meshes get LODs at all | `stages/networks` (fixed 2026-08-20) |
+| `stages/navgraph._in_region` — the AI road graph | |
+
+So a region build kept a square of buildings, props, trees, terrain tiles and road meshes and a
+disc of everything painted on them. In the corners: streets with no markings, no skirts, no lane
+geometry and no AI roads, and buildings whose LODs were never generated.
+
+**21.5 % of a region build was in that gap** (4r² against πr²). Measured at centre (1399, 1153),
+half-width 1000 m on the reference city: **16,786 more placed objects, 135 more road segments,
+887 more surface areas**.
+
+Fixed as principle 1 requires — one rule, in `csiibundle/region.py`, called by all eleven sites,
+squares included so there is one rule rather than six that agree. `tools/test_region.py` asks
+each real caller about the four corners of a box.
+
+The cache had to be handled or the fix would not reach anyone with a region build already baked:
+`region.tag()` records the shape on the region dict and `bake/runner.py` folds it into the option
+fingerprint, so the five region-declaring products re-bake for a region and a **whole-bundle bake
+is untouched** — there being no boundary, the two rules agree there. `stages/navgraph` goes to
+version 4 for the same reason.
+
+**3. `NetworkRipSystem` could wedge the main thread.** Confirmed. All four `Queue.Add` sites were
+plain blocking adds on a bounded(8) queue with zero `IsFaulted` checks and no `Fail` path to
+abort into — the exact shape `MeshRipSystem.cs:744` documents as wrong. `Advance` also had no
+per-entity try/catch, so one throwing edge took the whole stage and every layer it writes.
+`Enqueue` (TryAdd + fault check), `RipStep` (per-entity catch, counted and reported) and `Fail`
+are all MeshRipSystem's, for MeshRipSystem's reasons. Built, awaiting in-game re-rip.
+
+**Two of the four items were not what the plan said.** Defect 1 was latent, not live, and the
+`Pump` item below was not a defect at all. That is now three plan claims out of four checked and
+found overstated (the region was six discs, not one). **Measure before believing the plan** — its
+numbers came from an audit that read code, not from running it.
+
+**The rebuild (refactor Rule 6).** `cs2_city_fine` rebuilt in place, `cook: true`, settings read
+from its own `cs2beamng_report.json`, BeamNG closed. **16 m 03 s**, status done, and the whole
+bake re-forced first (2,540 s) because the E3–E7 commits of 2026-08-20 21:41–21:58 had already
+changed `derived/` under the standing level.
+
+Against the Phase-0 golden report, **every validation check is identical** — objects, classes,
+forest items and types, cooked shapes, material files, navgraph, ground check, ter, spawn points,
+all of it — and so are the budgets: DecalRoads 15,393, TSStatics 19,202, WaterBlocks 192, forest
+items 903,371, forest types 3,105, shape files 7,879. `cs2beamng budget` is **byte-identical** to
+the baseline: 4,256 MiB resident, 1,278,860 triangles.
+
+`validate_level` reports **1 problem, the same 1 as the baseline**: the standing budget warning
+that 4,256 MiB is in the unmeasured band. The only fields that moved are
+`resident.budgetMiB`/`budgetPixels`/`budgetSource`, which are a THRESHOLD derived from the
+resolution BeamNG last logged — and BeamNG was closed for the rebuild, so it fell back to the
+1080p reference. A property of the machine, not of the level.
+
+That is the expected result: this was a full-city build, `region` is None, and neither change
+bites without a region. **The region fix is unproven in a built level until someone builds a
+region** — the arithmetic and every caller are pinned by `tools/test_region.py`, but the picture
+of a corner with markings in it is still owed.
+
+**The fourth item was not a defect.** The plan recorded `RipProgress.Pump()` as latent —
+"the progress indicator freezes on any plan without those stages". It does not: `Mod.cs`
+registers every rip system unconditionally at `MainLoop` and none declares `RequireForUpdate`,
+so `Pump` ran every frame regardless, twice. The **placement** was still wrong — `Pump` is what
+runs `RunDeferred`'s queued work, the vanilla vector export included, and it was riding on an
+accident of registration in two systems whose job it is not. It moved to `RipOrchestratorSystem`.
+
+### Phase 2 — pre-flight, 2026-08-21
+
+Every claim checked against the code before touching it, because two of the plan's own have
+already turned out wrong (the region was six discs, not one; `RipProgress.Pump` was not a defect).
+
+**Confirmed exactly as written**
+
+* `frames.py:161` and `frames.py:167` are byte-identical (`bundle_to_zup_point` /
+  `zup_to_bundle_point`), and the second has **zero callers**.
+* **All thirteen** of the never-called public functions are never called — grepped one by one
+  across the whole repo, callers = 0 for every name.
+* `stages/scene.py:133 hasattr(colour_mod, "blackbody")` is permanently false: there is no
+  `blackbody` anywhere in either package.
+* Three PNG-decode wrappers (`groundmap.read_rgb`, `beamng/materials._load_any`,
+  `stages/terrain._read_alpha`) and three `resample_nearest` (`reader.py:206`,
+  `bake/materials.py:123 _resample_nearest`, `measure_paint_factor.py:50`).
+* Three "first mesh state on disk" walks — `stages/shapes._state_suffix`,
+  `stages/instances` (inline, cached by key), `pipeline/meshindex._state_stem`. **They do not
+  return the same thing**: two return the suffix (`candidate[len(asset):]`), one the whole stem.
+  The shared function returns the candidate; slicing stays at the call site.
+* `bake/ground.py:41 MEASURED_DIAGONAL = "ne_sw"` is a BeamNG measurement defaulting for every
+  consumer; `colour.py:752 Grading.write_ocio` opens "Write a **Blender** OCIO config".
+* `pipeline/mapview.py:281` imports `stages.poi`; `stages/derived.py:48` and
+  `stages/networks.py:39,40` import other stages as libraries.
+
+**Wrong in the plan**
+
+* **`pipeline/estimate.py` does not document a cycle.** The deferred
+  `from ..beamng import validate_level` at `:506` is a lazy import with a comment about reading
+  the budget "exactly the way the validator reads it" — and `validate_level` imports nothing
+  from `pipeline`, so there is no cycle to break. It can simply be hoisted.
+* **The hard-coded bundle path is in 9 non-test files, not 20** (`blender_import_bundle`,
+  `check_roadgrade_vs_game`, `check_terrain_vs_game`, `colour_model`, `bake/locate`,
+  `bake/__main__`, `probe_point`, `cli`, `modinstall`) — the 20 counted occurrences, and most
+  of the rest are in tests, which `tools/conftest.py` already gives a fixture for.
+
+**Already done, in Phase 1.** The `_in_region` promotion this phase lists could not wait: making
+`bake/roads.py` a square while `bake/markings.py` stayed a disc would have left the very
+inconsistency the defect is. `csiibundle/region.py` is that shared rule, and all eleven sites
+call it.
+
+### Phase 7 — in progress, 2026-08-21
+
+Started out of order, and deliberately: the Phase 1 consumer rebuild is a multi-hour block during
+which the Python tree has to stay still, and the two halves of this repo have independent gates.
+
+**Landed** (`a4acd61`, `32855e1`, `303715e`)
+
+* `Systems/Rip/RipAssetIds.cs` — what an `assetId` is, out of `MeshRipSystem`, where it was
+  `public static` and five systems reached for it. `Digest` came with it, deleting the
+  byte-identical copy in `MaterialRipSystem` whose own comment admitted it.
+* `Systems/Rip/RipDiagnostics.cs` — `DescribeComponents`, byte-identical in two systems.
+* `Systems/Rip/RipOutcome.cs` — a stage says whether it failed. The `FAILED:` prefix was written
+  by twelve sites and read by one, `StartsWith("FAILED", Ordinal)`; a stage writing `"Failed"` —
+  which all five already write to their logs — was silently a success.
+* The `Stage` union is two types. `SyncStage` and `AsyncStage`, and `StartStage` switches on the
+  type rather than on a null check standing in for one.
+* `Systems/Rip/RipWalk.cs` — the frame loop. `InstanceRipSystem.Advance` and
+  `LaneRipSystem.Advance` were byte-identical for **57 lines**, comments included; 114 lines of
+  duplicated loop are 46 of call site. The tuning stays per-stage: the instance walk's 12 ms
+  against the mesh rip's 6 is a measured choice with its reason recorded, and a shared constant
+  would have thrown that away.
+
+**Not done, and not for lack of time: `Tessellate` should not be unified yet.**
+
+The plan lists it as "two divergent sampling policies for the same bézier". They are divergent,
+and the divergence is not accidental:
+
+| | `LaneRipSystem.cs:616` | `NetworkRipSystem.cs:2190` |
+| --- | --- | --- |
+| samples | `Samples = 8`, fixed | `ceil(length / TessellationGap)`, adaptive |
+| straight curves | sampled 8 times anyway | short-circuited to two points |
+| duplicate points | skipped at `1e-6` | skipped by `Append` |
+
+The network one is better on both counts. But adopting it for lanes changes `lanes.jsonl` — a
+**676,863-record layer** — so it is a producer output change, not a refactor, and Rule 1 forbids
+folding it into a move. It needs its own commit, its own measurement of what the record count and
+the file size do, and an answer to whether 8 points was ever a considered number. Left as it is,
+named here so the next pass does not "tidy" it by accident.
 

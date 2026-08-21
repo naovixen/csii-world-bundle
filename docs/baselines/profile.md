@@ -92,6 +92,29 @@ settings unchanged". Units per second survive that.
 `validate` at 0.41 units/s and `water` at 74.6 are the two whose "unit" is a whole level rather
 than a record — read them as seconds-per-level inverted, not as throughput.
 
+### The bake, in seconds
+
+`python -m csiibundle.bake --force` over the whole 5.51 GB bundle, 2026-08-21, **2,540 s
+(42 min 20 s)**. Not a clean-room measurement — other work (a `pytest` run, `dotnet build`) shared
+the machine — so treat these as the right order of magnitude and re-measure on a quiet box before
+claiming a Phase 10 win from them.
+
+| Product | Seconds | Share |
+| --- | ---: | ---: |
+| lods | 1,575.4 | 62 % |
+| materials | 435.2 | 17 % |
+| areas | 154.6 | 6 % |
+| lanegeometry | 144.5 | 6 % |
+| markings | 87.5 | 3 % |
+| terrainmask | 75.3 | 3 % |
+| terraincut | 55.9 | 2 % |
+| skirts | 11.6 | 0.5 % |
+
+**Two products are 79 % of the bake.** `lods` generates the LOD ladders and `materials` walks
+every material and every instance; nothing else is close. That is where a bake optimization has
+to land, and `skirts` — which Phase 10 does not mention — is already 11.6 s and cannot repay
+attention.
+
 ## 4. The level — 4,256 MiB resident, 1,278,860 triangles drawn
 
 Instrument: `cs2beamng budget`, full output in `cs2_city_fine-budget-2026-08-20.txt`.

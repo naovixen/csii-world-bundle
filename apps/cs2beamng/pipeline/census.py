@@ -104,9 +104,9 @@ def take(values):
     out["region"] = region
     map_size = float(manifest.get("mapSize") or 14336.0)
     if region:
-        # The SQUARE the stages actually keep (`beamng.placement.in_region`), not the disc the
-        # setting's name suggests. A circle's area is pi/4 of its square's, so every stage's ETA
-        # was 27 % short on a region build for as long as this said `math.pi`.
+        # The SQUARE every stage keeps (`csiibundle.region`), not the disc the setting's name
+        # suggests. A circle's area is pi/4 of its square's, so every stage's ETA was 27 % short
+        # on a region build for as long as this said `math.pi`.
         out["scale"] = min(1.0, 4.0 * region["radius"] ** 2 / (map_size * map_size))
 
     # derived cache freshness per product (cheap fingerprints)

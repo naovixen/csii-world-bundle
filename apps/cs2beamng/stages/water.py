@@ -23,6 +23,7 @@ import time
 import numpy
 from csiibundle import colour as colour_mod
 from csiibundle import png, reader
+from csiibundle import region as region_rule
 from csiibundle import water as water_mod
 
 from ..beamng import frame
@@ -246,9 +247,7 @@ def _isfile(path):
 
 
 def _intersects(region, min_x, min_z, max_x, max_z):
-    r = float(region["radius"])
-    cx, cz = float(region["centerX"]), float(region["centerZ"])
-    return not (max_x < cx - r or min_x > cx + r or max_z < cz - r or min_z > cz + r)
+    return region_rule.intersects_box(region, min_x, min_z, max_x, max_z)
 
 
 def _appearance_fields(appearance):

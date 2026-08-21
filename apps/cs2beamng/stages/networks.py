@@ -31,6 +31,7 @@ from collections import defaultdict
 
 import numpy
 from csiibundle import glb, lod, reader
+from csiibundle import region as region_rule
 from csiibundle.bake.tiles import MIN_LOD_MARK
 
 from ..beamng import dae, frame, tilelod
@@ -77,16 +78,11 @@ def run(ctx, progress):
         if r.get("kind") == "segment" and r.get("assetId") and r.get("pos")
     ]
     if ctx.region:
-        # A SQUARE, like every other stage that reads a region (`beamng.placement.in_region`,
-        # `stages/derived._tile_in_region`, `stages/water._intersects`). This was a circle until
-        # 2026-08-20, so a region build kept a square of buildings and a disc of roads and the
-        # corners of the area had houses and no streets. Nothing shrinks: a circle is inside its
-        # square, so this only ever adds the segments that were missing. Found when the settings
-        # screen's map picker had to draw the region and there were two shapes to draw.
-        cx, cz = float(ctx.region["centerX"]), float(ctx.region["centerZ"])
-        rr = float(ctx.region["radius"]) + REACH
+        # `csiibundle.region` holds the rule and the post-mortem of the day it was two rules.
         records = [
-            r for r in records if abs(r["pos"][0] - cx) <= rr and abs(r["pos"][2] - cz) <= rr
+            r
+            for r in records
+            if region_rule.contains(r["pos"][0], r["pos"][2], ctx.region, reach=REACH)
         ]
 
     # -- bucket by tile of the segment origin (bundle frame x, z) -------------------------------

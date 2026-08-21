@@ -33,6 +33,7 @@ it is the approximation this file exists to keep countable — see `variant_of`.
 """
 
 from csiibundle import instances as bundle_instances
+from csiibundle import region as region_rule
 from csiibundle import tints
 
 # Kinds the bake has already turned into world-space tiles; the object stages must not place
@@ -100,14 +101,15 @@ def shape_key(asset_id, state_suffix="", variant=None):
 
 
 def in_region(record, region):
-    """Whether the record's position falls inside a `{centerX, centerZ, radius}` region box.
-    The same square test the tile stages use, so a region build is consistent across stages."""
+    """Whether the record's position falls inside the `{centerX, centerZ, radius}` region box.
+
+    The no-region case returns before reading `pos`, deliberately: several callers ask this of a
+    record shape that carries no position at all when there is no region to test it against.
+    """
     if not region:
         return True
     pos = record["pos"]
-    return abs(float(pos[0]) - float(region["centerX"])) <= float(region["radius"]) and abs(
-        float(pos[2]) - float(region["centerZ"])
-    ) <= float(region["radius"])
+    return region_rule.contains(pos[0], pos[2], region)
 
 
 def kind_enabled(kind, settings):

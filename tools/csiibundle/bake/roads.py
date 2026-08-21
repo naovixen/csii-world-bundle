@@ -4,9 +4,9 @@ indexed as one `drape.TriangleSoupSurface`.
 Network meshes are world-space already except for a translation (`networks.jsonl` `pos`
 places the segment's origin, §5) and the §2.2 X mirror; the loop below applies both, swaps to
 Z-up, and hands the pieces to the surface. Full city: 7,289 files, 9.3M triangles, ~8 s to
-load and ~4 s to index (measured 2026-08-15). A `region` (bundle-frame disc) keeps only the
-segments whose origin lies within `radius + reach`, so a marking at the window's edge still
-finds the neighbouring segment it drapes onto.
+load and ~4 s to index (measured 2026-08-15). A `region` (`csiibundle.region`, a bundle-frame SQUARE) keeps only the
+segments whose origin lies within `radius + reach` of its centre on both axes, so a marking at
+the window's edge still finds the neighbouring segment it drapes onto.
 """
 
 import os
@@ -14,6 +14,7 @@ import os
 import numpy
 
 from .. import drape, glb, reader
+from .. import region as region_rule
 
 REACH = 150.0  # metres past the region a segment origin may sit and still matter (test_drape_pick's REACH)
 
@@ -31,13 +32,10 @@ def load_road_surface(bundle_dir, region=None, progress=None, cell=8.0):
         if r.get("kind") == "segment" and r.get("assetId") and r.get("pos")
     ]
     if region:
-        cx, cz, r = (
-            float(region["centerX"]),
-            float(region["centerZ"]),
-            float(region["radius"]) + REACH,
-        )
         records = [
-            rec for rec in records if (rec["pos"][0] - cx) ** 2 + (rec["pos"][2] - cz) ** 2 <= r * r
+            rec
+            for rec in records
+            if region_rule.contains(rec["pos"][0], rec["pos"][2], region, reach=REACH)
         ]
     if progress is not None:
         progress.begin("road surface", total=len(records), unit="segments")

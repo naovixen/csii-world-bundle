@@ -38,6 +38,7 @@ from multiprocessing import Pool
 import numpy
 
 from .. import decimate, glb, glbwrite, png, reader
+from .. import region as region_rule
 from . import Product, register
 
 PRODUCT_NAME = "lods"
@@ -234,14 +235,13 @@ def run(context, progress):
     region = context.options.get("region")
     if region:
         # LODs are per prefab, not per place; a region bake still bakes every prefab the region
-        # references. Cheap way to know which: scan instances inside the disc.
+        # references. Cheap way to know which: scan instances inside the region.
         from .. import instances as _inst
 
-        cx, cz, r = float(region["centerX"]), float(region["centerZ"]), float(region["radius"])
         wanted = set()
         for rec in _inst.read_instances(bundle):
             p = rec.get("pos") or (0, 0, 0)
-            if (p[0] - cx) ** 2 + (p[2] - cz) ** 2 <= r * r:
+            if region_rule.contains(p[0], p[2], region):
                 for cand in _inst.mesh_candidates(rec):
                     wanted.add(cand)
         names = [n for n in names if n in wanted]

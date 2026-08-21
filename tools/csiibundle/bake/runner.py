@@ -19,6 +19,7 @@ import time
 from collections import namedtuple
 
 from .. import reader
+from .. import region as region_rule
 from . import BAKE_VERSION
 from . import manifest as _manifest
 from . import products as _registry
@@ -101,6 +102,10 @@ def run(
     """
     progress = progress or Progress()
     options = dict(DEFAULT_OPTIONS, **(options or {}))
+    # The region carries the shape it was filtered under into the fingerprint. Five products
+    # declare `region` in their options, and all five were filtering it as a DISC until the
+    # square landed; without this a cache baked under the old rule would be silently reused.
+    options["region"] = region_rule.tag(options["region"])
     bundle_dir = os.path.abspath(bundle_dir)
     derived = _manifest.derived_dir(bundle_dir, derived_dir)
 
