@@ -230,6 +230,9 @@ namespace Carto.Systems
             public Dictionary<string, int> ByForm = new();
             public System.Diagnostics.Stopwatch Clock = System.Diagnostics.Stopwatch.StartNew();
             public int SkippedMarker, SkippedNoWidth, SkippedDegenerate, SkippedStale;
+
+            /// <summary>Entities whose rip threw and was counted rather than killing the stage.</summary>
+            public int Failed;
             public int MarkerCenterline;
             public int Points, Triangles;
             public long Bytes;
@@ -396,12 +399,11 @@ namespace Carto.Systems
         }
 
         /// <summary>
-        /// Drive the progress indicator, and advance any rip in progress by one frame's worth.
+        /// Advance any rip in progress by one frame's worth. (The progress indicator is pumped by
+        /// <c>RipOrchestratorSystem</c>, which owns the rip's UX.)
         /// </summary>
         protected override void OnUpdate()
         {
-            RipProgress.Pump();
-
             NetworkRun run = _run;
             if (run != null) Advance(run);
         }
@@ -527,7 +529,7 @@ namespace Carto.Systems
             //
             run.Queue = new BlockingCollection<NetworkItem>(QueueCapacity);
             Instance.MaterialRip.Begin(outputDirectory, textureSizeCap,
-                                       texture => run.Queue.Add(new NetworkItem { Texture = texture }));
+                                       texture => Enqueue(run, new NetworkItem { Texture = texture }));
 
             // Partial reads inside `ReadMesh` (lane part meshes read this way) must land in this
             // run's warnings — without a mesh run in flight they had nowhere to go (§10).
@@ -550,11 +552,24 @@ namespace Carto.Systems
         /// <param name="run">The rip in flight.</param>
         private void Advance(NetworkRun run)
         {
+            // A faulted encoder never drains the queue, so a plain `Add` on a full one would
+            // block the MAIN THREAD for the rest of the session and the stage would never
+            // finish. `MeshRipSystem.cs:744` documents the same trap and this is its answer.
+            //
+            if (run.Encoder.IsFaulted)
+            {
+                Fail(run);
+                return;
+            }
+
             double started = run.Clock.Elapsed.TotalMilliseconds;
 
             while (run.Index < run.Edges.Length)
             {
-                RipOne(run, run.Edges[run.Index]);
+                // Back-pressure: pause rather than assemble meshes faster than they are written.
+                if (run.Queue.Count >= QueueCapacity) break;
+
+                RipStep(run, run.Edges[run.Index], "edge", RipOne);
                 run.Index++;
 
                 if ((run.Clock.Elapsed.TotalMilliseconds - started) >= FrameBudgetMs) break;
@@ -567,7 +582,9 @@ namespace Carto.Systems
                 while ((run.OrphanIndex < run.Orphans.Length)
                        && ((run.Clock.Elapsed.TotalMilliseconds - started) < FrameBudgetMs))
                 {
-                    RipOrphan(run, run.Orphans[run.OrphanIndex]);
+                    if (run.Queue.Count >= QueueCapacity) break;
+
+                    RipStep(run, run.Orphans[run.OrphanIndex], "orphan node", RipOrphan);
                     run.OrphanIndex++;
                 }
             }
@@ -580,7 +597,9 @@ namespace Carto.Systems
                 while ((run.LaneIndex < run.Lanes.Length)
                        && ((run.Clock.Elapsed.TotalMilliseconds - started) < FrameBudgetMs))
                 {
-                    RipLaneGeometry(run, run.Lanes[run.LaneIndex]);
+                    if (run.Queue.Count >= QueueCapacity) break;
+
+                    RipStep(run, run.Lanes[run.LaneIndex], "lane", RipLaneGeometry);
                     run.LaneIndex++;
                 }
             }
@@ -590,6 +609,107 @@ namespace Carto.Systems
 
             if ((run.Index >= run.Edges.Length) && (run.OrphanIndex >= run.Orphans.Length)
                 && (run.LaneIndex >= run.Lanes.Length)) Finish(run);
+        }
+
+        /// <summary>
+        /// Abort the pass because the encoder task died.
+        /// </summary>
+        /// <remarks>
+        /// The queue is bounded, so an encoder that has faulted stops it draining for good: the
+        /// reader would pause on back-pressure for the rest of the session, the stage would never
+        /// finish, and a pipeline driving the rip would wait on it forever. There was no such path
+        /// here before — <c>MeshRipSystem.Fail</c> has had one since it was written, and this is
+        /// the same one, reporting through the same completion-callback-or-dialog shape.
+        /// The layers written so far are left on disk: a mixed-vintage bundle is the documented
+        /// outcome of a partial rip, and deleting them would lose work the fault did not cost.
+        /// </remarks>
+        /// <param name="run">The run that cannot continue.</param>
+        private void Fail(NetworkRun run)
+        {
+            _run = null;
+            run.Clock.Stop();
+            RipProgress.Clear();
+
+            Exception cause = run.Encoder.Exception?.GetBaseException();
+            _log.Error($"Network encoder faulted at {run.Index}/{run.Edges.Length} edge(s); aborting the pass: {run.Encoder.Exception}");
+
+            Instance.MeshRip.WarningSink = null;
+            try { run.Queue?.CompleteAdding(); } catch { /* already completed */ }
+            Instance.MaterialRip.Abandon();
+            run.Writer?.Dispose();
+            run.LaneWriter?.Dispose();
+
+            string summary = $"FAILED: the network encoder faulted at {run.Index}/{run.Edges.Length} edge(s) — "
+                           + $"networks/ and lanemeshes/ are incomplete: {cause?.Message ?? "unknown error"}"
+                           + "\n\nFull details: Logs/Carto.log";
+
+            if (run.Completed != null)
+            {
+                try { run.Completed(summary); }
+                catch (Exception ex) { _log.Warn($"Network rip completion callback failed: {ex}"); }
+                return;
+            }
+
+            try
+            {
+                Game.UI.MessageDialog dialog = new("Options.SECTION[Carto.Carto.Mod]", summary, "Common.OK");
+                Instance.UI.appBindings.ShowMessageDialog(dialog, null);
+            }
+            catch (Exception ex)
+            {
+                _log.Warn($"Could not show the network rip failure: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Run one per-entity step, counting a throw against the run instead of killing the stage.
+        /// </summary>
+        /// <remarks>
+        /// Without this, one edge that throws — a prefab shape nothing anticipated, a stale
+        /// entity that <see cref="EntityManager.Exists"/> did not catch — takes the whole
+        /// networks stage down and with it every layer it writes, on a rip that has already
+        /// spent twenty minutes. <c>MeshRipSystem.ReadOne</c> has caught per prefab since it was
+        /// written; this is the same guarantee per edge, per orphan node and per lane.
+        /// </remarks>
+        /// <param name="run">The run in progress.</param>
+        /// <param name="entity">The entity to process.</param>
+        /// <param name="what">What kind of thing it is, for the report line.</param>
+        /// <param name="step">The work to do.</param>
+        private void RipStep(NetworkRun run, Entity entity, string what, Action<NetworkRun, Entity> step)
+        {
+            try
+            {
+                step(run, entity);
+            }
+            catch (Exception ex)
+            {
+                run.Failed++;
+                run.Report.AppendLine($"  ! {what} {entity.Index}: {ex.GetType().Name} {ex.Message}");
+                _log.Warn($"Failed to rip {what} {entity.Index}: {ex}");
+            }
+        }
+
+        /// <summary>
+        /// Hand one item to the bounded queue without wedging on a dead encoder.
+        /// </summary>
+        /// <remarks>
+        /// A plain <c>Add</c> blocks until the encoder makes room, and an encoder task that has
+        /// faulted never will. Several items are queued per edge — one per piece mesh, plus every
+        /// texture the material rip hands over through the callback at <c>BeginRip</c> — so the
+        /// reader can meet a full queue between <see cref="Advance"/>'s capacity checks and block
+        /// the main thread there for good. Throwing instead lets <see cref="RipStep"/> count the
+        /// entity failed and the next <see cref="Advance"/> abort the pass.
+        /// This is <c>MeshRipSystem.Enqueue</c>, for the same reason.
+        /// </remarks>
+        /// <param name="run">The run in progress.</param>
+        /// <param name="item">The item to queue.</param>
+        private static void Enqueue(NetworkRun run, NetworkItem item)
+        {
+            while (!run.Queue.TryAdd(item, 200))
+            {
+                if (run.Encoder.IsFaulted)
+                    throw new InvalidOperationException("the network encoder task has faulted; the queue will never drain");
+            }
         }
 
         /// <summary>
@@ -697,7 +817,7 @@ namespace Carto.Systems
                         // just queued its pieces' textures, and the .glb can only name them once
                         // they carry a content hash. See NetworkItem.
                         //
-                        run.Queue.Add(new NetworkItem { Mesh = assembled });
+                        Enqueue(run, new NetworkItem { Mesh = assembled });
                         record.AssetId = assetId;
                         record.Position = center;
                         record.Rotation = quaternion.identity;
@@ -788,7 +908,7 @@ namespace Carto.Systems
                 return;
             }
 
-            run.Queue.Add(new NetworkItem { Mesh = assembled });
+            Enqueue(run, new NetworkItem { Mesh = assembled });
             run.Triangles += assembled.TriangleCount;
             _orphanCaps++;
 
@@ -1079,6 +1199,9 @@ namespace Carto.Systems
             if (run.SkippedNoWidth > 0) report.AppendLine($"Skipped {run.SkippedNoWidth} edge(s) with no usable width");
             if (run.SkippedDegenerate > 0) report.AppendLine($"Skipped {run.SkippedDegenerate} edge(s) whose centerline collapsed to a point");
             if (run.SkippedStale > 0) report.AppendLine($"Skipped {run.SkippedStale} edge(s) the simulation removed mid-rip");
+            if (run.Failed > 0)
+                report.AppendLine($"FAILED on {run.Failed} entit(ies) — each counted and skipped rather than "
+                                + "killing the stage; the `!` lines above name them");
             if (run.Skipped.Count > 0) report.AppendLine($"{run.Skipped.Count} surface(s) or texture(s) produced no material entry");
 
             // Contract §10: this stage's gaps go on disk, not only into the report. Written after
@@ -1544,7 +1667,7 @@ namespace Carto.Systems
                         if (role != null) run.LaneDecalRoles[assetId] = role;
 
                         run.LaneMeshIds[meshEntity] = assetId;
-                        run.Queue.Add(new NetworkItem { Mesh = mesh, IsLane = true });
+                        Enqueue(run, new NetworkItem { Mesh = mesh, IsLane = true });
                     }
 
                     entry.Parts.Add(new LanePartRef { Flags = subMesh.m_Flags, Index = catalogueParts.Count });

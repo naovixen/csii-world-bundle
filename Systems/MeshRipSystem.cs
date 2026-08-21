@@ -122,8 +122,8 @@ namespace Carto.Systems
         }
 
         /// <summary>
-        /// Drive the progress indicator, and advance any rip in progress by one frame's worth of
-        /// work.
+        /// Advance any rip in progress by one frame's worth of work. (The progress indicator is
+        /// pumped by <c>RipOrchestratorSystem</c>, which owns the rip's UX.)
         /// This system is registered at <see cref="SystemUpdatePhase.MainLoop"/> rather than with
         /// the simulation, because a rip is started from the options page — which pauses the
         /// simulation, so a simulation-phase system would never tick while the user is looking at
@@ -131,8 +131,6 @@ namespace Carto.Systems
         /// </summary>
         protected override void OnUpdate()
         {
-            RipProgress.Pump();
-
             RipRun run = _run;
             if (run != null) Advance(run);
         }

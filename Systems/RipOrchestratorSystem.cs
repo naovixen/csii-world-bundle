@@ -171,10 +171,23 @@ namespace Carto.Systems
         }
 
         /// <summary>
-        /// Advance the pipeline: start the next stage once the current one has reported.
+        /// Drive the progress indicator, and advance the pipeline: start the next stage once the
+        /// current one has reported.
         /// </summary>
+        /// <remarks>
+        /// <see cref="RipProgress.Pump"/> lives here rather than in a rip stage. It has to run on
+        /// the main thread every frame — it is what pushes the caption to the UI AND what runs
+        /// the work queued by <see cref="RipProgress.RunDeferred"/>, which includes the vanilla
+        /// vector export (<c>Settings.cs:431</c>) and the manifest. It used to be called from
+        /// <c>MeshRipSystem.OnUpdate</c> and <c>NetworkRipSystem.OnUpdate</c>, twice a frame,
+        /// which worked only because those two systems happen to be registered unconditionally at
+        /// <c>MainLoop</c> and declare no <c>RequireForUpdate</c>. That is an accident of
+        /// registration, not a design: this system is the one whose job the rip's UX is.
+        /// </remarks>
         protected override void OnUpdate()
         {
+            RipProgress.Pump();
+
             if (_stages == null || !_stageDone) return;
 
             _stageClock.Stop();
