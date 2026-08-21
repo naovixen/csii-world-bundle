@@ -14,7 +14,6 @@ settings change that never reached the docs.
 """
 
 import argparse
-import io
 import json
 import os
 import sys
@@ -55,13 +54,18 @@ headless build and a UI build with the same settings produce the same level.
 # list does not have: what the app asks for before any of it, and what has no control at all.
 # `settings.section_of` is the one function that decides which of them a key is in, so the page
 # and the app cannot file the same setting differently.
-BASICS_TITLE = ("basics", "The things you have to supply",
-                "The application asks for these before anything else, and finds most of them "
-                "for you.")
-DRIVEN_TITLE = ("driven", "Set for you by something else",
-                "These have no control of their own: another one on screen sets them. They keep "
-                "their `--set` name, and `--set` stays literal - it does exactly what you tell "
-                "it, driving rule or not.")
+BASICS_TITLE = (
+    "basics",
+    "The things you have to supply",
+    "The application asks for these before anything else, and finds most of them for you.",
+)
+DRIVEN_TITLE = (
+    "driven",
+    "Set for you by something else",
+    "These have no control of their own: another one on screen sets them. They keep "
+    "their `--set` name, and `--set` stays literal - it does exactly what you tell "
+    "it, driving rule or not.",
+)
 
 
 def render_markdown(settings_mod):
@@ -73,8 +77,10 @@ def render_markdown(settings_mod):
         if name in settings_mod.PRESET_INFO:
             parts.append(f"| `{name}` | {settings_mod.PRESET_INFO[name]} |")
     parts.append("")
-    parts.append("A preset is a whole-dict override applied on top of the defaults; your own "
-                 "changes after picking one stick, and the preset row then reads `custom`.\n")
+    parts.append(
+        "A preset is a whole-dict override applied on top of the defaults; your own "
+        "changes after picking one stick, and the preset row then reads `custom`.\n"
+    )
 
     for where, title, note in _page_sections(settings_mod):
         keys = [k for k in settings_mod.SCHEMA if settings_mod.section_of(k) == where]
@@ -126,18 +132,25 @@ def _entry(settings_mod, key):
 
 def render_json(settings_mod):
     """What the site's command builder needs: enough to compose a `--set` line, no prose."""
-    out = {"version": __import__("cs2beamng").__version__,
-           "basic": list(settings_mod.BASIC),
-           "presets": {name: settings_mod.PRESET_INFO.get(name, "") for name in settings_mod.PRESETS},
-           "settings": []}
+    out = {
+        "version": __import__("cs2beamng").__version__,
+        "basic": list(settings_mod.BASIC),
+        "presets": {name: settings_mod.PRESET_INFO.get(name, "") for name in settings_mod.PRESETS},
+        "settings": [],
+    }
     for key, (default, kind, help_text) in settings_mod.SCHEMA.items():
         # `label` and `blurb` as well as `help`: the site shows a person the same words the
         # application does, and used to print the raw key with its underscores knocked out.
-        entry = {"key": key, "kind": kind.split(":", 1)[0], "default": default, "help": help_text,
-                 "label": settings_mod.LABELS.get(key, key),
-                 "blurb": settings_mod.BLURBS.get(key, help_text),
-                 "section": settings_mod.section_of(key),
-                 "tier": "basic" if key in set(settings_mod.BASIC) else "advanced"}
+        entry = {
+            "key": key,
+            "kind": kind.split(":", 1)[0],
+            "default": default,
+            "help": help_text,
+            "label": settings_mod.LABELS.get(key, key),
+            "blurb": settings_mod.BLURBS.get(key, help_text),
+            "section": settings_mod.section_of(key),
+            "tier": "basic" if key in set(settings_mod.BASIC) else "advanced",
+        }
         if kind.startswith("choice:"):
             entry["choices"] = kind.split(":", 1)[1].split("|")
         out["settings"].append(entry)
@@ -154,14 +167,14 @@ def main(argv=None):
     wanted = {MD_PATH: render_markdown(settings_mod), JSON_PATH: render_json(settings_mod)}
     stale = []
     for path, text in wanted.items():
-        current = io.open(path, encoding="utf-8").read() if os.path.isfile(path) else None
+        current = open(path, encoding="utf-8").read() if os.path.isfile(path) else None
         if current == text:
             continue
         if args.check:
             stale.append(os.path.relpath(path, ROOT))
             continue
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        io.open(path, "w", encoding="utf-8", newline="\n").write(text)
+        open(path, "w", encoding="utf-8", newline="\n").write(text)
         print(f"wrote {os.path.relpath(path, ROOT)} ({len(text):,} chars)")
     if stale:
         print(f"stale: {', '.join(stale)} - run `python tools/gen_docs.py`", file=sys.stderr)

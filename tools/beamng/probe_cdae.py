@@ -9,6 +9,7 @@ single geometry of 65,536-167,287. This reads what the compiler actually stored 
 mesh survived at that size, and how wide its indices are — from BeamNG's own bytes
 (format: https://go.beamng.com/shapeMessagepackFileformat). No third-party msgpack module.
 """
+
 import struct
 import sys
 
@@ -21,7 +22,7 @@ class Stream:
         self.i = pos
 
     def _take(self, n):
-        v = self.b[self.i:self.i + n]
+        v = self.b[self.i : self.i + n]
         if len(v) != n:
             raise EOFError(f"cdae: truncated at {self.i}")
         self.i += n
@@ -29,61 +30,61 @@ class Stream:
 
     def read(self):
         c = self._take(1)[0]
-        if c <= 0x7f:
+        if c <= 0x7F:
             return c
-        if c >= 0xe0:
+        if c >= 0xE0:
             return c - 0x100
-        if 0x80 <= c <= 0x8f:
-            return {self.read(): self.read() for _ in range(c & 0x0f)}
-        if 0x90 <= c <= 0x9f:
-            return [self.read() for _ in range(c & 0x0f)]
-        if 0xa0 <= c <= 0xbf:
-            return self._take(c & 0x1f).decode("utf-8", "replace")
-        if c == 0xc0:
+        if 0x80 <= c <= 0x8F:
+            return {self.read(): self.read() for _ in range(c & 0x0F)}
+        if 0x90 <= c <= 0x9F:
+            return [self.read() for _ in range(c & 0x0F)]
+        if 0xA0 <= c <= 0xBF:
+            return self._take(c & 0x1F).decode("utf-8", "replace")
+        if c == 0xC0:
             return None
-        if c == 0xc2:
+        if c == 0xC2:
             return False
-        if c == 0xc3:
+        if c == 0xC3:
             return True
-        if c == 0xc4:
+        if c == 0xC4:
             return bytes(self._take(self._take(1)[0]))
-        if c == 0xc5:
+        if c == 0xC5:
             return bytes(self._take(struct.unpack(">H", self._take(2))[0]))
-        if c == 0xc6:
+        if c == 0xC6:
             return bytes(self._take(struct.unpack(">I", self._take(4))[0]))
-        if c == 0xca:
+        if c == 0xCA:
             return struct.unpack(">f", self._take(4))[0]
-        if c == 0xcb:
+        if c == 0xCB:
             return struct.unpack(">d", self._take(8))[0]
-        if c == 0xcc:
+        if c == 0xCC:
             return self._take(1)[0]
-        if c == 0xcd:
+        if c == 0xCD:
             return struct.unpack(">H", self._take(2))[0]
-        if c == 0xce:
+        if c == 0xCE:
             return struct.unpack(">I", self._take(4))[0]
-        if c == 0xcf:
+        if c == 0xCF:
             return struct.unpack(">Q", self._take(8))[0]
-        if c == 0xd0:
+        if c == 0xD0:
             return struct.unpack(">b", self._take(1))[0]
-        if c == 0xd1:
+        if c == 0xD1:
             return struct.unpack(">h", self._take(2))[0]
-        if c == 0xd2:
+        if c == 0xD2:
             return struct.unpack(">i", self._take(4))[0]
-        if c == 0xd3:
+        if c == 0xD3:
             return struct.unpack(">q", self._take(8))[0]
-        if c == 0xd9:
+        if c == 0xD9:
             return self._take(self._take(1)[0]).decode("utf-8", "replace")
-        if c == 0xda:
+        if c == 0xDA:
             return self._take(struct.unpack(">H", self._take(2))[0]).decode("utf-8", "replace")
-        if c == 0xdb:
+        if c == 0xDB:
             return self._take(struct.unpack(">I", self._take(4))[0]).decode("utf-8", "replace")
-        if c == 0xdc:
+        if c == 0xDC:
             return [self.read() for _ in range(struct.unpack(">H", self._take(2))[0])]
-        if c == 0xdd:
+        if c == 0xDD:
             return [self.read() for _ in range(struct.unpack(">I", self._take(4))[0])]
-        if c == 0xde:
+        if c == 0xDE:
             return {self.read(): self.read() for _ in range(struct.unpack(">H", self._take(2))[0])}
-        if c == 0xdf:
+        if c == 0xDF:
             return {self.read(): self.read() for _ in range(struct.unpack(">I", self._take(4))[0])}
         raise ValueError(f"cdae: msgpack marker 0x{c:02x} at {self.i - 1} not handled")
 
@@ -92,7 +93,9 @@ class Stream:
         es = self.read()
         raw = self.read()
         if not isinstance(raw, (bytes, bytearray)) or len(raw) != n * es:
-            raise ValueError(f"cdae: pack_vector mismatch n={n} es={es} bin={None if raw is None else len(raw)} at {self.i}")
+            raise ValueError(
+                f"cdae: pack_vector mismatch n={n} es={es} bin={None if raw is None else len(raw)} at {self.i}"
+            )
         return n, es, raw
 
 
@@ -100,18 +103,43 @@ def read_cdae(path):
     data = open(path, "rb").read()
     version, header_size = struct.unpack("<iI", data[:8])
     header = Stream(data, 8).read()
-    body = data[8 + header_size:]
+    body = data[8 + header_size :]
     if header.get("compression"):
         raise SystemExit(f"{path}: body is zstd-compressed; not handled by this probe")
     s = Stream(body)
-    info = {"version": version & 0xff, "exporter": version >> 16, "header": {k: v for k, v in header.items() if k != "info"}}
-    s.read(); s.read(); s.read(); s.read()          # smallestVisibleSize, DL, radius, tubeRadius
-    s.read(); s.read()                              # center [3], bounds [6] (msgpack arrays)
+    info = {
+        "version": version & 0xFF,
+        "exporter": version >> 16,
+        "header": {k: v for k, v in header.items() if k != "info"},
+    }
+    s.read()
+    s.read()
+    s.read()
+    s.read()  # smallestVisibleSize, DL, radius, tubeRadius
+    s.read()
+    s.read()  # center [3], bounds [6] (msgpack arrays)
     vectors = {}
-    for name in ("nodes", "objects", "subShapeFirstNode", "subShapeFirstObject", "subShapeNumNodes", "subShapeNumObjects",
-                 "defaultRotations", "defaultTranslations", "nodeRotations", "nodeTranslations", "nodeUniformScales",
-                 "nodeAlignedScales", "nodeArbitraryScaleFactors", "nodeArbitraryScaleRots", "groundTranslations",
-                 "groundRotations", "objectStates", "triggers", "details"):
+    for name in (
+        "nodes",
+        "objects",
+        "subShapeFirstNode",
+        "subShapeFirstObject",
+        "subShapeNumNodes",
+        "subShapeNumObjects",
+        "defaultRotations",
+        "defaultTranslations",
+        "nodeRotations",
+        "nodeTranslations",
+        "nodeUniformScales",
+        "nodeAlignedScales",
+        "nodeArbitraryScaleFactors",
+        "nodeArbitraryScaleRots",
+        "groundTranslations",
+        "groundRotations",
+        "objectStates",
+        "triggers",
+        "details",
+    ):
         vectors[name] = s.vector()[:2]
     n_names = s.read()
     names = [s.read() for _ in range(n_names)]
@@ -124,10 +152,27 @@ def read_cdae(path):
             meshes.append({"index": m, "type": "null"})
             continue
         num_frames, num_mat_frames, parent = s.read(), s.read(), s.read()
-        s.read(); s.read(); s.read()                # mBounds [6], mCenter [3], mRadius
-        rec = {"index": m, "type": {0: "standard", 1: "skin", 2: "decal", 3: "sorted"}.get(mesh_type, mesh_type),
-               "frames": num_frames, "matFrames": num_mat_frames, "parent": parent}
-        for name in ("verts", "tverts", "tverts2", "colors", "norms", "encodedNorms", "primitives", "indices", "tangents"):
+        s.read()
+        s.read()
+        s.read()  # mBounds [6], mCenter [3], mRadius
+        rec = {
+            "index": m,
+            "type": {0: "standard", 1: "skin", 2: "decal", 3: "sorted"}.get(mesh_type, mesh_type),
+            "frames": num_frames,
+            "matFrames": num_mat_frames,
+            "parent": parent,
+        }
+        for name in (
+            "verts",
+            "tverts",
+            "tverts2",
+            "colors",
+            "norms",
+            "encodedNorms",
+            "primitives",
+            "indices",
+            "tangents",
+        ):
             n, es, raw = s.vector()
             rec[name] = (n, es)
             if name == "indices":
@@ -139,7 +184,8 @@ def read_cdae(path):
         if mesh_type == 1:
             is_parent = parent < 0
             if is_parent:
-                s.vector(); s.vector()
+                s.vector()
+                s.vector()
             s.vector()
             if is_parent:
                 for _ in range(4):
@@ -160,19 +206,24 @@ def describe(path):
             continue
         n_idx, es_idx = m["indices"]
         n_v, es_v = m["verts"]
-        line = (f"  mesh {m['index']}: {m['type']} verts {n_v}x{es_v}B tverts {m['tverts']} norms {m['norms']} "
-                f"primitives {m['primitives']} indices {n_idx}x{es_idx}B tangents {m['tangents']} vertsPerFrame {m['vertsPerFrame']}")
+        line = (
+            f"  mesh {m['index']}: {m['type']} verts {n_v}x{es_v}B tverts {m['tverts']} norms {m['norms']} "
+            f"primitives {m['primitives']} indices {n_idx}x{es_idx}B tangents {m['tangents']} vertsPerFrame {m['vertsPerFrame']}"
+        )
         print(line)
         raw = m["indicesRaw"]
         if n_idx:
             fmt = {1: "B", 2: "H", 4: "I"}.get(es_idx)
             if fmt:
                 import array
+
                 arr = array.array(fmt)
                 arr.frombytes(raw)
                 mx = max(arr)
-                print(f"    index range 0..{mx} (verts {n_v}) {'-> INDICES EXCEED VERTEX COUNT' if mx >= n_v else 'ok'}"
-                      f"{' -> vertices beyond 65535 are unreachable with 2-byte indices' if es_idx == 2 and n_v > 65536 else ''}")
+                print(
+                    f"    index range 0..{mx} (verts {n_v}) {'-> INDICES EXCEED VERTEX COUNT' if mx >= n_v else 'ok'}"
+                    f"{' -> vertices beyond 65535 are unreachable with 2-byte indices' if es_idx == 2 and n_v > 65536 else ''}"
+                )
         praw = m["primitivesRaw"]
         pn, pes = m["primitives"]
         if pn and pes in (8, 12):

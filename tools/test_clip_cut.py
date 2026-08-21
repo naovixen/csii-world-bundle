@@ -43,6 +43,7 @@ prisms rather than that one rasteriser agrees with itself.
 Run: `python tools/test_clip_cut.py`  (system Python + numpy + PIL; skipped when no bundle is on
 disk).
 """
+
 import json
 import math
 import os
@@ -57,7 +58,8 @@ from csiibundle import bezier as bezier_math
 from csiibundle import terrain as terrain_math
 
 BUNDLE = os.environ.get("CARTO_BUNDLE") or os.path.expandvars(
-    r"%USERPROFILE%\AppData\LocalLow\Colossal Order\Cities Skylines II\ModsData\Carto")
+    r"%USERPROFILE%\AppData\LocalLow\Colossal Order\Cities Skylines II\ModsData\Carto"
+)
 
 # Independent truth sampling, finer than the rule's own. A sliver narrower than this is below
 # what any 3.5 m mesh can represent and is not what this test is about.
@@ -65,14 +67,16 @@ TRUTH = 12
 
 # The five windows the 2026-08-11 defects were reported and located in: the user's two, the two
 # densest deep-band (trench / tunnel-portal) clusters, and the densest clip-area cluster.
-WINDOWS = (("train tracks", 873.9, 1442.0, 120.0),
-           ("road junction", 2936.9, 1397.5, 120.0),
-           ("trench cluster", -2650.0, 3850.0, 120.0),
-           ("deep cluster", 2750.0, -350.0, 120.0),
-           ("clip areas", 450.0, -2900.0, 120.0),
-           # The 2026-08-11 width transition: a 24 m Medium Road narrowing to an 8 m Alley
-           # Oneway, whose node fans opened the two triangles the prism score could not see.
-           ("width transition", 4324.5, 1550.5, 120.0))
+WINDOWS = (
+    ("train tracks", 873.9, 1442.0, 120.0),
+    ("road junction", 2936.9, 1397.5, 120.0),
+    ("trench cluster", -2650.0, 3850.0, 120.0),
+    ("deep cluster", 2750.0, -350.0, 120.0),
+    ("clip areas", 450.0, -2900.0, 120.0),
+    # The 2026-08-11 width transition: a 24 m Medium Road narrowing to an 8 m Alley
+    # Oneway, whose node fans opened the two triangles the prism score could not see.
+    ("width transition", 4324.5, 1550.5, 120.0),
+)
 
 # Sky, in m² per window, that the shipped rule is allowed to leave. Above zero only because the
 # containment test samples at `_CLIP_CONTAIN_SAMPLES` per cell and the truth here is finer; the
@@ -126,11 +130,11 @@ def fuzz_scanline_paths(trials=4000, seed=20260811):
         terrain = numpy.asarray([[rng.uniform(-5.0, 5.0) for _ in range(w)] for _ in range(h)])
         corner = [(rng.uniform(-3.0, w + 3.0), rng.uniform(-3.0, h + 3.0)) for _ in range(4)]
         shape = trial % 4
-        if shape == 1:                                    # triangle, as `area` records ship
+        if shape == 1:  # triangle, as `area` records ship
             corner[3] = corner[2]
-        elif shape == 2:                                  # degenerate: both sides collapsed
+        elif shape == 2:  # degenerate: both sides collapsed
             corner = [corner[0], corner[1], corner[0], corner[1]]
-        elif shape == 3:                                  # bowtie
+        elif shape == 3:  # bowtie
             corner = [corner[0], corner[2], corner[1], corner[3]]
         # Half the trials use the tilted `(left, right)` band, half the plain height an `area`
         # record ships. Both reach the same span body, and a ramp that disagreed between the
@@ -149,42 +153,80 @@ def fuzz_scanline_paths(trials=4000, seed=20260811):
         rows_refs = numpy.full((h, w), -1, dtype=numpy.int32)
         rows_ceiling = numpy.full((h, w), numpy.inf)
         if row_hi >= row_lo:
-            H["_fill_clip_quad_rows"](rows_mask, terrain, w, h, corner, lane, bottom, top,
-                                      rows_refs, 7, offset, row_lo, row_hi, rows_ceiling)
+            H["_fill_clip_quad_rows"](
+                rows_mask,
+                terrain,
+                w,
+                h,
+                corner,
+                lane,
+                bottom,
+                top,
+                rows_refs,
+                7,
+                offset,
+                row_lo,
+                row_hi,
+                rows_ceiling,
+            )
         both_mask = numpy.zeros((h, w), dtype=bool)
         both_refs = numpy.full((h, w), -1, dtype=numpy.int32)
         both_ceiling = numpy.full((h, w), numpy.inf)
-        H["_fill_clip_quad"](both_mask, terrain, w, h, corner, lane, bottom, top,
-                             refs=both_refs, ref_value=7, offset=offset, ceiling=both_ceiling)
+        H["_fill_clip_quad"](
+            both_mask,
+            terrain,
+            w,
+            h,
+            corner,
+            lane,
+            bottom,
+            top,
+            refs=both_refs,
+            ref_value=7,
+            offset=offset,
+            ceiling=both_ceiling,
+        )
 
         # The ceiling raster carries the lateral ramp, so comparing it is what actually pins the
         # two paths to the same per-sample lane height; the mask alone only sees its sign.
-        if not (numpy.array_equal(rows_mask, both_mask)
-                and numpy.array_equal(rows_refs, both_refs)
-                and numpy.allclose(rows_ceiling, both_ceiling, equal_nan=True)):
+        if not (
+            numpy.array_equal(rows_mask, both_mask)
+            and numpy.array_equal(rows_refs, both_refs)
+            and numpy.allclose(rows_ceiling, both_ceiling, equal_nan=True)
+        ):
             bad += 1
             if bad <= 3:
-                print(f"  FAIL scanline paths disagree: shape {shape}, offset {offset}, "
-                      f"lane {lane}, quad {corner}")
+                print(
+                    f"  FAIL scanline paths disagree: shape {shape}, offset {offset}, "
+                    f"lane {lane}, quad {corner}"
+                )
     if bad:
         print(f"  FAIL {bad} of {trials} random quads rasterise differently on the two paths")
         failures += 1
     else:
-        print(f"  ok   scanline paths agree on {trials} random quads "
-              f"(triangles, degenerates, bowties)")
+        print(
+            f"  ok   scanline paths agree on {trials} random quads "
+            f"(triangles, degenerates, bowties)"
+        )
 
 
 def load_terrain():
     from PIL import Image
+
     rasters = json.load(open(os.path.join(BUNDLE, "terrain", "rasters.json"), encoding="utf-8"))
     geo = json.load(open(os.path.join(BUNDLE, "bundle.json"), encoding="utf-8"))["rasters"]
     pixels = numpy.asarray(Image.open(os.path.join(BUNDLE, "terrain", "heightmap.png")))
     if pixels.ndim == 3:
         pixels = pixels[..., 0]
-    heights = (pixels.astype(numpy.float64) * float(rasters["elevationScale"])
-               + float(rasters["elevationOffset"]))
-    return (heights, float(rasters["resolution"]),
-            float(geo["originWorld"][0]), float(geo["originWorld"][2]))
+    heights = pixels.astype(numpy.float64) * float(rasters["elevationScale"]) + float(
+        rasters["elevationOffset"]
+    )
+    return (
+        heights,
+        float(rasters["resolution"]),
+        float(geo["originWorld"][0]),
+        float(geo["originWorld"][2]),
+    )
 
 
 def strips_near(x0, x1, z0, z1):
@@ -204,8 +246,12 @@ def strips_near(x0, x1, z0, z1):
                 if not record.get("left") or not record.get("right"):
                     continue
                 hull = numpy.asarray(record["left"] + record["right"], dtype=numpy.float64)
-            if (hull[:, 0].max() < x0 or hull[:, 0].min() > x1
-                    or hull[:, 2].max() < z0 or hull[:, 2].min() > z1):
+            if (
+                hull[:, 0].max() < x0
+                or hull[:, 0].min() > x1
+                or hull[:, 2].max() < z0
+                or hull[:, 2].min() > z1
+            ):
                 continue
             found.append(record)
     return found
@@ -234,8 +280,12 @@ def quads_of(record, to_cell, cell):
                 continue
             pts = numpy.asarray([nodes[i] for i in tri], dtype=numpy.float64)
             cells = to_cell(pts)
-            yield ([tuple(cells[0]), tuple(cells[1]), tuple(cells[2]), tuple(cells[2])],
-                   float(pts[:, 1].mean()), bottom, top)
+            yield (
+                [tuple(cells[0]), tuple(cells[1]), tuple(cells[2]), tuple(cells[2])],
+                float(pts[:, 1].mean()),
+                bottom,
+                top,
+            )
         return
     left, right = record["left"], record["right"]
     polygon = numpy.asarray(left, dtype=numpy.float64)
@@ -249,10 +299,17 @@ def quads_of(record, to_cell, cell):
     # mean here would test a band the harness no longer builds.
     left_y, right_y = left_pts[:, 1], right_pts[:, 1]
     for i in range(1, steps + 1):
-        yield ([tuple(left_cells[i - 1]), tuple(right_cells[i - 1]),
-                tuple(right_cells[i]), tuple(left_cells[i])],
-               (float((left_y[i - 1] + left_y[i]) * 0.5),
-                float((right_y[i - 1] + right_y[i]) * 0.5)), bottom, top)
+        yield (
+            [
+                tuple(left_cells[i - 1]),
+                tuple(right_cells[i - 1]),
+                tuple(right_cells[i]),
+                tuple(left_cells[i]),
+            ],
+            (float((left_y[i - 1] + left_y[i]) * 0.5), float((right_y[i - 1] + right_y[i]) * 0.5)),
+            bottom,
+            top,
+        )
 
 
 def road_cover(cx, cz, radius, origin_x, origin_z, col0, row0, cell, fine_h, fine_w):
@@ -263,7 +320,7 @@ def road_cover(cx, cz, radius, origin_x, origin_z, col0, row0, cell, fine_h, fin
     contract §2.2 places an instance, with the mirror the harness applies:
     `world = pos + diag(-1, 1, 1) * v` (every network record ships an identity rotation).
     """
-    from inspect_glb import read_glb, read_accessor
+    from inspect_glb import read_accessor, read_glb
 
     cover = numpy.zeros((fine_h, fine_w), dtype=bool)
     mesh_dir = os.path.join(BUNDLE, "networks")
@@ -293,10 +350,12 @@ def road_cover(cx, cz, radius, origin_x, origin_z, col0, row0, cell, fine_h, fin
                         continue
                     verts = numpy.asarray(
                         read_accessor(gltf, blob, prim["attributes"]["POSITION"]),
-                        dtype=numpy.float64)
+                        dtype=numpy.float64,
+                    )
                     if "indices" in prim:
-                        idx = numpy.asarray(read_accessor(gltf, blob, prim["indices"]),
-                                            dtype=numpy.int64)
+                        idx = numpy.asarray(
+                            read_accessor(gltf, blob, prim["indices"]), dtype=numpy.int64
+                        )
                     else:
                         idx = numpy.arange(len(verts), dtype=numpy.int64)
                     tri = verts[idx].reshape(-1, 3, 3)
@@ -323,13 +382,12 @@ def _fill_triangles(mask, px, pz):
         det = (bz - cz_) * (ax - cx_) + (cx_ - bx) * (az - cz_)
         if abs(det) < 1e-12:
             continue
-        gx, gz = numpy.meshgrid(numpy.arange(x0, x1 + 1) + 0.5,
-                                numpy.arange(y0, y1 + 1) + 0.5)
+        gx, gz = numpy.meshgrid(numpy.arange(x0, x1 + 1) + 0.5, numpy.arange(y0, y1 + 1) + 0.5)
         l1 = ((bz - cz_) * (gx - cx_) + (cx_ - bx) * (gz - cz_)) / det
         l2 = ((cz_ - az) * (gx - cx_) + (ax - cx_) * (gz - cz_)) / det
         inside = (l1 >= 0) & (l2 >= 0) & (l1 + l2 <= 1)
         if inside.any():
-            mask[y0:y1 + 1, x0:x1 + 1] |= inside
+            mask[y0 : y1 + 1, x0 : x1 + 1] |= inside
 
 
 def check(label, cx, cz, radius, heights, cell, origin_x, origin_z):
@@ -341,18 +399,22 @@ def check(label, cx, cz, radius, heights, cell, origin_x, origin_z):
     row0 = max(0, int((origin_z - (cz + radius)) / cell) - 2)
     row1 = min(raster_h - 1, int((origin_z - (cz - radius)) / cell) + 2)
     lat_h, lat_w = row1 - row0 + 1, col1 - col0 + 1
-    terrain = heights[row0:row1 + 1, col0:col1 + 1]
+    terrain = heights[row0 : row1 + 1, col0 : col1 + 1]
     records = strips_near(cx - radius, cx + radius, cz - radius, cz + radius)
 
     def to_cell(points):
-        return numpy.stack(((points[:, 0] - origin_x) / cell + 0.5 - col0,
-                            (origin_z - points[:, 2]) / cell + 0.5 - row0), axis=-1)
+        return numpy.stack(
+            (
+                (points[:, 0] - origin_x) / cell + 0.5 - col0,
+                (origin_z - points[:, 2]) / cell + 0.5 - row0,
+            ),
+            axis=-1,
+        )
 
     quads = [q for record in records for q in quads_of(record, to_cell, cell)]
     # Only a carving record reaches the deletion rule, exactly as `_clip_grid` bins it. Every
     # record still fills `cell_cut`, which is the refine corridor, not the cut.
-    cutting = [q for record in records if carves(record)
-               for q in quads_of(record, to_cell, cell)]
+    cutting = [q for record in records if carves(record) for q in quads_of(record, to_cell, cell)]
     if not quads:
         print(f"  {label:<16} no clip volumes in window — skipped")
         return
@@ -361,10 +423,15 @@ def check(label, cx, cz, radius, heights, cell, origin_x, origin_z):
     cell_cut = numpy.zeros((lat_h, lat_w), dtype=bool)
     for quad, lane_y, bottom, top in quads:
         H["_fill_clip_quad"](cell_cut, terrain, lat_w, lat_h, quad, lane_y, bottom, top)
-    contain, band_count, deep_touch = H["_contain_faces"](
-        lat_w, lat_h, terrain, cell_cut,
+    contain, _band_count, deep_touch = H["_contain_faces"](
+        lat_w,
+        lat_h,
+        terrain,
+        cell_cut,
         lambda r0, c0, r1, c1: iter(cutting),
-        H["_CLIP_CONTAIN_SAMPLES"], H["_CLIP_CONTAIN_BLOCK"])
+        H["_CLIP_CONTAIN_SAMPLES"],
+        H["_CLIP_CONTAIN_BLOCK"],
+    )
 
     # -- truth: the band and the footprint at TRUTH samples per cell -----------------------
     fine_h, fine_w = (lat_h - 1) * TRUTH, (lat_w - 1) * TRUTH
@@ -372,18 +439,20 @@ def check(label, cx, cz, radius, heights, cell, origin_x, origin_z):
     gr = numpy.clip((numpy.arange(fine_h) + 0.5) / TRUTH, 0, lat_h - 1.001)
     ci, ri = gc.astype(int), gr.astype(int)
     fu, fv = gc - ci, gr - ri
-    fine_y = ((terrain[numpy.ix_(ri, ci)] * (1 - fu)[None, :]
-               + terrain[numpy.ix_(ri, ci + 1)] * fu[None, :]) * (1 - fv)[:, None]
-              + (terrain[numpy.ix_(ri + 1, ci)] * (1 - fu)[None, :]
-                 + terrain[numpy.ix_(ri + 1, ci + 1)] * fu[None, :]) * fv[:, None])
+    fine_y = (
+        terrain[numpy.ix_(ri, ci)] * (1 - fu)[None, :]
+        + terrain[numpy.ix_(ri, ci + 1)] * fu[None, :]
+    ) * (1 - fv)[:, None] + (
+        terrain[numpy.ix_(ri + 1, ci)] * (1 - fu)[None, :]
+        + terrain[numpy.ix_(ri + 1, ci + 1)] * fu[None, :]
+    ) * fv[:, None]
     band = numpy.zeros((fine_h, fine_w), dtype=bool)
     footprint = numpy.zeros((fine_h, fine_w), dtype=bool)
     for quad, lane_y, bottom, top in quads:
         local = [((px - 0.5) * TRUTH, (py - 0.5) * TRUTH) for px, py in quad]
         H["_fill_clip_quad"](band, fine_y, fine_w, fine_h, local, lane_y, bottom, top)
         # Footprint: the same scanline with a band that cannot reject anything.
-        H["_fill_clip_quad"](footprint, fine_y, fine_w, fine_h, local, 0.0,
-                             -1e18, 1e18)
+        H["_fill_clip_quad"](footprint, fine_y, fine_w, fine_h, local, 0.0, -1e18, 1e18)
 
     area = (cell / TRUTH) ** 2
     deleted = numpy.kron(contain, numpy.ones((TRUTH, TRUTH), dtype=bool))
@@ -416,23 +485,29 @@ def check(label, cx, cz, radius, heights, cell, origin_x, origin_z):
             deep = record.get("top") is None or float(record["top"]) > H["_CLIP_DEEP_BAND_TOP"]
             if not (record.get("kind") == "area" or deep):
                 continue
-            for quad, lane_y, bottom, top in quads_of(record, to_cell, cell):
+            for quad, _lane_y, _bottom, _top in quads_of(record, to_cell, cell):
                 local = [((px - 0.5) * TRUTH, (py - 0.5) * TRUTH) for px, py in quad]
                 H["_fill_clip_quad"](exempt, fine_y, fine_w, fine_h, local, 0.0, -1e18, 1e18)
         seen_through = float((deleted & ~cover & ~exempt).sum()) * area
 
     ok = True
     if seen_through is not None and seen_through > ROAD_SKY_BUDGET:
-        print(f"  FAIL {label}: {seen_through:.1f} m² of ground deleted with no road mesh over "
-              f"it (budget {ROAD_SKY_BUDGET:.1f} m²) — visible holes")
+        print(
+            f"  FAIL {label}: {seen_through:.1f} m² of ground deleted with no road mesh over "
+            f"it (budget {ROAD_SKY_BUDGET:.1f} m²) — visible holes"
+        )
         ok = False
     if sky > SKY_BUDGET:
-        print(f"  FAIL {label}: {sky:.0f} m² deleted where no clip prism reaches "
-              f"(budget {SKY_BUDGET:.0f} m²) — see-through gaps")
+        print(
+            f"  FAIL {label}: {sky:.0f} m² deleted where no clip prism reaches "
+            f"(budget {SKY_BUDGET:.0f} m²) — see-through gaps"
+        )
         ok = False
     if ratio > 1.0:
-        print(f"  FAIL {label}: cut {deleted_area:.0f} m² against {band_area:.0f} m² clipped "
-              f"(x{ratio:.2f}) — above 1.00 is sky")
+        print(
+            f"  FAIL {label}: cut {deleted_area:.0f} m² against {band_area:.0f} m² clipped "
+            f"(x{ratio:.2f}) — above 1.00 is sky"
+        )
         ok = False
     if not ok:
         failures += 1
@@ -443,10 +518,12 @@ def check(label, cx, cz, radius, heights, cell, origin_x, origin_z):
     # sampling; the figure is reported so their number stays visible, not because they are left.
     recut = int((deep_touch & ~contain & ~H["_dilate"](contain, 1)).sum())
     hole = f"{seen_through:5.1f} m²" if seen_through is not None else "  (no meshes)"
-    print(f"  ok   {label:<16} hole {hole}   sky {sky:5.0f} m²   cut/clipped x{ratio:.2f}   "
-          f"kept-in-band {100 * poke / max(band_area, 1e-9):4.1f}%   "
-          f"re-cut {recut * cell * cell:5.0f} m²   "
-          f"({len(records)} record(s), {len(cutting)} carving quad(s))")
+    print(
+        f"  ok   {label:<16} hole {hole}   sky {sky:5.0f} m²   cut/clipped x{ratio:.2f}   "
+        f"kept-in-band {100 * poke / max(band_area, 1e-9):4.1f}%   "
+        f"re-cut {recut * cell * cell:5.0f} m²   "
+        f"({len(records)} record(s), {len(cutting)} carving quad(s))"
+    )
 
 
 def main():
@@ -456,8 +533,10 @@ def main():
         print(f"no bundle at {BUNDLE} — window checks skipped")
         return 1 if failures else 0
     heights, cell, origin_x, origin_z = load_terrain()
-    print(f"clip cut, {H['_CLIP_CONTAIN_SAMPLES']} sample(s)/cell against {cell / TRUTH:.2f} m "
-          f"truth, {cell:g} m faces:")
+    print(
+        f"clip cut, {H['_CLIP_CONTAIN_SAMPLES']} sample(s)/cell against {cell / TRUTH:.2f} m "
+        f"truth, {cell:g} m faces:"
+    )
     for label, cx, cz, radius in WINDOWS:
         check(label, cx, cz, radius, heights, cell, origin_x, origin_z)
     print("clip cut: FAILED" if failures else "clip cut: ok")

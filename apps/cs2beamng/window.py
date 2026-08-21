@@ -17,25 +17,37 @@ WINDOW_TITLE = "cs2beamng — CS2 World Bundle to BeamNG.drive"
 
 def available():
     try:
-        import webview  # noqa: F401,WPS433
-    except Exception:  # noqa: BLE001 - any import failure means "no native window here"
+        import webview  # noqa: F401
+    except Exception:
         return False
     return True
 
 
 # where the named browsers usually live; `webbrowser` itself only knows the system default
 BROWSER_CANDIDATES = {
-    "chrome": [r"%ProgramFiles%\Google\Chrome\Application\chrome.exe",
-               r"%ProgramFiles(x86)%\Google\Chrome\Application\chrome.exe",
-               r"%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe",
-               "/usr/bin/google-chrome", "/usr/bin/google-chrome-stable", "/usr/bin/chromium", "/usr/bin/chromium-browser",
-               "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"],
-    "edge": [r"%ProgramFiles(x86)%\Microsoft\Edge\Application\msedge.exe",
-             r"%ProgramFiles%\Microsoft\Edge\Application\msedge.exe",
-             "/usr/bin/microsoft-edge", "/usr/bin/microsoft-edge-stable",
-             "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"],
-    "firefox": [r"%ProgramFiles%\Mozilla Firefoxirefox.exe", r"%ProgramFiles(x86)%\Mozilla Firefoxirefox.exe",
-                "/usr/bin/firefox", "/Applications/Firefox.app/Contents/MacOS/firefox"],
+    "chrome": [
+        r"%ProgramFiles%\Google\Chrome\Application\chrome.exe",
+        r"%ProgramFiles(x86)%\Google\Chrome\Application\chrome.exe",
+        r"%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe",
+        "/usr/bin/google-chrome",
+        "/usr/bin/google-chrome-stable",
+        "/usr/bin/chromium",
+        "/usr/bin/chromium-browser",
+        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    ],
+    "edge": [
+        r"%ProgramFiles(x86)%\Microsoft\Edge\Application\msedge.exe",
+        r"%ProgramFiles%\Microsoft\Edge\Application\msedge.exe",
+        "/usr/bin/microsoft-edge",
+        "/usr/bin/microsoft-edge-stable",
+        "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+    ],
+    "firefox": [
+        r"%ProgramFiles%\Mozilla Firefoxirefox.exe",
+        r"%ProgramFiles(x86)%\Mozilla Firefoxirefox.exe",
+        "/usr/bin/firefox",
+        "/Applications/Firefox.app/Contents/MacOS/firefox",
+    ],
 }
 
 
@@ -58,7 +70,7 @@ def _open_in(name, url):
         for cand in _registry_app_paths(name) + BROWSER_CANDIDATES[name]:
             exe = os.path.expandvars(cand)
             if os.path.isfile(exe):
-                subprocess.Popen([exe, url])  # noqa: S603 - the user's own browser
+                subprocess.Popen([exe, url])
                 return name
         print(f"{name} not found on this machine; using the system default browser", flush=True)
     webbrowser.open(url)
@@ -72,13 +84,15 @@ def _registry_app_paths(name):
     if not exe or not sys.platform.startswith("win"):
         return []
     try:
-        import winreg  # noqa: WPS433
+        import winreg
     except ImportError:
         return []
     out = []
     for root in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
         try:
-            with winreg.OpenKey(root, rf"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\{exe}") as key:
+            with winreg.OpenKey(
+                root, rf"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\{exe}"
+            ) as key:
                 value, _kind = winreg.QueryValueEx(key, None)
                 if value:
                     out.append(str(value).strip('"'))
@@ -90,9 +104,15 @@ def _registry_app_paths(name):
 def _show_browser(url, server, open_browser=True, name="default"):
     if open_browser:
         used = _open_in(name, url)
-        print(f"UI opened in {'the system default browser' if used == 'default' else used}. Ctrl-C here quits.", flush=True)
+        print(
+            f"UI opened in {'the system default browser' if used == 'default' else used}. Ctrl-C here quits.",
+            flush=True,
+        )
     else:
-        print("serving only (--no-open): open the URL above in a browser of your choice. Ctrl-C here quits.", flush=True)
+        print(
+            "serving only (--no-open): open the URL above in a browser of your choice. Ctrl-C here quits.",
+            flush=True,
+        )
     try:
         while not server.stopped.wait(0.5):
             pass
@@ -102,15 +122,22 @@ def _show_browser(url, server, open_browser=True, name="default"):
 
 
 def _show_native(url, server):
-    import webview  # noqa: WPS433
+    import webview
 
-    window = webview.create_window(WINDOW_TITLE, url, width=1280, height=860, min_size=(960, 640),
-                                   background_color="#0f1115", text_select=True)
+    window = webview.create_window(
+        WINDOW_TITLE,
+        url,
+        width=1280,
+        height=860,
+        min_size=(960, 640),
+        background_color="#0f1115",
+        text_select=True,
+    )
 
     def pick_folder(current=None):
         try:
             result = window.create_file_dialog(webview.FOLDER_DIALOG, directory=current or "")
-        except Exception:  # noqa: BLE001
+        except Exception:
             return None
         if not result:
             return None
@@ -138,5 +165,5 @@ def _show_native(url, server):
         server.stop()
 
     window.events.closed += stop_server_when_closed
-    webview.start(debug=False)                        # pywebview picks the platform backend (GTK/Qt on Linux)
+    webview.start(debug=False)  # pywebview picks the platform backend (GTK/Qt on Linux)
     return 0

@@ -12,6 +12,7 @@ Result on BeamNG 0.39.2 `small_island` (3,800 nodes): rows_from=y, no flips — 
 `h = stored * maxHeight / 65536 + position.z`; median |err| 0.020 m, every other hypothesis
 > 4 m.
 """
+
 import json
 import struct
 import sys
@@ -38,18 +39,20 @@ def read_ter(data):
         # Torque string: u8 length + bytes (long names use a different prefix; not seen here)
         length = data[off]
         off += 1
-        names.append(data[off:off + length].decode("utf-8", "replace"))
+        names.append(data[off : off + length].decode("utf-8", "replace"))
         off += length
     return version, size, heights, layers, names
 
 
 def main(argv):
     zip_path = argv[1] if len(argv) > 1 else DEFAULT_ZIP
-    level = argv[2] if len(argv) > 2 else zip_path.rsplit("\\", 1)[-1].rsplit("/", 1)[-1][:-4]
+    argv[2] if len(argv) > 2 else zip_path.rsplit("\\", 1)[-1].rsplit("/", 1)[-1][:-4]
     z = zipfile.ZipFile(zip_path)
     ter_name = next(n for n in z.namelist() if n.endswith(".ter"))
     version, size, heights, layers, names = read_ter(z.read(ter_name))
-    print(f"{ter_name}: version={version} size={size} materials={len(names)} holes={int((layers == 255).sum())}")
+    print(
+        f"{ter_name}: version={version} size={size} materials={len(names)} holes={int((layers == 255).sum())}"
+    )
 
     terrain_block = None
     nodes = []
@@ -74,7 +77,9 @@ def main(argv):
     pos = terrain_block.get("position", [0, 0, 0])
     max_h = float(terrain_block.get("maxHeight", 2048))
     sq = float(terrain_block.get("squareSize") or 1.0)
-    print("TerrainBlock:", {k: terrain_block.get(k) for k in ("position", "maxHeight", "squareSize")})
+    print(
+        "TerrainBlock:", {k: terrain_block.get(k) for k in ("position", "maxHeight", "squareSize")}
+    )
     nodes = np.asarray(nodes, dtype=np.float64)
     print("decal road nodes:", len(nodes))
 
@@ -94,11 +99,15 @@ def main(argv):
                 ci = np.clip(np.round(c).astype(int), 0, size - 1)
                 err = hm[ri, ci] + pos[2] - nodes[:, 2]
                 med = float(np.median(np.abs(err)))
-                print(f"rows_from={rows_from} flip_r={flip_r!s:5} flip_c={flip_c!s:5}: "
-                      f"median|err|={med:.3f} m  p90={np.percentile(np.abs(err), 90):.3f}")
+                print(
+                    f"rows_from={rows_from} flip_r={flip_r!s:5} flip_c={flip_c!s:5}: "
+                    f"median|err|={med:.3f} m  p90={np.percentile(np.abs(err), 90):.3f}"
+                )
                 if best is None or med < best[0]:
                     best = (med, rows_from, flip_r, flip_c)
-    print(f"\nwinner: rows_from={best[1]} flip_r={best[2]} flip_c={best[3]} (median {best[0]:.3f} m)")
+    print(
+        f"\nwinner: rows_from={best[1]} flip_r={best[2]} flip_c={best[3]} (median {best[0]:.3f} m)"
+    )
     return 0
 
 

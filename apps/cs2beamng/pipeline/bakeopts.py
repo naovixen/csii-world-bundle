@@ -11,7 +11,6 @@ from csiibundle.bake import ground as bake_ground
 
 from .. import settings as settings_mod
 
-
 # Product options this app deliberately leaves at the bake's own default, so `bake_options` does
 # not carry them. Listing them is the point: the gate in `tools/test_app_shell.py` fails when a
 # product declares an option that is neither built here nor named here, so a new option has to be
@@ -29,7 +28,11 @@ def bake_options(settings, jobs=1):
     as stale forever. The cache itself was fine — the build skipped those products — but the
     preflight said "stale" and the estimate promised a re-bake that never happened.
     """
-    categories = [c.strip() for c in str(settings.get("lane_furniture_categories") or "fence,cable,lane").split(",") if c.strip()]
+    categories = [
+        c.strip()
+        for c in str(settings.get("lane_furniture_categories") or "fence,cable,lane").split(",")
+        if c.strip()
+    ]
     return {
         "tile": float(settings.get("tile_size") or 256),
         # MEASURED, not hard-coded conservatism: BeamNG splits SW-NE (audit §73)
@@ -44,9 +47,13 @@ def bake_options(settings, jobs=1):
         # before that you would have had to type an empty string to find it. A default belongs
         # in `SCHEMA` (it is "tree,prop" there), not in a fallback that fires on a legitimate
         # value and overrules it.
-        "paint_kinds": [k.strip() for k in str(settings.get("paint_kinds") or "").split(",") if k.strip()],
-        "paint_variants": {"tree": int(settings.get("paint_variants_tree", 2) or 1),
-                           "prop": int(settings.get("paint_variants_prop", 1) or 1)},
+        "paint_kinds": [
+            k.strip() for k in str(settings.get("paint_kinds") or "").split(",") if k.strip()
+        ],
+        "paint_variants": {
+            "tree": int(settings.get("paint_variants_tree", 2) or 1),
+            "prop": int(settings.get("paint_variants_prop", 1) or 1),
+        },
         "lane_max_tris": int(settings.get("lane_max_tris") or 0) or None,
         "paint_factor_max_error": int(settings.get("paint_factor_max_error", 4) or 0),
         # A tinted albedo the bake writes at 1024 and this build then caps at `texture_max` is
@@ -55,8 +62,10 @@ def bake_options(settings, jobs=1):
         # albedo before tinting either way, so this moves that filter one step earlier rather
         # than adding one; the colour mask is nearest-resampled to the same size, which is where
         # the (measured, sub-percent) difference comes from.
-        "variant_max_size": int(settings.get("texture_max_variant")
-                                or settings.get("texture_max") or 0) or 1024,
+        "variant_max_size": int(
+            settings.get("texture_max_variant") or settings.get("texture_max") or 0
+        )
+        or 1024,
         # the ground the level will have: the fine 1.75 m raster only when the .ter is built from
         # it (terrain_upsample 2 = 8192); the paint must be conformed to the same surface
         "ground": "fine" if int(settings.get("terrain_upsample") or 1) == 2 else "base",

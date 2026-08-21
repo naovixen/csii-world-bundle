@@ -11,7 +11,7 @@ import time
 
 from csiibundle.bake.progress import Progress
 
-ADVANCE_INTERVAL = 0.25     # seconds between "adv" messages per phase
+ADVANCE_INTERVAL = 0.25  # seconds between "adv" messages per phase
 HEARTBEAT_INTERVAL = 0.5
 
 
@@ -36,7 +36,16 @@ class QueueProgress(Progress):
         self._phase, self._done, self._total, self._unit = name, 0, total, unit
         self._last_sent = 0.0
         self._last_done_sent = -1
-        self.queue.put({"t": "phase", "stage": self.stage, "phase": name, "total": total, "unit": unit, "at": time.time()})
+        self.queue.put(
+            {
+                "t": "phase",
+                "stage": self.stage,
+                "phase": name,
+                "total": total,
+                "unit": unit,
+                "at": time.time(),
+            }
+        )
 
     def set_total(self, total):
         self._total = total
@@ -51,7 +60,9 @@ class QueueProgress(Progress):
     def _flush(self, now=None):
         now = self.clock() if now is None else now
         if self._done != self._last_done_sent:
-            self.queue.put({"t": "adv", "stage": self.stage, "done": self._done, "total": self._total})
+            self.queue.put(
+                {"t": "adv", "stage": self.stage, "done": self._done, "total": self._total}
+            )
             self._last_done_sent = self._done
         self._last_sent = now
 
@@ -65,13 +76,28 @@ class QueueProgress(Progress):
         now = self.clock()
         if now - self._last_stagep >= ADVANCE_INTERVAL or fraction >= 1.0:
             self._last_stagep = now
-            self.queue.put({"t": "stagep", "stage": self.stage, "fraction": float(fraction),
-                            "remaining": None if remaining_seconds is None else float(remaining_seconds), "at": time.time()})
+            self.queue.put(
+                {
+                    "t": "stagep",
+                    "stage": self.stage,
+                    "fraction": float(fraction),
+                    "remaining": None if remaining_seconds is None else float(remaining_seconds),
+                    "at": time.time(),
+                }
+            )
 
     def end(self, summary=None):
         self._flush()
-        self.queue.put({"t": "phase_end", "stage": self.stage, "phase": self._phase, "done": self._done,
-                        "total": self._total, "summary": summary})
+        self.queue.put(
+            {
+                "t": "phase_end",
+                "stage": self.stage,
+                "phase": self._phase,
+                "done": self._done,
+                "total": self._total,
+                "summary": summary,
+            }
+        )
         self._phase = None
 
     def cancelled(self):
@@ -106,17 +132,25 @@ class Heartbeat(threading.Thread):
                 for child in multiprocessing.active_children():
                     try:
                         child.terminate()
-                    except Exception:  # noqa: BLE001
+                    except Exception:
                         pass
                 try:
-                    self.queue.put({"t": "log", "stage": "system", "at": time.time(),
-                                    "text": "worker: hard cancel" if hard else "worker: parent gone, exiting"})
-                except Exception:  # noqa: BLE001
+                    self.queue.put(
+                        {
+                            "t": "log",
+                            "stage": "system",
+                            "at": time.time(),
+                            "text": "worker: hard cancel"
+                            if hard
+                            else "worker: parent gone, exiting",
+                        }
+                    )
+                except Exception:
                     pass
                 os._exit(3)
             try:
                 self.queue.put({"t": "hb", "at": time.time()})
-            except Exception:  # noqa: BLE001 - the queue is gone; nothing to say
+            except Exception:
                 return
 
     def stop(self):

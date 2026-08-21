@@ -62,6 +62,7 @@ STATE_VERSION = 1
 
 # -- the document --------------------------------------------------------------------------------
 
+
 def state_path(level_dir):
     return os.path.join(level_dir, STATE_NAME)
 
@@ -79,8 +80,14 @@ def load(level_dir):
 
 
 def new_document(settings):
-    return {"schema": SCHEMA, "stateVersion": STATE_VERSION, "level": settings.get("level_name"),
-            "bundle": settings.get("bundle"), "generatedAt": _now(), "stages": {}}
+    return {
+        "schema": SCHEMA,
+        "stateVersion": STATE_VERSION,
+        "level": settings.get("level_name"),
+        "bundle": settings.get("bundle"),
+        "generatedAt": _now(),
+        "stages": {},
+    }
 
 
 def save(level_dir, document):
@@ -98,6 +105,7 @@ def _now():
 
 
 # -- signatures ----------------------------------------------------------------------------------
+
 
 def incremental(stage):
     """Whether this stage declared enough to be skippable at all."""
@@ -121,24 +129,32 @@ def signature(stage, ctx, manifest=None, document=None):
             fps = {key: {"kind": "unreadable"} for key in layer_keys}
         for key in layer_keys:
             inputs["layer:" + key] = fps.get(key, {"kind": "missing"})
-    for ref in (stage.inputs or ()):
+    for ref in stage.inputs or ():
         if ref.startswith("derived:"):
-            inputs[ref] = bake_manifest.fingerprint_path(os.path.join(ctx.derived_dir, ref.split(":", 1)[1]))
+            inputs[ref] = bake_manifest.fingerprint_path(
+                os.path.join(ctx.derived_dir, ref.split(":", 1)[1])
+            )
         elif ref == "level:":
             inputs[ref] = level_fingerprint(ctx.level_dir)
         elif ref == "shapes:":
             inputs[ref] = shapes_fingerprint(ctx.level_dir)
         elif not ref.startswith("layer:"):
-            raise ValueError(f"{stage.key}: input {ref!r} must start with 'layer:', 'derived:' or be "
-                             f"'level:'/'shapes:'")
+            raise ValueError(
+                f"{stage.key}: input {ref!r} must start with 'layer:', 'derived:' or be "
+                f"'level:'/'shapes:'"
+            )
     # An upstream stage this one consumes: its signature IS the input. `materials` exports only
     # what `shapes`/`networks`/`derived` bound, and none of that shows up in its own layers.
     after = {}
-    for key in (stage.after or ()):
+    for key in stage.after or ():
         entry = ((document or {}).get("stages") or {}).get(key) or {}
         after[key] = entry.get("signature")
-    return {"version": int(getattr(stage, "version", 1) or 1), "settings": settings, "inputs": inputs,
-            "after": after}
+    return {
+        "version": int(getattr(stage, "version", 1) or 1),
+        "settings": settings,
+        "inputs": inputs,
+        "after": after,
+    }
 
 
 # What the build writes about ITSELF rather than into the level: excluded from `level:` so the
@@ -240,24 +256,27 @@ def check(document, stage, sig, level_dir):
     for key, value in sig["settings"].items():
         if (recorded.get("settings") or {}).get(key) != value:
             return False, f"setting {key!r} changed"
-    for key in (recorded.get("settings") or {}):
+    for key in recorded.get("settings") or {}:
         if key not in sig["settings"]:
             return False, f"setting {key!r} no longer declared"
     for key, value in sig["inputs"].items():
         if (recorded.get("inputs") or {}).get(key) != value:
             return False, f"input {key!r} changed"
-    for key in (recorded.get("inputs") or {}):
+    for key in recorded.get("inputs") or {}:
         if key not in sig["inputs"]:
             return False, f"input {key!r} no longer declared"
     if (recorded.get("after") or {}) != (sig.get("after") or {}):
-        changed = sorted(k for k in set(recorded.get("after") or {}) | set(sig.get("after") or {})
-                         if (recorded.get("after") or {}).get(k) != (sig.get("after") or {}).get(k))
+        changed = sorted(
+            k
+            for k in set(recorded.get("after") or {}) | set(sig.get("after") or {})
+            if (recorded.get("after") or {}).get(k) != (sig.get("after") or {}).get(k)
+        )
         return False, f"upstream stage(s) {changed} re-ran"
     # Outputs are checked against what was actually there when the stage was recorded, not
     # against the declaration: `networks` writes no `art/shapes/networks/` on a bundle with no
     # network meshes, and demanding a directory the stage had no reason to create re-ran it on
     # every build. What this does catch is the case it is for — a user who deleted the folder.
-    for rel in (entry.get("outputs") or ()):
+    for rel in entry.get("outputs") or ():
         if not os.path.exists(os.path.join(level_dir, *rel.split("/"))):
             return False, f"output {rel!r} is missing"
     if not os.path.isfile(_payload_path(level_dir, stage.key)):
@@ -266,6 +285,7 @@ def check(document, stage, sig, level_dir):
 
 
 # -- the replay payload --------------------------------------------------------------------------
+
 
 def _payload_path(level_dir, stage_key):
     return os.path.join(level_dir, STATE_DIR, f"{stage_key}.state.json")
@@ -276,8 +296,13 @@ def write_payload(level_dir, stage_key, objects, shared_delta, result):
     delta, and the result dict its report entry carried."""
     path = _payload_path(level_dir, stage_key)
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    document = {"schema": SCHEMA, "stage": stage_key, "objects": objects,
-                "shared": encode(shared_delta), "result": encode(result)}
+    document = {
+        "schema": SCHEMA,
+        "stage": stage_key,
+        "objects": objects,
+        "shared": encode(shared_delta),
+        "result": encode(result),
+    }
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8", newline="\n") as handle:
         json.dump(document, handle, separators=(",", ":"), default=str)
@@ -307,6 +332,7 @@ def replay(level_dir, stage_key, level, shared):
 
 
 # -- `ctx.shared` deltas ---------------------------------------------------------------------------
+
 
 def diff_shared(before, after, keys):
     """What this stage added to `ctx.shared`, per declared key.
@@ -397,6 +423,7 @@ def _sort_key(value):
 
 # -- the recording settings view --------------------------------------------------------------------
 
+
 class Recorder(dict):
     """`ctx.settings` while a stage runs: a plain dict that remembers which keys were read.
 
@@ -420,7 +447,7 @@ class Recorder(dict):
         return super().__getitem__(key)
 
     def __reduce__(self):
-        return (dict, (dict(self),))          # a pool worker gets a plain dict, not a recorder
+        return (dict, (dict(self),))  # a pool worker gets a plain dict, not a recorder
 
 
 # Settings that cannot make a RECORDED stage stale, so reading one undeclared is not a fault:
@@ -430,10 +457,21 @@ class Recorder(dict):
 # runtime recorder cannot drift apart (they did on the first full build: the materials stage
 # reads `level_name` to name a paint-variant material, the static gate exempted it, the recorder
 # did not, and the stage could never have been skipped).
-NOT_FIDELITY_SETTINGS = frozenset({
-    "level_name", "level_title", "bundle", "output", "jobs", "rebuild", "cook", "keep_partial",
-    "beamng_exe", "quality_preset", "ui_browser",
-})
+NOT_FIDELITY_SETTINGS = frozenset(
+    {
+        "level_name",
+        "level_title",
+        "bundle",
+        "output",
+        "jobs",
+        "rebuild",
+        "cook",
+        "keep_partial",
+        "beamng_exe",
+        "quality_preset",
+        "ui_browser",
+    }
+)
 
 
 def undeclared(recorder, stage, known):

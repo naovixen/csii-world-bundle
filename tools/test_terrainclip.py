@@ -12,7 +12,7 @@ import sys
 import numpy
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from csiibundle import terrainclip as tc  # noqa: E402
+from csiibundle import terrainclip as tc
 
 FAILED = []
 
@@ -51,18 +51,22 @@ def test_no_overlap():
     tri = flat_tri(20, 20, 23, 20, 23, 23)
     prisms = box_prism(0, 10, 0, 10, lane_y=10.0, bottom=-0.5, top=0.3)
     kept = tc.clip_triangle(tri, prisms)
-    check(len(kept) == 1 and abs(area3(kept[0]) - area3(tri)) < 1e-9,
-          f"one piece, same area ({len(kept)} piece(s), {area3(kept[0]) if kept else 0:.4f} vs {area3(tri):.4f} m2)")
+    check(
+        len(kept) == 1 and abs(area3(kept[0]) - area3(tri)) < 1e-9,
+        f"one piece, same area ({len(kept)} piece(s), {area3(kept[0]) if kept else 0:.4f} vs {area3(tri):.4f} m2)",
+    )
 
 
 def test_above_the_band_is_kept():
     print("ground above the band's roof is kept — the hill over a portal")
-    tri = flat_tri(1, 1, 9, 1, 9, 9, y=40.0)          # 30 m above the lane
+    tri = flat_tri(1, 1, 9, 1, 9, 9, y=40.0)  # 30 m above the lane
     prisms = box_prism(0, 10, 0, 10, lane_y=10.0, bottom=-0.5, top=12.3)
     kept = tc.clip_triangle(tri, prisms)
-    check(len(kept) == 1 and abs(area3(kept[0]) - area3(tri)) < 1e-9,
-          "the whole triangle survives (it is over the roof, not in the band)")
-    tri_low = flat_tri(1, 1, 9, 1, 9, 9, y=15.0)      # 5 m up: inside a 12.3 m band
+    check(
+        len(kept) == 1 and abs(area3(kept[0]) - area3(tri)) < 1e-9,
+        "the whole triangle survives (it is over the roof, not in the band)",
+    )
+    tri_low = flat_tri(1, 1, 9, 1, 9, 9, y=15.0)  # 5 m up: inside a 12.3 m band
     check(not tc.clip_triangle(tri_low, prisms), "the same triangle inside the band is removed")
 
 
@@ -74,10 +78,12 @@ def test_partial_cut_conserves_area():
     kept_area = sum(area3(p) for p in kept)
     # the triangle spans z in [0, x] for x in [0, 10], so its area to the left of x = 3 is
     # the integral of x, not a similar triangle: 3**2 / 2 = 4.5 m2 (the whole is 50)
-    kept_expected = 3.0 ** 2 / 2.0
-    check(abs(kept_area - kept_expected) < 1e-6,
-          f"kept {kept_area:.4f} m2 = the integral of x over [0, 3] ({kept_expected:.4f}), of a {area3(tri):.0f} m2 triangle "
-          f"({len(kept)} piece(s))")
+    kept_expected = 3.0**2 / 2.0
+    check(
+        abs(kept_area - kept_expected) < 1e-6,
+        f"kept {kept_area:.4f} m2 = the integral of x over [0, 3] ({kept_expected:.4f}), of a {area3(tri):.0f} m2 triangle "
+        f"({len(kept)} piece(s))",
+    )
     inside = [p for piece in kept for p in piece if p[0] > 3.0 + 1e-6]
     check(not inside, f"no kept vertex is inside the prism ({len(inside)} were)")
 
@@ -90,11 +96,16 @@ def test_height_iso_cut():
     kept = tc.clip_triangle(tri, prisms)
     # h(x) = 5 + 2x; the roof is at 15 -> the cut is at x = 5
     xs = [p[0] for piece in kept for p in piece]
-    check(kept and min(xs) >= 5.0 - 1e-6,
-          f"everything kept is beyond the iso-line x = 5 (min x {min(xs) if xs else float('nan'):.4f})")
+    check(
+        kept and min(xs) >= 5.0 - 1e-6,
+        f"everything kept is beyond the iso-line x = 5 (min x {min(xs) if xs else float('nan'):.4f})",
+    )
     kept_area = sum(area3(p) for p in kept)
     # same shape in plan: the part beyond x = 5 is the integral of x over [5, 10] = 37.5 m2
-    check(abs(kept_area - 37.5) < 1e-6, f"kept area {kept_area:.4f} m2 (the integral of x over [5, 10])")
+    check(
+        abs(kept_area - 37.5) < 1e-6,
+        f"kept area {kept_area:.4f} m2 (the integral of x over [5, 10])",
+    )
 
 
 def test_shared_edge_is_watertight():
@@ -102,13 +113,15 @@ def test_shared_edge_is_watertight():
     # a unit square split into two triangles, sharing the diagonal (0,0)-(10,10)
     a = [(0.0, 12.0, 0.0), (10.0, 8.0, 0.0), (10.0, 11.0, 10.0)]
     b = [(0.0, 12.0, 0.0), (10.0, 11.0, 10.0), (0.0, 9.0, 10.0)]
-    prisms = box_prism(-5, 20, -5, 20, lane_y=10.0, bottom=-0.5, top=0.3)   # band 9.5 .. 10.3
+    prisms = box_prism(-5, 20, -5, 20, lane_y=10.0, bottom=-0.5, top=0.3)  # band 9.5 .. 10.3
     ka = tc.clip_triangle(a, prisms)
     kb = tc.clip_triangle(b, prisms)
+
     # collect the cut vertices that lie on the shared edge (0,0,12)-(10,10,11)
     def on_shared(p):
         t = p[2] / 10.0
         return abs(p[0] - 10.0 * t) < 1e-6 and abs(p[1] - (12.0 - t)) < 1e-6
+
     va = sorted(round(p[2], 9) for piece in ka for p in piece if on_shared(p))
     vb = sorted(round(p[2], 9) for piece in kb for p in piece if on_shared(p))
     check(va == vb and va, f"the same {len(va)} vertex/vertices on the shared edge ({va} vs {vb})")
@@ -119,8 +132,12 @@ def test_two_prisms():
     tri = flat_tri(0, 0, 12, 0, 12, 12, y=10.0)
     prisms = box_prism(2, 4, -5, 20, 10.0, -0.5, 0.3) + box_prism(7, 9, -5, 20, 10.0, -0.5, 0.3)
     kept = tc.clip_triangle(tri, prisms)
-    bad = [p for piece in kept for p in piece
-           if (2.0 + 1e-6 < p[0] < 4.0 - 1e-6) or (7.0 + 1e-6 < p[0] < 9.0 - 1e-6)]
+    bad = [
+        p
+        for piece in kept
+        for p in piece
+        if (2.0 + 1e-6 < p[0] < 4.0 - 1e-6) or (7.0 + 1e-6 < p[0] < 9.0 - 1e-6)
+    ]
     check(not bad, f"no kept vertex inside either prism ({len(bad)} were)")
     check(sum(area3(p) for p in kept) < area3(tri) - 1e-6, "some area was removed")
 
@@ -129,7 +146,7 @@ def test_sampled_agreement():
     print("point-sample agreement with the game's own predicate over a random field")
     rng = numpy.random.default_rng(7)
     tri = [(0.0, 9.0, 0.0), (10.0, 13.0, 0.0), (4.0, 11.0, 10.0)]
-    prisms = box_prism(1, 6, 1, 8, lane_y=10.0, bottom=-0.5, top=1.5)      # band 9.5 .. 11.5
+    prisms = box_prism(1, 6, 1, 8, lane_y=10.0, bottom=-0.5, top=1.5)  # band 9.5 .. 11.5
     kept = tc.clip_triangle(tri, prisms)
     plane = tc.plane_through(tri)
 
@@ -169,8 +186,10 @@ def test_sampled_agreement():
         covered = any(in_piece(p, x, z) for p in kept)
         if discarded == covered:
             disagree += 1
-    check(tested > 500 and disagree == 0,
-          f"{tested} interior samples: kept == not discarded by the game's predicate ({disagree} disagreed)")
+    check(
+        tested > 500 and disagree == 0,
+        f"{tested} interior samples: kept == not discarded by the game's predicate ({disagree} disagreed)",
+    )
 
 
 def main():

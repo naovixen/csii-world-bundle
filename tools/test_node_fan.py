@@ -31,6 +31,7 @@ therefore means the gate is live.
 
 Run: `python tools/test_node_fan.py`  (system Python + numpy; skipped when no bundle is on disk).
 """
+
 import collections
 import json
 import math
@@ -42,10 +43,11 @@ import numpy
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from inspect_glb import read_accessor, read_glb  # noqa: E402
+from inspect_glb import read_accessor, read_glb
 
 BUNDLE = os.environ.get("CARTO_BUNDLE") or os.path.expandvars(
-    r"%USERPROFILE%\AppData\LocalLow\Colossal Order\Cities Skylines II\ModsData\Carto")
+    r"%USERPROFILE%\AppData\LocalLow\Colossal Order\Cities Skylines II\ModsData\Carto"
+)
 
 # Truth raster pitch. A gap narrower than this is below what a 0.5 m cross-section piece can
 # represent and is not what this test is about.
@@ -61,12 +63,14 @@ RADIUS = 200.0
 # The six windows the 2026-08-11 clip-cut and flare defects were reported in (same set as
 # `test_clip_cut.py`, so a failure here can be read beside one there), plus the ten densest
 # node-strip clusters in the city, chosen from the bundle itself so the sweep follows the save.
-WINDOWS = (("width transition", 4324.5, 1550.5),
-           ("road junction", 2936.9, 1397.5),
-           ("train tracks", 873.9, 1442.0),
-           ("clip areas", 450.0, -2900.0),
-           ("trench cluster", -2650.0, 3850.0),
-           ("deep cluster", 2750.0, -350.0))
+WINDOWS = (
+    ("width transition", 4324.5, 1550.5),
+    ("road junction", 2936.9, 1397.5),
+    ("train tracks", 873.9, 1442.0),
+    ("clip areas", 450.0, -2900.0),
+    ("trench cluster", -2650.0, 3850.0),
+    ("deep cluster", 2750.0, -350.0),
+)
 DENSE_WINDOWS = 10
 
 # Metres of bare rail a strip is allowed. Measured on the 2026-08-11 23:37 full rip over 5,872
@@ -88,7 +92,7 @@ def bezier(points, t):
     p = numpy.asarray(points, dtype=numpy.float64)
     t = numpy.asarray(t, dtype=numpy.float64)[:, None]
     u = 1.0 - t
-    return u ** 3 * p[0] + 3 * u ** 2 * t * p[1] + 3 * u * t ** 2 * p[2] + t ** 3 * p[3]
+    return u**3 * p[0] + 3 * u**2 * t * p[1] + 3 * u * t**2 * p[2] + t**3 * p[3]
 
 
 def fill_triangles(mask, px, pz):
@@ -111,7 +115,7 @@ def fill_triangles(mask, px, pz):
         l2 = ((cz - az) * (gx - cx) + (ax - cx) * (gz - cz)) / det
         inside = (l1 >= 0) & (l2 >= 0) & (l1 + l2 <= 1)
         if inside.any():
-            mask[y0:y1 + 1, x0:x1 + 1] |= inside
+            mask[y0 : y1 + 1, x0 : x1 + 1] |= inside
 
 
 def build_cover(cx, cz, radius, amputate=None):
@@ -149,10 +153,12 @@ def build_cover(cx, cz, radius, amputate=None):
                         continue
                     verts = numpy.asarray(
                         read_accessor(gltf, blob, prim["attributes"]["POSITION"]),
-                        dtype=numpy.float64)
+                        dtype=numpy.float64,
+                    )
                     if "indices" in prim:
-                        idx = numpy.asarray(read_accessor(gltf, blob, prim["indices"]),
-                                            dtype=numpy.int64)
+                        idx = numpy.asarray(
+                            read_accessor(gltf, blob, prim["indices"]), dtype=numpy.int64
+                        )
                     else:
                         idx = numpy.arange(len(verts), dtype=numpy.int64)
                     tri = verts[idx].reshape(-1, 3, 3)
@@ -160,8 +166,9 @@ def build_cover(cx, cz, radius, amputate=None):
                         tri = tri[numpy.abs(tri[:, :, 0]).max(axis=1) <= CONTROL_CUT]
                         if not len(tri):
                             continue
-                    fill_triangles(cover, (pos[0] - tri[:, :, 0] - x0) / PX,
-                                   (pos[2] + tri[:, :, 2] - z0) / PX)
+                    fill_triangles(
+                        cover, (pos[0] - tri[:, :, 0] - x0) / PX, (pos[2] + tri[:, :, 2] - z0) / PX
+                    )
     return (cover, x0, z0) if segments else (None, x0, z0)
 
 
@@ -192,7 +199,7 @@ def score_window(cx, cz, radius, amputate=None, only=None):
             gx = ((points[:, :, 0] - x0) / PX).astype(int)
             gz = ((points[:, :, 2] - z0) / PX).astype(int)
             if not ((gx >= 0) & (gx < width) & (gz >= 0) & (gz < height)).all():
-                continue          # partly outside the window: skip rather than score a lie
+                continue  # partly outside the window: skip rather than score a lie
             hit = cover[gz, gx]
             worst = 0.0
             for station in range(STATIONS):
@@ -200,8 +207,9 @@ def score_window(cx, cz, radius, amputate=None, only=None):
                 for side in (row, row[::-1]):
                     steps = int(numpy.argmax(side)) if side.any() else ACROSS - 1
                     worst = max(worst, steps / (ACROSS - 1) * span[station])
-            rows.append((record["id"], worst, float(1.0 - hit.mean()),
-                         float(span.min()), float(span.max())))
+            rows.append(
+                (record["id"], worst, float(1.0 - hit.mean()), float(span.min()), float(span.max()))
+            )
     return rows
 
 
@@ -235,14 +243,20 @@ def check_paved():
         if worst[1] > worst_overall[0]:
             worst_overall = (worst[1], worst[0], label)
         status = "FAIL" if over else "ok"
-        print(f"  {label:>22}: {len(rows):4d} strips, worst gap {worst[1]:.2f} m "
-              f"(id {worst[0]}, {worst[3]:.1f}-{worst[4]:.1f} m wide)  {status}")
+        print(
+            f"  {label:>22}: {len(rows):4d} strips, worst gap {worst[1]:.2f} m "
+            f"(id {worst[0]}, {worst[3]:.1f}-{worst[4]:.1f} m wide)  {status}"
+        )
         for record_id, gap, unpaved, wmin, wmax in sorted(over, key=lambda r: -r[1])[:6]:
-            print(f"        id {record_id:<9} gap {gap:.2f} m  unpaved {unpaved * 100:.1f}%  "
-                  f"width {wmin:.2f}-{wmax:.2f} m")
+            print(
+                f"        id {record_id:<9} gap {gap:.2f} m  unpaved {unpaved * 100:.1f}%  "
+                f"width {wmin:.2f}-{wmax:.2f} m"
+            )
         failures += len(over)
-    print(f"  {total} node strips scored; worst gap {worst_overall[0]:.2f} m "
-          f"(id {worst_overall[1]}, {worst_overall[2]}), budget {GAP_BUDGET:.2f} m")
+    print(
+        f"  {total} node strips scored; worst gap {worst_overall[0]:.2f} m "
+        f"(id {worst_overall[1]}, {worst_overall[2]}), budget {GAP_BUDGET:.2f} m"
+    )
 
 
 def check_control():
@@ -263,8 +277,10 @@ def check_control():
     if missing:
         # Segment entity ids come from the save, so a different city has different ones. Say so
         # rather than passing a control that never ran.
-        print(f"  control segments absent from this bundle ({', '.join(missing)}) — "
-              f"the gate above is UNPROVEN on this city")
+        print(
+            f"  control segments absent from this bundle ({', '.join(missing)}) — "
+            f"the gate above is UNPROVEN on this city"
+        )
         failures += 1
         return
     clean = score_window(cx, cz, RADIUS, only=only)
@@ -273,17 +289,23 @@ def check_control():
         # The control segments exist but none of their NODE clip volumes falls whole inside the
         # window (`score_window` skips a strip that crosses its edge rather than scoring a lie).
         # Same situation as an absent segment: say the gate is unproven, do not crash on max().
-        print(f"  control segments {', '.join(CONTROL_SEGMENTS)} have no node strip inside "
-              f"the {label} window — the gate above is UNPROVEN on this city")
+        print(
+            f"  control segments {', '.join(CONTROL_SEGMENTS)} have no node strip inside "
+            f"the {label} window — the gate above is UNPROVEN on this city"
+        )
         failures += 1
         return
     clean_worst = max(r[1] for r in clean)
     hurt_worst = max(r[1] for r in hurt)
-    print(f"  {len(clean)} strips on {', '.join(CONTROL_SEGMENTS)}: shipped worst gap "
-          f"{clean_worst:.2f} m, amputated worst gap {hurt_worst:.2f} m")
+    print(
+        f"  {len(clean)} strips on {', '.join(CONTROL_SEGMENTS)}: shipped worst gap "
+        f"{clean_worst:.2f} m, amputated worst gap {hurt_worst:.2f} m"
+    )
     if hurt_worst < CONTROL_MIN_GAP:
-        print(f"        FAIL: amputating the outer geometry did not reproduce the defect "
-              f"({hurt_worst:.2f} m < {CONTROL_MIN_GAP:.2f} m) — this test cannot see it")
+        print(
+            f"        FAIL: amputating the outer geometry did not reproduce the defect "
+            f"({hurt_worst:.2f} m < {CONTROL_MIN_GAP:.2f} m) — this test cannot see it"
+        )
         failures += 1
 
 

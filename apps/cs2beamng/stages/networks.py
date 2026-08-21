@@ -30,7 +30,6 @@ import time
 from collections import defaultdict
 
 import numpy
-
 from csiibundle import glb, lod, reader
 from csiibundle.bake.tiles import MIN_LOD_MARK
 
@@ -40,7 +39,7 @@ from .derived import LevelPaths
 from .materials import aliases_of, mapto_name
 
 STAGE_KEY = "networks"
-TILE_DETAIL_PX = tilelod.ALWAYS_PX      # what a tile nothing culls still ships (see beamng/tilelod)
+TILE_DETAIL_PX = tilelod.ALWAYS_PX  # what a tile nothing culls still ships (see beamng/tilelod)
 REACH = 150.0
 SPLIT_VERTS = 300_000
 GROUP = ["Networks"]
@@ -60,16 +59,23 @@ def run(ctx, progress):
     level = level_of(ctx)
     settings = ctx.settings
     tile = float(settings.get("tile_size") or 256)
-    options = {"detail_scale": float(settings.get("lod_detail_scale", 6.0) or 6.0),
-               "level_of_detail": lod.DEFAULT_LEVEL_OF_DETAIL,
-               "view_distance": float(settings.get("view_distance") or 0)
-               if settings.get("tile_lod", True) else None}
+    options = {
+        "detail_scale": float(settings.get("lod_detail_scale", 6.0) or 6.0),
+        "level_of_detail": lod.DEFAULT_LEVEL_OF_DETAIL,
+        "view_distance": float(settings.get("view_distance") or 0)
+        if settings.get("tile_lod", True)
+        else None,
+    }
     lay = reader.resolve_layers(ctx.bundle)
     if not os.path.isfile(lay.networks) or not os.path.isdir(lay.net_meshes):
         progress.log("networks: no network meshes in the bundle")
         level.write_objects()
         return {"segments": 0, "tiles": 0}
-    records = [r for r in reader.read_jsonl(lay.networks) if r.get("kind") == "segment" and r.get("assetId") and r.get("pos")]
+    records = [
+        r
+        for r in reader.read_jsonl(lay.networks)
+        if r.get("kind") == "segment" and r.get("assetId") and r.get("pos")
+    ]
     if ctx.region:
         # A SQUARE, like every other stage that reads a region (`beamng.placement.in_region`,
         # `stages/derived._tile_in_region`, `stages/water._intersects`). This was a circle until
@@ -79,8 +85,9 @@ def run(ctx, progress):
         # screen's map picker had to draw the region and there were two shapes to draw.
         cx, cz = float(ctx.region["centerX"]), float(ctx.region["centerZ"])
         rr = float(ctx.region["radius"]) + REACH
-        records = [r for r in records
-                   if abs(r["pos"][0] - cx) <= rr and abs(r["pos"][2] - cz) <= rr]
+        records = [
+            r for r in records if abs(r["pos"][0] - cx) <= rr and abs(r["pos"][2] - cz) <= rr
+        ]
 
     # -- bucket by tile of the segment origin (bundle frame x, z) -------------------------------
     buckets = defaultdict(list)
@@ -98,9 +105,21 @@ def run(ctx, progress):
     counts = {"written": 0, "tris": 0, "verts": 0, "refused": 0, "split_geoms": 0, "rewritten": 0}
     names = set()
     ladder_stats = tilelod.new_stats()
-    jobs = [(lay.net_meshes, recs, tx, tz, tile, level.dir, level.name, aliases,
-             options["detail_scale"], options["view_distance"])
-            for (tx, tz), recs in sorted(buckets.items())]
+    jobs = [
+        (
+            lay.net_meshes,
+            recs,
+            tx,
+            tz,
+            tile,
+            level.dir,
+            level.name,
+            aliases,
+            options["detail_scale"],
+            options["view_distance"],
+        )
+        for (tx, tz), recs in sorted(buckets.items())
+    ]
 
     def absorb(result):
         counts["refused"] += result["refused"]
@@ -110,14 +129,22 @@ def run(ctx, progress):
             counts["split_geoms"] += shape["extraGeoms"]
             counts["rewritten"] += 1 if shape["changed"] else 0
             names.add(shape["name"])
-            level.add(GROUP, {
-                "name": shape["name"], "class": "TSStatic",
-                "shapeName": level.game_path(*shapes_dir, shape["name"] + ".dae"),
-                "position": [round(shape["ox"], 3), round(shape["oy"], 3), 0.0],
-                "rotationMatrix": frame.identity_matrix(),
-                "scale": [1, 1, 1], "collisionType": "Visible Mesh Final", "decalType": "None",
-                "useInstanceRenderData": True, "canSave": True,
-            }, key="networks:" + shape["name"])
+            level.add(
+                GROUP,
+                {
+                    "name": shape["name"],
+                    "class": "TSStatic",
+                    "shapeName": level.game_path(*shapes_dir, shape["name"] + ".dae"),
+                    "position": [round(shape["ox"], 3), round(shape["oy"], 3), 0.0],
+                    "rotationMatrix": frame.identity_matrix(),
+                    "scale": [1, 1, 1],
+                    "collisionType": "Visible Mesh Final",
+                    "decalType": "None",
+                    "useInstanceRenderData": True,
+                    "canSave": True,
+                },
+                key="networks:" + shape["name"],
+            )
             counts["written"] += 1
             counts["tris"] += shape["triangles"]
             counts["verts"] += shape["vertices"]
@@ -140,36 +167,48 @@ def run(ctx, progress):
     level.write_objects()
     # this stage owns art/shapes/networks/ (the folder is no longer cleared at build start)
     orphans = dae.sweep_orphans(level.path(*shapes_dir), names)
-    progress.end(f"{written} tiles ({rewritten} rewritten), {tris_total:,} triangles, {verts_total:,} vertices "
-                 f"({refused} meshes refused, {orphans} orphans removed, "
-                 f"{split_geoms} extra geometries from the {dae.MAX_GEOMETRY_VERTS:,}-vertex cap)")
-    return {"segments": len(records), "tiles": written, "tilesRewritten": rewritten, "orphansRemoved": orphans,
-            "triangles": tris_total, "vertices": verts_total,
-            "refused": refused, "splitGeometries": split_geoms, "jobs": workers,
-            "lod": tilelod.ladder_summary(ladder_stats, options["detail_scale"]),
-            "approximations": {
-                "compositionHeightRange": {
-                    "what": "a segment's composition height range is taken from the assembled "
-                            "mesh's own vertical extent, capped at its width",
-                    "why": "the bundle ships a segment's `width` but not its composition's "
-                           "`m_HeightRange`; the term is a third of the rendering size at most, "
-                           "and the cap keeps the error on the draw-FURTHER side",
-                    "count": len(records),
-                },
-                "compositionLodBias": {
-                    "what": "the mean of the pieces' `MeshData.m_LodBias` is taken as 0",
-                    "why": "the bundle ships assembled segment meshes, not the composition's "
-                           "piece list; a positive bias only ever pulls the distance IN, so 0 "
-                           "draws at least as far as the game",
-                    "count": len(records),
-                },
+    progress.end(
+        f"{written} tiles ({rewritten} rewritten), {tris_total:,} triangles, {verts_total:,} vertices "
+        f"({refused} meshes refused, {orphans} orphans removed, "
+        f"{split_geoms} extra geometries from the {dae.MAX_GEOMETRY_VERTS:,}-vertex cap)"
+    )
+    return {
+        "segments": len(records),
+        "tiles": written,
+        "tilesRewritten": rewritten,
+        "orphansRemoved": orphans,
+        "triangles": tris_total,
+        "vertices": verts_total,
+        "refused": refused,
+        "splitGeometries": split_geoms,
+        "jobs": workers,
+        "lod": tilelod.ladder_summary(ladder_stats, options["detail_scale"]),
+        "approximations": {
+            "compositionHeightRange": {
+                "what": "a segment's composition height range is taken from the assembled "
+                "mesh's own vertical extent, capped at its width",
+                "why": "the bundle ships a segment's `width` but not its composition's "
+                "`m_HeightRange`; the term is a third of the rendering size at most, "
+                "and the cap keeps the error on the draw-FURTHER side",
+                "count": len(records),
             },
-            "seconds": round(time.monotonic() - started, 1)}
+            "compositionLodBias": {
+                "what": "the mean of the pieces' `MeshData.m_LodBias` is taken as 0",
+                "why": "the bundle ships assembled segment meshes, not the composition's "
+                "piece list; a positive bias only ever pulls the distance IN, so 0 "
+                "draws at least as far as the game",
+                "count": len(records),
+            },
+        },
+        "seconds": round(time.monotonic() - started, 1),
+    }
 
 
 def _tile_job(args):
     """One tile of segments to its `.dae` file(s), in a worker process."""
-    net_meshes, recs, tx, tz, tile, level_dir, level_name, aliases, detail_scale, view_distance = args
+    net_meshes, recs, tx, tz, tile, level_dir, level_name, aliases, detail_scale, view_distance = (
+        args
+    )
     level = LevelPaths(level_dir, level_name)
     shared = {"materials_aliases": {"aliases": aliases}}
     parts = _load_parts(net_meshes, recs)
@@ -178,26 +217,47 @@ def _tile_job(args):
     if not pieces:
         return out
     for sub_index, sub in enumerate(_split(pieces, SPLIT_VERTS)):
-        ox, oy = (tx + 0.5) * tile, (tz + 0.5) * tile    # BeamNG x = bundle x, BeamNG y = bundle z
+        ox, oy = (tx + 0.5) * tile, (tz + 0.5) * tile  # BeamNG x = bundle x, BeamNG y = bundle z
         merged = _merge_local(sub, ox, oy, level, shared)
         name = f"net_{tx}_{tz}" + (f"_{sub_index}" if sub_index else "")
-        mesh = dae.group_by_material(dae.Mesh(name, merged["verts"], merged["tris"], merged["runs"],
-                                              normals=merged["normals"], uvs=merged["uvs"]))
+        mesh = dae.group_by_material(
+            dae.Mesh(
+                name,
+                merged["verts"],
+                merged["tris"],
+                merged["runs"],
+                normals=merged["normals"],
+                uvs=merged["uvs"],
+            )
+        )
         # Same ladder as the derived tiles (`beamng/tilelod`): each level is the set of
         # segments CS2 still draws at that distance, carried in on the `#L<n>` marks the
         # merge kept on the material names.
-        levels, ladder = tilelod.build_levels(dae, name, mesh, detail_scale,
-                                              lod.DEFAULT_LEVEL_OF_DETAIL, TILE_DETAIL_PX,
-                                              view_distance=view_distance,
-                                              targets=tilelod.TILE_TARGETS if view_distance else None,
-                                              tile=tile)
+        levels, ladder = tilelod.build_levels(
+            dae,
+            name,
+            mesh,
+            detail_scale,
+            lod.DEFAULT_LEVEL_OF_DETAIL,
+            TILE_DETAIL_PX,
+            view_distance=view_distance,
+            targets=tilelod.TILE_TARGETS if view_distance else None,
+            tile=tile,
+        )
         shape = dae.Shape(name, levels, collision=[], billboard_px=None, null_px=ladder["nullPx"])
         stats = dae.write_shape(level.path("art", "shapes", "networks", f"{name}.dae"), shape)
-        out["shapes"].append({"name": name, "ox": ox, "oy": oy,
-                              "triangles": stats["triangles"], "vertices": stats["vertices"],
-                              "changed": bool(stats.get("changed")),
-                              "lod": tilelod.compact(levels, ladder),
-                              "extraGeoms": sum(len(ms) for _px, ms in levels) - len(levels)})
+        out["shapes"].append(
+            {
+                "name": name,
+                "ox": ox,
+                "oy": oy,
+                "triangles": stats["triangles"],
+                "vertices": stats["vertices"],
+                "changed": bool(stats.get("changed")),
+                "lod": tilelod.compact(levels, ladder),
+                "extraGeoms": sum(len(ms) for _px, ms in levels) - len(levels),
+            }
+        )
     used = sorted(shared.get("materials_used") or ())
     for shape in out["shapes"]:
         shape["used"] = used
@@ -230,15 +290,25 @@ def _load_parts(net_meshes, recs):
             # glTF axes with the mirror still applied: undoing the mirror is x -> -x, and the
             # bundle offset applies in bundle axes; keep everything in "mirrored glTF" form and
             # add the offset mirrored too, so dae.glb_to_local does the whole conversion once
-            v[:, 0] -= pos[0]                        # bundle +x is glTF -x
+            v[:, 0] -= pos[0]  # bundle +x is glTF -x
             v[:, 1] += pos[1]
             v[:, 2] += pos[2]
-            pieces.append((v, n, node["uvs"], node["tris"], node["material_runs"],
-                           (rec["pos"][0], rec["pos"][2]), min_lod))
+            pieces.append(
+                (
+                    v,
+                    n,
+                    node["uvs"],
+                    node["tris"],
+                    node["material_runs"],
+                    (rec["pos"][0], rec["pos"][2]),
+                    min_lod,
+                )
+            )
     return {"pieces": pieces, "refused": refused}
 
 
 # -- the game's own draw-distance limit, per segment -------------------------------------------------
+
 
 def _segment_min_lod(record, nodes):
     """`NetCompositionData.m_MinLod` for one segment — `NetCompositionHelpers.CalculateMinLod`.
@@ -309,7 +379,13 @@ def _merge_local(pieces, ox, oy, level, shared):
         runs2 = [(mapto_name(shared, level, name) + mark, count) for name, count in runs]
         parts.append((local, nn, dae.glb_uvs(uv), None, tris, runs2))
     merged = dae.merge_meshes("tile", parts)
-    return {"verts": merged.verts, "normals": merged.normals, "uvs": merged.uvs, "tris": merged.tris, "runs": merged.runs}
+    return {
+        "verts": merged.verts,
+        "normals": merged.normals,
+        "uvs": merged.uvs,
+        "tris": merged.tris,
+        "runs": merged.runs,
+    }
 
 
 INPUTS = ("layer:networks", "layer:networkMeshes", "derived:materials.json")
@@ -318,5 +394,15 @@ OUTPUTS = ("art/shapes/networks",)
 
 # version 5: `lod_detail_scale` no longer multiplies the LADDER, only the null threshold
 # version 4: the decimator's UV bin scales with the mesh's own UV range
-STAGE = Stage(STAGE_KEY, "Roads and networks", enabled, units, run, inputs=INPUTS,
-              settings_keys=SETTINGS, outputs=OUTPUTS, shared_keys=("materials_used",), version=5)
+STAGE = Stage(
+    STAGE_KEY,
+    "Roads and networks",
+    enabled,
+    units,
+    run,
+    inputs=INPUTS,
+    settings_keys=SETTINGS,
+    outputs=OUTPUTS,
+    shared_keys=("materials_used",),
+    version=5,
+)

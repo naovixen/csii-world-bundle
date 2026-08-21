@@ -107,8 +107,10 @@ class ConsoleProgress(Progress):
             frac = min(1.0, self._done / self._total)
             bar = "#" * int(frac * 24)
             eta = (elapsed / frac - elapsed) if frac > 0 else float("nan")
-            text = (f"[{self._name}] {bar:<24} {self._done}/{self._total} {self._unit}"
-                    f"  {elapsed:6.1f}s  eta {eta:6.1f}s")
+            text = (
+                f"[{self._name}] {bar:<24} {self._done}/{self._total} {self._unit}"
+                f"  {elapsed:6.1f}s  eta {eta:6.1f}s"
+            )
         else:
             text = f"[{self._name}] {self._done} {self._unit}  {elapsed:6.1f}s"
         self.stream.write("\r" + text[:118].ljust(118))

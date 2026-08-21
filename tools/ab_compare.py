@@ -1,8 +1,9 @@
 """A/B gate: pixel-diff two renders, or diff the numbers in two import logs.
 
-  python tools/ab_compare.py a.png b.png
-  python tools/ab_compare.py --counts a.log b.log
+python tools/ab_compare.py a.png b.png
+python tools/ab_compare.py --counts a.log b.log
 """
+
 import re
 import sys
 from collections import defaultdict
@@ -10,9 +11,21 @@ from collections import defaultdict
 import numpy
 from PIL import Image
 
-COUNT_MARKERS = ("lanes:", "draped", "splatmap calibrated", "terrain:", "face(s)",
-                 "networks:", "category ", "record(s)", "object(s)",
-                 "instance(s)", "prefab(s)", "tinted:", "skipped:")
+COUNT_MARKERS = (
+    "lanes:",
+    "draped",
+    "splatmap calibrated",
+    "terrain:",
+    "face(s)",
+    "networks:",
+    "category ",
+    "record(s)",
+    "object(s)",
+    "instance(s)",
+    "prefab(s)",
+    "tinted:",
+    "skipped:",
+)
 
 # Elapsed-time numbers (e.g. "placed 101 instance(s) from 58 prefab(s) in 21.2 s")
 # are run-to-run noise, not a count worth gating on. Strip them before extracting
@@ -88,17 +101,19 @@ def compare_counts(path_a, path_b):
             numbers_b, text_b, line_b = list_b[i]
             if numbers_a != numbers_b:
                 changed.append((line_a, line_b, text_a, text_b, numbers_a, numbers_b))
-        for numbers, text, lineno in list_a[matched:]:
+        for _numbers, text, lineno in list_a[matched:]:
             removed.append((lineno, text))
-        for numbers, text, lineno in list_b[matched:]:
+        for _numbers, text, lineno in list_b[matched:]:
             added.append((lineno, text))
 
     if not changed and not added and not removed:
         print(f"PASS {len(a)} count line(s) identical")
         return 0
 
-    print(f"FAIL {len(changed)} line(s) changed, {len(added)} added, {len(removed)} removed "
-          f"(of {len(a)} vs {len(b)} count line(s))")
+    print(
+        f"FAIL {len(changed)} line(s) changed, {len(added)} added, {len(removed)} removed "
+        f"(of {len(a)} vs {len(b)} count line(s))"
+    )
     for line_a, line_b, text_a, text_b, numbers_a, numbers_b in changed:
         print(f"  changed a:{line_a} vs b:{line_b}: {numbers_a} != {numbers_b}")
         print(f"    a: {text_a}")

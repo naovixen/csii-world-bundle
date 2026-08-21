@@ -119,8 +119,8 @@ def rendering_size(size):
     unavailable rather than guessed (audit §62).
     """
     s = numpy.asarray(size, dtype=numpy.float64).ravel()[:3]
-    other1 = numpy.roll(s, -1)                      # size.yzx
-    other2 = numpy.roll(s, -2)                      # size.zxy
+    other1 = numpy.roll(s, -1)  # size.yzx
+    other2 = numpy.roll(s, -2)  # size.zxy
     cap = numpy.maximum(numpy.minimum(other1, other2) * 8.0, numpy.maximum(other1, other2) * 4.0)
     s = numpy.minimum(s, cap)
     return float(s.sum() / 3.0)
@@ -200,7 +200,9 @@ def area_triangle_min_lod(nearest_two, node_distance=AREA_NODE_DISTANCE["Surface
     return calculate_lod_limit(rendering_size_raw((4.0 * d1, float(node_distance), 4.0 * d2)), bias)
 
 
-def area_triangle_min_lods(nodes_xz, triangles, node_distance=AREA_NODE_DISTANCE["Surface"], bias=0.0):
+def area_triangle_min_lods(
+    nodes_xz, triangles, node_distance=AREA_NODE_DISTANCE["Surface"], bias=0.0
+):
     """Every triangle's `m_MinLod` for one area — `Game.Areas.GeometrySystem.CalculateGeometry`.
 
     The game measures how WIDE the paint is at each triangle, not how big the triangle is: it
@@ -223,7 +225,7 @@ def area_triangle_min_lods(nodes_xz, triangles, node_distance=AREA_NODE_DISTANCE
     n = len(nodes)
     if n < 3 or len(tris) == 0:
         return [255] * len(tris)
-    seg_a = nodes[numpy.arange(-1, n - 1)]                 # every boundary segment, wrapping
+    seg_a = nodes[numpy.arange(-1, n - 1)]  # every boundary segment, wrapping
     seg_b = nodes
     out = []
     for tri in tris:
@@ -259,7 +261,9 @@ def area_triangle_min_lods(nodes_xz, triangles, node_distance=AREA_NODE_DISTANCE
             out.append(255)
             continue
         d = numpy.sqrt(numpy.asarray(best)) * 4.0
-        out.append(calculate_lod_limit(rendering_size_raw((d[0], float(node_distance), d[1])), bias))
+        out.append(
+            calculate_lod_limit(rendering_size_raw((d[0], float(node_distance), d[1])), bias)
+        )
     return out
 
 
@@ -372,8 +376,14 @@ def screen_px(world_length, distance, screen_height=REFERENCE_SCREEN_HEIGHT, fov
     return float(world_length) * (screen_height * 0.5) / (max(float(distance), 1e-6) * tan_half)
 
 
-def game_detail_px(radius, size, area, authored_bias=0.0,
-                   level_of_detail=DEFAULT_LEVEL_OF_DETAIL, screen_height=REFERENCE_SCREEN_HEIGHT):
+def game_detail_px(
+    radius,
+    size,
+    area,
+    authored_bias=0.0,
+    level_of_detail=DEFAULT_LEVEL_OF_DETAIL,
+    screen_height=REFERENCE_SCREEN_HEIGHT,
+):
     """CS2's cull threshold for this mesh **in BeamNG's units** — the projected pixel size of the
     shape's bounding-sphere `radius` at the distance CS2 stops drawing it.
 

@@ -186,7 +186,7 @@ _MESH_SUFFIX = "_Mesh"
 def slot_asset_id(prefab_key):
     """The `assetId` (mesh/instance key) a colour slot's `lights.json` key refers to."""
     if prefab_key and prefab_key.endswith(_MESH_SUFFIX):
-        return prefab_key[:-len(_MESH_SUFFIX)]
+        return prefab_key[: -len(_MESH_SUFFIX)]
     return prefab_key
 
 
@@ -206,7 +206,7 @@ def slots_by_asset(catalogue):
         slots = [e for e in entries or () if is_colour_slot(e)]
         if slots:
             out.setdefault(slot_asset_id(prefab), []).extend(slots)
-    for key, slots in out.items():
+    for _key, slots in out.items():
         slots.sort(key=lambda e: int(e.get("slot") or 0))
     return out
 

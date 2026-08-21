@@ -35,8 +35,7 @@ import numpy
 
 # GLTF_YUP_TO_ZUP is re-exported: it is the basis a Y-up-to-Z-up loader applies, and a consumer
 # reading nodes here needs it in the same breath as the matrices below.
-from .frames import (GLTF_YUP_TO_ZUP, quat_matrix,  # noqa: F401
-                     scale_matrix, translation_matrix)
+from .frames import GLTF_YUP_TO_ZUP, quat_matrix, scale_matrix, translation_matrix  # noqa: F401
 
 # glTF component-type codes, from the spec.
 COMPONENT_FLOAT = 5126
@@ -68,6 +67,7 @@ def lod_level(node_name):
     if not match:
         return node_name, 0
     return match.group("base"), int(match.group("level"))
+
 
 _CHUNK_JSON = 0x4E4F534A
 _CHUNK_BIN = 0x004E4942
@@ -122,7 +122,9 @@ def primitive_materials(path):
     for mesh in doc.get("meshes") or ():
         for primitive in mesh.get("primitives") or ():
             index = primitive.get("material")
-            order.append(names[index] if isinstance(index, int) and 0 <= index < len(names) else None)
+            order.append(
+                names[index] if isinstance(index, int) and 0 <= index < len(names) else None
+            )
     return order
 
 
@@ -185,7 +187,7 @@ def parse_glb(path):
     """
     try:
         return _parse_glb_unguarded(path)
-    except Exception:                                            # noqa: BLE001 - refuse, quietly
+    except Exception:
         return None
 
 
@@ -203,7 +205,7 @@ def _parse_glb_unguarded(path):
     pos = 12
     while pos + 8 <= total_length:
         chunk_length, chunk_type = struct.unpack_from("<II", data, pos)
-        payload = data[pos + 8:pos + 8 + chunk_length]
+        payload = data[pos + 8 : pos + 8 + chunk_length]
         if chunk_type == _CHUNK_JSON:
             json_chunk = payload
         elif chunk_type == _CHUNK_BIN:
@@ -225,7 +227,7 @@ def _parse_glb_unguarded(path):
             if not {"POSITION", "NORMAL"} <= set(attrs):
                 return None
             if set(attrs) - KNOWN_ATTRIBUTES:
-                return None                                    # COLOR_0 or anything exotic
+                return None  # COLOR_0 or anything exotic
             if "indices" not in prim or "material" not in prim:
                 return None
 
@@ -236,7 +238,7 @@ def _parse_glb_unguarded(path):
 
     buffers = doc.get("buffers", [])
     if len(buffers) != 1 or "uri" in buffers[0]:
-        return None                                            # embedded BIN chunk only
+        return None  # embedded BIN chunk only
     if bin_chunk is None or len(bin_chunk) < buffers[0].get("byteLength", 0):
         return None
     buffer_views = doc.get("bufferViews", [])
@@ -249,7 +251,7 @@ def _parse_glb_unguarded(path):
             return None
         view = buffer_views[accessor["bufferView"]]
         if view.get("byteStride"):
-            return None                                        # interleaved, not this path
+            return None  # interleaved, not this path
         offset = view.get("byteOffset", 0) + accessor.get("byteOffset", 0)
         count = accessor["count"] * components
         if offset + count * numpy.dtype(np_dtype).itemsize > len(bin_chunk):
@@ -262,7 +264,9 @@ def _parse_glb_unguarded(path):
         if accessor.get("normalized") or accessor.get("type") != "SCALAR":
             return None
         component_type = accessor["componentType"]
-        np_dtype = {COMPONENT_USHORT: numpy.uint16, COMPONENT_UINT: numpy.uint32}.get(component_type)
+        np_dtype = {COMPONENT_USHORT: numpy.uint16, COMPONENT_UINT: numpy.uint32}.get(
+            component_type
+        )
         if np_dtype is None:
             return None
         return read_accessor(index, "SCALAR", component_type, np_dtype, 1)
@@ -292,7 +296,9 @@ def _parse_glb_unguarded(path):
         else:
             return None
         if components == 3:
-            values = numpy.concatenate([values, numpy.ones((len(values), 1), numpy.float32)], axis=1)
+            values = numpy.concatenate(
+                [values, numpy.ones((len(values), 1), numpy.float32)], axis=1
+            )
         return values
 
     materials = doc.get("materials", [])
@@ -303,7 +309,7 @@ def _parse_glb_unguarded(path):
         return None
     nodes = doc.get("nodes", [])
 
-    mesh_nodes = []                                             # (name, world matrix, mesh index)
+    mesh_nodes = []  # (name, world matrix, mesh index)
 
     def walk(node_index, parent_matrix):
         node = nodes[node_index]
@@ -332,7 +338,7 @@ def _parse_glb_unguarded(path):
         # accessors once per unique POSITION accessor, keyed by its index, handles both that
         # case and the "each primitive has its own buffer" case uniformly — the latter is just
         # every POSITION accessor index happening to be unique.
-        blocks = {}                                              # POSITION accessor index -> …
+        blocks = {}  # POSITION accessor index -> …
         block_order = []
         for prim in prims:
             attrs = prim["attributes"]
@@ -340,7 +346,7 @@ def _parse_glb_unguarded(path):
             pairing = (attrs.get("NORMAL"), attrs.get("TEXCOORD_0"), attrs.get("COLOR_0"))
             if pos_index in blocks:
                 if blocks[pos_index][3] != pairing:
-                    return None                                  # same POSITION, different NORMAL/UV
+                    return None  # same POSITION, different NORMAL/UV
                 continue
             verts = read_accessor(pos_index, "VEC3", COMPONENT_FLOAT, numpy.float32, 3)
             normals = read_accessor(attrs["NORMAL"], "VEC3", COMPONENT_FLOAT, numpy.float32, 3)
@@ -361,10 +367,10 @@ def _parse_glb_unguarded(path):
 
         has_uv = blocks[block_order[0]][2] is not None
         if any((blocks[i][2] is not None) != has_uv for i in block_order):
-            return None                                          # mixed UV presence in one mesh
+            return None  # mixed UV presence in one mesh
         has_color = blocks[block_order[0]][4] is not None
         if any((blocks[i][4] is not None) != has_color for i in block_order):
-            return None                                          # mixed COLOR_0 presence
+            return None  # mixed COLOR_0 presence
 
         offsets, cursor = {}, 0
         for pos_index in block_order:
@@ -387,16 +393,20 @@ def _parse_glb_unguarded(path):
             tri_parts.append(indices.astype(numpy.int64).reshape(-1, 3) + offset)
             runs.append((material_name, len(indices) // 3))
 
-        result.append({
-            "name": name,
-            "matrix": world,
-            "verts": numpy.concatenate([blocks[i][0] for i in block_order]),
-            "normals": numpy.concatenate([blocks[i][1] for i in block_order]),
-            "uvs": numpy.concatenate([blocks[i][2] for i in block_order]) if has_uv else None,
-            "colors": numpy.concatenate([blocks[i][4] for i in block_order]) if has_color else None,
-            "tris": numpy.concatenate(tri_parts),
-            "material_runs": runs,
-        })
+        result.append(
+            {
+                "name": name,
+                "matrix": world,
+                "verts": numpy.concatenate([blocks[i][0] for i in block_order]),
+                "normals": numpy.concatenate([blocks[i][1] for i in block_order]),
+                "uvs": numpy.concatenate([blocks[i][2] for i in block_order]) if has_uv else None,
+                "colors": numpy.concatenate([blocks[i][4] for i in block_order])
+                if has_color
+                else None,
+                "tris": numpy.concatenate(tri_parts),
+                "material_runs": runs,
+            }
+        )
 
     return result
 
@@ -411,6 +421,7 @@ def glb_uv_to_texture_uv(uvs):
 
 
 # -- the degenerate-face policy ----------------------------------------------------------------
+
 
 def clean_degenerate_polygons(verts, loops_flat, sizes, uv_layers=None, material_runs=None):
     """Drop polygons that carry no area, keeping materials and UVs aligned to the survivors.
@@ -473,7 +484,7 @@ def clean_degenerate_polygons(verts, loops_flat, sizes, uv_layers=None, material
         repeated[group] = rep
         area2[group] = a2
 
-    zero_area = (~repeated) & (area2 < 1e-12)          # TUNED: below any real mesh's face area
+    zero_area = (~repeated) & (area2 < 1e-12)  # TUNED: below any real mesh's face area
     degenerate = repeated | zero_area
     repeated_count = int(repeated.sum())
     zero_area_count = int(zero_area.sum())
@@ -496,8 +507,15 @@ def clean_degenerate_polygons(verts, loops_flat, sizes, uv_layers=None, material
         material_runs = trimmed
     loop_keep = numpy.repeat(keep, sizes)
     if uv_layers:
-        uv_layers = {layer_name: numpy.asarray(uvs)[loop_keep]
-                     for layer_name, uvs in uv_layers.items()}
+        uv_layers = {
+            layer_name: numpy.asarray(uvs)[loop_keep] for layer_name, uvs in uv_layers.items()
+        }
 
-    return (loops_flat[loop_keep], sizes[keep], uv_layers, material_runs,
-            repeated_count, zero_area_count)
+    return (
+        loops_flat[loop_keep],
+        sizes[keep],
+        uv_layers,
+        material_runs,
+        repeated_count,
+        zero_area_count,
+    )

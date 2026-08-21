@@ -33,7 +33,7 @@ def run(ctx, progress):
         try:
             from ..beamng import validate_level
         except ImportError:
-            validate_level = None                       # the level validator lands in A1
+            validate_level = None  # the level validator lands in A1
         if validate_level is not None:
             checks, problems = validate_level.check(level, ctx.bundle, progress, ctx.settings)
         else:
@@ -44,8 +44,11 @@ def run(ctx, progress):
     # `_report` is merged into the report by the worker and travels in the replay payload, so a
     # SKIPPED validate still leaves its verdict in `cs2beamng_report.json` — writing straight to
     # `ctx.report` did not (see `pipeline/worker._merge_report`).
-    return {"problems": len(problems), "checks": checks,
-            "_report": {"validation": {"problems": problems, "checks": checks}}}
+    return {
+        "problems": len(problems),
+        "checks": checks,
+        "_report": {"validation": {"problems": problems, "checks": checks}},
+    }
 
 
 # This stage's input is THE LEVEL FOLDER, not the bundle: it is fresh exactly when nothing the
@@ -63,5 +66,13 @@ def run(ctx, progress):
 # version 6: `map.lua`'s own node build is run over the level's OWN `DecalRoad`s and the build
 #            FAILS on a triangle - the shape that reaches map.lua:459's unguarded `lanes`
 #            compare and takes the game down before the level opens (A7.5, audit §85)
-STAGE = Stage("validate", "Validate level", enabled, units, run, inputs=("level:",),
-               settings_keys=("gpu_vram_mib", "render_width", "render_height"), version=6)
+STAGE = Stage(
+    "validate",
+    "Validate level",
+    enabled,
+    units,
+    run,
+    inputs=("level:",),
+    settings_keys=("gpu_vram_mib", "render_width", "render_height"),
+    version=6,
+)

@@ -20,8 +20,8 @@ level under the detected levels folder that carries a report is used.
 
 import json
 import os
-import tempfile
 import sys
+import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
@@ -48,6 +48,7 @@ def section(title):
 
 # -- 1. the arithmetic ---------------------------------------------------------------------------
 
+
 def test_dds_arithmetic():
     from cs2beamng.beamng import dds
 
@@ -68,7 +69,10 @@ def test_dds_arithmetic():
             if got != want:
                 check(False, f"encoded_bytes({width}x{height}, {fmt}) = {got}, want {want}")
                 return
-    check(True, f"encoded_bytes matches the mip walk over {len(sizes) * len(formats)} (size, format) pairs")
+    check(
+        True,
+        f"encoded_bytes matches the mip walk over {len(sizes) * len(formats)} (size, format) pairs",
+    )
 
     if not dds.available():
         SKIPPED.append("encoded_bytes against a real encode (etcpak is not installed)")
@@ -84,14 +88,17 @@ def test_dds_arithmetic():
             written = len(dds.encode(arr, fmt))
             if written != dds.encoded_bytes(width, height, fmt):
                 exact = False
-                check(False, f"encode({width}x{height}, {fmt}) wrote {written}, "
-                             f"encoded_bytes said {dds.encoded_bytes(width, height, fmt)}")
+                check(
+                    False,
+                    f"encode({width}x{height}, {fmt}) wrote {written}, "
+                    f"encoded_bytes said {dds.encoded_bytes(width, height, fmt)}",
+                )
     check(exact, "encoded_bytes is byte-for-byte what encode() writes (12 real encodes)")
 
 
 def test_cap_arithmetic():
-    from cs2beamng.beamng import materials as bm
     import numpy
+    from cs2beamng.beamng import materials as bm
 
     section("the size cap is arithmetic")
     ok = True
@@ -108,8 +115,8 @@ def test_cap_arithmetic():
 
 
 def test_formats_are_covered():
-    from cs2beamng.beamng import materials as bm
     from cs2beamng.beamng import dds
+    from cs2beamng.beamng import materials as bm
 
     section("every exported kind has a format")
     ok = True
@@ -123,29 +130,67 @@ def test_formats_are_covered():
     check(ok, "dxgi_format returns a known format for every kind, greyness and alpha")
     # the one case a flat table gets wrong: an RGB data map is BC7, not BC4
     check(bm.dxgi_format("data", False, True) == dds.BC4_UNORM, "a grey data map is BC4")
-    check(bm.dxgi_format("data", False, False) == dds.BC7_UNORM, "an RGB data map is BC7 (data_rgb)")
+    check(
+        bm.dxgi_format("data", False, False) == dds.BC7_UNORM, "an RGB data map is BC7 (data_rgb)"
+    )
     check(bm.dxgi_format("opacity", False, False) == dds.BC4_UNORM, "an opacity map is always BC4")
     check(bm.dxgi_format("colormask", False, True) == dds.BC7_UNORM, "a colour mask is always BC7")
 
 
 # -- 2. the selection ------------------------------------------------------------------------------
 
+
 def test_index_selection():
     from cs2beamng.pipeline import meshindex
 
     section("the mesh index answers every slider position")
-    doc = {"schema": meshindex.SCHEMA, "cellMetres": meshindex.CELL_METRES, "shipped": {
-        "House": {"kind": "building", "count": 10, "rank": 0.0, "bytes": 1000, "lodBytes": 100,
-                  "cells": ["0,0"]},
-        "Bench": {"kind": "prop", "count": 4, "rank": 0.30, "bytes": 200, "lodBytes": 20,
-                  "cells": ["0,0", "4,4"]},
-        "RarePot": {"kind": "prop", "count": 1, "rank": 0.90, "bytes": 50, "lodBytes": 5,
-                    "cells": ["4,4"]},
-        "Oak": {"kind": "tree", "count": 900, "rank": 0.01, "bytes": 400, "lodBytes": 40,
-                "cells": ["0,0"]},
-    }}
-    base = {"trees": True, "props": True, "buildings": True, "foliage_density": 100,
-            "prop_density": 100, "generate_lods": True, "region": None}
+    doc = {
+        "schema": meshindex.SCHEMA,
+        "cellMetres": meshindex.CELL_METRES,
+        "shipped": {
+            "House": {
+                "kind": "building",
+                "count": 10,
+                "rank": 0.0,
+                "bytes": 1000,
+                "lodBytes": 100,
+                "cells": ["0,0"],
+            },
+            "Bench": {
+                "kind": "prop",
+                "count": 4,
+                "rank": 0.30,
+                "bytes": 200,
+                "lodBytes": 20,
+                "cells": ["0,0", "4,4"],
+            },
+            "RarePot": {
+                "kind": "prop",
+                "count": 1,
+                "rank": 0.90,
+                "bytes": 50,
+                "lodBytes": 5,
+                "cells": ["4,4"],
+            },
+            "Oak": {
+                "kind": "tree",
+                "count": 900,
+                "rank": 0.01,
+                "bytes": 400,
+                "lodBytes": 40,
+                "cells": ["0,0"],
+            },
+        },
+    }
+    base = {
+        "trees": True,
+        "props": True,
+        "buildings": True,
+        "foliage_density": 100,
+        "prop_density": 100,
+        "generate_lods": True,
+        "region": None,
+    }
 
     got = meshindex.select(doc, base)
     check(sorted(got) == ["building", "prop", "tree"], "everything on ships all three kinds")
@@ -161,8 +206,10 @@ def test_index_selection():
     check(thin["prop"]["shapes"] == 1, "a prop whose first instance ranks 0.90 is gone at 50 %")
     thin = meshindex.select(doc, dict(base, prop_density=20))
     check("prop" not in thin, "at 20 % neither prop survives its rank")
-    check(meshindex.select(doc, dict(base, foliage_density=0)).get("tree") is None,
-          "density 0 places no trees at all")
+    check(
+        meshindex.select(doc, dict(base, foliage_density=0)).get("tree") is None,
+        "density 0 places no trees at all",
+    )
 
     near = meshindex.select(doc, dict(base, region="100 100 300"))
     check(sorted(near) == ["building", "prop", "tree"], "a region at the origin keeps cell 0,0")
@@ -177,7 +224,10 @@ def test_density_rank_is_the_same_rule():
     section("density_rank is density_keep from the other end")
     ok = True
     for ident in range(400):
-        record = {"id": ident, "attrs": {"treeState": ["Adult", "Teen", "Child", "Stump"][ident % 4]}}
+        record = {
+            "id": ident,
+            "attrs": {"treeState": ["Adult", "Teen", "Child", "Stump"][ident % 4]},
+        }
         rank = instances.density_rank(record)
         for fraction in (0.05, 0.25, 0.5, 0.75, 0.99):
             if instances.density_keep(record, fraction) != (rank < fraction):
@@ -187,12 +237,15 @@ def test_density_rank_is_the_same_rule():
 
 # -- 3. the shape of the answer ---------------------------------------------------------------------
 
+
 def test_waiting_states():
     from cs2beamng.pipeline import estimate
 
     section("an estimate it cannot make says what it is waiting for")
     out = estimate.take({"bundle": os.path.join(REPO, "nowhere")})
-    check(out["ready"] is False and out["waiting"] == "no bundle", "no bundle -> waiting 'no bundle'")
+    check(
+        out["ready"] is False and out["waiting"] == "no bundle", "no bundle -> waiting 'no bundle'"
+    )
     check(out["rows"] == [], "...and no rows, rather than an empty bar")
     # a bundle-shaped folder of its own, so a leftover `derived/` in the example bundle cannot
     # decide what this asserts
@@ -208,10 +261,12 @@ def test_learn_floor():
 
     section("a level too small to teach anything is not learned from")
     tiny = {"meshMiB": 0.2, "textureShippedMiB": 0.1, "totalMiB": 0.3}
-    check(estimate.score({"meshes": {"bytes": 1}, "textures": {"bytes": 1},
-                          "residentBytes": 2}, tiny) is None,
-          f"a {tiny['totalMiB']} MiB level is under the {estimate.LEARN_FLOOR_MIB:.0f} MiB floor "
-          f"and is not scored")
+    check(
+        estimate.score({"meshes": {"bytes": 1}, "textures": {"bytes": 1}, "residentBytes": 2}, tiny)
+        is None,
+        f"a {tiny['totalMiB']} MiB level is under the {estimate.LEARN_FLOOR_MIB:.0f} MiB floor "
+        f"and is not scored",
+    )
 
 
 def test_history_sizes():
@@ -221,10 +276,14 @@ def test_history_sizes():
     rates = history.load()
     for kind in ("building", "prop", "tree", "networks", "areas", "markings", "skirts"):
         check(f"size/cdae_per_source_{kind}" in rates, f"a shipped ratio for {kind}")
-    check(rates.get("size/ground_texture_per_source", 0) > 1.0, "a shipped ratio for the ground textures")
+    check(
+        rates.get("size/ground_texture_per_source", 0) > 1.0,
+        "a shipped ratio for the ground textures",
+    )
 
 
 # -- 4. against a real build ------------------------------------------------------------------------
+
 
 def find_level():
     """A built level with a report that measured its residency, or None."""
@@ -253,7 +312,8 @@ def find_level():
 
 
 def test_against_a_real_build():
-    from cs2beamng.pipeline import estimate, meshindex, census as census_mod
+    from cs2beamng.pipeline import census as census_mod
+    from cs2beamng.pipeline import estimate, meshindex
 
     section("against a level that was actually built")
     level = find_level()
@@ -265,8 +325,10 @@ def test_against_a_real_build():
     measured = ((report.get("validation") or {}).get("checks") or {}).get("resident")
     settings_path = os.path.join(level, "cs2beamng_settings.json")
     if not measured or not os.path.isfile(settings_path):
-        SKIPPED.append(f"the real-build tier: {os.path.basename(level)} predates the residency "
-                       f"measurement or the settings it was built with")
+        SKIPPED.append(
+            f"the real-build tier: {os.path.basename(level)} predates the residency "
+            f"measurement or the settings it was built with"
+        )
         print("  skip  that level's report has no residency measurement to score against")
         return
     values = json.load(open(settings_path, encoding="utf-8"))["settings"]
@@ -292,30 +354,41 @@ def test_against_a_real_build():
     # different level than the one on disk. That is not the estimate being wrong; it is
     # `_stale_bake_note`, which the meter declares on screen. Scoring across it would be scoring
     # something the estimate never claimed.
-    baked = ((estimate._load_json(os.path.join(bundle, "derived", "derived.json")) or {})
-             .get("options") or {}).get("paint_kinds")
+    baked = (
+        (estimate._load_json(os.path.join(bundle, "derived", "derived.json")) or {}).get("options")
+        or {}
+    ).get("paint_kinds")
     wanted = [k.strip() for k in str(values.get("paint_kinds") or "").split(",") if k.strip()]
     stale_bake = baked is not None and list(baked) != wanted
     if stale_bake:
-        print(f"  ..    the bake on disk recolours {baked}, this level was built with "
-              f"{wanted or 'none'} — the byte totals are not comparable")
+        print(
+            f"  ..    the bake on disk recolours {baked}, this level was built with "
+            f"{wanted or 'none'} — the byte totals are not comparable"
+        )
 
     exact, compared, worst, unnamed = _texture_file_check(values, bundle, level)
     if compared:
-        check(exact == compared, f"every one of {compared:,} exported textures is sized to the "
-                                 f"byte (worst error {worst:,})")
+        check(
+            exact == compared,
+            f"every one of {compared:,} exported textures is sized to the "
+            f"byte (worst error {worst:,})",
+        )
         # The materials stage sweeps its own orphans, so every file in the folder is one THIS
         # settings combination exported. A file the enumeration cannot name is therefore a hole
         # in it — which is what the refactor onto `plan_canonical` had to be proved free of.
         #
         # ...but only against the bake that built it (see above).
         if stale_bake:
-            SKIPPED.append(f"the completeness check: this level was built from a bake made with "
-                           f"paint_kinds {wanted or 'none'}, and the one on disk has {baked}")
+            SKIPPED.append(
+                f"the completeness check: this level was built from a bake made with "
+                f"paint_kinds {wanted or 'none'}, and the one on disk has {baked}"
+            )
             print(f"  skip  {unnamed} files belong to a bake this one is not — not a hole")
         else:
-            check(unnamed == 0, f"the enumeration names every file the build wrote ({unnamed} "
-                                f"unnamed)")
+            check(
+                unnamed == 0,
+                f"the enumeration names every file the build wrote ({unnamed} unnamed)",
+            )
     else:
         SKIPPED.append("the per-file texture check: the level ships no DDS")
         print("  skip  the level ships no DDS textures to compare against")
@@ -333,43 +406,63 @@ def test_against_a_real_build():
     ground = est["textures"]["groundBytes"] / (1024.0 * 1024.0)
     if shipped["textures"]:
         over = 100.0 * (material - shipped["textures"]) / shipped["textures"]
-        check(0.0 <= over <= 8.0,
-              f"the computed textures are an upper bound and a tight one: {material:,.0f} MiB "
-              f"against {shipped['textures']:,.0f} MiB shipped ({over:+.1f} %, the materials no "
-              f"shape binds)")
+        check(
+            0.0 <= over <= 8.0,
+            f"the computed textures are an upper bound and a tight one: {material:,.0f} MiB "
+            f"against {shipped['textures']:,.0f} MiB shipped ({over:+.1f} %, the materials no "
+            f"shape binds)",
+        )
     if shipped["ground"]:
         off = 100.0 * (ground - shipped["ground"]) / shipped["ground"]
-        check(abs(off) <= 25.0,
-              f"the ground textures are within 25 % of their ratio: {ground:,.0f} MiB against "
-              f"{shipped['ground']:,.0f} MiB shipped ({off:+.1f} %)")
+        check(
+            abs(off) <= 25.0,
+            f"the ground textures are within 25 % of their ratio: {ground:,.0f} MiB against "
+            f"{shipped['ground']:,.0f} MiB shipped ({off:+.1f} %)",
+        )
 
     score = estimate.score(est, measured)
     if stale_bake:
         SKIPPED.append("the byte totals: the bake on disk is not the one that built this level")
         for name in ("mesh", "texture", "total"):
             row = score[name]
-            print(f"  skip  {name}: {row['estimatedMiB']:,.0f} MiB estimated against "
-                  f"{row['actualMiB']:,.0f} MiB measured ({row['errorPercent']:+.1f} %) — "
-                  f"across a re-bake, so not a score")
+            print(
+                f"  skip  {name}: {row['estimatedMiB']:,.0f} MiB estimated against "
+                f"{row['actualMiB']:,.0f} MiB measured ({row['errorPercent']:+.1f} %) — "
+                f"across a re-bake, so not a score"
+            )
     else:
         for name, tolerance in (("mesh", 10.0), ("total", 8.0)):
             row = score[name]
-            note = "" if name == "texture" else (" (a tolerance on a calibrated figure; the "
-                                                 "running score is the one in each build's "
-                                                 "own report)")
-            check(abs(row["errorPercent"]) <= tolerance,
-                  f"the {name} half is within {tolerance:.0f} %: {row['estimatedMiB']:,.0f} MiB "
-                  f"estimated against {row['actualMiB']:,.0f} MiB measured "
-                  f"({row['errorPercent']:+.1f} %){note}")
+            note = (
+                ""
+                if name == "texture"
+                else (
+                    " (a tolerance on a calibrated figure; the "
+                    "running score is the one in each build's "
+                    "own report)"
+                )
+            )
+            check(
+                abs(row["errorPercent"]) <= tolerance,
+                f"the {name} half is within {tolerance:.0f} %: {row['estimatedMiB']:,.0f} MiB "
+                f"estimated against {row['actualMiB']:,.0f} MiB measured "
+                f"({row['errorPercent']:+.1f} %){note}",
+            )
 
     # every figure carries a basis, and every approximation says what and why
-    check(bool(est["textures"]["basis"]) and bool(est["meshes"]["basis"]),
-          "both halves state their basis")
+    check(
+        bool(est["textures"]["basis"]) and bool(est["meshes"]["basis"]),
+        "both halves state their basis",
+    )
     check(all(row.get("basis") for row in est["rows"]), "every row states its basis")
-    check(all(a.get("what") and a.get("why") for a in est["approximations"]),
-          f"all {len(est['approximations'])} approximations say what they approximate and why")
-    check(est["rows"][0].get("band") in ("fits", "close", "over", "unknown"),
-          f"the video memory row lands in a band ({est['rows'][0].get('band')})")
+    check(
+        all(a.get("what") and a.get("why") for a in est["approximations"]),
+        f"all {len(est['approximations'])} approximations say what they approximate and why",
+    )
+    check(
+        est["rows"][0].get("band") in ("fits", "close", "over", "unknown"),
+        f"the video memory row lands in a band ({est['rows'][0].get('band')})",
+    )
 
 
 def _texture_bytes_by_folder(level):
@@ -387,8 +480,8 @@ def _texture_bytes_by_folder(level):
 
 def _texture_file_check(values, bundle, level):
     """`(exact, compared, worstError, unnamed)` over the DDS files the level actually holds."""
-    from cs2beamng.beamng import materials as bm
     from cs2beamng.beamng import dds as dds_mod
+    from cs2beamng.beamng import materials as bm
     from cs2beamng.pipeline import estimate
 
     plan = estimate._texture_plan(bundle, os.path.join(bundle, "derived"), values)
@@ -399,7 +492,8 @@ def _texture_file_check(values, bundle, level):
         kind, keep_alpha, width, height, colour = sizes
         width, height = bm.capped_size(width, height, int(caps.get(kind, 0) or 0))
         predicted[bm.texture_name(job[0], kind, keep_alpha, True)] = dds_mod.encoded_bytes(
-            width, height, bm.dxgi_format(kind, keep_alpha, colour in (0, 4)))
+            width, height, bm.dxgi_format(kind, keep_alpha, colour in (0, 4))
+        )
     directory = os.path.join(level, "art", "textures")
     if not os.path.isdir(directory):
         return 0, 0, 0, 0
@@ -428,8 +522,9 @@ def _plan_jobs(bundle, values):
 
     derived_dir = os.path.join(bundle, "derived")
     table = estimate._load_json(os.path.join(derived_dir, "materials.json")) or {}
-    canonical = sorted({rec.get("canonical") or name
-                        for name, rec in (table.get("materials") or {}).items()})
+    canonical = sorted(
+        {rec.get("canonical") or name for name, rec in (table.get("materials") or {}).items()}
+    )
     jobs = {}
     for plan in bm.plan_canonical(bundle, derived_dir, table, canonical).values():
         for job in plan.values():

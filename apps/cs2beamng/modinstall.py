@@ -120,7 +120,9 @@ def _verify(path):
         names = {n.replace("\\", "/") for n in archive.namelist()}
         for required in REQUIRED_FILES:
             if f"{MOD_FOLDER_NAME}/{required}" not in names:
-                raise ValueError(f"{os.path.basename(path)} has no {MOD_FOLDER_NAME}/{required} in it")
+                raise ValueError(
+                    f"{os.path.basename(path)} has no {MOD_FOLDER_NAME}/{required} in it"
+                )
 
 
 def install(zip_path=None, version=None):
@@ -132,12 +134,15 @@ def install(zip_path=None, version=None):
     """
     path = zip_path or bundled_zip()
     if not path:
-        raise FileNotFoundError("no mod zip shipped with this build - download it from the "
-                                "releases page and pass it here")
+        raise FileNotFoundError(
+            "no mod zip shipped with this build - download it from the "
+            "releases page and pass it here"
+        )
     target = install_dir()
     if not target:
-        raise FileNotFoundError("no Cities: Skylines II user folder on this machine - run the "
-                                "game once, then try again")
+        raise FileNotFoundError(
+            "no Cities: Skylines II user folder on this machine - run the game once, then try again"
+        )
     _verify(path)
     if os.path.isdir(target):
         shutil.rmtree(target)
@@ -152,6 +157,8 @@ def install(zip_path=None, version=None):
             with archive.open(member) as src, open(dest, "wb") as out:
                 shutil.copyfileobj(src, out)
     stamp = version or bundled_version() or "unknown"
-    with open(os.path.join(target, "cs2beamng_mod_version.txt"), "w", encoding="utf-8", newline="\n") as handle:
+    with open(
+        os.path.join(target, "cs2beamng_mod_version.txt"), "w", encoding="utf-8", newline="\n"
+    ) as handle:
         handle.write(stamp + "\n")
     return target

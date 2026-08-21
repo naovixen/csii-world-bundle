@@ -25,14 +25,20 @@ import json
 import struct
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any
 
-COMPONENT = {5120: ("b", 1), 5121: ("B", 1), 5122: ("h", 2), 5123: ("H", 2),
-             5125: ("I", 4), 5126: ("f", 4)}
+COMPONENT = {
+    5120: ("b", 1),
+    5121: ("B", 1),
+    5122: ("h", 2),
+    5123: ("H", 2),
+    5125: ("I", 4),
+    5126: ("f", 4),
+}
 ARITY = {"SCALAR": 1, "VEC2": 2, "VEC3": 3, "VEC4": 4, "MAT4": 16}
 
 
-def read_glb(path: Path) -> Tuple[Dict[str, Any], bytes]:
+def read_glb(path: Path) -> tuple[dict[str, Any], bytes]:
     data = path.read_bytes()
     if len(data) < 12:
         raise ValueError("shorter than a GLB header")
@@ -50,7 +56,7 @@ def read_glb(path: Path) -> Tuple[Dict[str, Any], bytes]:
         offset += 8
         if offset + chunk_len > len(data):
             raise ValueError(f"chunk {chunk_type!r} overruns the file")
-        payload = data[offset:offset + chunk_len]
+        payload = data[offset : offset + chunk_len]
         if chunk_type == b"JSON":
             gltf = json.loads(payload.decode("utf-8"))
         elif chunk_type == b"BIN\x00":
@@ -64,7 +70,7 @@ def read_glb(path: Path) -> Tuple[Dict[str, Any], bytes]:
     return gltf, blob
 
 
-def read_accessor(gltf: Dict[str, Any], blob: bytes, index: int) -> List[Any]:
+def read_accessor(gltf: dict[str, Any], blob: bytes, index: int) -> list[Any]:
     acc = gltf["accessors"][index]
     view = gltf["bufferViews"][acc["bufferView"]]
     fmt, width = COMPONENT[acc["componentType"]]
@@ -79,8 +85,8 @@ def read_accessor(gltf: Dict[str, Any], blob: bytes, index: int) -> List[Any]:
     return out
 
 
-def inspect(path: Path, verbose: bool) -> List[str]:
-    problems: List[str] = []
+def inspect(path: Path, verbose: bool) -> list[str]:
+    problems: list[str] = []
     try:
         gltf, blob = read_glb(path)
     except (ValueError, json.JSONDecodeError, UnicodeDecodeError, struct.error) as exc:
@@ -121,11 +127,15 @@ def inspect(path: Path, verbose: bool) -> List[str]:
                 actual_lo = [min(p[a] for p in positions) for a in range(3)]
                 actual_hi = [max(p[a] for p in positions) for a in range(3)]
                 for a in range(3):
-                    if abs(acc["min"][a] - actual_lo[a]) > 1e-4 or abs(acc["max"][a] - actual_hi[a]) > 1e-4:
+                    if (
+                        abs(acc["min"][a] - actual_lo[a]) > 1e-4
+                        or abs(acc["max"][a] - actual_hi[a]) > 1e-4
+                    ):
                         problems.append(
                             f"{label}: POSITION accessor bounds disagree with the data on axis {a} "
                             f"(declared {acc['min'][a]:.4f}..{acc['max'][a]:.4f}, "
-                            f"actual {actual_lo[a]:.4f}..{actual_hi[a]:.4f})")
+                            f"actual {actual_lo[a]:.4f}..{actual_hi[a]:.4f})"
+                        )
                         break
             else:
                 problems.append(f"{label}: POSITION accessor has no min/max (required by glTF)")
@@ -149,38 +159,53 @@ def inspect(path: Path, verbose: bool) -> List[str]:
             if indices and (max(indices) >= len(positions) or min(indices) < 0):
                 problems.append(
                     f"{label}: index range {min(indices)}..{max(indices)} escapes the "
-                    f"{len(positions)}-vertex buffer — likely a submesh index base error")
+                    f"{len(positions)}-vertex buffer — likely a submesh index base error"
+                )
                 continue
 
             degenerate = sum(
-                1 for t in range(0, len(indices) - 2, 3)
-                if len({indices[t], indices[t + 1], indices[t + 2]}) < 3)
+                1
+                for t in range(0, len(indices) - 2, 3)
+                if len({indices[t], indices[t + 1], indices[t + 2]}) < 3
+            )
             if degenerate:
                 problems.append(f"{label}: {degenerate} degenerate triangle(s)")
 
             total_tris += len(indices) // 3
             if verbose:
-                mat = gltf.get("materials", [])[prim["material"]].get("name") if "material" in prim else None
-                print(f"    {label}: {len(positions)} verts, {len(indices)//3} tris, material {mat!r}")
+                mat = (
+                    gltf.get("materials", [])[prim["material"]].get("name")
+                    if "material" in prim
+                    else None
+                )
+                print(
+                    f"    {label}: {len(positions)} verts, {len(indices) // 3} tris, material {mat!r}"
+                )
 
         if total_tris == 0:
             problems.append(f"{name}: no triangles")
 
         if lo[0] != float("inf"):
             size = [hi[a] - lo[a] for a in range(3)]
-            print(f"  {name}: {total_tris} tris, "
-                  f"size {size[0]:.2f} x {size[1]:.2f} x {size[2]:.2f} m, "
-                  f"y {lo[1]:.2f}..{hi[1]:.2f}")
+            print(
+                f"  {name}: {total_tris} tris, "
+                f"size {size[0]:.2f} x {size[1]:.2f} x {size[2]:.2f} m, "
+                f"y {lo[1]:.2f}..{hi[1]:.2f}"
+            )
             biggest = max(size)
             if biggest < 0.01:
-                problems.append(f"{name}: {biggest:.5f} m across — implausibly tiny, check units/scale")
+                problems.append(
+                    f"{name}: {biggest:.5f} m across — implausibly tiny, check units/scale"
+                )
             elif biggest > 10000:
-                problems.append(f"{name}: {biggest:.1f} m across — implausibly huge, check units/scale")
+                problems.append(
+                    f"{name}: {biggest:.1f} m across — implausibly huge, check units/scale"
+                )
 
     return problems
 
 
-def main(argv: List[str]) -> int:
+def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description="Inspect ripper-produced .glb files.")
     parser.add_argument("target", type=Path, help="a .glb file, or a directory of them")
     parser.add_argument("-v", "--verbose", action="store_true", help="list every primitive")

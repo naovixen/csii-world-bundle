@@ -23,9 +23,9 @@ import struct
 
 import numpy
 
-try:                                                        # optional dependency (pyproject `textures`)
+try:  # optional dependency (pyproject `textures`)
     import etcpak
-except ImportError:                                         # pragma: no cover - environment dependent
+except ImportError:  # pragma: no cover - environment dependent
     etcpak = None
 
 # DXGI formats, as the cooker writes them
@@ -44,11 +44,16 @@ D3D10_RESOURCE_DIMENSION_TEXTURE2D = 3
 _BLOCK_BYTES = {BC7_UNORM_SRGB: 16, BC7_UNORM: 16, BC5_UNORM: 16, BC4_UNORM: 8}
 
 # texture kind (the materials stage's vocabulary) -> DXGI format
-KIND_FORMAT = {"color": BC7_UNORM_SRGB, "normal": BC5_UNORM, "data": BC4_UNORM, "opacity": BC4_UNORM,
-               "data_rgb": BC7_UNORM,
-               # CS2's colour mask, converted into BeamNG's palette semantics: linear, and its
-               # ALPHA is load-bearing (the tint coverage), so it must survive the encode
-               "colormask": BC7_UNORM}
+KIND_FORMAT = {
+    "color": BC7_UNORM_SRGB,
+    "normal": BC5_UNORM,
+    "data": BC4_UNORM,
+    "opacity": BC4_UNORM,
+    "data_rgb": BC7_UNORM,
+    # CS2's colour mask, converted into BeamNG's palette semantics: linear, and its
+    # ALPHA is load-bearing (the tint coverage), so it must survive the encode
+    "colormask": BC7_UNORM,
+}
 
 
 def available():
@@ -93,7 +98,7 @@ def _reduce2(arr):
     if h == 1 and w == 1:
         return arr
     h2, w2 = max(1, h // 2), max(1, w // 2)
-    a = arr[:h2 * 2, :w2 * 2].astype(numpy.uint16)
+    a = arr[: h2 * 2, : w2 * 2].astype(numpy.uint16)
     if h >= 2 and w >= 2:
         s = a[0::2, 0::2] + a[1::2, 0::2] + a[0::2, 1::2] + a[1::2, 1::2]
         return ((s + 2) >> 2).astype(numpy.uint8)
@@ -142,7 +147,9 @@ def header(width, height, mips, fmt, linear_size):
         flags |= DDSD_MIPMAPCOUNT
         caps |= DDSCAPS_MIPMAP | DDSCAPS_COMPLEX
     out = b"DDS " + struct.pack("<7I", 124, flags, height, width, linear_size, 1, mips) + b"\0" * 44
-    out += struct.pack("<4I", 32, DDPF_FOURCC, struct.unpack("<I", b"DX10")[0], 0) + struct.pack("<4I", 0, 0, 0, 0)
+    out += struct.pack("<4I", 32, DDPF_FOURCC, struct.unpack("<I", b"DX10")[0], 0) + struct.pack(
+        "<4I", 0, 0, 0, 0
+    )
     out += struct.pack("<5I", caps, 0, 0, 0, 0)
     out += struct.pack("<5I", fmt, D3D10_RESOURCE_DIMENSION_TEXTURE2D, 0, 1, 0)
     return out
@@ -173,19 +180,23 @@ def to_rgba(arr, kind):
     if arr.ndim == 2:
         g = arr
         if g.dtype != numpy.uint8:
-            g = (g.astype(numpy.uint32) >> 8).astype(numpy.uint8) if g.max() > 255 else g.astype(numpy.uint8)
-        out = numpy.empty(g.shape + (4,), dtype=numpy.uint8)
+            g = (
+                (g.astype(numpy.uint32) >> 8).astype(numpy.uint8)
+                if g.max() > 255
+                else g.astype(numpy.uint8)
+            )
+        out = numpy.empty((*g.shape, 4), dtype=numpy.uint8)
         out[..., 0] = out[..., 1] = out[..., 2] = g
         out[..., 3] = 255
         return out
     if arr.shape[2] == 3:
-        out = numpy.empty(arr.shape[:2] + (4,), dtype=numpy.uint8)
+        out = numpy.empty((*arr.shape[:2], 4), dtype=numpy.uint8)
         out[..., :3] = arr
         out[..., 3] = 255
         return out
     out = arr.astype(numpy.uint8, copy=True)
     if kind in ("color", "normal", "data_rgb"):
-        out[..., 3] = 255                                   # no stray coverage in an opaque map
+        out[..., 3] = 255  # no stray coverage in an opaque map
     # "colormask" deliberately keeps its alpha — see KIND_FORMAT
     return out
 

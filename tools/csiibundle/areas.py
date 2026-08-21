@@ -45,12 +45,7 @@ which is where every layer of ground paint is ordered against every other.
 
 import math
 
-from . import lod
-
-import numpy
-
-from . import decals
-
+from . import decals, lod
 
 # Lift above the terrain grid, below everything that stands on the area. The rung is
 # `decals.LIFT_LADDER`'s, where every layer of ground paint is ordered against every other; the
@@ -175,7 +170,9 @@ def draw_order(catalogue):
     catalogue or record order gets whichever the iteration happened to reach last, which is
     z-fighting with extra steps.
     """
-    return sorted(catalogue or {}, key=lambda k: int((catalogue[k] or {}).get("rendererPriority") or 0))
+    return sorted(
+        catalogue or {}, key=lambda k: int((catalogue[k] or {}).get("rendererPriority") or 0)
+    )
 
 
 def height_range(record, index):
@@ -220,9 +217,7 @@ def conform_triangle(tri, cell, sample, counters):
     floor = max(cell * 0.02, 0.10)
     (ax, ay, _), (bx, by, _), (cx, cy, _) = tri
     plan = abs((bx - ax) * (cy - ay) - (by - ay) * (cx - ax)) * 0.5
-    budget = min(PIECE_BUDGET[1],
-                 max(PIECE_BUDGET[0],
-                     int(PIECES_PER_CELL * plan / (cell * cell))))
+    budget = min(PIECE_BUDGET[1], max(PIECE_BUDGET[0], int(PIECES_PER_CELL * plan / (cell * cell))))
     work = [(tri, 0)]
     out = []
     while work:
@@ -245,15 +240,15 @@ def conform_triangle(tri, cell, sample, counters):
             worst = max(worst, centre - (a[2] + b[2] + c[2]) / 3.0)
         longest = max(math.dist(p[:2], q[:2]) for p, q in ((a, b), (b, c), (c, a)))
         spent = len(out) + len(work)
-        if (worst <= CONFORM_TOLERANCE or depth >= MAX_DEPTH
-                or longest <= floor or spent >= budget):
+        if worst <= CONFORM_TOLERANCE or depth >= MAX_DEPTH or longest <= floor or spent >= budget:
             if worst > CONFORM_TOLERANCE:
                 # Report the GROUND left unconformed, not the piece count: a piece is an
                 # arbitrary unit (a budget stop leaves few big ones, a floor stop many small
                 # ones) and only the square metres say how much of the city still shows it.
                 counters["unconformed"] += 1
-                counters["unconformed_area"] += abs(
-                    (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])) * 0.5
+                counters["unconformed_area"] += (
+                    abs((b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])) * 0.5
+                )
                 counters["worst"] = max(counters["worst"], worst)
             out.append((a, b, c))
             continue
@@ -305,8 +300,9 @@ def memoised_sampler(surface):
     return ground_at
 
 
-def build_pieces(records, cell, sample, center=None, radius=None, lift=AREA_LIFT,
-                 progress=None, catalogue=None):
+def build_pieces(
+    records, cell, sample, center=None, radius=None, lift=AREA_LIFT, progress=None, catalogue=None
+):
     """Conform every area record into Z-up triangle soup, grouped by prefab.
 
     `records` is an iterable of §8b area records; `sample` is a `(x, y) -> height or None`
@@ -329,9 +325,15 @@ def build_pieces(records, cell, sample, center=None, radius=None, lift=AREA_LIFT
     # survives being rebuilt as geometry instead of composited as decals. See `priority_lift`.
     ordered = priorities(catalogue) if catalogue else []
     pieces = {}
-    stats = {"placed": 0, "skipped_region": 0, "dropped_bad": 0, "missed": 0,
-             "source_tris": 0, "painted_area": 0.0,
-             "counters": {"unconformed": 0, "unconformed_area": 0.0, "worst": 0.0}}
+    stats = {
+        "placed": 0,
+        "skipped_region": 0,
+        "dropped_bad": 0,
+        "missed": 0,
+        "source_tris": 0,
+        "painted_area": 0.0,
+        "counters": {"unconformed": 0, "unconformed_area": 0.0, "worst": 0.0},
+    }
     counters = stats["counters"]
 
     for record in records:
@@ -355,9 +357,13 @@ def build_pieces(records, cell, sample, center=None, radius=None, lift=AREA_LIFT
         # the conform subdivides it, and every conformed sub-triangle inherits its parent's — the
         # subdivision is a fidelity step for the terrain, not a change to what the game draws.
         tri_min_lod = lod.area_triangle_min_lods([(n[0], n[2]) for n in nodes], triangles)
-        piece_lift = lift + (priority_lift(
-            int(((catalogue or {}).get(prefab) or {}).get("rendererPriority") or 0), ordered)
-            if ordered else 0.0)
+        piece_lift = lift + (
+            priority_lift(
+                int(((catalogue or {}).get(prefab) or {}).get("rendererPriority") or 0), ordered
+            )
+            if ordered
+            else 0.0
+        )
         corners = []
         for n in nodes:
             hit = sample(n[0], n[2])
@@ -370,13 +376,16 @@ def build_pieces(records, cell, sample, center=None, radius=None, lift=AREA_LIFT
                 continue
             stats["source_tris"] += 1
             a, b, c = (corners[i] for i in reversed(tri))
-            stats["painted_area"] += abs((b[0] - a[0]) * (c[1] - a[1])
-                                         - (b[1] - a[1]) * (c[0] - a[0])) * 0.5
+            stats["painted_area"] += (
+                abs((b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])) * 0.5
+            )
             for piece in conform_triangle((a, b, c), cell, sample, counters):
                 base = len(sink["verts"])
                 sink["verts"].extend((p[0], p[1], p[2] + piece_lift) for p in piece)
                 sink["faces"].append((base, base + 1, base + 2))
-                sink["minLod"].append(tri_min_lod[tri_index] if tri_index < len(tri_min_lod) else 255)
+                sink["minLod"].append(
+                    tri_min_lod[tri_index] if tri_index < len(tri_min_lod) else 255
+                )
         stats["placed"] += 1
         if progress is not None:
             progress(stats["placed"])

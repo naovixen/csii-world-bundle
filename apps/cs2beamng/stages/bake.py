@@ -130,14 +130,27 @@ def run(ctx, progress):
     estimates = (ctx.census or {}).get("estimates", {})
     weights = {name: (estimates.get(f"bake/{name}") or {}).get("seconds") for name in only}
     tracker = _StageProgress(progress, weights)
-    outcomes = bake_runner.run(ctx.bundle, derived_dir=ctx.derived_dir, options=options, only=only,
-                               force=False, progress=tracker)
+    outcomes = bake_runner.run(
+        ctx.bundle,
+        derived_dir=ctx.derived_dir,
+        options=options,
+        only=only,
+        force=False,
+        progress=tracker,
+    )
     if all(o.status in ("baked", "fresh") for o in outcomes):
-        tracker.finish()                               # a cancelled/failed bake must not read as 100 %
-    summary = {o.name: {"status": o.status, "reason": o.reason, "seconds": round(o.seconds, 1),
-                        "stats": {k: v for k, v in (o.stats or {}).items() if k != "_tiles"}} for o in outcomes}
+        tracker.finish()  # a cancelled/failed bake must not read as 100 %
+    summary = {
+        o.name: {
+            "status": o.status,
+            "reason": o.reason,
+            "seconds": round(o.seconds, 1),
+            "stats": {k: v for k, v in (o.stats or {}).items() if k != "_tiles"},
+        }
+        for o in outcomes
+    }
     if any(o.status == "cancelled" for o in outcomes):
-        raise Cancelled()                              # the bake reports a cancel as an outcome; the stage is cancelled
+        raise Cancelled()  # the bake reports a cancel as an outcome; the stage is cancelled
     failed = [o.name for o in outcomes if o.status == "failed"]
     if failed:
         raise RuntimeError(f"bake products failed: {failed}")

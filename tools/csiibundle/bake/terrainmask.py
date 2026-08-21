@@ -44,8 +44,10 @@ def run(context, progress):
     started = time.monotonic()
     progress.begin("terrainmask: clip volumes", total=None, unit="")
     hm = terrain.hole_mask(bundle, prefer_fine=context.options.get("ground", "fine") == "fine")
-    progress.end(f"{int(hm.contain.sum()):,} contained faces, {int(hm.deep_touch.sum()):,} deep-touched, "
-                 f"{int(numpy.isfinite(hm.band_ceiling).sum()):,} samples under a shallow band")
+    progress.end(
+        f"{int(hm.contain.sum()):,} contained faces, {int(hm.deep_touch.sum()):,} deep-touched, "
+        f"{int(numpy.isfinite(hm.band_ceiling).sum()):,} samples under a shallow band"
+    )
 
     cells = numpy.zeros(hm.contain.shape, dtype=numpy.uint8)
     cells[hm.deep_touch] = 128
@@ -80,17 +82,34 @@ def run(context, progress):
         hit = has & (drop > 0)
         lowered = int(hit.sum())
         worst = float(drop[hit].max()) if hit.any() else 0.0
-    doc = {"schema": "csiibundle.bake.terrainmask/4", "faceSize": [int(cells.shape[0]), int(cells.shape[1])],
-           "sampleSize": [int(q.shape[0]), int(q.shape[1])], "cell": hm.cell, "fine": bool(hm.fine),
-           "originWorld": [hm.origin_x, hm.origin_z], "elevationScale": hm.elevation_scale,
-           "elevationOffset": hm.elevation_offset, "holesDefault": "contain",
-           "counts": {"contain": int(hm.contain.sum()), "deepTouch": int(hm.deep_touch.sum()),
-                      "shallowSamples": int(has.sum()), "wouldLower": lowered, "worstDrop": round(worst, 3)}}
+    doc = {
+        "schema": "csiibundle.bake.terrainmask/4",
+        "faceSize": [int(cells.shape[0]), int(cells.shape[1])],
+        "sampleSize": [int(q.shape[0]), int(q.shape[1])],
+        "cell": hm.cell,
+        "fine": bool(hm.fine),
+        "originWorld": [hm.origin_x, hm.origin_z],
+        "elevationScale": hm.elevation_scale,
+        "elevationOffset": hm.elevation_offset,
+        "holesDefault": "contain",
+        "counts": {
+            "contain": int(hm.contain.sum()),
+            "deepTouch": int(hm.deep_touch.sum()),
+            "shallowSamples": int(has.sum()),
+            "wouldLower": lowered,
+            "worstDrop": round(worst, 3),
+        },
+    }
     with open(os.path.join(out_dir, "mask.json"), "w", encoding="utf-8", newline="\n") as handle:
         json.dump(doc, handle, indent=1)
-    return {"contain": doc["counts"]["contain"], "deepTouch": doc["counts"]["deepTouch"],
-            "shallowSamples": doc["counts"]["shallowSamples"], "wouldLower": lowered,
-            "worstDrop": round(worst, 3), "seconds": round(time.monotonic() - started, 1)}
+    return {
+        "contain": doc["counts"]["contain"],
+        "deepTouch": doc["counts"]["deepTouch"],
+        "shallowSamples": doc["counts"]["shallowSamples"],
+        "wouldLower": lowered,
+        "worstDrop": round(worst, 3),
+        "seconds": round(time.monotonic() - started, 1),
+    }
 
 
 # v4: shallow_floor.png (the band FLOOR) replaced by carriageway_ceiling.png (the game's own

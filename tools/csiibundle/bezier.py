@@ -60,8 +60,12 @@ def evaluate_scalar(control, t):
     control = numpy.asarray(control, dtype=numpy.float64)
     t = numpy.asarray(t, dtype=numpy.float64)
     u = 1.0 - t
-    return ((u * u * u) * control[0] + (3.0 * u * u * t) * control[1]
-            + (3.0 * u * t * t) * control[2] + (t * t * t) * control[3])
+    return (
+        (u * u * u) * control[0]
+        + (3.0 * u * u * t) * control[1]
+        + (3.0 * u * t * t) * control[2]
+        + (t * t * t) * control[3]
+    )
 
 
 def cut(control, t0, t1):
@@ -71,6 +75,7 @@ def cut(control, t0, t1):
     approximation of it. This is how a lane record's spans (`[t0, t1]` ranges along the parent
     curve, §5B) become curves in their own right.
     """
+
     def split_after(points, t):
         p01 = tuple((1 - t) * points[0][i] + t * points[1][i] for i in range(3))
         p12 = tuple((1 - t) * points[1][i] + t * points[2][i] for i in range(3))

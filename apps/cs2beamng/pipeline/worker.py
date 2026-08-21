@@ -24,7 +24,8 @@ import traceback
 from csiibundle import reader
 from csiibundle.bake.progress import Cancelled
 
-from ..settings import SCHEMA as SETTINGS_SCHEMA, app_dir, region_of
+from ..settings import SCHEMA as SETTINGS_SCHEMA
+from ..settings import app_dir, region_of
 from ..stages import BuildContext, all_stages, level_of
 from . import history, state
 from .progress import Heartbeat, QueueProgress
@@ -48,13 +49,24 @@ def main(settings, census, queue, cancel_event, hard_cancel=None):
     heartbeat.start()
     queue.put({"t": "hello", "pid": os.getpid(), "at": time.time()})
     progress = QueueProgress(queue, cancel_event)
-    report = {"settings": {k: v for k, v in settings.items()}, "startedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-              "stages": {}}
+    report = {
+        "settings": dict(settings.items()),
+        "startedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "stages": {},
+    }
     level_dir = os.path.join(settings["output"], settings["level_name"])
     derived_dir = os.path.join(settings["bundle"], "derived")
-    ctx = BuildContext(settings=settings, bundle=settings["bundle"], level_dir=level_dir,
-                       derived_dir=derived_dir, census=census, region=region_of(settings),
-                       report=report, jobs=_jobs(settings), shared={})
+    ctx = BuildContext(
+        settings=settings,
+        bundle=settings["bundle"],
+        level_dir=level_dir,
+        derived_dir=derived_dir,
+        census=census,
+        region=region_of(settings),
+        report=report,
+        jobs=_jobs(settings),
+        shared={},
+    )
     ok = True
     force = bool(settings.get("rebuild", False))
     previous = None if force else state.load(level_dir)
@@ -63,13 +75,19 @@ def main(settings, census, queue, cancel_event, hard_cancel=None):
     skipped = {}
     try:
         os.makedirs(level_dir, exist_ok=True)
-        _write_settings(level_dir, settings, queue)   # first, so an interrupted build still says what it was
-        _remove_stale_report(level_dir)               # a killed build must not be explained by the previous one's report
+        _write_settings(
+            level_dir, settings, queue
+        )  # first, so an interrupted build still says what it was
+        _remove_stale_report(
+            level_dir
+        )  # a killed build must not be explained by the previous one's report
         if force:
-            _clear_generated(level_dir, queue)        # --force is the "start from nothing" path
+            _clear_generated(level_dir, queue)  # --force is the "start from nothing" path
         for stage in all_stages():
             if not stage.enabled(settings):
-                queue.put({"t": "stage", "stage": stage.key, "status": "skipped", "at": time.time()})
+                queue.put(
+                    {"t": "stage", "stage": stage.key, "status": "skipped", "at": time.time()}
+                )
                 continue
             progress.set_stage(stage.key)
             sig = reason = None
@@ -77,19 +95,38 @@ def main(settings, census, queue, cancel_event, hard_cancel=None):
                 try:
                     sig = state.signature(stage, ctx, manifest, current)
                     fresh, reason = state.check(previous, stage, sig, level_dir)
-                except (OSError, ValueError) as exc:   # a fingerprint that cannot be taken is not a skip
+                except (
+                    OSError,
+                    ValueError,
+                ) as exc:  # a fingerprint that cannot be taken is not a skip
                     fresh, reason = False, f"could not fingerprint inputs ({exc!r})"
                 if fresh:
                     result = state.replay(level_dir, stage.key, level_of(ctx), ctx.shared)
                     if result is not None:
-                        current["stages"][stage.key] = dict((previous.get("stages") or {})[stage.key])
-                        current["stages"][stage.key]["skippedAt"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+                        current["stages"][stage.key] = dict(
+                            (previous.get("stages") or {})[stage.key]
+                        )
+                        current["stages"][stage.key]["skippedAt"] = time.strftime(
+                            "%Y-%m-%dT%H:%M:%SZ", time.gmtime()
+                        )
                         _merge_report(report, result)
-                        report["stages"][stage.key] = {"seconds": 0.0, "skipped": True, "reason": reason,
-                                                       "result": result}
+                        report["stages"][stage.key] = {
+                            "seconds": 0.0,
+                            "skipped": True,
+                            "reason": reason,
+                            "result": result,
+                        }
                         skipped[stage.key] = reason
-                        queue.put({"t": "stage", "stage": stage.key, "status": "fresh", "seconds": 0.0,
-                                   "summary": f"unchanged, skipped ({reason})", "at": time.time()})
+                        queue.put(
+                            {
+                                "t": "stage",
+                                "stage": stage.key,
+                                "status": "fresh",
+                                "seconds": 0.0,
+                                "summary": f"unchanged, skipped ({reason})",
+                                "at": time.time(),
+                            }
+                        )
                         continue
                     reason = "replay payload unreadable"
             if any(str(i).startswith("level:") for i in (stage.inputs or ())):
@@ -111,18 +148,42 @@ def main(settings, census, queue, cancel_event, hard_cancel=None):
             before = _shared_snapshot(ctx.shared, stage.shared_keys)
             queue.put({"t": "stage", "stage": stage.key, "status": "running", "at": time.time()})
             if sig is not None and reason:
-                queue.put({"t": "log", "stage": stage.key, "text": f"re-running: {reason}", "at": time.time()})
+                queue.put(
+                    {
+                        "t": "log",
+                        "stage": stage.key,
+                        "text": f"re-running: {reason}",
+                        "at": time.time(),
+                    }
+                )
             started = time.monotonic()
             try:
                 result = stage.run(stage_ctx, progress) or {}
             except Cancelled:
-                queue.put({"t": "stage", "stage": stage.key, "status": "cancelled", "at": time.time()})
+                queue.put(
+                    {"t": "stage", "stage": stage.key, "status": "cancelled", "at": time.time()}
+                )
                 ok = False
                 report["cancelled"] = stage.key
                 break
-            except Exception as exc:  # noqa: BLE001 - reported, never swallowed
-                queue.put({"t": "log", "stage": stage.key, "text": traceback.format_exc(), "at": time.time()})
-                queue.put({"t": "stage", "stage": stage.key, "status": "failed", "summary": repr(exc), "at": time.time()})
+            except Exception as exc:
+                queue.put(
+                    {
+                        "t": "log",
+                        "stage": stage.key,
+                        "text": traceback.format_exc(),
+                        "at": time.time(),
+                    }
+                )
+                queue.put(
+                    {
+                        "t": "stage",
+                        "stage": stage.key,
+                        "status": "failed",
+                        "summary": repr(exc),
+                        "at": time.time(),
+                    }
+                )
                 ok = False
                 report["failed"] = {"stage": stage.key, "error": repr(exc)}
                 break
@@ -130,7 +191,7 @@ def main(settings, census, queue, cancel_event, hard_cancel=None):
             _merge_report(report, result)
             report["stages"][stage.key] = {"seconds": round(seconds, 1), "result": result}
             per_key = result.pop("_history", None) if isinstance(result, dict) else None
-            if per_key:                                   # heterogeneous stages learn per sub-key
+            if per_key:  # heterogeneous stages learn per sub-key
                 for key, (u, sec) in per_key.items():
                     history.update(key, u, sec)
             else:
@@ -142,9 +203,29 @@ def main(settings, census, queue, cancel_event, hard_cancel=None):
             # closing the game changes nothing this stage declares.
             norecord = bool(result.pop("_norecord", False)) if isinstance(result, dict) else False
             if sig is not None and not norecord:
-                _record(level_dir, current, stage, sig, recorder, ctx, before, result, seconds, queue, report)
-            queue.put({"t": "stage", "stage": stage.key, "status": "done", "seconds": seconds,
-                       "summary": _summary(result), "at": time.time()})
+                _record(
+                    level_dir,
+                    current,
+                    stage,
+                    sig,
+                    recorder,
+                    ctx,
+                    before,
+                    result,
+                    seconds,
+                    queue,
+                    report,
+                )
+            queue.put(
+                {
+                    "t": "stage",
+                    "stage": stage.key,
+                    "status": "done",
+                    "seconds": seconds,
+                    "summary": _summary(result),
+                    "at": time.time(),
+                }
+            )
         # The object tree is rewritten whole from the accumulated `Level`, and only the stages
         # that RUN call `write_objects` themselves — so after a build where a later stage was
         # replayed rather than run, the last writer's snapshot is missing everything replayed
@@ -160,13 +241,13 @@ def main(settings, census, queue, cancel_event, hard_cancel=None):
         report["finishedAt"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         _write_report(level_dir, report, queue)
         queue.put({"t": "done", "ok": ok, "report": report, "at": time.time()})
-    except Exception:  # noqa: BLE001
+    except Exception:
         queue.put({"t": "error", "text": traceback.format_exc(), "at": time.time()})
     finally:
         heartbeat.stop()
         try:
             queue.close()
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
 
 
@@ -183,42 +264,64 @@ def _score_estimate(report, settings, census, queue):
     texture half is enumerated from: on a first build there is nothing to size until the bake
     has run, and the derived tree the build used is the one that is there now.
     """
-    from . import estimate as estimate_mod, meshindex
+    from . import estimate as estimate_mod
+    from . import meshindex
 
     measured = ((report.get("validation") or {}).get("checks") or {}).get("resident")
     if not measured or float(measured.get("totalMiB") or 0) < estimate_mod.LEARN_FLOOR_MIB:
-        return                                            # too small to score, let alone learn from
+        return  # too small to score, let alone learn from
     try:
         index = meshindex.load(settings["bundle"])
         if index is None:
-            queue.put({"t": "log", "stage": "system", "at": time.time(),
-                       "text": "estimate: indexing the city's shapes so the cost meter has a "
-                               "baseline (one pass, kept for next time)"})
+            queue.put(
+                {
+                    "t": "log",
+                    "stage": "system",
+                    "at": time.time(),
+                    "text": "estimate: indexing the city's shapes so the cost meter has a "
+                    "baseline (one pass, kept for next time)",
+                }
+            )
             index = meshindex.build(settings["bundle"])
         estimated = estimate_mod.take(settings, census, index)
         score = estimate_mod.score(estimated, measured)
-    except Exception as exc:                              # noqa: BLE001 - a report line, never a failure
-        queue.put({"t": "log", "stage": "system", "text": f"estimate: not scored ({exc!r})",
-                   "at": time.time()})
+    except Exception as exc:
+        queue.put(
+            {
+                "t": "log",
+                "stage": "system",
+                "text": f"estimate: not scored ({exc!r})",
+                "at": time.time(),
+            }
+        )
         return
     if not score:
         return
-    report["estimate"] = {"predicted": {k: v for k, v in estimated.items() if k != "coefficients"},
-                          "score": score}
+    report["estimate"] = {
+        "predicted": {k: v for k, v in estimated.items() if k != "coefficients"},
+        "score": score,
+    }
     for name in ("mesh", "texture", "total"):
         row = score.get(name)
         if row:
-            queue.put({"t": "log", "stage": "system", "at": time.time(),
-                       "text": f"estimate: {name} {row['estimatedMiB']:,.0f} MiB estimated, "
-                               f"{row['actualMiB']:,.0f} MiB actual ({row['errorPercent']:+.1f} %)"})
+            queue.put(
+                {
+                    "t": "log",
+                    "stage": "system",
+                    "at": time.time(),
+                    "text": f"estimate: {name} {row['estimatedMiB']:,.0f} MiB estimated, "
+                    f"{row['actualMiB']:,.0f} MiB actual ({row['errorPercent']:+.1f} %)",
+                }
+            )
     estimate_mod.observe(estimated, measured)
 
 
 REPORT_NAME = "cs2beamng_report.json"
-SETTINGS_NAME = "cs2beamng_settings.json"   # written first, never removed: see _write_settings
+SETTINGS_NAME = "cs2beamng_settings.json"  # written first, never removed: see _write_settings
 
 
 # -- the incremental bookkeeping -------------------------------------------------------------------
+
 
 def _manifest(bundle_dir):
     """`bundle.json` read once per build; every stage's layer fingerprints resolve through it."""
@@ -238,7 +341,9 @@ def _shared_snapshot(shared, keys):
         if isinstance(value, (set, frozenset)):
             out[key] = set(value)
         elif isinstance(value, dict):
-            out[key] = {k: (set(v) if isinstance(v, (set, frozenset)) else v) for k, v in value.items()}
+            out[key] = {
+                k: (set(v) if isinstance(v, (set, frozenset)) else v) for k, v in value.items()
+            }
         elif value is not None:
             out[key] = value
     return out
@@ -250,23 +355,36 @@ def _record(level_dir, document, stage, sig, recorder, ctx, before, result, seco
     25-minute build on 2026-08-18)."""
     missed = state.undeclared(recorder, stage, SETTINGS_SCHEMA)
     if missed:
-        text = (f"{stage.key}: reads settings it does not declare {missed} - not recorded, so it re-runs "
-                f"next build. Add them to the stage's settings_keys.")
+        text = (
+            f"{stage.key}: reads settings it does not declare {missed} - not recorded, so it re-runs "
+            f"next build. Add them to the stage's settings_keys."
+        )
         queue.put({"t": "log", "stage": stage.key, "text": text, "at": time.time()})
         report.setdefault("stateWarnings", []).append(text)
         return
     try:
         delta = state.diff_shared(before, ctx.shared or {}, stage.shared_keys)
-        state.write_payload(level_dir, stage.key, level_of(ctx).stage_objects(stage.key), delta, result)
+        state.write_payload(
+            level_dir, stage.key, level_of(ctx).stage_objects(stage.key), delta, result
+        )
     except (OSError, ValueError, TypeError) as exc:
-        text = f"{stage.key}: could not write its replay payload ({exc!r}); it will re-run next build"
+        text = (
+            f"{stage.key}: could not write its replay payload ({exc!r}); it will re-run next build"
+        )
         queue.put({"t": "log", "stage": stage.key, "text": text, "at": time.time()})
         report.setdefault("stateWarnings", []).append(text)
         return
-    present = [rel for rel in (stage.outputs or ())
-               if os.path.exists(os.path.join(level_dir, *rel.split("/")))]
-    document["stages"][stage.key] = {"signature": sig, "seconds": round(seconds, 1), "outputs": present,
-                                     "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+    present = [
+        rel
+        for rel in (stage.outputs or ())
+        if os.path.exists(os.path.join(level_dir, *rel.split("/")))
+    ]
+    document["stages"][stage.key] = {
+        "signature": sig,
+        "seconds": round(seconds, 1),
+        "outputs": present,
+        "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
 
 
 # Folders `--force` / `rebuild` empties before starting. **Only on force** since A4: clearing
@@ -286,9 +404,23 @@ def _clear_generated(level_dir, queue):
         if os.path.isdir(path):
             try:
                 shutil.rmtree(path)
-                queue.put({"t": "log", "stage": "", "text": f"cleared {'/'.join(parts)}/ from the previous build", "at": time.time()})
+                queue.put(
+                    {
+                        "t": "log",
+                        "stage": "",
+                        "text": f"cleared {'/'.join(parts)}/ from the previous build",
+                        "at": time.time(),
+                    }
+                )
             except OSError as exc:
-                queue.put({"t": "log", "stage": "", "text": f"could not clear {'/'.join(parts)}/: {exc}", "at": time.time()})
+                queue.put(
+                    {
+                        "t": "log",
+                        "stage": "",
+                        "text": f"could not clear {'/'.join(parts)}/: {exc}",
+                        "at": time.time(),
+                    }
+                )
 
 
 def _write_settings(level_dir, settings, queue):
@@ -303,11 +435,15 @@ def _write_settings(level_dir, settings, queue):
     """
     try:
         os.makedirs(level_dir, exist_ok=True)
-        recorded = {key: settings.get(key, default)
-                    for key, (default, _kind, _help) in SETTINGS_SCHEMA.items()}
-        payload = {"schema": "cs2beamng.settings/1",
-                   "startedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-                   "settings": recorded}
+        recorded = {
+            key: settings.get(key, default)
+            for key, (default, _kind, _help) in SETTINGS_SCHEMA.items()
+        }
+        payload = {
+            "schema": "cs2beamng.settings/1",
+            "startedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "settings": recorded,
+        }
         paths = [os.path.join(level_dir, SETTINGS_NAME)]
         # ...and a copy outside the level, so deleting or rebuilding the folder cannot take the
         # last record of it with them
@@ -322,8 +458,14 @@ def _write_settings(level_dir, settings, queue):
             with open(path, "w", encoding="utf-8", newline="\n") as handle:
                 json.dump(payload, handle, indent=1, sort_keys=True, default=str)
     except OSError as exc:
-        queue.put({"t": "log", "stage": "system",
-                   "text": f"could not write {SETTINGS_NAME}: {exc}", "at": time.time()})
+        queue.put(
+            {
+                "t": "log",
+                "stage": "system",
+                "text": f"could not write {SETTINGS_NAME}: {exc}",
+                "at": time.time(),
+            }
+        )
 
 
 def _same_settings(path, recorded):
@@ -354,7 +496,14 @@ def _write_report(level_dir, report, queue):
         with open(path, "w", encoding="utf-8", newline="\n") as handle:
             json.dump(report, handle, indent=1, sort_keys=True, default=str)
     except OSError as exc:
-        queue.put({"t": "log", "stage": "system", "text": f"could not write {REPORT_NAME}: {exc}", "at": time.time()})
+        queue.put(
+            {
+                "t": "log",
+                "stage": "system",
+                "text": f"could not write {REPORT_NAME}: {exc}",
+                "at": time.time(),
+            }
+        )
 
 
 def _merge_report(report, result):

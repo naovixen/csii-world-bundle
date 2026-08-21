@@ -27,9 +27,14 @@ DERIVED_MANIFEST = "derived.json"
 
 # -- location -----------------------------------------------------------------------------------
 
+
 def derived_dir(bundle_dir, override=None):
     """Where the derived cache lives: `<bundle>/derived/` unless the caller redirected it."""
-    return os.path.abspath(override) if override else os.path.join(os.path.abspath(bundle_dir), DERIVED_DIRNAME)
+    return (
+        os.path.abspath(override)
+        if override
+        else os.path.join(os.path.abspath(bundle_dir), DERIVED_DIRNAME)
+    )
 
 
 def manifest_path(derived):
@@ -37,6 +42,7 @@ def manifest_path(derived):
 
 
 # -- fingerprints -------------------------------------------------------------------------------
+
 
 def fingerprint_path(path):
     """A `fingerprint` object (§13 / derived.schema.json) for a file or directory on disk."""
@@ -61,7 +67,13 @@ def fingerprint_path(path):
                 newest = max(newest, int(st.st_mtime_ns))
                 names.append(os.path.relpath(full, base).replace(os.sep, "/"))
         digest = hashlib.sha256("\n".join(sorted(names)).encode("utf-8")).hexdigest()
-        return {"kind": "dir", "count": count, "bytes": total, "maxMtimeNs": newest, "names": digest}
+        return {
+            "kind": "dir",
+            "count": count,
+            "bytes": total,
+            "maxMtimeNs": newest,
+            "names": digest,
+        }
     return {"kind": "missing"}
 
 
@@ -89,8 +101,10 @@ def bundle_identity(bundle_dir):
     with open(path, "rb") as handle:
         raw = handle.read()
     document = json.loads(raw.decode("utf-8"))
-    block = {"sha256": hashlib.sha256(raw).hexdigest(),
-             "generatedAt": str(document.get("generatedAt", ""))}
+    block = {
+        "sha256": hashlib.sha256(raw).hexdigest(),
+        "generatedAt": str(document.get("generatedAt", "")),
+    }
     if document.get("generator"):
         block["generator"] = str(document["generator"])
     if document.get("city"):
@@ -100,8 +114,11 @@ def bundle_identity(bundle_dir):
 
 # -- the document -------------------------------------------------------------------------------
 
+
 def now_iso():
-    return _dt.datetime.now(_dt.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    return (
+        _dt.datetime.now(_dt.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    )
 
 
 def load(derived):
@@ -135,10 +152,17 @@ def save(derived, document):
     os.replace(tmp, manifest_path(derived))
 
 
-def record_product(document, name, path, inputs, seconds, tiles=None, stats=None, version=1, options=None):
+def record_product(
+    document, name, path, inputs, seconds, tiles=None, stats=None, version=1, options=None
+):
     """Write one product's entry into `document["products"]`."""
-    entry = {"path": path, "generatedAt": now_iso(), "seconds": round(float(seconds), 3), "inputs": inputs,
-             "version": int(version)}
+    entry = {
+        "path": path,
+        "generatedAt": now_iso(),
+        "seconds": round(float(seconds), 3),
+        "inputs": inputs,
+        "version": int(version),
+    }
     if options:
         entry["options"] = dict(options)
     if tiles is not None:
@@ -167,8 +191,16 @@ def _same_options(recorded, wanted):
     return True
 
 
-def product_status(document, name, product_inputs, bundle_dir, wanted_options, manifest=None, version=1,
-                   option_keys=()):
+def product_status(
+    document,
+    name,
+    product_inputs,
+    bundle_dir,
+    wanted_options,
+    manifest=None,
+    version=1,
+    option_keys=(),
+):
     """One of 'fresh', 'stale', 'absent' for a product, with a reason string.
 
     `product_inputs` are the layer keys the product reads (its registry entry). A product is
@@ -189,7 +221,10 @@ def product_status(document, name, product_inputs, bundle_dir, wanted_options, m
     recorded_opts = document["products"][name].get("options", {})
     for key in option_keys:
         if recorded_opts.get(key) != wanted_options.get(key):
-            return "stale", f"option {key!r} changed ({recorded_opts.get(key)!r} -> {wanted_options.get(key)!r})"
+            return (
+                "stale",
+                f"option {key!r} changed ({recorded_opts.get(key)!r} -> {wanted_options.get(key)!r})",
+            )
     recorded = document["products"][name].get("inputs", {})
     current = fingerprint_layers(bundle_dir, product_inputs, manifest)
     for key in product_inputs:
@@ -201,11 +236,23 @@ def product_status(document, name, product_inputs, bundle_dir, wanted_options, m
 def status_report(document, registry, bundle_dir, wanted_options):
     """`{name: (status, reason)}` for every registered product."""
     manifest = reader.load_manifest(bundle_dir)
-    return {name: product_status(document, name, prod.inputs, bundle_dir, wanted_options, manifest, prod.version, prod.options)
-            for name, prod in registry.items()}
+    return {
+        name: product_status(
+            document,
+            name,
+            prod.inputs,
+            bundle_dir,
+            wanted_options,
+            manifest,
+            prod.version,
+            prod.options,
+        )
+        for name, prod in registry.items()
+    }
 
 
 # -- a fast sanity check on the bundle before baking -------------------------------------------
+
 
 def quick_check(bundle_dir):
     """Cheap preconditions (a full `tools/validate_bundle.py` run takes minutes on a city and
@@ -227,4 +274,5 @@ def quick_check(bundle_dir):
 
 def _schema_version():
     from .. import SCHEMA_VERSION
+
     return SCHEMA_VERSION

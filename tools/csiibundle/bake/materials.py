@@ -45,7 +45,8 @@ from multiprocessing import Pool
 
 import numpy
 
-from .. import glb, instances, lights as bundle_lights, materials, png, reader, tints, water
+from .. import glb, instances, materials, png, reader, tints, water
+from .. import lights as bundle_lights
 from . import Product, register
 
 PRODUCT_NAME = "materials"
@@ -69,10 +70,11 @@ DEFAULT_PAINT_VARIANTS = {"tree": 4, "prop": 2, "building": 2, "fence": 2, "poi"
 # 4 % of the texture and changes those texels completely). 0 keeps every texture — the A3
 # behaviour — and the setting is `paint_factor_max_error`.
 DEFAULT_FACTOR_MAX_ERROR = 4
-QUANT_STEPS = 31            # colour quantisation for counting distinct sets (1/31 ≈ 8 bits/32)
+QUANT_STEPS = 31  # colour quantisation for counting distinct sets (1/31 ≈ 8 bits/32)
 
 
 # -- helpers ------------------------------------------------------------------------------------
+
 
 def _sha_stem(path):
     """`textures/<sha>.png` → `<sha>`; anything else → a sha of the path."""
@@ -107,9 +109,13 @@ def _resample_mask(img, h, w):
     anything else (a mask smaller than its albedo, a non-multiple size) is still nearest, because
     a box filter has nothing to average there.
     """
-    if img.shape[0] > h and img.shape[1] > w \
-            and img.shape[0] % h == 0 and img.shape[1] % w == 0 \
-            and img.shape[0] // h == img.shape[1] // w:
+    if (
+        img.shape[0] > h
+        and img.shape[1] > w
+        and img.shape[0] % h == 0
+        and img.shape[1] % w == 0
+        and img.shape[0] // h == img.shape[1] // w
+    ):
         return png.downsample_box(img, img.shape[0] // h)
     return _resample_nearest(img, h, w)
 
@@ -156,6 +162,7 @@ def _kmeans(points, weights, k, iterations=12):
 # The jobs are module-level functions taking one tuple, which is what `Pool` (spawn on Windows)
 # needs; the same functions run in-process when `jobs <= 1`, so the serial path is the same code.
 
+
 def _each(job, args, jobs, progress, chunksize=8):
     """Run `job` over `args`, yielding results as they arrive and advancing `progress` per item.
     A pool when it is worth one, the plain loop otherwise; cancellation is honoured between
@@ -179,7 +186,10 @@ def _split_mask_job(args):
     """One §7.1 mask -> its metallic (R) and roughness (255 - A) greys. `(rel, outs, error)`."""
     bundle, derived, rel = args
     stem = _sha_stem(rel)
-    outs = {"metallic": f"textures/{stem}_metallic.png", "roughness": f"textures/{stem}_roughness.png"}
+    outs = {
+        "metallic": f"textures/{stem}_metallic.png",
+        "roughness": f"textures/{stem}_roughness.png",
+    }
     src = os.path.join(bundle, rel)
     if not os.path.isfile(src):
         return rel, None, None
@@ -187,7 +197,7 @@ def _split_mask_job(args):
         rgba = png.rgba_array(src)
         png.write_gray(os.path.join(derived, outs["metallic"]), rgba[:, :, 0])
         png.write_gray(os.path.join(derived, outs["roughness"]), 255 - rgba[:, :, 3])
-    except Exception as exc:  # noqa: BLE001 - one bad texture must not stop the bake
+    except Exception as exc:
         return rel, None, repr(exc)
     return rel, outs, None
 
@@ -214,14 +224,23 @@ def _normal_job(args):
         out8 = numpy.clip(numpy.rint(out * 255.0), 0, 255).astype(numpy.uint8)
         dst = f"textures/{_sha_stem(rel)}_normal_rgb.png"
         png.write_rgba(os.path.join(derived, dst), out8)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         return rel, None, False, repr(exc)
     return rel, {"packing": packing, "path": dst}, True, None
 
 
 # The mesh-state suffixes a prefab may ship (§6.1). Every state file of one prefab binds the same
 # materials, so any of them names them; all are read because the base file is not guaranteed.
-STATE_SUFFIXES = ("", "__teen", "__elderly", "__dead", "__stump", "__partial1", "__partial2", "__full")
+STATE_SUFFIXES = (
+    "",
+    "__teen",
+    "__elderly",
+    "__dead",
+    "__stump",
+    "__partial1",
+    "__partial2",
+    "__full",
+)
 
 
 def _asset_materials_job(args):
@@ -234,7 +253,7 @@ def _asset_materials_job(args):
             continue
         try:
             nodes = glb.parse_glb(path)
-        except Exception:  # noqa: BLE001 - a mesh that will not parse names no materials
+        except Exception:
             continue
         for node in nodes or []:
             for name, _count in node.get("material_runs", []):
@@ -272,21 +291,27 @@ def _tint_job(args):
     bundle, derived, base_rel, mask_rel, variants, variant_max, max_error = args
     try:
         mask = png.rgba_array(os.path.join(bundle, mask_rel))
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         return base_rel, 0, repr(exc), {}
     # Uniformity is decided on the FULL-RESOLUTION mask: nearest-resampling a uniform channel
     # keeps it uniform, so this can only under-claim, never over-claim.
-    if mask.size and bool(numpy.all(mask[:, :, :3].min(axis=(0, 1)) == mask[:, :, :3].max(axis=(0, 1)))):
+    if mask.size and bool(
+        numpy.all(mask[:, :, :3].min(axis=(0, 1)) == mask[:, :, :3].max(axis=(0, 1)))
+    ):
         mask_lo = mask[:, :, :3].min(axis=(0, 1)).astype(numpy.float64) / 255.0
         out = {}
         for vkey, centre in variants:
-            constant = _uniform_multiplier(mask_lo, [tuple(centre[i]) + (1.0,) for i in range(3)])
-            out[vkey] = {"factor": [round(float(v), 5) for v in constant], "maxErr": 0, "path": None}
+            constant = _uniform_multiplier(mask_lo, [(*tuple(centre[i]), 1.0) for i in range(3)])
+            out[vkey] = {
+                "factor": [round(float(v), 5) for v in constant],
+                "maxErr": 0,
+                "path": None,
+            }
         return base_rel, 0, None, out
 
     try:
         base = png.rgba_array(os.path.join(bundle, base_rel))
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         return base_rel, 0, repr(exc), {}
     h, w = base.shape[:2]
     factor = 1
@@ -303,7 +328,7 @@ def _tint_job(args):
     written = 0
     out = {}
     for vkey, centre in variants:
-        colours = [tuple(centre[i]) + (1.0,) for i in range(3)]
+        colours = [(*tuple(centre[i]), 1.0) for i in range(3)]
         multiplier = _tint_multiplier(mask_r[:, :, :3], colours)
         lo = multiplier.min(axis=(0, 1))
         if numpy.array_equal(lo, multiplier.max(axis=(0, 1))):
@@ -328,9 +353,17 @@ def _tint_job(args):
             if _png_size(path) != (h, w):
                 png.write_rgba(path, numpy.concatenate([exact8, base[:, :, 3:4]], axis=2))
                 written += 1
-            out[vkey] = {"factor": [round(float(v), 5) for v in constant], "maxErr": max_err, "path": rel}
+            out[vkey] = {
+                "factor": [round(float(v), 5) for v in constant],
+                "maxErr": max_err,
+                "path": rel,
+            }
         else:
-            out[vkey] = {"factor": [round(float(v), 5) for v in constant], "maxErr": max_err, "path": None}
+            out[vkey] = {
+                "factor": [round(float(v), 5) for v in constant],
+                "maxErr": max_err,
+                "path": None,
+            }
     return base_rel, written, None, out
 
 
@@ -375,7 +408,7 @@ def _apply_lut(lut, rgb8):
 
 def _tint_multiplier(mask_rgb, colours):
     """`M(texel)` — what `tints.apply_reference` amounts to, as a per-texel RGB multiplier."""
-    out = numpy.ones(mask_rgb.shape[:2] + (3,), dtype=numpy.float64)
+    out = numpy.ones((*mask_rgb.shape[:2], 3), dtype=numpy.float64)
     for i in range(tints.CHANNELS):
         weight = mask_rgb[..., i][..., None]
         colour = numpy.asarray(colours[i][:3], dtype=numpy.float64)
@@ -456,12 +489,24 @@ def _emissive_slots(bundle, resolved, progress):
     each their own.
     """
     catalogue = bundle_lights.load(bundle)
-    prefabs = catalogue.get("prefabs") if isinstance(catalogue, dict) and "prefabs" in catalogue else catalogue
+    prefabs = (
+        catalogue.get("prefabs")
+        if isinstance(catalogue, dict) and "prefabs" in catalogue
+        else catalogue
+    )
     by_asset = bundle_lights.slots_by_asset(prefabs or {})
-    stats = {"slotMeshes": len(by_asset), "slotMeshesRead": 0, "slotMeshesJoined": 0,
-             "slotMeshesJoinedById": 0, "slotMeshesLayersOnly": 0,
-             "slotMeshesAmbiguous": 0, "slotMeshesMissing": 0,
-             "slotsOnAMaterialLayer": 0, "materialsFromSlots": 0, "materialsContested": 0}
+    stats = {
+        "slotMeshes": len(by_asset),
+        "slotMeshesRead": 0,
+        "slotMeshesJoined": 0,
+        "slotMeshesJoinedById": 0,
+        "slotMeshesLayersOnly": 0,
+        "slotMeshesAmbiguous": 0,
+        "slotMeshesMissing": 0,
+        "slotsOnAMaterialLayer": 0,
+        "materialsFromSlots": 0,
+        "materialsContested": 0,
+    }
     if not by_asset:
         return stats
     progress.begin("materials: emissive colour slots", total=len(by_asset), unit="meshes")
@@ -492,7 +537,9 @@ def _emissive_slots(bundle, resolved, progress):
                 stats["slotMeshesJoinedById"] += 1
             else:
                 stats["slotMeshesLayersOnly"] += 1
-            pairs = [(primitives[i], e) for i, e in by_id if 0 <= i < len(primitives) and primitives[i]]
+            pairs = [
+                (primitives[i], e) for i, e in by_id if 0 <= i < len(primitives) and primitives[i]
+            ]
         else:
             names = []
             for name in primitives:
@@ -522,12 +569,14 @@ def _emissive_slots(bundle, resolved, progress):
             record["emissiveNits"] = min(EMISSIVE_NITS_MAX, raw * EMISSIVE_NITS_PER_UNIT)
     stats["materialsFromSlots"] = len(claimed)
     stats["materialsContested"] = len(contested)
-    progress.end(f"{stats['slotMeshesJoinedById']} of {stats['slotMeshesRead']} slot-carrying "
-                 f"meshes joined by the game's own materialId and {stats['slotMeshesJoined']} by "
-                 f"ordinal ({stats['slotMeshesAmbiguous']} ambiguous, "
-                 f"{stats['slotMeshesLayersOnly']} on a material layer only, "
-                 f"{stats['slotMeshesMissing']} without a mesh), "
-                 f"{len(claimed)} materials take CS2's own emissive colour")
+    progress.end(
+        f"{stats['slotMeshesJoinedById']} of {stats['slotMeshesRead']} slot-carrying "
+        f"meshes joined by the game's own materialId and {stats['slotMeshesJoined']} by "
+        f"ordinal ({stats['slotMeshesAmbiguous']} ambiguous, "
+        f"{stats['slotMeshesLayersOnly']} on a material layer only, "
+        f"{stats['slotMeshesMissing']} without a mesh), "
+        f"{len(claimed)} materials take CS2's own emissive colour"
+    )
     return stats
 
 
@@ -570,7 +619,9 @@ def run(context, progress):
     progress.begin("materials: split masks", total=len(mask_paths), unit="masks")
     split_of = {}
     written = 0
-    for rel, outs, error in _each(_split_mask_job, [(bundle, derived, rel) for rel in mask_paths], jobs, progress):
+    for rel, outs, error in _each(
+        _split_mask_job, [(bundle, derived, rel) for rel in mask_paths], jobs, progress
+    ):
         if error:
             progress.log(f"mask {rel}: unreadable ({error}), skipped")
         elif outs:
@@ -584,21 +635,27 @@ def run(context, progress):
     progress.begin("materials: normals", total=len(normal_paths), unit="maps")
     rebuilt = {}
     checked = 0
-    for rel, entry, ok, error in _each(_normal_job, [(bundle, derived, rel) for rel in normal_paths], jobs, progress):
+    for rel, entry, ok, error in _each(
+        _normal_job, [(bundle, derived, rel) for rel in normal_paths], jobs, progress
+    ):
         if error:
             progress.log(f"normal {rel}: unreadable ({error}), skipped")
             continue
         checked += 1 if ok else 0
         if entry:
             rebuilt[rel] = entry
-    progress.end(f"{checked} normal maps checked, {len(rebuilt)} rebuilt from a two-channel packing "
-                 f"({jobs} worker(s))")
+    progress.end(
+        f"{checked} normal maps checked, {len(rebuilt)} rebuilt from a two-channel packing "
+        f"({jobs} worker(s))"
+    )
     stats["normalsRebuilt"] = len(rebuilt)
 
     # 4. paint variants -------------------------------------------------------------------------
     manifest = context.manifest or {}
     total_instances = int(((manifest.get("counts") or {}).get("instances")) or 0) or None
-    progress.begin("materials: paint variants (instances pass)", total=total_instances, unit="instances")
+    progress.begin(
+        "materials: paint variants (instances pass)", total=total_instances, unit="instances"
+    )
     sets_by_asset = defaultdict(Counter)
     kind_of_asset = {}
     seen = 0
@@ -634,8 +691,11 @@ def run(context, progress):
         variants[asset_id] = {
             "kind": kind,
             "instances": int(weights.sum()),
-            "distinct": int(len(keys)),
-            "variants": [[[round(float(v), 4) for v in centre[3 * i:3 * i + 3]] for i in range(3)] for centre in centres],
+            "distinct": len(keys),
+            "variants": [
+                [[round(float(v), 4) for v in centre[3 * i : 3 * i + 3]] for i in range(3)]
+                for centre in centres
+            ],
             "counts": [int(c) for c in counts],
         }
     stats["paintPrefabs"] = len(variants)
@@ -652,7 +712,9 @@ def run(context, progress):
     lay = reader.resolve_layers(bundle)
     progress.begin("materials: prefab materials", total=len(paint_assets), unit="prefabs")
     materials_of = {}
-    for asset_id, names in _each(_asset_materials_job, [(lay.meshes, a) for a in paint_assets], jobs, progress):
+    for asset_id, names in _each(
+        _asset_materials_job, [(lay.meshes, a) for a in paint_assets], jobs, progress
+    ):
         materials_of[asset_id] = names
     progress.end(f"{len(paint_assets)} prefabs of kind {list(paint_kinds)} named their materials")
 
@@ -661,8 +723,8 @@ def run(context, progress):
     # each output file. Where two materials share a base but declare different colour masks the
     # lexicographically first mask wins for all of them - the serial code had the same collision
     # and resolved it by iteration order, which was not reproducible.
-    by_base = {}                                    # base_rel -> {"mask": rel, "variants": {vkey: centre}}
-    tinted = {}                                     # material -> {variantKey: path}
+    by_base = {}  # base_rel -> {"mask": rel, "variants": {vkey: centre}}
+    tinted = {}  # material -> {variantKey: path}
     for asset_id in paint_assets:
         for name in materials_of.get(asset_id) or ():
             rec = resolved.get(name)
@@ -678,11 +740,21 @@ def run(context, progress):
                 tinted.setdefault(name, {})[vkey] = f"textures/{_sha_stem(base_rel)}_v{vkey}.png"
 
     progress.begin("materials: tinted albedos", total=len(by_base), unit="albedos")
-    args = [(bundle, derived, base_rel, e["mask"], sorted(e["variants"].items()), variant_max, factor_max_error)
-            for base_rel, e in sorted(by_base.items())]
+    args = [
+        (
+            bundle,
+            derived,
+            base_rel,
+            e["mask"],
+            sorted(e["variants"].items()),
+            variant_max,
+            factor_max_error,
+        )
+        for base_rel, e in sorted(by_base.items())
+    ]
     textures_written = 0
     failed_bases = set()
-    per_base = {}                                   # base_rel -> {vkey: {"factor", "maxErr", "path"}}
+    per_base = {}  # base_rel -> {vkey: {"factor", "maxErr", "path"}}
     for base_rel, count, error, table in _each(_tint_job, args, jobs, progress):
         if error:
             progress.log(f"tint {base_rel}: {error}, skipped")
@@ -693,7 +765,7 @@ def run(context, progress):
     # A variant whose constant is close enough ships NO texture: the consumer multiplies the
     # canonical albedo by `factor` instead. Both halves are recorded either way, so the split is
     # a measured number in the report rather than a claim.
-    factors = {}                                    # material -> {vkey: {"factor", "maxErr"}}
+    factors = {}  # material -> {vkey: {"factor", "maxErr"}}
     as_factor = as_texture = 0
     for name, table in list(tinted.items()):
         rec = resolved.get(name) or {}
@@ -703,7 +775,10 @@ def run(context, progress):
             entry = entries.get(vkey)
             if entry is None:
                 continue
-            factors.setdefault(name, {})[vkey] = {"factor": entry["factor"], "maxErr": entry["maxErr"]}
+            factors.setdefault(name, {})[vkey] = {
+                "factor": entry["factor"],
+                "maxErr": entry["maxErr"],
+            }
             if entry["path"]:
                 keep[vkey] = entry["path"]
                 as_texture += 1
@@ -715,10 +790,12 @@ def run(context, progress):
             tinted.pop(name)
     for name in [n for n in tinted if (resolved.get(n) or {}).get("baseColor") in failed_bases]:
         tinted.pop(name)
-    progress.end(f"{textures_written} tinted albedo textures over {len(by_base)} source albedos for "
-                 f"{len(paint_assets)} prefabs of kind {list(paint_kinds)}: {as_factor} (material, variant) "
-                 f"pairs ship a baseColorFactor and {as_texture} need the texture "
-                 f"(threshold {factor_max_error}/255, {jobs} worker(s))")
+    progress.end(
+        f"{textures_written} tinted albedo textures over {len(by_base)} source albedos for "
+        f"{len(paint_assets)} prefabs of kind {list(paint_kinds)}: {as_factor} (material, variant) "
+        f"pairs ship a baseColorFactor and {as_texture} need the texture "
+        f"(threshold {factor_max_error}/255, {jobs} worker(s))"
+    )
     stats["tintedTextures"] = textures_written
     stats["tintedSourceAlbedos"] = len(by_base)
     stats["variantsAsFactor"] = as_factor
@@ -745,13 +822,27 @@ def run(context, progress):
             if isinstance(v2, tuple):
                 entry[k2] = list(v2)
         table[key] = entry
-    document = {"schema": "csiibundle.bake.materials/1", "generatedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-                "materials": table, "aliases": aliases, "normalsRebuilt": rebuilt,
-                "paintKinds": list(paint_kinds)}
-    with open(os.path.join(derived, "materials.json"), "w", encoding="utf-8", newline="\n") as handle:
+    document = {
+        "schema": "csiibundle.bake.materials/1",
+        "generatedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "materials": table,
+        "aliases": aliases,
+        "normalsRebuilt": rebuilt,
+        "paintKinds": list(paint_kinds),
+    }
+    with open(
+        os.path.join(derived, "materials.json"), "w", encoding="utf-8", newline="\n"
+    ) as handle:
         json.dump(document, handle, indent=1, sort_keys=True)
-    with open(os.path.join(derived, "paint_variants.json"), "w", encoding="utf-8", newline="\n") as handle:
-        json.dump({"schema": "csiibundle.bake.paint_variants/1", "prefabs": variants}, handle, indent=1, sort_keys=True)
+    with open(
+        os.path.join(derived, "paint_variants.json"), "w", encoding="utf-8", newline="\n"
+    ) as handle:
+        json.dump(
+            {"schema": "csiibundle.bake.paint_variants/1", "prefabs": variants},
+            handle,
+            indent=1,
+            sort_keys=True,
+        )
     return stats
 
 
@@ -765,6 +856,13 @@ def run(context, progress):
 # version 6: the join takes the game's own `materialId` when the rip ships it (2026-08-19 and
 # after), which retires the ordinal guess entirely - 765 of 778 meshes exact, 0 ambiguous, and
 # the 13 that are left name a material LAYER and are counted as such rather than as a failure
-register(Product(PRODUCT_NAME, INPUTS, "materials.json", run, version=6,
-                 options=("paint_kinds", "paint_variants", "variant_max_size",
-                          "paint_factor_max_error")))
+register(
+    Product(
+        PRODUCT_NAME,
+        INPUTS,
+        "materials.json",
+        run,
+        version=6,
+        options=("paint_kinds", "paint_variants", "variant_max_size", "paint_factor_max_error"),
+    )
+)

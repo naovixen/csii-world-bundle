@@ -30,7 +30,6 @@ import os
 import re
 
 import numpy
-
 from csiibundle import png
 
 from . import dae
@@ -55,9 +54,13 @@ TEXTURE_SUBDIR = ("art", "textures")
 # level's 771 masks shipped at 1024 x 1024 while every colour and normal map beside them was
 # capped at 256, which was 1,025 MiB — 58 % of ALL the level's texture bytes — for a map whose
 # only job is to select per texel against a 256-pixel albedo.
-KIND_CAP_SETTING = {"color": "texture_max", "normal": "texture_max_normal",
-                    "data": "texture_max_data", "opacity": "texture_max",
-                    "colormask": "texture_max"}
+KIND_CAP_SETTING = {
+    "color": "texture_max",
+    "normal": "texture_max_normal",
+    "data": "texture_max_data",
+    "opacity": "texture_max",
+    "colormask": "texture_max",
+}
 
 
 def caps_from_settings(settings):
@@ -78,6 +81,7 @@ def mapto(level_name, raw_name):
 
 # -- textures ----------------------------------------------------------------------------------
 
+
 def _load_any(path):
     """`(array, kind)`: `(h,w,4) uint8` for RGB/RGBA PNGs (RGB gets alpha 255), `(h,w) uint8|uint16`
     for grey ones. csiibundle's decoders first (they never colour-manage), PIL for the rest."""
@@ -90,7 +94,7 @@ def _load_any(path):
         return g, "gray"
     except ValueError:
         pass
-    from PIL import Image  # noqa: WPS433 - palette / RGB PNGs
+    from PIL import Image
 
     im = Image.open(path)
     if im.mode in ("L", "I;16", "I"):
@@ -149,6 +153,7 @@ def dxgi_format(kind, keep_alpha=False, grey=False):
 # `stages/materials` builds these to EXPORT them; `pipeline/estimate` builds the same ones to
 # SIZE them. Two copies of the walk would be two answers to "which textures does this level
 # ship", and the meter's whole value is that it cannot disagree with the build.
+
 
 def plan_canonical(bundle, derived_dir, table, names):
     """`{canonical: {slot: (src, kind, keep_alpha)}}` for the named canonical materials.
@@ -238,7 +243,7 @@ def texture_name(src_path, kind, keep_alpha=False, use_dds=True):
     """
     ext = "dds" if use_dds else "png"
     stem = re.sub(r"[^A-Za-z0-9_\-]", "_", os.path.splitext(os.path.basename(src_path or ""))[0])
-    if kind == "opacity":                                # the albedo's alpha as a grey map: v1.5's opacityMap
+    if kind == "opacity":  # the albedo's alpha as a grey map: v1.5's opacityMap
         return f"{stem}_o.data.{ext}"
     return f"{stem}.{kind}.{ext}" if not keep_alpha else f"{stem}_a.{kind}.{ext}"
 
@@ -266,7 +271,11 @@ def export_texture(level, src_path, kind, max_size=0, keep_alpha=False, cache=No
     arr = _cap(arr, max_size)
     if kind == "opacity":
         alpha = arr[:, :, 3] if form == "rgba" else (numpy.full(arr.shape[:2], 255, numpy.uint8))
-        data = _encode_dds(alpha.astype(numpy.uint8), "opacity") if use_dds else png.encode_gray(alpha.astype(numpy.uint8), bit_depth=8)
+        data = (
+            _encode_dds(alpha.astype(numpy.uint8), "opacity")
+            if use_dds
+            else png.encode_gray(alpha.astype(numpy.uint8), bit_depth=8)
+        )
     elif kind == "colormask":
         # BEFORE the `form == "gray"` branch: a single-channel mask is still a colour mask, and
         # the conversion has to run on it too. (This branch was written into `texture_name` by
@@ -278,12 +287,20 @@ def export_texture(level, src_path, kind, max_size=0, keep_alpha=False, cache=No
     elif form == "gray":
         g = arr
         if g.dtype != numpy.uint8:
-            g = (g.astype(numpy.uint32) >> 8).astype(numpy.uint8) if g.max() > 255 else g.astype(numpy.uint8)
+            g = (
+                (g.astype(numpy.uint32) >> 8).astype(numpy.uint8)
+                if g.max() > 255
+                else g.astype(numpy.uint8)
+            )
         data = _encode_dds(g, kind) if use_dds else png.encode_gray(g, bit_depth=8)
     elif keep_alpha:
         data = _encode_dds(arr, kind, keep_alpha=True) if use_dds else png.encode_rgba(arr)
     else:
-        data = _encode_dds(arr, kind if kind != "data" else "data_rgb") if use_dds else png.encode_rgb(arr)
+        data = (
+            _encode_dds(arr, kind if kind != "data" else "data_rgb")
+            if use_dds
+            else png.encode_rgb(arr)
+        )
     level.write_bytes_if_changed(data, *TEXTURE_SUBDIR, name)
     if cache is not None:
         cache[key] = game
@@ -318,7 +335,7 @@ def _colormask_rgba(arr, form):
     BeamNG can only mix where CS2 multiplies, and no alpha can fix that; it is declared in the
     report as `colorMaskOverlap` with its count.
     """
-    rgba = numpy.zeros(arr.shape[:2] + (4,), dtype=numpy.uint8)
+    rgba = numpy.zeros((*arr.shape[:2], 4), dtype=numpy.uint8)
     if form == "gray":
         rgba[..., 0] = arr if arr.dtype == numpy.uint8 else arr.astype(numpy.uint8)
     else:
@@ -400,21 +417,33 @@ def material_v15(level, name, rec, maps, pid_key=None):
         # compiler defaults it to when a `colorPaletteMap` is present.
         stage["paletteBaseColor"] = True
     if maps.get("opacity"):
-        stage["opacityMap"] = maps["opacity"]           # v1.5 reads opacity from here, not from the albedo's alpha
+        stage["opacityMap"] = maps[
+            "opacity"
+        ]  # v1.5 reads opacity from here, not from the albedo's alpha
     factor = rec.get("baseColorFactor")
     if factor:
         rgb = [float(v) for v in factor[:3]]
         alpha = float(factor[3]) if len(factor) > 3 else 1.0
         if any(abs(v - 1.0) > 1e-3 for v in rgb):
-            stage["baseColorFactor"] = rgb + [1.0]
+            stage["baseColorFactor"] = [*rgb, 1.0]
         if alpha < 0.999:
             stage["opacityFactor"] = alpha
     if not stage.get("baseColorMap") and rec.get("color"):
-        stage["diffuseColor"] = [float(v) for v in list(rec["color"])[:4]] + [1.0] * (4 - len(rec["color"][:4]))
+        stage["diffuseColor"] = [float(v) for v in list(rec["color"])[:4]] + [1.0] * (
+            4 - len(rec["color"][:4])
+        )
     if rec.get("uv_scale") and rec.get("uv_scale") != 1.0:
-        pass                                              # UV scale is baked into tile UVs by the areas product
-    mat = {"name": name, "mapTo": name, "class": "Material", "persistentId": level.pid(pid_key or f"material:{name}"),
-           "version": 1.5, "Stages": [stage, {}, {}, {}], "materialTag0": "beamng", "materialTag1": "cs2"}
+        pass  # UV scale is baked into tile UVs by the areas product
+    mat = {
+        "name": name,
+        "mapTo": name,
+        "class": "Material",
+        "persistentId": level.pid(pid_key or f"material:{name}"),
+        "version": 1.5,
+        "Stages": [stage, {}, {}, {}],
+        "materialTag0": "beamng",
+        "materialTag1": "cs2",
+    }
     mode = rec.get("alphaMode") or "opaque"
     if mode == "mask":
         mat["alphaTest"] = True
@@ -434,6 +463,13 @@ def material_v15(level, name, rec, maps, pid_key=None):
 
 def placeholder_material(level, name, color=(0.5, 0.5, 0.5, 1.0)):
     """A flat material for a symbol nothing resolves (unresolved asset packs, `unmapped`)."""
-    return {"name": name, "mapTo": name, "class": "Material", "persistentId": level.pid(f"material:{name}"),
-            "version": 1.5, "Stages": [{"diffuseColor": [float(c) for c in color]}, {}, {}, {}],
-            "materialTag0": "beamng", "materialTag1": "cs2"}
+    return {
+        "name": name,
+        "mapTo": name,
+        "class": "Material",
+        "persistentId": level.pid(f"material:{name}"),
+        "version": 1.5,
+        "Stages": [{"diffuseColor": [float(c) for c in color]}, {}, {}, {}],
+        "materialTag0": "beamng",
+        "materialTag1": "cs2",
+    }

@@ -28,7 +28,9 @@ def _steam_roots_linux():
     return [
         os.path.join(home, ".steam", "steam"),
         os.path.join(home, ".local", "share", "Steam"),
-        os.path.join(home, ".var", "app", "com.valvesoftware.Steam", ".local", "share", "Steam"),  # flatpak
+        os.path.join(
+            home, ".var", "app", "com.valvesoftware.Steam", ".local", "share", "Steam"
+        ),  # flatpak
         os.path.join(home, ".steam", "root"),
     ]
 
@@ -39,9 +41,21 @@ def candidate_bundle_dirs():
         profile = os.environ.get("USERPROFILE") or os.path.expanduser("~")
         return [os.path.join(profile, "AppData", "LocalLow", MODSDATA_TAIL)]
     if sys.platform == "darwin":
-        return [os.path.join(os.path.expanduser("~"), "Library", "Application Support", MODSDATA_TAIL)]
-    proton_tail = os.path.join("steamapps", "compatdata", CS2_APP_ID, "pfx", "drive_c", "users",
-                               "steamuser", "AppData", "LocalLow", MODSDATA_TAIL)
+        return [
+            os.path.join(os.path.expanduser("~"), "Library", "Application Support", MODSDATA_TAIL)
+        ]
+    proton_tail = os.path.join(
+        "steamapps",
+        "compatdata",
+        CS2_APP_ID,
+        "pfx",
+        "drive_c",
+        "users",
+        "steamuser",
+        "AppData",
+        "LocalLow",
+        MODSDATA_TAIL,
+    )
     return [os.path.join(root, proton_tail) for root in _steam_roots_linux()]
 
 

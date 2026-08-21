@@ -141,11 +141,12 @@ def plane_through(points):
     """
     if len(points) == 3:
         (x0, y0, z0), (x1, y1, z1), (x2, y2, z2) = (
-            (float(q[0]), float(q[1]), float(q[2])) for q in points)
+            (float(q[0]), float(q[1]), float(q[2])) for q in points
+        )
         ux, uy, uz = x1 - x0, y1 - y0, z1 - z0
         vx, vy, vz = x2 - x0, y2 - y0, z2 - z0
         nx = uy * vz - uz * vy
-        ny = uz * vx - ux * vz          # = 2 * signed plan area
+        ny = uz * vx - ux * vz  # = 2 * signed plan area
         nz = ux * vy - uy * vx
         if abs(ny) > PLAN_DEGENERATE:
             p = -nx / ny
@@ -185,7 +186,11 @@ def band_halfplanes(tri_plane, quad_tri, bottom, top):
     area = polygon_area([p0, p1, p2])
     if abs(area) < 1e-12:
         return None
-    out = [edge_halfplane(p0, p1, centre), edge_halfplane(p1, p2, centre), edge_halfplane(p2, p0, centre)]
+    out = [
+        edge_halfplane(p0, p1, centre),
+        edge_halfplane(p1, p2, centre),
+        edge_halfplane(p2, p0, centre),
+    ]
     lane = plane_through(quad_tri)
     tp, tq, tr = tri_plane
     lp, lq, lr = lane
@@ -207,7 +212,9 @@ def clean_polygon(poly, tol=WELD_M):
     for p in poly:
         if not out or abs(p[0] - out[-1][0]) > tol or abs(p[1] - out[-1][1]) > tol:
             out.append(p)
-    while len(out) > 1 and abs(out[0][0] - out[-1][0]) <= tol and abs(out[0][1] - out[-1][1]) <= tol:
+    while (
+        len(out) > 1 and abs(out[0][0] - out[-1][0]) <= tol and abs(out[0][1] - out[-1][1]) <= tol
+    ):
         out.pop()
     if len(out) < 3:
         return None
@@ -281,7 +288,10 @@ def clip_triangle(tri, prisms, stats=None):
 def fan(polygon):
     """Triangulate a convex polygon as a fan — `[(i0, i1, i2), …]` over its own vertex order."""
     return [(0, i, i + 1) for i in range(1, len(polygon) - 1)]
+
+
 # -- the prisms themselves -----------------------------------------------------------------------
+
 
 def load_prisms(bundle_dir, cell, deep_only=True):
     """Every clip volume of `clipvolumes.jsonl` as prism sub-triangles — `[(three (x, y, z) lane
@@ -308,7 +318,8 @@ def load_prisms(bundle_dir, cell, deep_only=True):
     if not os.path.isfile(path):
         raise RuntimeError(
             "CONTRACT VIOLATION: terrain layer present but no clipvolumes.jsonl — "
-            "the producer always writes the §8c clip layer; re-rip the bundle")
+            "the producer always writes the §8c clip layer; re-rip the bundle"
+        )
     prisms = []
     skipped = 0
     for record in reader.read_jsonl(path):
@@ -330,7 +341,11 @@ def load_prisms(bundle_dir, cell, deep_only=True):
         left, right = record.get("left"), record.get("right")
         if not left or not right:
             continue
-        span = float(numpy.linalg.norm(numpy.diff(numpy.asarray(left, dtype=numpy.float64), axis=0), axis=1).sum())
+        span = float(
+            numpy.linalg.norm(
+                numpy.diff(numpy.asarray(left, dtype=numpy.float64), axis=0), axis=1
+            ).sum()
+        )
         steps = int(min(1024, max(1, math.ceil(max(span, 1.0) / cell))))
         t = numpy.linspace(0.0, 1.0, steps + 1)
         lp, rp = bezier.evaluate(left, t), bezier.evaluate(right, t)

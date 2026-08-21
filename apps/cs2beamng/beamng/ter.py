@@ -75,7 +75,7 @@ def read_ter(path):
     for _ in range(count):
         length = data[off]
         off += 1
-        names.append(data[off:off + length].decode("utf-8", "replace"))
+        names.append(data[off : off + length].decode("utf-8", "replace"))
         off += length
     return size, heights, layers, names
 
@@ -84,8 +84,8 @@ def terrain_json(level_name, ter_rel_path, size, names):
     """The `.terrain.json` sidecar BeamNG keeps beside the binary."""
     return {
         "binaryFormat": "version(char), size(unsigned int), heightMap(heightMapSize * heightMapItemSize), "
-                        "layerMap(layerMapSize * layerMapItemSize), layerTextureMap(layerMapSize * layerMapItemSize), "
-                        "materialNames",
+        "layerMap(layerMapSize * layerMapItemSize), layerTextureMap(layerMapSize * layerMapItemSize), "
+        "materialNames",
         "datafile": ter_rel_path,
         "heightMapItemSize": 2,
         "heightMapSize": size * size,
@@ -113,7 +113,12 @@ def from_bundle_arrays(heights_m, layers_bundle, elevation_scale, elevation_offs
     stored = numpy.rint((h - elevation_offset) / max(elevation_scale, 1e-12))
     stored = numpy.clip(stored, 0, 65535).astype("<u2")
     layers = numpy.asarray(layers_bundle, dtype="u1")
-    return stored[::-1].copy(), layers[::-1].copy(), 65536.0 * elevation_scale, float(elevation_offset)
+    return (
+        stored[::-1].copy(),
+        layers[::-1].copy(),
+        65536.0 * elevation_scale,
+        float(elevation_offset),
+    )
 
 
 def sample_height(heights_u16, max_height, position, square_size, x, y):

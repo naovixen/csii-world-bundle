@@ -15,6 +15,7 @@ Average(3) and Paeth(4) are exercised by hand-built synthetic PNGs instead (see
 `_build_synthetic_png`), one per bit depth/channel-count combination the decoder supports
 (gray8, gray16, rgba8), each cycling through all five filter kinds row by row.
 """
+
 import os
 import struct
 import sys
@@ -27,8 +28,10 @@ from PIL import Image
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from csiibundle import png as png_reader
 
-BUNDLE = os.path.expandvars(r"%USERPROFILE%\AppData\LocalLow\Colossal Order"
-                            r"\Cities Skylines II\ModsData\Carto")
+BUNDLE = os.path.expandvars(
+    r"%USERPROFILE%\AppData\LocalLow\Colossal Order"
+    r"\Cities Skylines II\ModsData\Carto"
+)
 # Synthetic PNGs are throwaway test fixtures — keep them out of the repo tree entirely rather
 # than relying on .gitignore or careful `git add`.
 SCRATCH = os.path.join(tempfile.gettempdir(), "carto_test_png_decode")
@@ -47,7 +50,7 @@ failures = 0
 def check(label, decoder_name, path):
     """Decode `path` with the harness's `decoder_name` and compare against PIL, sample-exact."""
     global failures
-    width, height, data = namespace[decoder_name](path)
+    _width, _height, data = namespace[decoder_name](path)
     truth = numpy.asarray(Image.open(path))
     if truth.dtype.itemsize > 1:
         # PIL's I;16 already comes back as native-endian uint16 with the correct numeric
@@ -91,9 +94,9 @@ for name, decoder in REAL_CASES:
     width = height = depth = colour_type = None
     idat = []
     while pos + 8 <= len(raw_file):
-        (length,) = struct.unpack(">I", raw_file[pos:pos + 4])
-        tag = raw_file[pos + 4:pos + 8]
-        payload = raw_file[pos + 8:pos + 8 + length]
+        (length,) = struct.unpack(">I", raw_file[pos : pos + 4])
+        tag = raw_file[pos + 4 : pos + 8]
+        payload = raw_file[pos + 8 : pos + 8 + length]
         pos += 12 + length
         if tag == b"IHDR":
             width, height = struct.unpack(">II", payload[:8])
@@ -116,11 +119,14 @@ for name, counts in filter_histogram.items():
     print(f"  {name}: {dict(sorted(counts.items()))}")
 only_none = all(set(c) <= {0} for c in filter_histogram.values())
 if only_none:
-    print("  -> every real raster uses filter 0 (None) exclusively; "
-          "Sub/Up/Average/Paeth are untested by real data, covered by synthetics below.")
+    print(
+        "  -> every real raster uses filter 0 (None) exclusively; "
+        "Sub/Up/Average/Paeth are untested by real data, covered by synthetics below."
+    )
 
 
 # -- synthetic PNGs exercising every filter kind --------------------------------------------
+
 
 def _paeth_predictor(left, up, corner):
     p = left + up - corner
@@ -159,8 +165,12 @@ def _forward_filter(kind, raw_line, raw_prev, bpp):
 
 
 def _png_chunk(tag, payload):
-    return (struct.pack(">I", len(payload)) + tag + payload
-            + struct.pack(">I", zlib.crc32(tag + payload) & 0xFFFFFFFF))
+    return (
+        struct.pack(">I", len(payload))
+        + tag
+        + payload
+        + struct.pack(">I", zlib.crc32(tag + payload) & 0xFFFFFFFF)
+    )
 
 
 def _build_synthetic_png(path, width, height, depth, colour_type, bpp, rng):
@@ -191,7 +201,8 @@ def _build_synthetic_png(path, width, height, depth, colour_type, bpp, rng):
 
 
 os.makedirs(SCRATCH, exist_ok=True)
-import random
+import random  # noqa: E402 - after the sys.path bootstrap above
+
 rng = random.Random(20260807)
 
 print("\n-- synthetic PNGs (all five filter kinds) --")
@@ -202,18 +213,34 @@ SYNTH_CASES = [
 ]
 for filename, depth, colour_type, bpp, decoder in SYNTH_CASES:
     path = os.path.join(SCRATCH, filename)
-    kinds = _build_synthetic_png(path, width=17, height=23, depth=depth,
-                                  colour_type=colour_type, bpp=bpp, rng=rng)
+    kinds = _build_synthetic_png(
+        path, width=17, height=23, depth=depth, colour_type=colour_type, bpp=bpp, rng=rng
+    )
     assert kinds == [0, 1, 2, 3, 4], f"{filename}: synthetic build didn't cover all filters"
     check(f"synthetic depth={depth} colour_type={colour_type}", decoder, path)
 
 print("\n-- encoders (csiibundle.png.encode_gray / encode_rgba round-trip, deterministic) --")
-import numpy as _np
-from csiibundle import png as _png
+import numpy as _np  # noqa: E402 - after the sys.path bootstrap above
+from csiibundle import png as _png  # noqa: E402 - after the sys.path bootstrap above
+
 _cases = [
-    ("enc_gray8.png", ((_np.arange(17 * 23, dtype=_np.uint32).reshape(23, 17) * 3) % 256).astype(_np.uint8), _png.gray_array),
-    ("enc_gray16.png", (_np.arange(17 * 23, dtype=_np.uint32).reshape(23, 17) * 197 % 65536).astype(_np.uint16), _png.gray_array),
-    ("enc_rgba8.png", _np.frombuffer(bytes(rng.getrandbits(8) for _ in range(23 * 17 * 4)), dtype=_np.uint8).reshape(23, 17, 4), _png.rgba_array),
+    (
+        "enc_gray8.png",
+        ((_np.arange(17 * 23, dtype=_np.uint32).reshape(23, 17) * 3) % 256).astype(_np.uint8),
+        _png.gray_array,
+    ),
+    (
+        "enc_gray16.png",
+        (_np.arange(17 * 23, dtype=_np.uint32).reshape(23, 17) * 197 % 65536).astype(_np.uint16),
+        _png.gray_array,
+    ),
+    (
+        "enc_rgba8.png",
+        _np.frombuffer(
+            bytes(rng.getrandbits(8) for _ in range(23 * 17 * 4)), dtype=_np.uint8
+        ).reshape(23, 17, 4),
+        _png.rgba_array,
+    ),
 ]
 for filename, arr, back in _cases:
     path = os.path.join(SCRATCH, filename)

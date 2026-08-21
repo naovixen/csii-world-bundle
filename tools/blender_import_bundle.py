@@ -121,7 +121,6 @@ trees and props are the ones that need one.
 import json
 import math
 import os
-import re
 import sys
 import time
 
@@ -142,11 +141,24 @@ from mathutils.bvhtree import BVHTree
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import colour_model
 from csiibundle import areas as area_math
-from csiibundle import bezier, decals, drape, frames, instances, lanes, materials, water
-from csiibundle import networks, reader, tints
-from csiibundle import terrain as terrain_math, terrainclip
-from csiibundle import glb as glb_reader, png as png_reader, splat as splat_reader
-
+from csiibundle import (
+    bezier,
+    decals,
+    drape,
+    frames,
+    instances,
+    lanes,
+    materials,
+    networks,
+    reader,
+    terrainclip,
+    tints,
+    water,
+)
+from csiibundle import glb as glb_reader
+from csiibundle import png as png_reader
+from csiibundle import splat as splat_reader
+from csiibundle import terrain as terrain_math
 
 # -- the frame conversion, contract §2 ------------------------------------------------------
 #
@@ -331,9 +343,18 @@ class _Log:
 LOG = _Log()
 
 
-def _mesh_from_arrays(name, verts, tris, uv_layers=None, material_runs=None, poly_size=3,
-                      smooth=True, degenerate_report=None, source_geometry=False,
-                      poly_sizes=None):
+def _mesh_from_arrays(
+    name,
+    verts,
+    tris,
+    uv_layers=None,
+    material_runs=None,
+    poly_size=3,
+    smooth=True,
+    degenerate_report=None,
+    source_geometry=False,
+    poly_sizes=None,
+):
     """Build a mesh from numpy arrays via foreach_set — the hot-path alternative to
     per-face `from_pydata` / per-loop attribute assignment.
 
@@ -403,31 +424,39 @@ def _mesh_from_arrays(name, verts, tris, uv_layers=None, material_runs=None, pol
     if verts.size == 0:
         verts = verts.reshape(0, 3)
     if verts.ndim != 2 or verts.shape[1] != 3:
-        raise ValueError(f"_mesh_from_arrays({name!r}): verts must be (N, 3), got shape {verts.shape}")
+        raise ValueError(
+            f"_mesh_from_arrays({name!r}): verts must be (N, 3), got shape {verts.shape}"
+        )
 
     if poly_sizes is None:
         tris = numpy.asarray(tris, dtype=numpy.int64)
         if tris.size == 0:
             tris = tris.reshape(0, poly_size)
         if tris.ndim != 2 or tris.shape[1] != poly_size:
-            raise ValueError(f"_mesh_from_arrays({name!r}): tris must be (M, {poly_size}), "
-                             f"got shape {tris.shape}")
+            raise ValueError(
+                f"_mesh_from_arrays({name!r}): tris must be (M, {poly_size}), "
+                f"got shape {tris.shape}"
+            )
         loops_flat = tris.ravel()
         sizes = numpy.full(len(tris), poly_size, dtype=numpy.int64)
     else:
         loops_flat = numpy.asarray(tris, dtype=numpy.int64).ravel()
         sizes = numpy.asarray(poly_sizes, dtype=numpy.int64)
         if int(sizes.sum()) != len(loops_flat):
-            raise ValueError(f"_mesh_from_arrays({name!r}): poly_sizes sum "
-                             f"{int(sizes.sum())} != {len(loops_flat)} flat loop indices")
+            raise ValueError(
+                f"_mesh_from_arrays({name!r}): poly_sizes sum "
+                f"{int(sizes.sum())} != {len(loops_flat)} flat loop indices"
+            )
 
     # The drop itself is `csiibundle.glb.clean_degenerate_polygons` — engine-neutral, and it
     # trims `material_runs` and the UV layers in the same pass so the survivors keep what they
     # were given. What stays here is the REPORTING, because what a degenerate face means
     # depends on where the arrays came from and only this caller knows that.
-    (loops_flat, sizes, uv_layers, material_runs,
-     repeated_count, zero_area_count) = glb_reader.clean_degenerate_polygons(
-        verts, loops_flat, sizes, uv_layers=uv_layers, material_runs=material_runs)
+    (loops_flat, sizes, uv_layers, material_runs, repeated_count, zero_area_count) = (
+        glb_reader.clean_degenerate_polygons(
+            verts, loops_flat, sizes, uv_layers=uv_layers, material_runs=material_runs
+        )
+    )
     poly_count = len(sizes)
 
     if repeated_count:
@@ -438,17 +467,21 @@ def _mesh_from_arrays(name, verts, tris, uv_layers=None, material_runs=None, pol
         if source_geometry and degenerate_report is not None:
             degenerate_report(name, repeated_count, True)
         else:
-            LOG.warn(f"CONTRACT VIOLATION: {name} array input had {repeated_count} "
-                     "face(s) with a repeated vertex index; dropping before build so "
-                     "materials/UVs stay aligned to the surviving polygons")
+            LOG.warn(
+                f"CONTRACT VIOLATION: {name} array input had {repeated_count} "
+                "face(s) with a repeated vertex index; dropping before build so "
+                "materials/UVs stay aligned to the surviving polygons"
+            )
     if zero_area_count:
         if degenerate_report is not None:
             degenerate_report(name, zero_area_count, False)
         else:
-            LOG.warn(f"CONTRACT VIOLATION: {name} array input had {zero_area_count} "
-                     "geometrically zero-area face(s) (distinct indices collapsed to "
-                     "a line or point); dropping before build so materials/UVs stay "
-                     "aligned to the surviving polygons")
+            LOG.warn(
+                f"CONTRACT VIOLATION: {name} array input had {zero_area_count} "
+                "geometrically zero-area face(s) (distinct indices collapsed to "
+                "a line or point); dropping before build so materials/UVs stay "
+                "aligned to the surviving polygons"
+            )
 
     mesh = bpy.data.meshes.new(name)
     mesh.vertices.add(len(verts))
@@ -456,8 +489,11 @@ def _mesh_from_arrays(name, verts, tris, uv_layers=None, material_runs=None, pol
     mesh.loops.add(len(loops_flat))
     mesh.loops.foreach_set("vertex_index", numpy.ascontiguousarray(loops_flat, dtype=numpy.int32))
     mesh.polygons.add(poly_count)
-    loop_start = numpy.concatenate(([0], numpy.cumsum(sizes)[:-1])).astype(numpy.int32) \
-        if poly_count else numpy.zeros(0, dtype=numpy.int32)
+    loop_start = (
+        numpy.concatenate(([0], numpy.cumsum(sizes)[:-1])).astype(numpy.int32)
+        if poly_count
+        else numpy.zeros(0, dtype=numpy.int32)
+    )
     mesh.polygons.foreach_set("loop_start", loop_start)
     mesh.polygons.foreach_set("loop_total", numpy.ascontiguousarray(sizes, dtype=numpy.int32))
     if material_runs:
@@ -468,7 +504,7 @@ def _mesh_from_arrays(name, verts, tris, uv_layers=None, material_runs=None, pol
             if material is not None and material.name not in slots:
                 slots[material.name] = len(mesh.materials)
                 mesh.materials.append(material)
-            indices[cursor:cursor + count] = slots[material.name] if material is not None else 0
+            indices[cursor : cursor + count] = slots[material.name] if material is not None else 0
             cursor += count
         mesh.polygons.foreach_set("material_index", indices)
     for layer_name, uvs in (uv_layers or {}).items():
@@ -490,7 +526,8 @@ def _mesh_from_arrays(name, verts, tris, uv_layers=None, material_runs=None, pol
         raise RuntimeError(
             f"_mesh_from_arrays({name!r}): mesh.validate() dropped "
             f"{dropped_extra} more face(s) after the degenerate-face "
-            "pre-clean — it rejected something this check does not detect")
+            "pre-clean — it rejected something this check does not detect"
+        )
     mesh.polygons.foreach_set("use_smooth", numpy.full(poly_count, smooth, dtype=bool))
     return mesh
 
@@ -574,8 +611,7 @@ def survey_interchange(instances_path, networks_path, cell=250.0):
 
     def neighbourhood(key):
         cx, cz = key
-        return sum(skyline.get((cx + dx, cz + dz), 0.0)
-                   for dx in (-1, 0, 1) for dz in (-1, 0, 1))
+        return sum(skyline.get((cx + dx, cz + dz), 0.0) for dx in (-1, 0, 1) for dz in (-1, 0, 1))
 
     best = max(junction_cells, key=neighbourhood)
     if neighbourhood(best) <= 0:
@@ -650,7 +686,9 @@ def report_materials(bundle_dir):
             if not os.path.isfile(os.path.join(bundle_dir, rel)):
                 dangling.append(f"{mat_id}.{rel}")
 
-    LOG.step(f"materials: {len(table)} ({mapless} with no maps), {len(referenced)} distinct textures")
+    LOG.step(
+        f"materials: {len(table)} ({mapless} with no maps), {len(referenced)} distinct textures"
+    )
 
     # colors.json is a palette; colorMask is what says where each channel of it lands. Counting
     # them here is how "did the colour layer actually come out?" gets answered by the harness
@@ -659,7 +697,9 @@ def report_materials(bundle_dir):
     if dangling:
         # A path in the table with no file behind it is a producer bug: §7 lets a map be absent,
         # but not present-and-broken.
-        LOG.warn(f"CONTRACT VIOLATION: {len(dangling)} texture reference(s) do not resolve: {dangling[:5]}")
+        LOG.warn(
+            f"CONTRACT VIOLATION: {len(dangling)} texture reference(s) do not resolve: {dangling[:5]}"
+        )
 
 
 def show_materials():
@@ -747,10 +787,10 @@ def apply_shader_only_materials(bundle_dir):
             continue
         tree = getattr(mat, "node_tree", None)
         if tree is None or any(node.label == _SHADER_LABEL for node in tree.nodes):
-            continue                                    # already done
+            continue  # already done
         bsdf = next((n for n in tree.nodes if n.type == "BSDF_PRINCIPLED"), None)
         if bsdf is None or bsdf.inputs["Base Color"].links:
-            continue                                    # it has a texture after all; leave it
+            continue  # it has a texture after all; leave it
 
         # Mark the BSDF itself, so a `--keep-existing` re-run can tell this material is done
         # without needing a node type to hang a label on.
@@ -772,7 +812,7 @@ def apply_shader_only_materials(bundle_dir):
             bsdf.inputs["Base Color"].default_value = flat or (0.92, 0.96, 1.0, 1.0)
             bsdf.inputs["Roughness"].default_value = appearance.roughness
             if "IOR" in bsdf.inputs:
-                bsdf.inputs["IOR"].default_value = 1.5     # architectural glass
+                bsdf.inputs["IOR"].default_value = 1.5  # architectural glass
             if "Transmission Weight" in bsdf.inputs:
                 bsdf.inputs["Transmission Weight"].default_value = 1.0
             else:
@@ -819,13 +859,13 @@ def apply_pbr_masks(bundle_dir):
             continue
         tree = getattr(mat, "node_tree", None)
         if tree is None or any(node.label == _PBR_LABEL for node in tree.nodes):
-            continue                                            # already rigged
+            continue  # already rigged
         principled = next((n for n in tree.nodes if n.type == "BSDF_PRINCIPLED"), None)
         if principled is None:
             continue
         mask_path = materials.texture_path(bundle_dir, entry, "mask")
         if not mask_path or not os.path.isfile(mask_path):
-            continue                                            # report_materials flags it
+            continue  # report_materials flags it
 
         image = _unpremultiply(bpy.data.images.load(mask_path, check_existing=True))
         image.colorspace_settings.name = "Non-Color"
@@ -840,8 +880,11 @@ def apply_pbr_masks(bundle_dir):
         tree.links.new(tex.outputs["Color"], sep.inputs["Color"])
 
         for _slot, channel, target, invert in plan:
-            socket = (tex.outputs["Alpha"] if channel == "A"
-                      else sep.outputs[{"R": "Red", "G": "Green", "B": "Blue"}[channel]])
+            socket = (
+                tex.outputs["Alpha"]
+                if channel == "A"
+                else sep.outputs[{"R": "Red", "G": "Green", "B": "Blue"}[channel]]
+            )
             if invert:
                 node = tree.nodes.new("ShaderNodeMath")
                 node.operation, node.label = "SUBTRACT", _PBR_LABEL
@@ -881,17 +924,17 @@ def apply_color_tints(bundle_dir):
         if tree is None:
             continue
         if any(node.label == _TINT_LABEL for node in tree.nodes):
-            continue                                            # already rigged (--keep-existing rerun)
+            continue  # already rigged (--keep-existing rerun)
         principled = next((n for n in tree.nodes if n.type == "BSDF_PRINCIPLED"), None)
         if principled is None:
             continue
         base_in = principled.inputs.get("Base Color")
         if base_in is None or not base_in.links:
-            continue                                            # no base texture to tint
+            continue  # no base texture to tint
 
         mask_path = os.path.join(bundle_dir, entry["colorMask"])
         if not os.path.isfile(mask_path):
-            continue                                            # report_materials already flagged it
+            continue  # report_materials already flagged it
         image = _unpremultiply(bpy.data.images.load(mask_path, check_existing=True))
         image.colorspace_settings.name = "Non-Color"
 
@@ -907,7 +950,7 @@ def apply_color_tints(bundle_dir):
         upstream = base_in.links[0].from_socket
         for i, (prop, channel) in enumerate(zip(_TINT_PROPS, ("Red", "Green", "Blue"))):
             attr = tree.nodes.new("ShaderNodeAttribute")
-            attr.attribute_type = "INSTANCER"                   # instancer empty first, object itself second
+            attr.attribute_type = "INSTANCER"  # instancer empty first, object itself second
             attr.attribute_name, attr.label = prop, _TINT_LABEL
             attr.location = (anchor.x - 700 + i * 60, anchor.y - 900)
             mix = tree.nodes.new("ShaderNodeMix")
@@ -918,7 +961,7 @@ def apply_color_tints(bundle_dir):
             tree.links.new(attr.outputs["Color"], _mix_socket(mix, "B"))
             upstream = _mix_socket(mix, "Result", outputs=True)
 
-        tree.links.new(upstream, base_in)                       # replaces the existing link
+        tree.links.new(upstream, base_in)  # replaces the existing link
         rigged += 1
 
     return rigged
@@ -959,8 +1002,10 @@ def ribbon(centerline, width, lift, mitre_limit=networks.DEFAULT_MITRE_LIMIT):
     if built is None:
         return None
     verts, quads = built
-    return ([Vector(frames.bundle_to_zup_point(v)) for v in verts],
-            [tuple(int(i) for i in quad) for quad in quads])
+    return (
+        [Vector(frames.bundle_to_zup_point(v)) for v in verts],
+        [tuple(int(i) for i in quad) for quad in quads],
+    )
 
 
 def place_network_mesh(record, mesh_dir, collection):
@@ -988,8 +1033,16 @@ def place_network_mesh(record, mesh_dir, collection):
     return True
 
 
-def build_networks(networks_path, categories, collection, net_mesh_dir=None, lift=0.05,
-                   center=None, radius=None, limit=None):
+def build_networks(
+    networks_path,
+    categories,
+    collection,
+    net_mesh_dir=None,
+    lift=0.05,
+    center=None,
+    radius=None,
+    limit=None,
+):
     """Extrude every centerline record into one merged mesh per (category, form).
 
     Merged rather than one object per segment: a city has tens of thousands of edges, and
@@ -1098,8 +1151,10 @@ def build_networks(networks_path, categories, collection, net_mesh_dir=None, lif
             if mat.users == 0:
                 bpy.data.materials.remove(mat)
         if merged:
-            LOG.step(f"merged {merged} duplicate material slot(s) onto "
-                     f"{len(bpy.data.materials)} material(s)")
+            LOG.step(
+                f"merged {merged} duplicate material slot(s) onto "
+                f"{len(bpy.data.materials)} material(s)"
+            )
 
     placed = 0
     for (category, form), (verts, faces) in sorted(groups.items()):
@@ -1121,8 +1176,10 @@ def build_networks(networks_path, categories, collection, net_mesh_dir=None, lif
         collection.objects.link(obj)
         placed += len(faces)
 
-    LOG.done(f"networks:  {total} record(s) read, {sum(counts['category'].values())} extruded "
-             f"into {len(groups)} mesh(es), {placed} quad(s)")
+    LOG.done(
+        f"networks:  {total} record(s) read, {sum(counts['category'].values())} extruded "
+        f"into {len(groups)} mesh(es), {placed} quad(s)"
+    )
     if net_mesh_dir is not None and mesh_form:
         _glb_fast_path_counts_log()
     for form, count in sorted(counts["form"].items()):
@@ -1141,8 +1198,10 @@ def build_networks(networks_path, categories, collection, net_mesh_dir=None, lif
         LOG.step(f"{mesh_form} record(s) use the mesh form")
     if missing_mesh:
         # A referenced mesh that is not on disk is a broken reference, not a style choice.
-        LOG.warn(f"CONTRACT VIOLATION: {missing_mesh} mesh-form record(s) reference a "
-                 f"missing .glb under {net_mesh_dir}")
+        LOG.warn(
+            f"CONTRACT VIOLATION: {missing_mesh} mesh-form record(s) reference a "
+            f"missing .glb under {net_mesh_dir}"
+        )
 
     return sum(counts["category"].values())
 
@@ -1223,8 +1282,7 @@ class _ProjectionSurface(drape.ProjectionSurface):
             mesh.calc_loop_triangles()
             tris = numpy.empty(len(mesh.loop_triangles) * 3, dtype=numpy.int64)
             mesh.loop_triangles.foreach_get("vertices", tris)
-            self._trees[index] = BVHTree.FromPolygons(
-                world.tolist(), tris.reshape(-1, 3).tolist())
+            self._trees[index] = BVHTree.FromPolygons(world.tolist(), tris.reshape(-1, 3).tolist())
         return self._trees[index]
 
     def drop(self, x, y, z, half_up, half_down):
@@ -1363,8 +1421,14 @@ def _load_lane_source(asset_id, lane_mesh_dir, cache):
             quad = _decal_quad_info(verts, tris, uvs)
             if quad is not None:
                 quad["material"] = slot_materials[int(tri_material[0])] if tri_count else None
-            source = {"verts": verts, "tris": tris, "uvs": uvs,
-                     "tri_material": tri_material, "materials": slot_materials, "quad": quad}
+            source = {
+                "verts": verts,
+                "tris": tris,
+                "uvs": uvs,
+                "tri_material": tri_material,
+                "materials": slot_materials,
+                "quad": quad,
+            }
         for obj in imported:
             bpy.data.objects.remove(obj, do_unlink=True)
 
@@ -1383,7 +1447,8 @@ def _lane_object_arrays(blocks):
     offsets = numpy.concatenate(([0], numpy.cumsum(counts)))[:-1]
     verts = numpy.concatenate([block["verts"] for block in blocks], axis=0)
     tris = numpy.concatenate(
-        [block["tris"] + offset for block, offset in zip(blocks, offsets)], axis=0)
+        [block["tris"] + offset for block, offset in zip(blocks, offsets)], axis=0
+    )
     uvs = numpy.concatenate([block["uvs"].reshape(-1, 2) for block in blocks], axis=0)
     material_runs = [(block["material"], len(block["tris"])) for block in blocks]
     return verts, tris, uvs, material_runs
@@ -1405,12 +1470,20 @@ def _lane_part_object(asset_id, source, cache, parts_collection, degenerate_repo
     order = numpy.argsort(tri_mat, kind="stable")
     tris = source["tris"][order]
     uvs = source["uvs"][order].reshape(-1, 2)
-    material_runs = [(source["materials"][m], int((tri_mat == m).sum()))
-                     for m in numpy.unique(tri_mat)]
-    mesh = _mesh_from_arrays(f"lanepart_{asset_id[:16]}", verts, tris,
-                             uv_layers={"UVMap": uvs}, material_runs=material_runs,
-                             poly_size=3, smooth=False, source_geometry=True,
-                             degenerate_report=degenerate_report)
+    material_runs = [
+        (source["materials"][m], int((tri_mat == m).sum())) for m in numpy.unique(tri_mat)
+    ]
+    mesh = _mesh_from_arrays(
+        f"lanepart_{asset_id[:16]}",
+        verts,
+        tris,
+        uv_layers={"UVMap": uvs},
+        material_runs=material_runs,
+        poly_size=3,
+        smooth=False,
+        source_geometry=True,
+        degenerate_report=degenerate_report,
+    )
     obj = bpy.data.objects.new(f"lanepart_{asset_id[:16]}", mesh)
     parts_collection.objects.link(obj)
     cache[asset_id] = obj
@@ -1464,7 +1537,8 @@ def _tile_instancer_object(name, part_obj, matrices, group_cache):
     mesh = bpy.data.meshes.new(name)
     mesh.vertices.add(len(mats))
     mesh.vertices.foreach_set(
-        "co", numpy.ascontiguousarray(mats[:, :3, 3], dtype=numpy.float32).ravel())
+        "co", numpy.ascontiguousarray(mats[:, :3, 3], dtype=numpy.float32).ravel()
+    )
     attr = mesh.attributes.new("tile_matrix", "FLOAT4X4", "POINT")
     for i, mat in enumerate(mats):
         attr.data[i].value = Matrix(mat.tolist())
@@ -1476,9 +1550,18 @@ def _tile_instancer_object(name, part_obj, matrices, group_cache):
     return obj
 
 
-def build_lanes(lanes_path, catalogue_path, lane_mesh_dir, collection,
-                center=None, radius=None, limit=None, road_surface=None,
-                markings_only=False, ground_surface=None):
+def build_lanes(
+    lanes_path,
+    catalogue_path,
+    lane_mesh_dir,
+    collection,
+    center=None,
+    radius=None,
+    limit=None,
+    road_surface=None,
+    markings_only=False,
+    ground_surface=None,
+):
     """Bend every lane record's parts along its curve, merged into one object per prefab.
 
     `markings_only` bends just the decal parts (road markings, wear tint) and skips the
@@ -1499,13 +1582,20 @@ def build_lanes(lanes_path, catalogue_path, lane_mesh_dir, collection,
     # `_bend_lane_part`). Checked once here rather than per part, and reported rather than
     # guessed around — a decal with no role would silently take the wear tint's lower lift and
     # bury a marking, the exact class of failure the field was added to end.
-    roleless = sorted({part.get("assetId", "?")
-                       for entry in catalogue.values() for part in entry.get("parts", ())
-                       if part.get("decal") and not part.get("decalRole")})
+    roleless = sorted(
+        {
+            part.get("assetId", "?")
+            for entry in catalogue.values()
+            for part in entry.get("parts", ())
+            if part.get("decal") and not part.get("decalRole")
+        }
+    )
     if roleless:
-        LOG.warn(f"CONTRACT VIOLATION: {len(roleless)} decal part(s) carry no §5B decalRole "
-                 f"({', '.join(roleless[:4])}{' …' if len(roleless) > 4 else ''}) — they take "
-                 "the wear-tint lift; re-rip the bundle")
+        LOG.warn(
+            f"CONTRACT VIOLATION: {len(roleless)} decal part(s) carry no §5B decalRole "
+            f"({', '.join(roleless[:4])}{' …' if len(roleless) > 4 else ''}) — they take "
+            "the wear-tint lift; re-rip the bundle"
+        )
 
     sources = {}
     builders = {}
@@ -1549,8 +1639,9 @@ def build_lanes(lanes_path, catalogue_path, lane_mesh_dir, collection,
             if source is None:
                 missing_mesh += 1
                 continue
-            _bend_lane_part(parts[index], source, curve, spans, curve_length,
-                            width_scale, hang, sink)
+            _bend_lane_part(
+                parts[index], source, curve, spans, curve_length, width_scale, hang, sink
+            )
 
         bent += 1
         category = record.get("category", "lane")
@@ -1560,13 +1651,19 @@ def build_lanes(lanes_path, catalogue_path, lane_mesh_dir, collection,
     # The bend loop above prints its progress; everything below (drape ray-casts, lazy
     # road-surface BVH builds, object construction) is the quiet expensive part of a
     # full-city run — announce it so a long silence reads as work, not a hang.
-    drape_blocks = [block for sink in builders.values() for block in sink["blocks"]
-                    if block["drape_eps"] is not None]
+    drape_blocks = [
+        block
+        for sink in builders.values()
+        for block in sink["blocks"]
+        if block["drape_eps"] is not None
+    ]
     to_drape = sum(len(block["verts"]) for block in drape_blocks)
     if road_surface is not None and to_drape:
-        LOG.step(f"bending done; draping {len(drape_blocks)} marking(s) "
-                 f"({to_drape} decal vertex(es)) onto the road surface and "
-                 f"building {len(builders)} object(s)")
+        LOG.step(
+            f"bending done; draping {len(drape_blocks)} marking(s) "
+            f"({to_drape} decal vertex(es)) onto the road surface and "
+            f"building {len(builders)} object(s)"
+        )
 
     # One ray-cast per unique WORLD (x, z), not per vertex (see _drape_block) — exact
     # because it samples each vertex's own laterally-offset position (fix round 1: an
@@ -1589,8 +1686,7 @@ def build_lanes(lanes_path, catalogue_path, lane_mesh_dir, collection,
     draped, drape_missed = counters["draped"], counters["missed"]
     drape_grounded = counters["grounded"]
     if counters["queries"]:
-        LOG.step(f"{counters['queries']} drape ray-cast(s) issued for "
-                 f"{to_drape} decal vertex(es)")
+        LOG.step(f"{counters['queries']} drape ray-cast(s) issued for {to_drape} decal vertex(es)")
 
     # A heavily tiled non-decal part (train sleepers/rails, catenary cable — a repeated
     # section stamped along the whole curve) can have its LAST tile's clip window fall short
@@ -1630,9 +1726,16 @@ def build_lanes(lanes_path, catalogue_path, lane_mesh_dir, collection,
 
         verts, tris, uvs, material_runs = _lane_object_arrays(blocks)
         verts = verts[:, [0, 2, 1]]  # bundle -> Blender: X stays, Y<->Z swap, no sign flip
-        mesh = _mesh_from_arrays(f"lane_{prefab_key}", verts, tris,
-                                 uv_layers={"UVMap": uvs}, material_runs=material_runs,
-                                 poly_size=3, smooth=False, degenerate_report=_report_lane_degenerate)
+        mesh = _mesh_from_arrays(
+            f"lane_{prefab_key}",
+            verts,
+            tris,
+            uv_layers={"UVMap": uvs},
+            material_runs=material_runs,
+            poly_size=3,
+            smooth=False,
+            degenerate_report=_report_lane_degenerate,
+        )
         obj = bpy.data.objects.new(f"lane_{prefab_key}", mesh)
         collection.objects.link(obj)
         if sink["colorSet"] is not None:
@@ -1664,10 +1767,12 @@ def build_lanes(lanes_path, catalogue_path, lane_mesh_dir, collection,
             if parts_collection is None:
                 parts_collection = bpy.data.collections.new("bundle_laneparts")
                 bpy.context.scene.collection.children.link(parts_collection)
-            part_obj = _lane_part_object(asset_id, sources[asset_id], part_cache,
-                                         parts_collection, _report_part_degenerate)
+            part_obj = _lane_part_object(
+                asset_id, sources[asset_id], part_cache, parts_collection, _report_part_degenerate
+            )
             instancer = _tile_instancer_object(
-                f"lanetiles_{prefab_key}_{asset_id[:12]}", part_obj, matrices, group_cache)
+                f"lanetiles_{prefab_key}_{asset_id[:12]}", part_obj, matrices, group_cache
+            )
             collection.objects.link(instancer)
             if sink["colorSet"] is not None:
                 set_paint(instancer, {"colorSet": sink["colorSet"]})
@@ -1680,21 +1785,29 @@ def build_lanes(lanes_path, catalogue_path, lane_mesh_dir, collection,
         if layer is not None:
             layer.exclude = True
 
-    LOG.done(f"lanes:     {bent} record(s) bent into {built} object(s), "
-             f"{len(sources)} part mesh(es) loaded")
+    LOG.done(
+        f"lanes:     {bent} record(s) bent into {built} object(s), "
+        f"{len(sources)} part mesh(es) loaded"
+    )
     if instanced_tiles:
         baked_tiles = sum(sink.get("tiles_baked", 0) for sink in builders.values())
-        LOG.step(f"{instanced_tiles} straight tile(s) instanced across {instancers} "
-                 f"instancer(s) ({len(part_cache)} shared part mesh(es)); "
-                 f"{baked_tiles} tile(s) baked (curved, tapered, hung or clipped)")
+        LOG.step(
+            f"{instanced_tiles} straight tile(s) instanced across {instancers} "
+            f"instancer(s) ({len(part_cache)} shared part mesh(es)); "
+            f"{baked_tiles} tile(s) baked (curved, tapered, hung or clipped)"
+        )
     if part_degenerates["faces"]:
-        LOG.step(f"{part_degenerates['faces']} degenerate face(s) dropped from shared part "
-                 "meshes (authored in the source .glb)")
+        LOG.step(
+            f"{part_degenerates['faces']} degenerate face(s) dropped from shared part "
+            "meshes (authored in the source .glb)"
+        )
     dropped_decals = sum(sink.get("decal_dropped", 0) for sink in builders.values())
     if dropped_decals:
         # New line vs pre-§39 baselines (cf. the degenerate-face note below for the A/B gate).
-        LOG.step(f"{dropped_decals} decal span(s) dropped (tiling clip 0 — the game draws "
-                 "zero instances on a sub-half-period stub)")
+        LOG.step(
+            f"{dropped_decals} decal span(s) dropped (tiling clip 0 — the game draws "
+            "zero instances on a sub-half-period stub)"
+        )
     if degenerate_totals["faces"]:
         # tools/ab_compare.py's COUNT_MARKERS ("face(s)", "object(s)") match this line, so any
         # two logs being diffed with --counts must have the identical number of degenerate
@@ -1703,32 +1816,48 @@ def build_lanes(lanes_path, catalogue_path, lane_mesh_dir, collection,
         # otherwise-unchanged lane import will now always show ONE extra matched line versus a
         # pre-this-task baseline (see task-6-report.md "Fix round 1" for how that was handled
         # in this task's own A/B gate).
-        LOG.step(f"{degenerate_totals['faces']} zero-area degenerate face(s) dropped across "
-                 f"{degenerate_totals['objects']} object(s) — a heavily tiled part's last "
-                 "tile clipping short of a full section, not a bundle defect")
+        LOG.step(
+            f"{degenerate_totals['faces']} zero-area degenerate face(s) dropped across "
+            f"{degenerate_totals['objects']} object(s) — a heavily tiled part's last "
+            "tile clipping short of a full section, not a bundle defect"
+        )
     if draped or drape_missed or drape_grounded:
-        LOG.step(f"{draped} decal vertex(es) draped onto the road surface"
-                 + (f", {drape_grounded} onto the terrain instead (no road under them)"
-                    if drape_grounded else "")
-                 + (f", {drape_missed} kept the fixed lift (no surface hit)" if drape_missed else ""))
+        LOG.step(
+            f"{draped} decal vertex(es) draped onto the road surface"
+            + (
+                f", {drape_grounded} onto the terrain instead (no road under them)"
+                if drape_grounded
+                else ""
+            )
+            + (f", {drape_missed} kept the fixed lift (no surface hit)" if drape_missed else "")
+        )
         # A miss is a marking floating or sunk at an authored height with nothing beneath it.
         # A few are expected at a region edge, where the marking is inside the window and the
         # road carrying it is not; a large share means the drape is not doing its job.
         total_drape = draped + drape_grounded + drape_missed
         if total_drape and drape_missed > total_drape * _DRAPE_MISS_WARN:
-            LOG.warn(f"{drape_missed / total_drape * 100:.1f}% of decal vertices found no "
-                     f"surface within their own projector reach"
-                     + ("" if ground_surface is not None else
-                        " — import --terrain as well and they fall back to the ground"))
+            LOG.warn(
+                f"{drape_missed / total_drape * 100:.1f}% of decal vertices found no "
+                f"surface within their own projector reach"
+                + (
+                    ""
+                    if ground_surface is not None
+                    else " — import --terrain as well and they fall back to the ground"
+                )
+            )
     elif road_surface is None:
-        LOG.warn("networks layer not built — decals keep the fixed lift, expect "
-                 "markings to z-fight or sink into the crown")
+        LOG.warn(
+            "networks layer not built — decals keep the fixed lift, expect "
+            "markings to z-fight or sink into the crown"
+        )
     if road_surface is not None and road_surface.kerb_rejections:
         # A low number here is the truth, not blindness: only 2.1% of drape samples have more
         # than one object under them even at the city's densest junction, and 0% in a plain
         # road window (tools/test_drape_pick.py). Nothing to reject, nothing counted.
-        LOG.step(f"{road_surface.kerb_rejections} drape sample(s) where the nearest-surface "
-                 "pick differed from the highest hit in range (Tier 0: kerb/wall snap avoided)")
+        LOG.step(
+            f"{road_surface.kerb_rejections} drape sample(s) where the nearest-surface "
+            "pick differed from the highest hit in range (Tier 0: kerb/wall snap avoided)"
+        )
     for category, count in sorted(counts.items()):
         LOG.step(f"category {category}: {count}")
     if skipped_region:
@@ -1736,11 +1865,15 @@ def build_lanes(lanes_path, catalogue_path, lane_mesh_dir, collection,
     if skipped_limit:
         LOG.step(f"{skipped_limit} skipped by --net-limit")
     if missing_prefab:
-        LOG.warn(f"CONTRACT VIOLATION: {missing_prefab} record(s) name a prefab "
-                 f"missing from laneprefabs.json")
+        LOG.warn(
+            f"CONTRACT VIOLATION: {missing_prefab} record(s) name a prefab "
+            f"missing from laneprefabs.json"
+        )
     if missing_mesh:
-        LOG.warn(f"CONTRACT VIOLATION: {missing_mesh} part reference(s) missing "
-                 f"their .glb under {lane_mesh_dir}")
+        LOG.warn(
+            f"CONTRACT VIOLATION: {missing_mesh} part reference(s) missing "
+            f"their .glb under {lane_mesh_dir}"
+        )
     return bent
 
 
@@ -1781,8 +1914,9 @@ class _Splat(splat_reader.Splat):
         # north), and SplatUV already puts V = 0 at the south edge — so the flip belongs here.
         flat = self.extras(flip_v=True).reshape(-1)
 
-        image = bpy.data.images.new("terrain_splat_extras", self.width, self.height,
-                                    alpha=True, float_buffer=False)
+        image = bpy.data.images.new(
+            "terrain_splat_extras", self.width, self.height, alpha=True, float_buffer=False
+        )
         # ORDER IS LOAD-BEARING, and getting it wrong fails silently — the image reads back as
         # the blank default (RGB 0, alpha 1), which paints the whole map with extra4 and
         # nothing else. Both settings must precede the write, because changing either one
@@ -1794,7 +1928,7 @@ class _Splat(splat_reader.Splat):
         image.alpha_mode = "CHANNEL_PACKED"
         image.pixels.foreach_set(flat)
         image.update()
-        image.pack()                    # a generated image has no file to reload from
+        image.pack()  # a generated image has no file to reload from
         return image
 
 
@@ -1868,7 +2002,7 @@ def _splat_ground_material(surfaces_dir, splat, mapping, tiling_block=None):
     _diffuse_ground(bsdf)
 
     world_uv = tree.nodes.new("ShaderNodeUVMap")
-    world_uv.uv_map = "WorldUV"                     # world metres; the scale is per ground
+    world_uv.uv_map = "WorldUV"  # world metres; the scale is per ground
 
     camera = tree.nodes.new("ShaderNodeCameraData")
     blend_cache = {}
@@ -1891,8 +2025,7 @@ def _splat_ground_material(surfaces_dir, splat, mapping, tiling_block=None):
     def tap(image, metres_per_repeat):
         node = tree.nodes.new("ShaderNodeMapping")
         node.vector_type = "POINT"
-        node.inputs["Scale"].default_value = (1.0 / metres_per_repeat,
-                                              1.0 / metres_per_repeat, 1.0)
+        node.inputs["Scale"].default_value = (1.0 / metres_per_repeat, 1.0 / metres_per_repeat, 1.0)
         tree.links.new(world_uv.outputs["UV"], node.inputs["Vector"])
         texture = tree.nodes.new("ShaderNodeTexImage")
         texture.image = image
@@ -1908,16 +2041,14 @@ def _splat_ground_material(surfaces_dir, splat, mapping, tiling_block=None):
         # near -> mid -> far, each fading in over its own camera-distance band. One image
         # datablock, three samples: the whole point is that the same texture repeats at three
         # different rates so no single rate's grid can dominate.
-        blended_near_mid = mix(tap(image, near), tap(image, mid),
-                               lod_factor(mid_start, mid_end))
+        blended_near_mid = mix(tap(image, near), tap(image, mid), lod_factor(mid_start, mid_end))
         return mix(blended_near_mid, tap(image, far), lod_factor(far_start, far_end))
 
     def ground_texture(ground):
         path = os.path.join(surfaces_dir, f"{ground}.png")
         if not os.path.isfile(path):
             rgb = tree.nodes.new("ShaderNodeRGB")
-            rgb.outputs[0].default_value = _GROUND_FALLBACK_COLOUR.get(ground,
-                                                                       (0.3, 0.3, 0.3, 1.0))
+            rgb.outputs[0].default_value = _GROUND_FALLBACK_COLOUR.get(ground, (0.3, 0.3, 0.3, 1.0))
             return rgb.outputs[0]
         return sampled(_unpremultiply(bpy.data.images.load(path)), ground)
 
@@ -1937,7 +2068,7 @@ def _splat_ground_material(surfaces_dir, splat, mapping, tiling_block=None):
         if not os.path.isfile(path):
             return None
         image = _unpremultiply(bpy.data.images.load(path))
-        image.colorspace_settings.name = "Non-Color"      # a normal is data, not colour
+        image.colorspace_settings.name = "Non-Color"  # a normal is data, not colour
 
         # Measured on the reference bundle, all seven grounds ship tangent RGB — unlike the
         # area surfaces, which ship two-channel packings and shaded black for it. Checked
@@ -1946,9 +2077,11 @@ def _splat_ground_material(surfaces_dir, splat, mapping, tiling_block=None):
         # threading alpha through `tap`. If this ever fires, that is the work it needs.
         packing = materials.detect_normal_packing(_sample_image_rgba(image))
         if packing != materials.NORMAL_RGB:
-            LOG.warn(f"ground normal {ground}_normal.png is {packing}-packed, not the tangent "
-                     "RGB of contract §7.1 — its relief will be wrong; re-rip to ship it "
-                     "unpacked (see materials.detect_normal_packing)")
+            LOG.warn(
+                f"ground normal {ground}_normal.png is {packing}-packed, not the tangent "
+                "RGB of contract §7.1 — its relief will be wrong; re-rip to ship it "
+                "unpacked (see materials.detect_normal_packing)"
+            )
         return sampled(image, ground)
 
     splat_uv = tree.nodes.new("ShaderNodeUVMap")
@@ -1962,8 +2095,12 @@ def _splat_ground_material(surfaces_dir, splat, mapping, tiling_block=None):
 
     separate = tree.nodes.new("ShaderNodeSeparateColor")
     tree.links.new(splat_node.outputs["Color"], separate.inputs["Color"])
-    channels = {0: separate.outputs["Red"], 1: separate.outputs["Green"],
-                2: separate.outputs["Blue"], 3: splat_node.outputs["Alpha"]}
+    channels = {
+        0: separate.outputs["Red"],
+        1: separate.outputs["Green"],
+        2: separate.outputs["Blue"],
+        3: splat_node.outputs["Alpha"],
+    }
 
     # The four paint weights, already unpacked out of B and A into an ordinary RGBA image
     # (`_Splat.extras_image`). Because they are plain weights now, this tap is Linear like the
@@ -1978,10 +2115,12 @@ def _splat_ground_material(surfaces_dir, splat, mapping, tiling_block=None):
     tree.links.new(splat_uv.outputs["UV"], extras_node.inputs["Vector"])
     separate_extras = tree.nodes.new("ShaderNodeSeparateColor")
     tree.links.new(extras_node.outputs["Color"], separate_extras.inputs["Color"])
-    extra_weight = {"extra1": separate_extras.outputs["Red"],
-                    "extra2": separate_extras.outputs["Green"],
-                    "extra3": separate_extras.outputs["Blue"],
-                    "extra4": extras_node.outputs["Alpha"]}
+    extra_weight = {
+        "extra1": separate_extras.outputs["Red"],
+        "extra2": separate_extras.outputs["Green"],
+        "extra3": separate_extras.outputs["Blue"],
+        "extra4": extras_node.outputs["Alpha"],
+    }
 
     def math(op, a, b):
         node = tree.nodes.new("ShaderNodeMath")
@@ -2065,9 +2204,9 @@ def _splat_ground_material(surfaces_dir, splat, mapping, tiling_block=None):
         blended_n = ground_normal(base_ground)
         if blended_n is None:
             flat = tree.nodes.new("ShaderNodeRGB")
-            flat.outputs[0].default_value = (0.5, 0.5, 1.0, 1.0)   # tangent-space "no bump"
+            flat.outputs[0].default_value = (0.5, 0.5, 1.0, 1.0)  # tangent-space "no bump"
             blended_n = flat.outputs[0]
-        for (ground, socket), (_g, opacity) in zip(normal_layers, composite):
+        for (_ground, socket), (_g, opacity) in zip(normal_layers, composite):
             if socket is not None:
                 blended_n = mix(blended_n, socket, opacity)
         normal_map = tree.nodes.new("ShaderNodeNormalMap")
@@ -2106,7 +2245,7 @@ def _unpremultiply(image):
     return image
 
 
-_NORMAL_SAMPLE_STRIDE = 64          # every 64th texel: enough to see a channel is CONSTANT
+_NORMAL_SAMPLE_STRIDE = 64  # every 64th texel: enough to see a channel is CONSTANT
 
 
 def _sample_image_rgba(image, stride=_NORMAL_SAMPLE_STRIDE):
@@ -2163,9 +2302,17 @@ def _tangent_normal_colour(tree, texture, packing, anchor):
     # can land marginally outside the unit disc and a negative square root is a black texel.
     x = math("MULTIPLY_ADD", stored_x, 2.0, -1.0, offset=0)
     y = math("MULTIPLY_ADD", stored_y, 2.0, -1.0, offset=160)
-    remainder = math("SUBTRACT", 1.0, math("ADD", math("MULTIPLY", x, x, offset=320),
-                                           math("MULTIPLY", y, y, offset=320), offset=480),
-                     offset=640)
+    remainder = math(
+        "SUBTRACT",
+        1.0,
+        math(
+            "ADD",
+            math("MULTIPLY", x, x, offset=320),
+            math("MULTIPLY", y, y, offset=320),
+            offset=480,
+        ),
+        offset=640,
+    )
     z = math("SQRT", math("MAXIMUM", remainder, 0.0, offset=800), offset=960)
 
     combine = tree.nodes.new("ShaderNodeCombineColor")
@@ -2271,13 +2418,17 @@ def build_terrain(bundle_dir, collection, center, radius, clip_floor=None, coars
     resolution inside it. `clip_floor` overrides every clip strip's `bottom` (diagnostic,
     `--clip-floor`).
     """
-    heightmap_path, surface_path, water_path, surfaces_dir, splat_path, rasters, _fine_path = _terrain_paths(bundle_dir)
+    heightmap_path, surface_path, water_path, surfaces_dir, splat_path, rasters, _fine_path = (
+        _terrain_paths(bundle_dir)
+    )
     if not os.path.isfile(heightmap_path):
         LOG.warn(f"no terrain layer at {heightmap_path} — skipping terrain")
         return 0, None
     if rasters is None:
-        LOG.warn("terrain rasters present but no geo-reference (bundle.json rasters or "
-                 "terrain/rasters.json) — skipping terrain")
+        LOG.warn(
+            "terrain rasters present but no geo-reference (bundle.json rasters or "
+            "terrain/rasters.json) — skipping terrain"
+        )
         return 0, None
 
     # The ground to mesh: the fine 1.75 m `terrainFine` raster when the bundle carries it — the
@@ -2293,33 +2444,59 @@ def build_terrain(bundle_dir, collection, center, radius, clip_floor=None, coars
     elevation_scale, elevation_offset = field.elevation_scale, field.elevation_offset
     base_size = tuple(int(v) for v in rasters["size"])
     if field.fine:
-        LOG.step(f"terrain: meshing the fine {width}x{height} raster @ {cell:.3f} m (layers.terrainFine — "
-                 f"the game's near-camera ground); the {base_size[0]}x{base_size[1]} base map stays the reference for "
-                 "surface ids and water")
+        LOG.step(
+            f"terrain: meshing the fine {width}x{height} raster @ {cell:.3f} m (layers.terrainFine — "
+            f"the game's near-camera ground); the {base_size[0]}x{base_size[1]} base map stays the reference for "
+            "surface ids and water"
+        )
     elif coarse:
-        LOG.step(f"terrain: meshing the {width}x{height} base raster @ {cell:.3f} m (--coarse-terrain: the fine raster, "
-                 "if any, is deliberately ignored)")
+        LOG.step(
+            f"terrain: meshing the {width}x{height} base raster @ {cell:.3f} m (--coarse-terrain: the fine raster, "
+            "if any, is deliberately ignored)"
+        )
     else:
-        LOG.step(f"terrain: meshing the {width}x{height} base raster @ {cell:.3f} m (no layers.terrainFine in this "
-                 "rip — the game's finer near-camera grading is not available; kerb seams sit within a 3.5 m texel)")
+        LOG.step(
+            f"terrain: meshing the {width}x{height} base raster @ {cell:.3f} m (no layers.terrainFine in this "
+            "rip — the game's finer near-camera grading is not available; kerb seams sit within a 3.5 m texel)"
+        )
 
     surface_ids = None
     if os.path.isfile(surface_path):
         sw, sh, surface_ids = _decode_png_gray(surface_path)
         if (sw, sh) != base_size:
-            LOG.warn(f"CONTRACT VIOLATION: surface_index is {sw}x{sh}, heightmap {base_size[0]}x{base_size[1]}")
+            LOG.warn(
+                f"CONTRACT VIOLATION: surface_index is {sw}x{sh}, heightmap {base_size[0]}x{base_size[1]}"
+            )
             surface_ids = None
         elif (sw, sh) != (width, height):
-            surface_ids = reader.resample_nearest(numpy.asarray(surface_ids).reshape(sh, sw), (height, width)).reshape(-1)
+            surface_ids = reader.resample_nearest(
+                numpy.asarray(surface_ids).reshape(sh, sw), (height, width)
+            ).reshape(-1)
 
     # Contract §8c. The terrain covering tunnel portals and sunken trenches is never carved out
     # of the heightmap — the game hides it per-frame with a stencil pass — so the clip volumes
     # are rasterised here against this heightmap. The layer is mandatory; _clip_grid raises on
     # a bundle without it.
-    (cut_grid, contain_raster, band_count_raster, deep_raster,
-     cut_refs, strip_geo, band_ceiling_raster) = _clip_grid(
-        bundle_dir, width, height, heights, cell, origin_x, origin_z, elevation_scale,
-        elevation_offset, floor_override=clip_floor)
+    (
+        cut_grid,
+        contain_raster,
+        band_count_raster,
+        _deep_raster,
+        _cut_refs,
+        strip_geo,
+        band_ceiling_raster,
+    ) = _clip_grid(
+        bundle_dir,
+        width,
+        height,
+        heights,
+        cell,
+        origin_x,
+        origin_z,
+        elevation_scale,
+        elevation_offset,
+        floor_override=clip_floor,
+    )
     # The prisms themselves, for the EXACT cut (audit §46): the game hides terrain by discarding
     # the pixels inside its clip volume, so the hole's boundary is the prism's own surface and
     # the mesh is CUT on it — `csiibundle.terrainclip`, shared with the heightfield bake.
@@ -2329,10 +2506,14 @@ def build_terrain(bundle_dir, collection, center, radius, clip_floor=None, coars
     if os.path.isfile(water_path):
         ww, wh, levels = _decode_png_gray(water_path)
         if (ww, wh) != base_size:
-            LOG.warn(f"CONTRACT VIOLATION: water_level is {ww}x{wh}, heightmap {base_size[0]}x{base_size[1]}")
+            LOG.warn(
+                f"CONTRACT VIOLATION: water_level is {ww}x{wh}, heightmap {base_size[0]}x{base_size[1]}"
+            )
             levels = None
         elif (ww, wh) != (width, height):
-            levels = reader.resample_nearest(numpy.asarray(levels).reshape(wh, ww), (height, width)).reshape(-1)
+            levels = reader.resample_nearest(
+                numpy.asarray(levels).reshape(wh, ww), (height, width)
+            ).reshape(-1)
 
     # The crop window, in raster indices. Row 0 is the northernmost (§3: rows toward -Z).
     if center is not None and radius is not None:
@@ -2355,42 +2536,46 @@ def build_terrain(bundle_dir, collection, center, radius, clip_floor=None, coars
     # mesh goes native, the three face families welded onto one vertex set, the containment
     # deletion — which is now the EXACT cut against the clip prisms rather than a score.
     lattice = terrain_math.build_lattice(
-        heights, width, height, surface_ids, levels,
-        row0, col0, row1, col1, stride, cell, origin_x, origin_z,
-        elevation_scale, elevation_offset,
-        cut_grid, contain_raster, band_count_raster, band_ceiling_raster, strip_geo,
-        prisms=prisms)
+        heights,
+        width,
+        height,
+        surface_ids,
+        levels,
+        row0,
+        col0,
+        row1,
+        col1,
+        stride,
+        cell,
+        origin_x,
+        origin_z,
+        elevation_scale,
+        elevation_offset,
+        cut_grid,
+        contain_raster,
+        band_count_raster,
+        band_ceiling_raster,
+        strip_geo,
+        prisms=prisms,
+    )
     if lattice is None:
         LOG.warn("terrain: the region window is smaller than one face — skipping terrain")
         return 0, None
     if lattice.stray_cells:
-        LOG.warn(f"terrain: {lattice.stray_cells} cut cell(s) escaped the refine corridor — "
-                 "coarse faces may wall off part of a tunnel")
+        LOG.warn(
+            f"terrain: {lattice.stray_cells} cut cell(s) escaped the refine corridor — "
+            "coarse faces may wall off part of a tunnel"
+        )
     lat_h = lattice.lat_h
-    lat_w = lattice.lat_w
     nfr = lattice.nfr
     nfc = lattice.nfc
     verts = lattice.verts
     loops = lattice.loops
     sizes = lattice.sizes
     face_class = lattice.face_class
-    native_y = lattice.native_y
-    ground_y = lattice.ground_y
-    wet = lattice.wet
-    has_level = lattice.has_level
-    level_value = lattice.level_value
-    roadbed = lattice.roadbed
-    cut = lattice.cut
-    contain = lattice.contain
     band_count = lattice.band_count
     block_refined = lattice.block_refined
     coarse_loops = lattice.coarse_loops
-    cbr = lattice.cbr
-    cbc = lattice.cbc
-    cell_rr = lattice.cell_rr
-    cell_cc = lattice.cell_cc
-    refined_loops_all = lattice.refined_loops_all
-    fan_loops = lattice.fan_loops
     fan_faces = lattice.fan_faces
     refined_faces = lattice.refined_faces
     cut_faces = lattice.cut_faces
@@ -2409,7 +2594,6 @@ def build_terrain(bundle_dir, collection, center, radius, clip_floor=None, coars
         # ever becoming a gated line the A/B baseline does not have.
         LOG.progress("terrain rows", row_number + 1, lat_h)
 
-
     # -- the game's own ground blend, when the bundle carries it --------------------------
     # terrain/splatmap.png is the 4096² weight map the terrain shader samples per pixel, and
     # the rasters "splatmap" block names which ground each channel weights (contract §8). It
@@ -2421,16 +2605,18 @@ def build_terrain(bundle_dir, collection, center, radius, clip_floor=None, coars
     if splat_block and os.path.isfile(splat_path):
         try:
             splat = _Splat(splat_path, splat_block)
-        except Exception as error:  # noqa: BLE001 - any decode failure just means fallback
+        except Exception as error:
             LOG.warn(f"splatmap unreadable ({error}); falling back to per-face ground painting")
             splat = None
     if splat is not None:
         splat_mapping, published = _splat_mapping(splat_block)
         named = ", ".join(f"{key}={splat_mapping[key] or 'unknown'}" for key in "RGBA")
         source = "published by the bundle" if published else "assumed"
-        LOG.step(f"splatmap channels {source}: "
-                 f"{named}, base={splat_mapping.get('base') or 'none'} (the residual of the "
-                 f"first channel)")
+        LOG.step(
+            f"splatmap channels {source}: "
+            f"{named}, base={splat_mapping.get('base') or 'none'} (the residual of the "
+            f"first channel)"
+        )
     # World-anchored UVs so the ground textures tile at a plausible density without any
     # per-face unwrap. Per-LOOP, in the same flat loop order as `loops` (coarse quads, refined
     # quads, fan triangles).
@@ -2445,19 +2631,26 @@ def build_terrain(bundle_dir, collection, center, radius, clip_floor=None, coars
     if splat_mapping is not None:
         uv_layers["WorldUV"] = numpy.stack((loop_x, loop_z), axis=-1)
         tiling_block = rasters.get("terrainTiling") if isinstance(rasters, dict) else None
-        named_tiling = [ground for ground in ("grass", "dirt", "rock")
-                        if _ground_tiling(tiling_block, ground)]
+        named_tiling = [
+            ground for ground in ("grass", "dirt", "rock") if _ground_tiling(tiling_block, ground)
+        ]
         if named_tiling:
             detail = ", ".join(
                 f"{ground} {'/'.join(f'{r:g}' for r in _ground_tiling(tiling_block, ground)[0])} m"
-                for ground in named_tiling)
-            LOG.step(f"ground tiling from the bundle (near/mid/far per repeat): {detail}; "
-                     "extras tile with grass")
+                for ground in named_tiling
+            )
+            LOG.step(
+                f"ground tiling from the bundle (near/mid/far per repeat): {detail}; "
+                "extras tile with grass"
+            )
         else:
-            LOG.warn(f"no rasters.terrainTiling in the bundle — every ground falls back to "
-                     f"{_GROUND_FALLBACK_TILING:g} m per repeat, expect a visible grid")
-        material_runs = [(_splat_ground_material(surfaces_dir, splat, splat_mapping,
-                                                 tiling_block), len(sizes))]
+            LOG.warn(
+                f"no rasters.terrainTiling in the bundle — every ground falls back to "
+                f"{_GROUND_FALLBACK_TILING:g} m per repeat, expect a visible grid"
+            )
+        material_runs = [
+            (_splat_ground_material(surfaces_dir, splat, splat_mapping, tiling_block), len(sizes))
+        ]
         # No face overrides on the blend. The roadbed keeps whatever the splat says, as in
         # game — the blend has no roadbed response at all, and the roadbed LOOK is carried by
         # the ~13%-alpha wear decals and surface areas drawn on top (the sink still applies).
@@ -2468,12 +2661,15 @@ def build_terrain(bundle_dir, collection, center, radius, clip_floor=None, coars
         # The splat blend samples in its own geo-referenced UV space.
         uv_layers["SplatUV"] = numpy.stack(splat.uv(loop_x, loop_z), axis=-1)
     else:
-        grass = _ground_material("terrain_natural", os.path.join(surfaces_dir, "grass.png"),
-                                 (0.20, 0.30, 0.12, 1.0))
-        dirt = _ground_material("terrain_roadbed", os.path.join(surfaces_dir, "dirt.png"),
-                                (0.35, 0.28, 0.20, 1.0))
-        rock = _ground_material("terrain_rock", os.path.join(surfaces_dir, "rock.png"),
-                                (0.30, 0.28, 0.26, 1.0))
+        grass = _ground_material(
+            "terrain_natural", os.path.join(surfaces_dir, "grass.png"), (0.20, 0.30, 0.12, 1.0)
+        )
+        dirt = _ground_material(
+            "terrain_roadbed", os.path.join(surfaces_dir, "dirt.png"), (0.35, 0.28, 0.20, 1.0)
+        )
+        rock = _ground_material(
+            "terrain_rock", os.path.join(surfaces_dir, "rock.png"), (0.30, 0.28, 0.26, 1.0)
+        )
         by_class = (grass, dirt, rock)
         # Run-length encode face_class into (material, run) pairs — the array is already
         # spatially coherent (grass/dirt/rock form contiguous runs along each sampled row),
@@ -2483,8 +2679,10 @@ def build_terrain(bundle_dir, collection, center, radius, clip_floor=None, coars
             change = numpy.nonzero(numpy.diff(face_class) != 0)[0] + 1
             run_starts = numpy.concatenate(([0], change))
             run_ends = numpy.concatenate((change, [len(face_class)]))
-            material_runs = [(by_class[int(face_class[start])], int(end - start))
-                              for start, end in zip(run_starts, run_ends)]
+            material_runs = [
+                (by_class[int(face_class[start])], int(end - start))
+                for start, end in zip(run_starts, run_ends)
+            ]
         else:
             material_runs = []
 
@@ -2498,12 +2696,21 @@ def build_terrain(bundle_dir, collection, center, radius, clip_floor=None, coars
         assert not repeated
         terrain_degenerates["faces"] += count
 
-    mesh = _mesh_from_arrays("bundle_terrain", verts, loops, uv_layers=uv_layers,
-                              material_runs=material_runs, poly_sizes=sizes, smooth=True,
-                              degenerate_report=_report_terrain_degenerate)
+    mesh = _mesh_from_arrays(
+        "bundle_terrain",
+        verts,
+        loops,
+        uv_layers=uv_layers,
+        material_runs=material_runs,
+        poly_sizes=sizes,
+        smooth=True,
+        degenerate_report=_report_terrain_degenerate,
+    )
     if terrain_degenerates["faces"]:
-        LOG.step(f"{terrain_degenerates['faces']} sliver face(s) collapsed by the "
-                 "hole-boundary snap and dropped")
+        LOG.step(
+            f"{terrain_degenerates['faces']} sliver face(s) collapsed by the "
+            "hole-boundary snap and dropped"
+        )
     # Smooth-shade the grid: the game's terrain is a continuous heightfield, and a
     # flat-shaded quad is uniformly lit — at the full-city coarse blocks that reads as a
     # brightness checkerboard over every slope, squares no texture blend can hide. The
@@ -2545,31 +2752,44 @@ def build_terrain(bundle_dir, collection, center, radius, clip_floor=None, coars
             water_bsdf.inputs["Alpha"].default_value = appearance.surface_alpha()
             _set_alpha_blend(water_material)
         if appearance.present:
-            LOG.step(f"water:     {appearance.prefab} — colour "
-                     f"{tuple(round(c, 3) for c in appearance.base_color[:3])}, roughness "
-                     f"{appearance.roughness:.2f} near / {appearance.roughness_distant:.2f} far, "
-                     f"absorption {appearance.absorption_distance:g} m")
+            LOG.step(
+                f"water:     {appearance.prefab} — colour "
+                f"{tuple(round(c, 3) for c in appearance.base_color[:3])}, roughness "
+                f"{appearance.roughness:.2f} near / {appearance.roughness_distant:.2f} far, "
+                f"absorption {appearance.absorption_distance:g} m"
+            )
 
-        mesh = _mesh_from_arrays("bundle_water", water_mesh.verts, water_mesh.loops,
-                                material_runs=[(water_material, wet_faces)],
-                                poly_sizes=water_mesh.sizes, smooth=False)
+        mesh = _mesh_from_arrays(
+            "bundle_water",
+            water_mesh.verts,
+            water_mesh.loops,
+            material_runs=[(water_material, wet_faces)],
+            poly_sizes=water_mesh.sizes,
+            smooth=False,
+        )
         water_object = bpy.data.objects.new("bundle_water", mesh)
         collection.objects.link(water_object)
         placed += 1
 
-    LOG.done(f"terrain:   {nfr}x{nfc} block window of {width}x{height} at {cell:g} m"
-             + (f", stride {stride}" if stride > 1 else ""))
-    LOG.step(f"{roadbed_faces} roadbed face(s), "
-             f"{rock_faces} rock face(s), {wet_faces} water face(s), "
-             f"{cut_faces} face(s) cut (tunnel portals, trenches and area clips — a shallow "
-             f"surface band never carves)")
+    LOG.done(
+        f"terrain:   {nfr}x{nfc} block window of {width}x{height} at {cell:g} m"
+        + (f", stride {stride}" if stride > 1 else "")
+    )
+    LOG.step(
+        f"{roadbed_faces} roadbed face(s), "
+        f"{rock_faces} rock face(s), {wet_faces} water face(s), "
+        f"{cut_faces} face(s) cut (tunnel portals, trenches and area clips — a shallow "
+        f"surface band never carves)"
+    )
     if band_clamped:
         # APPROXIMATION, counted: the heights are the game's own graded ground (audit §51) and
         # are kept; only the samples standing ABOVE the carriageway's cross-section move, onto
         # the game's own profile top, because the game discards those pixels with a stencil.
-        LOG.step(f"{band_clamped} lattice vertex(es) standing over a carriageway lowered onto "
-                 f"its profile top, worst drop {band_clamp_drop:.2f} m — the pixels the game "
-                 f"discards there (see _clamp_carriageway)")
+        LOG.step(
+            f"{band_clamped} lattice vertex(es) standing over a carriageway lowered onto "
+            f"its profile top, worst drop {band_clamp_drop:.2f} m — the pixels the game "
+            f"discards there (see _clamp_carriageway)"
+        )
     band_samples = int(band_count.sum(dtype=numpy.int64))
     if cut_removed_m2 or band_samples:
         # How much ground the cut removed, against how much the prisms cover — the same sanity
@@ -2581,28 +2801,41 @@ def build_terrain(bundle_dir, collection, center, radius, clip_floor=None, coars
         sample = cell / terrain_math.contain_samples(cell)
         clipped_area = band_samples * sample * sample
         ratio = (cut_removed_m2 / clipped_area) if clipped_area else float("nan")
-        LOG.step(f"cut {cut_removed_m2:,.0f} m² of terrain against {clipped_area:,.0f} m² the "
-                 f"clip prisms cover (x{ratio:.2f})")
+        LOG.step(
+            f"cut {cut_removed_m2:,.0f} m² of terrain against {clipped_area:,.0f} m² the "
+            f"clip prisms cover (x{ratio:.2f})"
+        )
         if ratio > 1.05:
-            LOG.warn(f"the cut removed {(ratio - 1.0) * 100:.0f}% more than the sampled prism "
-                     "area — check the containment sampling, not the cut")
+            LOG.warn(
+                f"the cut removed {(ratio - 1.0) * 100:.0f}% more than the sampled prism "
+                "area — check the containment sampling, not the cut"
+            )
 
     # The exact cut has no residual to report: every face a prism reaches is cut on the prism's
     # own surface, which is where the game's stencil discards. What IS worth stating is how much
     # ground it removed and how many sub-centimetre ribbons were dropped with it (the game
     # resolves those per pixel; a polygon renders them as a hairline — see `terrainclip`).
     if cut_parents:
-        LOG.step(f"{cut_parents} face(s) met a clip prism and were CUT on it — "
-                 f"{cut_pieces} piece(s) kept, {cut_removed_m2:,.0f} m² removed"
-                 + (f", {cut_slivers} ribbon(s) under "
-                    f"{terrainclip.MIN_WIDTH_M * 100:g} cm dropped" if cut_slivers else ""))
+        LOG.step(
+            f"{cut_parents} face(s) met a clip prism and were CUT on it — "
+            f"{cut_pieces} piece(s) kept, {cut_removed_m2:,.0f} m² removed"
+            + (
+                f", {cut_slivers} ribbon(s) under {terrainclip.MIN_WIDTH_M * 100:g} cm dropped"
+                if cut_slivers
+                else ""
+            )
+        )
     if shallow_skipped:
-        LOG.step(f"{shallow_skipped} shallow clip volume(s) skipped: the ±0.3 m shell over a "
-                 "surface road is under the carriageway that hides it (contract §8c)")
+        LOG.step(
+            f"{shallow_skipped} shallow clip volume(s) skipped: the ±0.3 m shell over a "
+            "surface road is under the carriageway that hides it (contract §8c)"
+        )
     if stride > 1:
-        LOG.step(f"{refined_faces} native face(s) in {int(block_refined.sum())} corridor "
-                 f"block(s), {fan_faces} transition fan face(s), "
-                 f"{len(coarse_loops)} coarse {cell * stride:g} m face(s)")
+        LOG.step(
+            f"{refined_faces} native face(s) in {int(block_refined.sum())} corridor "
+            f"block(s), {fan_faces} transition fan face(s), "
+            f"{len(coarse_loops)} coarse {cell * stride:g} m face(s)"
+        )
     return placed, (terrain_object, cell * stride)
 
 
@@ -2660,7 +2893,8 @@ def build_areas(bundle_dir, collection, center, radius, ground=None, cell=3.5):
         material = _ground_material(
             f"area_{prefab}",
             os.path.join(bundle_dir, surface["texture"]) if surface["texture"] else None,
-            (colour[0], colour[1], colour[2], 1.0))
+            (colour[0], colour[1], colour[2], 1.0),
+        )
         tree = material.node_tree
         bsdf = tree.nodes.get("Principled BSDF")
 
@@ -2671,12 +2905,13 @@ def build_areas(bundle_dir, collection, center, radius, ground=None, cell=3.5):
         if surface["roughness"] is not None:
             bsdf.inputs["Roughness"].default_value = surface["roughness"]
 
-        normal_path = (os.path.join(bundle_dir, surface["normal_map"])
-                       if surface["normal_map"] else None)
+        normal_path = (
+            os.path.join(bundle_dir, surface["normal_map"]) if surface["normal_map"] else None
+        )
         if normal_path and os.path.isfile(normal_path):
             tex = tree.nodes.new("ShaderNodeTexImage")
             tex.image = _unpremultiply(bpy.data.images.load(normal_path, check_existing=True))
-            tex.image.colorspace_settings.name = "Non-Color"   # set BEFORE sampling the pixels
+            tex.image.colorspace_settings.name = "Non-Color"  # set BEFORE sampling the pixels
 
             # An area normal map is not reliably three-channel. Feeding a packed one straight
             # into a Normal Map node points every shading normal sideways or into the surface,
@@ -2686,13 +2921,13 @@ def build_areas(bundle_dir, collection, center, radius, ground=None, cell=3.5):
             packing = materials.detect_normal_packing(_sample_image_rgba(tex.image))
             area_packings[packing] = area_packings.get(packing, 0) + 1
 
-            nmap = tree.nodes.new("ShaderNodeNormalMap")   # CS2 authors OpenGL +Y, as Blender wants
-            tree.links.new(_tangent_normal_colour(tree, tex, packing, bsdf.location),
-                           nmap.inputs["Color"])
+            nmap = tree.nodes.new("ShaderNodeNormalMap")  # CS2 authors OpenGL +Y, as Blender wants
+            tree.links.new(
+                _tangent_normal_colour(tree, tex, packing, bsdf.location), nmap.inputs["Color"]
+            )
             tree.links.new(nmap.outputs["Normal"], bsdf.inputs["Normal"])
 
-        mask_path = (os.path.join(bundle_dir, surface["mask_map"])
-                     if surface["mask_map"] else None)
+        mask_path = os.path.join(bundle_dir, surface["mask_map"]) if surface["mask_map"] else None
         if mask_path and os.path.isfile(mask_path):
             tex = tree.nodes.new("ShaderNodeTexImage")
             tex.image = _unpremultiply(bpy.data.images.load(mask_path, check_existing=True))
@@ -2703,7 +2938,7 @@ def build_areas(bundle_dir, collection, center, radius, ground=None, cell=3.5):
             invert = tree.nodes.new("ShaderNodeMath")
             invert.operation = "SUBTRACT"
             invert.inputs[0].default_value = 1.0
-            tree.links.new(tex.outputs["Alpha"], invert.inputs[1])   # A is smoothness
+            tree.links.new(tex.outputs["Alpha"], invert.inputs[1])  # A is smoothness
             tree.links.new(invert.outputs[0], bsdf.inputs["Roughness"])
 
         area_materials[prefab] = material
@@ -2717,8 +2952,14 @@ def build_areas(bundle_dir, collection, center, radius, ground=None, cell=3.5):
     # The whole loop is `csiibundle.areas.build_pieces`: region filter, frame change, winding
     # reversal, and the adaptive split. What comes back is Z-up triangle soup per prefab.
     builders, stats = area_math.build_pieces(
-        read_jsonl(path), cell, ground_at, center=center, radius=radius,
-        progress=lambda n: LOG.progress("areas conformed", n, None), catalogue=catalogue)
+        read_jsonl(path),
+        cell,
+        ground_at,
+        center=center,
+        radius=radius,
+        progress=lambda n: LOG.progress("areas conformed", n, None),
+        catalogue=catalogue,
+    )
     placed = stats["placed"]
     skipped_region = stats["skipped_region"]
     dropped_bad = stats["dropped_bad"]
@@ -2739,8 +2980,7 @@ def build_areas(bundle_dir, collection, center, radius, ground=None, cell=3.5):
         # from `RenderedArea.m_UVScale` (AreaBatchSystem line 2109) and multiplies the world
         # position. `_AREA_UV_SCALE_FALLBACK` is the game's own field default, for a bundle
         # ripped before §8b carried the value.
-        uv_scale = float((catalogue.get(prefab) or {}).get("uvScale")
-                         or _AREA_UV_SCALE_FALLBACK)
+        uv_scale = float((catalogue.get(prefab) or {}).get("uvScale") or _AREA_UV_SCALE_FALLBACK)
         for loop in mesh.loops:
             x, y, _ = mesh.vertices[loop.vertex_index].co
             uv_layer.data[loop.index].uv = (x * uv_scale, y * uv_scale)
@@ -2749,60 +2989,77 @@ def build_areas(bundle_dir, collection, center, radius, ground=None, cell=3.5):
         collection.objects.link(obj)
         built += 1
 
-    LOG.done(f"areas:     {placed} surface area(s) into {built} object(s) "
-             f"over {len(builders)} prefab(s)"
-             + (f", {skipped_region} outside the region" if skipped_region else ""))
+    LOG.done(
+        f"areas:     {placed} surface area(s) into {built} object(s) "
+        f"over {len(builders)} prefab(s)"
+        + (f", {skipped_region} outside the region" if skipped_region else "")
+    )
 
     # Say it out loud when a bundle ships normal maps the contract does not describe: rebuilt
     # here they light correctly, but the fix belongs in the producer, and a silent rebuild is
     # how a consumer written against §7.1 alone inherits black ground without ever knowing why.
     packed = {k: v for k, v in area_packings.items() if k != materials.NORMAL_RGB}
     if packed:
-        LOG.warn(f"{sum(packed.values())} of {sum(area_packings.values())} area normal map(s) "
-                 f"are two-channel packed ({', '.join(f'{n}x {k}' for k, n in sorted(packed.items()))}) "
-                 "rather than the tangent RGB of contract §7.1 — rebuilt here (they would "
-                 "otherwise shade black); re-rip to ship them unpacked")
+        LOG.warn(
+            f"{sum(packed.values())} of {sum(area_packings.values())} area normal map(s) "
+            f"are two-channel packed ({', '.join(f'{n}x {k}' for k, n in sorted(packed.items()))}) "
+            "rather than the tangent RGB of contract §7.1 — rebuilt here (they would "
+            "otherwise shade black); re-rip to ship them unpacked"
+        )
 
     # A prefab with neither texture nor colour renders the neutral grey fallback — say why,
     # per prefab, instead of leaving grey boxes as a riddle. `unresolved` is the producer's
     # flag for "the save references an asset (pack) that was not loaded in the rip session":
     # the game itself drew those areas grey (Missing Area fallback), and the cure is enabling
     # the pack in-game and re-ripping, not anything on this side.
-    grey = [prefab for prefab in builders
-            if not (catalogue.get(prefab) or {}).get("texture")
-            and not (catalogue.get(prefab) or {}).get("color")]
+    grey = [
+        prefab
+        for prefab in builders
+        if not (catalogue.get(prefab) or {}).get("texture")
+        and not (catalogue.get(prefab) or {}).get("color")
+    ]
     if grey:
         unresolved = [p for p in grey if (catalogue.get(p) or {}).get("unresolved")]
         for prefab in sorted(unresolved):
             name = (catalogue.get(prefab) or {}).get("name", prefab)
-            LOG.warn(f"area prefab did not resolve at rip time (asset pack not loaded "
-                     f"or version mismatch): {name}")
+            LOG.warn(
+                f"area prefab did not resolve at rip time (asset pack not loaded "
+                f"or version mismatch): {name}"
+            )
         if unresolved:
-            LOG.warn(f"{len(unresolved)} area prefab(s) render grey because their asset "
-                     "was missing in the rip session — the game drew them grey too "
-                     "(Missing Area); enable the packs, load the save, re-rip")
+            LOG.warn(
+                f"{len(unresolved)} area prefab(s) render grey because their asset "
+                "was missing in the rip session — the game drew them grey too "
+                "(Missing Area); enable the packs, load the save, re-rip"
+            )
         for prefab in sorted(set(grey) - set(unresolved)):
             LOG.warn(f"area prefab carries no colour and no texture: {prefab}")
     if ground is None:
-        LOG.warn("terrain layer not built — surface areas stay flat, expect the ground to "
-                 "cut through pavement on any slope (audit §30)")
+        LOG.warn(
+            "terrain layer not built — surface areas stay flat, expect the ground to "
+            "cut through pavement on any slope (audit §30)"
+        )
     else:
         total = sum(len(sink["faces"]) for sink in builders.values())
-        LOG.step(f"{int(source_tris)} area triangle(s) conformed to the terrain as "
-                 f"{total} piece(s)"
-                 + (f", {missed} node(s) found no ground" if missed else ""))
+        LOG.step(
+            f"{int(source_tris)} area triangle(s) conformed to the terrain as "
+            f"{total} piece(s)" + (f", {missed} node(s) found no ground" if missed else "")
+        )
         if counters["unconformed"]:
             share = 100.0 * counters["unconformed_area"] / max(painted_area, 1e-9)
-            LOG.step(f"{counters['unconformed_area']:.0f} m2 of {painted_area:.0f} m2 painted "
-                     f"({share:.2f}%) stayed unconformed — ground up to "
-                     f"{counters['worst']*100:.0f} cm above it, over "
-                     f"{counters['unconformed']} piece(s)")
+            LOG.step(
+                f"{counters['unconformed_area']:.0f} m2 of {painted_area:.0f} m2 painted "
+                f"({share:.2f}%) stayed unconformed — ground up to "
+                f"{counters['worst'] * 100:.0f} cm above it, over "
+                f"{counters['unconformed']} piece(s)"
+            )
     if dropped_bad:
         LOG.warn(f"CONTRACT VIOLATION: {dropped_bad} triangle(s) index out of range")
     return built
 
 
 # -- scene building -------------------------------------------------------------------------
+
 
 def _view_transform_available(name):
     """Is `name` one of this Blender's view transforms?
@@ -2860,8 +3117,10 @@ def _apply_grading(bundle_dir):
     """
     grading = colour_model.load(bundle_dir)
     if grading is None:
-        LOG.warn("--colour: this bundle has no grading.json (ripped before the grading layer); "
-                 "leaving the scene ungraded")
+        LOG.warn(
+            "--colour: this bundle has no grading.json (ripped before the grading layer); "
+            "leaving the scene ungraded"
+        )
         return
 
     global _GRADING
@@ -2886,8 +3145,10 @@ def _apply_grading(bundle_dir):
     try:
         scene.view_settings.view_transform = view
     except (AttributeError, TypeError):
-        LOG.warn(f"--colour: this Blender has no '{view}' view transform; leaving "
-                 f"{scene.view_settings.view_transform}")
+        LOG.warn(
+            f"--colour: this Blender has no '{view}' view transform; leaving "
+            f"{scene.view_settings.view_transform}"
+        )
 
     # The per-channel gain rides the lights when it cannot ride the view. Scaling every light per
     # channel scales the whole render per channel, bounces included, so this is exact rather than
@@ -2896,32 +3157,49 @@ def _apply_grading(bundle_dir):
         for ob in scene.objects:
             if ob.type == "LIGHT":
                 ob.data.color = (gain[0], gain[1], gain[2])
-        background = (scene.world.node_tree.nodes.get("Background")
-                      if scene.world and scene.world.node_tree else None)
+        background = (
+            scene.world.node_tree.nodes.get("Background")
+            if scene.world and scene.world.node_tree
+            else None
+        )
         if background is not None:
             base = background.inputs["Color"].default_value
-            background.inputs["Color"].default_value = (base[0] * gain[0], base[1] * gain[1],
-                                                        base[2] * gain[2], 1.0)
+            background.inputs["Color"].default_value = (
+                base[0] * gain[0],
+                base[1] * gain[1],
+                base[2] * gain[2],
+                1.0,
+            )
 
-    LOG.step(f"grading applied from grading.json: view transform {view}, "
-             f"exposure {exposure:+.2f} EV" + (f", gamma {gamma:.4g}" if gamma != 1.0 else "")
-             + (f", light gain {tuple(round(c, 4) for c in gain)}"
-                if any(abs(c - 1.0) > 1e-6 for c in gain) else ""))
+    LOG.step(
+        f"grading applied from grading.json: view transform {view}, "
+        f"exposure {exposure:+.2f} EV"
+        + (f", gamma {gamma:.4g}" if gamma != 1.0 else "")
+        + (
+            f", light gain {tuple(round(c, 4) for c in gain)}"
+            if any(abs(c - 1.0) > 1e-6 for c in gain)
+            else ""
+        )
+    )
     for line in grading.warnings:
         LOG.warn("--colour: " + line)
 
     if available:
-        LOG.step(f"the '{grading.view_name}' view is carrying the whole chain — gain, contrast, "
-                 f"saturation and shadows/midtones/highlights all run on final radiance, in the "
-                 f"viewport")
+        LOG.step(
+            f"the '{grading.view_name}' view is carrying the whole chain — gain, contrast, "
+            f"saturation and shadows/midtones/highlights all run on final radiance, in the "
+            f"viewport"
+        )
         return
 
     for line in missing:
         LOG.warn("--colour: NOT applied - " + line)
     config = colour_model.blender_config_path()
     if config is None:
-        LOG.warn("--colour: could not find Blender's own config.ocio to extend; set "
-                 "CARTO_BLENDER_COLORMANAGEMENT to the folder holding it")
+        LOG.warn(
+            "--colour: could not find Blender's own config.ocio to extend; set "
+            "CARTO_BLENDER_COLORMANAGEMENT to the folder holding it"
+        )
         return
     try:
         path = grading.write_ocio(os.path.join(bundle_dir, "colour"), config)
@@ -2934,7 +3212,7 @@ def _apply_grading(bundle_dir):
     # operator before the display transform, so the scene loses the saturation entirely and
     # reads flat and dark — which looks exactly like "the grading does not work".
     LOG.warn("=" * 78)
-    LOG.warn(f"--colour is only HALF APPLIED. Blender loads its colour config at startup, so")
+    LOG.warn("--colour is only HALF APPLIED. Blender loads its colour config at startup, so")
     LOG.warn(f"the '{grading.view_name}' view cannot be switched on from inside this script.")
     LOG.warn("")
     LOG.warn("  1. close Blender")
@@ -2966,7 +3244,7 @@ def _sun_from_bundle(bundle_dir):
     grading = colour_model.load(bundle_dir)
     if grading is None:
         return None
-    toward = grading.lighting.sun.toward     # None below the horizon: a night rip lights nothing
+    toward = grading.lighting.sun.toward  # None below the horizon: a night rip lights nothing
     if toward is None:
         return None
     return Vector(frames.bundle_to_zup_point(toward)).normalized()
@@ -3048,9 +3326,11 @@ def _build_sky(world, background, bundle_dir):
     if lighting is not None:
         strength *= 2.0 ** float(lighting.sky.exposure)
     background.inputs["Strength"].default_value = strength
-    LOG.step(f"sky:       physical sky at the bundle's own sun ({math.degrees(elevation):.1f}° "
-             f"elevation), normalised to the rig's {_WORLD_LEVEL:g} ambient (strength "
-             f"{strength:.4f}) so reflections gain a horizon without changing exposure")
+    LOG.step(
+        f"sky:       physical sky at the bundle's own sun ({math.degrees(elevation):.1f}° "
+        f"elevation), normalised to the rig's {_WORLD_LEVEL:g} ambient (strength "
+        f"{strength:.4f}) so reflections gain a horizon without changing exposure"
+    )
     return sky
 
 
@@ -3078,11 +3358,14 @@ def _setup_lighting(bundle_dir=None):
         if toward is not None:
             sun.rotation_euler = toward.to_track_quat("Z", "Y").to_euler()
             cos_theta = max(1e-3, toward.z)
-            LOG.step(f"sun placed from the bundle: {math.degrees(math.asin(cos_theta)):.1f} deg "
-                     f"above the horizon, as the game had it at rip time")
+            LOG.step(
+                f"sun placed from the bundle: {math.degrees(math.asin(cos_theta)):.1f} deg "
+                f"above the horizon, as the game had it at rip time"
+            )
         else:
             sun.rotation_euler = _SUN_TILT
             from mathutils import Euler
+
             cos_theta = max(1e-3, Euler(_SUN_TILT, "XYZ").to_matrix().col[2].z)
         sun_data.energy = math.pi * (1.0 - _WORLD_LEVEL) / cos_theta
 
@@ -3093,8 +3376,7 @@ def _setup_lighting(bundle_dir=None):
     _ensure_nodes(world)
     background = world.node_tree.nodes.get("Background")
     if background is not None:
-        background.inputs["Color"].default_value = (_WORLD_LEVEL, _WORLD_LEVEL,
-                                                    _WORLD_LEVEL, 1.0)
+        background.inputs["Color"].default_value = (_WORLD_LEVEL, _WORLD_LEVEL, _WORLD_LEVEL, 1.0)
         background.inputs["Strength"].default_value = 1.0
 
     if _SKY and background is not None:
@@ -3127,12 +3409,13 @@ def _setup_lighting(bundle_dir=None):
                 seen.append(shading.type)
 
     if seen:
-        LOG.step(f"viewport shading set to {', '.join(sorted(set(seen)))} "
-                 f"({len(seen)} 3D view(s))")
+        LOG.step(f"viewport shading set to {', '.join(sorted(set(seen)))} ({len(seen)} 3D view(s))")
     else:
-        LOG.warn("no 3D viewport found to configure (headless run, or the .blend was opened "
-                 "afterwards) — if the scene looks flat grey, set the viewport to Material "
-                 "Preview or Rendered: Solid shading ignores materials entirely")
+        LOG.warn(
+            "no 3D viewport found to configure (headless run, or the .blend was opened "
+            "afterwards) — if the scene looks flat grey, set the viewport to Material "
+            "Preview or Rendered: Solid shading ignores materials entirely"
+        )
 
 
 def _pin_view_transform():
@@ -3148,8 +3431,10 @@ def _pin_view_transform():
         if hasattr(scene.view_settings, "look"):
             scene.view_settings.look = "None"
     except (AttributeError, TypeError) as exc:
-        LOG.warn(f"could not pin the Standard view transform ({exc}); "
-                 f"ground colour will read desaturated under AgX")
+        LOG.warn(
+            f"could not pin the Standard view transform ({exc}); "
+            f"ground colour will read desaturated under AgX"
+        )
 
 
 def clear_scene():
@@ -3176,7 +3461,7 @@ def find_layer_collection(collection, root=None):
     return None
 
 
-class parked_out_of_view_layer:                                 # noqa: N801 - used as a context
+class parked_out_of_view_layer:  # noqa: N801 - used as a context
     """Keep a collection out of the view layer for the duration of a bulk import.
 
     The glTF importer ends every file with `bpy.ops.object.select_all(action='DESELECT')`, which
@@ -3290,10 +3575,12 @@ def _glb_fast_path_counts_log():
             detail.append(f"{_FAST_DEGENERATE_ZERO_AREA_POLYS} zero-area")
         if _FAST_DEGENERATE_REPEATED_POLYS:
             detail.append(f"{_FAST_DEGENERATE_REPEATED_POLYS} repeated-index")
-        LOG.step(f"{total} degenerate polygon(s) among them ({', '.join(detail)}), dropped "
-                 "quietly — source .glb artifacts the stock importer tolerates identically "
-                 "(silently drops the repeated-index kind, silently keeps the zero-area kind "
-                 "invisible), not a defect this path introduced")
+        LOG.step(
+            f"{total} degenerate polygon(s) among them ({', '.join(detail)}), dropped "
+            "quietly — source .glb artifacts the stock importer tolerates identically "
+            "(silently drops the repeated-index kind, silently keeps the zero-area kind "
+            "invisible), not a defect this path introduced"
+        )
 
 
 def _record_fast_degenerate(_name, dropped, repeated):
@@ -3371,24 +3658,32 @@ def _fast_import_glb(path):
             if node["uvs"] is not None:
                 loop_uv = glb_reader.glb_uv_to_texture_uv(node["uvs"][node["tris"].ravel()])
                 uv_layers = {"UVMap": loop_uv}
-            material_runs = [(_KNOWN_MATERIALS[name], count)
-                             for name, count in node["material_runs"]]
+            material_runs = [
+                (_KNOWN_MATERIALS[name], count) for name, count in node["material_runs"]
+            ]
 
             # `smooth=True`: the stock importer's shading comes from the custom split normals
             # it sets on the mesh, not from the per-polygon flat/smooth flag — matched below
             # by setting those same custom normals, so `smooth` only has to be "not flat".
-            mesh = _mesh_from_arrays(node["name"], verts, node["tris"], uv_layers=uv_layers,
-                                     material_runs=material_runs, smooth=True,
-                                     degenerate_report=_record_fast_degenerate,
-                                     source_geometry=True)
+            mesh = _mesh_from_arrays(
+                node["name"],
+                verts,
+                node["tris"],
+                uv_layers=uv_layers,
+                material_runs=material_runs,
+                smooth=True,
+                degenerate_report=_record_fast_degenerate,
+                source_geometry=True,
+            )
             created.append(mesh)
             mesh.normals_split_custom_set_from_vertices(
-                numpy.ascontiguousarray(normals, dtype=numpy.float32))
+                numpy.ascontiguousarray(normals, dtype=numpy.float32)
+            )
 
             obj = bpy.data.objects.new(node["name"], mesh)
             obj.matrix_world = _gltf_node_matrix_to_blender(node["matrix"])
             created[-1] = obj
-    except Exception:                                            # noqa: BLE001 - fall back, quietly
+    except Exception:
         # A guard above missed something about this file's shape. Undo whatever partial mesh
         # data this attempt already allocated and let the stock importer have it instead of
         # returning half-built geometry or propagating a crash out of a per-file fast path.
@@ -3457,7 +3752,7 @@ def _scratch_layer_collection():
     return None
 
 
-class _quiet_gltf_import:                                        # noqa: N801 - used as a context
+class _quiet_gltf_import:  # noqa: N801 - used as a context
     """Silence io_scene_gltf2's per-.glb INFO banner, for exactly the span of one operator call.
 
     `logging.getLogger("glTFImporter").setLevel(logging.WARNING)` looks like the fix and is
@@ -3520,7 +3815,7 @@ def import_glb(path):
     try:
         with _quiet_gltf_import():
             bpy.ops.import_scene.gltf(filepath=path)
-    except Exception as exc:                                    # noqa: BLE001 - report and go on
+    except Exception as exc:
         LOG.warn(f"! {os.path.basename(path)}: import failed — {exc}")
         return []
     finally:
@@ -3585,9 +3880,13 @@ def aim_viewports(collection):
             points.append(obj.matrix_world.translation)
     if not points:
         return
-    centre = Vector((sum(p.x for p in points) / len(points),
-                     sum(p.y for p in points) / len(points),
-                     sum(p.z for p in points) / len(points)))
+    centre = Vector(
+        (
+            sum(p.x for p in points) / len(points),
+            sum(p.y for p in points) / len(points),
+            sum(p.z for p in points) / len(points),
+        )
+    )
     span = max((p - centre).length for p in points)
 
     aimed = 0
@@ -3609,12 +3908,14 @@ def aim_viewports(collection):
                 aimed += 1
 
     if aimed:
-        LOG.step(f"aimed {aimed} viewport(s) at X {centre.x:.0f} Y {centre.y:.0f} Z {centre.z:.0f}, "
-                 f"clip end 100000")
+        LOG.step(
+            f"aimed {aimed} viewport(s) at X {centre.x:.0f} Y {centre.y:.0f} Z {centre.z:.0f}, "
+            f"clip end 100000"
+        )
 
 
 def main():
-    argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
+    argv = sys.argv[sys.argv.index("--") + 1 :] if "--" in sys.argv else []
 
     # The bundle directory may be omitted: since 2026-08-09 the producer writes straight into
     # ModsData/Carto (the development-era spike/ subfolder is retired), so that is the default.
@@ -3624,7 +3925,8 @@ def main():
         argv = argv[1:]
     else:
         bundle_dir = os.path.expanduser(
-            "~/AppData/LocalLow/Colossal Order/Cities Skylines II/ModsData/Carto")
+            "~/AppData/LocalLow/Colossal Order/Cities Skylines II/ModsData/Carto"
+        )
         if not os.path.isdir(bundle_dir):
             print(__doc__)
             print(f"\nNo bundle directory given and the default does not exist:\n  {bundle_dir}")
@@ -3697,7 +3999,9 @@ def main():
         elif arg == "--net-categories":
             do_networks = True
             value = argv[i + 1].strip()
-            net_categories = None if value == "all" else {c.strip() for c in value.split(",") if c.strip()}
+            net_categories = (
+                None if value == "all" else {c.strip() for c in value.split(",") if c.strip()}
+            )
             i += 2
         elif arg == "--limit":
             limit = int(argv[i + 1])
@@ -3739,9 +4043,9 @@ def main():
         if kinds is _UNSET:
             kinds = set(_ALL_KINDS)
         if net_categories is _UNSET:
-            net_categories = None                               # every category
+            net_categories = None  # every category
         if limit is _UNSET:
-            limit = None                                        # the radius is the limit
+            limit = None  # the radius is the limit
         if center is None:
             center = "downtown"
         if radius is None:
@@ -3754,8 +4058,15 @@ def main():
     if limit is _UNSET:
         limit = 20000
 
-    (mesh_dir, instances_path, networks_path, net_mesh_dir,
-     lanes_path, lane_mesh_dir, lane_prefabs_path) = resolve_layers(bundle_dir)
+    (
+        mesh_dir,
+        instances_path,
+        networks_path,
+        net_mesh_dir,
+        lanes_path,
+        lane_mesh_dir,
+        lane_prefabs_path,
+    ) = resolve_layers(bundle_dir)
     if kinds and not os.path.isfile(instances_path):
         LOG.warn(f"no instances.jsonl at {instances_path}")
         return 2
@@ -3768,7 +4079,9 @@ def main():
         LOG.step(f"assets:    matching {assets}")
     if do_networks:
         LOG.step(f"networks:  {networks_path}")
-        LOG.step(f"           categories: {'all' if net_categories is None else sorted(net_categories)}")
+        LOG.step(
+            f"           categories: {'all' if net_categories is None else sorted(net_categories)}"
+        )
 
     LOG.phase("Instances")
     _glb_fast_path_counts_reset()
@@ -3784,9 +4097,11 @@ def main():
         min_x, max_x, min_z, max_z = where["bounds"]
         LOG.step(f"selected:  {where['count']} instance(s)")
         LOG.step(f"           X {min_x:.0f} .. {max_x:.0f}   Z {min_z:.0f} .. {max_z:.0f}")
-        LOG.step(f"           centroid X {where['centroid'][0]:.0f} Z {where['centroid'][1]:.0f}"
-                 f"   densest 250 m cell X {where['densest'][0]:.0f} Z {where['densest'][1]:.0f}"
-                 f" ({where['densest_count']} there)")
+        LOG.step(
+            f"           centroid X {where['centroid'][0]:.0f} Z {where['centroid'][1]:.0f}"
+            f"   densest 250 m cell X {where['densest'][0]:.0f} Z {where['densest'][1]:.0f}"
+            f" ({where['densest_count']} there)"
+        )
 
         if center == "auto":
             center = where["densest"]
@@ -3802,22 +4117,30 @@ def main():
     if center == "downtown":
         skyline = survey(instances_path, {"building"}, weight=skyline_weight)
         if skyline is None:
-            LOG.warn("--center downtown needs buildings in the bundle; "
-                     "use --center auto, or give explicit X Z")
+            LOG.warn(
+                "--center downtown needs buildings in the bundle; "
+                "use --center auto, or give explicit X Z"
+            )
             return 2
         center = skyline["densest"]
-        LOG.step(f"           --center downtown resolved to X {center[0]:.0f} Z {center[1]:.0f}"
-                 f"   (tallest 250 m cell of {skyline['count']} building(s))")
+        LOG.step(
+            f"           --center downtown resolved to X {center[0]:.0f} Z {center[1]:.0f}"
+            f"   (tallest 250 m cell of {skyline['count']} building(s))"
+        )
 
     if center == "interchange":
         found = survey_interchange(instances_path, networks_path)
         if found is None:
-            LOG.warn("--center interchange needs highway or elevated network records with buildings "
-                     "near them; use --center downtown, or give explicit X Z")
+            LOG.warn(
+                "--center interchange needs highway or elevated network records with buildings "
+                "near them; use --center downtown, or give explicit X Z"
+            )
             return 2
         center = found
-        LOG.step(f"           --center interchange resolved to X {center[0]:.0f} Z {center[1]:.0f}"
-                 f"   (tallest skyline with a highway junction in it)")
+        LOG.step(
+            f"           --center interchange resolved to X {center[0]:.0f} Z {center[1]:.0f}"
+            f"   (tallest skyline with a highway junction in it)"
+        )
 
     if radius is not None:
         if center is None:
@@ -3869,7 +4192,7 @@ def main():
     missing = {}
     started = time.time()
 
-    for record in (read_jsonl(instances_path) if kinds else ()):
+    for record in read_jsonl(instances_path) if kinds else ():
         if limit is not None and placed >= limit:
             break
 
@@ -3907,8 +4230,11 @@ def main():
         for candidate in instances.mesh_candidates(record):
             if candidate not in prefabs:
                 path = os.path.join(mesh_dir, candidate + ".glb")
-                prefabs[candidate] = (load_prefab_collection(candidate, mesh_dir, sources)
-                                      if os.path.isfile(path) else None)
+                prefabs[candidate] = (
+                    load_prefab_collection(candidate, mesh_dir, sources)
+                    if os.path.isfile(path)
+                    else None
+                )
             if prefabs[candidate] is not None:
                 asset_id = candidate
                 break
@@ -3941,8 +4267,11 @@ def main():
             base_id = instances.skirt_asset_id(record)
             if base_id not in skirt_prefabs:
                 base_path = os.path.join(mesh_dir, base_id + ".glb")
-                skirt_prefabs[base_id] = (load_prefab_collection(base_id, mesh_dir, sources)
-                                          if os.path.isfile(base_path) else None)
+                skirt_prefabs[base_id] = (
+                    load_prefab_collection(base_id, mesh_dir, sources)
+                    if os.path.isfile(base_path)
+                    else None
+                )
             if skirt_prefabs[base_id] is not None:
                 skirt = bpy.data.objects.new(f"{base_id}.{record.get('id', placed)}", None)
                 skirt.instance_type = "COLLECTION"
@@ -3978,9 +4307,15 @@ def main():
         network_collection = bpy.data.collections.new("bundle_networks")
         bpy.context.scene.collection.children.link(network_collection)
         with parked_out_of_view_layer(network_collection):
-            network_count = build_networks(networks_path, net_categories, network_collection,
-                                      net_mesh_dir, center=center, radius=radius,
-                                      limit=net_limit)
+            network_count = build_networks(
+                networks_path,
+                net_categories,
+                network_collection,
+                net_mesh_dir,
+                center=center,
+                radius=radius,
+                limit=net_limit,
+            )
         LOG.end_phase()  # build_networks() may have early-returned before its own done()
 
     # Terrain BEFORE lanes, since 2026-08-11. It depends on neither networks nor lanes, and
@@ -3993,9 +4328,14 @@ def main():
         LOG.phase("Terrain & water")
         terrain_collection = bpy.data.collections.new("bundle_terrain")
         bpy.context.scene.collection.children.link(terrain_collection)
-        terrain_objects, terrain_ground = build_terrain(bundle_dir, terrain_collection,
-                                                        center, radius, clip_floor=clip_floor,
-                                                        coarse=coarse_terrain)
+        terrain_objects, terrain_ground = build_terrain(
+            bundle_dir,
+            terrain_collection,
+            center,
+            radius,
+            clip_floor=clip_floor,
+            coarse=coarse_terrain,
+        )
         LOG.end_phase()  # build_terrain() may have early-returned before its own done()
 
     lane_count = 0
@@ -4007,17 +4347,28 @@ def main():
         if os.path.isfile(lanes_path):
             lane_collection = bpy.data.collections.new("bundle_lanemeshes")
             bpy.context.scene.collection.children.link(lane_collection)
-            LOG.phase("Lane markings (lanemeshes.jsonl, decal parts)" if not do_lanes
-                      else "Lane geometry (lanemeshes.jsonl)")
+            LOG.phase(
+                "Lane markings (lanemeshes.jsonl, decal parts)"
+                if not do_lanes
+                else "Lane geometry (lanemeshes.jsonl)"
+            )
             road_surface = _ProjectionSurface(network_collection.objects) if network_count else None
-            ground_surface = (_ProjectionSurface([terrain_ground[0]])
-                              if terrain_ground is not None else None)
+            ground_surface = (
+                _ProjectionSurface([terrain_ground[0]]) if terrain_ground is not None else None
+            )
             with parked_out_of_view_layer(lane_collection):
-                lane_count = build_lanes(lanes_path, lane_prefabs_path, lane_mesh_dir,
-                                    lane_collection, center=center, radius=radius,
-                                    limit=net_limit, road_surface=road_surface,
-                                    markings_only=not do_lanes,
-                                    ground_surface=ground_surface)
+                lane_count = build_lanes(
+                    lanes_path,
+                    lane_prefabs_path,
+                    lane_mesh_dir,
+                    lane_collection,
+                    center=center,
+                    radius=radius,
+                    limit=net_limit,
+                    road_surface=road_surface,
+                    markings_only=not do_lanes,
+                    ground_surface=ground_surface,
+                )
             LOG.end_phase()  # build_lanes() may have early-returned before its own done()
         else:
             LOG.warn(f"no lanemeshes.jsonl at {lanes_path} — skipping lane geometry")
@@ -4032,8 +4383,9 @@ def main():
         if terrain_ground is not None:
             ground_surface = _ProjectionSurface([terrain_ground[0]])
             ground_cell = terrain_ground[1]
-        area_objects = build_areas(bundle_dir, area_collection, center, radius,
-                                   ground=ground_surface, cell=ground_cell)
+        area_objects = build_areas(
+            bundle_dir, area_collection, center, radius, ground=ground_surface, cell=ground_cell
+        )
         LOG.end_phase()  # build_areas() may have early-returned before its own done()
 
     # Everything is imported, so the placed instances can come back into the view layer. This is
@@ -4049,15 +4401,21 @@ def main():
     masked = apply_pbr_masks(bundle_dir)
     shader_water, shader_glass, shader_tint = apply_shader_only_materials(bundle_dir)
     if masked:
-        LOG.step(f"pbr:       {masked} material(s) took metallic + roughness from their §7 mask "
-                 "(the .glb ships neither — it hard-codes roughness 0.9)")
+        LOG.step(
+            f"pbr:       {masked} material(s) took metallic + roughness from their §7 mask "
+            "(the .glb ships neither — it hard-codes roughness 0.9)"
+        )
     if shader_water or shader_glass or shader_tint:
-        LOG.step(f"shaders:   {shader_water} water, {shader_glass} glass, {shader_tint} tinted "
-                 "material(s) given an appearance — CS2 draws these with a shader and no "
-                 "texture, so the .glb leaves them white")
+        LOG.step(
+            f"shaders:   {shader_water} water, {shader_glass} glass, {shader_tint} tinted "
+            "material(s) given an appearance — CS2 draws these with a shader and no "
+            "texture, so the .glb leaves them white"
+        )
     tinted = apply_color_tints(bundle_dir)
     if tinted:
-        LOG.step(f"tinted:    {tinted} material(s) wired to per-instance colorSet via their colorMask")
+        LOG.step(
+            f"tinted:    {tinted} material(s) wired to per-instance colorSet via their colorMask"
+        )
 
     # The scratch collection is empty by construction — every import unlinks what it produced —
     # so drop it rather than leave an empty entry in the outliner.
@@ -4077,9 +4435,15 @@ def main():
     # Aim at whatever there is to look at. With `--kinds none --networks` the instance
     # collection is empty, and aiming at an empty collection leaves the viewport at the origin
     # — which is where a city almost never is.
-    aim_viewports(placed_collection if placed else
-                  (network_collection if network_count else
-                   (lane_collection if lane_count else placed_collection)))
+    aim_viewports(
+        placed_collection
+        if placed
+        else (
+            network_collection
+            if network_count
+            else (lane_collection if lane_count else placed_collection)
+        )
+    )
 
     elapsed = time.time() - started
     # No phase is open at this point — Instances closed right after its loop, and whichever
@@ -4093,28 +4457,35 @@ def main():
     # premultiplying colour by alpha. See `_unpremultiply` — this is worth several stops.
     repacked = _unpremultiply_all()
     if repacked:
-        LOG.step(f"{repacked} texture(s) set to channel-packed alpha so their colour is not "
-                 f"multiplied by packed alpha data")
+        LOG.step(
+            f"{repacked} texture(s) set to channel-packed alpha so their colour is not "
+            f"multiplied by packed alpha data"
+        )
 
     if do_skirts:
-        LOG.step(f"placed {skirts_placed} foundation skirt(s) (__base, as-authored 1 m bands — "
-                 f"the terrain drop is the consumer rule, contract §4.1)")
+        LOG.step(
+            f"placed {skirts_placed} foundation skirt(s) (__base, as-authored 1 m bands — "
+            f"the terrain drop is the consumer rule, contract §4.1)"
+        )
     if do_terrain:
         LOG.step(f"placed {terrain_objects} terrain object(s) (ground grid + water; §8)")
     if do_areas:
         LOG.step(f"placed {area_objects} surface-area object(s) (driveways, lots, paths; §8b)")
-    LOG.step(f"skipped: {skipped_kind} by kind, {skipped_asset} by --assets, {skipped_region} outside the region")
+    LOG.step(
+        f"skipped: {skipped_kind} by kind, {skipped_asset} by --assets, {skipped_region} outside the region"
+    )
 
     # An empty-looking scene is nearly always the region filter, not the bundle. Say so, with the
     # coordinates that would have worked. The absolute floor matters as much as the ratio: a
     # deliberate 500 m window on a 14 km city keeps well under a twentieth of it by design, and
     # tens of thousands of instances is not an empty scene — pointing that run at `--center auto`
     # would have moved it from downtown to whichever field has the most trees.
-    if (radius is not None and where is not None
-            and placed < where["count"] / 20 and placed < 500):
-        LOG.warn(f"NOTE: the region kept {placed} of {where['count']} selected instance(s). "
-                 f"The densest 250 m cell is at X {where['densest'][0]:.0f} Z {where['densest'][1]:.0f} — "
-                 f"try --center auto, --center downtown, a larger --radius, or drop them.")
+    if radius is not None and where is not None and placed < where["count"] / 20 and placed < 500:
+        LOG.warn(
+            f"NOTE: the region kept {placed} of {where['count']} selected instance(s). "
+            f"The densest 250 m cell is at X {where['densest'][0]:.0f} Z {where['densest'][1]:.0f} — "
+            f"try --center auto, --center downtown, a larger --radius, or drop them."
+        )
 
     if missing:
         undeclared = [a for a, r in missing.items() if r == "NOT DECLARED in warnings.jsonl"]

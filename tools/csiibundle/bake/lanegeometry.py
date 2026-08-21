@@ -36,8 +36,9 @@ from .tiles import TileSink
 
 PRODUCT_NAME = "lanegeometry"
 INPUTS = ("laneGeometry", "lanePrefabs", "laneMeshes")
-LEVEL_GRADE = 0.02      # rise/run below which a rigid tile is "level" and expressible as rotation x scale. TUNED.
-UNIFORM_TOL = 0.02      # scale factors within 2 % of each other count as uniform (forest-able). TUNED.
+# rise/run below which a rigid tile is "level" and expressible as rotation x scale. TUNED.
+LEVEL_GRADE = 0.02
+UNIFORM_TOL = 0.02  # scale factors within 2 % of each other count as uniform (forest-able). TUNED.
 DEFAULT_CATEGORIES = ("lane", "fence", "cable")
 
 
@@ -47,7 +48,11 @@ def _classify(matrix):
     c0, c1, c2 = m[:3, 0], m[:3, 1], m[:3, 2]
     run = float(numpy.hypot(c2[0], c2[2]))
     grade = abs(float(c2[1])) / max(run, 1e-9)
-    scale = [float(numpy.linalg.norm(c0)), float(numpy.linalg.norm(c1)), float(numpy.linalg.norm(c2))]
+    scale = [
+        float(numpy.linalg.norm(c0)),
+        float(numpy.linalg.norm(c1)),
+        float(numpy.linalg.norm(c2)),
+    ]
     smax, smin = max(scale), min(scale)
     uniform = (smax - smin) <= UNIFORM_TOL * max(smax, 1e-9)
     return grade <= LEVEL_GRADE, scale, uniform
@@ -74,8 +79,8 @@ def run(context, progress):
     sources = {}
     prefab_lods = {}
     per_category = Counter()
-    placements = []                                # (assetId, category, prefab, matrix)
-    baked_blocks = []                              # per-vertex bent tiles
+    placements = []  # (assetId, category, prefab, matrix)
+    baked_blocks = []  # per-vertex bent tiles
     sheared = 0
     bent = skipped_region = skipped_category = missing_mesh = 0
     seen = 0
@@ -97,14 +102,24 @@ def run(context, progress):
                 skipped_region += 1
                 continue
             parts = entry.get("parts", [])
-            solid = [i for i in record.get("parts", []) if 0 <= i < len(parts) and not parts[i].get("decal")]
+            solid = [
+                i
+                for i in record.get("parts", [])
+                if 0 <= i < len(parts) and not parts[i].get("decal")
+            ]
             if not solid:
                 continue
             curve_length = bezier.length(curve)
             spans = record.get("spans") or [[0.0, 1.0]]
             width_scale = record.get("widthScale", [1.0, 1.0])
             hang = lanes.hang_curve(record, entry, curve_length)
-            sink = {"blocks": [], "instances": [], "tiles_instanced": 0, "tiles_baked": 0, "decal_dropped": 0}
+            sink = {
+                "blocks": [],
+                "instances": [],
+                "tiles_instanced": 0,
+                "tiles_baked": 0,
+                "decal_dropped": 0,
+            }
             # The game's own limit for this fence / cable / kerb: the min over the PREFAB's
             # meshes (`NetLaneGeometryData.m_MinLod`), stamped on everything this record produces.
             prefab_lod = _prefab_min_lod(record.get("prefab"), entry, sources, lay, prefab_lods)
@@ -112,28 +127,44 @@ def run(context, progress):
                 asset_id = parts[index]["assetId"]
                 if asset_id not in sources:
                     path = os.path.join(lay.lane_meshes, asset_id + ".glb")
-                    sources[asset_id] = lanes.part_source(glb.parse_glb(path)) if os.path.isfile(path) else None
+                    sources[asset_id] = (
+                        lanes.part_source(glb.parse_glb(path)) if os.path.isfile(path) else None
+                    )
                 source = sources[asset_id]
                 if source is None:
                     missing_mesh += 1
                     continue
-                lanes.bend_part(parts[index], source, curve, spans, curve_length, width_scale, hang, sink)
+                lanes.bend_part(
+                    parts[index], source, curve, spans, curve_length, width_scale, hang, sink
+                )
             for asset_id, matrix in sink["instances"]:
                 level, scale, uniform = _classify(matrix)
                 if level:
-                    placements.append((asset_id, category, record.get("prefab"), matrix, scale, uniform))
+                    placements.append(
+                        (asset_id, category, record.get("prefab"), matrix, scale, uniform)
+                    )
                 else:
                     # bake the sheared tile as world geometry from the same part source
                     src = sources.get(asset_id)
                     if src is None:
                         continue
-                    world = src["verts"] @ numpy.asarray(matrix)[:3, :3].T + numpy.asarray(matrix)[:3, 3]
+                    world = (
+                        src["verts"] @ numpy.asarray(matrix)[:3, :3].T
+                        + numpy.asarray(matrix)[:3, 3]
+                    )
                     tri_mat = src["tri_material"]
                     for m_index in numpy.unique(tri_mat):
                         rows = numpy.nonzero(tri_mat == m_index)[0]
-                        baked_blocks.append({"verts": world, "tris": src["tris"][rows], "uvs": src["uvs"][rows],
-                                             "material": src["materials"][int(m_index)], "category": category,
-                                             "min_lod": prefab_lod})
+                        baked_blocks.append(
+                            {
+                                "verts": world,
+                                "tris": src["tris"][rows],
+                                "uvs": src["uvs"][rows],
+                                "material": src["materials"][int(m_index)],
+                                "category": category,
+                                "min_lod": prefab_lod,
+                            }
+                        )
                     sheared += 1
             for block in sink["blocks"]:
                 block["category"] = category
@@ -141,9 +172,11 @@ def run(context, progress):
                 baked_blocks.append(block)
             per_category[category] += 1
             bent += 1
-    progress.end(f"{bent} lanes: {len(placements)} level rigid tiles as placements, {sheared} sheared rigid tiles "
-                 f"and {len(baked_blocks)} baked blocks; "
-                 f"{skipped_region} outside region, {skipped_category} filtered by category, {missing_mesh} no mesh")
+    progress.end(
+        f"{bent} lanes: {len(placements)} level rigid tiles as placements, {sheared} sheared rigid tiles "
+        f"and {len(baked_blocks)} baked blocks; "
+        f"{skipped_region} outside region, {skipped_category} filtered by category, {missing_mesh} no mesh"
+    )
 
     # -- placements -----------------------------------------------------------------------------
     inst_path = os.path.join(out_dir, "instances.jsonl")
@@ -151,9 +184,14 @@ def run(context, progress):
     with open(inst_path, "w", encoding="utf-8", newline="\n") as handle:
         for asset_id, category, prefab, matrix, scale, uniform in placements:
             uniform_count += int(uniform)
-            row = {"assetId": asset_id, "category": category, "prefab": prefab,
-                   "matrix": [round(float(v), 6) for v in numpy.asarray(matrix).reshape(-1)],
-                   "scale": [round(s, 4) for s in scale], "uniform": bool(uniform)}
+            row = {
+                "assetId": asset_id,
+                "category": category,
+                "prefab": prefab,
+                "matrix": [round(float(v), 6) for v in numpy.asarray(matrix).reshape(-1)],
+                "scale": [round(s, 4) for s in scale],
+                "uniform": bool(uniform),
+            }
             handle.write(json.dumps(row, separators=(",", ":")) + "\n")
 
     # -- baked tiles ----------------------------------------------------------------------------
@@ -171,9 +209,17 @@ def run(context, progress):
     # lane rule in `csiibundle.lod`), so the budget keeps the blocks the game draws FURTHEST and
     # drops the ones it culls soonest, spread over the whole map. Ties keep the file's own order,
     # so the result does not depend on the sort being unstable.
-    order = sorted(range(len(baked_blocks)),
-                   key=lambda i: (-(baked_blocks[i].get("min_lod") if baked_blocks[i].get("min_lod")
-                                    is not None else 255), i))
+    order = sorted(
+        range(len(baked_blocks)),
+        key=lambda i: (
+            -(
+                baked_blocks[i].get("min_lod")
+                if baked_blocks[i].get("min_lod") is not None
+                else 255
+            ),
+            i,
+        ),
+    )
     kept = set()
     if max_tris is not None:
         running = 0
@@ -193,7 +239,9 @@ def run(context, progress):
             continue
         if max_tris is not None and index not in kept:
             continue
-        material = block["material"] if isinstance(block["material"], str) else str(block["material"])
+        material = (
+            block["material"] if isinstance(block["material"], str) else str(block["material"])
+        )
         # bundle-frame face order is the reverse of the part .glb's (see markings._face_up's note);
         # furniture has no "up" to force, so the rule alone applies
         tris = numpy.asarray(block["tris"], dtype=numpy.int64)[:, [0, 2, 1]]
@@ -206,20 +254,38 @@ def run(context, progress):
         tris_by_category[block.get("category", "lane")] += n
     tiles = tile_sink.tiles()
     progress.begin("lanegeometry: tiles", total=len(tiles), unit="tiles")
-    written = tile_sink.flush(progress, texture_uri_base=_texture_uri_base(out_dir, bundle),
-                              jobs=max(1, int(options.get("jobs") or 1)))
-    progress.end(f"{written['files']} tiles, {written['tris']:,} triangles baked "
-                 f"({dropped_budget:,} dropped by lane_max_tris)" if max_tris else
-                 f"{written['files']} tiles, {written['tris']:,} triangles baked")
+    written = tile_sink.flush(
+        progress,
+        texture_uri_base=_texture_uri_base(out_dir, bundle),
+        jobs=max(1, int(options.get("jobs") or 1)),
+    )
+    progress.end(
+        f"{written['files']} tiles, {written['tris']:,} triangles baked "
+        f"({dropped_budget:,} dropped by lane_max_tris)"
+        if max_tris
+        else f"{written['files']} tiles, {written['tris']:,} triangles baked"
+    )
     if dropped_budget:
-        progress.log(f"lanegeometry: {dropped_budget:,} triangles dropped by lane_max_tris={max_tris} "
-                     f"(the lowest `m_MinLod` first — what CS2 culls soonest): "
-                     + ", ".join(f"{k} {v:,}" for k, v in sorted(dropped_by_category.items())))
-    return {"lanes": bent, "byCategory": dict(per_category), "placements": len(placements),
-            "placementsUniform": uniform_count, "shearedTiles": sheared, "bakedTris": written["tris"],
-            "bakedTrisByCategory": dict(tris_by_category), "droppedTris": dropped_budget,
-            "droppedTrisByCategory": dict(dropped_by_category), "laneMaxTris": max_tris,
-            "tiles": written["files"], "_tiles": written["tiles"], "seconds": round(time.monotonic() - started, 1)}
+        progress.log(
+            f"lanegeometry: {dropped_budget:,} triangles dropped by lane_max_tris={max_tris} "
+            f"(the lowest `m_MinLod` first — what CS2 culls soonest): "
+            + ", ".join(f"{k} {v:,}" for k, v in sorted(dropped_by_category.items()))
+        )
+    return {
+        "lanes": bent,
+        "byCategory": dict(per_category),
+        "placements": len(placements),
+        "placementsUniform": uniform_count,
+        "shearedTiles": sheared,
+        "bakedTris": written["tris"],
+        "bakedTrisByCategory": dict(tris_by_category),
+        "droppedTris": dropped_budget,
+        "droppedTrisByCategory": dict(dropped_by_category),
+        "laneMaxTris": max_tris,
+        "tiles": written["files"],
+        "_tiles": written["tiles"],
+        "seconds": round(time.monotonic() - started, 1),
+    }
 
 
 def _prefab_min_lod(prefab, entry, sources, lay, cache):
@@ -239,17 +305,29 @@ def _prefab_min_lod(prefab, entry, sources, lay, cache):
             continue
         if asset_id not in sources:
             path = os.path.join(lay.lane_meshes, asset_id + ".glb")
-            sources[asset_id] = lanes.part_source(glb.parse_glb(path)) if os.path.isfile(path) else None
+            sources[asset_id] = (
+                lanes.part_source(glb.parse_glb(path)) if os.path.isfile(path) else None
+            )
         source = sources[asset_id]
         if source is None or len(source["tris"]) == 0:
             continue
         verts = numpy.asarray(source["verts"], dtype=numpy.float64)
-        meshes.append((verts.max(axis=0) - verts.min(axis=0), lod.surface_area(verts, source["tris"])))
+        meshes.append(
+            (verts.max(axis=0) - verts.min(axis=0), lod.surface_area(verts, source["tris"]))
+        )
     answer = lod.lane_min_lod(meshes) if meshes else None
     cache[prefab] = answer
     return answer
 
 
 # version 2: tile primitives carry the game's per-primitive draw-distance limit (`#L<n>`)
-register(Product(PRODUCT_NAME, INPUTS, "lanegeometry/", run, version=2,
-                 options=("lane_parts", "lane_max_tris", "region")))
+register(
+    Product(
+        PRODUCT_NAME,
+        INPUTS,
+        "lanegeometry/",
+        run,
+        version=2,
+        options=("lane_parts", "lane_max_tris", "region"),
+    )
+)

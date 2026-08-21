@@ -22,7 +22,7 @@ relative to each other), so it works on glTF-space `parse_glb` output directly.
 
 import numpy
 
-MIN_THICKNESS = 0.3          # metres — BeamNG's own rule of thumb for a collider that holds at speed
+MIN_THICKNESS = 0.3  # metres — BeamNG's own rule of thumb for a collider that holds at speed
 CYLINDER_SIDES = 8
 
 
@@ -62,8 +62,10 @@ def colmesh_from_lod(mesh, min_thickness=MIN_THICKNESS):
         return None
     if thickness(mesh["verts"]) < min_thickness:
         return None
-    return {"verts": numpy.asarray(mesh["verts"], dtype=numpy.float32),
-            "tris": numpy.asarray(mesh["tris"], dtype=numpy.int64)}
+    return {
+        "verts": numpy.asarray(mesh["verts"], dtype=numpy.float32),
+        "tris": numpy.asarray(mesh["tris"], dtype=numpy.int64),
+    }
 
 
 def colbox(bounds_min, bounds_max, min_thickness=MIN_THICKNESS):
@@ -77,14 +79,36 @@ def colbox(bounds_min, bounds_max, min_thickness=MIN_THICKNESS):
             lo[k], hi[k] = mid - 0.5 * min_thickness, mid + 0.5 * min_thickness
     x0, y0, z0 = lo
     x1, y1, z1 = hi
-    verts = numpy.array([[x0, y0, z0], [x1, y0, z0], [x1, y1, z0], [x0, y1, z0],
-                         [x0, y0, z1], [x1, y0, z1], [x1, y1, z1], [x0, y1, z1]], dtype=numpy.float32)
-    tris = numpy.array([[0, 2, 1], [0, 3, 2],      # bottom (z0), facing -z
-                        [4, 5, 6], [4, 6, 7],      # top
-                        [0, 1, 5], [0, 5, 4],      # y0 side
-                        [1, 2, 6], [1, 6, 5],      # x1 side
-                        [2, 3, 7], [2, 7, 6],      # y1 side
-                        [3, 0, 4], [3, 4, 7]], dtype=numpy.int64)   # x0 side
+    verts = numpy.array(
+        [
+            [x0, y0, z0],
+            [x1, y0, z0],
+            [x1, y1, z0],
+            [x0, y1, z0],
+            [x0, y0, z1],
+            [x1, y0, z1],
+            [x1, y1, z1],
+            [x0, y1, z1],
+        ],
+        dtype=numpy.float32,
+    )
+    tris = numpy.array(
+        [
+            [0, 2, 1],
+            [0, 3, 2],  # bottom (z0), facing -z
+            [4, 5, 6],
+            [4, 6, 7],  # top
+            [0, 1, 5],
+            [0, 5, 4],  # y0 side
+            [1, 2, 6],
+            [1, 6, 5],  # x1 side
+            [2, 3, 7],
+            [2, 7, 6],  # y1 side
+            [3, 0, 4],
+            [3, 4, 7],
+        ],
+        dtype=numpy.int64,
+    )  # x0 side
     return verts, tris
 
 
@@ -97,7 +121,7 @@ def _trunk_group(mesh, up_axis=1):
     groups = []
     cursor = 0
     for name, count in runs:
-        idx = numpy.unique(tris[cursor:cursor + count].ravel())
+        idx = numpy.unique(tris[cursor : cursor + count].ravel())
         cursor += count
         if idx.size:
             groups.append((name or "", idx))
@@ -170,7 +194,7 @@ def wind_vertex_colours(mesh, up_axis=1, seed=0):
     r_norm = numpy.clip(r / max(float(r.max()), 1e-6), 0.0, 1.0)
     trunk_mask = numpy.zeros(n, dtype=bool)
     trunk_mask[idx] = True
-    red = numpy.where(trunk_mask, 0.0, h_norm ** 2)             # bend grows with height, trunk rigid
-    green = numpy.full(n, 0.5 + 0.5 * ((seed * 0.6180339887) % 1.0))   # variation phase, per mesh
-    blue = numpy.where(trunk_mask, 0.0, r_norm * h_norm)       # flutter at the canopy edge
+    red = numpy.where(trunk_mask, 0.0, h_norm**2)  # bend grows with height, trunk rigid
+    green = numpy.full(n, 0.5 + 0.5 * ((seed * 0.6180339887) % 1.0))  # variation phase, per mesh
+    blue = numpy.where(trunk_mask, 0.0, r_norm * h_norm)  # flutter at the canopy edge
     return numpy.stack([red, green, blue, numpy.ones(n)], axis=1).astype(numpy.float32)

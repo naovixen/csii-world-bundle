@@ -105,8 +105,9 @@ def in_region(record, region):
     if not region:
         return True
     pos = record["pos"]
-    return (abs(float(pos[0]) - float(region["centerX"])) <= float(region["radius"])
-            and abs(float(pos[2]) - float(region["centerZ"])) <= float(region["radius"]))
+    return abs(float(pos[0]) - float(region["centerX"])) <= float(region["radius"]) and abs(
+        float(pos[2]) - float(region["centerZ"])
+    ) <= float(region["radius"])
 
 
 def kind_enabled(kind, settings):
@@ -154,7 +155,8 @@ def admit(record, settings, region=None, clipped=None, orphans=None):
     if not in_region(record, region):
         return "region"
     if kind in ("tree", "prop") and not bundle_instances.density_keep(
-            record, density_fraction(kind, settings)):
+        record, density_fraction(kind, settings)
+    ):
         return "density"
     if clipped and record.get("id") in clipped:
         return "roadclear"
@@ -184,7 +186,7 @@ def road_clipped(bundle, settings, region=None):
     if not lanes_path:
         return set(), stats
     points = roadclear.lane_points(reader.read_jsonl(lanes_path))
-    stats["laneStations"] = int(len(points))
+    stats["laneStations"] = len(points)
     if not len(points):
         return set(), stats
     grid = roadclear.PointGrid(points, clearance)

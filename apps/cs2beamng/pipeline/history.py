@@ -17,20 +17,20 @@ EMA = 0.5
 
 # units per second, measured on the reference city (see docs/plans/beamng-consumer-plan.md log)
 DEFAULT_RATES = {
-    "bake/materials": 4641 / 453.0,           # materials
-    "bake/lods": 5575 / 200.0,                # meshes
-    "bake/markings": 117374 / 90.0,           # lane records
+    "bake/materials": 4641 / 453.0,  # materials
+    "bake/lods": 5575 / 200.0,  # meshes
+    "bake/markings": 117374 / 90.0,  # lane records
     "bake/lanegeometry": 117374 / 142.0,
     "bake/areas": 24938 / 90.0,
-    "bake/skirts": 1226046 / 60.0,            # instances scanned
+    "bake/skirts": 1226046 / 60.0,  # instances scanned
     "bake/terrainmask": 1 / 45.0,
-    "terrain": 4096 * 4096 / 30.0,            # samples
+    "terrain": 4096 * 4096 / 30.0,  # samples
     "water": 1 / 20.0,
-    "scene": 641639 / 25.0,                   # lanes streamed for the spawn pick
+    "scene": 641639 / 25.0,  # lanes streamed for the spawn pick
     "materials": 4641 / 120.0,
     "shapes": 5575 / 300.0,
     "networks": 8259 / 120.0,
-    "derived": 3000 / 120.0,                  # tiles
+    "derived": 3000 / 120.0,  # tiles
     "instances": 1226046 / 240.0,
     "lights": 654 / 5.0,
     "validate": 1 / 30.0,
@@ -109,8 +109,11 @@ def observe(key, value, blend=True):
     if value is None or value <= 0:
         return
     rates = load()
-    rates[key] = float(value) if not blend or key not in rates else (
-        EMA * float(value) + (1 - EMA) * rates[key])
+    rates[key] = (
+        float(value)
+        if not blend or key not in rates
+        else (EMA * float(value) + (1 - EMA) * rates[key])
+    )
     _write(rates)
 
 

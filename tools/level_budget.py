@@ -12,10 +12,12 @@ working from a checkout, installed or not.
 import os
 import sys
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "apps"))
+sys.path.insert(
+    0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "apps")
+)
 
-from cs2beamng.beamng.budget import *  # noqa: E402,F401,F403 - re-export the whole module
-from cs2beamng.beamng.budget import main  # noqa: E402
+from cs2beamng.beamng.budget import *  # noqa: F403 - re-export the whole module
+from cs2beamng.beamng.budget import main
 
 if __name__ == "__main__":
     sys.exit(main())

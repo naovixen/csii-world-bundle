@@ -14,6 +14,7 @@ Three oracles, none of which share code with the surface under test:
 
 Plain `python tools/test_soup_surface.py`. Reports throughput as a note, not a gate.
 """
+
 import os
 import sys
 import time
@@ -25,7 +26,8 @@ sys.path.insert(0, HERE)
 from csiibundle import drape  # noqa: E402
 
 BUNDLE = os.environ.get("CARTO_BUNDLE") or os.path.expandvars(
-    r"%USERPROFILE%\AppData\LocalLow\Colossal Order\Cities Skylines II\ModsData\Carto")
+    r"%USERPROFILE%\AppData\LocalLow\Colossal Order\Cities Skylines II\ModsData\Carto"
+)
 
 failures = []
 
@@ -66,13 +68,19 @@ def synthetic():
     tris = []
     for i in range(n):
         for k in range(3):
-            verts.append([centres[i, 0] + offsets[i, k, 0], centres[i, 1] + offsets[i, k, 1], band[i] + rng.uniform(-0.2, 0.2)])
+            verts.append(
+                [
+                    centres[i, 0] + offsets[i, k, 0],
+                    centres[i, 1] + offsets[i, k, 1],
+                    band[i] + rng.uniform(-0.2, 0.2),
+                ]
+            )
         tris.append([3 * i, 3 * i + 1, 3 * i + 2])
     base = len(verts)
     verts += [[-10, -10, -1], [110, -10, -1], [110, 110, -1], [-10, 110, -1]]
     tris += [[base, base + 1, base + 2], [base, base + 2, base + 3]]
     base = len(verts)
-    verts += [[50, 0, 0], [50, 0, 30], [50, 100, 30], [50, 100, 0]]        # vertical wall, edge-on
+    verts += [[50, 0, 0], [50, 0, 30], [50, 100, 30], [50, 100, 0]]  # vertical wall, edge-on
     tris += [[base, base + 1, base + 2], [base, base + 2, base + 3]]
     verts = numpy.asarray(verts, numpy.float64)
     tris = numpy.asarray(tris, numpy.int64)
@@ -100,10 +108,20 @@ def synthetic():
             win = hits[(hits >= qz[i] - half) & (hits <= qz[i] + half)]
             if len(win):
                 exp_d[i] = win[numpy.argmin(numpy.abs(win - qz[i]))]
-    same_h = (numpy.isnan(got_h) == numpy.isnan(exp_h)).all() and numpy.allclose(got_h[~numpy.isnan(got_h)], exp_h[~numpy.isnan(exp_h)], atol=1e-6)
-    same_d = (numpy.isnan(got_d) == numpy.isnan(exp_d)).all() and numpy.allclose(got_d[~numpy.isnan(got_d)], exp_d[~numpy.isnan(exp_d)], atol=1e-6)
-    check(same_h, f"synthetic height_many == brute force ({int((~numpy.isnan(exp_h)).sum())} hits of {q})")
-    check(same_d, f"synthetic drop_many == brute force nearest-in-window ({int((~numpy.isnan(exp_d)).sum())} hits)")
+    same_h = (numpy.isnan(got_h) == numpy.isnan(exp_h)).all() and numpy.allclose(
+        got_h[~numpy.isnan(got_h)], exp_h[~numpy.isnan(exp_h)], atol=1e-6
+    )
+    same_d = (numpy.isnan(got_d) == numpy.isnan(exp_d)).all() and numpy.allclose(
+        got_d[~numpy.isnan(got_d)], exp_d[~numpy.isnan(exp_d)], atol=1e-6
+    )
+    check(
+        same_h,
+        f"synthetic height_many == brute force ({int((~numpy.isnan(exp_h)).sum())} hits of {q})",
+    )
+    check(
+        same_d,
+        f"synthetic drop_many == brute force nearest-in-window ({int((~numpy.isnan(exp_d)).sum())} hits)",
+    )
     print(f"      note: {q} queries x 2 modes on {len(tris)} tris in {dt * 1000:.1f} ms")
 
     # scalar protocol == bulk
@@ -117,31 +135,60 @@ def synthetic():
 
     # empty soup and out-of-grid
     empty = drape.TriangleSoupSurface(numpy.zeros((0, 3)), numpy.zeros((0, 3), numpy.int64))
-    check(empty.height(1, 1) is None and numpy.isnan(empty.drop_many([1], [1], [1], 1, 1)).all(), "empty soup answers None/NaN")
+    check(
+        empty.height(1, 1) is None and numpy.isnan(empty.drop_many([1], [1], [1], 1, 1)).all(),
+        "empty soup answers None/NaN",
+    )
     check(soup.height(1000, 1000) is None, "outside the grid is None")
 
     # from_pieces offsets
-    s2 = drape.TriangleSoupSurface.from_pieces([(verts[:3], tris[:1]), (verts[3:], tris[1:] - 3)], cell=4.0)
-    check(numpy.allclose(numpy.nan_to_num(s2.height_many(qx, qy)), numpy.nan_to_num(got_h)), "from_pieces reproduces the concatenated soup")
+    s2 = drape.TriangleSoupSurface.from_pieces(
+        [(verts[:3], tris[:1]), (verts[3:], tris[1:] - 3)], cell=4.0
+    )
+    check(
+        numpy.allclose(numpy.nan_to_num(s2.height_many(qx, qy)), numpy.nan_to_num(got_h)),
+        "from_pieces reproduces the concatenated soup",
+    )
 
     # drape_blocks: block 1 sits over the base quad (-1) with an expected height in reach;
     # block 2 lies outside the soup but on the ground heightfield; block 3 is out of reach.
     ground = drape.HeightfieldSurface(numpy.full((60, 60), -0.5), 4.0, -100.0, 200.0)
-    b1 = {"verts": numpy.array([[20, -0.9, 20], [21, -0.9, 20], [21, -0.9, 21]], numpy.float64), "half_height": 0.5, "drape_eps": 0.014}
-    b2 = {"verts": numpy.array([[120, 0.0, 0], [120, 0.0, 1]], numpy.float64), "half_height": 0.5, "drape_eps": 0.02}
-    b3 = {"verts": numpy.array([[120, 30.0, 0]], numpy.float64), "half_height": 0.5, "drape_eps": 0.02}
+    b1 = {
+        "verts": numpy.array([[20, -0.9, 20], [21, -0.9, 20], [21, -0.9, 21]], numpy.float64),
+        "half_height": 0.5,
+        "drape_eps": 0.014,
+    }
+    b2 = {
+        "verts": numpy.array([[120, 0.0, 0], [120, 0.0, 1]], numpy.float64),
+        "half_height": 0.5,
+        "drape_eps": 0.02,
+    }
+    b3 = {
+        "verts": numpy.array([[120, 30.0, 0]], numpy.float64),
+        "half_height": 0.5,
+        "drape_eps": 0.02,
+    }
     counters = drape.drape_blocks([b1, b2, b3], soup, ground)
-    check(numpy.allclose(b1["verts"][:, 1], -1.0 + 0.014), "drape_blocks lands block 1 on the soup + lift")
-    check(numpy.allclose(b2["verts"][:, 1], -0.5 + 0.02), "drape_blocks falls back to the ground surface + lift")
+    check(
+        numpy.allclose(b1["verts"][:, 1], -1.0 + 0.014),
+        "drape_blocks lands block 1 on the soup + lift",
+    )
+    check(
+        numpy.allclose(b2["verts"][:, 1], -0.5 + 0.02),
+        "drape_blocks falls back to the ground surface + lift",
+    )
     check(numpy.allclose(b3["verts"][:, 1], 30.0), "a miss keeps its height")
-    check(counters["missed"] == 1 and counters["grounded"] == 2 and counters["draped"] == 3, f"counters {counters}")
+    check(
+        counters["missed"] == 1 and counters["grounded"] == 2 and counters["draped"] == 3,
+        f"counters {counters}",
+    )
 
 
 def heightfield_agreement():
     rng = numpy.random.RandomState(3)
     rows, cols, cell = 12, 15, 3.5
     heights = rng.uniform(100, 130, (rows, cols))
-    origin_x, origin_y = 10.0, 500.0   # row 0 north: y decreases with row
+    origin_x, origin_y = 10.0, 500.0  # row 0 north: y decreases with row
     hf = drape.HeightfieldSurface(heights, cell, origin_x, origin_y, diagonal="nw_se")
     verts = []
     for r in range(rows):
@@ -153,35 +200,44 @@ def heightfield_agreement():
     for r in range(rows - 1):
         for c in range(cols - 1):
             nw, ne, sw, se = idx(r, c), idx(r, c + 1), idx(r + 1, c), idx(r + 1, c + 1)
-            tris.append([nw, ne, se])   # u >= v half
-            tris.append([nw, se, sw])   # u < v half
+            tris.append([nw, ne, se])  # u >= v half
+            tris.append([nw, se, sw])  # u < v half
     soup = drape.TriangleSoupSurface(verts, numpy.asarray(tris), cell=7.0)
     qx = rng.uniform(origin_x, origin_x + (cols - 1) * cell, 2000)
     qy = rng.uniform(origin_y - (rows - 1) * cell, origin_y, 2000)
     a = hf.height_many(qx, qy)
     b = soup.height_many(qx, qy)
     good = ~numpy.isnan(a)
-    check(good.all() and (~numpy.isnan(b)).all() and numpy.allclose(a, b, atol=1e-6),
-          f"soup over a meshed heightfield == HeightfieldSurface (max |diff| {numpy.nanmax(numpy.abs(a - b)):.2e})")
+    check(
+        good.all() and (~numpy.isnan(b)).all() and numpy.allclose(a, b, atol=1e-6),
+        f"soup over a meshed heightfield == HeightfieldSurface (max |diff| {numpy.nanmax(numpy.abs(a - b)):.2e})",
+    )
 
 
 def real_bundle():
     if not os.path.isdir(BUNDLE):
         print(f"SKIP real-bundle oracle: no bundle at {BUNDLE}")
         return
-    import json
     import test_drape_pick as oracle
+
     center, radius = oracle.CENTER, 300.0
-    records = [r for r in oracle._jsonl(os.path.join(BUNDLE, "networks.jsonl"))
-               if r.get("kind") == "segment" and r.get("pos")
-               and abs(r["pos"][0] - center[0]) <= radius and abs(r["pos"][2] - center[1]) <= radius]
+    records = [
+        r
+        for r in oracle._jsonl(os.path.join(BUNDLE, "networks.jsonl"))
+        if r.get("kind") == "segment"
+        and r.get("pos")
+        and abs(r["pos"][0] - center[0]) <= radius
+        and abs(r["pos"][2] - center[1]) <= radius
+    ]
     pieces = []
     tri_soup = []
     for r in records:
         path = os.path.join(BUNDLE, "networks", r["assetId"] + ".glb")
         if not os.path.isfile(path):
             continue
-        tris = oracle.glb_triangles(path) + numpy.asarray(r["pos"], numpy.float64)   # bundle frame (x, y up, z)
+        tris = oracle.glb_triangles(path) + numpy.asarray(
+            r["pos"], numpy.float64
+        )  # bundle frame (x, y up, z)
         if not len(tris):
             continue
         tri_soup.append(tris)
@@ -217,9 +273,16 @@ def real_bundle():
     got_drop = soup.drop_many(x, z, numpy.nan_to_num(expected_y, nan=-1e9), 0.5, 0.5)
     q = time.perf_counter() - t0
     hit = ~numpy.isnan(exp_top)
-    same_top = (numpy.isnan(got_top) == numpy.isnan(exp_top)).all() and numpy.allclose(got_top[hit], exp_top[hit], atol=1e-4)
-    same_drop = (numpy.isnan(got_drop) == numpy.isnan(exp_drop)).all() and numpy.allclose(got_drop[~numpy.isnan(exp_drop)], exp_drop[~numpy.isnan(exp_drop)], atol=1e-4)
-    check(same_top, f"real segments: height_many == test_drape_pick.hits_below topmost ({int(hit.sum())}/{n} hits, {len(pieces)} segments, {len(all_tris)} tris)")
+    same_top = (numpy.isnan(got_top) == numpy.isnan(exp_top)).all() and numpy.allclose(
+        got_top[hit], exp_top[hit], atol=1e-4
+    )
+    same_drop = (numpy.isnan(got_drop) == numpy.isnan(exp_drop)).all() and numpy.allclose(
+        got_drop[~numpy.isnan(exp_drop)], exp_drop[~numpy.isnan(exp_drop)], atol=1e-4
+    )
+    check(
+        same_top,
+        f"real segments: height_many == test_drape_pick.hits_below topmost ({int(hit.sum())}/{n} hits, {len(pieces)} segments, {len(all_tris)} tris)",
+    )
     check(same_drop, "real segments: drop_many == nearest-to-expected inside the ±0.5 m window")
     print(f"      note: build {build:.2f} s, {n} queries x 2 modes {q * 1000:.0f} ms")
 

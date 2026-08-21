@@ -31,7 +31,8 @@ import json
 import os
 import time
 
-from csiibundle import instances as bundle_instances, tints
+from csiibundle import instances as bundle_instances
+from csiibundle import tints
 
 from ..beamng import frame, placement
 from . import Stage, level_of
@@ -61,9 +62,18 @@ ANNOTATION = {"tree": "NATURE", "prop": "OBSTACLES", "building": "BUILDINGS"}
 # `TSForestItemData` wind/physics defaults, the median of the vanilla levels' own values
 # (1,678 item datas read across every shipped level). OURS in the sense that CS2 states nothing
 # about wind; vanilla-derived rather than invented.
-FOREST_DEFAULTS = {"tree": {"windScale": 0.4, "detailAmp": 0.1, "detailFreq": 1.0,
-                            "branchAmp": 0.05, "trunkBendScale": 0.004, "rigidity": 20, "mass": 10},
-                   "prop": {"windScale": 0.0, "rigidity": 50, "mass": 50}}
+FOREST_DEFAULTS = {
+    "tree": {
+        "windScale": 0.4,
+        "detailAmp": 0.1,
+        "detailFreq": 1.0,
+        "branchAmp": 0.05,
+        "trunkBendScale": 0.004,
+        "rigidity": 20,
+        "mass": 10,
+    },
+    "prop": {"windScale": 0.0, "rigidity": 50, "mass": 50},
+}
 
 # When forest shadows are off. `TSForestItemData` has no `castShadows`; `shadowNullDetailSize`
 # is the only shadow control the vanilla data uses (40 px on 138 items), so a very large value
@@ -133,10 +143,10 @@ def run(ctx, progress):
     have, suffix_cache = {}, {}
     forest_dir = level.path("forest")
     _clear_forest(forest_dir)
-    lines = {}                                              # type -> [json line, ...]
+    lines = {}  # type -> [json line, ...]
     pending = 0
-    types = {}                                              # type -> the shape row behind it
-    type_source = {}                                        # type -> (asset, suffix, variant)
+    types = {}  # type -> the shape row behind it
+    type_source = {}  # type -> (asset, suffix, variant)
     statics = 0
     counts = {"forest": 0, "tsstatic": 0, "noShape": 0, "kept": 0, "records": 0}
     untinted_forest = 0
@@ -191,110 +201,135 @@ def run(ctx, progress):
                 _flush(forest_dir, lines)
                 pending = 0
         else:
-            key = _add_static(level, record, name, row, kind, position, rotation, scale, collide, statics)
+            key = _add_static(
+                level, record, name, row, kind, position, rotation, scale, collide, statics
+            )
             collision_types[key] = collision_types.get(key, 0) + 1
             statics += 1
             counts["tsstatic"] += 1
     _flush(forest_dir, lines)
-    merged = _merge_thin_types(forest_dir, types, type_source, item_counts, results,
-                               int(settings.get("forest_min_items") or 0))
-    progress.end(f"{counts['forest']:,} forest items in {len(types):,} types "
-                 f"({merged['types']} thin types holding {merged['items']} items merged into their "
-                 f"untinted twin), {counts['tsstatic']:,} TSStatics")
+    merged = _merge_thin_types(
+        forest_dir,
+        types,
+        type_source,
+        item_counts,
+        results,
+        int(settings.get("forest_min_items") or 0),
+    )
+    progress.end(
+        f"{counts['forest']:,} forest items in {len(types):,} types "
+        f"({merged['types']} thin types holding {merged['items']} items merged into their "
+        f"untinted twin), {counts['tsstatic']:,} TSStatics"
+    )
 
     forest_stats = {}
     if types:
         level.add(["Vegetation"], {"name": "theForest", "class": "Forest"}, key="forest:theForest")
         for name, (row, _kind) in types.items():
-            row["_items"] = item_counts.get(name, 0)   # for the collision-hygiene count below
+            row["_items"] = item_counts.get(name, 0)  # for the collision-hygiene count below
         forest_stats = _write_item_data(level, types, settings, collide)
     level.write_objects()
 
     report = {
-        "forestItems": counts["forest"], "forestTypes": len(types), "tsStatics": counts["tsstatic"],
-        "forestTypesMerged": merged["types"], "forestItemsMerged": merged["items"],
+        "forestItems": counts["forest"],
+        "forestTypes": len(types),
+        "tsStatics": counts["tsstatic"],
+        "forestTypesMerged": merged["types"],
+        "forestItemsMerged": merged["items"],
         "forestMinItems": int(settings.get("forest_min_items") or 0),
         "collisionTypes": collision_types,
         "forestCollision": forest_stats,
         "forestBytes": _forest_bytes(forest_dir),
         "placed": counts["forest"] + counts["tsstatic"],
-        "scanned": counts["records"], "kept": counts["kept"], "noShape": counts["noShape"],
+        "scanned": counts["records"],
+        "kept": counts["kept"],
+        "noShape": counts["noShape"],
         "seconds": round(time.monotonic() - started, 1),
         "approximations": {
             "forestPaintVariants": {
                 "what": "a forest item is drawn in its prefab's nearest baked colorSet centre, "
-                        "not its own colour (a TSStatic gets instanceColor/1/2 exactly)",
+                "not its own colour (a TSStatic gets instanceColor/1/2 exactly)",
                 "why": "a BeamNG forest item carries no per-item colour; the bake clusters each "
-                       "prefab's sets and tints one albedo per centre",
+                "prefab's sets and tints one albedo per centre",
                 "count": counts["forest"],
             },
             "forestVariantWithoutTintedAlbedo": {
                 "what": "forest items whose variant had no tinted albedo baked, so they fell "
-                        "back to the untinted material",
+                "back to the untinted material",
                 "why": "the bake tints only `paint_kinds` (default trees); widen it to cover props",
                 "count": untinted_forest,
             },
             "forestPlantsDoNotCollide": {
                 "what": "a forest type built from a CS2 `PlantObject` (bush, hedge, flower pot, "
-                        "garden bed, long grass) ships collidable:false whatever its height",
+                "garden bed, long grass) ships collidable:false whatever its height",
                 "why": "the `tree` kind is ALL vegetation - 376,187 of the reference city's "
-                       "686,641 planted items are plants, not trees. CS2's own archetypes split "
-                       "them: `TreeObject` adds `Tree`, `PlantObject` does not, and the producer "
-                       "writes `attrs.growth` inside exactly that component's lookup, so this is "
-                       "the GAME's rule (csiibundle.instances.is_tree), not a height guess. A "
-                       "plant is driven through, and it has no trunk to fit a cylinder to",
+                "686,641 planted items are plants, not trees. CS2's own archetypes split "
+                "them: `TreeObject` adds `Tree`, `PlantObject` does not, and the producer "
+                "writes `attrs.growth` inside exactly that component's lookup, so this is "
+                "the GAME's rule (csiibundle.instances.is_tree), not a height guess. A "
+                "plant is driven through, and it has no trunk to fit a cylinder to",
                 "count": forest_stats.get("plant", 0),
             },
             "forestCollidableThreshold": {
                 "what": f"a forest type whose shape is under {FOREST_COLLIDABLE_MIN_HEIGHT} m tall "
-                        f"ships collidable:false",
+                f"ships collidable:false",
                 "why": "CS2 states nothing about collision for a placed object, so there is no rule "
-                       "to port; BeamNG's own guidance is to disable it for small decorative items, "
-                       "and this height sits under a passenger wheel radius",
+                "to port; BeamNG's own guidance is to disable it for small decorative items, "
+                "and this height sits under a passenger wheel radius",
                 "count": forest_stats.get("tooShort", 0),
                 "value": FOREST_COLLIDABLE_MIN_HEIGHT,
                 "items": forest_stats.get("itemsNotCollidable", 0),
             },
             "forestFootprintThreshold": {
                 "what": f"a forest type whose shape is under "
-                        f"{settings.get('collision_min_footprint', FOREST_COLLIDABLE_MIN_FOOTPRINT)} m "
-                        f"ACROSS ships collidable:false whatever its height - road signs, "
-                        f"hydrants, bins, mailbox stands, bollards, traffic lights",
+                f"{settings.get('collision_min_footprint', FOREST_COLLIDABLE_MIN_FOOTPRINT)} m "
+                f"ACROSS ships collidable:false whatever its height - road signs, "
+                f"hydrants, bins, mailbox stands, bollards, traffic lights",
                 "why": "height alone let through the very things it was meant to catch (a hydrant "
-                       "is 0.97 m tall, a road sign 2.2 m); what decides whether a car should stop "
-                       "is the FOOTPRINT. OURS - CS2 states nothing about collision for a placed "
-                       "object. KNOWN WRONG for bollards, which are 0.24 m across and exist to "
-                       "stop vehicles; exempting them would mean matching a name",
+                "is 0.97 m tall, a road sign 2.2 m); what decides whether a car should stop "
+                "is the FOOTPRINT. OURS - CS2 states nothing about collision for a placed "
+                "object. KNOWN WRONG for bollards, which are 0.24 m across and exist to "
+                "stop vehicles; exempting them would mean matching a name",
                 "count": forest_stats.get("tooThin", 0),
-                "value": float(settings.get("collision_min_footprint",
-                                            FOREST_COLLIDABLE_MIN_FOOTPRINT) or 0.0),
+                "value": float(
+                    settings.get("collision_min_footprint", FOREST_COLLIDABLE_MIN_FOOTPRINT) or 0.0
+                ),
             },
             "forestRotationPrecision": {
                 "what": f"a forest item's rotationMatrix is written at {ROTATION_DP} decimal places",
                 "why": "1e-4 of a unit vector is 0.6 mm of arc at 10 m; the file is parsed line by "
-                       "line at load and vanilla's largest forest is 151 MiB",
+                "line at load and vanilla's largest forest is 151 MiB",
                 "count": counts["forest"],
             },
             "forestWindConstants": {
                 "what": "windScale / rigidity / mass on every TSForestItemData",
                 "why": "CS2 states nothing about wind or physics for a placed object; the values "
-                       "are the vanilla levels' medians, not a port",
+                "are the vanilla levels' medians, not a port",
                 "count": len(types),
             },
         },
     }
-    progress.log(f"instances: {report['placed']:,} objects placed "
-                 f"({report['forestItems']:,} forest / {report['tsStatics']:,} TSStatic)")
+    progress.log(
+        f"instances: {report['placed']:,} objects placed "
+        f"({report['forestItems']:,} forest / {report['tsStatics']:,} TSStatic)"
+    )
     if untinted_forest:
-        progress.log(f"instances: {untinted_forest:,} forest items drew an untinted albedo because "
-                     f"their kind is outside the bake's paint_kinds")
+        progress.log(
+            f"instances: {untinted_forest:,} forest items drew an untinted albedo because "
+            f"their kind is outside the bake's paint_kinds"
+        )
     return report
 
 
 # -- one record ------------------------------------------------------------------------------------
 
+
 def _state_suffix(record, asset, mesh_dir, have, cache):
-    key = (asset, (record.get("attrs") or {}).get("treeState"), (record.get("attrs") or {}).get("fullness"))
+    key = (
+        asset,
+        (record.get("attrs") or {}).get("treeState"),
+        (record.get("attrs") or {}).get("fullness"),
+    )
     if key in cache:
         return cache[key]
     answer = None
@@ -302,7 +337,7 @@ def _state_suffix(record, asset, mesh_dir, have, cache):
         if candidate not in have:
             have[candidate] = os.path.isfile(os.path.join(mesh_dir, candidate + ".glb"))
         if have[candidate]:
-            answer = candidate[len(asset):]
+            answer = candidate[len(asset) :]
             break
     cache[key] = answer
     return answer
@@ -332,9 +367,11 @@ def _quat_rows(quat):
     xx, yy, zz = x * x * s, y * y * s, z * z * s
     xy, xz, yz = x * y * s, x * z * s, y * z * s
     wx, wy, wz = w * x * s, w * y * s, w * z * s
-    return [[1.0 - (yy + zz), xy - wz, xz + wy],
-            [xy + wz, 1.0 - (xx + zz), yz - wx],
-            [xz - wy, yz + wx, 1.0 - (xx + yy)]]
+    return [
+        [1.0 - (yy + zz), xy - wz, xz + wy],
+        [xy + wz, 1.0 - (xx + zz), yz - wx],
+        [xz - wy, yz + wx, 1.0 - (xx + yy)],
+    ]
 
 
 def _swap_yz(matrix):
@@ -349,11 +386,13 @@ def _forest_line(type_name, position, rotation, scale):
     """One `.forest4.json` line. A forest item carries ONE scalar scale, so a record that needed
     three would not have reached here (`placement.wants_forest`)."""
     flat = frame.basis_flat(rotation)
-    item = {"ctxid": 0,
-            "pos": [round(v, 4) for v in position],
-            "rotationMatrix": [round(v, ROTATION_DP) for v in flat],
-            "scale": round(float(sum(scale) / 3.0), 5),
-            "type": type_name}
+    item = {
+        "ctxid": 0,
+        "pos": [round(v, 4) for v in position],
+        "rotationMatrix": [round(v, ROTATION_DP) for v in flat],
+        "scale": round(float(sum(scale) / 3.0), 5),
+        "type": type_name,
+    }
     return json.dumps(item, separators=(",", ":"))
 
 
@@ -365,23 +404,24 @@ def _add_static(level, record, name, row, kind, position, rotation, scale, colli
     collide on a stack.
     """
     flat = frame.basis_flat(rotation)
-    obj = {"name": f"{name}_{record['id']}_{ordinal}",
-           "class": "TSStatic",
-           "shapeName": level.game_path("art", "shapes", "cs2", row["file"]),
-           "position": [round(v, 3) for v in position],
-           "rotationMatrix": [round(v, 6) for v in flat],
-           "scale": [round(v, 5) for v in scale],
-           # `Collision Mesh` uses the `Colmesh_<name>` node the shapes stage already writes into
-           # every collidable shape (a trunk cylinder, the decimated LOD1 hull, or a padded box).
-           # BeamNG's own docs: "Collision Mesh - uses dedicated collision meshes from the shape.
-           # **Recommended**"; "Visible Mesh Final - uses rendered mesh polygons intentionally.
-           # Use only when required", and "expensive". A3 shipped 14,658 statics on the expensive
-           # one while carrying the cheap one in the file unused.
-           "collisionType": ("None" if row.get("collider", "none") in NO_COLLIDER
-                             else COLLISION_TYPE),
-           "decalType": "None",
-           "useInstanceRenderData": True,
-           "annotation": ANNOTATION.get(kind, "OBSTACLES")}
+    obj = {
+        "name": f"{name}_{record['id']}_{ordinal}",
+        "class": "TSStatic",
+        "shapeName": level.game_path("art", "shapes", "cs2", row["file"]),
+        "position": [round(v, 3) for v in position],
+        "rotationMatrix": [round(v, 6) for v in flat],
+        "scale": [round(v, 5) for v in scale],
+        # `Collision Mesh` uses the `Colmesh_<name>` node the shapes stage already writes into
+        # every collidable shape (a trunk cylinder, the decimated LOD1 hull, or a padded box).
+        # BeamNG's own docs: "Collision Mesh - uses dedicated collision meshes from the shape.
+        # **Recommended**"; "Visible Mesh Final - uses rendered mesh polygons intentionally.
+        # Use only when required", and "expensive". A3 shipped 14,658 statics on the expensive
+        # one while carrying the cheap one in the file unused.
+        "collisionType": ("None" if row.get("collider", "none") in NO_COLLIDER else COLLISION_TYPE),
+        "decalType": "None",
+        "useInstanceRenderData": True,
+        "annotation": ANNOTATION.get(kind, "OBSTACLES"),
+    }
     colours = tints.color_set(record.get("attrs") or {})
     for index, colour in enumerate(colours[:3]):
         key = "instanceColor" if index == 0 else f"instanceColor{index}"
@@ -398,12 +438,15 @@ def _group_of(position):
 def _collision_policy(settings):
     if str(settings.get("collision_preset") or "simplified") == "off":
         return {}
-    return {"building": bool(settings.get("collision_buildings", True)),
-            "prop": bool(settings.get("collision_props", True)),
-            "tree": bool(settings.get("collision_trees", True))}
+    return {
+        "building": bool(settings.get("collision_buildings", True)),
+        "prop": bool(settings.get("collision_props", True)),
+        "tree": bool(settings.get("collision_trees", True)),
+    }
 
 
 # -- the forest files --------------------------------------------------------------------------
+
 
 def _merge_thin_types(forest_dir, types, type_source, item_counts, results, min_items):
     """Fold every forest type under `min_items` into its prefab's UNTINTED type. In place.
@@ -427,10 +470,10 @@ def _merge_thin_types(forest_dir, types, type_source, item_counts, results, min_
             continue
         asset, suffix, variant = type_source.get(name, (None, None, None))
         if variant is None:
-            continue                                    # already the untinted type
+            continue  # already the untinted type
         base_row = results.get((asset, suffix, None))
         if base_row is None:
-            continue                                    # no untinted shape to fold into
+            continue  # no untinted shape to fold into
         base = os.path.splitext(base_row["file"])[0]
         if base == name or base not in types:
             # The untinted shape EXISTS (the shapes stage writes one for every prefab) but this
@@ -443,8 +486,9 @@ def _merge_thin_types(forest_dir, types, type_source, item_counts, results, min_
             continue
         with open(thin, encoding="utf-8") as handle:
             rows = [line for line in handle if line.strip()]
-        with open(os.path.join(forest_dir, base + ".forest4.json"), "a",
-                  encoding="utf-8", newline="\n") as handle:
+        with open(
+            os.path.join(forest_dir, base + ".forest4.json"), "a", encoding="utf-8", newline="\n"
+        ) as handle:
             for line in rows:
                 handle.write(line.replace(f'"type":"{name}"', f'"type":"{base}"'))
         os.remove(thin)
@@ -473,8 +517,12 @@ def _flush(forest_dir, lines):
     for type_name, rows in lines.items():
         if not rows:
             continue
-        with open(os.path.join(forest_dir, type_name + ".forest4.json"), "a",
-                  encoding="utf-8", newline="\n") as handle:
+        with open(
+            os.path.join(forest_dir, type_name + ".forest4.json"),
+            "a",
+            encoding="utf-8",
+            newline="\n",
+        ) as handle:
             handle.write("\n".join(rows))
             handle.write("\n")
         rows.clear()
@@ -488,17 +536,29 @@ def _write_item_data(level, types, settings, collide):
     """
     shadows = bool(settings.get("forest_shadows", True))
     document = {}
-    stats = {"types": 0, "collidable": 0, "tooShort": 0, "tooThin": 0, "policyOff": 0,
-             "noCollider": 0, "plant": 0,
-             "itemsNotCollidable": 0}
-    min_footprint = float(settings.get("collision_min_footprint",
-                                       FOREST_COLLIDABLE_MIN_FOOTPRINT) or 0.0)
+    stats = {
+        "types": 0,
+        "collidable": 0,
+        "tooShort": 0,
+        "tooThin": 0,
+        "policyOff": 0,
+        "noCollider": 0,
+        "plant": 0,
+        "itemsNotCollidable": 0,
+    }
+    min_footprint = float(
+        settings.get("collision_min_footprint", FOREST_COLLIDABLE_MIN_FOOTPRINT) or 0.0
+    )
     for name, (row, kind) in sorted(types.items()):
-        entry = {"name": name, "internalName": name, "class": "TSForestItemData",
-                 "persistentId": level.pid("forestItem:" + name),
-                 "shapeFile": level.game_path("art", "shapes", "cs2", row["file"]),
-                 "annotation": ANNOTATION.get(kind, "OBSTACLES"),
-                 "radius": round(float(row["radius"]), 3)}
+        entry = {
+            "name": name,
+            "internalName": name,
+            "class": "TSForestItemData",
+            "persistentId": level.pid("forestItem:" + name),
+            "shapeFile": level.game_path("art", "shapes", "cs2", row["file"]),
+            "annotation": ANNOTATION.get(kind, "OBSTACLES"),
+            "radius": round(float(row["radius"]), 3),
+        }
         entry.update(FOREST_DEFAULTS.get(kind, FOREST_DEFAULTS["prop"]))
         stats["types"] += 1
         collidable = bool(collide.get(kind))
@@ -556,7 +616,7 @@ def _shape_footprint(row):
     """
     lo, hi = row.get("boundsMin"), row.get("boundsMax")
     if not lo or not hi or len(lo) < 3 or len(hi) < 3:
-        return float("inf")                            # unknown footprint never loses its collider
+        return float("inf")  # unknown footprint never loses its collider
     return max(float(hi[0]) - float(lo[0]), float(hi[2]) - float(lo[2]))
 
 
@@ -565,15 +625,28 @@ def _shape_height(row):
     shapes stage, which measured them in the mesh's own space."""
     lo, hi = row.get("boundsMin"), row.get("boundsMax")
     if not lo or not hi or len(lo) < 2 or len(hi) < 2:
-        return float("inf")                            # unknown height never loses its collider
+        return float("inf")  # unknown height never loses its collider
     return float(hi[1]) - float(lo[1])
 
 
 INPUTS = ("layer:instances", "layer:meshes", "derived:paint_variants.json")
-SETTINGS = ("trees", "props", "buildings", "foliage_density", "prop_density", "region",
-            "collision_preset", "collision_buildings", "collision_props", "collision_trees",
-            "collision_min_footprint", "collision_lights",
-            "forest_shadows", "forest_min_items", "foliage_road_clearance")
+SETTINGS = (
+    "trees",
+    "props",
+    "buildings",
+    "foliage_density",
+    "prop_density",
+    "region",
+    "collision_preset",
+    "collision_buildings",
+    "collision_props",
+    "collision_trees",
+    "collision_min_footprint",
+    "collision_lights",
+    "forest_shadows",
+    "forest_min_items",
+    "foliage_road_clearance",
+)
 OUTPUTS = ("forest",)
 
 # version 4: `forest_min_items` folds a thin colour-variant type into its untinted twin —
@@ -586,5 +659,15 @@ OUTPUTS = ("forest",)
 # version 8: `rotationMatrix` is written as the object's own axes in groups of three - it
 # was flattened row-major, i.e. every TSStatic and forest item carried the INVERSE of its
 # rotation, which is why buildings stood diagonally on their own plots (A6.8)
-STAGE = Stage(STAGE_KEY, "Trees, props and buildings", enabled, units, run, inputs=INPUTS,
-              settings_keys=SETTINGS, outputs=OUTPUTS, after=("shapes",), version=10)
+STAGE = Stage(
+    STAGE_KEY,
+    "Trees, props and buildings",
+    enabled,
+    units,
+    run,
+    inputs=INPUTS,
+    settings_keys=SETTINGS,
+    outputs=OUTPUTS,
+    after=("shapes",),
+    version=10,
+)

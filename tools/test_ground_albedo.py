@@ -31,6 +31,7 @@ BeamNG is what it measures and, for now, deliberately does not require.
 Run: `python tools/test_ground_albedo.py`  (system Python + numpy + Pillow; skipped when BeamNG is
 not installed, so it is advisory on a machine without the game and binding on one with it).
 """
+
 import io
 import json
 import os
@@ -41,8 +42,10 @@ import numpy
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "apps"))
 
-LEVELS = os.environ.get("BEAMNG_LEVELS") or \
-    r"G:\SteamLibrary\steamapps\common\BeamNG.drive\content\levels"
+LEVELS = (
+    os.environ.get("BEAMNG_LEVELS")
+    or r"G:\SteamLibrary\steamapps\common\BeamNG.drive\content\levels"
+)
 
 # The value the app deliberately ships, and the only thing this file asserts. Held below the
 # measured anchor pending §60 — see the module docstring. Change one and you must change the
@@ -75,6 +78,7 @@ def linear_luminance(rgb):
 def vanilla_ground_albedos():
     """(level, texture, linear luminance) for every vanilla `TerrainMaterial` base colour."""
     from PIL import Image
+
     rows = []
     if not os.path.isdir(LEVELS):
         return rows
@@ -87,7 +91,9 @@ def vanilla_ground_albedos():
             continue
         names = zf.namelist()
         wanted = set()
-        for member in (n for n in names if n.endswith(".materials.json") and "terrain" in n.lower()):
+        for member in (
+            n for n in names if n.endswith(".materials.json") and "terrain" in n.lower()
+        ):
             try:
                 doc = json.loads(zf.read(member).decode("utf-8-sig"))
             except (ValueError, OSError, KeyError):
@@ -106,10 +112,12 @@ def vanilla_ground_albedos():
                 continue
             try:
                 image = Image.open(io.BytesIO(zf.read(found[0]))).convert("RGB")
-            except Exception:  # noqa: BLE001 - one unreadable texture must not stop the sweep
+            except Exception:
                 continue
             image.thumbnail((256, 256))
-            rows.append((name[:-4], os.path.basename(found[0]), linear_luminance(numpy.asarray(image))))
+            rows.append(
+                (name[:-4], os.path.basename(found[0]), linear_luminance(numpy.asarray(image)))
+            )
     return rows
 
 
@@ -126,40 +134,53 @@ def main():
     from cs2beamng.stages import terrain as stage
 
     rows = vanilla_ground_albedos()
-    print(f"BeamNG vanilla ground albedos: {len(rows)} across "
-          f"{len(set(r[0] for r in rows))} levels")
+    print(f"BeamNG vanilla ground albedos: {len(rows)} across {len({r[0] for r in rows})} levels")
     if len(rows) < 40:
         print("  too few readable to judge — skipped")
         return 0
     allv = numpy.array([r[2] for r in rows])
     grass = numpy.array([r[2] for r in rows if "grass" in r[1].lower()])
-    print(f"  all grounds : mean {allv.mean():.4f}  median {numpy.median(allv):.4f}"
-          f"  p10 {numpy.percentile(allv, 10):.4f}  p90 {numpy.percentile(allv, 90):.4f}")
+    print(
+        f"  all grounds : mean {allv.mean():.4f}  median {numpy.median(allv):.4f}"
+        f"  p10 {numpy.percentile(allv, 10):.4f}  p90 {numpy.percentile(allv, 90):.4f}"
+    )
     if len(grass):
-        print(f"  grass-named : n={len(grass)}  mean {grass.mean():.4f}"
-              f"  median {numpy.median(grass):.4f}")
+        print(
+            f"  grass-named : n={len(grass)}  mean {grass.mean():.4f}"
+            f"  median {numpy.median(grass):.4f}"
+        )
 
     target = float(stage.GRASS_TARGET_LUMINANCE)
     anchor = float(numpy.median(grass)) if len(grass) >= 5 else float(numpy.median(allv))
     gap = abs(target - anchor)
-    print(f"  GRASS_TARGET_LUMINANCE = {target:.4f}   BeamNG's own anchor = {anchor:.4f}"
-          f"   gap {gap:.4f}")
+    print(
+        f"  GRASS_TARGET_LUMINANCE = {target:.4f}   BeamNG's own anchor = {anchor:.4f}"
+        f"   gap {gap:.4f}"
+    )
     if gap > TOLERANCE:
-        print(f"    DIVERGED by more than {TOLERANCE} - deliberate, pending audit section 60 "
-              f"(planar cut-mesh UVs). Reported, not failed.")
+        print(
+            f"    DIVERGED by more than {TOLERANCE} - deliberate, pending audit section 60 "
+            f"(planar cut-mesh UVs). Reported, not failed."
+        )
 
     # The one assertion: the shipped value is the decided one. This is what stops the constant
     # drifting silently while the docstring above still explains a different number.
-    check(abs(target - DECIDED_TARGET) < 1e-9,
-          f"GRASS_TARGET_LUMINANCE is the decided {DECIDED_TARGET} (reads {target})")
+    check(
+        abs(target - DECIDED_TARGET) < 1e-9,
+        f"GRASS_TARGET_LUMINANCE is the decided {DECIDED_TARGET} (reads {target})",
+    )
     # The measurement itself must stay live, or the number above is unfalsifiable.
-    check(0.05 <= anchor <= 0.5,
-          f"BeamNG's vanilla ground anchor re-measured this run ({anchor:.4f} from "
-          f"{len(grass) if len(grass) >= 5 else len(allv)} textures)")
-    check(hasattr(stage, "MEASURED_GRASS_ANCHOR")
-          and abs(float(stage.MEASURED_GRASS_ANCHOR) - anchor) <= TOLERANCE,
-          f"the app records the measured anchor beside the shipped value "
-          f"(MEASURED_GRASS_ANCHOR = {getattr(stage, 'MEASURED_GRASS_ANCHOR', None)})")
+    check(
+        0.05 <= anchor <= 0.5,
+        f"BeamNG's vanilla ground anchor re-measured this run ({anchor:.4f} from "
+        f"{len(grass) if len(grass) >= 5 else len(allv)} textures)",
+    )
+    check(
+        hasattr(stage, "MEASURED_GRASS_ANCHOR")
+        and abs(float(stage.MEASURED_GRASS_ANCHOR) - anchor) <= TOLERANCE,
+        f"the app records the measured anchor beside the shipped value "
+        f"(MEASURED_GRASS_ANCHOR = {getattr(stage, 'MEASURED_GRASS_ANCHOR', None)})",
+    )
 
     print()
     if FAILED:

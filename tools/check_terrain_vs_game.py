@@ -13,6 +13,7 @@ GAME, not against the other consumer (CLAUDE.md, "When output looks wrong, find 
 Needs a built level, so it is a probe rather than a gate; `tools/test_terrainclip.py` is the unit
 gate for the cut itself.
 """
+
 import math
 import os
 import sys
@@ -22,13 +23,15 @@ import numpy
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), "apps"))
-from csiibundle import bezier, glb, png, reader, terrain  # noqa: E402
 from cs2beamng.beamng import ter as ter_mod  # noqa: E402
+from csiibundle import bezier, glb, reader, terrain  # noqa: E402
 
 derived, level_dir = sys.argv[1], sys.argv[2]
 cx, cz, half = (float(v) for v in sys.argv[3:6])
 samples = int(sys.argv[6]) if len(sys.argv) > 6 else 20000
-BUNDLE = os.path.join(os.environ["USERPROFILE"], "AppData/LocalLow/Colossal Order/Cities Skylines II/ModsData/Carto")
+BUNDLE = os.path.join(
+    os.environ["USERPROFILE"], "AppData/LocalLow/Colossal Order/Cities Skylines II/ModsData/Carto"
+)
 
 field = reader.load_heightfield(BUNDLE, prefer_fine=True)
 cell, ox, oz = field.cell, field.origin_x, field.origin_z
@@ -36,7 +39,7 @@ scale, offset = field.elevation_scale, field.elevation_offset
 name = os.path.basename(level_dir)
 _sz, h16, layers, _names = ter_mod.read_ter(os.path.join(level_dir, f"{name}.ter"))
 H = h16.shape[0]
-ter_h = h16.astype(numpy.float64) * scale + offset          # .ter row (H-1-r) is bundle row r
+ter_h = h16.astype(numpy.float64) * scale + offset  # .ter row (H-1-r) is bundle row r
 holes = layers == ter_mod.HOLE
 
 # -- the game's own prisms, deep ones only (what this product cuts) ------------------------------
@@ -58,16 +61,25 @@ for record in reader.read_jsonl(reader.layer_path(BUNDLE, "clipVolumes")):
     left, right = record.get("left"), record.get("right")
     if not left or not right:
         continue
-    span = float(numpy.linalg.norm(numpy.diff(numpy.asarray(left, dtype=numpy.float64), axis=0), axis=1).sum())
+    span = float(
+        numpy.linalg.norm(
+            numpy.diff(numpy.asarray(left, dtype=numpy.float64), axis=0), axis=1
+        ).sum()
+    )
     steps = int(min(1024, max(1, math.ceil(max(span, 1.0) / cell))))
     t = numpy.linspace(0.0, 1.0, steps + 1)
     lp, rp = bezier.evaluate(left, t), bezier.evaluate(right, t)
     for i in range(1, steps + 1):
         prisms.append(([tuple(lp[i - 1]), tuple(rp[i - 1]), tuple(rp[i])], bottom, top))
         prisms.append(([tuple(lp[i - 1]), tuple(rp[i]), tuple(lp[i])], bottom, top))
-prisms = [p for p in prisms
-          if min(q[0] for q in p[0]) <= cx + half and max(q[0] for q in p[0]) >= cx - half
-          and min(q[2] for q in p[0]) <= cz + half and max(q[2] for q in p[0]) >= cz - half]
+prisms = [
+    p
+    for p in prisms
+    if min(q[0] for q in p[0]) <= cx + half
+    and max(q[0] for q in p[0]) >= cx - half
+    and min(q[2] for q in p[0]) <= cz + half
+    and max(q[2] for q in p[0]) >= cz - half
+]
 print(f"{len(prisms):,} deep prism triangles in the window")
 
 
@@ -101,18 +113,22 @@ for tile in sorted(n for n in os.listdir(tile_dir) if n.endswith(".glb")):
         v = numpy.asarray(node["verts"], dtype=numpy.float64)
         m = numpy.asarray(node["matrix"])
         v = v @ m[:3, :3].T + m[:3, 3]
-        p = numpy.stack((-v[:, 0], v[:, 1], v[:, 2]), axis=-1)      # §2.2 mirror -> bundle frame
+        p = numpy.stack((-v[:, 0], v[:, 1], v[:, 2]), axis=-1)  # §2.2 mirror -> bundle frame
         for t in numpy.asarray(node["tris"]):
             tri = [tuple(p[i]) for i in t]
-            if (min(q[0] for q in tri) <= cx + half and max(q[0] for q in tri) >= cx - half
-                    and min(q[2] for q in tri) <= cz + half and max(q[2] for q in tri) >= cz - half):
+            if (
+                min(q[0] for q in tri) <= cx + half
+                and max(q[0] for q in tri) >= cx - half
+                and min(q[2] for q in tri) <= cz + half
+                and max(q[2] for q in tri) >= cz - half
+            ):
                 mesh_tris.append(tri)
 print(f"{len(mesh_tris):,} mesh triangles in the window")
 
 rng = numpy.random.default_rng(11)
 agree = 0
-sky = 0          # we draw nothing where the game draws ground
-extra = 0        # we draw ground where the game discards it
+sky = 0  # we draw nothing where the game draws ground
+extra = 0  # we draw ground where the game discards it
 tested = 0
 for _ in range(samples):
     x = float(rng.uniform(cx - half, cx + half))
@@ -123,8 +139,10 @@ for _ in range(samples):
         continue
     tested += 1
     # the terrain height at the point: bilinear over the .ter square, in bundle rows
-    h00 = ter_h[H - 1 - r, c]; h01 = ter_h[H - 1 - r, c + 1]
-    h10 = ter_h[H - 1 - (r + 1), c]; h11 = ter_h[H - 1 - (r + 1), c + 1]
+    h00 = ter_h[H - 1 - r, c]
+    h01 = ter_h[H - 1 - r, c + 1]
+    h10 = ter_h[H - 1 - (r + 1), c]
+    h11 = ter_h[H - 1 - (r + 1), c + 1]
     fu = (x - (ox + c * cell)) / cell
     fv = ((oz - r * cell) - z) / cell
     h = (h00 * (1 - fu) + h01 * fu) * (1 - fv) + (h10 * (1 - fu) + h11 * fu) * fv
@@ -144,7 +162,7 @@ for _ in range(samples):
         sky += 1
     else:
         extra += 1
-print(f"{tested:,} samples over {2*half:.0f} x {2*half:.0f} m at ({cx:.0f}, {cz:.0f})")
-print(f"  agree with the game            {agree:,}  ({100.0*agree/max(tested,1):.3f} %)")
+print(f"{tested:,} samples over {2 * half:.0f} x {2 * half:.0f} m at ({cx:.0f}, {cz:.0f})")
+print(f"  agree with the game            {agree:,}  ({100.0 * agree / max(tested, 1):.3f} %)")
 print(f"  WE SHOW SKY, the game ground   {sky:,}")
 print(f"  WE SHOW GROUND, the game none  {extra:,}")

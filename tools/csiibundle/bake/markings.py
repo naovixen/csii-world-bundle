@@ -38,8 +38,19 @@ from .roads import load_road_surface
 from .tiles import TileSink
 
 PRODUCT_NAME = "markings"
-INPUTS = ("laneGeometry", "lanePrefabs", "laneMeshes", "networkMeshes", "networks", "instances", "meshes", "terrain", "terrainFine")
-DECAL_STEP = 2.0     # metres: instance-decal quads are split so no edge exceeds this before draping. TUNED.
+INPUTS = (
+    "laneGeometry",
+    "lanePrefabs",
+    "laneMeshes",
+    "networkMeshes",
+    "networks",
+    "instances",
+    "meshes",
+    "terrain",
+    "terrainFine",
+)
+# metres: instance-decal quads are split so no edge exceeds this before draping. TUNED.
+DECAL_STEP = 2.0
 
 
 def _in_region(x, z, region):
@@ -57,7 +68,7 @@ def _subdivide_quad(corners, uvs, step):
     m = max(1, int(math.ceil(numpy.linalg.norm(p3 - p0) / step)))
     a = numpy.linspace(0.0, 1.0, n + 1)
     b = numpy.linspace(0.0, 1.0, m + 1)
-    A, B = numpy.meshgrid(a, b, indexing="ij")            # (n+1, m+1)
+    A, B = numpy.meshgrid(a, b, indexing="ij")  # (n+1, m+1)
     A = A.reshape(-1, 1)
     B = B.reshape(-1, 1)
     verts = (1 - A) * (1 - B) * p0 + A * (1 - B) * p1 + A * B * p2 + (1 - A) * B * p3
@@ -83,8 +94,8 @@ def _decal_quad(node):
     shared = list(t0 & t1)
     if len(shared) != 2:
         return None
-    a = [i for i in tris[0].tolist() if i not in shared][0]
-    c = [i for i in tris[1].tolist() if i not in shared][0]
+    a = next(i for i in tris[0].tolist() if i not in shared)
+    c = next(i for i in tris[1].tolist() if i not in shared)
     order = [a, shared[0], c, shared[1]]
     uvs = numpy.asarray(node["uvs"], dtype=numpy.float64)
     return verts[order], uvs[order]
@@ -102,7 +113,9 @@ def run(context, progress):
 
     road, road_stats = load_road_surface(bundle, region, progress)
     stats["road"] = road_stats
-    ground = drape.HeightfieldSurface.from_bundle(bundle, prefer_fine=options.get("ground", "fine") == "fine")
+    ground = drape.HeightfieldSurface.from_bundle(
+        bundle, prefer_fine=options.get("ground", "fine") == "fine"
+    )
     if ground is None:
         progress.log("no terrain layer: markings with no road beneath keep their bent height")
 
@@ -116,7 +129,13 @@ def run(context, progress):
     sources = {}
     prefab_lods = {}
     blocks = []
-    sink = {"blocks": blocks, "instances": [], "tiles_instanced": 0, "tiles_baked": 0, "decal_dropped": 0}
+    sink = {
+        "blocks": blocks,
+        "instances": [],
+        "tiles_instanced": 0,
+        "tiles_baked": 0,
+        "decal_dropped": 0,
+    }
     bent = skipped_region = missing_prefab = missing_mesh = with_colorset = 0
     seen = 0
     if os.path.isfile(lay.lane_geometry):
@@ -134,7 +153,9 @@ def run(context, progress):
                 skipped_region += 1
                 continue
             parts = entry.get("parts", [])
-            decal_indices = [i for i in record.get("parts", []) if 0 <= i < len(parts) and parts[i].get("decal")]
+            decal_indices = [
+                i for i in record.get("parts", []) if 0 <= i < len(parts) and parts[i].get("decal")
+            ]
             if not decal_indices:
                 continue
             curve_length = bezier.length(curve)
@@ -143,12 +164,16 @@ def run(context, progress):
             hang = lanes.hang_curve(record, entry, curve_length)
             if record.get("colorSet"):
                 with_colorset += 1
-            prefab_lod = _lane_prefab_min_lod(record.get("prefab"), entry, sources, lay, prefab_lods)
+            prefab_lod = _lane_prefab_min_lod(
+                record.get("prefab"), entry, sources, lay, prefab_lods
+            )
             for index in decal_indices:
                 asset_id = parts[index]["assetId"]
                 if asset_id not in sources:
                     path = os.path.join(lay.lane_meshes, asset_id + ".glb")
-                    sources[asset_id] = lanes.part_source(glb.parse_glb(path)) if os.path.isfile(path) else None
+                    sources[asset_id] = (
+                        lanes.part_source(glb.parse_glb(path)) if os.path.isfile(path) else None
+                    )
                 source = sources[asset_id]
                 if source is None:
                     missing_mesh += 1
@@ -157,18 +182,28 @@ def run(context, progress):
                 # `NetLaneGeometryData.m_MinLod`), not of the part being bent, so it is stamped on
                 # whatever blocks this bend produced rather than passed down into `bend_part`.
                 first = len(blocks)
-                lanes.bend_part(parts[index], source, curve, spans, curve_length, width_scale, hang, sink)
+                lanes.bend_part(
+                    parts[index], source, curve, spans, curve_length, width_scale, hang, sink
+                )
                 for block in blocks[first:]:
                     block["min_lod"] = prefab_lod
             bent += 1
-    progress.end(f"{bent} lanes bent into {len(blocks)} marking blocks "
-                 f"({skipped_region} outside region, {missing_prefab} no prefab, {missing_mesh} no mesh, "
-                 f"{with_colorset} carry a colorSet, {sink['decal_dropped']} dropped by clip)")
-    stats.update({"lanesBent": bent, "markingBlocks": len(blocks), "decalDropped": sink["decal_dropped"],
-                  "lanesWithColorSet": with_colorset})
+    progress.end(
+        f"{bent} lanes bent into {len(blocks)} marking blocks "
+        f"({skipped_region} outside region, {missing_prefab} no prefab, {missing_mesh} no mesh, "
+        f"{with_colorset} carry a colorSet, {sink['decal_dropped']} dropped by clip)"
+    )
+    stats.update(
+        {
+            "lanesBent": bent,
+            "markingBlocks": len(blocks),
+            "decalDropped": sink["decal_dropped"],
+            "lanesWithColorSet": with_colorset,
+        }
+    )
 
     # -- 3. instance decals -------------------------------------------------------------------
-    total_instances = int(((manifest.get("counts") or {}).get("instances")) or 0) or None
+    int(((manifest.get("counts") or {}).get("instances")) or 0) or None
     # prefiltered to decal records, so the manifest's instance count is not the total
     progress.begin("markings: instance decals", total=None, unit="decals")
     decal_meshes = {}
@@ -198,13 +233,20 @@ def run(context, progress):
             for node in nodes or []:
                 q = _decal_quad(node)
                 if q is not None:
-                    quads.append((q[0], q[1], node["material_runs"][0][0] if node["material_runs"] else "decal", node["matrix"]))
+                    quads.append(
+                        (
+                            q[0],
+                            q[1],
+                            node["material_runs"][0][0] if node["material_runs"] else "decal",
+                            node["matrix"],
+                        )
+                    )
             decal_meshes[asset_id] = quads
         quads = decal_meshes[asset_id]
         if not quads:
             n_decal_missing += 1
             continue
-        matrix = frames.instance_matrix(record)          # bundle frame, no lift: the drape sets the height
+        matrix = frames.instance_matrix(record)  # bundle frame, no lift: the drape sets the height
         half = (instances.decal_height(record) or 1.0) * 0.5
         layers = instances.decal_layers(record)
         target = decal_blocks_ground if (layers and "Roads" not in layers) else decal_blocks_road
@@ -215,12 +257,23 @@ def run(context, progress):
         for corners, uvs, material, node_matrix in quads:
             world = frames.transform_points(matrix @ node_matrix, corners)
             v, t, uv = _subdivide_quad(world, uvs, DECAL_STEP)
-            target.append({"verts": v, "tris": t, "uvs": uv[t], "material": material,
-                           "drape_eps": decals.LIFT["instance_decal"], "half_height": half,
-                           "decal_priority": priority, "min_lod": decal_lod})
+            target.append(
+                {
+                    "verts": v,
+                    "tris": t,
+                    "uvs": uv[t],
+                    "material": material,
+                    "drape_eps": decals.LIFT["instance_decal"],
+                    "half_height": half,
+                    "decal_priority": priority,
+                    "min_lod": decal_lod,
+                }
+            )
         n_decals += 1
-    progress.end(f"{n_decals} decal instances as {len(decal_blocks_road) + len(decal_blocks_ground)} blocks "
-                 f"({n_decal_missing} without a quad mesh)")
+    progress.end(
+        f"{n_decals} decal instances as {len(decal_blocks_road) + len(decal_blocks_ground)} blocks "
+        f"({n_decal_missing} without a quad mesh)"
+    )
     # The game's own draw order for two decals projecting onto one surface, applied as a rank lift
     # within the top rung of the ladder (audit §57.2). `areas.py` has done this for surface areas
     # since §8b; this is the same rule for decal instances, so both halves now come from the game.
@@ -235,8 +288,14 @@ def run(context, progress):
         if bump:
             block["drape_eps"] += bump
             n_decal_ranked += 1
-    stats.update({"decalInstances": n_decals, "decalInstancesNoMesh": n_decal_missing,
-                  "decalPriorities": len(ordered), "decalBlocksRanked": n_decal_ranked})
+    stats.update(
+        {
+            "decalInstances": n_decals,
+            "decalInstancesNoMesh": n_decal_missing,
+            "decalPriorities": len(ordered),
+            "decalBlocksRanked": n_decal_ranked,
+        }
+    )
 
     # -- 4. drape -----------------------------------------------------------------------------
     progress.begin("markings: drape", total=None, unit="vertices")
@@ -244,16 +303,22 @@ def run(context, progress):
     lane_blocks = [b for b in blocks if b.get("drape_eps") is not None]
     drape.drape_blocks(lane_blocks + decal_blocks_road, road, ground, counters)
     if decal_blocks_ground:
-        drape.drape_blocks(decal_blocks_ground, ground if ground is not None else road, None, counters)
+        drape.drape_blocks(
+            decal_blocks_ground, ground if ground is not None else road, None, counters
+        )
     total_v = sum(len(b["verts"]) for b in lane_blocks + decal_blocks_road + decal_blocks_ground)
     progress.set_total(total_v)
     progress.advance(total_v)
     miss_frac = counters["missed"] / max(1, total_v)
-    progress.end(f"{counters['queries']} queries for {total_v} vertices: {counters['draped']} draped, "
-                 f"{counters['grounded']} grounded, {counters['missed']} missed ({miss_frac * 100:.2f}%)")
+    progress.end(
+        f"{counters['queries']} queries for {total_v} vertices: {counters['draped']} draped, "
+        f"{counters['grounded']} grounded, {counters['missed']} missed ({miss_frac * 100:.2f}%)"
+    )
     if miss_frac > drape.MISS_WARN_FRACTION:
-        progress.log(f"WARNING: {miss_frac * 100:.1f}% of marking vertices found no surface (limit "
-                     f"{drape.MISS_WARN_FRACTION * 100:.0f}%) — region edge, or a missing network layer")
+        progress.log(
+            f"WARNING: {miss_frac * 100:.1f}% of marking vertices found no surface (limit "
+            f"{drape.MISS_WARN_FRACTION * 100:.0f}%) — region edge, or a missing network layer"
+        )
     stats["drape"] = dict(counters, vertices=total_v)
 
     # -- 5. tiles -------------------------------------------------------------------------------
@@ -278,11 +343,21 @@ def run(context, progress):
     tiles = tile_sink.tiles()
     progress.begin("markings: tiles", total=len(tiles), unit="tiles")
     uri_base = _texture_uri_base(out_dir, bundle)
-    written = tile_sink.flush(progress, texture_uri_base=uri_base,
-                              jobs=max(1, int(options.get("jobs") or 1)))
-    progress.end(f"{written['files']} tiles, {written['verts']:,} vertices, {written['tris']:,} triangles")
-    stats.update({"tiles": written["files"], "verts": written["verts"], "tris": written["tris"],
-                  "_tiles": written["tiles"], "seconds": round(time.monotonic() - started, 1)})
+    written = tile_sink.flush(
+        progress, texture_uri_base=uri_base, jobs=max(1, int(options.get("jobs") or 1))
+    )
+    progress.end(
+        f"{written['files']} tiles, {written['verts']:,} vertices, {written['tris']:,} triangles"
+    )
+    stats.update(
+        {
+            "tiles": written["files"],
+            "verts": written["verts"],
+            "tris": written["tris"],
+            "_tiles": written["tiles"],
+            "seconds": round(time.monotonic() - started, 1),
+        }
+    )
     return stats
 
 
@@ -316,16 +391,25 @@ def _material_specs(derived, bundle):
         if os.path.isfile(path):
             doc = json.load(open(path, encoding="utf-8"))
             for key, entry in doc.get("materials", {}).items():
-                specs[key] = {"baseColor": entry.get("baseColor"), "normal": entry.get("normal"),
-                              "alphaMode": entry.get("alphaMode"), "alphaCutoff": entry.get("alphaCutoff"),
-                              "doubleSided": entry.get("doubleSided"), "baseColorFactor": entry.get("baseColorFactor")}
+                specs[key] = {
+                    "baseColor": entry.get("baseColor"),
+                    "normal": entry.get("normal"),
+                    "alphaMode": entry.get("alphaMode"),
+                    "alphaCutoff": entry.get("alphaCutoff"),
+                    "doubleSided": entry.get("doubleSided"),
+                    "baseColorFactor": entry.get("baseColorFactor"),
+                }
             return specs
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass
     for key, entry in (reader.load_materials(bundle) or {}).items():
-        specs[key] = {"baseColor": entry.get("baseColor"), "normal": entry.get("normal"),
-                      "alphaMode": entry.get("alphaMode"), "alphaCutoff": entry.get("alphaCutoff"),
-                      "doubleSided": entry.get("doubleSided")}
+        specs[key] = {
+            "baseColor": entry.get("baseColor"),
+            "normal": entry.get("normal"),
+            "alphaMode": entry.get("alphaMode"),
+            "alphaCutoff": entry.get("alphaCutoff"),
+            "doubleSided": entry.get("doubleSided"),
+        }
     return specs
 
 
@@ -352,6 +436,7 @@ def _texture_uri_base(out_dir, bundle):
 # each primitive (`TileSink.add(min_lod=...)`) and a consumer rebuilds the visible set per
 # distance. Without this a lane line drawn to 406 m in CS2 is drawn to the whole view distance.
 
+
 def _lane_prefab_min_lod(prefab, entry, sources, lay, cache):
     """`NetLaneGeometryData.m_MinLod` for one lane prefab — the min over ALL its parts, decal and
     non-decal alike, because that is the set the game takes the min over."""
@@ -364,7 +449,9 @@ def _lane_prefab_min_lod(prefab, entry, sources, lay, cache):
             continue
         if asset_id not in sources:
             path = os.path.join(lay.lane_meshes, asset_id + ".glb")
-            sources[asset_id] = lanes.part_source(glb.parse_glb(path)) if os.path.isfile(path) else None
+            sources[asset_id] = (
+                lanes.part_source(glb.parse_glb(path)) if os.path.isfile(path) else None
+            )
         source = sources[asset_id]
         if source is None or len(source["tris"]) == 0:
             continue
@@ -383,11 +470,15 @@ def _decal_min_lod(asset_id, quads, cache):
         return cache[asset_id]
     lo = hi = None
     area = 0.0
-    for corners, uvs, _material, node_matrix in quads:
+    for corners, _uvs, _material, node_matrix in quads:
         pts = frames.transform_points(numpy.asarray(node_matrix, dtype=numpy.float64), corners)
         lo = pts.min(axis=0) if lo is None else numpy.minimum(lo, pts.min(axis=0))
         hi = pts.max(axis=0) if hi is None else numpy.maximum(hi, pts.max(axis=0))
-        area += lod.surface_area(pts, numpy.array([[0, 1, 2], [0, 2, 3]], dtype=numpy.int64)) if len(pts) >= 4 else 0.0
+        area += (
+            lod.surface_area(pts, numpy.array([[0, 1, 2], [0, 2, 3]], dtype=numpy.int64))
+            if len(pts) >= 4
+            else 0.0
+        )
     answer = None if lo is None else lod.mesh_min_lod(hi - lo, area)
     cache[asset_id] = answer
     return answer

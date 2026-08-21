@@ -83,7 +83,7 @@ class PointGrid:
         index = numpy.arange(len(q))
         for dx in (-1, 0, 1):
             for dz in (-1, 0, 1):
-                todo = ~out                       # a query already satisfied needs no more cells
+                todo = ~out  # a query already satisfied needs no more cells
                 if not todo.any():
                     return out
                 cells = base_cells[todo] + numpy.array([dx, dz], dtype=numpy.int64)

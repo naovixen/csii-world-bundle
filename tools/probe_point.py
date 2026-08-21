@@ -51,19 +51,25 @@ OPTIONS
 """
 
 import json
-import math
 import os
 import sys
 
 try:
     import bpy
+
     IN_BLENDER = True
 except ImportError:
     IN_BLENDER = False
 
 DEFAULT_BUNDLE = os.path.join(
-    os.path.expanduser("~"), "AppData", "LocalLow", "Colossal Order",
-    "Cities Skylines II", "ModsData", "Carto")
+    os.path.expanduser("~"),
+    "AppData",
+    "LocalLow",
+    "Colossal Order",
+    "Cities Skylines II",
+    "ModsData",
+    "Carto",
+)
 
 # The terrain grid is built in bundle world units, so Blender (x, y) IS bundle (x, z).
 # Stated here because it is the one assumption a reader should be able to check.
@@ -74,11 +80,16 @@ _SPLAT_DEFAULT = {"R": "dirt", "G": "grass", "base": "rock"}
 # B and A each pack TWO 4-bit weights, which is how four paintable extras fit the game's R8G8
 # user splatmap: B.low/B.high = extra1/extra2, A.low/A.high = extra3/extra4. The four are the
 # game's paint tools 01 Dry, 02 Lush, 03 Dirt, 04 Sand. A nibble normalises by 15, not 255.
-_PACKED_EXTRAS = ((2, "low", "extra1"), (2, "high", "extra2"),
-                  (3, "low", "extra3"), (3, "high", "extra4"))
+_PACKED_EXTRAS = (
+    (2, "low", "extra1"),
+    (2, "high", "extra2"),
+    (3, "low", "extra3"),
+    (3, "high", "extra4"),
+)
 
 
 # -- small helpers --------------------------------------------------------------------------
+
 
 def _srgb_to_linear(c):
     c = c / 255.0
@@ -91,7 +102,7 @@ def _linear_to_srgb(c):
 
 
 def _hex(rgb01):
-    return "#" + "".join("%02x" % int(round(max(0.0, min(1.0, v)) * 255)) for v in rgb01)
+    return "#" + "".join(f"{int(round(max(0.0, min(1.0, v)) * 255)):02x}" for v in rgb01)
 
 
 def _hsv(rgb01):
@@ -118,8 +129,9 @@ def _load_png(path):
     the thing it is diagnosing imports cleanly is not much of a diagnostic.
     """
     try:
-        from PIL import Image
         import numpy
+        from PIL import Image
+
         Image.MAX_IMAGE_PIXELS = None
         a = numpy.asarray(Image.open(path))
         if a.ndim == 2:
@@ -130,6 +142,7 @@ def _load_png(path):
 
     import struct
     import zlib
+
     import numpy
 
     data = open(path, "rb").read()
@@ -138,9 +151,9 @@ def _load_png(path):
     pos, idat = 8, []
     width = height = depth = colour = None
     while pos + 8 <= len(data):
-        (length,) = struct.unpack(">I", data[pos:pos + 4])
-        tag = data[pos + 4:pos + 8]
-        payload = data[pos + 8:pos + 8 + length]
+        (length,) = struct.unpack(">I", data[pos : pos + 4])
+        tag = data[pos + 4 : pos + 8]
+        payload = data[pos + 8 : pos + 8 + length]
         pos += 12 + length
         if tag == b"IHDR":
             width, height = struct.unpack(">II", payload[:8])
@@ -165,12 +178,12 @@ def _load_png(path):
         line = numpy.frombuffer(raw, dtype=numpy.uint8, count=stride, offset=off + 1).copy()
         if kind == 0:
             pass
-        elif kind == 2:                                   # Up
+        elif kind == 2:  # Up
             line += previous
-        elif kind == 1:                                   # Sub
+        elif kind == 1:  # Sub
             lanes = line.reshape(-1, bpp).astype(numpy.uint32)
             line = numpy.cumsum(lanes, axis=0, dtype=numpy.uint32).astype(numpy.uint8).reshape(-1)
-        else:                                             # Average(3) / Paeth(4), sequential
+        else:  # Average(3) / Paeth(4), sequential
             buf = bytearray(line.tobytes())
             prev = bytes(previous.tobytes())
             for i in range(stride):
@@ -197,6 +210,7 @@ def _load_png(path):
 
 # -- the probe ------------------------------------------------------------------------------
 
+
 class Bundle:
     def __init__(self, root):
         self.root = root
@@ -213,7 +227,7 @@ class Bundle:
         """(col, row) for a bundle-frame point, using the block's texel-centre origin."""
         ox, _, oz = block["originWorld"]
         res = block.get("resolution", self.rasters.get("resolution"))
-        rx, rz = (res if isinstance(res, list) else [res, res])
+        rx, rz = res if isinstance(res, list) else [res, res]
         return int(round((x - ox) / rx)), int(round((oz - z) / rz))
 
 
@@ -315,6 +329,7 @@ def _grading_model(root):
         try:
             sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
             import colour_model
+
             _GRADING_MODEL[root] = colour_model.load(root)
         except Exception:
             _GRADING_MODEL[root] = None
@@ -377,7 +392,7 @@ def areas_covering(bundle, x, z, limit=6):
 
 
 def _in_tri(px, pz, a, b, c):
-    d = ((b[2] - c[2]) * (a[0] - c[0]) + (c[0] - b[0]) * (a[2] - c[2]))
+    d = (b[2] - c[2]) * (a[0] - c[0]) + (c[0] - b[0]) * (a[2] - c[2])
     if abs(d) < 1e-12:
         return False
     u = ((b[2] - c[2]) * (px - c[0]) + (c[0] - b[0]) * (pz - c[2])) / d
@@ -386,6 +401,7 @@ def _in_tri(px, pz, a, b, c):
 
 
 # -- rendered-colour sampling (Blender only) ------------------------------------------------
+
 
 class _NoRender(Exception):
     """This Blender cannot produce that particular picture (background mode has no GL context)."""
@@ -405,7 +421,9 @@ def sample_render(x, z, metres, viewport=False):
     output only, so anything living there is visible in one and invisible in the other.
     """
     import tempfile
+
     from mathutils import Vector
+
     scene = bpy.context.scene
     prev_cam, prev_path = scene.camera, scene.render.filepath
     prev_x, prev_y = scene.render.resolution_x, scene.render.resolution_y
@@ -444,12 +462,12 @@ def sample_render(x, z, metres, viewport=False):
         scene.render.resolution_x, scene.render.resolution_y = prev_x, prev_y
         scene.render.image_settings.color_depth = prev_depth
         bpy.data.objects.remove(cam, do_unlink=True)
-        raise _NoRender(str(exc))
+        raise _NoRender(str(exc)) from exc
 
     img = bpy.data.images.load(out)
     px = list(img.pixels)
     n = len(px) // 4
-    side = int(round(n ** 0.5))
+    side = int(round(n**0.5))
     mean = [sum(px[i * 4 + k] for i in range(n)) / n for k in range(3)]
     centre = (side // 2) * side + (side // 2)
     texel = [px[centre * 4 + k] for k in range(3)]
@@ -466,9 +484,10 @@ def sample_render(x, z, metres, viewport=False):
 
 # -- main -----------------------------------------------------------------------------------
 
+
 def _argv():
     if "--" in sys.argv:
-        return sys.argv[sys.argv.index("--") + 1:]
+        return sys.argv[sys.argv.index("--") + 1 :]
     return [a for a in sys.argv[1:] if a.endswith((".py",)) is False]
 
 
@@ -479,13 +498,17 @@ def main():
     while i < len(argv):
         a = argv[i]
         if a == "--bundle":
-            bundle_dir = argv[i + 1]; i += 2
+            bundle_dir = argv[i + 1]
+            i += 2
         elif a == "--at":
-            at = (float(argv[i + 1]), float(argv[i + 2])); i += 3
+            at = (float(argv[i + 1]), float(argv[i + 2]))
+            i += 3
         elif a == "--render":
-            do_render = True; i += 1
+            do_render = True
+            i += 1
         elif a == "--render-size":
-            patch = float(argv[i + 1]); i += 2
+            patch = float(argv[i + 1])
+            i += 2
         else:
             i += 1
 
@@ -503,6 +526,7 @@ def main():
     info = probe(bundle, x, z)
 
     out = []
+
     def say(line=""):
         out.append(line)
 
@@ -516,9 +540,11 @@ def main():
     if not info.get("inside"):
         say("  !! outside the terrain raster")
     else:
-        say(f"  elevation         : {info['elevation']:.2f} m   "
+        say(
+            f"  elevation         : {info['elevation']:.2f} m   "
             f"water {info['water_level']:.2f} m   "
-            f"{info['above_water']:+.2f} m relative to water")
+            f"{info['above_water']:+.2f} m relative to water"
+        )
         if "surface_index" in info:
             idx, name = info["surface_index"]
             say(f"  surface_index     : {idx} ({name})")
@@ -526,8 +552,7 @@ def main():
     if "splat_rgba" in info:
         r_, g_, b_, a_ = info["splat_rgba"]
         mult, power = info["splat_shape"]
-        say(f"  splat texel       : {info['texel_splat']}   "
-            f"RGBA = ({r_}, {g_}, {b_}, {a_})")
+        say(f"  splat texel       : {info['texel_splat']}   RGBA = ({r_}, {g_}, {b_}, {a_})")
         say(f"  splatMultiplier   : {mult}   splatPower: {power}")
         ch = info["channels"]
         say(f"  channel map       : R={ch.get('R')}  G={ch.get('G')}  base={ch.get('base')}")
@@ -536,15 +561,16 @@ def main():
         say("  ground stack, base first, each composited over the last:")
         # `ch["base"]` is None on a theme that binds no rock ground; `:<10` on None is a
         # TypeError, and because the report is buffered it took the whole tool with it.
-        say(f"      {'base':<10} {str(ch.get('base') or 'unknown'):<10}")
+        say(f"      {'base':<10} {ch.get('base') or 'unknown'!s:<10}")
         for key, ground, weight, op in info["stack"]:
             bar = "#" * int(round(op * 30))
-            say(f"      {key:<8} {ground:<8} weight {weight:>7}  "
-                f"opacity {op:5.3f} |{bar}")
+            say(f"      {key:<8} {ground:<8} weight {weight:>7}  opacity {op:5.3f} |{bar}")
         say()
         hsv = _hsv(tuple(_linear_to_srgb(c) for c in info["albedo_linear"]))
-        say(f"  composite ALBEDO  : {info['albedo_hex']}   "
-            f"hue {hsv[0]:5.1f}  sat {hsv[1]:.3f}  val {hsv[2]:.3f}")
+        say(
+            f"  composite ALBEDO  : {info['albedo_hex']}   "
+            f"hue {hsv[0]:5.1f}  sat {hsv[1]:.3f}  val {hsv[2]:.3f}"
+        )
         say("      (flat ground colour before lighting - NOT what an eyedropper on the")
         say("       viewport reads; use --render for that)")
 
@@ -567,13 +593,17 @@ def main():
         say("  MODEL says         : this albedo, under this bundle's own grading")
         if shown:
             hsv = _hsv(shown)
-            say(f"      on screen     : {_hex(shown)}   "
+            say(
+                f"      on screen     : {_hex(shown)}   "
                 f"hue {hsv[0]:5.1f}  sat {hsv[1]:.3f}  val {hsv[2]:.3f}   "
-                f"through {used} at {grading.exposure_ev:+.2f} EV")
+                f"through {used} at {grading.exposure_ev:+.2f} EV"
+            )
         else:
-            say(f"      graded linear : "
+            say(
+                f"      graded linear : "
                 f"{tuple(round(v, 4) for v in grading.apply(info['albedo_linear']))}   "
-                f"(no PyOpenColorIO here, so no on-screen colour)")
+                f"(no PyOpenColorIO here, so no on-screen colour)"
+            )
         say("      (exposure is the ONE term the bundle cannot supply - the game meters per")
         say("       frame - so compare HUE and SATURATION, and read VALUE as free)")
 
@@ -591,21 +621,29 @@ def main():
             th, ts, tv = _hsv(texel)
             mh, ms, mv = _hsv(mean)
             say()
-            say(f"  {label} colour  : {_hex(texel)}   "
-                f"hue {th:5.1f}  sat {ts:.3f}  val {tv:.3f}   <- compare to an eyedropper")
-            say(f"      {patch:.0f} m patch mean: {_hex(mean)}   "
-                f"hue {mh:5.1f}  sat {ms:.3f}  val {mv:.3f}")
+            say(
+                f"  {label} colour  : {_hex(texel)}   "
+                f"hue {th:5.1f}  sat {ts:.3f}  val {tv:.3f}   <- compare to an eyedropper"
+            )
+            say(
+                f"      {patch:.0f} m patch mean: {_hex(mean)}   "
+                f"hue {mh:5.1f}  sat {ms:.3f}  val {mv:.3f}"
+            )
             # The scene's own light level is not the game's, so the model is re-exposed to the
             # measured VALUE before the comparison; what is being checked is hue and saturation.
             if grading is not None and shown is not None:
                 ev, model, _ = grading.match_value(info["albedo_linear"], tv)
                 if model:
                     hh, ss, vv = _hsv(model)
-                    say(f"      model at the same value ({ev:+.2f} EV): {_hex(model)}   "
-                        f"hue {hh:5.1f}  sat {ss:.3f}  val {vv:.3f}")
+                    say(
+                        f"      model at the same value ({ev:+.2f} EV): {_hex(model)}   "
+                        f"hue {hh:5.1f}  sat {ss:.3f}  val {vv:.3f}"
+                    )
                     say(f"      -> difference: hue {th - hh:+.1f}, saturation {ts - ss:+.3f}")
-        say(f"      ({settings.view_transform} view transform, "
-            f"exposure {settings.exposure:+.2f}, gamma {settings.gamma:.2f})")
+        say(
+            f"      ({settings.view_transform} view transform, "
+            f"exposure {settings.exposure:+.2f}, gamma {settings.gamma:.2f})"
+        )
         say("      VIEWPORT is what you look at; RENDER additionally runs the compositor. If")
         say("      they differ, something is living in a path half the tools cannot see.")
     say("=" * 78)
@@ -631,13 +669,15 @@ def _deliver(report):
         text = bpy.data.texts.get(name) or bpy.data.texts.new(name)
         text.clear()
         text.write(report)
-    except Exception as exc:                                    # noqa: BLE001
+    except Exception as exc:
         print(f"(could not write the carto_probe text datablock: {exc})")
     try:
         bpy.context.window_manager.clipboard = report
-        print("[probe] report copied to the clipboard, and written to the "
-              "'carto_probe' text datablock (Text Editor). Ctrl+V to paste it.")
-    except Exception as exc:                                    # noqa: BLE001
+        print(
+            "[probe] report copied to the clipboard, and written to the "
+            "'carto_probe' text datablock (Text Editor). Ctrl+V to paste it."
+        )
+    except Exception as exc:
         print(f"(could not set the clipboard: {exc})")
 
 

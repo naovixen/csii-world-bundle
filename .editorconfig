@@ -1,0 +1,112 @@
+; One place that says what this repo's files look like, so an editor, `ruff format` and the C#
+; analyzers all agree without anyone remembering. See docs/plans/refactor.md Phase 0.
+;
+; Upstream Carto code (upstream-files.txt) is exempt from the refactor's rules, but not from
+; whitespace hygiene — trailing spaces and a missing final newline are not style opinions.
+
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+indent_style = space
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+[*.py]
+indent_size = 4
+max_line_length = 100
+
+[*.{js,css,json,yml,yaml}]
+indent_size = 2
+
+[*.md]
+; Markdown uses two trailing spaces for a hard line break.
+trim_trailing_whitespace = false
+
+[*.{cs,csproj,props,targets}]
+indent_size = 4
+
+[*.cs]
+; --- language conventions ------------------------------------------------------------------
+csharp_new_line_before_open_brace = all
+csharp_prefer_braces = true:warning
+csharp_style_namespace_declarations = block_scoped:silent
+csharp_using_directive_placement = outside_namespace:silent
+dotnet_sort_system_directives_first = true
+dotnet_style_qualification_for_field = false:silent
+dotnet_style_qualification_for_method = false:silent
+dotnet_style_qualification_for_property = false:silent
+dotnet_style_readonly_field = true:suggestion
+
+; --- naming: the fork's convention, settled here rather than in three places -----------------
+; Refactor principle 9 (consistent structure). Fork C# currently runs three field conventions —
+; `_camelCase` implicit-private, `_camelCase` explicit-private, and `m_PascalCase` inside
+; NetworkRipSystem.GameMesh.cs — inside one partial class. `_camelCase` wins; Phase 9 and
+; Phase 11 convert `.GameMesh.cs` and this rule is what keeps it converted.
+dotnet_naming_rule.private_fields_underscore_camel.symbols = private_fields
+dotnet_naming_rule.private_fields_underscore_camel.style = underscore_camel
+dotnet_naming_rule.private_fields_underscore_camel.severity = suggestion
+dotnet_naming_symbols.private_fields.applicable_kinds = field
+dotnet_naming_symbols.private_fields.applicable_accessibilities = private
+dotnet_naming_style.underscore_camel.required_prefix = _
+dotnet_naming_style.underscore_camel.capitalization = camel_case
+
+dotnet_naming_rule.constants_pascal.symbols = constants
+dotnet_naming_rule.constants_pascal.style = pascal
+dotnet_naming_rule.constants_pascal.severity = suggestion
+dotnet_naming_symbols.constants.applicable_kinds = field
+dotnet_naming_symbols.constants.required_modifiers = const
+dotnet_naming_style.pascal.capitalization = pascal_case
+
+; --- what fails the build ---------------------------------------------------------------------
+; Kept narrow deliberately: these are correctness and dead-code rules, the ones a reader cannot
+; catch by eye, not layout preferences. `TreatWarningsAsErrors` in Directory.Build.props turns
+; every warning-severity entry here into a build failure, so promoting a rule to `warning` is a
+; commitment to it being clean across BOTH the fork and upstream Carto.
+dotnet_diagnostic.CS0162.severity = warning  ; unreachable code
+dotnet_diagnostic.CS0168.severity = warning  ; variable declared but never used
+dotnet_diagnostic.CS0219.severity = warning  ; variable assigned but never used
+dotnet_diagnostic.CS0649.severity = warning  ; field never assigned
+dotnet_diagnostic.IDE0035.severity = warning ; unreachable code (IDE)
+
+dotnet_diagnostic.IDE0044.severity = warning ; make field readonly — already clean, verified
+
+; IDE0005 (unnecessary using) cannot be a build gate here: the SDK only runs it when
+; GenerateDocumentationFile is true, and turning that on would light up CS1591 across every
+; undocumented public member in ~30k lines of upstream Carto. Kept as an editor suggestion.
+dotnet_diagnostic.IDE0005.severity = suggestion
+
+; Naming is Phase 11. Promoting this to `warning` is what "Phase 11 landed" looks like — the
+; naming rules above are already declared, so the day the code matches them, this line changes.
+dotnet_diagnostic.IDE1006.severity = suggestion
+
+; --- upstream Carto, exempt ------------------------------------------------------------------
+; The refactor does not touch these files (upstream-files.txt), so its rules must not report on
+; them. Only the whole-repo `[*]` hygiene above applies. This is the same boundary
+; `tools/check_limits.py` reads, spelled for Roslyn.
+[{Systems/AreaSystem.cs,Systems/BuildingSystem.cs,Systems/NetworkSystem.cs,Systems/POISystem.cs,Systems/RasterSystem.cs,Systems/RouteSystem.cs,Systems/SharedDataCollectionSystem.cs,Systems/ZoningSystem.cs}]
+dotnet_analyzer_diagnostic.severity = none
+dotnet_diagnostic.IDE0005.severity = none
+dotnet_diagnostic.IDE0044.severity = none
+dotnet_diagnostic.IDE1006.severity = none
+
+[{Domain,Geodata,Locale,Utils,Properties}/**.cs]
+dotnet_analyzer_diagnostic.severity = none
+dotnet_diagnostic.IDE0005.severity = none
+dotnet_diagnostic.IDE0044.severity = none
+dotnet_diagnostic.IDE1006.severity = none
+
+[{IO/BufferManager.cs,IO/Enums.cs,IO/FieldInfo.cs,IO/GeoJson.cs,IO/GeoTiff.cs,IO/IO.cs,IO/Options.cs,IO/Shapefile.cs,IO/TagManager.cs}]
+dotnet_analyzer_diagnostic.severity = none
+dotnet_diagnostic.IDE0005.severity = none
+dotnet_diagnostic.IDE0044.severity = none
+dotnet_diagnostic.IDE1006.severity = none
+
+; Settings.cs, Mod.cs and Instance.cs are MIXED — upstream files carrying fork-added members.
+; They stay exempt until Phase 9 moves the fork's members out into fork-owned files.
+[{Settings.cs,Mod.cs,Instance.cs}]
+dotnet_analyzer_diagnostic.severity = none
+dotnet_diagnostic.IDE0005.severity = none
+dotnet_diagnostic.IDE0044.severity = none
+dotnet_diagnostic.IDE1006.severity = none

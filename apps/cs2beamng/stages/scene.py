@@ -24,8 +24,8 @@ import os
 import time
 
 import numpy
-
-from csiibundle import colour as colour_mod, lanegraph, reader
+from csiibundle import colour as colour_mod
+from csiibundle import reader
 
 from ..beamng import frame
 from . import Stage, level_of
@@ -64,12 +64,24 @@ def run(ctx, progress):
     fog_height = float(fog.get("maximumHeight") or 1000.0)
     tint = fog.get("tint") or [1.0, 1.0, 1.0]
     haze = [0.66, 0.89, 1.0]
-    fog_color = [round(min(1.0, haze[i] * float(tint[i]) if i < len(tint) else haze[i]), 4) for i in range(3)] + [1]
-    level.add(["Level_objects"], {
-        "name": "theLevelInfo", "class": "LevelInfo", "canvasClearColor": "black", "enabled": "1",
-        "visibleDistance": view, "fogDensity": round(fog_density, 7), "fogAtmosphereHeight": round(min(fog_height, 3000.0), 1),
-        "fogColor": fog_color, "gravity": -9.81, "nearClip": 0.1,
-    })
+    fog_color = [
+        round(min(1.0, haze[i] * float(tint[i]) if i < len(tint) else haze[i]), 4) for i in range(3)
+    ] + [1]
+    level.add(
+        ["Level_objects"],
+        {
+            "name": "theLevelInfo",
+            "class": "LevelInfo",
+            "canvasClearColor": "black",
+            "enabled": "1",
+            "visibleDistance": view,
+            "fogDensity": round(fog_density, 7),
+            "fogAtmosphereHeight": round(min(fog_height, 3000.0), 1),
+            "fogColor": fog_color,
+            "gravity": -9.81,
+            "nearClip": 0.1,
+        },
+    )
     progress.end(f"visibleDistance {view:.0f} m, fog 1/{mean_free:.0f} m")
 
     # -- TimeOfDay + ScatterSky ------------------------------------------------------------
@@ -89,38 +101,78 @@ def run(ctx, progress):
     lat = float(clock.get("latitude") or manifest.get("geo", {}).get("latitude") or 45.0)
     lon = float(clock.get("longitude") or manifest.get("geo", {}).get("longitude") or 0.0)
     day = int(clock.get("day") or 172)
-    level.add(["Level_objects"], {
-        "name": "tod", "class": "TimeOfDay", "position": [0, 0, 0], "animate": "0", "play": False,
-        "axisTilt": 23.44, "day": day, "latitude": round(lat, 4), "longitude": round(lon, 4),
-        "startTime": round(tod_time, 4), "time": round(tod_time, 4), "utcOffset": "0", "dstRule": "off", "version": 2,
-    })
+    level.add(
+        ["Level_objects"],
+        {
+            "name": "tod",
+            "class": "TimeOfDay",
+            "position": [0, 0, 0],
+            "animate": "0",
+            "play": False,
+            "axisTilt": 23.44,
+            "day": day,
+            "latitude": round(lat, 4),
+            "longitude": round(lon, 4),
+            "startTime": round(tod_time, 4),
+            "time": round(tod_time, 4),
+            "utcOffset": "0",
+            "dstRule": "off",
+            "version": 2,
+        },
+    )
     key = lighting.key_light
     azimuth, elevation = 210.0, 45.0
     if key is not None and key.toward is not None:
-        tx, ty, tz = key.toward                      # bundle frame: x east, y up, z north
+        tx, ty, tz = key.toward  # bundle frame: x east, y up, z north
         azimuth = math.degrees(math.atan2(tx, tz)) % 360.0
         elevation = math.degrees(math.asin(max(-1.0, min(1.0, ty))))
     sun_rgb = list(lighting.sun.color) if lighting.sun.enabled else [1.0, 1.0, 1.0]
     if lighting.sun.enabled and lighting.sun.use_color_temperature:
-        bb = colour_mod.blackbody(lighting.sun.temperature) if hasattr(colour_mod, "blackbody") else (1.0, 1.0, 1.0)
+        bb = (
+            colour_mod.blackbody(lighting.sun.temperature)
+            if hasattr(colour_mod, "blackbody")
+            else (1.0, 1.0, 1.0)
+        )
         sun_rgb = [sun_rgb[i] * bb[i] for i in range(3)]
     peak = max(sun_rgb) or 1.0
     sun_scale = [round(c / peak, 4) for c in sun_rgb] + [1]
-    level.add(["Level_objects"], {
-        "name": "sunsky", "class": "ScatterSky", "position": [0, 0, 0],
-        "azimuth": round(azimuth, 3), "elevation": round(max(1.0, elevation), 3),
-        "sunScale": sun_scale, "sunScaleGradientFile": "art/sky_gradients/default/gradient_sunscale.png",
-        "ambientScale": [1, 0.894, 0.78, 1], "ambientScaleGradientFile": "art/sky_gradients/default/gradient_ambient.png",
-        "colorize": [0.2157, 0.349, 0.6039, 1], "colorizeGradientFile": "art/sky_gradients/default/gradient_colorize.png",
-        "fogScale": [0.396, 0.667, 1, 1], "fogScaleGradientFile": "art/sky_gradients/default/gradient_fog.png",
-        "nightColor": [0, 0, 0, 1], "nightCubemap": "nightCubemap", "nightFogColor": [0, 0, 0, 1],
-        "nightFogGradientFile": "art/sky_gradients/default/gradient_fog.png",
-        "nightGradientFile": "art/sky_gradients/default/gradient_ambient.png",
-        "skyBrightness": 40, "mieScattering": 0.00047, "occlusionScale": 0.025, "shadowDarkenColor": [0, 0, 0, 0],
-        "flareScale": 5, "flareType": "BNG_Sunflare_3", "moonScale": 0.05, "moonAngularSize": 0.67,
-        "moonMat": "Moon_Glow_Mat", "moonLightColor": [1, 1, 1, 1], "moonAzimuth": (azimuth + 180.0) % 360.0,
-        "moonElevation": 30.0, "starVisibility": 1, "enableFogFallBack": False,
-    })
+    level.add(
+        ["Level_objects"],
+        {
+            "name": "sunsky",
+            "class": "ScatterSky",
+            "position": [0, 0, 0],
+            "azimuth": round(azimuth, 3),
+            "elevation": round(max(1.0, elevation), 3),
+            "sunScale": sun_scale,
+            "sunScaleGradientFile": "art/sky_gradients/default/gradient_sunscale.png",
+            "ambientScale": [1, 0.894, 0.78, 1],
+            "ambientScaleGradientFile": "art/sky_gradients/default/gradient_ambient.png",
+            "colorize": [0.2157, 0.349, 0.6039, 1],
+            "colorizeGradientFile": "art/sky_gradients/default/gradient_colorize.png",
+            "fogScale": [0.396, 0.667, 1, 1],
+            "fogScaleGradientFile": "art/sky_gradients/default/gradient_fog.png",
+            "nightColor": [0, 0, 0, 1],
+            "nightCubemap": "nightCubemap",
+            "nightFogColor": [0, 0, 0, 1],
+            "nightFogGradientFile": "art/sky_gradients/default/gradient_fog.png",
+            "nightGradientFile": "art/sky_gradients/default/gradient_ambient.png",
+            "skyBrightness": 40,
+            "mieScattering": 0.00047,
+            "occlusionScale": 0.025,
+            "shadowDarkenColor": [0, 0, 0, 0],
+            "flareScale": 5,
+            "flareType": "BNG_Sunflare_3",
+            "moonScale": 0.05,
+            "moonAngularSize": 0.67,
+            "moonMat": "Moon_Glow_Mat",
+            "moonLightColor": [1, 1, 1, 1],
+            "moonAzimuth": (azimuth + 180.0) % 360.0,
+            "moonElevation": 30.0,
+            "starVisibility": 1,
+            "enableFogFallBack": False,
+        },
+    )
     progress.end(f"sun azimuth {azimuth:.1f} elevation {elevation:.1f}, clock {hour:.2f} h")
 
     # -- spawn -----------------------------------------------------------------------------
@@ -129,15 +181,31 @@ def run(ctx, progress):
     spawns = []
     if spawn is not None:
         pos, heading = spawn
-        spawns.append({"name": SPAWN_NAME, "class": "SpawnSphere", "position": [round(v, 3) for v in pos],
-                       "rotationMatrix": [round(v, 6) for v in frame.heading_matrix(*heading)],
-                       "autoplaceOnSpawn": "0", "dataBlock": "SpawnSphereMarker", "enabled": "1",
-                       "homingCount": "0", "indoorWeight": "1", "isAIControlled": "0", "lockCount": "0",
-                       "outdoorWeight": "1", "radius": 5, "sphereWeight": "1"})
+        spawns.append(
+            {
+                "name": SPAWN_NAME,
+                "class": "SpawnSphere",
+                "position": [round(v, 3) for v in pos],
+                "rotationMatrix": [round(v, 6) for v in frame.heading_matrix(*heading)],
+                "autoplaceOnSpawn": "0",
+                "dataBlock": "SpawnSphereMarker",
+                "enabled": "1",
+                "homingCount": "0",
+                "indoorWeight": "1",
+                "isAIControlled": "0",
+                "lockCount": "0",
+                "outdoorWeight": "1",
+                "radius": 5,
+                "sphereWeight": "1",
+            }
+        )
     for obj in spawns:
         level.add(["PlayerDropPoints"], obj)
     level.write_objects()
-    progress.end(f"{len(spawns)} spawn point(s)" + (f" at {spawns[0]['position']}" if spawns else " (no drivable lane found)"))
+    progress.end(
+        f"{len(spawns)} spawn point(s)"
+        + (f" at {spawns[0]['position']}" if spawns else " (no drivable lane found)")
+    )
 
     # -- preview + info.json -----------------------------------------------------------------
     progress.begin("scene: preview", total=None, unit="")
@@ -145,16 +213,31 @@ def run(ctx, progress):
     progress.end("preview image" if preview else "no preview (no terrain)")
     map_size = float(manifest.get("mapSize") or 14336.0)
     city = manifest.get("city") or "CS2 city"
-    info = {"title": level.title, "description": f"{city} - ripped from Cities: Skylines II with Carto and built by cs2beamng",
-            "previews": [preview] if preview else [], "size": [map_size, map_size], "authors": "cs2beamng",
-            "spawnPoints": [{"translationId": "City", "objectname": SPAWN_NAME, "preview": preview or ""}] if spawns else [],
-            "defaultSpawnPointName": SPAWN_NAME if spawns else ""}
+    info = {
+        "title": level.title,
+        "description": f"{city} - ripped from Cities: Skylines II with Carto and built by cs2beamng",
+        "previews": [preview] if preview else [],
+        "size": [map_size, map_size],
+        "authors": "cs2beamng",
+        "spawnPoints": [
+            {"translationId": "City", "objectname": SPAWN_NAME, "preview": preview or ""}
+        ]
+        if spawns
+        else [],
+        "defaultSpawnPointName": SPAWN_NAME if spawns else "",
+    }
     level.write_info(info)
-    return {"visibleDistance": view, "sunAzimuth": round(azimuth, 1), "sunElevation": round(elevation, 1),
-            # the `lights` stage reads this: `nightLight` objects are dark unless the clock is
-            # inside `environment.lua`'s (0.25, 0.75) night window, and the clock does not move
-            "todHour": round(hour, 3), "todTime": round(tod_time, 4),
-            "spawn": spawns[0]["position"] if spawns else None, "seconds": round(time.monotonic() - started, 1)}
+    return {
+        "visibleDistance": view,
+        "sunAzimuth": round(azimuth, 1),
+        "sunElevation": round(elevation, 1),
+        # the `lights` stage reads this: `nightLight` objects are dark unless the clock is
+        # inside `environment.lua`'s (0.25, 0.75) night window, and the clock does not move
+        "todHour": round(hour, 3),
+        "todTime": round(tod_time, 4),
+        "spawn": spawns[0]["position"] if spawns else None,
+        "seconds": round(time.monotonic() - started, 1),
+    }
 
 
 def _write_preview(ctx, level, size=512):
@@ -176,7 +259,7 @@ def _write_preview(ctx, level, size=512):
     # hillshade: light from the north-west, slope from finite differences (metres per pixel)
     metres = float(paths.rasters["resolution"]) * step
     dzdx = numpy.gradient(h, metres, axis=1)
-    dzdy = -numpy.gradient(h, metres, axis=0)          # row 0 is north
+    dzdy = -numpy.gradient(h, metres, axis=0)  # row 0 is north
     nx, ny, nz = -dzdx, -dzdy, numpy.ones_like(h)
     norm = numpy.sqrt(nx * nx + ny * ny + nz * nz)
     lx, ly, lz = -0.5, 0.5, 0.707
@@ -247,5 +330,14 @@ OUTPUTS = ("info.json",)
 # was placed on (A6.8)
 # version 3: the built hour is published to `shared["scene"]`, because the `lights` stage has to
 # say whether its night lights can be seen at it (A6.9/D2)
-STAGE = Stage(STAGE_KEY, "Sky, spawn and level info", enabled, units, run, inputs=INPUTS,
-              settings_keys=SETTINGS, outputs=OUTPUTS, version=3)
+STAGE = Stage(
+    STAGE_KEY,
+    "Sky, spawn and level info",
+    enabled,
+    units,
+    run,
+    inputs=INPUTS,
+    settings_keys=SETTINGS,
+    outputs=OUTPUTS,
+    version=3,
+)

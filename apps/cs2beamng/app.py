@@ -27,10 +27,12 @@ def launch(browser=None, host="127.0.0.1", port=0, open_ui=True):
             pass
     server = AppServer(host=host, port=port)
     if browser:
-        server.update_settings({"ui_browser": browser})       # remembered for next time
+        server.update_settings({"ui_browser": browser})  # remembered for next time
     mode = server.values.get("ui_browser") or "window"
     url = server.start()
-    print(f"cs2beamng {__version__}: {url}", flush=True)     # also the way to reach a native window's server
+    print(
+        f"cs2beamng {__version__}: {url}", flush=True
+    )  # also the way to reach a native window's server
     try:
         code = window_mod.show(url, server, mode=mode, open_ui=open_ui)
     finally:
@@ -39,5 +41,5 @@ def launch(browser=None, host="127.0.0.1", port=0, open_ui=True):
 
 
 def _shutdown(server):
-    server.runner.stop()            # cancel, grace period, then kill: a non-daemon worker must not outlive us
+    server.runner.stop()  # cancel, grace period, then kill: a non-daemon worker must not outlive us
     server.stop()

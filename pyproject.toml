@@ -53,3 +53,72 @@ packages = [
 
 [tool.setuptools.package-data]
 cs2beamng = ["ui/*", "ui/**/*"]
+
+# ---------------------------------------------------------------------------------------------
+# Lint and format. Every Python file in the repo is fork-owned (upstream Carto is C#-only), so
+# nothing here needs the upstream exemption that `tools/check_limits.py` carries.
+#
+# 100 columns is what the repo already writes to: at the fork-point measurement 1,271 lines of
+# 14,485 non-79-col lines exceeded it, and almost all of those are prose comments the formatter
+# does not touch. Picking 88 would have rewrapped 11,066 lines for no reader's benefit.
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+# Markdown is excluded deliberately. `ruff format` formats fenced Python blocks inside .md,
+# and the docs align their trailing `#` comments into columns on purpose — the formatter
+# collapsed that alignment in docs/consumer-guide.md the first time it ran.
+extend-exclude = ["tools/decomp", "site", "build", "dist", "*.md"]
+
+[tool.ruff.lint]
+select = [
+    "F",    # pyflakes — F401 unused imports is principle 3, YAGNI
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "I",    # import sorting
+    "N",    # pep8-naming — principle 7
+    "UP",   # pyupgrade
+    "B",    # bugbear
+    "C4",   # comprehensions
+    # ARG (unused arguments, principle 3) is deliberately NOT here. It is a real rule with
+    # ~80 live findings that split into stage-protocol conformance and genuinely dead
+    # parameters, and Phases 2 and 3 own the difference. `tools/check_ruff_debt.py` selects
+    # it explicitly against a shrink-only ledger so the count can fall but never rise.
+    "RUF",
+]
+ignore = [
+    "E501",    # line length is the formatter's job; a prose comment at 104 is not a defect
+    "B905",    # zip(strict=) — target-version is py310 and the repo supports 3.10
+    "RUF001",  # the docs and comments deliberately use — and × and °
+    "RUF002",
+    "RUF003",
+    # --- permanent, each with its reason -----------------------------------------------------
+    # `int(round(x))` is not redundant here. numpy scalars implement __round__ and __floor__ and
+    # return numpy types, and a numpy scalar reaching `json.dumps` is a TypeError at build time.
+    # The cast is what keeps every figure this repo writes a plain Python int.
+    "RUF046",
+    # A, B = meshgrid(...); H, W = shape; bR, bC — matrix and grid capitals are the domain
+    # convention in a numpy codebase, and lowercasing them would make the algebra harder to read
+    # against the derivations the comments cite.
+    "N806",
+    # `import PyOpenColorIO as ocio` is OCIO's own documented idiom.
+    "N813",
+    # `Cancelled` (csiibundle.bake.progress) reads better than `CancelledError` and does not
+    # collide with asyncio's. The Error suffix is a PEP 8 preference, not a rule this repo needs.
+    "N818",
+    # RUF005 (collection-literal-concatenation) cannot tell `list + list` from `ndarray + list`,
+    # and the second is numpy BROADCASTING, not concatenation. Its fix silently turned
+    #     canopy = rng.normal(0, 1.5, (200, 3)) + [0, 4.5, 0]
+    # into `[*rng.normal(...), 0, 4.5, 0]` in tools/test_lod_collision.py — 200 rows plus three
+    # scalars instead of 200 rows each offset — and the test caught it only because
+    # numpy.concatenate then refused the ragged list. In a codebase where `+` on an array is
+    # arithmetic everywhere, a cosmetic rule that rewrites `+` is a bad trade.
+    "RUF005",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# The Blender adapter runs inside Blender's interpreter, where `bpy` is injected rather than
+# imported and star-imports out of `bpy.props` are the documented idiom.
+"tools/blender_import_*.py" = ["F403", "F405"]
+
+[tool.ruff.format]
+docstring-code-format = false

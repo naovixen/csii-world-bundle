@@ -19,7 +19,9 @@ import os
 import shutil
 import uuid
 
-NAMESPACE = uuid.UUID("7d3d3a3e-2c7a-4a1e-9f6a-5c9b8e2d1a4f")     # cs2beamng persistentId namespace, never change
+NAMESPACE = uuid.UUID(
+    "7d3d3a3e-2c7a-4a1e-9f6a-5c9b8e2d1a4f"
+)  # cs2beamng persistentId namespace, never change
 
 
 class Level:
@@ -27,11 +29,11 @@ class Level:
         self.dir = os.path.abspath(level_dir)
         self.name = name
         self.title = title
-        self._groups = {}          # tuple(path) -> list of objects (dicts) in order
-        self._group_meta = {}      # tuple(path) -> extra fields on the SimGroup itself
+        self._groups = {}  # tuple(path) -> list of objects (dicts) in order
+        self._group_meta = {}  # tuple(path) -> extra fields on the SimGroup itself
         self._ids = set()
-        self._stage = None         # which build stage is adding right now (pipeline/state.py)
-        self._by_stage = {}        # stage key -> [[group path, object], ...] it added
+        self._stage = None  # which build stage is adding right now (pipeline/state.py)
+        self._by_stage = {}  # stage key -> [[group path, object], ...] it added
         os.makedirs(self.dir, exist_ok=True)
 
     # -- stage attribution ---------------------------------------------------------------------
@@ -55,7 +57,9 @@ class Level:
             path = self.group(tuple(path))
             pid = obj.get("persistentId")
             if pid in self._ids:
-                raise ValueError(f"replay of stage {key!r}: duplicate persistentId for {obj.get('name')!r}")
+                raise ValueError(
+                    f"replay of stage {key!r}: duplicate persistentId for {obj.get('name')!r}"
+                )
             if pid:
                 self._ids.add(pid)
             self._groups[path].append(dict(obj))
@@ -111,19 +115,30 @@ class Level:
         """
         main = self.path("main")
         os.makedirs(main, exist_ok=True)
-        root = {"name": "MissionGroup", "class": "SimGroup", "persistentId": self.pid("MissionGroup"), "enabled": "1"}
+        root = {
+            "name": "MissionGroup",
+            "class": "SimGroup",
+            "persistentId": self.pid("MissionGroup"),
+            "enabled": "1",
+        }
         files = {os.path.join(main, "items.level.json"): [root]}
         count = 0
         # every group's own file lists its child groups first (BeamNG's order), then its objects
         by_parent = {}
         for path in sorted(self._groups):
             by_parent.setdefault(path[:-1], []).append(path)
-        for path in sorted(set(list(self._groups) + [()])):
+        for path in sorted({*list(self._groups), ()}):
             children = []
             for child in by_parent.get(path, []):
                 meta = dict(self._group_meta.get(child, {}))
-                meta.update({"name": child[-1], "class": "SimGroup", "persistentId": self.pid("group:" + "/".join(child)),
-                             "__parent": path[-1] if path else "MissionGroup"})
+                meta.update(
+                    {
+                        "name": child[-1],
+                        "class": "SimGroup",
+                        "persistentId": self.pid("group:" + "/".join(child)),
+                        "__parent": path[-1] if path else "MissionGroup",
+                    }
+                )
                 children.append(meta)
             children.extend(self._groups.get(path, []))
             if not children:
@@ -144,7 +159,7 @@ class Level:
                         pass
             for name in dirs:
                 try:
-                    os.rmdir(os.path.join(root_dir, name))      # only succeeds when it is empty
+                    os.rmdir(os.path.join(root_dir, name))  # only succeeds when it is empty
                 except OSError:
                     pass
         return count
@@ -204,7 +219,9 @@ class Level:
 
 def _write_lines_if_changed(path, objects):
     """One `items.level.json` — one JSON object per line — written only when it differs."""
-    raw = "".join(json.dumps(obj, separators=(",", ":"), ensure_ascii=False) + "\n" for obj in objects).encode("utf-8")
+    raw = "".join(
+        json.dumps(obj, separators=(",", ":"), ensure_ascii=False) + "\n" for obj in objects
+    ).encode("utf-8")
     try:
         if os.path.isfile(path) and os.path.getsize(path) == len(raw):
             with open(path, "rb") as handle:

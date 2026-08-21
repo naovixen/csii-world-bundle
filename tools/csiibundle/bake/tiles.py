@@ -22,7 +22,7 @@ import numpy
 
 from .. import glbwrite
 
-WELD_MM = 0.5     # positions within half a millimetre AND equal UV/colour weld into one vertex
+WELD_MM = 0.5  # positions within half a millimetre AND equal UV/colour weld into one vertex
 
 # How a per-primitive draw-distance limit is carried in a tile's material name. `#` cannot occur
 # in a CS2 material name (the producer's names are asset identifiers) and glTF material names are
@@ -63,7 +63,9 @@ class TileSink:
                 except OSError:
                     pass
 
-    def add(self, verts, tris, uvs, material, variant=None, colors=None, normals=None, min_lod=None):
+    def add(
+        self, verts, tris, uvs, material, variant=None, colors=None, normals=None, min_lod=None
+    ):
         """Add triangles. `verts` `(N,3)` bundle frame; `tris` `(M,3)`; `uvs` `(M,3,2)` per corner
         or `(N,2)` per vertex or None; `colors` `(N,4)` per vertex or None; `normals` `(N,3)` per
         vertex (bundle frame) or None — a primitive without them gets flat normals at write time.
@@ -79,7 +81,7 @@ class TileSink:
         tris = numpy.asarray(tris, dtype=numpy.int64)
         if len(tris) == 0:
             return
-        corners = verts[tris]                              # (M, 3, 3)
+        corners = verts[tris]  # (M, 3, 3)
         if uvs is None:
             corner_uv = numpy.zeros((len(tris), 3, 2))
         else:
@@ -134,9 +136,19 @@ class TileSink:
 
         def jobs_iter():
             for tile_key in order:
-                buckets = [(k[2], self._buckets.pop(k)) for k in sorted(by_tile[tile_key], key=lambda k: k[2])]
-                yield (self.out_dir, self.product, tile_key[0], tile_key[1], buckets,
-                       self.material_specs, texture_uri_base)
+                buckets = [
+                    (k[2], self._buckets.pop(k))
+                    for k in sorted(by_tile[tile_key], key=lambda k: k[2])
+                ]
+                yield (
+                    self.out_dir,
+                    self.product,
+                    tile_key[0],
+                    tile_key[1],
+                    buckets,
+                    self.material_specs,
+                    texture_uri_base,
+                )
 
         tiles_written = []
         total_verts = total_tris = 0
@@ -160,7 +172,12 @@ class TileSink:
         else:
             for job in jobs_iter():
                 absorb(_write_tile(job))
-        return {"tiles": tiles_written, "files": len(tiles_written), "verts": total_verts, "tris": total_tris}
+        return {
+            "tiles": tiles_written,
+            "files": len(tiles_written),
+            "verts": total_verts,
+            "tris": total_tris,
+        }
 
     def _specs_for(self, prims, texture_uri_base):
         return _specs_for(self.material_specs, prims, texture_uri_base)
@@ -172,14 +189,14 @@ def _write_tile(args):
     prims = []
     total_verts = total_tris = 0
     for name, bucket in buckets:
-        corners = numpy.concatenate(bucket["corners"])          # (M,3,3)
-        uvs = numpy.concatenate(bucket["uvs"])                  # (M,3,2)
+        corners = numpy.concatenate(bucket["corners"])  # (M,3,3)
+        uvs = numpy.concatenate(bucket["uvs"])  # (M,3,2)
         cols = None
         if all(c is not None for c in bucket["colors"]) and bucket["colors"]:
-            cols = numpy.concatenate(bucket["colors"])          # (M,3,4)
+            cols = numpy.concatenate(bucket["colors"])  # (M,3,4)
         nrms = None
         if all(c is not None for c in bucket["normals"]) and bucket["normals"]:
-            nrms = numpy.concatenate(bucket["normals"])         # (M,3,3)
+            nrms = numpy.concatenate(bucket["normals"])  # (M,3,3)
         welded = weld(corners, uvs, cols, nrms)
         v, n_uv, n_col, t = welded[:4]
         n_nrm = welded[4] if len(welded) > 4 else None
@@ -196,10 +213,12 @@ def _write_tile(args):
     if not prims:
         return None
     asset_id = f"{product}_{tx}_{tz}"
-    glbwrite.write_glb(os.path.join(out_dir, asset_id + ".glb"),
-                       [{"name": asset_id, "primitives": prims}],
-                       materials=_specs_for(material_specs, prims, texture_uri_base),
-                       from_bundle_frame=True)
+    glbwrite.write_glb(
+        os.path.join(out_dir, asset_id + ".glb"),
+        [{"name": asset_id, "primitives": prims}],
+        materials=_specs_for(material_specs, prims, texture_uri_base),
+        from_bundle_frame=True,
+    )
     return tx, tz, total_verts, total_tris
 
 

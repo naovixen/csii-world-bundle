@@ -36,8 +36,12 @@ def version():
 
 
 def platform_tag():
-    system = {"Windows": "windows", "Linux": "linux", "Darwin": "macos"}.get(platform.system(), platform.system().lower())
-    machine = {"AMD64": "x64", "x86_64": "x64", "arm64": "arm64", "aarch64": "arm64"}.get(platform.machine(), platform.machine().lower())
+    system = {"Windows": "windows", "Linux": "linux", "Darwin": "macos"}.get(
+        platform.system(), platform.system().lower()
+    )
+    machine = {"AMD64": "x64", "x86_64": "x64", "arm64": "arm64", "aarch64": "arm64"}.get(
+        platform.machine(), platform.machine().lower()
+    )
     return f"{system}-{machine}"
 
 
@@ -55,8 +59,17 @@ def stage_mod(path):
 
 
 def run_pyinstaller(clean):
-    args = [sys.executable, "-m", "PyInstaller", SPEC, "--distpath", DIST, "--workpath", BUILD,
-            "--noconfirm"]
+    args = [
+        sys.executable,
+        "-m",
+        "PyInstaller",
+        SPEC,
+        "--distpath",
+        DIST,
+        "--workpath",
+        BUILD,
+        "--noconfirm",
+    ]
     if clean:
         args.append("--clean")
     print("$ " + " ".join(args), flush=True)
@@ -107,8 +120,7 @@ def main(argv=None):
         print(f"PyInstaller produced no {folder}", file=sys.stderr)
         return 1
 
-    size = sum(os.path.getsize(os.path.join(r, f))
-               for r, _d, fs in os.walk(folder) for f in fs)
+    size = sum(os.path.getsize(os.path.join(r, f)) for r, _d, fs in os.walk(folder) for f in fs)
     exe = os.path.join(folder, "cs2beamng" + (".exe" if sys.platform.startswith("win") else ""))
     print(f"built {folder}  ({size / 1048576:.0f} MiB)")
     # PyInstaller leaves an IDENTICALLY NAMED bootloader stub in its work directory, and that
@@ -116,8 +128,10 @@ def main(argv=None):
     # gets "Failed to load Python DLL .../build/cs2beamng/_internal/python313.dll". Print the
     # one to run, and name the other, or the two folders are told apart by trial and error.
     print(f"run it: {exe}")
-    print(f"        (not the one in {BUILD}{os.sep}cs2beamng - that is PyInstaller's scratch "
-          f"copy with no _internal beside it, and it fails with 'Failed to load Python DLL')")
+    print(
+        f"        (not the one in {BUILD}{os.sep}cs2beamng - that is PyInstaller's scratch "
+        f"copy with no _internal beside it, and it fails with 'Failed to load Python DLL')"
+    )
     if args.no_zip:
         return 0
     out = os.path.join(DIST, f"cs2beamng-{version()}-{platform_tag()}.zip")

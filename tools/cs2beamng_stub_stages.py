@@ -33,7 +33,7 @@ def _run(ctx, progress):
         return {"steps": 3}
     if mode == "slow":
         progress.begin("crawl", total=200, unit="ticks")
-        for i in range(200):
+        for _i in range(200):
             time.sleep(0.02)
             progress.advance(1)
             progress.check()
@@ -56,7 +56,7 @@ def _run(ctx, progress):
     if mode == "crash":
         progress.begin("doomed", total=10, unit="steps")
         progress.advance(2)
-        time.sleep(0.3)                  # let the advance reach the runner first
+        time.sleep(0.3)  # let the advance reach the runner first
         os._exit(3)
     if mode == "fail":
         progress.begin("failing", total=None, unit="")
@@ -84,9 +84,16 @@ def _sleep_forever(_x):
 
 def all_stages():
     return [
-        Stage("prep", "Prepare (stub)", lambda s: True, lambda c, s: 1,
-              lambda ctx, p: (p.log("prep done"), {"ok": True})[1]),
+        Stage(
+            "prep",
+            "Prepare (stub)",
+            lambda s: True,
+            lambda c, s: 1,
+            lambda ctx, p: (p.log("prep done"), {"ok": True})[1],
+        ),
         Stage("work", "Work (stub)", lambda s: True, lambda c, s: 200, _run),
         Stage("skipme", "Skipped (stub)", lambda s: False, lambda c, s: 0, lambda ctx, p: {}),
-        Stage("wrap", "Wrap up (stub)", lambda s: True, lambda c, s: 1, lambda ctx, p: {"done": True}),
+        Stage(
+            "wrap", "Wrap up (stub)", lambda s: True, lambda c, s: 1, lambda ctx, p: {"done": True}
+        ),
     ]

@@ -47,6 +47,7 @@ HEIGHT = 4.0
 # PNG
 # --------------------------------------------------------------------------------------
 
+
 def _png_chunk(tag: bytes, payload: bytes) -> bytes:
     return (
         struct.pack(">I", len(payload))
@@ -56,8 +57,9 @@ def _png_chunk(tag: bytes, payload: bytes) -> bytes:
     )
 
 
-def make_checker_png(size: int = 64, cell: int = 8,
-                     a: tuple = (198, 202, 206, 255), b: tuple = (126, 132, 140, 255)) -> bytes:
+def make_checker_png(
+    size: int = 64, cell: int = 8, a: tuple = (198, 202, 206, 255), b: tuple = (126, 132, 140, 255)
+) -> bytes:
     """An 8-bit RGBA checkerboard, so a consumer can see UVs are being applied."""
     raw = bytearray()
     for y in range(size):
@@ -96,6 +98,7 @@ def make_gray_png(samples: list, width: int, height: int, depth: int) -> bytes:
 # GLB
 # --------------------------------------------------------------------------------------
 
+
 def _cube_geometry():
     """Return (positions, normals, uvs, indices) for a unit-ish cube.
 
@@ -106,12 +109,12 @@ def _cube_geometry():
     edge = HALF * 2.0
     # (origin, u, v) per face; u x v == the outward normal, so (o, o+u, o+u+v, o+v) is CCW.
     faces = [
-        ((HALF, 0.0, HALF), (0.0, 0.0, -1.0), (0.0, 1.0, 0.0)),      # +X
-        ((-HALF, 0.0, -HALF), (0.0, 0.0, 1.0), (0.0, 1.0, 0.0)),     # -X
+        ((HALF, 0.0, HALF), (0.0, 0.0, -1.0), (0.0, 1.0, 0.0)),  # +X
+        ((-HALF, 0.0, -HALF), (0.0, 0.0, 1.0), (0.0, 1.0, 0.0)),  # -X
         ((-HALF, HEIGHT, HALF), (1.0, 0.0, 0.0), (0.0, 0.0, -1.0)),  # +Y (top)
-        ((-HALF, 0.0, -HALF), (1.0, 0.0, 0.0), (0.0, 0.0, 1.0)),     # -Y (bottom)
-        ((-HALF, 0.0, HALF), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0)),      # +Z
-        ((HALF, 0.0, -HALF), (-1.0, 0.0, 0.0), (0.0, 1.0, 0.0)),     # -Z
+        ((-HALF, 0.0, -HALF), (1.0, 0.0, 0.0), (0.0, 0.0, 1.0)),  # -Y (bottom)
+        ((-HALF, 0.0, HALF), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0)),  # +Z
+        ((HALF, 0.0, -HALF), (-1.0, 0.0, 0.0), (0.0, 1.0, 0.0)),  # -Z
     ]
 
     positions: list[tuple[float, float, float]] = []
@@ -236,6 +239,7 @@ def make_cube_glb(texture_rel_uri: str) -> bytes:
 # Bundle
 # --------------------------------------------------------------------------------------
 
+
 def _yaw_quat(degrees: float) -> list[float]:
     """Left-handed rotation about +Y, as [x, y, z, w]."""
     half = math.radians(degrees) * 0.5
@@ -352,16 +356,34 @@ def build(out_dir: Path) -> None:
     # mostly net NODES, which get no record at all (§5.1), so a consumer must treat it as an
     # advisory grouping key rather than a foreign key.
     graph_lanes = [
-        {"id": 4001, "kind": "car", "owner": networks[0]["id"],
-         "path": [[100.0, 12.0, -362.0], [140.0, 12.0, -362.0], [180.0, 12.2, -362.0]],
-         "length": 80.02, "limit": 50.0, "curviness": 0.004, "flags": ["Twoway"]},
-        {"id": 4002, "kind": "car", "owner": networks[0]["id"],
-         "path": [[180.0, 12.2, -358.0], [140.0, 12.0, -358.0], [100.0, 12.0, -358.0]],
-         "length": 80.02, "limit": 50.0, "curviness": 0.004, "flags": ["Twoway"],
-         "secondary": True},
-        {"id": 4003, "kind": "pedestrian", "owner": networks[0]["id"],
-         "path": [[100.0, 12.0, -353.0], [180.0, 12.2, -353.0]],
-         "length": 80.0},
+        {
+            "id": 4001,
+            "kind": "car",
+            "owner": networks[0]["id"],
+            "path": [[100.0, 12.0, -362.0], [140.0, 12.0, -362.0], [180.0, 12.2, -362.0]],
+            "length": 80.02,
+            "limit": 50.0,
+            "curviness": 0.004,
+            "flags": ["Twoway"],
+        },
+        {
+            "id": 4002,
+            "kind": "car",
+            "owner": networks[0]["id"],
+            "path": [[180.0, 12.2, -358.0], [140.0, 12.0, -358.0], [100.0, 12.0, -358.0]],
+            "length": 80.02,
+            "limit": 50.0,
+            "curviness": 0.004,
+            "flags": ["Twoway"],
+            "secondary": True,
+        },
+        {
+            "id": 4003,
+            "kind": "pedestrian",
+            "owner": networks[0]["id"],
+            "path": [[100.0, 12.0, -353.0], [180.0, 12.2, -353.0]],
+            "length": 80.0,
+        },
     ]
     with (out_dir / "lanes.jsonl").open("w", encoding="utf-8", newline="\n") as fh:
         for record in graph_lanes:
@@ -372,7 +394,8 @@ def build(out_dir: Path) -> None:
     # consumer's bend has to consume: curve, spans (one hole), a width scale and paint.
     (out_dir / "lanemeshes").mkdir(exist_ok=True)
     (out_dir / "lanemeshes" / f"{ASSET_ID}_fence.glb").write_bytes(
-        make_cube_glb(f"../textures/{Path(tex_rel).name}"))
+        make_cube_glb(f"../textures/{Path(tex_rel).name}")
+    )
 
     lane_catalogue = {
         "Example_Fence": {
@@ -402,8 +425,12 @@ def build(out_dir: Path) -> None:
             "prefab": "Example_Fence",
             "category": "fence",
             "owner": 2001,
-            "curve": [[100.0, 12.0, -352.0], [126.0, 12.0, -352.0],
-                      [154.0, 12.0, -350.0], [180.0, 12.2, -350.0]],
+            "curve": [
+                [100.0, 12.0, -352.0],
+                [126.0, 12.0, -352.0],
+                [154.0, 12.0, -350.0],
+                [180.0, 12.2, -350.0],
+            ],
             "parts": [0],
             "spans": [[0.0, 0.45], [0.6, 1.0]],
             "widthScale": [1.0, 1.0],
@@ -421,12 +448,32 @@ def build(out_dir: Path) -> None:
     # drawn with is its own attrs.colorSet. Applying it is a masked MULTIPLY through the
     # material's colorMask map, never a replacement.
     (out_dir / "colors.json").write_text(
-        json.dumps({ASSET_ID: [
-            {"channels": [[0.82, 0.74, 0.62, 1.0], [0.35, 0.33, 0.31, 1.0], [1.0, 1.0, 1.0, 1.0]],
-             "probability": 70},
-            {"channels": [[0.62, 0.66, 0.72, 1.0], [0.28, 0.3, 0.34, 1.0], [1.0, 1.0, 1.0, 1.0]],
-             "probability": 30},
-        ]}, indent=2) + "\n", encoding="utf-8")
+        json.dumps(
+            {
+                ASSET_ID: [
+                    {
+                        "channels": [
+                            [0.82, 0.74, 0.62, 1.0],
+                            [0.35, 0.33, 0.31, 1.0],
+                            [1.0, 1.0, 1.0, 1.0],
+                        ],
+                        "probability": 70,
+                    },
+                    {
+                        "channels": [
+                            [0.62, 0.66, 0.72, 1.0],
+                            [0.28, 0.3, 0.34, 1.0],
+                            [1.0, 1.0, 1.0, 1.0],
+                        ],
+                        "probability": 30,
+                    },
+                ]
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
 
     # ONE FILE, TWO RECORD SHAPES, keyed the same way and placed by OPPOSITE rules. The
     # procedural entry has no position because the light IS the emissive material: put it at
@@ -434,23 +481,50 @@ def build(out_dir: Path) -> None:
     # position and must use it — falling back to the centroid would move every streetlamp to
     # the middle of its pole. A consumer that treats them uniformly makes both or neither.
     (out_dir / "lights.json").write_text(
-        json.dumps({ASSET_ID: [
-            {"slot": 0, "color": [1.0, 0.87, 0.68, 1.0], "colorOff": [0.0, 0.0, 0.0, 1.0],
-             "purpose": "DecorativeLight", "responseSpeed": 0.5},
-            {"kind": "punctual", "effect": "Example Wall Lamp",
-             "position": [0.0, 3.2, 2.1], "rotation": [0.0, 0.0, 0.0, 1.0],
-             "parentMesh": -1, "range": 12.0,
-             "finalColor": [3.2, 2.78, 2.18, 1.0],
-             "type": "Spot", "color": [1.0, 0.87, 0.68, 1.0],
-             "intensity": 2000.0, "intensityUnit": "Lumen", "temperature": 2700.0,
-             "spotShape": "Cone", "spotAngle": 100.0, "innerSpotPercentage": 60.0},
-        ]}, indent=2) + "\n", encoding="utf-8")
+        json.dumps(
+            {
+                ASSET_ID: [
+                    {
+                        "slot": 0,
+                        "color": [1.0, 0.87, 0.68, 1.0],
+                        "colorOff": [0.0, 0.0, 0.0, 1.0],
+                        "purpose": "DecorativeLight",
+                        "responseSpeed": 0.5,
+                    },
+                    {
+                        "kind": "punctual",
+                        "effect": "Example Wall Lamp",
+                        "position": [0.0, 3.2, 2.1],
+                        "rotation": [0.0, 0.0, 0.0, 1.0],
+                        "parentMesh": -1,
+                        "range": 12.0,
+                        "finalColor": [3.2, 2.78, 2.18, 1.0],
+                        "type": "Spot",
+                        "color": [1.0, 0.87, 0.68, 1.0],
+                        "intensity": 2000.0,
+                        "intensityUnit": "Lumen",
+                        "temperature": 2700.0,
+                        "spotShape": "Cone",
+                        "spotAngle": 100.0,
+                        "innerSpotPercentage": 60.0,
+                    },
+                ]
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
 
     # -- warnings (contract §10): the producer declaring a gap it could not close ------
     (out_dir / "warnings.jsonl").write_text(
-        json.dumps({"kind": "mesh", "assetId": MISSING_ASSET_ID,
-                    "reason": "mesh not readable at runtime"},
-                   separators=(",", ":")) + "\n", encoding="utf-8")
+        json.dumps(
+            {"kind": "mesh", "assetId": MISSING_ASSET_ID, "reason": "mesh not readable at runtime"},
+            separators=(",", ":"),
+        )
+        + "\n",
+        encoding="utf-8",
+    )
 
     # -- colour grading and lighting (contract §8) ------------------------------------
     # A DISPLAY TRANSFORM, never baked into the shipped textures — and a snapshot of one
@@ -458,62 +532,104 @@ def build(out_dir: Path) -> None:
     # consumer this is the game's real grade rather than an unevaluated stack of defaults.
     grading = {
         "semantics": "the game's resolved HDRP colour grading at rip time, read from "
-                     "VolumeManager's post-blend volume stack. CS2's ground albedo is authored "
-                     "near-grey and this is what turns it into the on-screen palette. Optional: "
-                     "a consumer that wants the raw albedo should ignore this block entirely; "
-                     "one that wants the game's look should apply it as a display transform, "
-                     "NOT bake it into the shipped textures",
+        "VolumeManager's post-blend volume stack. CS2's ground albedo is authored "
+        "near-grey and this is what turns it into the on-screen palette. Optional: "
+        "a consumer that wants the raw albedo should ignore this block entirely; "
+        "one that wants the game's look should apply it as a display transform, "
+        "NOT bake it into the shipped textures",
         "order": "exposure -> white balance -> color adjustments (filter, contrast, hue, "
-                 "saturation) -> shadows/midtones/highlights -> tonemapping",
+        "saturation) -> shadows/midtones/highlights -> tonemapping",
         "weatherDependent": True,
         "note": "a snapshot of one moment: grading follows weather and time of day, so a rip "
-                "taken at dusk records dusk",
-        "diagnostics": {"stackEvaluated": True, "volumesFound": 3,
-                        "camera": "Main Camera", "volumeLayerMask": -1,
-                        "unread": ["CloudLayer", "VolumetricClouds"]},
-        "exposure": {"mode": "AutomaticHistogram", "fixedExposure": 0.0, "compensation": 0.0,
-                     "limitMin": -2.0, "limitMax": 14.0,
-                     "units": "EV100; `compensation` is stops"},
-        "whiteBalance": {"temperature": 8.0, "tint": 0.0,
-                         "units": "both -100..100, HDRP's own scale"},
-        "colorAdjustments": {"postExposure": 0.0, "contrast": 12.0,
-                             "colorFilter": [1.0, 1.0, 1.0], "hueShift": 0.0,
-                             "saturation": 8.0,
-                             "units": "postExposure in EV/stops; the rest on HDRP's -100..100"},
+        "taken at dusk records dusk",
+        "diagnostics": {
+            "stackEvaluated": True,
+            "volumesFound": 3,
+            "camera": "Main Camera",
+            "volumeLayerMask": -1,
+            "unread": ["CloudLayer", "VolumetricClouds"],
+        },
+        "exposure": {
+            "mode": "AutomaticHistogram",
+            "fixedExposure": 0.0,
+            "compensation": 0.0,
+            "limitMin": -2.0,
+            "limitMax": 14.0,
+            "units": "EV100; `compensation` is stops",
+        },
+        "whiteBalance": {
+            "temperature": 8.0,
+            "tint": 0.0,
+            "units": "both -100..100, HDRP's own scale",
+        },
+        "colorAdjustments": {
+            "postExposure": 0.0,
+            "contrast": 12.0,
+            "colorFilter": [1.0, 1.0, 1.0],
+            "hueShift": 0.0,
+            "saturation": 8.0,
+            "units": "postExposure in EV/stops; the rest on HDRP's -100..100",
+        },
         "shadowsMidtonesHighlights": {
-            "shadows": [1.0, 1.0, 1.02, 0.0], "midtones": [1.0, 1.0, 1.0, 0.0],
+            "shadows": [1.0, 1.0, 1.02, 0.0],
+            "midtones": [1.0, 1.0, 1.0, 0.0],
             "highlights": [1.02, 1.0, 0.98, 0.0],
-            "shadowsStart": 0.0, "shadowsEnd": 0.3,
-            "highlightsStart": 0.55, "highlightsEnd": 1.0,
-            "units": "each is [r, g, b, w]: rgb a per-channel multiplier around 1.0, w an offset"},
-        "tonemapping": {"mode": "ACES",
-                        "note": "the display transform the grading above was authored against",
-                        "lutContribution": 1.0, "hasLut": False},
+            "shadowsStart": 0.0,
+            "shadowsEnd": 0.3,
+            "highlightsStart": 0.55,
+            "highlightsEnd": 1.0,
+            "units": "each is [r, g, b, w]: rgb a per-channel multiplier around 1.0, w an offset",
+        },
+        "tonemapping": {
+            "mode": "ACES",
+            "note": "the display transform the grading above was authored against",
+            "lutContribution": 1.0,
+            "hasLut": False,
+        },
         "lighting": {
             "semantics": "the illumination the grading above sits on top of. A consumer that "
-                         "reproduces the albedo and the grading but lights the scene white will "
-                         "still miss the game's colour: the sun is not white",
-            "sun": {"color": [1.0, 1.0, 1.0], "useColorTemperature": False,
-                    "colorTemperature": 6570.0,
-                    "units": "`color` is the light's own filter as authored",
-                    "intensity": 110000.0, "initialIntensity": 130000.0,
-                    "intensityUnits": "lux for a directional light",
-                    "direction": [-0.35, -0.91, 0.22],
-                    "elevationDegrees": 66.0, "azimuthDegrees": 122.0,
-                    "directionUnits": "`direction` is the unit vector the light TRAVELS along",
-                    "shadows": "Soft", "enabled": True, "which": "sun"},
-            "sky": {"exposure": 0.0, "zenithTint": [0.42, 0.56, 0.86],
-                    "horizonTint": [0.78, 0.82, 0.88], "groundTint": [0.28, 0.26, 0.24],
-                    "units": "HDRP PhysicallyBasedSky; this is the ambient half of the light"},
-            "indirect": {"diffuseMultiplier": 1.0, "reflectionMultiplier": 1.0,
-                         "units": "multipliers on bounced light"},
-            "time": {"hour": 13, "minute": 20, "day": 172, "year": 2026,
-                     "latitude": 25.033, "longitude": 121.5654,
-                     "units": "in-game clock and map position at rip time"},
+            "reproduces the albedo and the grading but lights the scene white will "
+            "still miss the game's colour: the sun is not white",
+            "sun": {
+                "color": [1.0, 1.0, 1.0],
+                "useColorTemperature": False,
+                "colorTemperature": 6570.0,
+                "units": "`color` is the light's own filter as authored",
+                "intensity": 110000.0,
+                "initialIntensity": 130000.0,
+                "intensityUnits": "lux for a directional light",
+                "direction": [-0.35, -0.91, 0.22],
+                "elevationDegrees": 66.0,
+                "azimuthDegrees": 122.0,
+                "directionUnits": "`direction` is the unit vector the light TRAVELS along",
+                "shadows": "Soft",
+                "enabled": True,
+                "which": "sun",
+            },
+            "sky": {
+                "exposure": 0.0,
+                "zenithTint": [0.42, 0.56, 0.86],
+                "horizonTint": [0.78, 0.82, 0.88],
+                "groundTint": [0.28, 0.26, 0.24],
+                "units": "HDRP PhysicallyBasedSky; this is the ambient half of the light",
+            },
+            "indirect": {
+                "diffuseMultiplier": 1.0,
+                "reflectionMultiplier": 1.0,
+                "units": "multipliers on bounced light",
+            },
+            "time": {
+                "hour": 13,
+                "minute": 20,
+                "day": 172,
+                "year": 2026,
+                "latitude": 25.033,
+                "longitude": 121.5654,
+                "units": "in-game clock and map position at rip time",
+            },
         },
     }
-    (out_dir / "grading.json").write_text(
-        json.dumps(grading, indent=2) + "\n", encoding="utf-8")
+    (out_dir / "grading.json").write_text(json.dumps(grading, indent=2) + "\n", encoding="utf-8")
 
     # -- terrain layers (contract §8): one small grid shared by every raster -----------
     # 32x32 cells at 4 m cover x 80..208, z -300..-428 — the whole example scene. Rows run
@@ -521,7 +637,7 @@ def build(out_dir: Path) -> None:
     grid = 32
     cell_m = 4.0
     origin = (80.0, 0.0, -300.0)  # top-left cell centre
-    elevation_scale = 0.001       # worldY = value * 0.001 m
+    elevation_scale = 0.001  # worldY = value * 0.001 m
 
     heights: list[int] = []
     surface: list[int] = []
@@ -579,32 +695,46 @@ def build(out_dir: Path) -> None:
         "id": 9001,
         "prefab": "example_concrete_pad",
         "owner": instances[0]["id"],
-        "nodes": [[100.0, 12.0, -344.0], [112.0, 12.0, -344.0],
-                  [112.0, 12.0, -336.0], [100.0, 12.0, -336.0]],
+        "nodes": [
+            [100.0, 12.0, -344.0],
+            [112.0, 12.0, -344.0],
+            [112.0, 12.0, -336.0],
+            [100.0, 12.0, -336.0],
+        ],
         "triangles": [[0, 1, 2], [0, 2, 3]],
     }
     (out_dir / "areas.jsonl").write_text(
-        json.dumps(area_record, separators=(",", ":")) + "\n", encoding="utf-8")
+        json.dumps(area_record, separators=(",", ":")) + "\n", encoding="utf-8"
+    )
     # The catalogue carries the four keys the game pushes for every version — and
     # `rendererPriority` above all, because without it a consumer has no rule for which of two
     # overlapping areas paints on top. `uvScale` is the authored rate: uv = world position ×
     # uvScale, so 0.2 means one repeat every 5 m. Tiling is world-planar, never UV-mapped.
     (terrain_dir / "surfaces" / "area_example_concrete_pad.png").write_bytes(
-        make_checker_png(16, 4, (168, 166, 162, 255), (152, 150, 147, 255)))
+        make_checker_png(16, 4, (168, 166, 162, 255), (152, 150, 147, 255))
+    )
     (out_dir / "areaprefabs.json").write_text(
-        json.dumps({"example_concrete_pad": {
-            "name": "Example Concrete Pad",
-            "color": [0.42, 0.4, 0.38, 1.0],
-            "texture": "terrain/surfaces/area_example_concrete_pad.png",
-            "uvScale": 0.2,
-            "heightOffset": 0.0,
-            "expandAmount": 0.5,
-            "roundness": 0.0,
-            "rendererPriority": 0,
-            "decalLayers": ["Terrain"],
-            "metallic": 0.0,
-            "smoothness": 0.35,
-        }}, indent=2) + "\n", encoding="utf-8")
+        json.dumps(
+            {
+                "example_concrete_pad": {
+                    "name": "Example Concrete Pad",
+                    "color": [0.42, 0.4, 0.38, 1.0],
+                    "texture": "terrain/surfaces/area_example_concrete_pad.png",
+                    "uvScale": 0.2,
+                    "heightOffset": 0.0,
+                    "expandAmount": 0.5,
+                    "roundness": 0.0,
+                    "rendererPriority": 0,
+                    "decalLayers": ["Terrain"],
+                    "metallic": 0.0,
+                    "smoothness": 0.35,
+                }
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
 
     # -- clip volumes (contract §8c): what opens the tunnel portal -----------------------
     # One edge strip: the two boundary Béziers straddling the whole road at the lane height,
@@ -618,18 +748,36 @@ def build(out_dir: Path) -> None:
     # reuses the same footprint only for the example's economy), and `top` is absent because
     # an authored clip surface hides whatever covers it, however high.
     clip_volumes = [
-        {"id": networks[0]["id"], "kind": "edge",
-         "left": [[96.0, 12.0, -368.0], [132.0, 12.0, -368.0],
-                  [168.0, 12.0, -368.0], [206.0, 12.0, -368.0]],
-         "right": [[96.0, 12.0, -352.0], [132.0, 12.0, -352.0],
-                   [168.0, 12.0, -352.0], [206.0, 12.0, -352.0]],
-         "bottom": 0.5, "top": 30.3},
-        {"id": area_record["id"], "kind": "area", "area": area_record["id"], "bottom": 0.5,
-         "nodes": area_record["nodes"], "triangles": area_record["triangles"]},
+        {
+            "id": networks[0]["id"],
+            "kind": "edge",
+            "left": [
+                [96.0, 12.0, -368.0],
+                [132.0, 12.0, -368.0],
+                [168.0, 12.0, -368.0],
+                [206.0, 12.0, -368.0],
+            ],
+            "right": [
+                [96.0, 12.0, -352.0],
+                [132.0, 12.0, -352.0],
+                [168.0, 12.0, -352.0],
+                [206.0, 12.0, -352.0],
+            ],
+            "bottom": 0.5,
+            "top": 30.3,
+        },
+        {
+            "id": area_record["id"],
+            "kind": "area",
+            "area": area_record["id"],
+            "bottom": 0.5,
+            "nodes": area_record["nodes"],
+            "triangles": area_record["triangles"],
+        },
     ]
     (out_dir / "clipvolumes.jsonl").write_text(
-        "".join(json.dumps(v, separators=(",", ":")) + "\n" for v in clip_volumes),
-        encoding="utf-8")
+        "".join(json.dumps(v, separators=(",", ":")) + "\n" for v in clip_volumes), encoding="utf-8"
+    )
 
     rasters = {
         "resolution": cell_m,
@@ -756,9 +904,7 @@ def build(out_dir: Path) -> None:
             "includeVector": False,
         },
     }
-    (out_dir / "bundle.json").write_text(
-        json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
-    )
+    (out_dir / "bundle.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
 
     print(f"wrote example bundle to {out_dir}")
     print(f"  texture sha256 {tex_hash}")

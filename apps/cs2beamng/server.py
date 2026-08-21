@@ -56,11 +56,28 @@ from .pipeline.worker import REPORT_NAME
 UI_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ui")
 STATE_INTERVAL = 0.5
 INDEX_RECHECK_SECONDS = 5.0
-CONTENT_TYPES = {".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8",
-                 ".js": "application/javascript; charset=utf-8", ".svg": "image/svg+xml",
-                 ".png": "image/png", ".ico": "image/x-icon", ".json": "application/json; charset=utf-8"}
-CENSUS_KEYS = ("bundle", "region", "tile_size", "generate_lods", "markings", "lane_furniture", "areas",
-               "skirts", "networks", "lights", "terrain_upsample")
+CONTENT_TYPES = {
+    ".html": "text/html; charset=utf-8",
+    ".css": "text/css; charset=utf-8",
+    ".js": "application/javascript; charset=utf-8",
+    ".svg": "image/svg+xml",
+    ".png": "image/png",
+    ".ico": "image/x-icon",
+    ".json": "application/json; charset=utf-8",
+}
+CENSUS_KEYS = (
+    "bundle",
+    "region",
+    "tile_size",
+    "generate_lods",
+    "markings",
+    "lane_furniture",
+    "areas",
+    "skirts",
+    "networks",
+    "lights",
+    "terrain_upsample",
+)
 
 
 class AppServer:
@@ -72,18 +89,18 @@ class AppServer:
         self.runner = runner or Runner()
         self.values = values if values is not None else settings_mod.load()
         self.token = secrets.token_urlsafe(24)
-        self.pick_folder = None            # set by window.py: callable(start_dir) -> path | None
-        self.on_quit = None                # set by app.py: callable() when /api/quit arrives
+        self.pick_folder = None  # set by window.py: callable(start_dir) -> path | None
+        self.on_quit = None  # set by app.py: callable() when /api/quit arrives
         self._census = None
         self._census_key = None
         self._planned = None
-        self._estimate = None              # (settings fingerprint, index identity) -> the estimate
-        self._index = None                 # the mesh index for the current bundle, once scanned
+        self._estimate = None  # (settings fingerprint, index identity) -> the estimate
+        self._index = None  # the mesh index for the current bundle, once scanned
         self._index_bundle = None
         self._index_thread = None
-        self._warming = None               # the thread resolving a bundle's texture plan
-        self._index_checked = 0.0          # when the in-memory index was last re-validated
-        self._map = None                   # the map view document for the current bundle
+        self._warming = None  # the thread resolving a bundle's texture plan
+        self._index_checked = 0.0  # when the in-memory index was last re-validated
+        self._map = None  # the map view document for the current bundle
         self._map_bundle = None
         self._map_thread = None
         self._lock = threading.RLock()
@@ -97,11 +114,17 @@ class AppServer:
         try:
             self._httpd = _Server((self.host, self.port), _Handler, self)
         except OSError as exc:
-            raise SystemExit(f"cs2beamng: cannot listen on {self.host}:{self.port} ({exc}). "
-                             "Is another cs2beamng already running? Close it, or pick another --port.") from exc
+            raise SystemExit(
+                f"cs2beamng: cannot listen on {self.host}:{self.port} ({exc}). "
+                "Is another cs2beamng already running? Close it, or pick another --port."
+            ) from exc
         self.port = self._httpd.server_address[1]
-        self._thread = threading.Thread(target=self._httpd.serve_forever, kwargs={"poll_interval": 0.25},
-                                        daemon=True, name="cs2beamng-http")
+        self._thread = threading.Thread(
+            target=self._httpd.serve_forever,
+            kwargs={"poll_interval": 0.25},
+            daemon=True,
+            name="cs2beamng-http",
+        )
         self._thread.start()
         return self.url()
 
@@ -131,23 +154,35 @@ class AppServer:
         base = values.get("quality_preset")
         if base == "custom":
             base = (custom or {}).get("base")
-        return {"values": values, "schema": settings_mod.schema_for_ui(), "groups": settings_mod.GROUPS,
-                "basic": settings_mod.BASIC,
-                # E1: the redesigned screen's own model - the basics strip, the sidebar, and
-                # what drives the settings that no longer have a control of their own.
-                "basics": settings_mod.BASICS, "sections": settings_mod.sections_for_ui(),
-                "drivenBy": settings_mod.DRIVEN_BY, "presets": settings_mod.PRESETS,
-                "subsetOf": settings_mod.SUBSET_OF, "parentOff": settings_mod.PARENT_OFF,
-                "needs": settings_mod.NEEDS,
-                "choiceSets": settings_mod.CHOICE_SETS, "units": settings_mod.UNITS,
-                "presetBase": base, "hasCustom": custom is not None,
-                "presetChanged": settings_mod.preset_changes(values, base),
-                "presetInfo": settings_mod.PRESET_INFO, "problems": settings_mod.validate(values),
-                "detected": settings_mod.detected(values), "canBrowse": self.pick_folder is not None,
-                # E4: what this level will cost the machine, recomputed on every settings change
-                # (~50 ms once the bundle's texture plan is warm) and never a placeholder.
-                "estimate": self.estimate(values),
-                "mod": self.mod_state(), "version": __version__}
+        return {
+            "values": values,
+            "schema": settings_mod.schema_for_ui(),
+            "groups": settings_mod.GROUPS,
+            "basic": settings_mod.BASIC,
+            # E1: the redesigned screen's own model - the basics strip, the sidebar, and
+            # what drives the settings that no longer have a control of their own.
+            "basics": settings_mod.BASICS,
+            "sections": settings_mod.sections_for_ui(),
+            "drivenBy": settings_mod.DRIVEN_BY,
+            "presets": settings_mod.PRESETS,
+            "subsetOf": settings_mod.SUBSET_OF,
+            "parentOff": settings_mod.PARENT_OFF,
+            "needs": settings_mod.NEEDS,
+            "choiceSets": settings_mod.CHOICE_SETS,
+            "units": settings_mod.UNITS,
+            "presetBase": base,
+            "hasCustom": custom is not None,
+            "presetChanged": settings_mod.preset_changes(values, base),
+            "presetInfo": settings_mod.PRESET_INFO,
+            "problems": settings_mod.validate(values),
+            "detected": settings_mod.detected(values),
+            "canBrowse": self.pick_folder is not None,
+            # E4: what this level will cost the machine, recomputed on every settings change
+            # (~50 ms once the bundle's texture plan is warm) and never a placeholder.
+            "estimate": self.estimate(values),
+            "mod": self.mod_state(),
+            "version": __version__,
+        }
 
     # -- the cost estimate ----------------------------------------------------------------------
 
@@ -172,13 +207,13 @@ class AppServer:
         return out
 
     def _compute_estimate(self, values, index, key, warm_only=False):
-        from .pipeline import estimate as estimate_mod                # noqa: PLC0415
+        from .pipeline import estimate as estimate_mod
 
         try:
             out = estimate_mod.take(values, self._census, index, warm_only=warm_only)
-        except Exception as exc:                                      # noqa: BLE001 - never blank the page
+        except Exception as exc:
             out = {"ready": False, "waiting": "error", "error": str(exc), "rows": []}
-        if out.get("waiting") != "reading":                           # a refusal is not an answer
+        if out.get("waiting") != "reading":  # a refusal is not an answer
             with self._lock:
                 self._estimate = (key, out)
         return out
@@ -188,8 +223,9 @@ class AppServer:
         with self._lock:
             if self._warming is not None and self._warming.is_alive():
                 return
-            thread = threading.Thread(target=target, args=args, daemon=True,
-                                      name="cs2beamng-estimate")
+            thread = threading.Thread(
+                target=target, args=args, daemon=True, name="cs2beamng-estimate"
+            )
             self._warming = thread
         thread.start()
 
@@ -201,7 +237,7 @@ class AppServer:
         into the same folder has to invalidate it or the meter would go on describing the city
         that used to be there.
         """
-        from .pipeline import meshindex                               # noqa: PLC0415 - lazy: numpy
+        from .pipeline import meshindex
 
         if not bundle or not os.path.isfile(os.path.join(bundle, "bundle.json")):
             return None
@@ -217,7 +253,7 @@ class AppServer:
                 self._index_checked = now
             if meshindex.key_for(bundle) == self._index.get("key"):
                 return self._index
-            with self._lock:                                          # the bundle moved under it
+            with self._lock:  # the bundle moved under it
                 self._index, self._index_bundle = None, None
         if running:
             # a scan is already reading the layer; asking the disk whether it has finished costs
@@ -229,19 +265,20 @@ class AppServer:
                 self._index, self._index_bundle = stored, bundle
                 self._index_checked = now
             return stored
-        thread = threading.Thread(target=self._scan_index, args=(bundle,), daemon=True,
-                                  name="cs2beamng-meshindex")
+        thread = threading.Thread(
+            target=self._scan_index, args=(bundle,), daemon=True, name="cs2beamng-meshindex"
+        )
         with self._lock:
             self._index_thread = thread
         thread.start()
         return None
 
     def _scan_index(self, bundle):
-        from .pipeline import meshindex                               # noqa: PLC0415
+        from .pipeline import meshindex
 
         try:
             doc = meshindex.build(bundle, cancelled=self.stopped.is_set)
-        except Exception:                                             # noqa: BLE001 - diagnostics only
+        except Exception:
             doc = None
         if doc is not None:
             with self._lock:
@@ -259,7 +296,7 @@ class AppServer:
         georeference as well as the picture, because everything it draws on top — a region circle,
         a fast-travel pin — is in bundle metres and has to land on the right pixel.
         """
-        from .pipeline import mapview                                 # noqa: PLC0415 - lazy: numpy
+        from .pipeline import mapview
 
         with self._lock:
             bundle = self.values.get("bundle")
@@ -276,8 +313,9 @@ class AppServer:
             with self._lock:
                 self._map, self._map_bundle = stored, bundle
             return self._map_payload(stored)
-        thread = threading.Thread(target=self._draw_map, args=(bundle,), daemon=True,
-                                  name="cs2beamng-mapview")
+        thread = threading.Thread(
+            target=self._draw_map, args=(bundle,), daemon=True, name="cs2beamng-mapview"
+        )
         with self._lock:
             self._map_thread = thread
         thread.start()
@@ -285,21 +323,26 @@ class AppServer:
 
     def _map_payload(self, doc):
         """The document as the page wants it: no disk paths, and the points it has to draw."""
-        from .pipeline import mapview                                 # noqa: PLC0415
+        from .pipeline import mapview
 
         with self._lock:
             bundle = self.values.get("bundle")
             region = self.values.get("region")
-        return {"ready": True, "world": doc["world"], "suggestions": doc.get("suggestions") or [],
-                "image": f"/api/map.png?t={self.token}&k={doc.get('key')}",
-                "points": mapview.load_pois(bundle), "region": region}
+        return {
+            "ready": True,
+            "world": doc["world"],
+            "suggestions": doc.get("suggestions") or [],
+            "image": f"/api/map.png?t={self.token}&k={doc.get('key')}",
+            "points": mapview.load_pois(bundle),
+            "region": region,
+        }
 
     def _draw_map(self, bundle):
-        from .pipeline import mapview                                 # noqa: PLC0415
+        from .pipeline import mapview
 
         try:
             doc = mapview.build(bundle, cancelled=self.stopped.is_set)
-        except Exception:                                             # noqa: BLE001 - never fatal
+        except Exception:
             doc = None
         if doc is not None:
             with self._lock:
@@ -307,7 +350,7 @@ class AppServer:
 
     def map_image(self):
         """The cached PNG's bytes, or None."""
-        from .pipeline import mapview                                 # noqa: PLC0415
+        from .pipeline import mapview
 
         with self._lock:
             bundle = self.values.get("bundle")
@@ -322,7 +365,7 @@ class AppServer:
             return None
 
     def snap_point(self, at):
-        from .pipeline import mapview                                 # noqa: PLC0415
+        from .pipeline import mapview
 
         with self._lock:
             bundle = self.values.get("bundle")
@@ -338,7 +381,7 @@ class AppServer:
         writing of it (plan §3.7). An empty list clears the setting rather than leaving it
         pointing at an empty file, which the build would read as "you asked for none".
         """
-        from .pipeline import mapview                                 # noqa: PLC0415
+        from .pipeline import mapview
 
         with self._lock:
             bundle = self.values.get("bundle")
@@ -356,11 +399,20 @@ class AppServer:
         from . import modinstall
 
         try:
-            return {"installed": modinstall.installed_version(), "bundled": modinstall.bundled_version(),
-                    "canInstall": modinstall.available(), "dir": modinstall.install_dir()}
-        except Exception as exc:                                # noqa: BLE001 - never break the page
-            return {"installed": None, "bundled": None, "canInstall": False, "dir": None,
-                    "error": str(exc)}
+            return {
+                "installed": modinstall.installed_version(),
+                "bundled": modinstall.bundled_version(),
+                "canInstall": modinstall.available(),
+                "dir": modinstall.install_dir(),
+            }
+        except Exception as exc:
+            return {
+                "installed": None,
+                "bundled": None,
+                "canInstall": False,
+                "dir": None,
+                "error": str(exc),
+            }
 
     def install_mod(self):
         """Unpack the bundled ripper mod into the CS2 mods folder."""
@@ -368,7 +420,7 @@ class AppServer:
 
         try:
             target = modinstall.install()
-        except Exception as exc:                                # noqa: BLE001 - reported to the page
+        except Exception as exc:
             return {"ok": False, "error": str(exc), "mod": self.mod_state()}
         return {"ok": True, "dir": target, "mod": self.mod_state()}
 
@@ -473,7 +525,9 @@ class AppServer:
             return {"ok": False, "problems": problems}, HTTPStatus.BAD_REQUEST
         census = self.census()
         try:
-            self.runner.start(values, census)          # the runner's own lock decides; two racing starts -> one 409
+            self.runner.start(
+                values, census
+            )  # the runner's own lock decides; two racing starts -> one 409
         except RuntimeError as exc:
             return {"ok": False, "problems": [str(exc)]}, HTTPStatus.CONFLICT
         except ValueError as exc:
@@ -532,9 +586,13 @@ class AppServer:
         with self._lock:
             values = dict(self.values)
         level = os.path.join(values.get("output") or "", values.get("level_name") or "")
-        target = {"level": level, "output": values.get("output"), "bundle": values.get("bundle"),
-                  "derived": os.path.join(values.get("bundle") or "", "derived"),
-                  "report": os.path.join(level, REPORT_NAME)}.get(what)
+        target = {
+            "level": level,
+            "output": values.get("output"),
+            "bundle": values.get("bundle"),
+            "derived": os.path.join(values.get("bundle") or "", "derived"),
+            "report": os.path.join(level, REPORT_NAME),
+        }.get(what)
         if not target or not os.path.exists(target):
             return {"ok": False, "error": f"nothing at {target!r}"}
         try:
@@ -546,14 +604,15 @@ class AppServer:
 
 def _open_in_file_manager(path):
     if sys.platform.startswith("win"):
-        os.startfile(path)  # noqa: S606 - the user asked to open their own folder
+        os.startfile(path)
     elif sys.platform == "darwin":
-        subprocess.Popen(["open", path])  # noqa: S603,S607
+        subprocess.Popen(["open", path])
     else:
-        subprocess.Popen(["xdg-open", path])  # noqa: S603,S607
+        subprocess.Popen(["xdg-open", path])
 
 
 # -- HTTP plumbing ---------------------------------------------------------------------------------
+
 
 class _BadRequest(Exception):
     """A malformed request body; answered with 400 rather than silently treated as empty."""
@@ -594,7 +653,7 @@ class _Handler(BaseHTTPRequestHandler):
             if path == "/":
                 return self._serve_index()
             if path.startswith("/static/"):
-                return self._serve_static(path[len("/static/"):])
+                return self._serve_static(path[len("/static/") :])
             if not self._authorised(query):
                 return self._json({"error": "missing or wrong token"}, HTTPStatus.FORBIDDEN)
             if path == "/events":
@@ -618,7 +677,7 @@ class _Handler(BaseHTTPRequestHandler):
             return self._json({"error": "not found"}, HTTPStatus.NOT_FOUND)
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             return None
-        except Exception:  # noqa: BLE001 - report to the client, never kill the server thread silently
+        except Exception:
             return self._json({"error": traceback.format_exc()}, HTTPStatus.INTERNAL_SERVER_ERROR)
 
     def do_POST(self):
@@ -650,7 +709,10 @@ class _Handler(BaseHTTPRequestHandler):
                 return self._json(self.app.open_path(body.get("what")))
             if path == "/api/browse":
                 if self.app.pick_folder is None:
-                    return self._json({"error": "no native folder picker in a browser"}, HTTPStatus.NOT_IMPLEMENTED)
+                    return self._json(
+                        {"error": "no native folder picker in a browser"},
+                        HTTPStatus.NOT_IMPLEMENTED,
+                    )
                 picked = self.app.pick_folder(body.get("current") or None)
                 return self._json({"path": picked})
             if path == "/api/installmod":
@@ -664,7 +726,7 @@ class _Handler(BaseHTTPRequestHandler):
             return self._json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             return None
-        except Exception:  # noqa: BLE001
+        except Exception:
             return self._json({"error": traceback.format_exc()}, HTTPStatus.INTERNAL_SERVER_ERROR)
 
     def _quit_later(self):
@@ -680,7 +742,8 @@ class _Handler(BaseHTTPRequestHandler):
         token = self.headers.get("X-Token") or (query.get("t") or [None])[0]
         ok = token is not None and secrets.compare_digest(token, self.app.token)
         if not ok:
-            self.close_connection = True       # an unread body must not become the next request on a keep-alive socket
+            # an unread body must not become the next request on a keep-alive socket
+            self.close_connection = True
         return ok
 
     def _body(self):
@@ -751,7 +814,7 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_header("Connection", "keep-alive")
         self.send_header("X-Accel-Buffering", "no")
         self.end_headers()
-        self.close_connection = True       # an unbounded body ends when the socket closes
+        self.close_connection = True  # an unbounded body ends when the socket closes
         seq = since
         app = self.app
         while not app.stopped.is_set():
@@ -768,4 +831,4 @@ class _Handler(BaseHTTPRequestHandler):
 
     def _event(self, name, payload):
         data = json.dumps(payload, default=str)
-        self.wfile.write(f"event: {name}\ndata: {data}\n\n".encode("utf-8"))
+        self.wfile.write(f"event: {name}\ndata: {data}\n\n".encode())

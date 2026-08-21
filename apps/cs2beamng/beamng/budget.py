@@ -41,12 +41,30 @@ MIB = 1024.0 * 1024.0
 # the big open-world one and the fair comparison for a city; the maxima are over every level in
 # `content/levels/`. THEIRS, not ours — re-measure rather than edit.
 VANILLA = {
-    "west_coast_usa": {"shapeFiles": 2608, "tsStatics": 22067, "forestTypes": 226,
-                       "forestItems": 133375, "materials": 586, "visibleDistance": 15667},
-    "italy": {"shapeFiles": 1419, "tsStatics": 13971, "forestTypes": 208,
-              "forestItems": 206152, "materials": 171, "visibleDistance": 25000},
-    "johnson_valley": {"shapeFiles": 498, "tsStatics": 15559, "forestTypes": 78,
-                       "forestItems": 663057, "materials": 171, "visibleDistance": 24500},
+    "west_coast_usa": {
+        "shapeFiles": 2608,
+        "tsStatics": 22067,
+        "forestTypes": 226,
+        "forestItems": 133375,
+        "materials": 586,
+        "visibleDistance": 15667,
+    },
+    "italy": {
+        "shapeFiles": 1419,
+        "tsStatics": 13971,
+        "forestTypes": 208,
+        "forestItems": 206152,
+        "materials": 171,
+        "visibleDistance": 25000,
+    },
+    "johnson_valley": {
+        "shapeFiles": 498,
+        "tsStatics": 15559,
+        "forestTypes": 78,
+        "forestItems": 663057,
+        "materials": 171,
+        "visibleDistance": 24500,
+    },
 }
 
 # A `.dae`'s detail nodes: `<name>_a<px>`, plus the two special ones. `Colmesh_` is collision and
@@ -72,7 +90,9 @@ def scan_dae(path):
     if scene < 0:
         return {}, 0
     geometries = {}
-    bounds = [(m.group(1).decode("ascii", "replace"), m.start()) for m in GEOM_RE.finditer(data, 0, scene)]
+    bounds = [
+        (m.group(1).decode("ascii", "replace"), m.start()) for m in GEOM_RE.finditer(data, 0, scene)
+    ]
     edges = [b[1] for b in bounds] + [scene]
     for index, (gid, _start) in enumerate(bounds):
         total = 0
@@ -142,7 +162,9 @@ def _ladder_from_sidecar(level_dir, rel):
     entry = _LADDERS[level_dir].get(rel)
     if not entry:
         return None, None
-    return {int(px): int(t) for px, t in (entry.get("levels") or {}).items()}, int(entry.get("collision") or 0)
+    return {int(px): int(t) for px, t in (entry.get("levels") or {}).items()}, int(
+        entry.get("collision") or 0
+    )
 
 
 def file_bytes(path):
@@ -184,7 +206,7 @@ def measure(level_dir, view_distance, spawn=None, screen_height=1080.0):
             lower = file_name.lower()
             if lower.endswith(".cdae"):
                 if os.path.isfile(os.path.join(root, file_name[:-5] + ".dae")):
-                    continue                           # the source is there; it is scanned below
+                    continue  # the source is there; it is scanned below
                 full = os.path.join(root, file_name[:-5] + ".dae")
             elif lower.endswith(".dae"):
                 full = os.path.join(root, file_name)
@@ -194,10 +216,16 @@ def measure(level_dir, view_distance, spawn=None, screen_height=1080.0):
             size, cooked = file_bytes(full)
             # the detail ladder and the collision count come out of the XML; with the source
             # dropped they are UNKNOWN rather than zero, and are reported as such
-            levels, collision = (scan_dae(full) if os.path.isfile(full)
-                                 else _ladder_from_sidecar(level_dir, rel))
-            shapes[rel] = {"bytes": size, "cooked": cooked, "levels": levels,
-                           "collision": collision, "group": group_of(rel)}
+            levels, collision = (
+                scan_dae(full) if os.path.isfile(full) else _ladder_from_sidecar(level_dir, rel)
+            )
+            shapes[rel] = {
+                "bytes": size,
+                "cooked": cooked,
+                "levels": levels,
+                "collision": collision,
+                "group": group_of(rel),
+            }
 
     unknown_ladders = set()
 
@@ -215,7 +243,11 @@ def measure(level_dir, view_distance, spawn=None, screen_height=1080.0):
         if obj["class"] != "TSStatic":
             continue
         shape_name = str(obj.get("shapeName") or "")
-        rel = shape_name.split(f"/levels/{name}/", 1)[-1] if f"/levels/{name}/" in shape_name else None
+        rel = (
+            shape_name.split(f"/levels/{name}/", 1)[-1]
+            if f"/levels/{name}/" in shape_name
+            else None
+        )
         position = obj.get("position") or [0, 0, 0]
         statics.append((rel, float(position[0]), float(position[1])))
     if spawn_xy is None:
@@ -239,8 +271,9 @@ def measure(level_dir, view_distance, spawn=None, screen_height=1080.0):
         if shape["levels"] is None:
             unknown_ladders.add(shape["group"])
             continue
-        in_view[shape["group"]] += detail_at(shape["levels"], radius, max(distance, 1.0),
-                                             screen_height)
+        in_view[shape["group"]] += detail_at(
+            shape["levels"], radius, max(distance, 1.0), screen_height
+        )
         drawn[shape["group"]] += 1
 
     # -- forest -----------------------------------------------------------------------------
@@ -291,8 +324,9 @@ def measure(level_dir, view_distance, spawn=None, screen_height=1080.0):
         # city the heaviest 100 of 4,289 shapes are half of all object mesh bytes and the biggest
         # single one is 26 MiB. Nothing in this report said that until 2026-08-19, so "the level
         # is too big" had no next question (audit §83).
-        "heaviestShapes": sorted(((s["bytes"], name) for name, s in shapes.items()),
-                                 reverse=True)[:20],
+        "heaviestShapes": sorted(((s["bytes"], name) for name, s in shapes.items()), reverse=True)[
+            :20
+        ],
         "shapeBytesTop100": sum(sorted((s["bytes"] for s in shapes.values()), reverse=True)[:100]),
         "textureBytes": dict(texture_bytes),
         "textureBytesTotal": sum(texture_bytes.values()),
@@ -368,15 +402,26 @@ def measure_vanilla(install_dir):
             continue
         path = os.path.join(levels_dir, file_name)
         name = os.path.splitext(file_name)[0]
-        row = {"shapeFiles": 0, "tsStatics": 0, "forestTypes": 0, "forestItems": 0,
-               "materials": 0, "visibleDistance": None,
-               "meshBytes": 0, "textureBytes": 0, "residentTotal": 0}
+        row = {
+            "shapeFiles": 0,
+            "tsStatics": 0,
+            "forestTypes": 0,
+            "forestItems": 0,
+            "materials": 0,
+            "visibleDistance": None,
+            "meshBytes": 0,
+            "textureBytes": 0,
+            "residentTotal": 0,
+        }
         try:
             with zipfile.ZipFile(path) as archive:
                 # a `.dae` whose `.cdae` is also in the archive is the source file and is not
                 # loaded; collect the cooked stems first so the second pass can skip it
-                cooked_stems = {os.path.splitext(i.filename.lower())[0]
-                                for i in archive.infolist() if i.filename.lower().endswith(".cdae")}
+                cooked_stems = {
+                    os.path.splitext(i.filename.lower())[0]
+                    for i in archive.infolist()
+                    if i.filename.lower().endswith(".cdae")
+                }
                 for info in archive.infolist():
                     lower = info.filename.lower()
                     stem, ext = os.path.splitext(lower)
@@ -412,8 +457,10 @@ def report(result, compare=None):
     compare = compare or VANILLA
     lines = []
     add = lines.append
-    add(f"level {result['level']} — {result['viewDistance']:.0f} m view from "
-        f"({result['spawn'][0]:.0f}, {result['spawn'][1]:.0f})")
+    add(
+        f"level {result['level']} — {result['viewDistance']:.0f} m view from "
+        f"({result['spawn'][0]:.0f}, {result['spawn'][1]:.0f})"
+    )
     add("")
     add("  resident                    MiB")
     for group, value in sorted(result["meshBytes"].items(), key=lambda kv: -kv[1]):
@@ -426,9 +473,11 @@ def report(result, compare=None):
     top100 = result.get("shapeBytesTop100") or 0
     if top100:
         share = 100.0 * top100 / max(1, result["meshBytesTotal"])
-        add(f"  the heaviest shapes — a shape is mounted WHOLE for one instance in view")
-        add(f"    top 100 of {result['shapeFiles']:,} shape files{top100 / MIB:16.0f} MiB "
-            f"({share:.0f} % of all mesh bytes)")
+        add("  the heaviest shapes — a shape is mounted WHOLE for one instance in view")
+        add(
+            f"    top 100 of {result['shapeFiles']:,} shape files{top100 / MIB:16.0f} MiB "
+            f"({share:.0f} % of all mesh bytes)"
+        )
         for value, name in (result.get("heaviestShapes") or [])[:8]:
             add(f"    {name[:44]:<44}{value / MIB:8.1f} MiB")
         add("")
@@ -437,15 +486,19 @@ def report(result, compare=None):
         add(f"    {group:<27}{value:>12,}  ({result['staticsInView'].get(group, 0)} statics)")
     add(f"    {'TOTAL':<27}{result['trianglesInViewTotal']:>12,}")
     if result.get("unknownLadders"):
-        add(f"    NOT COUNTED — the `.dae` sources were dropped, so these groups' detail ladders")
+        add("    NOT COUNTED — the `.dae` sources were dropped, so these groups' detail ladders")
         add(f"    could not be read: {', '.join(result['unknownLadders'])}. Build with `keep_dae`")
-        add(f"    to measure them.")
+        add("    to measure them.")
     add("")
     reference = compare.get("west_coast_usa") or {}
-    add(f"  counts                        this   west_coast_usa")
-    for key, label in (("shapeFiles", "shape files"), ("tsStatics", "TSStatics"),
-                       ("forestTypes", "forest types"), ("forestItems", "forest items"),
-                       ("materials", "materials")):
+    add("  counts                        this   west_coast_usa")
+    for key, label in (
+        ("shapeFiles", "shape files"),
+        ("tsStatics", "TSStatics"),
+        ("forestTypes", "forest types"),
+        ("forestItems", "forest items"),
+        ("materials", "materials"),
+    ):
         theirs = reference.get(key)
         ratio = f"{result[key] / theirs:5.1f}x" if theirs else "    —"
         add(f"    {label:<22}{result[key]:>10,}{(theirs or 0):>12,}  {ratio}")
@@ -458,10 +511,14 @@ def main(argv=None):
     parser = argparse.ArgumentParser(prog="cs2beamng budget", description=__doc__.split("\n\n")[0])
     parser.add_argument("level", nargs="?", help="built level directory")
     parser.add_argument("--view", type=float, default=4000.0, help="view distance in metres")
-    parser.add_argument("--spawn", default=None, help="X,Y to measure from (default: the SpawnSphere)")
+    parser.add_argument(
+        "--spawn", default=None, help="X,Y to measure from (default: the SpawnSphere)"
+    )
     parser.add_argument("--screen-height", type=float, default=1080.0)
     parser.add_argument("--json", default=None, help="also write the numbers here")
-    parser.add_argument("--vanilla", default=None, help="BeamNG install to re-measure the maxima from")
+    parser.add_argument(
+        "--vanilla", default=None, help="BeamNG install to re-measure the maxima from"
+    )
     args = parser.parse_args(sys.argv[1:] if argv is None else argv)
 
     if args.vanilla:

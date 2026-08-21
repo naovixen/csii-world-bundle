@@ -7,13 +7,14 @@ north from the south, clockwise) and looks at `(cx, cy, cz)`. `ortho` makes it a
 orthographic camera of width `dist`. Output path must be ABSOLUTE (a relative one silently
 writes nothing under --background). EEVEE, Standard view transform, one sun.
 """
+
 import math
 import sys
 
 import bpy
 from mathutils import Vector
 
-args = sys.argv[sys.argv.index("--") + 1:]
+args = sys.argv[sys.argv.index("--") + 1 :]
 out = args[0]
 cx, cy, cz, dist, elev, az = (float(v) for v in args[1:7])
 ortho = len(args) > 7 and args[7].lower().startswith("ortho")
@@ -31,7 +32,9 @@ if ortho:
     cam.rotation_euler = (0.0, 0.0, 0.0)
 else:
     e, a = math.radians(elev), math.radians(az)
-    cam.location = target + dist * Vector((math.cos(e) * math.sin(a), -math.cos(e) * math.cos(a), math.sin(e)))
+    cam.location = target + dist * Vector(
+        (math.cos(e) * math.sin(a), -math.cos(e) * math.cos(a), math.sin(e))
+    )
     direction = target - cam.location
     cam.rotation_euler = direction.to_track_quat("-Z", "Y").to_euler()
     cam_data.lens = 24.0

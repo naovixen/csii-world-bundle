@@ -23,35 +23,39 @@ have made is a suggestion that disappears the moment you accept it.
 
 import hashlib
 import json
-import math
 import os
 import time
 
 import numpy
-
-from csiibundle import groundmap, png as png_mod, reader, splat as splat_mod
+from csiibundle import groundmap, reader
+from csiibundle import png as png_mod
+from csiibundle import splat as splat_mod
 
 from .. import settings as settings_mod
 
 SCHEMA = "cs2beamng.mapview/1"
 MAP_DIR = "mapview"
-SIZE = 1024                       # pixels on the long edge; 14 m per pixel on a full city
+SIZE = 1024  # pixels on the long edge; 14 m per pixel on a full city
 ROAD_RGB = (236, 238, 244)
 HIGHWAY_RGB = (255, 214, 122)
 # A road is drawn one pixel wide and a highway two: at 14 m per pixel a carriageway is a third of
 # a pixel, so the line width is legibility and not a measurement, and the two colours are what
 # make a city's shape readable rather than a grey web.
 HIGHWAY_CATEGORIES = {"highway"}
-SUGGESTIONS = 12                  # offered, not placed; `poi_max` is what a build derives
+SUGGESTIONS = 12  # offered, not placed; `poi_max` is what a build derives
 
 
 def key_for(bundle):
     """A cache key over what the picture is drawn FROM."""
     parts = [os.path.abspath(bundle or "")]
-    for rel in ("bundle.json", "lanes.jsonl", "networks.jsonl",
-                os.path.join("terrain", "heightmap.png"),
-                os.path.join("terrain", "splatmap.png"),
-                os.path.join("terrain", "water_level.png")):
+    for rel in (
+        "bundle.json",
+        "lanes.jsonl",
+        "networks.jsonl",
+        os.path.join("terrain", "heightmap.png"),
+        os.path.join("terrain", "splatmap.png"),
+        os.path.join("terrain", "water_level.png"),
+    ):
         try:
             stat = os.stat(os.path.join(bundle or "", rel))
             parts.append(f"{rel}:{stat.st_size}:{int(stat.st_mtime_ns)}")
@@ -105,16 +109,23 @@ def build(bundle, cancelled=None):
     # must not cost a second pass over a 230 MiB layer, and the same pass has just walked it.
     names = sorted({name for _x, _y, _z, name in midpoints if name})
     _save_samples(samples_path, midpoints, names)
-    doc = {"schema": SCHEMA, "bundle": os.path.abspath(bundle), "key": key_for(bundle),
-           "world": world, "suggestions": _suggestions(bundle, midpoints),
-           "roadNames": names, "roadSamples": len(midpoints),
-           "seconds": round(time.monotonic() - started, 1)}
+    doc = {
+        "schema": SCHEMA,
+        "bundle": os.path.abspath(bundle),
+        "key": key_for(bundle),
+        "world": world,
+        "suggestions": _suggestions(bundle, midpoints),
+        "roadNames": names,
+        "roadSamples": len(midpoints),
+        "seconds": round(time.monotonic() - started, 1),
+    }
     _write(meta_path, json.dumps(doc, separators=(",", ":")).encode("utf-8"))
     doc["image"] = image_path
     return doc
 
 
 # -- the ground ------------------------------------------------------------------------------
+
 
 def _ground(bundle, rasters, manifest):
     """`(rgb, world)` — the bundle's ground at map size, and the pixel <-> metre conversion.
@@ -145,9 +156,13 @@ def _ground(bundle, rasters, manifest):
             water = reader.resample_nearest(water, raw.shape)
         surface = water[::step, ::step].astype(numpy.float32) * scale
     rgb = groundmap.ground_image(heights, layers, palette, cell, surface)
-    world = {"originX": float(origin[0]), "originZ": float(origin[2]),
-             "metresPerPixel": cell, "pixels": int(heights.shape[0]),
-             "mapSize": float(manifest.get("mapSize") or heights.shape[0] * cell)}
+    world = {
+        "originX": float(origin[0]),
+        "originZ": float(origin[2]),
+        "metresPerPixel": cell,
+        "pixels": int(heights.shape[0]),
+        "mapSize": float(manifest.get("mapSize") or heights.shape[0] * cell),
+    }
     return numpy.clip(rgb, 0, 255).astype(numpy.uint8), world
 
 
@@ -161,7 +176,7 @@ def _layers(bundle, rasters, shape):
         sp = splat_mod.Splat(path, block)
         mapping, _published = splat_mod.channel_mapping(block)
         index, names = splat_mod.dominant_layer(sp, mapping, surface_index=None)
-    except Exception:                                     # noqa: BLE001 - a map is never fatal
+    except Exception:
         return ["rock"], numpy.zeros(shape, dtype=numpy.uint8)
     if index.shape != shape:
         index = reader.resample_nearest(index, shape)
@@ -169,6 +184,7 @@ def _layers(bundle, rasters, shape):
 
 
 # -- the roads -------------------------------------------------------------------------------
+
 
 def _roads(bundle, world, cancelled=None):
     """`(mask, midpoints)` — a (pixels, pixels) uint8 of 0 / 1 road / 2 highway, and one
@@ -187,8 +203,10 @@ def _roads(bundle, world, cancelled=None):
         for record in reader.read_jsonl(path):
             attrs = record.get("attrs") or {}
             if attrs.get("category") in navgraph_mod.DEFAULT_CATEGORIES:
-                segments[record["id"]] = (attrs.get("name"),
-                                          attrs.get("category") in HIGHWAY_CATEGORIES)
+                segments[record["id"]] = (
+                    attrs.get("name"),
+                    attrs.get("category") in HIGHWAY_CATEGORIES,
+                )
     pixels = int(world["pixels"])
     mask = numpy.zeros((pixels, pixels), dtype=numpy.uint8)
     midpoints = []
@@ -230,7 +248,7 @@ def _draw(mask, points, world, value):
     py = (oz - zs) * scale
     for i in range(len(points) - 1):
         steps = int(max(abs(px[i + 1] - px[i]), abs(py[i + 1] - py[i]))) + 1
-        if steps > 4096:                                  # a path that leaves the map: skip it
+        if steps > 4096:  # a path that leaves the map: skip it
             continue
         t = numpy.linspace(0.0, 1.0, steps + 1)
         cx = numpy.clip((px[i] + (px[i + 1] - px[i]) * t).astype(numpy.int32), 0, size - 1)
@@ -248,6 +266,7 @@ def _compose(ground, roads):
 
 # -- the suggestions -------------------------------------------------------------------------
 
+
 def _suggestions(bundle, midpoints):
     """Places worth offering as fast-travel points, by the build's own rule.
 
@@ -258,8 +277,8 @@ def _suggestions(bundle, midpoints):
     """
     if not midpoints:
         return []
-    from ..beamng import frame                            # noqa: PLC0415
-    from ..stages import poi as poi_stage                 # noqa: PLC0415
+    from ..beamng import frame
+    from ..stages import poi as poi_stage
 
     points, labels = [], []
     for x, y, z, label in midpoints:
@@ -271,12 +290,18 @@ def _suggestions(bundle, midpoints):
     for entry in poi_stage._derive(network, SUGGESTIONS, []):
         bx, by = entry["at_beamng"]
         x, _up, z = frame.to_bundle(bx, by, 0.0)
-        out.append({"name": entry["name"], "at": [round(x, 1), round(z, 1)],
-                    "description": entry["description"]})
+        out.append(
+            {
+                "name": entry["name"],
+                "at": [round(x, 1), round(z, 1)],
+                "description": entry["description"],
+            }
+        )
     return out
 
 
 # -- placing a point -------------------------------------------------------------------------
+
 
 def snap(bundle, at):
     """The nearest drivable point to `at` (bundle X/Z), or `at` unchanged where there is no road.
@@ -288,7 +313,7 @@ def snap(bundle, at):
     samples = _road_samples(bundle)
     if samples is None or not len(samples):
         return {"at": [float(at[0]), float(at[1])], "snapped": False}
-    from scipy.spatial import cKDTree                     # noqa: PLC0415 - a hard dependency
+    from scipy.spatial import cKDTree
 
     tree = _tree_for(bundle, samples[:, :2], cKDTree)
     distance, index = tree.query(numpy.asarray([float(at[0]), float(at[1])], dtype=numpy.float64))
@@ -296,9 +321,12 @@ def snap(bundle, at):
     doc = load(bundle) or {}
     names = doc.get("roadNames") or []
     which = int(point[2])
-    return {"at": [round(float(point[0]), 1), round(float(point[1]), 1)],
-            "name": names[which] if 0 <= which < len(names) else None,
-            "snapped": True, "movedMetres": round(float(distance), 1)}
+    return {
+        "at": [round(float(point[0]), 1), round(float(point[1]), 1)],
+        "name": names[which] if 0 <= which < len(names) else None,
+        "snapped": True,
+        "movedMetres": round(float(distance), 1),
+    }
 
 
 _SAMPLE_CACHE = {}
@@ -340,7 +368,7 @@ def _road_samples(bundle):
             out = numpy.load(handle)
     except (OSError, ValueError):
         out = numpy.zeros((0, 3), dtype=numpy.float32)
-    if out.ndim != 2 or out.shape[1] != 3:                # a file from an older map build
+    if out.ndim != 2 or out.shape[1] != 3:  # a file from an older map build
         out = numpy.zeros((0, 3), dtype=numpy.float32)
     _SAMPLE_CACHE.clear()
     _TREE_CACHE.clear()

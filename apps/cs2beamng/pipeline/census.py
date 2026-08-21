@@ -18,9 +18,8 @@ from csiibundle.bake import manifest as bake_manifest
 from csiibundle.bake import products as bake_products
 
 from .. import settings as settings_mod
-from .bakeopts import bake_options
 from . import history
-
+from .bakeopts import bake_options
 
 _SIZE_CACHE = {}
 
@@ -72,8 +71,15 @@ def _dir_size(path):
 
 def take(values):
     bundle = values.get("bundle") or ""
-    out = {"bundle": None, "derived": {"present": False, "products": {}}, "region": None, "scale": 1.0,
-           "estimates": {}, "totalSeconds": None, "warnings": []}
+    out = {
+        "bundle": None,
+        "derived": {"present": False, "products": {}},
+        "region": None,
+        "scale": 1.0,
+        "estimates": {},
+        "totalSeconds": None,
+        "warnings": [],
+    }
     manifest = reader.load_manifest(bundle) if bundle else None
     if manifest is None:
         out["warnings"].append(f"no bundle.json at {bundle!r}")
@@ -81,11 +87,19 @@ def take(values):
     counts = dict(manifest.get("counts") or {})
     layers = dict(manifest.get("layers") or {})
     size_bytes = _bundle_size(bundle, layers)
-    raster_size = ((manifest.get("rasters") or {}).get("size") or [4096, 4096])
-    out["bundle"] = {"path": bundle, "city": manifest.get("city"), "generatedAt": manifest.get("generatedAt"),
-                     "generator": manifest.get("generator"), "schema": manifest.get("schema"),
-                     "mapSize": manifest.get("mapSize"), "counts": counts, "layers": sorted(layers),
-                     "sizeBytes": size_bytes, "rasterSize": raster_size}
+    raster_size = (manifest.get("rasters") or {}).get("size") or [4096, 4096]
+    out["bundle"] = {
+        "path": bundle,
+        "city": manifest.get("city"),
+        "generatedAt": manifest.get("generatedAt"),
+        "generator": manifest.get("generator"),
+        "schema": manifest.get("schema"),
+        "mapSize": manifest.get("mapSize"),
+        "counts": counts,
+        "layers": sorted(layers),
+        "sizeBytes": size_bytes,
+        "rasterSize": raster_size,
+    }
     region = settings_mod.region_of(values)
     out["region"] = region
     map_size = float(manifest.get("mapSize") or 14336.0)
@@ -105,8 +119,10 @@ def take(values):
             # beyond tile/diagonal/region reads as stale forever (`bakeopts.bake_options`)
             options = bake_options(values)
             report = bake_manifest.status_report(doc, bake_products(), bundle, options)
-            out["derived"]["products"] = {k: {"status": s, "reason": r} for k, (s, r) in report.items()}
-        except Exception as exc:  # noqa: BLE001
+            out["derived"]["products"] = {
+                k: {"status": s, "reason": r} for k, (s, r) in report.items()
+            }
+        except Exception as exc:
             out["warnings"].append(f"derived cache check failed: {exc!r}")
 
     # per-stage units and seconds
@@ -116,11 +132,15 @@ def take(values):
         "bake/materials": counts.get("materials", 0),
         "bake/lods": counts.get("meshes", 0) if values.get("generate_lods", True) else 0,
         "bake/markings": counts.get("laneGeometry", 0) if values.get("markings", True) else 0,
-        "bake/lanegeometry": counts.get("laneGeometry", 0) if values.get("lane_furniture", True) else 0,
+        "bake/lanegeometry": counts.get("laneGeometry", 0)
+        if values.get("lane_furniture", True)
+        else 0,
         "bake/areas": counts.get("areas", 0) * scale if values.get("areas", True) else 0,
         "bake/skirts": counts.get("instances", 0) if values.get("skirts", True) else 0,
         "bake/terrainmask": 1,
-        "terrain": int(raster_size[0]) * int(raster_size[1]) * (values.get("terrain_upsample", 1) or 1) ** 2,
+        "terrain": int(raster_size[0])
+        * int(raster_size[1])
+        * (values.get("terrain_upsample", 1) or 1) ** 2,
         "water": 1 if values.get("water", True) else 0,
         "scene": counts.get("lanes", 0) or 1,
         "materials": counts.get("materials", 0),
@@ -132,14 +152,18 @@ def take(values):
         "validate": 1,
     }
     for key, u in units.items():
-        status = out["derived"]["products"].get(key.split("/", 1)[1], {}).get("status") if key.startswith("bake/") else None
+        status = (
+            out["derived"]["products"].get(key.split("/", 1)[1], {}).get("status")
+            if key.startswith("bake/")
+            else None
+        )
         if status == "fresh":
             u = 0
         seconds = history.estimate_seconds(key, u, rates) if u else 0.0
         out["estimates"][key] = {"units": u, "seconds": seconds}
     # the total counts only the stages that exist and are enabled, so the preflight number and
     # the Build card's stage list say the same thing
-    from ..stages import all_stages  # noqa: WPS433 - lazy: stages import numpy-heavy code
+    from ..stages import all_stages
 
     total = 0.0
     known = True

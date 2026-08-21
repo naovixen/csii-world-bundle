@@ -48,8 +48,8 @@ MAX_TILES = 256
 
 # When a tile may be instanced instead of baked. Both are accuracy bounds on the claim "this
 # window's bend is rigid", so tightening them costs speed and never fidelity. TUNED.
-TILE_CHORD_TOL = 0.02   # m: max deviation of the tile's curve window from its 3D chord
-TILE_WIDTH_TOL = 0.01   # fraction: max widthScale variation across the tile
+TILE_CHORD_TOL = 0.02  # m: max deviation of the tile's curve window from its 3D chord
+TILE_WIDTH_TOL = 0.01  # fraction: max widthScale variation across the tile
 
 
 def tile_count(span_length, mesh_length, tiling_count, geometry_tiling):
@@ -71,8 +71,7 @@ def tile_count(span_length, mesh_length, tiling_count, geometry_tiling):
         tiles = (clip + tiling_count - 1) // tiling_count
         return (min(MAX_TILES, tiles) if geometry_tiling else min(1, tiles)), clip
     if geometry_tiling:
-        return max(1, min(MAX_TILES,
-                          math.ceil(span_length / max(1.0, mesh_length) - 0.0001))), 0
+        return max(1, min(MAX_TILES, math.ceil(span_length / max(1.0, mesh_length) - 0.0001))), 0
     return 1, 0
 
 
@@ -99,8 +98,7 @@ def hang_curve(record, prefab, curve_length):
     if distances is None and not hanging:
         return None
     d0, d1 = distances if distances is not None else (0.0, 0.0)
-    return (d0, (d0 + hanging * curve_length) * 2 / 3,
-            (d1 + hanging * curve_length) * 2 / 3, d1)
+    return (d0, (d0 + hanging * curve_length) * 2 / 3, (d1 + hanging * curve_length) * 2 / 3, d1)
 
 
 def hang_drop(control, t):
@@ -123,23 +121,43 @@ def quat_apply(quat, vectors):
     tx = 2 * (y * v[:, 2] - z * v[:, 1])
     ty = 2 * (z * v[:, 0] - x * v[:, 2])
     tz = 2 * (x * v[:, 1] - y * v[:, 0])
-    return numpy.stack((v[:, 0] + w * tx + y * tz - z * ty,
-                        v[:, 1] + w * ty + z * tx - x * tz,
-                        v[:, 2] + w * tz + x * ty - y * tx), axis=1)
+    return numpy.stack(
+        (
+            v[:, 0] + w * tx + y * tz - z * ty,
+            v[:, 1] + w * ty + z * tx - x * tz,
+            v[:, 2] + w * tz + x * ty - y * tx,
+        ),
+        axis=1,
+    )
 
 
 def quat_to_mat3(quat):
     """A bundle quaternion `[x, y, z, w]` as a 3×3 rotation matrix (columns = rotated axes)."""
     x, y, z, w = quat
-    return numpy.array([
-        [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
-        [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
-        [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)],
-    ], dtype=numpy.float64)
+    return numpy.array(
+        [
+            [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+            [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+            [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)],
+        ],
+        dtype=numpy.float64,
+    )
 
 
-def rigid_tile_matrix(curve, t_table, arc_table, arc_start, arc_per_z,
-                      span, inverted, width_scale, pos, rot, bmin_z, mesh_length):
+def rigid_tile_matrix(
+    curve,
+    t_table,
+    arc_table,
+    arc_start,
+    arc_per_z,
+    span,
+    inverted,
+    width_scale,
+    pos,
+    rot,
+    bmin_z,
+    mesh_length,
+):
     """The BUNDLE-frame 4×4 placing one straight tile rigidly, or `None` if the bend is not
     rigid over this tile's window.
 
@@ -155,8 +173,15 @@ def rigid_tile_matrix(curve, t_table, arc_table, arc_start, arc_per_z,
     converts any other (`frames.to_zup_transform` for the Z-up case).
     """
     arc_end = arc_start + arc_per_z
-    arcs = numpy.array([arc_start, arc_start + 0.25 * arc_per_z, arc_start + 0.5 * arc_per_z,
-                        arc_start + 0.75 * arc_per_z, arc_end])
+    arcs = numpy.array(
+        [
+            arc_start,
+            arc_start + 0.25 * arc_per_z,
+            arc_start + 0.5 * arc_per_z,
+            arc_start + 0.75 * arc_per_z,
+            arc_end,
+        ]
+    )
     t = numpy.interp(arcs, arc_table, t_table)
     points = bezier.evaluate(curve, t)
     chord = points[-1] - points[0]
@@ -168,9 +193,12 @@ def rigid_tile_matrix(curve, t_table, arc_table, arc_start, arc_per_z,
     if float(deviation.max()) > TILE_CHORD_TOL:
         return None
 
-    t_global = numpy.where(inverted, span[1] - (span[1] - span[0]) * t[[0, -1]],
-                           span[0] + (span[1] - span[0]) * t[[0, -1]])
-    w0, w1 = (width_scale[0] + (width_scale[1] - width_scale[0]) * t_global)
+    t_global = numpy.where(
+        inverted,
+        span[1] - (span[1] - span[0]) * t[[0, -1]],
+        span[0] + (span[1] - span[0]) * t[[0, -1]],
+    )
+    w0, w1 = width_scale[0] + (width_scale[1] - width_scale[0]) * t_global
     if abs(w1 - w0) > TILE_WIDTH_TOL * max(abs(w0), abs(w1), 1e-6):
         return None
     width = (w0 + w1) * 0.5
@@ -187,8 +215,9 @@ def rigid_tile_matrix(curve, t_table, arc_table, arc_start, arc_per_z,
     outer[:, 2] = chord / mesh_length
     matrix = numpy.eye(4)
     matrix[:3, :3] = outer @ quat_to_mat3(rot)
-    matrix[:3, 3] = (points[0] - outer[:, 2] * bmin_z
-                     + outer @ numpy.asarray(pos, dtype=numpy.float64))
+    matrix[:3, 3] = (
+        points[0] - outer[:, 2] * bmin_z + outer @ numpy.asarray(pos, dtype=numpy.float64)
+    )
     return matrix
 
 
@@ -213,13 +242,20 @@ def part_source(nodes):
     base = 0
     for node in nodes:
         v = numpy.asarray(node["verts"], dtype=numpy.float64)
-        m = numpy.asarray(node.get("matrix"), dtype=numpy.float64) if node.get("matrix") is not None else numpy.identity(4)
+        m = (
+            numpy.asarray(node.get("matrix"), dtype=numpy.float64)
+            if node.get("matrix") is not None
+            else numpy.identity(4)
+        )
         v = v @ m[:3, :3].T + m[:3, 3]
         v[:, 0] *= -1.0
         t = numpy.asarray(node["tris"], dtype=numpy.int64)
         uvs = node.get("uvs")
-        uv_corner = (numpy.asarray(uvs, dtype=numpy.float64)[t] if uvs is not None
-                     else numpy.zeros((len(t), 3, 2), dtype=numpy.float64))
+        uv_corner = (
+            numpy.asarray(uvs, dtype=numpy.float64)[t]
+            if uvs is not None
+            else numpy.zeros((len(t), 3, 2), dtype=numpy.float64)
+        )
         cursor = 0
         for name, count in node.get("material_runs", []):
             if name not in materials:
@@ -241,8 +277,14 @@ def part_source(nodes):
     quad = decals.quad_info(verts, tris, uvs)
     if quad is not None:
         quad["material"] = materials[int(tri_material[0])] if len(tris) else None
-    return {"verts": verts, "tris": tris, "uvs": uvs, "tri_material": tri_material,
-            "materials": materials, "quad": quad}
+    return {
+        "verts": verts,
+        "tris": tris,
+        "uvs": uvs,
+        "tri_material": tri_material,
+        "materials": materials,
+        "quad": quad,
+    }
 
 
 def bend_part(part, source, curve, spans, curve_length, width_scale, hang, sink):
@@ -299,8 +341,7 @@ def bend_part(part, source, curve, spans, curve_length, width_scale, hang, sink)
         if is_decal:
             tiles, clip = tile_count(total_arc, mesh_length, tiling_count, False)
             tiles = min(tiles, 1)  # geometry stays the single chord-to-chord box
-            n_total = (clip / tiling_count if tiling_count
-                       else total_arc / max(1.0, mesh_length))
+            n_total = clip / tiling_count if tiling_count else total_arc / max(1.0, mesh_length)
         else:
             tiles, clip = tile_count(span_length, mesh_length, tiling_count, geometry_tiling)
         if tiles < 1 or (tiling_count > 0 and clip < 1):
@@ -325,8 +366,10 @@ def bend_part(part, source, curve, spans, curve_length, width_scale, hang, sink)
             # takes this general unsubdivided path rather than a guess at its shape.
             raw_verts, tris_local, uv_local = source["verts"], source["tris"], source["uvs"]
             tri_mat = source["tri_material"]
-            material_groups = [(source["materials"][m], numpy.nonzero(tri_mat == m)[0])
-                               for m in numpy.unique(tri_mat)]
+            material_groups = [
+                (source["materials"][m], numpy.nonzero(tri_mat == m)[0])
+                for m in numpy.unique(tri_mat)
+            ]
 
         local = quat_apply(rot, raw_verts) + pos
         z_fraction = (local[:, 2] - bmin[2]) / mesh_length
@@ -368,9 +411,20 @@ def bend_part(part, source, curve, spans, curve_length, width_scale, hang, sink)
             # width is constant bends into exactly one affine transform — record an instance and
             # skip the per-vertex bake. Everything failing the gate bakes as before.
             if full_tile and not is_decal and hang is None and lift == 0.0:
-                matrix = rigid_tile_matrix(curve_span, t_table, arc_table, arc_start, arc_per_z,
-                                           span, inverted, width_scale, pos, rot,
-                                           bmin[2], mesh_length)
+                matrix = rigid_tile_matrix(
+                    curve_span,
+                    t_table,
+                    arc_table,
+                    arc_start,
+                    arc_per_z,
+                    span,
+                    inverted,
+                    width_scale,
+                    pos,
+                    rot,
+                    bmin[2],
+                    mesh_length,
+                )
                 if matrix is not None:
                     sink["instances"].append((part["assetId"], matrix))
                     sink["tiles_instanced"] = sink.get("tiles_instanced", 0) + 1
@@ -390,13 +444,16 @@ def bend_part(part, source, curve, spans, curve_length, width_scale, hang, sink)
             rlen = numpy.linalg.norm(right[:, (0, 2)], axis=1, keepdims=True)
             right = right / numpy.clip(rlen, 1e-9, None)
 
-            t_global = numpy.where(inverted, span[1] - (span[1] - span[0]) * t,
-                                   span[0] + (span[1] - span[0]) * t)
+            t_global = numpy.where(
+                inverted, span[1] - (span[1] - span[0]) * t, span[0] + (span[1] - span[0]) * t
+            )
             width = width_scale[0] + (width_scale[1] - width_scale[0]) * t_global
             drop = hang_drop(hang, t_global) if hang is not None else numpy.zeros_like(t_global)
 
-            world = (points[station_of_vert]
-                     + right[station_of_vert] * (local_x * width[station_of_vert])[:, None])
+            world = (
+                points[station_of_vert]
+                + right[station_of_vert] * (local_x * width[station_of_vert])[:, None]
+            )
             world[:, 1] += local_y + lift - drop[station_of_vert]
 
             for material, tri_rows in material_groups:

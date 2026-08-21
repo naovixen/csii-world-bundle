@@ -48,10 +48,10 @@ from . import bezier
 #
 # TUNED (the magnitudes) / CONTRACT (the order).
 LIFT_LADDER = (
-    ("terrain", 0.000),        # the thing being painted on
-    ("lane_tint", 0.008),      # lane wear tint          ) on the ROAD, draped onto it
-    ("lane_marking", 0.014),   # markings, crosswalks    )  per vertex
-    ("area", 0.020),           # §8b surface areas — pavement, driveways, paths
+    ("terrain", 0.000),  # the thing being painted on
+    ("lane_tint", 0.008),  # lane wear tint          ) on the ROAD, draped onto it
+    ("lane_marking", 0.014),  # markings, crosswalks    )  per vertex
+    ("area", 0.020),  # §8b surface areas — pavement, driveways, paths
     ("instance_decal", 0.030),  # §4.2a decal instances — bay markings, arrows
 )
 LIFT = dict(LIFT_LADDER)
@@ -117,6 +117,7 @@ def instance_priority_lift(priority, ordered):
     if top * step > INSTANCE_PRIORITY_CEILING:
         step = INSTANCE_PRIORITY_CEILING / top
     return rank * step
+
 
 # The lane bend's PRE-DRAPE offset. NOT a rung of the ladder above and must not be tuned with
 # it: the drape centres each marking's ±half-height search window on the height this produces,
@@ -236,8 +237,9 @@ def station_rows(rows, n_total):
     if len(bounds) == 0:
         return base, base * n_total
     keep = base[numpy.abs(base[:, None] - bounds[None, :]).min(axis=1) > 1e-6]
-    tag = numpy.concatenate([numpy.zeros(len(keep)), numpy.ones(len(bounds)),
-                             numpy.full(len(bounds), 2.0)])
+    tag = numpy.concatenate(
+        [numpy.zeros(len(keep)), numpy.ones(len(bounds)), numpy.full(len(bounds), 2.0)]
+    )
     val = numpy.concatenate([keep, bounds, bounds])
     order = numpy.lexsort((tag, val))  # by station; period-end copy before period-start copy
     stations, tag = val[order], tag[order]
@@ -249,6 +251,7 @@ def station_rows(rows, n_total):
 
 
 # -- the quad and its lattice -------------------------------------------------------------------
+
 
 def quad_info(verts, tris, uvs):
     """Reduce a two-triangle decal rectangle to its four corners, for direct lattice generation.
@@ -274,10 +277,14 @@ def quad_info(verts, tris, uvs):
     z_sorted = sorted(float(v[2]) for v in verts)
     if abs(z_sorted[0] - z_sorted[1]) > 1e-4 or abs(z_sorted[2] - z_sorted[3]) > 1e-4:
         return None
-    near = sorted((i for i in range(4) if abs(float(verts[i][2]) - z_sorted[0]) <= 1e-4),
-                  key=lambda i: verts[i][0])
-    far = sorted((i for i in range(4) if abs(float(verts[i][2]) - z_sorted[2]) <= 1e-4),
-                 key=lambda i: verts[i][0])
+    near = sorted(
+        (i for i in range(4) if abs(float(verts[i][2]) - z_sorted[0]) <= 1e-4),
+        key=lambda i: verts[i][0],
+    )
+    far = sorted(
+        (i for i in range(4) if abs(float(verts[i][2]) - z_sorted[2]) <= 1e-4),
+        key=lambda i: verts[i][0],
+    )
     if len(near) != 2 or len(far) != 2:
         return None
 
@@ -293,8 +300,10 @@ def quad_info(verts, tris, uvs):
         "near_right": tuple(float(c) for c in verts[near[1]]),
         "far_left": tuple(float(c) for c in verts[far[0]]),
         "far_right": tuple(float(c) for c in verts[far[1]]),
-        "uv_near_left": corner_uv[int(near[0])], "uv_near_right": corner_uv[int(near[1])],
-        "uv_far_left": corner_uv[int(far[0])], "uv_far_right": corner_uv[int(far[1])],
+        "uv_near_left": corner_uv[int(near[0])],
+        "uv_near_right": corner_uv[int(near[1])],
+        "uv_far_left": corner_uv[int(far[0])],
+        "uv_far_right": corner_uv[int(far[1])],
         "flip": flip,
     }
 
@@ -337,8 +346,9 @@ def lattice(quad, stations, v_frac):
 
     row = numpy.nonzero(st[1:] > st[:-1])[0]
     l0, r0, l1, r1 = row * 2, row * 2 + 1, row * 2 + 2, row * 2 + 3
-    tris = numpy.stack((numpy.stack((l0, r0, r1), axis=1),
-                        numpy.stack((l0, r1, l1), axis=1)), axis=1).reshape(-1, 3)
+    tris = numpy.stack(
+        (numpy.stack((l0, r0, r1), axis=1), numpy.stack((l0, r1, l1), axis=1)), axis=1
+    ).reshape(-1, 3)
     if quad["flip"]:
         tris = tris[:, ::-1]
     return verts, tris, uv[tris]

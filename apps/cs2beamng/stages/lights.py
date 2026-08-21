@@ -42,7 +42,8 @@ import hashlib
 import math
 import time
 
-from csiibundle import instances as bundle_instances, lights as bundle_lights
+from csiibundle import instances as bundle_instances
+from csiibundle import lights as bundle_lights
 
 from ..beamng import frame, placement
 from . import Stage, level_of
@@ -122,7 +123,9 @@ def run(ctx, progress):
 
     cap = max(0, int(settings.get("lights_max", LIGHTS_MAX_DEFAULT) or 0))
     candidates = []
-    progress.begin("lights: finding lit instances", total=units(ctx.census, settings), unit="instances")
+    progress.begin(
+        "lights: finding lit instances", total=units(ctx.census, settings), unit="instances"
+    )
     scanned = 0
     # the road-clearance deviation, as the shapes stage computed it — a light parented to a tree
     # that was not placed must not be placed either, which is the whole point of one admission
@@ -156,8 +159,9 @@ def run(ctx, progress):
     progress.end(f"{placed:,} lights placed")
     level.write_objects()
 
-    faintest = min((bundle_lights.candela(e) or 0.0 for _s, _r, e, _i in candidates[:cap]),
-                   default=0.0)
+    faintest = min(
+        (bundle_lights.candela(e) or 0.0 for _s, _r, e, _i in candidates[:cap]), default=0.0
+    )
     # `nightLight` is BeamNG's own mechanism and vanilla uses it on 3,063 of its 5,033 lights, but
     # it means the level's CLOCK decides whether any of this is visible: `environment.lua` enables
     # the set only while `time` is inside (0.25, 0.75), and every vanilla level — ours included —
@@ -166,10 +170,12 @@ def run(ctx, progress):
     hour = float((ctx.shared.get("scene") or {}).get("todHour") or -1.0)
     night = 18.0 <= hour or hour < 6.0 if hour >= 0.0 else None
     if night is False:
-        progress.log(f"lights: {placed:,} placed, and NONE of them will be lit — they are night "
-                     f"lights (BeamNG's `nightLight`, vanilla's own mechanism) and the level ships "
-                     f"at {int(hour):02d}:{int(round((hour % 1) * 60)):02d}. Move the time past "
-                     f"18:00 in game, or build with `tod_hour 21`, to see them.")
+        progress.log(
+            f"lights: {placed:,} placed, and NONE of them will be lit — they are night "
+            f"lights (BeamNG's `nightLight`, vanilla's own mechanism) and the level ships "
+            f"at {int(hour):02d}:{int(round((hour % 1) * 60)):02d}. Move the time past "
+            f"18:00 in game, or build with `tod_hour 21`, to see them."
+        )
 
     return {
         "lights": placed,
@@ -184,39 +190,39 @@ def run(ctx, progress):
         "approximations": {
             "lightCap": {
                 "what": f"{placed:,} of the city's {len(candidates):,} punctual lights are placed, "
-                        f"the faintest at {faintest:,.0f} cd",
+                f"the faintest at {faintest:,.0f} cd",
                 "why": "NEITHER engine caps at author time - CS2 keeps all of them and draws up to "
-                       "RenderingSystem.maxLightCount (2,048) per frame, BeamNG culls by frustum, "
-                       "size, occlusion and importance in the engine - so this is a scene-graph "
-                       "budget, not a rendering one. The subset is ranked by BeamNG's own "
-                       "importance metric (luminance x brightness x range) and tie-broken by a "
-                       "stable hash, so a bigger cap is a superset; at a SMALL cap it is the "
-                       "brightest classes, which are not spread evenly over the map",
+                "RenderingSystem.maxLightCount (2,048) per frame, BeamNG culls by frustum, "
+                "size, occlusion and importance in the engine - so this is a scene-graph "
+                "budget, not a rendering one. The subset is ranked by BeamNG's own "
+                "importance metric (luminance x brightness x range) and tie-broken by a "
+                "stable hash, so a bigger cap is a superset; at a SMALL cap it is the "
+                "brightest classes, which are not spread evenly over the map",
                 "count": max(0, len(candidates) - placed),
             },
             "lightsAreNightOnly": {
                 "what": "every placed light carries `nightLight` and is disabled by day",
                 "why": "BeamNG's own mechanism and vanilla's convention (3,063 of its 5,033); CS2 "
-                       "decides per light instead. The level's clock does not move, so the built "
-                       "hour is the only hour these are judged at - `tod_hour` is the knob",
+                "decides per light instead. The level's clock does not move, so the built "
+                "hour is the only hour these are judged at - `tod_hour` is the knob",
                 "count": placed,
             },
             "lightShadows": {
                 "what": "no placed light casts a shadow",
                 "why": "CS2's do; a shadow-casting light costs a render pass and the cap exists "
-                       "for FPS",
+                "for FPS",
                 "count": placed,
             },
             "emissiveSlotsAlwaysOn": {
                 "what": f"the {slots:,} colour slots are applied to their materials by "
-                        "`bake.materials` but never switch off - CS2 lerps each between `color` "
-                        "and `colorOff` (which is BLACK on all 1,896), we emit the lit half at "
-                        "every hour",
+                "`bake.materials` but never switch off - CS2 lerps each between `color` "
+                "and `colorOff` (which is BLACK on all 1,896), we emit the lit half at "
+                "every hour",
                 "why": "BeamNG's counterpart is a TSStatic `nightEmissive`, which drives "
-                       "`instanceColor` slot 0 - and MEASURED, all 639 shapes the slot join "
-                       "reaches carry a `colorPaletteMap` material, so slot 0 is already the "
-                       "colour palette's own channel on every one of them and writing (0,0,0) "
-                       "into it by day would black out the building tint instead",
+                "`instanceColor` slot 0 - and MEASURED, all 639 shapes the slot join "
+                "reaches carry a `colorPaletteMap` material, so slot 0 is already the "
+                "colour palette's own channel on every one of them and writing (0,0,0) "
+                "into it by day would black out the building tint instead",
                 "count": slots,
             },
         },
@@ -225,7 +231,11 @@ def run(ctx, progress):
 
 def _load(bundle_dir):
     catalogue = bundle_lights.load(bundle_dir)
-    if isinstance(catalogue, dict) and "prefabs" in catalogue and isinstance(catalogue["prefabs"], dict):
+    if (
+        isinstance(catalogue, dict)
+        and "prefabs" in catalogue
+        and isinstance(catalogue["prefabs"], dict)
+    ):
         return catalogue["prefabs"]
     return catalogue or {}
 
@@ -255,8 +265,10 @@ def _importance(entry):
     """
     cd = bundle_lights.candela(entry) or 0.0
     colour = entry.get("color") or (1.0, 1.0, 1.0, 1.0)
-    luminance = min(1.0, max(0.0, 0.2126 * float(colour[0]) + 0.7152 * float(colour[1])
-                             + 0.0722 * float(colour[2])))
+    luminance = min(
+        1.0,
+        max(0.0, 0.2126 * float(colour[0]) + 0.7152 * float(colour[1]) + 0.0722 * float(colour[2])),
+    )
     return luminance * cd * BRIGHTNESS_PER_CANDELA * max(0.0, float(entry.get("range") or 0.0))
 
 
@@ -264,7 +276,7 @@ def _priority(record, entry, index):
     """Sort key: smaller wins a slot. `-importance` first, so the cap keeps the lights the engine
     itself would keep; a stable per-instance hash breaks the ties, and every light of one prefab
     ties, so a smaller cap is always a SUBSET of a larger one."""
-    digest = hashlib.blake2b(f"{record.get('id')}:{index}".encode("utf-8"), digest_size=8).digest()
+    digest = hashlib.blake2b(f"{record.get('id')}:{index}".encode(), digest_size=8).digest()
     tie = int.from_bytes(digest, "little") / float(1 << 64)
     return (-_importance(entry), tie)
 
@@ -302,19 +314,32 @@ def _light_object(level, record, entry, index):
     cone = bundle_lights.cone_angles(entry)
     if entry.get("type") == "Spot" and cone:
         outer, inner = cone
-        common.update({"class": "SpotLight", "outerAngle": round(outer, 3), "innerAngle": round(inner, 3),
-                       "range": round(float(entry.get("range") or 10.0), 3),
-                       # a SpotLight stores CANDELA
-                       "intensity": round(cd, 4), "intensityUnit": UNIT_CANDELA,
-                       "rotationMatrix": [round(v, 6) for v in rotation]})
+        common.update(
+            {
+                "class": "SpotLight",
+                "outerAngle": round(outer, 3),
+                "innerAngle": round(inner, 3),
+                "range": round(float(entry.get("range") or 10.0), 3),
+                # a SpotLight stores CANDELA
+                "intensity": round(cd, 4),
+                "intensityUnit": UNIT_CANDELA,
+                "rotationMatrix": [round(v, 6) for v in rotation],
+            }
+        )
         return common
     if entry.get("type") not in ("Spot", "Point"):
         return None
     # a PointLight stores LUMENS: an isotropic source of `cd` candela emits `4*pi*cd` lumens,
     # which is why the vanilla ratio is 4*pi times the spot's and why `brightness` is the same
     # number for both.
-    common.update({"class": "PointLight", "radius": round(float(entry.get("range") or 10.0), 3),
-                   "intensity": round(cd * 4.0 * math.pi, 4), "intensityUnit": UNIT_LUMEN})
+    common.update(
+        {
+            "class": "PointLight",
+            "radius": round(float(entry.get("range") or 10.0), 3),
+            "intensity": round(cd * 4.0 * math.pi, 4),
+            "intensityUnit": UNIT_LUMEN,
+        }
+    )
     return common
 
 
@@ -330,20 +355,32 @@ def _world(record, entry):
     base_pos, base_rot, base_scale = _transform(record)
     local = entry.get("position") or (0.0, 0.0, 0.0)
     local_beamng = (float(local[0]), float(local[2]), float(local[1]))
-    world = [base_pos[axis]
-             + sum(base_rot[axis][k] * base_scale[k] * local_beamng[k] for k in range(3))
-             for axis in range(3)]
+    world = [
+        base_pos[axis] + sum(base_rot[axis][k] * base_scale[k] * local_beamng[k] for k in range(3))
+        for axis in range(3)
+    ]
     local_rot = _swap_yz(_quat_rows(entry.get("rotation") or (0.0, 0.0, 0.0, 1.0)))
-    combined = [[sum(base_rot[r][k] * local_rot[k][c] for k in range(3)) for c in range(3)]
-                for r in range(3)]
+    combined = [
+        [sum(base_rot[r][k] * local_rot[k][c] for k in range(3)) for c in range(3)]
+        for r in range(3)
+    ]
     return world, frame.basis_flat(combined)
 
 
 # `placement.keep` decides which instances are lit, so this stage inherits its whole admission
 # surface - the kind toggles and the two density sliders included.
 INPUTS = ("layer:lights", "layer:instances")
-SETTINGS = ("lights", "lights_max", "region", "trees", "props", "buildings",
-            "foliage_density", "prop_density", "foliage_road_clearance")
+SETTINGS = (
+    "lights",
+    "lights_max",
+    "region",
+    "trees",
+    "props",
+    "buildings",
+    "foliage_density",
+    "prop_density",
+    "foliage_road_clearance",
+)
 
 # version 2: `rotationMatrix` through `frame.basis_flat` - the field holds the object's own axes
 # in groups of three, so flattening the matrix row-major aimed every spot light by the INVERSE of
@@ -352,5 +389,14 @@ SETTINGS = ("lights", "lights_max", "region", "trees", "props", "buildings",
 # candela plus the `brightness` BeamNG actually renders with, in place of the authored Lux; the
 # cap ranks by BeamNG's own importance metric instead of reach alone and defaults to 25,000
 # instead of 500; `isEnabled: false` beside `nightLight`, as vanilla writes it
-STAGE = Stage(STAGE_KEY, "Street and building lights", enabled, units, run, inputs=INPUTS,
-              settings_keys=SETTINGS, after=("shapes", "scene"), version=3)
+STAGE = Stage(
+    STAGE_KEY,
+    "Street and building lights",
+    enabled,
+    units,
+    run,
+    inputs=INPUTS,
+    settings_keys=SETTINGS,
+    after=("shapes", "scene"),
+    version=3,
+)

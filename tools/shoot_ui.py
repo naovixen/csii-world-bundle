@@ -33,7 +33,9 @@ BROWSERS = [
     r"C:\Program Files\Google\Chrome\Application\chrome.exe",
     r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
     "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-    "/usr/bin/google-chrome", "/usr/bin/chromium", "/usr/bin/chromium-browser",
+    "/usr/bin/google-chrome",
+    "/usr/bin/chromium",
+    "/usr/bin/chromium-browser",
 ]
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -57,7 +59,8 @@ class WS:
         self.sock.sendall(
             f"GET /{path} HTTP/1.1\r\nHost: {hostport}\r\nUpgrade: websocket\r\n"
             f"Connection: Upgrade\r\nSec-WebSocket-Key: {key}\r\n"
-            f"Sec-WebSocket-Version: 13\r\n\r\n".encode())
+            f"Sec-WebSocket-Version: 13\r\n\r\n".encode()
+        )
         buf = b""
         while b"\r\n\r\n" not in buf:
             buf += self.sock.recv(4096)
@@ -118,17 +121,30 @@ def main():
     script = sys.argv[6] if len(sys.argv) > 6 else None
 
     profile = os.path.join(tempfile.gettempdir(), "cs2beamng_shoot_ui_profile")
-    proc = subprocess.Popen([find_browser(), "--headless=new", "--no-first-run", "--no-default-browser-check",
-                             "--disable-gpu", "--no-sandbox", "--hide-scrollbars",
-                             f"--window-size={width},{height}",
-                             "--remote-debugging-port=9223", f"--user-data-dir={profile}",
-                             "about:blank"],
-                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    proc = subprocess.Popen(
+        [
+            find_browser(),
+            "--headless=new",
+            "--no-first-run",
+            "--no-default-browser-check",
+            "--disable-gpu",
+            "--no-sandbox",
+            "--hide-scrollbars",
+            f"--window-size={width},{height}",
+            "--remote-debugging-port=9223",
+            f"--user-data-dir={profile}",
+            "about:blank",
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
     try:
         target = None
         for _ in range(60):
             try:
-                pages = json.loads(urllib.request.urlopen("http://127.0.0.1:9223/json/list", timeout=1).read())
+                pages = json.loads(
+                    urllib.request.urlopen("http://127.0.0.1:9223/json/list", timeout=1).read()
+                )
                 target = next((p for p in pages if p.get("type") == "page"), None)
                 if target:
                     break
@@ -139,12 +155,19 @@ def main():
             raise SystemExit("no devtools target")
         ws = WS(target["webSocketDebuggerUrl"])
         ws.call("Page.enable")
-        ws.call("Emulation.setDeviceMetricsOverride", width=width, height=height,
-                deviceScaleFactor=1, mobile=False)
+        ws.call(
+            "Emulation.setDeviceMetricsOverride",
+            width=width,
+            height=height,
+            deviceScaleFactor=1,
+            mobile=False,
+        )
         ws.call("Page.navigate", url=url)
         time.sleep(wait)
         if script:
-            res = ws.call("Runtime.evaluate", expression=script, returnByValue=True, awaitPromise=True)
+            res = ws.call(
+                "Runtime.evaluate", expression=script, returnByValue=True, awaitPromise=True
+            )
             print("js:", json.dumps(res.get("result", {}).get("result", {}).get("value"))[:2000])
             time.sleep(1.0)
         shot = ws.call("Page.captureScreenshot", format="png", captureBeyondViewport=True)

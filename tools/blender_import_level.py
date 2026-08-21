@@ -31,7 +31,7 @@ import time
 
 import bpy
 import numpy
-from mathutils import Matrix, Vector
+from mathutils import Matrix
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), "apps"))
@@ -41,9 +41,14 @@ from cs2beamng.beamng import level as level_mod  # noqa: E402
 from cs2beamng.beamng import ter as ter_mod  # noqa: E402
 
 GROUND_COLOURS = {
-    "grass": (0.18, 0.36, 0.10), "rock": (0.42, 0.40, 0.38), "dirt": (0.36, 0.26, 0.16),
-    "roadbed": (0.22, 0.20, 0.18), "extra1": (0.5, 0.45, 0.3), "extra2": (0.4, 0.5, 0.3),
-    "extra3": (0.5, 0.3, 0.3), "extra4": (0.3, 0.4, 0.5),
+    "grass": (0.18, 0.36, 0.10),
+    "rock": (0.42, 0.40, 0.38),
+    "dirt": (0.36, 0.26, 0.16),
+    "roadbed": (0.22, 0.20, 0.18),
+    "extra1": (0.5, 0.45, 0.3),
+    "extra2": (0.4, 0.5, 0.3),
+    "extra3": (0.5, 0.3, 0.3),
+    "extra4": (0.3, 0.4, 0.5),
 }
 
 
@@ -52,32 +57,50 @@ def log(msg):
 
 
 def parse_args():
-    argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
-    opts = {"level": None, "center": None, "radius": 250.0, "products": None, "terrain": True,
-            "save": None, "ter": None, "forest": True, "forest_max": 40000}
+    argv = sys.argv[sys.argv.index("--") + 1 :] if "--" in sys.argv else []
+    opts = {
+        "level": None,
+        "center": None,
+        "radius": 250.0,
+        "products": None,
+        "terrain": True,
+        "save": None,
+        "ter": None,
+        "forest": True,
+        "forest_max": 40000,
+    }
     i = 0
     while i < len(argv):
         a = argv[i]
         if a == "--level":
-            opts["level"] = argv[i + 1]; i += 2
+            opts["level"] = argv[i + 1]
+            i += 2
         elif a == "--center":
-            opts["center"] = (float(argv[i + 1]), float(argv[i + 2])); i += 3
+            opts["center"] = (float(argv[i + 1]), float(argv[i + 2]))
+            i += 3
         elif a == "--radius":
-            opts["radius"] = float(argv[i + 1]); i += 2
+            opts["radius"] = float(argv[i + 1])
+            i += 2
         elif a == "--products":
-            opts["products"] = set(argv[i + 1].split(",")); i += 2
+            opts["products"] = set(argv[i + 1].split(","))
+            i += 2
         elif a == "--no-terrain":
-            opts["terrain"] = False; i += 1
+            opts["terrain"] = False
+            i += 1
         elif a == "--no-forest":
-            opts["forest"] = False; i += 1
+            opts["forest"] = False
+            i += 1
         elif a == "--forest-max":
-            opts["forest_max"] = int(argv[i + 1]); i += 2
+            opts["forest_max"] = int(argv[i + 1])
+            i += 2
         elif a == "--ter":
             # diagnostic: another level's .ter (same size/origin) in place of this level's — the
             # A/B of a terrain-stage change against the shapes that did not change
-            opts["ter"] = argv[i + 1]; i += 2
+            opts["ter"] = argv[i + 1]
+            i += 2
         elif a == "--save":
-            opts["save"] = argv[i + 1]; i += 2
+            opts["save"] = argv[i + 1]
+            i += 2
         else:
             raise SystemExit(f"unknown argument {a}")
     if not opts["level"] or not opts["center"]:
@@ -86,6 +109,7 @@ def parse_args():
 
 
 # -- level data ----------------------------------------------------------------------------------
+
 
 def read_level(level_dir):
     objects = [o for _f, _n, o in level_mod.read_objects(level_dir) if o]
@@ -115,6 +139,7 @@ def resolve(level_dir, game_path):
 
 # -- terrain -------------------------------------------------------------------------------------
 
+
 def build_terrain(level_dir, objects, center, radius, ter_override=None):
     block = next((o for o in objects if o.get("class") == "TerrainBlock"), None)
     if block is None:
@@ -127,13 +152,15 @@ def build_terrain(level_dir, objects, center, radius, ter_override=None):
     max_height = float(block.get("maxHeight") or 2048.0)
     scale = max_height / 65536.0
     cx, cy = center
-    c0 = max(0, int((cx - radius - pos[0]) / cell)); c1 = min(size - 1, int((cx + radius - pos[0]) / cell) + 1)
-    r0 = max(0, int((cy - radius - pos[1]) / cell)); r1 = min(size - 1, int((cy + radius - pos[1]) / cell) + 1)
+    c0 = max(0, int((cx - radius - pos[0]) / cell))
+    c1 = min(size - 1, int((cx + radius - pos[0]) / cell) + 1)
+    r0 = max(0, int((cy - radius - pos[1]) / cell))
+    r1 = min(size - 1, int((cy + radius - pos[1]) / cell) + 1)
     if c1 <= c0 or r1 <= r0:
         log("region outside the terrain block")
         return
-    hs = heights[r0:r1 + 1, c0:c1 + 1].astype(numpy.float64) * scale + pos[2]
-    ls = layers[r0:r1 + 1, c0:c1 + 1]
+    hs = heights[r0 : r1 + 1, c0 : c1 + 1].astype(numpy.float64) * scale + pos[2]
+    ls = layers[r0 : r1 + 1, c0 : c1 + 1]
     nr, nc = hs.shape
     xs = pos[0] + (numpy.arange(c0, c1 + 1) * cell)
     ys = pos[1] + (numpy.arange(r0, r1 + 1) * cell)
@@ -144,7 +171,10 @@ def build_terrain(level_dir, objects, center, radius, ter_override=None):
     # a face's layer byte is the one at its south-west sample (BeamNG's convention: the square
     # starting at sample (r, c)); HOLE = 255 removes the square
     idx = numpy.arange(nr * nc).reshape(nr, nc)
-    sw = idx[:-1, :-1]; se = idx[:-1, 1:]; nw = idx[1:, :-1]; ne = idx[1:, 1:]
+    sw = idx[:-1, :-1]
+    se = idx[:-1, 1:]
+    nw = idx[1:, :-1]
+    ne = idx[1:, 1:]
     keep = ls[:-1, :-1] != ter_mod.HOLE
     holes = int((~keep).sum())
     quads = numpy.stack([sw[keep], se[keep], ne[keep], nw[keep]], axis=1)
@@ -158,24 +188,32 @@ def build_terrain(level_dir, objects, center, radius, ter_override=None):
     mesh.polygons.foreach_set("loop_start", numpy.arange(len(quads)) * 4)
     mesh.polygons.foreach_set("loop_total", numpy.full(len(quads), 4))
     mats = []
-    for i, name in enumerate(names):
+    for _i, name in enumerate(names):
         m = bpy.data.materials.new(f"ter:{name}")
         m.use_nodes = True
         bsdf = m.node_tree.nodes.get("Principled BSDF")
-        col = next((c for k, c in GROUND_COLOURS.items() if name == k or name.endswith("_" + k)), (0.5, 0.5, 0.5))
+        col = next(
+            (c for k, c in GROUND_COLOURS.items() if name == k or name.endswith("_" + k)),
+            (0.5, 0.5, 0.5),
+        )
         bsdf.inputs["Base Color"].default_value = (*col, 1.0)
         bsdf.inputs["Roughness"].default_value = 1.0
         mesh.materials.append(m)
         mats.append(m)
-    mesh.polygons.foreach_set("material_index", numpy.clip(face_layer, 0, max(0, len(names) - 1)).astype(numpy.int32))
+    mesh.polygons.foreach_set(
+        "material_index", numpy.clip(face_layer, 0, max(0, len(names) - 1)).astype(numpy.int32)
+    )
     mesh.update(calc_edges=True)
     mesh.validate()
     obj = bpy.data.objects.new("terrain", mesh)
     bpy.context.scene.collection.objects.link(obj)
-    log(f"terrain: {nr}x{nc} samples, {len(quads):,} faces, {holes:,} holes in the region, materials {names}")
+    log(
+        f"terrain: {nr}x{nc} samples, {len(quads):,} faces, {holes:,} holes in the region, materials {names}"
+    )
 
 
 # -- shapes ----------------------------------------------------------------------------------------
+
 
 def tiles_in_region(level_dir, objects, center, radius, products):
     cx, cy = center
@@ -203,6 +241,7 @@ def read_dae(path):
     `<instance_geometry>` in the visual scene (geometry ids resolved). Handles per-input
     offsets (indices are un-shared into per-corner vertices when inputs disagree)."""
     import xml.etree.ElementTree as ET
+
     root = ET.parse(path).getroot()
     geoms = {}
     for g in root.iter(NS + "geometry"):
@@ -230,30 +269,42 @@ def read_dae(path):
                 continue
             inputs = []
             for inp in t.findall(NS + "input"):
-                sem, off, srcid = inp.get("semantic"), int(inp.get("offset") or 0), inp.get("source")
+                sem, off, srcid = (
+                    inp.get("semantic"),
+                    int(inp.get("offset") or 0),
+                    inp.get("source"),
+                )
                 if sem == "VERTEX":
                     for vsem, vsrc in vert_map.get(srcid, {}).items():
                         inputs.append((vsem, off, vsrc))
                 else:
                     inputs.append((sem, off, srcid))
             stride = max(off for _s, off, _src in inputs) + 1
-            p = numpy.fromstring(t.find(NS + "p").text, sep=" ", dtype=numpy.int64).reshape(-1, stride)
+            p = numpy.fromstring(t.find(NS + "p").text, sep=" ", dtype=numpy.int64).reshape(
+                -1, stride
+            )
             by = {sem: (off, sources[src]) for sem, off, src in inputs if src in sources}
             pos_off, pos_src = by["POSITION"]
-            n = len(p)                                    # corners
+            n = len(p)  # corners
             pos_all.append(pos_src[p[:, pos_off]])
             if "NORMAL" in by:
-                o, srcv = by["NORMAL"]; nrm_all.append(srcv[p[:, o]])
+                o, srcv = by["NORMAL"]
+                nrm_all.append(srcv[p[:, o]])
             if "TEXCOORD" in by:
-                o, srcv = by["TEXCOORD"]; uv_all.append(srcv[p[:, o]][:, :2])
+                o, srcv = by["TEXCOORD"]
+                uv_all.append(srcv[p[:, o]][:, :2])
             tri_all.append(numpy.arange(base, base + n).reshape(-1, 3))
             runs.append((t.get("material"), count))
             base += n
         if not tri_all:
             continue
-        geoms["#" + g.get("id")] = (numpy.concatenate(pos_all), numpy.concatenate(nrm_all) if nrm_all and len(nrm_all) == len(pos_all) else None,
-                                    numpy.concatenate(uv_all) if uv_all and len(uv_all) == len(pos_all) else None,
-                                    numpy.concatenate(tri_all), runs)
+        geoms["#" + g.get("id")] = (
+            numpy.concatenate(pos_all),
+            numpy.concatenate(nrm_all) if nrm_all and len(nrm_all) == len(pos_all) else None,
+            numpy.concatenate(uv_all) if uv_all and len(uv_all) == len(pos_all) else None,
+            numpy.concatenate(tri_all),
+            runs,
+        )
     out = []
 
     def walk(node, parent_m):
@@ -269,7 +320,9 @@ def read_dae(path):
             for im in ig.iter(NS + "instance_material"):
                 symbols[im.get("symbol")] = im.get("target", "").lstrip("#")
             runs = [(symbols.get(sym, sym or ""), c) for sym, c in geo[4]]
-            out.append((node.get("name") or node.get("id"), geo[0], geo[1], geo[2], geo[3], runs, m))
+            out.append(
+                (node.get("name") or node.get("id"), geo[0], geo[1], geo[2], geo[3], runs, m)
+            )
         for child in node.findall(NS + "node"):
             walk(child, m)
 
@@ -287,10 +340,10 @@ def import_tiles(tiles, materials, level_dir, center, radius):
             continue
         try:
             parts = read_dae(path)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             log(f"{name}: dae read failed: {exc!r}")
             continue
-        for node_name, verts, normals, uvs, tris, runs, matrix in _nearest_detail(parts):
+        for node_name, verts, _normals, uvs, tris, runs, matrix in _nearest_detail(parts):
             v = verts @ matrix[:3, :3].T + matrix[:3, 3] + numpy.asarray(pos)
             _mesh_object(f"{name}:{node_name}", v, tris, runs, uvs, product)
         imported += 1
@@ -305,8 +358,11 @@ def _nearest_detail(parts):
     """The parts of ONE detail level - the largest `_a<px>` - with the collider and the
     imposter/null placeholders dropped. A shape with an LOD ladder writes a node per level, and
     importing all of them stacks three copies of the same tree on top of each other."""
-    keep = [p for p in parts
-            if "Colmesh" not in p[0] and "bb_autobillboard" not in p[0] and "nulldetail" not in p[0]]
+    keep = [
+        p
+        for p in parts
+        if "Colmesh" not in p[0] and "bb_autobillboard" not in p[0] and "nulldetail" not in p[0]
+    ]
     sizes = [int(m.group(1)) for m in (DETAIL_RE.search(p[0]) for p in keep) if m]
     if not sizes:
         return keep
@@ -385,11 +441,13 @@ def _forest_meshes(cache, level_dir, item_data, type_name):
     if path and os.path.isfile(path):
         try:
             for node_name, verts, _n, uvs, tris, runs, matrix in _nearest_detail(read_dae(path)):
-                obj = _mesh_object(f"forestproto:{type_name}:{node_name}", verts, tris, runs, uvs, "forest")
+                obj = _mesh_object(
+                    f"forestproto:{type_name}:{node_name}", verts, tris, runs, uvs, "forest"
+                )
                 mesh = obj.data
-                bpy.data.objects.remove(obj)               # keep the datablock, drop the prototype
+                bpy.data.objects.remove(obj)  # keep the datablock, drop the prototype
                 out.append((mesh, numpy.asarray(matrix, dtype=numpy.float64)))
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             log(f"forest type {type_name}: dae read failed: {exc!r}")
     cache[type_name] = out
     return out
@@ -421,7 +479,7 @@ def _mesh_object(name, verts, tris, runs, uvs, product):
         if mname not in slot:
             slot[mname] = len(mesh.materials)
             mesh.materials.append(_material(mname))
-        mat_index[start:start + count] = slot[mname]
+        mat_index[start : start + count] = slot[mname]
         start += count
     mesh.polygons.foreach_set("material_index", mat_index)
     if uvs is not None and len(uvs) == len(verts):
@@ -514,6 +572,7 @@ def _image(cache, path, colorspace):
 
 
 # -- main ------------------------------------------------------------------------------------------
+
 
 def main():
     opts = parse_args()

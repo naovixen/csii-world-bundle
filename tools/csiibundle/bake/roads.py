@@ -15,19 +15,30 @@ import numpy
 
 from .. import drape, glb, reader
 
-REACH = 150.0    # metres past the region a segment origin may sit and still matter (test_drape_pick's REACH)
+REACH = 150.0  # metres past the region a segment origin may sit and still matter (test_drape_pick's REACH)
 
 
 def load_road_surface(bundle_dir, region=None, progress=None, cell=8.0):
     """`(surface, stats)`; `surface` may be an empty soup when the layer is absent."""
     lay = reader.resolve_layers(bundle_dir)
     if not os.path.isfile(lay.networks) or not os.path.isdir(lay.net_meshes):
-        return drape.TriangleSoupSurface(numpy.zeros((0, 3), numpy.float32), numpy.zeros((0, 3), numpy.int64), cell), \
-            {"segments": 0, "files": 0, "refused": 0, "tris": 0}
-    records = [r for r in reader.read_jsonl(lay.networks) if r.get("kind") == "segment" and r.get("assetId") and r.get("pos")]
+        return drape.TriangleSoupSurface(
+            numpy.zeros((0, 3), numpy.float32), numpy.zeros((0, 3), numpy.int64), cell
+        ), {"segments": 0, "files": 0, "refused": 0, "tris": 0}
+    records = [
+        r
+        for r in reader.read_jsonl(lay.networks)
+        if r.get("kind") == "segment" and r.get("assetId") and r.get("pos")
+    ]
     if region:
-        cx, cz, r = float(region["centerX"]), float(region["centerZ"]), float(region["radius"]) + REACH
-        records = [rec for rec in records if (rec["pos"][0] - cx) ** 2 + (rec["pos"][2] - cz) ** 2 <= r * r]
+        cx, cz, r = (
+            float(region["centerX"]),
+            float(region["centerZ"]),
+            float(region["radius"]) + REACH,
+        )
+        records = [
+            rec for rec in records if (rec["pos"][0] - cx) ** 2 + (rec["pos"][2] - cz) ** 2 <= r * r
+        ]
     if progress is not None:
         progress.begin("road surface", total=len(records), unit="segments")
     pieces = []
@@ -46,9 +57,9 @@ def load_road_surface(bundle_dir, region=None, progress=None, cell=8.0):
             v = numpy.asarray(node["verts"], dtype=numpy.float64)
             m = numpy.asarray(node["matrix"], dtype=numpy.float64)
             v = v @ m[:3, :3].T + m[:3, 3]
-            v[:, 0] *= -1.0                              # undo the §2.2 mirror
-            v += pos                                     # bundle world
-            pieces.append((v[:, [0, 2, 1]].astype(numpy.float32), node["tris"]))   # -> Z-up
+            v[:, 0] *= -1.0  # undo the §2.2 mirror
+            v += pos  # bundle world
+            pieces.append((v[:, [0, 2, 1]].astype(numpy.float32), node["tris"]))  # -> Z-up
             tris += len(node["tris"])
         if progress is not None and i % 200 == 0:
             progress.advance(200 if i + 200 <= len(records) else len(records) - i)

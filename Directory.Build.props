@@ -39,7 +39,15 @@
       the default globs, so there are no Compile items to remove yet. DefaultItemExcludes is a
       property, and the globs read it when they are finally expanded.
     -->
-    <DefaultItemExcludes>$(DefaultItemExcludes);tools\**</DefaultItemExcludes>
+    <!--
+      ...and out of the Python half's build outputs. `AssemblySearchPaths` puts
+      {CandidateAssemblyFiles} FIRST, and CandidateAssemblyFiles is fed by the SDK's default
+      None/Content globs — so every .dll under dist/, build/ and site/ was a candidate the
+      reference resolver preferred over both the HintPath and the game's Managed folder. That is
+      how `netstandard` came to resolve out of `dist/cs2beamng/_internal/pythonnet/runtime/`.
+      (Found by refactor Phase 0, 2026-08-21.)
+    -->
+    <DefaultItemExcludes>$(DefaultItemExcludes);tools\**;dist\**;build\**;site\**;apps\**;packaging\**</DefaultItemExcludes>
     <DisableImplicitFrameworkReferences>true</DisableImplicitFrameworkReferences>
     <!--
       Also required. For a net48 target the SDK restores Microsoft.NETFramework.ReferenceAssemblies,
@@ -47,6 +55,26 @@
       4.8 BCL comes back in through the package even with implicit framework references off.
     -->
     <AutomaticallyUseReferenceAssemblyPackages>false</AutomaticallyUseReferenceAssemblyPackages>
+    <!--
+      Analyzers, added by refactor Phase 0. Before this the producer had NO automated check of
+      any kind: ci.yml did not list Systems/, IO/ or Domain/ in its `paths:` filter, so a C#
+      change could not fail anything, including compilation.
+
+      The build is warning-clean today (verified on 5b7e212, 0 warnings), which is what makes
+      TreatWarningsAsErrors safe to switch on now rather than "one day". Which diagnostics are
+      warnings is decided in .editorconfig, per file, so upstream Carto stays exempt from the
+      refactor's rules without being exempt from compiling.
+
+      Nullable stays off. Turning it on project-wide would report thousands of findings across
+      ~30k lines of upstream code the refactor is forbidden to touch, and it cannot be scoped by
+      .editorconfig the way a diagnostic can. Fork files opt in one at a time with a
+      `#nullable enable` at the top, which is a Phase 9/11 move as each file is split.
+    -->
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+    <AnalysisLevel>latest</AnalysisLevel>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <!-- Deployment writes into the game's mods folder; a stale-file warning there is not ours. -->
+    <WarningsNotAsErrors>MSB3277;NU1701</WarningsNotAsErrors>
     <!--
       With that package gone, MSBuild has no reference-assembly directory at all and fails with
       MSB3644. Point it at the game's Managed folder, which is the BCL the game actually runs
@@ -63,7 +91,15 @@
       name resolves it out of the .NET Framework reference assemblies instead and puts the
       System.Index / Math.Cbrt failures straight back.
     -->
+    <!--
+      By FULL PATH, not by simple name. Resolved by name, MSBuild searched the repo and found
+      `dist/cs2beamng/_internal/pythonnet/runtime/netstandard.dll` — a PyInstaller output of the
+      Python half of this repo — and compiled the mod against pythonnet's facade instead of the
+      game's. It built, which is why nobody noticed; it would have broken the day `dist/` was
+      cleaned or rebuilt against a different pythonnet. (Found by refactor Phase 0, 2026-08-21.)
+    -->
     <Reference Include="netstandard">
+      <HintPath>$(FrameworkPathOverride)\netstandard.dll</HintPath>
       <Private>False</Private>
     </Reference>
     <Reference Include="System">

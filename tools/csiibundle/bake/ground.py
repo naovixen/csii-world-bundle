@@ -48,12 +48,15 @@ class GroundSurface(drape.ProjectionSurface):
             self.mode, self.a, self.b, self.present = mode, None, None, False
             return
         import numpy
+
         heights = field.raw.astype(numpy.float64) * field.elevation_scale + field.elevation_offset
         self._init(heights, field.cell, field.origin_x, field.origin_z, diagonal, mode)
         self.fine = field.fine
 
     @classmethod
-    def from_heights(cls, heights, cell, origin_x, origin_y, diagonal=MEASURED_DIAGONAL, mode="max"):
+    def from_heights(
+        cls, heights, cell, origin_x, origin_y, diagonal=MEASURED_DIAGONAL, mode="max"
+    ):
         """A ground over an already-decoded `(rows, cols)` float64 array, row 0 north.
 
         The array is NOT copied — both diagonals reference it — so a worker process can attach a
@@ -83,6 +86,7 @@ class GroundSurface(drape.ProjectionSurface):
 
     def height_many(self, x, y, ceiling=4000.0):
         import numpy
+
         if self.a is None:
             return numpy.full(len(numpy.atleast_1d(x)), numpy.nan)
         ha = self.a.height_many(x, y, ceiling)
@@ -117,11 +121,13 @@ class GroundSurface(drape.ProjectionSurface):
                 return ha
             return max(ha, hb) if self.mode == "max" else min(ha, hb)
         import numpy
+
         out = self.height_many(numpy.array([x], float), numpy.array([y], float), ceiling)
         return None if numpy.isnan(out[0]) else float(out[0])
 
     def drop_many(self, x, y, z, half_up, half_down):
         import numpy
+
         top = self.height_many(x, y)
         z = numpy.asarray(z, dtype=float)
         ok = (~numpy.isnan(top)) & (top >= z - half_down) & (top <= z + half_up)
@@ -129,5 +135,12 @@ class GroundSurface(drape.ProjectionSurface):
 
     def drop(self, x, y, z, half_up, half_down):
         import numpy
-        out = self.drop_many(numpy.array([x], float), numpy.array([y], float), numpy.array([z], float), half_up, half_down)
+
+        out = self.drop_many(
+            numpy.array([x], float),
+            numpy.array([y], float),
+            numpy.array([z], float),
+            half_up,
+            half_down,
+        )
         return None if numpy.isnan(out[0]) else float(out[0])

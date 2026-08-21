@@ -67,13 +67,57 @@ prop and tree correctly. Then, in rough order of how wrong the result looks with
   on top of it are things the game does, not things the textures carry.
 """
 
-from . import (areas, bezier, collision, colour, decals, decimate, drape, frames, glb,
-               glbwrite, instances, lanegraph, lanes, lights, lod, materials, networks, png,
-               reader, splat, terrain, tints, water)
+from . import (
+    areas,
+    bezier,
+    collision,
+    colour,
+    decals,
+    decimate,
+    drape,
+    frames,
+    glb,
+    glbwrite,
+    instances,
+    lanegraph,
+    lanes,
+    lights,
+    lod,
+    materials,
+    networks,
+    png,
+    reader,
+    splat,
+    terrain,
+    tints,
+    water,
+)
 
-__all__ = ["areas", "bezier", "collision", "colour", "decals", "decimate", "drape", "frames",
-           "glb", "glbwrite", "instances", "lanegraph", "lanes", "lights", "lod", "materials",
-           "networks", "png", "reader", "splat", "terrain", "tints", "water"]
+__all__ = [
+    "areas",
+    "bezier",
+    "collision",
+    "colour",
+    "decals",
+    "decimate",
+    "drape",
+    "frames",
+    "glb",
+    "glbwrite",
+    "instances",
+    "lanegraph",
+    "lanes",
+    "lights",
+    "lod",
+    "materials",
+    "networks",
+    "png",
+    "reader",
+    "splat",
+    "terrain",
+    "tints",
+    "water",
+]
 
 # Bundle schema version this package reads. `reader.schema_version` reports what a bundle on
 # disk declares, for a consumer that wants to compare. CONTRACT.

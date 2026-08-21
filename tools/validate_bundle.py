@@ -30,7 +30,7 @@ import re
 import struct
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_SCHEMA_DIR = REPO_ROOT / "docs" / "schema"
@@ -42,11 +42,22 @@ BOUNDS_TOLERANCE = 1e-6
 # `laneprefabs` its catalogue; `lane` is §5A's graph, a different file. Every name here must
 # exist in the schema directory — a missing one is a setup error, not a bundle error.
 SCHEMA_NAMES = (
-    "bundle", "instance", "network", "materials",
-    "lane", "lanemesh", "laneprefabs",
-    "colors", "lights",
-    "area", "areaprefabs", "clipvolume", "district",
-    "warning", "surfaceindex", "grading",
+    "bundle",
+    "instance",
+    "network",
+    "materials",
+    "lane",
+    "lanemesh",
+    "laneprefabs",
+    "colors",
+    "lights",
+    "area",
+    "areaprefabs",
+    "clipvolume",
+    "district",
+    "warning",
+    "surfaceindex",
+    "grading",
 )
 
 
@@ -54,16 +65,43 @@ SCHEMA_NAMES = (
 # Minimal JSON Schema evaluator (the draft 2020-12 subset used by docs/schema/*.json)
 # ======================================================================================
 
+
 class SchemaError(Exception):
     """Raised when a schema itself uses a keyword this evaluator does not implement."""
 
 
 SUPPORTED = {
-    "$schema", "$id", "$defs", "$ref", "title", "description", "default", "examples",
-    "type", "const", "enum", "required", "properties", "additionalProperties",
-    "patternProperties", "propertyNames", "items", "minItems", "maxItems", "uniqueItems",
-    "minLength", "maxLength", "pattern", "minimum", "maximum", "exclusiveMinimum",
-    "exclusiveMaximum", "oneOf", "anyOf", "allOf", "not",
+    "$schema",
+    "$id",
+    "$defs",
+    "$ref",
+    "title",
+    "description",
+    "default",
+    "examples",
+    "type",
+    "const",
+    "enum",
+    "required",
+    "properties",
+    "additionalProperties",
+    "patternProperties",
+    "propertyNames",
+    "items",
+    "minItems",
+    "maxItems",
+    "uniqueItems",
+    "minLength",
+    "maxLength",
+    "pattern",
+    "minimum",
+    "maximum",
+    "exclusiveMinimum",
+    "exclusiveMaximum",
+    "oneOf",
+    "anyOf",
+    "allOf",
+    "not",
 }
 
 
@@ -96,7 +134,7 @@ def _type_ok(value: Any, name: str) -> bool:
 class Validator:
     """Evaluates one schema document (with local $ref into its own $defs)."""
 
-    def __init__(self, schema: Dict[str, Any], name: str) -> None:
+    def __init__(self, schema: dict[str, Any], name: str) -> None:
         self.root = schema
         self.name = name
         self._check_supported(schema, "#")
@@ -116,7 +154,7 @@ class Validator:
             for i, sub in enumerate(node):
                 self._check_supported(sub, f"{path}/{i}")
 
-    def _resolve(self, ref: str) -> Dict[str, Any]:
+    def _resolve(self, ref: str) -> dict[str, Any]:
         if not ref.startswith("#/"):
             raise SchemaError(f"{self.name}: only local $ref is supported, got {ref!r}")
         node: Any = self.root
@@ -125,12 +163,12 @@ class Validator:
             node = node[token]
         return node
 
-    def validate(self, instance: Any) -> List[str]:
-        errors: List[str] = []
+    def validate(self, instance: Any) -> list[str]:
+        errors: list[str] = []
         self._apply(self.root, instance, "$", errors)
         return errors
 
-    def _apply(self, schema: Any, value: Any, path: str, errors: List[str]) -> None:
+    def _apply(self, schema: Any, value: Any, path: str, errors: list[str]) -> None:
         if schema is True or schema == {}:
             return
         if schema is False:
@@ -167,12 +205,16 @@ class Validator:
             if key not in schema:
                 continue
             passing = []
-            branch_errors: List[str] = []
+            branch_errors: list[str] = []
             for i, branch in enumerate(schema[key]):
-                sub: List[str] = []
+                sub: list[str] = []
                 self._apply(branch, value, path, sub)
                 if sub:
-                    label = branch.get("title", f"branch {i}") if isinstance(branch, dict) else f"branch {i}"
+                    label = (
+                        branch.get("title", f"branch {i}")
+                        if isinstance(branch, dict)
+                        else f"branch {i}"
+                    )
                     branch_errors.extend(f"[{label}] {e}" for e in sub)
                 else:
                     passing.append(i)
@@ -184,15 +226,19 @@ class Validator:
                 if not passing:
                     errors.append(f"{path}: matched no oneOf branch ({'; '.join(branch_errors)})")
                 else:
-                    errors.append(f"{path}: matched {len(passing)} oneOf branches, expected exactly 1")
+                    errors.append(
+                        f"{path}: matched {len(passing)} oneOf branches, expected exactly 1"
+                    )
 
         if "not" in schema:
-            sub: List[str] = []
+            sub: list[str] = []
             self._apply(schema["not"], value, path, sub)
             if not sub:
                 errors.append(f"{path}: value must NOT match {json.dumps(schema['not'])}")
 
-    def _apply_string(self, schema: Dict[str, Any], value: str, path: str, errors: List[str]) -> None:
+    def _apply_string(
+        self, schema: dict[str, Any], value: str, path: str, errors: list[str]
+    ) -> None:
         if "minLength" in schema and len(value) < schema["minLength"]:
             errors.append(f"{path}: shorter than minLength {schema['minLength']}")
         if "maxLength" in schema and len(value) > schema["maxLength"]:
@@ -200,7 +246,9 @@ class Validator:
         if "pattern" in schema and not re.search(schema["pattern"], value):
             errors.append(f"{path}: {value!r} does not match pattern {schema['pattern']!r}")
 
-    def _apply_number(self, schema: Dict[str, Any], value: float, path: str, errors: List[str]) -> None:
+    def _apply_number(
+        self, schema: dict[str, Any], value: float, path: str, errors: list[str]
+    ) -> None:
         if "minimum" in schema and value < schema["minimum"]:
             errors.append(f"{path}: {value} < minimum {schema['minimum']}")
         if "maximum" in schema and value > schema["maximum"]:
@@ -210,20 +258,24 @@ class Validator:
         if "exclusiveMaximum" in schema and value >= schema["exclusiveMaximum"]:
             errors.append(f"{path}: {value} >= exclusiveMaximum {schema['exclusiveMaximum']}")
 
-    def _apply_array(self, schema: Dict[str, Any], value: List[Any], path: str, errors: List[str]) -> None:
+    def _apply_array(
+        self, schema: dict[str, Any], value: list[Any], path: str, errors: list[str]
+    ) -> None:
         if "minItems" in schema and len(value) < schema["minItems"]:
             errors.append(f"{path}: has {len(value)} items, minItems {schema['minItems']}")
         if "maxItems" in schema and len(value) > schema["maxItems"]:
             errors.append(f"{path}: has {len(value)} items, maxItems {schema['maxItems']}")
-        if schema.get("uniqueItems") and len(
-            {json.dumps(v, sort_keys=True) for v in value}
-        ) != len(value):
+        if schema.get("uniqueItems") and len({json.dumps(v, sort_keys=True) for v in value}) != len(
+            value
+        ):
             errors.append(f"{path}: items are not unique")
         if "items" in schema:
             for i, item in enumerate(value):
                 self._apply(schema["items"], item, f"{path}[{i}]", errors)
 
-    def _apply_object(self, schema: Dict[str, Any], value: Dict[str, Any], path: str, errors: List[str]) -> None:
+    def _apply_object(
+        self, schema: dict[str, Any], value: dict[str, Any], path: str, errors: list[str]
+    ) -> None:
         for key in schema.get("required", []):
             if key not in value:
                 errors.append(f"{path}: missing required property {key!r}")
@@ -269,7 +321,8 @@ def _kind(value: Any) -> str:
 # GLB / glTF container inspection
 # ======================================================================================
 
-def read_glb(path: Path) -> Tuple[Dict[str, Any], int]:
+
+def read_glb(path: Path) -> tuple[dict[str, Any], int]:
     """Return (glTF JSON, BIN chunk length). Raises ValueError on a malformed container."""
     data = path.read_bytes()
     if len(data) < 12:
@@ -283,14 +336,14 @@ def read_glb(path: Path) -> Tuple[Dict[str, Any], int]:
         raise ValueError(f"header length {length} != file size {len(data)}")
 
     offset = 12
-    gltf: Optional[Dict[str, Any]] = None
+    gltf: dict[str, Any] | None = None
     bin_len = 0
     while offset + 8 <= len(data):
         chunk_len, chunk_type = struct.unpack_from("<I4s", data, offset)
         offset += 8
         if offset + chunk_len > len(data):
             raise ValueError(f"chunk {chunk_type!r} overruns the file")
-        payload = data[offset:offset + chunk_len]
+        payload = data[offset : offset + chunk_len]
         if chunk_type == b"JSON":
             gltf = json.loads(payload.decode("utf-8"))
         elif chunk_type == b"BIN\x00":
@@ -300,7 +353,9 @@ def read_glb(path: Path) -> Tuple[Dict[str, Any], int]:
     if gltf is None:
         raise ValueError("no JSON chunk")
     if gltf.get("asset", {}).get("version") != "2.0":
-        raise ValueError(f"asset.version is {gltf.get('asset', {}).get('version')!r}, expected '2.0'")
+        raise ValueError(
+            f"asset.version is {gltf.get('asset', {}).get('version')!r}, expected '2.0'"
+        )
     return gltf, bin_len
 
 
@@ -308,11 +363,12 @@ def read_glb(path: Path) -> Tuple[Dict[str, Any], int]:
 # Bundle validation
 # ======================================================================================
 
+
 class Report:
     def __init__(self) -> None:
-        self.errors: List[str] = []
-        self.warnings: List[str] = []
-        self.notes: List[str] = []
+        self.errors: list[str] = []
+        self.warnings: list[str] = []
+        self.notes: list[str] = []
 
     def error(self, message: str) -> None:
         self.errors.append(message)
@@ -324,8 +380,10 @@ class Report:
         self.notes.append(message)
 
 
-def _load_jsonl(path: Path, validator: Validator, label: str, report: Report) -> List[Dict[str, Any]]:
-    records: List[Dict[str, Any]] = []
+def _load_jsonl(
+    path: Path, validator: Validator, label: str, report: Report
+) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
     with path.open("r", encoding="utf-8") as fh:
         for lineno, line in enumerate(fh, start=1):
             if not line.strip():
@@ -345,8 +403,9 @@ def _load_jsonl(path: Path, validator: Validator, label: str, report: Report) ->
     return records
 
 
-def _load_json_layer(path: Path, validator: Validator, label: str,
-                     report: Report) -> Optional[Dict[str, Any]]:
+def _load_json_layer(
+    path: Path, validator: Validator, label: str, report: Report
+) -> dict[str, Any] | None:
     """Parse a whole-file JSON layer and validate it, or return None.
 
     Every whole-file layer in the contract is a JSON **object**, so anything else is reported
@@ -368,7 +427,7 @@ def _load_json_layer(path: Path, validator: Validator, label: str,
     return document
 
 
-def _load_declared_missing(bundle_dir: Path) -> Dict[str, str]:
+def _load_declared_missing(bundle_dir: Path) -> dict[str, str]:
     """Read warnings.jsonl and return {assetId: reason} for assets the producer could not deliver.
 
     Advisory and not schema-validated (§10), so this is deliberately forgiving: an unreadable or
@@ -376,7 +435,7 @@ def _load_declared_missing(bundle_dir: Path) -> Dict[str, str]:
     excusing it.
     """
     path = bundle_dir / "warnings.jsonl"
-    declared: Dict[str, str] = {}
+    declared: dict[str, str] = {}
     if not path.is_file():
         return declared
 
@@ -399,12 +458,12 @@ def _load_declared_missing(bundle_dir: Path) -> Dict[str, str]:
     return declared
 
 
-def _resolve_layer(bundle_dir: Path, layers: Dict[str, str], key: str) -> Optional[Path]:
+def _resolve_layer(bundle_dir: Path, layers: dict[str, str], key: str) -> Path | None:
     rel = layers.get(key)
     return None if rel is None else bundle_dir / rel
 
 
-def _count_records(path: Optional[Path]) -> int:
+def _count_records(path: Path | None) -> int:
     """Record count of a JSON Lines layer — non-blank lines (blank lines are reported elsewhere)."""
     if path is None or not path.is_file():
         return 0
@@ -431,7 +490,7 @@ def validate_bundle(bundle_dir: Path, schema_dir: Path) -> Report:
     if report.errors:
         return report
 
-    layers: Dict[str, str] = manifest["layers"]
+    layers: dict[str, str] = manifest["layers"]
 
     # -- every declared layer must exist, as the right kind of thing -------------------
     for key, rel in layers.items():
@@ -447,7 +506,7 @@ def validate_bundle(bundle_dir: Path, schema_dir: Path) -> Report:
     tex_dir = _resolve_layer(bundle_dir, layers, "textures")
 
     # -- materials.json ----------------------------------------------------------------
-    materials: Dict[str, Any] = {}
+    materials: dict[str, Any] = {}
     referenced_textures: set = set()
     materials_path = _resolve_layer(bundle_dir, layers, "materials")
     if materials_path and materials_path.is_file():
@@ -469,7 +528,7 @@ def validate_bundle(bundle_dir: Path, schema_dir: Path) -> Report:
                 _check_texture(tex_path, rel, f"materials.json[{mat_id}].{slot}", report)
 
     # -- instances.jsonl ---------------------------------------------------------------
-    instances: List[Dict[str, Any]] = []
+    instances: list[dict[str, Any]] = []
     instances_path = _resolve_layer(bundle_dir, layers, "instances")
     if instances_path and instances_path.is_file():
         instances = _load_jsonl(instances_path, schemas["instance"], layers["instances"], report)
@@ -482,20 +541,24 @@ def validate_bundle(bundle_dir: Path, schema_dir: Path) -> Report:
     # A record id is unique per logical object; the one sanctioned exception is §4.1's stack
     # expansion, where every section record of one stacked instance shares that instance's id.
     stack_section = re.compile(r"__stack_(first|mid|last|rest)$")
-    seen_ids: Dict[int, bool] = {}  # id -> every record seen so far is a stack section
-    missing_meshes: Dict[str, int] = {}
+    seen_ids: dict[int, bool] = {}  # id -> every record seen so far is a stack section
+    missing_meshes: dict[str, int] = {}
     for i, record in enumerate(instances):
         rid = record.get("id")
         if rid is not None:
             is_section = bool(stack_section.search(record.get("assetId", "")))
             if rid in seen_ids and not (seen_ids[rid] and is_section):
-                report.error(f"instances.jsonl: duplicate id {rid} "
-                             "(only §4.1 stack-section records may share an id)")
+                report.error(
+                    f"instances.jsonl: duplicate id {rid} "
+                    "(only §4.1 stack-section records may share an id)"
+                )
             seen_ids[rid] = seen_ids.get(rid, True) and is_section
         _check_quat(record.get("rot"), f"instances.jsonl line {i + 1}", report)
         asset_id = record["assetId"]
         if mesh_dir is None:
-            report.error(f"instances.jsonl line {i + 1}: assetId {asset_id!r} but no 'meshes' layer is declared")
+            report.error(
+                f"instances.jsonl line {i + 1}: assetId {asset_id!r} but no 'meshes' layer is declared"
+            )
         elif not (mesh_dir / f"{asset_id}.glb").is_file():
             # Aggregated by assetId: one broken prefab can be referenced by tens of thousands of
             # instances, and a line-per-instance report buries every other finding.
@@ -520,19 +583,21 @@ def validate_bundle(bundle_dir: Path, schema_dir: Path) -> Report:
             report.error(f"assetId {asset_id!r} ({count} {plural}) has no mesh at {where}")
 
     if declared_gaps:
-        reasons: Dict[str, int] = {}
+        reasons: dict[str, int] = {}
         for asset_id in missing_meshes:
             if asset_id in declared_missing:
                 reason = declared_missing[asset_id]
                 reasons[reason] = reasons.get(reason, 0) + 1
-        breakdown = "; ".join(f"{n}x {r}" for r, n in sorted(reasons.items(), key=lambda kv: -kv[1]))
+        breakdown = "; ".join(
+            f"{n}x {r}" for r, n in sorted(reasons.items(), key=lambda kv: -kv[1])
+        )
         report.note(
             f"{declared_gaps} assetId(s) referenced by {declared_instances} instance(s) have no "
             f"mesh, every one of them declared in warnings.jsonl (§10): {breakdown}"
         )
 
     # -- networks.jsonl ----------------------------------------------------------------
-    networks: List[Dict[str, Any]] = []
+    networks: list[dict[str, Any]] = []
     networks_path = _resolve_layer(bundle_dir, layers, "networks")
     if networks_path and networks_path.is_file():
         networks = _load_jsonl(networks_path, schemas["network"], layers["networks"], report)
@@ -544,7 +609,7 @@ def validate_bundle(bundle_dir: Path, schema_dir: Path) -> Report:
     # edges, net nodes — leave a parent that resolves to no record; §4 makes parent advisory
     # grouping, never a required join, so that is a warning, aggregated because one city has
     # tens of thousands of such owners.
-    unresolved_parents: Dict[int, int] = {}
+    unresolved_parents: dict[int, int] = {}
     for record in instances:
         parent = record.get("parent")
         if parent is not None and parent not in seen_ids and parent not in net_ids:
@@ -564,9 +629,13 @@ def validate_bundle(bundle_dir: Path, schema_dir: Path) -> Report:
         asset_id = record.get("assetId")
         if asset_id is not None:
             if net_mesh_dir is None:
-                report.error(f"{label}: assetId {asset_id!r} but no 'networkMeshes' layer is declared")
+                report.error(
+                    f"{label}: assetId {asset_id!r} but no 'networkMeshes' layer is declared"
+                )
             elif not (net_mesh_dir / f"{asset_id}.glb").is_file():
-                report.error(f"{label}: assetId {asset_id!r} has no mesh in {layers['networkMeshes']}")
+                report.error(
+                    f"{label}: assetId {asset_id!r} has no mesh in {layers['networkMeshes']}"
+                )
         for key in ("startNode", "endNode"):
             if key in record and record[key] not in net_ids:
                 report.error(f"{label}: {key} {record[key]} matches no network record id")
@@ -575,17 +644,21 @@ def validate_bundle(bundle_dir: Path, schema_dir: Path) -> Report:
     # Declared by the Phase 7 manifest as layers.laneGeometry / lanePrefabs / laneMeshes:
     # parameter records against their schema, the prefab join against the catalogue, and every
     # part's assetId against the lane-mesh directory.
-    lanes: List[Dict[str, Any]] = []
+    lanes: list[dict[str, Any]] = []
     lanes_path = _resolve_layer(bundle_dir, layers, "laneGeometry")
     catalogue_path = _resolve_layer(bundle_dir, layers, "lanePrefabs")
     lane_mesh_dir = _resolve_layer(bundle_dir, layers, "laneMeshes")
     if lanes_path and lanes_path.is_file():
         lanes = _load_jsonl(lanes_path, schemas["lanemesh"], layers["laneGeometry"], report)
 
-        catalogue: Dict[str, Any] = {}
+        catalogue: dict[str, Any] = {}
         if catalogue_path and catalogue_path.is_file():
-            catalogue = _load_json_layer(catalogue_path, schemas["laneprefabs"],
-                                         layers["lanePrefabs"], report) or {}
+            catalogue = (
+                _load_json_layer(
+                    catalogue_path, schemas["laneprefabs"], layers["lanePrefabs"], report
+                )
+                or {}
+            )
         elif lanes:
             report.error("layers.laneGeometry is declared but no lanePrefabs catalogue resolves")
 
@@ -598,39 +671,61 @@ def validate_bundle(bundle_dir: Path, schema_dir: Path) -> Report:
                 elif asset_id not in checked_parts:
                     checked_parts.add(asset_id)
                     if lane_mesh_dir is None:
-                        report.error(f"laneprefabs.json[{entry_key}].parts[{j}]: "
-                                     f"assetId {asset_id!r} but no 'laneMeshes' layer is declared")
+                        report.error(
+                            f"laneprefabs.json[{entry_key}].parts[{j}]: "
+                            f"assetId {asset_id!r} but no 'laneMeshes' layer is declared"
+                        )
                     elif not (lane_mesh_dir / f"{asset_id}.glb").is_file():
-                        report.error(f"laneprefabs.json[{entry_key}].parts[{j}]: "
-                                     f"assetId {asset_id!r} has no mesh in {layers['laneMeshes']}")
+                        report.error(
+                            f"laneprefabs.json[{entry_key}].parts[{j}]: "
+                            f"assetId {asset_id!r} has no mesh in {layers['laneMeshes']}"
+                        )
 
         for i, record in enumerate(lanes):
             label = f"{layers['laneGeometry']} line {i + 1}"
             entry = catalogue.get(record.get("prefab"))
             if entry is None:
-                report.error(f"{label}: prefab {record.get('prefab')!r} is not in the lanePrefabs catalogue")
+                report.error(
+                    f"{label}: prefab {record.get('prefab')!r} is not in the lanePrefabs catalogue"
+                )
                 continue
             part_count = len(entry.get("parts", []))
             for index in record.get("parts", []):
                 if not 0 <= index < part_count:
-                    report.error(f"{label}: part index {index} out of range "
-                                 f"(catalogue entry has {part_count})")
+                    report.error(
+                        f"{label}: part index {index} out of range "
+                        f"(catalogue entry has {part_count})"
+                    )
 
     # -- meshes ------------------------------------------------------------------------
-    mesh_files: List[Path] = sorted(mesh_dir.glob("*.glb")) if mesh_dir and mesh_dir.is_dir() else []
-    net_mesh_files: List[Path] = sorted(net_mesh_dir.glob("*.glb")) if net_mesh_dir and net_mesh_dir.is_dir() else []
-    lane_mesh_files: List[Path] = sorted(lane_mesh_dir.glob("*.glb")) if lane_mesh_dir and lane_mesh_dir.is_dir() else []
+    mesh_files: list[Path] = (
+        sorted(mesh_dir.glob("*.glb")) if mesh_dir and mesh_dir.is_dir() else []
+    )
+    net_mesh_files: list[Path] = (
+        sorted(net_mesh_dir.glob("*.glb")) if net_mesh_dir and net_mesh_dir.is_dir() else []
+    )
+    lane_mesh_files: list[Path] = (
+        sorted(lane_mesh_dir.glob("*.glb")) if lane_mesh_dir and lane_mesh_dir.is_dir() else []
+    )
     # Sub-mesh names, for the §7.2 appearance join: a palette or a procedural light is keyed by
     # the glTF node name inside the owning prefab's .glb, and a punctual light by the prefab's
     # own assetId, so both are looked up in this set. Object meshes only — a colors.json key
     # matching a network cross-section piece would be a coincidence, not a join.
     mesh_names: set = set()
     for path in mesh_files:
-        _check_mesh(path, bundle_dir, materials, materials_path is not None, referenced_textures,
-                    report, mesh_names)
+        _check_mesh(
+            path,
+            bundle_dir,
+            materials,
+            materials_path is not None,
+            referenced_textures,
+            report,
+            mesh_names,
+        )
     for path in net_mesh_files + lane_mesh_files:
-        _check_mesh(path, bundle_dir, materials, materials_path is not None, referenced_textures,
-                    report)
+        _check_mesh(
+            path, bundle_dir, materials, materials_path is not None, referenced_textures, report
+        )
 
     used_assets = {r["assetId"] for r in instances}
 
@@ -658,8 +753,16 @@ def validate_bundle(bundle_dir: Path, schema_dir: Path) -> Report:
         # variant (__teen, __elderly, __dead, __stump, __partial1/2, __full — contract §6.1) is
         # swapped in from the instance's own attrs.treeState / attrs.fullness. The first
         # full-city rip with skirts drowned the report in 1,380 of these; variants added 225 more.
-        derived = ("__base", "__teen", "__elderly", "__dead", "__stump",
-                   "__partial1", "__partial2", "__full")
+        derived = (
+            "__base",
+            "__teen",
+            "__elderly",
+            "__dead",
+            "__stump",
+            "__partial1",
+            "__partial2",
+            "__full",
+        )
         suffix = next((s for s in derived if path.stem.endswith(s)), None)
         if suffix and _references(path.stem[: -len(suffix)]):
             continue
@@ -667,7 +770,9 @@ def validate_bundle(bundle_dir: Path, schema_dir: Path) -> Report:
         report.warn(f"{path.name}: mesh is not referenced by any instance")
 
     # -- textures ----------------------------------------------------------------------
-    texture_files: List[Path] = sorted(tex_dir.glob("*.png")) if tex_dir and tex_dir.is_dir() else []
+    texture_files: list[Path] = (
+        sorted(tex_dir.glob("*.png")) if tex_dir and tex_dir.is_dir() else []
+    )
     for path in texture_files:
         if path.resolve() not in referenced_textures:
             report.warn(f"{path.name}: texture is not referenced by any material or mesh")
@@ -693,7 +798,9 @@ def validate_bundle(bundle_dir: Path, schema_dir: Path) -> Report:
         ("networkSegments", len(networks)),
     ):
         if counts[key] != actual:
-            report.error(f"bundle.json counts.{key} is {counts[key]}, but the bundle contains {actual}")
+            report.error(
+                f"bundle.json counts.{key} is {counts[key]}, but the bundle contains {actual}"
+            )
 
     # The record layers added after the freeze carry a count whenever their layer is declared
     # (§3); a declared layer with no count is itself an error, so truncation detection cannot
@@ -707,17 +814,25 @@ def validate_bundle(bundle_dir: Path, schema_dir: Path) -> Report:
     ):
         if layer_key in layers:
             if key not in counts:
-                report.error(f"bundle.json: layers.{layer_key} is declared but counts.{key} is missing")
+                report.error(
+                    f"bundle.json: layers.{layer_key} is declared but counts.{key} is missing"
+                )
             elif counts[key] != actual:
-                report.error(f"bundle.json counts.{key} is {counts[key]}, but the bundle contains {actual}")
+                report.error(
+                    f"bundle.json counts.{key} is {counts[key]}, but the bundle contains {actual}"
+                )
         elif key in counts and counts[key] != 0:
-            report.error(f"bundle.json counts.{key} is {counts[key]}, but no layers.{layer_key} is declared")
+            report.error(
+                f"bundle.json counts.{key} is {counts[key]}, but no layers.{layer_key} is declared"
+            )
 
     # counts.warnings has been optional since the freeze — checked only when stated.
     if "warnings" in counts:
         actual = _count_records(_resolve_layer(bundle_dir, layers, "warnings"))
         if counts["warnings"] != actual:
-            report.error(f"bundle.json counts.warnings is {counts['warnings']}, but the bundle contains {actual}")
+            report.error(
+                f"bundle.json counts.warnings is {counts['warnings']}, but the bundle contains {actual}"
+            )
 
     # -- bounds ------------------------------------------------------------------------
     lo = manifest["bounds"]["min"]
@@ -725,7 +840,7 @@ def validate_bundle(bundle_dir: Path, schema_dir: Path) -> Report:
     for axis in range(3):
         if lo[axis] > hi[axis]:
             report.error(f"bundle.json bounds: min[{axis}] > max[{axis}]")
-    points: List[Tuple[str, List[float]]] = [
+    points: list[tuple[str, list[float]]] = [
         (f"instances.jsonl line {i + 1}", r["pos"]) for i, r in enumerate(instances)
     ]
     for i, record in enumerate(networks):
@@ -734,24 +849,45 @@ def validate_bundle(bundle_dir: Path, schema_dir: Path) -> Report:
             points.append((f"networks.jsonl line {i + 1} centerline[{j}]", point))
     for label, point in points:
         for axis in range(3):
-            if point[axis] < lo[axis] - BOUNDS_TOLERANCE or point[axis] > hi[axis] + BOUNDS_TOLERANCE:
-                report.error(f"{label}: axis {axis} value {point[axis]} lies outside bundle.json bounds")
+            if (
+                point[axis] < lo[axis] - BOUNDS_TOLERANCE
+                or point[axis] > hi[axis] + BOUNDS_TOLERANCE
+            ):
+                report.error(
+                    f"{label}: axis {axis} value {point[axis]} lies outside bundle.json bounds"
+                )
 
     # -- raster layers need raster geo-referencing -------------------------------------
-    raster_layers = [k for k in ("terrain", "terrainFine", "worldTerrain", "surfaceIndex", "splatmap",
-                                 "userSplatmap", "water", "worldWater") if k in layers]
+    raster_layers = [
+        k
+        for k in (
+            "terrain",
+            "terrainFine",
+            "worldTerrain",
+            "surfaceIndex",
+            "splatmap",
+            "userSplatmap",
+            "water",
+            "worldWater",
+        )
+        if k in layers
+    ]
     if raster_layers and "rasters" not in manifest:
-        report.error(f"bundle.json declares raster layers {raster_layers} but has no 'rasters' block")
+        report.error(
+            f"bundle.json declares raster layers {raster_layers} but has no 'rasters' block"
+        )
     elif raster_layers:
         _check_raster_layers(bundle_dir, manifest, layers, schemas, report)
 
     report.note(f"schema {manifest['schema']}, generator {manifest['generator']!r}")
     report.note(f"{len(instances)} instances, {len(networks)} network records")
-    report.note(f"{len(mesh_files)} meshes, {len(materials)} materials, {len(texture_files)} textures")
+    report.note(
+        f"{len(mesh_files)} meshes, {len(materials)} materials, {len(texture_files)} textures"
+    )
     return report
 
 
-def _png_header(path: Path) -> Optional[Tuple[int, int, int, int]]:
+def _png_header(path: Path) -> tuple[int, int, int, int] | None:
     """Return (width, height, bit depth, colour type) from a PNG's IHDR, or None."""
     try:
         data = path.read_bytes()
@@ -763,8 +899,13 @@ def _png_header(path: Path) -> Optional[Tuple[int, int, int, int]]:
     return width, height, data[24], data[25]
 
 
-def _check_raster_layers(bundle_dir: Path, manifest: Dict[str, Any], layers: Dict[str, str],
-                         schemas: Dict[str, Validator], report: Report) -> None:
+def _check_raster_layers(
+    bundle_dir: Path,
+    manifest: dict[str, Any],
+    layers: dict[str, str],
+    schemas: dict[str, Validator],
+    report: Report,
+) -> None:
     """The terrain-layer invariants of contract §8.
 
     Every raster is a single-channel PNG on the one grid the manifest's `rasters` block
@@ -798,11 +939,17 @@ def _check_raster_layers(bundle_dir: Path, manifest: Dict[str, Any], layers: Dic
             continue
         width, height, bit_depth, colour_type = header
         if colour_type != 0:
-            report.error(f"layers.{key}: {rel!r} colour type is {colour_type}, contract §8 requires 0 (grayscale)")
+            report.error(
+                f"layers.{key}: {rel!r} colour type is {colour_type}, contract §8 requires 0 (grayscale)"
+            )
         if bit_depth != depth:
-            report.error(f"layers.{key}: {rel!r} bit depth is {bit_depth}, contract §8 requires {depth}")
+            report.error(
+                f"layers.{key}: {rel!r} bit depth is {bit_depth}, contract §8 requires {depth}"
+            )
         if playable_grid and isinstance(size, list) and len(size) == 2 and [width, height] != size:
-            report.error(f"layers.{key}: {rel!r} is {width}x{height}, but rasters.size is {size[0]}x{size[1]}")
+            report.error(
+                f"layers.{key}: {rel!r} is {width}x{height}, but rasters.size is {size[0]}x{size[1]}"
+            )
         for needed in needed_keys:
             if needed not in rasters:
                 report.error(f"layers.{key} is declared but rasters.{needed} is missing")
@@ -821,8 +968,10 @@ def _check_raster_layers(bundle_dir: Path, manifest: Dict[str, Any], layers: Dic
             continue
         width, height, bit_depth, colour_type = header
         if colour_type != 6 or bit_depth != 8:
-            report.error(f"layers.{key}: {rel!r} is colour type {colour_type} at depth {bit_depth}, "
-                         "contract §8 requires RGBA8 (colour type 6, depth 8)")
+            report.error(
+                f"layers.{key}: {rel!r} is colour type {colour_type} at depth {bit_depth}, "
+                "contract §8 requires RGBA8 (colour type 6, depth 8)"
+            )
 
     # Rasters on their own grid carry their own geo-referencing sub-block (§3), whose `file`
     # and `size` must agree with the layer it describes.
@@ -835,15 +984,19 @@ def _check_raster_layers(bundle_dir: Path, manifest: Dict[str, Any], layers: Dic
             report.error(f"layers.{key} is declared but rasters.{key} is missing")
             continue
         if block.get("file") != rel:
-            report.error(f"rasters.{key}.file is {block.get('file')!r}, but layers.{key} is {rel!r}")
+            report.error(
+                f"rasters.{key}.file is {block.get('file')!r}, but layers.{key} is {rel!r}"
+            )
         path = bundle_dir / rel
         header = _png_header(path) if path.is_file() else None
         block_size = block.get("size")
         if header is not None and isinstance(block_size, list) and len(block_size) == 2:
             width, height = header[0], header[1]
             if [width, height] != block_size:
-                report.error(f"layers.{key}: {rel!r} is {width}x{height}, "
-                             f"but rasters.{key}.size is {block_size[0]}x{block_size[1]}")
+                report.error(
+                    f"layers.{key}: {rel!r} is {width}x{height}, "
+                    f"but rasters.{key}.size is {block_size[0]}x{block_size[1]}"
+                )
 
     surfaces_dir = layers.get("surfaces")
     if surfaces_dir is not None:
@@ -863,8 +1016,13 @@ def _check_raster_layers(bundle_dir: Path, manifest: Dict[str, Any], layers: Dic
                     report.error(f"{label}[{surface_id}]: texture {texture!r} does not exist")
 
 
-def _check_areas(bundle_dir: Path, layers: Dict[str, str], schemas: Dict[str, Validator],
-                 instance_ids: Dict[int, bool], report: Report) -> int:
+def _check_areas(
+    bundle_dir: Path,
+    layers: dict[str, str],
+    schemas: dict[str, Validator],
+    instance_ids: dict[int, bool],
+    report: Report,
+) -> int:
     """The surface-area invariants of contract §8b, when the optional layer is declared.
 
     The record shape is `area.schema.json`'s; what stays here is what a schema cannot say.
@@ -879,13 +1037,15 @@ def _check_areas(bundle_dir: Path, layers: Dict[str, str], schemas: Dict[str, Va
     if areas_path is None or not areas_path.is_file():
         return 0
 
-    catalogue: Dict[str, Any] = {}
+    catalogue: dict[str, Any] = {}
     catalogue_path = _resolve_layer(bundle_dir, layers, "areaPrefabs")
     if catalogue_path is None:
         report.error("layers.areas is declared but no areaPrefabs catalogue is declared")
     elif catalogue_path.is_file():
-        catalogue = _load_json_layer(catalogue_path, schemas["areaprefabs"],
-                                     layers["areaPrefabs"], report) or {}
+        catalogue = (
+            _load_json_layer(catalogue_path, schemas["areaprefabs"], layers["areaPrefabs"], report)
+            or {}
+        )
 
     # The catalogue's PBR block is four separate maps, not one `texture` (audit #40 P11). A
     # dangling normalMap is exactly as broken as a dangling base map and used to go unchecked.
@@ -909,7 +1069,7 @@ def _check_areas(bundle_dir: Path, layers: Dict[str, str], schemas: Dict[str, Va
         )
 
     records = 0
-    dangling_owners: Dict[int, int] = {}
+    dangling_owners: dict[int, int] = {}
     with areas_path.open(encoding="utf-8") as handle:
         for line_no, line in enumerate(handle, start=1):
             line = line.strip()
@@ -930,15 +1090,20 @@ def _check_areas(bundle_dir: Path, layers: Dict[str, str], schemas: Dict[str, Va
             if not isinstance(nodes, list) or not isinstance(triangles, list):
                 continue  # already reported structurally
             for tri in triangles:
-                if (not isinstance(tri, list) or len(tri) != 3
-                        or any(not _is_int(i) or i < 0 or i >= len(nodes) for i in tri)):
+                if (
+                    not isinstance(tri, list)
+                    or len(tri) != 3
+                    or any(not _is_int(i) or i < 0 or i >= len(nodes) for i in tri)
+                ):
                     report.error(f"{label}: triangle {tri!r} does not index its {len(nodes)} nodes")
                     break
 
             ranges = record.get("heightRanges")
             if isinstance(ranges, list) and len(ranges) != len(triangles):
-                report.error(f"{label}: heightRanges has {len(ranges)} entries but the area has "
-                             f"{len(triangles)} triangles; §8b indexes them in parallel")
+                report.error(
+                    f"{label}: heightRanges has {len(ranges)} entries but the area has "
+                    f"{len(triangles)} triangles; §8b indexes them in parallel"
+                )
 
             prefab = record.get("prefab")
             if isinstance(prefab, str) and prefab and prefab not in catalogue:
@@ -962,8 +1127,9 @@ def _check_areas(bundle_dir: Path, layers: Dict[str, str], schemas: Dict[str, Va
     return records
 
 
-def _check_districts(bundle_dir: Path, layers: Dict[str, str], schemas: Dict[str, Validator],
-                     report: "Report") -> int:
+def _check_districts(
+    bundle_dir: Path, layers: dict[str, str], schemas: dict[str, Validator], report: Report
+) -> int:
     """§8d — the player's named districts. Same geometry contract as §8b, plus a name.
 
     An EMPTY file is legal and expected: most cities have no districts drawn. What is not legal
@@ -997,8 +1163,11 @@ def _check_districts(bundle_dir: Path, layers: Dict[str, str], schemas: Dict[str
             if not record.get("name"):
                 unnamed += 1
             for tri in triangles:
-                if (not isinstance(tri, list) or len(tri) != 3
-                        or any(not _is_int(i) or i < 0 or i >= len(nodes) for i in tri)):
+                if (
+                    not isinstance(tri, list)
+                    or len(tri) != 3
+                    or any(not _is_int(i) or i < 0 or i >= len(nodes) for i in tri)
+                ):
                     report.error(f"{label}: triangle {tri!r} does not index its {len(nodes)} nodes")
                     break
             centroid = record.get("centroid")
@@ -1006,18 +1175,23 @@ def _check_districts(bundle_dir: Path, layers: Dict[str, str], schemas: Dict[str
                 for axis in range(3):
                     mean = sum(float(n[axis]) for n in nodes) / len(nodes)
                     if abs(mean - float(centroid[axis])) > 0.01:
-                        report.error(f"{label}: centroid[{axis}] is {centroid[axis]} but the node "
-                                     f"mean is {mean:.3f}; §8d defines it as the node mean")
+                        report.error(
+                            f"{label}: centroid[{axis}] is {centroid[axis]} but the node "
+                            f"mean is {mean:.3f}; §8d defines it as the node mean"
+                        )
                         break
     if unnamed:
-        report.note(f"{unnamed} of {records} districts carry no label — the name system could not "
-                    f"render one; the polygon is still exact")
+        report.note(
+            f"{unnamed} of {records} districts carry no label — the name system could not "
+            f"render one; the polygon is still exact"
+        )
     report.note(f"{records} districts (§8d)")
     return records
 
 
-def _check_clip_volumes(bundle_dir: Path, layers: Dict[str, str],
-                        schemas: Dict[str, Validator], report: Report) -> int:
+def _check_clip_volumes(
+    bundle_dir: Path, layers: dict[str, str], schemas: dict[str, Validator], report: Report
+) -> int:
     """The clip-volume invariants of contract §8c, when the optional layer is declared.
 
     This layer replaced `terrain/cutout.png` on 2026-08-08 — the precomputed intersection the
@@ -1031,7 +1205,7 @@ def _check_clip_volumes(bundle_dir: Path, layers: Dict[str, str],
     if path is None or not path.is_file():
         return 0
 
-    kinds: Dict[str, int] = {}
+    kinds: dict[str, int] = {}
     records = 0
     unbounded = 0
     with path.open("r", encoding="utf-8") as handle:
@@ -1069,22 +1243,34 @@ def _check_clip_volumes(bundle_dir: Path, layers: Dict[str, str],
             triangles = record.get("triangles")
             if isinstance(nodes, list) and isinstance(triangles, list):
                 for tri in triangles:
-                    if (not isinstance(tri, list) or len(tri) != 3
-                            or any(not _is_int(i) or not 0 <= i < len(nodes) for i in tri)):
-                        report.error(f"{label}: triangle {tri!r} does not index its "
-                                     f"{len(nodes)} nodes (§8c)")
+                    if (
+                        not isinstance(tri, list)
+                        or len(tri) != 3
+                        or any(not _is_int(i) or not 0 <= i < len(nodes) for i in tri)
+                    ):
+                        report.error(
+                            f"{label}: triangle {tri!r} does not index its {len(nodes)} nodes (§8c)"
+                        )
                         break
 
     summary = ", ".join(f"{count} {kind}" for kind, count in sorted(kinds.items()))
     report.note(f"{records} clip volume strips ({summary}) (§8c)")
     if unbounded:
-        report.note(f"{unbounded} clip volume(s) have no `top` — unbounded, hiding whatever "
-                    "covers them however high (§8c)")
+        report.note(
+            f"{unbounded} clip volume(s) have no `top` — unbounded, hiding whatever "
+            "covers them however high (§8c)"
+        )
     return records
 
 
-def _check_lanes(bundle_dir: Path, layers: Dict[str, str], schemas: Dict[str, Validator],
-                 net_ids: set, instance_ids: Dict[int, bool], report: Report) -> None:
+def _check_lanes(
+    bundle_dir: Path,
+    layers: dict[str, str],
+    schemas: dict[str, Validator],
+    net_ids: set,
+    instance_ids: dict[int, bool],
+    report: Report,
+) -> None:
     """The lane-graph invariants of contract §5A, when the optional layer is declared.
 
     `lane.schema.json` carries the record shape. What stays here is `owner`, and it is a NOTE
@@ -1100,13 +1286,15 @@ def _check_lanes(bundle_dir: Path, layers: Dict[str, str], schemas: Dict[str, Va
         return
 
     records = 0
-    kinds: Dict[str, int] = {}
+    kinds: dict[str, int] = {}
     to_net = to_instance = to_neither = no_owner = 0
     with path.open("r", encoding="utf-8") as handle:
         for line_no, line in enumerate(handle, start=1):
             line = line.strip()
             if not line:
-                report.error(f"lanes.jsonl:{line_no}: blank line (JSON Lines allows no blank lines)")
+                report.error(
+                    f"lanes.jsonl:{line_no}: blank line (JSON Lines allows no blank lines)"
+                )
                 continue
             try:
                 record = json.loads(line)
@@ -1140,8 +1328,13 @@ def _check_lanes(bundle_dir: Path, layers: Dict[str, str], schemas: Dict[str, Va
     )
 
 
-def _check_appearance(bundle_dir: Path, layers: Dict[str, str], schemas: Dict[str, Validator],
-                      mesh_names: set, report: Report) -> None:
+def _check_appearance(
+    bundle_dir: Path,
+    layers: dict[str, str],
+    schemas: dict[str, Validator],
+    mesh_names: set,
+    report: Report,
+) -> None:
     """`colors.json` and `lights.json` — contract §7.2, when either layer is declared.
 
     Both are keyed by an assetId that must be findable in the mesh layer: a sub-mesh's glTF
@@ -1152,8 +1345,10 @@ def _check_appearance(bundle_dir: Path, layers: Dict[str, str], schemas: Dict[st
     reference city: 184 of 3,620 palette keys (tree `*Child*` sub-meshes, a state §6.1 does not
     export) and 86 of 1,186 light keys (vehicles, which both rip queries exclude).
     """
-    for layer_key, schema_key, what in (("colors", "colors", "colour palettes"),
-                                        ("lights", "lights", "light entries")):
+    for layer_key, schema_key, what in (
+        ("colors", "colors", "colour palettes"),
+        ("lights", "lights", "light entries"),
+    ):
         path = _resolve_layer(bundle_dir, layers, layer_key)
         if path is None or not path.is_file():
             continue
@@ -1176,8 +1371,9 @@ def _check_appearance(bundle_dir: Path, layers: Dict[str, str], schemas: Dict[st
             )
 
 
-def _check_warnings(bundle_dir: Path, layers: Dict[str, str], schemas: Dict[str, Validator],
-                    report: Report) -> None:
+def _check_warnings(
+    bundle_dir: Path, layers: dict[str, str], schemas: dict[str, Validator], report: Report
+) -> None:
     """`warnings.jsonl` — contract §10, when the layer is declared.
 
     A consumer may ignore this file entirely; it is schema-validated anyway, because it is also
@@ -1189,7 +1385,7 @@ def _check_warnings(bundle_dir: Path, layers: Dict[str, str], schemas: Dict[str,
     if path is None or not path.is_file():
         return
 
-    kinds: Dict[str, int] = {}
+    kinds: dict[str, int] = {}
     with path.open("r", encoding="utf-8") as handle:
         for line_no, line in enumerate(handle, start=1):
             line = line.strip()
@@ -1211,8 +1407,9 @@ def _check_warnings(bundle_dir: Path, layers: Dict[str, str], schemas: Dict[str,
         report.note(f"warnings.jsonl declares {sum(kinds.values())} gap(s): {summary} (§10)")
 
 
-def _check_grading(bundle_dir: Path, layers: Dict[str, str], schemas: Dict[str, Validator],
-                   report: Report) -> None:
+def _check_grading(
+    bundle_dir: Path, layers: dict[str, str], schemas: dict[str, Validator], report: Report
+) -> None:
     """`grading.json` — contract §8, when the layer is declared.
 
     The one semantic check a schema cannot make is the capture's own honesty flag: an
@@ -1230,29 +1427,52 @@ def _check_grading(bundle_dir: Path, layers: Dict[str, str], schemas: Dict[str, 
     diagnostics = document.get("diagnostics", {})
     if isinstance(diagnostics, dict):
         if diagnostics.get("stackEvaluated") is False:
-            report.error(f"{layers['grading']}: diagnostics.stackEvaluated is false — the volume "
-                         "stack was never evaluated, so every block in this file is HDRP's "
-                         "default rather than the game's grade")
+            report.error(
+                f"{layers['grading']}: diagnostics.stackEvaluated is false — the volume "
+                "stack was never evaluated, so every block in this file is HDRP's "
+                "default rather than the game's grade"
+            )
         elif diagnostics.get("volumesFound") == 0:
-            report.error(f"{layers['grading']}: diagnostics.volumesFound is 0 — the stack "
-                         "matched no volume, so every block in this file is a default")
+            report.error(
+                f"{layers['grading']}: diagnostics.volumesFound is 0 — the stack "
+                "matched no volume, so every block in this file is a default"
+            )
         unread = diagnostics.get("unread")
         if isinstance(unread, list) and unread:
-            report.note(f"{layers['grading']}: the producer names {len(unread)} volume "
-                        "component(s) it does not capture (diagnostics.unread) — read them "
-                        "before concluding the colour chain is complete")
+            report.note(
+                f"{layers['grading']}: the producer names {len(unread)} volume "
+                "component(s) it does not capture (diagnostics.unread) — read them "
+                "before concluding the colour chain is complete"
+            )
 
-    blocks = [k for k in ("exposure", "whiteBalance", "colorAdjustments",
-                          "shadowsMidtonesHighlights", "splitToning", "tonemapping",
-                          "vignette", "fog", "lighting") if k in document]
+    blocks = [
+        k
+        for k in (
+            "exposure",
+            "whiteBalance",
+            "colorAdjustments",
+            "shadowsMidtonesHighlights",
+            "splitToning",
+            "tonemapping",
+            "vignette",
+            "fog",
+            "lighting",
+        )
+        if k in document
+    ]
     report.note(f"{layers['grading']} carries {', '.join(blocks)} (§8)")
 
     tonemapping = document.get("tonemapping")
-    if isinstance(tonemapping, dict) and tonemapping.get("mode") == "External" \
-            and tonemapping.get("hasLut"):
-        report.warn(f"{layers['grading']}: tonemapping is External with a bound LUT, which is "
-                    "NOT exported — the grading block is incomplete and a consumer replaying it "
-                    "will not match the game (§8)")
+    if (
+        isinstance(tonemapping, dict)
+        and tonemapping.get("mode") == "External"
+        and tonemapping.get("hasLut")
+    ):
+        report.warn(
+            f"{layers['grading']}: tonemapping is External with a bound LUT, which is "
+            "NOT exported — the grading block is incomplete and a consumer replaying it "
+            "will not match the game (§8)"
+        )
 
 
 def _check_quat(rot: Any, label: str, report: Report) -> None:
@@ -1279,11 +1499,11 @@ def _check_texture(path: Path, rel: str, label: str, report: Report) -> None:
 def _check_mesh(
     path: Path,
     bundle_dir: Path,
-    materials: Dict[str, Any],
+    materials: dict[str, Any],
     have_materials: bool,
     referenced_textures: set,
     report: Report,
-    names: Optional[set] = None,
+    names: set | None = None,
 ) -> None:
     if not re.match(r"^[A-Za-z0-9][A-Za-z0-9._-]*$", path.stem):
         report.error(f"{path.name}: filename stem is not a valid assetId")
@@ -1304,9 +1524,13 @@ def _check_mesh(
     for i, material in enumerate(gltf.get("materials", [])):
         name = material.get("name")
         if not name:
-            report.error(f"{path.name}: materials[{i}] has no name, so it cannot join into materials.json")
+            report.error(
+                f"{path.name}: materials[{i}] has no name, so it cannot join into materials.json"
+            )
         elif have_materials and name not in materials:
-            report.error(f"{path.name}: materials[{i}].name {name!r} is not a key in materials.json")
+            report.error(
+                f"{path.name}: materials[{i}].name {name!r} is not a key in materials.json"
+            )
 
     for i, image in enumerate(gltf.get("images", [])):
         uri = image.get("uri")
@@ -1330,11 +1554,23 @@ def _check_mesh(
 
 # ======================================================================================
 
-def main(argv: List[str]) -> int:
-    parser = argparse.ArgumentParser(description="Validate a CS2 World Bundle (schema 2, frozen 2026-08-09).")
-    parser.add_argument("bundle", type=Path, help="path to the bundle directory (the one holding bundle.json)")
-    parser.add_argument("--schema-dir", type=Path, default=DEFAULT_SCHEMA_DIR, help="directory holding *.schema.json")
-    parser.add_argument("-q", "--quiet", action="store_true", help="print only errors and the verdict")
+
+def main(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(
+        description="Validate a CS2 World Bundle (schema 2, frozen 2026-08-09)."
+    )
+    parser.add_argument(
+        "bundle", type=Path, help="path to the bundle directory (the one holding bundle.json)"
+    )
+    parser.add_argument(
+        "--schema-dir",
+        type=Path,
+        default=DEFAULT_SCHEMA_DIR,
+        help="directory holding *.schema.json",
+    )
+    parser.add_argument(
+        "-q", "--quiet", action="store_true", help="print only errors and the verdict"
+    )
     args = parser.parse_args(argv)
 
     if not args.bundle.is_dir():

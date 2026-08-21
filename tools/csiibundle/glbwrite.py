@@ -131,7 +131,12 @@ def write_glb(path, nodes, materials=None, from_bundle_frame=False, generator="c
         return material_index[name]
 
     def accessor(view_index, component_type, count, gltf_type, minmax=None):
-        entry = {"bufferView": view_index, "componentType": component_type, "count": int(count), "type": gltf_type}
+        entry = {
+            "bufferView": view_index,
+            "componentType": component_type,
+            "count": int(count),
+            "type": gltf_type,
+        }
         if minmax is not None:
             entry["min"], entry["max"] = minmax
         accessors.append(entry)
@@ -156,26 +161,39 @@ def write_glb(path, nodes, materials=None, from_bundle_frame=False, generator="c
             v_view = buffer.add(verts, TARGET_ARRAY_BUFFER)
             n_view = buffer.add(normals, TARGET_ARRAY_BUFFER)
             attributes = {
-                "POSITION": accessor(v_view, COMPONENT_FLOAT, len(verts), "VEC3",
-                                     (verts.min(axis=0).tolist(), verts.max(axis=0).tolist())),
+                "POSITION": accessor(
+                    v_view,
+                    COMPONENT_FLOAT,
+                    len(verts),
+                    "VEC3",
+                    (verts.min(axis=0).tolist(), verts.max(axis=0).tolist()),
+                ),
                 "NORMAL": accessor(n_view, COMPONENT_FLOAT, len(normals), "VEC3"),
             }
             if uvs is not None:
                 uvs = numpy.asarray(uvs, dtype=numpy.float32)
-                attributes["TEXCOORD_0"] = accessor(buffer.add(uvs, TARGET_ARRAY_BUFFER), COMPONENT_FLOAT, len(uvs), "VEC2")
+                attributes["TEXCOORD_0"] = accessor(
+                    buffer.add(uvs, TARGET_ARRAY_BUFFER), COMPONENT_FLOAT, len(uvs), "VEC2"
+                )
             if colors is not None:
                 colors = numpy.asarray(colors, dtype=numpy.float32)
                 if colors.shape[1] == 3:
-                    colors = numpy.concatenate([colors, numpy.ones((len(colors), 1), numpy.float32)], axis=1)
-                attributes["COLOR_0"] = accessor(buffer.add(colors, TARGET_ARRAY_BUFFER), COMPONENT_FLOAT, len(colors), "VEC4")
+                    colors = numpy.concatenate(
+                        [colors, numpy.ones((len(colors), 1), numpy.float32)], axis=1
+                    )
+                attributes["COLOR_0"] = accessor(
+                    buffer.add(colors, TARGET_ARRAY_BUFFER), COMPONENT_FLOAT, len(colors), "VEC4"
+                )
             indices = tris.astype(numpy.uint32).ravel()
             i_view = buffer.add(indices, TARGET_ELEMENT_ARRAY_BUFFER)
-            prims_out.append({
-                "attributes": attributes,
-                "indices": accessor(i_view, COMPONENT_UINT, len(indices), "SCALAR"),
-                "material": material_for(prim["material"]),
-                "mode": 4,
-            })
+            prims_out.append(
+                {
+                    "attributes": attributes,
+                    "indices": accessor(i_view, COMPONENT_UINT, len(indices), "SCALAR"),
+                    "material": material_for(prim["material"]),
+                    "mode": 4,
+                }
+            )
         if not prims_out:
             continue
         gltf_meshes.append({"name": node["name"], "primitives": prims_out})

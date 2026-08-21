@@ -33,16 +33,16 @@ The three stages ported, in the order `linkMap()` runs them (map.lua:2140-2170):
 
 from collections import defaultdict
 
-MERGE_DISTANCE = 0.1        # map.lua:1211, sqDist < 0.01
-MERGE_RADIUS = 0.1          # map.lua:1211, abs(r1 - r2) < 0.1
+MERGE_DISTANCE = 0.1  # map.lua:1211, sqDist < 0.01
+MERGE_RADIUS = 0.1  # map.lua:1211, abs(r1 - r2) < 0.1
 
 
 def _is_one_way(lanes):
-    return ('-' not in lanes) or ('+' not in lanes)
+    return ("-" not in lanes) or ("+" not in lanes)
 
 
 def _flip_lanes(lanes):
-    return ''.join('-' if c == '+' else ('+' if c == '-' else '0') for c in reversed(lanes))
+    return "".join("-" if c == "+" else ("+" if c == "-" else "0") for c in reversed(lanes))
 
 
 def build_nodes(roads, right_hand_drive=False):
@@ -50,8 +50,8 @@ def build_nodes(roads, right_hand_drive=False):
     nodes = {}
 
     def name_node(prefix, idx):
-        name = "%s%d" % (prefix, idx)
-        if name in nodes:                      # map.lua:135 nameNode
+        name = f"{prefix}{idx}"
+        if name in nodes:  # map.lua:135 nameNode
             base, k = name + "_", 1
             while base + str(k) in nodes:
                 k += 1
@@ -70,31 +70,51 @@ def build_nodes(roads, right_hand_drive=False):
         speed = road.get("speedLimit")
         speed = float(speed) if speed not in (None, "") else None
         if speed is not None and speed <= 0:
-            speed = None                        # "auto calculate", map.lua:613
+            speed = None  # "auto calculate", map.lua:613
         flip = bool(road.get("flipDirection", False))
         no_merge = not road.get("autoJunction", True)
         lanes = None
-        if not road.get("autoLanes", False):    # map.lua:627
+        if not road.get("autoLanes", False):  # map.lua:627
             left = max(0, int(road.get("lanesLeft") or 0))
             right = max(0, int(road.get("lanesRight") or 0))
-            lanes = ('+' * left + '-' * right) if right_hand_drive else ('-' * left + '+' * right)
+            lanes = ("+" * left + "-" * right) if right_hand_drive else ("-" * left + "+" * right)
             one_way = _is_one_way(lanes)
-            if one_way and lanes[:1] == '-':
+            if one_way and lanes[:1] == "-":
                 lanes, flip = _flip_lanes(lanes), not flip
         previous = name_node(prefix, 1)
-        nodes[previous] = {"pos": tuple(points[0][:3]), "radius": 0.5 * points[0][3], "links": {},
-                           "endNode": True, "noMerge": no_merge, "road": prefix}
+        nodes[previous] = {
+            "pos": tuple(points[0][:3]),
+            "radius": 0.5 * points[0][3],
+            "links": {},
+            "endNode": True,
+            "noMerge": no_merge,
+            "road": prefix,
+        }
         for i in range(1, len(points)):
             current = name_node(prefix, i + 1)
-            nodes[current] = {"pos": tuple(points[i][:3]), "radius": 0.5 * points[i][3],
-                              "links": {}, "endNode": False, "noMerge": no_merge, "road": prefix}
+            nodes[current] = {
+                "pos": tuple(points[i][:3]),
+                "radius": 0.5 * points[i][3],
+                "links": {},
+                "endNode": False,
+                "noMerge": no_merge,
+                "road": prefix,
+            }
             in_node = current if flip else previous
             out_node = previous if in_node == current else current
-            edge = {"drivability": drivability, "oneWay": one_way, "lanes": lanes,
-                    "speedLimit": speed, "inNode": in_node, "outNode": out_node,
-                    "inPos": nodes[in_node]["pos"], "outPos": nodes[out_node]["pos"],
-                    "inRadius": nodes[in_node]["radius"], "outRadius": nodes[out_node]["radius"],
-                    "road": prefix}
+            edge = {
+                "drivability": drivability,
+                "oneWay": one_way,
+                "lanes": lanes,
+                "speedLimit": speed,
+                "inNode": in_node,
+                "outNode": out_node,
+                "inPos": nodes[in_node]["pos"],
+                "outPos": nodes[out_node]["pos"],
+                "inRadius": nodes[in_node]["radius"],
+                "outRadius": nodes[out_node]["radius"],
+                "road": prefix,
+            }
             nodes[current]["links"][previous] = edge
             nodes[previous]["links"][current] = edge
             previous = current
@@ -136,7 +156,7 @@ def merge_end_nodes(nodes, distance=MERGE_DISTANCE, radius=MERGE_RADIUS):
         keep = group[0]
         for other in group[1:]:
             first, second = nodes[keep], nodes[other]
-            first["links"].pop(other, None)     # the edge between them is a self-edge; dropped
+            first["links"].pop(other, None)  # the edge between them is a self-edge; dropped
             second["links"].pop(keep, None)
             for other_id, edge in list(second["links"].items()):
                 neighbour = nodes.get(other_id)
@@ -214,25 +234,49 @@ def crash_risks(nodes):
         # map.lua:1989-1992, transcribed rather than tidied. The radius lines test `d2.outNode`
         # where the position lines test `d2.inNode`; that asymmetry is theirs, and a predicate
         # about their code has to reproduce it to mean anything.
-        in_pos = (d1["inPos" if d1["inNode"] == first_id else "outPos"] if in_node == first_id
-                  else d2["inPos" if d2["inNode"] == second_id else "outPos"])
-        out_pos = (d1["outPos" if d1["outNode"] == first_id else "inPos"] if out_node == first_id
-                   else d2["outPos" if d2["outNode"] == second_id else "inPos"])
-        in_radius = (d1["inRadius" if d1["inNode"] == first_id else "outRadius"]
-                     if in_node == first_id
-                     else d2["inRadius" if d2["outNode"] == second_id else "outRadius"])
-        out_radius = (d1["outRadius" if d1["outNode"] == first_id else "inRadius"]
-                      if out_node == first_id
-                      else d2["outRadius" if d2["outNode"] == second_id else "inRadius"])
-        merged = {"drivability": min(d1["drivability"], d2["drivability"]),
-                  "speedLimit": (min(d1["speedLimit"], d2["speedLimit"])
-                                 if None not in (d1["speedLimit"], d2["speedLimit"]) else None),
-                  "oneWay": d1["oneWay"], "lanes": None,
-                  "inPos": in_pos, "inRadius": in_radius,
-                  "outPos": out_pos, "outRadius": out_radius}
+        in_pos = (
+            d1["inPos" if d1["inNode"] == first_id else "outPos"]
+            if in_node == first_id
+            else d2["inPos" if d2["inNode"] == second_id else "outPos"]
+        )
+        out_pos = (
+            d1["outPos" if d1["outNode"] == first_id else "inPos"]
+            if out_node == first_id
+            else d2["outPos" if d2["outNode"] == second_id else "inPos"]
+        )
+        in_radius = (
+            d1["inRadius" if d1["inNode"] == first_id else "outRadius"]
+            if in_node == first_id
+            else d2["inRadius" if d2["outNode"] == second_id else "outRadius"]
+        )
+        out_radius = (
+            d1["outRadius" if d1["outNode"] == first_id else "inRadius"]
+            if out_node == first_id
+            else d2["outRadius" if d2["outNode"] == second_id else "inRadius"]
+        )
+        merged = {
+            "drivability": min(d1["drivability"], d2["drivability"]),
+            "speedLimit": (
+                min(d1["speedLimit"], d2["speedLimit"])
+                if None not in (d1["speedLimit"], d2["speedLimit"])
+                else None
+            ),
+            "oneWay": d1["oneWay"],
+            "lanes": None,
+            "inPos": in_pos,
+            "inRadius": in_radius,
+            "outPos": out_pos,
+            "outRadius": out_radius,
+        }
         if chord["lanes"] is not None and _reaches_lanes_test(merged, chord):
-            out.append({"node": node_id, "between": (first_id, second_id),
-                        "road": d1.get("road"), "chord": chord.get("road")})
+            out.append(
+                {
+                    "node": node_id,
+                    "between": (first_id, second_id),
+                    "road": d1.get("road"),
+                    "chord": chord.get("road"),
+                }
+            )
     return out, chords
 
 
@@ -241,5 +285,12 @@ def check(roads, right_hand_drive=False):
     nodes = build_nodes(roads, right_hand_drive=right_hand_drive)
     merged = merge_end_nodes(nodes)
     risks, chords = crash_risks(nodes)
-    return ({"mapNodes": len(nodes), "endNodesMerged": merged, "chords": chords,
-             "crashRisks": len(risks)}, risks)
+    return (
+        {
+            "mapNodes": len(nodes),
+            "endNodesMerged": merged,
+            "chords": chords,
+            "crashRisks": len(risks),
+        },
+        risks,
+    )

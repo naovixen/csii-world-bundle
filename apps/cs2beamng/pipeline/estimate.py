@@ -35,8 +35,8 @@ import json
 import os
 
 from .. import settings as settings_mod
-from ..beamng import materials as bm
 from ..beamng import dds as dds_mod
+from ..beamng import materials as bm
 from . import history, meshindex
 
 MIB = 1024.0 * 1024.0
@@ -99,31 +99,40 @@ def take(values, census=None, index=None, warm_only=False):
     rates = history.load()
     resident = textures["bytes"] + meshes["bytes"]
     budget = _budget(values)
-    out.update({
-        "ready": True,
-        "textures": textures,
-        "meshes": meshes,
-        "residentBytes": resident,
-        "residentMiB": round(resident / MIB, 1),
-        "diskBytes": resident + _terrain_file_bytes(values, bundle),
-        # The `.dae` sources are NOT in it and the basis says so rather than guessing at them:
-        # nothing has measured what they weigh against the cooked files, and a made-up multiple
-        # of several gigabytes is the kind of number this meter exists not to print.
-        "diskBasis": ("shapes, textures and the heightfield; the COLLADA sources you keep are "
-                      "on top" if values.get("keep_dae", True)
-                      else "shapes, textures and the heightfield"),
-        "budget": budget,
-        "approximations": (textures["approximations"] + meshes["approximations"]
-                           + _stale_bake_note(census)),
-        "coefficients": {k: round(v, 4) for k, v in sorted(rates.items()) if k.startswith("size/")},
-    })
+    out.update(
+        {
+            "ready": True,
+            "textures": textures,
+            "meshes": meshes,
+            "residentBytes": resident,
+            "residentMiB": round(resident / MIB, 1),
+            "diskBytes": resident + _terrain_file_bytes(values, bundle),
+            # The `.dae` sources are NOT in it and the basis says so rather than guessing at them:
+            # nothing has measured what they weigh against the cooked files, and a made-up multiple
+            # of several gigabytes is the kind of number this meter exists not to print.
+            "diskBasis": (
+                "shapes, textures and the heightfield; the COLLADA sources you keep are on top"
+                if values.get("keep_dae", True)
+                else "shapes, textures and the heightfield"
+            ),
+            "budget": budget,
+            "approximations": (
+                textures["approximations"] + meshes["approximations"] + _stale_bake_note(census)
+            ),
+            "coefficients": {
+                k: round(v, 4) for k, v in sorted(rates.items()) if k.startswith("size/")
+            },
+        }
+    )
     out["rows"] = _rows(out, values)
-    out["overSections"] = sorted({row["section"] for row in out["rows"]
-                                  if row.get("band") == "over" and row.get("section")})
+    out["overSections"] = sorted(
+        {row["section"] for row in out["rows"] if row.get("band") == "over" and row.get("section")}
+    )
     return out
 
 
 # -- the textures, computed ----------------------------------------------------------------------
+
 
 def texture_estimate(values, bundle, derived_dir):
     """Every texture the build will write, sized from its own header and the caps.
@@ -145,32 +154,44 @@ def texture_estimate(values, bundle, derived_dir):
     total = files = 0
     for kind, keep_alpha, width, height, colour_type in plan["jobs"]:
         width, height = bm.capped_size(width, height, int(caps.get(kind, 0) or 0))
-        total += dds_mod.encoded_bytes(width, height,
-                                       bm.dxgi_format(kind, keep_alpha, colour_type in (0, 4)))
+        total += dds_mod.encoded_bytes(
+            width, height, bm.dxgi_format(kind, keep_alpha, colour_type in (0, 4))
+        )
         files += 1
     ground = _ground_texture_bytes(bundle)
-    out = {"bytes": total + ground, "materialBytes": total, "groundBytes": ground,
-           "files": files, "unsized": plan["unsized"],
-           "format": "dds" if use_dds else "png",
-           "basis": ("computed from your city's own textures at these caps" if use_dds else
-                     "computed from your city's own textures; they ship as PNG and BeamNG "
-                     "compresses them on the first load, which is what this counts"),
-           "variantFiles": plan["variantFiles"],
-           "approximations": [{
-               "what": "every material the bake resolved is counted, including the ones no shape "
-                       "in your city binds",
-               "why": "which materials are bound is decided by the shapes stage, which is the "
-                      "build. Counting them all makes this an upper bound rather than a guess",
-               "measured": "257 of 7,973 files, 16.9 MiB of 558.2, on the reference city",
-           }, {
-               "what": "the ground's own textures follow the bundle's surface pack at a measured "
-                       "ratio instead of being sized one by one",
-               "why": "they are re-encoded and split into base, detail and macro copies by the "
-                      "terrain stage rather than capped, so their sizes are not the source's",
-               "measured": "1.28 on the reference build (193.9 MiB of surfaces -> 247.4 MiB of "
-                           "ground), and about a fifth high on a level whose terrain settings "
-                           "differ - it is one ratio over a group that is not one thing",
-           }]}
+    out = {
+        "bytes": total + ground,
+        "materialBytes": total,
+        "groundBytes": ground,
+        "files": files,
+        "unsized": plan["unsized"],
+        "format": "dds" if use_dds else "png",
+        "basis": (
+            "computed from your city's own textures at these caps"
+            if use_dds
+            else "computed from your city's own textures; they ship as PNG and BeamNG "
+            "compresses them on the first load, which is what this counts"
+        ),
+        "variantFiles": plan["variantFiles"],
+        "approximations": [
+            {
+                "what": "every material the bake resolved is counted, including the ones no shape "
+                "in your city binds",
+                "why": "which materials are bound is decided by the shapes stage, which is the "
+                "build. Counting them all makes this an upper bound rather than a guess",
+                "measured": "257 of 7,973 files, 16.9 MiB of 558.2, on the reference city",
+            },
+            {
+                "what": "the ground's own textures follow the bundle's surface pack at a measured "
+                "ratio instead of being sized one by one",
+                "why": "they are re-encoded and split into base, detail and macro copies by the "
+                "terrain stage rather than capped, so their sizes are not the source's",
+                "measured": "1.28 on the reference build (193.9 MiB of surfaces -> 247.4 MiB of "
+                "ground), and about a fifth high on a level whose terrain settings "
+                "differ - it is one ratio over a group that is not one thing",
+            },
+        ],
+    }
     return out
 
 
@@ -266,7 +287,7 @@ def _variant_jobs(values, derived_dir, table):
     figures on screen are for the last one.
     """
     for _raw, rec in (table.get("materials") or {}).items():
-        keys = sorted(((rec.get("derived") or {}).get("variants") or {}))
+        keys = sorted((rec.get("derived") or {}).get("variants") or {})
         for vkey in keys:
             src = bm.variant_albedo(derived_dir, rec, vkey)
             if not src:
@@ -323,6 +344,7 @@ def _header_has_alpha(path):
 
 # -- the meshes, calibrated -----------------------------------------------------------------------
 
+
 def mesh_estimate(values, bundle, index, census=None):
     """What the level's `.cdae` files will weigh: the exact shape list, times measured ratios."""
     rates = history.load()
@@ -333,9 +355,13 @@ def mesh_estimate(values, bundle, index, census=None):
     for kind, bucket in sorted(selected.items()):
         ratio = rates.get(f"size/cdae_per_source_{kind}") or 1.0
         size = int(bucket["bytes"] * ratio)
-        groups[kind] = {"shapes": bucket["shapes"], "sourceBytes": bucket["bytes"],
-                        "bytes": size, "ratio": round(ratio, 3),
-                        "section": KIND_SECTION.get(kind, "world")}
+        groups[kind] = {
+            "shapes": bucket["shapes"],
+            "sourceBytes": bucket["bytes"],
+            "bytes": size,
+            "ratio": round(ratio, 3),
+            "section": KIND_SECTION.get(kind, "world"),
+        }
         total += size
     scale = _region_scale(values, map_size)
     for key, parts, group in TILE_GROUPS:
@@ -346,33 +372,47 @@ def mesh_estimate(values, bundle, index, census=None):
             continue
         ratio = rates.get(f"size/cdae_per_source_{group}") or 1.0
         size = int(source * scale * ratio)
-        groups[group] = {"shapes": None, "sourceBytes": int(source * scale), "bytes": size,
-                         "ratio": round(ratio, 3), "section": "world"}
+        groups[group] = {
+            "shapes": None,
+            "sourceBytes": int(source * scale),
+            "bytes": size,
+            "ratio": round(ratio, 3),
+            "section": "world",
+        }
         total += size
     return {
-        "bytes": total, "groups": groups,
+        "bytes": total,
+        "groups": groups,
         "basis": _mesh_basis(rates),
         "approximations": [
-            {"what": "a cooked shape's bytes are its source glTF times a measured ratio, not the "
-                     "cooked file itself",
-             "why": "the cook is BeamNG's own compiler and only running it says what it produces",
-             "measured": "0.97 over the reference city's 4,272 object shapes, per kind 1.02 "
-                         "buildings / 0.65 props / 1.03 trees"},
-            {"what": "a road, marking, area or foundation tile is sized from the bake product it "
-                     "is merged out of, scaled by how much of the map the region covers",
-             "why": "how the merge divides into tiles is the build's own tiling, and a tile is "
-                    "one shape however many records went into it",
-             "measured": "1.31 networks / 1.52 areas / 1.59 markings / 1.53 foundations"},
-            {"what": "a recoloured prefab is counted once per colour the bake gave it, including "
-                     "the copies too thinly placed to be worth their own type",
-             "why": "which copies survive is decided by `forest_min_items` against the item count "
-                    "per colour, which is the build's own count and not the bake's",
-             "measured": "17 of 4,272 shapes and 5.9 MiB of 2,068 on the reference city (+5.7 % "
-                         "of the tree group, +0.3 % of all shapes)"},
-            {"what": "trees standing in the road are still counted",
-             "why": "the clearance rule is a spatial pass over the lane layer and it has never "
-                    "removed a whole shape",
-             "measured": "1,806 of 1,276,060 records on the reference city, 0 shapes"},
+            {
+                "what": "a cooked shape's bytes are its source glTF times a measured ratio, not the "
+                "cooked file itself",
+                "why": "the cook is BeamNG's own compiler and only running it says what it produces",
+                "measured": "0.97 over the reference city's 4,272 object shapes, per kind 1.02 "
+                "buildings / 0.65 props / 1.03 trees",
+            },
+            {
+                "what": "a road, marking, area or foundation tile is sized from the bake product it "
+                "is merged out of, scaled by how much of the map the region covers",
+                "why": "how the merge divides into tiles is the build's own tiling, and a tile is "
+                "one shape however many records went into it",
+                "measured": "1.31 networks / 1.52 areas / 1.59 markings / 1.53 foundations",
+            },
+            {
+                "what": "a recoloured prefab is counted once per colour the bake gave it, including "
+                "the copies too thinly placed to be worth their own type",
+                "why": "which copies survive is decided by `forest_min_items` against the item count "
+                "per colour, which is the build's own count and not the bake's",
+                "measured": "17 of 4,272 shapes and 5.9 MiB of 2,068 on the reference city (+5.7 % "
+                "of the tree group, +0.3 % of all shapes)",
+            },
+            {
+                "what": "trees standing in the road are still counted",
+                "why": "the clearance rule is a spatial pass over the lane layer and it has never "
+                "removed a whole shape",
+                "measured": "1,806 of 1,276,060 records on the reference city, 0 shapes",
+            },
         ],
     }
 
@@ -382,16 +422,23 @@ def _stale_bake_note(census):
     is a figure for the LAST one. The census already knows which products are stale; saying so
     here is the difference between an estimate that is behind and an estimate that is wrong."""
     products = ((census or {}).get("derived") or {}).get("products") or {}
-    stale = sorted(name for name, info in products.items()
-                   if info.get("status") in ("stale", "absent")
-                   and name in ("materials", "lods", "areas", "markings", "skirts", "terraincut"))
+    stale = sorted(
+        name
+        for name, info in products.items()
+        if info.get("status") in ("stale", "absent")
+        and name in ("materials", "lods", "areas", "markings", "skirts", "terraincut")
+    )
     if not stale:
         return []
-    return [{"what": f"the figures are for the last bake; {len(stale)} of its products "
-                     f"({', '.join(stale)}) will be rebuilt with these settings",
-             "why": "both halves are sized from what the bake produced, and what the next bake "
-                    "produces is what the build will ship",
-             "measured": None}]
+    return [
+        {
+            "what": f"the figures are for the last bake; {len(stale)} of its products "
+            f"({', '.join(stale)}) will be rebuilt with these settings",
+            "why": "both halves are sized from what the bake produced, and what the next bake "
+            "produces is what the build will ship",
+            "measured": None,
+        }
+    ]
 
 
 def _region_scale(values, map_size):
@@ -418,7 +465,7 @@ def _mesh_basis(rates):
     return "from the reference city"
 
 
-def _dir_bytes(path, _cache={}):                              # noqa: B006 - process-lived cache
+def _dir_bytes(path, _cache={}):  # noqa: B006 - process-lived cache
     """Bytes under a directory, cached on its entry count and newest mtime."""
     try:
         stamp = (os.path.getmtime(path), len(os.listdir(path)))
@@ -451,17 +498,22 @@ def _terrain_file_bytes(values, bundle):
 
 # -- the rows the meter draws ----------------------------------------------------------------------
 
+
 def _budget(values):
     """What this machine's card is known to hold, read exactly the way the validator reads it, so
     the meter and the build's own verdict cannot disagree."""
     try:
-        from ..beamng import validate_level                   # noqa: PLC0415 - avoids a cycle
+        from ..beamng import validate_level
 
         vram, pixels, source = validate_level.render_target(values)
-        return {"vramMiB": vram, "pixels": pixels, "source": source,
-                "residentMiB": round(validate_level.resident_budget_mib(vram, pixels)),
-                "failureMiB": round(validate_level.resident_failure_mib(vram, pixels))}
-    except Exception:                                         # noqa: BLE001 - never blank the page
+        return {
+            "vramMiB": vram,
+            "pixels": pixels,
+            "source": source,
+            "residentMiB": round(validate_level.resident_budget_mib(vram, pixels)),
+            "failureMiB": round(validate_level.resident_failure_mib(vram, pixels)),
+        }
+    except Exception:
         return None
 
 
@@ -471,8 +523,13 @@ def _rows(est, values):
     three target-machine settings are for."""
     budget = est.get("budget")
     mib = est["residentMiB"]
-    row = {"key": "vram", "label": "Video memory", "value": f"{mib:,.0f} MiB",
-           "basis": _resident_basis(est), "section": _biggest_lever(est)}
+    row = {
+        "key": "vram",
+        "label": "Video memory",
+        "value": f"{mib:,.0f} MiB",
+        "basis": _resident_basis(est),
+        "section": _biggest_lever(est),
+    }
     if budget:
         fit, fail = float(budget["residentMiB"]), float(budget["failureMiB"])
         row["of"] = f"of {fit:,.0f} MiB known to fit"
@@ -480,12 +537,16 @@ def _rows(est, values):
         row["markFraction"] = fit / max(fail, 1.0)
         if mib >= fail:
             row["band"] = "over"
-            row["advice"] = ("This is past the point where this card has been measured to run "
-                             "out. The level will stutter and get worse the longer you play.")
+            row["advice"] = (
+                "This is past the point where this card has been measured to run "
+                "out. The level will stutter and get worse the longer you play."
+            )
         elif mib > fit:
             row["band"] = "close"
-            row["advice"] = ("This is more than your card is known to hold, and less than it is "
-                             "known to fail at. It may run; nobody has measured it.")
+            row["advice"] = (
+                "This is more than your card is known to hold, and less than it is "
+                "known to fail at. It may run; nobody has measured it."
+            )
         else:
             row["band"] = "fits"
     else:
@@ -498,8 +559,10 @@ def _rows(est, values):
 def _resident_basis(est):
     meshes = est["meshes"]["bytes"] / MIB
     textures = est["textures"]["bytes"] / MIB
-    return (f"{meshes:,.0f} MiB of shapes {est['meshes']['basis']}, "
-            f"{textures:,.0f} MiB of textures computed exactly")
+    return (
+        f"{meshes:,.0f} MiB of shapes {est['meshes']['basis']}, "
+        f"{textures:,.0f} MiB of textures computed exactly"
+    )
 
 
 def _biggest_lever(est):
@@ -541,16 +604,23 @@ def score(estimated, measured):
     if float(measured.get("totalMiB") or 0) < LEARN_FLOOR_MIB:
         return None
     out = {}
-    for name, got in (("mesh", measured.get("meshMiB")),
-                      ("texture", measured.get("textureShippedMiB")),
-                      ("total", measured.get("totalMiB"))):
-        want = {"mesh": estimated.get("meshes", {}).get("bytes", 0) / MIB,
-                "texture": estimated.get("textures", {}).get("bytes", 0) / MIB,
-                "total": estimated.get("residentBytes", 0) / MIB}[name]
+    for name, got in (
+        ("mesh", measured.get("meshMiB")),
+        ("texture", measured.get("textureShippedMiB")),
+        ("total", measured.get("totalMiB")),
+    ):
+        want = {
+            "mesh": estimated.get("meshes", {}).get("bytes", 0) / MIB,
+            "texture": estimated.get("textures", {}).get("bytes", 0) / MIB,
+            "total": estimated.get("residentBytes", 0) / MIB,
+        }[name]
         if got is None:
             continue
-        out[name] = {"estimatedMiB": round(want, 1), "actualMiB": round(float(got), 1),
-                     "errorPercent": round(100.0 * (want - float(got)) / max(float(got), 1e-6), 1)}
+        out[name] = {
+            "estimatedMiB": round(want, 1),
+            "actualMiB": round(float(got), 1),
+            "errorPercent": round(100.0 * (want - float(got)) / max(float(got), 1e-6), 1),
+        }
     return out
 
 

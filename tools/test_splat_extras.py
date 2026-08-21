@@ -29,6 +29,7 @@ it — is not reproducible here; it is asserted in `_Splat.extras_image`'s own c
 records that the colorspace and alpha mode must be set BEFORE the write or the buffer silently
 reverts to blank.
 """
+
 import json
 import os
 import sys
@@ -39,9 +40,10 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from csiibundle import png as png_reader
 from csiibundle import splat as splat_reader
 
-BUNDLE = os.path.expandvars(r"%USERPROFILE%\AppData\LocalLow\Colossal Order"
-                            r"\Cities Skylines II\ModsData\Carto")
-
+BUNDLE = os.path.expandvars(
+    r"%USERPROFILE%\AppData\LocalLow\Colossal Order"
+    r"\Cities Skylines II\ModsData\Carto"
+)
 
 
 def unpack(byte_plane):
@@ -79,14 +81,17 @@ def main():
     shipped = splat_reader.Splat(splat_path, rasters.get("splatmap", {})).extras()
     worst = float(numpy.abs(shipped.astype(numpy.float64) - extras).max())
     if worst > 1e-6:
-        print(f"FAIL csiibundle.splat.Splat.extras disagrees with the reference decode "
-              f"by {worst:.6f}")
+        print(
+            f"FAIL csiibundle.splat.Splat.extras disagrees with the reference decode by {worst:.6f}"
+        )
         failures += 1
     else:
         print("PASS csiibundle.splat.Splat.extras matches the reference nibble decode")
-    painted = (extras.max(axis=2) > 0)
-    print(f"splatmap {width}x{height}; {painted.mean() * 100:.2f}% of the map carries paint; "
-          "means " + ", ".join(f"extra{i + 1} {extras[:, :, i].mean():.4f}" for i in range(4)))
+    painted = extras.max(axis=2) > 0
+    print(
+        f"splatmap {width}x{height}; {painted.mean() * 100:.2f}% of the map carries paint; "
+        "means " + ", ".join(f"extra{i + 1} {extras[:, :, i].mean():.4f}" for i in range(4))
+    )
 
     # 1. The independent packing must agree, channel for channel.
     if os.path.isfile(user_path):
@@ -96,21 +101,26 @@ def main():
             failures += 1
         else:
             user = numpy.frombuffer(uraw, dtype=numpy.uint8).reshape(uh, uw, 4)
-            user1, user2 = unpack(user[:, :, 0])        # R packs extra1:extra2
-            user3, user4 = unpack(user[:, :, 1])        # G packs extra3:extra4
-            for index, (mine, theirs) in enumerate(((extra1, user1), (extra2, user2),
-                                                    (extra3, user3), (extra4, user4)), 1):
+            user1, user2 = unpack(user[:, :, 0])  # R packs extra1:extra2
+            user3, user4 = unpack(user[:, :, 1])  # G packs extra3:extra4
+            for index, (mine, theirs) in enumerate(
+                ((extra1, user1), (extra2, user2), (extra3, user3), (extra4, user4)), 1
+            ):
                 worst = float(numpy.abs(mine - theirs).max())
                 if worst > 1e-6:
                     disagree = float((numpy.abs(mine - theirs) > 1e-6).mean()) * 100
-                    print(f"FAIL extra{index} disagrees with user_splatmap on "
-                          f"{disagree:.3f}% of texels, worst {worst:.4f}")
+                    print(
+                        f"FAIL extra{index} disagrees with user_splatmap on "
+                        f"{disagree:.3f}% of texels, worst {worst:.4f}"
+                    )
                     failures += 1
             if not failures:
                 print("PASS all four extras match user_splatmap's independent packing exactly")
     else:
-        print("NOTE no terrain/user_splatmap.png — the cross-check against the second "
-              "packing was skipped")
+        print(
+            "NOTE no terrain/user_splatmap.png — the cross-check against the second "
+            "packing was skipped"
+        )
 
     # 2. The 8-bit image `_Splat.extras_image` builds is lossless for nibble data.
     quantised = numpy.round(extras * 15.0).astype(numpy.uint8) * 17
@@ -147,13 +157,17 @@ def main():
             band.append(run)
         band = numpy.asarray(band, dtype=float) * cell
         partial = float((band > 0).mean()) * 100
-        print(f"extra{strongest + 1}: {len(rows)} painted edge texel(s); "
-              f"{partial:.1f}% carry a partial-opacity band, median width "
-              f"{numpy.median(band[band > 0]) if (band > 0).any() else 0.0:.1f} m "
-              f"(splat texel {cell:g} m)")
+        print(
+            f"extra{strongest + 1}: {len(rows)} painted edge texel(s); "
+            f"{partial:.1f}% carry a partial-opacity band, median width "
+            f"{numpy.median(band[band > 0]) if (band > 0).any() else 0.0:.1f} m "
+            f"(splat texel {cell:g} m)"
+        )
         if partial <= 0.0:
-            print("FAIL every painted edge saturates in one texel — a linear tap has nothing "
-                  "to interpolate and the 3.5 m steps would remain")
+            print(
+                "FAIL every painted edge saturates in one texel — a linear tap has nothing "
+                "to interpolate and the 3.5 m steps would remain"
+            )
             failures += 1
         else:
             print("PASS painted edges carry partial opacity, so a linear tap ramps them")

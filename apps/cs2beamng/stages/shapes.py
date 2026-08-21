@@ -52,8 +52,8 @@ import os
 import time
 
 import numpy
-
-from csiibundle import collision, glb, instances as bundle_instances, lod, tints
+from csiibundle import collision, glb, lod, tints
+from csiibundle import instances as bundle_instances
 from csiibundle.bake import lods as bake_lods
 
 from ..beamng import dae, placement
@@ -135,6 +135,7 @@ def units(census, settings):
 
 # -- the demand scan ------------------------------------------------------------------------------
 
+
 def scan_demand(ctx, progress):
     """One pass over `instances.jsonl`: which `(assetId, state)` the build places, how many of
     each, which paint variants are wanted, and whether the placement is forest or TSStatic.
@@ -148,13 +149,22 @@ def scan_demand(ctx, progress):
     settings = ctx.settings
     region = ctx.region
     mesh_dir = os.path.join(ctx.bundle, "meshes")
-    have = {}                                          # asset+suffix -> bool, cached file probes
+    have = {}  # asset+suffix -> bool, cached file probes
     variants = _paint_variants(ctx)
     forest_allowed = True
     demand = {}
-    stats = {"records": 0, "kept": 0, "noMesh": 0, "skippedBaked": 0, "skippedState": 0,
-             "skippedKind": 0, "skippedDensity": 0, "skippedRegion": 0,
-             "skippedRoadclear": 0, "skippedOrphan": 0}                 # `placement.admit`'s reasons
+    stats = {
+        "records": 0,
+        "kept": 0,
+        "noMesh": 0,
+        "skippedBaked": 0,
+        "skippedState": 0,
+        "skippedKind": 0,
+        "skippedDensity": 0,
+        "skippedRegion": 0,
+        "skippedRoadclear": 0,
+        "skippedOrphan": 0,
+    }  # `placement.admit`'s reasons
     # A6.6 — records whose owner the producer declared ABSENT (§10). Computed once here beside
     # the road clearance and handed to the other passes through `shared`.
     orphans, orphan_stats = bundle_instances.orphans_of_absent_owners(ctx.bundle)
@@ -164,7 +174,9 @@ def scan_demand(ctx, progress):
     # reach different answers because they consult the same set.
     clipped, clip_stats = placement.road_clipped(ctx.bundle, settings, region)
     stats["roadclear"] = clip_stats
-    progress.begin("shapes: which meshes the city places", total=units(ctx.census, settings), unit="instances")
+    progress.begin(
+        "shapes: which meshes the city places", total=units(ctx.census, settings), unit="instances"
+    )
     for record in bundle_instances.read_instances(ctx.bundle):
         stats["records"] += 1
         if stats["records"] % 25000 == 0:
@@ -186,8 +198,14 @@ def scan_demand(ctx, progress):
         forest = placement.wants_forest(record, forest_allowed)
         entry = demand.get((asset, suffix))
         if entry is None:
-            entry = demand[(asset, suffix)] = {"kind": kind, "count": 0, "forest": False,
-                                               "static": False, "variants": {}, "tree": False}
+            entry = demand[(asset, suffix)] = {
+                "kind": kind,
+                "count": 0,
+                "forest": False,
+                "static": False,
+                "variants": {},
+                "tree": False,
+            }
         # `kind == "tree"` is ALL vegetation; only `is_tree` is the game's own tree (see
         # `csiibundle.instances.is_tree`). Measured per prefab on the reference city, no asset
         # is ever classified both ways, so one flag per demand entry is exact rather than a
@@ -203,7 +221,9 @@ def scan_demand(ctx, progress):
                 index = placement.variant_of(record, centres)
                 entry["variants"][index] = entry["variants"].get(index, 0) + 1
         stats["kept"] += 1
-    progress.end(f"{stats['kept']:,} of {stats['records']:,} records over {len(demand):,} mesh states")
+    progress.end(
+        f"{stats['kept']:,} of {stats['records']:,} records over {len(demand):,} mesh states"
+    )
     return demand, stats, clipped | orphans
 
 
@@ -216,7 +236,7 @@ def _state_suffix(record, asset, mesh_dir, have):
         if candidate not in have:
             have[candidate] = os.path.isfile(os.path.join(mesh_dir, candidate + ".glb"))
         if have[candidate]:
-            return candidate[len(asset):]
+            return candidate[len(asset) :]
     return None
 
 
@@ -233,15 +253,30 @@ def _paint_variants(ctx):
 
 # -- writing one shape ---------------------------------------------------------------------------
 
+
 def _shape_job(args):
     """Worker: one `(asset, suffix, variant)` -> a written `.dae` plus the numbers the report and
     the instances stage need. Returns `(key, result_dict)`; `result_dict["error"]` on failure."""
-    (bundle, derived_dir, out_dir, level_name, asset, suffix, variant, variant_key, kind,
-     options, aliases, tinted, is_tree, displacement) = args
+    (
+        bundle,
+        derived_dir,
+        out_dir,
+        level_name,
+        asset,
+        suffix,
+        variant,
+        variant_key,
+        kind,
+        options,
+        aliases,
+        tinted,
+        is_tree,
+        displacement,
+    ) = args
     source = asset + suffix
     try:
         nodes = glb.parse_glb(os.path.join(bundle, "meshes", source + ".glb"))
-    except Exception as exc:                                              # noqa: BLE001
+    except Exception as exc:
         return (asset, suffix, variant), {"error": f"{source}: {exc}"}
     if not nodes:
         return (asset, suffix, variant), {"error": f"{source}: no mesh-bearing node"}
@@ -259,21 +294,36 @@ def _shape_job(args):
 
     shape_name = placement.shape_key(asset, suffix, variant)
     base_mesh = dae.group_by_material(dae.merge_meshes(shape_name, parts))
-    levels, lod_stats, ladder = _lod_levels(derived_dir, source, shape_name, base_mesh, null_px,
-                                            radius, displacement, kind, aliases, tinted,
-                                            level_name, options)
+    levels, lod_stats, ladder = _lod_levels(
+        derived_dir,
+        source,
+        shape_name,
+        base_mesh,
+        null_px,
+        radius,
+        displacement,
+        kind,
+        aliases,
+        tinted,
+        level_name,
+        options,
+    )
     # The collider comes off LOD 1 where the bake generated one — `collision.colmesh_from_lod` is
     # written for the ~25 % level, and a 20k-triangle building shell is not a collider. **WHICH
     # ENTRY OF THE LADDER THAT IS MOVED IN A8**: with `lod0_max_error` promoting LOD 1 to the top
     # detail, LOD 1 is `ladder[0]` and `ladder[1]` is LOD 2 — taking index 1 blindly would hand
     # every promoted shape a collider two levels coarse than intended.
-    lod1_mesh = (ladder[0] if lod_stats.get("lod0Promoted")
-                 else (ladder[1] if len(ladder) > 1 else base_mesh))
+    lod1_mesh = (
+        ladder[0]
+        if lod_stats.get("lod0Promoted")
+        else (ladder[1] if len(ladder) > 1 else base_mesh)
+    )
     if asset in options.get("no_collide", ()):
         colliders, collider_kind = (), "lightNone"
     else:
-        colliders, collider_kind = _collider(shape_name, base_mesh, lod1_mesh, kind, options,
-                                             is_tree)
+        colliders, collider_kind = _collider(
+            shape_name, base_mesh, lod1_mesh, kind, options, is_tree
+        )
     # How well the trunk search actually found a trunk. `_trunk_group` prefers a material run
     # NAMED for one, and on a CS2 bundle that branch never fires — the game's material names are
     # hashed asset ids (`lvl_OakTreeAdult01_c8092af6...`), so all 32 tree prefabs of the reference
@@ -291,14 +341,19 @@ def _shape_job(args):
 
     # `gameCullMetres` divided by the declared `lod_detail_scale` is how far THIS level draws the
     # mesh; an imposter only earns its atlas past `imposter_min_metres`.
-    reach_m = lod.cull_distance(lod.mesh_min_lod(size, area),
-                                options["level_of_detail"]) / max(detail_scale, 1e-6)
+    reach_m = lod.cull_distance(lod.mesh_min_lod(size, area), options["level_of_detail"]) / max(
+        detail_scale, 1e-6
+    )
     wants_imposter = options["imposters"] and reach_m >= options["imposter_min_metres"]
     billboard_px = null_px if wants_imposter else None
     final_null = (null_px / IMPOSTER_REACH) if wants_imposter else null_px
-    shape = dae.Shape(shape_name, levels, collision=colliders,
-                      billboard_px=int(max(1, round(billboard_px))) if billboard_px else None,
-                      null_px=int(max(1, round(final_null))))
+    shape = dae.Shape(
+        shape_name,
+        levels,
+        collision=colliders,
+        billboard_px=int(max(1, round(billboard_px))) if billboard_px else None,
+        null_px=int(max(1, round(final_null))),
+    )
     path = os.path.join(out_dir, shape_name + ".dae")
     written = dae.write_shape(path, shape)
     return (asset, suffix, variant), {
@@ -312,8 +367,9 @@ def _shape_job(args):
         "renderingSize": round(lod.rendering_size(size), 4),
         "lodBias": round(lod.lod_bias(size, area), 4),
         "gamePx": round(float(game_px), 4),
-        "gameCullMetres": round(lod.cull_distance(lod.mesh_min_lod(size, area),
-                                                  options["level_of_detail"]), 1),
+        "gameCullMetres": round(
+            lod.cull_distance(lod.mesh_min_lod(size, area), options["level_of_detail"]), 1
+        ),
         "nullPx": int(max(1, round(final_null))),
         "billboardPx": int(max(1, round(billboard_px))) if billboard_px else None,
         "boundsMin": [round(float(v), 4) for v in lo],
@@ -358,7 +414,9 @@ def _collect(nodes, aliases, tinted, level_name):
             bound = _bound_material(name, aliases, tinted, level_name)
             materials_used.add(aliases.get(name, name))
             runs.append((bound, count))
-        parts.append((local, normals, dae.glb_uvs(node["uvs"]), node.get("colors"), node["tris"], runs))
+        parts.append(
+            (local, normals, dae.glb_uvs(node["uvs"]), node.get("colors"), node["tris"], runs)
+        )
     return parts, lo, hi, area, materials_used
 
 
@@ -367,8 +425,9 @@ def _with_wind_colours(parts):
     (`collision.wind_vertex_colours`). Synthesised, cosmetic and off by default."""
     out = []
     for index, (verts, normals, uvs, _colors, tris, runs) in enumerate(parts):
-        colours = collision.wind_vertex_colours({"verts": verts, "tris": tris, "material_runs": runs},
-                                                up_axis=2, seed=index)
+        colours = collision.wind_vertex_colours(
+            {"verts": verts, "tris": tris, "material_runs": runs}, up_axis=2, seed=index
+        )
         out.append((verts, normals, uvs, colours, tris, runs))
     return out
 
@@ -381,6 +440,7 @@ def _bound_material(raw, aliases, tinted, level_name):
     if variant_name:
         return variant_name
     from ..beamng import materials as bm
+
     return bm.mapto(level_name, canonical)
 
 
@@ -430,8 +490,20 @@ LOD0_MAX_ERROR_DEFAULT = 0.10
 LOD0_MIN_TRIANGLES = 1000
 
 
-def _lod_levels(derived_dir, source, shape_name, base_mesh, null_px, radius, displacement,
-                kind, aliases, tinted, level_name, options):
+def _lod_levels(
+    derived_dir,
+    source,
+    shape_name,
+    base_mesh,
+    null_px,
+    radius,
+    displacement,
+    kind,
+    aliases,
+    tinted,
+    level_name,
+    options,
+):
     """`[(px, [Mesh]), ...]` nearest-first: LOD 0 plus whatever the bake generated, each with the
     threshold its own measured displacement earns it.
 
@@ -481,21 +553,34 @@ def _lod_levels(derived_dir, source, shape_name, base_mesh, null_px, radius, dis
     # total, so a distance is not a fair test of it (A6.7).
     promote = float(options.get("lod0_max_error") or 0.0)
     keep_small = int(options.get("lod0_min_triangles") or 0)
-    if (promote > 0.0 and generated and generated[0] == 1 and len(meshes) > 1
-            and kind in DISPLACEMENT_RULE_KINDS
-            and displacement and displacement[0] is not None
-            and float(displacement[0]) <= promote
-            and len(meshes[1].tris) >= keep_small):
+    if (
+        promote > 0.0
+        and generated
+        and generated[0] == 1
+        and len(meshes) > 1
+        and kind in DISPLACEMENT_RULE_KINDS
+        and displacement
+        and displacement[0] is not None
+        and float(displacement[0]) <= promote
+        and len(meshes[1].tris) >= keep_small
+    ):
         stats["lod0Promoted"] = True
         stats["lod0Triangles"] = len(base_mesh.tris)
-        meshes = meshes[1:]                  # LOD 1 is now the shape's own top detail
-        generated = generated[1:]            # ...so only LOD 2 is still a GENERATED level
+        meshes = meshes[1:]  # LOD 1 is now the shape's own top detail
+        generated = generated[1:]  # ...so only LOD 2 is still a GENERATED level
         stats["levels"] -= 1
         stats["triangles"] = stats["triangles"][1:]
-    elif (promote > 0.0 and generated and generated[0] == 1 and len(meshes) > 1
-          and kind in DISPLACEMENT_RULE_KINDS and displacement
-          and displacement[0] is not None and float(displacement[0]) <= promote):
-        stats["lod0KeptSmall"] = len(meshes[1].tris)      # too few triangles to survive the drop
+    elif (
+        promote > 0.0
+        and generated
+        and generated[0] == 1
+        and len(meshes) > 1
+        and kind in DISPLACEMENT_RULE_KINDS
+        and displacement
+        and displacement[0] is not None
+        and float(displacement[0]) <= promote
+    ):
+        stats["lod0KeptSmall"] = len(meshes[1].tris)  # too few triangles to survive the drop
 
     floor = max(2.0, null_px * LADDER_RATIOS[0])
     # one threshold per mesh, nearest first: each generated level's switch point, and the floor
@@ -509,15 +594,23 @@ def _lod_levels(derived_dir, source, shape_name, base_mesh, null_px, radius, dis
         metres = None
         if displacement and len(displacement) >= level and not exempt:
             metres = displacement[level - 1]
-        ceiling = max(2.0, null_px * LADDER_RATIOS[min(len(meshes) - 1 - index, len(LADDER_RATIOS) - 1)])
+        ceiling = max(
+            2.0, null_px * LADDER_RATIOS[min(len(meshes) - 1 - index, len(LADDER_RATIOS) - 1)]
+        )
         # `metres` is None for an exempt kind and for a level the bake did not measure; the
         # switch helper answers with its ceiling, which the clamp turns back into the ladder
         earned = lod.displacement_switch_px(radius, metres, options["switch_error_px"])
         px = max(floor, min(ceiling, earned))
         thresholds.append(px)
-        shipped.append({"level": level, "metres": None if metres is None else round(metres, 4),
-                        "ladderPx": int(round(ceiling)), "exempt": exempt,
-                        "deferred": bool(px < ceiling - 0.5)})
+        shipped.append(
+            {
+                "level": level,
+                "metres": None if metres is None else round(metres, 4),
+                "ladderPx": int(round(ceiling)),
+                "exempt": exempt,
+                "deferred": bool(px < ceiling - 0.5),
+            }
+        )
     thresholds.append(floor)
     # `split_mesh` caps every <geometry> at MAX_GEOMETRY_VERTS: BeamNG's per-mesh index buffers
     # wrap past 65,535 and the shape shards in-game (load #10). A hospital reached 68,856.
@@ -536,8 +629,11 @@ def _lod_levels(derived_dir, source, shape_name, base_mesh, null_px, radius, dis
     # and the pixels its displacement covers there — the approximation, counted
     for index, entry in enumerate(shipped):
         entry["px"] = stats["detailSizes"][index] if index < len(stats["detailSizes"]) else None
-        entry["errorPx"] = (round(lod.displacement_error_px(radius, entry["metres"], entry["px"]), 2)
-                            if entry["metres"] is not None and entry["px"] else None)
+        entry["errorPx"] = (
+            round(lod.displacement_error_px(radius, entry["metres"], entry["px"]), 2)
+            if entry["metres"] is not None and entry["px"]
+            else None
+        )
     stats["switches"] = shipped
     return fixed, stats, meshes
 
@@ -587,9 +683,12 @@ def _collider(shape_name, base_mesh, lod_mesh, kind, options, is_tree=True):
         # only the first node picks whichever of the two the file happens to list first)
         cyl_v, cyl_t = collision.trunk_cylinder(
             {"verts": base_mesh.verts, "tris": base_mesh.tris, "material_runs": base_mesh.runs},
-            up_axis=2)
-        return (dae.Mesh(f"Colmesh_{shape_name}", cyl_v, cyl_t, [(base_mesh.runs[0][0], len(cyl_t))]),), "trunk"
-    lo, hi = collision.bounds(base_mesh.verts)      # the box is LOD 0's, never a decimated hull's
+            up_axis=2,
+        )
+        return (
+            dae.Mesh(f"Colmesh_{shape_name}", cyl_v, cyl_t, [(base_mesh.runs[0][0], len(cyl_t))]),
+        ), "trunk"
+    lo, hi = collision.bounds(base_mesh.verts)  # the box is LOD 0's, never a decimated hull's
     footprint = max(float(hi[0] - lo[0]), float(hi[1] - lo[1]))
     # A PADDED BOX IS ONLY A STAND-IN WHILE IT IS SMALL. Over the triangle cap the collider used
     # to fall back to the shape's bounding box unconditionally, and on the median shape that box
@@ -601,16 +700,33 @@ def _collider(shape_name, base_mesh, lod_mesh, kind, options, is_tree=True):
     # so the triangle cap gives way instead: a few thousand collision triangles cost far less
     # than a trap.
     oversized = footprint > BOX_COLLIDER_MAX_METRES
-    if options["collision_preset"] == "exact" or len(tris) <= options["colmesh_max_tris"] or oversized:
+    if (
+        options["collision_preset"] == "exact"
+        or len(tris) <= options["colmesh_max_tris"]
+        or oversized
+    ):
         mesh = collision.colmesh_from_lod({"verts": verts, "tris": tris})
         if mesh is not None:
-            return (dae.Mesh(f"Colmesh_{shape_name}", mesh["verts"], mesh["tris"],
-                             [(base_mesh.runs[0][0], len(mesh["tris"]))]),),                    ("mesh_oversized" if oversized and len(tris) > options["colmesh_max_tris"] else "mesh")
+            return (
+                dae.Mesh(
+                    f"Colmesh_{shape_name}",
+                    mesh["verts"],
+                    mesh["tris"],
+                    [(base_mesh.runs[0][0], len(mesh["tris"]))],
+                ),
+            ), (
+                "mesh_oversized"
+                if oversized and len(tris) > options["colmesh_max_tris"]
+                else "mesh"
+            )
     box_v, box_t = collision.colbox(lo, hi)
-    return (dae.Mesh(f"Colmesh_{shape_name}", box_v, box_t, [(base_mesh.runs[0][0], len(box_t))]),), "box"
+    return (
+        dae.Mesh(f"Colmesh_{shape_name}", box_v, box_t, [(base_mesh.runs[0][0], len(box_t))]),
+    ), "box"
 
 
 # -- the stage -----------------------------------------------------------------------------------
+
 
 def run(ctx, progress):
     started = time.monotonic()
@@ -632,7 +748,8 @@ def run(ctx, progress):
         raise RuntimeError(
             f"{bake_lods.INDEX_NAME} is missing from {ctx.derived_dir}: the LOD switch points are "
             "derived from each level's measured displacement, so the `lods` bake product must be "
-            "re-baked (it is version 2 or later that writes it)")
+            "re-baked (it is version 2 or later that writes it)"
+        )
 
     options = {
         "level_of_detail": lod.DEFAULT_LEVEL_OF_DETAIL,
@@ -642,8 +759,10 @@ def run(ctx, progress):
         "detail_scale_prop": float(settings.get("lod_detail_scale_prop") or 0.0),
         "generate_lods": bool(settings.get("generate_lods", True)),
         "imposters": bool(settings.get("imposters", True)),
-        "imposter_min_metres": (float(settings.get("imposter_min_metres") or 0)
-                                or IMPOSTER_VIEW_FRACTION * float(settings.get("view_distance") or 4000)),
+        "imposter_min_metres": (
+            float(settings.get("imposter_min_metres") or 0)
+            or IMPOSTER_VIEW_FRACTION * float(settings.get("view_distance") or 4000)
+        ),
         "collision_preset": str(settings.get("collision_preset") or "simplified"),
         "colmesh_max_tris": 20000,
         "tree_wind": bool(settings.get("tree_wind", False)),
@@ -652,14 +771,18 @@ def run(ctx, progress):
         # A8/P2: metres of measured surface error at which LOD 1 replaces LOD 0 outright
         "lod0_max_error": float(settings.get("lod0_max_error", LOD0_MAX_ERROR_DEFAULT) or 0.0),
         # ...and never on a shape this small, whatever the measured displacement says
-        "lod0_min_triangles": int(settings.get("lod0_min_triangles", LOD0_MIN_TRIANGLES)
-                                  if settings.get("lod0_min_triangles") is not None
-                                  else LOD0_MIN_TRIANGLES),
+        "lod0_min_triangles": int(
+            settings.get("lod0_min_triangles", LOD0_MIN_TRIANGLES)
+            if settings.get("lod0_min_triangles") is not None
+            else LOD0_MIN_TRIANGLES
+        ),
         "collide": _collision_policy(settings),
         # A prefab CS2 gives a photometric light to is a LAMP, and `collision_lights` says
         # whether one is solid. The set is the game's own answer to "is this a lamp" - see the
         # setting's help - and it is empty when lamps are allowed to collide.
-        "no_collide": _light_bearing(ctx.bundle) if not settings.get("collision_lights") else frozenset(),
+        "no_collide": _light_bearing(ctx.bundle)
+        if not settings.get("collision_lights")
+        else frozenset(),
     }
 
     jobs = {}
@@ -673,17 +796,47 @@ def run(ctx, progress):
             # a variant the bake wrote no tinted albedo for is the UNTINTED shape (`variant=None`),
             # not variant 0 - see `placement.shape_key`
             index_out = index if tinted else None
-            jobs.setdefault((asset, suffix, index_out),
-                            (ctx.bundle, ctx.derived_dir, out_dir, level.name, asset, suffix,
-                             index_out, key if tinted else None, entry["kind"], options, aliases,
-                             tinted, entry["tree"], _displacement(lod_index, asset, suffix)))
+            jobs.setdefault(
+                (asset, suffix, index_out),
+                (
+                    ctx.bundle,
+                    ctx.derived_dir,
+                    out_dir,
+                    level.name,
+                    asset,
+                    suffix,
+                    index_out,
+                    key if tinted else None,
+                    entry["kind"],
+                    options,
+                    aliases,
+                    tinted,
+                    entry["tree"],
+                    _displacement(lod_index, asset, suffix),
+                ),
+            )
         # the UNTINTED shape: what a TSStatic binds (it keeps `colorPaletteMap` and carries its
         # own `instanceColor*`), and what a prefab with no baked variants gets
         if entry["static"] or not wanted:
-            jobs.setdefault((asset, suffix, None),
-                            (ctx.bundle, ctx.derived_dir, out_dir, level.name, asset, suffix,
-                             None, None, entry["kind"], options, aliases, {}, entry["tree"],
-                             _displacement(lod_index, asset, suffix)))
+            jobs.setdefault(
+                (asset, suffix, None),
+                (
+                    ctx.bundle,
+                    ctx.derived_dir,
+                    out_dir,
+                    level.name,
+                    asset,
+                    suffix,
+                    None,
+                    None,
+                    entry["kind"],
+                    options,
+                    aliases,
+                    {},
+                    entry["tree"],
+                    _displacement(lod_index, asset, suffix),
+                ),
+            )
     jobs = list(jobs.values())
 
     progress.begin("shapes: writing .dae", total=len(jobs), unit="shapes")
@@ -705,8 +858,10 @@ def run(ctx, progress):
     # build is an orphan and goes now, .cdae included.
     rewritten = sum(1 for v in results.values() if v.get("changed"))
     orphans = dae.sweep_orphans(out_dir, {os.path.splitext(v["file"])[0] for v in results.values()})
-    progress.end(f"{len(results):,} shapes ({rewritten:,} rewritten, {len(results) - rewritten:,} unchanged), "
-                 f"{orphans} orphans removed, {len(errors)} failed")
+    progress.end(
+        f"{len(results):,} shapes ({rewritten:,} rewritten, {len(results) - rewritten:,} unchanged), "
+        f"{orphans} orphans removed, {len(errors)} failed"
+    )
 
     shared = ctx.shared if ctx.shared is not None else {}
     used = shared.setdefault("materials_used", set())
@@ -716,10 +871,17 @@ def run(ctx, progress):
         key = value.get("variantKey")
         if key:
             variant_used.setdefault(key, set()).update(value["materials"])
-    shared["shapes"] = {"dir": SHAPES_SUBDIR, "results": results, "demand": demand,
-                        "variants": variants, "droppedRecords": sorted(dropped),
-                        "options": {k: v for k, v in options.items() if k != "collide"}}
-    return _report(results, demand, scan_stats, options, errors, started, progress, rewritten, orphans)
+    shared["shapes"] = {
+        "dir": SHAPES_SUBDIR,
+        "results": results,
+        "demand": demand,
+        "variants": variants,
+        "droppedRecords": sorted(dropped),
+        "options": {k: v for k, v in options.items() if k != "collide"},
+    }
+    return _report(
+        results, demand, scan_stats, options, errors, started, progress, rewritten, orphans
+    )
 
 
 def _displacement(lod_index, asset, suffix):
@@ -770,9 +932,11 @@ def _collision_policy(settings):
     expressed against the settings the UI exposes."""
     if str(settings.get("collision_preset") or "simplified") == "off":
         return {}
-    return {"building": bool(settings.get("collision_buildings", True)),
-            "prop": bool(settings.get("collision_props", True)),
-            "tree": bool(settings.get("collision_trees", True))}
+    return {
+        "building": bool(settings.get("collision_buildings", True)),
+        "prop": bool(settings.get("collision_props", True)),
+        "tree": bool(settings.get("collision_trees", True)),
+    }
 
 
 def _material_tables(ctx, level):
@@ -782,6 +946,7 @@ def _material_tables(ctx, level):
     BeamNG material; the materials stage writes it under this name when it sees it bound.
     """
     from ..beamng import materials as bm
+
     path = os.path.join(ctx.derived_dir, "materials.json")
     aliases, by_variant = {}, {}
     if not os.path.isfile(path):
@@ -795,7 +960,7 @@ def _material_tables(ctx, level):
         # per-texel tint a single `baseColorFactor` could not stand in for (A4 §2.4). A shape binds
         # a variant material either way — the difference is whether that material carries its own
         # tinted albedo or just a multiplier on the canonical one.
-        for key in (derived.get("variantFactors") or derived.get("variants") or {}):
+        for key in derived.get("variantFactors") or derived.get("variants") or {}:
             canonical = entry.get("canonical") or name
             by_variant.setdefault(key, {})[name] = bm.mapto(level.name, f"{canonical}__v{key}")
     return aliases, by_variant
@@ -823,14 +988,15 @@ def _switch_summary(results):
     per_level = {}
     exempted = 0
     for row in results.values():
-        for entry in (row["lods"].get("switches") or []):
+        for entry in row["lods"].get("switches") or []:
             if entry.get("exempt"):
                 exempted += 1
                 continue
             if entry.get("metres") is None:
                 continue
-            bucket = per_level.setdefault(entry["level"], {"metres": [], "px": [], "error": [],
-                                                          "deferred": 0, "factor": []})
+            bucket = per_level.setdefault(
+                entry["level"], {"metres": [], "px": [], "error": [], "deferred": 0, "factor": []}
+            )
             bucket["metres"].append(entry["metres"])
             bucket["px"].append(entry["px"] or 0)
             bucket["error"].append(entry["errorPx"] or 0.0)
@@ -849,8 +1015,11 @@ def _switch_summary(results):
         factor = sorted(bucket["factor"])
         out[f"LOD{level}"] = {
             "shapes": len(metres),
-            "metresP50": at(metres, 0.5), "metresP90": at(metres, 0.9), "metresMax": at(metres, 1.0),
-            "errorPxP50": at(error, 0.5), "errorPxP90": at(error, 0.9),
+            "metresP50": at(metres, 0.5),
+            "metresP90": at(metres, 0.9),
+            "metresMax": at(metres, 1.0),
+            "errorPxP50": at(error, 0.5),
+            "errorPxP90": at(error, 0.9),
             "identical": sum(1 for m in metres if m <= 1e-6),
             # the only shapes this rule changes: the ones whose level was too far out of shape to
             # keep the ladder's place, and how many times further out it went
@@ -861,7 +1030,9 @@ def _switch_summary(results):
     return out
 
 
-def _report(results, demand, scan_stats, options, errors, started, progress, rewritten=0, orphans=0):
+def _report(
+    results, demand, scan_stats, options, errors, started, progress, rewritten=0, orphans=0
+):
     rows_by_pair = {}
     for (asset, suffix, _variant), row in results.items():
         rows_by_pair.setdefault((asset, suffix), []).append(row)
@@ -870,7 +1041,9 @@ def _report(results, demand, scan_stats, options, errors, started, progress, rew
         rows = rows_by_pair.get(pair)
         if not rows:
             continue
-        bucket = by_kind.setdefault(entry["kind"], {"shapes": 0, "instances": 0, "gameCull": [], "ourCull": []})
+        bucket = by_kind.setdefault(
+            entry["kind"], {"shapes": 0, "instances": 0, "gameCull": [], "ourCull": []}
+        )
         bucket["shapes"] += len(rows)
         bucket["instances"] += entry["count"]
         for row in rows:
@@ -878,19 +1051,24 @@ def _report(results, demand, scan_stats, options, errors, started, progress, rew
             # distance scales inversely with the pixel threshold, so ours is the game's distance
             # times (game px / shipped px). `nullPx` is what the level actually stops drawing at,
             # imposter reach included.
-            bucket["ourCull"].append(row["gameCullMetres"] * row["gamePx"] / max(row["nullPx"], 1e-6))
+            bucket["ourCull"].append(
+                row["gameCullMetres"] * row["gamePx"] / max(row["nullPx"], 1e-6)
+            )
     summary = {}
     for kind, bucket in by_kind.items():
         game = sorted(bucket["gameCull"])
         ours = sorted(bucket["ourCull"])
         summary[kind] = {
-            "shapes": bucket["shapes"], "instances": bucket["instances"],
+            "shapes": bucket["shapes"],
+            "instances": bucket["instances"],
             "gameCullMedian": round(game[len(game) // 2], 1),
             "ourCullMedian": round(ours[len(ours) // 2], 1),
         }
-        progress.log(f"shapes: {kind} - {bucket['shapes']} shapes, CS2 draws the median one to "
-                     f"{summary[kind]['gameCullMedian']:,.0f} m, this level to "
-                     f"{summary[kind]['ourCullMedian']:,.0f} m")
+        progress.log(
+            f"shapes: {kind} - {bucket['shapes']} shapes, CS2 draws the median one to "
+            f"{summary[kind]['gameCullMedian']:,.0f} m, this level to "
+            f"{summary[kind]['ourCullMedian']:,.0f} m"
+        )
     switch_summary = _switch_summary(results)
     colliders = {}
     for row in results.values():
@@ -901,20 +1079,24 @@ def _report(results, demand, scan_stats, options, errors, started, progress, rew
     for name, entry in switch_summary.items():
         if not isinstance(entry, dict) or "deferred" not in entry:
             continue
-        progress.log(f"shapes: {name} is DEFERRED past the ladder on {entry['deferred']:,} of "
-                     f"{entry['shapes']:,} shapes (median {entry['deferredMedianFactor']}x further "
-                     f"out, worst {entry['deferredMaxFactor']}x); the rest keep the ladder's own "
-                     f"place, which no shape now takes NEARER than")
+        progress.log(
+            f"shapes: {name} is DEFERRED past the ladder on {entry['deferred']:,} of "
+            f"{entry['shapes']:,} shapes (median {entry['deferredMedianFactor']}x further "
+            f"out, worst {entry['deferredMaxFactor']}x); the rest keep the ladder's own "
+            f"place, which no shape now takes NEARER than"
+        )
     promoted = [r for r in results.values() if (r.get("lods") or {}).get("lod0Promoted")]
     kept_small = [r for r in results.values() if (r.get("lods") or {}).get("lod0KeptSmall")]
     if kept_small:
         smallest = min(int(r["lods"]["lod0KeptSmall"]) for r in kept_small)
-        progress.log(f"shapes: LOD0 is KEPT on {len(kept_small):,} shapes that measured within "
-                     f"{options.get('lod0_max_error')} m of their LOD1 but hold fewer than "
-                     f"{options.get('lod0_min_triangles'):,} triangles once promoted (smallest "
-                     f"{smallest}) - a surface distance cannot see a decimation that opened the "
-                     f"object up, and 381 triangles is a facade you can see through. "
-                     f"{len(promoted):,} shapes were still promoted")
+        progress.log(
+            f"shapes: LOD0 is KEPT on {len(kept_small):,} shapes that measured within "
+            f"{options.get('lod0_max_error')} m of their LOD1 but hold fewer than "
+            f"{options.get('lod0_min_triangles'):,} triangles once promoted (smallest "
+            f"{smallest}) - a surface distance cannot see a decimation that opened the "
+            f"object up, and 381 triangles is a facade you can see through. "
+            f"{len(promoted):,} shapes were still promoted"
+        )
     return {
         "shapes": len(results),
         "lod0Promoted": len(promoted),
@@ -926,14 +1108,20 @@ def _report(results, demand, scan_stats, options, errors, started, progress, rew
         "scan": scan_stats,
         "triangles": sum(r["triangles"] for r in results.values()),
         "colliders": colliders,
-        "trunkFit": {"shapes": len(trunk_ratios), "wide": trunk_wide,
-                     "medianRatio": (round(sorted(trunk_ratios)[len(trunk_ratios) // 2], 3)
-                                     if trunk_ratios else None),
-                     "ratio": TRUNK_WIDE_RATIO},
-        "imposters": {"shapes": sum(1 for r in results.values() if r.get("billboardPx")),
-                      "ofShapes": len(results),
-                      "minMetres": round(options["imposter_min_metres"], 1),
-                      "vanillaShare": "west_coast_usa 3.1 %, italy 7.2 %, johnson_valley 4.4 %"},
+        "trunkFit": {
+            "shapes": len(trunk_ratios),
+            "wide": trunk_wide,
+            "medianRatio": (
+                round(sorted(trunk_ratios)[len(trunk_ratios) // 2], 3) if trunk_ratios else None
+            ),
+            "ratio": TRUNK_WIDE_RATIO,
+        },
+        "imposters": {
+            "shapes": sum(1 for r in results.values() if r.get("billboardPx")),
+            "ofShapes": len(results),
+            "minMetres": round(options["imposter_min_metres"], 1),
+            "vanillaShare": "west_coast_usa 3.1 %, italy 7.2 %, johnson_valley 4.4 %",
+        },
         "detailScale": options["detail_scale"],
         "detailScaleProp": options.get("detail_scale_prop") or options["detail_scale"],
         "levelOfDetail": options["level_of_detail"],
@@ -941,42 +1129,46 @@ def _report(results, demand, scan_stats, options, errors, started, progress, rew
         "approximations": {
             "lodDetailScalePerKind": {
                 "what": "a PROP's cull threshold uses `lod_detail_scale_prop` instead of the "
-                        "global multiplier",
+                "global multiplier",
                 "why": "CS2 draws a median prop to 1,024 m and a median building to 13,008 m, a "
-                       "factor of 12.7, and one global divisor preserves that ratio while "
-                       "destroying the relationship - at 105 m a window frame is plainly visible "
-                       "where at CS2's 1,024 m it is sub-pixel, so facades read as construction "
-                       "sites (A6.2). DECLARED TUNING: the game has no per-kind divisor. The "
-                       "game's actual sub-object rule - cull at the OWNER's bounds, keep your own "
-                       "m_MinLod (audit §70) - is NOT ported, because BeamNG holds detail "
-                       "thresholds per SHAPE and ownership is per INSTANCE",
-                "count": sum(1 for pair, entry in demand.items()
-                             if entry.get("kind") == "prop" and pair in rows_by_pair),
+                "factor of 12.7, and one global divisor preserves that ratio while "
+                "destroying the relationship - at 105 m a window frame is plainly visible "
+                "where at CS2's 1,024 m it is sub-pixel, so facades read as construction "
+                "sites (A6.2). DECLARED TUNING: the game has no per-kind divisor. The "
+                "game's actual sub-object rule - cull at the OWNER's bounds, keep your own "
+                "m_MinLod (audit §70) - is NOT ported, because BeamNG holds detail "
+                "thresholds per SHAPE and ownership is per INSTANCE",
+                "count": sum(
+                    1
+                    for pair, entry in demand.items()
+                    if entry.get("kind") == "prop" and pair in rows_by_pair
+                ),
                 "value": options.get("detail_scale_prop") or options["detail_scale"],
             },
             "lodDetailScale": {
                 "what": "every shape's cull threshold is CS2's own, multiplied by lod_detail_scale",
                 "why": "CS2 draws a median prop to 1 km and a median building to 7.3 km over 1.2M "
-                       "objects; BeamNG cannot. 1.0 restores the game exactly.",
-                "count": len(results), "value": options["detail_scale"],
+                "objects; BeamNG cannot. 1.0 restores the game exactly.",
+                "count": len(results),
+                "value": options["detail_scale"],
             },
             "lodLadderSwitchPoints": {
                 "what": "where LOD1/LOD2 take over: the distance at which that level's own "
-                        f"measured displacement from LOD 0 is worth "
-                        f"{options['switch_error_px']:.0f} px",
+                f"measured displacement from LOD 0 is worth "
+                f"{options['switch_error_px']:.0f} px",
                 "why": "CS2 ships no LOD chain for these prefabs (lodCap 0), so there is no game "
-                       "rule to port. The ladder used to be fixed multiples of the shape's CULL "
-                       "threshold, and that threshold is a statement about the shape's SIZE, not "
-                       "about its LOD's ERROR: a LOD1's displacement runs from 0 m on 603 of "
-                       "4,261 shapes to 37 m on the worst, so one multiple cannot serve both ends "
-                       "and the coarse end reads as a roof moving under props that have not moved "
-                       "(A6.7). Each level now takes its threshold from its own displacement, "
-                       "measured by the bake as the p95 distance from the generated surface back "
-                       "to LOD 0's. The PIXEL BUDGET is still ours: "
-                       "about a pixel is what fidelity would ask for and costs +384 % to +630 % "
-                       "drawn triangles (measured over 1.16 M placements from four viewpoints), "
-                       "where 6 px costs +0 % to +16 %, so `lod_switch_error_px` is a declared "
-                       "budget and not a measurement",
+                "rule to port. The ladder used to be fixed multiples of the shape's CULL "
+                "threshold, and that threshold is a statement about the shape's SIZE, not "
+                "about its LOD's ERROR: a LOD1's displacement runs from 0 m on 603 of "
+                "4,261 shapes to 37 m on the worst, so one multiple cannot serve both ends "
+                "and the coarse end reads as a roof moving under props that have not moved "
+                "(A6.7). Each level now takes its threshold from its own displacement, "
+                "measured by the bake as the p95 distance from the generated surface back "
+                "to LOD 0's. The PIXEL BUDGET is still ours: "
+                "about a pixel is what fidelity would ask for and costs +384 % to +630 % "
+                "drawn triangles (measured over 1.16 M placements from four viewpoints), "
+                "where 6 px costs +0 % to +16 %, so `lod_switch_error_px` is a declared "
+                "budget and not a measurement",
                 "count": sum(1 for r in results.values() if r["lods"]["levels"] > 1),
                 "value": options["switch_error_px"],
                 "kinds": list(DISPLACEMENT_RULE_KINDS),
@@ -984,62 +1176,62 @@ def _report(results, demand, scan_stats, options, errors, started, progress, rew
             },
             "treeTrunkCylinderFit": {
                 "what": "a tree whose trunk collider is wider than "
-                        f"{TRUNK_WIDE_RATIO:.0%} of its own canopy - the trunk search found the "
-                        "canopy instead",
+                f"{TRUNK_WIDE_RATIO:.0%} of its own canopy - the trunk search found the "
+                "canopy instead",
                 "why": "CS2 has no collision for a planted object, so there is no rule to port. "
-                       "`collision._trunk_group` prefers a material run NAMED trunk/bark/stem, "
-                       "and on a CS2 bundle that branch never fires - the game's material names "
-                       "are hashed asset ids - so every tree falls through to the geometric "
-                       "fallback (lowest band, smallest footprint). That is right for a clean "
-                       "bole and wrong where the lowest band is not the trunk: a spruce whose "
-                       "branches sweep the ground, or a wide shrub CS2 counts as a tree because "
-                       "it carries growth. MEASURED on the reference city: 5 of 32 tree prefabs, "
-                       "4.5 % of tree items",
+                "`collision._trunk_group` prefers a material run NAMED trunk/bark/stem, "
+                "and on a CS2 bundle that branch never fires - the game's material names "
+                "are hashed asset ids - so every tree falls through to the geometric "
+                "fallback (lowest band, smallest footprint). That is right for a clean "
+                "bole and wrong where the lowest band is not the trunk: a spruce whose "
+                "branches sweep the ground, or a wide shrub CS2 counts as a tree because "
+                "it carries growth. MEASURED on the reference city: 5 of 32 tree prefabs, "
+                "4.5 % of tree items",
                 "count": trunk_wide,
             },
             "oversizedBoxColliders": {
                 "what": f"a shape whose footprint is over {BOX_COLLIDER_MAX_METRES:.0f} m keeps a "
-                        f"MESH collider even past the triangle cap, instead of a padded box",
+                f"MESH collider even past the triangle cap, instead of a padded box",
                 "why": "a padded box is a fine stand-in at the median shape's 1.6 m and a trap at "
-                       "1,344 m: `InternationalAirport01`'s box was 1,344 x 1,245 x 82 m, an "
-                       "invisible solid block a kilometre wide, and driving onto the airport put "
-                       "the car inside it. 34 of 1,407 boxes were over 20 m - the harbour, the "
-                       "power plant, stadiums. CS2 has no collision for a placed object, so the "
-                       "20 m is OURS and is declared here",
+                "1,344 m: `InternationalAirport01`'s box was 1,344 x 1,245 x 82 m, an "
+                "invisible solid block a kilometre wide, and driving onto the airport put "
+                "the car inside it. 34 of 1,407 boxes were over 20 m - the harbour, the "
+                "power plant, stadiums. CS2 has no collision for a placed object, so the "
+                "20 m is OURS and is declared here",
                 "count": sum(1 for r in results.values() if r.get("collider") == "mesh_oversized"),
                 "value": BOX_COLLIDER_MAX_METRES,
             },
             "orphansOfAbsentOwners": {
                 "what": "a record whose owner the producer declared ABSENT is not placed either",
                 "why": "not a CS2 rule — the game had those prefabs and drew the buildings. It is "
-                       "a consumer's obligation against a DECLARED gap (§10): the prefab did not "
-                       "resolve at rip time (an unowned asset pack), so we drop the building and "
-                       "would otherwise place its props in mid-air — 6,714 records on the "
-                       "reference city, up to 292 m up, 695 of them hanging off ONE absent tower. "
-                       "Only the absent class is dropped: a prefab that exists WITHOUT GEOMETRY "
-                       "keeps its 5,806 children (the lamps and benches of car parks and sports "
-                       "pitches, whose own surface ships in the `areas` layer), and a construction "
-                       "site keeps its children too — measurement says they are the "
-                       "ConstructionCrane01 and the site's benches, which §4 states are real. "
-                       "THE REMEDY AT SOURCE IS CHEAPER: enable those asset packs in CS2 and "
-                       "re-rip, which brings the buildings back instead of hiding their props",
+                "a consumer's obligation against a DECLARED gap (§10): the prefab did not "
+                "resolve at rip time (an unowned asset pack), so we drop the building and "
+                "would otherwise place its props in mid-air — 6,714 records on the "
+                "reference city, up to 292 m up, 695 of them hanging off ONE absent tower. "
+                "Only the absent class is dropped: a prefab that exists WITHOUT GEOMETRY "
+                "keeps its 5,806 children (the lamps and benches of car parks and sports "
+                "pitches, whose own surface ships in the `areas` layer), and a construction "
+                "site keeps its children too — measurement says they are the "
+                "ConstructionCrane01 and the site's benches, which §4 states are real. "
+                "THE REMEDY AT SOURCE IS CHEAPER: enable those asset packs in CS2 and "
+                "re-rip, which brings the buildings back instead of hiding their props",
                 "count": (scan_stats.get("orphans") or {}).get("orphans", 0),
                 "owners": (scan_stats.get("orphans") or {}).get("owners", 0),
             },
             "foliageRoadClearance": {
                 "what": f"a TREE standing within "
-                        f"{(scan_stats.get('roadclear') or {}).get('clearance', 0):.2f} m of a "
-                        f"drivable lane centre is not placed",
+                f"{(scan_stats.get('roadclear') or {}).get('clearance', 0):.2f} m of a "
+                f"drivable lane centre is not placed",
                 "why": "A DECLARED DEVIATION, asked for, not a fidelity rule - CS2 clears objects "
-                       "when a road is BUILT and whatever survives in the save is what the city "
-                       "contains, so there is no game rule to port. Trees only: a bush or a "
-                       "flower pot is driven straight through once it stops colliding (A6.1), so "
-                       "removing it would cost fidelity and buy no drivability. The distance is "
-                       "the VEHICLE ENVELOPE, not an edge found in the data - the sweep showed "
-                       "trees per 0.25 m band are almost FLAT from 0.5 m out to 5 m, so there is "
-                       "no natural threshold to prefer. `foliage_road_clearance` 0 turns it off. "
-                       "Separately and always on, CS2's own `Overridden` rule removes what the "
-                       "game itself does not draw (instances.should_draw)",
+                "when a road is BUILT and whatever survives in the save is what the city "
+                "contains, so there is no game rule to port. Trees only: a bush or a "
+                "flower pot is driven straight through once it stops colliding (A6.1), so "
+                "removing it would cost fidelity and buy no drivability. The distance is "
+                "the VEHICLE ENVELOPE, not an edge found in the data - the sweep showed "
+                "trees per 0.25 m band are almost FLAT from 0.5 m out to 5 m, so there is "
+                "no natural threshold to prefer. `foliage_road_clearance` 0 turns it off. "
+                "Separately and always on, CS2's own `Overridden` rule removes what the "
+                "game itself does not draw (instances.should_draw)",
                 "count": (scan_stats.get("roadclear") or {}).get("clipped", 0),
                 "value": (scan_stats.get("roadclear") or {}).get("clearance", 0),
                 "ofTrees": (scan_stats.get("roadclear") or {}).get("trees", 0),
@@ -1047,7 +1239,7 @@ def _report(results, demand, scan_stats, options, errors, started, progress, rew
             "renderingSizeSpecialCases": {
                 "what": "the human-object and Standing-leg shrinks in GetRenderingSize",
                 "why": "both need ObjectGeometryData flags the bundle does not ship; both only "
-                       "shrink the size, so the threshold errs towards drawing further",
+                "shrink the size, so the threshold errs towards drawing further",
                 "count": None,
             },
         },
@@ -1058,15 +1250,37 @@ def _report(results, demand, scan_stats, options, errors, started, progress, rew
 # `placement.admit` is the reason trees/props/buildings and the two density sliders are here:
 # they are read through a helper, so no source scan of THIS file would find them (the runtime
 # recorder in pipeline/state.py does, and refuses to record the stage if one is missing).
-INPUTS = ("layer:instances", "layer:meshes", "derived:lods", "derived:materials.json",
-          "derived:paint_variants.json")
-SETTINGS = ("trees", "props", "buildings", "foliage_density", "prop_density", "region",
-            "foliage_road_clearance",
-            "generate_lods", "imposters", "imposter_min_metres", "view_distance",
-            "lod_detail_scale", "lod_detail_scale_prop", "lod_switch_error_px", "lod0_max_error", "lod0_min_triangles",
-            "tree_wind",
-            "collision_preset", "collision_buildings", "collision_props", "collision_trees",
-            "collision_lights")
+INPUTS = (
+    "layer:instances",
+    "layer:meshes",
+    "derived:lods",
+    "derived:materials.json",
+    "derived:paint_variants.json",
+)
+SETTINGS = (
+    "trees",
+    "props",
+    "buildings",
+    "foliage_density",
+    "prop_density",
+    "region",
+    "foliage_road_clearance",
+    "generate_lods",
+    "imposters",
+    "imposter_min_metres",
+    "view_distance",
+    "lod_detail_scale",
+    "lod_detail_scale_prop",
+    "lod_switch_error_px",
+    "lod0_max_error",
+    "lod0_min_triangles",
+    "tree_wind",
+    "collision_preset",
+    "collision_buildings",
+    "collision_props",
+    "collision_trees",
+    "collision_lights",
+)
 OUTPUTS = ("art/shapes/cs2",)
 
 # version 13: a prefab CS2 gives a photometric light to ships NO collider while `collision_lights`
@@ -1092,6 +1306,15 @@ OUTPUTS = ("art/shapes/cs2",)
 # version 3: the road-clearance deviation (A6.4)
 # version 2: the tree/plant split (A6.1) - a plant gets no collider and no trunk cylinder, and
 # every shape row carries `tree` and `trunkRatio`
-STAGE = Stage(STAGE_KEY, "Object shapes", enabled, units, run, inputs=INPUTS, settings_keys=SETTINGS,
-              outputs=OUTPUTS,
-              shared_keys=("shapes", "materials_used", "materials_variants_used"), version=13)
+STAGE = Stage(
+    STAGE_KEY,
+    "Object shapes",
+    enabled,
+    units,
+    run,
+    inputs=INPUTS,
+    settings_keys=SETTINGS,
+    outputs=OUTPUTS,
+    shared_keys=("shapes", "materials_used", "materials_variants_used"),
+    version=13,
+)

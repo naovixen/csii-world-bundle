@@ -55,14 +55,14 @@ import os
 import time
 
 import numpy
-
-from csiibundle import navgraph as navgraph_mod, reader
+from csiibundle import navgraph as navgraph_mod
+from csiibundle import reader
 
 from ..beamng import frame
 from . import Stage, level_of
 
 STAGE_KEY = "navgraph"
-GROUP = "AIWaypointsGroup"          # vanilla's own name for it
+GROUP = "AIWaypointsGroup"  # vanilla's own name for it
 MATERIAL = "road_invisible"
 
 # Copied verbatim from `west_coast_usa`'s AI-helper roads. Nothing here is tuned by us: they are
@@ -104,13 +104,16 @@ def run(ctx, progress):
     max_width = float(settings.get("navgraph_max_width") or 0) or None
 
     progress.begin("navgraph: build", total=units(ctx.census, settings), unit="lanes")
-    graph = navgraph_mod.build(ctx.bundle, categories=tuple(categories), max_width=max_width,
-                               progress=progress)
-    for note in graph.notes:                # every approximation is counted where it is made
+    graph = navgraph_mod.build(
+        ctx.bundle, categories=tuple(categories), max_width=max_width, progress=progress
+    )
+    for note in graph.notes:  # every approximation is counted where it is made
         progress.log(note)
-    progress.end(f"{graph.stats['roads']:,} roads, {graph.stats['nodes']:,} nodes, "
-                 f"{graph.stats['components']} components "
-                 f"(largest {graph.stats['largestComponentFraction']:.1%})")
+    progress.end(
+        f"{graph.stats['roads']:,} roads, {graph.stats['nodes']:,} nodes, "
+        f"{graph.stats['components']} components "
+        f"(largest {graph.stats['largestComponentFraction']:.1%})"
+    )
 
     # -- the material the roads bind ---------------------------------------------------------
     progress.begin("navgraph: material", total=None, unit="")
@@ -137,17 +140,30 @@ def run(ctx, progress):
     left_hand, source = _traffic_side(ctx.bundle, graph)
     _patch_info(level, {"roadRules": {"rightHandDrive": bool(left_hand)}})
     level.write_objects()
-    progress.end(f"{emitted:,} DecalRoads in {GROUP}"
-                 + (f", {dropped:,} outside the region" if dropped else ""))
-    progress.log(f"navgraph: traffic drives on the {'LEFT' if left_hand else 'RIGHT'} "
-                 f"({source}) - info.json roadRules.rightHandDrive = {bool(left_hand)}")
+    progress.end(
+        f"{emitted:,} DecalRoads in {GROUP}"
+        + (f", {dropped:,} outside the region" if dropped else "")
+    )
+    progress.log(
+        f"navgraph: traffic drives on the {'LEFT' if left_hand else 'RIGHT'} "
+        f"({source}) - info.json roadRules.rightHandDrive = {bool(left_hand)}"
+    )
 
     shared = ctx.shared if ctx.shared is not None else {}
-    shared["navgraph"] = {"roads": emitted, "nodes": sum(len(r.nodes) for r in graph.roads),
-                          "stats": graph.stats}
-    return {"roads": emitted, "droppedOutsideRegion": dropped, "leftHandTraffic": bool(left_hand),
-            "trafficSideSource": source, "stats": graph.stats, "notes": graph.notes,
-            "seconds": round(time.monotonic() - started, 1)}
+    shared["navgraph"] = {
+        "roads": emitted,
+        "nodes": sum(len(r.nodes) for r in graph.roads),
+        "stats": graph.stats,
+    }
+    return {
+        "roads": emitted,
+        "droppedOutsideRegion": dropped,
+        "leftHandTraffic": bool(left_hand),
+        "trafficSideSource": source,
+        "stats": graph.stats,
+        "notes": graph.notes,
+        "seconds": round(time.monotonic() - started, 1),
+    }
 
 
 def decal_road(road):
@@ -158,21 +174,25 @@ def decal_road(road):
     the thing that has to be crash-free is the object that reaches the level and not the graph it
     came from (audit §80: a rule that passes its own unit test and never reaches the level).
     """
-    nodes = [list(frame.to_beamng(x, y, z)) + [round(float(w), 3)] for x, y, z, w in road.nodes]
+    nodes = [[*list(frame.to_beamng(x, y, z)), round(float(w), 3)] for x, y, z, w in road.nodes]
     obj = dict(VANILLA_FIELDS)
-    obj.update({
-        "name": road.key, "class": "DecalRoad", "material": MATERIAL,
-        "position": [round(v, 4) for v in nodes[0][:3]],
-        "nodes": [[round(v, 4) for v in n] for n in nodes],
-        "drivability": DRIVABILITY.get(road.category, 1.0),
-        "oneWay": bool(road.oneway),
-        "lanesLeft": int(road.lanes_left),
-        "lanesRight": int(road.lanes_right),
-        # reading (4): an elevated road or a tunnel must not have its INTERIOR nodes welded
-        # into whatever it crosses. Its two end nodes still merge exactly, which is what
-        # keeps it attached to its own ramps.
-        "autoJunction": not road.elevated,
-    })
+    obj.update(
+        {
+            "name": road.key,
+            "class": "DecalRoad",
+            "material": MATERIAL,
+            "position": [round(v, 4) for v in nodes[0][:3]],
+            "nodes": [[round(v, 4) for v in n] for n in nodes],
+            "drivability": DRIVABILITY.get(road.category, 1.0),
+            "oneWay": bool(road.oneway),
+            "lanesLeft": int(road.lanes_left),
+            "lanesRight": int(road.lanes_right),
+            # reading (4): an elevated road or a tunnel must not have its INTERIOR nodes welded
+            # into whatever it crosses. Its two end nodes still merge exactly, which is what
+            # keeps it attached to its own ramps.
+            "autoJunction": not road.elevated,
+        }
+    )
     # A DYNAMIC FIELD, not a DecalRoad property: Torque's `SimObject::setDataField` keeps
     # anything it does not recognise as one, so this rides along without the engine caring.
     # It is CS2's own street name for this road, and it is what the `poi` stage names a
@@ -180,7 +200,7 @@ def decal_road(road):
     if road.name:
         obj["cs2Street"] = road.name
     if road.speed_kph:
-        obj["speedLimit"] = round(float(road.speed_kph) / 3.6, 3)         # km/h -> m/s
+        obj["speedLimit"] = round(float(road.speed_kph) / 3.6, 3)  # km/h -> m/s
     return obj
 
 
@@ -204,15 +224,32 @@ def _write_invisible_material(level):
 
     texture = "art/road/invisible.png"
     level.write_bytes_if_changed(
-        png.encode_rgba(numpy.zeros((4, 4, 4), dtype=numpy.uint8)), *texture.split("/"))
-    level.write_materials("road", {MATERIAL: {
-        "name": MATERIAL, "mapTo": MATERIAL, "class": "Material",
-        "persistentId": level.pid("material:" + MATERIAL),
-        "Stages": [{"colorMap": level.game_path(texture).lstrip("/"), "useAnisotropic": True},
-                   {"useAnisotropic": None}, {"useAnisotropic": None}, {"useAnisotropic": None}],
-        "alphaRef": 127, "alphaTest": True, "annotation": "STREET", "castShadows": False,
-        "materialTag0": "RoadAndPath", "materialTag1": "beamng", "specularStrength0": "0",
-    }})
+        png.encode_rgba(numpy.zeros((4, 4, 4), dtype=numpy.uint8)), *texture.split("/")
+    )
+    level.write_materials(
+        "road",
+        {
+            MATERIAL: {
+                "name": MATERIAL,
+                "mapTo": MATERIAL,
+                "class": "Material",
+                "persistentId": level.pid("material:" + MATERIAL),
+                "Stages": [
+                    {"colorMap": level.game_path(texture).lstrip("/"), "useAnisotropic": True},
+                    {"useAnisotropic": None},
+                    {"useAnisotropic": None},
+                    {"useAnisotropic": None},
+                ],
+                "alphaRef": 127,
+                "alphaTest": True,
+                "annotation": "STREET",
+                "castShadows": False,
+                "materialTag0": "RoadAndPath",
+                "materialTag1": "beamng",
+                "specularStrength0": "0",
+            }
+        },
+    )
 
 
 def _traffic_side(bundle_dir, graph):
@@ -238,7 +275,8 @@ def _traffic_side(bundle_dir, graph):
         return False, "no bundle field and no two-way segment to measure; assumed right-hand"
     return bool(stats.get("leftHandTraffic")), (
         f"MEASURED from the lane layer, {right:,} two-way segments put the with-flow lanes right "
-        f"and {left:,} put them left - the producer does not ship leftHandTraffic on this rip")
+        f"and {left:,} put them left - the producer does not ship leftHandTraffic on this rip"
+    )
 
 
 def _patch_info(level, extra):
@@ -272,6 +310,16 @@ INPUTS = ("layer:lanes", "layer:networks")
 SETTINGS = ("ai_roads", "navgraph_max_width", "navgraph_taxiways", "region")
 OUTPUTS = ("art/road/main.materials.json",)
 
-STAGE = Stage(STAGE_KEY, "AI navgraph (minimap and routing)", enabled, units, run, inputs=INPUTS,
-              settings_keys=SETTINGS, outputs=OUTPUTS, shared_keys=("navgraph",),
-              after=("scene",), version=3)
+STAGE = Stage(
+    STAGE_KEY,
+    "AI navgraph (minimap and routing)",
+    enabled,
+    units,
+    run,
+    inputs=INPUTS,
+    settings_keys=SETTINGS,
+    outputs=OUTPUTS,
+    shared_keys=("navgraph",),
+    after=("scene",),
+    version=3,
+)

@@ -51,26 +51,27 @@ import time
 
 import numpy
 
-from .. import png, reader, splat as splat_mod, terrain, terrainclip
+from .. import png, reader, terrain, terrainclip
+from .. import splat as splat_mod
 from . import Product, register
 from .tiles import TileSink
 
 PRODUCT_NAME = "terraincut"
 INPUTS = ("clipVolumes", "terrain", "terrainFine", "surfaceIndex", "splatmap")
-VERSION = 18         # v13: the EXACT cut (audit §46) — `terrainclip` against the prisms, replacing the
-                     #      containment scoring, the rim snap, the sub-cut and the cliff lift of v3-v12
-                     # v14: sub-centimetre ribbons dropped (they rendered as hairlines: load #18) and the
-                     #      prism construction shared with the Blender harness (`terrainclip.load_prisms`)
-                     # v15: no roadbed stamp — the game paints no roadbed on its terrain (§17 row 2)
-                     # v16: a square losing under MIN_REMOVED_M2 stays with the heightfield
-                     # v17: the game's own graded heights kept — the 0.15 m roadbed sink and the
-                     #      clamp to the band FLOOR are gone, only the over-carriageway residual
-                     #      is lowered, onto the game's own profile top (audit §51)
-                     # v18: TRIPLANAR UVs — CS2's terrain samples its grounds triplanar
-                     #      (`TerrainMaterialSystem` binds `_TriplanarHeightmapBlending` and
-                     #      `_TerrainTriplanarBlendStrengthY` as shader globals), so a face is
-                     #      projected in the plane it is most parallel to, not always in (x, z)
-                     #      (audit §61)
+VERSION = 18  # v13: the EXACT cut (audit §46) — `terrainclip` against the prisms, replacing the
+#      containment scoring, the rim snap, the sub-cut and the cliff lift of v3-v12
+# v14: sub-centimetre ribbons dropped (they rendered as hairlines: load #18) and the
+#      prism construction shared with the Blender harness (`terrainclip.load_prisms`)
+# v15: no roadbed stamp — the game paints no roadbed on its terrain (§17 row 2)
+# v16: a square losing under MIN_REMOVED_M2 stays with the heightfield
+# v17: the game's own graded heights kept — the 0.15 m roadbed sink and the
+#      clamp to the band FLOOR are gone, only the over-carriageway residual
+#      is lowered, onto the game's own profile top (audit §51)
+# v18: TRIPLANAR UVs — CS2's terrain samples its grounds triplanar
+#      (`TerrainMaterialSystem` binds `_TriplanarHeightmapBlending` and
+#      `_TerrainTriplanarBlendStrengthY` as shader globals), so a face is
+#      projected in the plane it is most parallel to, not always in (x, z)
+#      (audit §61)
 
 # metres per texture repeat on the ground mesh: the terrain material's MACRO tier period
 GROUND_UV_M = 40.0
@@ -120,7 +121,7 @@ MIN_REMOVED_M2 = 0.01
 # not a different UV.
 # Faces flatter than 45 deg keep the `(x, z)` projection they had, so 83 % of the mesh is
 # unchanged.
-TRIPLANAR_PLANES = ((2, 1), (0, 2), (0, 1))     # per dominant normal axis x/y/z: the two axes kept
+TRIPLANAR_PLANES = ((2, 1), (0, 2), (0, 1))  # per dominant normal axis x/y/z: the two axes kept
 
 
 def run(context, progress):
@@ -157,7 +158,9 @@ def run(context, progress):
     heights32 = raw.astype(numpy.float32) * numpy.float32(scale) + numpy.float32(offset)
     band_ceiling = _carriageway_ceiling(derived, heights32.shape, scale, offset)
     ground_y, clamped, _drop = terrain.ground_heights(heights32, band_ceiling)
-    ground_y = numpy.rint((ground_y.astype(numpy.float64) - offset) / max(scale, 1e-12)) * scale + offset
+    ground_y = (
+        numpy.rint((ground_y.astype(numpy.float64) - offset) / max(scale, 1e-12)) * scale + offset
+    )
     progress.end(f"{clamped:,} samples lowered onto the carriageway profile")
 
     # -- the prisms, straight from the game's own clip volumes -------------------------------
@@ -168,8 +171,10 @@ def run(context, progress):
         _write_mask(derived, numpy.zeros((height - 1, width - 1), dtype=bool), cell, field.fine, [])
         return {"tiles": 0, "faces": 0, "seconds": round(time.monotonic() - started, 1)}
     by_face = terrainclip.index_prisms(prisms, cell, origin_x, origin_z, width, height)
-    progress.end(f"{len(prisms):,} deep prism triangles over {len(by_face):,} squares "
-                 f"({skipped_shallow:,} shallow volumes skipped: the road hides that ground)")
+    progress.end(
+        f"{len(prisms):,} deep prism triangles over {len(by_face):,} squares "
+        f"({skipped_shallow:,} shallow volumes skipped: the road hides that ground)"
+    )
 
     # -- heightfield normals, so the mesh shades like the terrain around it -------------------
     gx = numpy.zeros_like(heights32)
@@ -180,21 +185,35 @@ def run(context, progress):
     def raster_normals(x, z):
         c = numpy.clip((numpy.asarray(x) - origin_x) / cell, 0, width - 1.001)
         r = numpy.clip((origin_z - numpy.asarray(z)) / cell, 0, height - 1.001)
-        ci = c.astype(numpy.int64); ri = r.astype(numpy.int64); fu = c - ci; fv = r - ri
+        ci = c.astype(numpy.int64)
+        ri = r.astype(numpy.int64)
+        fu = c - ci
+        fv = r - ri
 
         def bil(a):
-            return ((a[ri, ci] * (1 - fu) + a[ri, ci + 1] * fu) * (1 - fv)
-                    + (a[ri + 1, ci] * (1 - fu) + a[ri + 1, ci + 1] * fu) * fv)
+            return (a[ri, ci] * (1 - fu) + a[ri, ci + 1] * fu) * (1 - fv) + (
+                a[ri + 1, ci] * (1 - fu) + a[ri + 1, ci + 1] * fu
+            ) * fv
+
         dx, dz = bil(gx), bil(gz)
         n = numpy.stack((-dx, numpy.ones_like(dx), dz), axis=-1)
         return n / numpy.linalg.norm(n, axis=1)[:, None]
 
     def layer_at(x, z):
-        r = numpy.clip(numpy.rint((origin_z - numpy.asarray(z)) / cell).astype(numpy.int64), 0, height - 1)
-        c = numpy.clip(numpy.rint((numpy.asarray(x) - origin_x) / cell).astype(numpy.int64), 0, width - 1)
+        r = numpy.clip(
+            numpy.rint((origin_z - numpy.asarray(z)) / cell).astype(numpy.int64), 0, height - 1
+        )
+        c = numpy.clip(
+            numpy.rint((numpy.asarray(x) - origin_x) / cell).astype(numpy.int64), 0, width - 1
+        )
         idx = layer_idx[r, c]
-        return numpy.asarray([f"ground:{layer_names[i]}" if i < len(layer_names) else GROUND_FALLBACK
-                              for i in idx.reshape(-1)], dtype=object).reshape(idx.shape)
+        return numpy.asarray(
+            [
+                f"ground:{layer_names[i]}" if i < len(layer_names) else GROUND_FALLBACK
+                for i in idx.reshape(-1)
+            ],
+            dtype=object,
+        ).reshape(idx.shape)
 
     # -- cut every square a deep prism reaches ------------------------------------------------
     replaced = numpy.zeros((height - 1, width - 1), dtype=bool)
@@ -204,7 +223,7 @@ def run(context, progress):
     removed_m2 = 0.0
     stats = {}
     materials_used = set()
-    plane_tris = [0, 0, 0]              # faces projected in zy / xz / xy (dominant normal x/y/z)
+    plane_tris = [0, 0, 0]  # faces projected in zy / xz / xy (dominant normal x/y/z)
     plane_area = [0.0, 0.0, 0.0]
     done = 0
     for (r, c), station_ids in by_face.items():
@@ -224,17 +243,21 @@ def run(context, progress):
         local = [prisms[i] for i in station_ids]
         whole = cell * cell
         kept = []
-        for tri in ((nw, ne, se), (nw, se, sw)):        # the NW-SE diagonal, as `drape` assumes
+        for tri in ((nw, ne, se), (nw, se, sw)):  # the NW-SE diagonal, as `drape` assumes
             kept.extend(terrainclip.clip_triangle(tri, local, stats))
-        kept = [p for p in kept if abs(terrainclip.polygon_area([(q[0], q[2]) for q in p])) > MIN_PIECE_M2]
+        kept = [
+            p
+            for p in kept
+            if abs(terrainclip.polygon_area([(q[0], q[2]) for q in p])) > MIN_PIECE_M2
+        ]
         kept_area = sum(abs(terrainclip.polygon_area([(q[0], q[2]) for q in p])) for p in kept)
         if whole - kept_area < MIN_REMOVED_M2:
-            continue                                    # the prism only grazed it: leave it be
+            continue  # the prism only grazed it: leave it be
         replaced[r, c] = True
         removed_m2 += whole - kept_area
         faces_cut += 1
         if not kept:
-            continue                                    # wholly inside the band: a hole, as in game
+            continue  # wholly inside the band: a hole, as in game
         verts = []
         tris = []
         for poly in kept:
@@ -251,7 +274,7 @@ def run(context, progress):
         flip = nrm[:, 1] < 0
         tris[flip] = tris[flip][:, ::-1]
         # triplanar: project each face in the plane it is most parallel to (see TRIPLANAR_PLANES)
-        corners = verts[tris]                               # (M, 3, 3)
+        corners = verts[tris]  # (M, 3, 3)
         dominant = numpy.abs(nrm).argmax(axis=1)
         uvs = numpy.empty((len(tris), 3, 2), dtype=numpy.float64)
         for axis, (u_ax, v_ax) in enumerate(TRIPLANAR_PLANES):
@@ -274,24 +297,38 @@ def run(context, progress):
     side_tris = plane_tris[0] + plane_tris[2]
     side_area = plane_area[0] + plane_area[2]
     total_area = sum(plane_area)
-    progress.end(f"{written['files']} tiles, {faces_cut:,} squares cut -> {pieces_out:,} pieces / "
-                 f"{tris_out:,} triangles, {removed_m2:,.0f} m2 removed, "
-                 f"{stats.get('slivers', 0):,} ribbon(s) under {terrainclip.MIN_WIDTH_M * 100:g} cm dropped "
-                 f"({stats.get('sliverArea', 0.0):.1f} m2 — the game resolves those per pixel)")
-    progress.log(f"terraincut: triplanar — {side_tris:,} face(s) / {side_area:,.0f} m2 "
-                 f"({100.0 * side_area / max(total_area, 1e-9):.1f} % of the mesh) project from a SIDE "
-                 f"plane, the rest from above. APPROXIMATED: the game blends the three projections "
-                 f"per pixel (_TerrainTriplanarBlendStrengthY, _TriplanarHeightmapBlending); a baked "
-                 f"UV set collapses that to the dominant plane per face, so those faces meet their "
-                 f"neighbours with a pattern seam the game would blend away")
+    progress.end(
+        f"{written['files']} tiles, {faces_cut:,} squares cut -> {pieces_out:,} pieces / "
+        f"{tris_out:,} triangles, {removed_m2:,.0f} m2 removed, "
+        f"{stats.get('slivers', 0):,} ribbon(s) under {terrainclip.MIN_WIDTH_M * 100:g} cm dropped "
+        f"({stats.get('sliverArea', 0.0):.1f} m2 — the game resolves those per pixel)"
+    )
+    progress.log(
+        f"terraincut: triplanar — {side_tris:,} face(s) / {side_area:,.0f} m2 "
+        f"({100.0 * side_area / max(total_area, 1e-9):.1f} % of the mesh) project from a SIDE "
+        f"plane, the rest from above. APPROXIMATED: the game blends the three projections "
+        f"per pixel (_TerrainTriplanarBlendStrengthY, _TriplanarHeightmapBlending); a baked "
+        f"UV set collapses that to the dominant plane per face, so those faces meet their "
+        f"neighbours with a pattern seam the game would blend away"
+    )
     _write_mask(derived, replaced, cell, field.fine, sorted(materials_used))
-    return {"tiles": written["files"], "faces": faces_cut, "triangles": tris_out, "pieces": pieces_out,
-            "removedSquareMetres": round(removed_m2, 1), "shallowVolumesSkipped": skipped_shallow,
-            "sliversDropped": stats.get("slivers", 0), "sliverSquareMetres": round(stats.get("sliverArea", 0.0), 2),
-            "materials": sorted(materials_used), "corridorFaces": int(replaced.sum()),
-            "triplanarSideFaces": side_tris, "triplanarSideSquareMetres": round(side_area, 1),
-            "triplanarFacesPerPlane": {"zy": plane_tris[0], "xz": plane_tris[1], "xy": plane_tris[2]},
-            "_tiles": written["tiles"], "seconds": round(time.monotonic() - started, 1)}
+    return {
+        "tiles": written["files"],
+        "faces": faces_cut,
+        "triangles": tris_out,
+        "pieces": pieces_out,
+        "removedSquareMetres": round(removed_m2, 1),
+        "shallowVolumesSkipped": skipped_shallow,
+        "sliversDropped": stats.get("slivers", 0),
+        "sliverSquareMetres": round(stats.get("sliverArea", 0.0), 2),
+        "materials": sorted(materials_used),
+        "corridorFaces": int(replaced.sum()),
+        "triplanarSideFaces": side_tris,
+        "triplanarSideSquareMetres": round(side_area, 1),
+        "triplanarFacesPerPlane": {"zy": plane_tris[0], "xz": plane_tris[1], "xy": plane_tris[2]},
+        "_tiles": written["tiles"],
+        "seconds": round(time.monotonic() - started, 1),
+    }
 
 
 def _carriageway_ceiling(derived, shape, scale, offset):
@@ -302,12 +339,16 @@ def _carriageway_ceiling(derived, shape, scale, offset):
     ceiling = numpy.full(shape, numpy.inf, dtype=numpy.float32)
     path = os.path.join(derived, "terrain", "carriageway_ceiling.png")
     if not os.path.isfile(path):
-        raise RuntimeError(f"terraincut needs {path} — bake `terrainmask` first (it is the same "
-                           "carriageway clamp the consumer's own heightfield applies)")
+        raise RuntimeError(
+            f"terraincut needs {path} — bake `terrainmask` first (it is the same "
+            "carriageway clamp the consumer's own heightfield applies)"
+        )
     stored = png.gray_array(path)
     if stored.shape != shape:
-        raise RuntimeError(f"carriageway_ceiling.png is {stored.shape}, the ground raster {shape} "
-                           "— re-bake `terrainmask` against the same `ground` option")
+        raise RuntimeError(
+            f"carriageway_ceiling.png is {stored.shape}, the ground raster {shape} "
+            "— re-bake `terrainmask` against the same `ground` option"
+        )
     has = stored > 0
     ceiling[has] = (stored[has].astype(numpy.float64) * scale + offset).astype(numpy.float32)
     return ceiling
@@ -328,19 +369,32 @@ def _paint_layers(paths, surface, shape, progress):
             index, names = splat_mod.dominant_layer(sp, mapping)
             if index.shape != shape:
                 index = reader.resample_nearest(index, shape)
-        except Exception as exc:  # noqa: BLE001 - presentation only; grass everywhere beats no product
-            progress.log(f"terraincut: splat unreadable ({exc!r}); every face binds {GROUND_FALLBACK}")
+        except Exception as exc:
+            progress.log(
+                f"terraincut: splat unreadable ({exc!r}); every face binds {GROUND_FALLBACK}"
+            )
     return names, index
 
 
 def _write_mask(derived, replaced, cell, fine, materials):
     out_dir = os.path.join(derived, "terrain")
     os.makedirs(out_dir, exist_ok=True)
-    png.write_gray(os.path.join(out_dir, "corridor_faces.png"), numpy.where(replaced, 255, 0).astype(numpy.uint8))
-    doc = {"schema": "csiibundle.bake.terraincut/3", "faceSize": [int(replaced.shape[0]), int(replaced.shape[1])],
-           "cell": cell, "fine": bool(fine), "corridorFaces": int(replaced.sum()), "groundUvMetres": GROUND_UV_M,
-           "materials": list(materials)}
-    with open(os.path.join(out_dir, "corridor.json"), "w", encoding="utf-8", newline="\n") as handle:
+    png.write_gray(
+        os.path.join(out_dir, "corridor_faces.png"),
+        numpy.where(replaced, 255, 0).astype(numpy.uint8),
+    )
+    doc = {
+        "schema": "csiibundle.bake.terraincut/3",
+        "faceSize": [int(replaced.shape[0]), int(replaced.shape[1])],
+        "cell": cell,
+        "fine": bool(fine),
+        "corridorFaces": int(replaced.sum()),
+        "groundUvMetres": GROUND_UV_M,
+        "materials": list(materials),
+    }
+    with open(
+        os.path.join(out_dir, "corridor.json"), "w", encoding="utf-8", newline="\n"
+    ) as handle:
         json.dump(doc, handle, indent=1)
 
 

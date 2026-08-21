@@ -24,7 +24,8 @@ plain system Python is part of the gate. Dependencies: the standard library plus
 
 ```python
 import sys, os
-sys.path.insert(0, "<repo>/tools")     # Blender's --python does not add it for you
+
+sys.path.insert(0, "<repo>/tools")  # Blender's --python does not add it for you
 import csiibundle
 ```
 

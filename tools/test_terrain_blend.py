@@ -42,12 +42,19 @@ import numpy
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), "apps"))
-BUNDLE = os.path.join(os.environ.get("USERPROFILE", ""), "AppData", "LocalLow", "Colossal Order",
-                      "Cities Skylines II", "ModsData", "Carto")
+BUNDLE = os.path.join(
+    os.environ.get("USERPROFILE", ""),
+    "AppData",
+    "LocalLow",
+    "Colossal Order",
+    "Cities Skylines II",
+    "ModsData",
+    "Carto",
+)
 SURFACES = os.path.join(BUNDLE, "terrain", "surfaces")
 
-from csiibundle import png  # noqa: E402
 from cs2beamng.stages import terrain as stage  # noqa: E402
+from csiibundle import png  # noqa: E402
 
 CHECKS = 0
 FAILS = []
@@ -62,6 +69,7 @@ def check(ok, label, detail=""):
 
 
 # -- the ported shader ---------------------------------------------------------------------------
+
 
 def calc_blend_values(u, v):
     """`terrain.h.hlsl calcBlendValues` — the bilinear weights of the four corner layer texels."""
@@ -132,15 +140,27 @@ def boundary_u(mat_height, samples=1024):
 print("-- the ported blend reproduces the shader's invariants --")
 u, v = numpy.meshgrid((numpy.arange(8) + 0.5) / 8, (numpy.arange(8) + 0.5) / 8, indexing="xy")
 factor = calc_blend_values(u, v)
-check(abs(float(factor.sum(axis=-1).min()) - 1.0) < 1e-9 and abs(float(factor.sum(axis=-1).max()) - 1.0) < 1e-9,
-      "calcBlendValues is a partition of unity")
+check(
+    abs(float(factor.sum(axis=-1).min()) - 1.0) < 1e-9
+    and abs(float(factor.sum(axis=-1).max()) - 1.0) < 1e-9,
+    "calcBlendValues is a partition of unity",
+)
 corner = calc_blend_values(numpy.array([0.0]), numpy.array([0.0]))
 check(abs(float(corner[0, 0]) - 1.0) < 1e-9, "calcBlendValues at (0,0) is corner 0 alone")
 flat = numpy.full(4, 0.5)
-shares = blend_shares(calc_blend_values(numpy.array([0.02]), numpy.array([0.02])), numpy.broadcast_to(flat, (1, 4)))
-check(abs(float(shares.sum(axis=-1)[0]) - 1.0) < 1e-6, "the four shares sum to 1", f"{float(shares.sum(axis=-1)[0]):.6f}")
-check(float(shares[0, 0]) > 0.9, "deep inside a texel one material owns it",
-      f"corner-0 share {float(shares[0, 0]):.3f}")
+shares = blend_shares(
+    calc_blend_values(numpy.array([0.02]), numpy.array([0.02])), numpy.broadcast_to(flat, (1, 4))
+)
+check(
+    abs(float(shares.sum(axis=-1)[0]) - 1.0) < 1e-6,
+    "the four shares sum to 1",
+    f"{float(shares.sum(axis=-1)[0]):.6f}",
+)
+check(
+    float(shares[0, 0]) > 0.9,
+    "deep inside a texel one material owns it",
+    f"corner-0 share {float(shares[0, 0]):.3f}",
+)
 
 print("\n-- what the height map does, and what it does NOT do --")
 # MEASURED, and it corrected the story this change was first written on: a height map does not
@@ -157,10 +177,16 @@ for sigma in (0.05, stage.HEIGHT_SIGMA, 0.25):
     print(f"  sigma {sigma:.3f}: band {band * 100:.1f} %, boundary sigma {shift:.3f} texel")
     if abs(sigma - stage.HEIGHT_SIGMA) < 1e-9:
         measured_shift, measured_band = float(shift), float(band)
-check(abs(measured_band - flat_band) < 0.05, "the relief does NOT widen the soft band",
-      f"{measured_band * 100:.1f} % vs {flat_band * 100:.1f} % — the band is the bilinear ramp's")
-check(measured_shift > 0.05, "the relief DOES displace the boundary off the grid line",
-      f"sigma {measured_shift:.3f} texel = {measured_shift * 3.5:.2f} m on a 3.5 m heightfield")
+check(
+    abs(measured_band - flat_band) < 0.05,
+    "the relief does NOT widen the soft band",
+    f"{measured_band * 100:.1f} % vs {flat_band * 100:.1f} % — the band is the bilinear ramp's",
+)
+check(
+    measured_shift > 0.05,
+    "the relief DOES displace the boundary off the grid line",
+    f"sigma {measured_shift:.3f} texel = {measured_shift * 3.5:.2f} m on a 3.5 m heightfield",
+)
 
 print("\n-- HEIGHT_SIGMA is the value BeamNG's own arithmetic asks for --")
 # A height difference dh moves the tie point by dh/2 texels (the key is h + 2*matFactor), and dh
@@ -168,14 +194,21 @@ print("\n-- HEIGHT_SIGMA is the value BeamNG's own arithmetic asks for --")
 # sigma/sqrt(2), and +-2 of those is the +-0.25-texel excursion HEIGHT_SIGMA is derived from.
 # HEIGHT_SIGMA is BeamNG's own median, not the closed form; both are reported so a future change
 # to either is visible. Vanilla: 189 TerrainMaterials, sigma median 0.178 / mean 0.156 / max 0.297.
-check(0.10 <= stage.HEIGHT_SIGMA <= 0.30, "HEIGHT_SIGMA sits inside vanilla BeamNG's own range",
-      f"{stage.HEIGHT_SIGMA} against median 0.178, max 0.297 over 189 vanilla terrain materials")
-check(abs(2 * stage.HEIGHT_SIGMA / numpy.sqrt(2) - 2 * stage.HEIGHT_SIGMA / 1.41421356) < 1e-6,
-      "+-2 sigma moves a boundary by +-{:.2f} texel".format(2 * stage.HEIGHT_SIGMA / numpy.sqrt(2)),
-      f"{2 * stage.HEIGHT_SIGMA / numpy.sqrt(2) * 1.75:.2f} m on the 1.75 m grid")
-check(abs(measured_shift - stage.HEIGHT_SIGMA / numpy.sqrt(2)) < 0.02,
-      "the sampled displacement matches that derivation",
-      f"measured {measured_shift:.3f} vs predicted {stage.HEIGHT_SIGMA / numpy.sqrt(2):.3f}")
+check(
+    0.10 <= stage.HEIGHT_SIGMA <= 0.30,
+    "HEIGHT_SIGMA sits inside vanilla BeamNG's own range",
+    f"{stage.HEIGHT_SIGMA} against median 0.178, max 0.297 over 189 vanilla terrain materials",
+)
+check(
+    abs(2 * stage.HEIGHT_SIGMA / numpy.sqrt(2) - 2 * stage.HEIGHT_SIGMA / 1.41421356) < 1e-6,
+    f"+-2 sigma moves a boundary by +-{2 * stage.HEIGHT_SIGMA / numpy.sqrt(2):.2f} texel",
+    f"{2 * stage.HEIGHT_SIGMA / numpy.sqrt(2) * 1.75:.2f} m on the 1.75 m grid",
+)
+check(
+    abs(measured_shift - stage.HEIGHT_SIGMA / numpy.sqrt(2)) < 0.02,
+    "the sampled displacement matches that derivation",
+    f"measured {measured_shift:.3f} vs predicted {stage.HEIGHT_SIGMA / numpy.sqrt(2):.3f}",
+)
 
 rasters_path = os.path.join(BUNDLE, "terrain", "rasters.json")
 
@@ -188,18 +221,27 @@ albedo = albedo8.astype(numpy.float64) / 255.0
 base = albedo.reshape(-1, 3).mean(axis=0)[None, None, :]
 tier = stage._tier_deviation(albedo8).astype(numpy.float64) / 255.0
 full = numpy.clip(base + (2 * tier - 1) * 1.0, 0.0, 1.0)
-check(float(numpy.abs(full - albedo).max()) < 3.0 / 255.0, "strength 1 reproduces the tier exactly",
-      f"max |v - albedo| = {float(numpy.abs(full - albedo).max()):.4f}, 8-bit quantisation only")
+check(
+    float(numpy.abs(full - albedo).max()) < 3.0 / 255.0,
+    "strength 1 reproduces the tier exactly",
+    f"max |v - albedo| = {float(numpy.abs(full - albedo).max()):.4f}, 8-bit quantisation only",
+)
 half = numpy.clip(base + (2 * tier - 1) * 0.5, 0.0, 1.0)
-check(float(numpy.abs(half - (base + (albedo - base) * 0.5)).max()) < 3.0 / 255.0,
-      "an intermediate strength is the cross-fade", "lerp(base, tier, f)")
+check(
+    float(numpy.abs(half - (base + (albedo - base) * 0.5)).max()) < 3.0 / 255.0,
+    "an intermediate strength is the cross-fade",
+    "lerp(base, tier, f)",
+)
 # the invariant: at strength 1 the composite IS the source, so it reaches a rail only where the
 # source already does. (This synthetic albedo is uniform on [0,1], so it sits on both rails by
 # construction — the real grounds are measured below.)
 rail = ((albedo <= 1e-9) | (albedo >= 1 - 1e-9)).any(axis=-1)
 hit = ((full <= 1e-9) | (full >= 1 - 1e-9)).any(axis=-1)
-check(bool((hit & ~rail).sum() == 0), "it clamps only where the source itself is at a rail",
-      f"{int((hit & ~rail).sum())} extra clamped pixels")
+check(
+    bool((hit & ~rail).sum() == 0),
+    "it clamps only where the source itself is at a rail",
+    f"{int((hit & ~rail).sum())} extra clamped pixels",
+)
 if os.path.isdir(SURFACES):
     worst = None
     for ground in ("grass", "dirt", "rock", "extra1", "extra2", "extra4"):
@@ -216,14 +258,22 @@ if os.path.isdir(SURFACES):
         o = numpy.clip(a - a.reshape(-1, 3).mean(axis=0)[None, None, :] + 0.5, 0, 1)
         ov = numpy.clip(numpy.clip(b + (2 * o - 1) * 0.6, 0, 1) + (2 * o - 1) * 0.85, 0, 1)
         ofrac = float(((ov <= 1e-9) | (ov >= 1 - 1e-9)).any(axis=-1).mean())
-        print(f"  {ground:8s} clamped: {frac*100:5.1f} %   (the encoding it replaced: {ofrac*100:5.1f} %)")
+        print(
+            f"  {ground:8s} clamped: {frac * 100:5.1f} %   (the encoding it replaced: {ofrac * 100:5.1f} %)"
+        )
         worst = frac if worst is None else max(worst, frac)
-    check(worst is not None and worst < 0.01, "no shipped ground clamps on the real textures",
-          f"worst {worst*100:.2f} %" if worst is not None else "no bundle")
+    check(
+        worst is not None and worst < 0.01,
+        "no shipped ground clamps on the real textures",
+        f"worst {worst * 100:.2f} %" if worst is not None else "no bundle",
+    )
 old = numpy.clip(albedo - albedo.reshape(-1, 3).mean(axis=0)[None, None, :] + 0.5, 0, 1)
 old_v = numpy.clip(numpy.clip(base + (2 * old - 1) * 0.6, 0, 1) + (2 * old - 1) * 0.85, 0, 1)
-check(old_v.std() > full.std() * 1.5, "and it is materially flatter than what it replaced",
-      f"contrast sigma {full.std():.3f} against the old {old_v.std():.3f}")
+check(
+    old_v.std() > full.std() * 1.5,
+    "and it is materially flatter than what it replaced",
+    f"contrast sigma {full.std():.3f} against the old {old_v.std():.3f}",
+)
 
 print("\n-- the tier strengths are the game's cross-fade, and they partition --")
 
@@ -248,65 +298,102 @@ if os.path.isfile(rasters_path):
     _block = json.load(open(rasters_path, encoding="utf-8")).get("terrainTiling")
     if isinstance(_block, dict):
         _m, dd, md, _f = stage._tiling_of(_block, "grass")
-        check(dd == md, "one distance ramp serves both tiers - the check that the mapping is right",
-              f"{[round(x) for x in dd]}")
+        check(
+            dd == md,
+            "one distance ramp serves both tiers - the check that the mapping is right",
+            f"{[round(x) for x in dd]}",
+        )
         for pd in (0, 100, 1000, 4000):
             det = strength(dd, [0, 0], [1, 0], pd)
             mac = strength(md, [0, 1], [0, 1], pd)
             print(f"  {pd:5d} m: near {det:.3f}  mid {mac:.3f}  far {1 - det - mac:.3f}")
         check(strength(dd, [0, 0], [1, 0], 0) > 0.99, "at the camera the NEAR tiling is what draws")
-        check(strength(md, [0, 1], [0, 1], 1000) > 0.99, "by midBlendEnd the MID tiling has taken over")
+        check(
+            strength(md, [0, 1], [0, 1], 1000) > 0.99,
+            "by midBlendEnd the MID tiling has taken over",
+        )
         d_far = strength(dd, [0, 0], [1, 0], 4000)
         m_far = strength(md, [0, 1], [0, 1], 4000)
-        check(d_far < 0.01 and m_far < 0.01, "by farBlendEnd only the FAR tiling is left",
-              f"near {d_far:.3f}, mid {m_far:.3f}")
-        over = max(strength(dd, [0, 0], [1, 0], pd) + strength(md, [0, 1], [0, 1], pd)
-                   for pd in range(0, 4001, 25))
+        check(
+            d_far < 0.01 and m_far < 0.01,
+            "by farBlendEnd only the FAR tiling is left",
+            f"near {d_far:.3f}, mid {m_far:.3f}",
+        )
+        over = max(
+            strength(dd, [0, 0], [1, 0], pd) + strength(md, [0, 1], [0, 1], pd)
+            for pd in range(0, 4001, 25)
+        )
         check(over <= 1.001, "the three tiers never over-sum", f"max(near + mid) = {over:.3f}")
 
 print("\n-- the tilings come from the game, not from us --")
 if os.path.isfile(rasters_path):
     block = json.load(open(rasters_path, encoding="utf-8")).get("terrainTiling")
     if not isinstance(block, dict):
-        check(False, "the bundle carries rasters.terrainTiling", "absent — this rip predates 095322a")
+        check(
+            False, "the bundle carries rasters.terrainTiling", "absent — this rip predates 095322a"
+        )
     else:
         metres, detail_d, macro_d, from_game = stage._tiling_of(block, "grass")
         want = block["layers"]["grass"]["metresPerRepeat"]
         blend = block["layers"]["grass"]["lodBlend"]
         check(from_game, "grass reads the shipped block")
-        check(abs(metres["detail"] - want[0]) < 1e-6 and abs(metres["macro"] - want[1]) < 1e-6
-              and abs(metres["base"] - want[2]) < 1e-6,
-              "near -> detail, mid -> macro, far -> base",
-              f"detail {metres['detail']:.2f} m, macro {metres['macro']:.2f} m, base {metres['base']:.1f} m")
+        check(
+            abs(metres["detail"] - want[0]) < 1e-6
+            and abs(metres["macro"] - want[1]) < 1e-6
+            and abs(metres["base"] - want[2]) < 1e-6,
+            "near -> detail, mid -> macro, far -> base",
+            f"detail {metres['detail']:.2f} m, macro {metres['macro']:.2f} m, base {metres['base']:.1f} m",
+        )
         # *TexSize is in LAYER TEXELS: the shader samples at (terrainUv * layerSize) / TexSize,
         # and vanilla's TexSize x squareSize lands on BeamNG's documented 2-8 / 30-80 / 128-2048 m
         for cell in (1.75, 3.5):
             got = {t: stage._tex_size(metres[t], cell) for t in ("detail", "macro", "base")}
             err = max(abs(got[t] * cell - metres[t]) / metres[t] for t in got)
-            check(err < 0.04, f"grass tiers land within 4 % of the game's metres on a {cell} m grid",
-                  ", ".join(f"{t} {got[t]} texels = {got[t] * cell:.1f} m (want {metres[t]:.1f})" for t in got))
-        check(stage._tex_size(14.336, 1.75) == 8 and stage._tex_size(14.336, 1.0) == 14,
-              "TexSize scales with squareSize - it is texels, not metres",
-              "14.34 m is 8 texels at 1.75 m and 14 at 1.0 m")
-        check(metres != stage.FALLBACK_TILE_M, "the pre-§47 constants are gone",
-              f"was base {stage.FALLBACK_TILE_M['base']}/macro {stage.FALLBACK_TILE_M['macro']}/"
-              f"detail {stage.FALLBACK_TILE_M['detail']} m for every ground")
-        check(detail_d == [0.0, blend[0], blend[1], blend[3]] and macro_d == detail_d,
-              "the tier ramp is the prefab's own lodBlend",
-              f"near->mid {blend[0]:.0f}-{blend[1]:.0f} m, mid->far ends {blend[3]:.0f} m")
+            check(
+                err < 0.04,
+                f"grass tiers land within 4 % of the game's metres on a {cell} m grid",
+                ", ".join(
+                    f"{t} {got[t]} texels = {got[t] * cell:.1f} m (want {metres[t]:.1f})"
+                    for t in got
+                ),
+            )
+        check(
+            stage._tex_size(14.336, 1.75) == 8 and stage._tex_size(14.336, 1.0) == 14,
+            "TexSize scales with squareSize - it is texels, not metres",
+            "14.34 m is 8 texels at 1.75 m and 14 at 1.0 m",
+        )
+        check(
+            metres != stage.FALLBACK_TILE_M,
+            "the pre-§47 constants are gone",
+            f"was base {stage.FALLBACK_TILE_M['base']}/macro {stage.FALLBACK_TILE_M['macro']}/"
+            f"detail {stage.FALLBACK_TILE_M['detail']} m for every ground",
+        )
+        check(
+            detail_d == [0.0, blend[0], blend[1], blend[3]] and macro_d == detail_d,
+            "the tier ramp is the prefab's own lodBlend",
+            f"near->mid {blend[0]:.0f}-{blend[1]:.0f} m, mid->far ends {blend[3]:.0f} m",
+        )
         # extras take the grass tiling: the bundle's own semantics string says so
         extra, _, _, extra_from_game = stage._tiling_of(block, "extra2")
         check(extra_from_game and extra == metres, "an extra tiles with grass")
         rock, _, _, _ = stage._tiling_of(block, "rock")
-        check(rock["detail"] > metres["detail"], "rock is coarser than grass, as authored",
-              f"rock detail {rock['detail']:.2f} m vs grass {metres['detail']:.2f} m")
+        check(
+            rock["detail"] > metres["detail"],
+            "rock is coarser than grass, as authored",
+            f"rock detail {rock['detail']:.2f} m vs grass {metres['detail']:.2f} m",
+        )
 else:
-    check(False, "the bundle carries terrain/rasters.json", "no bundle on this machine — awaiting a rip")
+    check(
+        False,
+        "the bundle carries terrain/rasters.json",
+        "no bundle on this machine — awaiting a rip",
+    )
 missing, _, _, from_game = stage._tiling_of(None, "grass")
 check(not from_game and missing == stage.FALLBACK_TILE_M, "no block falls back and says so")
 
 print("\n-- <ground>_normal.png alpha IS the ground's height map --")
 if os.path.isdir(SURFACES):
+
     def corr(p, q):
         p = p.ravel().astype(numpy.float64)
         q = q.ravel().astype(numpy.float64)
@@ -325,9 +412,11 @@ if os.path.isdir(SURFACES):
         cy = corr(ny, -numpy.gradient(height, axis=0))
         # the green convention is flipped (OpenGL vs DirectX), so the two correlations are
         # equal and opposite — that pairing is the signature, not either sign on its own
-        check(cx > 0.25 and cy < -0.25 and abs(cx + cy) < 0.25,
-              f"{ground}: alpha's gradient reproduces the normal's XY",
-              f"corr(nx,-dh/du) {cx:+.3f}, corr(ny,-dh/dv) {cy:+.3f}")
+        check(
+            cx > 0.25 and cy < -0.25 and abs(cx + cy) < 0.25,
+            f"{ground}: alpha's gradient reproduces the normal's XY",
+            f"corr(nx,-dh/du) {cx:+.3f}, corr(ny,-dh/dv) {cy:+.3f}",
+        )
     check(tested >= 3, "at least three grounds measured", f"{tested}")
 else:
     check(False, "terrain/surfaces/ exists", "no bundle on this machine — awaiting a rip")
@@ -339,6 +428,7 @@ print("\n-- ground mesh maps carry BeamNG's colour-space suffix --")
 # The convention is BeamNG's own: 1404 vanilla baseColorMaps end .color.png, and our own road and
 # marking materials -- the ones that always rendered right -- end .color.dds.
 with tempfile.TemporaryDirectory() as tmp2:
+
     class _GroundLevel:
         name = "gate"
 
@@ -361,50 +451,82 @@ with tempfile.TemporaryDirectory() as tmp2:
         handle.write(png.encode_rgb((rngc.random((64, 64, 3)) * 200 + 20).astype(numpy.uint8)))
     base, detail = stage._ground_mesh_maps(lv, src, "gate_grass_ground_b", size=64)
     check(base.endswith(".color.png"), "the base map is tagged .color (sRGB)", base.split("/")[-1])
-    check(detail.endswith(".data.png"), "the detail map is tagged .data (raw linear)", detail.split("/")[-1])
+    check(
+        detail.endswith(".data.png"),
+        "the detail map is tagged .data (raw linear)",
+        detail.split("/")[-1],
+    )
     nrm, nrm_detail = stage._ground_mesh_maps(lv, src, "gate_grass_ground_nm", normal=True, size=64)
-    check(nrm.endswith(".normal.png") and nrm_detail == nrm, "the normal map is tagged .normal",
-          nrm.split("/")[-1])
+    check(
+        nrm.endswith(".normal.png") and nrm_detail == nrm,
+        "the normal map is tagged .normal",
+        nrm.split("/")[-1],
+    )
     # `.color` is decoded to linear before blendDetail runs, so the deviation must be linear too
     from PIL import Image as _Img
-    det = numpy.asarray(_Img.open(os.path.join(tmp2, "art", "terrains", "gate_grass_ground_b.data.png"))).astype(numpy.float64) / 255.0
-    bas = numpy.asarray(_Img.open(os.path.join(tmp2, "art", "terrains", "gate_grass_ground_b.color.png"))).astype(numpy.float64) / 255.0
+
+    det = (
+        numpy.asarray(
+            _Img.open(os.path.join(tmp2, "art", "terrains", "gate_grass_ground_b.data.png"))
+        ).astype(numpy.float64)
+        / 255.0
+    )
+    bas = (
+        numpy.asarray(
+            _Img.open(os.path.join(tmp2, "art", "terrains", "gate_grass_ground_b.color.png"))
+        ).astype(numpy.float64)
+        / 255.0
+    )
     lin = (numpy.asarray(_Img.open(src).convert("RGB")).astype(numpy.float64) / 255.0) ** 2.2
     want = 0.5 + (lin - lin.reshape(-1, 3).mean(axis=0)[None, None, :]) * 0.5
-    check(float(numpy.abs(det - want).max()) < 3.0 / 255.0,
-          "the detail deviation is computed in the space blendDetail runs in",
-          f"max err {float(numpy.abs(det - want).max()):.4f}")
+    check(
+        float(numpy.abs(det - want).max()) < 3.0 / 255.0,
+        "the detail deviation is computed in the space blendDetail runs in",
+        f"max err {float(numpy.abs(det - want).max()):.4f}",
+    )
     # The base slot must be LOW-FREQUENCY or its own contrast is added a second time: the detail
     # carries the deviation from the image MEAN, so `base + (2*detail - 1)` only reproduces the
     # albedo where the base is locally that mean. Measured on the shipped grounds before this:
     # 1.8x the albedo's sigma and 32.5 % of extra2 clamped to black.
-    base_lin = bas ** 2.2
-    check(base_lin.std() < lin.std() * 0.5, "the base map is low-passed, not the full albedo",
-          f"base sigma {base_lin.std():.4f} against the albedo's {lin.std():.4f}")
+    base_lin = bas**2.2
+    check(
+        base_lin.std() < lin.std() * 0.5,
+        "the base map is low-passed, not the full albedo",
+        f"base sigma {base_lin.std():.4f} against the albedo's {lin.std():.4f}",
+    )
     real = numpy.clip(base_lin + (2 * det - 1), 0.0, 1.0)
-    check(abs(real.std() - lin.std()) < 0.02, "so it carries the albedo's contrast, not twice it",
-          f"composite sigma {real.std():.4f} against the albedo's {lin.std():.4f}")
+    check(
+        abs(real.std() - lin.std()) < 0.02,
+        "so it carries the albedo's contrast, not twice it",
+        f"composite sigma {real.std():.4f} against the albedo's {lin.std():.4f}",
+    )
 # Clamping is a property of the real grounds' own contrast, so it is measured on them, not on the
 # synthetic source above (uniform random, sigma 0.21 — far past any real ground, and it clamps by
 # construction). Before the low-pass this was 32.5 % of extra2 crushed to black.
 if os.path.isdir(SURFACES):
-    from PIL import Image as _I2
+    from PIL import Image as _image2
+
     worst_clamp, worst_name = 0.0, None
     for ground in ("grass", "dirt", "rock", "extra1", "extra2", "extra4"):
         path = os.path.join(SURFACES, f"{ground}.png")
         if not os.path.isfile(path):
             continue
-        a8 = numpy.asarray(_I2.open(path).convert("RGB")).astype(numpy.uint8)
-        a = numpy.clip((a8.astype(numpy.float64) / 255.0) ** 2.2 * 2.57, 0, 1)     # the build's gain
-        enc = _I2.fromarray((a ** (1 / 2.2) * 255).astype(numpy.uint8))
-        low = numpy.asarray(enc.resize((stage.BASE_LOWPASS,) * 2, _I2.BOX).resize(enc.size, _I2.BILINEAR))
+        a8 = numpy.asarray(_image2.open(path).convert("RGB")).astype(numpy.uint8)
+        a = numpy.clip((a8.astype(numpy.float64) / 255.0) ** 2.2 * 2.57, 0, 1)  # the build's gain
+        enc = _image2.fromarray((a ** (1 / 2.2) * 255).astype(numpy.uint8))
+        low = numpy.asarray(
+            enc.resize((stage.BASE_LOWPASS,) * 2, _image2.BOX).resize(enc.size, _image2.BILINEAR)
+        )
         base = (low.astype(numpy.float64) / 255.0) ** 2.2
         comp = numpy.clip(base + (a - a.reshape(-1, 3).mean(axis=0)[None, None, :]), 0.0, 1.0)
         frac = float(((comp <= 1e-9) | (comp >= 1 - 1e-9)).any(axis=-1).mean())
         if frac > worst_clamp:
             worst_clamp, worst_name = frac, ground
-    check(worst_clamp < 0.02, "and no shipped ground clamps in the mesh composite",
-          f"worst {worst_name} {worst_clamp * 100:.2f} % (32.5 % before the low-pass)")
+    check(
+        worst_clamp < 0.02,
+        "and no shipped ground clamps in the mesh composite",
+        f"worst {worst_name} {worst_clamp * 100:.2f} % (32.5 % before the low-pass)",
+    )
 
 print("\n-- _height_texture writes the relief as a tier deviation --")
 
@@ -440,23 +562,40 @@ with tempfile.TemporaryDirectory() as tmp:
     out = stage._height_texture(level, src, "h.png")
     check(out is not None, "a source with alpha yields a height map", str(out))
     from PIL import Image
-    written = numpy.asarray(Image.open(os.path.join(tmp, "art", "terrains", "h.png"))).astype(numpy.float64) / 255.0
+
+    written = (
+        numpy.asarray(Image.open(os.path.join(tmp, "art", "terrains", "h.png"))).astype(
+            numpy.float64
+        )
+        / 255.0
+    )
     check(abs(written.mean() - 0.5) < 0.02, "centred on mid-gray", f"mean {written.mean():.4f}")
     # written at HALF sigma: the base tier is flat, so the additive overlay doubles it back
-    check(abs(written.std() - stage.HEIGHT_SIGMA * 0.5) < 0.01, "written at half HEIGHT_SIGMA",
-          f"sigma {written.std():.4f}, composite 0.5 + (2t - 1) = {stage.HEIGHT_SIGMA}")
+    check(
+        abs(written.std() - stage.HEIGHT_SIGMA * 0.5) < 0.01,
+        "written at half HEIGHT_SIGMA",
+        f"sigma {written.std():.4f}, composite 0.5 + (2t - 1) = {stage.HEIGHT_SIGMA}",
+    )
     composite = numpy.clip(0.5 + (2 * written - 1) * 1.0, 0.0, 1.0)
-    check(abs(composite.std() - stage.HEIGHT_SIGMA) < 0.01, "and the composite lands on HEIGHT_SIGMA",
-          f"sigma {composite.std():.4f}")
+    check(
+        abs(composite.std() - stage.HEIGHT_SIGMA) < 0.01,
+        "and the composite lands on HEIGHT_SIGMA",
+        f"sigma {composite.std():.4f}",
+    )
 
     flat_src = os.path.join(tmp, "flat.png")
     rgba[:, :, 3] = 200
     with open(flat_src, "wb") as handle:
         handle.write(png.encode_rgba(rgba))
-    check(stage._height_texture(level, flat_src, "flat_h.png") is None,
-          "a constant alpha is NOT a height map", "the material keeps the neutral 128")
-    check(stage._height_texture(level, os.path.join(tmp, "nope.png"), "x.png") is None,
-          "a missing source yields None")
+    check(
+        stage._height_texture(level, flat_src, "flat_h.png") is None,
+        "a constant alpha is NOT a height map",
+        "the material keeps the neutral 128",
+    )
+    check(
+        stage._height_texture(level, os.path.join(tmp, "nope.png"), "x.png") is None,
+        "a missing source yields None",
+    )
 
 print(f"\n{CHECKS - len(FAILS)}/{CHECKS} checks passed")
 if FAILS:

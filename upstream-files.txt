@@ -1,0 +1,104 @@
+# Upstream Carto files — the exemption list and the don't-touch boundary in one artifact.
+#
+# Regenerate and verify with:  python tools/check_limits.py --verify-upstream
+#
+.gitattributes
+.gitignore
+.gitmodules
+Carto.csproj
+Carto.sln
+Documentation/Banner-Bright.png
+Documentation/Banner-Dark.png
+Documentation/CheckList.md
+Documents/Design Guidelines  (ver 2025-01-05).pdf
+Documents/Design Guidelines  (ver 2025-01-09).pdf
+Documents/Related APIs.md
+Domain/Address.cs
+Domain/AreaStat.cs
+Domain/Brand.cs
+Domain/BuildingStat.cs
+Domain/EnumWrapper.cs
+Domain/Enums.cs
+Domain/ExtendedTransportManager.cs
+Domain/Interfaces.cs
+Domain/Lane.cs
+Domain/LiteralAddress.cs
+Domain/NameManager.cs
+Domain/NetworkStat.cs
+Domain/POI.cs
+Domain/RoadBuilder.cs
+Domain/RoadSpeedAdjuster.cs
+Domain/Roundabout.cs
+Domain/RouteStat.cs
+Domain/Theme.cs
+Domain/ZoneColorChanger.cs
+Domain/ZoningCell.cs
+Domain/ZoningType.cs
+Geodata/Coefficients.cs
+Geodata/Coord.cs
+Geodata/EllipsoidDefinition.cs
+Geodata/Enums.cs
+Geodata/Epsg.cs
+Geodata/Geometry.cs
+Geodata/HelmertTransform.cs
+Geodata/ParsedParams.cs
+Geodata/ProjectionDefinition.cs
+Geodata/Transform.cs
+IO/BufferManager.cs
+IO/Enums.cs
+IO/ExportResult.cs
+IO/FieldInfo.cs
+IO/GeoJson.cs
+IO/GeoTiff.cs
+IO/IO.cs
+IO/Options.cs
+IO/PropertyComparer.cs
+IO/Shapefile.cs
+IO/TagManager.cs
+Instance.cs
+LICENSE.txt
+Licenses/DOTNET_LICENSE.txt
+Licenses/PROJ4JS_LICENSE.txt
+Licenses/PROJ_LICENSE.txt
+Locale/en-US.json
+Locale/fr-FR.json
+Locale/ja-JP.json
+Locale/nl-NL.json
+Locale/zh-HANS.json
+Locale/zh-HANT.json
+Mod.cs
+Properties/PublishConfiguration.xml
+Properties/PublishProfiles/PublishNewMod.pubxml
+Properties/PublishProfiles/PublishNewVersion.pubxml
+Properties/PublishProfiles/UpdatePublishedConfiguration.pubxml
+Properties/Screenshot-1.png
+Properties/Screenshot-2.png
+Properties/Screenshot-3.png
+Properties/Screenshot-4.png
+Properties/Thumbnail.png
+README.md
+Settings.cs
+Styles
+Systems/AreaSystem.cs
+Systems/BuildingSystem.cs
+Systems/NetworkSystem.cs
+Systems/POISystem.cs
+Systems/RasterSystem.cs
+Systems/RouteSystem.cs
+Systems/SharedDataCollectionSystem.cs
+Systems/SoundSystem.cs
+Systems/ZoningSystem.cs
+Utils/BVHUtils.cs
+Utils/CommonUtils.cs
+Utils/DatumUtils.cs
+Utils/IOUtils.cs
+Utils/LocaleUtils.cs
+Utils/MathUtils.cs
+
+# Upstream files the fork has since deleted (kept for the record, not matched):
+# Library/ilpp.pid
+# obj/Carto.csproj.nuget.dgspec.json
+# obj/Carto.csproj.nuget.g.props
+# obj/Carto.csproj.nuget.g.targets
+# obj/project.assets.json
+# obj/project.nuget.cache

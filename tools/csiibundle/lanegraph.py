@@ -59,6 +59,7 @@ and a segment's car lanes are stacked laterally AND chained longitudinally.
 Positions are bundle-frame metres (X east, Y up, Z north). Convert with `csiibundle.frames`.
 """
 
+import itertools
 from collections import defaultdict
 
 from . import reader
@@ -140,7 +141,7 @@ def polyline_length(path):
     the game and here, which is worth knowing before routing anything over it.
     """
     total = 0.0
-    for a, b in zip(path, path[1:]):
+    for a, b in itertools.pairwise(path):
         total += ((b[0] - a[0]) ** 2 + (b[1] - a[1]) ** 2 + (b[2] - a[2]) ** 2) ** 0.5
     return total
 
@@ -158,5 +159,12 @@ def summarise(bundle_dir):
         limited += lane.get("limit") is not None
         for flag in lane.get("flags") or ():
             flags[flag] = flags.get(flag, 0) + 1
-    return {"lanes": n, "kinds": counts, "flags": flags, "total_length_m": total_length,
-            "with_owner": owned, "secondary": secondary, "with_limit": limited}
+    return {
+        "lanes": n,
+        "kinds": counts,
+        "flags": flags,
+        "total_length_m": total_length,
+        "with_owner": owned,
+        "secondary": secondary,
+        "with_limit": limited,
+    }

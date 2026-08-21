@@ -1,9 +1,11 @@
 """Top-down ortho A/B render of an already-loaded .blend. Argv: out.png cx cy cam_z."""
+
 import sys
+
 import bpy
 from mathutils import Vector
 
-out, cx, cy, cz = sys.argv[sys.argv.index("--") + 1:][:4]
+out, cx, cy, cz = sys.argv[sys.argv.index("--") + 1 :][:4]
 cx, cy, cz = float(cx), float(cy), float(cz)
 
 cam_data = bpy.data.cameras.new("ab_topdown")
@@ -27,7 +29,9 @@ scene.camera = cam
 # EEVEE was removed (Blender 5.x); fall back for older builds that still use
 # the "_NEXT" suffix.
 _available_engines = bpy.types.RenderSettings.bl_rna.properties["engine"].enum_items.keys()
-scene.render.engine = "BLENDER_EEVEE_NEXT" if "BLENDER_EEVEE_NEXT" in _available_engines else "BLENDER_EEVEE"
+scene.render.engine = (
+    "BLENDER_EEVEE_NEXT" if "BLENDER_EEVEE_NEXT" in _available_engines else "BLENDER_EEVEE"
+)
 scene.render.resolution_x = scene.render.resolution_y = 1600
 scene.render.filepath = out
 scene.view_settings.view_transform = "Standard"

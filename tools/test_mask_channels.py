@@ -35,6 +35,7 @@ classifier gives everything.
 Run: `python tools/test_mask_channels.py`  (system Python + numpy + Pillow; the measurement is
 skipped when no bundle is on disk, the structural clauses always run).
 """
+
 import json
 import os
 import sys
@@ -43,10 +44,11 @@ import numpy
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from csiibundle import materials  # noqa: E402
+from csiibundle import materials
 
 BUNDLE = os.environ.get("CARTO_BUNDLE") or os.path.expandvars(
-    r"%LOCALAPPDATA%\..\LocalLow\Colossal Order\Cities Skylines II\ModsData\Carto")
+    r"%LOCALAPPDATA%\..\LocalLow\Colossal Order\Cities Skylines II\ModsData\Carto"
+)
 
 # How many distinct masks to open. 890 on the reference city; all of them, it is seconds.
 MAX_MASKS = 2000
@@ -76,18 +78,28 @@ def looks_like_ao(channel):
 def test_no_occlusion_slot():
     """The rule lives in `csiibundle`, so both consumers get it: no AO comes out of the mask."""
     print("mask packing: the shared rule")
-    plan = materials.wire_plan({"mask": "textures/x.png"}) if hasattr(materials, "wire_plan") else None
+    plan = (
+        materials.wire_plan({"mask": "textures/x.png"}) if hasattr(materials, "wire_plan") else None
+    )
     if plan is None:
         check(True, "wire_plan() absent in this build — structural clause skipped")
     else:
-        slots = set(plan) if isinstance(plan, dict) else set(plan)
-        check(not any("ao" in str(s).lower() or "occl" in str(s).lower() for s in slots),
-              f"wire_plan() offers no occlusion slot (offers {sorted(map(str, slots))})")
+        slots = set(plan)
+        check(
+            not any("ao" in str(s).lower() or "occl" in str(s).lower() for s in slots),
+            f"wire_plan() offers no occlusion slot (offers {sorted(map(str, slots))})",
+        )
 
-    source = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                               "csiibundle", "bake", "materials.py"), encoding="utf-8").read()
-    check("_ao.png" not in source.split('"""', 2)[-1],
-          "the materials bake product writes no `_ao.png` outside its docstring")
+    source = open(
+        os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "csiibundle", "bake", "materials.py"
+        ),
+        encoding="utf-8",
+    ).read()
+    check(
+        "_ao.png" not in source.split('"""', 2)[-1],
+        "the materials bake product writes no `_ao.png` outside its docstring",
+    )
 
 
 def test_negative_control():
@@ -99,7 +111,10 @@ def test_negative_control():
     crease = rng.random((256, 256)) < 0.06
     ao[crease] = rng.integers(20, 90, int(crease.sum()))
     check(looks_like_ao(ao), "a synthesised near-white AO map is classified as AO")
-    check(not looks_like_ao(numpy.full((64, 64), 255.0)), "a uniformly white channel is not AO (a no-op)")
+    check(
+        not looks_like_ao(numpy.full((64, 64), 255.0)),
+        "a uniformly white channel is not AO (a no-op)",
+    )
     stencil = numpy.where(rng.random((256, 256)) < 0.5, 255.0, 0.0)
     check(not looks_like_ao(stencil), "a bimodal 0/255 stencil is not AO")
 
@@ -145,15 +160,21 @@ def test_measured_channels():
     # Not "zero": 2 of 890 survive on the reference city, both near-white. The decision this
     # protects is "do not wire an occlusion slot", and a 0.22 % near-neutral tail supports it.
     # A bundle where G really were AO would put this far above 1 %.
-    check(len(ao_like) <= max(1, n // 100),
-          f"mask G is not an occlusion map for this layer ({len(ao_like)} of {n} = "
-          f"{100 * len(ao_like) / n:.2f}% read as AO; a real AO channel would be near 100%)")
-    check(means["A"] >= 60.0 and zeros["A"] < 0.25,
-          f"A is populated everywhere, as smoothness is (mean {means['A']:.1f}, "
-          f"frac==0 {zeros['A']:.3f})")
-    check(zeros["R"] + full["R"] >= 0.6,
-          f"R is binary, as metallic is ({100 * (zeros['R'] + full['R']):.1f}% of texels at an "
-          f"extreme)")
+    check(
+        len(ao_like) <= max(1, n // 100),
+        f"mask G is not an occlusion map for this layer ({len(ao_like)} of {n} = "
+        f"{100 * len(ao_like) / n:.2f}% read as AO; a real AO channel would be near 100%)",
+    )
+    check(
+        means["A"] >= 60.0 and zeros["A"] < 0.25,
+        f"A is populated everywhere, as smoothness is (mean {means['A']:.1f}, "
+        f"frac==0 {zeros['A']:.3f})",
+    )
+    check(
+        zeros["R"] + full["R"] >= 0.6,
+        f"R is binary, as metallic is ({100 * (zeros['R'] + full['R']):.1f}% of texels at an "
+        f"extreme)",
+    )
 
 
 def main():

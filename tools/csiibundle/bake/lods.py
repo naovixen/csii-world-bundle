@@ -79,7 +79,7 @@ def _albedo_sampler_factory(bundle_dir, catalogue):
                     # a coarse copy is plenty for per-vertex sampling and keeps the cache small
                     step = max(1, img.shape[0] // 128)
                     cache[rel] = img[::step, ::step]
-                except Exception:  # noqa: BLE001
+                except Exception:
                     cache[rel] = None
             return cache[rel]
         tint = entry.get("tint")
@@ -149,7 +149,7 @@ def _process_file(args):
         tri_in += len(node["tris"])
         try:
             levels, ladder_stats = decimate.lod_ladder(node, targets=targets, backend=backend)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             return asset_id, f"failed: {exc!r}", {}
         resolved_backend = ladder_stats.get("backend", backend)
         for li, level in enumerate(levels):
@@ -168,12 +168,16 @@ def _process_file(args):
             # one primitive per material run, but glbwrite wants per-primitive vertex arrays:
             # split the level back into runs (compact vertices per run)
             for name, count in level["material_runs"]:
-                tris = level["tris"][cursor:cursor + count]
+                tris = level["tris"][cursor : cursor + count]
                 cursor += count
                 used, inverse = numpy.unique(tris.ravel(), return_inverse=True)
-                prim = {"verts": level["verts"][used], "normals": None if level["normals"] is None else level["normals"][used],
-                        "uvs": None if level["uvs"] is None else level["uvs"][used],
-                        "tris": inverse.reshape(-1, 3), "material": name}
+                prim = {
+                    "verts": level["verts"][used],
+                    "normals": None if level["normals"] is None else level["normals"][used],
+                    "uvs": None if level["uvs"] is None else level["uvs"][used],
+                    "tris": inverse.reshape(-1, 3),
+                    "material": name,
+                }
                 if colours is not None:
                     prim["colors"] = colours[used]
                 prims.append(prim)
@@ -190,11 +194,27 @@ def _process_file(args):
         if not distances:
             displacement.append(None)
             continue
-        displacement.append(round(decimate.weighted_percentile(
-            numpy.concatenate(distances), numpy.concatenate(weights),
-            decimate.DISPLACEMENT_PERCENTILE), 4))
-    return asset_id, "baked", {"tris": tri_in, "levels": tri_out, "files": written,
-                               "displacement": displacement, "backend": resolved_backend}
+        displacement.append(
+            round(
+                decimate.weighted_percentile(
+                    numpy.concatenate(distances),
+                    numpy.concatenate(weights),
+                    decimate.DISPLACEMENT_PERCENTILE,
+                ),
+                4,
+            )
+        )
+    return (
+        asset_id,
+        "baked",
+        {
+            "tris": tri_in,
+            "levels": tri_out,
+            "files": written,
+            "displacement": displacement,
+            "backend": resolved_backend,
+        },
+    )
 
 
 def run(context, progress):
@@ -206,13 +226,17 @@ def run(context, progress):
     jobs = max(1, int(context.options.get("jobs") or 1))
     lay = reader.resolve_layers(bundle)
     catalogue = reader.load_materials(bundle) or {}
-    names = sorted(os.path.splitext(f)[0] for f in os.listdir(lay.meshes)
-                   if f.endswith(".glb") and not f.endswith("__base.glb"))
+    names = sorted(
+        os.path.splitext(f)[0]
+        for f in os.listdir(lay.meshes)
+        if f.endswith(".glb") and not f.endswith("__base.glb")
+    )
     region = context.options.get("region")
     if region:
         # LODs are per prefab, not per place; a region bake still bakes every prefab the region
         # references. Cheap way to know which: scan instances inside the disc.
         from .. import instances as _inst
+
         cx, cz, r = float(region["centerX"]), float(region["centerZ"]), float(region["radius"])
         wanted = set()
         for rec in _inst.read_instances(bundle):
@@ -223,9 +247,18 @@ def run(context, progress):
         names = [n for n in names if n in wanted]
     progress.begin("lods", total=len(names), unit="meshes")
     args = [(bundle, lay.meshes, out_dir, n, targets, backend, catalogue) for n in names]
-    stats = {"meshes": len(names), "baked": 0, "authored": 0, "refused": 0, "empty": 0, "failed": 0,
-             "trisIn": 0, "trisOut": [0] * len(targets), "backendRequested": backend,
-             "backend": None}
+    stats = {
+        "meshes": len(names),
+        "baked": 0,
+        "authored": 0,
+        "refused": 0,
+        "empty": 0,
+        "failed": 0,
+        "trisIn": 0,
+        "trisOut": [0] * len(targets),
+        "backendRequested": backend,
+        "backend": None,
+    }
     index = {}
     started = time.monotonic()
 
@@ -238,8 +271,11 @@ def run(context, progress):
             for i, t in enumerate(st["levels"]):
                 stats["trisOut"][i] += t
             stats["backend"] = st.get("backend") or stats["backend"]
-            index[asset_id] = {"tris": st["tris"], "levels": st["levels"],
-                               "displacement": st["displacement"]}
+            index[asset_id] = {
+                "tris": st["tris"],
+                "levels": st["levels"],
+                "displacement": st["displacement"],
+            }
         elif status.startswith("failed"):
             progress.log(f"{asset_id}: {status}")
         progress.advance()
@@ -259,13 +295,24 @@ def run(context, progress):
     stats["displacement"] = _displacement_summary(index, len(targets))
     stats["displacementPercentile"] = decimate.DISPLACEMENT_PERCENTILE
     with open(os.path.join(out_dir, INDEX_NAME), "w", encoding="utf-8") as handle:
-        json.dump({"backend": stats["backend"], "targets": list(targets),
-                   "percentile": decimate.DISPLACEMENT_PERCENTILE, "assets": index},
-                  handle, separators=(",", ":"), sort_keys=True)
-    spread = " ".join(f"LOD{i + 1} p50 {d['p50']:.3f} m" for i, d in
-                      enumerate(stats["displacement"]) if d)
-    progress.end(f"{stats['baked']} baked ({stats['authored']} authored, {stats['refused']} refused), "
-                 f"tri ratios {ratio}, backend {stats['backend']}, displacement {spread}")
+        json.dump(
+            {
+                "backend": stats["backend"],
+                "targets": list(targets),
+                "percentile": decimate.DISPLACEMENT_PERCENTILE,
+                "assets": index,
+            },
+            handle,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+    spread = " ".join(
+        f"LOD{i + 1} p50 {d['p50']:.3f} m" for i, d in enumerate(stats["displacement"]) if d
+    )
+    progress.end(
+        f"{stats['baked']} baked ({stats['authored']} authored, {stats['refused']} refused), "
+        f"tri ratios {ratio}, backend {stats['backend']}, displacement {spread}"
+    )
     stats["ratios"] = ratio
     return stats
 
@@ -275,18 +322,28 @@ def _displacement_summary(index, levels):
     points a consumer derives from it are actually made of."""
     out = []
     for li in range(levels):
-        values = sorted(entry["displacement"][li] for entry in index.values()
-                        if entry.get("displacement") and entry["displacement"][li] is not None)
+        values = sorted(
+            entry["displacement"][li]
+            for entry in index.values()
+            if entry.get("displacement") and entry["displacement"][li] is not None
+        )
         if not values:
             out.append(None)
             continue
 
-        def at(fraction):
+        def at(fraction, values=values):
             return round(values[min(len(values) - 1, int(fraction * len(values)))], 4)
 
-        out.append({"shapes": len(values), "p50": at(0.5), "p90": at(0.9), "p99": at(0.99),
-                    "max": round(values[-1], 4),
-                    "zero": sum(1 for v in values if v <= 1e-6)})
+        out.append(
+            {
+                "shapes": len(values),
+                "p50": at(0.5),
+                "p90": at(0.9),
+                "p99": at(0.99),
+                "max": round(values[-1], 4),
+                "zero": sum(1 for v in values if v <= 1e-6),
+            }
+        )
     return out
 
 
@@ -295,5 +352,13 @@ def _displacement_summary(index, levels):
 # 75.9 m the moment they switched (A6.7).
 # v2: every level carries its measured displacement from LOD 0, and the index records the
 # RESOLVED decimator - a consumer picks its switch points from those (A6.7).
-register(Product(PRODUCT_NAME, INPUTS, "lods/", run, version=3,
-                 options=("lod_targets", "lod_backend", "region")))
+register(
+    Product(
+        PRODUCT_NAME,
+        INPUTS,
+        "lods/",
+        run,
+        version=3,
+        options=("lod_targets", "lod_backend", "region"),
+    )
+)

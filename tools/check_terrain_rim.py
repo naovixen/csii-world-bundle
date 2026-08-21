@@ -19,6 +19,7 @@ Everything here is BeamNG's own shader, ported and already gated in tools/test_t
 The two lookups use DIFFERENT positions, which is the crux: a pixel the clip keeps can still
 gather the hole texel with a large weight, because the warp moves the gather up to +-0.5 texel.
 """
+
 import os
 import sys
 
@@ -27,6 +28,7 @@ import numpy
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import importlib.util  # noqa: E402
+
 spec = importlib.util.spec_from_file_location("tb", os.path.join(HERE, "test_terrain_blend.py"))
 tb = importlib.util.module_from_spec(spec)
 sys.modules["tb"] = tb
@@ -34,6 +36,7 @@ sys.modules["tb"] = tb
 # ported shader functions.
 import contextlib  # noqa: E402
 import io as _io  # noqa: E402
+
 with contextlib.redirect_stdout(_io.StringIO()):
     try:
         spec.loader.exec_module(tb)
@@ -45,9 +48,9 @@ rng = numpy.random.default_rng(3)
 # -- the scene: layer texels, hole on one side of a straight boundary ---------------------------
 # Texel column index >= HOLE_AT is a hole (byte 255 -> matId 31); everything else is a real
 # ground with its own relief. One texel is 1.75 m on the shipped grid.
-N = 64                      # texels across
+N = 64  # texels across
 HOLE_AT = N // 2
-PIX = 16                    # pixels per texel
+PIX = 16  # pixels per texel
 WARP_FREQ, WARP_AMP = 1.3, 0.5
 
 
@@ -64,8 +67,9 @@ def value_noise(p):
     b = table[i[..., 0] - lo + 1, i[..., 1] - lo]
     c = table[i[..., 0] - lo, i[..., 1] - lo + 1]
     d = table[i[..., 0] - lo + 1, i[..., 1] - lo + 1]
-    return (a * (1 - f[..., 0]) + b * f[..., 0]) * (1 - f[..., 1]) + \
-           (c * (1 - f[..., 0]) + d * f[..., 0]) * f[..., 1]
+    return (a * (1 - f[..., 0]) + b * f[..., 0]) * (1 - f[..., 1]) + (
+        c * (1 - f[..., 0]) + d * f[..., 0]
+    ) * f[..., 1]
 
 
 def run(hole_height, label, real_height=0.5):
@@ -76,8 +80,10 @@ def run(hole_height, label, real_height=0.5):
     X, Y = numpy.meshgrid(px, py, indexing="xy")
     P = numpy.stack((X, Y), axis=-1)
 
-    warp = (numpy.stack((value_noise(P * WARP_FREQ), value_noise(P * WARP_FREQ + 37.2)), axis=-1)
-            * 2.0 - 1.0) * WARP_AMP
+    warp = (
+        numpy.stack((value_noise(P * WARP_FREQ), value_noise(P * WARP_FREQ + 37.2)), axis=-1) * 2.0
+        - 1.0
+    ) * WARP_AMP
 
     # the CLIP: nearest texel at the UNWARPED position (Load(uv*size - 0.5) -> floor(p - 0.5 + 0.5))
     own = numpy.floor(X).astype(int)
@@ -85,7 +91,7 @@ def run(hole_height, label, real_height=0.5):
 
     # the GATHER: warped, bilinear 2x2 around (p + warp)
     g = P + warp
-    base = numpy.floor(g - 0.5).astype(int)              # top-left of the 2x2
+    base = numpy.floor(g - 0.5).astype(int)  # top-left of the 2x2
     frac = (g - 0.5) - base
     factor = tb.calc_blend_values(frac[..., 0], frac[..., 1])
     cols = numpy.stack((base[..., 0], base[..., 0] + 1, base[..., 0], base[..., 0] + 1), axis=-1)
@@ -96,15 +102,19 @@ def run(hole_height, label, real_height=0.5):
     hole_share = numpy.where(is_hole, shares, 0.0).sum(axis=-1)
 
     hs = hole_share[drawn]
-    dist = (HOLE_AT - X)[drawn]                          # texels from the boundary
+    dist = (HOLE_AT - X)[drawn]  # texels from the boundary
     print(f"   {label}")
-    print(f"      drawn pixels showing >10 % slot 31: {(hs > 0.10).mean() * 100:6.2f} %   "
-          f">50 %: {(hs > 0.50).mean() * 100:6.2f} %   mean share {hs.mean() * 100:5.2f} %")
+    print(
+        f"      drawn pixels showing >10 % slot 31: {(hs > 0.10).mean() * 100:6.2f} %   "
+        f">50 %: {(hs > 0.50).mean() * 100:6.2f} %   mean share {hs.mean() * 100:5.2f} %"
+    )
     for lo, hi in ((0.0, 0.5), (0.5, 1.0), (1.0, 1.5), (1.5, 2.5)):
         sel = (dist >= lo) & (dist < hi)
         if sel.sum():
-            print(f"      {lo:.1f}-{hi:.1f} texel ({lo * 1.75:.2f}-{hi * 1.75:.2f} m) from the hole: "
-                  f"mean slot-31 share {hs[sel].mean() * 100:5.2f} %, >50 % on {(hs[sel] > 0.5).mean() * 100:5.2f} %")
+            print(
+                f"      {lo:.1f}-{hi:.1f} texel ({lo * 1.75:.2f}-{hi * 1.75:.2f} m) from the hole: "
+                f"mean slot-31 share {hs[sel].mean() * 100:5.2f} %, >50 % on {(hs[sel] > 0.5).mean() * 100:5.2f} %"
+            )
     return hs
 
 

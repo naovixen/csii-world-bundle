@@ -23,16 +23,18 @@ import re
 import xml.etree.ElementTree as ET
 
 import numpy
+from csiibundle import instances as instances_mod
+from csiibundle import reader
 
-from csiibundle import instances as instances_mod, reader
-
-from . import dae as dae_mod, map_lua, ter as ter_mod
+from . import dae as dae_mod
+from . import map_lua
+from . import ter as ter_mod
 from .level import read_objects
 
 GROUND_TOLERANCE = 0.5
 GROUND_SAMPLES = 3000
 GROUND_PASS_FRACTION = 0.97
-GROUND_MIN_SAMPLES = 50          # fewer buildings than this say nothing (the example bundle has 2)
+GROUND_MIN_SAMPLES = 50  # fewer buildings than this say nothing (the example bundle has 2)
 
 
 def check(level_dir, bundle_dir, progress=None, settings=None):
@@ -86,10 +88,10 @@ def check(level_dir, bundle_dir, progress=None, settings=None):
         p = str(game_path).replace("\\", "/")
         prefix = f"/levels/{level_name}/"
         if p.startswith(prefix):
-            return os.path.join(level_dir, *p[len(prefix):].split("/"))
+            return os.path.join(level_dir, *p[len(prefix) :].split("/"))
         if p.startswith("levels/" + level_name + "/"):
-            return os.path.join(level_dir, *p[len("levels/" + level_name + "/"):].split("/"))
-        return None                                    # a core/ or art/ path: BeamNG's own, not ours to check
+            return os.path.join(level_dir, *p[len("levels/" + level_name + "/") :].split("/"))
+        return None  # a core/ or art/ path: BeamNG's own, not ours to check
 
     for _rel, _n, obj in objects:
         for field in ("terrainFile", "shapeName", "minimapImage"):
@@ -165,11 +167,20 @@ def check(level_dir, bundle_dir, progress=None, settings=None):
     # drops frames, which is why they are notes on the build rather than silence.
     # What actually SHIPS as a shape. `keep_dae: false` drops the sources the engine never loads
     # (A8/P7), so counting `.dae` alone would read a level with 8,164 shapes as having none.
-    checks["cookedShapes"] = sum(1 for _r, _d, fs in os.walk(os.path.join(level_dir, "art"))
-                                 for f in fs if f.lower().endswith(".cdae"))
-    over = _budget_notes(by_class, item_data,
-                         dae_files if len(dae_files) >= checks["cookedShapes"]
-                         else [(None, None)] * checks["cookedShapes"], forest_items)
+    checks["cookedShapes"] = sum(
+        1
+        for _r, _d, fs in os.walk(os.path.join(level_dir, "art"))
+        for f in fs
+        if f.lower().endswith(".cdae")
+    )
+    over = _budget_notes(
+        by_class,
+        item_data,
+        dae_files
+        if len(dae_files) >= checks["cookedShapes"]
+        else [(None, None)] * checks["cookedShapes"],
+        forest_items,
+    )
     checks["budgets"] = {name: value for name, value, _limit in over}
 
     # A local light needs the DEFERRED renderer. Read the profile the level will actually be
@@ -178,19 +189,23 @@ def check(level_dir, bundle_dir, progress=None, settings=None):
     manager, manager_source = _light_manager()
     checks["lightManager"] = {"manager": manager, "source": manager_source, "lights": placed_lights}
     if placed_lights and manager and "basic" in manager.lower():
-        note(f"lighting: {placed_lights:,} local lights are placed, and BeamNG is set to "
-             f"{manager!r} ({manager_source}) - the BASIC (forward) renderer, which has no "
-             f"g-buffer prepass and shades no point or spot light at all. They will cost load "
-             f"time and scene memory and light NOTHING. Switch BeamNG to Advanced Lighting, or "
-             f"build with `lights false`")
+        note(
+            f"lighting: {placed_lights:,} local lights are placed, and BeamNG is set to "
+            f"{manager!r} ({manager_source}) - the BASIC (forward) renderer, which has no "
+            f"g-buffer prepass and shades no point or spot light at all. They will cost load "
+            f"time and scene memory and light NOTHING. Switch BeamNG to Advanced Lighting, or "
+            f"build with `lights false`"
+        )
     for name, value, limit in over:
         if limit is not None and value > limit:
-            note(f"budget: {value:,} {name} exceeds the plan's ~{limit:,} "
-                 f"(calibrated on the vanilla levels' own maxima)")
+            note(
+                f"budget: {value:,} {name} exceeds the plan's ~{limit:,} "
+                f"(calibrated on the vanilla levels' own maxima)"
+            )
     # A sampled full XML parse (a 10 MB tile takes a second), over whatever sources SURVIVE —
     # `keep_dae: false` drops every one whose `.cdae` is current, and then there is nothing to
     # parse and nothing wrong with that.
-    for _name, path in (dae_files[::max(1, len(dae_files) // 8)][:8] if dae_files else ()):
+    for _name, path in dae_files[:: max(1, len(dae_files) // 8)][:8] if dae_files else ():
         try:
             ET.parse(path)
         except ET.ParseError:
@@ -208,33 +223,40 @@ def check(level_dir, bundle_dir, progress=None, settings=None):
     vram_mib, pixels, target_source = _render_target(settings)
     budget_mib = resident_budget_mib(vram_mib, pixels)
     failure_mib = resident_failure_mib(vram_mib, pixels)
-    checks["resident"] = {"meshMiB": round(resident["meshes"] / (1024.0 * 1024.0), 1),
-                          "textureShippedMiB": round(resident["textures"] / (1024.0 * 1024.0), 1),
-                          "textureMiB": round(texture_mib, 1),
-                          "textureReduction": reduction,
-                          "textureReductionSource": reduction_source,
-                          "totalMiB": round(total_mib, 1),
-                          "budgetMiB": round(budget_mib),
-                          "failureMiB": round(failure_mib),
-                          "budgetVramMiB": vram_mib,
-                          "budgetPixels": pixels,
-                          "budgetSource": target_source,
-                          "vanillaMaxMiB": VANILLA_MAX_RESIDENT_MIB,
-                          "vanillaRatio": round(total_mib / VANILLA_MAX_RESIDENT_MIB, 2),
-                          "cookedShapes": resident["cookedShapes"], "shapes": resident["shapes"]}
+    checks["resident"] = {
+        "meshMiB": round(resident["meshes"] / (1024.0 * 1024.0), 1),
+        "textureShippedMiB": round(resident["textures"] / (1024.0 * 1024.0), 1),
+        "textureMiB": round(texture_mib, 1),
+        "textureReduction": reduction,
+        "textureReductionSource": reduction_source,
+        "totalMiB": round(total_mib, 1),
+        "budgetMiB": round(budget_mib),
+        "failureMiB": round(failure_mib),
+        "budgetVramMiB": vram_mib,
+        "budgetPixels": pixels,
+        "budgetSource": target_source,
+        "vanillaMaxMiB": VANILLA_MAX_RESIDENT_MIB,
+        "vanillaRatio": round(total_mib / VANILLA_MAX_RESIDENT_MIB, 2),
+        "cookedShapes": resident["cookedShapes"],
+        "shapes": resident["shapes"],
+    }
     if total_mib > budget_mib:
-        where = ("AT OR OVER the measured failure point" if total_mib >= failure_mib
-                 else "in the unmeasured band between what is known to fit and what is known "
-                      "to fail")
-        note(f"budget: the level mounts {total_mib:,.0f} MiB "
-             f"({resident['meshes'] / (1024.0 * 1024.0):,.0f} meshes + "
-             f"{texture_mib:,.0f} textures, {reduction_source}) on a "
-             f"{vram_mib:,} MiB card at {pixels / 1.0e6:.2f} Mpixel ({target_source}) - "
-             f"{where}. Known to fit: {budget_mib:,.0f} MiB. Known to fail: "
-             f"{failure_mib:,.0f} MiB, where D3D12 failed 131,073 texture creates in one "
-             f"session. This level is {total_mib / VANILLA_MAX_RESIDENT_MIB:.1f}x the "
-             f"{VANILLA_MAX_RESIDENT_MIB:,} MiB of west_coast_usa, the biggest level BeamNG "
-             f"ships - see tools/level_budget.py for where the bytes are")
+        where = (
+            "AT OR OVER the measured failure point"
+            if total_mib >= failure_mib
+            else "in the unmeasured band between what is known to fit and what is known to fail"
+        )
+        note(
+            f"budget: the level mounts {total_mib:,.0f} MiB "
+            f"({resident['meshes'] / (1024.0 * 1024.0):,.0f} meshes + "
+            f"{texture_mib:,.0f} textures, {reduction_source}) on a "
+            f"{vram_mib:,} MiB card at {pixels / 1.0e6:.2f} Mpixel ({target_source}) - "
+            f"{where}. Known to fit: {budget_mib:,.0f} MiB. Known to fail: "
+            f"{failure_mib:,.0f} MiB, where D3D12 failed 131,073 texture creates in one "
+            f"session. This level is {total_mib / VANILLA_MAX_RESIDENT_MIB:.1f}x the "
+            f"{VANILLA_MAX_RESIDENT_MIB:,} MiB of west_coast_usa, the biggest level BeamNG "
+            f"ships - see tools/level_budget.py for where the bytes are"
+        )
 
     # -- collisionType must match what the shape actually carries (A4 2.2) --------------------
     # `Collision Mesh` uses the shape's `Colmesh_` node; `Visible Mesh*` rasterises the rendered
@@ -259,15 +281,21 @@ def check(level_dir, bundle_dir, progress=None, settings=None):
             mismatched_expensive.append(obj["name"])
         elif not colmesh_cache[path] and kind == "Collision Mesh":
             mismatched_missing.append(obj["name"])
-    checks["collisionTypeMismatch"] = {"visibleMeshWithColmesh": len(mismatched_expensive),
-                                       "collisionMeshWithoutColmesh": len(mismatched_missing)}
+    checks["collisionTypeMismatch"] = {
+        "visibleMeshWithColmesh": len(mismatched_expensive),
+        "collisionMeshWithoutColmesh": len(mismatched_missing),
+    }
     if mismatched_expensive:
-        note(f"{len(mismatched_expensive):,} TSStatic(s) use a Visible Mesh collider although their shape "
-             f"carries a Colmesh_ node (e.g. {', '.join(mismatched_expensive[:3])}) - the expensive path, "
-             f"with the cheap one already in the file")
+        note(
+            f"{len(mismatched_expensive):,} TSStatic(s) use a Visible Mesh collider although their shape "
+            f"carries a Colmesh_ node (e.g. {', '.join(mismatched_expensive[:3])}) - the expensive path, "
+            f"with the cheap one already in the file"
+        )
     for bad in mismatched_missing[:10]:
-        problems.append(f"TSStatic {bad}: collisionType 'Collision Mesh' but the shape has no Colmesh_ node, "
-                        f"so it collides with nothing")
+        problems.append(
+            f"TSStatic {bad}: collisionType 'Collision Mesh' but the shape has no Colmesh_ node, "
+            f"so it collides with nothing"
+        )
     # material texture paths under art/
     art = os.path.join(level_dir, "art")
     material_files = 0
@@ -298,7 +326,7 @@ def check(level_dir, bundle_dir, progress=None, settings=None):
     # a shape, load #10) shadows the real one. We write materials under art/cs2/ and art/terrains/
     # only: a materials file under art/shapes/ is never ours.
     mapto = set()
-    defined_in = {}                                     # lower-case name -> [relative file, ...]
+    defined_in = {}  # lower-case name -> [relative file, ...]
     stray = []
     mixed_class_files = []
     shapes_root = os.path.join(art, "shapes")
@@ -308,7 +336,9 @@ def check(level_dir, bundle_dir, progress=None, settings=None):
                 if name.endswith(".materials.json"):
                     full = os.path.join(root, name)
                     rel = os.path.relpath(full, level_dir).replace("\\", "/")
-                    if os.path.commonpath([os.path.abspath(full), os.path.abspath(shapes_root)]) == os.path.abspath(shapes_root):
+                    if os.path.commonpath(
+                        [os.path.abspath(full), os.path.abspath(shapes_root)]
+                    ) == os.path.abspath(shapes_root):
                         stray.append(rel)
                     try:
                         with open(full, encoding="utf-8") as handle:
@@ -322,7 +352,9 @@ def check(level_dir, bundle_dir, progress=None, settings=None):
                     # for three loads; they were DEFINED, so this validator passed, and the cut
                     # meshes still drew as flat untextured grey. Defined is not the same as
                     # applied — that is the blind spot this check closes.
-                    classes = {str(m.get("class")) for m in (doc or {}).values() if isinstance(m, dict)}
+                    classes = {
+                        str(m.get("class")) for m in (doc or {}).values() if isinstance(m, dict)
+                    }
                     if "TerrainMaterial" in classes and "Material" in classes:
                         mixed_class_files.append(rel)
                     for key, mat in (doc or {}).items():
@@ -337,15 +369,21 @@ def check(level_dir, bundle_dir, progress=None, settings=None):
     checks["strayMaterialFiles"] = len(stray)
     checks["mixedClassMaterialFiles"] = len(mixed_class_files)
     for rel in mixed_class_files[:10]:
-        note(f"{rel}: plain 'Material' entries share a file with 'TerrainMaterial' entries - no vanilla "
-             "level does this (191 TerrainMaterial / 0 Material across the shipped levels); put the "
-             "plain materials in their own art/<dir>/main.materials.json")
+        note(
+            f"{rel}: plain 'Material' entries share a file with 'TerrainMaterial' entries - no vanilla "
+            "level does this (191 TerrainMaterial / 0 Material across the shipped levels); put the "
+            "plain materials in their own art/<dir>/main.materials.json"
+        )
     checks["duplicateMaterials"] = len(duplicates)
     for rel in stray[:10]:
-        note(f"{rel}: a materials file under art/shapes/ - BeamNG's compiler/importer auto-generated it "
-             "(opaque placeholders that shadow the level's materials); the cook stage removes these")
+        note(
+            f"{rel}: a materials file under art/shapes/ - BeamNG's compiler/importer auto-generated it "
+            "(opaque placeholders that shadow the level's materials); the cook stage removes these"
+        )
     for n, files in list(duplicates.items())[:10]:
-        note(f"material {n!r} is defined in {len(files)} files ({', '.join(files)}): one shadows the other")
+        note(
+            f"material {n!r} is defined in {len(files)} files ({', '.join(files)}): one shadows the other"
+        )
     unbound = {}
     mat_re = re.compile(r'<material id="[^"]*" name="([^"]+)"')
     for name, path in dae_files:
@@ -408,8 +446,10 @@ def check(level_dir, bundle_dir, progress=None, settings=None):
         if worst > dae_mod.MAX_GEOMETRY_VERTS:
             oversize += 1
             if oversize <= 5:
-                note(f"{name}: a geometry with {worst:,} vertices exceeds the {dae_mod.MAX_GEOMETRY_VERTS:,} cap "
-                     "(shards in-game: BeamNG's per-mesh index buffers wrap past 65,535)")
+                note(
+                    f"{name}: a geometry with {worst:,} vertices exceeds the {dae_mod.MAX_GEOMETRY_VERTS:,} cap "
+                    "(shards in-game: BeamNG's per-mesh index buffers wrap past 65,535)"
+                )
     checks["oversizeGeometries"] = oversize
     for sym, where in list(unbound.items())[:20]:
         note(f"material {sym!r} bound by {where} has no mapTo in any main.materials.json")
@@ -426,8 +466,13 @@ def check(level_dir, bundle_dir, progress=None, settings=None):
             try:
                 size, heights, layers, names = ter_mod.read_ter(path)
                 terrain = (size, heights, layers, names, block)
-                checks["ter"] = {"size": size, "materials": names, "holes": int((layers == ter_mod.HOLE).sum()),
-                                 "minStored": int(heights.min()), "maxStored": int(heights.max())}
+                checks["ter"] = {
+                    "size": size,
+                    "materials": names,
+                    "holes": int((layers == ter_mod.HOLE).sum()),
+                    "minStored": int(heights.min()),
+                    "maxStored": int(heights.max()),
+                }
                 bad = numpy.unique(layers[(layers != ter_mod.HOLE) & (layers >= len(names))])
                 if bad.size:
                     note(f".ter layer indices without a material: {bad.tolist()}")
@@ -470,45 +515,61 @@ def check(level_dir, bundle_dir, progress=None, settings=None):
                     continue
                 name = entry.get("objectname")
                 if name is None:
-                    continue          # levels.lua's own auto-inserted default carries none
+                    continue  # levels.lua's own auto-inserted default carries none
                 if name not in spawn_names:
-                    note(f"info.json spawnPoints objectname {name!r} is not a SpawnSphere - "
-                         f"the quick-travel point is dropped with a log line and nothing else")
+                    note(
+                        f"info.json spawnPoints objectname {name!r} is not a SpawnSphere - "
+                        f"the quick-travel point is dropped with a log line and nothing else"
+                    )
                 preview = entry.get("preview")
-                if preview and not os.path.isfile(os.path.join(level_dir, *str(preview).split("/"))):
-                    note(f"info.json spawnPoints preview {preview!r} does not exist - BeamNG "
-                         f"silently substitutes the level preview for it")
+                if preview and not os.path.isfile(
+                    os.path.join(level_dir, *str(preview).split("/"))
+                ):
+                    note(
+                        f"info.json spawnPoints preview {preview!r} does not exist - BeamNG "
+                        f"silently substitutes the level preview for it"
+                    )
             # the navgraph is what the minimap, the route line and the ground markers all read
             roads = by_class.get("DecalRoad", [])
             drivable = [r for r in roads if float(r.get("drivability") or 0) > 0]
-            checks["navgraph"] = {"decalRoads": len(roads), "drivable": len(drivable),
-                                  "nodes": sum(len(r.get("nodes") or ()) for r in drivable)}
+            checks["navgraph"] = {
+                "decalRoads": len(roads),
+                "drivable": len(drivable),
+                "nodes": sum(len(r.get("nodes") or ()) for r in drivable),
+            }
             if not drivable:
-                note("no DecalRoad with drivability > 0: `map.getMap()` will be EMPTY, so the "
-                     "minimap draws nothing, a waypoint produces no route and the ground-marker "
-                     "arrows never appear (audit A7.0). Build with `ai_roads true`")
+                note(
+                    "no DecalRoad with drivability > 0: `map.getMap()` will be EMPTY, so the "
+                    "minimap draws nothing, a waypoint produces no route and the ground-marker "
+                    "arrows never appear (audit A7.0). Build with `ai_roads true`"
+                )
             else:
                 # ...and having roads is not the same as having a graph map.lua can build. It
                 # crashes the LOAD on a configuration the builder must never emit (audit A7.5),
                 # so the level is asked the question here rather than the game.
                 rules = info.get("roadRules") if isinstance(info.get("roadRules"), dict) else {}
                 map_stats, risks = map_lua.check(
-                    drivable, right_hand_drive=bool(rules.get("rightHandDrive")))
+                    drivable, right_hand_drive=bool(rules.get("rightHandDrive"))
+                )
                 checks["navgraph"].update(map_stats)
                 if risks:
                     example = risks[0]
-                    note(f"{len(risks)} navgraph node{'s' if len(risks) != 1 else ''} take"
-                         f"{'' if len(risks) != 1 else 's'} map.lua's optimiser into its "
-                         f"unguarded lane compare (map.lua:459): the load dies with "
-                         f"'attempt to compare nil with string' and the level never opens. "
-                         f"First is {example['node']} between {example['between'][0]} and "
-                         f"{example['between'][1]} - road {example['road']}, chord "
-                         f"{example['chord']}")
+                    note(
+                        f"{len(risks)} navgraph node{'s' if len(risks) != 1 else ''} take"
+                        f"{'' if len(risks) != 1 else 's'} map.lua's optimiser into its "
+                        f"unguarded lane compare (map.lua:459): the load dies with "
+                        f"'attempt to compare nil with string' and the level never opens. "
+                        f"First is {example['node']} between {example['between'][0]} and "
+                        f"{example['between'][1]} - road {example['road']}, chord "
+                        f"{example['chord']}"
+                    )
                 elif map_stats["chords"]:
-                    note(f"{map_stats['chords']} navgraph nodes sit on a triangle (a degree-2 "
-                         f"node whose two neighbours are already linked). None of them ties "
-                         f"map.lua's ten edge fields today, so none crashes the load, but the "
-                         f"emitted graph is meant to be simple and this says it is not")
+                    note(
+                        f"{map_stats['chords']} navgraph nodes sit on a triangle (a degree-2 "
+                        f"node whose two neighbours are already linked). None of them ties "
+                        f"map.lua's ten edge fields today, so none crashes the load, but the "
+                        f"emitted graph is meant to be simple and this says it is not"
+                    )
     else:
         note("no info.json")
 
@@ -516,9 +577,14 @@ def check(level_dir, bundle_dir, progress=None, settings=None):
     if terrain is not None and bundle_dir:
         result = _ground_check(terrain, bundle_dir, progress)
         checks["groundCheck"] = result
-        if result.get("sampled", 0) >= GROUND_MIN_SAMPLES and result["fraction"] < GROUND_PASS_FRACTION:
-            note(f"terrain under OnGround buildings: only {result['fraction']:.1%} within {GROUND_TOLERANCE} m "
-                 f"(median |dz| {result['medianAbs']:.2f} m over {result['sampled']} buildings) - orientation/origin/scale?")
+        if (
+            result.get("sampled", 0) >= GROUND_MIN_SAMPLES
+            and result["fraction"] < GROUND_PASS_FRACTION
+        ):
+            note(
+                f"terrain under OnGround buildings: only {result['fraction']:.1%} within {GROUND_TOLERANCE} m "
+                f"(median |dz| {result['medianAbs']:.2f} m over {result['sampled']} buildings) - orientation/origin/scale?"
+            )
     return checks, problems
 
 
@@ -544,7 +610,7 @@ def _has_colmesh(path):
 def _budget_notes(by_class, item_data, dae_files, forest_items):
     """`[(name, value, limit_or_None), ...]` — the plan's per-object budgets against this level."""
     return [
-        ("forest items", forest_items, None),                 # unbounded in practice
+        ("forest items", forest_items, None),  # unbounded in practice
         ("forest types", len(item_data), 5000),
         ("TSStatics", len(by_class.get("TSStatic", [])), 25000),
         ("shape files", len(dae_files), 10000),
@@ -593,9 +659,9 @@ def _budget_notes(by_class, item_data, dae_files, forest_items):
 # everything else the renderer needs. Every MiB of card above that minimum is a MiB more content
 # it can hold; every pixel above the 1080p that budget is implicitly quoted at takes some back
 # for the deferred G-buffer and the post chain.
-VANILLA_MAX_RESIDENT_MIB = 1375        # west_coast_usa, measured 2026-08-18 (BeamNG 0.39)
-BEAMNG_DX12_MIN_VRAM_MIB = 5632        # the engine's own printed "5.50 GB minimum"
-REFERENCE_PIXELS = 1920 * 1080         # the resolution the vanilla anchor is quoted at
+VANILLA_MAX_RESIDENT_MIB = 1375  # west_coast_usa, measured 2026-08-18 (BeamNG 0.39)
+BEAMNG_DX12_MIN_VRAM_MIB = 5632  # the engine's own printed "5.50 GB minimum"
+REFERENCE_PIXELS = 1920 * 1080  # the resolution the vanilla anchor is quoted at
 
 # DECLARED APPROXIMATION — this one term is an estimate, not a measurement. BeamNG's deferred
 # targets are named in `lua/ge/client` (`deferred`, `matinfo`, `lightinfo`, `ssao`, velocity,
@@ -646,8 +712,10 @@ def resident_failure_mib(vram_mib=REFERENCE_VRAM_MIB, pixels=REFERENCE_PIXELS):
     """The measured failure point, moved to another card and resolution on the same terms."""
     delta_vram = float(vram_mib) - FAILURE_VRAM_MIB
     delta_mpixels = (float(pixels) - FAILURE_PIXELS) / 1.0e6
-    return max(resident_budget_mib(vram_mib, pixels) + 1.0,
-               FAILURE_RESIDENT_MIB + delta_vram - RENDER_TARGET_MIB_PER_MPIXEL * delta_mpixels)
+    return max(
+        resident_budget_mib(vram_mib, pixels) + 1.0,
+        FAILURE_RESIDENT_MIB + delta_vram - RENDER_TARGET_MIB_PER_MPIXEL * delta_mpixels,
+    )
 
 
 def _texture_reduction():
@@ -675,7 +743,9 @@ def _texture_reduction():
     newest = None
     for entry in os.listdir(base):
         path = os.path.join(base, entry, "settings", "game-settings.json")
-        if os.path.isfile(path) and (newest is None or os.path.getmtime(path) > os.path.getmtime(newest)):
+        if os.path.isfile(path) and (
+            newest is None or os.path.getmtime(path) > os.path.getmtime(newest)
+        ):
             newest = path
     if newest is None:
         return 0, "assumed Normal (no game-settings.json)"
@@ -687,8 +757,11 @@ def _texture_reduction():
     if not found:
         return 0, "assumed Normal (not set)"
     level = int(found.group(1))
-    return level, f"textureReductionLevel {level} " + {0: "(Normal+)", 1: "(Low)", 2: "(Lowest)"}.get(
-        level, "(custom)")
+    return level, f"textureReductionLevel {level} " + {
+        0: "(Normal+)",
+        1: "(Low)",
+        2: "(Lowest)",
+    }.get(level, "(custom)")
 
 
 def _shape_present(path):
@@ -733,7 +806,9 @@ def _light_manager():
     newest = None
     for entry in os.listdir(base):
         path = os.path.join(base, entry, "settings", "game-settings.json")
-        if os.path.isfile(path) and (newest is None or os.path.getmtime(path) > os.path.getmtime(newest)):
+        if os.path.isfile(path) and (
+            newest is None or os.path.getmtime(path) > os.path.getmtime(newest)
+        ):
             newest = path
     if newest is None:
         return None, "no game-settings.json"
@@ -862,7 +937,7 @@ def _resident_bytes(level_dir):
             if ext == ".dae":
                 shapes += 1
                 if stem + ".cdae" not in names:
-                    meshes += size            # uncooked: the XML is what gets parsed and kept
+                    meshes += size  # uncooked: the XML is what gets parsed and kept
             elif ext == ".cdae":
                 cooked += 1
                 meshes += size
@@ -872,7 +947,7 @@ def _resident_bytes(level_dir):
 
 
 def _ground_check(terrain, bundle_dir, progress):
-    size, heights, _layers, _names, block = terrain
+    _size, heights, _layers, _names, block = terrain
     position = [float(v) for v in block["position"]]
     square = float(block.get("squareSize", 1.0))
     max_height = float(block["maxHeight"])
@@ -890,11 +965,13 @@ def _ground_check(terrain, bundle_dir, progress):
             continue
         ground = instances_mod.ground_level(record)
         if ground is None:
-            if flags:                                  # off the ground for a stated reason, no elevation given: skip
+            if flags:  # off the ground for a stated reason, no elevation given: skip
                 continue
-            ground = float(record["pos"][1])           # §4.2: no elevation = sitting flat on the ground at pos
+            ground = float(
+                record["pos"][1]
+            )  # §4.2: no elevation = sitting flat on the ground at pos
         seen += 1
-        if seen > 200 and seen % 7 != 0:               # past the first 200: every 7th, spread over the file
+        if seen > 200 and seen % 7 != 0:  # past the first 200: every 7th, spread over the file
             continue
         x, _y, z = record["pos"]
         h = ter_mod.sample_height(heights, max_height, position, square, float(x), float(z))
@@ -906,14 +983,19 @@ def _ground_check(terrain, bundle_dir, progress):
     if not dz:
         return {"sampled": 0}
     arr = numpy.abs(numpy.asarray(dz))
-    return {"sampled": int(arr.size), "fraction": float((arr <= GROUND_TOLERANCE).mean()),
-            "medianAbs": float(numpy.median(arr)), "p95Abs": float(numpy.percentile(arr, 95)),
-            "meanSigned": float(numpy.mean(dz))}
+    return {
+        "sampled": int(arr.size),
+        "fraction": float((arr <= GROUND_TOLERANCE).mean()),
+        "medianAbs": float(numpy.median(arr)),
+        "p95Abs": float(numpy.percentile(arr, 95)),
+        "meanSigned": float(numpy.mean(dz)),
+    }
 
 
 # -- public wrappers, for `cs2beamng doctor` and the UI's "target machine" line ----------------
 # Same readers the validator uses, so what the app SAYS about this machine and what it BUDGETS
 # for it can never drift apart.
+
 
 def render_target(settings=None):
     """`(vram_mib, pixels, source)` for this machine - settings first, then the BeamNG logs."""

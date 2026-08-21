@@ -23,6 +23,7 @@ The plan's warning is tested too: a per-square ALTERNATING split (checkerboard o
 1`) is a real possibility in Torque-derived terrain, and a probe that only tries two uniform
 hypotheses would "confirm" whichever one happened to fit the squares it hit.
 """
+
 import json
 import sys
 import zipfile
@@ -30,7 +31,7 @@ import zipfile
 import numpy as np
 
 sys.path.insert(0, __file__.rsplit("probe_diagonal.py", 1)[0])
-from probe_ter import read_ter                                          # noqa: E402
+from probe_ter import read_ter
 
 # this probe's split name -> the name `csiibundle.drape.HeightfieldSurface` gives the SAME split
 BAKE_NAME = {"sw_ne": "ne_sw", "nw_se": "nw_se"}
@@ -47,7 +48,7 @@ EDGE_MARGIN = 0.15
 def _corners(hm, ri, ci, size):
     r1 = np.minimum(ri + 1, size - 1)
     c1 = np.minimum(ci + 1, size - 1)
-    return hm[ri, ci], hm[ri, c1], hm[r1, ci], hm[r1, c1]      # h00, h01, h10, h11
+    return hm[ri, ci], hm[ri, c1], hm[r1, ci], hm[r1, c1]  # h00, h01, h10, h11
 
 
 def _height(kind, h00, h01, h10, h11, u, v):
@@ -65,18 +66,19 @@ def _height(kind, h00, h01, h10, h11, u, v):
     Both names below are world-compass, so `bake_diagonal()` translates without ambiguity.
     """
     if kind == "bilinear":
-        return (h00 * (1 - u) * (1 - v) + h01 * u * (1 - v)
-                + h10 * (1 - u) * v + h11 * u * v)
-    if kind == "sw_ne":                       # joins h00 (SW) to h11 (NE)
+        return h00 * (1 - u) * (1 - v) + h01 * u * (1 - v) + h10 * (1 - u) * v + h11 * u * v
+    if kind == "sw_ne":  # joins h00 (SW) to h11 (NE)
         lower = v <= u
-        return np.where(lower,
-                        h00 + u * (h01 - h00) + v * (h11 - h01),
-                        h00 + v * (h10 - h00) + u * (h11 - h10))
-    if kind == "nw_se":                       # joins h10 (NW) to h01 (SE)
+        return np.where(
+            lower, h00 + u * (h01 - h00) + v * (h11 - h01), h00 + v * (h10 - h00) + u * (h11 - h10)
+        )
+    if kind == "nw_se":  # joins h10 (NW) to h01 (SE)
         lower = (u + v) <= 1.0
-        return np.where(lower,
-                        h00 + u * (h01 - h00) + v * (h10 - h00),
-                        h11 + (1 - u) * (h10 - h11) + (1 - v) * (h01 - h11))
+        return np.where(
+            lower,
+            h00 + u * (h01 - h00) + v * (h10 - h00),
+            h11 + (1 - u) * (h10 - h11) + (1 - v) * (h01 - h11),
+        )
     raise ValueError(kind)
 
 
@@ -110,8 +112,10 @@ def main(argv):
     sq = float(block.get("squareSize") or 1.0)
     hm = heights.astype(np.float64) * (float(block.get("maxHeight", 2048)) / 65536.0) + pos[2]
     nodes = np.asarray(nodes, dtype=np.float64)
-    print(f"{zip_path.rsplit(chr(92), 1)[-1]}: {ter_name} size={size} squareSize={sq} "
-          f"{len(nodes):,} DecalRoad nodes")
+    print(
+        f"{zip_path.rsplit(chr(92), 1)[-1]}: {ter_name} size={size} squareSize={sq} "
+        f"{len(nodes):,} DecalRoad nodes"
+    )
 
     # `probe_ter.py`'s settled orientation: rows from y, no flips
     r = (nodes[:, 1] - pos[1]) / sq
@@ -123,12 +127,19 @@ def main(argv):
 
     h00, h01, h10, h11 = _corners(hm, ri, ci, size)
     twist = np.abs(h00 + h11 - h01 - h10)
-    interior = ((u > EDGE_MARGIN) & (u < 1 - EDGE_MARGIN)
-                & (v > EDGE_MARGIN) & (v < 1 - EDGE_MARGIN)
-                & (np.abs(u - v) > EDGE_MARGIN) & (np.abs(u + v - 1) > EDGE_MARGIN))
+    interior = (
+        (u > EDGE_MARGIN)
+        & (u < 1 - EDGE_MARGIN)
+        & (v > EDGE_MARGIN)
+        & (v < 1 - EDGE_MARGIN)
+        & (np.abs(u - v) > EDGE_MARGIN)
+        & (np.abs(u + v - 1) > EDGE_MARGIN)
+    )
     keep = (twist >= MIN_TWIST) & interior
-    print(f"  inside the grid: {len(r):,}   twisted (>= {MIN_TWIST} m) AND clear of both "
-          f"diagonals: {int(keep.sum()):,}")
+    print(
+        f"  inside the grid: {len(r):,}   twisted (>= {MIN_TWIST} m) AND clear of both "
+        f"diagonals: {int(keep.sum()):,}"
+    )
     if int(keep.sum()) < 50:
         print("  NOT ENOUGH DISCRIMINATING SAMPLES — this level cannot answer it")
         return 2
@@ -139,30 +150,40 @@ def main(argv):
     for kind in ("bilinear", "sw_ne", "nw_se"):
         err = np.abs(_height(kind, h00[k], h01[k], h10[k], h11[k], u[k], v[k]) - z_node[k])
         results[kind] = float(np.median(err))
-        print(f"  {kind:<26}{np.median(err):>12.4f}{np.percentile(err, 90):>10.4f}"
-              f"{np.percentile(err, 99):>10.4f}")
+        print(
+            f"  {kind:<26}{np.median(err):>12.4f}{np.percentile(err, 90):>10.4f}"
+            f"{np.percentile(err, 99):>10.4f}"
+        )
     # the envelope the bake currently uses, and the alternating split the plan warns about
     a = _height("sw_ne", h00[k], h01[k], h10[k], h11[k], u[k], v[k])
     b = _height("nw_se", h00[k], h01[k], h10[k], h11[k], u[k], v[k])
-    for label, value in (("envelope max (the bake)", np.maximum(a, b)),
-                         ("envelope min", np.minimum(a, b))):
+    for label, value in (
+        ("envelope max (the bake)", np.maximum(a, b)),
+        ("envelope min", np.minimum(a, b)),
+    ):
         err = np.abs(value - z_node[k])
         results[label] = float(np.median(err))
-        print(f"  {label:<26}{np.median(err):>12.4f}{np.percentile(err, 90):>10.4f}"
-              f"{np.percentile(err, 99):>10.4f}")
+        print(
+            f"  {label:<26}{np.median(err):>12.4f}{np.percentile(err, 90):>10.4f}"
+            f"{np.percentile(err, 99):>10.4f}"
+        )
     alt = np.where(((ri[k] + ci[k]) & 1) == 0, a, b)
     err = np.abs(alt - z_node[k])
     results["alternating (checkerboard)"] = float(np.median(err))
-    print(f"  {'alternating (checkerboard)':<26}{np.median(err):>12.4f}"
-          f"{np.percentile(err, 90):>10.4f}{np.percentile(err, 99):>10.4f}")
+    print(
+        f"  {'alternating (checkerboard)':<26}{np.median(err):>12.4f}"
+        f"{np.percentile(err, 90):>10.4f}{np.percentile(err, 99):>10.4f}"
+    )
 
     winner = min(results, key=results.get)
     runner = sorted(results.values())[1]
     print(f"\n  winner: {winner} (median {results[winner]:.4f} m); next best {runner:.4f} m")
     if winner in BAKE_NAME:
-        print(f"  -> pass `--diagonal {BAKE_NAME[winner]}` to the bake. THE COMPASS NAME FLIPS: "
-              f"this probe's row 0 is SOUTH, the bake's is NORTH, so the same split has the "
-              f"other two-corner name there.")
+        print(
+            f"  -> pass `--diagonal {BAKE_NAME[winner]}` to the bake. THE COMPASS NAME FLIPS: "
+            f"this probe's row 0 is SOUTH, the bake's is NORTH, so the same split has the "
+            f"other two-corner name there."
+        )
     if results[winner] > 0.5 * runner:
         print("  INCONCLUSIVE — the winner is not clearly better than the next hypothesis")
     return 0

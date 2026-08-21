@@ -68,7 +68,6 @@ import numpy
 
 from . import bezier, reader, terrainclip
 
-
 # Quads spanning fewer rows than this take the scalar scanline: below it the whole-array
 # path's fixed cost (arange / sort / nonzero / clip) outweighs the per-row arithmetic it saves.
 # Measured on the full city, where 471k quad fills split roughly two to one short-to-tall.
@@ -133,8 +132,9 @@ def lane_ramp(quad, lane_y):
     return mean, (y_left, y_right - y_left, lx, lz, ax, az, 1.0 / len2)
 
 
-def clip_span(mask, terrain_y, row, lo, hi, lane_y, ramp, bottom, top,
-               refs, ref_value, ceiling, offset):
+def clip_span(
+    mask, terrain_y, row, lo, hi, lane_y, ramp, bottom, top, refs, ref_value, ceiling, offset
+):
     """Mark one scanline span of a clip quad, and record what the span was marked against.
 
     The body both scanline paths share, so the two cannot drift apart on it —
@@ -155,23 +155,38 @@ def clip_span(mask, terrain_y, row, lo, hi, lane_y, ramp, bottom, top,
         s = numpy.clip(((px - lx) * ax + (row + offset - lz) * az) * inv_len2, 0.0, 1.0)
         lane = y_left + dy * s
 
-    over = terrain_y[row, lo:hi + 1] - lane
+    over = terrain_y[row, lo : hi + 1] - lane
     inside = (over > bottom) & (over < top)
-    mask[row, lo:hi + 1] |= inside
+    mask[row, lo : hi + 1] |= inside
     if refs is not None and ref_value >= 0:
-        span = refs[row, lo:hi + 1]
+        span = refs[row, lo : hi + 1]
         span[inside] = ref_value
     if ceiling is not None:
-        span = ceiling[row, lo:hi + 1]
+        span = ceiling[row, lo : hi + 1]
         # Lowest ceiling wins where strips overlap, so a cell claimed by two roads ends up under
         # both of them rather than under whichever was rasterised last. `casting="unsafe"` is
         # only the float64 lane arithmetic landing in the float32 raster, which is deliberate.
-        numpy.minimum(span, lane + (top - CLIP_BAND_EXPANSION), out=span, where=inside,
-                      casting="unsafe")
+        numpy.minimum(
+            span, lane + (top - CLIP_BAND_EXPANSION), out=span, where=inside, casting="unsafe"
+        )
 
 
-def fill_clip_quad_rows(mask, terrain_y, width, height, quad, lane_y, bottom, top,
-                         refs, ref_value, offset, row_lo, row_hi, ceiling=None):
+def fill_clip_quad_rows(
+    mask,
+    terrain_y,
+    width,
+    height,
+    quad,
+    lane_y,
+    bottom,
+    top,
+    refs,
+    ref_value,
+    offset,
+    row_lo,
+    row_hi,
+    ceiling=None,
+):
     """The even-odd scanline, one row at a time — the reference path `fill_clip_quad` splits
     from. Kept whole rather than folded into a branch so the two can be fuzzed against each
     other; see `tools/test_clip_cut.py`."""
@@ -194,12 +209,37 @@ def fill_clip_quad_rows(mask, terrain_y, width, height, quad, lane_y, bottom, to
             hi = min(width - 1, int(math.floor(crossings[pair + 1] - offset)))
             if hi < lo:
                 continue
-            clip_span(mask, terrain_y, row, lo, hi, lane_y, ramp, bottom, top,
-                       refs, ref_value, ceiling, offset)
+            clip_span(
+                mask,
+                terrain_y,
+                row,
+                lo,
+                hi,
+                lane_y,
+                ramp,
+                bottom,
+                top,
+                refs,
+                ref_value,
+                ceiling,
+                offset,
+            )
 
 
-def fill_clip_quad(mask, terrain_y, width, height, quad, lane_y, bottom, top,
-                    refs=None, ref_value=-1, offset=0.5, ceiling=None):
+def fill_clip_quad(
+    mask,
+    terrain_y,
+    width,
+    height,
+    quad,
+    lane_y,
+    bottom,
+    top,
+    refs=None,
+    ref_value=-1,
+    offset=0.5,
+    ceiling=None,
+):
     """Mark the samples one strip quad clips — even-odd scanline over sample points.
 
     `quad` is four (x, y) points in cell space, where cell (row, col) spans [col, col+1) ×
@@ -229,8 +269,22 @@ def fill_clip_quad(mask, terrain_y, width, height, quad, lane_y, bottom, top,
     if row_hi < row_lo:
         return
     if row_hi - row_lo < CLIP_SCANLINE_VECTOR_ROWS:
-        fill_clip_quad_rows(mask, terrain_y, width, height, quad, lane_y, bottom, top,
-                             refs, ref_value, offset, row_lo, row_hi, ceiling)
+        fill_clip_quad_rows(
+            mask,
+            terrain_y,
+            width,
+            height,
+            quad,
+            lane_y,
+            bottom,
+            top,
+            refs,
+            ref_value,
+            offset,
+            row_lo,
+            row_hi,
+            ceiling,
+        )
         return
     lane_y, ramp = lane_ramp(quad, lane_y)
 
@@ -252,10 +306,10 @@ def fill_clip_quad(mask, terrain_y, width, height, quad, lane_y, bottom, top,
         yh = y[hit]
         crossings[e, hit] = px + (yh - py) / (qy - py) * (qx - px)
 
-    ordered = numpy.sort(crossings, axis=0)          # inf pads sort to the end
+    ordered = numpy.sort(crossings, axis=0)  # inf pads sort to the end
     count = numpy.isfinite(ordered).sum(axis=0)
 
-    for pair in (0, 2):                              # a quad crosses in 2 or 4 places
+    for pair in (0, 2):  # a quad crosses in 2 or 4 places
         live = numpy.nonzero(count >= pair + 2)[0]
         if not len(live):
             break
@@ -272,8 +326,21 @@ def fill_clip_quad(mask, terrain_y, width, height, quad, lane_y, bottom, top,
         for k in numpy.nonzero(his >= los)[0]:
             row = int(rows[live[k]])
             lo, hi = int(los[k]), int(his[k])
-            clip_span(mask, terrain_y, row, lo, hi, lane_y, ramp, bottom, top,
-                       refs, ref_value, ceiling, offset)
+            clip_span(
+                mask,
+                terrain_y,
+                row,
+                lo,
+                hi,
+                lane_y,
+                ramp,
+                bottom,
+                top,
+                refs,
+                ref_value,
+                ceiling,
+                offset,
+            )
 
 
 def face_footprint_reduce(native, row0, col0, nfr, nfc, stride):
@@ -287,13 +354,13 @@ def face_footprint_reduce(native, row0, col0, nfr, nfc, stride):
     Done as `(stride + 1)²` strided views rather than one fancy-indexed gather: stride is 4 on
     the largest map, so this is 25 cheap whole-array ops instead of a 26M-element index array.
     """
-    base = native[row0:row0 + nfr * stride + 1, col0:col0 + nfc * stride + 1]
+    base = native[row0 : row0 + nfr * stride + 1, col0 : col0 + nfc * stride + 1]
     any_ = numpy.zeros((nfr, nfc), dtype=bool)
     all_ = numpy.ones((nfr, nfc), dtype=bool)
     for i in range(stride + 1):
         for j in range(stride + 1):
             sub = base[i::stride, j::stride][:nfr, :nfc]
-            if sub.shape != (nfr, nfc):          # a partial last block: leave it to `any`
+            if sub.shape != (nfr, nfc):  # a partial last block: leave it to `any`
                 continue
             any_ |= sub
             all_ &= sub
@@ -362,10 +429,10 @@ def transition_fans(block_refined, block_transition, stride, lattice_w):
         north = 0 <= bR - 1 and block_refined[bR - 1, bC]
 
         perimeter = (
-            edge_points(west, [(r0 + k, c0) for k in range(stride)]) +
-            edge_points(south, [(r0 + stride, c0 + k) for k in range(stride)]) +
-            edge_points(east, [(r0 + stride - k, c0 + stride) for k in range(stride)]) +
-            edge_points(north, [(r0, c0 + stride - k) for k in range(stride)])
+            edge_points(west, [(r0 + k, c0) for k in range(stride)])
+            + edge_points(south, [(r0 + stride, c0 + k) for k in range(stride)])
+            + edge_points(east, [(r0 + stride - k, c0 + stride) for k in range(stride)])
+            + edge_points(north, [(r0, c0 + stride - k) for k in range(stride)])
         )
         centre = (r0 + half) * lattice_w + (c0 + half)
         count = len(perimeter)
@@ -375,8 +442,7 @@ def transition_fans(block_refined, block_transition, stride, lattice_w):
             loops.extend((centre, pr * lattice_w + pc, qr * lattice_w + qc))
             block_ids.append(bR * nfc + bC)
 
-    return (numpy.asarray(loops, dtype=numpy.int64),
-            numpy.asarray(block_ids, dtype=numpy.int64))
+    return (numpy.asarray(loops, dtype=numpy.int64), numpy.asarray(block_ids, dtype=numpy.int64))
 
 
 CLIP_REF_STATION_BITS = 11  # stations per strip cap at 1024 (< 2^11)
@@ -413,6 +479,8 @@ def contain_samples(cell):
     """Sub-samples per cell per axis for a heightfield of `cell` metres — `CLIP_CONTAIN_SAMPLES`
     at 3.5 m, scaled to keep the sub-sample spacing, never below 2."""
     return max(2, int(round(float(cell) / CLIP_CONTAIN_SAMPLE_M)))
+
+
 CLIP_CONTAIN_BLOCK = 128
 
 # A band this tall is a trench or a tunnel portal (`ElevationLimit * 3` — 12.3 m for roads,
@@ -498,20 +566,27 @@ def contain_faces(width, height, terrain_y, cell_cut, quad_source, samples, bloc
             # the test reads the same surface the eye sees.
             gc = numpy.clip(c0 + (numpy.arange(sw) + 0.5) / samples, 0, width - 1.001)
             gr = numpy.clip(r0 + (numpy.arange(sh) + 0.5) / samples, 0, height - 1.001)
-            ci = gc.astype(numpy.int64); fu = gc - ci
-            ri = gr.astype(numpy.int64); fv = gr - ri
-            top_row = (terrain_y[numpy.ix_(ri, ci)] * (1.0 - fu)[None, :]
-                       + terrain_y[numpy.ix_(ri, ci + 1)] * fu[None, :])
-            bot_row = (terrain_y[numpy.ix_(ri + 1, ci)] * (1.0 - fu)[None, :]
-                       + terrain_y[numpy.ix_(ri + 1, ci + 1)] * fu[None, :])
+            ci = gc.astype(numpy.int64)
+            fu = gc - ci
+            ri = gr.astype(numpy.int64)
+            fv = gr - ri
+            top_row = (
+                terrain_y[numpy.ix_(ri, ci)] * (1.0 - fu)[None, :]
+                + terrain_y[numpy.ix_(ri, ci + 1)] * fu[None, :]
+            )
+            bot_row = (
+                terrain_y[numpy.ix_(ri + 1, ci)] * (1.0 - fu)[None, :]
+                + terrain_y[numpy.ix_(ri + 1, ci + 1)] * fu[None, :]
+            )
             fine_y = top_row * (1.0 - fv)[:, None] + bot_row * fv[:, None]
 
             band = numpy.zeros((sh, sw), dtype=bool)
             deep = numpy.zeros((sh, sw), dtype=bool)
             origin = (c0 + 0.5, r0 + 0.5)
             for quad, lane_y, bottom, top in quad_source(r0, c0, r1, c1):
-                local = [((px - origin[0]) * samples, (py - origin[1]) * samples)
-                         for px, py in quad]
+                local = [
+                    ((px - origin[0]) * samples, (py - origin[1]) * samples) for px, py in quad
+                ]
                 fill_clip_quad(band, fine_y, sw, sh, local, lane_y, bottom, top)
                 if top > CLIP_DEEP_BAND_TOP:
                     fill_clip_quad(deep, fine_y, sw, sh, local, lane_y, bottom, top)
@@ -526,8 +601,18 @@ def contain_faces(width, height, terrain_y, cell_cut, quad_source, samples, bloc
     return contain, band_count, deep_touch
 
 
-def clip_grid(bundle_dir, width, height, heights, cell, origin_x, origin_z,
-               elevation_scale, elevation_offset, floor_override=None):
+def clip_grid(
+    bundle_dir,
+    width,
+    height,
+    heights,
+    cell,
+    origin_x,
+    origin_z,
+    elevation_scale,
+    elevation_offset,
+    floor_override=None,
+):
     """Rasterise `clipvolumes.jsonl` onto the heightmap grid — contract §8c.
 
     The volumes are what the producer intersects against the heightmap; a consumer meshing at
@@ -561,21 +646,28 @@ def clip_grid(bundle_dir, width, height, heights, cell, origin_x, origin_z,
     if not os.path.isfile(path):
         raise RuntimeError(
             "CONTRACT VIOLATION: terrain layer present but no clipvolumes.jsonl — "
-            "the producer always writes the §8c clip layer; re-rip the bundle")
+            "the producer always writes the §8c clip layer; re-rip the bundle"
+        )
 
-    strips = [record for record in reader.read_jsonl(path)]
+    strips = list(reader.read_jsonl(path))
     refs = numpy.full((height, width), -1, dtype=numpy.int32)
     strip_geo = []
     area_geo = []
     if not strips:
-        return (numpy.zeros((height, width), dtype=bool),
-                numpy.zeros((height - 1, width - 1), dtype=bool),
-                numpy.zeros((height - 1, width - 1), dtype=numpy.uint8),
-                numpy.zeros((height - 1, width - 1), dtype=bool), refs, strip_geo,
-                numpy.full((height, width), numpy.inf, dtype=numpy.float32))
+        return (
+            numpy.zeros((height, width), dtype=bool),
+            numpy.zeros((height - 1, width - 1), dtype=bool),
+            numpy.zeros((height - 1, width - 1), dtype=numpy.uint8),
+            numpy.zeros((height - 1, width - 1), dtype=bool),
+            refs,
+            strip_geo,
+            numpy.full((height, width), numpy.inf, dtype=numpy.float32),
+        )
 
-    terrain_y = (numpy.asarray(heights, dtype=numpy.float64).reshape(height, width)
-                 * elevation_scale + elevation_offset)
+    terrain_y = (
+        numpy.asarray(heights, dtype=numpy.float64).reshape(height, width) * elevation_scale
+        + elevation_offset
+    )
     mask = numpy.zeros((height, width), dtype=bool)
 
     # The top of the game's own carriageway cross-section under a SHALLOW band, per cell —
@@ -587,14 +679,26 @@ def clip_grid(bundle_dir, width, height, heights, cell, origin_x, origin_z,
     band_ceiling = numpy.full((height, width), numpy.inf, dtype=numpy.float32)
 
     def fill(quad, lane_y, bottom, top, ref_value=-1, ceiling=None):
-        fill_clip_quad(mask, terrain_y, width, height, quad, lane_y, bottom, top,
-                        refs=(refs if ref_value >= 0 else None), ref_value=ref_value,
-                        ceiling=ceiling)
+        fill_clip_quad(
+            mask,
+            terrain_y,
+            width,
+            height,
+            quad,
+            lane_y,
+            bottom,
+            top,
+            refs=(refs if ref_value >= 0 else None),
+            ref_value=ref_value,
+            ceiling=ceiling,
+        )
 
     def to_cell(points):
         """World positions to cell space, cell (row, col) centred on (col + .5, row + .5)."""
-        return numpy.stack(((points[:, 0] - origin_x) / cell + 0.5,
-                            (origin_z - points[:, 2]) / cell + 0.5), axis=-1)
+        return numpy.stack(
+            ((points[:, 0] - origin_x) / cell + 0.5, (origin_z - points[:, 2]) / cell + 0.5),
+            axis=-1,
+        )
 
     unbounded = float("inf")
     for strip in strips:
@@ -614,8 +718,12 @@ def clip_grid(bundle_dir, width, height, heights, cell, origin_x, origin_z,
                 # A triangle reaches the scanline as a quad with one doubled corner, and its
                 # lane reference is the corner mean — both as the producer has them. No ref:
                 # an area cut has no boundary curves for the snap to project onto.
-                fill([tuple(cells[0]), tuple(cells[1]), tuple(cells[2]), tuple(cells[2])],
-                     float(pts[:, 1].mean()), bottom, top)
+                fill(
+                    [tuple(cells[0]), tuple(cells[1]), tuple(cells[2]), tuple(cells[2])],
+                    float(pts[:, 1].mean()),
+                    bottom,
+                    top,
+                )
                 area_geo.append((cells, float(pts[:, 1].mean()), bottom, top))
             continue
 
@@ -643,29 +751,53 @@ def clip_grid(bundle_dir, width, height, heights, cell, origin_x, origin_z,
         for i in range(1, steps + 1):
             # The band's two sides, not their mean: see `lane_ramp`. A deep band writes no
             # ceiling — it is carved, and a carved cell has no ground left to clamp.
-            fill([tuple(left_cells[i - 1]), tuple(right_cells[i - 1]),
-                  tuple(right_cells[i]), tuple(left_cells[i])],
-                 (float((left_y[i - 1] + left_y[i]) * 0.5),
-                  float((right_y[i - 1] + right_y[i]) * 0.5)), bottom, top,
-                 ref_value=(strip_index << CLIP_REF_STATION_BITS) | i,
-                 ceiling=(None if carves else band_ceiling))
+            fill(
+                [
+                    tuple(left_cells[i - 1]),
+                    tuple(right_cells[i - 1]),
+                    tuple(right_cells[i]),
+                    tuple(left_cells[i]),
+                ],
+                (
+                    float((left_y[i - 1] + left_y[i]) * 0.5),
+                    float((right_y[i - 1] + right_y[i]) * 0.5),
+                ),
+                bottom,
+                top,
+                ref_value=(strip_index << CLIP_REF_STATION_BITS) | i,
+                ceiling=(None if carves else band_ceiling),
+            )
 
     # -- the deletion mask ----------------------------------------------------------------
     # Each strip in cell space with PER-STATION bounds, so a face block replays only the
     # stations that reach it. Without the per-station filter a long strip binned to a block
     # re-scans all of its quads there, and the containment pass costs ~3x what it needs to.
     strip_cells = []
-    for left_pts, right_pts, lane, bottom, top, carves in strip_geo:
+    for left_pts, right_pts, _lane, bottom, top, carves in strip_geo:
         lc, rc = to_cell(left_pts), to_cell(right_pts)
         quad_r = numpy.stack((lc[:-1, 1], rc[:-1, 1], lc[1:, 1], rc[1:, 1]), axis=-1)
         quad_c = numpy.stack((lc[:-1, 0], rc[:-1, 0], lc[1:, 0], rc[1:, 0]), axis=-1)
-        strip_cells.append((lc, rc, (left_pts[:, 1], right_pts[:, 1]), bottom, top,
-                            quad_r.min(axis=1), quad_r.max(axis=1),
-                            quad_c.min(axis=1), quad_c.max(axis=1), carves))
-    boxes = [(rmin.min(), cmin.min(), rmax.max(), cmax.max())
-             for _, _, _, _, _, rmin, rmax, cmin, cmax, _ in strip_cells]
-    boxes += [(c[:, 1].min(), c[:, 0].min(), c[:, 1].max(), c[:, 0].max())
-              for c, _, _, _ in area_geo]
+        strip_cells.append(
+            (
+                lc,
+                rc,
+                (left_pts[:, 1], right_pts[:, 1]),
+                bottom,
+                top,
+                quad_r.min(axis=1),
+                quad_r.max(axis=1),
+                quad_c.min(axis=1),
+                quad_c.max(axis=1),
+                carves,
+            )
+        )
+    boxes = [
+        (rmin.min(), cmin.min(), rmax.max(), cmax.max())
+        for _, _, _, _, _, rmin, rmax, cmin, cmax, _ in strip_cells
+    ]
+    boxes += [
+        (c[:, 1].min(), c[:, 0].min(), c[:, 1].max(), c[:, 0].max()) for c, _, _, _ in area_geo
+    ]
 
     # Bin each strip into the face blocks it reaches, once. Face (r, c) spans cell space
     # [c + 0.5, c + 1.5] x [r + 0.5, r + 1.5], so block (br, bc) covers cell space
@@ -690,23 +822,36 @@ def clip_grid(bundle_dir, width, height, heights, cell, origin_x, origin_z,
         """Every station quad whose strip reaches this face block, in native cell space."""
         for index in bins.get((r0 // block, c0 // block), ()):
             if index < len(strip_cells):
-                lc, rc, (left_y, right_y), low, high, rmin, rmax, cmin, cmax, _ = \
-                    strip_cells[index]
-                live = numpy.nonzero((rmax >= r0 - 0.5) & (rmin <= r1 + 1.5)
-                                     & (cmax >= c0 - 0.5) & (cmin <= c1 + 1.5))[0]
+                lc, rc, (left_y, right_y), low, high, rmin, rmax, cmin, cmax, _ = strip_cells[index]
+                live = numpy.nonzero(
+                    (rmax >= r0 - 0.5)
+                    & (rmin <= r1 + 1.5)
+                    & (cmax >= c0 - 0.5)
+                    & (cmin <= c1 + 1.5)
+                )[0]
                 for station in live:
                     i = int(station) + 1
-                    yield ([tuple(lc[i - 1]), tuple(rc[i - 1]), tuple(rc[i]), tuple(lc[i])],
-                           (float((left_y[i - 1] + left_y[i]) * 0.5),
-                            float((right_y[i - 1] + right_y[i]) * 0.5)), low, high)
+                    yield (
+                        [tuple(lc[i - 1]), tuple(rc[i - 1]), tuple(rc[i]), tuple(lc[i])],
+                        (
+                            float((left_y[i - 1] + left_y[i]) * 0.5),
+                            float((right_y[i - 1] + right_y[i]) * 0.5),
+                        ),
+                        low,
+                        high,
+                    )
             else:
                 cells, lane_y, low, high = area_geo[index - len(strip_cells)]
-                yield ([tuple(cells[0]), tuple(cells[1]), tuple(cells[2]), tuple(cells[2])],
-                       lane_y, low, high)
+                yield (
+                    [tuple(cells[0]), tuple(cells[1]), tuple(cells[2]), tuple(cells[2])],
+                    lane_y,
+                    low,
+                    high,
+                )
 
     contain, band_count, deep_touch = contain_faces(
-        width, height, terrain_y, mask, quad_source, contain_samples(cell),
-        CLIP_CONTAIN_BLOCK)
+        width, height, terrain_y, mask, quad_source, contain_samples(cell), CLIP_CONTAIN_BLOCK
+    )
     return mask, contain, band_count, deep_touch, refs, strip_geo, band_ceiling
 
 
@@ -744,7 +889,7 @@ def clamp_carriageway(ground_y, band_ceiling_w):
 
     Mutates `ground_y` in place. Returns `(vertices lowered, largest drop in metres)`.
     """
-    drop = ground_y - band_ceiling_w     # +inf ceiling (no shallow band) never selects
+    drop = ground_y - band_ceiling_w  # +inf ceiling (no shallow band) never selects
     hit = drop > 0.0
     if not hit.any():
         return 0, 0.0
@@ -813,21 +958,43 @@ def ground_tiling(block, ground):
 # parent's for a sub-cut patch, `-1` for a coarse block or a transition fan. A consumer that
 # keeps part of the heightmap as its own grid (bake `terraincut`) needs the identity, because
 # a face's centre is no longer inside its cell once the snap has moved a corner.
-LatticeMesh = namedtuple("LatticeMesh", (
-    "lat_h lat_w nfr nfc "
-    "verts loops sizes face_class face_cell "
-    "native_y ground_y wet has_level level_value roadbed cut contain band_count "
-    "block_refined coarse_loops cbr cbc cell_rr cell_cc refined_loops_all fan_loops "
-    "fan_faces refined_faces cut_faces roadbed_faces rock_faces "
-    "cut_parents cut_pieces cut_removed_m2 cut_slivers "
-    "band_clamped band_clamp_drop stray_cells"))
+LatticeMesh = namedtuple(
+    "LatticeMesh",
+    (
+        "lat_h lat_w nfr nfc "
+        "verts loops sizes face_class face_cell "
+        "native_y ground_y wet has_level level_value roadbed cut contain band_count "
+        "block_refined coarse_loops cbr cbc cell_rr cell_cc refined_loops_all fan_loops "
+        "fan_faces refined_faces cut_faces roadbed_faces rock_faces "
+        "cut_parents cut_pieces cut_removed_m2 cut_slivers "
+        "band_clamped band_clamp_drop stray_cells"
+    ),
+)
 
 
-def build_lattice(heights, width, height, surface_ids, levels,
-                  row0, col0, row1, col1, stride, cell, origin_x, origin_z,
-                  elevation_scale, elevation_offset,
-                  cut_grid, contain_raster, band_count_raster, band_ceiling_raster,
-                  strip_geo, prisms=None):
+def build_lattice(
+    heights,
+    width,
+    height,
+    surface_ids,
+    levels,
+    row0,
+    col0,
+    row1,
+    col1,
+    stride,
+    cell,
+    origin_x,
+    origin_z,
+    elevation_scale,
+    elevation_offset,
+    cut_grid,
+    contain_raster,
+    band_count_raster,
+    band_ceiling_raster,
+    strip_geo,
+    prisms=None,
+):
     """Build the §8 ground mesh for one window: vertices, faces, and what each face is.
 
     This is where every other function in this module meets. It returns a `LatticeMesh`, or
@@ -865,29 +1032,39 @@ def build_lattice(heights, width, height, surface_ids, levels,
     nfr = (row1 - row0) // stride
     nfc = (col1 - col0) // stride
     if nfr < 1 or nfc < 1:
-        return None                       # smaller than one face; the caller reports it
+        return None  # smaller than one face; the caller reports it
     lat_h = nfr * stride + 1
     lat_w = nfc * stride + 1
 
     heights_native = numpy.asarray(heights).reshape(height, width)
-    native_y = heights_native[row0:row0 + lat_h, col0:col0 + lat_w].astype(numpy.float32) \
-        * numpy.float32(elevation_scale) + numpy.float32(elevation_offset)
+    native_y = heights_native[row0 : row0 + lat_h, col0 : col0 + lat_w].astype(
+        numpy.float32
+    ) * numpy.float32(elevation_scale) + numpy.float32(elevation_offset)
 
-    roadbed = (numpy.asarray(surface_ids).reshape(height, width)
-               [row0:row0 + lat_h, col0:col0 + lat_w] != 0) if surface_ids is not None \
+    roadbed = (
+        (
+            numpy.asarray(surface_ids).reshape(height, width)[
+                row0 : row0 + lat_h, col0 : col0 + lat_w
+            ]
+            != 0
+        )
+        if surface_ids is not None
         else numpy.zeros((lat_h, lat_w), dtype=bool)
-    cut = cut_grid[row0:row0 + lat_h, col0:col0 + lat_w]
+    )
+    cut = cut_grid[row0 : row0 + lat_h, col0 : col0 + lat_w]
     # Face (r, c) of this window is face (row0 + r, col0 + c) of the raster, and the raster is
     # one entry smaller than the cell grid on each axis, so the window's last lattice row and
     # column carry no face — hence lat_h - 1 / lat_w - 1.
-    contain = contain_raster[row0:row0 + lat_h - 1, col0:col0 + lat_w - 1]
-    band_count = band_count_raster[row0:row0 + lat_h - 1, col0:col0 + lat_w - 1]
+    contain = contain_raster[row0 : row0 + lat_h - 1, col0 : col0 + lat_w - 1]
+    band_count = band_count_raster[row0 : row0 + lat_h - 1, col0 : col0 + lat_w - 1]
     if levels is not None:
-        level_raw = numpy.asarray(levels).reshape(height, width)[row0:row0 + lat_h,
-                                                                 col0:col0 + lat_w]
+        level_raw = numpy.asarray(levels).reshape(height, width)[
+            row0 : row0 + lat_h, col0 : col0 + lat_w
+        ]
         has_level = level_raw != 0  # 0 = no data, same truthiness test as ever (§8)
-        level_value = level_raw.astype(numpy.float32) * numpy.float32(elevation_scale) \
-            + numpy.float32(elevation_offset)
+        level_value = level_raw.astype(numpy.float32) * numpy.float32(
+            elevation_scale
+        ) + numpy.float32(elevation_offset)
         wet = has_level & (level_value > native_y)
     else:
         has_level = numpy.zeros((lat_h, lat_w), dtype=bool)
@@ -910,7 +1087,9 @@ def build_lattice(heights, width, height, surface_ids, levels,
     cut_for_corridor[1:, 1:] |= contain
     # 3 cells at 3.5 m (10.5 m) covers the game's 8 m terrain-smoothing apron; in cells of the
     # heightfield at hand, so the corridor is the same width in metres on the fine raster.
-    refine_cells = dilate(roadbed | cut_for_corridor | mask_boundary(wet), max(1, int(math.ceil(10.5 / cell))))
+    refine_cells = dilate(
+        roadbed | cut_for_corridor | mask_boundary(wet), max(1, int(math.ceil(10.5 / cell)))
+    )
 
     if stride == 1:
         # A region import is already native everywhere; the whole window is one corridor and
@@ -927,8 +1106,9 @@ def build_lattice(heights, width, height, surface_ids, levels,
     # tunnel.
     if stride > 1 and cut_for_corridor.any():
         s_rr, s_cc = numpy.nonzero(cut_for_corridor)
-        stray = ~block_refined[numpy.minimum(s_rr // stride, nfr - 1),
-                               numpy.minimum(s_cc // stride, nfc - 1)]
+        stray = ~block_refined[
+            numpy.minimum(s_rr // stride, nfr - 1), numpy.minimum(s_cc // stride, nfc - 1)
+        ]
         stray_cells = int(stray.sum())
 
     # -- heights, as the game graded them --------------------------------------------------
@@ -940,7 +1120,8 @@ def build_lattice(heights, width, height, surface_ids, levels,
     # dilated 3 cells, so a clamped vertex only ever sits inside a refined block: it cannot
     # move a coarse corner or a fan edge.
     ground_y, band_clamped, band_clamp_drop = ground_heights(
-        native_y, band_ceiling_raster[row0:row0 + lat_h, col0:col0 + lat_w])
+        native_y, band_ceiling_raster[row0 : row0 + lat_h, col0 : col0 + lat_w]
+    )
 
     # -- block-level ground class (0 grass / 2 rock), from the coarse corners --------------
     # Sampled (unclamped) heights, so the road clamp cannot flip a boundary face. Coarse and
@@ -948,10 +1129,20 @@ def build_lattice(heights, width, height, surface_ids, levels,
     # by construction.
     corner_ys = native_y[::stride, ::stride]  # (nfr+1, nfc+1), exact by lattice construction
     run = float(stride) * cell
-    gx = numpy.maximum(numpy.abs(corner_ys[:-1, 1:] - corner_ys[:-1, :-1]),
-                       numpy.abs(corner_ys[1:, 1:] - corner_ys[1:, :-1])) / run
-    gz = numpy.maximum(numpy.abs(corner_ys[1:, :-1] - corner_ys[:-1, :-1]),
-                       numpy.abs(corner_ys[1:, 1:] - corner_ys[:-1, 1:])) / run
+    gx = (
+        numpy.maximum(
+            numpy.abs(corner_ys[:-1, 1:] - corner_ys[:-1, :-1]),
+            numpy.abs(corner_ys[1:, 1:] - corner_ys[1:, :-1]),
+        )
+        / run
+    )
+    gz = (
+        numpy.maximum(
+            numpy.abs(corner_ys[1:, :-1] - corner_ys[:-1, :-1]),
+            numpy.abs(corner_ys[1:, 1:] - corner_ys[:-1, 1:]),
+        )
+        / run
+    )
     block_class = numpy.where(numpy.hypot(gx, gz) > ROCK_SLOPE, 2, 0)
 
     # -- coarse quads ----------------------------------------------------------------------
@@ -960,9 +1151,15 @@ def build_lattice(heights, width, height, surface_ids, levels,
     lattice_flat = numpy.arange(lat_h * lat_w, dtype=numpy.int64).reshape(lat_h, lat_w)
     corner_flat = lattice_flat[::stride, ::stride]  # (nfr+1, nfc+1)
     cbr, cbc = numpy.nonzero(block_coarse)
-    coarse_loops = numpy.stack((corner_flat[cbr, cbc], corner_flat[cbr + 1, cbc],
-                                corner_flat[cbr + 1, cbc + 1], corner_flat[cbr, cbc + 1]),
-                               axis=-1)
+    coarse_loops = numpy.stack(
+        (
+            corner_flat[cbr, cbc],
+            corner_flat[cbr + 1, cbc],
+            corner_flat[cbr + 1, cbc + 1],
+            corner_flat[cbr, cbc + 1],
+        ),
+        axis=-1,
+    )
     coarse_class = block_class[cbr, cbc]
 
     # -- native cells inside refined blocks, cut only where the prism CONTAINS the face -----
@@ -990,19 +1187,29 @@ def build_lattice(heights, width, height, surface_ids, levels,
     # centreline faces, which is the split band's own number to the digit.
     rbr, rbc = numpy.nonzero(block_refined)
     span = numpy.arange(stride, dtype=numpy.int64)
-    cell_rr = numpy.broadcast_to(rbr[:, None, None] * stride + span[None, :, None],
-                                 (len(rbr), stride, stride)).reshape(-1)
-    cell_cc = numpy.broadcast_to(rbc[:, None, None] * stride + span[None, None, :],
-                                 (len(rbr), stride, stride)).reshape(-1)
+    cell_rr = numpy.broadcast_to(
+        rbr[:, None, None] * stride + span[None, :, None], (len(rbr), stride, stride)
+    ).reshape(-1)
+    cell_cc = numpy.broadcast_to(
+        rbc[:, None, None] * stride + span[None, None, :], (len(rbr), stride, stride)
+    ).reshape(-1)
     a = cell_rr * lat_w + cell_cc
     refined_loops_all = numpy.stack((a, a + lat_w, a + lat_w + 1, a + 1), axis=-1)
     # Every face a prism reaches is CUT (below) rather than kept or deleted whole, so it leaves
     # the quad set here and comes back as polygons. `terrainclip.index_prisms` answers "which
     # prisms can reach this square" by plan bounding box, conservatively.
-    by_face = terrainclip.index_prisms(prisms, cell, origin_x, origin_z,
-                                       lat_w, lat_h, row0=row0, col0=col0) if prisms else {}
-    sub_face = numpy.fromiter(((int(r), int(c)) in by_face for r, c in zip(cell_rr, cell_cc)),
-                              dtype=bool, count=len(cell_rr))
+    by_face = (
+        terrainclip.index_prisms(
+            prisms, cell, origin_x, origin_z, lat_w, lat_h, row0=row0, col0=col0
+        )
+        if prisms
+        else {}
+    )
+    sub_face = numpy.fromiter(
+        ((int(r), int(c)) in by_face for r, c in zip(cell_rr, cell_cc)),
+        dtype=bool,
+        count=len(cell_rr),
+    )
     refined_loops = refined_loops_all[~sub_face]
     cut_faces = 0
 
@@ -1023,15 +1230,22 @@ def build_lattice(heights, width, height, surface_ids, levels,
     fan_class = block_class.reshape(-1)[fan_blocks]
 
     # -- one shared vertex set over the lattice --------------------------------------------
-    all_loops = numpy.concatenate((coarse_loops.reshape(-1), refined_loops.reshape(-1),
-                                   fan_loops))
-    sizes = numpy.concatenate((numpy.full(len(coarse_loops), 4, dtype=numpy.int64),
-                               numpy.full(len(refined_loops), 4, dtype=numpy.int64),
-                               numpy.full(len(fan_loops) // 3, 3, dtype=numpy.int64)))
+    all_loops = numpy.concatenate((coarse_loops.reshape(-1), refined_loops.reshape(-1), fan_loops))
+    sizes = numpy.concatenate(
+        (
+            numpy.full(len(coarse_loops), 4, dtype=numpy.int64),
+            numpy.full(len(refined_loops), 4, dtype=numpy.int64),
+            numpy.full(len(fan_loops) // 3, 3, dtype=numpy.int64),
+        )
+    )
     face_class = numpy.concatenate((coarse_class, refined_class, fan_class))
-    face_cell = numpy.concatenate((numpy.full((len(coarse_loops), 2), -1, dtype=numpy.int64),
-                                   numpy.stack((cell_rr, cell_cc), axis=-1)[~sub_face],
-                                   numpy.full((len(fan_loops) // 3, 2), -1, dtype=numpy.int64)))
+    face_cell = numpy.concatenate(
+        (
+            numpy.full((len(coarse_loops), 2), -1, dtype=numpy.int64),
+            numpy.stack((cell_rr, cell_cc), axis=-1)[~sub_face],
+            numpy.full((len(fan_loops) // 3, 2), -1, dtype=numpy.int64),
+        )
+    )
 
     used = numpy.zeros(lat_h * lat_w, dtype=bool)
     used[all_loops] = True
@@ -1045,9 +1259,14 @@ def build_lattice(heights, width, height, surface_ids, levels,
     vid = numpy.full(lat_h * lat_w, -1, dtype=numpy.int64)
     vid[used_idx] = numpy.arange(len(used_idx))
     ur, uc = numpy.divmod(used_idx, lat_w)
-    verts = numpy.stack((origin_x + (col0 + uc).astype(numpy.float64) * cell,
-                         origin_z - (row0 + ur).astype(numpy.float64) * cell,
-                         ground_y[ur, uc].astype(numpy.float64)), axis=-1)
+    verts = numpy.stack(
+        (
+            origin_x + (col0 + uc).astype(numpy.float64) * cell,
+            origin_z - (row0 + ur).astype(numpy.float64) * cell,
+            ground_y[ur, uc].astype(numpy.float64),
+        ),
+        axis=-1,
+    )
     loops = vid[all_loops]
 
     # -- cut every face a prism reaches, exactly ------------------------------------------
@@ -1072,7 +1291,7 @@ def build_lattice(heights, width, height, surface_ids, levels,
             key = (round(x, 6), round(z, 6), round(y, 6))
             found = weld.get(key)
             if found is None:
-                cut_extra.append((x, z, y))          # the lattice frame is (x, bundle z, height)
+                cut_extra.append((x, z, y))  # the lattice frame is (x, bundle z, height)
                 found = len(verts) + len(cut_extra) - 1
                 weld[key] = found
             return found
@@ -1106,10 +1325,15 @@ def build_lattice(heights, width, height, surface_ids, levels,
         if cut_loops:
             if cut_extra:
                 verts = numpy.concatenate((verts, numpy.asarray(cut_extra, dtype=numpy.float64)))
-            loops = numpy.concatenate((loops, numpy.asarray([i for poly in cut_loops for i in poly],
-                                                            dtype=numpy.int64)))
-            sizes = numpy.concatenate((sizes, numpy.asarray([len(p) for p in cut_loops], dtype=numpy.int64)))
-            face_class = numpy.concatenate((face_class, numpy.asarray(cut_class, dtype=face_class.dtype)))
+            loops = numpy.concatenate(
+                (loops, numpy.asarray([i for poly in cut_loops for i in poly], dtype=numpy.int64))
+            )
+            sizes = numpy.concatenate(
+                (sizes, numpy.asarray([len(p) for p in cut_loops], dtype=numpy.int64))
+            )
+            face_class = numpy.concatenate(
+                (face_class, numpy.asarray(cut_class, dtype=face_class.dtype))
+            )
             face_cell = numpy.concatenate((face_cell, numpy.asarray(cut_cell, dtype=numpy.int64)))
 
         # A lattice corner used only by a face that the cut removed entirely is referenced by
@@ -1121,20 +1345,51 @@ def build_lattice(heights, width, height, surface_ids, levels,
             loops = (numpy.cumsum(referenced) - 1)[loops]
 
     refined_faces = len(refined_loops)
-    cut_faces = int(sub_face.sum()) - cut_faces_out      # faces the cut removed entirely
+    cut_faces = int(sub_face.sum()) - cut_faces_out  # faces the cut removed entirely
     fan_faces = len(fan_blocks)
     roadbed_faces = int((face_class == 1).sum())
     rock_faces = int((face_class == 2).sum())
 
     return LatticeMesh(
-        lat_h=lat_h, lat_w=lat_w, nfr=nfr, nfc=nfc, verts=verts, loops=loops, sizes=sizes,
-        face_class=face_class, face_cell=face_cell, native_y=native_y, ground_y=ground_y, wet=wet, has_level=has_level, level_value=level_value,
-        roadbed=roadbed, cut=cut, contain=contain, band_count=band_count, block_refined=block_refined, coarse_loops=coarse_loops,
-        cbr=cbr, cbc=cbc, cell_rr=cell_rr, cell_cc=cell_cc, refined_loops_all=refined_loops_all, fan_loops=fan_loops, fan_faces=fan_faces,
-        refined_faces=refined_faces, cut_faces=cut_faces, roadbed_faces=roadbed_faces, rock_faces=rock_faces,
-        cut_parents=int(sub_face.sum()), cut_pieces=len(cut_loops), cut_removed_m2=cut_removed,
+        lat_h=lat_h,
+        lat_w=lat_w,
+        nfr=nfr,
+        nfc=nfc,
+        verts=verts,
+        loops=loops,
+        sizes=sizes,
+        face_class=face_class,
+        face_cell=face_cell,
+        native_y=native_y,
+        ground_y=ground_y,
+        wet=wet,
+        has_level=has_level,
+        level_value=level_value,
+        roadbed=roadbed,
+        cut=cut,
+        contain=contain,
+        band_count=band_count,
+        block_refined=block_refined,
+        coarse_loops=coarse_loops,
+        cbr=cbr,
+        cbc=cbc,
+        cell_rr=cell_rr,
+        cell_cc=cell_cc,
+        refined_loops_all=refined_loops_all,
+        fan_loops=fan_loops,
+        fan_faces=fan_faces,
+        refined_faces=refined_faces,
+        cut_faces=cut_faces,
+        roadbed_faces=roadbed_faces,
+        rock_faces=rock_faces,
+        cut_parents=int(sub_face.sum()),
+        cut_pieces=len(cut_loops),
+        cut_removed_m2=cut_removed,
         cut_slivers=clip_stats.get("slivers", 0),
-        band_clamped=band_clamped, band_clamp_drop=band_clamp_drop, stray_cells=stray_cells)
+        band_clamped=band_clamped,
+        band_clamp_drop=band_clamp_drop,
+        stray_cells=stray_cells,
+    )
 
 
 WaterSurface = namedtuple("WaterSurface", "verts loops sizes faces")
@@ -1170,14 +1425,20 @@ def water_surface(lattice, stride, cell, origin_x, origin_z, row0, col0):
 
     wet_faces = 0
     if level_value is not None and wet.any():
-        coarse_wet = (wet[cbr * stride, cbc * stride] |
-                      wet[(cbr + 1) * stride, cbc * stride] |
-                      wet[(cbr + 1) * stride, (cbc + 1) * stride] |
-                      wet[cbr * stride, (cbc + 1) * stride])
+        coarse_wet = (
+            wet[cbr * stride, cbc * stride]
+            | wet[(cbr + 1) * stride, cbc * stride]
+            | wet[(cbr + 1) * stride, (cbc + 1) * stride]
+            | wet[cbr * stride, (cbc + 1) * stride]
+        )
         water_coarse = coarse_loops[coarse_wet]
 
-        refined_wet = (wet[cell_rr, cell_cc] | wet[cell_rr, cell_cc + 1] |
-                       wet[cell_rr + 1, cell_cc] | wet[cell_rr + 1, cell_cc + 1])
+        refined_wet = (
+            wet[cell_rr, cell_cc]
+            | wet[cell_rr, cell_cc + 1]
+            | wet[cell_rr + 1, cell_cc]
+            | wet[cell_rr + 1, cell_cc + 1]
+        )
         # NOT filtered by the cut: a clipped trench under a lake still has water over it,
         # exactly as the coarse rule always kept it.
         water_refined = refined_loops_all[refined_wet]
@@ -1191,13 +1452,16 @@ def water_surface(lattice, stride, cell, origin_x, origin_z, row0, col0):
 
         wet_faces = len(water_coarse) + len(water_refined) + len(water_fans)
         if wet_faces:
-            water_loops_all = numpy.concatenate((water_coarse.reshape(-1),
-                                                 water_refined.reshape(-1),
-                                                 water_fans.reshape(-1)))
-            water_sizes = numpy.concatenate((
-                numpy.full(len(water_coarse), 4, dtype=numpy.int64),
-                numpy.full(len(water_refined), 4, dtype=numpy.int64),
-                numpy.full(len(water_fans), 3, dtype=numpy.int64)))
+            water_loops_all = numpy.concatenate(
+                (water_coarse.reshape(-1), water_refined.reshape(-1), water_fans.reshape(-1))
+            )
+            water_sizes = numpy.concatenate(
+                (
+                    numpy.full(len(water_coarse), 4, dtype=numpy.int64),
+                    numpy.full(len(water_refined), 4, dtype=numpy.int64),
+                    numpy.full(len(water_fans), 3, dtype=numpy.int64),
+                )
+            )
 
             # A corner past the dilated ring carries no level; seat it on the ground so the
             # surface closes instead of tearing.
@@ -1210,21 +1474,28 @@ def water_surface(lattice, stride, cell, origin_x, origin_z, row0, col0):
             wvid[wused_idx] = numpy.arange(len(wused_idx))
             wur, wuc = numpy.divmod(wused_idx, lat_w)
             water_verts = numpy.stack(
-                (origin_x + (col0 + wuc).astype(numpy.float64) * cell,
-                 origin_z - (row0 + wur).astype(numpy.float64) * cell,
-                 surface_y[wur, wuc].astype(numpy.float64)), axis=-1)
-
+                (
+                    origin_x + (col0 + wuc).astype(numpy.float64) * cell,
+                    origin_z - (row0 + wur).astype(numpy.float64) * cell,
+                    surface_y[wur, wuc].astype(numpy.float64),
+                ),
+                axis=-1,
+            )
 
     if not wet_faces:
         return None
-    return WaterSurface(verts=water_verts, loops=wvid[water_loops_all],
-                        sizes=water_sizes, faces=wet_faces)
+    return WaterSurface(
+        verts=water_verts, loops=wvid[water_loops_all], sizes=water_sizes, faces=wet_faces
+    )
 
 
 # -- the hole mask for a heightmap-native consumer -----------------------------------------------
 
-HoleMask = namedtuple("HoleMask", "contain deep_touch band_count band_ceiling heights cell "
-                                  "origin_x origin_z elevation_scale elevation_offset fine")
+HoleMask = namedtuple(
+    "HoleMask",
+    "contain deep_touch band_count band_ceiling heights cell "
+    "origin_x origin_z elevation_scale elevation_offset fine",
+)
 
 
 def hole_mask(bundle_dir, floor_override=None, prefer_fine=True):
@@ -1265,8 +1536,28 @@ def hole_mask(bundle_dir, floor_override=None, prefer_fine=True):
     cell, origin_x, origin_z = field.cell, field.origin_x, field.origin_z
     scale, offset = field.elevation_scale, field.elevation_offset
     _mask, contain, band_count, deep_touch, _refs, _strip_geo, band_ceiling = clip_grid(
-        bundle_dir, width, height, raw.reshape(-1), cell, origin_x, origin_z, scale, offset,
-        floor_override=floor_override)
+        bundle_dir,
+        width,
+        height,
+        raw.reshape(-1),
+        cell,
+        origin_x,
+        origin_z,
+        scale,
+        offset,
+        floor_override=floor_override,
+    )
     heights = raw.astype(numpy.float64) * scale + offset
-    return HoleMask(contain, deep_touch, band_count, band_ceiling, heights, cell,
-                    float(origin_x), float(origin_z), scale, offset, field.fine)
+    return HoleMask(
+        contain,
+        deep_touch,
+        band_count,
+        band_ceiling,
+        heights,
+        cell,
+        float(origin_x),
+        float(origin_z),
+        scale,
+        offset,
+        field.fine,
+    )

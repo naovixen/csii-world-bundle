@@ -189,11 +189,17 @@ Navgraph = namedtuple("Navgraph", "roads stats notes")
 
 # A `Road` with the pair of segment ends a joint ties together, so `build` can mark both as
 # joined without re-deriving them. Never emitted to a consumer; `Road` is what leaves here.
-_Joint = namedtuple("_Joint", Road._fields + ("key_pair",))
+_Joint = namedtuple("_Joint", (*Road._fields, "key_pair"))
 
 
-def build(bundle_dir, categories=DEFAULT_CATEGORIES, weld_tolerance=WELD_TOLERANCE,
-          max_width=None, simplify=SIMPLIFY_TOLERANCE, progress=None):
+def build(
+    bundle_dir,
+    categories=DEFAULT_CATEGORIES,
+    weld_tolerance=WELD_TOLERANCE,
+    max_width=None,
+    simplify=SIMPLIFY_TOLERANCE,
+    progress=None,
+):
     """Build the navgraph. `categories` are `attrs.category` values; `max_width` clamps the
     emitted carriageway width (None = the measured value, whatever it is).
 
@@ -206,9 +212,11 @@ def build(bundle_dir, categories=DEFAULT_CATEGORIES, weld_tolerance=WELD_TOLERAN
     log(f"navgraph: {len(attrs):,} {'/'.join(wanted)} segments in networks.jsonl")
 
     seg_lanes, junction_lanes, counts = _read_car_lanes(bundle_dir, set(attrs), progress)
-    log(f"navgraph: {counts['carLanes']:,} car lanes - {counts['segmentOwned']:,} on those "
+    log(
+        f"navgraph: {counts['carLanes']:,} car lanes - {counts['segmentOwned']:,} on those "
         f"segments ({counts['sideConnections']:,} SideConnection stubs dropped), "
-        f"{len(junction_lanes):,} node-owned")
+        f"{len(junction_lanes):,} node-owned"
+    )
 
     stats = {"segments": len(attrs), "segmentsWithLanes": len(seg_lanes)}
     stats.update(counts)
@@ -220,10 +228,9 @@ def build(bundle_dir, categories=DEFAULT_CATEGORIES, weld_tolerance=WELD_TOLERAN
             spines[sid] = spine
     stats["segmentsWithoutCenterline"] = len(seg_lanes) - len(spines)
 
-
     roads = []
-    ends = {}                       # (sid, 0|1) -> end point of the emitted centerline
-    end_lane_points = []            # every carriageway lane endpoint AT a segment end
+    ends = {}  # (sid, 0|1) -> end point of the emitted centerline
+    end_lane_points = []  # every carriageway lane endpoint AT a segment end
     end_lane_key = []
     divided = 0
     clamped = 0
@@ -239,12 +246,21 @@ def build(bundle_dir, categories=DEFAULT_CATEGORIES, weld_tolerance=WELD_TOLERAN
         limit = a.get("limit")
         if limit is None:
             speed_inferred += 1
-        roads.append(Road(
-            key=f"seg_{sid}", kind="segment", segment=sid, name=a.get("name"),
-            category=a.get("category"), nodes=[(p[0], p[1], p[2], width) for p in nodes],
-            oneway=(spine.lanes_left == 0), lanes_left=spine.lanes_left,
-            lanes_right=spine.lanes_right, speed_kph=limit,
-            elevated=a.get("form") in ("elevated", "tunnel")))
+        roads.append(
+            Road(
+                key=f"seg_{sid}",
+                kind="segment",
+                segment=sid,
+                name=a.get("name"),
+                category=a.get("category"),
+                nodes=[(p[0], p[1], p[2], width) for p in nodes],
+                oneway=(spine.lanes_left == 0),
+                lanes_left=spine.lanes_left,
+                lanes_right=spine.lanes_right,
+                speed_kph=limit,
+                elevated=a.get("form") in ("elevated", "tunnel"),
+            )
+        )
         ends[(sid, 0)] = spine.points[0]
         ends[(sid, 1)] = spine.points[-1]
         for k, pts in ((0, spine.start_lane_points), (1, spine.end_lane_points)):
@@ -258,12 +274,21 @@ def build(bundle_dir, categories=DEFAULT_CATEGORIES, weld_tolerance=WELD_TOLERAN
     stats["forwardLanesLeft"] = sum(1 for s in spines.values() if s.forward_side > 0)
     stats["leftHandTraffic"] = stats["forwardLanesLeft"] > stats["forwardLanesRight"]
 
-    connectors, conn_stats = _connectors(junction_lanes, end_lane_points, end_lane_key, ends,
-                                         attrs, spines, weld_tolerance, simplify, max_width)
+    connectors, conn_stats = _connectors(
+        junction_lanes,
+        end_lane_points,
+        end_lane_key,
+        ends,
+        attrs,
+        spines,
+        weld_tolerance,
+        simplify,
+        max_width,
+    )
     roads.extend(connectors)
     touched = conn_stats.pop("touched")
     joints = _joints(end_lane_points, end_lane_key, ends, attrs, spines, weld_tolerance)
-    roads.extend(Road(*joint[:len(Road._fields)]) for joint in joints)
+    roads.extend(Road(*joint[: len(Road._fields)]) for joint in joints)
     touched.update(k for joint in joints for k in joint.key_pair)
     stats["joints"] = len(joints)
     stats.update(conn_stats)
@@ -286,6 +311,7 @@ def build(bundle_dir, categories=DEFAULT_CATEGORIES, weld_tolerance=WELD_TOLERAN
 
 
 # -- the bundle read ---------------------------------------------------------------------------
+
 
 def _read_segments(bundle_dir, categories):
     """`{id: attrs}` for every network segment in the wanted categories."""
@@ -336,8 +362,7 @@ def _read_car_lanes(bundle_dir, segment_ids, progress=None):
             if "SideConnection" in flags:
                 counts["sideConnections"] += 1
                 continue
-            seg_lanes[owner].append((numpy.asarray(path, dtype=numpy.float64),
-                                     "Invert" in flags))
+            seg_lanes[owner].append((numpy.asarray(path, dtype=numpy.float64), "Invert" in flags))
         elif owner not in networks:
             junction_lanes.append(numpy.asarray(path, dtype=numpy.float32))
     if progress is not None:
@@ -354,8 +379,11 @@ def _network_ids(bundle_dir):
 
 # -- the segment centerline --------------------------------------------------------------------
 
-Spine = namedtuple("Spine", "points width measured_width lanes_left lanes_right "
-                            "start_lane_points end_lane_points forward_side")
+Spine = namedtuple(
+    "Spine",
+    "points width measured_width lanes_left lanes_right "
+    "start_lane_points end_lane_points forward_side",
+)
 
 
 def _segment_centerline(lanes, attrs, max_width):
@@ -375,7 +403,7 @@ def _segment_centerline(lanes, attrs, max_width):
     if spine is None or len(spine) < 2:
         return None
     spine = _resample(spine, SPINE_STEP)
-    tangents, normals = _frame(spine)
+    _tangents, normals = _frame(spine)
 
     offsets = []
     weights = []
@@ -434,9 +462,16 @@ def _segment_centerline(lanes, attrs, max_width):
         forward_side = 1 if float(with_flow.mean()) > float(against.mean()) else -1
 
     start_pts, end_pts = _terminal_lane_points(forward, spine)
-    return Spine(points=points, width=width, measured_width=measured,
-                 lanes_left=left, lanes_right=right, forward_side=forward_side,
-                 start_lane_points=start_pts, end_lane_points=end_pts)
+    return Spine(
+        points=points,
+        width=width,
+        measured_width=measured,
+        lanes_left=left,
+        lanes_right=right,
+        forward_side=forward_side,
+        start_lane_points=start_pts,
+        end_lane_points=end_pts,
+    )
 
 
 def _longest_chain(paths):
@@ -529,23 +564,29 @@ def _terminal_lane_points(paths, spine):
 
 # -- the connectors ----------------------------------------------------------------------------
 
-def _connectors(junction_lanes, end_points, end_keys, ends, attrs, spines, tolerance, simplify,
-                max_width):
+
+def _connectors(
+    junction_lanes, end_points, end_keys, ends, attrs, spines, tolerance, simplify, max_width
+):
     """One road per turning movement between two different segment ends.
 
     The junction lane's own interior shape is kept; only its two terminal nodes are moved, onto
     the two segments' own centerline ends — which is what makes the join exact instead of
     something a consumer's merge pass has to find.
     """
-    stats = {"junctionLanes": len(junction_lanes), "connectorsUnmatched": 0,
-             "connectorsUnused": 0, "touched": set()}
+    stats = {
+        "junctionLanes": len(junction_lanes),
+        "connectorsUnmatched": 0,
+        "connectorsUnused": 0,
+        "touched": set(),
+    }
     if not end_points:
         stats["connectorsUnused"] = len(junction_lanes)
         return [], stats
     from scipy.spatial import cKDTree
 
     tree = cKDTree(numpy.asarray(end_points, dtype=numpy.float64))
-    movements = defaultdict(list)               # (from_key, to_key) -> [path, ...]
+    movements = defaultdict(list)  # (from_key, to_key) -> [path, ...]
     touched = set()
     for path in junction_lanes:
         a = {end_keys[i] for i in tree.query_ball_point(path[0], tolerance)}
@@ -595,12 +636,21 @@ def _connectors(junction_lanes, end_points, end_keys, ends, attrs, spines, toler
         node_widths = _terminal_widths(len(line), width, spines, x, y)
         limits = [attrs[s].get("limit") for s, _k in (x, y) if attrs.get(s, {}).get("limit")]
         elevated = any(attrs.get(s, {}).get("form") in ("elevated", "tunnel") for s, _k in (x, y))
-        roads.append(Road(
-            key=f"conn_{x[0]}_{x[1]}_{y[0]}_{y[1]}", kind="connector", segment=x[0],
-            name=attrs.get(x[0], {}).get("name"), category=attrs.get(x[0], {}).get("category"),
-            nodes=[(p[0], p[1], p[2], w) for p, w in zip(line, node_widths)],
-            oneway=oneway, lanes_left=0 if oneway else 1, lanes_right=1,
-            speed_kph=min(limits) if limits else None, elevated=elevated))
+        roads.append(
+            Road(
+                key=f"conn_{x[0]}_{x[1]}_{y[0]}_{y[1]}",
+                kind="connector",
+                segment=x[0],
+                name=attrs.get(x[0], {}).get("name"),
+                category=attrs.get(x[0], {}).get("category"),
+                nodes=[(p[0], p[1], p[2], w) for p, w in zip(line, node_widths)],
+                oneway=oneway,
+                lanes_left=0 if oneway else 1,
+                lanes_right=1,
+                speed_kph=min(limits) if limits else None,
+                elevated=elevated,
+            )
+        )
     return roads, stats
 
 
@@ -708,15 +758,20 @@ def _clearance_clamp(roads, clearance=STACKED_CLEARANCE, margin=CLEARANCE_MARGIN
         limits[0] = min(this, node_cap.get(first, numpy.inf))
         limits[-1] = min(this, node_cap.get(last, numpy.inf))
         # never widen: every node keeps its own width unless its cap is tighter
-        nodes = [(n[0], n[1], n[2], min(n[3], 2.0 * capped))
-                 for n, capped in zip(road.nodes, limits)]
+        nodes = [
+            (n[0], n[1], n[2], min(n[3], 2.0 * capped)) for n, capped in zip(road.nodes, limits)
+        ]
         if all(new[3] == old[3] for new, old in zip(nodes, road.nodes)):
             out.append(road)
             continue
         stats["widthClearanceClamped"] += 1
         stats["widthClearanceWorst"] = round(
-            max(stats["widthClearanceWorst"],
-                max(old[3] - new[3] for old, new in zip(road.nodes, nodes))), 2)
+            max(
+                stats["widthClearanceWorst"],
+                max(old[3] - new[3] for old, new in zip(road.nodes, nodes)),
+            ),
+            2,
+        )
         out.append(road._replace(nodes=nodes))
     return out, stats
 
@@ -746,7 +801,7 @@ def _surface(road, step):
         return centre
     half = 0.5 * max(n[3] for n in road.nodes)
     flat = centre.copy()
-    flat[:, 1] = 0.0                                   # the lateral frame is horizontal
+    flat[:, 1] = 0.0  # the lateral frame is horizontal
     _tangents, normals = _frame(flat)
     return numpy.concatenate((centre, centre + normals * half, centre - normals * half))
 
@@ -800,9 +855,16 @@ def stacked_coverage(roads, clearance=STACKED_CLEARANCE, step=4.0):
                 continue
             gap = float(numpy.linalg.norm(surfaces[point_index] - centres[centre_index]))
             if gap < half[j]:
-                out.append({"road": roads[i].key, "other": roads[j].key, "gap": gap,
-                            "radius": float(half[j]), "height": height,
-                            "at": [round(float(v), 1) for v in surfaces[point_index]]})
+                out.append(
+                    {
+                        "road": roads[i].key,
+                        "other": roads[j].key,
+                        "gap": gap,
+                        "radius": float(half[j]),
+                        "height": height,
+                        "at": [round(float(v), 1) for v in surfaces[point_index]],
+                    }
+                )
     return out
 
 
@@ -871,16 +933,27 @@ def _joints(end_points, end_keys, ends, attrs, spines, tolerance):
         wa, wb = _terminal_widths(2, width, spines, x, y)
         limits = [attrs[s].get("limit") for s, _k in (x, y) if attrs.get(s, {}).get("limit")]
         elevated = any(attrs.get(s, {}).get("form") in ("elevated", "tunnel") for s, _k in (x, y))
-        roads.append(_Joint(
-            key=f"joint_{x[0]}_{x[1]}_{y[0]}_{y[1]}", kind="joint", segment=x[0],
-            name=attrs.get(x[0], {}).get("name"), category=attrs.get(x[0], {}).get("category"),
-            nodes=[(a[0], a[1], a[2], wa), (b[0], b[1], b[2], wb)],
-            oneway=False, lanes_left=1, lanes_right=1,
-            speed_kph=min(limits) if limits else None, elevated=elevated, key_pair=(x, y)))
+        roads.append(
+            _Joint(
+                key=f"joint_{x[0]}_{x[1]}_{y[0]}_{y[1]}",
+                kind="joint",
+                segment=x[0],
+                name=attrs.get(x[0], {}).get("name"),
+                category=attrs.get(x[0], {}).get("category"),
+                nodes=[(a[0], a[1], a[2], wa), (b[0], b[1], b[2], wb)],
+                oneway=False,
+                lanes_left=1,
+                lanes_right=1,
+                speed_kph=min(limits) if limits else None,
+                elevated=elevated,
+                key_pair=(x, y),
+            )
+        )
     return roads
 
 
 # -- polyline maths ----------------------------------------------------------------------------
+
 
 def _length(path):
     return float(numpy.sum(numpy.linalg.norm(numpy.diff(path, axis=0), axis=1)))
@@ -890,8 +963,11 @@ def _key(point, quantum=0.05):
     """A weld key: the point rounded to the tolerance grid. Two lane ends CS2 placed at the same
     coordinate hash together; a grid is used rather than a kd-tree because a segment's own lanes
     are exact to the millimetre and this runs 6,667 times."""
-    return (round(float(point[0]) / quantum), round(float(point[1]) / quantum),
-            round(float(point[2]) / quantum))
+    return (
+        round(float(point[0]) / quantum),
+        round(float(point[1]) / quantum),
+        round(float(point[2]) / quantum),
+    )
 
 
 def _resample(path, step):
@@ -915,7 +991,9 @@ def _frame(points):
     delta = numpy.gradient(points, axis=0)
     flat = numpy.stack((delta[:, 0], delta[:, 2]), axis=1)
     norm = numpy.linalg.norm(flat, axis=1, keepdims=True)
-    flat = numpy.where(norm < 1e-9, numpy.array([1.0, 0.0]), flat / numpy.where(norm < 1e-9, 1.0, norm))
+    flat = numpy.where(
+        norm < 1e-9, numpy.array([1.0, 0.0]), flat / numpy.where(norm < 1e-9, 1.0, norm)
+    )
     tangents = numpy.zeros_like(points)
     tangents[:, 0] = flat[:, 0]
     tangents[:, 2] = flat[:, 1]
@@ -945,7 +1023,7 @@ def _simplify(points, tolerance):
         a, b = points[i], points[j]
         ab = b - a
         denom = float(numpy.dot(ab, ab))
-        seg = points[i + 1:j] - a
+        seg = points[i + 1 : j] - a
         if denom < 1e-12:
             dist = numpy.linalg.norm(seg, axis=1)
         else:
@@ -961,6 +1039,7 @@ def _simplify(points, tolerance):
 
 # -- reporting ---------------------------------------------------------------------------------
 
+
 def _terminal_clusters(roads, distance=NODE_MERGE_DISTANCE, radius=NODE_MERGE_RADIUS):
     """`[(a, b), ...]` — the node each road's first and last node belongs to, one entry per road.
 
@@ -971,10 +1050,13 @@ def _terminal_clusters(roads, distance=NODE_MERGE_DISTANCE, radius=NODE_MERGE_RA
     """
     from scipy.spatial import cKDTree
 
-    points = numpy.asarray([node[:3] for road in roads for node in (road.nodes[0], road.nodes[-1])],
-                           dtype=numpy.float64)
-    radii = numpy.asarray([0.5 * road.nodes[i][3] for road in roads for i in (0, -1)],
-                          dtype=numpy.float64)
+    points = numpy.asarray(
+        [node[:3] for road in roads for node in (road.nodes[0], road.nodes[-1])],
+        dtype=numpy.float64,
+    )
+    radii = numpy.asarray(
+        [0.5 * road.nodes[i][3] for road in roads for i in (0, -1)], dtype=numpy.float64
+    )
     parent = list(range(len(points)))
 
     def find(a):
@@ -1018,8 +1100,10 @@ def _simple_graph(roads, distance=NODE_MERGE_DISTANCE, radius=NODE_MERGE_RADIUS)
 
     # A segment first, then the road carrying the most geometry: where a stub and a real turning
     # path join the same two nodes, the turn's shape is the one worth keeping.
-    order = sorted(range(len(roads)),
-                   key=lambda i: (roads[i].kind != "segment", -len(roads[i].nodes), roads[i].key))
+    order = sorted(
+        range(len(roads)),
+        key=lambda i: (roads[i].kind != "segment", -len(roads[i].nodes), roads[i].key),
+    )
     taken = {}
     keep = [False] * len(roads)
     for i in order:
@@ -1073,8 +1157,11 @@ def _components(roads):
         sizes[find(a)] += 1
     ordered = sorted(sizes.values(), reverse=True)
     total = sum(ordered)
-    return {"components": len(ordered), "largestComponent": ordered[0] if ordered else 0,
-            "largestComponentFraction": round(ordered[0] / total, 4) if total else 0.0}
+    return {
+        "components": len(ordered),
+        "largestComponent": ordered[0] if ordered else 0,
+        "largestComponentFraction": round(ordered[0] / total, 4) if total else 0.0,
+    }
 
 
 def _notes(stats, max_width):
@@ -1082,54 +1169,78 @@ def _notes(stats, max_width):
     notes = []
     if stats.get("sideConnections"):
         n = stats["sideConnections"]
-        notes.append(f"navgraph: {n:,} SideConnection driveway stubs excluded from the "
-                     f"carriageway - CS2's own flag, not a length threshold")
+        notes.append(
+            f"navgraph: {n:,} SideConnection driveway stubs excluded from the "
+            f"carriageway - CS2's own flag, not a length threshold"
+        )
     if stats.get("dividedCarriagewaysAveraged"):
-        notes.append(f"navgraph: APPROXIMATION - {stats['dividedCarriagewaysAveraged']:,} segments "
-                     f"carry lanes in both directions and become ONE centerline down the middle "
-                     f"of them; a median strip inside a single segment is not represented")
+        notes.append(
+            f"navgraph: APPROXIMATION - {stats['dividedCarriagewaysAveraged']:,} segments "
+            f"carry lanes in both directions and become ONE centerline down the middle "
+            f"of them; a median strip inside a single segment is not represented"
+        )
     if stats.get("endsWithNoJunction"):
-        notes.append(f"navgraph: {stats['endsWithNoJunction']:,} segment ends weld to no turning "
-                     f"movement - a dead end, or a join not found")
+        notes.append(
+            f"navgraph: {stats['endsWithNoJunction']:,} segment ends weld to no turning "
+            f"movement - a dead end, or a join not found"
+        )
     if stats.get("connectorsUnmatched"):
-        notes.append(f"navgraph: {stats['connectorsUnmatched']:,} node-owned car lanes touch a "
-                     f"drivable segment at one end only (a movement into a lot or a path) and "
-                     f"are not emitted")
+        notes.append(
+            f"navgraph: {stats['connectorsUnmatched']:,} node-owned car lanes touch a "
+            f"drivable segment at one end only (a movement into a lot or a path) and "
+            f"are not emitted"
+        )
     if stats.get("widthClamped"):
-        notes.append(f"navgraph: APPROXIMATION - {stats['widthClamped']:,} segments had their "
-                     f"carriageway width clamped to {max_width} m, so their node radius understates "
-                     f"the real road")
+        notes.append(
+            f"navgraph: APPROXIMATION - {stats['widthClamped']:,} segments had their "
+            f"carriageway width clamped to {max_width} m, so their node radius understates "
+            f"the real road"
+        )
     if stats.get("speedInferred"):
-        notes.append(f"navgraph: {stats['speedInferred']:,} segments ship no attrs.limit; the "
-                     f"consumer is left to auto-calculate a speed for them")
+        notes.append(
+            f"navgraph: {stats['speedInferred']:,} segments ship no attrs.limit; the "
+            f"consumer is left to auto-calculate a speed for them"
+        )
     if stats.get("widthClearanceClamped"):
-        notes.append(f"navgraph: APPROXIMATION - {stats['widthClearanceClamped']:,} segments had "
-                     f"their width capped so their node radius stops short of a road stacked "
-                     f"over or under them (worst {stats.get('widthClearanceWorst', 0)} m); their "
-                     f"width is understated by that much, and without it a consumer that asks "
-                     f"'is the car inside this radius' answers with the deck overhead")
+        notes.append(
+            f"navgraph: APPROXIMATION - {stats['widthClearanceClamped']:,} segments had "
+            f"their width capped so their node radius stops short of a road stacked "
+            f"over or under them (worst {stats.get('widthClearanceWorst', 0)} m); their "
+            f"width is understated by that much, and without it a consumer that asks "
+            f"'is the car inside this radius' answers with the deck overhead"
+        )
     if stats.get("selfLoopsDropped"):
-        notes.append(f"navgraph: {stats['selfLoopsDropped']:,} connectors/joints dropped as "
-                     f"SELF-LOOPS - both ends land on one node once coincident terminal nodes "
-                     f"merge, so they join nothing (map.lua:459 crashed on the 3-cycle they make)")
+        notes.append(
+            f"navgraph: {stats['selfLoopsDropped']:,} connectors/joints dropped as "
+            f"SELF-LOOPS - both ends land on one node once coincident terminal nodes "
+            f"merge, so they join nothing (map.lua:459 crashed on the 3-cycle they make)"
+        )
     if stats.get("duplicateEdgesDropped"):
-        notes.append(f"navgraph: {stats['duplicateEdgesDropped']:,} connectors/joints dropped as "
-                     f"DUPLICATE edges - a second road between one pair of nodes is not a second "
-                     f"edge; the one carrying the turn's geometry is kept")
+        notes.append(
+            f"navgraph: {stats['duplicateEdgesDropped']:,} connectors/joints dropped as "
+            f"DUPLICATE edges - a second road between one pair of nodes is not a second "
+            f"edge; the one carrying the turn's geometry is kept"
+        )
     if stats.get("joints"):
-        notes.append(f"navgraph: {stats['joints']:,} joints where two segments abut with no "
-                     f"turning movement between them (an asset change or a bridge abutment, not "
-                     f"a junction)")
+        notes.append(
+            f"navgraph: {stats['joints']:,} joints where two segments abut with no "
+            f"turning movement between them (an asset change or a bridge abutment, not "
+            f"a junction)"
+        )
     votes = stats.get("forwardLanesRight", 0) + stats.get("forwardLanesLeft", 0)
     if votes:
         side = "LEFT" if stats.get("leftHandTraffic") else "RIGHT"
-        notes.append(f"navgraph: traffic drives on the {side} - MEASURED, "
-                     f"{stats['forwardLanesRight']:,} two-way segments put the with-flow lanes "
-                     f"right and {stats['forwardLanesLeft']:,} put them left")
+        notes.append(
+            f"navgraph: traffic drives on the {side} - MEASURED, "
+            f"{stats['forwardLanesRight']:,} two-way segments put the with-flow lanes "
+            f"right and {stats['forwardLanesLeft']:,} put them left"
+        )
     frac = stats.get("largestComponentFraction") or 0.0
-    notes.append(f"navgraph: {stats.get('roads', 0):,} roads / {stats.get('nodes', 0):,} nodes, "
-                 f"{stats.get('components', 0)} connected components, largest holds "
-                 f"{frac:.1%} of them")
+    notes.append(
+        f"navgraph: {stats.get('roads', 0):,} roads / {stats.get('nodes', 0):,} nodes, "
+        f"{stats.get('components', 0)} connected components, largest holds "
+        f"{frac:.1%} of them"
+    )
     return notes
 
 

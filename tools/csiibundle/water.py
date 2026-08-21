@@ -84,7 +84,7 @@ FALLBACK_COLOR = (0.08, 0.22, 0.35, 1.0)
 FALLBACK_SMOOTHNESS = 0.95
 
 
-class Appearance(object):
+class Appearance:
     """`rasters.water` as constants a renderer can apply. See the module docstring for the
     exact/modelled split."""
 
@@ -95,15 +95,16 @@ class Appearance(object):
         self.prefab = block.get("prefab")
 
         self.base_color = tuple(block.get("waterColor") or FALLBACK_COLOR)[:4]
-        self.scattering_color = tuple(block.get("scatteringColor")
-                                      or self.base_color)[:4]
+        self.scattering_color = tuple(block.get("scatteringColor") or self.base_color)[:4]
         self.absorption_distance = float(block.get("absorptionDistance", 16.0) or 16.0)
         self.max_refraction_distance = float(block.get("maxRefractionDistance", 3.0) or 3.0)
 
-        self.smoothness_close = float(block.get("smoothnessClose", FALLBACK_SMOOTHNESS)
-                                      or FALLBACK_SMOOTHNESS)
-        self.smoothness_distant = float(block.get("smoothnessDistant", self.smoothness_close)
-                                        or self.smoothness_close)
+        self.smoothness_close = float(
+            block.get("smoothnessClose", FALLBACK_SMOOTHNESS) or FALLBACK_SMOOTHNESS
+        )
+        self.smoothness_distant = float(
+            block.get("smoothnessDistant", self.smoothness_close) or self.smoothness_close
+        )
         # The game's one bind-time transform, from `WaterRenderSystem.ApplyMaterialParams`.
         self.end_smoothness = min(self.smoothness_distant, self.smoothness_close)
         rng = block.get("smoothnessRange") or (0.0, 0.0)
@@ -222,25 +223,37 @@ def is_water_material(entry):
     return False
 
 
-
 # -- water bodies: connected wet regions with a level, for an engine that wants planes ---------
 
-class Body(object):
+
+class Body:
     """One connected water body on the downsampled grid.
 
     `level_mean/min/max` metres; `area_m2`; `bbox` `(min_x, min_z, max_x, max_z)` in bundle
     metres (Z north); `cells` count on the coarse grid; `touches_edge` when the body reaches the
     raster's border (the sea rather than a lake); `mask` the coarse (rows, cols) bool array.
     """
-    __slots__ = ("level_mean", "level_min", "level_max", "area_m2", "bbox", "cells", "touches_edge", "mask")
+
+    __slots__ = (
+        "area_m2",
+        "bbox",
+        "cells",
+        "level_max",
+        "level_mean",
+        "level_min",
+        "mask",
+        "touches_edge",
+    )
 
     def __init__(self, **kw):
         for k, v in kw.items():
             setattr(self, k, v)
 
     def __repr__(self):
-        return (f"Body(level={self.level_mean:.2f} [{self.level_min:.2f}..{self.level_max:.2f}], "
-                f"area={self.area_m2:.0f} m2, cells={self.cells}, edge={self.touches_edge})")
+        return (
+            f"Body(level={self.level_mean:.2f} [{self.level_min:.2f}..{self.level_max:.2f}], "
+            f"area={self.area_m2:.0f} m2, cells={self.cells}, edge={self.touches_edge})"
+        )
 
 
 def bodies(levels, heights, cell, origin_x, origin_z, downsample=8, min_cells=2):
@@ -267,7 +280,7 @@ def bodies(levels, heights, cell, origin_x, origin_z, downsample=8, min_cells=2)
     grid = coarse_grid(lv, hg, d)
     if grid is None:
         return []
-    level_c, hg_c, wet = grid
+    level_c, _hg_c, wet = grid
     rows, cols = wet.shape
     labels, count = _label4(wet)
     out = []
@@ -279,14 +292,25 @@ def bodies(levels, heights, cell, origin_x, origin_z, downsample=8, min_cells=2)
             continue
         rr, cc = numpy.nonzero(m)
         lvls = level_c[m]
-        touches = bool(rr.min() == 0 or cc.min() == 0 or rr.max() == rows - 1 or cc.max() == cols - 1)
+        touches = bool(
+            rr.min() == 0 or cc.min() == 0 or rr.max() == rows - 1 or cc.max() == cols - 1
+        )
         min_x = origin_x + cc.min() * coarse_cell - 0.5 * cell
         max_x = origin_x + (cc.max() + 1) * coarse_cell - 0.5 * cell
         max_z = origin_z - rr.min() * coarse_cell + 0.5 * cell
         min_z = origin_z - (rr.max() + 1) * coarse_cell + 0.5 * cell
-        out.append(Body(level_mean=float(lvls.mean()), level_min=float(lvls.min()), level_max=float(lvls.max()),
-                        area_m2=float(n * coarse_cell * coarse_cell), bbox=(float(min_x), float(min_z), float(max_x), float(max_z)),
-                        cells=n, touches_edge=touches, mask=m))
+        out.append(
+            Body(
+                level_mean=float(lvls.mean()),
+                level_min=float(lvls.min()),
+                level_max=float(lvls.max()),
+                area_m2=float(n * coarse_cell * coarse_cell),
+                bbox=(float(min_x), float(min_z), float(max_x), float(max_z)),
+                cells=n,
+                touches_edge=touches,
+                mask=m,
+            )
+        )
     out.sort(key=lambda b: -b.area_m2)
     return out
 
@@ -301,8 +325,8 @@ def coarse_grid(levels, heights, downsample=8):
     rows, cols = lv.shape[0] // d, lv.shape[1] // d
     if rows == 0 or cols == 0:
         return None
-    lv_c = lv[:rows * d, :cols * d].reshape(rows, d, cols, d)
-    hg_b = hg[:rows * d, :cols * d].reshape(rows, d, cols, d)
+    lv_c = lv[: rows * d, : cols * d].reshape(rows, d, cols, d)
+    hg_b = hg[: rows * d, : cols * d].reshape(rows, d, cols, d)
     # wet is decided per TEXEL (level > ground) and a coarse cell is wet when a quarter of its
     # texels are; level and ground are then averaged over the wet texels only. Averaging land
     # into a shoreline cell's ground made every river narrower than a few cells read as dry.
@@ -311,7 +335,9 @@ def coarse_grid(levels, heights, downsample=8):
     wet = wet_n >= max(1, (d * d) // 4)
     denom = numpy.maximum(wet_n, 1)
     level_c = numpy.where(wet_n > 0, numpy.where(wet_t, lv_c, 0.0).sum(axis=(1, 3)) / denom, 0.0)
-    hg_c = numpy.where(wet_n > 0, numpy.where(wet_t, hg_b, 0.0).sum(axis=(1, 3)) / denom, hg_b.mean(axis=(1, 3)))
+    hg_c = numpy.where(
+        wet_n > 0, numpy.where(wet_t, hg_b, 0.0).sum(axis=(1, 3)) / denom, hg_b.mean(axis=(1, 3))
+    )
     return level_c, hg_c, wet
 
 
@@ -329,7 +355,7 @@ def _label4(mask):
     idx = numpy.flatnonzero(mask)
     if idx.size == 0:
         return labels.astype(numpy.int32), 0
-    labels.reshape(-1)[idx] = idx + 1          # each wet cell starts as its own label (index+1)
+    labels.reshape(-1)[idx] = idx + 1  # each wet cell starts as its own label (index+1)
     # propagate the MIN label across 4-neighbours until nothing changes; each pass halves the
     # remaining disagreement along a chain, and real water bodies are compact, so it converges
     # in tens of passes on a 512² grid.
@@ -353,4 +379,4 @@ def _label4(mask):
     uniq, inv = numpy.unique(labels[mask], return_inverse=True)
     compact = numpy.zeros((rows, cols), dtype=numpy.int32)
     compact[mask] = (inv + 1).astype(numpy.int32)
-    return compact, int(len(uniq))
+    return compact, len(uniq)

@@ -33,14 +33,12 @@ accounting. `imap` rather than `imap_unordered`, so the object list — and ther
 diff of a rebuild — does not depend on which worker finished first.
 """
 
-import math
 import multiprocessing
 import os
 import re
 import time
 
 import numpy
-
 from csiibundle import glb, lod
 from csiibundle.bake.tiles import MIN_LOD_MARK, split_material_name
 
@@ -49,7 +47,7 @@ from . import Stage, level_of
 from .materials import aliases_of, mapto_name
 
 STAGE_KEY = "derived"
-TILE_DETAIL_PX = tilelod.ALWAYS_PX      # what a tile nothing culls still ships (see beamng/tilelod)
+TILE_DETAIL_PX = tilelod.ALWAYS_PX  # what a tile nothing culls still ships (see beamng/tilelod)
 PRODUCTS = {
     # product: (setting toggle, group, collision setting or None for paint, castShadows)
     "markings": ("markings", "Markings", "collision_paint", False),
@@ -83,7 +81,9 @@ def run(ctx, progress):
     detail_scale = float(settings.get("lod_detail_scale", 6.0) or 6.0)
     # `tile_lod` off keeps A4's ladder exactly: switches anchored on the game's own null distance
     # and no decimation at all.
-    view_distance = float(settings.get("view_distance") or 0) if settings.get("tile_lod", True) else None
+    view_distance = (
+        float(settings.get("view_distance") or 0) if settings.get("tile_lod", True) else None
+    )
     workers = ctx.jobs or 1
     aliases = aliases_of(ctx.shared, level)
     shared_used = (ctx.shared if ctx.shared is not None else {}).setdefault("materials_used", set())
@@ -97,27 +97,54 @@ def run(ctx, progress):
             # on disk on any level that had once been built with it on, and said nothing (A8/P5).
             removed = dae.sweep_orphans(level.path("art", "shapes", product), set())
             if removed:
-                progress.log(f"derived: {product} is off — removed {removed} shape file(s) an "
-                             f"earlier build left behind")
+                progress.log(
+                    f"derived: {product} is off — removed {removed} shape file(s) an "
+                    f"earlier build left behind"
+                )
             summary[product] = {"disabled": True, "shapesRemoved": removed}
             continue
         folder = os.path.join(ctx.derived_dir, product)
         if not os.path.isdir(folder):
             progress.log(f"derived: no {product} tiles baked")
             continue
-        files = sorted(f for f in os.listdir(folder) if TILE_RE.match(f) and f.startswith(product + "_"))
+        files = sorted(
+            f for f in os.listdir(folder) if TILE_RE.match(f) and f.startswith(product + "_")
+        )
         if ctx.region:
             files = [f for f in files if _tile_intersects(f, tile, ctx.region)]
-        collide = collide_all and (coll_setting is None or bool(settings.get(coll_setting, coll_setting != "collision_paint")))
+        collide = collide_all and (
+            coll_setting is None
+            or bool(settings.get(coll_setting, coll_setting != "collision_paint"))
+        )
         progress.begin(f"derived: {product}", total=len(files), unit="tiles")
         counts = {"written": 0, "tris": 0, "split_geoms": 0, "rewritten": 0}
         names = set()
         ladder_stats = tilelod.new_stats()
-        jobs = [(folder, name, product, tile, level.dir, level.name, aliases, detail_scale,
-                 view_distance) for name in files]
+        jobs = [
+            (
+                folder,
+                name,
+                product,
+                tile,
+                level.dir,
+                level.name,
+                aliases,
+                detail_scale,
+                view_distance,
+            )
+            for name in files
+        ]
 
-        def absorb(result, counts=counts, names=names, ladder_stats=ladder_stats,
-                   group=group, product=product, collide=collide, shadows=shadows):
+        def absorb(
+            result,
+            counts=counts,
+            names=names,
+            ladder_stats=ladder_stats,
+            group=group,
+            product=product,
+            collide=collide,
+            shadows=shadows,
+        ):
             progress.advance(1)
             if result is None:
                 return
@@ -126,12 +153,17 @@ def run(ctx, progress):
             counts["split_geoms"] += result["extraGeoms"]
             counts["rewritten"] += 1 if result["changed"] else 0
             names.add(result["name"])
-            obj = {"name": result["name"], "class": "TSStatic",
-                   "shapeName": level.game_path("art", "shapes", product, result["name"] + ".dae"),
-                   "position": [round(result["ox"], 3), round(result["oy"], 3), 0.0],
-                   "rotationMatrix": frame.identity_matrix(), "scale": [1, 1, 1],
-                   "collisionType": "Visible Mesh Final" if collide else "None", "decalType": "None",
-                   "useInstanceRenderData": True}
+            obj = {
+                "name": result["name"],
+                "class": "TSStatic",
+                "shapeName": level.game_path("art", "shapes", product, result["name"] + ".dae"),
+                "position": [round(result["ox"], 3), round(result["oy"], 3), 0.0],
+                "rotationMatrix": frame.identity_matrix(),
+                "scale": [1, 1, 1],
+                "collisionType": "Visible Mesh Final" if collide else "None",
+                "decalType": "None",
+                "useInstanceRenderData": True,
+            }
             if not shadows:
                 obj["castShadows"] = False
             level.add([group], obj, key=f"derived:{result['name']}")
@@ -152,13 +184,20 @@ def run(ctx, progress):
                     progress.check()
         # each product owns art/shapes/<product>/ (the folder is no longer cleared at build start)
         orphans = dae.sweep_orphans(level.path("art", "shapes", product), names)
-        progress.end(f"{counts['written']} tiles ({counts['rewritten']} rewritten), {counts['tris']:,} triangles, collision "
-                     f"{'on' if collide else 'off'}, {orphans} orphans removed, "
-                     f"{counts['split_geoms']} extra geometries from the {dae.MAX_GEOMETRY_VERTS:,}-vertex cap")
-        summary[product] = {"tiles": counts["written"], "tilesRewritten": counts["rewritten"],
-                            "orphansRemoved": orphans, "triangles": counts["tris"], "collision": collide,
-                            "splitGeometries": counts["split_geoms"],
-                            "lod": tilelod.ladder_summary(ladder_stats, detail_scale)}
+        progress.end(
+            f"{counts['written']} tiles ({counts['rewritten']} rewritten), {counts['tris']:,} triangles, collision "
+            f"{'on' if collide else 'off'}, {orphans} orphans removed, "
+            f"{counts['split_geoms']} extra geometries from the {dae.MAX_GEOMETRY_VERTS:,}-vertex cap"
+        )
+        summary[product] = {
+            "tiles": counts["written"],
+            "tilesRewritten": counts["rewritten"],
+            "orphansRemoved": orphans,
+            "triangles": counts["tris"],
+            "collision": collide,
+            "splitGeometries": counts["split_geoms"],
+            "lod": tilelod.ladder_summary(ladder_stats, detail_scale),
+        }
     level.write_objects()
     return {"products": summary, "jobs": workers, "seconds": round(time.monotonic() - started, 1)}
 
@@ -178,7 +217,7 @@ def _tile_job(args):
         return None
     level = LevelPaths(level_dir, level_name)
     shared = {"materials_aliases": {"aliases": aliases}}
-    ox, oy = (tx + 0.5) * tile, (tz + 0.5) * tile      # bundle x/z = BeamNG x/y
+    ox, oy = (tx + 0.5) * tile, (tz + 0.5) * tile  # bundle x/z = BeamNG x/y
     parts = []
     for node in nodes:
         if len(node["tris"]) == 0:
@@ -198,7 +237,11 @@ def _tile_job(args):
             # emits one today (paint variants live on object shapes), and if one ever
             # does it will need its own bound name here rather than the canonical.
             base, _variant, min_lod = split_material_name(mat)
-            bound = _ground_mapto(level, base) if base.startswith("ground:") else mapto_name(shared, level, base)
+            bound = (
+                _ground_mapto(level, base)
+                if base.startswith("ground:")
+                else mapto_name(shared, level, base)
+            )
             runs.append((bound if min_lod is None else f"{bound}{MIN_LOD_MARK}{min_lod}", count))
         parts.append((local, nn, dae.glb_uvs(node["uvs"]), None, node["tris"], runs))
     if not parts:
@@ -208,10 +251,16 @@ def _tile_job(args):
     levels, ladder = _tile_levels(shape_name, mesh, detail_scale, view_distance, tile)
     path = level.path("art", "shapes", product, f"{shape_name}.dae")
     stats = dae.write_shape(path, dae.Shape(shape_name, levels, null_px=ladder["nullPx"]))
-    return {"name": shape_name, "ox": ox, "oy": oy, "triangles": stats["triangles"],
-            "changed": bool(stats.get("changed")), "lod": tilelod.compact(levels, ladder),
-            "extraGeoms": sum(len(ms) for _px, ms in levels) - len(levels),
-            "used": sorted(shared.get("materials_used") or ())}
+    return {
+        "name": shape_name,
+        "ox": ox,
+        "oy": oy,
+        "triangles": stats["triangles"],
+        "changed": bool(stats.get("changed")),
+        "lod": tilelod.compact(levels, ladder),
+        "extraGeoms": sum(len(ms) for _px, ms in levels) - len(levels),
+        "used": sorted(shared.get("materials_used") or ()),
+    }
 
 
 class LevelPaths:
@@ -246,11 +295,21 @@ def _tile_intersects(name, tile, region):
 
 # The five product toggles are read through a variable (`settings.get(toggle, True)`), so they
 # are declared here by hand and caught at runtime by the recorder rather than by a source scan.
-INPUTS = tuple(f"derived:{p}" for p in sorted(PRODUCTS)) + ("derived:materials.json",)
-SETTINGS = tuple(sorted({toggle for toggle, _g, _c, _s in PRODUCTS.values()}
-                        | {c for _t, _g, c, _s in PRODUCTS.values() if c}
-                        | {"tile_size", "region", "collision_preset", "lod_detail_scale",
-                           "view_distance", "tile_lod"}))
+INPUTS = (*tuple(f"derived:{p}" for p in sorted(PRODUCTS)), "derived:materials.json")
+SETTINGS = tuple(
+    sorted(
+        {toggle for toggle, _g, _c, _s in PRODUCTS.values()}
+        | {c for _t, _g, c, _s in PRODUCTS.values() if c}
+        | {
+            "tile_size",
+            "region",
+            "collision_preset",
+            "lod_detail_scale",
+            "view_distance",
+            "tile_lod",
+        }
+    )
+)
 OUTPUTS = ("art/shapes",)
 
 # -- the ladder ------------------------------------------------------------------------------------
@@ -259,17 +318,34 @@ OUTPUTS = ("art/shapes",)
 # only what the game had already stopped drawing and no level can crack against another. The
 # whole argument and every helper live in `beamng/tilelod.py`, shared with the networks stage.
 
+
 def _tile_levels(shape_name, mesh, detail_scale, view_distance=None, tile=None):
     """`([(px, [Mesh]), ...], ladder)` for one merged tile."""
-    return tilelod.build_levels(dae, shape_name, mesh, detail_scale,
-                                lod.DEFAULT_LEVEL_OF_DETAIL, TILE_DETAIL_PX,
-                                view_distance=view_distance,
-                                targets=tilelod.TILE_TARGETS if view_distance else None,
-                                tile=tile)
+    return tilelod.build_levels(
+        dae,
+        shape_name,
+        mesh,
+        detail_scale,
+        lod.DEFAULT_LEVEL_OF_DETAIL,
+        TILE_DETAIL_PX,
+        view_distance=view_distance,
+        targets=tilelod.TILE_TARGETS if view_distance else None,
+        tile=tile,
+    )
 
 
 # version 5: `lod_detail_scale` no longer multiplies the LADDER, only the null threshold
 # version 4: an uncullable tile (skirts, terraincut) gets a detail ladder too, and the
 # decimator's UV bin scales with the mesh's own UV range
-STAGE = Stage(STAGE_KEY, "Markings, areas, skirts, furniture", enabled, units, run, inputs=INPUTS,
-              settings_keys=SETTINGS, outputs=OUTPUTS, shared_keys=("materials_used",), version=5)
+STAGE = Stage(
+    STAGE_KEY,
+    "Markings, areas, skirts, furniture",
+    enabled,
+    units,
+    run,
+    inputs=INPUTS,
+    settings_keys=SETTINGS,
+    outputs=OUTPUTS,
+    shared_keys=("materials_used",),
+    version=5,
+)

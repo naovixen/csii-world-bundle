@@ -22,6 +22,7 @@ Four claims, each scored against something that is not the implementation:
 Run: `python tools/test_heightfield.py`  (system Python + numpy; claim 1 is skipped when no
 bundle is on disk).
 """
+
 import os
 import sys
 
@@ -32,8 +33,10 @@ from csiibundle import png as png_reader
 from csiibundle import reader
 from csiibundle.drape import HeightfieldSurface
 
-BUNDLE = os.path.expandvars(r"%USERPROFILE%\AppData\LocalLow\Colossal Order"
-                            r"\Cities Skylines II\ModsData\Carto")
+BUNDLE = os.path.expandvars(
+    r"%USERPROFILE%\AppData\LocalLow\Colossal Order"
+    r"\Cities Skylines II\ModsData\Carto"
+)
 
 failures = 0
 
@@ -65,8 +68,11 @@ for diagonal in ("nw_se", "ne_sw"):
     surface = HeightfieldSurface(plane, CELL, ORIGIN_X, ORIGIN_Y, diagonal=diagonal)
     got = surface.height(qx, qy)
     worst = float(numpy.abs(got - truth).max())
-    check(worst < 1e-9, f"planar field is exact everywhere ({diagonal})",
-          f"worst {worst:.2e} m over {len(qx)} query points")
+    check(
+        worst < 1e-9,
+        f"planar field is exact everywhere ({diagonal})",
+        f"worst {worst:.2e} m over {len(qx)} query points",
+    )
 
 # A saddle: the four corners of every quad are deliberately non-coplanar, so a quad's centre has
 # three DIFFERENT defensible answers and which you get says which surface you built.
@@ -93,14 +99,20 @@ for name, surface, want in (("nw_se", a, (nw + se) * 0.5), ("ne_sw", b, (ne + sw
     got = surface.height(cxg.ravel(), cyg.ravel()).reshape(want.shape)
     worst = float(numpy.abs(got - want).max())
     apart = float(numpy.abs(got - bilinear).min())
-    check(worst < 1e-9 and apart > 1e-6,
-          f"quad centres take the {name} diagonal's own midpoint, not a bilinear blend",
-          f"error {worst:.2e} m, nearest bilinear value {apart * 100:.2f} cm away")
+    check(
+        worst < 1e-9 and apart > 1e-6,
+        f"quad centres take the {name} diagonal's own midpoint, not a bilinear blend",
+        f"error {worst:.2e} m, nearest bilinear value {apart * 100:.2f} cm away",
+    )
 
-gap = float(numpy.abs(a.height(cxg.ravel(), cyg.ravel())
-                      - b.height(cxg.ravel(), cyg.ravel())).max())
-check(gap > 1e-6, "and the two conventions therefore disagree with each other",
-      f"worst {gap * 100:.2f} cm at a quad centre")
+gap = float(
+    numpy.abs(a.height(cxg.ravel(), cyg.ravel()) - b.height(cxg.ravel(), cyg.ravel())).max()
+)
+check(
+    gap > 1e-6,
+    "and the two conventions therefore disagree with each other",
+    f"worst {gap * 100:.2f} cm at a quad centre",
+)
 
 # Vertices are shared by both triangles whichever diagonal is chosen, so both must reproduce
 # them; this is claim 1's synthetic half and holds with or without a bundle.
@@ -110,19 +122,31 @@ for name, surface in (("nw_se", a), ("ne_sw", b)):
     check(worst < 1e-9, f"lattice vertices are exact on a saddle ({name})", f"worst {worst:.2e} m")
 
 flat = HeightfieldSurface(numpy.zeros((ROWS, COLS)), CELL, ORIGIN_X, ORIGIN_Y)
-outside = [(ORIGIN_X - CELL, ORIGIN_Y), (ORIGIN_X, ORIGIN_Y + CELL),
-           (ORIGIN_X + COLS * CELL, ORIGIN_Y), (ORIGIN_X, ORIGIN_Y - ROWS * CELL)]
-check(all(flat.height(x, y) is None for x, y in outside),
-      "outside the raster returns None rather than clamping to an edge value")
+outside = [
+    (ORIGIN_X - CELL, ORIGIN_Y),
+    (ORIGIN_X, ORIGIN_Y + CELL),
+    (ORIGIN_X + COLS * CELL, ORIGIN_Y),
+    (ORIGIN_X, ORIGIN_Y - ROWS * CELL),
+]
+check(
+    all(flat.height(x, y) is None for x, y in outside),
+    "outside the raster returns None rather than clamping to an edge value",
+)
 check(flat.height(ORIGIN_X, ORIGIN_Y) == 0.0, "the exact corner vertex is inside, not outside")
 
 inside_x, inside_y = ORIGIN_X + CELL, ORIGIN_Y - CELL
-check(flat.drop(inside_x, inside_y, 0.4, 0.5, 0.5) == 0.0,
-      "drop answers when the ground is inside the projector window")
-check(flat.drop(inside_x, inside_y, 0.9, 0.5, 0.5) is None,
-      "drop declines when the ground is outside the window (a marking on a deck above)")
-check(flat.drop(inside_x, inside_y, -0.9, 0.5, 0.5) is None,
-      "drop declines when the ground is above the window too")
+check(
+    flat.drop(inside_x, inside_y, 0.4, 0.5, 0.5) == 0.0,
+    "drop answers when the ground is inside the projector window",
+)
+check(
+    flat.drop(inside_x, inside_y, 0.9, 0.5, 0.5) is None,
+    "drop declines when the ground is outside the window (a marking on a deck above)",
+)
+check(
+    flat.drop(inside_x, inside_y, -0.9, 0.5, 0.5) is None,
+    "drop declines when the ground is above the window too",
+)
 
 
 # -- 1: the real heightmap ----------------------------------------------------------------------
@@ -155,12 +179,17 @@ else:
         got = surface.height(vx, vy)
         want = truth_grid[rr, cc]
         worst = float(numpy.nanmax(numpy.abs(got - want)))
-        check(worst < 1e-9, f"{len(rr)} real lattice vertices reproduce the raster exactly",
-              f"worst {worst:.2e} m, heights {want.min():.1f}..{want.max():.1f} m")
+        check(
+            worst < 1e-9,
+            f"{len(rr)} real lattice vertices reproduce the raster exactly",
+            f"worst {worst:.2e} m, heights {want.min():.1f}..{want.max():.1f} m",
+        )
 
         # And the map's own extent: one cell beyond the last vertex must be outside.
-        check(surface.height(ox - cell, oz) is None and surface.height(ox, oz + cell) is None,
-              "the real raster's north-west edge is bounded correctly")
+        check(
+            surface.height(ox - cell, oz) is None and surface.height(ox, oz + cell) is None,
+            "the real raster's north-west edge is bounded correctly",
+        )
 
 print("test_heightfield: " + ("FAILED" if failures else "OK"))
 sys.exit(1 if failures else 0)

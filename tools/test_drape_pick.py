@@ -30,9 +30,9 @@ so agreement means the geometry agrees, not that one bug is being compared again
 Run: `python tools/test_drape_pick.py [densest]`  (system Python + numpy; skipped when no bundle
 is on disk).
 """
+
 import json
 import os
-import re
 import struct
 import sys
 
@@ -42,8 +42,10 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from csiibundle import bezier as bezier_math
 from csiibundle import decals as decal_rules
 
-BUNDLE = os.path.expandvars(r"%USERPROFILE%\AppData\LocalLow\Colossal Order"
-                            r"\Cities Skylines II\ModsData\Carto")
+BUNDLE = os.path.expandvars(
+    r"%USERPROFILE%\AppData\LocalLow\Colossal Order"
+    r"\Cities Skylines II\ModsData\Carto"
+)
 
 # The window to sweep, and how densely each marking is sampled. Stations run along the lane
 # curve, laterals across the decal part's own width — the two axes `_drape_block` samples. The
@@ -83,8 +85,7 @@ TOLERANCE = 0.05
 # Recorded baselines, measured 2026-08-11 on the 2026-08-10 full-city rip. `lift` is the share
 # of samples landing more than 2 cm above their own segment's surface; `worst` the largest such
 # excursion, in metres. The shipped rule must not regress past these.
-BASELINE = {"default": {"lift": 0.0005, "worst": 0.02},
-            "densest": {"lift": 0.0030, "worst": 0.31}}
+BASELINE = {"default": {"lift": 0.0005, "worst": 0.02}, "densest": {"lift": 0.0030, "worst": 0.31}}
 
 _COMPONENT = {5120: "b", 5121: "B", 5122: "h", 5123: "H", 5125: "I", 5126: "f"}
 _COUNT = {"SCALAR": 1, "VEC2": 2, "VEC3": 3, "VEC4": 4}
@@ -108,8 +109,8 @@ def glb_triangles(path):
     assert data[:4] == b"glTF", path
     pos, gltf, binary = 12, None, b""
     while pos + 8 <= len(data):
-        length, tag = struct.unpack("<I4s", data[pos:pos + 8])
-        payload = data[pos + 8:pos + 8 + length]
+        length, tag = struct.unpack("<I4s", data[pos : pos + 8])
+        payload = data[pos + 8 : pos + 8 + length]
         pos += 8 + length
         if tag == b"JSON":
             gltf = json.loads(payload.decode("utf-8"))
@@ -124,9 +125,8 @@ def glb_triangles(path):
         components = _COUNT[acc["type"]]
         fmt = _COMPONENT[acc["componentType"]]
         stride = view.get("byteStride") or struct.calcsize("<" + fmt) * components
-        raw = numpy.frombuffer(binary, dtype=numpy.uint8,
-                               count=stride * acc["count"], offset=start)
-        wide = raw.reshape(acc["count"], stride)[:, :struct.calcsize("<" + fmt) * components]
+        raw = numpy.frombuffer(binary, dtype=numpy.uint8, count=stride * acc["count"], offset=start)
+        wide = raw.reshape(acc["count"], stride)[:, : struct.calcsize("<" + fmt) * components]
         return wide.copy().view(numpy.dtype("<" + fmt)).reshape(acc["count"], components)
 
     def node_matrix(node):
@@ -134,11 +134,13 @@ def glb_triangles(path):
             return numpy.asarray(node["matrix"], dtype=numpy.float64).reshape(4, 4).T
         matrix = numpy.eye(4)
         x, y, z, w = node.get("rotation", (0.0, 0.0, 0.0, 1.0))
-        matrix[:3, :3] = numpy.array([
-            [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
-            [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
-            [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)],
-        ]) * numpy.asarray(node.get("scale", (1.0, 1.0, 1.0)), dtype=numpy.float64)
+        matrix[:3, :3] = numpy.array(
+            [
+                [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+                [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+                [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)],
+            ]
+        ) * numpy.asarray(node.get("scale", (1.0, 1.0, 1.0)), dtype=numpy.float64)
         matrix[:3, 3] = node.get("translation", (0.0, 0.0, 0.0))
         return matrix
 
@@ -153,9 +155,11 @@ def glb_triangles(path):
                     continue
                 verts = accessor(primitive["attributes"]["POSITION"]).astype(numpy.float64)
                 verts = verts @ world[:3, :3].T + world[:3, 3]
-                index_list = (accessor(primitive["indices"]).reshape(-1)
-                              if "indices" in primitive
-                              else numpy.arange(len(verts)))
+                index_list = (
+                    accessor(primitive["indices"]).reshape(-1)
+                    if "indices" in primitive
+                    else numpy.arange(len(verts))
+                )
                 tris.append(verts[index_list].reshape(-1, 3, 3))
         for child in node.get("children", ()):
             walk(child, world)
@@ -181,7 +185,7 @@ def hits_below(tris, x, z, top, bottom):
     bx, bz = tris[:, 1, 0], tris[:, 1, 2]
     cx, cz = tris[:, 2, 0], tris[:, 2, 2]
     det = (bz - cz) * (ax - cx) + (cx - bx) * (az - cz)
-    live = numpy.abs(det) > 1e-12                       # a triangle seen edge-on has no top
+    live = numpy.abs(det) > 1e-12  # a triangle seen edge-on has no top
     safe = numpy.where(live, det, 1.0)
     u = ((bz - cz) * (x - cx) + (cx - bx) * (z - cz)) / safe
     v = ((cz - az) * (x - cx) + (ax - cx) * (z - cz)) / safe
@@ -235,8 +239,11 @@ def main():
         return 0
 
     mesh_dir = os.path.join(BUNDLE, "networks")
-    every = [record for record in _jsonl(os.path.join(BUNDLE, "networks.jsonl"))
-             if record.get("kind") == "segment" and record.get("pos")]
+    every = [
+        record
+        for record in _jsonl(os.path.join(BUNDLE, "networks.jsonl"))
+        if record.get("kind") == "segment" and record.get("pos")
+    ]
 
     center = CENTER
     if DENSEST:
@@ -246,8 +253,9 @@ def main():
             counts[key] = counts.get(key, 0) + 1
         best = max(counts, key=counts.get)
         center = ((best[0] + 0.5) * RADIUS, (best[1] + 0.5) * RADIUS)
-        print(f"densest {RADIUS:g} m cell: {counts[best]} segment(s) at "
-              f"{center[0]:g},{center[1]:g}")
+        print(
+            f"densest {RADIUS:g} m cell: {counts[best]} segment(s) at {center[0]:g},{center[1]:g}"
+        )
 
     segments = {}
     for record in every:
@@ -269,13 +277,18 @@ def main():
             continue
         try:
             tris = glb_triangles(path) + numpy.asarray(record["pos"], dtype=numpy.float64)
-        except Exception as error:                      # noqa: BLE001 - a bad glb just skips
+        except Exception as error:
             print(f"  note: {os.path.basename(path)} unreadable ({error})")
             continue
         if len(tris):
             flat = tris.reshape(-1, 3)
-            geometry[identifier] = (tris, flat[:, 0].min(), flat[:, 0].max(),
-                                    flat[:, 2].min(), flat[:, 2].max())
+            geometry[identifier] = (
+                tris,
+                flat[:, 0].min(),
+                flat[:, 0].max(),
+                flat[:, 2].min(),
+                flat[:, 2].max(),
+            )
     if len(geometry) < 20:
         print(f"SKIP only {len(geometry)} segment mesh(es) in the window — nothing to measure")
         return 0
@@ -297,8 +310,11 @@ def main():
         entry = catalogue.get(record.get("prefab"))
         if entry is None:
             continue
-        decals = [entry["parts"][i] for i in record.get("parts", ())
-                  if i < len(entry.get("parts", ())) and entry["parts"][i].get("decal")]
+        decals = [
+            entry["parts"][i]
+            for i in record.get("parts", ())
+            if i < len(entry.get("parts", ())) and entry["parts"][i].get("decal")
+        ]
         if not decals:
             continue
 
@@ -322,8 +338,12 @@ def main():
                     expected = float(points[i][1]) + H["_DECAL_LIFT"]
                     top, bottom = expected + half_height, expected - half_height
 
-                    near = numpy.nonzero((boxes[:, 0] <= x) & (x <= boxes[:, 1])
-                                         & (boxes[:, 2] <= z) & (z <= boxes[:, 3]))[0]
+                    near = numpy.nonzero(
+                        (boxes[:, 0] <= x)
+                        & (x <= boxes[:, 1])
+                        & (boxes[:, 2] <= z)
+                        & (z <= boxes[:, 3])
+                    )[0]
                     per_object = []
                     own = numpy.zeros(0)
                     for k in near:
@@ -352,19 +372,23 @@ def main():
         return 0
 
     failures = 0
-    print(f"swept {len(geometry)} segment mesh(es) in a {RADIUS:g} m window at "
-          f"{center[0]:g},{center[1]:g}; {samples} drape sample(s), {multi} with more than one "
-          f"object under them; decal parts by role: "
-          + ", ".join(f"{k or 'MISSING'}={v}" for k, v in sorted(roles.items(), key=str)))
+    print(
+        f"swept {len(geometry)} segment mesh(es) in a {RADIUS:g} m window at "
+        f"{center[0]:g},{center[1]:g}; {samples} drape sample(s), {multi} with more than one "
+        f"object under them; decal parts by role: "
+        + ", ".join(f"{k or 'MISSING'}={v}" for k, v in sorted(roles.items(), key=str))
+    )
 
     for key, _ in rules:
         over = numpy.asarray(excess[key])
         above = over[over > 0]
-        print(f"  {key:3s}: above its own road  >2 cm {(over > 0.02).mean() * 100:5.2f}%   "
-              f">5 cm {(over > 0.05).mean() * 100:5.2f}%   "
-              f">10 cm {(over > 0.10).mean() * 100:5.2f}%   "
-              f"max {above.max() if len(above) else 0.0:+.3f} m   "
-              f"below it >5 cm {(over < -0.05).mean() * 100:5.2f}%")
+        print(
+            f"  {key:3s}: above its own road  >2 cm {(over > 0.02).mean() * 100:5.2f}%   "
+            f">5 cm {(over > 0.05).mean() * 100:5.2f}%   "
+            f">10 cm {(over > 0.10).mean() * 100:5.2f}%   "
+            f"max {above.max() if len(above) else 0.0:+.3f} m   "
+            f"below it >5 cm {(over < -0.05).mean() * 100:5.2f}%"
+        )
 
     # "old" IS the shipped rule — per-object topmost, then nearest-to-expected. The other two
     # are the alternatives this test retired; they are measured every run so the comparison
@@ -375,21 +399,30 @@ def main():
     baseline = BASELINE["densest" if DENSEST else "default"]
 
     if lift > baseline["lift"] or worst > baseline["worst"]:
-        print(f"FAIL the shipped pick regressed: {lift * 100:.2f}% of samples over 2 cm above "
-              f"their own road (baseline {baseline['lift'] * 100:.2f}%), worst {worst:+.3f} m "
-              f"(baseline {baseline['worst']:+.3f} m)")
+        print(
+            f"FAIL the shipped pick regressed: {lift * 100:.2f}% of samples over 2 cm above "
+            f"their own road (baseline {baseline['lift'] * 100:.2f}%), worst {worst:+.3f} m "
+            f"(baseline {baseline['worst']:+.3f} m)"
+        )
         failures += 1
     else:
-        print(f"PASS the shipped pick is within its baseline: {lift * 100:.2f}% over 2 cm "
-              f"(<= {baseline['lift'] * 100:.2f}%), worst {worst:+.3f} m "
-              f"(<= {baseline['worst']:+.3f} m) over {len(shipped)} sample(s)")
+        print(
+            f"PASS the shipped pick is within its baseline: {lift * 100:.2f}% over 2 cm "
+            f"(<= {baseline['lift'] * 100:.2f}%), worst {worst:+.3f} m "
+            f"(<= {baseline['worst']:+.3f} m) over {len(shipped)} sample(s)"
+        )
 
     # And no alternative may quietly become the better rule without this saying so.
-    better = [key for key, _ in rules
-              if key != "old" and (numpy.asarray(excess[key]) > 0.02).mean() < lift - 1e-9]
+    better = [
+        key
+        for key, _ in rules
+        if key != "old" and (numpy.asarray(excess[key]) > 0.02).mean() < lift - 1e-9
+    ]
     if better:
-        print(f"NOTE {', '.join(better)} now lifts fewer samples than the shipped rule — "
-              "the choice made on 2026-08-11 deserves revisiting")
+        print(
+            f"NOTE {', '.join(better)} now lifts fewer samples than the shipped rule — "
+            "the choice made on 2026-08-11 deserves revisiting"
+        )
 
     print("test_drape_pick:", "FAIL" if failures else "OK")
     return 1 if failures else 0

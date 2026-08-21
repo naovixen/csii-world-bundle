@@ -46,28 +46,46 @@ CHUNK = 24
 _WORKER = {}
 
 
-def _worker_init(spec, cell, origin_x, origin_y, diagonal, mode, catalogue, center, radius,
-                 bundle_dir, prefer_fine):
+def _worker_init(
+    spec,
+    cell,
+    origin_x,
+    origin_y,
+    diagonal,
+    mode,
+    catalogue,
+    center,
+    radius,
+    bundle_dir,
+    prefer_fine,
+):
     """Attach the shared heightfield (or decode our own if the parent could not share one)."""
     if spec is not None:
         name, shape, dtype = spec
         block = shared_memory.SharedMemory(name=name)
-        _WORKER["block"] = block                 # keep the mapping alive for the process's life
+        _WORKER["block"] = block  # keep the mapping alive for the process's life
         heights = numpy.ndarray(tuple(shape), dtype=numpy.dtype(dtype), buffer=block.buf)
         ground = GroundSurface.from_heights(heights, cell, origin_x, origin_y, diagonal, mode)
     else:
         ground = GroundSurface(bundle_dir, diagonal, mode=mode, prefer_fine=prefer_fine)
     _WORKER["cell"] = float(ground.cell) if ground.present else 3.5
-    _WORKER["sample"] = area_rules.memoised_sampler(ground) if ground.present else (lambda x, y: None)
+    _WORKER["sample"] = (
+        area_rules.memoised_sampler(ground) if ground.present else (lambda x, y: None)
+    )
     _WORKER["catalogue"] = catalogue
     _WORKER["center"] = center
     _WORKER["radius"] = radius
 
 
 def _conform_chunk(records):
-    pieces, stats = area_rules.build_pieces(records, _WORKER["cell"], _WORKER["sample"],
-                                            center=_WORKER["center"], radius=_WORKER["radius"],
-                                            catalogue=_WORKER["catalogue"])
+    pieces, stats = area_rules.build_pieces(
+        records,
+        _WORKER["cell"],
+        _WORKER["sample"],
+        center=_WORKER["center"],
+        radius=_WORKER["radius"],
+        catalogue=_WORKER["catalogue"],
+    )
     return _to_arrays(pieces), stats
 
 
@@ -84,10 +102,13 @@ def _to_arrays(pieces):
         faces = piece["faces"]
         if not faces:
             continue
-        assert faces[0] == (0, 1, 2) and faces[-1][2] == len(piece["verts"]) - 1, \
+        assert faces[0] == (0, 1, 2) and faces[-1][2] == len(piece["verts"]) - 1, (
             f"areas: {prefab} faces are not sequential triples; the arange reconstruction is invalid"
-        out[prefab] = (numpy.asarray(piece["verts"], dtype=numpy.float64),
-                       numpy.asarray(piece["minLod"], dtype=numpy.int64))
+        )
+        out[prefab] = (
+            numpy.asarray(piece["verts"], dtype=numpy.float64),
+            numpy.asarray(piece["minLod"], dtype=numpy.int64),
+        )
     return out
 
 
@@ -119,7 +140,7 @@ def _publish(heights):
     """
     try:
         block = shared_memory.SharedMemory(create=True, size=heights.nbytes)
-    except Exception:      # noqa: BLE001 - no shared memory on this platform/container
+    except Exception:
         return None, None
     view = numpy.ndarray(heights.shape, dtype=heights.dtype, buffer=block.buf)
     view[:] = heights
@@ -157,8 +178,14 @@ def _clip_roads(pieces, catalogue, road, ground, progress):
     <= 1.75 m on the fine raster), not the kerb, so the edge is ragged by up to one piece. And
     the test is per-CENTROID, so a piece straddling a kerb goes whole or stays whole.
     """
-    stats = {"prefabs": 0, "pieces": 0, "area": 0.0, "kept": 0,
-             "terrainOnlyPrefabs": 0, "roadTris": int(getattr(road, "count", 0) or 0)}
+    stats = {
+        "prefabs": 0,
+        "pieces": 0,
+        "area": 0.0,
+        "kept": 0,
+        "terrainOnlyPrefabs": 0,
+        "roadTris": int(getattr(road, "count", 0) or 0),
+    }
     if road is None or not getattr(road, "count", 0):
         progress.log("areas: decalLayers - no road surface, nothing to clip")
         return pieces, stats
@@ -172,7 +199,7 @@ def _clip_roads(pieces, catalogue, road, ground, progress):
         # zero can never again be mistaken for "no work to do".
         layers = tuple(entry.get("decalLayers") or entry.get("decal_layers") or ())
         if not layers or "Roads" in layers:
-            out[prefab] = (verts, min_lods)          # the game DOES paint these onto roads
+            out[prefab] = (verts, min_lods)  # the game DOES paint these onto roads
             continue
         stats["terrainOnlyPrefabs"] += 1
         tri = verts.reshape(-1, 3, 3)
@@ -181,31 +208,41 @@ def _clip_roads(pieces, catalogue, road, ground, progress):
         # `height_many` is the vectorised one. Getting this wrong reads as "no road anywhere".
         road_z = road.height_many(centroid[:, 0], centroid[:, 1])
         delta = road_z - centroid[:, 2]
-        covered = (~numpy.isnan(road_z)) & (delta <= ROAD_AT_GRADE_M) & (delta >= -ROAD_UNDER_TOLERANCE_M)
+        covered = (
+            (~numpy.isnan(road_z)) & (delta <= ROAD_AT_GRADE_M) & (delta >= -ROAD_UNDER_TOLERANCE_M)
+        )
         if not covered.any():
             out[prefab] = (verts, min_lods)
             continue
         edge1 = tri[covered, 1, :2] - tri[covered, 0, :2]
         edge2 = tri[covered, 2, :2] - tri[covered, 0, :2]
-        stats["area"] += float(numpy.abs(edge1[:, 0] * edge2[:, 1] - edge1[:, 1] * edge2[:, 0]).sum()) * 0.5
+        stats["area"] += (
+            float(numpy.abs(edge1[:, 0] * edge2[:, 1] - edge1[:, 1] * edge2[:, 0]).sum()) * 0.5
+        )
         stats["pieces"] += int(covered.sum())
         stats["prefabs"] += 1
         keep = ~covered
         stats["kept"] += int(keep.sum())
         if not keep.any():
-            continue                                  # the whole surface was carriageway
+            continue  # the whole surface was carriageway
         out[prefab] = (tri[keep].reshape(-1, 3), min_lods[keep])
     if stats["pieces"]:
-        progress.log(f"areas: decalLayers - {stats['area']:,.0f} m2 of terrain-only paint clipped "
-                     f"off carriageways ({stats['pieces']:,} pieces over {stats['prefabs']} prefabs)")
+        progress.log(
+            f"areas: decalLayers - {stats['area']:,.0f} m2 of terrain-only paint clipped "
+            f"off carriageways ({stats['pieces']:,} pieces over {stats['prefabs']} prefabs)"
+        )
     elif not stats["terrainOnlyPrefabs"]:
         # LOUD, because a silent zero here is indistinguishable from a working clip with nothing
         # to do — which is exactly how the first cut of this shipped
-        progress.log("areas: decalLayers - NO prefab declared terrain-only layers; the catalogue "
-                     "may not carry `decalLayers` at all, so nothing was clipped")
+        progress.log(
+            "areas: decalLayers - NO prefab declared terrain-only layers; the catalogue "
+            "may not carry `decalLayers` at all, so nothing was clipped"
+        )
     else:
-        progress.log(f"areas: decalLayers - {stats['terrainOnlyPrefabs']} terrain-only prefabs, "
-                     f"none of them over a carriageway")
+        progress.log(
+            f"areas: decalLayers - {stats['terrainOnlyPrefabs']} terrain-only prefabs, "
+            f"none of them over a carriageway"
+        )
     return out, stats
 
 
@@ -239,7 +276,7 @@ def run(context, progress):
         center = (float(region["centerX"]), float(region["centerZ"]))
         radius = float(region["radius"])
     records = list(reader.read_jsonl(areas_path)) if os.path.isfile(areas_path) else []
-    chunks = [records[i:i + CHUNK] for i in range(0, len(records), CHUNK)]
+    chunks = [records[i : i + CHUNK] for i in range(0, len(records), CHUNK)]
 
     merged = {}
     stats = None
@@ -247,13 +284,25 @@ def run(context, progress):
         block, spec = _publish(ground.a.heights) if ground.present else (None, None)
         if ground.present and spec is None:
             progress.log(f"areas: no shared memory — each of {jobs} workers decodes its own raster")
-        init = (spec, cell, ground.a.origin_x if ground.present else 0.0,
-                ground.a.origin_y if ground.present else 0.0, diagonal, "max",
-                catalogue, center, radius, bundle, prefer_fine)
-        del ground      # the workers own the raster now; the parent samples nothing
+        init = (
+            spec,
+            cell,
+            ground.a.origin_x if ground.present else 0.0,
+            ground.a.origin_y if ground.present else 0.0,
+            diagonal,
+            "max",
+            catalogue,
+            center,
+            radius,
+            bundle,
+            prefer_fine,
+        )
+        del ground  # the workers own the raster now; the parent samples nothing
         try:
             with Pool(processes=jobs, initializer=_worker_init, initargs=init) as pool:
-                for chunk, (chunk_pieces, chunk_stats) in zip(chunks, pool.imap(_conform_chunk, chunks)):
+                for chunk, (chunk_pieces, chunk_stats) in zip(
+                    chunks, pool.imap(_conform_chunk, chunks)
+                ):
                     progress.check()
                     _merge(merged, chunk_pieces)
                     stats = _merge_stats(stats, chunk_stats)
@@ -263,7 +312,7 @@ def run(context, progress):
                 block.close()
                 block.unlink()
     else:
-        sample = area_rules.memoised_sampler(ground) if ground.present else (lambda x, y: None)  # noqa: E731
+        sample = area_rules.memoised_sampler(ground) if ground.present else (lambda x, y: None)
         last = [0]
 
         def tick(placed):
@@ -272,24 +321,37 @@ def run(context, progress):
                 last[0] = placed
                 progress.check()
 
-        pieces, stats = area_rules.build_pieces(records, cell, sample, center=center, radius=radius,
-                                                progress=tick, catalogue=catalogue)
+        pieces, stats = area_rules.build_pieces(
+            records, cell, sample, center=center, radius=radius, progress=tick, catalogue=catalogue
+        )
         _merge(merged, _to_arrays(pieces))
         del pieces
-    stats = stats or {"placed": 0, "skipped_region": 0, "dropped_bad": 0, "missed": 0,
-                      "source_tris": 0, "painted_area": 0.0,
-                      "counters": {"unconformed": 0, "unconformed_area": 0.0, "worst": 0.0}}
-    pieces = {prefab: (numpy.concatenate(v) if len(v) > 1 else v[0],
-                       numpy.concatenate(m) if len(m) > 1 else m[0])
-              for prefab, (v, m) in merged.items()}
+    stats = stats or {
+        "placed": 0,
+        "skipped_region": 0,
+        "dropped_bad": 0,
+        "missed": 0,
+        "source_tris": 0,
+        "painted_area": 0.0,
+        "counters": {"unconformed": 0, "unconformed_area": 0.0, "worst": 0.0},
+    }
+    pieces = {
+        prefab: (
+            numpy.concatenate(v) if len(v) > 1 else v[0],
+            numpy.concatenate(m) if len(m) > 1 else m[0],
+        )
+        for prefab, (v, m) in merged.items()
+    }
     del merged
     # the game's `decalLayers` mask, applied here because this is where both surfaces exist
-    road, road_stats = load_road_surface(bundle, region, progress)
+    road, _road_stats = load_road_surface(bundle, region, progress)
     pieces, clip_stats = _clip_roads(pieces, catalogue, road, None, progress)
     del road
-    progress.end(f"{stats['placed']} areas -> {sum(len(m) for _, m in pieces.values()):,} pieces "
-                 f"({stats['skipped_region']} outside region, {stats['missed']} node lookups missed, "
-                 f"worst unconformed {stats['counters']['worst']:.3f} m)")
+    progress.end(
+        f"{stats['placed']} areas -> {sum(len(m) for _, m in pieces.values()):,} pieces "
+        f"({stats['skipped_region']} outside region, {stats['missed']} node lookups missed, "
+        f"worst unconformed {stats['counters']['worst']:.3f} m)"
+    )
 
     # tiles: Z-up pieces back to the bundle frame (x, z_up, y_north), winding restored
     sink = TileSink(tile, PRODUCT_NAME, out_dir)
@@ -297,14 +359,16 @@ def run(context, progress):
     materials = {}
     for prefab, (v_zup, min_lods) in pieces.items():
         faces = numpy.arange(len(v_zup), dtype=numpy.int64).reshape(-1, 3)
-        verts = v_zup[:, [0, 2, 1]]                        # bundle frame (x, y_up, z_north)
+        verts = v_zup[:, [0, 2, 1]]  # bundle frame (x, y_up, z_north)
         # winding: build_pieces reversed the source order for Z-up; the axis swap back to the
         # bundle frame reverses orientation again, so the Z-up face order IS the bundle-frame
         # up-facing order — measured (bundle-frame normals +Y on the reference city), not argued
         entry = catalogue.get(prefab) or {}
         mat = area_rules.surface_material(entry)
         uv_scale = float(mat["uv_scale"] or area_rules.UV_SCALE_DEFAULT)
-        uvs = numpy.stack([v_zup[:, 0] * uv_scale, v_zup[:, 1] * uv_scale], axis=1)   # world-planar (x, y_north)
+        uvs = numpy.stack(
+            [v_zup[:, 0] * uv_scale, v_zup[:, 1] * uv_scale], axis=1
+        )  # world-planar (x, y_north)
         name = f"area:{prefab}"
         # one add per distinct limit, so the tile carries the game's own per-triangle cull
         for value in numpy.unique(min_lods):
@@ -319,29 +383,46 @@ def run(context, progress):
     progress.begin("areas: tiles", total=len(tiles), unit="tiles")
     written = sink.flush(progress, jobs=jobs)
     progress.end(f"{written['files']} tiles, {written['tris']:,} triangles")
-    with open(os.path.join(out_dir, "materials.json"), "w", encoding="utf-8", newline="\n") as handle:
-        json.dump({"schema": "csiibundle.bake.areas.materials/1", "materials": materials}, handle, indent=1, sort_keys=True)
-    return {"areas": stats["placed"], "pieces": piece_count,
-            "sourceTris": stats["source_tris"], "paintedArea": round(stats["painted_area"], 1),
-            "missedLookups": stats["missed"], "worstUnconformed": round(stats["counters"]["worst"], 4),
-            "tiles": written["files"], "tris": written["tris"], "_tiles": written["tiles"],
-            "minLodTriangles": {str(k): int(v) for k, v in sorted(lod_histogram.items())},
-            "roadClip": {
-                "what": "paint of a `[\"Terrain\"]`-only prefab is dropped where a road surface "
-                        "is on top of it",
-                "why": "CS2's own `decalLayers` mask (§4.2) - the game never paints those onto "
-                       "roads. We conformed across the whole polygon and then lifted it, so on "
-                       "the reference city 472,957 m2 of terrain-only paint lay over a "
-                       "carriageway and stood proud of it over three quarters of the overlap. "
-                       "`bake/markings.py` has read the same field since A2. APPROXIMATE at the "
-                       "conform's own piece boundaries (sub-cell), not at the kerb",
-                "m2": round(clip_stats["area"], 1), "pieces": clip_stats["pieces"],
-                "prefabs": clip_stats["prefabs"],
-                "terrainOnlyPrefabs": clip_stats["terrainOnlyPrefabs"],
-                "roadTris": clip_stats["roadTris"], "atGradeMetres": ROAD_AT_GRADE_M,
-            },
-            "diagonal": diagonal,
-            "jobs": jobs, "seconds": round(time.monotonic() - started, 1)}
+    with open(
+        os.path.join(out_dir, "materials.json"), "w", encoding="utf-8", newline="\n"
+    ) as handle:
+        json.dump(
+            {"schema": "csiibundle.bake.areas.materials/1", "materials": materials},
+            handle,
+            indent=1,
+            sort_keys=True,
+        )
+    return {
+        "areas": stats["placed"],
+        "pieces": piece_count,
+        "sourceTris": stats["source_tris"],
+        "paintedArea": round(stats["painted_area"], 1),
+        "missedLookups": stats["missed"],
+        "worstUnconformed": round(stats["counters"]["worst"], 4),
+        "tiles": written["files"],
+        "tris": written["tris"],
+        "_tiles": written["tiles"],
+        "minLodTriangles": {str(k): int(v) for k, v in sorted(lod_histogram.items())},
+        "roadClip": {
+            "what": 'paint of a `["Terrain"]`-only prefab is dropped where a road surface '
+            "is on top of it",
+            "why": "CS2's own `decalLayers` mask (§4.2) - the game never paints those onto "
+            "roads. We conformed across the whole polygon and then lifted it, so on "
+            "the reference city 472,957 m2 of terrain-only paint lay over a "
+            "carriageway and stood proud of it over three quarters of the overlap. "
+            "`bake/markings.py` has read the same field since A2. APPROXIMATE at the "
+            "conform's own piece boundaries (sub-cell), not at the kerb",
+            "m2": round(clip_stats["area"], 1),
+            "pieces": clip_stats["pieces"],
+            "prefabs": clip_stats["prefabs"],
+            "terrainOnlyPrefabs": clip_stats["terrainOnlyPrefabs"],
+            "roadTris": clip_stats["roadTris"],
+            "atGradeMetres": ROAD_AT_GRADE_M,
+        },
+        "diagonal": diagonal,
+        "jobs": jobs,
+        "seconds": round(time.monotonic() - started, 1),
+    }
 
 
 # version 3: the MEASURED terrain diagonal (was the `envelope`, which floats), and CS2's own

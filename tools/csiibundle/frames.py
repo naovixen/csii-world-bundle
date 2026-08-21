@@ -50,26 +50,23 @@ import numpy
 
 # P — bundle Y-up (left-handed) to a Z-up right-handed consumer frame: (x, y, z) -> (x, z, y).
 # A row swap, determinant -1. CONTRACT (§2.1).
-P_ZUP = numpy.array([[1.0, 0.0, 0.0, 0.0],
-                     [0.0, 0.0, 1.0, 0.0],
-                     [0.0, 1.0, 0.0, 0.0],
-                     [0.0, 0.0, 0.0, 1.0]])
+P_ZUP = numpy.array(
+    [[1.0, 0.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]]
+)
 
 # diag(-1, 1, 1) — the X mirror that takes a `.glb`'s right-handed vertices into the bundle's
 # left-handed world frame. The last term of the §2.2 instance formula. CONTRACT.
-MIRROR_X = numpy.array([[-1.0, 0.0, 0.0, 0.0],
-                        [0.0, 1.0, 0.0, 0.0],
-                        [0.0, 0.0, 1.0, 0.0],
-                        [0.0, 0.0, 0.0, 1.0]])
+MIRROR_X = numpy.array(
+    [[-1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]]
+)
 
 # G — the basis change a Y-up-to-Z-up glTF loader applies to mesh vertices: (x, y, z) ->
 # (x, -z, y). This is NOT a bundle convention; it is a property of one class of loader, and it
 # appears here only so `zup_instance_matrix` can undo it. A consumer that reads the `.glb`
 # vertices as they are stored passes `mesh_basis=None` instead.
-GLTF_YUP_TO_ZUP = numpy.array([[1.0, 0.0, 0.0, 0.0],
-                               [0.0, 0.0, -1.0, 0.0],
-                               [0.0, 1.0, 0.0, 0.0],
-                               [0.0, 0.0, 0.0, 1.0]])
+GLTF_YUP_TO_ZUP = numpy.array(
+    [[1.0, 0.0, 0.0, 0.0], [0.0, 0.0, -1.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]]
+)
 
 # Identity rotation in the bundle's storage order. CONTRACT: the bundle stores quaternions
 # **[x, y, z, w]**, glTF's order — not the [w, x, y, z] that most maths libraries take.
@@ -91,12 +88,14 @@ def quat_matrix(quat):
     xx, yy, zz = x * x, y * y, z * z
     xy, xz, yz = x * y, x * z, y * z
     wx, wy, wz = w * x, w * y, w * z
-    return numpy.array([
-        [1.0 - 2.0 * (yy + zz), 2.0 * (xy - wz), 2.0 * (xz + wy), 0.0],
-        [2.0 * (xy + wz), 1.0 - 2.0 * (xx + zz), 2.0 * (yz - wx), 0.0],
-        [2.0 * (xz - wy), 2.0 * (yz + wx), 1.0 - 2.0 * (xx + yy), 0.0],
-        [0.0, 0.0, 0.0, 1.0],
-    ])
+    return numpy.array(
+        [
+            [1.0 - 2.0 * (yy + zz), 2.0 * (xy - wz), 2.0 * (xz + wy), 0.0],
+            [2.0 * (xy + wz), 1.0 - 2.0 * (xx + zz), 2.0 * (yz - wx), 0.0],
+            [2.0 * (xz - wy), 2.0 * (yz + wx), 1.0 - 2.0 * (xx + yy), 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ]
+    )
 
 
 def translation_matrix(pos):
@@ -127,9 +126,12 @@ def instance_matrix(record):
     every layer that carries a transform — `instances.jsonl`, the network and lane records, the
     sub-object rows.
     """
-    return trs_matrix(record["pos"],
-                      record.get("rot", IDENTITY_QUAT),
-                      record.get("scale", (1.0, 1.0, 1.0))) @ MIRROR_X
+    return (
+        trs_matrix(
+            record["pos"], record.get("rot", IDENTITY_QUAT), record.get("scale", (1.0, 1.0, 1.0))
+        )
+        @ MIRROR_X
+    )
 
 
 def zup_instance_matrix(record, mesh_basis=None):

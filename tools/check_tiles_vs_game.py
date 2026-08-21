@@ -31,7 +31,6 @@ one pixel of rounding.
 
 import argparse
 import json
-import math
 import os
 import re
 import sys
@@ -48,7 +47,7 @@ from csiibundle.bake.tiles import split_material_name  # noqa: E402
 
 try:
     from cs2beamng.beamng import tilelod
-except ImportError:  # noqa: BLE001 - the app is optional for reading a level
+except ImportError:
     tilelod = None
 
 # The bake products whose tiles carry the game's per-primitive limit. `terraincut` deliberately
@@ -107,8 +106,12 @@ def expected_from_tile(glb_path, detail_scale, level_of_detail):
     radius = float(numpy.linalg.norm(hi - lo) * 0.5)
     distances = tilelod.cull_distances(limits, level_of_detail)
     ladder = tilelod.tile_levels(radius, distances, detail_scale)
-    return {"radius": radius, "ladder": ladder, "triangles": len(limits),
-            "markedTriangles": sum(1 for v in limits if v is not None)}
+    return {
+        "radius": radius,
+        "ladder": ladder,
+        "triangles": len(limits),
+        "markedTriangles": sum(1 for v in limits if v is not None),
+    }
 
 
 def check_product(product, bundle, level_dir, derived, detail_scale, level_of_detail, samples):
@@ -135,14 +138,19 @@ def check_product(product, bundle, level_dir, derived, detail_scale, level_of_de
             continue
         want_null = expected["ladder"]["nullPx"]
         want_levels = len(expected["ladder"]["levels"]) or 1
-        rows.append({
-            "tile": stem,
-            "shippedNull": null_px, "expectedNull": want_null,
-            "shippedLevels": len(details), "expectedLevels": want_levels,
-            "gameNullMetres": expected["ladder"]["gameNullMetres"],
-            "triangles": expected["triangles"], "marked": expected["markedTriangles"],
-            "keptFar": 1.0 - (expected["ladder"].get("culledFraction") or 0.0),
-        })
+        rows.append(
+            {
+                "tile": stem,
+                "shippedNull": null_px,
+                "expectedNull": want_null,
+                "shippedLevels": len(details),
+                "expectedLevels": want_levels,
+                "gameNullMetres": expected["ladder"]["gameNullMetres"],
+                "triangles": expected["triangles"],
+                "marked": expected["markedTriangles"],
+                "keptFar": 1.0 - (expected["ladder"].get("culledFraction") or 0.0),
+            }
+        )
     return rows
 
 
@@ -161,7 +169,9 @@ def summarise(product, rows):
             disagreements.append(f"{row['tile']}: {row['error']}")
             continue
         want, got = row["expectedNull"], row["shippedNull"]
-        ok_null = (want is None and got is None) or (want is not None and got is not None and abs(want - got) <= 1)
+        ok_null = (want is None and got is None) or (
+            want is not None and got is not None and abs(want - got) <= 1
+        )
         agree_null += int(ok_null)
         agree_levels += int(row["shippedLevels"] == row["expectedLevels"])
         if not ok_null:
@@ -189,8 +199,12 @@ def main(argv=None):
     parser.add_argument("level", nargs="?", default=None)
     parser.add_argument("--derived", default=None)
     parser.add_argument("--samples", type=int, default=200, help="tiles per product (0 = all)")
-    parser.add_argument("--detail-scale", type=float, default=None,
-                        help="lod_detail_scale (default: read the level's own build report)")
+    parser.add_argument(
+        "--detail-scale",
+        type=float,
+        default=None,
+        help="lod_detail_scale (default: read the level's own build report)",
+    )
     args = parser.parse_args(argv)
     if tilelod is None:
         print("cs2beamng is not importable (pip install -e .)", file=sys.stderr)
@@ -207,7 +221,9 @@ def main(argv=None):
         report = os.path.join(level_dir, "cs2beamng_report.json")
         if os.path.isfile(report):
             with open(report, encoding="utf-8") as handle:
-                detail_scale = float(((json.load(handle).get("settings") or {}).get("lod_detail_scale")) or 6.0)
+                detail_scale = float(
+                    ((json.load(handle).get("settings") or {}).get("lod_detail_scale")) or 6.0
+                )
     level_of_detail = lod.DEFAULT_LEVEL_OF_DETAIL
 
     print(f"bundle {bundle}")
@@ -216,19 +232,28 @@ def main(argv=None):
     failures = 0
     out = {}
     for product in MARKED_PRODUCTS:
-        rows = check_product(product, bundle, level_dir, derived, detail_scale, level_of_detail,
-                             args.samples or 0)
+        rows = check_product(
+            product, bundle, level_dir, derived, detail_scale, level_of_detail, args.samples or 0
+        )
         if rows is None:
             print(f"{product}: not built")
             continue
         summary = summarise(product, rows)
         out[product] = summary
         print(f"{product}: {summary['tiles']} tiles sampled")
-        print(f"  nulldetail agrees with the game's rule   {summary['nullDetailAgreement'] * 100:.2f} %")
-        print(f"  LOD level count agrees                   {summary['levelCountAgreement'] * 100:.2f} %")
-        print(f"  triangles carrying a game limit          {summary['trianglesCarryingTheGameLimit'] * 100:.2f} %")
+        print(
+            f"  nulldetail agrees with the game's rule   {summary['nullDetailAgreement'] * 100:.2f} %"
+        )
+        print(
+            f"  LOD level count agrees                   {summary['levelCountAgreement'] * 100:.2f} %"
+        )
+        print(
+            f"  triangles carrying a game limit          {summary['trianglesCarryingTheGameLimit'] * 100:.2f} %"
+        )
         print(f"  CS2 draws the median tile to             {summary['gameNullMetresMedian']} m")
-        print(f"  the far level keeps                      {summary['meanTrianglesKeptAtTheFarLevel'] * 100:.1f} % of its triangles")
+        print(
+            f"  the far level keeps                      {summary['meanTrianglesKeptAtTheFarLevel'] * 100:.1f} % of its triangles"
+        )
         for line in summary["disagreements"]:
             print(f"  DISAGREE {line}")
         failures += len(summary["disagreements"])
@@ -236,7 +261,9 @@ def main(argv=None):
     for product in UNMARKED_PRODUCTS:
         shapes = os.path.join(level_dir, "art", "shapes", product)
         if os.path.isdir(shapes):
-            print(f"{product}: deliberately unlimited — {'the ground where the heightfield is punched' if product == 'terraincut' else 'a foundation skirt has no counterpart in CS2'}")
+            print(
+                f"{product}: deliberately unlimited — {'the ground where the heightfield is punched' if product == 'terraincut' else 'a foundation skirt has no counterpart in CS2'}"
+            )
     print()
     if failures:
         print(f"{failures} tile(s) disagree with the game's rule")

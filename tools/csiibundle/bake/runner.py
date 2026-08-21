@@ -19,8 +19,9 @@ import time
 from collections import namedtuple
 
 from .. import reader
-from . import BAKE_VERSION, products as _registry
+from . import BAKE_VERSION
 from . import manifest as _manifest
+from . import products as _registry
 from .progress import Cancelled, Progress
 
 # The options a bake is shaped by, with the defaults every product may rely on. `region` is
@@ -70,14 +71,29 @@ def plan(bundle_dir, derived, options, only=None, force=False, registry=None):
         if force:
             status, reason = "stale", "forced"
         else:
-            status, reason = _manifest.product_status(document, name, product.inputs, bundle_dir, options,
-                                                      version=product.version, option_keys=product.options)
+            status, reason = _manifest.product_status(
+                document,
+                name,
+                product.inputs,
+                bundle_dir,
+                options,
+                version=product.version,
+                option_keys=product.options,
+            )
         result.append((product, status, reason))
     return result
 
 
-def run(bundle_dir, derived_dir=None, options=None, only=None, force=False, progress=None,
-        registry=None, check_only=False):
+def run(
+    bundle_dir,
+    derived_dir=None,
+    options=None,
+    only=None,
+    force=False,
+    progress=None,
+    registry=None,
+    check_only=False,
+):
     """Bake what is stale. Returns `[Outcome]`, one per requested product.
 
     `progress` implements `progress.Progress` (default: silent). `check_only` reports statuses
@@ -100,8 +116,11 @@ def run(bundle_dir, derived_dir=None, options=None, only=None, force=False, prog
         return outcomes
 
     document = _manifest.load(derived)
-    if document is None or document.get("bakeVersion") != BAKE_VERSION \
-            or not _same_shaping(document.get("options", {}), options):
+    if (
+        document is None
+        or document.get("bakeVersion") != BAKE_VERSION
+        or not _same_shaping(document.get("options", {}), options)
+    ):
         # A different bake version or shaping options is a different cache: start over rather
         # than mixing products baked under two regimes.
         document = _manifest.new_document(bundle_dir, options)
@@ -124,20 +143,37 @@ def run(bundle_dir, derived_dir=None, options=None, only=None, force=False, prog
         try:
             stats = product.run(context, progress) or {}
         except Cancelled:
-            outcomes.append(Outcome(product.name, "cancelled", "cancelled by caller",
-                                    time.monotonic() - started, None))
+            outcomes.append(
+                Outcome(
+                    product.name,
+                    "cancelled",
+                    "cancelled by caller",
+                    time.monotonic() - started,
+                    None,
+                )
+            )
             _manifest.save(derived, document)
             break
-        except Exception as exc:  # noqa: BLE001 - one product failing must not lose the others
+        except Exception as exc:
             progress.log(f"{product.name}: FAILED: {exc!r}")
-            outcomes.append(Outcome(product.name, "failed", repr(exc), time.monotonic() - started, None))
+            outcomes.append(
+                Outcome(product.name, "failed", repr(exc), time.monotonic() - started, None)
+            )
             _manifest.save(derived, document)
             continue
         seconds = time.monotonic() - started
         tiles = stats.pop("_tiles", None) if isinstance(stats, dict) else None
-        _manifest.record_product(document, product.name, product.path, inputs, seconds,
-                                 tiles=tiles, stats=stats or None, version=product.version,
-                                 options={k: options.get(k) for k in product.options})
+        _manifest.record_product(
+            document,
+            product.name,
+            product.path,
+            inputs,
+            seconds,
+            tiles=tiles,
+            stats=stats or None,
+            version=product.version,
+            options={k: options.get(k) for k in product.options},
+        )
         _manifest.save(derived, document)
         outcomes.append(Outcome(product.name, "baked", reason, seconds, stats))
     return outcomes

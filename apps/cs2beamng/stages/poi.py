@@ -52,6 +52,7 @@ A7.3 records that the "spawn inside a building" report was the building rotation
 spawn picker, and the picker is deliberately left alone.
 """
 
+import itertools
 import json
 import math
 import os
@@ -59,7 +60,6 @@ import re
 import time
 
 import numpy
-
 from csiibundle import reader
 
 from ..beamng import frame
@@ -70,8 +70,8 @@ STAGE_KEY = "poi"
 SPAWN_LIFT = 0.5
 # Vanilla ships 3 (`italy`) to 9 (`west_coast_usa`) quick-travel points. A derived set is capped
 # on the same scale: the big map is a menu, not an index.
-DERIVED_CELL = 512.0            # metres; the grid the derived seeds are picked on
-DERIVED_SEPARATION = 1800.0     # metres between two derived points
+DERIVED_CELL = 512.0  # metres; the grid the derived seeds are picked on
+DERIVED_SEPARATION = 1800.0  # metres between two derived points
 SLUG_RE = re.compile(r"[^a-z0-9]+")
 
 
@@ -90,8 +90,10 @@ def run(ctx, progress):
 
     progress.begin("poi: road network", total=None, unit="")
     network = _road_network(ctx)
-    progress.end(f"{len(network.points):,} road points"
-                 + ("" if len(network.points) else " - nothing to snap to"))
+    progress.end(
+        f"{len(network.points):,} road points"
+        + ("" if len(network.points) else " - nothing to snap to")
+    )
     if not len(network.points):
         return {"points": 0, "note": "no road network to place points on", "seconds": 0.0}
 
@@ -101,7 +103,7 @@ def run(ctx, progress):
     wanted.extend(authored)
     districts = []
     if len(wanted) < cap:
-        districts = _read_districts(ctx.bundle, progress)[:cap - len(wanted)]
+        districts = _read_districts(ctx.bundle, progress)[: cap - len(wanted)]
         wanted.extend(districts)
     derived = []
     if len(wanted) < cap:
@@ -109,8 +111,11 @@ def run(ctx, progress):
         wanted.extend(derived)
 
     progress.begin("poi: place", total=len(wanted) or None, unit="points")
-    existing = {obj["name"] for _rel, _n, obj in read_objects(level.dir)
-                if obj and obj.get("class") == "SpawnSphere"}
+    existing = {
+        obj["name"]
+        for _rel, _n, obj in read_objects(level.dir)
+        if obj and obj.get("class") == "SpawnSphere"
+    }
     entries = []
     placed = 0
     used = set(existing)
@@ -120,13 +125,25 @@ def run(ctx, progress):
             continue
         position, heading = snapped
         name = _unique(f"spawn_{_slug(point['name'])}", used)
-        level.add(["PlayerDropPoints"], {
-            "name": name, "class": "SpawnSphere",
-            "position": [round(v, 3) for v in position],
-            "rotationMatrix": [round(v, 6) for v in frame.heading_matrix(*heading)],
-            "autoplaceOnSpawn": "0", "dataBlock": "SpawnSphereMarker", "enabled": "1",
-            "homingCount": "0", "indoorWeight": "1", "isAIControlled": "0", "lockCount": "0",
-            "outdoorWeight": "1", "radius": 5, "sphereWeight": "1"})
+        level.add(
+            ["PlayerDropPoints"],
+            {
+                "name": name,
+                "class": "SpawnSphere",
+                "position": [round(v, 3) for v in position],
+                "rotationMatrix": [round(v, 6) for v in frame.heading_matrix(*heading)],
+                "autoplaceOnSpawn": "0",
+                "dataBlock": "SpawnSphereMarker",
+                "enabled": "1",
+                "homingCount": "0",
+                "indoorWeight": "1",
+                "isAIControlled": "0",
+                "lockCount": "0",
+                "outdoorWeight": "1",
+                "radius": 5,
+                "sphereWeight": "1",
+            },
+        )
         entry = {"translationId": point["name"], "objectname": name}
         if point.get("description"):
             entry["description"] = point["description"]
@@ -134,27 +151,39 @@ def run(ctx, progress):
         placed += 1
         progress.advance(1)
     level.write_objects()
-    progress.end(f"{placed} quick-travel point(s): {len(authored)} authored, "
-                 f"{len(districts)} from CS2 districts, {len(derived)} derived")
+    progress.end(
+        f"{placed} quick-travel point(s): {len(authored)} authored, "
+        f"{len(districts)} from CS2 districts, {len(derived)} derived"
+    )
 
     added, replaced = _patch_info(level, entries)
     if replaced:
-        progress.log(f"poi: replaced {replaced} quick-travel entr(y/ies) left in info.json by an "
-                     f"earlier build - their SpawnSpheres are not in this level")
+        progress.log(
+            f"poi: replaced {replaced} quick-travel entr(y/ies) left in info.json by an "
+            f"earlier build - their SpawnSpheres are not in this level"
+        )
     for entry in entries:
         progress.log(f"poi: {entry['translationId']!r} -> {entry['objectname']}")
     if not authored and not districts and derived:
-        progress.log("poi: every point is DERIVED (densest road cells, named by their commonest "
-                     "street) - this bundle ships no districts.jsonl (contract §8d, producer "
-                     "2026-08-19), so CS2's own place names are not available to it. Point "
-                     "`poi_file` at a JSON list to name your own, or re-rip")
-    return {"points": placed, "authored": len(authored), "districts": len(districts),
-            "derived": len(derived), "infoSpawnPoints": added,
-            "names": [e["translationId"] for e in entries],
-            "seconds": round(time.monotonic() - started, 1)}
+        progress.log(
+            "poi: every point is DERIVED (densest road cells, named by their commonest "
+            "street) - this bundle ships no districts.jsonl (contract §8d, producer "
+            "2026-08-19), so CS2's own place names are not available to it. Point "
+            "`poi_file` at a JSON list to name your own, or re-rip"
+        )
+    return {
+        "points": placed,
+        "authored": len(authored),
+        "districts": len(districts),
+        "derived": len(derived),
+        "infoSpawnPoints": added,
+        "names": [e["translationId"] for e in entries],
+        "seconds": round(time.monotonic() - started, 1),
+    }
 
 
 # -- the road network to snap onto ---------------------------------------------------------------
+
 
 class _Network:
     """The drivable points a POI may be placed on, with their local heading.
@@ -174,6 +203,7 @@ class _Network:
             return None
         if self._tree is None:
             from scipy.spatial import cKDTree
+
             self._tree = cKDTree(self.points[:, :2])
         _d, i = self._tree.query(numpy.asarray(xy, dtype=numpy.float64)[:2])
         p = self.points[int(i)]
@@ -186,7 +216,7 @@ def _road_network(ctx):
         if not obj or obj.get("class") != "DecalRoad":
             continue
         nodes = obj.get("nodes") or []
-        for a, b in zip(nodes[:-1], nodes[1:]):
+        for a, b in itertools.pairwise(nodes):
             points.append((0.5 * (a[0] + b[0]), 0.5 * (a[1] + b[1]), 0.5 * (a[2] + b[2])))
             headings.append((b[0] - a[0], b[1] - a[1]))
             # the CS2 street name the `navgraph` stage rode along on the road, NOT the object's
@@ -239,6 +269,7 @@ def level_dir_of(ctx):
 
 # -- tier 1: the authored list -------------------------------------------------------------------
 
+
 def _read_poi_file(path, progress):
     """`[{name, at_beamng, description}]` from the user's JSON list, or `[]`."""
     if not path:
@@ -266,14 +297,20 @@ def _read_poi_file(path, progress):
         if which.startswith("bundle"):
             # bundle X/Z (east/north) -> BeamNG X/Y; the height is irrelevant, the snap sets it
             at = [at[0], at[-1] if len(at) > 2 else at[1]]
-        out.append({"name": str(entry["name"]), "at_beamng": (at[0], at[1]),
-                    "description": entry.get("description")})
+        out.append(
+            {
+                "name": str(entry["name"]),
+                "at_beamng": (at[0], at[1]),
+                "description": entry.get("description"),
+            }
+        )
     if out:
         progress.log(f"poi: {len(out)} authored point(s) from {path}")
     return out
 
 
 # -- tier 3: CS2's own districts -----------------------------------------------------------------
+
 
 def _read_districts(bundle_dir, progress):
     """`[{name, at_beamng, description}]` from `districts.jsonl` (§8d), largest district first.
@@ -297,16 +334,25 @@ def _read_districts(bundle_dir, progress):
             unnamed += 1
             continue
         x, y, _z = frame.to_beamng(centroid[0], centroid[1], centroid[2])
-        out.append({"name": name, "at_beamng": (x, y), "area": len(record.get("nodes") or ()),
-                    "description": f"{name} district"})
+        out.append(
+            {
+                "name": name,
+                "at_beamng": (x, y),
+                "area": len(record.get("nodes") or ()),
+                "description": f"{name} district",
+            }
+        )
     out.sort(key=lambda p: -p["area"])
     if out or unnamed:
-        progress.log(f"poi: {len(out)} named CS2 district(s) from districts.jsonl"
-                     + (f", {unnamed} unnamed skipped" if unnamed else ""))
+        progress.log(
+            f"poi: {len(out)} named CS2 district(s) from districts.jsonl"
+            + (f", {unnamed} unnamed skipped" if unnamed else "")
+        )
     return out
 
 
 # -- tier 2: the derived set ---------------------------------------------------------------------
+
 
 def _derive(network, want, avoid):
     """The densest road cells, at least `DERIVED_SEPARATION` apart, named by their streets."""
@@ -335,12 +381,18 @@ def _derive(network, want, avoid):
             continue
         name = max(bucket["names"].items(), key=lambda kv: (kv[1], kv[0]))[0]
         taken.append(centre)
-        out.append({"name": name, "at_beamng": (float(centre[0]), float(centre[1])),
-                    "description": f"{bucket['n']:,} road segments around {name}"})
+        out.append(
+            {
+                "name": name,
+                "at_beamng": (float(centre[0]), float(centre[1])),
+                "description": f"{bucket['n']:,} road segments around {name}",
+            }
+        )
     return out
 
 
 # -- info.json -----------------------------------------------------------------------------------
+
 
 def _patch_info(level, entries):
     """REPLACE the quick-travel entries in `info.json`, keeping the `scene` stage's own spawn.
@@ -366,8 +418,11 @@ def _patch_info(level, entries):
         except ValueError:
             return 0
     default = info.get("defaultSpawnPointName")
-    kept = [e for e in (info.get("spawnPoints") or [])
-            if isinstance(e, dict) and e.get("objectname") and e["objectname"] == default]
+    kept = [
+        e
+        for e in (info.get("spawnPoints") or [])
+        if isinstance(e, dict) and e.get("objectname") and e["objectname"] == default
+    ]
     dropped = len(info.get("spawnPoints") or []) - len(kept)
     info["spawnPoints"] = kept + [e for e in entries if e["objectname"] != default]
     level.write_info(info)
@@ -400,5 +455,15 @@ OUTPUTS = ("info.json",)
 # version 2: `info.json`'s spawnPoints are REPLACED, not appended to. Appending left six entries
 # naming SpawnSpheres a later build no longer placed, which `levels.lua` drops with a log line and
 # nothing visible - caught by this repo's own level validator on the first real build.
-STAGE = Stage(STAGE_KEY, "Fast-travel points", enabled, units, run, inputs=INPUTS,
-              settings_keys=SETTINGS, outputs=OUTPUTS, after=("scene", "navgraph"), version=2)
+STAGE = Stage(
+    STAGE_KEY,
+    "Fast-travel points",
+    enabled,
+    units,
+    run,
+    inputs=INPUTS,
+    settings_keys=SETTINGS,
+    outputs=OUTPUTS,
+    after=("scene", "navgraph"),
+    version=2,
+)

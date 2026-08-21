@@ -40,24 +40,35 @@ import importlib
 import os
 from collections import namedtuple
 
-Stage = namedtuple("Stage", "key title enabled units run inputs settings_keys outputs shared_keys after version",
-                   defaults=(None, (), (), (), (), 1))
+Stage = namedtuple(
+    "Stage",
+    "key title enabled units run inputs settings_keys outputs shared_keys after version",
+    defaults=(None, (), (), (), (), 1),
+)
 
-BuildContext = namedtuple("BuildContext", "settings bundle level_dir derived_dir census region report jobs shared",
-                          defaults=(None,))
+BuildContext = namedtuple(
+    "BuildContext",
+    "settings bundle level_dir derived_dir census region report jobs shared",
+    defaults=(None,),
+)
 
 
 def level_of(ctx):
     """The one `beamng.level.Level` every stage of a build appends to (kept in `ctx.shared`).
     Each stage writes the accumulated object tree when it is done, so the level folder is
     consistent after every stage — a cancelled build is a smaller level, not a broken one."""
-    from ..beamng.level import Level  # noqa: WPS433
+    from ..beamng.level import Level
 
     shared = ctx.shared if ctx.shared is not None else {}
     if "level" not in shared:
-        shared["level"] = Level(ctx.level_dir, ctx.settings["level_name"], ctx.settings.get("level_title") or ctx.settings["level_name"])
+        shared["level"] = Level(
+            ctx.level_dir,
+            ctx.settings["level_name"],
+            ctx.settings.get("level_title") or ctx.settings["level_name"],
+        )
         shared["level"].derived_dir = ctx.derived_dir
     return shared["level"]
+
 
 # Tests (and only tests) point this at a module whose `all_stages()` returns stub stages; the
 # variable is read in the worker process too, which is what makes hang/cancel tests possible.
@@ -81,13 +92,28 @@ def all_stages():
 def _resolve(override):
     if override:
         return importlib.import_module(override).all_stages()
-    from . import bake as _bake            # noqa: WPS433
-    from . import validate as _validate    # noqa: WPS433
+    from . import bake as _bake
+    from . import validate as _validate
+
     stages = [_bake.STAGE]
     # materials runs AFTER every stage that binds a material, so it exports only what is used
     # `navgraph` and `poi` come after `scene` (they read and extend the `info.json` it writes)
     # and `poi` after `navgraph` (it snaps onto the DecalRoads the navgraph stage shipped)
-    for name in ("terrain", "water", "scene", "shapes", "networks", "derived", "instances", "lights", "navgraph", "poi", "groundcover", "materials", "cook"):
+    for name in (
+        "terrain",
+        "water",
+        "scene",
+        "shapes",
+        "networks",
+        "derived",
+        "instances",
+        "lights",
+        "navgraph",
+        "poi",
+        "groundcover",
+        "materials",
+        "cook",
+    ):
         try:
             module = __import__(f"{__name__}.{name}", fromlist=["STAGE"])
         except ModuleNotFoundError as exc:

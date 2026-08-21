@@ -49,8 +49,14 @@ INDEX_DIR = "meshindex"
 # Everything on, nothing thinned, nowhere excluded: the superset every real setting selects out
 # of. `foliage_road_clearance` is 0 here because the index does not model it (see the module
 # docstring), not because the build does not.
-PERMISSIVE = {"trees": True, "props": True, "buildings": True,
-              "foliage_density": 100, "prop_density": 100, "foliage_road_clearance": 0.0}
+PERMISSIVE = {
+    "trees": True,
+    "props": True,
+    "buildings": True,
+    "foliage_density": 100,
+    "prop_density": 100,
+    "foliage_road_clearance": 0.0,
+}
 
 
 def key_for(bundle):
@@ -128,14 +134,19 @@ def build(bundle, progress=None, cancelled=None):
             # (`Oak__elderly`), and the bake's colour centres are per prefab, so the two are not
             # the same lookup. Reading centres by the key found 205 tree shapes where the build
             # wrote 253 - every state variant of a recoloured tree lost its shades.
-            row = rows[key] = {"kind": record.get("kind"), "asset": record.get("assetId"),
-                               "count": 0, "rank": 1.0, "cells": set()}
+            row = rows[key] = {
+                "kind": record.get("kind"),
+                "asset": record.get("assetId"),
+                "count": 0,
+                "rank": 1.0,
+                "cells": set(),
+            }
         row["count"] += 1
         kind = record.get("kind")
         if kind in ("tree", "prop"):
             row["rank"] = min(row["rank"], bundle_instances.density_rank(record))
         else:
-            row["rank"] = 0.0                     # not governed by a slider: always in
+            row["rank"] = 0.0  # not governed by a slider: always in
         pos = record.get("pos") or (0, 0, 0)
         row["cells"].add(_cell(pos[0], pos[2]))
     if progress is not None:
@@ -149,15 +160,27 @@ def build(bundle, progress=None, cancelled=None):
             size = os.path.getsize(os.path.join(mesh_dir, key + ".glb"))
         except OSError:
             size = 0
-        out[key] = {"kind": row["kind"], "count": row["count"], "rank": round(row["rank"], 6),
-                    "bytes": size, "lodBytes": lod_bytes.get(key, 0),
-                    "variants": centres.get(row["asset"], 1),
-                    "cells": sorted(row["cells"])}
+        out[key] = {
+            "kind": row["kind"],
+            "count": row["count"],
+            "rank": round(row["rank"], 6),
+            "bytes": size,
+            "lodBytes": lod_bytes.get(key, 0),
+            "variants": centres.get(row["asset"], 1),
+            "cells": sorted(row["cells"]),
+        }
     # `key` is in the document as well as in its filename: a consumer holding one in memory has
     # to be able to notice a re-rip into the same folder without re-reading the file.
-    doc = {"schema": SCHEMA, "bundle": os.path.abspath(bundle), "cellMetres": CELL_METRES,
-           "key": key_for(bundle), "records": records, "shapes": len(out),
-           "seconds": round(time.monotonic() - started, 1), "shipped": out}
+    doc = {
+        "schema": SCHEMA,
+        "bundle": os.path.abspath(bundle),
+        "cellMetres": CELL_METRES,
+        "key": key_for(bundle),
+        "records": records,
+        "shapes": len(out),
+        "seconds": round(time.monotonic() - started, 1),
+        "shipped": out,
+    }
     _store(bundle, doc)
     return doc
 
@@ -166,7 +189,7 @@ def _cell(x, z):
     return f"{int(x // CELL_METRES)},{int(z // CELL_METRES)}"
 
 
-def _state_stem(record, mesh_dir, _cache={}):                 # noqa: B006 - module-lived probe cache
+def _state_stem(record, mesh_dir, _cache={}):  # noqa: B006 - module-lived probe cache
     """The first mesh state of this record that is on disk, or None if none is.
 
     `mesh_candidates` is the contract's own walk (§6.1) and `stages/shapes` uses the same one;
@@ -233,6 +256,7 @@ def _store(bundle, doc):
 
 # -- reading it back at some settings --------------------------------------------------------
 
+
 def select(doc, values):
     """`{kind: {"shapes", "bytes", "instancesAtFull"}}` for the shapes these settings ship.
 
@@ -253,15 +277,18 @@ def select(doc, values):
         kind = row.get("kind")
         if not placement.kind_enabled(kind, values):
             continue
-        if kind in ("tree", "prop") and row.get("rank", 1.0) >= placement.density_fraction(kind, values):
+        if kind in ("tree", "prop") and row.get("rank", 1.0) >= placement.density_fraction(
+            kind, values
+        ):
             continue
         if cells is not None and not cells.intersection(row.get("cells") or ()):
             continue
         copies = max(1, int(row.get("variants") or 1)) if kind in painted else 1
         bucket = out.setdefault(kind, {"shapes": 0, "bytes": 0, "instancesAtFull": 0})
         bucket["shapes"] += copies
-        bucket["bytes"] += copies * (row.get("bytes", 0)
-                                     + (row.get("lodBytes", 0) if want_lods else 0))
+        bucket["bytes"] += copies * (
+            row.get("bytes", 0) + (row.get("lodBytes", 0) if want_lods else 0)
+        )
         bucket["instancesAtFull"] += row.get("count", 0)
     return out
 

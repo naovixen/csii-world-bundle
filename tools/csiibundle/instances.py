@@ -115,8 +115,9 @@ def read_instances(bundle_dir, kind=None):
     parsed. The caller must still test `record["kind"]` — the prefilter is a superset (a prop
     whose brand is the word "building" survives it), which is exactly what keeps it exact.
     """
-    return reader.read_jsonl(reader.layer_path(bundle_dir, "instances"),
-                             contains=None if kind is None else f'"{kind}"')
+    return reader.read_jsonl(
+        reader.layer_path(bundle_dir, "instances"), contains=None if kind is None else f'"{kind}"'
+    )
 
 
 def mesh_candidates(record):
@@ -263,8 +264,7 @@ def orphans_of_absent_owners(bundle_dir):
     2 — but a sub-object of a sub-object is legal, so the walk follows `parent` to the root.
     """
     absent = absent_prefabs(bundle_dir)
-    stats = {"absentPrefabs": len(absent), "records": 0, "withParent": 0,
-             "orphans": 0, "owners": 0}
+    stats = {"absentPrefabs": len(absent), "records": 0, "withParent": 0, "orphans": 0, "owners": 0}
     if not absent:
         return set(), stats
 
@@ -421,8 +421,9 @@ def instance_matrix(record, mesh_basis=None, zup=False):
     when missed: a forgotten decal lift flickers, and a forgotten growth scale draws 299,972
     saplings at full height without anything looking obviously broken.
     """
-    matrix = (frames.zup_instance_matrix(record, mesh_basis) if zup
-              else frames.instance_matrix(record))
+    matrix = (
+        frames.zup_instance_matrix(record, mesh_basis) if zup else frames.instance_matrix(record)
+    )
     scale = growth_scale(record)
     if scale != 1.0:
         # Uniform, and pre-multiplied into the linear part only — it scales the MESH about the
@@ -454,6 +455,7 @@ def skirt_rings(verts, up_axis=1):
     other: the band is two rings and nothing else.
     """
     import numpy
+
     h = numpy.asarray(verts, dtype=numpy.float64)[:, up_axis]
     lo, hi = float(h.min()), float(h.max())
     if hi - lo < 1e-6:
@@ -473,12 +475,15 @@ def drop_skirt(world_verts, bottom_mask, ground_height, up_axis=2):
     ground rising above the base level can never invert the band. Returns a new array.
     """
     import numpy
+
     out = numpy.array(world_verts, dtype=numpy.float64, copy=True)
     bottom = numpy.asarray(bottom_mask, dtype=bool)
     ground = numpy.asarray(ground_height, dtype=numpy.float64)
     if not bottom.any():
         return out
-    top_level = float(out[~bottom, up_axis].min()) if (~bottom).any() else float(out[:, up_axis].max())
+    top_level = (
+        float(out[~bottom, up_axis].min()) if (~bottom).any() else float(out[:, up_axis].max())
+    )
     target = numpy.minimum(ground[bottom], top_level - 1e-3)
     keep = numpy.isnan(target)
     current = out[bottom, up_axis]
@@ -520,8 +525,13 @@ def wants_skirt_with_parents(record, parents):
 # fraction is always a subset of a higher one (keep iff hash < fraction * weight), so thinning
 # is stable and monotone. Trees: mature states over young ones. TUNED.
 DENSITY_WEIGHT = {
-    "Adult": 1.0, "Elderly": 1.0, None: 1.0,
-    "Teen": 0.75, "Child": 0.5, "Dead": 0.9, "Stump": 0.4,
+    "Adult": 1.0,
+    "Elderly": 1.0,
+    None: 1.0,
+    "Teen": 0.75,
+    "Child": 0.5,
+    "Dead": 0.9,
+    "Stump": 0.4,
 }
 
 
@@ -529,6 +539,7 @@ def _stable_unit(value):
     """A stable float in [0, 1) from an int id (or any repr) — the same on every platform,
     unlike Python's salted `hash`."""
     import hashlib
+
     digest = hashlib.blake2b(str(value).encode("utf-8"), digest_size=8).digest()
     return int.from_bytes(digest, "little") / float(1 << 64)
 
@@ -564,6 +575,7 @@ def object_radius(bounds_min, bounds_max, scale=None):
     """Half the bounding-box diagonal of a mesh, times its largest scale factor — the size a
     consumer uses to pick imposter/cull thresholds and collider simplicity per object."""
     import numpy
+
     lo = numpy.asarray(bounds_min, dtype=numpy.float64)
     hi = numpy.asarray(bounds_max, dtype=numpy.float64)
     radius = 0.5 * float(numpy.linalg.norm(hi - lo))

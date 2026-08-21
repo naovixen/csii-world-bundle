@@ -75,10 +75,10 @@ GROUND_FALLBACK_COLOUR = {
     "grass": (0.20, 0.30, 0.12, 1.0),
     "dirt": (0.35, 0.28, 0.20, 1.0),
     "rock": (0.30, 0.28, 0.26, 1.0),
-    "extra1": (0.076, 0.077, 0.050, 1.0),   # 01 Dry   - Grass_Dry_Temperate_01
-    "extra2": (0.039, 0.046, 0.019, 1.0),   # 02 Lush  - Forest_temperate_01
-    "extra3": (0.118, 0.096, 0.080, 1.0),   # 03 Dirt  - Dirt_temperate_01
-    "extra4": (0.155, 0.128, 0.090, 1.0),   # 04 Sand  - Sand_Surface_01
+    "extra1": (0.076, 0.077, 0.050, 1.0),  # 01 Dry   - Grass_Dry_Temperate_01
+    "extra2": (0.039, 0.046, 0.019, 1.0),  # 02 Lush  - Forest_temperate_01
+    "extra3": (0.118, 0.096, 0.080, 1.0),  # 03 Dirt  - Dirt_temperate_01
+    "extra4": (0.155, 0.128, 0.090, 1.0),  # 04 Sand  - Sand_Surface_01
 }
 
 
@@ -125,10 +125,10 @@ class Splat:
             raise ValueError(f"splatmap is {self.width}x{self.height}, block says {size}")
 
         cx, cz = block["resolution"]
-        ox, _, oz = block["originWorld"]           # top-left texel CENTRE, row 0 north
+        ox, _, oz = block["originWorld"]  # top-left texel CENTRE, row 0 north
         self.cell_x = cx
         self.cell_z = cz
-        self.min_x = ox - cx * 0.5                 # the texel's edge, not its centre
+        self.min_x = ox - cx * 0.5  # the texel's edge, not its centre
         self.max_z = oz + cz * 0.5
         self.area_x = cx * self.width
         self.area_z = cz * self.height
@@ -149,15 +149,16 @@ class Splat:
         The V convention is the one nearly every renderer's texture space uses, and it is the
         opposite of the PNG's row order — which is why `weights()` flips. Accepts arrays.
         """
-        return ((numpy.asarray(x) - self.min_x) / self.area_x,
-                (numpy.asarray(z) - self.min_z) / self.area_z)
+        return (
+            (numpy.asarray(x) - self.min_x) / self.area_x,
+            (numpy.asarray(z) - self.min_z) / self.area_z,
+        )
 
     # -- weights ------------------------------------------------------------------------------
 
     def rgba(self):
         """The raw map as `(height, width, 4)` uint8, row 0 north. Packed — not weights yet."""
-        return numpy.frombuffer(self.pixels, dtype=numpy.uint8).reshape(self.height,
-                                                                       self.width, 4)
+        return numpy.frombuffer(self.pixels, dtype=numpy.uint8).reshape(self.height, self.width, 4)
 
     def soil_weights(self):
         """R and G as `(height, width, 2)` float32 in 0..1 — dirt and grass, in that order.
@@ -181,8 +182,7 @@ class Splat:
         """
         pixels = self.rgba()
         packed_b, packed_a = pixels[:, :, 2], pixels[:, :, 3]
-        weights = numpy.stack((packed_b & 15, packed_b >> 4,
-                               packed_a & 15, packed_a >> 4), axis=-1)
+        weights = numpy.stack((packed_b & 15, packed_b >> 4, packed_a & 15, packed_a >> 4), axis=-1)
         if flip_v:
             weights = weights[::-1]
         return weights.astype(numpy.float32) * (17.0 / 255.0)
@@ -234,8 +234,10 @@ class Splat:
 
 # -- one ground per texel, for an engine whose terrain holds a single material per sample --------
 
-def dominant_layer(splat, mapping=None, surface_index=None, roadbed_name="roadbed",
-                   roadbed_id=1, flip_v=False):
+
+def dominant_layer(
+    splat, mapping=None, surface_index=None, roadbed_name="roadbed", roadbed_id=1, flip_v=False
+):
     """`(index_raster uint8 (h, w), names)` — the ground that shows most at each texel.
 
     A BeamNG-class terrain stores ONE material index per heightmap sample and blends only at
@@ -272,7 +274,9 @@ def dominant_layer(splat, mapping=None, surface_index=None, roadbed_name="roadbe
     if surface_index is not None:
         surface = numpy.asarray(surface_index)
         if surface.shape != index.shape:
-            raise ValueError(f"surface_index {surface.shape} does not match the splatmap {index.shape}")
+            raise ValueError(
+                f"surface_index {surface.shape} does not match the splatmap {index.shape}"
+            )
         names.append(roadbed_name)
         index = numpy.where(surface == roadbed_id, len(names) - 1, index).astype(numpy.uint8)
     return index, names

@@ -30,6 +30,7 @@ to 88 % and stretched to 112 %, and the run FAILS if either is still scored heal
 Run: `python tools/test_net_composition.py`  (system Python + numpy; skipped when no bundle is
 on disk).
 """
+
 import json
 import os
 import pathlib
@@ -41,10 +42,13 @@ import numpy
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from inspect_glb import read_glb  # noqa: E402
+import itertools
+
+from inspect_glb import read_glb
 
 BUNDLE = os.environ.get("CARTO_BUNDLE") or os.path.expandvars(
-    r"%LOCALAPPDATA%\..\LocalLow\Colossal Order\Cities Skylines II\ModsData\Carto")
+    r"%LOCALAPPDATA%\..\LocalLow\Colossal Order\Cities Skylines II\ModsData\Carto"
+)
 
 # How many segments to open. The score is stable well below this; it is a runtime bound, not a
 # statistical one.
@@ -86,8 +90,11 @@ def positions(path):
             stride = view.get("byteStride") or 12
             count = acc["count"]
             if stride == 12:
-                out.append(numpy.frombuffer(blob, dtype="<f4", count=count * 3,
-                                            offset=base).reshape(count, 3))
+                out.append(
+                    numpy.frombuffer(blob, dtype="<f4", count=count * 3, offset=base).reshape(
+                        count, 3
+                    )
+                )
             else:
                 rows = [struct.unpack_from("<fff", blob, base + i * stride) for i in range(count)]
                 out.append(numpy.asarray(rows, dtype=numpy.float32))
@@ -175,25 +182,31 @@ def test_saturate_holds(records):
         values = rows[band]
         if not len(values):
             continue
-        print(f"    band +/-{band:.2f}*span  n={len(values):4d}  median {numpy.median(values):.4f}"
-              f"  p95 {numpy.percentile(values, 95):.4f}  min {values.min():.4f}")
+        print(
+            f"    band +/-{band:.2f}*span  n={len(values):4d}  median {numpy.median(values):.4f}"
+            f"  p95 {numpy.percentile(values, 95):.4f}  min {values.min():.4f}"
+        )
     ok, reason = healthy(rows)
     check(ok, f"the centre band spans exactly the composition width ({reason})")
 
     # The flare signature. If the excess came from the mapping rather than from the node
     # compositions, it would not shrink as the band closes on the segment's middle.
     medians = [float(numpy.median(rows[band])) for band in BANDS if len(rows[band])]
-    check(all(a >= b - 1e-9 for a, b in zip(medians, medians[1:])),
-          f"the excess falls monotonically toward the segment centre "
-          f"({' > '.join(f'{m:.4f}' for m in medians)}) - node flares, not a mapping error")
+    check(
+        all(a >= b - 1e-9 for a, b in itertools.pairwise(medians)),
+        f"the excess falls monotonically toward the segment centre "
+        f"({' > '.join(f'{m:.4f}' for m in medians)}) - node flares, not a mapping error",
+    )
     return rows
 
 
 def test_negative_control(records):
     """Green must be earned: the same scorer has to convict a mesh that misses its boundaries."""
     print("negative control (the gate fails on a defective bundle):")
-    for squeeze, label in ((0.88, "a cross-section reaching only 88% across"),
-                           (1.12, "a cross-section overrunning its boundary curves by 12%")):
+    for squeeze, label in (
+        (0.88, "a cross-section reaching only 88% across"),
+        (1.12, "a cross-section overrunning its boundary curves by 12%"),
+    ):
         ok, reason = healthy(collect(records, squeeze=squeeze))
         check(not ok, f"{label} is convicted ({reason})")
 
@@ -204,16 +217,21 @@ def test_form_invariants(records):
     both = [r for r in records if r.get("assetId") and r.get("centerline")]
     check(not both, f"no record carries both forms ({len(both)} found)")
 
-    dangling = [r for r in records
-                if r.get("assetId")
-                and not os.path.isfile(os.path.join(BUNDLE, "networks", r["assetId"] + ".glb"))]
+    dangling = [
+        r
+        for r in records
+        if r.get("assetId")
+        and not os.path.isfile(os.path.join(BUNDLE, "networks", r["assetId"] + ".glb"))
+    ]
     check(not dangling, f"every mesh-form record has its .glb ({len(dangling)} dangling)")
 
     lines = [r for r in records if not r.get("assetId")]
     bad = [r for r in lines if len(r.get("centerline") or ()) < 2 or not r.get("width", 0) > 0]
-    check(not bad,
-          f"every centerline-form record has >=2 points and a positive width "
-          f"({len(lines)} centerline-form, {len(bad)} bad)")
+    check(
+        not bad,
+        f"every centerline-form record has >=2 points and a positive width "
+        f"({len(lines)} centerline-form, {len(bad)} bad)",
+    )
 
 
 def main():

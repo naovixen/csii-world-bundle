@@ -24,6 +24,7 @@ in the level by a sub-millimetre amount that nothing downstream would ever flag.
 Run: `python tools/test_ground_scalar.py`  (system Python + numpy; claim 5 is skipped when no
 bundle is on disk).
 """
+
 import math
 import os
 import sys
@@ -34,8 +35,10 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from csiibundle.bake.ground import GroundSurface
 from csiibundle.drape import HeightfieldSurface
 
-BUNDLE = os.path.expandvars(r"%USERPROFILE%\AppData\LocalLow\Colossal Order"
-                            r"\Cities Skylines II\ModsData\Carto")
+BUNDLE = os.path.expandvars(
+    r"%USERPROFILE%\AppData\LocalLow\Colossal Order"
+    r"\Cities Skylines II\ModsData\Carto"
+)
 
 failures = 0
 
@@ -49,8 +52,9 @@ def check(ok, claim, detail=""):
 
 def compare(surface, xs, ys, label):
     """`_sample_one` against `_sample`, point by point, as exact bit patterns."""
-    want = surface._sample(numpy.asarray(xs, dtype=numpy.float64),
-                           numpy.asarray(ys, dtype=numpy.float64))
+    want = surface._sample(
+        numpy.asarray(xs, dtype=numpy.float64), numpy.asarray(ys, dtype=numpy.float64)
+    )
     bad = None
     for i, (x, y) in enumerate(zip(xs, ys)):
         got = surface._sample_one(float(x), float(y))
@@ -65,8 +69,13 @@ def compare(surface, xs, ys, label):
         if got is None or got != truth:
             bad = (x, y, got, truth)
             break
-    check(bad is None, label, "" if bad is None else
-          f"at ({bad[0]!r}, {bad[1]!r}): scalar {bad[2]!r} vs vectorised {bad[3]!r}")
+    check(
+        bad is None,
+        label,
+        ""
+        if bad is None
+        else f"at ({bad[0]!r}, {bad[1]!r}): scalar {bad[2]!r} vs vectorised {bad[3]!r}",
+    )
 
 
 rng = numpy.random.default_rng(20260818)
@@ -76,8 +85,12 @@ rng = numpy.random.default_rng(20260818)
 # of each convention rather than a plane where every split answers the same thing.
 rows = cols = 64
 gy, gx = numpy.mgrid[0:rows, 0:cols]
-field = (numpy.sin(gx * 0.31) * numpy.cos(gy * 0.27) * 7.0
-         + gx * 0.13 - gy * 0.09 + rng.normal(0.0, 0.4, (rows, cols)))
+field = (
+    numpy.sin(gx * 0.31) * numpy.cos(gy * 0.27) * 7.0
+    + gx * 0.13
+    - gy * 0.09
+    + rng.normal(0.0, 0.4, (rows, cols))
+)
 CELL, OX, OY = 3.5, -1000.0, 2000.0
 
 n = 20000
@@ -94,14 +107,27 @@ for diagonal in ("nw_se", "ne_sw"):
 special_x, special_y = [], []
 for c in range(0, cols - 1, 7):
     for r in range(0, rows - 1, 5):
-        for du, dv in ((0.0, 0.0), (0.5, 0.5), (0.25, 0.25), (0.75, 0.75),   # u == v
-                       (0.5, 0.5), (0.25, 0.75), (0.75, 0.25),               # u + v == 1
-                       (1.0, 0.0), (0.0, 1.0), (1.0, 1.0), (0.0, 0.5), (0.5, 0.0)):
+        for du, dv in (
+            (0.0, 0.0),
+            (0.5, 0.5),
+            (0.25, 0.25),
+            (0.75, 0.75),  # u == v
+            (0.5, 0.5),
+            (0.25, 0.75),
+            (0.75, 0.25),  # u + v == 1
+            (1.0, 0.0),
+            (0.0, 1.0),
+            (1.0, 1.0),
+            (0.0, 0.5),
+            (0.5, 0.0),
+        ):
             special_x.append(OX + (c + du) * CELL)
             special_y.append(OY - (r + dv) * CELL)
 for diagonal in ("nw_se", "ne_sw"):
     surface = HeightfieldSurface(field, CELL, OX, OY, diagonal=diagonal)
-    compare(surface, special_x, special_y, f"{len(special_x)} diagonal/vertex/edge points, {diagonal}")
+    compare(
+        surface, special_x, special_y, f"{len(special_x)} diagonal/vertex/edge points, {diagonal}"
+    )
 
 # -- 3. the raster boundary ---------------------------------------------------------------------
 edge_x = [OX + (cols - 1) * CELL, OX + (cols - 1) * CELL, OX - 1e-9, OX + cols * CELL, OX]
@@ -109,13 +135,21 @@ edge_y = [OY - (rows - 1) * CELL, OY, OY, OY, OY + 1e-9]
 for diagonal in ("nw_se", "ne_sw"):
     surface = HeightfieldSurface(field, CELL, OX, OY, diagonal=diagonal)
     compare(surface, edge_x, edge_y, f"the last row/column and just outside it, {diagonal}")
-    check(surface.height(OX - CELL, OY) is None and surface.height(OX, OY + CELL) is None,
-          f"one cell beyond the north-west corner is off the raster, {diagonal}")
+    check(
+        surface.height(OX - CELL, OY) is None and surface.height(OX, OY + CELL) is None,
+        f"one cell beyond the north-west corner is off the raster, {diagonal}",
+    )
 
 # -- 4. non-finite input ------------------------------------------------------------------------
 surface = HeightfieldSurface(field, CELL, OX, OY)
-nonfinite = [(float("nan"), OY), (OX, float("nan")), (float("inf"), OY), (OX, float("-inf")),
-             (1e300, OY), (OX, -1e300)]
+nonfinite = [
+    (float("nan"), OY),
+    (OX, float("nan")),
+    (float("inf"), OY),
+    (OX, float("-inf")),
+    (1e300, OY),
+    (OX, -1e300),
+]
 ok = True
 for x, y in nonfinite:
     got = surface.height(x, y)
@@ -123,6 +157,7 @@ for x, y in nonfinite:
     if got is not None or not math.isnan(float(truth)):
         ok = False
 check(ok, "NaN / infinity / 1e300 answer None, matching the array path's NaN")
+
 
 # -- the envelope: GroundSurface's scalar path against its own height_many -----------------------
 class _Envelope(GroundSurface):
@@ -148,19 +183,27 @@ for mode in ("max", "min"):
         elif got is None or got != truth:
             bad = (i, got, truth)
             break
-    check(bad is None, f"{n} envelope ({mode}) points bit-identical to height_many",
-          "" if bad is None else f"index {bad[0]}: scalar {bad[1]!r} vs vectorised {bad[2]!r}")
+    check(
+        bad is None,
+        f"{n} envelope ({mode}) points bit-identical to height_many",
+        "" if bad is None else f"index {bad[0]}: scalar {bad[1]!r} vs vectorised {bad[2]!r}",
+    )
 
 # a one-sided envelope (diagonal != "envelope") must not lose the NaN → None rule
 single = _Envelope(a, None, "max")
-check(single.height(OX - CELL, OY) is None and single.height(OX, OY) == field[0, 0],
-      "a single-diagonal GroundSurface answers the raster and bounds it")
+check(
+    single.height(OX - CELL, OY) is None and single.height(OX, OY) == field[0, 0],
+    "a single-diagonal GroundSurface answers the raster and bounds it",
+)
 
 # -- 5. the real bundle -------------------------------------------------------------------------
 try:
-    real = GroundSurface(BUNDLE, "envelope", mode="max", prefer_fine=True) \
-        if os.path.isdir(BUNDLE) else None
-except Exception as exc:      # noqa: BLE001 - a bundle we cannot read is a skip, not a failure
+    real = (
+        GroundSurface(BUNDLE, "envelope", mode="max", prefer_fine=True)
+        if os.path.isdir(BUNDLE)
+        else None
+    )
+except Exception as exc:
     print(f"  skip  real bundle ({exc!r})")
     real = None
 if real is None or not real.present:
@@ -184,8 +227,11 @@ else:
         elif got is None or got != truth:
             bad = (i, got, truth)
             break
-    check(bad is None, "the real envelope agrees bit for bit with height_many",
-          "" if bad is None else f"index {bad[0]}: scalar {bad[1]!r} vs vectorised {bad[2]!r}")
+    check(
+        bad is None,
+        "the real envelope agrees bit for bit with height_many",
+        "" if bad is None else f"index {bad[0]}: scalar {bad[1]!r} vs vectorised {bad[2]!r}",
+    )
 
 print("test_ground_scalar: " + ("FAILED" if failures else "OK"))
 sys.exit(1 if failures else 0)

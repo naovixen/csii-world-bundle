@@ -46,8 +46,9 @@ import os
 import time
 
 import numpy
-
-from csiibundle import png, reader, splat as splat_mod, terrain as terrain_mod
+from csiibundle import png, reader
+from csiibundle import splat as splat_mod
+from csiibundle import terrain as terrain_mod
 from csiibundle.bake import terraincut
 
 from ..beamng import ter as ter_mod
@@ -56,10 +57,24 @@ from . import Stage, level_of
 STAGE_KEY = "terrain"
 
 # groundmodel (physics surface) per ground name; BeamNG's names, upper case
-GROUNDMODEL = {"grass": "GRASS", "dirt": "DIRT", "rock": "ROCK", "extra1": "GRASS", "extra2": "GRASS",
-               "extra3": "DIRT", "extra4": "SAND", "roadbed": "DIRT"}
+GROUNDMODEL = {
+    "grass": "GRASS",
+    "dirt": "DIRT",
+    "rock": "ROCK",
+    "extra1": "GRASS",
+    "extra2": "GRASS",
+    "extra3": "DIRT",
+    "extra4": "SAND",
+    "roadbed": "DIRT",
+}
 # a ground whose texture the bundle does not carry borrows this one's
-TEXTURE_FALLBACK = {"roadbed": "dirt", "extra1": "grass", "extra2": "grass", "extra3": "dirt", "extra4": "dirt"}
+TEXTURE_FALLBACK = {
+    "roadbed": "dirt",
+    "extra1": "grass",
+    "extra2": "grass",
+    "extra3": "dirt",
+    "extra4": "dirt",
+}
 TIERS = ("base", "macro", "detail")
 # BeamNG's three terrain tiers ARE CS2's three ground tilings. Both engines draw one ground at
 # three scales and cross-blend them by camera distance: CS2 as `_Terrain*TextureTiling` =
@@ -74,7 +89,7 @@ TIERS = ("base", "macro", "detail")
 # since the post-audit pass; this app guessed three global constants until 2026-08-17 (audit
 # §47). Grass near is 14.34 m per repeat and rock near is 68.27 m, against the one 4 m detail
 # tile every ground used to get — which is the repeating fine grid on every screenshot.
-CS2_TILING_TIER = {"detail": 0, "macro": 1, "base": 2}          # near, mid, far
+CS2_TILING_TIER = {"detail": 0, "macro": 1, "base": 2}  # near, mid, far
 # Only for a bundle whose rip predates `rasters.terrainTiling`. Counted in the stage report so a
 # level built without the game's numbers says so. TUNED (the pre-§47 constants).
 FALLBACK_TILE_M = {"base": 128.0, "macro": 40.0, "detail": 4.0}
@@ -130,7 +145,7 @@ def enabled(settings):
 
 def units(census, settings):
     factor = int(settings.get("terrain_upsample") or 1)
-    size = (((census or {}).get("bundle") or {}).get("rasterSize") or [4096, 4096])
+    size = ((census or {}).get("bundle") or {}).get("rasterSize") or [4096, 4096]
     return int(size[0]) * int(size[1]) * factor * factor
 
 
@@ -146,7 +161,9 @@ def run(ctx, progress):
     want_fine = int(settings.get("terrain_upsample") or 1) == 2
     field = reader.load_heightfield(bundle, prefer_fine=want_fine)
     if field is None:
-        raise RuntimeError("the bundle has no terrain layer (terrain/heightmap.png + rasters block)")
+        raise RuntimeError(
+            "the bundle has no terrain layer (terrain/heightmap.png + rasters block)"
+        )
     rasters = paths.rasters
     # The ground the .ter is built from: the bundle's fine 1.75 m `terrainFine` raster when
     # present — the game's own near-camera ground, its road grading rasterised at that texel
@@ -168,9 +185,11 @@ def run(ctx, progress):
     # `terrain/surface_index.png` is deliberately NOT read here any more: nothing in this stage
     # keys off the roadbed footprint. The game paints no roadbed material (audit §17 row 2), and
     # since §51 it moves no roadbed height either — the heightmap arrives already graded.
-    progress.log(f"terrain: {'fine ' if field.fine else ''}heightmap {size}x{size} @ {cell:.3f} m ({os.path.basename(field.path)}"
-                 f"{'' if field.fine or not want_fine else ' - no layers.terrainFine in this rip'}"
-                 f"{' - terrain_upsample 1 keeps the base map' if paths.heightmap_fine and not want_fine else ''})")
+    progress.log(
+        f"terrain: {'fine ' if field.fine else ''}heightmap {size}x{size} @ {cell:.3f} m ({os.path.basename(field.path)}"
+        f"{'' if field.fine or not want_fine else ' - no layers.terrainFine in this rip'}"
+        f"{' - terrain_upsample 1 keeps the base map' if paths.heightmap_fine and not want_fine else ''})"
+    )
     # the ground edit is `terrain.ground_heights` — the same definition the mesh harness and the
     # bake's pre-clipped ground meshes use, so a mesh in a heightfield hole meets these samples
     # exactly. It is the carriageway clamp and nothing else; see the module docstring.
@@ -182,7 +201,9 @@ def run(ctx, progress):
         ceiling_raw = png.gray_array(ceiling_path)
         if ceiling_raw.shape == heights.shape:
             has = ceiling_raw > 0
-            ceiling[has] = (ceiling_raw[has].astype(numpy.float64) * scale + offset).astype(numpy.float32)
+            ceiling[has] = (ceiling_raw[has].astype(numpy.float64) * scale + offset).astype(
+                numpy.float32
+            )
     covered = int(numpy.isfinite(ceiling).sum())
     heights, lowered, worst = terrain_mod.ground_heights(heights, ceiling)
     punch, holes_mode, corridor_holes = _punch_mask(ctx, settings, size)
@@ -190,9 +211,11 @@ def run(ctx, progress):
     # APPROXIMATION, counted: the game discards these pixels with its road stencil; a heightfield
     # cannot, so they are lowered onto the game's own carriageway profile top instead. Everything
     # else keeps the grading CS2 itself baked into the heightmap.
-    progress.end(f"{size}x{size} @ {cell} m, {covered:,} samples under a carriageway, of which "
-                 f"{lowered:,} ({lowered / max(1, covered) * 100:.1f} %) stood over it and were "
-                 f"lowered onto its profile (worst {worst:.2f} m)")
+    progress.end(
+        f"{size}x{size} @ {cell} m, {covered:,} samples under a carriageway, of which "
+        f"{lowered:,} ({lowered / max(1, covered) * 100:.1f} %) stood over it and were "
+        f"lowered onto its profile (worst {worst:.2f} m)"
+    )
 
     # -- layers ----------------------------------------------------------------------------
     progress.begin("terrain: ground layers", total=None, unit="")
@@ -225,19 +248,25 @@ def run(ctx, progress):
         # .ter square is the one that starts at its SOUTH-WEST sample, i.e. bundle (r+1, c)
         target = layers[1:, :-1]
         target[punch] = ter_mod.HOLE
-    progress.end(f"{len(names)} materials {names}, {holes:,} holes ({holes_mode}; {corridor_holes:,} under the pre-clipped ground meshes)")
+    progress.end(
+        f"{len(names)} materials {names}, {holes:,} holes ({holes_mode}; {corridor_holes:,} under the pre-clipped ground meshes)"
+    )
 
     # -- upsample --------------------------------------------------------------------------
     # A bilinear upsample adds no information; with the fine raster (already 8192 at 1.75 m,
     # BeamNG's practical ceiling) it is skipped, and the setting only serves an older rip.
     factor = int(settings.get("terrain_upsample") or 1)
     if factor == 2 and (field.fine or size * 2 > 8192):
-        progress.log(f"terrain: upsample x2 skipped ({size} samples already; the fine raster is the game's own grading)")
+        progress.log(
+            f"terrain: upsample x2 skipped ({size} samples already; the fine raster is the game's own grading)"
+        )
         factor = 1
     if factor == 2:
         progress.begin("terrain: upsample x2", total=None, unit="")
         heights = _upsample_bilinear(heights)
-        layers = numpy.repeat(numpy.repeat(layers, 2, axis=0), 2, axis=1)[:heights.shape[0], :heights.shape[1]]
+        layers = numpy.repeat(numpy.repeat(layers, 2, axis=0), 2, axis=1)[
+            : heights.shape[0], : heights.shape[1]
+        ]
         cell = cell / 2.0
         size = heights.shape[0]
         progress.end(f"{size}x{size} @ {cell} m")
@@ -253,12 +282,17 @@ def run(ctx, progress):
     h16, l8, max_height, pos_z = ter_mod.from_bundle_arrays(heights, layers, scale, offset)
     ter_name = f"{level.name}.ter"
     ter_mod.write_ter(level.path(ter_name), h16, l8, names)
-    ter_mod.write_terrain_json(level.path(f"{level.name}.terrain.json"), level.name, level.game_path(ter_name), size, names)
+    ter_mod.write_terrain_json(
+        level.path(f"{level.name}.terrain.json"), level.name, level.game_path(ter_name), size, names
+    )
     position = [origin_x, origin_z - (size - 1) * cell, pos_z]
     minimap = _write_minimap(level, ctx.bundle, heights, layers, grounds, paths, scale, cell)
     block = {
-        "name": "theTerrain", "class": "TerrainBlock",
-        "position": position, "squareSize": cell, "maxHeight": max_height,
+        "name": "theTerrain",
+        "class": "TerrainBlock",
+        "position": position,
+        "squareSize": cell,
+        "maxHeight": max_height,
         "terrainFile": level.game_path(ter_name),
         "materialTextureSet": f"{level.name}_TerrainTextureSet",
     }
@@ -268,34 +302,52 @@ def run(ctx, progress):
         # mechanism is the one to port. `west_coast_usa` sets it to a 2048 px PNG.
         block["minimapImage"] = level.game_path(minimap).lstrip("/")
     level.add(["Level_objects"], block)
-    albedo_gain = _albedo_gain(os.path.join(bundle, "terrain", "surfaces"), settings.get("terrain_brightness", 1.0))
+    albedo_gain = _albedo_gain(
+        os.path.join(bundle, "terrain", "surfaces"), settings.get("terrain_brightness", 1.0)
+    )
     sharpen = float(settings.get("terrain_blend_sharpen") or 1.0)
-    materials, ground_materials, notes = _terrain_materials(level, bundle, grounds, gain=albedo_gain,
-                                                            rasters=rasters, sharpen=sharpen, cell=cell)
-    level.write_materials("terrains", materials)          # TerrainMaterial only - vanilla convention
-    level.write_materials("ground", ground_materials)     # the cut meshes' plain v1.5 Materials
+    materials, ground_materials, notes = _terrain_materials(
+        level, bundle, grounds, gain=albedo_gain, rasters=rasters, sharpen=sharpen, cell=cell
+    )
+    level.write_materials("terrains", materials)  # TerrainMaterial only - vanilla convention
+    level.write_materials("ground", ground_materials)  # the cut meshes' plain v1.5 Materials
     level.write_objects()
     progress.check()
-    for note in notes:                          # every approximation is counted where it is made
+    for note in notes:  # every approximation is counted where it is made
         progress.log(note)
     terrain_materials = sum(1 for m in materials.values() if m.get("class") == "TerrainMaterial")
-    progress.end(f"{ter_name} {os.path.getsize(level.path(ter_name)) / 2**20:.0f} MB, {terrain_materials} terrain materials "
-                 f"in art/terrains/ (+{len(ground_materials)} ground mesh materials in art/ground/), "
-                 f"albedo gain x{albedo_gain:.2f}")
+    progress.end(
+        f"{ter_name} {os.path.getsize(level.path(ter_name)) / 2**20:.0f} MB, {terrain_materials} terrain materials "
+        f"in art/terrains/ (+{len(ground_materials)} ground mesh materials in art/ground/), "
+        f"albedo gain x{albedo_gain:.2f}"
+    )
     shared = ctx.shared if ctx.shared is not None else {}
-    shared["terrain"] = {"position": position, "squareSize": cell, "maxHeight": max_height, "size": size,
-                         "cell": cell, "elevationScale": scale, "elevationOffset": offset,
-                         # what the ground is painted with: `grounds` are the bundle's own layer
-                         # names, `layers` the level-prefixed TerrainMaterial internalNames that
-                         # a GroundCover's `layer` field has to match
-                         "grounds": list(grounds), "layers": list(names)}
-    return {"size": size, "squareSize": cell, "materials": len(names), "holes": holes,
-            "minimap": minimap,
-            "carriagewaySamples": covered, "carriagewayClamped": lowered,
-            "carriagewayWorstDrop": round(worst, 3),
-            "fine": bool(field.fine), "seconds": round(time.monotonic() - started, 1)}
-
-
+    shared["terrain"] = {
+        "position": position,
+        "squareSize": cell,
+        "maxHeight": max_height,
+        "size": size,
+        "cell": cell,
+        "elevationScale": scale,
+        "elevationOffset": offset,
+        # what the ground is painted with: `grounds` are the bundle's own layer
+        # names, `layers` the level-prefixed TerrainMaterial internalNames that
+        # a GroundCover's `layer` field has to match
+        "grounds": list(grounds),
+        "layers": list(names),
+    }
+    return {
+        "size": size,
+        "squareSize": cell,
+        "materials": len(names),
+        "holes": holes,
+        "minimap": minimap,
+        "carriagewaySamples": covered,
+        "carriagewayClamped": lowered,
+        "carriagewayWorstDrop": round(worst, 3),
+        "fine": bool(field.fine),
+        "seconds": round(time.monotonic() - started, 1),
+    }
 
 
 MINIMAP_SIZE = 2048
@@ -315,13 +367,14 @@ def _write_minimap(level, bundle, heights, layers, grounds, paths, scale, cell):
     information the level draws, at 7 m per pixel — not a render, and not pretending to be one.
     The minimap APP does not use this at all: it draws the navgraph as vectors (audit A7.0).
     """
-    from csiibundle import groundmap, png as png_mod
+    from csiibundle import groundmap
+    from csiibundle import png as png_mod
 
     if heights is None or not heights.size:
         return None
     step = max(1, heights.shape[0] // MINIMAP_SIZE)
     h = heights[::step, ::step].astype(numpy.float32)
-    index = layers[::step, ::step][:h.shape[0], :h.shape[1]]
+    index = layers[::step, ::step][: h.shape[0], : h.shape[1]]
     palette = groundmap.ground_palette(os.path.join(bundle, "terrain", "surfaces"), grounds)
 
     surface = None
@@ -331,15 +384,17 @@ def _write_minimap(level, bundle, heights, layers, grounds, paths, scale, cell):
         water = png_mod.gray_array(paths.water)
         if water.shape != heights.shape:
             water = reader.resample_nearest(water, heights.shape)
-        surface = water[::step, ::step].astype(numpy.float32)[:h.shape[0], :h.shape[1]] * scale
+        surface = water[::step, ::step].astype(numpy.float32)[: h.shape[0], : h.shape[1]] * scale
 
     # The picture itself is `csiibundle.groundmap`, because the settings screen's map view draws
     # the same one from the same bundle and two copies of it would drift apart in appearance
     # with nothing to catch them.
     rgb = groundmap.ground_image(h, index, palette, float(cell) * step, surface)
-    rgba = numpy.concatenate([rgb, numpy.full(h.shape + (1,), 255.0)], axis=-1)
+    rgba = numpy.concatenate([rgb, numpy.full((*h.shape, 1), 255.0)], axis=-1)
     name = f"{level.name}_minimap.png"
-    level.write_bytes_if_changed(png_mod.encode_rgba(numpy.clip(rgba, 0, 255).astype(numpy.uint8)), name)
+    level.write_bytes_if_changed(
+        png_mod.encode_rgba(numpy.clip(rgba, 0, 255).astype(numpy.uint8)), name
+    )
     return name
 
 
@@ -383,13 +438,13 @@ def _upsample_bilinear(h):
     return out
 
 
-NEUTRAL_MAPS = {          # every v1.5 terrain material must name all five maps at all three tiers
-    "ao": 255,             # no occlusion
-    "height": 128,         # flat mid height - the LAST RESORT: see _height_texture
-    "roughness": 217,      # 0.85: matte ground. HYPOTHESIS pending sweep area #4 - the ground
-                           # albedo's own alpha is a plausible smoothness (means 9-34/255,
-                           # correlating +0.31..+0.83 with the height), but nothing in the game's
-                           # source names that channel, so it is measured and NOT shipped
+NEUTRAL_MAPS = {  # every v1.5 terrain material must name all five maps at all three tiers
+    "ao": 255,  # no occlusion
+    "height": 128,  # flat mid height - the LAST RESORT: see _height_texture
+    "roughness": 217,  # 0.85: matte ground. HYPOTHESIS pending sweep area #4 - the ground
+    # albedo's own alpha is a plausible smoothness (means 9-34/255,
+    # correlating +0.31..+0.83 with the height), but nothing in the game's
+    # source names that channel, so it is measured and NOT shipped
 }
 
 # How far a ground's height map is allowed to move a material boundary, and why that number.
@@ -473,7 +528,11 @@ def _neutral_map(level, kind, tier="detail", size=1024):
     if not os.path.isfile(path):
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "wb") as handle:
-            handle.write(png.encode_gray(numpy.full((size, size), NEUTRAL_MAPS[kind], dtype=numpy.uint8), bit_depth=8))
+            handle.write(
+                png.encode_gray(
+                    numpy.full((size, size), NEUTRAL_MAPS[kind], dtype=numpy.uint8), bit_depth=8
+                )
+            )
     return level.game_path("art", "terrains", name)
 
 
@@ -484,7 +543,8 @@ def _read_alpha(path):
     try:
         rgba = png.rgba_array(path)
     except ValueError:
-        from PIL import Image  # noqa: WPS433 - a colour-type-2 PNG has no alpha at all
+        from PIL import Image
+
         image = Image.open(path)
         if image.mode not in ("RGBA", "LA"):
             return None
@@ -513,20 +573,21 @@ def _height_texture(level, src, name, sharpen=1.0):
     target = HEIGHT_SIGMA * 0.5 * min(MAX_HEIGHT_SHARPEN, max(0.0, float(sharpen)))
     scaled = (values - values.mean()) * (target / sigma) + 0.5
     grey = numpy.clip(scaled * 255.0 + 0.5, 0.0, 255.0).astype(numpy.uint8)
-    level.write_bytes_if_changed(png.encode_gray(numpy.ascontiguousarray(grey), bit_depth=8),
-                                 "art", "terrains", name)
+    level.write_bytes_if_changed(
+        png.encode_gray(numpy.ascontiguousarray(grey), bit_depth=8), "art", "terrains", name
+    )
     return level.game_path("art", "terrains", name)
 
 
 def _read_rgb(path):
     """(h, w, 3) uint8 from an 8-bit RGB or RGBA PNG (the theme textures are either)."""
-    from csiibundle import groundmap  # noqa: WPS433 - shared with the settings screen's map view
+    from csiibundle import groundmap
 
     return groundmap.read_rgb(path)
 
 
 def _linear_luminance(rgb8):
-    lin = ((rgb8.astype(numpy.float64) / 255.0) ** 2.2)
+    lin = (rgb8.astype(numpy.float64) / 255.0) ** 2.2
     return float((0.2126 * lin[..., 0] + 0.7152 * lin[..., 1] + 0.0722 * lin[..., 2]).mean())
 
 
@@ -539,7 +600,7 @@ def _albedo_gain(surfaces_dir, user_gain):
             lum = _linear_luminance(_read_rgb(path))
             if lum > 1e-4:
                 gain = min(MAX_GAIN, GRASS_TARGET_LUMINANCE / lum)
-        except Exception:  # noqa: BLE001
+        except Exception:
             gain = 1.0
     return gain * float(user_gain or 1.0)
 
@@ -589,7 +650,7 @@ def _rgb_texture(level, src, name, gain=1.0, deviation=False):
         if deviation:
             rgb = _tier_deviation(rgb)
         level.write_bytes_if_changed(png.encode_rgb(rgb), "art", "terrains", name)
-    except Exception:  # noqa: BLE001 - an odd PNG: ship it as is rather than nothing
+    except Exception:
         level.copy_file(src, "art", "terrains", name)
     return level.game_path("art", "terrains", name)
 
@@ -643,12 +704,15 @@ def _ground_mesh_maps(level, src, name, gain=1.0, normal=False, size=2048):
         if abs(gain - 1.0) > 1e-3 and not normal:
             lin = (rgb.astype(numpy.float64) / 255.0) ** 2.2 * gain
             rgb = (numpy.clip(lin, 0.0, 1.0) ** (1 / 2.2) * 255.0 + 0.5).astype(numpy.uint8)
-        from PIL import Image  # noqa: WPS433
+        from PIL import Image
+
         if rgb.shape[0] != size:
             rgb = numpy.asarray(Image.fromarray(rgb).resize((size, size), Image.LANCZOS))
         base_name = f"{name}.normal.png" if normal else f"{name}.color.png"
         if normal:
-            level.write_bytes_if_changed(png.encode_rgb(numpy.ascontiguousarray(rgb)), "art", "terrains", base_name)
+            level.write_bytes_if_changed(
+                png.encode_rgb(numpy.ascontiguousarray(rgb)), "art", "terrains", base_name
+            )
             # a normal map is already signed around (128, 128, 255); the detail slot takes it
             # verbatim and `detailNormalMapStrength` scales it
             path = level.game_path("art", "terrains", base_name)
@@ -663,16 +727,23 @@ def _ground_mesh_maps(level, src, name, gain=1.0, normal=False, size=2048):
         # sigma and **32.5 % of `extra2` clamped**, 7-8 % of grass/dirt/extra1 — the near-black
         # and blown-out cream pieces of load #25. Low-passed, the composite clamps 0.0 % and its
         # sigma lands on the albedo's own (grass 0.068 against 0.069).
-        low = numpy.asarray(Image.fromarray(rgb).resize((BASE_LOWPASS, BASE_LOWPASS), Image.BOX)
-                            .resize((size, size), Image.BILINEAR))
-        level.write_bytes_if_changed(png.encode_rgb(numpy.ascontiguousarray(low)), "art", "terrains", base_name)
+        low = numpy.asarray(
+            Image.fromarray(rgb)
+            .resize((BASE_LOWPASS, BASE_LOWPASS), Image.BOX)
+            .resize((size, size), Image.BILINEAR)
+        )
+        level.write_bytes_if_changed(
+            png.encode_rgb(numpy.ascontiguousarray(low)), "art", "terrains", base_name
+        )
         base_path = level.game_path("art", "terrains", base_name)
         deviation = 0.5 + (linear - linear.reshape(-1, 3).mean(axis=0)[None, None, :]) * 0.5
         detail = numpy.clip(deviation * 255.0 + 0.5, 0.0, 255.0).astype(numpy.uint8)
         detail_name = f"{name}.data.png"
-        level.write_bytes_if_changed(png.encode_rgb(numpy.ascontiguousarray(detail)), "art", "terrains", detail_name)
+        level.write_bytes_if_changed(
+            png.encode_rgb(numpy.ascontiguousarray(detail)), "art", "terrains", detail_name
+        )
         return base_path, level.game_path("art", "terrains", detail_name)
-    except Exception:  # noqa: BLE001 - an odd PNG: ship it flat rather than not at all
+    except Exception:
         plain = _rgb_texture(level, src, f"{name}.color.png", gain=gain if not normal else 1.0)
         return plain, plain
 
@@ -745,9 +816,19 @@ def _terrain_materials(level, bundle, names, gain=1.0, rasters=None, sharpen=1.0
     guessed_tiling, missing_height = [], []
     out = {}
     set_name = f"{level.name}_TerrainTextureSet"
-    out[set_name] = {"name": set_name, "class": "TerrainMaterialTextureSet", "persistentId": level.pid("terrain:textureset"),
-                     "baseTexSize": [1024, 1024], "detailTexSize": [1024, 1024], "macroTexSize": [1024, 1024]}
-    neutral = {(kind, tier): _neutral_map(level, kind, tier=tier) for kind in NEUTRAL_MAPS for tier in TIERS}
+    out[set_name] = {
+        "name": set_name,
+        "class": "TerrainMaterialTextureSet",
+        "persistentId": level.pid("terrain:textureset"),
+        "baseTexSize": [1024, 1024],
+        "detailTexSize": [1024, 1024],
+        "macroTexSize": [1024, 1024],
+    }
+    neutral = {
+        (kind, tier): _neutral_map(level, kind, tier=tier)
+        for kind in NEUTRAL_MAPS
+        for tier in TIERS
+    }
     for name in names:
         source = name
         if not os.path.isfile(os.path.join(surfaces_dir, f"{source}.png")):
@@ -759,21 +840,34 @@ def _terrain_materials(level, bundle, names, gain=1.0, rasters=None, sharpen=1.0
         # up into purple/green). Vanilla terrain textures are colour type 2, no alpha.
         # the BASE tier carries the ground's colour; MACRO and DETAIL are signed deviations around
         # half their deviation from it (`_tier_deviation`) so the overlay reproduces a lerp
-        albedo = {tier: _rgb_texture(level, albedo_src, f"{level.name}_{source}_{tier}_b.png",
-                                     gain=gain, deviation=(tier != "base"))
-                  for tier in TIERS}
-        normal = {tier: _rgb_texture(level, normal_src, f"{level.name}_{source}_{tier}_nm.png") for tier in TIERS}
+        albedo = {
+            tier: _rgb_texture(
+                level,
+                albedo_src,
+                f"{level.name}_{source}_{tier}_b.png",
+                gain=gain,
+                deviation=(tier != "base"),
+            )
+            for tier in TIERS
+        }
+        normal = {
+            tier: _rgb_texture(level, normal_src, f"{level.name}_{source}_{tier}_nm.png")
+            for tier in TIERS
+        }
         # the ground's own relief, so BeamNG's height blend has something to interlock with
-        height = {tier: _height_texture(level, normal_src, f"{level.name}_{source}_{tier}_h.png",
-                                        sharpen=sharpen)
-                  for tier in TIERS}
+        height = {
+            tier: _height_texture(
+                level, normal_src, f"{level.name}_{source}_{tier}_h.png", sharpen=sharpen
+            )
+            for tier in TIERS
+        }
         if height["detail"] is None:
             missing_height.append(name)
         pid = level.pid(f"terrain:material:{name}")
         size, detail_distances, macro_distances, from_game = _tiling_of(tiling_block, name)
         if not from_game:
             guessed_tiling.append(name)
-        internal = f"{level.name}_{name}"               # globally unique: see run()
+        internal = f"{level.name}_{name}"  # globally unique: see run()
         # The strengths ARE the game's cross-fade, ported exactly rather than guessed. With
         # `_tier_deviation`'s encoding a tier's strength is its lerp weight, so CS2's
         # near -> mid -> far cross-fade is a three-way partition of the two overlays:
@@ -799,23 +893,42 @@ def _terrain_materials(level, bundle, names, gain=1.0, rasters=None, sharpen=1.0
         # is short of CS2's midBlendEnd/farBlendEnd. Invisible by construction — both tiers are
         # deviations around mid-gray, so a mip that has converged to the tier's mean contributes
         # exactly zero, and a 14 m repeat is long since mipped flat at 250 m.
-        mat = {"name": f"{internal}-{pid}", "internalName": internal, "class": "TerrainMaterial", "persistentId": pid,
-               "annotation": name.upper(), "groundmodelName": GROUNDMODEL.get(name, "DIRT"),
-               "detailDistances": detail_distances, "detailDistAtten": [0, 0],
-               "macroDistances": macro_distances, "macroDistAtten": [0, 1],
-               "baseColorMacroStrength": [0, 1], "baseColorDetailStrength": [1, 0],
-               "normalMacroStrength": [0, 1], "normalDetailStrength": [1, 0],
-               "roughnessMacroStrength": [0, 1], "roughnessDetailStrength": [1, 0],
-               "heightMacroStrength": [0, 1], "heightDetailStrength": [1, 0]}
+        mat = {
+            "name": f"{internal}-{pid}",
+            "internalName": internal,
+            "class": "TerrainMaterial",
+            "persistentId": pid,
+            "annotation": name.upper(),
+            "groundmodelName": GROUNDMODEL.get(name, "DIRT"),
+            "detailDistances": detail_distances,
+            "detailDistAtten": [0, 0],
+            "macroDistances": macro_distances,
+            "macroDistAtten": [0, 1],
+            "baseColorMacroStrength": [0, 1],
+            "baseColorDetailStrength": [1, 0],
+            "normalMacroStrength": [0, 1],
+            "normalDetailStrength": [1, 0],
+            "roughnessMacroStrength": [0, 1],
+            "roughnessDetailStrength": [1, 0],
+            "heightMacroStrength": [0, 1],
+            "heightDetailStrength": [1, 0],
+        }
         for tier in TIERS:
             cap = tier.capitalize()
-            mat[f"baseColor{cap}Tex"] = albedo[tier] or neutral[("ao", tier)]       # no texture at all: flat white
-            mat[f"normal{cap}Tex"] = normal[tier] or neutral[("height", tier)]      # mid gray reads as up
+            mat[f"baseColor{cap}Tex"] = (
+                albedo[tier] or neutral[("ao", tier)]
+            )  # no texture at all: flat white
+            mat[f"normal{cap}Tex"] = (
+                normal[tier] or neutral[("height", tier)]
+            )  # mid gray reads as up
             mat[f"ao{cap}Tex"] = neutral[("ao", tier)]
             # the base tier is the neutral flat 128 by design: height rides the additive
             # overlay, so the relief belongs in macro/detail only (`_height_texture`)
-            mat[f"height{cap}Tex"] = (neutral[("height", tier)] if tier == "base"
-                                      else height[tier] or neutral[("height", tier)])
+            mat[f"height{cap}Tex"] = (
+                neutral[("height", tier)]
+                if tier == "base"
+                else height[tier] or neutral[("height", tier)]
+            )
             mat[f"roughness{cap}Tex"] = neutral[("roughness", tier)]
             for group in ("baseColor", "normal", "ao", "height", "roughness"):
                 mat[f"{group}{cap}TexSize"] = _tex_size(size[tier], cell)
@@ -825,13 +938,25 @@ def _terrain_materials(level, bundle, names, gain=1.0, rasters=None, sharpen=1.0
     # three classic names for an older bake): base map at the mesh's own world-planar UV period
     # (csiibundle.bake.terraincut.GROUND_UV_M metres), detail map at the ground's near tiling
     # through `detailScale` — see `_ground_mesh_maps`.
-    for gname in sorted(set(list(names) + ["grass", "dirt", "rock"])):
-        source = gname if os.path.isfile(os.path.join(surfaces_dir, f"{gname}.png")) else TEXTURE_FALLBACK.get(gname, "grass")
+    for gname in sorted({*list(names), "grass", "dirt", "rock"}):
+        source = (
+            gname
+            if os.path.isfile(os.path.join(surfaces_dir, f"{gname}.png"))
+            else TEXTURE_FALLBACK.get(gname, "grass")
+        )
         metres, _dd, _md, _from_game = _tiling_of(tiling_block, gname)
-        albedo, albedo_detail = _ground_mesh_maps(level, os.path.join(surfaces_dir, f"{source}.png"),
-                                                  f"{level.name}_{source}_ground_b", gain=gain)
-        normal, normal_detail = _ground_mesh_maps(level, os.path.join(surfaces_dir, f"{source}_normal.png"),
-                                                  f"{level.name}_{source}_ground_nm", normal=True)
+        albedo, albedo_detail = _ground_mesh_maps(
+            level,
+            os.path.join(surfaces_dir, f"{source}.png"),
+            f"{level.name}_{source}_ground_b",
+            gain=gain,
+        )
+        normal, normal_detail = _ground_mesh_maps(
+            level,
+            os.path.join(surfaces_dir, f"{source}_normal.png"),
+            f"{level.name}_{source}_ground_nm",
+            normal=True,
+        )
         # how many times the near tiling repeats within one mesh UV period; a UV multiplier, so
         # unlike a baked composite it needs no rounding
         detail_scale = round(terraincut.GROUND_UV_M / max(1e-6, metres["detail"]), 4)
@@ -839,7 +964,7 @@ def _terrain_materials(level, bundle, names, gain=1.0, rasters=None, sharpen=1.0
         stage = {"roughnessFactor": 0.95, "metallicFactor": 0.0}
         if albedo:
             stage["baseColorMap"] = albedo
-            stage["baseColorFactor"] = [1.0, 1.0, 1.0, 1.0]     # blendDetail MULTIPLIES this in
+            stage["baseColorFactor"] = [1.0, 1.0, 1.0, 1.0]  # blendDetail MULTIPLIES this in
             if albedo_detail:
                 stage["detailMap"] = albedo_detail
                 stage["detailScale"] = [detail_scale, detail_scale]
@@ -856,8 +981,17 @@ def _terrain_materials(level, bundle, names, gain=1.0, rasters=None, sharpen=1.0
         # doubleSided: the harness draws its lattice from either side (Blender culls no
         # backfaces) and a sub-cut patch on a portal's cliff can be near-vertical, where "faces
         # up" is a coin toss — both sides must draw
-        out[mname] = {"name": mname, "mapTo": mname, "class": "Material", "persistentId": level.pid(f"material:ground:{gname}"),
-                      "version": 1.5, "materialTag0": "beamng", "materialTag1": "cs2", "doubleSided": True, "Stages": [stage]}
+        out[mname] = {
+            "name": mname,
+            "mapTo": mname,
+            "class": "Material",
+            "persistentId": level.pid(f"material:ground:{gname}"),
+            "version": 1.5,
+            "materialTag0": "beamng",
+            "materialTag1": "cs2",
+            "doubleSided": True,
+            "Stages": [stage],
+        }
     # The ground mesh materials go in their OWN file, NOT beside the TerrainMaterials.
     # Measured against every shipped vanilla level: `art/terrains/*.materials.json` holds 191
     # `TerrainMaterial` entries and ZERO plain `Material` entries, and not one vanilla file mixes
@@ -867,22 +1001,30 @@ def _terrain_materials(level, bundle, names, gain=1.0, rasters=None, sharpen=1.0
     # `art/cs2/` is out (the materials stage rewrites that file wholesale, after this one runs) and
     # `art/shapes/` is out (the mesh compiler writes placeholder materials files there and the cook
     # stage deletes what it finds), so they get `art/ground/`.
-    notes = [f"terrain: ground meshes get 2 tiers where the terrain gets 3 (a v1.5 material has "
-             f"two texture slots) and their base map runs at the mesh's {terraincut.GROUND_UV_M:.0f} m "
-             f"UV period, not the game's mid tiling - APPROXIMATED for "
-             f"{sum(1 for v in out.values() if v.get('class') == 'Material')} "
-             f"ground mesh material(s); the near tier is exact via detailScale"]
+    notes = [
+        f"terrain: ground meshes get 2 tiers where the terrain gets 3 (a v1.5 material has "
+        f"two texture slots) and their base map runs at the mesh's {terraincut.GROUND_UV_M:.0f} m "
+        f"UV period, not the game's mid tiling - APPROXIMATED for "
+        f"{sum(1 for v in out.values() if v.get('class') == 'Material')} "
+        f"ground mesh material(s); the near tier is exact via detailScale"
+    ]
     if guessed_tiling:
-        notes.append(f"terrain: no rasters.terrainTiling in this rip - {len(guessed_tiling)} ground(s) "
-                     f"fall back to the pre-audit-47 guesses ({', '.join(sorted(guessed_tiling))})")
+        notes.append(
+            f"terrain: no rasters.terrainTiling in this rip - {len(guessed_tiling)} ground(s) "
+            f"fall back to the pre-audit-47 guesses ({', '.join(sorted(guessed_tiling))})"
+        )
     if abs(sharpen - 1.0) > 1e-6:
-        notes.append(f"terrain: terrain_blend_sharpen x{sharpen:g} - NOT PARITY, a declared deviation: "
-                     f"the ground relief is {sharpen:g}x what BeamNG's blend derives, to dissolve the "
-                     f"blocky boundaries our 1.75 m layer grid causes (audit §48.3)")
+        notes.append(
+            f"terrain: terrain_blend_sharpen x{sharpen:g} - NOT PARITY, a declared deviation: "
+            f"the ground relief is {sharpen:g}x what BeamNG's blend derives, to dissolve the "
+            f"blocky boundaries our 1.75 m layer grid causes (audit §48.3)"
+        )
     if missing_height:
-        notes.append(f"terrain: {len(missing_height)} ground(s) ship no height map "
-                     f"({', '.join(sorted(missing_height))}) - flat 128, so BeamNG's height blend "
-                     f"degenerates to the bilinear ramp for them")
+        notes.append(
+            f"terrain: {len(missing_height)} ground(s) ship no height map "
+            f"({', '.join(sorted(missing_height))}) - flat 128, so BeamNG's height blend "
+            f"degenerates to the bilinear ramp for them"
+        )
     ground = {k: v for k, v in out.items() if v.get("class") == "Material"}
     terrain_only = {k: v for k, v in out.items() if v.get("class") != "Material"}
     return terrain_only, ground, notes
@@ -892,13 +1034,36 @@ def _terrain_materials(level, bundle, names, gain=1.0, rasters=None, sharpen=1.0
 # §8 rasters plus the bake's terrain product (the carriageway ceiling, the corridor faces and
 # the clip cells the punch is read from); `terrain_brightness` and `terrain_blend_sharpen` are
 # in the list because they change the ground textures this stage writes, not just its heights.
-INPUTS = ("layer:terrain", "layer:terrainFine", "layer:surfaceIndex", "layer:splatmap",
-          "layer:userSplatmap", "layer:surfaces", "layer:water", "derived:terrain")
-SETTINGS = ("terrain_upsample", "terrain_holes", "terrain_cut", "terrain_brightness",
-            "terrain_blend_sharpen")
+INPUTS = (
+    "layer:terrain",
+    "layer:terrainFine",
+    "layer:surfaceIndex",
+    "layer:splatmap",
+    "layer:userSplatmap",
+    "layer:surfaces",
+    "layer:water",
+    "derived:terrain",
+)
+SETTINGS = (
+    "terrain_upsample",
+    "terrain_holes",
+    "terrain_cut",
+    "terrain_brightness",
+    "terrain_blend_sharpen",
+)
 OUTPUTS = ("art/terrains/main.materials.json",)
 
 # version 2: the block carries `minimapImage` and the stage writes the 2048 px `<name>_minimap.png`
 # it names (A7.2) - the old dashboard map drew nothing without it
-STAGE = Stage(STAGE_KEY, "Terrain", enabled, units, run, inputs=INPUTS, settings_keys=SETTINGS,
-              outputs=OUTPUTS, shared_keys=("terrain",), version=2)
+STAGE = Stage(
+    STAGE_KEY,
+    "Terrain",
+    enabled,
+    units,
+    run,
+    inputs=INPUTS,
+    settings_keys=SETTINGS,
+    outputs=OUTPUTS,
+    shared_keys=("terrain",),
+    version=2,
+)

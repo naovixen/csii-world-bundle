@@ -59,6 +59,7 @@ DEFAULT_LAYERS = {
 
 # -- the manifest -----------------------------------------------------------------------------
 
+
 def load_manifest(bundle_dir):
     """`bundle.json` as a dict, or `None` for a bundle written before the manifest existed."""
     path = os.path.join(bundle_dir, MANIFEST_NAME)
@@ -85,8 +86,9 @@ def layer_path(bundle_dir, key, manifest=None):
     return os.path.join(bundle_dir, rel)
 
 
-Layers = namedtuple("Layers", "meshes instances networks net_meshes lane_geometry "
-                              "lane_meshes lane_prefabs")
+Layers = namedtuple(
+    "Layers", "meshes instances networks net_meshes lane_geometry lane_meshes lane_prefabs"
+)
 
 
 def resolve_layers(bundle_dir):
@@ -112,7 +114,9 @@ def resolve_layers(bundle_dir):
     )
 
 
-TerrainPaths = namedtuple("TerrainPaths", "heightmap surface_index water surfaces splatmap rasters heightmap_fine")
+TerrainPaths = namedtuple(
+    "TerrainPaths", "heightmap surface_index water surfaces splatmap rasters heightmap_fine"
+)
 
 
 def terrain_paths(bundle_dir):
@@ -143,11 +147,15 @@ def terrain_paths(bundle_dir):
         surfaces=layer_path(bundle_dir, "surfaces", manifest),
         splatmap=layer_path(bundle_dir, "splatmap", manifest),
         rasters=rasters,
-        heightmap_fine=layer_path(bundle_dir, "terrainFine", manifest) if "terrainFine" in declared else None,
+        heightmap_fine=layer_path(bundle_dir, "terrainFine", manifest)
+        if "terrainFine" in declared
+        else None,
     )
 
 
-Heightfield = namedtuple("Heightfield", "raw cell origin_x origin_z elevation_scale elevation_offset fine path")
+Heightfield = namedtuple(
+    "Heightfield", "raw cell origin_x origin_z elevation_scale elevation_offset fine path"
+)
 
 
 def load_heightfield(bundle_dir, prefer_fine=True):
@@ -163,6 +171,7 @@ def load_heightfield(bundle_dir, prefer_fine=True):
     Returns `None` when the bundle has no terrain layer at all.
     """
     from . import png
+
     paths = terrain_paths(bundle_dir)
     if paths.rasters is None or not os.path.isfile(paths.heightmap):
         return None
@@ -172,20 +181,26 @@ def load_heightfield(bundle_dir, prefer_fine=True):
     if prefer_fine and paths.heightmap_fine is not None:
         block = rasters.get("terrainFine")
         if not os.path.isfile(paths.heightmap_fine) or not isinstance(block, dict):
-            raise RuntimeError(f"CONTRACT VIOLATION: bundle.json declares layers.terrainFine but "
-                               f"{paths.heightmap_fine} or rasters.terrainFine is missing (§8)")
+            raise RuntimeError(
+                f"CONTRACT VIOLATION: bundle.json declares layers.terrainFine but "
+                f"{paths.heightmap_fine} or rasters.terrainFine is missing (§8)"
+            )
         raw = png.gray_array(paths.heightmap_fine)
         res = block["resolution"]
         cell = float(res[0]) if isinstance(res, (list, tuple)) else float(res)
         origin_x, _, origin_z = (float(v) for v in block["originWorld"])
         size = block.get("size")
         if size and (int(size[0]), int(size[1])) != (raw.shape[1], raw.shape[0]):
-            raise RuntimeError(f"CONTRACT VIOLATION: {paths.heightmap_fine} is {raw.shape[1]}x{raw.shape[0]}, "
-                               f"rasters.terrainFine.size says {size}")
+            raise RuntimeError(
+                f"CONTRACT VIOLATION: {paths.heightmap_fine} is {raw.shape[1]}x{raw.shape[0]}, "
+                f"rasters.terrainFine.size says {size}"
+            )
         return Heightfield(raw, cell, origin_x, origin_z, scale, offset, True, paths.heightmap_fine)
     raw = png.gray_array(paths.heightmap)
     origin_x, _, origin_z = (float(v) for v in rasters["originWorld"])
-    return Heightfield(raw, float(rasters["resolution"]), origin_x, origin_z, scale, offset, False, paths.heightmap)
+    return Heightfield(
+        raw, float(rasters["resolution"]), origin_x, origin_z, scale, offset, False, paths.heightmap
+    )
 
 
 def resample_nearest(raster, shape):
@@ -195,12 +210,17 @@ def resample_nearest(raster, shape):
     centre... up to half a coarse cell (§8: the fine texel centres sit at the coarse cell's
     quarter points), which is what the `+ 0.5` below expresses."""
     import numpy
+
     src_h, src_w = raster.shape[:2]
     dst_h, dst_w = int(shape[0]), int(shape[1])
     if (src_h, src_w) == (dst_h, dst_w):
         return raster
-    rows = numpy.minimum(((numpy.arange(dst_h) + 0.5) * (src_h / dst_h)).astype(numpy.int64), src_h - 1)
-    cols = numpy.minimum(((numpy.arange(dst_w) + 0.5) * (src_w / dst_w)).astype(numpy.int64), src_w - 1)
+    rows = numpy.minimum(
+        ((numpy.arange(dst_h) + 0.5) * (src_h / dst_h)).astype(numpy.int64), src_h - 1
+    )
+    cols = numpy.minimum(
+        ((numpy.arange(dst_w) + 0.5) * (src_w / dst_w)).astype(numpy.int64), src_w - 1
+    )
     return raster[rows][:, cols]
 
 
@@ -215,6 +235,7 @@ def schema_version(bundle_dir_or_manifest):
 
 
 # -- record streams ---------------------------------------------------------------------------
+
 
 def read_jsonl(path, contains=None):
     """Stream one JSON Lines layer, yielding a dict per record.
@@ -265,6 +286,7 @@ def read_declared_gaps(bundle_dir):
 # Loading one whole is the intended use. Each returns `{}` when its layer is absent, because a
 # partial rip legitimately ships without it (§1) and a consumer's answer to "no materials" is
 # to draw untextured, not to fail.
+
 
 def load_catalogue(bundle_dir, key):
     """One of the `.json` table layers by manifest key, or `{}` when it is not there."""

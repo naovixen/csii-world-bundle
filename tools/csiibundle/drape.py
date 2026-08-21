@@ -32,11 +32,10 @@ of this from a static reading.
 """
 
 import math
-import os
 
 import numpy
 
-from . import png, reader
+from . import reader
 
 # Quantise world (x, y) to this many millimetres before deduping surface queries. Two DIFFERENT
 # curve stations that clip to the same arc position, or two literal duplicate source vertices,
@@ -124,24 +123,31 @@ class HeightfieldSurface(ProjectionSurface):
         field = reader.load_heightfield(bundle_dir, prefer_fine=prefer_fine)
         if field is None:
             return None
-        surface = cls(field.raw.astype(numpy.float64) * field.elevation_scale + field.elevation_offset,
-                      field.cell, field.origin_x, field.origin_z, diagonal=diagonal)
+        surface = cls(
+            field.raw.astype(numpy.float64) * field.elevation_scale + field.elevation_offset,
+            field.cell,
+            field.origin_x,
+            field.origin_z,
+            diagonal=diagonal,
+        )
         surface.fine = field.fine
         return surface
 
     # -- the queries ---------------------------------------------------------------------------
 
-    def height(self, x, y, ceiling=4000.0):     # noqa: ARG002 - a heightfield has no occluders
+    def height(self, x, y, ceiling=4000.0):  # `ceiling`: a heightfield has no occluders
         """The ground height at `(x, y)`, or `None` (NaN in an array) outside the raster.
 
         `ceiling` is accepted for protocol compatibility and ignored: a heightfield is a single
         surface, so there is never more than one hit to choose between.
         """
         if isinstance(x, (float, int)) and isinstance(y, (float, int)):
-            return self._sample_one(x, y)           # the scalar path — see `_sample_one`
+            return self._sample_one(x, y)  # the scalar path — see `_sample_one`
         scalar = numpy.isscalar(x) and numpy.isscalar(y)
-        out = self._sample(numpy.atleast_1d(numpy.asarray(x, dtype=numpy.float64)),
-                           numpy.atleast_1d(numpy.asarray(y, dtype=numpy.float64)))
+        out = self._sample(
+            numpy.atleast_1d(numpy.asarray(x, dtype=numpy.float64)),
+            numpy.atleast_1d(numpy.asarray(y, dtype=numpy.float64)),
+        )
         if not scalar:
             return out
         value = float(out[0])
@@ -172,8 +178,8 @@ class HeightfieldSurface(ProjectionSurface):
         on_edge = (~inside) & (c0 >= 0) & (r0 >= 0) & (c0 <= cols - 1) & (r0 <= rows - 1)
         c0 = numpy.clip(c0, 0, max(cols - 2, 0))
         r0 = numpy.clip(r0, 0, max(rows - 2, 0))
-        u = numpy.clip(fc - c0, 0.0, 1.0)        # 0 at the west edge of the cell
-        v = numpy.clip(fr - r0, 0.0, 1.0)        # 0 at the north edge
+        u = numpy.clip(fc - c0, 0.0, 1.0)  # 0 at the west edge of the cell
+        v = numpy.clip(fr - r0, 0.0, 1.0)  # 0 at the north edge
 
         nw = self.heights[r0, c0]
         ne = self.heights[r0, c0 + 1]
@@ -183,15 +189,17 @@ class HeightfieldSurface(ProjectionSurface):
         if self.diagonal == "nw_se":
             # Triangles (nw, ne, se) for u >= v, and (nw, se, sw) for u < v.
             upper = u >= v
-            out = numpy.where(upper,
-                              nw + (ne - nw) * u + (se - ne) * v,
-                              nw + (se - sw) * u + (sw - nw) * v)
+            out = numpy.where(
+                upper, nw + (ne - nw) * u + (se - ne) * v, nw + (se - sw) * u + (sw - nw) * v
+            )
         else:
             # Diagonal ne-sw: triangles (nw, ne, sw) for u + v <= 1, else (ne, se, sw).
             lower = (u + v) <= 1.0
-            out = numpy.where(lower,
-                              nw + (ne - nw) * u + (sw - nw) * v,
-                              se + (sw - se) * (1.0 - u) + (ne - se) * (1.0 - v))
+            out = numpy.where(
+                lower,
+                nw + (ne - nw) * u + (sw - nw) * v,
+                se + (sw - se) * (1.0 - u) + (ne - se) * (1.0 - v),
+            )
 
         return numpy.where(inside | on_edge, out, numpy.nan)
 
@@ -217,7 +225,7 @@ class HeightfieldSurface(ProjectionSurface):
         try:
             c0 = math.floor(fc)
             r0 = math.floor(fr)
-        except (ValueError, OverflowError):     # NaN or infinity: the array path answers NaN
+        except (ValueError, OverflowError):  # NaN or infinity: the array path answers NaN
             return None
         # `inside | on_edge` in one test: a query exactly on the last row/column belongs to the
         # last cell, and anything else off the raster has no ground.
@@ -229,8 +237,8 @@ class HeightfieldSurface(ProjectionSurface):
             r0 = max(rows - 2, 0)
         u = fc - c0
         v = fr - r0
-        u = 0.0 if u < 0.0 else (1.0 if u > 1.0 else u)      # 0 at the west edge of the cell
-        v = 0.0 if v < 0.0 else (1.0 if v > 1.0 else v)      # 0 at the north edge
+        u = 0.0 if u < 0.0 else (1.0 if u > 1.0 else u)  # 0 at the west edge of the cell
+        v = 0.0 if v < 0.0 else (1.0 if v > 1.0 else v)  # 0 at the north edge
 
         nw = heights.item(r0, c0)
         ne = heights.item(r0, c0 + 1)
@@ -274,8 +282,10 @@ def drape_block(block, road_surface, counters, ground_surface=None):
 
     x, y_pre, z = verts[:, 0], verts[:, 1], verts[:, 2]
     scale = 1000.0 / DEDUP_MM
-    keys = numpy.stack((numpy.round(x * scale).astype(numpy.int64),
-                        numpy.round(z * scale).astype(numpy.int64)), axis=1)
+    keys = numpy.stack(
+        (numpy.round(x * scale).astype(numpy.int64), numpy.round(z * scale).astype(numpy.int64)),
+        axis=1,
+    )
     _, first_index, inverse = numpy.unique(keys, axis=0, return_index=True, return_inverse=True)
     inverse = inverse.reshape(-1)
 
@@ -308,6 +318,7 @@ def drape_block(block, road_surface, counters, ground_surface=None):
 
 # -- bulk queries on the heightfield -----------------------------------------------------------
 
+
 def _heightfield_drop_many(self, x, y, z, half_up, half_down):
     """Vectorised `drop`: `(N,)` arrays in, `(N,)` heights out with NaN where nothing is in the
     window. Same rule as the scalar form: one surface, so a window test."""
@@ -317,8 +328,10 @@ def _heightfield_drop_many(self, x, y, z, half_up, half_down):
     return numpy.where(ok, top, numpy.nan)
 
 
-def _heightfield_height_many(self, x, y, ceiling=4000.0):   # noqa: ARG001 - single surface
-    return self._sample(numpy.asarray(x, dtype=numpy.float64), numpy.asarray(y, dtype=numpy.float64))
+def _heightfield_height_many(self, x, y, ceiling=4000.0):  # `ceiling`: one surface, no occluders
+    return self._sample(
+        numpy.asarray(x, dtype=numpy.float64), numpy.asarray(y, dtype=numpy.float64)
+    )
 
 
 HeightfieldSurface.drop_many = _heightfield_drop_many
@@ -326,6 +339,7 @@ HeightfieldSurface.height_many = _heightfield_height_many
 
 
 # -- a triangle soup as a projection surface ---------------------------------------------------
+
 
 class TriangleSoupSurface(ProjectionSurface):
     """A `ProjectionSurface` over an arbitrary triangle soup — the network meshes — in numpy.
@@ -409,12 +423,19 @@ class TriangleSoupSurface(ProjectionSurface):
     # -- protocol ------------------------------------------------------------------------------
 
     def drop(self, x, y, z, half_up, half_down):
-        out = self.drop_many(numpy.array([x], numpy.float64), numpy.array([y], numpy.float64),
-                             numpy.array([z], numpy.float64), half_up, half_down)
+        out = self.drop_many(
+            numpy.array([x], numpy.float64),
+            numpy.array([y], numpy.float64),
+            numpy.array([z], numpy.float64),
+            half_up,
+            half_down,
+        )
         return None if numpy.isnan(out[0]) else float(out[0])
 
     def height(self, x, y, ceiling=4000.0):
-        out = self.height_many(numpy.array([x], numpy.float64), numpy.array([y], numpy.float64), ceiling)
+        out = self.height_many(
+            numpy.array([x], numpy.float64), numpy.array([y], numpy.float64), ceiling
+        )
         return None if numpy.isnan(out[0]) else float(out[0])
 
     def drop_many(self, x, y, z, half_up, half_down):
@@ -496,6 +517,7 @@ class TriangleSoupSurface(ProjectionSurface):
 
 # -- bulk draping -------------------------------------------------------------------------------
 
+
 def drape_blocks(blocks, road_surface, ground_surface=None, counters=None):
     """`drape_block` over many blocks with ONE bulk surface query — the form the bake uses.
 
@@ -515,20 +537,29 @@ def drape_blocks(blocks, road_surface, ground_surface=None, counters=None):
     if not live:
         return counters
     xs = numpy.concatenate([numpy.asarray(b["verts"][:, 0], numpy.float64) for b in live])
-    ys = numpy.concatenate([numpy.asarray(b["verts"][:, 1], numpy.float64) for b in live])   # expected (up)
+    ys = numpy.concatenate(
+        [numpy.asarray(b["verts"][:, 1], numpy.float64) for b in live]
+    )  # expected (up)
     zs = numpy.concatenate([numpy.asarray(b["verts"][:, 2], numpy.float64) for b in live])
     halves = numpy.concatenate([numpy.full(len(b["verts"]), float(b["half_height"])) for b in live])
     epss = numpy.concatenate([numpy.full(len(b["verts"]), float(b["drape_eps"])) for b in live])
     scale = 1000.0 / DEDUP_MM
-    keys = numpy.stack((numpy.round(xs * scale), numpy.round(zs * scale), numpy.round(ys * scale),
-                        numpy.round(halves * scale)), axis=1).astype(numpy.int64)
+    keys = numpy.stack(
+        (
+            numpy.round(xs * scale),
+            numpy.round(zs * scale),
+            numpy.round(ys * scale),
+            numpy.round(halves * scale),
+        ),
+        axis=1,
+    ).astype(numpy.int64)
     _, first, inverse = numpy.unique(keys, axis=0, return_index=True, return_inverse=True)
     inverse = inverse.reshape(-1)
-    counters["queries"] += int(len(first))
+    counters["queries"] += len(first)
     # Bundle (x, y_up, z_north) -> Z-up (x, y_north, z_up).
     qx, qy, qz, qh = xs[first], zs[first], ys[first], halves[first]
     top = _bulk_drop(road_surface, qx, qy, qz, qh)
-    status = numpy.where(numpy.isnan(top), 0, 1)                 # 1 = draped, 2 = grounded
+    status = numpy.where(numpy.isnan(top), 0, 1)  # 1 = draped, 2 = grounded
     if ground_surface is not None:
         miss = numpy.isnan(top)
         if miss.any():
@@ -547,7 +578,7 @@ def drape_blocks(blocks, road_surface, ground_surface=None, counters=None):
     cursor = 0
     for b in live:
         n = len(b["verts"])
-        b["verts"][:, 1] = new_y[cursor:cursor + n]
+        b["verts"][:, 1] = new_y[cursor : cursor + n]
         cursor += n
     return counters
 

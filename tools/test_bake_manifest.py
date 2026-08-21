@@ -5,6 +5,7 @@ Runs against `docs/example-bundle` copied into a temp dir (so nothing under docs
 stub product registered for the test — the real products arrive in later phases and share this
 machinery. Plain `python tools/test_bake_manifest.py`; stdlib + numpy only.
 """
+
 import inspect
 import json
 import os
@@ -32,7 +33,7 @@ class Counting(Progress):
         self.begun = []
         self.logs = []
 
-    def begin(self, name, total=None, unit="items"):
+    def begin(self, name, total=None, unit="items"):  # `unit`: the progress protocol
         self.begun.append((name, total))
 
     def log(self, message):
@@ -77,7 +78,9 @@ def main():
         outcomes = run(bundle, registry=registry, progress=prog)
         check([o.status for o in outcomes] == ["baked"], f"first run bakes the stub: {outcomes}")
         doc = json.load(open(os.path.join(derived, "derived.json"), encoding="utf-8"))
-        validator = validate_bundle.Validator(json.load(open(SCHEMA, encoding="utf-8")), "derived.schema.json")
+        validator = validate_bundle.Validator(
+            json.load(open(SCHEMA, encoding="utf-8")), "derived.schema.json"
+        )
         errors = validator.validate(doc)
         check(not errors, f"derived.json validates against derived.schema.json {errors[:3]}")
         check(doc["products"]["stub"]["tiles"] == [[0, 0], [-1, 2]], "tiles recorded")
@@ -100,13 +103,17 @@ def main():
         instances = os.path.join(bundle, "instances.jsonl")
         os.utime(instances, (time.time() + 5, time.time() + 5))
         outcomes = run(bundle, registry=registry, progress=Counting(), check_only=True)
-        check([o.status for o in outcomes] == ["stale"] and "instances" in outcomes[0].reason,
-              f"input change makes it stale: {outcomes}")
+        check(
+            [o.status for o in outcomes] == ["stale"] and "instances" in outcomes[0].reason,
+            f"input change makes it stale: {outcomes}",
+        )
         outcomes = run(bundle, registry=registry, progress=Counting())
         check([o.status for o in outcomes] == ["baked"], "stale product re-bakes")
 
         # 5. a different shaping option is a different cache
-        outcomes = run(bundle, registry=registry, progress=Counting(), options={"tile": 128.0}, check_only=True)
+        outcomes = run(
+            bundle, registry=registry, progress=Counting(), options={"tile": 128.0}, check_only=True
+        )
         check([o.status for o in outcomes] == ["stale"], "different tile size is stale")
 
         # 6. force re-bakes
@@ -151,14 +158,20 @@ def main():
         # error anywhere. `paint_kinds` did exactly that on 2026-08-18 - the setting was wired
         # end to end, the level rebuilt in 25 minutes, and 448k props still drew the untinted
         # albedo. Same failure shape as the `version` one, and the mechanism existed both times.
-        framework = set(bake_manifest.SHAPING_OPTIONS) | {"jobs"}   # reshape everything / split the work
+        framework = set(bake_manifest.SHAPING_OPTIONS) | {
+            "jobs"
+        }  # reshape everything / split the work
         reads = re.compile(r'options\.get\(\s*"([a-z_]+)"')
         for name, product in bake.products().items():
             source = inspect.getsource(inspect.getmodule(product.run))
             undeclared = sorted(set(reads.findall(source)) - framework - set(product.options))
-            check(not undeclared,
-                  f"product {name!r} declares every option it reads"
-                  + (f" - reads {undeclared}, declares {list(product.options)}" if undeclared else ""))
+            check(
+                not undeclared,
+                f"product {name!r} declares every option it reads"
+                + (
+                    f" - reads {undeclared}, declares {list(product.options)}" if undeclared else ""
+                ),
+            )
 
     print()
     if failures:

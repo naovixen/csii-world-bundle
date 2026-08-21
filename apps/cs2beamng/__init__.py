@@ -42,11 +42,14 @@ def _frozen_streams():
     import os
 
     try:
-        base = os.environ.get("CS2BEAMNG_HOME") or os.path.join(os.path.expanduser("~"), ".cs2beamng")
+        base = os.environ.get("CS2BEAMNG_HOME") or os.path.join(
+            os.path.expanduser("~"), ".cs2beamng"
+        )
         os.makedirs(base, exist_ok=True)
         handle = open(os.path.join(base, "cs2beamng.log"), "a", encoding="utf-8", errors="replace")
     except OSError:
-        class _Null:                                    # last resort: swallow, never raise
+
+        class _Null:  # last resort: swallow, never raise
             def write(self, _text):
                 return 0
 

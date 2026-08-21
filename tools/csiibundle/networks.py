@@ -50,11 +50,12 @@ def segment_normals(points):
     """
     points = numpy.asarray(points, dtype=numpy.float64)
     delta = points[1:] - points[:-1]
-    flat = numpy.stack((delta[:, 0], delta[:, 2]), axis=1)      # (east, north), up dropped
+    flat = numpy.stack((delta[:, 0], delta[:, 2]), axis=1)  # (east, north), up dropped
     length = numpy.linalg.norm(flat, axis=1, keepdims=True)
-    degenerate = (length[:, 0] < 1e-6)
-    flat = numpy.where(length < 1e-6, numpy.array([1.0, 0.0]), flat / numpy.where(
-        length < 1e-6, 1.0, length))
+    degenerate = length[:, 0] < 1e-6
+    flat = numpy.where(
+        length < 1e-6, numpy.array([1.0, 0.0]), flat / numpy.where(length < 1e-6, 1.0, length)
+    )
     normals = numpy.zeros((len(delta), 3))
     normals[:, 0] = -flat[:, 1]
     normals[:, 2] = flat[:, 0]
@@ -102,12 +103,12 @@ def ribbon(centerline, width, lift=0.0, mitre_limit=DEFAULT_MITRE_LIMIT):
 
     bisector = before + after
     blen = numpy.linalg.norm(bisector, axis=1, keepdims=True)
-    reversed_ = (blen[:, 0] < 1e-6)                 # a perfect reversal has no sane mitre
+    reversed_ = blen[:, 0] < 1e-6  # a perfect reversal has no sane mitre
     unit = numpy.where(blen < 1e-6, after, bisector / numpy.where(blen < 1e-6, 1.0, blen))
     # 1/cos(θ/2), where cos(θ/2) is the bisector's projection onto either segment normal.
     scale = numpy.minimum(1.0 / numpy.maximum((unit * after).sum(axis=1), 1e-3), mitre_limit)
     offset = unit * (half * scale)[:, None]
-    offset[reversed_] = after[reversed_] * half     # butt it
+    offset[reversed_] = after[reversed_] * half  # butt it
 
     lifted = points.copy()
     lifted[:, 1] += lift

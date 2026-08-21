@@ -40,17 +40,20 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), "apps"))
 
-from csiibundle import glb, instances as bundle_instances, lod, tints  # noqa: E402
-from cs2beamng.beamng import placement  # noqa: E402
+from cs2beamng.beamng import (  # noqa: E402 - after the sys.path bootstrap above
+    frame,
+    placement,
+)
 from cs2beamng.beamng.level import read_objects  # noqa: E402
-from cs2beamng.beamng import frame  # noqa: E402
 from cs2beamng.stages.instances import _transform  # noqa: E402
 from cs2beamng.stages.shapes import IMPOSTER_REACH  # noqa: E402
+from csiibundle import glb, lod, tints  # noqa: E402
+from csiibundle import instances as bundle_instances  # noqa: E402
 
 NS = "{http://www.collada.org/2005/11/COLLADASchema}"
 NULL_RE = re.compile(r"^nulldetail(\d+)$")
 BILLBOARD_RE = re.compile(r"^bb_autobillboard(\d+)$")
-TOLERANCE_POSITION = 0.002          # metres; the level writes 3 decimal places
+TOLERANCE_POSITION = 0.002  # metres; the level writes 3 decimal places
 TOLERANCE_SCALE = 2e-4
 # a forest item's rotationMatrix is rounded to 4 dp (`stages/instances.ROTATION_DP`), which
 # is 1e-4 of a unit vector; a TSStatic's to 6. The coarser one sets the tolerance.
@@ -68,9 +71,9 @@ def main(argv):
     print(f"bundle {bundle}\nlevel  {level_dir}\n")
     shapes = _read_shapes(level_dir)
     print(f"{len(shapes):,} shapes on disk")
-    forest, types = _read_forest(level_dir)
+    forest, _types = _read_forest(level_dir)
     print(f"{sum(len(v) for v in forest.values()):,} forest items in {len(forest):,} types")
-    statics = _read_statics(level_dir)                  # (by record id, by position)
+    statics = _read_statics(level_dir)  # (by record id, by position)
     print(f"{len(statics[1]):,} TSStatics\n")
 
     results = collections.OrderedDict()
@@ -87,11 +90,14 @@ def main(argv):
         verdict = "MATCH " if (share >= 1.0 or not exact) else "DIVERGE"
         if exact and share < 1.0:
             failed += 1
-        print(f"{verdict}  {name:44} {agree:>9,} / {total:<9,} = {share:8.4%}  {row.get('note', '')}")
+        print(
+            f"{verdict}  {name:44} {agree:>9,} / {total:<9,} = {share:8.4%}  {row.get('note', '')}"
+        )
     return 1 if failed else 0
 
 
 # -- reading the level back ------------------------------------------------------------------------
+
 
 def _settings_of(level_dir):
     """The build's own settings, from `cs2beamng_report.json` beside the level."""
@@ -217,7 +223,11 @@ def _static_for(record, position, by_id, by_pos):
 
 
 def _key(position):
-    return (round(float(position[0]), 2), round(float(position[1]), 2), round(float(position[2]), 2))
+    return (
+        round(float(position[0]), 2),
+        round(float(position[1]), 2),
+        round(float(position[2]), 2),
+    )
 
 
 def _shape_base(name):
@@ -228,6 +238,7 @@ def _shape_base(name):
 
 
 # -- the questions ---------------------------------------------------------------------------------
+
 
 def _check_state_and_scale(bundle, settings, forest, statics, samples, results):
     """For a sample of records: is the placed object at the position, rotation, size and mesh
@@ -311,22 +322,33 @@ def _check_state_and_scale(bundle, settings, forest, statics, samples, results):
         where["total"] += 1
         if placed[0] == "forest":
             item = placed[2]
-            where["agree"] += int(max(abs(a - b) for a, b in zip(item["pos"], position)) <= TOLERANCE_POSITION)
+            where["agree"] += int(
+                max(abs(a - b) for a, b in zip(item["pos"], position)) <= TOLERANCE_POSITION
+            )
             size["total"] += 1
             size["agree"] += int(abs(item["scale"] - sum(scale) / 3.0) <= TOLERANCE_SCALE)
             shipped = item.get("rotationMatrix")
         else:
             obj = placed[2]
-            where["agree"] += int(max(abs(a - b) for a, b in zip(obj["position"], position)) <= TOLERANCE_POSITION)
+            where["agree"] += int(
+                max(abs(a - b) for a, b in zip(obj["position"], position)) <= TOLERANCE_POSITION
+            )
             size["total"] += 1
-            size["agree"] += int(max(abs(a - b) for a, b in zip(obj["scale"], scale)) <= TOLERANCE_SCALE)
+            size["agree"] += int(
+                max(abs(a - b) for a, b in zip(obj["scale"], scale)) <= TOLERANCE_SCALE
+            )
             shipped = obj.get("rotationMatrix")
         if shipped and len(shipped) == 9:
             turn["total"] += 1
-            turn["agree"] += int(max(abs(a - b) for a, b in zip(shipped, flat)) <= TOLERANCE_ROTATION)
+            turn["agree"] += int(
+                max(abs(a - b) for a, b in zip(shipped, flat)) <= TOLERANCE_ROTATION
+            )
 
     results["a record this build admits is placed"] = dict(
-        found, exact=False, note=f"{found['total'] - found['agree']} unplaced = the prefab ships no mesh at all")
+        found,
+        exact=False,
+        note=f"{found['total'] - found['agree']} unplaced = the prefab ships no mesh at all",
+    )
     results["the mesh state is the one CalculateTreeSubMeshData picks"] = dict(state)
     results["the position is T(pos) conjugated into BeamNG axes"] = dict(where)
     results["the drawn size is the game's growthScale x the record's scale"] = dict(size)
@@ -356,7 +378,9 @@ def _check_lod(bundle, shapes, settings, results):
         area = 0.0
         for node in nodes:
             matrix = numpy.asarray(node["matrix"], dtype=numpy.float64)
-            world = numpy.asarray(node["verts"], dtype=numpy.float64) @ matrix[:3, :3].T + matrix[:3, 3]
+            world = (
+                numpy.asarray(node["verts"], dtype=numpy.float64) @ matrix[:3, :3].T + matrix[:3, 3]
+            )
             lo = numpy.minimum(lo, world.min(axis=0))
             hi = numpy.maximum(hi, world.max(axis=0))
             area += lod.surface_area(world, node["tris"])
@@ -364,7 +388,9 @@ def _check_lod(bundle, shapes, settings, results):
         radius = 0.5 * float(numpy.linalg.norm(boxes))
         game_px = lod.game_detail_px(radius, boxes, area)
         want = max(1.0, game_px * scale)
-        expected = int(max(1, round(want / IMPOSTER_REACH))) if imposters else int(max(1, round(want)))
+        expected = (
+            int(max(1, round(want / IMPOSTER_REACH))) if imposters else int(max(1, round(want)))
+        )
         row["total"] += 1
         row["agree"] += int(entry["nullPx"] == expected)
         ratios.append(entry["nullPx"] / max(game_px, 1e-9))
@@ -372,8 +398,9 @@ def _check_lod(bundle, shapes, settings, results):
         # nodes at the SAME px, which is legitimate (Hospital01: two geometries at 191 px)
         details = sorted(set(entry["details"]), reverse=True)
         ladder["total"] += 1
-        ladder["agree"] += int(len(details) == len(set(details))
-                               and all(px > (entry["nullPx"] or 0) for px in details))
+        ladder["agree"] += int(
+            len(details) == len(set(details)) and all(px > (entry["nullPx"] or 0) for px in details)
+        )
 
     results["the nulldetail px is the game's own threshold x lod_detail_scale"] = dict(row)
     results["the detail ladder strictly decreases and clears nulldetail"] = dict(ladder)
@@ -381,8 +408,11 @@ def _check_lod(bundle, shapes, settings, results):
         ratios.sort()
         median = ratios[len(ratios) // 2]
         results["how much closer than CS2 this level culls"] = {
-            "total": len(ratios), "agree": len(ratios), "exact": False,
-            "note": f"median {median:.2f}x closer (1.00 would be CS2 exactly)"}
+            "total": len(ratios),
+            "agree": len(ratios),
+            "exact": False,
+            "note": f"median {median:.2f}x closer (1.00 would be CS2 exactly)",
+        }
 
 
 def _check_colour(bundle, settings, statics, results):
@@ -409,7 +439,7 @@ def _check_colour(bundle, settings, statics, results):
             index = tints.variant_index(attrs, centres)
             centre = [float(v) for channel in centres[index] for v in channel[:3]]
             own = [float(c) for colour in colours[:3] for c in colour[:3]]
-            errors.append(max(abs(a - b) for a, b in zip(own, centre[:len(own)])))
+            errors.append(max(abs(a - b) for a, b in zip(own, centre[: len(own)])))
             continue
         position, _r, _s = _transform(record)
         obj = _static_for(record, position, statics[0], statics[1])
@@ -417,17 +447,22 @@ def _check_colour(bundle, settings, statics, results):
             continue
         exact["total"] += 1
         shipped = [obj.get("instanceColor"), obj.get("instanceColor1"), obj.get("instanceColor2")]
-        ok = all(shipped[i] is not None
-                 and max(abs(float(a) - float(b)) for a, b in zip(shipped[i], colours[i])) < 2e-6
-                 for i in range(3))
+        ok = all(
+            shipped[i] is not None
+            and max(abs(float(a) - float(b)) for a, b in zip(shipped[i], colours[i])) < 2e-6
+            for i in range(3)
+        )
         exact["agree"] += int(ok)
     results["a TSStatic carries the record's own colorSet exactly"] = dict(exact)
     if errors:
         errors.sort()
         results["a forest item's paint is its prefab's nearest baked centre"] = {
-            "total": len(errors), "agree": len(errors), "exact": False,
+            "total": len(errors),
+            "agree": len(errors),
+            "exact": False,
             "note": f"median channel error {errors[len(errors) // 2]:.4f}, "
-                    f"p95 {errors[int(0.95 * (len(errors) - 1))]:.4f} (0 = its own colour)"}
+            f"p95 {errors[int(0.95 * (len(errors) - 1))]:.4f} (0 = its own colour)",
+        }
 
 
 def _region_of(settings):

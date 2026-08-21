@@ -52,9 +52,7 @@ def basis_flat(matrix):
     that settles the ordering — it is the transpose of the obvious flatten, and the obvious
     flatten stores the inverse rotation."""
     m = [[float(v) for v in row] for row in matrix]
-    return [m[0][0], m[1][0], m[2][0],
-            m[0][1], m[1][1], m[2][1],
-            m[0][2], m[1][2], m[2][2]]
+    return [m[0][0], m[1][0], m[2][0], m[0][1], m[1][1], m[2][1], m[0][2], m[1][2], m[2][2]]
 
 
 def heading_matrix(dx, dy):
@@ -66,9 +64,7 @@ def heading_matrix(dx, dy):
         dx, dy = 0.0, 1.0
     else:
         dx, dy = dx / length, dy / length
-    return basis_flat([[dy, dx, 0.0],
-                       [-dx, dy, 0.0],
-                       [0.0, 0.0, 1.0]])
+    return basis_flat([[dy, dx, 0.0], [-dx, dy, 0.0], [0.0, 0.0, 1.0]])
 
 
 def identity_matrix():

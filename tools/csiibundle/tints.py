@@ -50,8 +50,14 @@ def color_set(attrs):
     for i in range(CHANNELS):
         channel = shipped[i] if i < len(shipped) else None
         if channel:
-            out.append((float(channel[0]), float(channel[1]), float(channel[2]),
-                        float(channel[3]) if len(channel) > 3 else 1.0))
+            out.append(
+                (
+                    float(channel[0]),
+                    float(channel[1]),
+                    float(channel[2]),
+                    float(channel[3]) if len(channel) > 3 else 1.0,
+                )
+            )
         else:
             out.append(IDENTITY)
     return out
@@ -99,8 +105,11 @@ def variant_vector(attrs):
     """One record's `colorSet` as the 9-vector the bake clusters in: three channels x RGB,
     quantised to `VARIANT_QUANT_STEPS` and back. Alpha and any fourth channel are dropped."""
     colours = color_set(attrs)
-    return [round(float(c) * VARIANT_QUANT_STEPS) / VARIANT_QUANT_STEPS
-            for colour in colours[:CHANNELS] for c in colour[:3]]
+    return [
+        round(float(c) * VARIANT_QUANT_STEPS) / VARIANT_QUANT_STEPS
+        for colour in colours[:CHANNELS]
+        for c in colour[:3]
+    ]
 
 
 def variant_index(attrs, centres):
@@ -129,4 +138,5 @@ def variant_key(centre):
     file stores it, so this takes the parsed JSON value and re-serialises it the same way."""
     import hashlib
     import json
+
     return hashlib.sha256(json.dumps(centre).encode("utf-8")).hexdigest()[:12]

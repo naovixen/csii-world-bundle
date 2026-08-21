@@ -12,7 +12,9 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from csiibundle import lod  # noqa: E402
+import itertools
+
+from csiibundle import lod
 
 FAILED = []
 
@@ -36,10 +38,17 @@ def test_lod_limit_is_the_exponent_reduction():
         got = lod.calculate_lod_limit(m)
         check(f"limit({m}) = {got}", got == want, f"expected {want}")
     check("limit(1) is 128", lod.calculate_lod_limit(1.0) == 128)
-    check("one LOD step is 2^(1/6)", lod.calculate_lod_limit(2.0) == lod.calculate_lod_limit(1.0) - 6)
-    check("a positive bias drops it sooner",
-          lod.calculate_lod_limit(4.0, bias=1.0) > lod.calculate_lod_limit(4.0))
-    check("bias 1 == half the size", lod.calculate_lod_limit(4.0, bias=1.0) == lod.calculate_lod_limit(2.0))
+    check(
+        "one LOD step is 2^(1/6)", lod.calculate_lod_limit(2.0) == lod.calculate_lod_limit(1.0) - 6
+    )
+    check(
+        "a positive bias drops it sooner",
+        lod.calculate_lod_limit(4.0, bias=1.0) > lod.calculate_lod_limit(4.0),
+    )
+    check(
+        "bias 1 == half the size",
+        lod.calculate_lod_limit(4.0, bias=1.0) == lod.calculate_lod_limit(2.0),
+    )
 
 
 def test_cull_distance_inverts_calculate_lod():
@@ -51,7 +60,10 @@ def test_cull_distance_inverts_calculate_lod():
         # the index is quantised to 1/6 of an octave (2^(1/6) = 1.1225x in distance), so
         # `cull_distance` is where the LAST visible band starts, not where it ends
         check(f"a whole step past {limit} is culled", lod.calculate_lod(d * 1.13, factor) < limit)
-        check(f"just inside the band at {limit} is drawn", lod.calculate_lod(d * 1.11, factor) == limit)
+        check(
+            f"just inside the band at {limit} is drawn",
+            lod.calculate_lod(d * 1.11, factor) == limit,
+        )
 
 
 def test_rendering_size_clamp():
@@ -59,10 +71,18 @@ def test_rendering_size_clamp():
     check("a cube is its side", near(lod.rendering_size([2, 2, 2]), 2.0))
     check("the mean of three unclamped axes", near(lod.rendering_size([1, 2, 3]), 2.0))
     # a mast: 0.2 x 0.2 x 40. Cap on the tall axis is max(8*0.2, 4*0.2) = 1.6
-    check("a mast's height is capped at 8x the thin axes", near(lod.rendering_size([0.2, 0.2, 40.0]), (0.2 + 0.2 + 1.6) / 3))
+    check(
+        "a mast's height is capped at 8x the thin axes",
+        near(lod.rendering_size([0.2, 0.2, 40.0]), (0.2 + 0.2 + 1.6) / 3),
+    )
     # a wall: 40 x 20 x 0.3. Cap on x is max(8*0.3, 4*20) = 80 -> uncapped
-    check("a wall is not capped", near(lod.rendering_size([40.0, 20.0, 0.3]), (40.0 + 20.0 + 0.3) / 3))
-    check("order does not matter", near(lod.rendering_size([40.0, 0.3, 20.0]), lod.rendering_size([0.3, 20.0, 40.0])))
+    check(
+        "a wall is not capped", near(lod.rendering_size([40.0, 20.0, 0.3]), (40.0 + 20.0 + 0.3) / 3)
+    )
+    check(
+        "order does not matter",
+        near(lod.rendering_size([40.0, 0.3, 20.0]), lod.rendering_size([0.3, 20.0, 40.0])),
+    )
 
 
 def test_surface_area_and_bias():
@@ -75,10 +95,17 @@ def test_surface_area_and_bias():
     check("a mesh that fills its box has no bias", near(lod.lod_bias([1, 2, 3], 22.0), 0.0))
     check("half the area is half a stop", near(lod.lod_bias([2, 2, 2], 12.0), 0.5))
     check("a quarter is a whole stop", near(lod.lod_bias([2, 2, 2], 6.0), 1.0))
-    check("the clamp floors at 1e-6", near(lod.lod_bias([2, 2, 2], 1e-9), -math.log2(math.sqrt(1e-6))))
-    check("an unknown area keeps the authored bias", lod.lod_bias([2, 2, 2], 0.0, authored_bias=0.25) == 0.25)
-    check("a sparser mesh is dropped sooner",
-          lod.mesh_min_lod([2, 2, 2], 6.0) > lod.mesh_min_lod([2, 2, 2], 24.0))
+    check(
+        "the clamp floors at 1e-6", near(lod.lod_bias([2, 2, 2], 1e-9), -math.log2(math.sqrt(1e-6)))
+    )
+    check(
+        "an unknown area keeps the authored bias",
+        lod.lod_bias([2, 2, 2], 0.0, authored_bias=0.25) == 0.25,
+    )
+    check(
+        "a sparser mesh is dropped sooner",
+        lod.mesh_min_lod([2, 2, 2], 6.0) > lod.mesh_min_lod([2, 2, 2], 24.0),
+    )
 
 
 def test_pixel_conversion_is_fov_free():
@@ -91,13 +118,20 @@ def test_pixel_conversion_is_fov_free():
         d = lod.cull_distance(limit, fov_degrees=fov)
         direct = lod.screen_px(radius, d, fov_degrees=fov)
         # the LOD index is quantised to 1/6 of an octave, so the two agree within that step
-        check(f"fov {fov} agrees within one LOD step", abs(math.log2(direct / px)) <= 1.0 / 6.0 + 1e-9,
-              f"direct {direct:.4f} vs px {px:.4f}")
-    check("a lower quality preset culls sooner (a bigger px)",
-          lod.game_detail_px(radius, size, area, level_of_detail=0.25)
-          > lod.game_detail_px(radius, size, area, level_of_detail=0.7))
-    check("the High preset puts a unit cube near 1.2 px",
-          1.0 < lod.game_detail_px(math.sqrt(3) / 2, [1, 1, 1], 6.0) < 1.6)
+        check(
+            f"fov {fov} agrees within one LOD step",
+            abs(math.log2(direct / px)) <= 1.0 / 6.0 + 1e-9,
+            f"direct {direct:.4f} vs px {px:.4f}",
+        )
+    check(
+        "a lower quality preset culls sooner (a bigger px)",
+        lod.game_detail_px(radius, size, area, level_of_detail=0.25)
+        > lod.game_detail_px(radius, size, area, level_of_detail=0.7),
+    )
+    check(
+        "the High preset puts a unit cube near 1.2 px",
+        1.0 < lod.game_detail_px(math.sqrt(3) / 2, [1, 1, 1], 6.0) < 1.6,
+    )
 
 
 def test_screen_px_reference():
@@ -105,7 +139,10 @@ def test_screen_px_reference():
     # a 1 m object 100 m away at 45 degrees: 1 * 540 / (100 * tan(22.5))
     want = 540.0 / (100.0 * math.tan(math.radians(22.5)))
     check("projectRadius", near(lod.screen_px(1.0, 100.0), want))
-    check("twice as far is half the size", near(lod.screen_px(1.0, 200.0), lod.screen_px(1.0, 100.0) / 2))
+    check(
+        "twice as far is half the size",
+        near(lod.screen_px(1.0, 200.0), lod.screen_px(1.0, 100.0) / 2),
+    )
 
 
 # -- the flat-thing producers (A4) -----------------------------------------------------------------
@@ -115,23 +152,31 @@ def test_screen_px_reference():
 # different place each time. These check the ported expressions against the game's arithmetic
 # written out by hand, and the one conclusion the numbers force.
 
+
 def test_rendering_size_2d():
     print("GetRenderingSize(float2) — the synthetic depth")
     # (x + y + max(8x, 4y)) / 3
     check("16 x 1 road", near(lod.rendering_size_2d((16.0, 1.0)), (16.0 + 1.0 + 128.0) / 3.0))
-    check("1 x 4 (height wins the max)", near(lod.rendering_size_2d((1.0, 4.0)), (1.0 + 4.0 + 16.0) / 3.0))
+    check(
+        "1 x 4 (height wins the max)",
+        near(lod.rendering_size_2d((1.0, 4.0)), (1.0 + 4.0 + 16.0) / 3.0),
+    )
     check("raw float3 is the plain mean", near(lod.rendering_size_raw((3.0, 6.0, 9.0)), 6.0))
     # the object path's clamp must NOT be in it: a long thin thing keeps its full mean here
-    check("no object clamp on the 2d overload",
-          lod.rendering_size_2d((100.0, 0.0)) > lod.rendering_size((100.0, 0.0, 0.0)))
+    check(
+        "no object clamp on the 2d overload",
+        lod.rendering_size_2d((100.0, 0.0)) > lod.rendering_size((100.0, 0.0, 0.0)),
+    )
 
 
 def test_composition_min_lod():
     print("NetCompositionHelpers.CalculateMinLod")
     want = lod.calculate_lod_limit(lod.rendering_size_2d((16.0, 1.0)), 0.0)
     check("16 m road", lod.composition_min_lod(16.0, 1.0) == want)
-    check("a wider road is drawn further",
-          lod.composition_min_lod(24.0, 1.0) < lod.composition_min_lod(3.0, 1.0))
+    check(
+        "a wider road is drawn further",
+        lod.composition_min_lod(24.0, 1.0) < lod.composition_min_lod(3.0, 1.0),
+    )
     # THE finding this port exists to record: CS2 does not distance-cull roads on any real map.
     far = lod.cull_distance(lod.composition_min_lod(16.0, 1.0))
     check(f"a 16 m road's own limit is past any map ({far:,.0f} m)", far > 20000.0, f"{far}")
@@ -139,19 +184,28 @@ def test_composition_min_lod():
 
 def test_lane_min_lod():
     print("NetLaneGeometryData.m_MinLod — the min over the prefab's meshes")
-    thin = ((0.15, 0.02, 4.0), 0.15 * 4.0)              # a lane line: 15 cm wide, 4 m long
-    wide = ((2.0, 0.02, 4.0), 2.0 * 4.0)                # a crosswalk block
-    check("the min over meshes is the MOST generous",
-          lod.lane_min_lod([thin, wide]) == min(lod.lane_min_lod([thin]), lod.lane_min_lod([wide])))
+    thin = ((0.15, 0.02, 4.0), 0.15 * 4.0)  # a lane line: 15 cm wide, 4 m long
+    wide = ((2.0, 0.02, 4.0), 2.0 * 4.0)  # a crosswalk block
+    check(
+        "the min over meshes is the MOST generous",
+        lod.lane_min_lod([thin, wide]) == min(lod.lane_min_lod([thin]), lod.lane_min_lod([wide])),
+    )
     # `Size(bounds).xy` is length-free, but `m_LodBias` is not: MeshSystem derives it from the
     # FULL 3D box, so a longer tile with the same triangle area is sparser and drops sooner.
     # Both halves are the game's; the check is that the size term alone ignores the length.
-    check("the size term ignores the length",
-          lod.rendering_size_2d((0.15, 0.02)) == lod.rendering_size_2d((0.15, 0.02)))
-    check("a longer, sparser tile drops sooner (the bias, not the size)",
-          lod.lane_min_lod([((0.15, 0.02, 400.0), 0.6)]) >= lod.lane_min_lod([((0.15, 0.02, 4.0), 0.6)]))
+    check(
+        "the size term ignores the length",
+        lod.rendering_size_2d((0.15, 0.02)) == lod.rendering_size_2d((0.15, 0.02)),
+    )
+    check(
+        "a longer, sparser tile drops sooner (the bias, not the size)",
+        lod.lane_min_lod([((0.15, 0.02, 400.0), 0.6)])
+        >= lod.lane_min_lod([((0.15, 0.02, 4.0), 0.6)]),
+    )
     near_m = lod.cull_distance(lod.lane_min_lod([thin]))
-    check(f"a lane line is culled inside a kilometre ({near_m:,.0f} m)", near_m < 1000.0, f"{near_m}")
+    check(
+        f"a lane line is culled inside a kilometre ({near_m:,.0f} m)", near_m < 1000.0, f"{near_m}"
+    )
     check("nothing to measure means never drawn", lod.lane_min_lod([]) == 255)
 
 
@@ -165,9 +219,15 @@ def test_area_triangle_min_lod():
     wide_poly = [(0.0, 0.0), (40.0, 0.0), (40.0, 30.0), (0.0, 30.0)]
     wide = lod.area_triangle_min_lods(wide_poly, tris)
     check("wider paint is drawn further", max(wide) < min(narrow), f"{wide} vs {narrow}")
-    check("length alone changes nothing",
-          lod.area_triangle_min_lods([(0.0, 0.0), (400.0, 0.0), (400.0, 3.0), (0.0, 3.0)], tris) == narrow)
-    check("a degenerate polygon is never drawn", lod.area_triangle_min_lods([(0.0, 0.0)], [(0, 0, 0)]) == [255])
+    check(
+        "length alone changes nothing",
+        lod.area_triangle_min_lods([(0.0, 0.0), (400.0, 0.0), (400.0, 3.0), (0.0, 3.0)], tris)
+        == narrow,
+    )
+    check(
+        "a degenerate polygon is never drawn",
+        lod.area_triangle_min_lods([(0.0, 0.0)], [(0, 0, 0)]) == [255],
+    )
     # MEASURED, and not what a guess would have said: the rule multiplies the distance to the
     # boundary by FOUR, so a 3 m strip counts as a 6 m thing and CS2 draws it to 3.65 km. That is
     # the fidelity number; `lod_detail_scale` is what turns it into something a level can afford.
@@ -179,8 +239,13 @@ def test_group_detail_px():
     print("group_detail_px — a merged tile's Torque threshold")
     # a 256 m tile's bounding sphere is ~181 m; at 4 km that is a large pixel size, at 40 km small
     r = 181.0
-    check("closer means a bigger threshold", lod.group_detail_px(r, 1000.0) > lod.group_detail_px(r, 4000.0))
-    check("it is the plain projection", near(lod.group_detail_px(r, 1000.0), lod.screen_px(r, 1000.0)))
+    check(
+        "closer means a bigger threshold",
+        lod.group_detail_px(r, 1000.0) > lod.group_detail_px(r, 4000.0),
+    )
+    check(
+        "it is the plain projection", near(lod.group_detail_px(r, 1000.0), lod.screen_px(r, 1000.0))
+    )
 
 
 def test_tile_ladder():
@@ -191,7 +256,7 @@ def test_tile_ladder():
         print("tile ladder: cs2beamng not installed, skipped")
         return
     print("the tile ladder")
-    radius = 181.0                                     # a 256 m tile's bounding sphere
+    radius = 181.0  # a 256 m tile's bounding sphere
     # a tile of one kind of thing: nothing to gain, and it must SAY nothing rather than ship
     # three copies of the same mesh
     uniform = tilelod.tile_levels(radius, [3650.0] * 100, detail_scale=6.0)
@@ -200,23 +265,39 @@ def test_tile_ladder():
     mixed = tilelod.tile_levels(radius, [256.0] * 60 + [3650.0] * 40, detail_scale=6.0)
     check("a mixed tile gets a real ladder", len(mixed["levels"]) >= 2, f"{len(mixed['levels'])}")
     sizes = [px for px, _mask in mixed["levels"]]
-    check("detail sizes strictly decrease", all(a > b for a, b in zip(sizes, sizes[1:])), f"{sizes}")
+    check(
+        "detail sizes strictly decrease",
+        all(a > b for a, b in itertools.pairwise(sizes)),
+        f"{sizes}",
+    )
     counts = [int(mask.sum()) for _px, mask in mixed["levels"]]
-    check("each level keeps no more than the one before it",
-          all(a >= b for a, b in zip(counts, counts[1:])), f"{counts}")
+    check(
+        "each level keeps no more than the one before it",
+        all(a >= b for a, b in itertools.pairwise(counts)),
+        f"{counts}",
+    )
     check("the far level drops the short-lived half", counts[-1] <= 40, f"{counts}")
-    check("nullPx is the game's far distance, scaled",
-          near(mixed["nullPx"], round(lod.group_detail_px(radius, 3650.0) * 6.0)), f"{mixed}")
+    check(
+        "nullPx is the game's far distance, scaled",
+        near(mixed["nullPx"], round(lod.group_detail_px(radius, 3650.0) * 6.0)),
+        f"{mixed}",
+    )
     # A tile of roads. CS2's own limit for a 16 m road is 41 km, so there is nothing to cull and
     # the ladder must SAY so — one level, and a null distance past any view distance — rather
     # than invent bands. The 9.27M network triangles are the game's answer, not an oversight.
     roads = tilelod.tile_levels(radius, [41298.0] * 50, detail_scale=6.0)
     check("a tile of roads gets one level", len(roads["levels"]) == 1, f"{roads['levels']}")
-    check("and its null distance is past any view distance",
-          41298.0 / 6.0 > 4000.0 and roads["culledFraction"] == 0.0, f"{roads}")
+    check(
+        "and its null distance is past any view distance",
+        41298.0 / 6.0 > 4000.0 and roads["culledFraction"] == 0.0,
+        f"{roads}",
+    )
     # infinity (no limit known at all) declines outright
     unknown = tilelod.tile_levels(radius, [float("inf")] * 10, detail_scale=6.0)
-    check("an unknown limit ships the always-on tile", unknown["nullPx"] is None and not unknown["levels"])
+    check(
+        "an unknown limit ships the always-on tile",
+        unknown["nullPx"] is None and not unknown["levels"],
+    )
 
 
 def test_displacement_switch_points():
@@ -224,28 +305,48 @@ def test_displacement_switch_points():
     radius, error = 16.0, 6.0
     tight = lod.displacement_switch_px(radius, 0.02, error)
     loose = lod.displacement_switch_px(radius, 2.0, error)
-    check("a level that is further out takes over further out", loose < tight, f"{loose} vs {tight}")
-    check("the error at the threshold IS the budget",
-          near(lod.displacement_error_px(radius, 2.0, loose), error), f"{loose}")
-    check("and it is the budget for the tight one too",
-          near(lod.displacement_error_px(radius, 0.02, tight), error), f"{tight}")
-    check("a level identical to LOD 0 is always allowed",
-          lod.displacement_switch_px(radius, 0.0, error) == lod.SWITCH_CEILING_PX)
-    check("an unmeasured level is treated as identical",
-          lod.displacement_switch_px(radius, None, error) == lod.SWITCH_CEILING_PX)
+    check(
+        "a level that is further out takes over further out", loose < tight, f"{loose} vs {tight}"
+    )
+    check(
+        "the error at the threshold IS the budget",
+        near(lod.displacement_error_px(radius, 2.0, loose), error),
+        f"{loose}",
+    )
+    check(
+        "and it is the budget for the tight one too",
+        near(lod.displacement_error_px(radius, 0.02, tight), error),
+        f"{tight}",
+    )
+    check(
+        "a level identical to LOD 0 is always allowed",
+        lod.displacement_switch_px(radius, 0.0, error) == lod.SWITCH_CEILING_PX,
+    )
+    check(
+        "an unmeasured level is treated as identical",
+        lod.displacement_switch_px(radius, None, error) == lod.SWITCH_CEILING_PX,
+    )
     # the whole point of A6.7, as an invariant rather than a statistic: two shapes of the SAME
     # size whose levels are a hundredfold apart in error get the same threshold from a ladder of
     # ratios - and so a hundredfold difference in what you see - where the rule gives them the
     # same picture and different thresholds. On the reference city that spread is real: 603 of
     # 4,261 LOD1s are identical to LOD 0 and the worst is 37 m out.
-    same_ladder = 24 * 16.0                                    # `nullPx * LADDER_RATIOS[-1]`
+    same_ladder = 24 * 16.0  # `nullPx * LADDER_RATIOS[-1]`
     clean = lod.displacement_error_px(radius, 0.02, same_ladder)
     coarse = lod.displacement_error_px(radius, 2.0, same_ladder)
-    check("one ratio for both shows a hundredfold difference on screen",
-          near(coarse / clean, 100.0, 1e-6), f"{coarse:.1f} px vs {clean:.1f} px")
-    check("the rule shows the same thing on both",
-          near(lod.displacement_error_px(radius, 0.02, tight),
-               lod.displacement_error_px(radius, 2.0, loose)), "")
+    check(
+        "one ratio for both shows a hundredfold difference on screen",
+        near(coarse / clean, 100.0, 1e-6),
+        f"{coarse:.1f} px vs {clean:.1f} px",
+    )
+    check(
+        "the rule shows the same thing on both",
+        near(
+            lod.displacement_error_px(radius, 0.02, tight),
+            lod.displacement_error_px(radius, 2.0, loose),
+        ),
+        "",
+    )
 
 
 def test_surface_displacement():
@@ -257,8 +358,9 @@ def test_surface_displacement():
     # the SURFACE, which nearest-vertex would answer as the distance to a corner
     verts = numpy.array([[0.0, 0, 0], [10, 0, 0], [10, 10, 0], [0, 10, 0]])
     tris = numpy.array([[0, 1, 2], [0, 2, 3]])
-    d = decimate.distance_to_surface(numpy.array([[5.0, 5, 1.0], [1, 1, 0.25], [-3, 5, 0]]),
-                                     verts, tris)
+    d = decimate.distance_to_surface(
+        numpy.array([[5.0, 5, 1.0], [1, 1, 0.25], [-3, 5, 0]]), verts, tris
+    )
     check("point-to-SURFACE, not point-to-vertex", near(d[0], 1.0) and near(d[1], 0.25), f"{d}")
     check("a point off the edge measures to the edge", near(d[2], 3.0), f"{d[2]}")
 
@@ -268,11 +370,15 @@ def test_surface_displacement():
     big = numpy.array([[-50.0, -50, -20], [50, -50, -20], [0, 50, -20]])
     mesh_v = numpy.concatenate([verts, big])
     mesh_t = numpy.concatenate([tris, numpy.array([[4, 5, 6]])])
-    points = numpy.column_stack([rng.uniform(1, 9, 200), rng.uniform(1, 9, 200),
-                                 rng.uniform(0.1, 2.0, 200)])
+    points = numpy.column_stack(
+        [rng.uniform(1, 9, 200), rng.uniform(1, 9, 200), rng.uniform(0.1, 2.0, 200)]
+    )
     got = decimate.distance_to_surface(points, mesh_v, mesh_t)
-    check("a distant giant triangle does not hide the near small one",
-          numpy.allclose(got, points[:, 2]), f"worst {float(numpy.abs(got - points[:, 2]).max()):.4f}")
+    check(
+        "a distant giant triangle does not hide the near small one",
+        numpy.allclose(got, points[:, 2]),
+        f"worst {float(numpy.abs(got - points[:, 2]).max()):.4f}",
+    )
 
     # a level that IS the source measures zero; one lifted by a metre measures a metre
     source = {"verts": verts, "tris": tris, "material_runs": [(None, 2)]}

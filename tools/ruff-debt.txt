@@ -1,0 +1,68 @@
+# Ruff findings the refactor has not reached yet. SHRINKS ONLY — see tools/check_ruff_debt.py.
+#
+# One line per finding, keyed by file and symbol rather than by line number, so the entry
+# survives an edit above it and dies with the parameter it names.
+#
+# After a phase clears some:  python tools/check_ruff_debt.py --prune
+ARG001 apps/cs2beamng/beamng/budget.py::shape
+ARG001 apps/cs2beamng/beamng/placement.py::region
+ARG001 apps/cs2beamng/beamng/ter.py::level_name
+ARG001 apps/cs2beamng/beamng/validate_level.py::progress
+ARG001 apps/cs2beamng/pipeline/estimate.py::bundle
+ARG001 apps/cs2beamng/pipeline/estimate.py::index
+ARG001 apps/cs2beamng/pipeline/estimate.py::values
+ARG001 apps/cs2beamng/pipeline/mapview.py::bundle
+ARG001 apps/cs2beamng/pipeline/runner.py::census
+ARG001 apps/cs2beamng/stages/bake.py::settings
+ARG001 apps/cs2beamng/stages/cook.py::census
+ARG001 apps/cs2beamng/stages/cook.py::settings
+ARG001 apps/cs2beamng/stages/derived.py::census
+ARG001 apps/cs2beamng/stages/derived.py::settings
+ARG001 apps/cs2beamng/stages/groundcover.py::census
+ARG001 apps/cs2beamng/stages/groundcover.py::settings
+ARG001 apps/cs2beamng/stages/instances.py::collide
+ARG001 apps/cs2beamng/stages/instances.py::settings
+ARG001 apps/cs2beamng/stages/lights.py::level
+ARG001 apps/cs2beamng/stages/lights.py::settings
+ARG001 apps/cs2beamng/stages/materials.py::settings
+ARG001 apps/cs2beamng/stages/navgraph.py::settings
+ARG001 apps/cs2beamng/stages/networks.py::settings
+ARG001 apps/cs2beamng/stages/poi.py::census
+ARG001 apps/cs2beamng/stages/poi.py::settings
+ARG001 apps/cs2beamng/stages/scene.py::settings
+ARG001 apps/cs2beamng/stages/shapes.py::settings
+ARG001 apps/cs2beamng/stages/terrain.py::settings
+ARG001 apps/cs2beamng/stages/validate.py::census
+ARG001 apps/cs2beamng/stages/validate.py::settings
+ARG001 apps/cs2beamng/stages/water.py::census
+ARG001 apps/cs2beamng/stages/water.py::settings
+ARG001 tools/blender_import_level.py::center
+ARG001 tools/blender_import_level.py::level_dir
+ARG001 tools/blender_import_level.py::materials
+ARG001 tools/blender_import_level.py::radius
+ARG001 tools/check_instances_vs_game.py::by_pos
+ARG001 tools/check_tiles_vs_game.py::bundle
+ARG001 tools/check_tiles_vs_game.py::product
+ARG001 tools/csiibundle/bake/areas.py::ground
+ARG001 tools/csiibundle/bake/terraincut.py::surface
+ARG001 tools/csiibundle/collision.py::tris
+ARG001 tools/csiibundle/drape.py::ceiling
+ARG001 tools/csiibundle/navgraph.py::max_width
+ARG001 tools/csiibundle/terrain.py::height
+ARG001 tools/csiibundle/terrain.py::strip_geo
+ARG001 tools/test_bake_manifest.py::context
+ARG002 tools/csiibundle/drape.py::ceiling
+ARG002 tools/test_bake_manifest.py::unit
+ARG005 tools/cs2beamng_stub_stages.py::c
+ARG005 tools/cs2beamng_stub_stages.py::ctx
+ARG005 tools/cs2beamng_stub_stages.py::p
+ARG005 tools/cs2beamng_stub_stages.py::s
+ARG005 tools/csiibundle/bake/areas.py::x
+ARG005 tools/csiibundle/bake/areas.py::y
+ARG005 tools/test_app_shell.py::a
+ARG005 tools/test_app_shell.py::k
+ARG005 tools/test_clip_cut.py::c0
+ARG005 tools/test_clip_cut.py::c1
+ARG005 tools/test_clip_cut.py::r0
+ARG005 tools/test_clip_cut.py::r1
+ARG005 tools/test_lod_collision.py::name

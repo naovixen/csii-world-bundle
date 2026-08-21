@@ -65,7 +65,7 @@ def ground_palette(surfaces_dir, grounds):
         if os.path.isfile(path):
             try:
                 colour = tuple(read_rgb(path).reshape(-1, 3).mean(axis=0))
-            except Exception:                             # noqa: BLE001 - cosmetic, never fatal
+            except Exception:
                 pass
         out.append(colour)
     return numpy.asarray(out or [NEUTRAL], dtype=numpy.float64)
@@ -78,6 +78,6 @@ def read_rgb(path):
     try:
         return png.rgba_array(path)[:, :, :3]
     except ValueError:
-        from PIL import Image                             # noqa: WPS433 - colour type 2 only
+        from PIL import Image
 
         return numpy.asarray(Image.open(path).convert("RGB"))

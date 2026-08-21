@@ -34,7 +34,6 @@ a saving that is not there.
 import math
 
 import numpy
-
 from csiibundle import decimate, lod
 from csiibundle.bake.tiles import split_material_name
 
@@ -108,8 +107,14 @@ def cull_distances(min_lods, level_of_detail=lod.DEFAULT_LEVEL_OF_DETAIL):
     return out
 
 
-def tile_levels(radius, distances_per_triangle, detail_scale=1.0, ratios=RATIOS,
-                view_distance=None, distinct_only=True):
+def tile_levels(
+    radius,
+    distances_per_triangle,
+    detail_scale=1.0,
+    ratios=RATIOS,
+    view_distance=None,
+    distinct_only=True,
+):
     """The whole ladder for one tile.
 
     `radius` is the tile's bounding-sphere radius — Torque measures a detail size against it —
@@ -157,8 +162,12 @@ def tile_levels(radius, distances_per_triangle, detail_scale=1.0, ratios=RATIOS,
         # 1.13 M triangles inside a 4 km view with no LOD chain at all — the second largest item
         # in the level, and the only product the A5 ladder did not touch.
         if not view_distance or distinct_only:
-            return {"nullPx": None, "levels": [], "gameNullMetres": far if math.isfinite(far) else None,
-                    "culledFraction": 0.0}
+            return {
+                "nullPx": None,
+                "levels": [],
+                "gameNullMetres": far if math.isfinite(far) else None,
+                "culledFraction": 0.0,
+            }
         anchor_px = lod.group_detail_px(radius, float(view_distance))
         base = min(float(r) for r in ratios)
         levels = []
@@ -172,8 +181,13 @@ def tile_levels(radius, distances_per_triangle, detail_scale=1.0, ratios=RATIOS,
                 px = fixed[-1][0] - 1
             if px >= ALWAYS_PX:
                 fixed.append((px, mask))
-        return {"nullPx": None, "levels": fixed, "gameNullMetres": None,
-                "anchorMetres": float(view_distance), "culledFraction": 0.0}
+        return {
+            "nullPx": None,
+            "levels": fixed,
+            "gameNullMetres": None,
+            "anchorMetres": float(view_distance),
+            "culledFraction": 0.0,
+        }
     null_px = lod.group_detail_px(radius, far) * float(detail_scale)
     if not math.isfinite(null_px) or null_px < ALWAYS_PX:
         return {"nullPx": None, "levels": [], "gameNullMetres": far, "culledFraction": 0.0}
@@ -201,31 +215,39 @@ def tile_levels(radius, distances_per_triangle, detail_scale=1.0, ratios=RATIOS,
         mask = d >= (anchor * base / ratio if scale_ladder else anchor / ratio)
         if not mask.any():
             continue
-        if distinct_only and masks and mask.shape == masks[-1][1].shape \
-                and bool((mask == masks[-1][1]).all()):
+        if (
+            distinct_only
+            and masks
+            and mask.shape == masks[-1][1].shape
+            and bool((mask == masks[-1][1]).all())
+        ):
             continue
         masks.append((ratio, mask))
     if not masks:
         return {"nullPx": None, "levels": [], "gameNullMetres": far, "culledFraction": 0.0}
     levels = []
-    for (index, (ratio, mask)) in enumerate(masks):
+    for _index, (ratio, mask) in enumerate(masks):
         # px scales exactly with 1/distance, so the size at `anchor * base / ratio` is
         # `anchor_px * ratio / base` — and at `anchor / ratio` (the unanchored case) `anchor_px *
         # ratio`, which is what A4 shipped.
         px = int(max(ALWAYS_PX, round(anchor_px * (ratio / base if scale_ladder else ratio))))
         levels.append((px, mask))
-    levels.sort(key=lambda pair: -pair[0])              # nearest (largest px) first
+    levels.sort(key=lambda pair: -pair[0])  # nearest (largest px) first
     fixed = []
-    for px, mask in levels:                            # strictly decreasing, or Torque reads two as one
+    for px, mask in levels:  # strictly decreasing, or Torque reads two as one
         if fixed and px >= fixed[-1][0]:
             px = fixed[-1][0] - 1
         if px < ALWAYS_PX:
             continue
         fixed.append((px, mask))
     kept = int(fixed[-1][1].sum()) if fixed else len(d)
-    return {"nullPx": int(max(ALWAYS_PX, round(null_px))), "levels": fixed, "gameNullMetres": far,
-            "anchorMetres": anchor,
-            "culledFraction": round(1.0 - kept / max(1, len(d)), 4)}
+    return {
+        "nullPx": int(max(ALWAYS_PX, round(null_px))),
+        "levels": fixed,
+        "gameNullMetres": far,
+        "anchorMetres": anchor,
+        "culledFraction": round(1.0 - kept / max(1, len(d)), 4),
+    }
 
 
 # -- applying the ladder to a merged tile mesh -------------------------------------------------------
@@ -234,6 +256,7 @@ def tile_levels(radius, distances_per_triangle, detail_scale=1.0, ratios=RATIOS,
 # triangle's limit off the material-name mark the bake wrote, strip the mark so the `.dae` binds a
 # real material name, and cut the mesh down to each level's visible set. They live here rather
 # than in one of the two stages because a rule that only one consumer gets is in the wrong place.
+
 
 def tri_distances(mesh, level_of_detail=lod.DEFAULT_LEVEL_OF_DETAIL):
     """Per-triangle CS2 cull distance, in the mesh's own triangle order.
@@ -260,8 +283,15 @@ def strip_marks(dae, mesh):
             merged[-1] = (name, merged[-1][1] + count)
         else:
             merged.append((name, count))
-    return dae.Mesh(mesh.name, mesh.verts, mesh.tris, merged, normals=mesh.normals,
-                    uvs=mesh.uvs, colors=mesh.colors)
+    return dae.Mesh(
+        mesh.name,
+        mesh.verts,
+        mesh.tris,
+        merged,
+        normals=mesh.normals,
+        uvs=mesh.uvs,
+        colors=mesh.colors,
+    )
 
 
 def subset(dae, shape_name, mesh, mask):
@@ -274,7 +304,7 @@ def subset(dae, shape_name, mesh, mask):
     runs = []
     cursor = 0
     for name, count in mesh.runs:
-        kept = int(keep[cursor:cursor + count].sum())
+        kept = int(keep[cursor : cursor + count].sum())
         if kept:
             runs.append((name, kept))
         cursor += count
@@ -282,10 +312,15 @@ def subset(dae, shape_name, mesh, mask):
     used = numpy.unique(tris.ravel())
     remap = numpy.zeros(int(used.max()) + 1, dtype=numpy.int64)
     remap[used] = numpy.arange(len(used))
-    return dae.Mesh(shape_name, mesh.verts[used], remap[tris], runs,
-                    normals=None if mesh.normals is None else mesh.normals[used],
-                    uvs=None if mesh.uvs is None else mesh.uvs[used],
-                    colors=None if mesh.colors is None else mesh.colors[used])
+    return dae.Mesh(
+        shape_name,
+        mesh.verts[used],
+        remap[tris],
+        runs,
+        normals=None if mesh.normals is None else mesh.normals[used],
+        uvs=None if mesh.uvs is None else mesh.uvs[used],
+        colors=None if mesh.colors is None else mesh.colors[used],
+    )
 
 
 def radius_of(mesh):
@@ -297,8 +332,17 @@ def radius_of(mesh):
     return float(numpy.linalg.norm(hi - lo) * 0.5)
 
 
-def build_levels(dae, shape_name, mesh, detail_scale, level_of_detail=lod.DEFAULT_LEVEL_OF_DETAIL,
-                 always_px=ALWAYS_PX, view_distance=None, targets=TILE_TARGETS, tile=None):
+def build_levels(
+    dae,
+    shape_name,
+    mesh,
+    detail_scale,
+    level_of_detail=lod.DEFAULT_LEVEL_OF_DETAIL,
+    always_px=ALWAYS_PX,
+    view_distance=None,
+    targets=TILE_TARGETS,
+    tile=None,
+):
     """`([(px, [Mesh]), ...], ladder)` for one merged tile, ready for `dae.Shape`.
 
     `dae` is passed in rather than imported so this module stays a pure function of its inputs
@@ -317,8 +361,13 @@ def build_levels(dae, shape_name, mesh, detail_scale, level_of_detail=lod.DEFAUL
     distances = tri_distances(mesh, level_of_detail)
     mesh = strip_marks(dae, mesh)
     decimating = bool(targets and tile)
-    ladder = tile_levels(radius_of(mesh), distances, detail_scale, view_distance=view_distance,
-                         distinct_only=not decimating)
+    ladder = tile_levels(
+        radius_of(mesh),
+        distances,
+        detail_scale,
+        view_distance=view_distance,
+        distinct_only=not decimating,
+    )
     out = []
     decimated = []
     for index, (px, mask) in enumerate(ladder["levels"]):
@@ -342,16 +391,27 @@ def build_levels(dae, shape_name, mesh, detail_scale, level_of_detail=lod.DEFAUL
 
 def _decimated(dae, shape_name, part, ratio, tile):
     """One level clustered to `ratio` of its triangles, boundary band pinned."""
-    source = {"verts": numpy.asarray(part.verts, dtype=numpy.float64),
-              "normals": None if part.normals is None else numpy.asarray(part.normals, dtype=numpy.float64),
-              "uvs": None if part.uvs is None else numpy.asarray(part.uvs, dtype=numpy.float64),
-              "tris": numpy.asarray(part.tris, dtype=numpy.int64),
-              "material_runs": list(part.runs)}
+    source = {
+        "verts": numpy.asarray(part.verts, dtype=numpy.float64),
+        "normals": None
+        if part.normals is None
+        else numpy.asarray(part.normals, dtype=numpy.float64),
+        "uvs": None if part.uvs is None else numpy.asarray(part.uvs, dtype=numpy.float64),
+        "tris": numpy.asarray(part.tris, dtype=numpy.int64),
+        "material_runs": list(part.runs),
+    }
     result = decimate.cluster_mesh(source, ratio, pinned=boundary_pins(source["verts"], tile))
     if len(result["tris"]) == 0:
         return part
-    return dae.Mesh(shape_name, result["verts"], result["tris"], result["material_runs"],
-                    normals=result["normals"], uvs=result["uvs"], colors=None)
+    return dae.Mesh(
+        shape_name,
+        result["verts"],
+        result["tris"],
+        result["material_runs"],
+        normals=result["normals"],
+        uvs=result["uvs"],
+        colors=None,
+    )
 
 
 def ladder_summary(stats, detail_scale):
@@ -373,8 +433,16 @@ def ladder_summary(stats, detail_scale):
 
 
 def new_stats():
-    return {"tiles": 0, "levels": 0, "culled": 0.0, "unculled": 0, "nullMetres": [],
-            "decimatedFrom": 0, "decimatedTo": 0, "anchorMetres": []}
+    return {
+        "tiles": 0,
+        "levels": 0,
+        "culled": 0.0,
+        "unculled": 0,
+        "nullMetres": [],
+        "decimatedFrom": 0,
+        "decimatedTo": 0,
+        "anchorMetres": [],
+    }
 
 
 def compact(levels, ladder):
@@ -386,10 +454,14 @@ def compact(levels, ladder):
     worker process must not hand the whole thing back. This is what crosses the pipe instead.
     """
     pairs = ladder.get("decimated") or []
-    return {"levels": len(levels), "culledFraction": ladder.get("culledFraction") or 0.0,
-            "gameNullMetres": ladder.get("gameNullMetres"),
-            "anchorMetres": ladder.get("anchorMetres"),
-            "decimatedFrom": sum(a for a, _b in pairs), "decimatedTo": sum(b for _a, b in pairs)}
+    return {
+        "levels": len(levels),
+        "culledFraction": ladder.get("culledFraction") or 0.0,
+        "gameNullMetres": ladder.get("gameNullMetres"),
+        "anchorMetres": ladder.get("anchorMetres"),
+        "decimatedFrom": sum(a for a, _b in pairs),
+        "decimatedTo": sum(b for _a, b in pairs),
+    }
 
 
 def account(stats, levels, ladder):

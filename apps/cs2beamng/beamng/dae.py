@@ -34,18 +34,24 @@ class Mesh:
     """One geometry: `verts (N,3)`, optional `normals (N,3)`, `uvs (N,2)`, `colors (N,4)`,
     `tris (M,3)` int, `runs [(material_name, triangle_count), ...]` in `tris` order."""
 
-    __slots__ = ("name", "verts", "normals", "uvs", "colors", "tris", "runs")
+    __slots__ = ("colors", "name", "normals", "runs", "tris", "uvs", "verts")
 
     def __init__(self, name, verts, tris, runs, normals=None, uvs=None, colors=None):
         self.name = name
         self.verts = numpy.ascontiguousarray(verts, dtype=numpy.float32)
         self.tris = numpy.ascontiguousarray(tris, dtype=numpy.int64)
         self.runs = list(runs)
-        self.normals = None if normals is None else numpy.ascontiguousarray(normals, dtype=numpy.float32)
+        self.normals = (
+            None if normals is None else numpy.ascontiguousarray(normals, dtype=numpy.float32)
+        )
         self.uvs = None if uvs is None else numpy.ascontiguousarray(uvs, dtype=numpy.float32)
-        self.colors = None if colors is None else numpy.ascontiguousarray(colors, dtype=numpy.float32)
+        self.colors = (
+            None if colors is None else numpy.ascontiguousarray(colors, dtype=numpy.float32)
+        )
         if sum(c for _m, c in self.runs) != len(self.tris):
-            raise ValueError(f"{name}: material runs cover {sum(c for _m, c in self.runs)} triangles, mesh has {len(self.tris)}")
+            raise ValueError(
+                f"{name}: material runs cover {sum(c for _m, c in self.runs)} triangles, mesh has {len(self.tris)}"
+            )
 
     @property
     def materials(self):
@@ -65,7 +71,9 @@ class Shape:
         self.levels = list(levels)
         for px, _ms in self.levels:
             if int(px) <= 0:
-                raise ValueError(f"{name}: detail size must be > 0 (BeamNG rejects the shape: 'invalid detail levels')")
+                raise ValueError(
+                    f"{name}: detail size must be > 0 (BeamNG rejects the shape: 'invalid detail levels')"
+                )
         self.collision = list(collision)
         self.billboard_px = billboard_px
         self.null_px = null_px
@@ -97,10 +105,10 @@ def write_shape(path, shape):
     names_used = {}
     for m in [m for _px, ms in shape.levels for m in ms] + list(shape.collision):
         if id(m) in seen_ids:
-            continue                                     # one geometry however many nodes instance it
+            continue  # one geometry however many nodes instance it
         seen_ids.add(id(m))
         base = sanitize(m.name)
-        if base in names_used:                          # distinct meshes with one name: make the ids unique
+        if base in names_used:  # distinct meshes with one name: make the ids unique
             names_used[base] += 1
             m.name = f"{base}_{names_used[base]}"
         else:
@@ -118,18 +126,24 @@ def write_shape(path, shape):
     with open(tmp, "w", encoding="utf-8", newline="\n") as f:
         f.write('<?xml version="1.0" encoding="utf-8"?>\n')
         f.write('<COLLADA xmlns="http://www.collada.org/2005/11/COLLADASchema" version="1.4.1">\n')
-        f.write("  <asset>\n    <contributor><authoring_tool>cs2beamng</authoring_tool></contributor>\n"
-                '    <unit name="meter" meter="1"/>\n    <up_axis>Z_UP</up_axis>\n  </asset>\n')
+        f.write(
+            "  <asset>\n    <contributor><authoring_tool>cs2beamng</authoring_tool></contributor>\n"
+            '    <unit name="meter" meter="1"/>\n    <up_axis>Z_UP</up_axis>\n  </asset>\n'
+        )
         # effects + materials
         f.write("  <library_effects>\n")
         for name in materials:
             sid = sanitize(name)
-            f.write(f'    <effect id="{sid}-effect"><profile_COMMON><technique sid="common"><phong>'
-                    '<diffuse><color sid="diffuse">0.8 0.8 0.8 1</color></diffuse></phong></technique></profile_COMMON></effect>\n')
+            f.write(
+                f'    <effect id="{sid}-effect"><profile_COMMON><technique sid="common"><phong>'
+                '<diffuse><color sid="diffuse">0.8 0.8 0.8 1</color></diffuse></phong></technique></profile_COMMON></effect>\n'
+            )
         f.write("  </library_effects>\n  <library_materials>\n")
         for name in materials:
             sid = sanitize(name)
-            f.write(f'    <material id="{sid}-material" name="{sid}"><instance_effect url="#{sid}-effect"/></material>\n')
+            f.write(
+                f'    <material id="{sid}-material" name="{sid}"><instance_effect url="#{sid}-effect"/></material>\n'
+            )
         f.write("  </library_materials>\n")
         # geometries
         f.write("  <library_geometries>\n")
@@ -141,7 +155,9 @@ def write_shape(path, shape):
         f.write('      <node id="base00" name="base00" type="NODE">\n')
         if shape.billboard_px is not None:
             px = int(shape.billboard_px)
-            f.write(f'        <node id="bb_autobillboard{px}" name="bb_autobillboard{px}" type="NODE"/>\n')
+            f.write(
+                f'        <node id="bb_autobillboard{px}" name="bb_autobillboard{px}" type="NODE"/>\n'
+            )
         if shape.null_px is not None:
             px = int(shape.null_px)
             f.write(f'        <node id="nulldetail{px}" name="nulldetail{px}" type="NODE"/>\n')
@@ -162,8 +178,13 @@ def write_shape(path, shape):
     if changed:
         stale = os.path.splitext(path)[0] + ".cdae"
         if os.path.isfile(stale):
-            os.remove(stale)                       # this one WOULD ship the old geometry
-    return {"materials": materials, "triangles": tri_total, "vertices": vert_total, "changed": changed}
+            os.remove(stale)  # this one WOULD ship the old geometry
+    return {
+        "materials": materials,
+        "triangles": tri_total,
+        "vertices": vert_total,
+        "changed": changed,
+    }
 
 
 def _replace_if_changed(tmp, path):
@@ -216,20 +237,30 @@ def _write_node(f, node_id, mesh):
     gid = _geometry_id(mesh)
     f.write(f'          <node id="{node_id}" name="{node_id}" type="NODE">\n')
     f.write('            <matrix sid="transform">1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1</matrix>\n')
-    f.write(f'            <instance_geometry url="#{gid}" name="{node_id}">\n              <bind_material><technique_common>\n')
+    f.write(
+        f'            <instance_geometry url="#{gid}" name="{node_id}">\n              <bind_material><technique_common>\n'
+    )
     for name in mesh.materials:
         sid = sanitize(name)
-        f.write(f'                <instance_material symbol="{sid}-material" target="#{sid}-material">'
-                '<bind_vertex_input semantic="UVMap" input_semantic="TEXCOORD" input_set="0"/></instance_material>\n')
-    f.write("              </technique_common></bind_material>\n            </instance_geometry>\n          </node>\n")
+        f.write(
+            f'                <instance_material symbol="{sid}-material" target="#{sid}-material">'
+            '<bind_vertex_input semantic="UVMap" input_semantic="TEXCOORD" input_set="0"/></instance_material>\n'
+        )
+    f.write(
+        "              </technique_common></bind_material>\n            </instance_geometry>\n          </node>\n"
+    )
 
 
 def _write_source(f, sid, array, params, fmt):
     n, stride = array.shape
-    f.write(f'        <source id="{sid}">\n          <float_array id="{sid}-array" count="{n * stride}">')
+    f.write(
+        f'        <source id="{sid}">\n          <float_array id="{sid}-array" count="{n * stride}">'
+    )
     array.astype(numpy.float32).ravel().tofile(f, sep=" ", format=fmt)
-    f.write("</float_array>\n          <technique_common>\n"
-            f'            <accessor source="#{sid}-array" count="{n}" stride="{stride}">\n')
+    f.write(
+        "</float_array>\n          <technique_common>\n"
+        f'            <accessor source="#{sid}-array" count="{n}" stride="{stride}">\n'
+    )
     for p in params:
         f.write(f'              <param name="{p}" type="float"/>\n')
     f.write("            </accessor>\n          </technique_common>\n        </source>\n")
@@ -245,26 +276,35 @@ def _write_geometry(f, mesh):
         _write_source(f, f"{gid}-map-0", mesh.uvs, ("S", "T"), UV_FMT)
     if mesh.colors is not None:
         _write_source(f, f"{gid}-colors", mesh.colors, ("R", "G", "B", "A"), UV_FMT)
-    f.write(f'        <vertices id="{gid}-vertices"><input semantic="POSITION" source="#{gid}-positions"/></vertices>\n')
+    f.write(
+        f'        <vertices id="{gid}-vertices"><input semantic="POSITION" source="#{gid}-positions"/></vertices>\n'
+    )
     start = 0
     for material, count in mesh.runs:
         sid = sanitize(material)
-        f.write(f'        <triangles material="{sid}-material" count="{count}">\n'
-                f'          <input semantic="VERTEX" source="#{gid}-vertices" offset="0"/>\n')
+        f.write(
+            f'        <triangles material="{sid}-material" count="{count}">\n'
+            f'          <input semantic="VERTEX" source="#{gid}-vertices" offset="0"/>\n'
+        )
         if mesh.normals is not None:
             f.write(f'          <input semantic="NORMAL" source="#{gid}-normals" offset="0"/>\n')
         if mesh.uvs is not None:
-            f.write(f'          <input semantic="TEXCOORD" source="#{gid}-map-0" offset="0" set="0"/>\n')
+            f.write(
+                f'          <input semantic="TEXCOORD" source="#{gid}-map-0" offset="0" set="0"/>\n'
+            )
         if mesh.colors is not None:
-            f.write(f'          <input semantic="COLOR" source="#{gid}-colors" offset="0" set="0"/>\n')
+            f.write(
+                f'          <input semantic="COLOR" source="#{gid}-colors" offset="0" set="0"/>\n'
+            )
         f.write("          <p>")
-        mesh.tris[start:start + count].ravel().tofile(f, sep=" ", format="%d")
+        mesh.tris[start : start + count].ravel().tofile(f, sep=" ", format="%d")
         f.write("</p>\n        </triangles>\n")
         start += count
     f.write("      </mesh>\n    </geometry>\n")
 
 
 # -- from bundle glb data ---------------------------------------------------------------------------
+
 
 def glb_to_local(verts, normals=None, matrix=None):
     """glTF (RH, Y-up, X mirrored per §2.2) → BeamNG local (Z-up): `(−gx, gz, gy)`. `matrix` is
@@ -275,7 +315,7 @@ def glb_to_local(verts, normals=None, matrix=None):
         m = numpy.asarray(matrix, dtype=numpy.float64)
         v = v @ m[:3, :3].T + m[:3, 3]
         if n is not None:
-            n = n @ numpy.linalg.inv(m[:3, :3])          # normals by the inverse transpose
+            n = n @ numpy.linalg.inv(m[:3, :3])  # normals by the inverse transpose
     out = numpy.empty_like(v)
     out[:, 0] = -v[:, 0]
     out[:, 1] = v[:, 2]
@@ -314,19 +354,35 @@ def merge_meshes(name, parts):
         v = numpy.asarray(v, dtype=numpy.float32)
         verts.append(v)
         if has_n:
-            normals.append(numpy.asarray(n, dtype=numpy.float32) if n is not None else numpy.tile([0, 0, 1], (len(v), 1)).astype(numpy.float32))
+            normals.append(
+                numpy.asarray(n, dtype=numpy.float32)
+                if n is not None
+                else numpy.tile([0, 0, 1], (len(v), 1)).astype(numpy.float32)
+            )
         if has_uv:
-            uvs.append(numpy.asarray(uv, dtype=numpy.float32) if uv is not None else numpy.zeros((len(v), 2), numpy.float32))
+            uvs.append(
+                numpy.asarray(uv, dtype=numpy.float32)
+                if uv is not None
+                else numpy.zeros((len(v), 2), numpy.float32)
+            )
         if has_c:
-            colors.append(numpy.asarray(c, dtype=numpy.float32) if c is not None else numpy.ones((len(v), 4), numpy.float32))
+            colors.append(
+                numpy.asarray(c, dtype=numpy.float32)
+                if c is not None
+                else numpy.ones((len(v), 4), numpy.float32)
+            )
         tris.append(numpy.asarray(t, dtype=numpy.int64) + base)
         runs.extend(r)
         base += len(v)
-    return Mesh(name, numpy.concatenate(verts) if verts else numpy.zeros((0, 3), numpy.float32),
-                numpy.concatenate(tris) if tris else numpy.zeros((0, 3), numpy.int64), _coalesce(runs),
-                normals=numpy.concatenate(normals) if normals else None,
-                uvs=numpy.concatenate(uvs) if uvs else None,
-                colors=numpy.concatenate(colors) if colors else None)
+    return Mesh(
+        name,
+        numpy.concatenate(verts) if verts else numpy.zeros((0, 3), numpy.float32),
+        numpy.concatenate(tris) if tris else numpy.zeros((0, 3), numpy.int64),
+        _coalesce(runs),
+        normals=numpy.concatenate(normals) if normals else None,
+        uvs=numpy.concatenate(uvs) if uvs else None,
+        colors=numpy.concatenate(colors) if colors else None,
+    )
 
 
 def _coalesce(runs):
@@ -362,18 +418,18 @@ def split_mesh(mesh, max_verts=MAX_GEOMETRY_VERTS):
     tri_mat = numpy.empty(len(mesh.tris), dtype=object)
     start = 0
     for m, c in mesh.runs:
-        tri_mat[start:start + c] = m
+        tri_mat[start : start + c] = m
         start += c
     parts = []
     lo = 0
     n = len(mesh.tris)
     while lo < n:
         # grow the part in blocks; back off with a bisection when a block overshoots
-        hi = min(n, lo + max_verts // 3)                 # a triangle brings at most 3 new vertices: always fits
+        hi = min(n, lo + max_verts // 3)  # a triangle brings at most 3 new vertices: always fits
         while hi < n:
             nxt = min(n, hi + max_verts // 3)
             if len(numpy.unique(mesh.tris[lo:nxt])) > max_verts:
-                a, b = hi, nxt                            # fill up: largest end in [hi, nxt) that fits
+                a, b = hi, nxt  # fill up: largest end in [hi, nxt) that fits
                 while b - a > 1:
                     mid = (a + b) // 2
                     if len(numpy.unique(mesh.tris[lo:mid])) <= max_verts:
@@ -393,10 +449,17 @@ def split_mesh(mesh, max_verts=MAX_GEOMETRY_VERTS):
                 runs[-1] = (m, runs[-1][1] + 1)
             else:
                 runs.append((m, 1))
-        parts.append(Mesh(f"{mesh.name}_p{len(parts)}", mesh.verts[used], tris, runs,
-                          normals=None if mesh.normals is None else mesh.normals[used],
-                          uvs=None if mesh.uvs is None else mesh.uvs[used],
-                          colors=None if mesh.colors is None else mesh.colors[used]))
+        parts.append(
+            Mesh(
+                f"{mesh.name}_p{len(parts)}",
+                mesh.verts[used],
+                tris,
+                runs,
+                normals=None if mesh.normals is None else mesh.normals[used],
+                uvs=None if mesh.uvs is None else mesh.uvs[used],
+                colors=None if mesh.colors is None else mesh.colors[used],
+            )
+        )
         lo = hi
     parts[0].name = mesh.name
     return parts
@@ -421,4 +484,12 @@ def group_by_material(mesh):
                 total += b - a
         new_runs.append((mat, total))
     idx = numpy.concatenate(order)
-    return Mesh(mesh.name, mesh.verts, mesh.tris[idx], new_runs, normals=mesh.normals, uvs=mesh.uvs, colors=mesh.colors)
+    return Mesh(
+        mesh.name,
+        mesh.verts,
+        mesh.tris[idx],
+        new_runs,
+        normals=mesh.normals,
+        uvs=mesh.uvs,
+        colors=mesh.colors,
+    )

@@ -23,8 +23,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-import make_example_bundle  # noqa: E402
-from validate_bundle import DEFAULT_SCHEMA_DIR, read_glb, validate_bundle  # noqa: E402
+import make_example_bundle
+from validate_bundle import DEFAULT_SCHEMA_DIR, read_glb, validate_bundle
 
 
 class BundleContractTest(unittest.TestCase):
@@ -54,7 +54,7 @@ class BundleContractTest(unittest.TestCase):
     def errors(self, bundle: Path) -> list:
         return validate_bundle(bundle, DEFAULT_SCHEMA_DIR).errors
 
-    def assertRejected(self, bundle: Path, needle: str) -> None:
+    def assert_rejected(self, bundle: Path, needle: str) -> None:
         errors = self.errors(bundle)
         self.assertTrue(errors, "expected the bundle to be rejected, but it validated clean")
         joined = "\n".join(errors)
@@ -97,36 +97,36 @@ class BundleContractTest(unittest.TestCase):
     def test_clip_volume_unknown_kind_rejected(self):
         bundle = self.fresh()
         self.patch_clip_volume(bundle, 0, lambda r: r.update(kind="ribbon"))
-        self.assertRejected(bundle, "'ribbon' is not one of")
+        self.assert_rejected(bundle, "'ribbon' is not one of")
 
     def test_clip_volume_inverted_band_rejected(self):
         bundle = self.fresh()
         self.patch_clip_volume(bundle, 0, lambda r: r.update(bottom=30.0, top=0.5))
-        self.assertRejected(bundle, "empty or inverted")
+        self.assert_rejected(bundle, "empty or inverted")
 
     def test_clip_volume_short_curve_rejected(self):
         """A cubic Bézier is four control points; three is a different curve, silently."""
         bundle = self.fresh()
         self.patch_clip_volume(bundle, 0, lambda r: r.update(left=r["left"][:3]))
-        self.assertRejected(bundle, "minItems 4")
+        self.assert_rejected(bundle, "minItems 4")
 
     def test_clip_volume_area_without_polygon_rejected(self):
         """Since schema 2 an area record carries its own polygon (S12.2) — the game never
         paints clip surfaces, so areas.jsonl cannot supply the triangles."""
         bundle = self.fresh()
         self.patch_clip_volume(bundle, 1, lambda r: r.pop("nodes"))
-        self.assertRejected(bundle, "matched no oneOf branch")
+        self.assert_rejected(bundle, "matched no oneOf branch")
 
     def test_clip_volume_area_with_dangling_triangle_index_rejected(self):
         bundle = self.fresh()
         self.patch_clip_volume(bundle, 1, lambda r: r.update(triangles=[[0, 1, 999]]))
-        self.assertRejected(bundle, "does not index its")
+        self.assert_rejected(bundle, "does not index its")
 
     def test_clip_volume_area_carrying_curves_rejected(self):
         """An area clips with its polygon; boundary curves on it could disagree with it."""
         bundle = self.fresh()
         self.patch_clip_volume(bundle, 1, lambda r: r.update(left=[[0.0, 0.0, 0.0]] * 4))
-        self.assertRejected(bundle, "matched no oneOf branch")
+        self.assert_rejected(bundle, "matched no oneOf branch")
 
     def test_clip_volume_unbounded_top_accepted(self):
         """An absent `top` means unbounded, which is how a clip surface says 'however high'."""
@@ -138,8 +138,9 @@ class BundleContractTest(unittest.TestCase):
         """A bundle ripped before §8c has no clip layer at all; that is not an error."""
         bundle = self.fresh()
         (bundle / "clipvolumes.jsonl").unlink()
-        self.patch_manifest(bundle, lambda m: (m["layers"].pop("clipVolumes"),
-                                               m["counts"].pop("clipVolumes")))
+        self.patch_manifest(
+            bundle, lambda m: (m["layers"].pop("clipVolumes"), m["counts"].pop("clipVolumes"))
+        )
         report = validate_bundle(bundle, DEFAULT_SCHEMA_DIR)
         self.assertEqual(report.errors, [])
 
@@ -148,7 +149,7 @@ class BundleContractTest(unittest.TestCase):
         what lets a consumer detect a truncated layer added after the freeze."""
         bundle = self.fresh()
         self.patch_manifest(bundle, lambda m: m["counts"].pop("areas"))
-        self.assertRejected(bundle, "layers.areas is declared but counts.areas is missing")
+        self.assert_rejected(bundle, "layers.areas is declared but counts.areas is missing")
 
     def _stack_expand(self, bundle: Path) -> None:
         """Turn the example's one placed prefab into a §4.1 stack expansion: two section
@@ -173,8 +174,9 @@ class BundleContractTest(unittest.TestCase):
                 out.append(json.dumps(clone, separators=(",", ":")))
         path.write_text("\n".join(out) + "\n", encoding="utf-8")
         meshes = len(list((bundle / "meshes").glob("*.glb")))
-        self.patch_manifest(bundle, lambda m: m["counts"].update({"instances": len(out),
-                                                                  "meshes": meshes}))
+        self.patch_manifest(
+            bundle, lambda m: m["counts"].update({"instances": len(out), "meshes": meshes})
+        )
 
     def test_stack_expanded_prefab_meshes_are_not_orphans(self):
         """A stacked prefab (pillar, high wall, fence) is placed only through its
@@ -208,7 +210,9 @@ class BundleContractTest(unittest.TestCase):
         (bundle / "meshes" / "Nobody_Places_This.glb").write_bytes(mesh)
         report = validate_bundle(bundle, DEFAULT_SCHEMA_DIR)
         orphans = [w for w in report.warnings if "not referenced by any instance" in w]
-        self.assertEqual(orphans, ["Nobody_Places_This.glb: mesh is not referenced by any instance"])
+        self.assertEqual(
+            orphans, ["Nobody_Places_This.glb: mesh is not referenced by any instance"]
+        )
 
     def test_bundle_without_grading_is_valid(self):
         """`grading.json` is optional: a rip that found no HDRP volume stack ships no layer,
@@ -223,7 +227,7 @@ class BundleContractTest(unittest.TestCase):
         consumer's problem to discover."""
         bundle = self.fresh()
         (bundle / "grading.json").unlink()
-        self.assertRejected(bundle, "layers.grading")
+        self.assert_rejected(bundle, "layers.grading")
 
     def test_count_without_declared_layer_rejected(self):
         """A non-zero count for an undeclared layer describes records nobody can find."""
@@ -234,7 +238,7 @@ class BundleContractTest(unittest.TestCase):
             manifest["counts"]["clipVolumes"] = 2
 
         self.patch_manifest(bundle, mutate)
-        self.assertRejected(bundle, "no layers.clipVolumes is declared")
+        self.assert_rejected(bundle, "no layers.clipVolumes is declared")
 
     # -- lane geometry, contract §5B v2 ------------------------------------------------
 
@@ -244,7 +248,7 @@ class BundleContractTest(unittest.TestCase):
         record = json.loads(path.read_text(encoding="utf-8").splitlines()[0])
         record["prefab"] = "No_Such_Prefab"
         path.write_text(json.dumps(record, separators=(",", ":")) + "\n", encoding="utf-8")
-        self.assertRejected(bundle, "not in the lanePrefabs catalogue")
+        self.assert_rejected(bundle, "not in the lanePrefabs catalogue")
 
     def test_lane_part_index_out_of_range_rejected(self):
         bundle = self.fresh()
@@ -252,7 +256,7 @@ class BundleContractTest(unittest.TestCase):
         record = json.loads(path.read_text(encoding="utf-8").splitlines()[0])
         record["parts"] = [5]
         path.write_text(json.dumps(record, separators=(",", ":")) + "\n", encoding="utf-8")
-        self.assertRejected(bundle, "out of range")
+        self.assert_rejected(bundle, "out of range")
 
     def test_lane_tunnel_tag_accepted(self):
         bundle = self.fresh()
@@ -270,18 +274,18 @@ class BundleContractTest(unittest.TestCase):
         record = json.loads(path.read_text(encoding="utf-8").splitlines()[0])
         record["tunnel"] = False
         path.write_text(json.dumps(record, separators=(",", ":")) + "\n", encoding="utf-8")
-        self.assertRejected(bundle, "expected const True")
+        self.assert_rejected(bundle, "expected const True")
 
     def test_lane_part_mesh_missing_rejected(self):
         bundle = self.fresh()
         for path in (bundle / "lanemeshes").glob("*.glb"):
             path.unlink()
-        self.assertRejected(bundle, "has no mesh in lanemeshes/")
+        self.assert_rejected(bundle, "has no mesh in lanemeshes/")
 
     def test_lanemeshes_without_catalogue_rejected(self):
         bundle = self.fresh()
         (bundle / "laneprefabs.json").unlink()
-        self.assertRejected(bundle, "no lanePrefabs catalogue resolves")
+        self.assert_rejected(bundle, "no lanePrefabs catalogue resolves")
 
     def test_glb_winding_matches_the_documented_convention(self):
         """frame.meshFrame claims front faces are CCW in the right-handed mesh frame.
@@ -341,33 +345,33 @@ class BundleContractTest(unittest.TestCase):
     def test_unknown_manifest_key_rejected(self):
         bundle = self.fresh()
         self.patch_manifest(bundle, lambda m: m.update({"totallyNewField": 1}))
-        self.assertRejected(bundle, "unexpected property 'totallyNewField'")
+        self.assert_rejected(bundle, "unexpected property 'totallyNewField'")
 
     def test_wrong_schema_version_rejected(self):
         bundle = self.fresh()
         self.patch_manifest(bundle, lambda m: m.update({"schema": 1}))
-        self.assertRejected(bundle, "expected const 2")
+        self.assert_rejected(bundle, "expected const 2")
 
     def test_frame_handedness_is_frozen(self):
         bundle = self.fresh()
         self.patch_manifest(bundle, lambda m: m["frame"].update({"handedness": "right"}))
-        self.assertRejected(bundle, "expected const 'left'")
+        self.assert_rejected(bundle, "expected const 'left'")
 
     def test_missing_required_geo_rejected(self):
         bundle = self.fresh()
         self.patch_manifest(bundle, lambda m: m["geo"].pop("originLatLon"))
-        self.assertRejected(bundle, "missing required property 'originLatLon'")
+        self.assert_rejected(bundle, "missing required property 'originLatLon'")
 
     def test_count_mismatch_rejected(self):
         bundle = self.fresh()
         self.patch_manifest(bundle, lambda m: m["counts"].update({"instances": 99}))
-        self.assertRejected(bundle, "counts.instances is 99")
+        self.assert_rejected(bundle, "counts.instances is 99")
 
     def test_undeclared_missing_mesh_rejected(self):
         """An instance pointing at a mesh that is not there is an error unless the producer said so."""
         bundle = self.fresh()
         self.patch_first_instance(bundle, lambda r: r.update({"assetId": "no_such_prefab"}))
-        self.assertRejected(bundle, "no_such_prefab")
+        self.assert_rejected(bundle, "no_such_prefab")
 
     def test_declared_missing_mesh_is_noted_not_warned(self):
         """warnings.jsonl (§10) is how a producer declares an asset it could not deliver.
@@ -385,18 +389,24 @@ class BundleContractTest(unittest.TestCase):
         path = bundle / "warnings.jsonl"
         path.write_text(
             path.read_text(encoding="utf-8")
-            + json.dumps({"kind": "mesh", "assetId": "no_such_prefab",
-                          "reason": "empty SubMesh buffer"}) + "\n",
-            encoding="utf-8")
+            + json.dumps(
+                {"kind": "mesh", "assetId": "no_such_prefab", "reason": "empty SubMesh buffer"}
+            )
+            + "\n",
+            encoding="utf-8",
+        )
         self.patch_manifest(bundle, lambda m: m["counts"].update({"warnings": 2}))
 
         report = validate_bundle(bundle, DEFAULT_SCHEMA_DIR)
         self.assertEqual(report.errors, [])
-        self.assertFalse(any("no_such_prefab" in w for w in report.warnings),
-                         f"a declared gap must not warn, got: {report.warnings}")
-        self.assertTrue(any("warnings.jsonl" in n and "empty SubMesh buffer" in n
-                            for n in report.notes),
-                        f"expected a note naming the declared reason, got: {report.notes}")
+        self.assertFalse(
+            any("no_such_prefab" in w for w in report.warnings),
+            f"a declared gap must not warn, got: {report.warnings}",
+        )
+        self.assertTrue(
+            any("warnings.jsonl" in n and "empty SubMesh buffer" in n for n in report.notes),
+            f"expected a note naming the declared reason, got: {report.notes}",
+        )
 
     def test_missing_mesh_is_reported_once_per_asset_not_per_instance(self):
         """One broken prefab can be referenced by tens of thousands of instances."""
@@ -412,25 +422,27 @@ class BundleContractTest(unittest.TestCase):
         path.write_text("\n".join(lines + clones) + "\n", encoding="utf-8")
 
         errors = [e for e in self.errors(bundle) if "no_such_prefab" in e]
-        self.assertEqual(len(errors), 1, f"expected one aggregated error, got:\n" + "\n".join(errors))
+        self.assertEqual(
+            len(errors), 1, "expected one aggregated error, got:\n" + "\n".join(errors)
+        )
         self.assertIn("5 instances", errors[0])
 
     def test_missing_layer_file_rejected(self):
         bundle = self.fresh()
         (bundle / "materials.json").unlink()
-        self.assertRejected(bundle, "layers.materials")
+        self.assert_rejected(bundle, "layers.materials")
 
     def test_declared_raster_layer_without_raster_block_rejected(self):
         bundle = self.fresh()
         self.patch_manifest(bundle, lambda m: m.pop("rasters"))
-        self.assertRejected(bundle, "no 'rasters' block")
+        self.assert_rejected(bundle, "no 'rasters' block")
 
     # -- negative: terrain rasters (contract §8) ---------------------------------------
 
     def test_raster_size_mismatch_rejected(self):
         bundle = self.fresh()
         self.patch_manifest(bundle, lambda m: m["rasters"].update({"size": [16, 16]}))
-        self.assertRejected(bundle, "rasters.size")
+        self.assert_rejected(bundle, "rasters.size")
 
     def test_raster_wrong_bit_depth_rejected(self):
         bundle = self.fresh()
@@ -438,19 +450,21 @@ class BundleContractTest(unittest.TestCase):
         grid = json.loads((bundle / "bundle.json").read_text(encoding="utf-8"))["rasters"]["size"]
         flat = [0] * (grid[0] * grid[1])
         (bundle / "terrain" / "heightmap.png").write_bytes(
-            make_example_bundle.make_gray_png(flat, grid[0], grid[1], 8))
-        self.assertRejected(bundle, "bit depth")
+            make_example_bundle.make_gray_png(flat, grid[0], grid[1], 8)
+        )
+        self.assert_rejected(bundle, "bit depth")
 
     def test_raster_not_grayscale_rejected(self):
         bundle = self.fresh()
         (bundle / "terrain" / "surface_index.png").write_bytes(
-            make_example_bundle.make_checker_png(32, 8))
-        self.assertRejected(bundle, "colour type")
+            make_example_bundle.make_checker_png(32, 8)
+        )
+        self.assert_rejected(bundle, "colour type")
 
     def test_terrain_without_elevation_scale_rejected(self):
         bundle = self.fresh()
         self.patch_manifest(bundle, lambda m: m["rasters"].pop("elevationScale"))
-        self.assertRejected(bundle, "rasters.elevationScale is missing")
+        self.assert_rejected(bundle, "rasters.elevationScale is missing")
 
     def test_water_carrying_retired_depth_scale_rejected(self):
         # depthScale died with the depth layer (§12.1, 2026-08-07): the water raster is a
@@ -458,7 +472,7 @@ class BundleContractTest(unittest.TestCase):
         # the stale key loudly rather than letting a consumer misread level as depth.
         bundle = self.fresh()
         self.patch_manifest(bundle, lambda m: m["rasters"].update({"depthScale": 0.03125}))
-        self.assertRejected(bundle, "depthScale")
+        self.assert_rejected(bundle, "depthScale")
 
     def test_area_triangle_out_of_range_rejected(self):
         bundle = self.fresh()
@@ -466,17 +480,17 @@ class BundleContractTest(unittest.TestCase):
         record = json.loads(path.read_text(encoding="utf-8"))
         record["triangles"][0] = [0, 1, 99]
         path.write_text(json.dumps(record) + "\n", encoding="utf-8")
-        self.assertRejected(bundle, "does not index")
+        self.assert_rejected(bundle, "does not index")
 
     def test_area_prefab_missing_from_catalogue_rejected(self):
         bundle = self.fresh()
         (bundle / "areaprefabs.json").write_text("{}\n", encoding="utf-8")
-        self.assertRejected(bundle, "not in the areaPrefabs catalogue")
+        self.assert_rejected(bundle, "not in the areaPrefabs catalogue")
 
     def test_surfaces_without_index_rejected(self):
         bundle = self.fresh()
         (bundle / "terrain" / "surfaces" / "index.json").unlink()
-        self.assertRejected(bundle, "has no index.json")
+        self.assert_rejected(bundle, "has no index.json")
 
     def test_surfaces_index_dangling_texture_rejected(self):
         bundle = self.fresh()
@@ -484,40 +498,43 @@ class BundleContractTest(unittest.TestCase):
         index = json.loads(index_path.read_text(encoding="utf-8"))
         index["1"]["texture"] = "terrain/surfaces/no_such.png"
         index_path.write_text(json.dumps(index, indent=2) + "\n", encoding="utf-8")
-        self.assertRejected(bundle, "does not exist")
+        self.assert_rejected(bundle, "does not exist")
 
     def test_layer_path_escaping_the_bundle_rejected(self):
         bundle = self.fresh()
-        self.patch_manifest(bundle, lambda m: m["layers"].update({"instances": "../instances.jsonl"}))
-        self.assertRejected(bundle, "does not match pattern")
+        self.patch_manifest(
+            bundle, lambda m: m["layers"].update({"instances": "../instances.jsonl"})
+        )
+        self.assert_rejected(bundle, "does not match pattern")
 
     # -- negative: instances -----------------------------------------------------------
 
     def test_dangling_asset_id_rejected(self):
         bundle = self.fresh()
         self.patch_first_instance(bundle, lambda r: r.update({"assetId": "no_such_prefab"}))
-        self.assertRejected(bundle, "has no mesh at")
+        self.assert_rejected(bundle, "has no mesh at")
 
     def test_non_unit_quaternion_rejected(self):
         bundle = self.fresh()
         self.patch_first_instance(bundle, lambda r: r.update({"rot": [0, 0, 0, 0.5]}))
-        self.assertRejected(bundle, "not a unit quaternion")
+        self.assert_rejected(bundle, "not a unit quaternion")
 
     def test_instance_outside_bounds_rejected(self):
         bundle = self.fresh()
         self.patch_first_instance(bundle, lambda r: r.update({"pos": [99999.0, 0.0, 0.0]}))
-        self.assertRejected(bundle, "outside bundle.json bounds")
+        self.assert_rejected(bundle, "outside bundle.json bounds")
 
     def test_unknown_instance_kind_rejected(self):
         bundle = self.fresh()
         self.patch_first_instance(bundle, lambda r: r.update({"kind": "spaceship"}))
-        self.assertRejected(bundle, "is not one of")
+        self.assert_rejected(bundle, "is not one of")
 
     def test_parent_resolving_to_network_record_accepted(self):
         """Street furniture is owned by road edges: parent joins into networks.jsonl too (§4)."""
         bundle = self.fresh()
         network_id = json.loads(
-            (bundle / "networks.jsonl").read_text(encoding="utf-8").splitlines()[0])["id"]
+            (bundle / "networks.jsonl").read_text(encoding="utf-8").splitlines()[0]
+        )["id"]
         self.patch_first_instance(bundle, lambda r: r.update({"parent": network_id}))
         self.assertEqual(self.errors(bundle), [])
 
@@ -530,7 +547,9 @@ class BundleContractTest(unittest.TestCase):
         report = validate_bundle(bundle, DEFAULT_SCHEMA_DIR)
         self.assertEqual(report.errors, [])
         matches = [w for w in report.warnings if "resolves to no exported record" in w]
-        self.assertEqual(len(matches), 1, f"expected one aggregated warning, got:\n{report.warnings}")
+        self.assertEqual(
+            len(matches), 1, f"expected one aggregated warning, got:\n{report.warnings}"
+        )
 
     def test_stack_sections_sharing_an_id_accepted(self):
         """§4.1: every section record of one stacked instance shares that instance's id —
@@ -542,7 +561,7 @@ class BundleContractTest(unittest.TestCase):
     def test_duplicate_id_outside_a_stack_rejected(self):
         bundle = self.fresh()
         self._append_shared_id_records(bundle, "", "")
-        self.assertRejected(bundle, "duplicate id 91000")
+        self.assert_rejected(bundle, "duplicate id 91000")
 
     def _append_shared_id_records(self, bundle: Path, *suffixes: str) -> None:
         """Append records sharing id 91000 whose assetIds are the cube plus each suffix,
@@ -553,7 +572,9 @@ class BundleContractTest(unittest.TestCase):
         cube = bundle / "meshes" / f"{record['assetId']}.glb"
         for suffix in set(suffixes):
             if suffix:
-                (bundle / "meshes" / f"{record['assetId']}{suffix}.glb").write_bytes(cube.read_bytes())
+                (bundle / "meshes" / f"{record['assetId']}{suffix}.glb").write_bytes(
+                    cube.read_bytes()
+                )
         clones = []
         for suffix in suffixes:
             clone = dict(record, id=91000, assetId=record["assetId"] + suffix)
@@ -571,7 +592,7 @@ class BundleContractTest(unittest.TestCase):
         bundle = self.fresh()
         path = bundle / "instances.jsonl"
         path.write_text(path.read_text(encoding="utf-8") + "\n", encoding="utf-8")
-        self.assertRejected(bundle, "blank line")
+        self.assert_rejected(bundle, "blank line")
 
     # -- negative: networks ------------------------------------------------------------
 
@@ -583,7 +604,7 @@ class BundleContractTest(unittest.TestCase):
         record["pos"] = [0.0, 0.0, 0.0]
         record["rot"] = [0.0, 0.0, 0.0, 1.0]
         path.write_text(json.dumps(record, separators=(",", ":")) + "\n", encoding="utf-8")
-        self.assertRejected(bundle, "oneOf")
+        self.assert_rejected(bundle, "oneOf")
 
     def test_network_record_with_neither_geometry_form_rejected(self):
         bundle = self.fresh()
@@ -592,7 +613,7 @@ class BundleContractTest(unittest.TestCase):
         record.pop("centerline")
         record.pop("width")
         path.write_text(json.dumps(record, separators=(",", ":")) + "\n", encoding="utf-8")
-        self.assertRejected(bundle, "oneOf")
+        self.assert_rejected(bundle, "oneOf")
 
     # -- negative: materials & textures -------------------------------------------------
 
@@ -602,7 +623,7 @@ class BundleContractTest(unittest.TestCase):
         materials = json.loads(path.read_text(encoding="utf-8"))
         materials["carto_example_cube_mat"]["normal"] = "textures/deadbeef.png"
         path.write_text(json.dumps(materials, indent=2) + "\n", encoding="utf-8")
-        self.assertRejected(bundle, "does not exist")
+        self.assert_rejected(bundle, "does not exist")
 
     def test_texture_not_named_by_its_hash_rejected(self):
         bundle = self.fresh()
@@ -613,7 +634,7 @@ class BundleContractTest(unittest.TestCase):
         old.rename(new)
         materials["carto_example_cube_mat"]["baseColor"] = f"textures/{new.name}"
         path.write_text(json.dumps(materials, indent=2) + "\n", encoding="utf-8")
-        self.assertRejected(bundle, "must be named by its own SHA-256")
+        self.assert_rejected(bundle, "must be named by its own SHA-256")
 
     def test_color_mask_is_a_known_map_and_is_resolved(self):
         """The map that makes colors.json applicable is a first-class texture reference.
@@ -625,13 +646,15 @@ class BundleContractTest(unittest.TestCase):
         bundle = self.fresh()
         path = bundle / "materials.json"
         materials = json.loads(path.read_text(encoding="utf-8"))
-        materials["carto_example_cube_mat"]["colorMask"] = materials["carto_example_cube_mat"]["baseColor"]
+        materials["carto_example_cube_mat"]["colorMask"] = materials["carto_example_cube_mat"][
+            "baseColor"
+        ]
         path.write_text(json.dumps(materials, indent=2) + "\n", encoding="utf-8")
         self.assertEqual(self.errors(bundle), [])
 
         materials["carto_example_cube_mat"]["colorMask"] = "textures/deadbeef.png"
         path.write_text(json.dumps(materials, indent=2) + "\n", encoding="utf-8")
-        self.assertRejected(bundle, "does not exist")
+        self.assert_rejected(bundle, "does not exist")
 
     def test_unknown_material_field_rejected(self):
         bundle = self.fresh()
@@ -639,7 +662,7 @@ class BundleContractTest(unittest.TestCase):
         materials = json.loads(path.read_text(encoding="utf-8"))
         materials["carto_example_cube_mat"]["specularGloss"] = "textures/x.png"
         path.write_text(json.dumps(materials, indent=2) + "\n", encoding="utf-8")
-        self.assertRejected(bundle, "unexpected property 'specularGloss'")
+        self.assert_rejected(bundle, "unexpected property 'specularGloss'")
 
     # -- negative: meshes ---------------------------------------------------------------
 
@@ -647,19 +670,19 @@ class BundleContractTest(unittest.TestCase):
         bundle = self.fresh()
         path = bundle / "meshes" / "carto_example_cube.glb"
         path.write_bytes(b"NOPE" + path.read_bytes()[4:])
-        self.assertRejected(bundle, "bad magic")
+        self.assert_rejected(bundle, "bad magic")
 
     def test_truncated_glb_rejected(self):
         bundle = self.fresh()
         path = bundle / "meshes" / "carto_example_cube.glb"
         path.write_bytes(path.read_bytes()[:-16])
-        self.assertRejected(bundle, "!= file size")
+        self.assert_rejected(bundle, "!= file size")
 
     def test_glb_material_not_in_materials_json_rejected(self):
         bundle = self.fresh()
         path = bundle / "materials.json"
         path.write_text(json.dumps({"some_other_mat": {}}, indent=2) + "\n", encoding="utf-8")
-        self.assertRejected(bundle, "is not a key in materials.json")
+        self.assert_rejected(bundle, "is not a key in materials.json")
 
     # -- negative: the lane graph, contract §5A ----------------------------------------
 
@@ -676,26 +699,26 @@ class BundleContractTest(unittest.TestCase):
         component; an unknown one means a consumer's traffic filter silently drops it."""
         bundle = self.fresh()
         self.patch_first_lane(bundle, lambda r: r.update(kind="monorail"))
-        self.assertRejected(bundle, "'monorail' is not one of")
+        self.assert_rejected(bundle, "'monorail' is not one of")
 
     def test_lane_single_point_path_rejected(self):
         """A one-point path is not a path — nothing can travel it, and a consumer building
         geometry from it divides by a zero-length segment."""
         bundle = self.fresh()
         self.patch_first_lane(bundle, lambda r: r.update(path=r["path"][:1]))
-        self.assertRejected(bundle, "minItems 2")
+        self.assert_rejected(bundle, "minItems 2")
 
     def test_lane_secondary_false_rejected(self):
         """The writer omits `secondary` for placed lanes; an explicit false is a producer bug,
         and it matters because 'derived vs placed' is a filter a consumer chooses deliberately."""
         bundle = self.fresh()
         self.patch_first_lane(bundle, lambda r: r.update(secondary=False))
-        self.assertRejected(bundle, "expected const True")
+        self.assert_rejected(bundle, "expected const True")
 
     def test_lane_unknown_field_rejected(self):
         bundle = self.fresh()
         self.patch_first_lane(bundle, lambda r: r.update(congestion=0.5))
-        self.assertRejected(bundle, "unexpected property 'congestion'")
+        self.assert_rejected(bundle, "unexpected property 'congestion'")
 
     def test_lane_owner_resolving_nowhere_is_accepted(self):
         """`owner` is the generic ECS owner, not a foreign key: on a real city 59% of them
@@ -709,15 +732,19 @@ class BundleContractTest(unittest.TestCase):
         self.patch_first_lane(bundle, lambda r: r.update(owner=7777))
         report = validate_bundle(bundle, DEFAULT_SCHEMA_DIR)
         self.assertEqual(report.errors, [])
-        self.assertTrue(any("1 into neither" in n for n in report.notes),
-                        f"expected the note to count exactly one, got: {report.notes}")
+        self.assertTrue(
+            any("1 into neither" in n for n in report.notes),
+            f"expected the note to count exactly one, got: {report.notes}",
+        )
 
     def test_lane_owner_note_counts_zero_when_all_resolve(self):
         """The other half of the gate above: unmutated, the count must be zero. Without this
         the assertion could be satisfied by a validator that always reported 1."""
         report = validate_bundle(self.pristine, DEFAULT_SCHEMA_DIR)
-        self.assertTrue(any("0 into neither" in n for n in report.notes),
-                        f"expected a zero count on the pristine example, got: {report.notes}")
+        self.assertTrue(
+            any("0 into neither" in n for n in report.notes),
+            f"expected a zero count on the pristine example, got: {report.notes}",
+        )
 
     # -- negative: the lane-prefab catalogue, contract §5B ------------------------------
 
@@ -729,26 +756,24 @@ class BundleContractTest(unittest.TestCase):
 
     def test_lane_prefab_unknown_category_rejected(self):
         bundle = self.fresh()
-        self.patch_lane_catalogue(
-            bundle, lambda c: c["Example_Fence"].update(category="powerline"))
-        self.assertRejected(bundle, "'powerline' is not one of")
+        self.patch_lane_catalogue(bundle, lambda c: c["Example_Fence"].update(category="powerline"))
+        self.assert_rejected(bundle, "'powerline' is not one of")
 
     def test_lane_part_without_bounds_rejected(self):
         """The part's z span IS the tile length the tile count is measured in, so a part
         without bounds cannot be tiled at all."""
         bundle = self.fresh()
-        self.patch_lane_catalogue(
-            bundle, lambda c: c["Example_Fence"]["parts"][0].pop("boundsMax"))
-        self.assertRejected(bundle, "missing required property 'boundsMax'")
+        self.patch_lane_catalogue(bundle, lambda c: c["Example_Fence"]["parts"][0].pop("boundsMax"))
+        self.assert_rejected(bundle, "missing required property 'boundsMax'")
 
     def test_lane_part_unknown_decal_role_rejected(self):
         """`decalRole` replaced an assetId string-match precisely so the vocabulary is closed;
         an absent key means unknown, but a wrong one would be read as a class."""
         bundle = self.fresh()
         self.patch_lane_catalogue(
-            bundle, lambda c: c["Example_Fence"]["parts"][0].update(decal=True,
-                                                                   decalRole="kerb"))
-        self.assertRejected(bundle, "'kerb' is not one of")
+            bundle, lambda c: c["Example_Fence"]["parts"][0].update(decal=True, decalRole="kerb")
+        )
+        self.assert_rejected(bundle, "'kerb' is not one of")
 
     # -- negative: colours and lights, contract §7.2 ------------------------------------
 
@@ -761,7 +786,7 @@ class BundleContractTest(unittest.TestCase):
         entry = colors["carto_example_cube"][0]
         entry["channels"] = entry["channels"][:2]
         path.write_text(json.dumps(colors, indent=2) + "\n", encoding="utf-8")
-        self.assertRejected(bundle, "minItems 3")
+        self.assert_rejected(bundle, "minItems 3")
 
     def test_punctual_light_without_position_rejected(self):
         """The two families are told apart by shape: a `kind: punctual` entry that carries no
@@ -772,7 +797,7 @@ class BundleContractTest(unittest.TestCase):
         lights = json.loads(path.read_text(encoding="utf-8"))
         lights["carto_example_cube"][1].pop("position")
         path.write_text(json.dumps(lights, indent=2) + "\n", encoding="utf-8")
-        self.assertRejected(bundle, "matched no oneOf branch")
+        self.assert_rejected(bundle, "matched no oneOf branch")
 
     def test_appearance_key_matching_no_mesh_is_noted(self):
         """A §7.2 key joins to the mesh layer. One that matches nothing is not an error — a
@@ -786,8 +811,10 @@ class BundleContractTest(unittest.TestCase):
         path.write_text(json.dumps(colors, indent=2) + "\n", encoding="utf-8")
         report = validate_bundle(bundle, DEFAULT_SCHEMA_DIR)
         self.assertEqual(report.errors, [])
-        self.assertTrue(any("match no mesh file" in n for n in report.notes),
-                        f"expected an unmatched-key note, got: {report.notes}")
+        self.assertTrue(
+            any("match no mesh file" in n for n in report.notes),
+            f"expected an unmatched-key note, got: {report.notes}",
+        )
 
     # -- negative: surface areas, contract §8b ------------------------------------------
 
@@ -802,7 +829,7 @@ class BundleContractTest(unittest.TestCase):
         by — a shorter list silently mis-bands every drape after the first."""
         bundle = self.fresh()
         self.patch_area(bundle, lambda r: r.update(heightRanges=[[0.0, 0.1]]))
-        self.assertRejected(bundle, "heightRanges has 1 entries")
+        self.assert_rejected(bundle, "heightRanges has 1 entries")
 
     def test_area_height_ranges_accepted_when_parallel(self):
         bundle = self.fresh()
@@ -818,7 +845,9 @@ class BundleContractTest(unittest.TestCase):
         report = validate_bundle(bundle, DEFAULT_SCHEMA_DIR)
         self.assertEqual(report.errors, [])
         matches = [w for w in report.warnings if "resolves to no instance" in w]
-        self.assertEqual(len(matches), 1, f"expected one aggregated warning, got:\n{report.warnings}")
+        self.assertEqual(
+            len(matches), 1, f"expected one aggregated warning, got:\n{report.warnings}"
+        )
 
     def test_area_prefab_dangling_normal_map_rejected(self):
         """The catalogue's PBR block is four separate maps; a dangling normalMap is exactly as
@@ -828,7 +857,7 @@ class BundleContractTest(unittest.TestCase):
         catalogue = json.loads(path.read_text(encoding="utf-8"))
         catalogue["example_concrete_pad"]["normalMap"] = "terrain/surfaces/no_such_n.png"
         path.write_text(json.dumps(catalogue, indent=2) + "\n", encoding="utf-8")
-        self.assertRejected(bundle, "normalMap")
+        self.assert_rejected(bundle, "normalMap")
 
     def test_area_prefab_unknown_field_rejected(self):
         bundle = self.fresh()
@@ -836,7 +865,7 @@ class BundleContractTest(unittest.TestCase):
         catalogue = json.loads(path.read_text(encoding="utf-8"))
         catalogue["example_concrete_pad"]["lodBias"] = 1.0
         path.write_text(json.dumps(catalogue, indent=2) + "\n", encoding="utf-8")
-        self.assertRejected(bundle, "unexpected property 'lodBias'")
+        self.assert_rejected(bundle, "unexpected property 'lodBias'")
 
     # -- negative: warnings, contract §10 -----------------------------------------------
 
@@ -845,8 +874,9 @@ class BundleContractTest(unittest.TestCase):
         an entity silently stops excusing anything, which is the failure worth catching."""
         bundle = self.fresh()
         (bundle / "warnings.jsonl").write_text(
-            json.dumps({"kind": "mesh", "reason": "gone"}) + "\n", encoding="utf-8")
-        self.assertRejected(bundle, "matched no anyOf branch")
+            json.dumps({"kind": "mesh", "reason": "gone"}) + "\n", encoding="utf-8"
+        )
+        self.assert_rejected(bundle, "matched no anyOf branch")
 
     def test_warning_unknown_kind_rejected(self):
         """Kinds are owned per pass and each pass rewrites only its own; an unknown kind is a
@@ -854,8 +884,9 @@ class BundleContractTest(unittest.TestCase):
         bundle = self.fresh()
         (bundle / "warnings.jsonl").write_text(
             json.dumps({"kind": "terrain", "assetId": "x", "reason": "gone"}) + "\n",
-            encoding="utf-8")
-        self.assertRejected(bundle, "'terrain' is not one of")
+            encoding="utf-8",
+        )
+        self.assert_rejected(bundle, "'terrain' is not one of")
 
     # -- negative: the surface index, contract §8 ---------------------------------------
 
@@ -866,7 +897,7 @@ class BundleContractTest(unittest.TestCase):
         index = json.loads(path.read_text(encoding="utf-8"))
         index["300"] = {"name": "impossible", "texture": None}
         path.write_text(json.dumps(index, indent=2) + "\n", encoding="utf-8")
-        self.assertRejected(bundle, "does not match pattern")
+        self.assert_rejected(bundle, "does not match pattern")
 
     def test_surface_index_null_texture_accepted(self):
         """`texture` may be null when the theme texture could not be read (§8) — a stated
@@ -892,12 +923,12 @@ class BundleContractTest(unittest.TestCase):
         does not tonemap."""
         bundle = self.fresh()
         self.patch_grading(bundle, lambda d: d["diagnostics"].update(stackEvaluated=False))
-        self.assertRejected(bundle, "stackEvaluated is false")
+        self.assert_rejected(bundle, "stackEvaluated is false")
 
     def test_grading_no_volumes_found_rejected(self):
         bundle = self.fresh()
         self.patch_grading(bundle, lambda d: d["diagnostics"].update(volumesFound=0))
-        self.assertRejected(bundle, "volumesFound is 0")
+        self.assert_rejected(bundle, "volumesFound is 0")
 
     def test_grading_unknown_block_rejected(self):
         """`grading.json` is a closed object on purpose: a block the writer starts emitting
@@ -905,34 +936,46 @@ class BundleContractTest(unittest.TestCase):
         and it should not reach a consumer unannounced."""
         bundle = self.fresh()
         self.patch_grading(bundle, lambda d: d.update(bloom={"intensity": 0.5}))
-        self.assertRejected(bundle, "unexpected property 'bloom'")
+        self.assert_rejected(bundle, "unexpected property 'bloom'")
 
     def test_grading_external_tonemapping_with_lut_warns(self):
         """mode External WITH a bound LUT means the grading block is incomplete — the LUT is a
         GPU 3D render texture and is not exported, so a consumer replaying this will not match
         the game and must be told."""
         bundle = self.fresh()
-        self.patch_grading(bundle, lambda d: d["tonemapping"].update(
-            mode="External", hasLut=True,
-            lut={"name": "DayLUT", "width": 1024, "height": 32, "type": "RenderTexture",
-                 "note": "NOT exported"}))
+        self.patch_grading(
+            bundle,
+            lambda d: d["tonemapping"].update(
+                mode="External",
+                hasLut=True,
+                lut={
+                    "name": "DayLUT",
+                    "width": 1024,
+                    "height": 32,
+                    "type": "RenderTexture",
+                    "note": "NOT exported",
+                },
+            ),
+        )
         report = validate_bundle(bundle, DEFAULT_SCHEMA_DIR)
         self.assertEqual(report.errors, [])
-        self.assertTrue(any("External with a bound LUT" in w for w in report.warnings),
-                        f"expected an incomplete-grading warning, got: {report.warnings}")
+        self.assertTrue(
+            any("External with a bound LUT" in w for w in report.warnings),
+            f"expected an incomplete-grading warning, got: {report.warnings}",
+        )
 
     def test_glb_image_uri_escaping_the_bundle_rejected(self):
         bundle = self.fresh()
         path = bundle / "meshes" / "carto_example_cube.glb"
         data = bytearray(path.read_bytes())
         json_len, _ = struct.unpack_from("<I4s", data, 12)
-        chunk = data[20:20 + json_len].decode("utf-8")
+        chunk = data[20 : 20 + json_len].decode("utf-8")
         # Same length, so no offset in the container needs rewriting.
         broken = chunk.replace('"uri":"../textures/', '"uri":"../../xxxxx/', 1)
         self.assertNotEqual(broken, chunk)
-        data[20:20 + json_len] = broken.encode("utf-8")
+        data[20 : 20 + json_len] = broken.encode("utf-8")
         path.write_bytes(bytes(data))
-        self.assertRejected(bundle, "escapes the bundle directory")
+        self.assert_rejected(bundle, "escapes the bundle directory")
 
 
 if __name__ == "__main__":

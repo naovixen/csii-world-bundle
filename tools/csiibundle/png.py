@@ -43,11 +43,11 @@ def unfilter_slow(kind, line, previous, bpp):
     keep the original sequential algorithm. `line` is mutated in place and returned.
     """
     stride = len(line)
-    if kind == 3:      # Average
+    if kind == 3:  # Average
         for i in range(stride):
             left = line[i - bpp] if i >= bpp else 0
             line[i] = (line[i] + ((left + previous[i]) >> 1)) & 0xFF
-    elif kind == 4:    # Paeth
+    elif kind == 4:  # Paeth
         for i in range(stride):
             left = line[i - bpp] if i >= bpp else 0
             up = previous[i]
@@ -81,14 +81,14 @@ def unfilter_scanlines(raw, width, height, bpp):
         offset = y * (stride + 1)
         kind = raw[offset]
         line = numpy.frombuffer(raw, dtype=numpy.uint8, count=stride, offset=offset + 1).copy()
-        if kind == 0:      # None
+        if kind == 0:  # None
             pass
-        elif kind == 2:    # Up
+        elif kind == 2:  # Up
             line += previous
-        elif kind == 1:    # Sub
+        elif kind == 1:  # Sub
             lanes = line.reshape(-1, bpp).astype(numpy.uint32)
             line = numpy.cumsum(lanes, axis=0, dtype=numpy.uint32).astype(numpy.uint8).reshape(-1)
-        else:              # Average(3) / Paeth(4)
+        else:  # Average(3) / Paeth(4)
             slow = unfilter_slow(kind, bytearray(line.tobytes()), bytes(previous.tobytes()), bpp)
             line = numpy.frombuffer(bytes(slow), dtype=numpy.uint8)
         out[y] = line
@@ -106,10 +106,10 @@ def _read_chunks(path):
     width = height = depth = colour_type = None
     idat = []
     while pos + 8 <= len(data):
-        (length,) = struct.unpack(">I", data[pos:pos + 4])
-        tag = data[pos + 4:pos + 8]
-        payload = data[pos + 8:pos + 8 + length]
-        pos += 12 + length                       # 4 length + 4 tag + payload + 4 CRC
+        (length,) = struct.unpack(">I", data[pos : pos + 4])
+        tag = data[pos + 4 : pos + 8]
+        payload = data[pos + 8 : pos + 8 + length]
+        pos += 12 + length  # 4 length + 4 tag + payload + 4 CRC
         if tag == b"IHDR":
             width, height = struct.unpack(">II", payload[:8])
             depth, colour_type = payload[8], payload[9]
@@ -130,8 +130,10 @@ def decode_png_gray(path):
     """
     width, height, depth, colour_type, compressed = _read_chunks(path)
     if colour_type != COLOUR_TYPE_GRAY or depth not in (8, 16):
-        raise ValueError(f"{path}: contract §8 rasters are 8- or 16-bit grayscale, "
-                         f"got colour type {colour_type} at depth {depth}")
+        raise ValueError(
+            f"{path}: contract §8 rasters are 8- or 16-bit grayscale, "
+            f"got colour type {colour_type} at depth {depth}"
+        )
 
     raw = zlib.decompress(compressed)
     bpp = depth // 8
@@ -155,8 +157,9 @@ def decode_png_rgba(path):
     """
     width, height, depth, colour_type, compressed = _read_chunks(path)
     if colour_type != COLOUR_TYPE_RGBA or depth != 8:
-        raise ValueError(f"{path}: the splatmap is RGBA8, got colour type {colour_type} "
-                         f"at depth {depth}")
+        raise ValueError(
+            f"{path}: the splatmap is RGBA8, got colour type {colour_type} at depth {depth}"
+        )
 
     raw = zlib.decompress(compressed)
     return width, height, bytes(unfilter_scanlines(raw, width, height, 4))
@@ -187,8 +190,14 @@ def rgba_array(path):
 # (colour type 6), deterministic bytes (same input, same file), no interlace, no ancillary chunks.
 # `IO/Png.cs` is the producer's twin of this.
 
+
 def _chunk(tag, payload):
-    return struct.pack(">I", len(payload)) + tag + payload + struct.pack(">I", zlib.crc32(tag + payload) & 0xFFFFFFFF)
+    return (
+        struct.pack(">I", len(payload))
+        + tag
+        + payload
+        + struct.pack(">I", zlib.crc32(tag + payload) & 0xFFFFFFFF)
+    )
 
 
 def encode_gray(samples, bit_depth=None, level=6):
@@ -213,9 +222,16 @@ def encode_gray(samples, bit_depth=None, level=6):
     else:
         raise ValueError("bit_depth must be 8 or 16")
     height, width = rows.shape
-    body = numpy.concatenate([numpy.zeros((height, 1), numpy.uint8), rows.view(numpy.uint8).reshape(height, -1)], axis=1)
+    body = numpy.concatenate(
+        [numpy.zeros((height, 1), numpy.uint8), rows.view(numpy.uint8).reshape(height, -1)], axis=1
+    )
     ihdr = struct.pack(">IIBBBBB", width, height, bit_depth, COLOUR_TYPE_GRAY, 0, 0, 0)
-    return PNG_SIGNATURE + _chunk(b"IHDR", ihdr) + _chunk(b"IDAT", zlib.compress(body.tobytes(), level)) + _chunk(b"IEND", b"")
+    return (
+        PNG_SIGNATURE
+        + _chunk(b"IHDR", ihdr)
+        + _chunk(b"IDAT", zlib.compress(body.tobytes(), level))
+        + _chunk(b"IEND", b"")
+    )
 
 
 def encode_rgba(pixels, level=6):
@@ -229,9 +245,16 @@ def encode_rgba(pixels, level=6):
             raise ValueError("RGBA8 samples must be within 0..255")
         arr = arr.astype(numpy.uint8)
     height, width, _ = arr.shape
-    body = numpy.concatenate([numpy.zeros((height, 1), numpy.uint8), arr.reshape(height, width * 4)], axis=1)
+    body = numpy.concatenate(
+        [numpy.zeros((height, 1), numpy.uint8), arr.reshape(height, width * 4)], axis=1
+    )
     ihdr = struct.pack(">IIBBBBB", width, height, 8, COLOUR_TYPE_RGBA, 0, 0, 0)
-    return PNG_SIGNATURE + _chunk(b"IHDR", ihdr) + _chunk(b"IDAT", zlib.compress(body.tobytes(), level)) + _chunk(b"IEND", b"")
+    return (
+        PNG_SIGNATURE
+        + _chunk(b"IHDR", ihdr)
+        + _chunk(b"IDAT", zlib.compress(body.tobytes(), level))
+        + _chunk(b"IEND", b"")
+    )
 
 
 def encode_rgb(pixels, level=6):
@@ -248,9 +271,16 @@ def encode_rgb(pixels, level=6):
         arr = arr.astype(numpy.uint8)
     arr = numpy.ascontiguousarray(arr)
     height, width, _ = arr.shape
-    body = numpy.concatenate([numpy.zeros((height, 1), numpy.uint8), arr.reshape(height, width * 3)], axis=1)
+    body = numpy.concatenate(
+        [numpy.zeros((height, 1), numpy.uint8), arr.reshape(height, width * 3)], axis=1
+    )
     ihdr = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
-    return PNG_SIGNATURE + _chunk(b"IHDR", ihdr) + _chunk(b"IDAT", zlib.compress(body.tobytes(), level)) + _chunk(b"IEND", b"")
+    return (
+        PNG_SIGNATURE
+        + _chunk(b"IHDR", ihdr)
+        + _chunk(b"IDAT", zlib.compress(body.tobytes(), level))
+        + _chunk(b"IEND", b"")
+    )
 
 
 def write_gray(path, samples, bit_depth=None):
@@ -279,7 +309,7 @@ def downsample_box(pixels, factor):
     h, w = arr.shape[0] // factor, arr.shape[1] // factor
     if h == 0 or w == 0:
         raise ValueError("factor larger than the image")
-    trimmed = arr[:h * factor, :w * factor]
+    trimmed = arr[: h * factor, : w * factor]
     if arr.ndim == 2:
         blocks = trimmed.reshape(h, factor, w, factor).astype(numpy.float64)
         mean = blocks.mean(axis=(1, 3))

@@ -85,16 +85,20 @@ def run(ctx, progress):
     started = time.monotonic()
     level = level_of(ctx)
     settings = ctx.settings
-    caps = bm.caps_from_settings(settings)             # per kind: colour / normal / data (A4 2.1)
+    caps = bm.caps_from_settings(settings)  # per kind: colour / normal / data (A4 2.1)
     # pre-compressed DDS (BC7/BC5/BC4 + mips, the cooker's own formats) unless the encoder is
     # missing or the setting turns it off; PNG means BeamNG cooks on the first load of the name
     use_dds = bool(settings.get("texture_dds", True)) and bm.dds_mod.available()
     if settings.get("texture_dds", True) and not bm.dds_mod.available():
-        progress.log("materials: etcpak not installed - textures go out as PNG and BeamNG cooks them on first load "
-                     "(pip install etcpak)")
+        progress.log(
+            "materials: etcpak not installed - textures go out as PNG and BeamNG cooks them on first load "
+            "(pip install etcpak)"
+        )
     table_path = os.path.join(ctx.derived_dir, "materials.json")
     if not os.path.isfile(table_path):
-        raise RuntimeError("derived/materials.json missing: the bake's materials product has not run")
+        raise RuntimeError(
+            "derived/materials.json missing: the bake's materials product has not run"
+        )
     with open(table_path, encoding="utf-8") as handle:
         table = json.load(handle)
     materials = table.get("materials") or {}
@@ -103,16 +107,20 @@ def run(ctx, progress):
     used = (ctx.shared or {}).get("materials_used")
     if used:
         canonical = sorted(c for c in canonical_all if c in used)
-        extra = sorted(c for c in used if c not in materials)      # names no table knows: placeholders below
+        extra = sorted(
+            c for c in used if c not in materials
+        )  # names no table knows: placeholders below
     else:
         canonical, extra = canonical_all, []
-    progress.log(f"materials: {len(materials)} named, {len(canonical_all)} canonical, {len(aliases)} aliases; "
-                 f"this build binds {len(canonical)}{' (all)' if not used else ''}; texture caps "
-                 + ", ".join(f"{k} {v or 'full'}" for k, v in sorted(caps.items())))
+    progress.log(
+        f"materials: {len(materials)} named, {len(canonical_all)} canonical, {len(aliases)} aliases; "
+        f"this build binds {len(canonical)}{' (all)' if not used else ''}; texture caps "
+        + ", ".join(f"{k} {v or 'full'}" for k, v in sorted(caps.items()))
+    )
 
     # -- texture jobs -----------------------------------------------------------------------
     progress.begin("materials: textures", total=None, unit="textures")
-    jobs = {}                                          # (src, kind, keep_alpha) -> None
+    jobs = {}  # (src, kind, keep_alpha) -> None
     # The slot walk lives in `beamng.materials` because the cost meter runs the same one to SIZE
     # what this stage EXPORTS (`pipeline/estimate`); two copies would be two answers to "which
     # textures does this level ship". No occlusion slot: the mask's G is not AO (audit §54).
@@ -137,8 +145,10 @@ def run(ctx, progress):
     reusable, todo = _partition(level, job_list, ledger, caps, use_dds)
     if reusable:
         progress.advance(len(reusable))
-        progress.log(f"materials: {len(reusable):,} textures unchanged since the last build (source bytes, cap "
-                     f"and format all the same) - not re-encoded")
+        progress.log(
+            f"materials: {len(reusable):,} textures unchanged since the last build (source bytes, cap "
+            f"and format all the same) - not re-encoded"
+        )
     exported = dict(reusable)
     exported.update(_export_all(level, todo, caps, ctx.jobs, progress, use_dds))
     missing = sum(1 for v in exported.values() if v is None)
@@ -149,7 +159,9 @@ def run(ctx, progress):
     # them straight back, which cost BeamNG a re-cook of those 88 on every first load. Found by
     # the no-op-rebuild A/B (A4): 34,965 files identical, 89 mtimes moved, all of them these.
     keep = {os.path.basename(v) for v in exported.values() if v}
-    progress.end(f"{len(job_list)} textures exported ({len(reusable)} reused, {missing} sources missing)")
+    progress.end(
+        f"{len(job_list)} textures exported ({len(reusable)} reused, {missing} sources missing)"
+    )
 
     # -- material objects -------------------------------------------------------------------
     progress.begin("materials: write", total=len(canonical), unit="materials")
@@ -162,7 +174,7 @@ def run(ctx, progress):
         progress.advance(1)
     # areas
     area_count = 0
-    area_exported = {}                                 # (src, kind, keep_alpha) -> game path
+    area_exported = {}  # (src, kind, keep_alpha) -> game path
     areas_path = os.path.join(ctx.derived_dir, "areas", "materials.json")
     if os.path.isfile(areas_path):
         with open(areas_path, encoding="utf-8") as handle:
@@ -175,14 +187,35 @@ def run(ctx, progress):
             keep_alpha = False
             if tex and os.path.isfile(os.path.join(ctx.bundle, tex)):
                 keep_alpha = _has_alpha(os.path.join(ctx.bundle, tex))
-                maps["baseColor"] = _area_texture(level, ctx, tex, "color", caps, cache, use_dds, ledger, area_exported)
+                maps["baseColor"] = _area_texture(
+                    level, ctx, tex, "color", caps, cache, use_dds, ledger, area_exported
+                )
                 if keep_alpha:
-                    maps["opacity"] = _area_texture(level, ctx, tex, "opacity", caps, cache, use_dds, ledger, area_exported)
-            if rec.get("normal_map") and os.path.isfile(os.path.join(ctx.bundle, rec["normal_map"])):
-                maps["normal"] = _area_texture(level, ctx, rec["normal_map"], "normal", caps, cache, use_dds, ledger, area_exported)
-            arec = {"alphaMode": "mask" if keep_alpha else "opaque", "alphaCutoff": 0.5, "doubleSided": False,
-                    "roughness": rec.get("roughness"), "metallic": rec.get("metallic"),
-                    "baseColorFactor": rec.get("color") or [1, 1, 1, 1]}
+                    maps["opacity"] = _area_texture(
+                        level, ctx, tex, "opacity", caps, cache, use_dds, ledger, area_exported
+                    )
+            if rec.get("normal_map") and os.path.isfile(
+                os.path.join(ctx.bundle, rec["normal_map"])
+            ):
+                maps["normal"] = _area_texture(
+                    level,
+                    ctx,
+                    rec["normal_map"],
+                    "normal",
+                    caps,
+                    cache,
+                    use_dds,
+                    ledger,
+                    area_exported,
+                )
+            arec = {
+                "alphaMode": "mask" if keep_alpha else "opaque",
+                "alphaCutoff": 0.5,
+                "doubleSided": False,
+                "roughness": rec.get("roughness"),
+                "metallic": rec.get("metallic"),
+                "baseColorFactor": rec.get("color") or [1, 1, 1, 1],
+            }
             if rec.get("unresolved") or not maps.get("baseColor"):
                 out[bound] = bm.placeholder_material(level, bound, (0.55, 0.55, 0.55, 1.0))
             else:
@@ -193,52 +226,68 @@ def run(ctx, progress):
     for bound, plan in sorted(variant_plans.items()):
         maps = {slot: exported.get(job) for slot, job in plan["maps"].items()}
         out[bound] = bm.material_v15(level, bound, plan["rec"], maps, pid_key=plan["pid"])
-        variant_kinds[plan.get("kind", "texture")] = variant_kinds.get(plan.get("kind", "texture"), 0) + 1
+        variant_kinds[plan.get("kind", "texture")] = (
+            variant_kinds.get(plan.get("kind", "texture"), 0) + 1
+        )
         variant_count += 1
     if variant_count:
-        progress.log(f"materials: {variant_count} paint-variant materials, {variant_kinds['texture']} with a "
-                     f"tinted albedo and {variant_kinds['factor']} as a baseColorFactor on the canonical one "
-                     f"(palette unbound in both)")
+        progress.log(
+            f"materials: {variant_count} paint-variant materials, {variant_kinds['texture']} with a "
+            f"tinted albedo and {variant_kinds['factor']} as a baseColorFactor on the canonical one "
+            f"(palette unbound in both)"
+        )
 
     for raw in extra:
         if not raw.startswith("area:"):
             bound = bm.mapto(level.name, raw)
             out.setdefault(bound, bm.placeholder_material(level, bound))
-    out[bm.mapto(level.name, "unmapped")] = bm.placeholder_material(level, bm.mapto(level.name, "unmapped"))
+    out[bm.mapto(level.name, "unmapped")] = bm.placeholder_material(
+        level, bm.mapto(level.name, "unmapped")
+    )
     level.write_materials("cs2", out)
     # NOW the orphan sweep: `keep` is everything this build exported, the area surfaces included.
     exported.update(area_exported)
     _save_ledger(ctx.level_dir, exported, caps, use_dds)
     keep |= {os.path.basename(v) for v in area_exported.values() if v}
     orphans = _sweep_orphans(level, keep)
-    progress.end(f"{len(out)} materials written ({area_count} area surfaces, {orphans} orphan textures removed)")
+    progress.end(
+        f"{len(out)} materials written ({area_count} area surfaces, {orphans} orphan textures removed)"
+    )
     shared = ctx.shared if ctx.shared is not None else {}
     shared["materials"] = {"aliases": aliases, "canonical": set(canonical_all), "known": set(out)}
-    return {"named": len(materials), "canonical": len(canonical), "areaMaterials": area_count,
-            "paintVariantMaterials": variant_count, "paintVariantKinds": variant_kinds,
-            "textures": len(job_list), "texturesReused": len(reusable), "texturesMissing": missing,
-            "orphanTexturesRemoved": orphans,
-            "textureCaps": caps, "textureBytes": _texture_bytes(level),
-            "format": "dds" if use_dds else "png",
-            "approximations": {
-                "colorMaskChannelOverlap": {
-                    "what": "a colour-mask texel where TWO OR MORE of CS2's tint channels are "
-                            "non-zero is mixed by BeamNG where CS2 multiplies",
-                    "why": "CS2 applies three INDEPENDENT lerps (bundle §7.2) and BeamNG's "
-                           "`getColorPalette` normalises the mask RGB into a simplex, so it can "
-                           "only ever BLEND between the three palette colours. Where one channel "
-                           "is active the conversion in `beamng.materials._colormask_rgba` is "
-                           "EXACT (worst error 0.001, which is the alpha's own 8-bit step); "
-                           "where two are, no alpha can reproduce a product with a mix. §7.2 "
-                           "states the channels are authored disjoint and MEASUREMENT AGREES: "
-                           "over 254 masks and 521.7 M texels, 39.0 % carry any tint at all and "
-                           "only 1.76 % of THOSE have two channels (median mask 0.29 %, 32 masks "
-                           "none at all)",
-                    "count": None,
-                    "value": 0.0176,
-                },
+    return {
+        "named": len(materials),
+        "canonical": len(canonical),
+        "areaMaterials": area_count,
+        "paintVariantMaterials": variant_count,
+        "paintVariantKinds": variant_kinds,
+        "textures": len(job_list),
+        "texturesReused": len(reusable),
+        "texturesMissing": missing,
+        "orphanTexturesRemoved": orphans,
+        "textureCaps": caps,
+        "textureBytes": _texture_bytes(level),
+        "format": "dds" if use_dds else "png",
+        "approximations": {
+            "colorMaskChannelOverlap": {
+                "what": "a colour-mask texel where TWO OR MORE of CS2's tint channels are "
+                "non-zero is mixed by BeamNG where CS2 multiplies",
+                "why": "CS2 applies three INDEPENDENT lerps (bundle §7.2) and BeamNG's "
+                "`getColorPalette` normalises the mask RGB into a simplex, so it can "
+                "only ever BLEND between the three palette colours. Where one channel "
+                "is active the conversion in `beamng.materials._colormask_rgba` is "
+                "EXACT (worst error 0.001, which is the alpha's own 8-bit step); "
+                "where two are, no alpha can reproduce a product with a mix. §7.2 "
+                "states the channels are authored disjoint and MEASUREMENT AGREES: "
+                "over 254 masks and 521.7 M texels, 39.0 % carry any tint at all and "
+                "only 1.76 % of THOSE have two channels (median mask 0.29 %, 32 masks "
+                "none at all)",
+                "count": None,
+                "value": 0.0176,
             },
-            "seconds": round(time.monotonic() - started, 1)}
+        },
+        "seconds": round(time.monotonic() - started, 1),
+    }
 
 
 # THE OCCLUSION SLOT IS GONE, and it is not coming back (audit §54, 2026-08-17).
@@ -284,8 +333,11 @@ def _variant_plans(ctx, materials, plans):
             rec = dict(materials.get(source) or {})
             rec.pop("colorMask", None)
             rec["tintable"] = False
-            maps = {slot: job for slot, job in (plans.get(canon) or {}).items()
-                    if slot not in ("colorMask", "baseColor", "opacity")}
+            maps = {
+                slot: job
+                for slot, job in (plans.get(canon) or {}).items()
+                if slot not in ("colorMask", "baseColor", "opacity")
+            }
             if path and os.path.isfile(path):
                 # the exact tint, in the texels
                 maps["baseColor"] = (path, "color", False)
@@ -300,12 +352,18 @@ def _variant_plans(ctx, materials, plans):
                         maps[slot] = job
                 base = list(rec.get("baseColorFactor") or [1.0, 1.0, 1.0, 1.0])
                 base = (base + [1.0] * 4)[:4]
-                rec["baseColorFactor"] = [float(base[i]) * float(factor[i]) for i in range(3)] + [float(base[3])]
+                rec["baseColorFactor"] = [float(base[i]) * float(factor[i]) for i in range(3)] + [
+                    float(base[3])
+                ]
             else:
-                continue                    # nothing for this pair; the shape binds the plain name
+                continue  # nothing for this pair; the shape binds the plain name
             bound = bm.mapto(ctx.settings["level_name"], f"{canon}__v{vkey}")
-            out[bound] = {"rec": rec, "maps": maps, "pid": f"material:{canon}__v{vkey}",
-                          "kind": "texture" if (path and os.path.isfile(path)) else "factor"}
+            out[bound] = {
+                "rec": rec,
+                "maps": maps,
+                "pid": f"material:{canon}__v{vkey}",
+                "kind": "texture" if (path and os.path.isfile(path)) else "factor",
+            }
     return out
 
 
@@ -348,8 +406,12 @@ def _area_texture(level, ctx, rel, kind, caps, cache, use_dds, ledger, exported)
     entry = ledger.get(_ledger_key(src, kind, False, caps, use_dds))
     stamp = _stamp(src)
     name = bm.texture_name(src, kind, False, use_dds)
-    if entry and stamp is not None and entry.get("stamp") == stamp \
-            and os.path.isfile(level.path(*bm.TEXTURE_SUBDIR, name)):
+    if (
+        entry
+        and stamp is not None
+        and entry.get("stamp") == stamp
+        and os.path.isfile(level.path(*bm.TEXTURE_SUBDIR, name))
+    ):
         exported[job] = entry["game"]
         return entry["game"]
     game = bm.export_texture(level, src, kind, cap, False, cache, dds=use_dds)
@@ -393,7 +455,7 @@ LEDGER_SCHEMA = "cs2beamng.texture_ledger/1"
 
 
 def _ledger_path(level_dir):
-    from ..pipeline import state as state_mod  # noqa: WPS433 - avoids a cycle at import time
+    from ..pipeline import state as state_mod
 
     return os.path.join(level_dir, state_mod.STATE_DIR, LEDGER_NAME)
 
@@ -423,11 +485,19 @@ def _save_ledger(level_dir, exported, caps, use_dds):
         os.makedirs(os.path.dirname(path), exist_ok=True)
         tmp = path + ".tmp"
         with open(tmp, "w", encoding="utf-8", newline="\n") as handle:
-            json.dump({"schema": LEDGER_SCHEMA, "caps": caps, "format": "dds" if use_dds else "png",
-                       "entries": entries}, handle, separators=(",", ":"))
+            json.dump(
+                {
+                    "schema": LEDGER_SCHEMA,
+                    "caps": caps,
+                    "format": "dds" if use_dds else "png",
+                    "entries": entries,
+                },
+                handle,
+                separators=(",", ":"),
+            )
         os.replace(tmp, path)
     except OSError:
-        pass                                            # a ledger that cannot be written costs time, not correctness
+        pass  # a ledger that cannot be written costs time, not correctness
 
 
 def _ledger_key(src, kind, keep_alpha, caps, use_dds):
@@ -456,13 +526,14 @@ def _partition(level, jobs, ledger, caps, use_dds):
             continue
         name = bm.texture_name(src, kind, keep_alpha, use_dds)
         if not os.path.isfile(level.path(*bm.TEXTURE_SUBDIR, name)):
-            todo.append(job)                            # the ledger remembers, the folder does not
+            todo.append(job)  # the ledger remembers, the folder does not
             continue
         reusable[job] = entry["game"]
     return reusable, todo
 
 
 # -- pool ---------------------------------------------------------------------------------------
+
 
 def _export_chunk(args):
     level_dir, level_name, caps, use_dds, chunk = args
@@ -472,8 +543,13 @@ def _export_chunk(args):
     for src, kind, keep_alpha in chunk:
         try:
             cap = int(caps.get(kind, 0) or 0)
-            out.append(((src, kind, keep_alpha), bm.export_texture(level, src, kind, cap, keep_alpha, cache, dds=use_dds)))
-        except Exception as exc:  # noqa: BLE001 - one bad texture must not stop the stage
+            out.append(
+                (
+                    (src, kind, keep_alpha),
+                    bm.export_texture(level, src, kind, cap, keep_alpha, cache, dds=use_dds),
+                )
+            )
+        except Exception as exc:
             out.append(((src, kind, keep_alpha), None))
             out.append((("__log__", str(src), ""), f"texture {os.path.basename(src)}: {exc!r}"))
     return out
@@ -484,7 +560,7 @@ def _export_all(level, jobs, caps, workers, progress, use_dds=True):
     if not jobs:
         return exported
     chunk_size = 16
-    chunks = [jobs[i:i + chunk_size] for i in range(0, len(jobs), chunk_size)]
+    chunks = [jobs[i : i + chunk_size] for i in range(0, len(jobs), chunk_size)]
     args = [(level.dir, level.name, caps, use_dds, c) for c in chunks]
     if workers and workers > 1 and len(chunks) > 1:
         ctx = multiprocessing.get_context("spawn")
@@ -512,8 +588,12 @@ def _absorb(results, exported, progress):
 # actually bound (`ctx.shared["materials_used"]`), and that set appears in none of its own
 # inputs. Without the declaration a `paint_kinds` change would re-run `shapes` and leave the
 # materials of the previous build in place - the exact shape of the 2026-08-18 miss.
-INPUTS = ("derived:materials.json", "derived:areas/materials.json", "derived:textures",
-          "layer:textures")
+INPUTS = (
+    "derived:materials.json",
+    "derived:areas/materials.json",
+    "derived:textures",
+    "layer:textures",
+)
 SETTINGS = ("texture_max", "texture_max_normal", "texture_max_data", "texture_dds")
 OUTPUTS = ("art/cs2/main.materials.json", "art/textures")
 
@@ -534,6 +614,16 @@ OUTPUTS = ("art/cs2/main.materials.json", "art/textures")
 # version 8: A8/P1 - the colour mask takes the colour cap like every other map. `colormask` was
 #            missing from `KIND_CAP_SETTING`, which means UNCAPPED, so 767 of 771 masks shipped
 #            at 1024 against everything else's 256: 1,025 MiB, 58 % of all texture bytes
-STAGE = Stage(STAGE_KEY, "Materials and textures", enabled, units, run, inputs=INPUTS,
-              settings_keys=SETTINGS, outputs=OUTPUTS, shared_keys=("materials",),
-              after=("shapes", "networks", "derived"), version=8)
+STAGE = Stage(
+    STAGE_KEY,
+    "Materials and textures",
+    enabled,
+    units,
+    run,
+    inputs=INPUTS,
+    settings_keys=SETTINGS,
+    outputs=OUTPUTS,
+    shared_keys=("materials",),
+    after=("shapes", "networks", "derived"),
+    version=8,
+)

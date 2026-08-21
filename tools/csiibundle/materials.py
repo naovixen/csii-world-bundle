@@ -144,7 +144,6 @@ SHADER_ONLY_TEMPLATES = {
     "CurvedOverlay": "overlay",
     "CurvedTransparent": "overlay",
     "Placeholder": "placeholder",
-
     # `Windows` is a real window template with 632 uses on the reference city, 625 of them
     # carrying maps — so it reaches here only for the 7 whose maps did not bind, and those are
     # window panes. Gated on `is_textureless`, as every entry in this table is.
@@ -240,6 +239,7 @@ def texture_path(bundle_dir, entry, slot):
     An absent slot is normal and means "the game has no such map here", not a missing file.
     """
     import os
+
     rel = (entry or {}).get(slot)
     return os.path.join(bundle_dir, rel) if rel else None
 
@@ -266,17 +266,16 @@ def wire_plan(entry):
     """
     if not entry or "mask" not in entry:
         return []
-    return [("mask", "R", "metallic", False),
-            ("mask", "A", "roughness", True)]
+    return [("mask", "R", "metallic", False), ("mask", "A", "roughness", True)]
 
 
 # The three layouts a normal map in this bundle can arrive in, and what carries X in each.
 # §7.1 promises the first; the other two are what a two-channel packing looks like when it
 # reaches disk unrebuilt, and reading one of them as if it were the first is silent and total —
 # see `detect_normal_packing`.
-NORMAL_RGB = "rgb"      # X in red, Y in green, Z in blue. The contract.
-NORMAL_AG = "ag"        # DXT5nm/BC3n: X in ALPHA, Y in green, red pinned white, Z reconstructed
-NORMAL_RG = "rg"        # BC5: X in red, Y in green, blue pinned black, Z reconstructed
+NORMAL_RGB = "rgb"  # X in red, Y in green, Z in blue. The contract.
+NORMAL_AG = "ag"  # DXT5nm/BC3n: X in ALPHA, Y in green, red pinned white, Z reconstructed
+NORMAL_RG = "rg"  # BC5: X in red, Y in green, blue pinned black, Z reconstructed
 
 # What "pinned" means, in 0-1. Block compression dents a constant channel by a few counts, so
 # these are not exact tests, and the fraction below is what actually decides.
@@ -308,7 +307,7 @@ def detect_normal_packing(samples):
     """
     total = high_red = low_blue = low_red = 0
     varying_alpha = False
-    for r, g, b, a in samples:
+    for r, _g, b, a in samples:
         total += 1
         if r >= _PINNED_HIGH:
             high_red += 1
@@ -368,21 +367,40 @@ def coverage(catalogue):
     return counts
 
 
-
 # -- the resolved material: what a renderer needs, decided once ----------------------------------
 
 # Substitutes for the shader-only kinds — a flat colour, roughness, and how the surface is
 # drawn. Glass and foliage are TUNED (the game's shaders are compiled and ship no numbers);
 # water is EXACT from `rasters.water` and is filled in by `resolve` from the bundle's block.
 SHADER_ONLY_SUBSTITUTE = {
-    "glass": {"baseColorFactor": (0.92, 0.96, 1.0, 0.35), "roughness": 0.05, "metallic": 0.0,
-              "alphaMode": "blend", "doubleSided": False},
-    "foliage": {"baseColorFactor": (0.28, 0.42, 0.18, 1.0), "roughness": 0.85, "metallic": 0.0,
-                "alphaMode": "opaque", "doubleSided": True},
-    "overlay": {"baseColorFactor": (0.5, 0.5, 0.5, 0.5), "roughness": 0.9, "metallic": 0.0,
-                "alphaMode": "blend", "doubleSided": False},
-    "placeholder": {"baseColorFactor": (0.6, 0.6, 0.6, 1.0), "roughness": 0.9, "metallic": 0.0,
-                    "alphaMode": "opaque", "doubleSided": False},
+    "glass": {
+        "baseColorFactor": (0.92, 0.96, 1.0, 0.35),
+        "roughness": 0.05,
+        "metallic": 0.0,
+        "alphaMode": "blend",
+        "doubleSided": False,
+    },
+    "foliage": {
+        "baseColorFactor": (0.28, 0.42, 0.18, 1.0),
+        "roughness": 0.85,
+        "metallic": 0.0,
+        "alphaMode": "opaque",
+        "doubleSided": True,
+    },
+    "overlay": {
+        "baseColorFactor": (0.5, 0.5, 0.5, 0.5),
+        "roughness": 0.9,
+        "metallic": 0.0,
+        "alphaMode": "blend",
+        "doubleSided": False,
+    },
+    "placeholder": {
+        "baseColorFactor": (0.6, 0.6, 0.6, 1.0),
+        "roughness": 0.9,
+        "metallic": 0.0,
+        "alphaMode": "opaque",
+        "doubleSided": False,
+    },
 }
 
 
@@ -432,8 +450,11 @@ def resolve(entry, material_id=None, water_appearance=None):
         # This used to substitute `(0, 0, 0)`, which is truthy, so every consumer's own
         # "no factor -> (1,1,1)" fallback was silently defeated and 2,373 BeamNG materials
         # multiplied their emissive map by ZERO. A missing factor is missing, not black.
-        "emissiveFactor": (tuple(float(v) for v in entry["emissiveFactor"])[:3]
-                           if entry.get("emissiveFactor") else None),
+        "emissiveFactor": (
+            tuple(float(v) for v in entry["emissiveFactor"])[:3]
+            if entry.get("emissiveFactor")
+            else None
+        ),
         # Emissive luminance in nits, when a colour slot has been joined to this material
         # (`bake.materials`); `None` otherwise. Engine-neutral: it is CS2's own
         # `SingleLightMapping.intensity x kIntensityMultiplier`, scaled once, declared there.
@@ -461,8 +482,12 @@ def resolve(entry, material_id=None, water_appearance=None):
     if kind == "water":
         app = water_appearance
         colour = tuple(app.base_color)[:4] if app is not None else (0.08, 0.22, 0.35, 1.0)
-        out["baseColorFactor"] = (float(colour[0]), float(colour[1]), float(colour[2]),
-                                  float(app.surface_alpha()) if app is not None else 0.8)
+        out["baseColorFactor"] = (
+            float(colour[0]),
+            float(colour[1]),
+            float(colour[2]),
+            float(app.surface_alpha()) if app is not None else 0.8,
+        )
         out["roughness"] = float(app.roughness) if app is not None else 0.05
         out["metallic"] = 0.0
         out["alphaMode"] = "blend"
@@ -489,12 +514,19 @@ def texture_set_key(resolved):
     alpha mode/cutoff, same double-sidedness, same factors. The bake collapses such materials
     into one (BeamNG's first performance cost is unique materials per view); the alias map it
     writes lets a consumer follow a mesh's material name to the canonical one."""
-    return (resolved.get("baseColor"), resolved.get("normal"), resolved.get("mask"),
-            resolved.get("emissive"), resolved.get("colorMask"), resolved.get("kind"),
-            resolved.get("alphaMode"), round(float(resolved.get("alphaCutoff") or 0.5), 3),
-            bool(resolved.get("doubleSided")),
-            tuple(round(float(v), 4) for v in resolved.get("baseColorFactor") or ()),
-            tuple(round(float(v), 4) for v in resolved.get("emissiveFactor") or ()),
-            None if resolved.get("emissiveNits") is None else round(float(resolved["emissiveNits"]), 3),
-            None if resolved.get("roughness") is None else round(float(resolved["roughness"]), 4),
-            None if resolved.get("metallic") is None else round(float(resolved["metallic"]), 4))
+    return (
+        resolved.get("baseColor"),
+        resolved.get("normal"),
+        resolved.get("mask"),
+        resolved.get("emissive"),
+        resolved.get("colorMask"),
+        resolved.get("kind"),
+        resolved.get("alphaMode"),
+        round(float(resolved.get("alphaCutoff") or 0.5), 3),
+        bool(resolved.get("doubleSided")),
+        tuple(round(float(v), 4) for v in resolved.get("baseColorFactor") or ()),
+        tuple(round(float(v), 4) for v in resolved.get("emissiveFactor") or ()),
+        None if resolved.get("emissiveNits") is None else round(float(resolved["emissiveNits"]), 3),
+        None if resolved.get("roughness") is None else round(float(resolved["roughness"]), 4),
+        None if resolved.get("metallic") is None else round(float(resolved["metallic"]), 4),
+    )

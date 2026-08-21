@@ -57,7 +57,7 @@ def resample_nearest(img, h, w):
 
 def multiplier(mask_rgb, colours):
     """`M(texel)` — the per-texel RGB multiplier `tints.apply_reference` amounts to."""
-    out = numpy.ones(mask_rgb.shape[:2] + (3,), dtype=numpy.float64)
+    out = numpy.ones((*mask_rgb.shape[:2], 3), dtype=numpy.float64)
     for i in range(tints.CHANNELS):
         w = mask_rgb[..., i][..., None]
         c = numpy.asarray(colours[i][:3], dtype=numpy.float64)
@@ -81,6 +81,7 @@ def measure(bundle, derived, limit=None, progress=True):
         variants_doc = json.load(handle)
     # variantKey -> the centre it was clustered at (the bake keys the texture by a sha of it)
     import hashlib
+
     centre_of = {}
     for entry in (variants_doc.get("prefabs") or {}).values():
         for centre in entry.get("variants") or []:
@@ -89,10 +90,13 @@ def measure(bundle, derived, limit=None, progress=True):
 
     rows = []
     materials = table.get("materials") or {}
-    todo = [(name, rec) for name, rec in sorted(materials.items())
-            if ((rec.get("derived") or {}).get("variants"))]
+    todo = [
+        (name, rec)
+        for name, rec in sorted(materials.items())
+        if ((rec.get("derived") or {}).get("variants"))
+    ]
     if limit:
-        todo = todo[:int(limit)]
+        todo = todo[: int(limit)]
     for index, (name, rec) in enumerate(todo):
         base_path = os.path.join(bundle, rec.get("baseColor") or "")
         mask_path = os.path.join(bundle, rec.get("colorMask") or "")
@@ -101,12 +105,12 @@ def measure(bundle, derived, limit=None, progress=True):
         try:
             base = png.rgba_array(base_path)
             mask = png.rgba_array(mask_path)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             print(f"  {name}: unreadable ({exc!r})", file=sys.stderr)
             continue
         h, w = base.shape[:2]
         factor_down = 1
-        while max(h, w) // factor_down > 512:          # the error is a per-texel statistic; 512 is plenty
+        while max(h, w) // factor_down > 512:  # the error is a per-texel statistic; 512 is plenty
             factor_down *= 2
         if factor_down > 1:
             base = png.downsample_box(base, factor_down)
@@ -119,7 +123,7 @@ def measure(bundle, derived, limit=None, progress=True):
             centre = centre_of.get(vkey)
             if centre is None:
                 continue
-            colours = [tuple(centre[i]) + (1.0,) for i in range(3)]
+            colours = [(*tuple(centre[i]), 1.0) for i in range(3)]
             m = multiplier(mask_r[:, :, :3], colours)
             exact8 = linear_to_srgb8(base_lin * m).astype(numpy.int16)
             factor = best_factor(m, alpha)
@@ -129,14 +133,17 @@ def measure(bundle, derived, limit=None, progress=True):
             if visible.any():
                 err = err[visible]
             flat = err.reshape(-1)
-            rows.append({
-                "material": name, "variant": vkey,
-                "factor": [round(float(v), 5) for v in factor],
-                "maxErr": int(flat.max()) if flat.size else 0,
-                "p99Err": int(numpy.percentile(flat, 99)) if flat.size else 0,
-                "meanErr": round(float(flat.mean()), 3) if flat.size else 0.0,
-                "maskedFraction": round(touched, 4),
-            })
+            rows.append(
+                {
+                    "material": name,
+                    "variant": vkey,
+                    "factor": [round(float(v), 5) for v in factor],
+                    "maxErr": int(flat.max()) if flat.size else 0,
+                    "p99Err": int(numpy.percentile(flat, 99)) if flat.size else 0,
+                    "meanErr": round(float(flat.mean()), 3) if flat.size else 0.0,
+                    "maskedFraction": round(touched, 4),
+                }
+            )
         if progress and (index + 1) % 25 == 0:
             print(f"  {index + 1}/{len(todo)} materials", file=sys.stderr)
     return rows
@@ -154,8 +161,12 @@ def summarise(rows):
     out = {
         "pairs": len(rows),
         "materials": len({r["material"] for r in rows}),
-        "maxErr": {"median": pct(max_errs, 0.5), "p90": pct(max_errs, 0.9),
-                   "p99": pct(max_errs, 0.99), "worst": max_errs[-1]},
+        "maxErr": {
+            "median": pct(max_errs, 0.5),
+            "p90": pct(max_errs, 0.9),
+            "p99": pct(max_errs, 0.99),
+            "worst": max_errs[-1],
+        },
         "p99Err": {"median": pct(p99s, 0.5), "p90": pct(p99s, 0.9), "worst": p99s[-1]},
     }
     for threshold in (2, 4, 8, 16, 32):
@@ -179,7 +190,9 @@ def main(argv=None):
     worst = sorted(rows, key=lambda r: -r["maxErr"])[:10]
     print("\nworst 10 (material, variant, maxErr, p99, maskedFraction):")
     for r in worst:
-        print(f"  {r['material'][:52]:52} {r['variant']} {r['maxErr']:4d} {r['p99Err']:4d} {r['maskedFraction']:.3f}")
+        print(
+            f"  {r['material'][:52]:52} {r['variant']} {r['maxErr']:4d} {r['p99Err']:4d} {r['maskedFraction']:.3f}"
+        )
     if args.json:
         with open(args.json, "w", encoding="utf-8", newline="\n") as handle:
             json.dump({"summary": summary, "rows": rows}, handle, indent=1)

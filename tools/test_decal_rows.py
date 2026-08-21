@@ -18,6 +18,7 @@ pins, so a rename fails here loudly instead of matching nothing.
 Run: `python tools/test_decal_rows.py`  (system Python + numpy; the bundle sweep is skipped when
 no bundle is on disk).
 """
+
 import json
 import os
 import sys
@@ -29,8 +30,10 @@ from csiibundle import bezier as bezier_math
 from csiibundle import decals as decal_rules
 from csiibundle import lanes as lane_math
 
-BUNDLE = os.path.expandvars(r"%USERPROFILE%\AppData\LocalLow\Colossal Order"
-                            r"\Cities Skylines II\ModsData\Carto")
+BUNDLE = os.path.expandvars(
+    r"%USERPROFILE%\AppData\LocalLow\Colossal Order"
+    r"\Cities Skylines II\ModsData\Carto"
+)
 DENSE = 513
 
 # Local names are `bezier` (a curve) and `decals` (a list of parts) throughout the body below,
@@ -84,10 +87,12 @@ def crest(length, height, plan_bend=0.0):
     `plan_bend` sideways) — a road crest, in bundle frame (x east, y up, z north)."""
     lift = height / 0.75
     side = plan_bend / 0.75
-    return ((0.0, 0.0, 0.0),
-            (length / 3.0, lift, side),
-            (2.0 * length / 3.0, lift, side),
-            (length, 0.0, 0.0))
+    return (
+        (0.0, 0.0, 0.0),
+        (length / 3.0, lift, side),
+        (2.0 * length / 3.0, lift, side),
+        (length, 0.0, 0.0),
+    )
 
 
 def check(label, bezier, eps, expect_rows=None):
@@ -96,9 +101,11 @@ def check(label, bezier, eps, expect_rows=None):
     dip = measured_dip(bezier, rows)
     bad = dip > eps or (expect_rows is not None and rows != expect_rows)
     failures += bool(bad)
-    print(f"{'FAIL' if bad else 'ok  '} {label}: rows={rows} dip={dip*1000:.1f} mm "
-          f"lift={eps*1000:.1f} mm"
-          + (f" (expected rows={expect_rows})" if expect_rows is not None else ""))
+    print(
+        f"{'FAIL' if bad else 'ok  '} {label}: rows={rows} dip={dip * 1000:.1f} mm "
+        f"lift={eps * 1000:.1f} mm"
+        + (f" (expected rows={expect_rows})" if expect_rows is not None else "")
+    )
 
 
 print("-- synthetic crests: the chord must stay within the marking's own lift --")
@@ -116,8 +123,12 @@ print("\n-- a vertically flat curve must not pay for the drape criterion --")
 # vertically flat curve can never bury itself, so the drape refinement must add nothing.
 flat_bend = ((0.0, 0.0, 0.0), (30.0, 0.0, 8.0), (60.0, 0.0, 8.0), (90.0, 0.0, 0.0))
 shape_only = rows_for(flat_bend, None)
-check("90 m plan bend, no grade, marking", flat_bend, H["_DECAL_DRAPE_MARKING"],
-      expect_rows=shape_only)
+check(
+    "90 m plan bend, no grade, marking",
+    flat_bend,
+    H["_DECAL_DRAPE_MARKING"],
+    expect_rows=shape_only,
+)
 
 print("\n-- texture-period stations: repeated V, seam-split, never smeared (audit §39) --")
 
@@ -135,13 +146,16 @@ def check_stations(label, rows, n_total, expect):
         problems.append("v_frac outside [0, 1]")
     boundaries = int(numpy.sum(numpy.diff(stations) == 0.0))
     if boundaries != expect.get("boundaries", boundaries):
-        problems.append(f"{boundaries} duplicated boundary station(s), "
-                        f"expected {expect['boundaries']}")
+        problems.append(
+            f"{boundaries} duplicated boundary station(s), expected {expect['boundaries']}"
+        )
     # Each zero-extent gap must be a v=1.0 row followed by a v=0.0 row (end before start).
     for i in numpy.nonzero(numpy.diff(stations) == 0.0)[0]:
         if not (v_frac[i] == 1.0 and v_frac[i + 1] == 0.0):
-            problems.append(f"seam at station {stations[i]:.4f} is "
-                            f"v {v_frac[i]:.4f}->{v_frac[i+1]:.4f}, not 1->0")
+            problems.append(
+                f"seam at station {stations[i]:.4f} is "
+                f"v {v_frac[i]:.4f}->{v_frac[i + 1]:.4f}, not 1->0"
+            )
     if "last_v" in expect and abs(float(v_frac[-1]) - expect["last_v"]) > 1e-9:
         problems.append(f"last v_frac {v_frac[-1]:.6f}, expected {expect['last_v']}")
     # Between seams, n = n_total*station - period must be continuous and rising: v at any
@@ -151,59 +165,78 @@ def check_stations(label, rows, n_total, expect):
     if float(residual.max()) > 1e-9:
         problems.append(f"v_frac drifts from n - period by {residual.max():.2e}")
     failures += bool(problems)
-    print(f"{'FAIL' if problems else 'ok  '} {label}: {len(stations)} station(s), "
-          f"{boundaries} seam(s)" + ("; " + "; ".join(problems) if problems else ""))
+    print(
+        f"{'FAIL' if problems else 'ok  '} {label}: {len(stations)} station(s), "
+        f"{boundaries} seam(s)" + ("; " + "; ".join(problems) if problems else "")
+    )
 
 
 check_stations("N=6 integer, 4 curvature rows", 4, 6.0, {"boundaries": 5, "last_v": 1.0})
-check_stations("N=6.5 fractional (74 m highway dash line)", 8, 6.5,
-               {"boundaries": 6, "last_v": 0.5})
-check_stations("N=0.22 sub-period (short yield line)", 4, 0.22,
-               {"boundaries": 0, "last_v": 0.22})
+check_stations(
+    "N=6.5 fractional (74 m highway dash line)", 8, 6.5, {"boundaries": 6, "last_v": 0.5}
+)
+check_stations("N=0.22 sub-period (short yield line)", 4, 0.22, {"boundaries": 0, "last_v": 0.22})
 check_stations("N=1 exactly (span == mesh length)", 4, 1.0, {"boundaries": 0, "last_v": 1.0})
 # Curvature stations landing exactly on boundaries must yield to the seam pair, not stack.
-check_stations("N=4 with rows=4 (every station is a boundary)", 4, 4.0,
-               {"boundaries": 3, "last_v": 1.0})
+check_stations(
+    "N=4 with rows=4 (every station is a boundary)", 4, 4.0, {"boundaries": 3, "last_v": 1.0}
+)
 
 print("\n-- lattice: seams split UVs, no zero-area faces --")
-QUAD = {"near_left": (-0.25, 0.0, -6.0), "near_right": (0.25, 0.0, -6.0),
-        "far_left": (-0.25, 0.0, 6.0), "far_right": (0.25, 0.0, 6.0),
-        "uv_near_left": (0.125, 1.0), "uv_near_right": (0.1458, 1.0),
-        "uv_far_left": (0.125, 0.0), "uv_far_right": (0.1458, 0.0), "flip": False}
+QUAD = {
+    "near_left": (-0.25, 0.0, -6.0),
+    "near_right": (0.25, 0.0, -6.0),
+    "far_left": (-0.25, 0.0, 6.0),
+    "far_right": (0.25, 0.0, 6.0),
+    "uv_near_left": (0.125, 1.0),
+    "uv_near_right": (0.1458, 1.0),
+    "uv_far_left": (0.125, 0.0),
+    "uv_far_right": (0.1458, 0.0),
+    "flip": False,
+}
 stations, v_frac = H["_decal_station_rows"](4, 6.5)
 verts, tris, tri_uvs = H["_decal_lattice"](QUAD, stations, v_frac)
-areas = numpy.linalg.norm(numpy.cross(verts[tris[:, 1]] - verts[tris[:, 0]],
-                                      verts[tris[:, 2]] - verts[tris[:, 0]]), axis=1)
+areas = numpy.linalg.norm(
+    numpy.cross(verts[tris[:, 1]] - verts[tris[:, 0]], verts[tris[:, 2]] - verts[tris[:, 0]]),
+    axis=1,
+)
 gaps = int(numpy.sum(numpy.diff(stations) > 0.0))
-lattice_bad = (len(tris) != 2 * gaps or float(areas.min()) <= 0.0
-               or len(verts) != 2 * len(stations))
+lattice_bad = len(tris) != 2 * gaps or float(areas.min()) <= 0.0 or len(verts) != 2 * len(stations)
 failures += lattice_bad
-print(f"{'FAIL' if lattice_bad else 'ok  '} N=6.5 lattice: {len(verts)} vert(s), "
-      f"{len(tris)} tri(s) over {gaps} gap(s), min area {areas.min():.3e}")
+print(
+    f"{'FAIL' if lattice_bad else 'ok  '} N=6.5 lattice: {len(verts)} vert(s), "
+    f"{len(tris)} tri(s) over {gaps} gap(s), min area {areas.min():.3e}"
+)
 # The V written at each seam's two rows must be the quad's far/near V — the full authored span.
 seam_rows = numpy.nonzero(numpy.diff(stations) == 0.0)[0]
 uv_by_vert = numpy.empty((len(verts), 2))
 uv_by_vert[tris.reshape(-1)] = tri_uvs.reshape(-1, 2)
 seam_v = uv_by_vert[seam_rows * 2, 1], uv_by_vert[(seam_rows + 1) * 2, 1]
-seam_bad = (numpy.any(seam_v[0] != QUAD["uv_far_left"][1])
-            or numpy.any(seam_v[1] != QUAD["uv_near_left"][1]))
+seam_bad = numpy.any(seam_v[0] != QUAD["uv_far_left"][1]) or numpy.any(
+    seam_v[1] != QUAD["uv_near_left"][1]
+)
 failures += bool(seam_bad)
-print(f"{'FAIL' if seam_bad else 'ok  '} seam rows carry far-V then near-V "
-      f"({QUAD['uv_far_left'][1]} / {QUAD['uv_near_left'][1]})")
+print(
+    f"{'FAIL' if seam_bad else 'ok  '} seam rows carry far-V then near-V "
+    f"({QUAD['uv_far_left'][1]} / {QUAD['uv_near_left'][1]})"
+)
 
 print("\n-- clip gate: GetTileCount parity — the game draws nothing on a sub-half-period stub --")
 for label, span_len, mesh_len, tiling, want_tiles, want_clip in (
-        ("L=2.9 S=12 T=2 (dash stub)", 2.9, 12.0, 2, 0, 0),
-        ("L=3.1 S=12 T=2 (just long enough)", 3.1, 12.0, 2, 1, 1),
-        ("L=74 S=12 T=1 (highway dash line)", 74.0, 12.0, 1, 1, 6),
-        ("L=74 S=12 T=2 (car dash line)", 74.0, 12.0, 2, 1, 12),
-        ("L=16 S=12 T=16 (crosswalk)", 16.0, 12.0, 16, 1, 21),
-        ("L=40 S=12 T=0 (solid line)", 40.0, 12.0, 0, 1, 0)):
+    ("L=2.9 S=12 T=2 (dash stub)", 2.9, 12.0, 2, 0, 0),
+    ("L=3.1 S=12 T=2 (just long enough)", 3.1, 12.0, 2, 1, 1),
+    ("L=74 S=12 T=1 (highway dash line)", 74.0, 12.0, 1, 1, 6),
+    ("L=74 S=12 T=2 (car dash line)", 74.0, 12.0, 2, 1, 12),
+    ("L=16 S=12 T=16 (crosswalk)", 16.0, 12.0, 16, 1, 21),
+    ("L=40 S=12 T=0 (solid line)", 40.0, 12.0, 0, 1, 0),
+):
     tiles, clip = H["_lane_tile_count"](span_len, mesh_len, tiling, False)
     bad = (tiles, clip) != (want_tiles, want_clip)
     failures += bad
-    print(f"{'FAIL' if bad else 'ok  '} {label}: tiles={tiles} clip={clip}"
-          + (f" (expected {want_tiles}/{want_clip})" if bad else ""))
+    print(
+        f"{'FAIL' if bad else 'ok  '} {label}: tiles={tiles} clip={clip}"
+        + (f" (expected {want_tiles}/{want_clip})" if bad else "")
+    )
 
 print("\n-- full-city sweep over the shipped bundle --")
 catalogue_path = os.path.join(BUNDLE, "laneprefabs.json")
@@ -222,19 +255,21 @@ else:
             if entry is None:
                 continue
             parts = entry.get("parts", [])
-            decals = [parts[i] for i in record.get("parts", [])
-                      if 0 <= i < len(parts) and parts[i].get("decal")]
+            decals = [
+                parts[i]
+                for i in record.get("parts", [])
+                if 0 <= i < len(parts) and parts[i].get("decal")
+            ]
             if not decals:
                 continue
             curve = record["curve"]
             curve_length = H["_curve_length"](curve)
-            for span in (record.get("spans") or [[0.0, 1.0]]):
+            for span in record.get("spans") or [[0.0, 1.0]]:
                 if curve_length * (span[1] - span[0]) <= 0.1:
                     continue
                 base = H["_cut_bezier"](curve, span[0], span[1])
                 for part in decals:
-                    bezier = ((base[3], base[2], base[1], base[0])
-                              if part.get("inverted") else base)
+                    bezier = (base[3], base[2], base[1], base[0]) if part.get("inverted") else base
                     asset = part.get("assetId", "")
                     # The producer's own `decalRole`, through the shipped rule — NOT the
                     # assetId substring test this line used to carry. The two disagree on 7 of
@@ -253,14 +288,18 @@ else:
                         # Only the row cap may bury a marking: everything else is a rule defect.
                         if rows < H["_DECAL_MAX_ROWS"]:
                             failures += 1
-                            print(f"FAIL {asset}: dip {dip*1000:.1f} mm > lift "
-                                  f"{eps*1000:.1f} mm at rows={rows} (cap not reached)")
+                            print(
+                                f"FAIL {asset}: dip {dip * 1000:.1f} mm > lift "
+                                f"{eps * 1000:.1f} mm at rows={rows} (cap not reached)"
+                            )
                     if dip - eps > worst[0]:
                         worst = (dip - eps, asset)
-    print(f"{'FAIL' if buried > capped else 'ok  '} {spans_seen} decal spans, "
-          f"{buried} buried ({capped} spans at the {H['_DECAL_MAX_ROWS']}-row cap), "
-          f"{verts} decal vertices")
+    print(
+        f"{'FAIL' if buried > capped else 'ok  '} {spans_seen} decal spans, "
+        f"{buried} buried ({capped} spans at the {H['_DECAL_MAX_ROWS']}-row cap), "
+        f"{verts} decal vertices"
+    )
     if worst[1]:
-        print(f"     worst overshoot {worst[0]*1000:.1f} mm on {worst[1]}")
+        print(f"     worst overshoot {worst[0] * 1000:.1f} mm on {worst[1]}")
 
 sys.exit(1 if failures else 0)

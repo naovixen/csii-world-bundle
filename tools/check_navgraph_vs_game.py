@@ -35,7 +35,10 @@ import numpy
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
-from csiibundle import navgraph as navgraph_mod, reader  # noqa: E402
+import itertools  # noqa: E402 - after the sys.path bootstrap above
+
+from csiibundle import navgraph as navgraph_mod  # noqa: E402
+from csiibundle import reader  # noqa: E402 - after the sys.path bootstrap above
 
 # A sampled lane point is covered when an edge passes within this many metres of it. It is
 # half the road's own carriageway width plus a lane: the navgraph is a CENTERLINE, so a point on
@@ -60,8 +63,12 @@ def main(argv):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("bundle", nargs="?", default=None)
     parser.add_argument("samples", nargs="?", type=int, default=SAMPLES)
-    parser.add_argument("--max-width", type=float, default=None,
-                        help="clamp the emitted carriageway width, as the consumer does")
+    parser.add_argument(
+        "--max-width",
+        type=float,
+        default=None,
+        help="clamp the emitted carriageway width, as the consumer does",
+    )
     parser.add_argument("--json", default=None, help="write the full result here")
     parser.add_argument("--seed", type=int, default=7)
     args = parser.parse_args(argv[1:])
@@ -69,6 +76,7 @@ def main(argv):
     bundle = args.bundle
     if not bundle:
         from csiibundle.bake.locate import default_bundle_dir
+
         bundle = default_bundle_dir()
     if not os.path.isdir(bundle):
         print(f"no bundle at {bundle}", file=sys.stderr)
@@ -96,8 +104,10 @@ def main(argv):
         mark = "OK " if (share >= 1.0 or (not exact and share >= r.get("pass", 1.0))) else "BAD"
         if mark == "BAD":
             failed += 1
-        print(f"{mark} {question}: {agree:,}/{total:,} = {share:.2%}"
-              + (f"  ({r['note']})" if r.get("note") else ""))
+        print(
+            f"{mark} {question}: {agree:,}/{total:,} = {share:.2%}"
+            + (f"  ({r['note']})" if r.get("note") else "")
+        )
     payload = {"bundle": bundle, "stats": graph.stats, "notes": graph.notes, "results": results}
     if args.json:
         with open(args.json, "w", encoding="utf-8", newline="\n") as handle:
@@ -118,7 +128,7 @@ def _edge_tree(graph):
         nodes = numpy.asarray([n[:3] for n in road.nodes], dtype=numpy.float64)
         width = road.nodes[0][3]
         step = 4.0
-        for a, b in zip(nodes[:-1], nodes[1:]):
+        for a, b in itertools.pairwise(nodes):
             length = float(numpy.linalg.norm(b - a))
             n = max(2, int(length / step) + 1)
             for t in numpy.linspace(0.0, 1.0, n):
@@ -148,7 +158,7 @@ def _coverage(bundle, graph, samples, seed, results):
         item = (lane["owner"], lane["path"])
         if len(picked) < samples:
             picked.append(item)
-        else:                                   # reservoir: one uniform pass, no second read
+        else:  # reservoir: one uniform pass, no second read
             j = rng.randrange(seen)
             if j < samples:
                 picked[j] = item
@@ -174,8 +184,12 @@ def _coverage(bundle, graph, samples, seed, results):
     if misses:
         note += f"; worst miss {misses[0][0]:.1f} m on {misses[0][2] or misses[0][1]!r}"
     results["every drivable lane point has a navgraph edge within half its road"] = {
-        "total": total, "agree": agree, "exact": False, "pass": 1.0 - COVERAGE_FAIL,
-        "note": note}
+        "total": total,
+        "agree": agree,
+        "exact": False,
+        "pass": 1.0 - COVERAGE_FAIL,
+        "note": note,
+    }
 
 
 def _stacked(graph, results):
@@ -191,11 +205,16 @@ def _stacked(graph, results):
     note = f"{len(sites)} site(s)"
     if hits:
         worst = max(hits, key=lambda h: h["radius"])
-        note += (f"; worst {worst['road']} sits {worst['gap']:.1f} m from {worst['other']}, "
-                 f"radius {worst['radius']:.1f}, {worst['height']:.1f} m of height, at "
-                 f"{worst['at']}")
+        note += (
+            f"; worst {worst['road']} sits {worst['gap']:.1f} m from {worst['other']}, "
+            f"radius {worst['radius']:.1f}, {worst['height']:.1f} m of height, at "
+            f"{worst['at']}"
+        )
     results["no road point sits inside the radius of a road at another height"] = {
-        "total": graph.stats["roads"], "agree": graph.stats["roads"] - len(sites), "note": note}
+        "total": graph.stats["roads"],
+        "agree": graph.stats["roads"] - len(sites),
+        "note": note,
+    }
 
 
 def _map_lua(graph, results):
@@ -210,25 +229,32 @@ def _map_lua(graph, results):
     try:
         from cs2beamng.beamng import map_lua
         from cs2beamng.stages.navgraph import decal_road
-    except ImportError:                          # the app is not installed; this question is its
-        return                                   # own, and the bundle-level ones still stand
+    except ImportError:  # the app is not installed; this question is its
+        return  # own, and the bundle-level ones still stand
     stats, risks = map_lua.check([decal_road(road) for road in graph.roads])
-    note = (f"{stats['mapNodes']:,} map nodes, {stats['endNodesMerged']:,} terminal nodes merged, "
-            f"{stats['chords']} triangles")
+    note = (
+        f"{stats['mapNodes']:,} map nodes, {stats['endNodesMerged']:,} terminal nodes merged, "
+        f"{stats['chords']} triangles"
+    )
     if risks:
-        note += (f"; first {risks[0]['node']} - road {risks[0]['road']}, chord "
-                 f"{risks[0]['chord']}")
+        note += f"; first {risks[0]['node']} - road {risks[0]['road']}, chord {risks[0]['chord']}"
     results["map.lua can build a graph from these roads without raising"] = {
-        "total": stats["mapNodes"], "agree": stats["mapNodes"] - stats["chords"], "note": note}
+        "total": stats["mapNodes"],
+        "agree": stats["mapNodes"] - stats["chords"],
+        "note": note,
+    }
 
 
 def _connectivity(graph, results):
     stats = graph.stats
     results["the drivable network is one connected component"] = {
-        "total": stats["roads"], "agree": stats["largestComponent"], "exact": False,
+        "total": stats["roads"],
+        "agree": stats["largestComponent"],
+        "exact": False,
         "pass": 0.95,
         "note": f"{stats['components']} components, {stats['endsWithNoJunction']:,} segment ends "
-                f"weld to nothing"}
+        f"weld to nothing",
+    }
 
 
 def _false_welds(graph, results):
@@ -268,7 +294,11 @@ def _false_welds(graph, results):
     if worst:
         note += f"; worst {worst[0][0]:.1f} m between {worst[0][1]} and {worst[0][2]}"
     results["no two navgraph nodes weld across a height difference"] = {
-        "total": checked or 1, "agree": (checked or 1) - len(worst), "exact": True, "note": note}
+        "total": checked or 1,
+        "agree": (checked or 1) - len(worst),
+        "exact": True,
+        "note": note,
+    }
 
 
 def _attributes(bundle, graph, results):
@@ -294,11 +324,18 @@ def _attributes(bundle, graph, results):
     # alleys on the reference city, marked `twoway` with no lane running back) the lanes win,
     # because a lane is what a vehicle occupies.
     results["a segment road's direction agrees with attrs.direction"] = {
-        "total": direction[1], "agree": direction[0], "exact": False, "pass": 0.999,
+        "total": direction[1],
+        "agree": direction[0],
+        "exact": False,
+        "pass": 0.999,
         "note": f"{direction[1] - direction[0]} disagree; the lane layer's `Invert` is taken as "
-                f"the authority over the asset's authored `direction`"}
+        f"the authority over the asset's authored `direction`",
+    }
     results["a segment road carries CS2's own speed limit"] = {
-        "total": speed[1], "agree": speed[0], "exact": True}
+        "total": speed[1],
+        "agree": speed[0],
+        "exact": True,
+    }
 
 
 if __name__ == "__main__":

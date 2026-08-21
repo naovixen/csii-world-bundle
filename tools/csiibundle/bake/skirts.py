@@ -37,12 +37,16 @@ def run(context, progress):
     started = time.monotonic()
     lay = reader.resolve_layers(bundle)
     manifest = context.manifest or {}
-    total = int(((manifest.get("counts") or {}).get("instances")) or 0) or None
+    int(((manifest.get("counts") or {}).get("instances")) or 0) or None
 
     # the measured diagonal, so `mode` is inert: with one triangulation there is no envelope
     # to take the MIN of, and taking one was only ever a hedge against not knowing (audit §73)
-    ground = GroundSurface(bundle, options.get("diagonal", MEASURED_DIAGONAL), mode="min",
-                           prefer_fine=options.get("ground", "fine") == "fine")
+    ground = GroundSurface(
+        bundle,
+        options.get("diagonal", MEASURED_DIAGONAL),
+        mode="min",
+        prefer_fine=options.get("ground", "fine") == "fine",
+    )
     if not ground.present:
         progress.log("skirts: no terrain layer — bands stay as authored (1 m plinths)")
 
@@ -90,15 +94,22 @@ def run(context, progress):
                 v = numpy.asarray(node["verts"], dtype=numpy.float64)
                 m = numpy.asarray(node["matrix"], dtype=numpy.float64)
                 v = v @ m[:3, :3].T + m[:3, 3]
-                prepared.append((v, numpy.asarray(node["tris"], dtype=numpy.int64),
-                                 None if node.get("uvs") is None else numpy.asarray(node["uvs"], dtype=numpy.float64),
-                                 node["material_runs"]))
+                prepared.append(
+                    (
+                        v,
+                        numpy.asarray(node["tris"], dtype=numpy.int64),
+                        None
+                        if node.get("uvs") is None
+                        else numpy.asarray(node["uvs"], dtype=numpy.float64),
+                        node["material_runs"],
+                    )
+                )
             skirt_cache[asset_id] = prepared
         prepared = skirt_cache[asset_id]
         if not prepared:
             no_file += 1
             continue
-        matrix = frames.instance_matrix(record)          # bundle world; includes the §2.2 mirror
+        matrix = frames.instance_matrix(record)  # bundle world; includes the §2.2 mirror
         for v_local, tris, uvs, runs in prepared:
             world = frames.transform_points(matrix, v_local)
             bottom, _top = instances.skirt_rings(world, up_axis=1)
@@ -114,20 +125,32 @@ def run(context, progress):
             # one, so the bundle-frame face order is its reverse (same rule as `markings`)
             cursor = 0
             for name, count in runs:
-                t = tris[cursor:cursor + count][:, [0, 2, 1]]
+                t = tris[cursor : cursor + count][:, [0, 2, 1]]
                 cursor += count
                 sink.add(world, t, uvs, name)
         placed += 1
-    progress.end(f"{placed} skirts placed ({no_file} prefabs without a skirt file, {not_ground} not on the ground), "
-                 f"{verts_dropped} bottom vertices dropped to the ground")
+    progress.end(
+        f"{placed} skirts placed ({no_file} prefabs without a skirt file, {not_ground} not on the ground), "
+        f"{verts_dropped} bottom vertices dropped to the ground"
+    )
     tiles = sink.tiles()
     progress.begin("skirts: tiles", total=len(tiles), unit="tiles")
-    written = sink.flush(progress, texture_uri_base=_texture_uri_base(out_dir, bundle),
-                        jobs=max(1, int(options.get("jobs") or 1)))
+    written = sink.flush(
+        progress,
+        texture_uri_base=_texture_uri_base(out_dir, bundle),
+        jobs=max(1, int(options.get("jobs") or 1)),
+    )
     progress.end(f"{written['files']} tiles, {written['tris']:,} triangles")
-    return {"placed": placed, "noSkirtFile": no_file, "notOnGround": not_ground, "verticesDropped": verts_dropped,
-            "tiles": written["files"], "tris": written["tris"], "_tiles": written["tiles"],
-            "seconds": round(time.monotonic() - started, 1)}
+    return {
+        "placed": placed,
+        "noSkirtFile": no_file,
+        "notOnGround": not_ground,
+        "verticesDropped": verts_dropped,
+        "tiles": written["files"],
+        "tris": written["tris"],
+        "_tiles": written["tiles"],
+        "seconds": round(time.monotonic() - started, 1),
+    }
 
 
 register(Product(PRODUCT_NAME, INPUTS, "skirts/", run, options=("ground", "region")))
