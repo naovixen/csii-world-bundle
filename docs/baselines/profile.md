@@ -166,11 +166,14 @@ Against vanilla's heaviest level, `west_coast_usa`: 3.0× the shape files, 0.9×
 | `python tools/check_ruff_debt.py` | ~2 |
 | `dotnet test tests/Carto.Tests` | ~1 (19 tests, 42 ms of test time) |
 | `dotnet build -c Release` (the mod) | ~40 |
-| `pytest tools` (bundle present) | 584 |
+| `pytest tools` (bundle present, quiet machine) | 584 |
+| `pytest tools` (bundle present, sharing the box with a level build) | 12,890 |
 | `pytest tools` (no bundle — what CI sees) | 62 |
 
-The gap between those last two is not overhead: with a bundle on disk the suite measures the
-real 5.5 GB city, which is the point of it.
+The gap between the first two is not overhead: with a bundle on disk the suite measures the real
+5.5 GB city, which is the point of it. The third is a warning — the same suite took **3 h 35 m**
+while a `cs2beamng build` and several `dotnet build`s shared the machine. Every number in this
+file is only comparable to one taken on a box doing nothing else.
 
 `pytest` collection alone is ~43 s because seven test files are still module-level scripts whose
 body runs at **import**, so collecting them runs them. Phase 4 turns those into real per-claim
