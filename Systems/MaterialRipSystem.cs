@@ -513,11 +513,11 @@ namespace Carto.Systems
         /// <returns>An id no other material in this bundle holds.</returns>
         private static string AssignId(MaterialRun run, SurfaceAsset surface, string identity)
         {
-            string id = MeshRipSystem.SanitizeAssetId(surface.name);
+            string id = RipAssetIds.SanitizeAssetId(surface.name);
             if (!run.Materials.ContainsKey(id)) return id;
 
             run.Disambiguated++;
-            return MeshRipSystem.SanitizeAssetId($"{id}_{Digest(identity)}");
+            return RipAssetIds.SanitizeAssetId($"{id}_{Digest(identity)}");
         }
 
         /// <summary>

@@ -324,7 +324,7 @@ namespace Carto.Systems
             public int SkippedFiltered;
 
             /// <summary>The shared asset-id assignment (see <see cref="BeginRip"/>).</summary>
-            public Dictionary<Entity, MeshRipSystem.AssetIdEntry> AssetIdTable;
+            public Dictionary<Entity, RipAssetIds.AssetIdEntry> AssetIdTable;
 
             /// <summary>The distinct asset ids referenced.</summary>
             public HashSet<string> AssetIds = new();
@@ -465,7 +465,7 @@ namespace Carto.Systems
                 Census(prefabUse, run.Report);
                 Profile(prefabUse, prefabSample, run.Report);
 
-                run.AssetIdTable = MeshRipSystem.BuildAssetIds(EntityManager, prefabEntities, out int disambiguated);
+                run.AssetIdTable = RipAssetIds.BuildAssetIds(EntityManager, prefabEntities, out int disambiguated);
                 if (disambiguated > 0) run.Report.AppendLine($"Disambiguated {disambiguated} prefab(s) sharing a name.");
 
                 run.Writer = new InstanceWriter(run.Path);
@@ -635,7 +635,7 @@ namespace Carto.Systems
             // still lands in the right place. Dropping them silently is what breaks the
             // contract's 1:1 fidelity requirement.
             //
-            MeshRipSystem.AssetIdEntry idEntry = run.AssetIdTable[prefabEntity];
+            RipAssetIds.AssetIdEntry idEntry = run.AssetIdTable[prefabEntity];
             string assetId = idEntry.AssetId;
             bool unresolved = !idEntry.Resolved;
 
@@ -659,7 +659,7 @@ namespace Carto.Systems
                 {
                     run.SkipSamples.Add($"entity {entity.Index} prefab {prefabEntity.Index} "
                         + $"hasPrefabData={EntityManager.HasComponent<PrefabData>(prefabEntity)} "
-                        + $"[{string.Join(", ", DescribeComponents(entity))}]");
+                        + $"[{string.Join(", ", RipDiagnostics.DescribeComponents(EntityManager, entity))}]");
                 }
             }
 
@@ -1110,9 +1110,9 @@ namespace Carto.Systems
                 report.AppendLine($"  {(string.IsNullOrEmpty(name) ? $"prefab {prefab.Index}" : name)} × {ranked[i].Value}");
 
                 if (prefabSample.TryGetValue(prefab, out Entity sample))
-                    report.AppendLine($"    instance: {string.Join(", ", DescribeComponents(sample))}");
+                    report.AppendLine($"    instance: {string.Join(", ", RipDiagnostics.DescribeComponents(EntityManager, sample))}");
 
-                report.AppendLine($"    prefab:   {string.Join(", ", DescribeComponents(prefab))}");
+                report.AppendLine($"    prefab:   {string.Join(", ", RipDiagnostics.DescribeComponents(EntityManager, prefab))}");
 
                 // The owner is where the last filter went wrong, so name what it actually is.
                 //
@@ -1127,7 +1127,7 @@ namespace Carto.Systems
                             : null;
 
                         report.AppendLine($"    owner:    {(string.IsNullOrEmpty(ownerName) ? "?" : ownerName)}"
-                                        + $" [{string.Join(", ", DescribeComponents(owner))}]");
+                                        + $" [{string.Join(", ", RipDiagnostics.DescribeComponents(EntityManager, owner))}]");
                     }
                 }
             }
@@ -1745,28 +1745,6 @@ namespace Carto.Systems
                 yield return WarningsFile.ById("instance", entityId,
                     $"failed to record ({error}); no record written — see the log");
             }
-        }
-
-        /// <summary>
-        /// List the component types present on an entity, for diagnostics.
-        /// </summary>
-        /// <param name="entity">The entity to describe.</param>
-        /// <returns>The type names.</returns>
-        private List<string> DescribeComponents(Entity entity)
-        {
-            List<string> names = new();
-            NativeArray<ComponentType> types = EntityManager.GetComponentTypes(entity, Allocator.TempJob);
-            try
-            {
-                foreach (ComponentType type in types) names.Add(type.GetManagedType()?.Name ?? type.ToString());
-            }
-            finally
-            {
-                types.Dispose();
-            }
-
-            names.Sort(StringComparer.Ordinal);
-            return names;
         }
     }
 }

@@ -1649,7 +1649,7 @@ namespace Carto.Systems
                         // must not share a file — the join key's uniqueness is assigned over the
                         // full set, never per name.
                         //
-                        assetId = MeshRipSystem.SanitizeAssetId(name);
+                        assetId = RipAssetIds.SanitizeAssetId(name);
                         if (!run.LaneIdsUsed.Add(assetId))
                         {
                             assetId = $"{assetId}_{meshEntity.Index}";
@@ -1730,7 +1730,7 @@ namespace Carto.Systems
             if (entry.Parts.Count > 0)
             {
                 string prefabName = Instance.Name.GetPrefabName(prefab);
-                string key = MeshRipSystem.SanitizeAssetId(
+                string key = RipAssetIds.SanitizeAssetId(
                     string.IsNullOrEmpty(prefabName) ? $"lane_prefab_{prefab.Index}" : prefabName);
                 if (run.LaneCatalogue.ContainsKey(key)) key = $"{key}_{prefab.Index}";
 
@@ -1931,23 +1931,6 @@ namespace Carto.Systems
             //
             return Finish(assetId, assembly);
         }
-
-        /// <summary>
-        /// Reduce a cross-section piece's name to the contract's <c>assetId</c> pattern.
-        /// <para>
-        /// <b>This delegates rather than implementing its own rule</b> <i>(2026-08-14, H12)</i>.
-        /// It used to be a second sanitiser, and the two disagreed on a class of input: it tested
-        /// with <c>char.IsLetterOrDigit</c>, which is Unicode-aware, so a non-Latin letter came
-        /// through unchanged and produced an id the contract's
-        /// <c>^[A-Za-z0-9][A-Za-z0-9._-]*$</c> pattern rejects — an invalid file name in
-        /// <c>networks/</c> that a validator would flag as a bad stem. This same file already
-        /// called <see cref="MeshRipSystem.SanitizeAssetId"/> in two other places, so the split
-        /// was an inconsistency within one system rather than a considered difference.
-        /// </para>
-        /// </summary>
-        /// <param name="name">The raw name.</param>
-        /// <returns>A safe id.</returns>
-        private static string SanitizeId(string name) => MeshRipSystem.SanitizeAssetId(name);
 
         /// <summary>
         /// The across-width vertex remap CS2 applies to a junction flare.

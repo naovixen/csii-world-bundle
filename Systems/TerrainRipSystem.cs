@@ -1063,7 +1063,7 @@ namespace Carto.Systems
             string name = Instance.Name.GetPrefabName(prefab);
             if (string.IsNullOrEmpty(name)) name = $"area_{prefab.Index}";
 
-            string key = MeshRipSystem.SanitizeAssetId(name);
+            string key = RipAssetIds.SanitizeAssetId(name);
             if (!usedKeys.Add(key))
             {
                 key = $"{key}_{prefab.Index}";

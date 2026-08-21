@@ -53,7 +53,7 @@ namespace Carto.Systems
         /// </para>
         /// <para>
         /// <b>The latent hazard is the asset id, not the dead keys.</b>
-        /// <see cref="MeshRipSystem.BuildAssetIds"/> disambiguates a shared name only against the
+        /// <see cref="RipAssetIds.BuildAssetIds"/> disambiguates a shared name only against the
         /// set it is handed, so a name shared between a building and a vehicle would be
         /// digest-suffixed here and left bare in the mesh layer, and the punctual-light key would
         /// stop joining. Not live: <b>zero</b> keys in either table are digest-suffixed today,
@@ -134,8 +134,8 @@ namespace Carto.Systems
                 entities.Dispose();
             }
 
-            Dictionary<Entity, MeshRipSystem.AssetIdEntry> assetIds =
-                MeshRipSystem.BuildAssetIds(EntityManager, prefabs, out _);
+            Dictionary<Entity, RipAssetIds.AssetIdEntry> assetIds =
+                RipAssetIds.BuildAssetIds(EntityManager, prefabs, out _);
 
             int punctualPrefabs = 0, punctualEmitters = 0;
 
@@ -169,7 +169,7 @@ namespace Carto.Systems
                     Entity mesh = subMeshes[i].m_SubMesh;
                     if ((mesh == Entity.Null) || !seen.Add(mesh)) continue;
 
-                    string id = MeshRipSystem.SanitizeAssetId(Instance.Name.GetPrefabName(mesh));
+                    string id = RipAssetIds.SanitizeAssetId(Instance.Name.GetPrefabName(mesh));
                     if (string.IsNullOrEmpty(id)) continue;
 
                     if (colors && EntityManager.HasBuffer<ColorVariation>(mesh) && !palettes.ContainsKey(id))

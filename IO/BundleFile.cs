@@ -23,13 +23,6 @@ namespace Carto.IO
     public static class BundleFile
     {
         /// <summary>
-        /// The on-disk path for a layer's logical path — the same path, layers being uncompressed.
-        /// </summary>
-        /// <param name="logicalPath">The layer's name, e.g. <c>…/instances.jsonl</c>.</param>
-        /// <returns>The path actually written.</returns>
-        public static string OnDisk(string logicalPath) => logicalPath;
-
-        /// <summary>
         /// Open a text layer for writing, with the line endings and encoding the contract requires
         /// of every JSON Lines layer.
         /// </summary>

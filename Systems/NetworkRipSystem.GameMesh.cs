@@ -1205,7 +1205,7 @@ namespace Carto.Systems
             if (!cache.TryGetValue(piece, out MeshAsset read))
             {
                 string pieceName = Instance.Name.GetPrefabName(piece);
-                read = Instance.MeshRip.ReadMesh(piece, SanitizeId(pieceName), pieceName);
+                read = Instance.MeshRip.ReadMesh(piece, RipAssetIds.SanitizeAssetId(pieceName), pieceName);
                 cache[piece] = read;
             }
 
