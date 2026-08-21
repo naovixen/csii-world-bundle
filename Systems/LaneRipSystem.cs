@@ -101,7 +101,7 @@ namespace Carto.Systems
         /// <summary>
         /// One lane rip in flight.
         /// </summary>
-        private class LaneRun
+        private class LaneRun : RipWalk.IRun
         {
             /// <summary>The bundle root, and the record file being written.</summary>
             public string OutputDirectory, Path;
@@ -152,6 +152,24 @@ namespace Carto.Systems
             /// run was started by hand and reports through its own dialog.
             /// </summary>
             public Action<RipOutcome> Completed;
+
+            // --- RipWalk.IRun -------------------------------------------------------------
+            // Explicit, so the fields above keep their names and their public surface. The frame
+            // loop these serve is `Systems/Rip/RipWalk.cs`; it was written out here and in
+            // InstanceRipSystem identically, comments included.
+            int RipWalk.IRun.Index { get => Index; set => Index = value; }
+
+            int RipWalk.IRun.Count => Entities.Length;
+
+            bool RipWalk.IRun.ReadingDone { get => ReadingDone; set => ReadingDone = value; }
+
+            bool RipWalk.IRun.WriterFaulted => WriterTask.IsFaulted;
+
+            bool RipWalk.IRun.WriterCompleted => WriterTask.IsCompleted;
+
+            int RipWalk.IRun.QueueCount => Queue.Count;
+
+            void RipWalk.IRun.CompleteAdding() => Queue.CompleteAdding();
         }
 
         /// <summary>The rip in flight, or <c>null</c>.</summary>
@@ -218,61 +236,27 @@ namespace Carto.Systems
         }
 
         /// <summary>
-        /// Advance a rip by one frame's budget.
+        /// Advance the walk by one frame's worth. The loop itself — budget, back-pressure, the
+        /// faulted-writer abort and the per-entity catch — is <see cref="RipWalk.Advance"/>,
+        /// which this system and <see cref="InstanceRipSystem"/> once wrote out identically.
         /// </summary>
-        /// <param name="run">The rip in flight.</param>
+        /// <param name="run">The run in flight.</param>
         private void Advance(LaneRun run)
         {
-            if (!run.ReadingDone)
-            {
-                // A faulted writer never drains the queue: the walk would pause on back-pressure
-                // for the rest of the session, ReadingDone would never turn true, and a pipeline
-                // driving the rip would wait on this stage forever. Abort the pass instead.
-                //
-                if (run.WriterTask.IsFaulted)
+            RipWalk.Advance(
+                run,
+                RipProgress.Phase.Lanes,
+                FrameBudgetMilliseconds,
+                QueueBackpressure,
+                index => ProcessOne(run, run.Entities[index]),
+                (index, ex) =>
                 {
-                    Fail(run);
-                    return;
-                }
-
-                System.Diagnostics.Stopwatch budget = System.Diagnostics.Stopwatch.StartNew();
-
-                while (run.Index < run.Entities.Length)
-                {
-                    // Back-pressure: pause the walk rather than pile records up faster than the
-                    // writer serialises them.
-                    if (run.Queue.Count >= QueueBackpressure) break;
-
-                    // One bad lane must not cost the rest of the graph its records.
-                    //
-                    try
-                    {
-                        ProcessOne(run, run.Entities[run.Index]);
-                    }
-                    catch (Exception ex)
-                    {
-                        run.ProcessFailed++;
-                        run.FailedEntities.Add((run.Entities[run.Index].Index, ex.GetType().Name));
-                        if (run.ProcessFailed <= 5) _log.Warn($"Failed to record lane entity {run.Entities[run.Index].Index}: {ex}");
-                    }
-
-                    run.Index++;
-
-                    if (budget.Elapsed.TotalMilliseconds >= FrameBudgetMilliseconds) break;
-                }
-
-                RipProgress.Report(RipProgress.Phase.Lanes, run.Index, run.Entities.Length);
-
-                if (run.Index >= run.Entities.Length)
-                {
-                    run.ReadingDone = true;
-                    run.Queue.CompleteAdding();
-                }
-
-                return;
-            }
-
-            if (run.WriterTask.IsCompleted) Finish(run);
+                    run.ProcessFailed++;
+                    run.FailedEntities.Add((run.Entities[index].Index, ex.GetType().Name));
+                    if (run.ProcessFailed <= 5) _log.Warn($"Failed to record lane entity {run.Entities[index].Index}: {ex}");
+                },
+                () => Fail(run),
+                () => Finish(run));
         }
 
         /// <summary>
