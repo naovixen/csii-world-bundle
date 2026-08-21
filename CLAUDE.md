@@ -12,10 +12,16 @@ without any of them. Two consumers do live in this repo, beside the mod, as of 2
 the Blender adapter (`tools/blender_import_bundle.py`) and the **`cs2beamng` BeamNG.drive level
 builder application** (`apps/cs2beamng/`), both built on the engine-neutral `tools/csiibundle/`
 package and its offline **bake** stage (`csiibundle.bake` → `<bundle>/derived/`, contract §13).
-The live plan for that work is `docs/plans/beamng-consumer-plan.md` — **every phase from A3 on
-carries a parity gate** (read the game's counterpart system, write the rule matrix, sample a
-predicate, count what stays approximated) before its in-game load; `pip install -e .` installs
-both Python packages (`pyproject.toml` at the root maps them from `tools/` and `apps/`).
+`pip install -e .` installs both Python packages (`pyproject.toml` at the root maps them from
+`tools/` and `apps/`).
+
+**The live plan is [`docs/plans/refactor.md`](docs/plans/refactor.md)** — a full-scale refactor of
+the producer, both consumers and the documentation, approved 2026-08-20. **Feature work is frozen
+for its duration**, including `docs/plans/a6-fidelity.md` and the consumer plan's A3+ phases.
+`docs/plans/beamng-consumer-plan.md` remains the record of what the consumer is and how it was
+built — **every phase from A3 on carries a parity gate** (read the game's counterpart system,
+write the rule matrix, sample a predicate, count what stays approximated) before its in-game
+load — but it is paused, not live.
 
 ## The spec
 `@PLAN.md` is the authoritative spec. It defines the extraction inventory, the bundle

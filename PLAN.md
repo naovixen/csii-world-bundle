@@ -268,7 +268,8 @@ Keep all new code additive; do not modify the vector export's behaviour.
 > **Status: Phases 0–8 are all accepted** (Phase 8 on 2026-08-09: one-button full-city rip, 8
 > stages, validator VALID end-to-end). The producer build described below is done; work since has
 > been fidelity, correctness and hand-off, tracked in
-> **[`docs/plans/consumer-handoff-plan.md`](docs/plans/consumer-handoff-plan.md)** — the live plan.
+> `docs/plans/consumer-handoff-plan.md` (closed) and `docs/plans/beamng-consumer-plan.md`
+> (paused). **The live plan is [`docs/plans/refactor.md`](docs/plans/refactor.md).**
 >
 > **The numbering collides and has already caused one misread.** This section numbers the
 > *producer build* (Phase 5 = Networks, accepted 2026-08-05). The hand-off plan numbers a
