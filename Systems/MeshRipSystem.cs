@@ -245,7 +245,7 @@ namespace Carto.Systems
             /// Where the finish summary goes when a pipeline drives this rip; <c>null</c> means the
             /// run was started by hand and reports through its own dialog.
             /// </summary>
-            public Action<string> Completed;
+            public Action<RipOutcome> Completed;
         }
 
         /// <summary>
@@ -339,7 +339,7 @@ namespace Carto.Systems
         /// <param name="completed">Receives the finish summary instead of a dialog when a pipeline drives the rip.</param>
         /// <param name="kinds">Which instance kinds' prefabs to rip; <c>null</c> for all — must match the instance pass so the two layers stay 1:1.</param>
         /// <returns>A short description of what was queued.</returns>
-        public string BeginRip(string outputDirectory, int maxPrefabs = 0, int textureSizeCap = 2048, Action<string> completed = null, RipKindFilter? kinds = null)
+        public string BeginRip(string outputDirectory, int maxPrefabs = 0, int textureSizeCap = 2048, Action<RipOutcome> completed = null, RipKindFilter? kinds = null)
         {
             if (_run != null) return "A mesh rip is already running.";
 
@@ -755,7 +755,7 @@ namespace Carto.Systems
 
             if (run.Completed != null)
             {
-                try { run.Completed(summary); }
+                try { run.Completed(RipOutcome.Failure(summary)); }
                 catch (Exception ex) { _log.Warn($"Mesh rip completion callback failed: {ex}"); }
                 return;
             }
@@ -1407,7 +1407,12 @@ namespace Carto.Systems
             // user started by hand gets its own dialog.
             if (run.Completed != null)
             {
-                try { run.Completed(summary.ToString()); }
+                try
+                {
+                    run.Completed(writerFaulted || (run.Failed > 0)
+                        ? RipOutcome.Failure(summary.ToString())
+                        : RipOutcome.Ok(summary.ToString()));
+                }
                 catch (Exception ex) { _log.Warn($"Mesh rip completion callback failed: {ex}"); }
                 return;
             }

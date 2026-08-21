@@ -89,24 +89,39 @@ namespace Carto.Systems
         }
 
         /// <summary>
-        /// One pipeline stage: either synchronous work returning its summary, or an asynchronous
-        /// begin/poll pair whose summary arrives through a completion callback.
+        /// One pipeline stage. There are exactly two kinds and they share only a title, so they
+        /// are two types: <see cref="SyncStage"/> runs on the main thread and returns its outcome,
+        /// <see cref="AsyncStage"/> is begun and reports through a completion callback later.
         /// </summary>
-        private sealed class Stage
+        /// <remarks>
+        /// This was ONE class with a <c>Work</c> field and a <c>Begin</c>/<c>Running</c> pair,
+        /// exactly one of which was ever set, and nothing but a null check said which — a type
+        /// carrying two mutually exclusive contracts with no compiler help. Split by refactor
+        /// Phase 7; <see cref="StartStage"/> now switches on the type instead of on a null.
+        /// </remarks>
+        private abstract class Stage
         {
             /// <summary>The heading the stage reports under.</summary>
             public string Title;
+        }
 
-            /// <summary>The caption phase while a synchronous stage runs.</summary>
+        /// <summary>Work that runs on the main thread and is finished when it returns.</summary>
+        private sealed class SyncStage : Stage
+        {
+            /// <summary>The caption while it runs.</summary>
             public RipProgress.Phase Phase;
 
-            /// <summary>Synchronous work, or <c>null</c> for an async stage.</summary>
-            public Func<string> Work;
+            /// <summary>The work.</summary>
+            public Func<RipOutcome> Work;
+        }
 
-            /// <summary>Start an async stage, handing it the completion sink; returns the kickoff message.</summary>
-            public Func<Action<string>, string> Begin;
+        /// <summary>Work that is started here and reports through its completion callback.</summary>
+        private sealed class AsyncStage : Stage
+        {
+            /// <summary>Start it, handing it the completion sink; returns the kickoff message.</summary>
+            public Func<Action<RipOutcome>, string> Begin;
 
-            /// <summary>Whether the async stage actually started.</summary>
+            /// <summary>Whether it actually started. False means there was nothing to do.</summary>
             public Func<bool> Running;
         }
 
@@ -119,9 +134,9 @@ namespace Carto.Systems
         /// <summary>The plan the run was started with.</summary>
         private RipPlan _plan;
 
-        /// <summary>Set (with <see cref="_stageSummary"/>) when the current stage finishes.</summary>
+        /// <summary>Set (with <see cref="_stageOutcome"/>) when the current stage finishes.</summary>
         private volatile bool _stageDone;
-        private string _stageSummary;
+        private RipOutcome _stageOutcome;
 
         /// <summary>How many stages recorded a failure.</summary>
         private int _stagesFailed;
@@ -191,7 +206,7 @@ namespace Carto.Systems
             if (_stages == null || !_stageDone) return;
 
             _stageClock.Stop();
-            RecordStage(_stages[_index], _stageSummary, _stageClock.Elapsed.TotalSeconds);
+            RecordStage(_stages[_index], _stageOutcome, _stageClock.Elapsed.TotalSeconds);
 
             _index++;
             if (_index < _stages.Count) StartStage(_stages[_index]);
@@ -327,7 +342,7 @@ namespace Carto.Systems
 
             if ((staleFiles.Count > 0) || (staleDirectories.Count > 0))
             {
-                stages.Add(new Stage
+                stages.Add(new AsyncStage
                 {
                     Title = "Clean",
                     Begin = completed =>
@@ -346,7 +361,7 @@ namespace Carto.Systems
 
             if (plan.RipsObjects)
             {
-                stages.Add(new Stage
+                stages.Add(new AsyncStage
                 {
                     Title = "Instances",
                     Begin = completed => Instance.InstanceRip.BeginRip(directory, completed, plan.Kinds),
@@ -361,17 +376,17 @@ namespace Carto.Systems
             //
             if (plan.Objects && (plan.Colors || plan.Lights))
             {
-                stages.Add(new Stage
+                stages.Add(new SyncStage
                 {
                     Title = "Appearance",
                     Phase = RipProgress.Phase.Instances,
-                    Work = () => Instance.AppearanceRip.RipAppearance(directory, plan.Colors, plan.Lights)
+                    Work = () => RipOutcome.Ok(Instance.AppearanceRip.RipAppearance(directory, plan.Colors, plan.Lights))
                 });
             }
 
             if (plan.RipsObjects)
             {
-                stages.Add(new Stage
+                stages.Add(new AsyncStage
                 {
                     Title = "Meshes, materials & textures",
                     Begin = completed => Instance.MeshRip.BeginRip(directory, plan.MeshLimit, plan.TextureSizeCap, completed, plan.Kinds),
@@ -381,7 +396,7 @@ namespace Carto.Systems
 
             if (plan.Networks && plan.LaneGraph)
             {
-                stages.Add(new Stage
+                stages.Add(new AsyncStage
                 {
                     Title = "Lane graph",
                     Begin = completed => Instance.LaneRip.BeginRip(directory, completed),
@@ -396,7 +411,7 @@ namespace Carto.Systems
             //
             if (plan.Terrain && plan.TerrainHeights)
             {
-                stages.Add(new Stage
+                stages.Add(new AsyncStage
                 {
                     Title = "Terrain (fine cascade)",
                     Begin = completed => Instance.TerrainRip.BeginFineCascade(completed),
@@ -406,7 +421,7 @@ namespace Carto.Systems
 
             if (plan.RipsNetworkStage)
             {
-                stages.Add(new Stage
+                stages.Add(new AsyncStage
                 {
                     Title = "Networks & lane geometry",
                     Begin = completed => Instance.NetworkRip.BeginRip(directory, plan.TextureSizeCap, completed,
@@ -417,18 +432,18 @@ namespace Carto.Systems
 
             if (plan.RipsTerrain)
             {
-                stages.Add(new Stage
+                stages.Add(new SyncStage
                 {
                     Title = "Terrain & water",
                     Phase = RipProgress.Phase.Terrain,
-                    Work = () => Instance.TerrainRip.RipTerrain(directory, plan.TerrainHeights, plan.TerrainWater,
-                                                                plan.TerrainGround, plan.TerrainClips, plan.TerrainAreas)
+                    Work = () => RipOutcome.Ok(Instance.TerrainRip.RipTerrain(directory, plan.TerrainHeights, plan.TerrainWater,
+                                                                              plan.TerrainGround, plan.TerrainClips, plan.TerrainAreas))
                 });
             }
 
             if (plan.Vector)
             {
-                stages.Add(new Stage
+                stages.Add(new SyncStage
                 {
                     Title = "Vector export",
                     Phase = RipProgress.Phase.Export,
@@ -442,7 +457,7 @@ namespace Carto.Systems
             // reading every record layer back — runs on a worker, and the pipeline waits on the
             // completion callback before reporting (PLAN Phase 8).
             //
-            stages.Add(new Stage
+            stages.Add(new AsyncStage
             {
                 Title = "Manifest",
                 Begin = completed =>
@@ -481,10 +496,11 @@ namespace Carto.Systems
                         catch (Exception ex)
                         {
                             Instance.Log.Error($"World rip stage `Manifest` failed: {ex}");
-                            summary = $"FAILED: {ex.Message}";
+                            completed(RipOutcome.Failure(ex.Message));
+                            return;
                         }
 
-                        completed(summary);
+                        completed(RipOutcome.Ok(summary));
                     });
 
                     return "Scanning the bundle on a background thread.";
@@ -502,7 +518,7 @@ namespace Carto.Systems
         /// <param name="files">Layer files to remove, relative to the root.</param>
         /// <param name="directories">Layer directories to remove, relative to the root.</param>
         /// <returns>What was removed.</returns>
-        private static string CleanStaleOutputs(string directory, List<string> files, List<string> directories)
+        private static RipOutcome CleanStaleOutputs(string directory, List<string> files, List<string> directories)
         {
             List<string> removed = new();
             List<string> failed = new();
@@ -539,7 +555,7 @@ namespace Carto.Systems
                 }
             }
 
-            if ((removed.Count == 0) && (failed.Count == 0)) return "Nothing stale to remove.";
+            if ((removed.Count == 0) && (failed.Count == 0)) return RipOutcome.Ok("Nothing stale to remove.");
 
             string summary = (removed.Count > 0)
                 ? $"Removed the previous rip's {string.Join(", ", removed)}."
@@ -547,7 +563,9 @@ namespace Carto.Systems
             if (failed.Count > 0)
                 summary += $"{(summary.Length > 0 ? "\n" : "")}FAILED to remove {string.Join(", ", failed)} — stale files may inflate the bundle; see the log.";
 
-            return summary;
+            // Partial: some layers went, some did not, and the report says both. `Failed` is
+            // what the orchestrator counts; the text is what the person reads.
+            return (failed.Count > 0) ? RipOutcome.Failure(summary) : RipOutcome.Ok(summary);
         }
 
         /// <summary>
@@ -560,7 +578,7 @@ namespace Carto.Systems
         /// </summary>
         /// <param name="bundleDirectory">The bundle root.</param>
         /// <returns>The stage summary.</returns>
-        private static string RunVectorExport(string bundleDirectory)
+        private static RipOutcome RunVectorExport(string bundleDirectory)
         {
             IO.Options options = Instance.Settings.GetOptions();
 
@@ -568,7 +586,7 @@ namespace Carto.Systems
             // here the refusal becomes a failed stage line instead.
             //
             if (options.Errors.Count > 0)
-                return $"FAILED: invalid export settings ({string.Join(", ", options.Errors.Keys)}) — fix them on the Carto options pages.";
+                return RipOutcome.Failure($"invalid export settings ({string.Join(", ", options.Errors.Keys)}) — fix them on the Carto options pages.");
 
             options.CustomDirectory = Utils.IOUtils.CombinePath(bundleDirectory, "vector");
             options.CompletionDialog = false;
@@ -576,8 +594,8 @@ namespace Carto.Systems
 
             IO.ExportResult result = IO.IO.Export(options);
             return result.Success
-                ? $"Vector/raster export completed — {result.FilesWritten.Length} file(s) into vector/."
-                : $"FAILED: {result.ErrorMessage}";
+                ? RipOutcome.Ok($"Vector/raster export completed — {result.FilesWritten.Length} file(s) into vector/.")
+                : RipOutcome.Failure(result.ErrorMessage);
         }
 
         /// <summary>
@@ -588,50 +606,51 @@ namespace Carto.Systems
         private void StartStage(Stage stage)
         {
             _stageDone = false;
-            _stageSummary = null;
+            _stageOutcome = default;
             _stageClock = Stopwatch.StartNew();
 
             int generation = _generation;
-            void Done(string summary)
+            void Done(RipOutcome outcome)
             {
                 if (generation != _generation) return;
-                _stageSummary = summary;
+                _stageOutcome = outcome;
                 _stageDone = true;
             }
 
-            if (stage.Work != null)
+            if (stage is SyncStage sync)
             {
                 // The exception is caught here, not left to RunDeferred's own catch, because the
                 // pipeline must hear about the stage either way — a swallowed throw would leave it
                 // waiting forever.
-                RipProgress.RunDeferred(stage.Phase, () =>
+                RipProgress.RunDeferred(sync.Phase, () =>
                 {
-                    string summary;
+                    RipOutcome outcome;
                     try
                     {
-                        summary = stage.Work();
+                        outcome = sync.Work();
                     }
                     catch (Exception ex)
                     {
                         _log.Error($"World rip stage `{stage.Title}` failed: {ex}");
-                        summary = $"FAILED: {ex.Message}";
+                        outcome = RipOutcome.Failure(ex.Message);
                     }
 
-                    Done(summary);
+                    Done(outcome);
                 });
 
                 return;
             }
 
+            AsyncStage async = (AsyncStage)stage;
             string kickoff;
             try
             {
-                kickoff = stage.Begin(Done);
+                kickoff = async.Begin(Done);
             }
             catch (Exception ex)
             {
                 _log.Error($"World rip stage `{stage.Title}` failed to start: {ex}");
-                Done($"FAILED to start: {ex.Message}");
+                Done(RipOutcome.Failure($"FAILED to start: {ex.Message}"));
                 return;
             }
 
@@ -640,31 +659,25 @@ namespace Carto.Systems
             // Not started means there was nothing to do (or a refusal) — the kickoff message is
             // the whole story, and no completion callback will ever come.
             //
-            if (!stage.Running()) Done(kickoff);
+            if (!async.Running()) Done(RipOutcome.Ok(kickoff));
         }
 
         /// <summary>
         /// Append one finished stage to the end-of-rip summary.
         /// </summary>
         /// <param name="stage">The stage that finished.</param>
-        /// <param name="summary">What it reported.</param>
+        /// <param name="outcome">What it reported, and whether it failed.</param>
         /// <param name="seconds">How long it took.</param>
-        private void RecordStage(Stage stage, string summary, double seconds)
+        private void RecordStage(Stage stage, RipOutcome outcome, double seconds)
         {
-            // Failures reach here as a line prefix whichever thread they happened on — the sync
-            // catch, the failed-to-start path and the manifest worker all speak it. Any line may
-            // carry it, not just the first: the Clean stage reports a partial failure as a
-            // "FAILED to remove …" line after its "Removed …" line (audit I-F7).
+            // The stage says whether it failed. It used to be inferred here by looking for a line
+            // beginning "FAILED", which twelve sites across five systems produced independently —
+            // so the contract was a spelling, and a stage writing "Failed" was silently a success.
             //
-            string[] lines = (summary ?? string.Empty).Replace("\r\n", "\n").Split('\n');
-            foreach (string line in lines)
-            {
-                if (line.StartsWith("FAILED", StringComparison.Ordinal))
-                {
-                    _stagesFailed++;
-                    break;
-                }
-            }
+            if (outcome.Failed) _stagesFailed++;
+
+            string summary = outcome.Summary;
+            string[] lines = summary.Replace("\r\n", "\n").Split('\n');
 
             _summary.AppendLine($"{stage.Title} — {seconds:F1} s");
 
@@ -814,7 +827,7 @@ namespace Carto.Systems
             _stages = null;
             _plan = null;
             _stageDone = false;
-            _stageSummary = null;
+            _stageOutcome = default;
             RipProgress.Clear();
         }
     }

@@ -151,7 +151,7 @@ namespace Carto.Systems
             /// Where the finish summary goes when a pipeline drives this rip; <c>null</c> means the
             /// run was started by hand and reports through its own dialog.
             /// </summary>
-            public Action<string> Completed;
+            public Action<RipOutcome> Completed;
         }
 
         /// <summary>The rip in flight, or <c>null</c>.</summary>
@@ -182,7 +182,7 @@ namespace Carto.Systems
         /// <param name="outputDirectory">The bundle root to write into.</param>
         /// <param name="completed">Receives the finish summary instead of a dialog when a pipeline drives the rip.</param>
         /// <returns>A short description of what was queued.</returns>
-        public string BeginRip(string outputDirectory, Action<string> completed = null)
+        public string BeginRip(string outputDirectory, Action<RipOutcome> completed = null)
         {
             if (_run != null) return "A lane rip is already running.";
 
@@ -414,7 +414,12 @@ namespace Carto.Systems
 
             if (run.Completed != null)
             {
-                try { run.Completed(report.ToString()); }
+                try
+                {
+                    run.Completed(writerFaulted || (run.ProcessFailed > 0)
+                        ? RipOutcome.Failure(report.ToString())
+                        : RipOutcome.Ok(report.ToString()));
+                }
                 catch (Exception ex) { _log.Warn($"Lane rip completion callback failed: {ex}"); }
                 return;
             }
@@ -457,7 +462,7 @@ namespace Carto.Systems
 
             if (run.Completed != null)
             {
-                try { run.Completed(summary); }
+                try { run.Completed(RipOutcome.Failure(summary)); }
                 catch (Exception ex) { _log.Warn($"Lane rip completion callback failed: {ex}"); }
                 return;
             }

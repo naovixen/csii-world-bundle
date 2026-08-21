@@ -358,7 +358,7 @@ namespace Carto.Systems
             /// Where the finish summary goes when a pipeline drives this rip; <c>null</c> means the
             /// run was started by hand and reports through its own dialog.
             /// </summary>
-            public Action<string> Completed;
+            public Action<RipOutcome> Completed;
         }
 
         /// <summary>The rip in flight, or <c>null</c>.</summary>
@@ -393,7 +393,7 @@ namespace Carto.Systems
         /// <param name="completed">Receives the finish summary instead of a dialog when a pipeline drives the rip.</param>
         /// <param name="kinds">Which kinds to cover; <c>null</c> for all of them.</param>
         /// <returns>A short description of what was queued.</returns>
-        public string BeginRip(string outputDirectory, Action<string> completed = null, RipKindFilter? kinds = null)
+        public string BeginRip(string outputDirectory, Action<RipOutcome> completed = null, RipKindFilter? kinds = null)
         {
             if (_run != null) return "An instance rip is already running.";
 
@@ -738,9 +738,9 @@ namespace Carto.Systems
 
             StringBuilder report = run.Report;
 
-            // The orchestrator counts a stage failed by its summary's FAILED prefix. A writer
-            // that died after the walk finished lost queued records, so the stage must not
-            // read as a success.
+            // A writer that died after the walk finished lost queued records, so the stage must
+            // not read as a success. The orchestrator is told so by `RipOutcome.Failed`; the text
+            // still says it because a person reads this report.
             //
             if (writerFaulted) report.Insert(0, "FAILED: the instance writer ended with an error — instances.jsonl is incomplete; see the log.\n");
             report.AppendLine($"Wrote {run.Writer.Count} instance(s) to instances.jsonl in {run.Clock.Elapsed.TotalSeconds:F1} s"
@@ -825,7 +825,12 @@ namespace Carto.Systems
 
             if (run.Completed != null)
             {
-                try { run.Completed(report.ToString()); }
+                try
+                {
+                    run.Completed(writerFaulted || (run.ProcessFailed > 0)
+                        ? RipOutcome.Failure(report.ToString())
+                        : RipOutcome.Ok(report.ToString()));
+                }
                 catch (Exception ex) { _log.Warn($"Instance rip completion callback failed: {ex}"); }
                 return;
             }
@@ -869,7 +874,7 @@ namespace Carto.Systems
 
             if (run.Completed != null)
             {
-                try { run.Completed(summary); }
+                try { run.Completed(RipOutcome.Failure(summary)); }
                 catch (Exception ex) { _log.Warn($"Instance rip completion callback failed: {ex}"); }
                 return;
             }

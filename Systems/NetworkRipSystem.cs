@@ -247,7 +247,7 @@ namespace Carto.Systems
             /// Where the finish summary goes when a pipeline drives this rip; <c>null</c> means the
             /// run was started by hand and reports through its own dialog.
             /// </summary>
-            public Action<string> Completed;
+            public Action<RipOutcome> Completed;
 
             // ---- The lane-geometry stage (bundle layer `lanemeshes/`). ----
             //
@@ -418,7 +418,7 @@ namespace Carto.Systems
         /// <param name="laneGeometry">Whether to bake lane-drawn furniture (lanemeshes layer).</param>
         /// <param name="laneDecals">Whether the lane catalogue carries decal parts — road markings and wear.</param>
         /// <returns>What the caller should tell the user.</returns>
-        public string BeginRip(string outputDirectory, int textureSizeCap = 2048, Action<string> completed = null,
+        public string BeginRip(string outputDirectory, int textureSizeCap = 2048, Action<RipOutcome> completed = null,
                                bool surfaces = true, bool laneGeometry = true, bool laneDecals = true)
         {
             if (_run != null) return "A network rip is already running.";
@@ -645,7 +645,7 @@ namespace Carto.Systems
 
             if (run.Completed != null)
             {
-                try { run.Completed(summary); }
+                try { run.Completed(RipOutcome.Failure(summary)); }
                 catch (Exception ex) { _log.Warn($"Network rip completion callback failed: {ex}"); }
                 return;
             }
@@ -1225,7 +1225,12 @@ namespace Carto.Systems
             {
                 string summary = $"Wrote {run.Writer?.Count ?? 0} segment(s) and {run.LaneWriter?.Count ?? 0} lane record(s), "
                                + $"{(run.Bytes + run.LaneBytes) / 1048576d:F1} MiB of glTF, in {run.Clock.Elapsed.TotalSeconds:F0} s.";
-                try { run.Completed(summary); }
+                try
+                {
+                    run.Completed(run.Failed > 0
+                        ? RipOutcome.Failure(summary)
+                        : RipOutcome.Ok(summary));
+                }
                 catch (Exception ex) { _log.Warn($"Network rip completion callback failed: {ex}"); }
                 return;
             }

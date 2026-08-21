@@ -77,7 +77,7 @@ namespace Carto.Systems
 
         private sealed class FineRun
         {
-            public Action<string> Completed;
+            public Action<RipOutcome> Completed;
             public int Slice;
             public int Width, Height;               // texels per slice (the cascade texture size)
             public float2 PlayableOffset, PlayableArea;
@@ -115,7 +115,7 @@ namespace Carto.Systems
         /// <see cref="OnUpdate"/>. Any previous capture's raster is released first.
         /// </summary>
         /// <param name="completed">Receives the finish summary when a pipeline drives the capture.</param>
-        public string BeginFineCascade(Action<string> completed = null)
+        public string BeginFineCascade(Action<RipOutcome> completed = null)
         {
             if (_fine != null) return "A fine terrain capture is already running.";
             ReleaseFine();
@@ -413,7 +413,9 @@ namespace Carto.Systems
             _log.Info(summary);
             // A run that never started (a synchronous refusal in Begin) reports through Begin's
             // return value; the pipeline sees Running() false and takes that as the summary.
-            if (run.Started) run.Completed?.Invoke(summary);
+            // The fine cascade reports no failure of its own: a run with no raster is a soft
+            // skip (no cascade, no controller), already declared in warnings.jsonl above.
+            if (run.Started) run.Completed?.Invoke(RipOutcome.Ok(summary));
             return summary;
         }
 
