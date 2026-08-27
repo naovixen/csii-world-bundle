@@ -104,6 +104,7 @@ __all__ = [
     "frames",
     "glb",
     "glbwrite",
+    "images",
     "instances",
     "lanegraph",
     "lanes",

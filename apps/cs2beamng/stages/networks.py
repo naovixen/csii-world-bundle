@@ -12,7 +12,7 @@ that origin.
 
 Frame: segment glb (glTF, X-mirrored) → node matrix → undo mirror → + `pos` (bundle world) →
 BeamNG `(x, z, y)`; that is `dae.glb_to_local` after adding the offset, so winding is kept.
-Materials bind the level-prefixed canonical name (`materials.mapto_name`).
+Materials bind the level-prefixed canonical name (`beamng.materials.mapto_name`).
 
 Region builds keep segments whose origin lies within the region (+`REACH` so a road entering
 the region does not stop at its edge).
@@ -35,9 +35,9 @@ from csiibundle import region as region_rule
 from csiibundle.bake.tiles import MIN_LOD_MARK
 
 from ..beamng import dae, frame, tilelod
+from ..beamng.level import LevelPaths
+from ..beamng.matbind import aliases_of, mapto_name
 from . import Stage, level_of
-from .derived import LevelPaths
-from .materials import aliases_of, mapto_name
 
 STAGE_KEY = "networks"
 TILE_DETAIL_PX = tilelod.ALWAYS_PX  # what a tile nothing culls still ships (see beamng/tilelod)

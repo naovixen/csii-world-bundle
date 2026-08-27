@@ -56,7 +56,7 @@ from csiibundle import collision, glb, lod, tints
 from csiibundle import instances as bundle_instances
 from csiibundle.bake import lods as bake_lods
 
-from ..beamng import dae, placement
+from ..beamng import dae, matbind, placement
 from . import Stage, level_of
 
 STAGE_KEY = "shapes"
@@ -228,16 +228,13 @@ def scan_demand(ctx, progress):
 
 
 def _state_suffix(record, asset, mesh_dir, have):
-    """The suffix of the first `mesh_candidates` entry that is on disk, or None if none is.
+    """The STATE SUFFIX of the first `mesh_candidates` entry on disk, or None if none is.
 
-    `mesh_candidates` is the contract's own walk (§6.1: a variant file exists only where the
-    prefab flags that state, so absence means the game has no such variant either)."""
-    for candidate in bundle_instances.mesh_candidates(record):
-        if candidate not in have:
-            have[candidate] = os.path.isfile(os.path.join(mesh_dir, candidate + ".glb"))
-        if have[candidate]:
-            return candidate[len(asset) :]
-    return None
+    The walk is `csiibundle.instances.first_mesh_state`; the slice is here because `asset` is
+    what is being sliced off and it is in scope here, not there.
+    """
+    candidate = bundle_instances.first_mesh_state(record, mesh_dir, have)
+    return None if candidate is None else candidate[len(asset) :]
 
 
 def _paint_variants(ctx):
@@ -324,7 +321,7 @@ def _shape_job(args):
         colliders, collider_kind = _collider(
             shape_name, base_mesh, lod1_mesh, kind, options, is_tree
         )
-    # How well the trunk search actually found a trunk. `_trunk_group` prefers a material run
+    # How well the trunk search actually found a trunk. `collision.trunk_group` prefers a material run
     # NAMED for one, and on a CS2 bundle that branch never fires — the game's material names are
     # hashed asset ids (`lvl_OakTreeAdult01_c8092af6...`), so all 32 tree prefabs of the reference
     # city fall through to the geometric fallback. That fallback is right for most of them
@@ -422,10 +419,10 @@ def _collect(nodes, aliases, tinted, level_name):
 
 def _with_wind_colours(parts):
     """Replace each part's vertex colours with BeamNG's forest wind convention
-    (`collision.wind_vertex_colours`). Synthesised, cosmetic and off by default."""
+    (`dae.wind_vertex_colours`). Synthesised, cosmetic and off by default."""
     out = []
     for index, (verts, normals, uvs, _colors, tris, runs) in enumerate(parts):
-        colours = collision.wind_vertex_colours(
+        colours = dae.wind_vertex_colours(
             {"verts": verts, "tris": tris, "material_runs": runs}, up_axis=2, seed=index
         )
         out.append((verts, normals, uvs, colours, tris, runs))
@@ -439,9 +436,8 @@ def _bound_material(raw, aliases, tinted, level_name):
     variant_name = tinted.get(raw) or tinted.get(canonical)
     if variant_name:
         return variant_name
-    from ..beamng import materials as bm
 
-    return bm.mapto(level_name, canonical)
+    return matbind.mapto(level_name, canonical)
 
 
 # Vegetation keeps the ladder, and the deferral rule does not apply to it. MEASURED: it is 262 of
@@ -705,7 +701,9 @@ def _collider(shape_name, base_mesh, lod_mesh, kind, options, is_tree=True):
         or len(tris) <= options["colmesh_max_tris"]
         or oversized
     ):
-        mesh = collision.colmesh_from_lod({"verts": verts, "tris": tris})
+        mesh = collision.colmesh_from_lod(
+            {"verts": verts, "tris": tris}, dae.MIN_COLLIDER_THICKNESS
+        )
         if mesh is not None:
             return (
                 dae.Mesh(
@@ -719,7 +717,7 @@ def _collider(shape_name, base_mesh, lod_mesh, kind, options, is_tree=True):
                 if oversized and len(tris) > options["colmesh_max_tris"]
                 else "mesh"
             )
-    box_v, box_t = collision.colbox(lo, hi)
+    box_v, box_t = collision.colbox(lo, hi, dae.MIN_COLLIDER_THICKNESS)
     return (
         dae.Mesh(f"Colmesh_{shape_name}", box_v, box_t, [(base_mesh.runs[0][0], len(box_t))]),
     ), "box"
@@ -945,7 +943,6 @@ def _material_tables(ctx, level):
     A variant's tinted albedo is a different TEXTURE for the same material, so it needs its own
     BeamNG material; the materials stage writes it under this name when it sees it bound.
     """
-    from ..beamng import materials as bm
 
     path = os.path.join(ctx.derived_dir, "materials.json")
     aliases, by_variant = {}, {}
@@ -962,7 +959,7 @@ def _material_tables(ctx, level):
         # tinted albedo or just a multiplier on the canonical one.
         for key in derived.get("variantFactors") or derived.get("variants") or {}:
             canonical = entry.get("canonical") or name
-            by_variant.setdefault(key, {})[name] = bm.mapto(level.name, f"{canonical}__v{key}")
+            by_variant.setdefault(key, {})[name] = matbind.mapto(level.name, f"{canonical}__v{key}")
     return aliases, by_variant
 
 
@@ -1179,7 +1176,7 @@ def _report(
                 f"{TRUNK_WIDE_RATIO:.0%} of its own canopy - the trunk search found the "
                 "canopy instead",
                 "why": "CS2 has no collision for a planted object, so there is no rule to port. "
-                "`collision._trunk_group` prefers a material run NAMED trunk/bark/stem, "
+                "`collision.trunk_group` prefers a material run NAMED trunk/bark/stem, "
                 "and on a CS2 bundle that branch never fires - the game's material names "
                 "are hashed asset ids - so every tree falls through to the geometric "
                 "fallback (lowest band, smallest footprint). That is right for a clean "

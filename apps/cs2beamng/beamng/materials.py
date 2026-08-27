@@ -17,7 +17,7 @@ Conventions (from shipped `main.materials.json` files and the v1.5 docs):
   `_o.data.png`, `opacityFactor` = the base-colour factor's alpha; `"mask"` → `alphaTest` +
   `alphaRef`; `"blend"` → `translucent` + `LerpAlpha` + `translucentZWrite`. `doubleSided` as given.
 * Every material name carries the level name (materials are a global registry; see the
-  terrain lesson) — `mapto(level_name, raw_name)`.
+  terrain lesson) — `matbind.mapto(level_name, raw_name)`, next door.
 
 Textures: `export_texture` copies a bundle/derived PNG into `art/textures/` under the BeamNG
 suffix for its colour space, box-downsampled to `max_size` (0 = full). Colour maps keep alpha
@@ -30,9 +30,8 @@ import os
 import re
 
 import numpy
-from csiibundle import png
+from csiibundle import images, png
 
-from . import dae
 from . import dds as dds_mod
 
 TEXTURE_SUBDIR = ("art", "textures")
@@ -74,32 +73,7 @@ def caps_from_settings(settings):
     return out
 
 
-def mapto(level_name, raw_name):
-    """The material name a `.dae` binds and `main.materials.json` `mapTo`s: level-prefixed."""
-    return dae.sanitize(f"{level_name}_{raw_name}")
-
-
 # -- textures ----------------------------------------------------------------------------------
-
-
-def _load_any(path):
-    """`(array, kind)`: `(h,w,4) uint8` for RGB/RGBA PNGs (RGB gets alpha 255), `(h,w) uint8|uint16`
-    for grey ones. csiibundle's decoders first (they never colour-manage), PIL for the rest."""
-    try:
-        return png.rgba_array(path), "rgba"
-    except ValueError:
-        pass
-    try:
-        g = png.gray_array(path)
-        return g, "gray"
-    except ValueError:
-        pass
-    from PIL import Image
-
-    im = Image.open(path)
-    if im.mode in ("L", "I;16", "I"):
-        return numpy.asarray(im.convert("I")).astype(numpy.uint16), "gray"
-    return numpy.asarray(im.convert("RGBA")), "rgba"
 
 
 def _cap(arr, max_size):
@@ -267,7 +241,7 @@ def export_texture(level, src_path, kind, max_size=0, keep_alpha=False, cache=No
     # texture keeps its mtime and BeamNG keeps its cooked copy in temp/ (load #11: every first
     # load re-cooked all 260 textures because the folder was cleared and rewritten each build).
     # A same-name file with different bytes (another cap, another rip) is replaced, never reused.
-    arr, form = _load_any(src_path)
+    arr, form = images.load_any(src_path)
     arr = _cap(arr, max_size)
     if kind == "opacity":
         alpha = arr[:, :, 3] if form == "rgba" else (numpy.full(arr.shape[:2], 255, numpy.uint8))

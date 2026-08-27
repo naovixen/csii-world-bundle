@@ -73,14 +73,16 @@ def test_every_caller_agrees():
     sys.path.insert(0, os.path.join(os.path.dirname(HERE), "apps"))
     from cs2beamng.beamng import placement
     from cs2beamng.stages import derived, navgraph, water
-    from csiibundle.bake import markings
+    from csiibundle import region as region_rule
 
     for x, z in CORNERS:
         check(
             placement.in_region({"pos": [x, 0.0, z]}, BOX),
             f"placement.in_region keeps the corner ({x:.0f}, {z:.0f})",
         )
-        check(markings._in_region(x, z, BOX), "bake.markings keeps it too")
+        # refactor Phase 2 deleted `bake.markings._in_region`, the shim that forwarded here;
+        # the three bake products that used it call `region.contains` directly now
+        check(region_rule.contains(x, z, BOX), "the bake products keep it too")
 
     class _Road:
         nodes = ((110.0, 0.0, -40.0, 4.0),)

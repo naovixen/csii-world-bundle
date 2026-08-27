@@ -244,6 +244,7 @@ def test_frame():
 
 def test_materials(tmp):
     from cs2beamng.beamng import level as level_mod
+    from cs2beamng.beamng import matbind
     from cs2beamng.beamng import materials as bm
     from csiibundle import png
 
@@ -328,7 +329,9 @@ def test_materials(tmp):
         and mat2["Stages"][0]["metallicFactor"] == 0.1,
         "blend -> translucent; scalar factors",
     )
-    check(bm.mapto("lvl", "area:Foo Bar") == "lvl_area_Foo_Bar", "mapto sanitises and prefixes")
+    check(
+        matbind.mapto("lvl", "area:Foo Bar") == "lvl_area_Foo_Bar", "mapto sanitises and prefixes"
+    )
     # texture export: RGBA 64x64 with alpha, cap 32
     src = os.path.join(tmp, "t.png")
     arr = numpy.zeros((64, 64, 4), numpy.uint8)

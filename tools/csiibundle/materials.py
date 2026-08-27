@@ -244,11 +244,6 @@ def texture_path(bundle_dir, entry, slot):
     return os.path.join(bundle_dir, rel) if rel else None
 
 
-def roughness_from_smoothness(smoothness):
-    """`1 - smoothness`. Trivial, and named so the call site says which way round it is."""
-    return 1.0 - smoothness
-
-
 def wire_plan(entry):
     """What to connect for this material beyond what a glTF loader already does.
 

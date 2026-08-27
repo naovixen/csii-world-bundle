@@ -406,7 +406,6 @@ def paint_factor():
     """
     import numpy
     from csiibundle import tints
-    from csiibundle.bake import materials as bake_materials
 
     print("paint variants as a baseColorFactor")
     rng = numpy.random.default_rng(7)
@@ -416,7 +415,7 @@ def paint_factor():
     # 1. the identity: tint == base * M, whatever the albedo
     mask = rng.random((32, 32, 3))
     exact = tints.apply_reference(base, mask, colours)
-    m = bake_materials._tint_multiplier(mask, colours)
+    m = tints.multiplier(mask, colours)
     check(numpy.abs(exact - base * m).max() < 1e-12, "the tint is exactly base x M(texel)")
     other = rng.random((32, 32, 3))
     check(
@@ -427,8 +426,8 @@ def paint_factor():
     # 2. a UNIFORM mask: one constant reproduces it exactly, so the texture is pure waste
     flat = numpy.zeros((32, 32, 3))
     flat[:, :, 0] = 1.0  # channel 0 everywhere, nothing else
-    m_flat = bake_materials._tint_multiplier(flat, colours)
-    factor = bake_materials._best_factor(m_flat, numpy.ones((32, 32)))
+    m_flat = tints.multiplier(flat, colours)
+    factor = tints.best_constant(m_flat, numpy.ones((32, 32)))
     check(
         numpy.abs(m_flat - factor[None, None, :]).max() < 1e-12,
         "a uniform colour mask is reproduced by one factor exactly",
@@ -438,8 +437,8 @@ def paint_factor():
     split = numpy.zeros((32, 32, 3))
     split[:16, :, 0] = 1.0
     split[16:, :, 2] = 1.0
-    m_split = bake_materials._tint_multiplier(split, colours)
-    factor = bake_materials._best_factor(m_split, numpy.ones((32, 32)))
+    m_split = tints.multiplier(split, colours)
+    factor = tints.best_constant(m_split, numpy.ones((32, 32)))
     worst = float(numpy.abs(m_split - factor[None, None, :]).max())
     check(worst > 0.2, f"a two-colour mask cannot be one factor (worst {worst:.3f})")
 

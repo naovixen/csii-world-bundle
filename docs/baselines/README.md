@@ -12,6 +12,8 @@ instrument, before and after (`docs/plans/refactor.md`, principle 10).
 | `cs2_city_fine-budget-2026-08-20.txt` | `cs2beamng budget` — resident MiB and triangles actually drawn. |
 | `bake-example-cprofile-2026-08-21.txt` | a cProfile of the example-bundle bake. **Not a performance baseline** — see below. |
 | `cs2_city_fine-report-after-phase1.json` | the same level rebuilt after refactor Phase 1 (`cook: true`, 16 m 03 s). Every validation check matches the baseline; `cs2beamng budget` came out **byte-identical**, which is why there is no "after" budget file. |
+| `cs2_city_fine-report-after-phase2.json` | the same level rebuilt after refactor Phase 2 (`cook: true`, `--force`, 30 m 44 s) — against the NEW bundle, so read the 2026-08-27 note below before diffing it. |
+| `cs2_city_fine-budget-after-phase2.txt` | `cs2beamng budget` for that rebuild. |
 | `profile.md` | the numbers themselves, and what instrument produced each. |
 
 ## What the digest deliberately excludes
@@ -105,3 +107,44 @@ would rename a file, not refill one byte-for-byte the same size.
 the rip overwrote the files. The cheap experiment is the *next* rip — if these three change again
 with no producer change and no play between them, the mesh rip is non-deterministic (see the
 "rip residency is intermittent" note); if they hold, the save explained them after all.
+
+## The Phase-2 rebuild, 2026-08-27
+
+`cs2_city_fine-report-after-phase2.json` and `cs2_city_fine-budget-after-phase2.txt`: the level
+rebuilt through the Phase-2 code, in place, `cook: true`, settings read from its own report,
+BeamNG closed, `--force`. **30 m 44 s, exit 0, one problem — the same budget warning the golden
+carried.**
+
+**It is measured against the NEW bundle, so most of the diff is the city, not the code.** The
+rebuild had to use the 08-27 rip (the level's own settings point at the bundle directory), and
+that city has been played since the golden was built. `instances.scanned` goes 1,276,060 →
+1,283,009 — the bundle's own instance count, exactly — and everything downstream follows it:
+forest items +5,470, TSStatics +102, shape files +4, resident 4,256 → 4,273 MiB. The spawn point
+moved because the spawn is the drivable lane nearest the region centre and the city has new roads.
+
+**What the diff shows that is the CODE:**
+
+* `scene.result.sunColorTemperatureIgnored: false` — the new declared approximation, reporting
+  that the sun's colour-temperature flag is off on this save, so the gap did not bite.
+* `validate.checks.groundCheck.sampler: "bilinear"` — the new counted field naming which height
+  sampler produced the ground numbers.
+* Nothing else. No new problem, no new warning class, no check that changed for a reason the
+  bundle does not explain.
+
+**One change went unexercised, and it is the only behavioural one.** This level has
+`lights: false` in its settings — as the golden did — so the lights stage is **skipped**, and the
+`frames.quat_matrix` change in `stages/lights._world` never ran. It was measured directly instead,
+against the rip's own `lights.json`: 654 rotations, 814 of 5,886 written floats moving by at most
+2e-06. A build cannot confirm it; a build with lights on would.
+
+**One number needed chasing, and it was cache accounting.** `bake.materials.tintedTextures` reads
+57 in the golden and **2,575** here — a 45x jump in a counter fed by `_png_size`, which Phase 2
+rewrote onto `png.read_header`. If that rewrite were broken, every texture would be rewritten
+every run and would look exactly like this. It is not: `_png_size` returns the true `(h, w)` for
+every file tested and `None` for a missing one, and re-running the identical bake with the cache
+warm writes **0** textures. The 2,575 is a cold cache — the new bundle re-baked everything — and
+`textures written` counts misses, not outputs. There are exactly 2,575 such files on disk.
+
+(The first attempt at that check ran `--only materials` without the app's `paint_kinds`, so it
+baked a *different, smaller* job — 96 source albedos against 493 — and proved nothing. Recorded
+because the invalid test looked like a valid one.)

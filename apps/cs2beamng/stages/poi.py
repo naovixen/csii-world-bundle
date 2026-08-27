@@ -107,7 +107,7 @@ def run(ctx, progress):
         wanted.extend(districts)
     derived = []
     if len(wanted) < cap:
-        derived = _derive(network, cap - len(wanted), [p["at_beamng"] for p in wanted])
+        derived = derive(network, cap - len(wanted), [p["at_beamng"] for p in wanted])
         wanted.extend(derived)
 
     progress.begin("poi: place", total=len(wanted) or None, unit="points")
@@ -185,7 +185,7 @@ def run(ctx, progress):
 # -- the road network to snap onto ---------------------------------------------------------------
 
 
-class _Network:
+class Network:
     """The drivable points a POI may be placed on, with their local heading.
 
     Read back out of the LEVEL's own `DecalRoad`s where the `navgraph` stage put them — the thing
@@ -223,7 +223,7 @@ def _road_network(ctx):
             # own `seg_<id>` name - a fast-travel point called "seg_2331850" is worse than none
             names.append(obj.get("cs2Street"))
     if points:
-        network = _Network(points, headings)
+        network = Network(points, headings)
         network.labels = names
         return network
     return _lane_network(ctx)
@@ -258,7 +258,7 @@ def _lane_network(ctx):
             points.append((0.5 * (ax + bx), 0.5 * (ay + by), az))
             headings.append((bx - ax, by - ay))
             names.append(segments[lane["owner"]])
-    network = _Network(points, headings)
+    network = Network(points, headings)
     network.labels = names
     return network
 
@@ -354,7 +354,7 @@ def _read_districts(bundle_dir, progress):
 # -- tier 2: the derived set ---------------------------------------------------------------------
 
 
-def _derive(network, want, avoid):
+def derive(network, want, avoid):
     """The densest road cells, at least `DERIVED_SEPARATION` apart, named by their streets."""
     if want <= 0 or not len(network.points):
         return []

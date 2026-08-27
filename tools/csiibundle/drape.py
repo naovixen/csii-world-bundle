@@ -50,6 +50,16 @@ DEDUP_MM = 1.0
 # a small tail; a big number means the layer is not landing on anything. TUNED.
 MISS_WARN_FRACTION = 0.01
 
+# How far up `height()` looks from. Surfaces above this are not candidates, which matters only
+# for a MESH surface — a heightfield has one surface per (x, y) and nothing to cut off.
+#
+# This was a `ceiling=4000.0` parameter on eight signatures across two modules, and not one
+# caller in either consumer ever passed a value: every call took the default, so the knob was
+# eight restatements of one number. CS2's terrain sits near y=500 and its tallest towers are
+# tens of metres, so 4 km is far above anything a city contains while staying finite — the
+# point is to be above the world, not to be tuned. TUNED (the value) / KISS (that it is one).
+HEIGHT_CEILING = 4000.0
+
 
 class ProjectionSurface:
     """The interface `drape_block` and the area conformance need from a surface.
@@ -69,10 +79,12 @@ class ProjectionSurface:
         """
         raise NotImplementedError
 
-    def height(self, x, y, ceiling=4000.0):
-        """The topmost surface under `(x, y)` seen from `ceiling` metres up, or `None`.
+    def height(self, x, y):
+        """The topmost surface under `(x, y)`, or `None` if nothing is there.
 
         The plain "what is the ground here" query, for a layer with no expected height.
+        Surfaces above `HEIGHT_CEILING` are not considered — see that constant for why the
+        cut-off is a module constant and not a parameter.
         """
         raise NotImplementedError
 
@@ -135,11 +147,11 @@ class HeightfieldSurface(ProjectionSurface):
 
     # -- the queries ---------------------------------------------------------------------------
 
-    def height(self, x, y, ceiling=4000.0):  # `ceiling`: a heightfield has no occluders
+    def height(self, x, y):
         """The ground height at `(x, y)`, or `None` (NaN in an array) outside the raster.
 
-        `ceiling` is accepted for protocol compatibility and ignored: a heightfield is a single
-        surface, so there is never more than one hit to choose between.
+        `HEIGHT_CEILING` never bites here: a heightfield is a single surface, so there is never
+        more than one hit to choose between.
         """
         if isinstance(x, (float, int)) and isinstance(y, (float, int)):
             return self._sample_one(x, y)  # the scalar path — see `_sample_one`
@@ -328,7 +340,7 @@ def _heightfield_drop_many(self, x, y, z, half_up, half_down):
     return numpy.where(ok, top, numpy.nan)
 
 
-def _heightfield_height_many(self, x, y, ceiling=4000.0):  # `ceiling`: one surface, no occluders
+def _heightfield_height_many(self, x, y):  # one surface, so nothing to cut off
     return self._sample(
         numpy.asarray(x, dtype=numpy.float64), numpy.asarray(y, dtype=numpy.float64)
     )
@@ -432,10 +444,8 @@ class TriangleSoupSurface(ProjectionSurface):
         )
         return None if numpy.isnan(out[0]) else float(out[0])
 
-    def height(self, x, y, ceiling=4000.0):
-        out = self.height_many(
-            numpy.array([x], numpy.float64), numpy.array([y], numpy.float64), ceiling
-        )
+    def height(self, x, y):
+        out = self.height_many(numpy.array([x], numpy.float64), numpy.array([y], numpy.float64))
         return None if numpy.isnan(out[0]) else float(out[0])
 
     def drop_many(self, x, y, z, half_up, half_down):
@@ -443,9 +453,9 @@ class TriangleSoupSurface(ProjectionSurface):
         among those that do, the one NEAREST `z`."""
         return self._query(x, y, z, "drop", half_up, half_down)
 
-    def height_many(self, x, y, ceiling=4000.0):
-        """`(N,)` topmost heights at or below `ceiling`, NaN where nothing is under (x, y)."""
-        return self._query(x, y, None, "height", ceiling, None)
+    def height_many(self, x, y):
+        """`(N,)` topmost heights at or below `HEIGHT_CEILING`, NaN where nothing is under (x, y)."""
+        return self._query(x, y, None, "height", HEIGHT_CEILING, None)
 
     # -- internals -----------------------------------------------------------------------------
 

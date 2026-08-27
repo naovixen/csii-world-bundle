@@ -888,7 +888,13 @@ def validate_bundle(bundle_dir: Path, schema_dir: Path) -> Report:
 
 
 def _png_header(path: Path) -> tuple[int, int, int, int] | None:
-    """Return (width, height, bit depth, colour type) from a PNG's IHDR, or None."""
+    """Return (width, height, bit depth, colour type) from a PNG's IHDR, or None.
+
+    Deliberately NOT `csiibundle.png.read_header`, which is the same walk and is what the three
+    other callers in this repo now share. This file's contract, stated at the top, is "the
+    standard library, no pip installs, no producer source" — it is what a consumer author runs
+    on a bundle they were handed, before they have any of this. That is worth one copy.
+    """
     try:
         data = path.read_bytes()
     except OSError:

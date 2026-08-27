@@ -30,9 +30,9 @@ from collections import Counter
 import numpy
 
 from .. import bezier, glb, lanes, lod, reader
+from .. import region as region_rule
 from . import Product, register
-from .markings import _in_region, _material_specs, _texture_uri_base
-from .tiles import TileSink
+from .tiles import TileSink, material_specs, texture_uri_base
 
 PRODUCT_NAME = "lanegeometry"
 INPUTS = ("laneGeometry", "lanePrefabs", "laneMeshes")
@@ -98,7 +98,7 @@ def run(context, progress):
                 skipped_category += 1
                 continue
             curve = record["curve"]
-            if not _in_region(curve[0][0], curve[0][2], region):
+            if not region_rule.contains(curve[0][0], curve[0][2], region):
                 skipped_region += 1
                 continue
             parts = entry.get("parts", [])
@@ -195,7 +195,7 @@ def run(context, progress):
             handle.write(json.dumps(row, separators=(",", ":")) + "\n")
 
     # -- baked tiles ----------------------------------------------------------------------------
-    specs = _material_specs(derived, bundle)
+    specs = material_specs(derived, bundle)
     tile_sink = TileSink(tile, PRODUCT_NAME, out_dir, specs)
     lod_histogram = Counter()
     tris_total = 0
@@ -256,7 +256,7 @@ def run(context, progress):
     progress.begin("lanegeometry: tiles", total=len(tiles), unit="tiles")
     written = tile_sink.flush(
         progress,
-        texture_uri_base=_texture_uri_base(out_dir, bundle),
+        texture_uri_base=texture_uri_base(out_dir, bundle),
         jobs=max(1, int(options.get("jobs") or 1)),
     )
     progress.end(

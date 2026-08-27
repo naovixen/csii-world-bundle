@@ -46,12 +46,10 @@ ARG001 tools/check_tiles_vs_game.py::product
 ARG001 tools/csiibundle/bake/areas.py::ground
 ARG001 tools/csiibundle/bake/terraincut.py::surface
 ARG001 tools/csiibundle/collision.py::tris
-ARG001 tools/csiibundle/drape.py::ceiling
 ARG001 tools/csiibundle/navgraph.py::max_width
 ARG001 tools/csiibundle/terrain.py::height
 ARG001 tools/csiibundle/terrain.py::strip_geo
 ARG001 tools/test_bake_manifest.py::context
-ARG002 tools/csiibundle/drape.py::ceiling
 ARG002 tools/test_bake_manifest.py::unit
 ARG005 tools/cs2beamng_stub_stages.py::c
 ARG005 tools/cs2beamng_stub_stages.py::ctx

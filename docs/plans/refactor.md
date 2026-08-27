@@ -635,12 +635,12 @@ Each phase records here what landed and what it found, so this document stays th
 | --- | --- |
 | 0 — Guardrails and baselines | **DONE** 2026-08-21 — see below |
 | 1 — The three defects | **DONE** 2026-08-21 — one of the three was not live; see below |
-| 2 — One implementation of every shared rule | pre-flight verified; blocked on the Phase 1 rebuild |
+| 2 — One implementation of every shared rule | **DONE** 2026-08-27 — five of its claims needed correcting; see below |
 | 3 — One stage framework | not started |
 | 4 — Split `csiibundle` and `tools/` | not started |
 | 5 — The app and its UI | not started |
 | 6 — The Blender adapter | not started |
-| 7 — One rip-stage framework | **in progress** — extractions and the typed outcome done; see below |
+| 7 — One rip-stage framework | **in progress** — extractions, the typed outcome, the frame loop and the report shape done; see below |
 | 8 — The IO writer layer | not started |
 | 9 — Split the rip systems | not started |
 | 10 — Performance | not started |
@@ -890,6 +890,117 @@ already turned out wrong (the region was six discs, not one; `RipProgress.Pump` 
 inconsistency the defect is. `csiibundle/region.py` is that shared rule, and all eleven sites
 call it.
 
+### Phase 2 — DONE 2026-08-27
+
+Every item on the list is done, and **five of its claims needed correcting**. The pattern from
+Phase 1 held: the plan is a set of hypotheses, and checking each one before moving code found
+work it had mis-sized in both directions.
+
+**What collapsed**
+
+| Rule | Was | Now |
+| --- | --- | --- |
+| Dead public surface | 13 functions, 0 callers each | deleted, plus `water.WATER_TEMPLATES` orphaned by one of them |
+| PNG decode | 4 wrappers in 3 modules | `csiibundle/images.py` — `load_any`, `load_rgb`, `load_alpha` |
+| PNG header | 4 IHDR readers | `png.read_header`, used by 2; 2 exempt (below) |
+| sRGB transfer | 5 copies of the curve | `colour.srgb8_to_linear` / `linear_to_srgb8` + named constants |
+| Tint multiplier | 3 (`_tint_multiplier`, `measure_paint_factor.multiplier`, `_uniform_multiplier`) | `tints.multiplier` / `tints.best_constant` |
+| Texture resize | 2 byte-identical | `images.resize_nearest` |
+| "First mesh state on disk" | 3 walks | `instances.first_mesh_state` |
+| Bundle location | 4 hard-coded Windows paths + 2 env-var spellings | `locate.default_bundle_dir()`, `CS2_BUNDLE_DIR` |
+| `ceiling=4000.0` | a parameter on 8 signatures, never once passed | `drape.HEIGHT_CEILING` |
+| Engine knowledge | `MIN_THICKNESS`, `wind_vertex_colours` in the neutral package | `beamng/dae.py` |
+| Material name binding | `stages/materials.py`, imported by 2 other stages | `beamng/matbind.py` |
+| `LevelPaths` | `stages/derived.py`, imported by `stages/networks.py` | `beamng/level.py` |
+| `_in_region`, `_material_specs`, `_texture_uri_base` | privates imported across `bake/` | `region.contains`, `tiles.material_specs`, `tiles.texture_uri_base` |
+| `Grading.write_ocio` | a Blender method on the neutral class | `colour_model.write_ocio` |
+
+**Proved rather than assumed.** The collapsed arithmetic is bit-identical, not
+approximately-identical: `srgb8_to_linear`/`linear_to_srgb8` over all 256 bytes, a 200,001-point
+float sweep and the 3x256x3 LUT that consumes them; `tints.multiplier`/`best_constant` over four
+mask shapes including the zero-weight branch and 2,000 random scalar cases. And the whole bake:
+`docs/example-bundle` baked from a worktree at `8e1cf11` and from this tree, same bundle, same
+drive — **15 of 16 files byte-identical, the 16th differing only in its own `generatedAt`**.
+
+(The first attempt at that comparison said a `lanegeometry` tile differed. It did not: the two
+bakes wrote to different drives, and `texture_uri_base` returns `None` when no relative path
+exists, so one glb carried a texture URI and the other carried none. The test was wrong, not the
+code — worth recording because the failure looked exactly like a real regression.)
+
+**Wrong in the plan**
+
+* **`validate_bundle.py` and `probe_point.py` cannot share anything, and that is by contract.**
+  The plan counts their PNG header reader and sRGB pair as duplication. `validate_bundle` states
+  at the top: "Python 3.8+ and the standard library, no pip installs, no game, no producer
+  source" — it is what a consumer author runs on a bundle before they have any of this.
+  `probe_point` runs inside Blender, which ships numpy and nothing else, and its own comment
+  says "a diagnostic that only works when the thing it is diagnosing imports cleanly is not much
+  of a diagnostic". Both keep their copies, and both now say so where the copy is.
+* **`stages/terrain.py`'s gamma-2.2 is not a fifth sRGB copy.** It is a different transfer
+  function on BeamNG terrain textures, in five places. Merging it into the exact curve would
+  change every terrain texture the app writes. `colour.py`'s constants block now says so, so a
+  later pass does not "tidy" it — the same fence Phase 7 put around `Tessellate`.
+* **The `resample_nearest` half-texel disagreement is a defect fix, not a move.** `reader`'s
+  `+ 0.5` centres the sample and has a §8 justification; the texture resize does not and takes
+  each block's corner. Adopting the better one changes what the bake writes, so Rule 1 says it
+  gets its own commit. `images.resize_nearest` documents the disagreement and says not to settle
+  it quietly.
+* **The imports are not inverted.** `pipeline` importing `stages` is how `runner`, `worker` and
+  `census` reach `all_stages`, which is correct layering. The defect in `mapview` was reaching
+  into `stages.poi`'s **privates**; `_Network`/`_derive` are `Network`/`derive` now.
+* **`MEASURED_DIAGONAL` could not move.** It is a BeamNG measurement defaulting for every
+  consumer, as the plan says — but `cs2beamng` is the only consumer of this bake that ships
+  terrain, so it is also the only value anybody asks for, and changing the neutral default would
+  change what a bare `csiibundle-bake` writes. The literal `"ne_sw"` in `runner.DEFAULT_OPTIONS`
+  now references the one constant, and both sites state whose measurement it is and that a
+  second engine must override it.
+
+**Two things the plan listed as dead code that were not**
+
+* **`stages/scene.py`'s `hasattr(colour_mod, "blackbody")`** is a permanently-false branch, as
+  the plan says. But deleting it silently would have dropped a rule the contract states:
+  `colour.Light` says the sun's effective colour is the authored filter TIMES the blackbody of
+  its colour temperature, and no consumer applies it because no `blackbody` exists anywhere.
+  That is a gap, not dead weight. The fake call is gone and the gap is a **declared, counted
+  approximation** — `sunColorTemperatureIgnored` in the scene report says when it actually bit.
+* **`validate_level.render_target` / `light_manager`** are not "wrappers that exist only to
+  un-privatise": they have six callers between `doctor`, `settings` and `estimate`. They ARE the
+  public API, so the private originals took their names and the wrappers went. `render_target`
+  then broke the 60-line ceiling under its new name — the shrink-only allowlist keys on the
+  symbol — and was split rather than re-listed.
+
+**One regression, caught by a test rather than by me.** Moving the material-name binding into
+`beamng/materials.py` made `stages/derived` and `stages/networks` transitively reach a module
+that reads `texture_max`, and `test_app_shell` checks that a stage declares every setting any
+module it can REACH reads. Declaring it would have been wrong twice — neither stage reads it,
+and both would then re-run whenever it changed. The binding is four settings-free functions, so
+it got its own module, `beamng/matbind.py`, and the closure stayed honest. `beamng/materials.py`
+imports `mapto` from it rather than the other way round.
+
+**The height-sampling question, answered with a measurement.** The plan says of
+`ter.sample_height`: "either the validator uses the diagonal-aware sample or the deviation is
+declared and counted". Measured on `cs2_city_fine` (square size **1.75 m**) over 1,441 sampled
+buildings, bilinear and the measured `ne_sw` triangulation disagree by a median and p95 of
+**0.0000 m**, a maximum of **0.0154 m**, and **no** sample crosses the 0.5 m tolerance the check
+applies — buildings sit on ground the game graded flat, which is where the two agree. The 9.4 cm
+and 41 cm figures in `drape.py` are at 3.5 m and 14 m strides. So: declared and counted, with
+the numbers, and `groundCheck.sampler` in the report now names which sampler produced them.
+
+**One intended behaviour change, measured.** `stages/lights._world` imported `_quat_rows` and
+`_swap_yz` out of `stages/instances` — a third and fourth copy of arithmetic `csiibundle.frames`
+owns, and the pair Phase 1 had just removed from `_transform`. `frames.quat_matrix` does not
+renormalise and `_quat_rows` did, so the written `rotationMatrix` moves: 630 of 654 light
+rotations (96.3 %) store a non-unit quaternion, off by at most 1.5e-06 in the squared norm, and
+**814 of the 5,886 matrix floats as written (13.8 %) change, by at most 2e-06** — a fifth of a
+millimetre of aim at 100 m. Not renormalising is the deliberate choice, for the reason Phase 1
+recorded: a producer shipping a non-unit quaternion should show up, not be corrected in one
+consumer.
+
+**New in `csiibundle`:** `images.py` — the picture loaders. `png.py` broke 400 lines when they
+were added to it, and the gate was right that they do not belong there: `png.py` is the
+standard-library decoder for the §8 rasters, which are numbers and must never touch PIL.
+**New in the app:** `beamng/matbind.py`.
+
 ### Phase 7 — in progress, 2026-08-21
 
 Started out of order, and deliberately: the Phase 1 consumer rebuild is a multi-hour block during
@@ -911,6 +1022,51 @@ which the Python tree has to stay still, and the two halves of this repo have in
   duplicated loop are 46 of call site. The tuning stays per-stage: the instance walk's 12 ms
   against the mesh rip's 6 is a measured choice with its reason recorded, and a shared constant
   would have thrown that away.
+
+**Landed 2026-08-27**
+
+* `Systems/Rip/RipReport.cs` — the completion-callback-or-dialog shape, which the plan counted at
+  16 sites and is 8: a success path and a failure path in each of the four walking stages. Every
+  copy carried the same two try/catch blocks for the same two reasons (a callback that throws must
+  not take the stage down; `ShowMessageDialog` throws when the UI bindings are not up). **99 lines
+  out of the four systems, 71 back in as call sites.**
+
+  What the extraction had to NOT do is more interesting than what it did. The three stages
+  disagree about which audience gets which text, and a naive collapse would have silently changed
+  two of them:
+
+  | | to the orchestrator | to the modal |
+  | --- | --- | --- |
+  | instance, lane | the **full** report | one line |
+  | mesh | the same summary | the same summary |
+  | network | one line | the **full** report |
+
+  So `dialogText` is a separate argument, passed explicitly at all eight sites, and the network
+  one carries a comment saying it inverts the other two on purpose. Settling that disagreement
+  changes what a rip reports and is not a move.
+
+  One thing the extraction DID settle: the dialog text now goes through `Settings.Fit`, which
+  caps it at 18 lines and points at the log for the rest. The network rip and the orchestrator
+  already fitted theirs; the mesh rip handed its full report straight to a modal that cannot
+  scroll. That is a behaviour change, declared here.
+
+* **Five stale doc comments**, all describing a protocol `32855e1` had already deleted:
+  "hand a summary with the `FAILED` prefix, which is what the orchestrator counts a stage failure
+  by" (three sites) and "the orchestrator counts a stage failed by its summary's FAILED prefix"
+  (two). It counts a typed `RipOutcome.Failed` now. The word FAILED is still in the summary text,
+  because a person reads it — the comments now say which is which.
+
+**Still not done.** `MeshRipSystem` and `NetworkRipSystem` keep their own frame loops, and on
+inspection that is right rather than pending:
+
+* `NetworkRipSystem.Advance` walks **three** lists — edges, then orphan nodes, then lane geometry
+  — under one shared frame budget, each with its own index and its own back-pressure check.
+  `RipWalk.Advance` is a single-list loop; a "sequence of lists" abstraction to fit it would be
+  more machinery than the 40 lines it would save.
+* `MeshRipSystem.Advance` is the single-list shape, but it reports `Phase.Write` progress on every
+  frame of the DRAIN, which `RipWalk` does not, and its per-item catch is inside `ReadOne` rather
+  than in the loop. Fitting it needs a ninth parameter on a function that already takes eight —
+  the point at which a parameter list is a design smell rather than a shared rule.
 
 **Not done, and not for lack of time: `Tessellate` should not be unified yet.**
 

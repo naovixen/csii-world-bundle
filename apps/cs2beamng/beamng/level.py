@@ -253,3 +253,23 @@ def read_objects(level_dir):
                         yield rel, number, json.loads(line)
                     except ValueError:
                         yield rel, number, None
+
+
+class LevelPaths:
+    """The `Level` methods a tile worker needs, without a `Level` — which owns the scene tree and
+    the persistent-id set and must stay in the parent process.
+
+    Here rather than in a stage: `stages/networks.py` imported it out of `stages/derived.py`,
+    which made one stage a library for another. It is a surrogate for the class in this module,
+    so this is where it belongs.
+    """
+
+    def __init__(self, level_dir, name):
+        self.dir = level_dir
+        self.name = name
+
+    def path(self, *parts):
+        return os.path.join(self.dir, *parts)
+
+    def game_path(self, *parts):
+        return "/levels/" + self.name + "/" + "/".join(p.replace("\\", "/") for p in parts)

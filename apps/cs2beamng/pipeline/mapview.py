@@ -284,10 +284,10 @@ def _suggestions(bundle, midpoints):
     for x, y, z, label in midpoints:
         points.append(frame.to_beamng(x, y, z))
         labels.append(label)
-    network = poi_stage._Network(points, [(1.0, 0.0)] * len(points))
+    network = poi_stage.Network(points, [(1.0, 0.0)] * len(points))
     network.labels = labels
     out = []
-    for entry in poi_stage._derive(network, SUGGESTIONS, []):
+    for entry in poi_stage.derive(network, SUGGESTIONS, []):
         bx, by = entry["at_beamng"]
         x, _up, z = frame.to_bundle(bx, by, 0.0)
         out.append(

@@ -34,6 +34,8 @@ scores is an estimator nobody can trust.
 import json
 import os
 
+from csiibundle import png
+
 from .. import settings as settings_mod
 from ..beamng import dds as dds_mod
 from ..beamng import materials as bm
@@ -303,8 +305,9 @@ _HEADER_CACHE = {}
 def _png_header(path):
     """`(width, height, colourType)` from a PNG's IHDR, cached on (path, mtime, size).
 
-    33 bytes per file. The reference city's texture plan is ~8,000 of them and the meter re-runs
-    on every settings change, so the cache is what keeps it under a frame.
+    26 bytes per file, read by `csiibundle.png.read_header`. The reference city's texture plan is
+    ~8,000 of them and the meter re-runs on every settings change, so the cache is what keeps it
+    under a frame — the cache is this function's reason to exist; the parsing never was.
     """
     try:
         stat = os.stat(path)
@@ -314,17 +317,8 @@ def _png_header(path):
     hit = _HEADER_CACHE.get(path)
     if hit is not None and hit[0] == key:
         return hit[1]
-    try:
-        with open(path, "rb") as handle:
-            head = handle.read(26)
-    except OSError:
-        return None
-    if head[:8] != b"\x89PNG\r\n\x1a\n" or head[12:16] != b"IHDR":
-        _HEADER_CACHE[path] = (key, None)
-        return None
-    width = int.from_bytes(head[16:20], "big")
-    height = int.from_bytes(head[20:24], "big")
-    out = (width, height, head[25])
+    header = png.read_header(path)
+    out = None if header is None else (header[0], header[1], header[3])
     _HEADER_CACHE[path] = (key, out)
     return out
 

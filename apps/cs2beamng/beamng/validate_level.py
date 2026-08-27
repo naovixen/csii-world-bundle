@@ -186,7 +186,7 @@ def check(level_dir, bundle_dir, progress=None, settings=None):
     # A local light needs the DEFERRED renderer. Read the profile the level will actually be
     # loaded on and say so, because nothing about the level itself can reveal this (§82).
     placed_lights = len(by_class.get("PointLight", [])) + len(by_class.get("SpotLight", []))
-    manager, manager_source = _light_manager()
+    manager, manager_source = light_manager()
     checks["lightManager"] = {"manager": manager, "source": manager_source, "lights": placed_lights}
     if placed_lights and manager and "basic" in manager.lower():
         note(
@@ -220,7 +220,7 @@ def check(level_dir, bundle_dir, progress=None, settings=None):
     # are 4^-reduction of what the level ships
     texture_mib = resident["textures"] / (1024.0 * 1024.0) / float(4 ** max(0, reduction))
     total_mib = resident["meshes"] / (1024.0 * 1024.0) + texture_mib
-    vram_mib, pixels, target_source = _render_target(settings)
+    vram_mib, pixels, target_source = render_target(settings)
     budget_mib = resident_budget_mib(vram_mib, pixels)
     failure_mib = resident_failure_mib(vram_mib, pixels)
     checks["resident"] = {
@@ -779,7 +779,7 @@ def _shape_present(path):
     return ext.lower() == ".dae" and os.path.isfile(stem + ".cdae")
 
 
-def _light_manager():
+def light_manager():
     """`(name, source)` — the lighting path the user's BeamNG is set to render with.
 
     **A local light does nothing at all under `Basic Lighting`, and the level cannot tell.**
@@ -825,7 +825,7 @@ def _light_manager():
     return name, "game-settings.json"
 
 
-def _render_target(settings):
+def render_target(settings=None):
     """`(vram_mib, pixels, source)` — the machine the budget is derived for.
 
     Settings win when set; otherwise the numbers are READ, not assumed. BeamNG prints both at
@@ -852,6 +852,34 @@ def _render_target(settings):
     if vram and pixels:
         return vram, pixels, "from settings"
 
+    log_vram, log_pixels = _target_from_logs()
+    parts = []
+    if vram:
+        parts.append("card from settings")
+    elif log_vram:
+        vram = log_vram
+        parts.append("card from beamng.log")
+    else:
+        vram = REFERENCE_VRAM_MIB
+        parts.append("REFERENCE card, no beamng.log")
+    if pixels:
+        parts.append("resolution from settings")
+    elif log_pixels:
+        pixels = log_pixels
+        parts.append("resolution from beamng.log")
+    else:
+        pixels = REFERENCE_PIXELS
+        parts.append("REFERENCE 1080p, no resolution logged")
+    return vram, pixels, ", ".join(parts)
+
+
+def _target_from_logs():
+    """`(vram_mib, pixels)` read out of the BeamNG logs, either half `None` if never printed.
+
+    Newest log first, and each half taken from the newest log that actually carries it — a
+    session that started and quit without opening a window prints the VRAM and never prints a
+    resolution.
+    """
     log_vram = log_pixels = None
     for path in _beamng_logs():
         if log_vram is not None and log_pixels is not None:
@@ -871,21 +899,7 @@ def _render_target(settings):
                         break
         except OSError:
             continue
-
-    parts = []
-    if vram:
-        parts.append("card from settings")
-    elif log_vram:
-        vram, _ = log_vram, parts.append("card from beamng.log")
-    else:
-        vram, _ = REFERENCE_VRAM_MIB, parts.append("REFERENCE card, no beamng.log")
-    if pixels:
-        parts.append("resolution from settings")
-    elif log_pixels:
-        pixels, _ = log_pixels, parts.append("resolution from beamng.log")
-    else:
-        pixels, _ = REFERENCE_PIXELS, parts.append("REFERENCE 1080p, no resolution logged")
-    return vram, pixels, ", ".join(parts)
+    return log_vram, log_pixels
 
 
 def _beamng_logs():
@@ -984,24 +998,12 @@ def _ground_check(terrain, bundle_dir, progress):
         return {"sampled": 0}
     arr = numpy.abs(numpy.asarray(dz))
     return {
+        # Which height this was measured against — see `ter.sample_height` for the deviation
+        # from the triangulation BeamNG actually renders, and why it is under the tolerance.
+        "sampler": "bilinear",
         "sampled": int(arr.size),
         "fraction": float((arr <= GROUND_TOLERANCE).mean()),
         "medianAbs": float(numpy.median(arr)),
         "p95Abs": float(numpy.percentile(arr, 95)),
         "meanSigned": float(numpy.mean(dz)),
     }
-
-
-# -- public wrappers, for `cs2beamng doctor` and the UI's "target machine" line ----------------
-# Same readers the validator uses, so what the app SAYS about this machine and what it BUDGETS
-# for it can never drift apart.
-
-
-def render_target(settings=None):
-    """`(vram_mib, pixels, source)` for this machine - settings first, then the BeamNG logs."""
-    return _render_target(settings or {})
-
-
-def light_manager():
-    """`(profile_name, source)` - "Advanced Lighting" / "Basic Lighting" from game-settings.json."""
-    return _light_manager()

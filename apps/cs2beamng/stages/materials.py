@@ -17,8 +17,10 @@ plus the area-surface materials.
   find (that renders as the orange "no material" checker).
 
 The stage records `ctx.shared["materials"] = {"aliases", "canonical", "known"}` for the
-shape/tile stages: `mapto_name(shared, level, raw)` is the one function that turns a bundle
-material name into the bound name.
+shape/tile stages: `beamng.materials.mapto_name(shared, level, raw)` is the one function that
+turns a bundle material name into the bound name. That binding used to live HERE, and the
+`derived` and `networks` stages imported it out of this module — one stage acting as another's
+library. It sits beside `mapto`, which it calls.
 """
 
 import json
@@ -28,6 +30,7 @@ import time
 
 from csiibundle import png
 
+from ..beamng import matbind
 from ..beamng import materials as bm
 from ..beamng.level import Level
 from . import Stage, level_of
@@ -42,43 +45,6 @@ def enabled(settings):
 def units(census, settings):
     counts = ((census or {}).get("bundle") or {}).get("counts") or {}
     return int(counts.get("materials") or 1)
-
-
-def mapto_name(shared, level, raw):
-    """Bound material name for a bundle material name (alias → canonical → prefixed), and a
-    record that this build binds it (the materials stage exports only what was bound)."""
-    info = _aliases(shared, level)
-    canonical = info["aliases"].get(raw, raw)
-    if shared is not None:
-        shared.setdefault("materials_used", set()).add(canonical)
-    return bm.mapto(level.name, canonical)
-
-
-def aliases_of(shared, level):
-    """The bake's alias table itself — what a worker process needs to bind names without the
-    `shared` dict (which cannot cross a process boundary and must not: it is where a stage
-    records what it bound)."""
-    return _aliases(shared, level)["aliases"]
-
-
-def _aliases(shared, level):
-    """The bake's alias table, loaded once per build (before the materials stage runs)."""
-    if shared is not None and "materials_aliases" in shared:
-        return shared["materials_aliases"]
-    aliases = {}
-    derived_dir = getattr(level, "derived_dir", None)
-    if derived_dir:
-        path = os.path.join(derived_dir, "materials.json")
-        if os.path.isfile(path):
-            try:
-                with open(path, encoding="utf-8") as handle:
-                    aliases = json.load(handle).get("aliases") or {}
-            except (OSError, ValueError):
-                aliases = {}
-    info = {"aliases": aliases}
-    if shared is not None:
-        shared["materials_aliases"] = info
-    return info
 
 
 def run(ctx, progress):
@@ -169,7 +135,7 @@ def run(ctx, progress):
     for name in canonical:
         rec = materials.get(name) or {}
         maps = {slot: exported.get(job) for slot, job in plans[name].items()}
-        bound = bm.mapto(level.name, name)
+        bound = matbind.mapto(level.name, name)
         out[bound] = bm.material_v15(level, bound, rec, maps, pid_key=f"material:{name}")
         progress.advance(1)
     # areas
@@ -181,7 +147,7 @@ def run(ctx, progress):
             area_doc = json.load(handle)
         cache = {}
         for raw, rec in (area_doc.get("materials") or {}).items():
-            bound = bm.mapto(level.name, raw)
+            bound = matbind.mapto(level.name, raw)
             maps = {}
             tex = rec.get("texture")
             keep_alpha = False
@@ -239,10 +205,10 @@ def run(ctx, progress):
 
     for raw in extra:
         if not raw.startswith("area:"):
-            bound = bm.mapto(level.name, raw)
+            bound = matbind.mapto(level.name, raw)
             out.setdefault(bound, bm.placeholder_material(level, bound))
-    out[bm.mapto(level.name, "unmapped")] = bm.placeholder_material(
-        level, bm.mapto(level.name, "unmapped")
+    out[matbind.mapto(level.name, "unmapped")] = bm.placeholder_material(
+        level, matbind.mapto(level.name, "unmapped")
     )
     level.write_materials("cs2", out)
     # NOW the orphan sweep: `keep` is everything this build exported, the area surfaces included.
@@ -357,7 +323,7 @@ def _variant_plans(ctx, materials, plans):
                 ]
             else:
                 continue  # nothing for this pair; the shape binds the plain name
-            bound = bm.mapto(ctx.settings["level_name"], f"{canon}__v{vkey}")
+            bound = matbind.mapto(ctx.settings["level_name"], f"{canon}__v{vkey}")
             out[bound] = {
                 "rec": rec,
                 "maps": maps,

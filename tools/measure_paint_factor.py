@@ -32,46 +32,8 @@ import numpy
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
-from csiibundle import png, tints  # noqa: E402
+from csiibundle import colour, images, png, tints  # noqa: E402
 from csiibundle.bake.locate import default_bundle_dir  # noqa: E402
-
-
-def srgb_to_linear(arr):
-    a = numpy.asarray(arr, dtype=numpy.float64) / 255.0
-    return numpy.where(a <= 0.04045, a / 12.92, ((a + 0.055) / 1.055) ** 2.4)
-
-
-def linear_to_srgb8(arr):
-    a = numpy.clip(arr, 0.0, 1.0)
-    s = numpy.where(a <= 0.0031308, a * 12.92, 1.055 * numpy.power(a, 1 / 2.4) - 0.055)
-    return numpy.clip(numpy.rint(s * 255.0), 0, 255).astype(numpy.uint8)
-
-
-def resample_nearest(img, h, w):
-    if img.shape[0] == h and img.shape[1] == w:
-        return img
-    rows = numpy.clip((numpy.arange(h) * img.shape[0] / h).astype(numpy.int64), 0, img.shape[0] - 1)
-    cols = numpy.clip((numpy.arange(w) * img.shape[1] / w).astype(numpy.int64), 0, img.shape[1] - 1)
-    return img[rows][:, cols]
-
-
-def multiplier(mask_rgb, colours):
-    """`M(texel)` — the per-texel RGB multiplier `tints.apply_reference` amounts to."""
-    out = numpy.ones((*mask_rgb.shape[:2], 3), dtype=numpy.float64)
-    for i in range(tints.CHANNELS):
-        w = mask_rgb[..., i][..., None]
-        c = numpy.asarray(colours[i][:3], dtype=numpy.float64)
-        out = out * ((1.0 - w) + w * c)
-    return out
-
-
-def best_factor(m, weight):
-    """The constant that minimises the weighted squared error against `M` per channel."""
-    w = weight[..., None]
-    denom = w.sum()
-    if denom <= 0:
-        return m.reshape(-1, 3).mean(axis=0)
-    return (m * w).reshape(-1, 3).sum(axis=0) / float(denom)
 
 
 def measure(bundle, derived, limit=None, progress=True):
@@ -115,8 +77,8 @@ def measure(bundle, derived, limit=None, progress=True):
         if factor_down > 1:
             base = png.downsample_box(base, factor_down)
             h, w = base.shape[:2]
-        mask_r = resample_nearest(mask, h, w).astype(numpy.float64) / 255.0
-        base_lin = srgb_to_linear(base[:, :, :3])
+        mask_r = images.resize_nearest(mask, h, w).astype(numpy.float64) / 255.0
+        base_lin = colour.srgb8_to_linear(base[:, :, :3])
         alpha = base[:, :, 3].astype(numpy.float64) / 255.0
         touched = float((mask_r[:, :, :3].max(axis=2) > 1.0 / 255.0).mean())
         for vkey in sorted((rec.get("derived") or {}).get("variants") or {}):
@@ -124,10 +86,10 @@ def measure(bundle, derived, limit=None, progress=True):
             if centre is None:
                 continue
             colours = [(*tuple(centre[i]), 1.0) for i in range(3)]
-            m = multiplier(mask_r[:, :, :3], colours)
-            exact8 = linear_to_srgb8(base_lin * m).astype(numpy.int16)
-            factor = best_factor(m, alpha)
-            approx8 = linear_to_srgb8(base_lin * factor[None, None, :]).astype(numpy.int16)
+            m = tints.multiplier(mask_r[:, :, :3], colours)
+            exact8 = colour.linear_to_srgb8(base_lin * m).astype(numpy.int16)
+            factor = tints.best_constant(m, alpha)
+            approx8 = colour.linear_to_srgb8(base_lin * factor[None, None, :]).astype(numpy.int16)
             err = numpy.abs(exact8 - approx8)
             visible = alpha > 0.5
             if visible.any():

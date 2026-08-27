@@ -13,14 +13,14 @@ material table, base-colour URIs are added relative to the tile file so a stock 
 something — the join a consumer relies on is still the NAME.
 """
 
-import math
+import json
 import os
 from collections import defaultdict
 from multiprocessing import Pool
 
 import numpy
 
-from .. import glbwrite
+from .. import glbwrite, reader
 
 WELD_MM = 0.5  # positions within half a millimetre AND equal UV/colour weld into one vertex
 
@@ -281,5 +281,51 @@ def weld(corners, uvs, colors=None, normals=None):
     return verts, out_uv, out_col, tris[keep], acc.astype(numpy.float32)
 
 
-def tile_of(x, z, tile):
-    return int(math.floor(x / tile)), int(math.floor(z / tile))
+# -- what a tile's materials point at ----------------------------------------------------------
+
+
+def material_specs(derived, bundle):
+    """Base-colour paths + alpha modes for the tile writer, from the bake's own materials
+    product when present, else straight from `materials.json`.
+
+    Here because three products need it — `markings`, `skirts`, `lanegeometry` — and the two
+    latter used to import it out of `markings` by its private name. It is about what a TILE
+    carries, which is this module's subject.
+    """
+    path = os.path.join(derived, "materials.json")
+    specs = {}
+    try:
+        if os.path.isfile(path):
+            doc = json.load(open(path, encoding="utf-8"))
+            for key, entry in doc.get("materials", {}).items():
+                specs[key] = {
+                    "baseColor": entry.get("baseColor"),
+                    "normal": entry.get("normal"),
+                    "alphaMode": entry.get("alphaMode"),
+                    "alphaCutoff": entry.get("alphaCutoff"),
+                    "doubleSided": entry.get("doubleSided"),
+                    "baseColorFactor": entry.get("baseColorFactor"),
+                }
+            return specs
+    except Exception:
+        pass
+    for key, entry in (reader.load_materials(bundle) or {}).items():
+        specs[key] = {
+            "baseColor": entry.get("baseColor"),
+            "normal": entry.get("normal"),
+            "alphaMode": entry.get("alphaMode"),
+            "alphaCutoff": entry.get("alphaCutoff"),
+            "doubleSided": entry.get("doubleSided"),
+        }
+    return specs
+
+
+def texture_uri_base(out_dir, bundle):
+    """Relative URI prefix from a tile directory to `<bundle>/textures/`, or None when no
+    relative path exists (different drive)."""
+    try:
+        textures = reader.layer_path(bundle, "textures")
+        rel = os.path.relpath(textures, out_dir).replace(os.sep, "/")
+        return rel.rstrip("/") + "/"
+    except ValueError:
+        return None

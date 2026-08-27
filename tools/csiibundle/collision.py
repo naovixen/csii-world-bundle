@@ -1,20 +1,24 @@
 """Colliders for an engine that wants simple ones — and the thickness rule that makes them work.
 
-BeamNG's guidance (and every physics engine's): collide with something SIMPLER than the visible
-mesh, keep it at least ~0.3 m thick so a wheel at speed cannot tunnel through or snag on it, and
-never build a collider out of paint. This module turns a mesh (or its LOD) into that:
+Every physics engine's guidance: collide with something SIMPLER than the visible mesh, keep it
+thick enough that a wheel at speed cannot tunnel through or snag on it, and never build a
+collider out of paint. This module turns a mesh (or its LOD) into that:
 
 * `thickness` — the object's smallest extent along its principal axes; a fence panel or a sign
   is thin, a building or a tree trunk is not.
 * `colmesh_from_lod` — a decimated LOD as the collider when the shape is thick enough, else None
   (the caller falls back to `colbox`).
 * `colbox` — the bounding box as 12 triangles; the collider for thin or tiny things.
+* `trunk_group` — the vertices that make up a tree's trunk, by material name or by footprint.
 * `trunk_cylinder` — a tree's collider: an 8-sided cylinder around the trunk sub-mesh, so a car
   stops at the trunk and drives through the canopy the way it does in every driving game.
-* `wind_vertex_colours` — BeamNG's forest wind reads vertex colours (R up/down bend, G
-  per-instance variation, B flutter, black = rigid); CS2 meshes carry none, so this synthesises
-  a plausible set from height and distance to the trunk axis. Cosmetic and TUNED; off by
-  default in the app.
+
+**How thick is thick enough is the ENGINE's number, and it is not here.** `colmesh_from_lod` and
+`colbox` require `min_thickness` from the caller. It used to default to BeamNG's ~0.3 m rule of
+thumb, which put one engine's tuning in the package both consumers share and let a caller take it
+without knowing it had; `cs2beamng` states it as `beamng.dae.MIN_COLLIDER_THICKNESS`.
+`wind_vertex_colours` left for the same reason — the R/G/B channel meanings are BeamNG's forest
+shader's, and it now lives in `beamng/dae.py` and calls `trunk_group` here.
 
 Everything takes and returns arrays in whatever frame the caller holds (positions only matter
 relative to each other), so it works on glTF-space `parse_glb` output directly.
@@ -22,7 +26,6 @@ relative to each other), so it works on glTF-space `parse_glb` output directly.
 
 import numpy
 
-MIN_THICKNESS = 0.3  # metres — BeamNG's own rule of thumb for a collider that holds at speed
 CYLINDER_SIDES = 8
 
 
@@ -55,7 +58,7 @@ def thickness(verts, tris=None):
     return float(extents.min())
 
 
-def colmesh_from_lod(mesh, min_thickness=MIN_THICKNESS):
+def colmesh_from_lod(mesh, min_thickness):
     """The mesh itself (dict with `verts`/`tris`) when it is thick enough to be a collider, else
     None. Pass a decimated LOD (`decimate.lod_ladder`'s ~25 % level), not LOD 0."""
     if mesh is None or len(mesh.get("tris", ())) == 0:
@@ -68,7 +71,7 @@ def colmesh_from_lod(mesh, min_thickness=MIN_THICKNESS):
     }
 
 
-def colbox(bounds_min, bounds_max, min_thickness=MIN_THICKNESS):
+def colbox(bounds_min, bounds_max, min_thickness):
     """An axis-aligned box as `(verts (8,3), tris (12,3))`, each side at least `min_thickness`
     (thin extents are padded symmetrically so a sign or a fence panel still holds a wheel)."""
     lo = numpy.asarray(bounds_min, dtype=numpy.float64).copy()
@@ -112,7 +115,7 @@ def colbox(bounds_min, bounds_max, min_thickness=MIN_THICKNESS):
     return verts, tris
 
 
-def _trunk_group(mesh, up_axis=1):
+def trunk_group(mesh, up_axis=1):
     """Index array of the vertices most likely to be the trunk: the material run whose name
     says so, else the run with the smallest horizontal footprint that reaches the base."""
     tris = numpy.asarray(mesh["tris"], dtype=numpy.int64)
@@ -148,7 +151,7 @@ def trunk_cylinder(mesh, up_axis=1, min_radius=0.15, sides=CYLINDER_SIDES):
     its base to its top; radius = the trunk group's horizontal half-extent at its base band,
     floored at `min_radius`."""
     verts = numpy.asarray(mesh["verts"], dtype=numpy.float64)
-    idx = _trunk_group(mesh, up_axis)
+    idx = trunk_group(mesh, up_axis)
     pts = verts[idx]
     horizontal = [k for k in range(3) if k != up_axis]
     y0, y1 = float(pts[:, up_axis].min()), float(pts[:, up_axis].max())
@@ -176,25 +179,3 @@ def trunk_cylinder(mesh, up_axis=1, min_radius=0.15, sides=CYLINDER_SIDES):
         tris.append([0, i + 1, i])
         tris.append([sides, sides + i, sides + i + 1])
     return out, numpy.asarray(tris, dtype=numpy.int64)
-
-
-def wind_vertex_colours(mesh, up_axis=1, seed=0):
-    """`(N, 4)` float32 vertex colours in BeamNG's forest wind convention (R up/down bend,
-    G per-instance variation, B flutter; black = rigid) from height and radius. TUNED."""
-    verts = numpy.asarray(mesh["verts"], dtype=numpy.float64)
-    n = len(verts)
-    if n == 0:
-        return numpy.zeros((0, 4), numpy.float32)
-    idx = _trunk_group(mesh, up_axis)
-    horizontal = [k for k in range(3) if k != up_axis]
-    trunk_axis = verts[idx][:, horizontal].mean(axis=0)
-    h = verts[:, up_axis]
-    h_norm = numpy.clip((h - h.min()) / max(h.max() - h.min(), 1e-6), 0.0, 1.0)
-    r = numpy.linalg.norm(verts[:, horizontal] - trunk_axis, axis=1)
-    r_norm = numpy.clip(r / max(float(r.max()), 1e-6), 0.0, 1.0)
-    trunk_mask = numpy.zeros(n, dtype=bool)
-    trunk_mask[idx] = True
-    red = numpy.where(trunk_mask, 0.0, h_norm**2)  # bend grows with height, trunk rigid
-    green = numpy.full(n, 0.5 + 0.5 * ((seed * 0.6180339887) % 1.0))  # variation phase, per mesh
-    blue = numpy.where(trunk_mask, 0.0, r_norm * h_norm)  # flutter at the canopy edge
-    return numpy.stack([red, green, blue, numpy.ones(n)], axis=1).astype(numpy.float32)

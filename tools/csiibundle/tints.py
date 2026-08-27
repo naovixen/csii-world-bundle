@@ -63,14 +63,6 @@ def color_set(attrs):
     return out
 
 
-def is_tintable(material):
-    """Whether one `materials.json` entry participates in §7.2 — i.e. names a `colorMask`.
-
-    A material without one is painted by nothing and must be left exactly as the atlas has it.
-    """
-    return isinstance(material, dict) and "colorMask" in material
-
-
 def apply_reference(base, mask, colors):
     """The CPU reference for §7.2. `base` and the result are `(..., 3)` LINEAR RGB.
 
@@ -99,6 +91,41 @@ def apply_reference(base, mask, colors):
 # The quantisation the bake counts distinct colour sets at (`bake/materials.py`). It is part of
 # the variant contract: an index computed at any other step would land on a different centre.
 VARIANT_QUANT_STEPS = 31
+
+
+def multiplier(mask, colors):
+    """`M(texel)` — `apply_reference` expressed as a per-texel RGB multiplier, `(..., 3)`.
+
+    `apply_reference` is a chain of lerps ON the albedo; this is the same chain with the albedo
+    factored out, so `apply_reference(base, mask, colors) == base * multiplier(mask, colors)`.
+    A caller that wants to know what the tint DOES, independently of what it is applied to,
+    wants this — approximating the field by a constant, measuring the error of doing so.
+
+    Lived twice, verbatim: `bake/materials._tint_multiplier` and `measure_paint_factor.multiplier`
+    — the bake and the tool that measures whether the bake's approximation is good enough. Two
+    copies of the thing being measured is the one place a copy is least affordable.
+    """
+    out = numpy.ones((*numpy.shape(mask)[:-1], 3), dtype=numpy.float64)
+    mask = numpy.asarray(mask, dtype=numpy.float64)
+    for i in range(CHANNELS):
+        weight = mask[..., i][..., None]
+        tint = numpy.asarray(colors[i][:3], dtype=numpy.float64)
+        out = out * ((1.0 - weight) + weight * tint)
+    return out
+
+
+def best_constant(multiplier_field, weight):
+    """The per-channel constant minimising the weighted squared error against `multiplier_field`.
+
+    Weighted by `weight` — in practice the albedo's own luminance, so the constant is chosen to
+    be right where the texture is bright and the error would show. With no weight anywhere, the
+    unweighted mean, which is that same minimiser in the limit.
+    """
+    w = weight[..., None]
+    denom = float(w.sum())
+    if denom <= 0.0:
+        return multiplier_field.reshape(-1, 3).mean(axis=0)
+    return (multiplier_field * w).reshape(-1, 3).sum(axis=0) / denom
 
 
 def variant_vector(attrs):

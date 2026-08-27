@@ -35,8 +35,23 @@ def _steam_roots_linux():
     ]
 
 
+# The one environment variable that points every entry point at a bundle: CI, a bundle copied off
+# the game machine, a second rip kept side by side. It used to be two — `CS2_BUNDLE` in one
+# check tool and `CS2_BUNDLE_DIR` in the test fixtures — which meant setting "the" override moved
+# some of the tools and not others. `CS2_BUNDLE_DIR` won because it is the one CI already sets.
+BUNDLE_DIR_ENV = "CS2_BUNDLE_DIR"
+
+
 def candidate_bundle_dirs():
-    """Every place a bundle might be on this OS, most likely first."""
+    """Every place a bundle might be on this OS, most likely first.
+
+    `CS2_BUNDLE_DIR`, when set, is the only candidate — an override that still had the default
+    paths behind it would silently fall back to the wrong bundle the moment the named one was
+    missing, which is the failure the override exists to prevent.
+    """
+    override = os.environ.get(BUNDLE_DIR_ENV)
+    if override:
+        return [override]
     if sys.platform.startswith("win"):
         profile = os.environ.get("USERPROFILE") or os.path.expanduser("~")
         return [os.path.join(profile, "AppData", "LocalLow", MODSDATA_TAIL)]

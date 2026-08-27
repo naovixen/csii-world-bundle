@@ -15,6 +15,8 @@ import os
 
 import numpy
 
+from . import images
+
 # The lamp: up and to the north-west, the convention every relief map uses, so a ridge reads as a
 # ridge. Not a light in the scene - a slope shade over a flat colour.
 LIGHT = (-0.5, 0.5, 0.707)
@@ -64,20 +66,8 @@ def ground_palette(surfaces_dir, grounds):
         path = os.path.join(surfaces_dir, f"{ground}.png")
         if os.path.isfile(path):
             try:
-                colour = tuple(read_rgb(path).reshape(-1, 3).mean(axis=0))
+                colour = tuple(images.load_rgb(path).reshape(-1, 3).mean(axis=0))
             except Exception:
                 pass
         out.append(colour)
     return numpy.asarray(out or [NEUTRAL], dtype=numpy.float64)
-
-
-def read_rgb(path):
-    """`(h, w, 3)` uint8 from an 8-bit RGB or RGBA PNG (the theme textures are either)."""
-    from . import png
-
-    try:
-        return png.rgba_array(path)[:, :, :3]
-    except ValueError:
-        from PIL import Image
-
-        return numpy.asarray(Image.open(path).convert("RGB"))

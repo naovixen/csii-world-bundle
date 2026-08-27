@@ -79,23 +79,6 @@ INSTANCE_PRIORITY_STEP = 0.0005
 INSTANCE_PRIORITY_CEILING = (LIFT["instance_decal"] - LIFT["area"]) * 0.25
 
 
-def instance_priorities(records):
-    """The distinct `attrs.decalPriority` values among decal records, ascending.
-
-    Records without the attribute are ignored rather than treated as zero — absent means the
-    prefab carries no `DecalProperties`, which is not the same as priority zero (contract §4.2a).
-    """
-    seen = set()
-    for record in records or ():
-        attrs = record.get("attrs") or {}
-        if "decalPriority" in attrs:
-            try:
-                seen.add(int(attrs["decalPriority"]))
-            except (TypeError, ValueError):
-                continue
-    return sorted(seen)
-
-
 def instance_priority_lift(priority, ordered):
     """Extra metres above the `instance_decal` rung for a decal of this priority.
 

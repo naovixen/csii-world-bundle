@@ -127,13 +127,19 @@ def run(ctx, progress):
         azimuth = math.degrees(math.atan2(tx, tz)) % 360.0
         elevation = math.degrees(math.asin(max(-1.0, min(1.0, ty))))
     sun_rgb = list(lighting.sun.color) if lighting.sun.enabled else [1.0, 1.0, 1.0]
-    if lighting.sun.enabled and lighting.sun.use_color_temperature:
-        bb = (
-            colour_mod.blackbody(lighting.sun.temperature)
-            if hasattr(colour_mod, "blackbody")
-            else (1.0, 1.0, 1.0)
-        )
-        sun_rgb = [sun_rgb[i] * bb[i] for i in range(3)]
+    # APPROXIMATED, declared and counted. `csiibundle.colour.Light` states the rule: the sun's
+    # effective colour is the authored filter TIMES the blackbody colour of `temperature` Kelvin
+    # whenever `use_color_temperature` is set. Only the filter is applied here, because no
+    # blackbody exists to apply — not in `csiibundle.colour`, not anywhere in either package.
+    #
+    # This line used to read `colour_mod.blackbody(...) if hasattr(colour_mod, "blackbody")
+    # else (1, 1, 1)`, which is a constant wearing a function call: the attribute has never
+    # existed, so the branch multiplied by white every time. It looked handled and was not.
+    # Writing the blackbody curve is feature work and the refactor is frozen for it, so the gap
+    # is declared instead of disguised, and `sunColorTemperatureIgnored` in the report says when
+    # it actually bit. On the reference city the flag is off and the filter is white, so it
+    # reports false — but that is a property of one save, not of the format.
+    sun_temperature_ignored = bool(lighting.sun.enabled and lighting.sun.use_color_temperature)
     peak = max(sun_rgb) or 1.0
     sun_scale = [round(c / peak, 4) for c in sun_rgb] + [1]
     level.add(
@@ -231,6 +237,8 @@ def run(ctx, progress):
         "visibleDistance": view,
         "sunAzimuth": round(azimuth, 1),
         "sunElevation": round(elevation, 1),
+        # see the APPROXIMATED note where sun_rgb is built
+        "sunColorTemperatureIgnored": sun_temperature_ignored,
         # the `lights` stage reads this: `nightLight` objects are dark unless the clock is
         # inside `environment.lua`'s (0.25, 0.75) night window, and the clock does not move
         "todHour": round(hour, 3),

@@ -320,3 +320,28 @@ def downsample_box(pixels, factor):
         info = numpy.iinfo(arr.dtype)
         return numpy.clip(numpy.rint(mean), info.min, info.max).astype(arr.dtype)
     return mean.astype(arr.dtype)
+
+
+# -- the header, without the pixels ------------------------------------------------------------
+
+
+def read_header(path):
+    """`(width, height, bit_depth, colour_type)` from a PNG's IHDR, or `None`.
+
+    Reads **26 bytes**, not the file — which is the whole point. `_read_chunks` above walks every
+    chunk because it is about to decode the pixels; a caller that only wants the dimensions is
+    usually asking about thousands of files at once (the cost meter sizes ~8,000 textures on
+    every settings change) and cannot afford to read them.
+
+    `None` covers both "no readable file there" and "not a PNG", because every caller treats
+    those the same way.
+    """
+    try:
+        with open(path, "rb") as handle:
+            head = handle.read(26)
+    except OSError:
+        return None
+    if len(head) < 26 or head[:8] != PNG_SIGNATURE or head[12:16] != b"IHDR":
+        return None
+    width, height = struct.unpack(">II", head[16:24])
+    return width, height, head[24], head[25]

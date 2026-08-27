@@ -4460,8 +4460,11 @@ Two design notes worth keeping:
   into the air. The headroom is a quarter of the gap below the rung, so the top-priority decal
   stays nearer the paint it sits on than the area rung underneath.
 * **Absent ≠ zero.** `instances.decal_priority` returns `None` where the prefab carries no
-  `DecalProperties`, and `instance_priorities` ignores those rather than counting them as 0 —
-  the distinction the contract draws and the schema note records.
+  `DecalProperties`, and the bake's `decal_priorities_seen` set ignores those rather than
+  counting them as 0 — the distinction the contract draws and the schema note records.
+  (A second implementation of that collection lived in `decals.instance_priorities` with no
+  callers; refactor Phase 2 deleted it, and `bake/markings.py` is now the only place the
+  distinct set is built.)
 * The instance file is read **once**: priorities are collected while streaming its 1.2 M records
   and the rank lifts are applied to the blocks afterwards, before draping. A pre-pass to learn the
   distinct set would have doubled the read for a field that is constant.

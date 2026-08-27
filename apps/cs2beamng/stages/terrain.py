@@ -46,7 +46,7 @@ import os
 import time
 
 import numpy
-from csiibundle import png, reader
+from csiibundle import images, png, reader
 from csiibundle import splat as splat_mod
 from csiibundle import terrain as terrain_mod
 from csiibundle.bake import terraincut
@@ -536,23 +536,6 @@ def _neutral_map(level, kind, tier="detail", size=1024):
     return level.game_path("art", "terrains", name)
 
 
-def _read_alpha(path):
-    """(h, w) uint8 alpha from an 8-bit RGBA PNG, or None when the file has no alpha."""
-    if not os.path.isfile(path):
-        return None
-    try:
-        rgba = png.rgba_array(path)
-    except ValueError:
-        from PIL import Image
-
-        image = Image.open(path)
-        if image.mode not in ("RGBA", "LA"):
-            return None
-        rgba = numpy.asarray(image.convert("RGBA"))
-    alpha = rgba[:, :, 3]
-    return None if int(alpha.max()) == int(alpha.min()) else alpha
-
-
 def _height_texture(level, src, name, sharpen=1.0):
     """The ground's own height map, from `<ground>_normal.png`'s alpha, as a TIER DEVIATION —
     the game path, or None when the source carries no height.
@@ -563,7 +546,12 @@ def _height_texture(level, src, name, sharpen=1.0):
     `0.5 + (2·(0.5 + σ/2) − 1)·1` then lands at exactly `0.5 ± HEIGHT_SIGMA` close up. Writing
     the full sigma into all three tiers, as this did before `_tier_deviation` existed, tripled it.
     """
-    alpha = _read_alpha(src)
+    # `images.load_alpha` decodes; whether the file is there at all is this caller's question, and
+    # `normal_src` is a path built by name — a ground with no normal map simply has no file.
+    # `_rgb_texture` guards the same way for the same reason.
+    if not os.path.isfile(src):
+        return None
+    alpha = images.load_alpha(src)
     if alpha is None:
         return None
     values = alpha.astype(numpy.float64) / 255.0
@@ -579,13 +567,6 @@ def _height_texture(level, src, name, sharpen=1.0):
     return level.game_path("art", "terrains", name)
 
 
-def _read_rgb(path):
-    """(h, w, 3) uint8 from an 8-bit RGB or RGBA PNG (the theme textures are either)."""
-    from csiibundle import groundmap
-
-    return groundmap.read_rgb(path)
-
-
 def _linear_luminance(rgb8):
     lin = (rgb8.astype(numpy.float64) / 255.0) ** 2.2
     return float((0.2126 * lin[..., 0] + 0.7152 * lin[..., 1] + 0.0722 * lin[..., 2]).mean())
@@ -597,7 +578,7 @@ def _albedo_gain(surfaces_dir, user_gain):
     gain = 1.0
     if os.path.isfile(path):
         try:
-            lum = _linear_luminance(_read_rgb(path))
+            lum = _linear_luminance(images.load_rgb(path))
             if lum > 1e-4:
                 gain = min(MAX_GAIN, GRASS_TARGET_LUMINANCE / lum)
         except Exception:
@@ -643,7 +624,7 @@ def _rgb_texture(level, src, name, gain=1.0, deviation=False):
     dst = level.path("art", "terrains", name)
     os.makedirs(os.path.dirname(dst), exist_ok=True)
     try:
-        rgb = _read_rgb(src)
+        rgb = images.load_rgb(src)
         if abs(gain - 1.0) > 1e-3:
             lin = (rgb.astype(numpy.float64) / 255.0) ** 2.2 * gain
             rgb = (numpy.clip(lin, 0.0, 1.0) ** (1 / 2.2) * 255.0 + 0.5).astype(numpy.uint8)
@@ -700,7 +681,7 @@ def _ground_mesh_maps(level, src, name, gain=1.0, normal=False, size=2048):
     if not os.path.isfile(src):
         return None, None
     try:
-        rgb = _read_rgb(src)
+        rgb = images.load_rgb(src)
         if abs(gain - 1.0) > 1e-3 and not normal:
             lin = (rgb.astype(numpy.float64) / 255.0) ** 2.2 * gain
             rgb = (numpy.clip(lin, 0.0, 1.0) ** (1 / 2.2) * 255.0 + 0.5).astype(numpy.uint8)

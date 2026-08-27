@@ -37,10 +37,9 @@ sys.path.insert(0, HERE)
 import itertools  # noqa: E402 - after the sys.path bootstrap above
 
 from csiibundle import bezier, png, reader, terrain  # noqa: E402
+from csiibundle.bake.locate import default_bundle_dir  # noqa: E402
 
-BUNDLE = os.environ.get("CS2_BUNDLE") or os.path.join(
-    os.environ["USERPROFILE"], "AppData/LocalLow/Colossal Order/Cities Skylines II/ModsData/Carto"
-)
+BUNDLE = default_bundle_dir()  # CS2_BUNDLE_DIR overrides; see `locate.BUNDLE_DIR_ENV`
 
 # `TerrainRipSystem.ClipBandExpansion` — GenerateClipDataJob's +-0.3 m, added to the band AFTER
 # the offsets are taken, so subtracting it recovers the game's own cmin/cmax profile bounds.

@@ -185,21 +185,6 @@ AREA_NODE_DISTANCE = {"Lot": 8.0, "District": 32.0, "MapTile": 64.0, "Space": 1.
 DEFAULT_AREA_NODE_DISTANCE = 1.0
 
 
-def area_triangle_min_lod(nearest_two, node_distance=AREA_NODE_DISTANCE["Surface"], bias=0.0):
-    """`Game.Areas.GeometrySystem:562` — one area triangle's `m_MinLod`.
-
-    `CalculateLodLimit(GetRenderingSize(float3(4*d1, nodeDistance, 4*d2)), m_LodBias)`, where
-    `d1 <= d2` are the two smallest distances from the triangle's chosen centre point to the
-    area's own boundary edges. So an area is drawn as far as it is WIDE, not as far as it is
-    long: a 2 m footpath vanishes at a 2 m thing's distance however far it runs. `AreaBatchSystem`
-    then keeps the triangle while `CalculateLod(minDistance^2) >= m_MinLod`, per triangle.
-
-    `nearest_two` is `(d1, d2)` in metres.
-    """
-    d1, d2 = (float(nearest_two[0]), float(nearest_two[1]))
-    return calculate_lod_limit(rendering_size_raw((4.0 * d1, float(node_distance), 4.0 * d2)), bias)
-
-
 def area_triangle_min_lods(
     nodes_xz, triangles, node_distance=AREA_NODE_DISTANCE["Surface"], bias=0.0
 ):

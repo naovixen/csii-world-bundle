@@ -193,17 +193,11 @@ def _cell(x, z):
 def _state_stem(record, mesh_dir, _cache={}):  # noqa: B006 - module-lived probe cache
     """The first mesh state of this record that is on disk, or None if none is.
 
-    `mesh_candidates` is the contract's own walk (§6.1) and `stages/shapes` uses the same one;
-    a variant file exists only where the prefab flags that state, so absence means the game has
-    no such variant either. One file probe per distinct name, cached across the whole pass.
+    Unlike the two callers in `stages/`, this wants the whole stem and not the suffix: the key it
+    builds is the prefab plus its state (`Oak__elderly`), which is what a shape is named by.
+    One file probe per distinct name, cached across the whole pass.
     """
-    for candidate in bundle_instances.mesh_candidates(record):
-        have = _cache.get(candidate)
-        if have is None:
-            have = _cache[candidate] = os.path.isfile(os.path.join(mesh_dir, candidate + ".glb"))
-        if have:
-            return candidate
-    return None
+    return bundle_instances.first_mesh_state(record, mesh_dir, _cache)
 
 
 def _lod_bytes(lod_dir):

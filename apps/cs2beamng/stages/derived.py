@@ -13,7 +13,7 @@ primitive per material); this stage is a frame change and a policy table:
 
 Paint is a projection lifted millimetres above a surface that already collides — a collider
 there is a lip that catches wheels (plan: collision policy). Each tile's geometry is written
-relative to its tile origin. Materials bind `materials.mapto_name`.
+relative to its tile origin. Materials bind `beamng.materials.mapto_name`.
 
 ## The LOD ladder (A4)
 
@@ -44,8 +44,9 @@ from csiibundle import region as region_rule
 from csiibundle.bake.tiles import MIN_LOD_MARK, split_material_name
 
 from ..beamng import dae, frame, tilelod
+from ..beamng.level import LevelPaths
+from ..beamng.matbind import aliases_of, mapto_name
 from . import Stage, level_of
-from .materials import aliases_of, mapto_name
 
 STAGE_KEY = "derived"
 TILE_DETAIL_PX = tilelod.ALWAYS_PX  # what a tile nothing culls still ships (see beamng/tilelod)
@@ -262,21 +263,6 @@ def _tile_job(args):
         "extraGeoms": sum(len(ms) for _px, ms in levels) - len(levels),
         "used": sorted(shared.get("materials_used") or ()),
     }
-
-
-class LevelPaths:
-    """The `Level` methods a tile worker needs, without a `Level` — which owns the scene tree and
-    the persistent-id set and must stay in the parent process."""
-
-    def __init__(self, level_dir, name):
-        self.dir = level_dir
-        self.name = name
-
-    def path(self, *parts):
-        return os.path.join(self.dir, *parts)
-
-    def game_path(self, *parts):
-        return "/levels/" + self.name + "/" + "/".join(p.replace("\\", "/") for p in parts)
 
 
 def _ground_mapto(level, mat):

@@ -161,12 +161,6 @@ def bundle_to_zup_point(pos):
     return (float(pos[0]), float(pos[2]), float(pos[1]))
 
 
-def zup_to_bundle_point(pos):
-    """The inverse of `bundle_to_zup_point` — which is the same swap. Named for readability at
-    a call site that is going the other way (a picked world coordinate back into bundle terms)."""
-    return (float(pos[0]), float(pos[2]), float(pos[1]))
-
-
 def to_zup_transform(matrix):
     """A bundle-frame TRANSFORM re-expressed for a Z-up consumer: `P · M · P⁻¹`.
 

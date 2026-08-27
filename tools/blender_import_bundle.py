@@ -20,8 +20,8 @@ it every tree and bush renders the grey the atlas actually stores.
 
     blender --python tools/blender_import_bundle.py -- [bundle_dir] [options]
 
-`bundle_dir` may be omitted: it defaults to the producer's output directory,
-%USERPROFILE%/AppData/LocalLow/Colossal Order/Cities Skylines II/ModsData/Carto
+`bundle_dir` may be omitted: it defaults to wherever `csiibundle.bake.locate` says this
+machine's bundle is — Windows, Proton or macOS, with `CS2_BUNDLE_DIR` overriding
 (the development-era spike/ subfolder is retired as of 2026-08-09).
 
 Options (after the `--`):
@@ -3202,7 +3202,7 @@ def _apply_grading(bundle_dir):
         )
         return
     try:
-        path = grading.write_ocio(os.path.join(bundle_dir, "colour"), config)
+        path = colour_model.write_ocio(grading, os.path.join(bundle_dir, "colour"), config)
     except OSError as exc:
         LOG.warn(f"--colour: could not write the OCIO config ({exc})")
         return
@@ -3924,9 +3924,11 @@ def main():
         bundle_dir = argv[0]
         argv = argv[1:]
     else:
-        bundle_dir = os.path.expanduser(
-            "~/AppData/LocalLow/Colossal Order/Cities Skylines II/ModsData/Carto"
-        )
+        # Not spelled out here: `locate` knows Windows, Proton and macOS and honours
+        # `CS2_BUNDLE_DIR`, and this was one of four places that had its own Windows-only copy.
+        from csiibundle.bake.locate import default_bundle_dir
+
+        bundle_dir = default_bundle_dir()
         if not os.path.isdir(bundle_dir):
             print(__doc__)
             print(f"\nNo bundle directory given and the default does not exist:\n  {bundle_dir}")

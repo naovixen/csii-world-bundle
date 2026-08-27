@@ -24,7 +24,6 @@ reference city are untinted atlases and the wear decal's colour variation is a f
 alpha; a lane's colorSet is recorded in stats and left for a follow-up if it proves visible.
 """
 
-import json
 import math
 import os
 import time
@@ -36,7 +35,7 @@ from .. import bezier, decals, drape, frames, glb, instances, lanes, lod, reader
 from .. import region as region_rule
 from . import Product, register
 from .roads import load_road_surface
-from .tiles import TileSink
+from .tiles import TileSink, material_specs, texture_uri_base
 
 PRODUCT_NAME = "markings"
 INPUTS = (
@@ -52,12 +51,6 @@ INPUTS = (
 )
 # metres: instance-decal quads are split so no edge exceeds this before draping. TUNED.
 DECAL_STEP = 2.0
-
-
-def _in_region(x, z, region):
-    """The region box. Kept as a name here because `skirts.py` and `lanegeometry.py` import it;
-    refactor Phase 2 points those at `csiibundle.region` directly and this goes away."""
-    return region_rule.contains(x, z, region)
 
 
 def _subdivide_quad(corners, uvs, step):
@@ -150,7 +143,7 @@ def run(context, progress):
                 missing_prefab += 1
                 continue
             curve = record["curve"]
-            if not _in_region(curve[0][0], curve[0][2], region):
+            if not region_rule.contains(curve[0][0], curve[0][2], region):
                 skipped_region += 1
                 continue
             parts = entry.get("parts", [])
@@ -224,7 +217,7 @@ def run(context, progress):
         if record.get("kind") != "decal":
             continue
         pos = record.get("pos") or (0, 0, 0)
-        if not _in_region(pos[0], pos[2], region):
+        if not region_rule.contains(pos[0], pos[2], region):
             continue
         asset_id = record["assetId"]
         if asset_id not in decal_meshes:
@@ -323,7 +316,7 @@ def run(context, progress):
     stats["drape"] = dict(counters, vertices=total_v)
 
     # -- 5. tiles -------------------------------------------------------------------------------
-    resolved_specs = _material_specs(derived, bundle)
+    resolved_specs = material_specs(derived, bundle)
     tile_sink = TileSink(tile, PRODUCT_NAME, out_dir, resolved_specs)
     lod_histogram = Counter()
     # Winding. A `lanes.part_source` block keeps the part .glb's triangle order in the bundle
@@ -343,7 +336,7 @@ def run(context, progress):
     stats["minLodUnknownTriangles"] = int(lod_histogram.get(255, 0))
     tiles = tile_sink.tiles()
     progress.begin("markings: tiles", total=len(tiles), unit="tiles")
-    uri_base = _texture_uri_base(out_dir, bundle)
+    uri_base = texture_uri_base(out_dir, bundle)
     written = tile_sink.flush(
         progress, texture_uri_base=uri_base, jobs=max(1, int(options.get("jobs") or 1))
     )
@@ -381,48 +374,6 @@ def _face_up(verts, tris, uvs):
         else:
             u2 = u
     return t2, u2
-
-
-def _material_specs(derived, bundle):
-    """Base-colour paths + alpha modes for the tile writer, from the bake's own materials
-    product when present, else straight from `materials.json`."""
-    path = os.path.join(derived, "materials.json")
-    specs = {}
-    try:
-        if os.path.isfile(path):
-            doc = json.load(open(path, encoding="utf-8"))
-            for key, entry in doc.get("materials", {}).items():
-                specs[key] = {
-                    "baseColor": entry.get("baseColor"),
-                    "normal": entry.get("normal"),
-                    "alphaMode": entry.get("alphaMode"),
-                    "alphaCutoff": entry.get("alphaCutoff"),
-                    "doubleSided": entry.get("doubleSided"),
-                    "baseColorFactor": entry.get("baseColorFactor"),
-                }
-            return specs
-    except Exception:
-        pass
-    for key, entry in (reader.load_materials(bundle) or {}).items():
-        specs[key] = {
-            "baseColor": entry.get("baseColor"),
-            "normal": entry.get("normal"),
-            "alphaMode": entry.get("alphaMode"),
-            "alphaCutoff": entry.get("alphaCutoff"),
-            "doubleSided": entry.get("doubleSided"),
-        }
-    return specs
-
-
-def _texture_uri_base(out_dir, bundle):
-    """Relative URI prefix from a tile directory to `<bundle>/textures/`, or None when no
-    relative path exists (different drive)."""
-    try:
-        textures = reader.layer_path(bundle, "textures")
-        rel = os.path.relpath(textures, out_dir).replace(os.sep, "/")
-        return rel.rstrip("/") + "/"
-    except ValueError:
-        return None
 
 
 # version 2: decal instances take the game's own `decalPriority` draw order (audit §57.2).

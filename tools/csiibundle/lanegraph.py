@@ -128,11 +128,6 @@ def drivable(lanes):
     return (lane for lane in lanes if lane.get("kind") in DRIVABLE_KINDS)
 
 
-def has_flag(lane, name):
-    """Whether a lane carries a named flag. Absent `flags` reads as "no", not as an error."""
-    return name in (lane.get("flags") or ())
-
-
 def polyline_length(path):
     """The summed segment length of a lane's `path`, in metres.
 

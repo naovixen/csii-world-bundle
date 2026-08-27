@@ -61,7 +61,11 @@ try:
 except ImportError:
     IN_BLENDER = False
 
-DEFAULT_BUNDLE = os.path.join(
+# Spelled out rather than taken from `csiibundle.bake.locate`, and NOT debt: this file's whole
+# premise (see `_read_png` below) is that a diagnostic which only works when the thing it is
+# diagnosing imports cleanly is not much of a diagnostic. It runs inside Blender, which ships
+# numpy and nothing else. `CS2_BUNDLE_DIR` is honoured so the one override still moves it.
+DEFAULT_BUNDLE = os.environ.get("CS2_BUNDLE_DIR") or os.path.join(
     os.path.expanduser("~"),
     "AppData",
     "LocalLow",

@@ -25,6 +25,7 @@ import os
 import re
 
 import numpy
+from csiibundle import collision
 
 FLOAT_FMT = "%.4f"
 UV_FMT = "%.5f"
@@ -493,3 +494,41 @@ def group_by_material(mesh):
         uvs=mesh.uvs,
         colors=mesh.colors,
     )
+
+
+# -- the forest wind convention ----------------------------------------------------------------
+
+# Minimum extent, in metres, for a mesh to work as a collider that holds at speed — BeamNG's own
+# rule of thumb. It lived in `csiibundle.collision` as a default argument, which put a BeamNG
+# number in the engine-neutral package and let a caller get it without asking; `colmesh_from_lod`
+# and `colbox` now REQUIRE it, so the engine supplying it is visible at the call site.
+MIN_COLLIDER_THICKNESS = 0.3
+
+
+def wind_vertex_colours(mesh, up_axis=1, seed=0):
+    """`(N, 4)` float32 vertex colours in BeamNG's forest wind convention, from height and radius.
+
+    R is up/down bend, G is per-instance variation, B is flutter, and black is rigid — which is a
+    statement about BeamNG's forest shader and about nothing else, so it lives here rather than in
+    `csiibundle.collision` where it used to. The trunk search it stands on is a plain mesh query
+    with no engine in it and stayed there, as `collision.trunk_group`.
+
+    TUNED.
+    """
+    verts = numpy.asarray(mesh["verts"], dtype=numpy.float64)
+    n = len(verts)
+    if n == 0:
+        return numpy.zeros((0, 4), numpy.float32)
+    idx = collision.trunk_group(mesh, up_axis)
+    horizontal = [k for k in range(3) if k != up_axis]
+    trunk_axis = verts[idx][:, horizontal].mean(axis=0)
+    h = verts[:, up_axis]
+    h_norm = numpy.clip((h - h.min()) / max(h.max() - h.min(), 1e-6), 0.0, 1.0)
+    r = numpy.linalg.norm(verts[:, horizontal] - trunk_axis, axis=1)
+    r_norm = numpy.clip(r / max(float(r.max()), 1e-6), 0.0, 1.0)
+    trunk_mask = numpy.zeros(n, dtype=bool)
+    trunk_mask[idx] = True
+    red = numpy.where(trunk_mask, 0.0, h_norm**2)  # bend grows with height, trunk rigid
+    green = numpy.full(n, 0.5 + 0.5 * ((seed * 0.6180339887) % 1.0))  # variation phase, per mesh
+    blue = numpy.where(trunk_mask, 0.0, r_norm * h_norm)  # flutter at the canopy edge
+    return numpy.stack([red, green, blue, numpy.ones(n)], axis=1).astype(numpy.float32)

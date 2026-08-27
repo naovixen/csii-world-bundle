@@ -38,6 +38,13 @@ from .. import drape, reader
 
 # How BeamNG actually splits a terrain square, measured — see the module docstring.
 # `tools/beamng/probe_diagonal.py` re-checks it in seconds on a new BeamNG version.
+#
+# **A BeamNG fact in an engine-neutral package.** It is the default because `cs2beamng` is the
+# only consumer of this bake that ships terrain, so "the measured one" and "the only one anybody
+# asks for" are the same string today. They will not be for a second engine: the diagonal must
+# match how that engine meshes the grid (`drape.HeightfieldSurface`), so it is a PARAMETER
+# everywhere — `GroundSurface(diagonal=...)`, `options["diagonal"]` — and this constant is only
+# what a caller gets for saying nothing.
 MEASURED_DIAGONAL = "ne_sw"
 
 
@@ -84,21 +91,21 @@ class GroundSurface(drape.ProjectionSurface):
     def cell(self):
         return self.a.cell if self.a is not None else None
 
-    def height_many(self, x, y, ceiling=4000.0):
+    def height_many(self, x, y):
         import numpy
 
         if self.a is None:
             return numpy.full(len(numpy.atleast_1d(x)), numpy.nan)
-        ha = self.a.height_many(x, y, ceiling)
+        ha = self.a.height_many(x, y)
         if self.b is None:
             return ha
-        hb = self.b.height_many(x, y, ceiling)
+        hb = self.b.height_many(x, y)
         both = numpy.stack([ha, hb])
         with numpy.errstate(invalid="ignore"):
             out = numpy.nanmax(both, axis=0) if self.mode == "max" else numpy.nanmin(both, axis=0)
         return out
 
-    def height(self, x, y, ceiling=4000.0):
+    def height(self, x, y):
         """The ground at one point, `None` off the raster.
 
         Scalars take a plain-Python path straight through `HeightfieldSurface._sample_one`: the
@@ -122,7 +129,7 @@ class GroundSurface(drape.ProjectionSurface):
             return max(ha, hb) if self.mode == "max" else min(ha, hb)
         import numpy
 
-        out = self.height_many(numpy.array([x], float), numpy.array([y], float), ceiling)
+        out = self.height_many(numpy.array([x], float), numpy.array([y], float))
         return None if numpy.isnan(out[0]) else float(out[0])
 
     def drop_many(self, x, y, z, half_up, half_down):

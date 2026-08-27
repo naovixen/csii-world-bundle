@@ -159,6 +159,30 @@ def mesh_candidates(record):
     return candidates
 
 
+def first_mesh_state(record, mesh_dir, probed):
+    """The first of `mesh_candidates` with a `.glb` in `mesh_dir`, or `None` if none has one.
+
+    The "take the first one that exists on disk" loop the docstring above describes, written
+    once. It was written three times instead — `stages/shapes._state_suffix`,
+    `stages/instances._state_suffix` and `pipeline/meshindex._state_stem` — and they did not
+    agree on what to return: two sliced the prefab off (`candidate[len(asset):]`, the state
+    SUFFIX) and one returned the whole stem. This returns the **candidate**, which is what
+    `mesh_candidates` yields; a caller that wants the suffix slices it, at the call site, where
+    the asset it is slicing off is in scope.
+
+    `probed` is a caller-owned `{candidate: bool}` dict, required rather than optional because
+    every caller runs this over a million records and one file probe per distinct name is the
+    difference between a pass and a stall. Share it across the whole walk.
+    """
+    for candidate in mesh_candidates(record):
+        have = probed.get(candidate)
+        if have is None:
+            have = probed[candidate] = os.path.isfile(os.path.join(mesh_dir, candidate + ".glb"))
+        if have:
+            return candidate
+    return None
+
+
 def growth_scale(record):
     """The uniform scale to apply on top of the record's own transform — 1.0 for most things.
 
@@ -401,15 +425,6 @@ def decal_priority(record):
         return int(value)
     except (TypeError, ValueError):
         return None
-
-
-def is_paint(record):
-    """Whether this record is paint rather than a solid — i.e. must not become collision.
-
-    Currently exactly the `decal` kind. Written as a question about the record rather than a
-    comparison at the call site, so a future paint-like kind is added here once.
-    """
-    return record.get("kind") == "decal"
 
 
 def instance_matrix(record, mesh_basis=None, zup=False):

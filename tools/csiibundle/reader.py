@@ -312,11 +312,6 @@ def load_materials(bundle_dir):
     return load_catalogue(bundle_dir, "materials")
 
 
-def load_colors(bundle_dir):
-    """`colors.json` (§7.2): the per-prefab colour sets a `colorMask` selects between."""
-    return load_catalogue(bundle_dir, "colors")
-
-
 def load_lights(bundle_dir):
     """`lights.json` (§4.3): photometry per light-bearing prefab."""
     return load_catalogue(bundle_dir, "lights")
@@ -330,8 +325,3 @@ def load_lane_prefabs(bundle_dir):
 def load_area_prefabs(bundle_dir):
     """`areaprefabs.json` (§8b): the surface material each area kind paints with."""
     return load_catalogue(bundle_dir, "areaPrefabs")
-
-
-def load_grading(bundle_dir):
-    """`grading.json` (§11) as a raw dict. `colour.load()` turns it into applicable constants."""
-    return load_catalogue(bundle_dir, "grading")

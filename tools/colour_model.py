@@ -7,7 +7,6 @@ running this as a program:
 
   * `blender_config_path()` — finding Blender's shipped `config.ocio`, which `write_ocio` needs
     as the base to graft the CS2 view onto. A locator, not colour maths.
-  * `DEFAULT_BUNDLE` — the producer's own output directory on this machine.
   * `REFERENCES` and the `--check` report — the in-game measurements every colour claim in this
     repo is scored against.
 
@@ -28,22 +27,101 @@ from csiibundle.colour import *  # noqa: F403 - the derivation, re-exported
 from csiibundle.colour import Grading, hex_of, hsv_of, srgb_to_linear  # noqa: F401
 from csiibundle.colour import load as _load
 
-# The producer writes one bundle per install, here. Not a bundle-format fact — just where this
-# machine's rips land, so the CLI has a default.
-DEFAULT_BUNDLE = os.path.join(
-    os.path.expanduser("~"),
-    "AppData",
-    "LocalLow",
-    "Colossal Order",
-    "Cities Skylines II",
-    "ModsData",
-    "Carto",
-)
-
 
 def load(bundle_dir=None):
-    """`csiibundle.colour.load`, with this machine's bundle directory as the default."""
-    return _load(bundle_dir or DEFAULT_BUNDLE)
+    """`csiibundle.colour.load`, with this machine's bundle directory as the default.
+
+    The default is `locate.default_bundle_dir()`, not a path spelled out here. This module used
+    to build its own Windows-only `~/AppData/LocalLow/...`, which is one of four places that did
+    — so on Linux under Proton, or with `CS2_BUNDLE_DIR` set, the colour tool looked somewhere
+    the rest of the repo did not.
+    """
+    from csiibundle.bake.locate import default_bundle_dir
+
+    return _load(bundle_dir or default_bundle_dir())
+
+
+def write_ocio(grading, directory, blender_config, name="CS2 Graded"):
+    """Write a Blender OCIO config that adds `grading` as a view.
+
+    A method on `csiibundle.colour.Grading` until refactor Phase 2, which is one Blender-shaped
+    method on the class both consumers share: it takes the path to Blender's own shipped
+    `config.ocio`, reads it, and writes a config only Blender loads. The grading itself — the
+    chain, `ocio_view_transform`, the `.cube` LUT — stays in the package, because OCIO and a cube
+    LUT are formats rather than an application.
+
+    Blender's shipped config is read and extended rather than replaced, so every other view
+    (Standard, AgX, Filmic, plain ACES) still works and a scene can be flipped between them
+    for comparison. The search path is rewritten to ABSOLUTE paths back into the Blender
+    install, so the 19 MB of LUTs beside it do not have to be copied.
+
+    THE SEARCH PATH IS WRITTEN AS A YAML LIST, and on Windows it has to be. OCIO's string
+    form is colon-separated, and a Windows absolute path contains a colon after the drive
+    letter — so `C:/x:G:/y` parses as four nonsense directories, and every FileTransform in
+    the config stops resolving. That takes out AgX and Filmic as well as our own LUT, and it
+    fails as "file not found" rather than as a parse error, so it reads like a missing file.
+    """
+    with open(blender_config, encoding="utf-8") as handle:
+        text = handle.read()
+
+    if not os.path.isdir(directory):
+        os.makedirs(directory)
+    lut = None
+    if grading.smh:
+        lut = "cs2_smh.cube"
+        grading.write_smh_lut(os.path.join(directory, lut))
+
+    out = _grafted_lines(text, grading, name, lut, _search_path(directory, blender_config))
+
+    path = os.path.join(directory, "config.ocio")
+    with open(path, "w", encoding="utf-8") as handle:
+        handle.write("\n".join(out) + "\n")
+    return path
+
+
+def _search_path(directory, blender_config):
+    """The absolute folders the grafted config resolves FileTransforms against.
+
+    Ours first, so the generated LUT resolves; then Blender's own three, so every view we did
+    not touch still finds the files it needs. Absolute, so the 19 MB of LUTs beside Blender's
+    own config do not have to be copied.
+    """
+    base = os.path.dirname(os.path.abspath(blender_config))
+    # Our own folder first, so the generated LUT resolves; then Blender's, so every view we
+    # did not touch still finds the files it needs.
+    search = [os.path.abspath(directory).replace("\\", "/")] + [
+        os.path.join(base, part).replace("\\", "/") for part in ("icc", "luts", "filmic")
+    ]
+    return search
+
+
+def _grafted_lines(text, grading, name, lut, search):
+    """Blender's shipped config, line by line, with our view and view transform spliced in."""
+    out = []
+    for line in text.splitlines():
+        if line.startswith("search_path:"):
+            line = "search_path: [{}]".format(", ".join(f'"{p}"' for p in search))
+        elif line.startswith("active_views:"):
+            # A view that is not in `active_views` still WORKS if you name it, but Blender
+            # never offers it in the Color Management dropdown and `getViews` does not list
+            # it — so the importer's "is this view available?" test says no and silently
+            # takes the fallback path while the config is in fact loaded and correct.
+            line = line.replace("active_views: [", f"active_views: [{name}, ", 1)
+        elif line.strip().startswith(
+            "- !<View> {name: ACES 1.3, view_transform: "
+            "ACES 1.3 Rec.1886, display_colorspace: sRGB}"
+        ):
+            indent = line[: len(line) - len(line.lstrip())]
+            out.append(line)
+            line = (
+                f"{indent}- !<View> {{name: {name}, view_transform: {name} Rec.1886, "
+                "display_colorspace: sRGB}"
+            )
+        elif line.startswith("view_transforms:"):
+            out.append(line)
+            line = grading.ocio_view_transform(f"{name} Rec.1886", lut).rstrip("\n")
+        out.append(line)
+    return out
 
 
 def blender_config_path():
@@ -95,8 +173,10 @@ def _argv():
 
 
 def main():
+    from csiibundle.bake.locate import default_bundle_dir
+
     args = _argv()
-    bundle = DEFAULT_BUNDLE
+    bundle = default_bundle_dir()
     mode = "--explain"
     values = []
     i = 0
@@ -128,7 +208,7 @@ def main():
                 "CARTO_BLENDER_COLORMANAGEMENT to the folder holding it"
             )
             return 1
-        path = grading.write_ocio(target, config)
+        path = write_ocio(grading, target, config)
         print(f"wrote {path}")
         print("Launch Blender with it, then pick the 'CS2 Graded' view in Color Management:")
         print(f'  $env:OCIO = "{path}"; blender.exe <scene.blend>')

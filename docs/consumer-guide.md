@@ -135,7 +135,9 @@ Do not skip, inside this tier:
 
 - `instances.mesh_candidates()` — the state-variant join (item 5 above). It returns candidates
   in preference order because the step *set* is per-prefab: a two-step prefab has no
-  `__partial2`, so walk down until a file exists.
+  `__partial2`, so walk down until a file exists. `instances.first_mesh_state(record, mesh_dir,
+  probed)` is that walk, if your meshes are on disk: it takes a dict it fills with one file probe
+  per distinct name, which over a million records is the difference between a pass and a stall.
 - `instances.growth_scale()` — the sapling scale that is not in `scale`.
 - `instances.should_draw()` — `attrs.state == "construction"` draws **nothing**. The game skips
   the building; the crane and site fence are separate records the bundle already carries.
@@ -198,7 +200,7 @@ pre-pass). If you have nothing, `HeightfieldSurface` ray-casts the §8 heightmap
 ```python
 class ProjectionSurface:
     def drop(self, x, y, z, half_up, half_down): ...   # nearest to z, in that window, or None
-    def height(self, x, y, ceiling=4000.0): ...        # topmost surface, or None
+    def height(self, x, y): ...                        # topmost surface, or None
 ```
 
 **All coordinates are Z-up** (X east, Y north, Z up) — a surface is a thing the *consumer*
@@ -344,9 +346,9 @@ The bundle frame is **left-handed, Y-up, X east, Y up, Z north**, in metres. Mos
 simulation engines are right-handed Z-up. The conversion is a single basis change, and
 `csiibundle.frames` does all of it.
 
-**Points.** `(x, y, z)_bundle → (x, z, y)_zup`. That is `frames.bundle_to_zup_point`, and
-`zup_to_bundle_point` is its own inverse. The swap flips handedness, which is exactly what is
-wanted: no separate mirror is needed at the point level.
+**Points.** `(x, y, z)_bundle → (x, z, y)_zup`. That is `frames.bundle_to_zup_point`, and it is
+**its own inverse** — call it again to come back. The swap flips handedness, which is exactly
+what is wanted: no separate mirror is needed at the point level.
 
 **Transforms — two different matrices, do not mix them up.**
 

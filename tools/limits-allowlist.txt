@@ -55,7 +55,6 @@ file tools/csiibundle/drape.py
 file tools/csiibundle/glb.py
 file tools/csiibundle/instances.py
 file tools/csiibundle/lanes.py
-file tools/csiibundle/lod.py
 file tools/csiibundle/materials.py
 file tools/csiibundle/navgraph.py
 file tools/csiibundle/terrain.py
@@ -148,7 +147,6 @@ func apps/cs2beamng/beamng/map_lua.py::build_nodes
 func apps/cs2beamng/beamng/map_lua.py::crash_risks
 func apps/cs2beamng/beamng/materials.py::material_v15
 func apps/cs2beamng/beamng/tilelod.py::tile_levels
-func apps/cs2beamng/beamng/validate_level.py::_render_target
 func apps/cs2beamng/beamng/validate_level.py::check
 func apps/cs2beamng/cli.py::_parser
 func apps/cs2beamng/doctor.py::collect

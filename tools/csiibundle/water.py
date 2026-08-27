@@ -70,10 +70,6 @@ import numpy
 
 from . import reader
 
-# Material templates whose entire appearance is the water shader — no maps, and white by default
-# in any glTF loader. CONTRACT (§7 `flags`).
-WATER_TEMPLATES = ("WaterGeneric", "WaterStream")
-
 # Water's index of refraction. NOT from the game — CS2 ships no IOR — but it is a physical
 # constant, not a taste. TUNED only in the sense that a consumer may prefer its own.
 WATER_IOR = 1.333
@@ -209,18 +205,6 @@ def load(bundle_dir):
     manifest = reader.load_manifest(bundle_dir) or {}
     rasters = manifest.get("rasters") or {}
     return Appearance(rasters.get("water"))
-
-
-def is_water_material(entry):
-    """Whether a §7 material entry is one of the shader-only water templates.
-
-    These carry no maps at all, so a glTF loader renders them white. Detect them by template and
-    give them `Appearance` instead.
-    """
-    for flag in (entry or {}).get("flags", ()):
-        if flag.startswith("template:") and flag[9:] in WATER_TEMPLATES:
-            return True
-    return False
 
 
 # -- water bodies: connected wet regions with a level, for an engine that wants planes ---------

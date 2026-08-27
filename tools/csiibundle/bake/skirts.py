@@ -18,10 +18,10 @@ import time
 import numpy
 
 from .. import frames, glb, instances, reader
+from .. import region as region_rule
 from . import Product, register
 from .ground import MEASURED_DIAGONAL, GroundSurface
-from .markings import _in_region, _material_specs, _texture_uri_base
-from .tiles import TileSink
+from .tiles import TileSink, material_specs, texture_uri_base
 
 PRODUCT_NAME = "skirts"
 INPUTS = ("instances", "meshes", "terrain", "terrainFine")
@@ -66,7 +66,7 @@ def run(context, progress):
 
     # pass 2: place + drop
     progress.begin("skirts: place", total=None, unit="buildings")
-    specs = _material_specs(derived, bundle)
+    specs = material_specs(derived, bundle)
     sink = TileSink(tile, PRODUCT_NAME, out_dir, specs)
     skirt_cache = {}
     placed = no_file = not_ground = 0
@@ -80,7 +80,7 @@ def run(context, progress):
         if record.get("kind") != "building":
             continue
         pos = record.get("pos") or (0, 0, 0)
-        if not _in_region(pos[0], pos[2], region):
+        if not region_rule.contains(pos[0], pos[2], region):
             continue
         if not instances.wants_skirt_with_parents(record, parents):
             not_ground += 1
@@ -137,7 +137,7 @@ def run(context, progress):
     progress.begin("skirts: tiles", total=len(tiles), unit="tiles")
     written = sink.flush(
         progress,
-        texture_uri_base=_texture_uri_base(out_dir, bundle),
+        texture_uri_base=texture_uri_base(out_dir, bundle),
         jobs=max(1, int(options.get("jobs") or 1)),
     )
     progress.end(f"{written['files']} tiles, {written['tris']:,} triangles")

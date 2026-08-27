@@ -25,13 +25,12 @@ sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), "apps"))
 from cs2beamng.beamng import ter as ter_mod  # noqa: E402
 from csiibundle import bezier, glb, reader, terrain  # noqa: E402
+from csiibundle.bake.locate import default_bundle_dir  # noqa: E402
 
 derived, level_dir = sys.argv[1], sys.argv[2]
 cx, cz, half = (float(v) for v in sys.argv[3:6])
 samples = int(sys.argv[6]) if len(sys.argv) > 6 else 20000
-BUNDLE = os.path.join(
-    os.environ["USERPROFILE"], "AppData/LocalLow/Colossal Order/Cities Skylines II/ModsData/Carto"
-)
+BUNDLE = default_bundle_dir()
 
 field = reader.load_heightfield(BUNDLE, prefer_fine=True)
 cell, ox, oz = field.cell, field.origin_x, field.origin_z

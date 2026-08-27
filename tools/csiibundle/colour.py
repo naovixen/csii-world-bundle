@@ -59,8 +59,11 @@ bundle ships no `grading.json`. From there:
   * `grading.exposure_ev`, `.white_balance`, `.saturation_matrix`, `.contrast_exponent`, … — the
     same chain as separate constants, for a renderer that would rather apply them in its own
     pipeline than call into Python per pixel.
-  * `grading.write_ocio(dir, base_config)` — the whole chain as an OCIO view transform, which is
-    how it can run on final radiance in the right order in any OCIO-aware application.
+  * `grading.ocio_view_transform()` — the whole chain as an OCIO view transform, which is how it
+    can run on final radiance in the right order in any OCIO-aware application; and
+    `grading.write_smh_lut(path)` for the one step a matrix cannot express. Writing a config for
+    a PARTICULAR application is that application's job — `tools/colour_model.write_ocio` does it
+    for Blender by extending Blender's own shipped config.
   * `grading.warnings` — what was NOT replayed. Read it. A non-zero hue shift or an external LUT
     means the model is knowingly incomplete for this bundle.
 
@@ -162,13 +165,68 @@ TONEMAP_TO_VIEW = {
 # -- small colour helpers -------------------------------------------------------------------
 
 
+# The sRGB transfer function's own constants (IEC 61966-2-1). Named because the curve is written
+# four times in this repo and two of those copies must stay copies — see `srgb8_to_linear`.
+#
+# NOT to be confused with a plain 2.2 gamma. `stages/terrain.py` raises to 2.2 in five places and
+# that is a DIFFERENT function, deliberately: those sites are BeamNG terrain textures, and
+# swapping the exact curve in would change every one of them. They are not copies of this.
+SRGB_LINEAR_CUTOFF = 0.0031308
+SRGB_ENCODED_CUTOFF = 0.04045
+SRGB_SLOPE = 12.92
+SRGB_OFFSET = 0.055
+SRGB_SCALE = 1.055
+SRGB_GAMMA = 2.4
+
+
 def linear_to_srgb(c):
+    """One linear value in 0..1 to its sRGB-encoded 0..1. Scalar; see `linear_to_srgb8` for arrays."""
     c = max(0.0, min(1.0, c))
-    return c * 12.92 if c <= 0.0031308 else 1.055 * (c ** (1 / 2.4)) - 0.055
+    if c <= SRGB_LINEAR_CUTOFF:
+        return c * SRGB_SLOPE
+    return SRGB_SCALE * (c ** (1 / SRGB_GAMMA)) - SRGB_OFFSET
 
 
 def srgb_to_linear(c):
-    return c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
+    """One sRGB-encoded value in 0..1 to linear. Scalar; see `srgb8_to_linear` for arrays."""
+    if c <= SRGB_ENCODED_CUTOFF:
+        return c / SRGB_SLOPE
+    return ((c + SRGB_OFFSET) / SRGB_SCALE) ** SRGB_GAMMA
+
+
+def srgb8_to_linear(arr):
+    """A uint8 sRGB array to float64 linear in 0..1 — the array form of `srgb_to_linear`.
+
+    This and `linear_to_srgb8` were byte-identical in `bake/materials.py` and
+    `measure_paint_factor.py`, which is what made the measurement tool and the thing it measures
+    two separate opinions about the same curve.
+
+    Two OTHER copies survive on purpose, both in files whose contract is to have no dependencies:
+    `tools/validate_bundle.py` ("the standard library, no pip installs, no producer source") and
+    `tools/probe_point.py` ("a diagnostic that only works when the thing it is diagnosing imports
+    cleanly is not much of a diagnostic"). Those two are not debt.
+    """
+    import numpy
+
+    a = numpy.asarray(arr, dtype=numpy.float64) / 255.0
+    return numpy.where(
+        a <= SRGB_ENCODED_CUTOFF,
+        a / SRGB_SLOPE,
+        ((a + SRGB_OFFSET) / SRGB_SCALE) ** SRGB_GAMMA,
+    )
+
+
+def linear_to_srgb8(arr):
+    """A float linear array to uint8 sRGB — the array form of `linear_to_srgb`, rounded."""
+    import numpy
+
+    a = numpy.clip(arr, 0.0, 1.0)
+    s = numpy.where(
+        a <= SRGB_LINEAR_CUTOFF,
+        a * SRGB_SLOPE,
+        SRGB_SCALE * numpy.power(a, 1 / SRGB_GAMMA) - SRGB_OFFSET,
+    )
+    return numpy.clip(numpy.rint(s * 255.0), 0, 255).astype(numpy.uint8)
 
 
 def gamma_to_linear(c):
@@ -748,66 +806,6 @@ class Grading:
             "    from_scene_reference: !<GroupTransform>\n"
             "      children:\n{}\n".format(name, "\n".join(children))
         )
-
-    def write_ocio(self, directory, blender_config, name="CS2 Graded"):
-        """Write a Blender OCIO config that adds this grading as a view.
-
-        Blender's shipped config is read and extended rather than replaced, so every other view
-        (Standard, AgX, Filmic, plain ACES) still works and a scene can be flipped between them
-        for comparison. The search path is rewritten to ABSOLUTE paths back into the Blender
-        install, so the 19 MB of LUTs beside it do not have to be copied.
-
-        THE SEARCH PATH IS WRITTEN AS A YAML LIST, and on Windows it has to be. OCIO's string
-        form is colon-separated, and a Windows absolute path contains a colon after the drive
-        letter — so `C:/x:G:/y` parses as four nonsense directories, and every FileTransform in
-        the config stops resolving. That takes out AgX and Filmic as well as our own LUT, and it
-        fails as "file not found" rather than as a parse error, so it reads like a missing file.
-        """
-        with open(blender_config, encoding="utf-8") as handle:
-            text = handle.read()
-
-        if not os.path.isdir(directory):
-            os.makedirs(directory)
-        lut = None
-        if self.smh:
-            lut = "cs2_smh.cube"
-            self.write_smh_lut(os.path.join(directory, lut))
-
-        base = os.path.dirname(os.path.abspath(blender_config))
-        # Our own folder first, so the generated LUT resolves; then Blender's, so every view we
-        # did not touch still finds the files it needs.
-        search = [os.path.abspath(directory).replace("\\", "/")] + [
-            os.path.join(base, part).replace("\\", "/") for part in ("icc", "luts", "filmic")
-        ]
-        out = []
-        for line in text.splitlines():
-            if line.startswith("search_path:"):
-                line = "search_path: [{}]".format(", ".join(f'"{p}"' for p in search))
-            elif line.startswith("active_views:"):
-                # A view that is not in `active_views` still WORKS if you name it, but Blender
-                # never offers it in the Color Management dropdown and `getViews` does not list
-                # it — so the importer's "is this view available?" test says no and silently
-                # takes the fallback path while the config is in fact loaded and correct.
-                line = line.replace("active_views: [", f"active_views: [{name}, ", 1)
-            elif line.strip().startswith(
-                "- !<View> {name: ACES 1.3, view_transform: "
-                "ACES 1.3 Rec.1886, display_colorspace: sRGB}"
-            ):
-                indent = line[: len(line) - len(line.lstrip())]
-                out.append(line)
-                line = (
-                    f"{indent}- !<View> {{name: {name}, view_transform: {name} Rec.1886, "
-                    "display_colorspace: sRGB}"
-                )
-            elif line.startswith("view_transforms:"):
-                out.append(line)
-                line = self.ocio_view_transform(f"{name} Rec.1886", lut).rstrip("\n")
-            out.append(line)
-
-        path = os.path.join(directory, "config.ocio")
-        with open(path, "w", encoding="utf-8") as handle:
-            handle.write("\n".join(out) + "\n")
-        return path
 
     # -- reporting -----------------------------------------------------------------------
     def explain(self, say=print):

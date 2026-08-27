@@ -45,7 +45,7 @@ from multiprocessing import Pool
 
 import numpy
 
-from .. import glb, instances, materials, png, reader, tints, water
+from .. import colour, glb, images, instances, materials, png, reader, tints, water
 from .. import lights as bundle_lights
 from . import Product, register
 
@@ -84,22 +84,11 @@ def _sha_stem(path):
     return hashlib.sha256((path or "").encode("utf-8")).hexdigest()
 
 
-def _srgb_to_linear(arr):
-    a = arr.astype(numpy.float64) / 255.0
-    return numpy.where(a <= 0.04045, a / 12.92, ((a + 0.055) / 1.055) ** 2.4)
-
-
-def _linear_to_srgb8(arr):
-    a = numpy.clip(arr, 0.0, 1.0)
-    s = numpy.where(a <= 0.0031308, a * 12.92, 1.055 * numpy.power(a, 1 / 2.4) - 0.055)
-    return numpy.clip(numpy.rint(s * 255.0), 0, 255).astype(numpy.uint8)
-
-
 def _resample_mask(img, h, w):
     """The colour mask at the albedo's size — box-filtered when it is being shrunk.
 
     The mask is a per-texel BLEND WEIGHT, so averaging it over the texels that collapse into one
-    is what the collapse means; taking one of them (`_resample_nearest`) makes a hard edge out of
+    is what the collapse means; taking one of them (`images.resize_nearest`) makes a hard edge out of
     a boundary the source resolves smoothly, and the texel then ships fully tinted or fully
     untinted rather than the mixture. Measured over 40 real (albedo, mask) pairs against tinting
     at 1024 and averaging afterwards: nearest is 1.441/255 RMS with 0.53 % of channel samples off
@@ -117,15 +106,7 @@ def _resample_mask(img, h, w):
         and img.shape[0] // h == img.shape[1] // w
     ):
         return png.downsample_box(img, img.shape[0] // h)
-    return _resample_nearest(img, h, w)
-
-
-def _resample_nearest(img, h, w):
-    if img.shape[0] == h and img.shape[1] == w:
-        return img
-    rows = numpy.clip((numpy.arange(h) * img.shape[0] / h).astype(numpy.int64), 0, img.shape[0] - 1)
-    cols = numpy.clip((numpy.arange(w) * img.shape[1] / w).astype(numpy.int64), 0, img.shape[1] - 1)
-    return img[rows][:, cols]
+    return images.resize_nearest(img, h, w)
 
 
 def _kmeans(points, weights, k, iterations=12):
@@ -301,7 +282,7 @@ def _tint_job(args):
         mask_lo = mask[:, :, :3].min(axis=(0, 1)).astype(numpy.float64) / 255.0
         out = {}
         for vkey, centre in variants:
-            constant = _uniform_multiplier(mask_lo, [(*tuple(centre[i]), 1.0) for i in range(3)])
+            constant = tints.multiplier(mask_lo, [(*tuple(centre[i]), 1.0) for i in range(3)])
             out[vkey] = {
                 "factor": [round(float(v), 5) for v in constant],
                 "maxErr": 0,
@@ -321,7 +302,7 @@ def _tint_job(args):
         base = png.downsample_box(base, factor)
         h, w = base.shape[:2]
     mask_r = _resample_mask(mask, h, w).astype(numpy.float64) / 255.0
-    base_lin = _srgb_to_linear(base[:, :, :3])
+    base_lin = colour.srgb8_to_linear(base[:, :, :3])
     alpha = base[:, :, 3].astype(numpy.float64) / 255.0
     visible = alpha > 0.5
     any_visible = bool(visible.any())
@@ -329,15 +310,15 @@ def _tint_job(args):
     out = {}
     for vkey, centre in variants:
         colours = [(*tuple(centre[i]), 1.0) for i in range(3)]
-        multiplier = _tint_multiplier(mask_r[:, :, :3], colours)
+        multiplier = tints.multiplier(mask_r[:, :, :3], colours)
         lo = multiplier.min(axis=(0, 1))
         if numpy.array_equal(lo, multiplier.max(axis=(0, 1))):
             # this variant's centre flattened a mask that is not itself flat (every channel it
             # touches is 1.0): same tautology, same answer
             out[vkey] = {"factor": [round(float(v), 5) for v in lo], "maxErr": 0, "path": None}
             continue
-        constant = _best_factor(multiplier, alpha)
-        exact8 = _linear_to_srgb8(base_lin * multiplier)
+        constant = tints.best_constant(multiplier, alpha)
+        exact8 = colour.linear_to_srgb8(base_lin * multiplier)
         approx8 = _apply_lut(_srgb8_lut(constant), base[:, :, :3])
         delta = numpy.abs(exact8.astype(numpy.int16) - approx8.astype(numpy.int16))
         if any_visible:
@@ -368,61 +349,28 @@ def _tint_job(args):
 
 
 def _png_size(path):
-    """`(height, width)` from a PNG's IHDR, or `None` when there is no readable file there."""
-    try:
-        with open(path, "rb") as handle:
-            head = handle.read(24)
-    except OSError:
-        return None
-    if len(head) < 24 or head[:8] != b"\x89PNG\r\n\x1a\n":
-        return None
-    width = int.from_bytes(head[16:20], "big")
-    height = int.from_bytes(head[20:24], "big")
-    return height, width
+    """`(height, width)` from a PNG's IHDR, or `None` when there is no readable file there.
 
-
-def _uniform_multiplier(weights, colours):
-    """`_tint_multiplier` for a mask that is one value per channel — the same ops, on scalars."""
-    out = numpy.ones(3, dtype=numpy.float64)
-    for i in range(tints.CHANNELS):
-        weight = float(weights[i])
-        colour = numpy.asarray(colours[i][:3], dtype=numpy.float64)
-        out = out * ((1.0 - weight) + weight * colour)
-    return out
+    Row-major, the way numpy reports a shape — the opposite order to `png.read_header`, which is
+    why this swaps rather than simply forwarding.
+    """
+    header = png.read_header(path)
+    return None if header is None else (header[1], header[0])
 
 
 def _srgb8_lut(constant):
-    """`(3, 256)` uint8: `_linear_to_srgb8(_srgb_to_linear(v) * constant[j])` for every byte `v`.
+    """`(3, 256)` uint8: `colour.linear_to_srgb8(colour.srgb8_to_linear(v) * constant[j])` for every byte `v`.
 
     The albedo is uint8, so a constant multiplier has only 256 possible answers per channel and
     the whole `power()` over the texture is a gather. Same function, same inputs, same bits.
     """
-    lin = _srgb_to_linear(numpy.arange(256, dtype=numpy.uint8))
-    return numpy.stack([_linear_to_srgb8(lin * float(constant[j])) for j in range(3)])
+    lin = colour.srgb8_to_linear(numpy.arange(256, dtype=numpy.uint8))
+    return numpy.stack([colour.linear_to_srgb8(lin * float(constant[j])) for j in range(3)])
 
 
 def _apply_lut(lut, rgb8):
     """`(h, w, 3)` uint8 through a per-channel `(3, 256)` table."""
     return numpy.stack([lut[j][rgb8[:, :, j]] for j in range(3)], axis=2)
-
-
-def _tint_multiplier(mask_rgb, colours):
-    """`M(texel)` — what `tints.apply_reference` amounts to, as a per-texel RGB multiplier."""
-    out = numpy.ones((*mask_rgb.shape[:2], 3), dtype=numpy.float64)
-    for i in range(tints.CHANNELS):
-        weight = mask_rgb[..., i][..., None]
-        colour = numpy.asarray(colours[i][:3], dtype=numpy.float64)
-        out = out * ((1.0 - weight) + weight * colour)
-    return out
-
-
-def _best_factor(multiplier, weight):
-    """The constant that minimises the weighted squared error against `M`, per channel."""
-    w = weight[..., None]
-    denom = float(w.sum())
-    if denom <= 0.0:
-        return multiplier.reshape(-1, 3).mean(axis=0)
-    return (multiplier * w).reshape(-1, 3).sum(axis=0) / denom
 
 
 # -- the product --------------------------------------------------------------------------------

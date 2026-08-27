@@ -190,16 +190,6 @@ def height_range(record, index):
     return (float(band[0]), float(band[1])) if band and len(band) >= 2 else None
 
 
-def is_flat(record, index):
-    """Whether the ground under triangle `index` is flat enough that conformance is a no-op.
-
-    False when the band is unknown — an absent range is not a promise of flatness, and treating
-    it as one is how a consumer skips exactly the triangles it should have split.
-    """
-    band = height_range(record, index)
-    return band is not None and (band[1] - band[0]) <= CONFORM_TOLERANCE
-
-
 def conform_triangle(tri, cell, sample, counters):
     """Split one area triangle until every piece follows the ground, and emit the pieces.
 

@@ -325,6 +325,13 @@ def run(ctx, progress):
 
 
 def _state_suffix(record, asset, mesh_dir, have, cache):
+    """The state suffix for this record, memoised on what actually varies it.
+
+    Two caches, doing different jobs: `have` is one file probe per distinct candidate NAME (owned
+    by `first_mesh_state`), and `cache` is one candidate WALK per distinct
+    `(asset, treeState, fullness)` — the only three fields `mesh_candidates` reads, so records
+    agreeing on them agree on the answer. A million records collapse to a few thousand walks.
+    """
     key = (
         asset,
         (record.get("attrs") or {}).get("treeState"),
@@ -332,13 +339,8 @@ def _state_suffix(record, asset, mesh_dir, have, cache):
     )
     if key in cache:
         return cache[key]
-    answer = None
-    for candidate in bundle_instances.mesh_candidates(record):
-        if candidate not in have:
-            have[candidate] = os.path.isfile(os.path.join(mesh_dir, candidate + ".glb"))
-        if have[candidate]:
-            answer = candidate[len(asset) :]
-            break
+    candidate = bundle_instances.first_mesh_state(record, mesh_dir, have)
+    answer = None if candidate is None else candidate[len(asset) :]
     cache[key] = answer
     return answer
 
@@ -372,29 +374,6 @@ def _transform(record):
     return frames.decompose(
         bundle_instances.instance_matrix(record, mesh_basis=DAE_MESH_BASIS, zup=True)
     )
-
-
-def _quat_rows(quat):
-    """A bundle quaternion `[x, y, z, w]` as a 3x3 row-major rotation in the BUNDLE frame."""
-    x, y, z, w = (float(quat[0]), float(quat[1]), float(quat[2]), float(quat[3]))
-    n = x * x + y * y + z * z + w * w
-    s = 0.0 if n <= 0.0 else 2.0 / n
-    xx, yy, zz = x * x * s, y * y * s, z * z * s
-    xy, xz, yz = x * y * s, x * z * s, y * z * s
-    wx, wy, wz = w * x * s, w * y * s, w * z * s
-    return [
-        [1.0 - (yy + zz), xy - wz, xz + wy],
-        [xy + wz, 1.0 - (xx + zz), yz - wx],
-        [xz - wy, yz + wx, 1.0 - (xx + yy)],
-    ]
-
-
-def _swap_yz(matrix):
-    """`P . M . P^-1` for the Y/Z swap: exchange rows 1 and 2, then columns 1 and 2."""
-    m = [matrix[0][:], matrix[2][:], matrix[1][:]]
-    for row in m:
-        row[1], row[2] = row[2], row[1]
-    return m
 
 
 def _forest_line(type_name, position, rotation, scale):

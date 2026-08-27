@@ -109,14 +109,6 @@ def _reduce2(arr):
     return ((s + 1) >> 1).astype(numpy.uint8)
 
 
-def mip_count(width, height):
-    n = 1
-    while width > 1 or height > 1:
-        width, height = max(1, width // 2), max(1, height // 2)
-        n += 1
-    return n
-
-
 HEADER_BYTES = 148
 
 

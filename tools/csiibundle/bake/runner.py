@@ -21,6 +21,7 @@ from collections import namedtuple
 from .. import reader
 from .. import region as region_rule
 from . import BAKE_VERSION
+from . import ground as _ground
 from . import manifest as _manifest
 from . import products as _registry
 from .progress import Cancelled, Progress
@@ -29,9 +30,14 @@ from .progress import Cancelled, Progress
 # None (whole bundle) or {"centerX", "centerZ", "radius"} in bundle-frame metres.
 DEFAULT_OPTIONS = {
     "tile": 256.0,
-    # MEASURED: BeamNG splits SW-NE (`ground.MEASURED_DIAGONAL`, audit §73). Was "envelope",
-    # which is >= both triangulations by construction and floated every ground product.
-    "diagonal": "ne_sw",
+    # How a terrain square is split into two triangles. **This default is a BeamNG measurement**
+    # (audit §73) sitting in an engine-neutral package, and that is a deliberate compromise, not
+    # an oversight: the bake has exactly one consumer that ships terrain, `cs2beamng`, which
+    # passes this explicitly through `pipeline/bakeopts.py` anyway. A second engine MUST override
+    # it — the diagonal has to match how that engine meshes the grid, and `drape.py` says so.
+    # Was "envelope", which is >= both triangulations by construction and floated every ground
+    # product. Named once, in `ground`, rather than spelled here as well.
+    "diagonal": _ground.MEASURED_DIAGONAL,
     "region": None,
     "jobs": 1,
     # Which §8 raster is "the ground": "fine" = layers.terrainFine (1.75 m) when the bundle has

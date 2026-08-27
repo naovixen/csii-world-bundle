@@ -59,11 +59,10 @@ def pytest_collection_modifyitems(items):
 def _candidates():
     """Every place a bundle might be, most likely first — the app's own answer, not a second one.
 
-    `CS2_BUNDLE_DIR` overrides, which is how CI and a copied bundle get pointed at.
+    `CS2_BUNDLE_DIR` overrides, which is how CI and a copied bundle get pointed at. That override
+    lives in `locate` now rather than here: this file used to apply it and the tools did not, so
+    setting it moved the tests onto a bundle and left the tools on another.
     """
-    override = os.environ.get("CS2_BUNDLE_DIR")
-    if override:
-        return [override]
     from csiibundle.bake import locate
 
     return list(locate.candidate_bundle_dirs())

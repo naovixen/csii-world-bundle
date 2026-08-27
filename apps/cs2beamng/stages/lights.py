@@ -42,6 +42,8 @@ import hashlib
 import math
 import time
 
+import numpy
+from csiibundle import frames
 from csiibundle import instances as bundle_instances
 from csiibundle import lights as bundle_lights
 
@@ -349,8 +351,20 @@ def _world(record, entry):
     The entry's `position`/`rotation` are in the OBJECT frame, so they compose with the record's
     own transform; `stages.instances._transform` is the same conjugation, applied here to the
     composed matrix rather than to the record alone.
+
+    The quaternion and the axis swap are `csiibundle.frames`', not this stage's. They used to be
+    `stages.instances._quat_rows` and `._swap_yz`, imported across from another stage — a third
+    and fourth copy of arithmetic the package already owned, and the pair Phase 1 had just
+    removed from `_transform` for the same reason.
+
+    **`frames.quat_matrix` does not renormalise and `_quat_rows` did**, so this changes the
+    written `rotationMatrix`. Measured on the 2026-08-27 rip: 630 of 654 light rotations (96.3 %)
+    store a quaternion off unity, by at most 1.5e-06 in the squared norm; 814 of the 5,886 matrix
+    floats as written (13.8 %) move, by **at most 2e-06** — a fifth of a millimetre of aim at
+    100 m. Not renormalising is the deliberate choice: a producer that ships a non-unit
+    quaternion should show up, not be quietly corrected in one consumer.
     """
-    from .instances import _quat_rows, _swap_yz, _transform
+    from .instances import _transform
 
     base_pos, base_rot, base_scale = _transform(record)
     local = entry.get("position") or (0.0, 0.0, 0.0)
@@ -359,12 +373,11 @@ def _world(record, entry):
         base_pos[axis] + sum(base_rot[axis][k] * base_scale[k] * local_beamng[k] for k in range(3))
         for axis in range(3)
     ]
-    local_rot = _swap_yz(_quat_rows(entry.get("rotation") or (0.0, 0.0, 0.0, 1.0)))
-    combined = [
-        [sum(base_rot[r][k] * local_rot[k][c] for k in range(3)) for c in range(3)]
-        for r in range(3)
-    ]
-    return world, frame.basis_flat(combined)
+    local_rot = frames.to_zup_transform(
+        frames.quat_matrix(entry.get("rotation") or frames.IDENTITY_QUAT)
+    )[:3, :3]
+    combined = numpy.asarray(base_rot, dtype=float) @ local_rot
+    return world, frame.basis_flat(combined.tolist())
 
 
 # `placement.keep` decides which instances are lit, so this stage inherits its whole admission
