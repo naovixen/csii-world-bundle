@@ -194,11 +194,18 @@ namespace Carto.IO
         /// own — <c>SplitToning.IsActive()</c>, <c>Fog.enabled.value</c> — and keep it beside this
         /// call, because it is theirs and not the general rule.
         /// </remarks>
-        /// <typeparam name="T">The volume component type.</typeparam>
+        /// <remarks>
+        /// <b>NOT generic, and that is the whole point.</b> <c>VolumeComponent</c> is a
+        /// <c>ScriptableObject</c>, so <c>== null</c> on it is Unity's OVERLOADED operator, which
+        /// answers true for an object that has been destroyed but whose reference is still
+        /// non-null. C# does not consider user-defined operators for a type PARAMETER: written as
+        /// <c>Applied&lt;T&gt;(T component) where T : VolumeComponent</c> this compiles to a plain
+        /// reference comparison and a destroyed component passes it. Taking the base type keeps
+        /// the overload, which is what the eight sites it replaced were getting.
+        /// </remarks>
         /// <param name="component">The component, or null.</param>
         /// <returns>True when the game is applying it.</returns>
-        private static bool Applied<T>(T component) where T : VolumeComponent =>
-            (component != null) && component.active;
+        private static bool Applied(VolumeComponent component) => (component != null) && component.active;
 
         private static void Add(Dictionary<string, object> document, string key, object block)
         {
