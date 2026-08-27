@@ -643,22 +643,7 @@ namespace Carto.Systems
                            + $"networks/ and lanemeshes/ are incomplete: {cause?.Message ?? "unknown error"}"
                            + "\n\nFull details: Logs/Carto.log";
 
-            if (run.Completed != null)
-            {
-                try { run.Completed(RipOutcome.Failure(summary)); }
-                catch (Exception ex) { _log.Warn($"Network rip completion callback failed: {ex}"); }
-                return;
-            }
-
-            try
-            {
-                Game.UI.MessageDialog dialog = new("Options.SECTION[Carto.Carto.Mod]", summary, "Common.OK");
-                Instance.UI.appBindings.ShowMessageDialog(dialog, null);
-            }
-            catch (Exception ex)
-            {
-                _log.Warn($"Could not show the network rip failure: {ex.Message}");
-            }
+            RipReport.Deliver(run.Completed, RipOutcome.Failure(summary), summary, "network rip", _log);
         }
 
         /// <summary>
@@ -1219,32 +1204,19 @@ namespace Carto.Systems
 
             _log.Info(report.ToString());
 
-            // A pipeline-driven run reports a short summary into the pipeline's combined dialog;
-            // the full report is in the log either way.
-            if (run.Completed != null)
-            {
-                string summary = $"Wrote {run.Writer?.Count ?? 0} segment(s) and {run.LaneWriter?.Count ?? 0} lane record(s), "
-                               + $"{(run.Bytes + run.LaneBytes) / 1048576d:F1} MiB of glTF, in {run.Clock.Elapsed.TotalSeconds:F0} s.";
-                try
-                {
-                    run.Completed(run.Failed > 0
-                        ? RipOutcome.Failure(summary)
-                        : RipOutcome.Ok(summary));
-                }
-                catch (Exception ex) { _log.Warn($"Network rip completion callback failed: {ex}"); }
-                return;
-            }
+            // NOTE the inversion, kept as it was: this stage gives the SHORT line to the
+            // orchestrator and the FULL report to the modal, where the instance and lane rips do
+            // the opposite. Three stages, three answers to "who gets which text" — worth settling,
+            // but settling it changes what a rip reports, so it is not folded into a move.
+            string summary = $"Wrote {run.Writer?.Count ?? 0} segment(s) and {run.LaneWriter?.Count ?? 0} lane record(s), "
+                           + $"{(run.Bytes + run.LaneBytes) / 1048576d:F1} MiB of glTF, in {run.Clock.Elapsed.TotalSeconds:F0} s.";
 
-            try
-            {
-                Game.UI.MessageDialog dialog = new("Options.SECTION[Carto.Carto.Mod]",
-                                                   Settings.Fit(report.ToString()), "Common.OK");
-                Instance.UI.appBindings.ShowMessageDialog(dialog, null);
-            }
-            catch (Exception ex)
-            {
-                _log.Warn($"Could not show the network rip result: {ex.Message}");
-            }
+            RipReport.Deliver(
+                run.Completed,
+                run.Failed > 0 ? RipOutcome.Failure(summary) : RipOutcome.Ok(summary),
+                report.ToString(),
+                "network rip",
+                _log);
         }
 
         /// <summary>

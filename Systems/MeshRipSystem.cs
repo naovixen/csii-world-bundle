@@ -730,8 +730,10 @@ namespace Carto.Systems
         /// <summary>
         /// Abort a rip whose writer task has died mid-read. Nothing more can ever be written —
         /// the queue will not drain again — so the only honest outcome is a failed stage:
-        /// release what the run holds and hand a summary with the <c>FAILED</c> prefix, which
-        /// is what the orchestrator counts a stage failure by, to whoever is listening.
+        /// release what the run holds and hand back a <see cref="RipOutcome"/> that SAYS it
+        /// failed. The summary still opens with the word FAILED because a person reads it; the
+        /// orchestrator does not — it used to infer failure from that spelling, which meant a
+        /// stage writing "Failed" was silently a success.
         /// </summary>
         /// <param name="run">The rip whose writer faulted.</param>
         private void Fail(RipRun run)
@@ -753,22 +755,7 @@ namespace Carto.Systems
                            + $"meshes/ is incomplete ({System.Threading.Volatile.Read(ref run.Written)} file(s) before the fault): "
                            + $"{cause?.Message ?? "unknown error"}\n\nFull details: Logs/Carto.log";
 
-            if (run.Completed != null)
-            {
-                try { run.Completed(RipOutcome.Failure(summary)); }
-                catch (Exception ex) { _log.Warn($"Mesh rip completion callback failed: {ex}"); }
-                return;
-            }
-
-            try
-            {
-                Game.UI.MessageDialog dialog = new("Options.SECTION[Carto.Carto.Mod]", summary, "Common.OK");
-                Instance.UI.appBindings.ShowMessageDialog(dialog, null);
-            }
-            catch (Exception ex)
-            {
-                _log.Warn($"Could not show the mesh rip result dialog: {ex.Message}");
-            }
+            RipReport.Deliver(run.Completed, RipOutcome.Failure(summary), summary, "mesh rip", _log);
         }
 
         /// <summary>
@@ -1392,9 +1379,9 @@ namespace Carto.Systems
 
             StringBuilder summary = new();
 
-            // The orchestrator counts a stage failed by its summary's FAILED prefix. A writer
-            // that died after the reader finished lost queued files, so the stage must not
-            // read as a success.
+            // A writer that died after the reader finished lost queued files, so the stage must
+            // not read as a success — the outcome this builds carries `Failed`, and the word in
+            // the text is for the person reading the report, not for the orchestrator.
             //
             if (writerFaulted) summary.AppendLine("FAILED: the mesh writer ended with an error — meshes/ is incomplete; see the log.");
             summary.AppendLine($"Wrote {run.Written} mesh file(s), skipped {run.Skipped}, failed {run.Failed}.");
@@ -1405,27 +1392,14 @@ namespace Carto.Systems
 
             // A pipeline-driven run reports into the pipeline's combined summary; only a run the
             // user started by hand gets its own dialog.
-            if (run.Completed != null)
-            {
-                try
-                {
-                    run.Completed(writerFaulted || (run.Failed > 0)
-                        ? RipOutcome.Failure(summary.ToString())
-                        : RipOutcome.Ok(summary.ToString()));
-                }
-                catch (Exception ex) { _log.Warn($"Mesh rip completion callback failed: {ex}"); }
-                return;
-            }
-
-            try
-            {
-                Game.UI.MessageDialog dialog = new("Options.SECTION[Carto.Carto.Mod]", summary.ToString(), "Common.OK");
-                Instance.UI.appBindings.ShowMessageDialog(dialog, null);
-            }
-            catch (Exception ex)
-            {
-                _log.Warn($"Could not show the mesh rip result dialog: {ex.Message}");
-            }
+            RipReport.Deliver(
+                run.Completed,
+                writerFaulted || (run.Failed > 0)
+                    ? RipOutcome.Failure(summary.ToString())
+                    : RipOutcome.Ok(summary.ToString()),
+                summary.ToString(),
+                "mesh rip",
+                _log);
         }
 
         /// <summary>

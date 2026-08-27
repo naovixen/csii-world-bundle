@@ -356,9 +356,9 @@ namespace Carto.Systems
 
             StringBuilder report = run.Report;
 
-            // The orchestrator counts a stage failed by its summary's FAILED prefix. A writer
-            // that died after the walk finished lost queued records, so the stage must not
-            // read as a success.
+            // A writer that died after the walk finished lost queued records, so the stage must
+            // not read as a success — the outcome this builds carries `Failed`, and the word in
+            // the text is for the person reading the report, not for the orchestrator.
             //
             if (writerFaulted) report.Insert(0, "FAILED: the lane writer ended with an error — lanes.jsonl is incomplete; see the log.\n");
             report.AppendLine($"Wrote {run.Writer.Count} lane(s) to lanes.jsonl in {run.Clock.Elapsed.TotalSeconds:F1} s");
@@ -396,36 +396,28 @@ namespace Carto.Systems
 
             _log.Info(report.ToString());
 
-            if (run.Completed != null)
-            {
-                try
-                {
-                    run.Completed(writerFaulted || (run.ProcessFailed > 0)
-                        ? RipOutcome.Failure(report.ToString())
-                        : RipOutcome.Ok(report.ToString()));
-                }
-                catch (Exception ex) { _log.Warn($"Lane rip completion callback failed: {ex}"); }
-                return;
-            }
+            // As in the instance rip: the orchestrator takes the full report, the modal takes
+            // the one line. See `RipReport.Deliver`.
+            string dialogText = (writerFaulted ? "FAILED: the writer ended with an error — the file is incomplete.\n" : "")
+                              + $"Wrote {laneCount} lane record(s) in {run.Clock.Elapsed.TotalSeconds:F1} s.\n\nFull report: Logs/Carto.log";
 
-            try
-            {
-                string summary = (writerFaulted ? "FAILED: the writer ended with an error — the file is incomplete.\n" : "")
-                               + $"Wrote {laneCount} lane record(s) in {run.Clock.Elapsed.TotalSeconds:F1} s.\n\nFull report: Logs/Carto.log";
-                Game.UI.MessageDialog dialog = new("Options.SECTION[Carto.Carto.Mod]", summary, "Common.OK");
-                Instance.UI.appBindings.ShowMessageDialog(dialog, null);
-            }
-            catch (Exception ex)
-            {
-                _log.Warn($"Could not show the lane rip result dialog: {ex.Message}");
-            }
+            RipReport.Deliver(
+                run.Completed,
+                writerFaulted || (run.ProcessFailed > 0)
+                    ? RipOutcome.Failure(report.ToString())
+                    : RipOutcome.Ok(report.ToString()),
+                dialogText,
+                "lane rip",
+                _log);
         }
 
         /// <summary>
         /// Abort a rip whose writer task has died mid-walk. Nothing more can ever be written —
         /// the queue will not drain again — so the only honest outcome is a failed stage:
-        /// release what the run holds and hand a summary with the <c>FAILED</c> prefix, which
-        /// is what the orchestrator counts a stage failure by, to whoever is listening.
+        /// release what the run holds and hand back a <see cref="RipOutcome"/> that SAYS it
+        /// failed. The summary still opens with the word FAILED because a person reads it; the
+        /// orchestrator does not — it used to infer failure from that spelling, which meant a
+        /// stage writing "Failed" was silently a success.
         /// </summary>
         /// <param name="run">The rip whose writer faulted.</param>
         private void Fail(LaneRun run)
@@ -444,22 +436,7 @@ namespace Carto.Systems
                            + $"lanes.jsonl is incomplete ({written} record(s) before the fault): "
                            + $"{cause?.Message ?? "unknown error"}\n\nFull details: Logs/Carto.log";
 
-            if (run.Completed != null)
-            {
-                try { run.Completed(RipOutcome.Failure(summary)); }
-                catch (Exception ex) { _log.Warn($"Lane rip completion callback failed: {ex}"); }
-                return;
-            }
-
-            try
-            {
-                Game.UI.MessageDialog dialog = new("Options.SECTION[Carto.Carto.Mod]", summary, "Common.OK");
-                Instance.UI.appBindings.ShowMessageDialog(dialog, null);
-            }
-            catch (Exception ex)
-            {
-                _log.Warn($"Could not show the lane rip result dialog: {ex.Message}");
-            }
+            RipReport.Deliver(run.Completed, RipOutcome.Failure(summary), summary, "lane rip", _log);
         }
 
         /// <summary>
