@@ -568,9 +568,19 @@ baseline. Then hand it over for the in-game look **before** the commit.
 
 **Producer phases.** Build only (`dotnet build -c Release`), `Carto.Tests` green, and the wording
 stays "built, awaiting in-game re-rip". After Phase 11, one request for a full rip; diff its
-digest against the Phase-0 golden manifest with `bundle_manifest.py` — per-layer record counts and
+digest against the current anchor manifest with `bundle_manifest.py` — per-layer record counts and
 per-file hashes must match except where a phase declared a change. Read the rip report's warnings
 and per-stage counts against the golden report.
+
+**A digest diff compares producer code only across rips of an UNCHANGED SAVE.** This was written
+into Phase 0 as an assumption and the 2026-08-27 re-rip broke it: the city had been played, so
++6,949 instances, +3,453 lanes, +290 areas and +11 meshes arrived that no producer commit could
+account for, and terraforming rewrote 57 terrain-conforming road meshes on top. Nothing was wrong
+with the rip — `VALID`, zero stage failures — but the instrument could no longer answer the
+question it was built for. So the Phase 11 rip is only a gate if the save is held still from the
+anchor rip to it; if it moves, the diff drops to what it can still do (record counts in the right
+direction, no new warning classes, no stage failure) and says so. `docs/baselines/README.md`
+carries the 08-27 diff and the one thing in it the save does not explain.
 
 **Performance.** Phase 10 reports a table: rip stage seconds, build stage seconds, bake `cProfile`
 totals, `level_budget` resident MiB and triangles drawn — before and after, same instrument.
@@ -636,6 +646,24 @@ Each phase records here what landed and what it found, so this document stays th
 | 10 — Performance | not started |
 | 11 — Comment, naming and structure | not started |
 | 12 — Documentation | not started |
+
+### The 2026-08-27 re-rip — the producer's first evidence
+
+The four producer commits carried "built, awaiting in-game re-rip" from 2026-08-21 to 2026-08-27.
+They are now ripped, and they are clean:
+
+* nine stages, **zero failures in any of them** — including `Networks & lane geometry`, whose
+  new per-entity catch and `run.Failed` counter (Phase 1, `e212516`) had never run in-game;
+* `validate_bundle.py` **VALID**, one warning, the same advisory-`parent` warning the golden had;
+* 27,154 network edges → 8,259 segments, identical to the golden's 8,259;
+* the mod is provably HEAD — `Carto.dll` stamped 90 s before the last producer commit, and no
+  `Systems/ IO/ Domain/` file touched since.
+
+The full diff and the one unexplained item in it are in `docs/baselines/README.md`. The short
+version: the save moved, which cost the golden its role as a producer oracle (see Verification),
+and three prefab meshes changed in a way the save should not cause — not attributable to any of
+the four commits, none of which touches geometry code, and not settleable from here because the
+old bytes are gone. The next rip is the experiment.
 
 ### Phase 0 — DONE 2026-08-21
 
