@@ -43,29 +43,22 @@ def each(
         args: one argument per job. Consumed into a list only if it is not already one.
         workers: how many processes at most. 1 or less means the serial loop.
         progress: something with `check()` and `advance(n)`.
-        ordered: yield in the order of `args`. `False` uses `imap_unordered`, which lets a slow
-            job stop holding up the ones behind it — correct unless the caller zips results back
-            against its input.
-        chunksize: jobs handed to a worker at a time. Larger amortises the IPC per job; smaller
-            balances better when jobs differ in cost.
-        min_parallel: the fewest jobs worth a pool. Defaults to `chunksize`, which is the smallest
-            number at which chunking means anything.
+        ordered: yield in the order of `args`. `False` uses `imap_unordered`, so a slow job does
+            not hold up the ones behind it — correct unless the caller zips results to its input.
+        chunksize: jobs handed to a worker at once; more amortises IPC, fewer balances uneven jobs.
+        min_parallel: the fewest jobs worth a pool. Defaults to `chunksize`.
         spawn: force a spawn context. The `cs2beamng` stages need it — a forked worker inherits
             the parent's half-built level object and its open handles. The bake does not, and
             passing it there would change how its workers get the rasters they were given.
-        advance: advance progress by one per result. True for a caller whose progress total counts
-            JOBS. `False` for one whose total counts something else and which advances itself —
-            `stages/networks` counts SEGMENTS and advances by however many a tile held, so one
-            per tile would make its bar mean nothing.
+        advance: advance progress by one per result — for a caller whose progress total counts
+            JOBS. `False` for one whose total counts something else and advances itself:
+            `stages/networks` counts SEGMENTS and advances by however many a tile held.
         total: how many jobs `args` will yield, when `args` is a GENERATOR that must stay lazy.
             Only the threshold and the process count need the length, and `imap` consumes lazily,
             so a caller that streams can keep streaming. `bake/tiles` must: its generator POPS
             each tile's geometry out of the accumulated buckets as it yields, so the memory is
             released tile by tile — materialising the list first holds a whole product's geometry
             at once, which on the areas product is hundreds of megabytes.
-
-    Yields:
-        Each job's return value.
     """
     if total is None:
         args = args if isinstance(args, (list, tuple)) else list(args)
