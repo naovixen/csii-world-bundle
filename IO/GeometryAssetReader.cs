@@ -401,9 +401,12 @@ namespace Carto.IO
             }
 
             // -- optional attributes ----------------------------------------------------------
-            mesh.Normals = ReadFloat3(asset, meshIndex, VertexAttribute.Normal, vertexCount);
-            mesh.Uvs = ReadFloat2(asset, meshIndex, VertexAttribute.TexCoord0, vertexCount);
-            mesh.Tangents = ReadFloat4(asset, meshIndex, VertexAttribute.Tangent, vertexCount);
+            mesh.Normals = ReadAttribute<MeshNormal, float3>(
+                asset, meshIndex, VertexAttribute.Normal, vertexCount, MeshNormal.Unpack, p => p.m_Normal);
+            mesh.Uvs = ReadAttribute<MeshUV0, float2>(
+                asset, meshIndex, VertexAttribute.TexCoord0, vertexCount, MeshUV0.Unpack, p => p.m_Uv);
+            mesh.Tangents = ReadAttribute<MeshTangent, float4>(
+                asset, meshIndex, VertexAttribute.Tangent, vertexCount, MeshTangent.Unpack, p => p.m_Tangent);
 
             // -- sub-meshes -------------------------------------------------------------------
             // These are the drawable ranges the ECS path never exposed, which is why every mesh
@@ -457,65 +460,67 @@ namespace Carto.IO
         /// <summary>
         /// Read a three-component vertex attribute, or <c>null</c> when the mesh lacks it.
         /// </summary>
-        private static float3[] ReadFloat3(GeometryAsset asset, int meshIndex, VertexAttribute attribute, int count)
+        /// <summary>
+        /// The game's own unpacker for one vertex-attribute struct: <c>MeshNormal.Unpack</c> and
+        /// friends. A delegate rather than an interface because these are static methods on
+        /// unrelated structs, with nothing in the game's types to constrain them by.
+        /// </summary>
+        /// <typeparam name="TPacked">The packed struct the attribute decodes into.</typeparam>
+        private delegate void Unpacker<TPacked>(
+            NativeSlice<byte> data,
+            NativeArray<TPacked> buffer,
+            int count,
+            VertexAttributeFormat format,
+            int dimension) where TPacked : struct;
+
+        /// <summary>
+        /// Decode one vertex attribute into a managed array, or <c>null</c> when the mesh does not
+        /// carry it.
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// This was <c>ReadFloat3</c>, <c>ReadFloat2</c> and <c>ReadFloat4</c> — twenty-one lines
+        /// three times, differing only in four types, and the second and third carried
+        /// <c>&lt;inheritdoc cref="ReadFloat3"/&gt;</c> as an admission that they were the same
+        /// method. What they share is not the shape but the RULES: ask the asset for the
+        /// attribute's format, treat a dimension of zero as "this mesh has no such attribute"
+        /// rather than as an error, and treat a throw from the native decode as the same thing,
+        /// because a prefab that cannot be read must cost its own mesh and not the whole rip.
+        /// Three copies is three chances to get one of those wrong.
+        /// </para>
+        /// <para>
+        /// <paramref name="select"/> runs per vertex, which is a delegate call on a hot loop —
+        /// about 20.7 M triangles across a full-city rip. It is the right trade anyway: at a few
+        /// nanoseconds a call that is well under a tenth of a second inside a mesh stage that
+        /// takes 1,683.
+        /// </para>
+        /// </remarks>
+        /// <typeparam name="TPacked">The packed struct the game decodes the attribute into.</typeparam>
+        /// <typeparam name="TValue">The value type this returns per vertex.</typeparam>
+        /// <param name="asset">The geometry asset being read.</param>
+        /// <param name="meshIndex">Which mesh within the asset.</param>
+        /// <param name="attribute">The attribute to decode.</param>
+        /// <param name="count">How many vertices the mesh has.</param>
+        /// <param name="unpack">The game's unpacker for <typeparamref name="TPacked"/>.</param>
+        /// <param name="select">The field of the packed struct that carries the value.</param>
+        /// <returns>One value per vertex, or <c>null</c> when the attribute is absent or unreadable.</returns>
+        private static TValue[] ReadAttribute<TPacked, TValue>(
+            GeometryAsset asset,
+            int meshIndex,
+            VertexAttribute attribute,
+            int count,
+            Unpacker<TPacked> unpack,
+            Func<TPacked, TValue> select) where TPacked : struct
         {
-            NativeArray<MeshNormal> buffer = new(count, Allocator.Temp);
+            NativeArray<TPacked> buffer = new(count, Allocator.Temp);
             try
             {
                 asset.GetAttributeFormat(meshIndex, attribute, out VertexAttributeFormat format, out int dimension);
                 if (dimension <= 0) return null;
-                MeshNormal.Unpack(asset.GetAttributeData(meshIndex, attribute), buffer, count, format, dimension);
+                unpack(asset.GetAttributeData(meshIndex, attribute), buffer, count, format, dimension);
 
-                float3[] result = new float3[count];
-                for (int i = 0; i < count; i++) result[i] = buffer[i].m_Normal;
-                return result;
-            }
-            catch (Exception)
-            {
-                return null;
-            }
-            finally
-            {
-                buffer.Dispose();
-            }
-        }
-
-        /// <inheritdoc cref="ReadFloat3"/>
-        private static float2[] ReadFloat2(GeometryAsset asset, int meshIndex, VertexAttribute attribute, int count)
-        {
-            NativeArray<MeshUV0> buffer = new(count, Allocator.Temp);
-            try
-            {
-                asset.GetAttributeFormat(meshIndex, attribute, out VertexAttributeFormat format, out int dimension);
-                if (dimension <= 0) return null;
-                MeshUV0.Unpack(asset.GetAttributeData(meshIndex, attribute), buffer, count, format, dimension);
-
-                float2[] result = new float2[count];
-                for (int i = 0; i < count; i++) result[i] = buffer[i].m_Uv;
-                return result;
-            }
-            catch (Exception)
-            {
-                return null;
-            }
-            finally
-            {
-                buffer.Dispose();
-            }
-        }
-
-        /// <inheritdoc cref="ReadFloat3"/>
-        private static float4[] ReadFloat4(GeometryAsset asset, int meshIndex, VertexAttribute attribute, int count)
-        {
-            NativeArray<MeshTangent> buffer = new(count, Allocator.Temp);
-            try
-            {
-                asset.GetAttributeFormat(meshIndex, attribute, out VertexAttributeFormat format, out int dimension);
-                if (dimension <= 0) return null;
-                MeshTangent.Unpack(asset.GetAttributeData(meshIndex, attribute), buffer, count, format, dimension);
-
-                float4[] result = new float4[count];
-                for (int i = 0; i < count; i++) result[i] = buffer[i].m_Tangent;
+                TValue[] result = new TValue[count];
+                for (int i = 0; i < count; i++) result[i] = select(buffer[i]);
                 return result;
             }
             catch (Exception)

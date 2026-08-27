@@ -636,12 +636,12 @@ Each phase records here what landed and what it found, so this document stays th
 | 0 — Guardrails and baselines | **DONE** 2026-08-21 — see below |
 | 1 — The three defects | **DONE** 2026-08-21 — one of the three was not live; see below |
 | 2 — One implementation of every shared rule | **DONE** 2026-08-27 — five of its claims needed correcting; see below |
-| 3 — One stage framework | not started |
+| 3 — One stage framework | pre-flight verified — the record unification is refused, with reasons; see below |
 | 4 — Split `csiibundle` and `tools/` | not started |
 | 5 — The app and its UI | not started |
 | 6 — The Blender adapter | not started |
 | 7 — One rip-stage framework | **in progress** — extractions, the typed outcome, the frame loop and the report shape done; see below |
-| 8 — The IO writer layer | not started |
+| 8 — The IO writer layer | **in progress** — the writers, the attribute readers and the grading guard; see below |
 | 9 — Split the rip systems | not started |
 | 10 — Performance | not started |
 | 11 — Comment, naming and structure | not started |
@@ -1000,6 +1000,97 @@ consumer.
 were added to it, and the gate was right that they do not belong there: `png.py` is the
 standard-library decoder for the §8 rasters, which are numbers and must never touch PIL.
 **New in the app:** `beamng/matbind.py`.
+
+### Phase 3 — pre-flight, 2026-08-27
+
+**Confirmed**
+
+* The TSStatic object literal is built by hand in exactly three places —
+  `stages/derived.py:160`, `stages/instances.py:403`, `stages/networks.py:132`.
+* Eight parallel-work blocks: four bake products (`materials`, `lods`, `tiles`, `areas`) and four
+  stages (`derived`, `materials`, `networks`, `shapes`). `bake/materials._each` is already the
+  abstraction — a generator that pools when it is worth one, honours cancellation between results
+  and advances progress per item — and it is **private to one product**, used four times inside it.
+* `Product.options` and `Stage.settings_keys` do solve the same problem in different vocabulary.
+
+**Wrong in the plan**
+
+* **"Structurally isomorphic" overstates it, and unifying the whole record would build the exact
+  defect Phase 7 was told to remove.** `Stage` has eleven fields
+  (`key title enabled units run inputs settings_keys outputs shared_keys after version`),
+  `Product` has six (`name inputs path run version options`); `BuildContext` has nine and the
+  bake's `Context` five, overlapping in three. The genuinely shared core is
+  `(name, inputs, run, version, options)`. Merging the rest produces a type where half the fields
+  are meaningless to half its users — which is what `RipOrchestratorSystem.Stage` was, and Phase 7
+  **split** it for "carrying two mutually exclusive contracts in one type with no compiler help".
+  The plan asks for opposite things in two phases; the split is the one that is right.
+* **The five "stage-name string lists" are five different things.** `stages/__init__.py:87` is
+  `_resolve`, not a list. `stages/bake.py:_wanted_products` is a conditional settings→product
+  mapping. `pipeline/history.DEFAULT_RATES` is measured units-per-second. `server.CENSUS_KEYS` is
+  **settings keys, not stage names at all**. `bake/PRODUCT_MODULES` is bake order. The real
+  overlap is narrower and worth fixing: three of them enumerate the product-name set, so adding a
+  product means remembering three files.
+* **The `ctx.shared` guard is at five sites, in two spellings that are NOT equivalent.**
+  `(ctx.shared or {})` builds a throwaway dict when `shared` is empty or None;
+  `(ctx.shared if ctx.shared is not None else {})` hands back the real one. The two sites that
+  call `.setdefault(...)` — `stages/derived.py:91` and `stages/networks.py:100` — use the second
+  form, and they have to: `.setdefault` on a throwaway mutates nothing, so unifying them onto
+  `or {}` would silently stop both stages recording the materials they bound. The three read-only
+  sites use `or {}` and are fine. This is a distinction to preserve, not duplication to collapse.
+* **The four bake pools are not one block copy-pasted.** They differ where it matters: `tiles` and
+  `areas` need `imap` (ordered) and the other two do not; chunksize is 8, 4, 1 and pre-chunked;
+  and `areas` alone passes an `initializer` so the workers own the heightfield raster instead of
+  each copying it — the change that made the areas conform parallelisable at all. All four **do**
+  honour cancellation (I first read `tiles` as missing `progress.check()`; it is inside `absorb`,
+  which the pooled and serial paths both call).
+
+### Phase 8 — in progress, 2026-08-27
+
+**Landed**
+
+* `IO/JsonLinesWriter.cs` — the base `InstanceWriter`, `LaneWriter` and `NetworkWriter` were three
+  copies of. Their own docstrings admitted it (`LaneWriter`: "The same shape as `NetworkWriter`
+  and for the same reason"). The stream, the count, opening through `BundleFile`, serialising with
+  no formatting and disposing move up; what stays is the one thing that differs, which is which
+  fields a record contributes.
+
+  **And it is testable, where the three copies were not.** It needs only `BundleFile` and
+  Newtonsoft, both already in the test project, so it links — five new tests take the suite from
+  19 to 24 and pin the invariant all three writers depend on: `Count` counts a line that was
+  written and not one that was skipped. `LaneWriter` drops a path of fewer than two points, and a
+  bundle whose manifest counts that record has a manifest disagreeing with its own layer. Also
+  pinned: field order (the layers are diffed between rips), an empty layer is an empty file and
+  not a missing one (§10 distinguishes those), and no BOM / no CR.
+
+* `GeometryAssetReader.ReadAttribute<TPacked, TValue>` — `ReadFloat3`/`ReadFloat2`/`ReadFloat4`
+  were twenty-one lines three times, and the second and third carried
+  `<inheritdoc cref="ReadFloat3"/>` as an admission. What they share is not the shape but three
+  rules: ask for the attribute's format, treat dimension zero as "no such attribute" rather than
+  an error, and treat a native throw the same way so a bad prefab costs its own mesh and not the
+  rip. `select` runs per vertex — a delegate call on ~20.7 M triangles, which is well under a
+  tenth of a second inside a stage that takes 1,683.
+
+* `GradingWriter.Applied<T>` — "null, or carried but switched off, means the game is not applying
+  it" was written at ten sites. Six were the plain guard, two add a condition of their own
+  (`SplitToning.IsActive()`, `Fog.enabled.value`) which stays beside the call because it is
+  theirs, and two are positive-form checks inside `CaptureLighting`. All ten now ask one function.
+
+**Wrong in the plan**
+
+* **The `["units"]` prose cannot leave the payload: it is `required` in the frozen schema.**
+  `docs/schema/grading.schema.json` lists `"units"` in the `required` array of every block that
+  has one, so removing it would fail `validate_bundle.py` on every bundle ever ripped. Schema 2 is
+  the frozen contract (CLAUDE.md, and the 2026-08-09 freeze). Moving the prose to the docs is a
+  schema change with a version bump behind it, not a tidy-up — and worth doing on its own terms,
+  since the strings are a real share of `grading.json`.
+* **Three of the four deletions were already done**, in `a4acd61`: `BundleFile.OnDisk`,
+  `MeshRipSystem`'s two dead queries, and `NetworkRipSystem.SanitizeId` — which was **not** dead,
+  as that commit recorded.
+
+**Not done yet:** the six layers that bypass the IO layer (`districts.jsonl`, `areas.jsonl`,
+`clipvolumes.jsonl`, `laneprefabs.json`, `materials.json`, `colors.json`/`lights.json`, written
+inline with `BundleFile.CreateText` + `JsonConvert`), and settling `BundleWriter` on one JSON
+idiom.
 
 ### Phase 7 — in progress, 2026-08-21
 

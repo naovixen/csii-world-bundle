@@ -12,21 +12,14 @@ namespace Carto.IO
     /// The same shape as <see cref="NetworkWriter"/> and for the same reason: a full city has
     /// hundreds of thousands of lanes, and neither side should have to hold them all at once.
     /// </summary>
-    public sealed class LaneWriter : IDisposable
+    public sealed class LaneWriter : JsonLinesWriter
     {
-        /// <summary>The underlying writer.</summary>
-        private readonly StreamWriter _writer;
-
-        /// <summary>The number of records written so far.</summary>
-        public int Count { get; private set; }
-
         /// <summary>
         /// Open a JSON Lines file for writing.
         /// </summary>
         /// <param name="path">The destination path, before <see cref="BundleFile"/>'s suffix.</param>
-        public LaneWriter(string path)
+        public LaneWriter(string path) : base(path)
         {
-            _writer = BundleFile.CreateText(path);
         }
 
         /// <summary>
@@ -54,11 +47,7 @@ namespace Carto.IO
             if (record.Secondary) line["secondary"] = true;
             if ((record.Flags != null) && (record.Flags.Count > 0)) line["flags"] = record.Flags;
 
-            _writer.WriteLine(JsonConvert.SerializeObject(line, Formatting.None));
-            Count++;
+            WriteLine(line);
         }
-
-        /// <summary>Close the file.</summary>
-        public void Dispose() => _writer?.Dispose();
     }
 }

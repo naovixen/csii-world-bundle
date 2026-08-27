@@ -54,6 +54,12 @@
     <Compile Include="..\..\IO\Png.cs" Link="mod\Png.cs" />
     <Compile Include="..\..\IO\BundleFile.cs" Link="mod\BundleFile.cs" />
     <!--
+      The JSON Lines base the instance, lane and network writers share. It needs BundleFile and
+      Newtonsoft and nothing else, so it links — which means the "count exactly when a line is
+      written" invariant all three depend on is testable, where the three copies of it were not.
+    -->
+    <Compile Include="..\..\IO\JsonLinesWriter.cs" Link="mod\JsonLinesWriter.cs" />
+    <!--
       NOT BundleManifest.cs, though the audit listed it as game-free. `BuildGeo` takes an
       `Options`, and Options.cs opens `using Carto.Utils`, which opens Unity.Entities,
       Unity.Burst and Colossal.Mathematics. The build is what found that; the list above is

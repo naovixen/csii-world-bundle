@@ -181,6 +181,25 @@ namespace Carto.IO
             }
         }
 
+        /// <summary>
+        /// Whether a volume component contributes to the stack at all.
+        /// </summary>
+        /// <remarks>
+        /// Null means the volume profile does not carry it; <c>active</c> false means it carries
+        /// it switched off. Either way the game is not applying it, and a capture that shipped it
+        /// would describe a grading the player never sees.
+        ///
+        /// Written out at eight capture sites before refactor Phase 8, which is eight chances to
+        /// check one and forget the other. Two of those sites add a further condition of their
+        /// own — <c>SplitToning.IsActive()</c>, <c>Fog.enabled.value</c> — and keep it beside this
+        /// call, because it is theirs and not the general rule.
+        /// </remarks>
+        /// <typeparam name="T">The volume component type.</typeparam>
+        /// <param name="component">The component, or null.</param>
+        /// <returns>True when the game is applying it.</returns>
+        private static bool Applied<T>(T component) where T : VolumeComponent =>
+            (component != null) && component.active;
+
         private static void Add(Dictionary<string, object> document, string key, object block)
         {
             if (block != null) document[key] = block;
@@ -189,7 +208,7 @@ namespace Carto.IO
         private static object CaptureExposure(VolumeStack stack)
         {
             Exposure exposure = stack.GetComponent<Exposure>();
-            if ((exposure == null) || !exposure.active) return null;
+            if (!Applied(exposure)) return null;
             return new Dictionary<string, object>
             {
                 ["mode"] = exposure.mode.value.ToString(),
@@ -212,7 +231,7 @@ namespace Carto.IO
         private static object CaptureVignette(VolumeStack stack)
         {
             Vignette vignette = stack.GetComponent<Vignette>();
-            if ((vignette == null) || !vignette.active) return null;
+            if (!Applied(vignette)) return null;
             if (vignette.intensity.value <= 0f) return null;
 
             UnityEngine.Color color = vignette.color.value;
@@ -254,7 +273,7 @@ namespace Carto.IO
         private static object CaptureSplitToning(VolumeStack stack)
         {
             SplitToning splitToning = stack.GetComponent<SplitToning>();
-            if ((splitToning == null) || !splitToning.active || !splitToning.IsActive()) return null;
+            if (!Applied(splitToning) || !splitToning.IsActive()) return null;
 
             UnityEngine.Color shadows = splitToning.shadows.value;
             UnityEngine.Color highlights = splitToning.highlights.value;
@@ -297,7 +316,7 @@ namespace Carto.IO
         private static object CaptureFog(VolumeStack stack)
         {
             Fog fog = stack.GetComponent<Fog>();
-            if ((fog == null) || !fog.active || !fog.enabled.value) return null;
+            if (!Applied(fog) || !fog.enabled.value) return null;
 
             UnityEngine.Color tint = fog.tint.value;
             return new Dictionary<string, object>
@@ -441,7 +460,7 @@ namespace Carto.IO
             }
 
             PhysicallyBasedSky sky = stack.GetComponent<PhysicallyBasedSky>();
-            if ((sky != null) && sky.active)
+            if (Applied(sky))
             {
                 UnityEngine.Color zenith = sky.zenithTint.value;
                 UnityEngine.Color horizon = sky.horizonTint.value;
@@ -460,7 +479,7 @@ namespace Carto.IO
             }
 
             IndirectLightingController indirect = stack.GetComponent<IndirectLightingController>();
-            if ((indirect != null) && indirect.active)
+            if (Applied(indirect))
             {
                 block["indirect"] = new Dictionary<string, object>
                 {
@@ -532,7 +551,7 @@ namespace Carto.IO
         private static object CaptureWhiteBalance(VolumeStack stack)
         {
             WhiteBalance balance = stack.GetComponent<WhiteBalance>();
-            if ((balance == null) || !balance.active) return null;
+            if (!Applied(balance)) return null;
             return new Dictionary<string, object>
             {
                 ["temperature"] = Round(balance.temperature.value),
@@ -545,7 +564,7 @@ namespace Carto.IO
         private static object CaptureColorAdjustments(VolumeStack stack)
         {
             ColorAdjustments adjustments = stack.GetComponent<ColorAdjustments>();
-            if ((adjustments == null) || !adjustments.active) return null;
+            if (!Applied(adjustments)) return null;
 
             UnityEngine.Color filter = adjustments.colorFilter.value;
             return new Dictionary<string, object>
@@ -565,7 +584,7 @@ namespace Carto.IO
         private static object CaptureSmh(VolumeStack stack)
         {
             ShadowsMidtonesHighlights smh = stack.GetComponent<ShadowsMidtonesHighlights>();
-            if ((smh == null) || !smh.active) return null;
+            if (!Applied(smh)) return null;
             return new Dictionary<string, object>
             {
                 ["shadows"] = Vector(smh.shadows.value),
@@ -583,7 +602,7 @@ namespace Carto.IO
         private static object CaptureTonemapping(VolumeStack stack)
         {
             Tonemapping tonemapping = stack.GetComponent<Tonemapping>();
-            if ((tonemapping == null) || !tonemapping.active) return null;
+            if (!Applied(tonemapping)) return null;
 
             Dictionary<string, object> block = new Dictionary<string, object>
             {

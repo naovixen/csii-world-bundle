@@ -14,18 +14,8 @@ namespace Carto.IO
     /// instances, and the bundle contract picks JSON Lines precisely so neither producer nor
     /// consumer has to hold them all at once.
     /// </summary>
-    public sealed class InstanceWriter : IDisposable
+    public sealed class InstanceWriter : JsonLinesWriter
     {
-        /// <summary>
-        /// The underlying writer.
-        /// </summary>
-        private readonly StreamWriter _writer;
-
-        /// <summary>
-        /// The number of records written so far.
-        /// </summary>
-        public int Count { get; private set; }
-
         /// <summary>
         /// The number of rotations that had to be normalised before writing.
         /// </summary>
@@ -35,11 +25,8 @@ namespace Carto.IO
         /// Open a JSON Lines file for writing.
         /// </summary>
         /// <param name="path">The destination path, before <see cref="BundleFile"/>'s suffix.</param>
-        public InstanceWriter(string path)
+        public InstanceWriter(string path) : base(path)
         {
-            // Through BundleFile so this layer shares the bundle's one on-disk policy — currently
-            // uncompressed; COMP-1 tried gzip here and was reverted (see BundleFile for why).
-            _writer = BundleFile.CreateText(path);
         }
 
         /// <summary>
@@ -61,8 +48,7 @@ namespace Carto.IO
             if (record.Parent.HasValue) line["parent"] = record.Parent.Value;
             if ((record.Attributes != null) && (record.Attributes.Count > 0)) line["attrs"] = record.Attributes;
 
-            _writer.WriteLine(JsonConvert.SerializeObject(line, Formatting.None));
-            Count++;
+            WriteLine(line);
         }
 
         /// <summary>
@@ -84,9 +70,5 @@ namespace Carto.IO
         }
 
 
-        /// <summary>
-        /// Flush and close the file.
-        /// </summary>
-        public void Dispose() => _writer?.Dispose();
     }
 }

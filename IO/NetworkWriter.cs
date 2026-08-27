@@ -12,25 +12,14 @@ namespace Carto.IO
     /// The same shape as <see cref="InstanceWriter"/> and for the same reason — the contract picks
     /// JSON Lines so neither side has to hold a whole city's networks at once.
     /// </summary>
-    public sealed class NetworkWriter : IDisposable
+    public sealed class NetworkWriter : JsonLinesWriter
     {
-        /// <summary>
-        /// The underlying writer.
-        /// </summary>
-        private readonly StreamWriter _writer;
-
-        /// <summary>
-        /// The number of records written so far.
-        /// </summary>
-        public int Count { get; private set; }
-
         /// <summary>
         /// Open a JSON Lines file for writing.
         /// </summary>
         /// <param name="path">The destination path, before <see cref="BundleFile"/>'s suffix.</param>
-        public NetworkWriter(string path)
+        public NetworkWriter(string path) : base(path)
         {
-            _writer = BundleFile.CreateText(path);
         }
 
         /// <summary>
@@ -69,8 +58,7 @@ namespace Carto.IO
 
             if ((record.Attributes != null) && (record.Attributes.Count > 0)) line["attrs"] = record.Attributes;
 
-            _writer.WriteLine(JsonConvert.SerializeObject(line, Formatting.None));
-            Count++;
+            WriteLine(line);
         }
 
         /// <summary>
@@ -134,8 +122,7 @@ namespace Carto.IO
 
             if (record.Wear != 0f) line["wear"] = Math.Round((double)record.Wear, 3);
 
-            _writer.WriteLine(JsonConvert.SerializeObject(line, Formatting.None));
-            Count++;
+            WriteLine(line);
         }
 
         /// <summary>
@@ -147,11 +134,5 @@ namespace Carto.IO
         /// How many records were written in the centerline form.
         /// </summary>
         public int CenterlineForm { get; private set; }
-
-
-        /// <summary>
-        /// Flush and close the file.
-        /// </summary>
-        public void Dispose() => _writer?.Dispose();
     }
 }
