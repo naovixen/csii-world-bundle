@@ -197,6 +197,7 @@ namespace Carto
             RipObjectsTrees = true;
             RipObjectsDecals = true;
             RipMeshLimit = 0;
+            RipTextureSize = 1024;
             RipAppearanceColors = true;
             RipAppearanceLights = true;
             RipNetworks = true;

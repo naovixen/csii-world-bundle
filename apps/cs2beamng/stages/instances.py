@@ -35,6 +35,7 @@ from csiibundle import frames, tints
 from csiibundle import instances as bundle_instances
 
 from ..beamng import frame, placement
+from ..beamng import level as level_mod
 from . import Stage, level_of
 
 STAGE_KEY = "instances"
@@ -397,25 +398,21 @@ def _add_static(level, record, name, row, kind, position, rotation, scale, colli
     section records of one stacked instance deliberately share it (§4.1), so `id` alone would
     collide on a stack.
     """
-    flat = frame.basis_flat(rotation)
-    obj = {
-        "name": f"{name}_{record['id']}_{ordinal}",
-        "class": "TSStatic",
-        "shapeName": level.game_path("art", "shapes", "cs2", row["file"]),
-        "position": [round(v, 3) for v in position],
-        "rotationMatrix": [round(v, 6) for v in flat],
-        "scale": [round(v, 5) for v in scale],
-        # `Collision Mesh` uses the `Colmesh_<name>` node the shapes stage already writes into
-        # every collidable shape (a trunk cylinder, the decimated LOD1 hull, or a padded box).
-        # BeamNG's own docs: "Collision Mesh - uses dedicated collision meshes from the shape.
-        # **Recommended**"; "Visible Mesh Final - uses rendered mesh polygons intentionally.
-        # Use only when required", and "expensive". A3 shipped 14,658 statics on the expensive
-        # one while carrying the cheap one in the file unused.
-        "collisionType": ("None" if row.get("collider", "none") in NO_COLLIDER else COLLISION_TYPE),
-        "decalType": "None",
-        "useInstanceRenderData": True,
-        "annotation": ANNOTATION.get(kind, "OBSTACLES"),
-    }
+    # `Collision Mesh` uses the `Colmesh_<name>` node the shapes stage already writes into every
+    # collidable shape (a trunk cylinder, the decimated LOD1 hull, or a padded box). BeamNG's own
+    # docs: "Collision Mesh - uses dedicated collision meshes from the shape. **Recommended**";
+    # "Visible Mesh Final - uses rendered mesh polygons intentionally. Use only when required",
+    # and "expensive". A3 shipped 14,658 statics on the expensive one while carrying the cheap
+    # one in the file unused.
+    obj = level_mod.tsstatic(
+        f"{name}_{record['id']}_{ordinal}",
+        level.game_path("art", "shapes", "cs2", row["file"]),
+        position,
+        frame.basis_flat(rotation),
+        scale=scale,
+        collision="None" if row.get("collider", "none") in NO_COLLIDER else COLLISION_TYPE,
+        annotation=ANNOTATION.get(kind, "OBSTACLES"),
+    )
     colours = tints.color_set(record.get("attrs") or {})
     for index, colour in enumerate(colours[:3]):
         key = "instanceColor" if index == 0 else f"instanceColor{index}"

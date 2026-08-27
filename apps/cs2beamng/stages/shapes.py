@@ -47,12 +47,11 @@ measurement is only allowed to say "not yet".
 
 import json
 import math
-import multiprocessing
 import os
 import time
 
 import numpy
-from csiibundle import collision, glb, lod, tints
+from csiibundle import collision, glb, lod, parallel, tints
 from csiibundle import instances as bundle_instances
 from csiibundle.bake import lods as bake_lods
 
@@ -840,15 +839,11 @@ def run(ctx, progress):
     progress.begin("shapes: writing .dae", total=len(jobs), unit="shapes")
     results, errors = {}, []
     workers = ctx.jobs or 1
-    if workers > 1 and len(jobs) > 8:
-        mp = multiprocessing.get_context("spawn")
-        with mp.Pool(min(workers, len(jobs))) as pool:
-            for key, value in pool.imap_unordered(_shape_job, jobs, chunksize=8):
-                _absorb(key, value, results, errors, progress)
-    else:
-        for job in jobs:
-            key, value = _shape_job(job)
-            _absorb(key, value, results, errors, progress)
+    # Unordered: `_absorb` keys results by shape, so nothing depends on the order they arrive.
+    for key, value in parallel.each(
+        _shape_job, jobs, workers, progress, chunksize=8, min_parallel=8, spawn=True, advance=False
+    ):
+        _absorb(key, value, results, errors, progress)
     for error in errors[:20]:
         progress.log("shapes: " + error)
     # art/shapes/ is no longer cleared at build start (that threw away every .cdae and cost the

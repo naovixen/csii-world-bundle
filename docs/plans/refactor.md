@@ -634,15 +634,15 @@ Each phase records here what landed and what it found, so this document stays th
 | Phase | Status |
 | --- | --- |
 | 0 — Guardrails and baselines | **DONE** 2026-08-21 — see below |
-| 1 — The three defects | **DONE** 2026-08-21 — one of the three was not live; see below |
-| 2 — One implementation of every shared rule | **DONE** 2026-08-27 — five of its claims needed correcting; see below |
-| 3 — One stage framework | pre-flight verified — the record unification is refused, with reasons; see below |
+| 1 — The three defects | **DONE** 2026-08-21, in-game look verified 2026-08-27 |
+| 2 — One implementation of every shared rule | **DONE** 2026-08-27, in-game look verified — five of its claims needed correcting; see below |
+| 3 — One stage framework | **DONE** 2026-08-27 — 7 of 8 parallel blocks unified; the record merge refused, with reasons |
 | 4 — Split `csiibundle` and `tools/` | not started |
 | 5 — The app and its UI | not started |
 | 6 — The Blender adapter | not started |
 | 7 — One rip-stage framework | **in progress** — extractions, the typed outcome, the frame loop and the report shape done; see below |
 | 8 — The IO writer layer | **in progress** — the writers, the attribute readers and the grading guard; see below |
-| 9 — Split the rip systems | not started |
+| 9 — Split the rip systems | **in progress** — the settings defaults and the field naming; the god-methods remain |
 | 10 — Performance | not started |
 | 11 — Comment, naming and structure | not started |
 | 12 — Documentation | not started |
@@ -1001,48 +1001,109 @@ were added to it, and the gate was right that they do not belong there: `png.py`
 standard-library decoder for the §8 rasters, which are numbers and must never touch PIL.
 **New in the app:** `beamng/matbind.py`.
 
-### Phase 3 — pre-flight, 2026-08-27
+### Phase 3 — DONE 2026-08-27 (the record unification refused, with reasons)
 
-**Confirmed**
+**What landed**
 
-* The TSStatic object literal is built by hand in exactly three places —
-  `stages/derived.py:160`, `stages/instances.py:403`, `stages/networks.py:132`.
-* Eight parallel-work blocks: four bake products (`materials`, `lods`, `tiles`, `areas`) and four
-  stages (`derived`, `materials`, `networks`, `shapes`). `bake/materials._each` is already the
-  abstraction — a generator that pools when it is worth one, honours cancellation between results
-  and advances progress per item — and it is **private to one product**, used four times inside it.
-* `Product.options` and `Stage.settings_keys` do solve the same problem in different vocabulary.
+* **`csiibundle/parallel.py` — `each()`.** Seven of the eight parallel blocks now run through one
+  function: four bake products (`materials` ×4 uses, `lods`, `tiles`) and four `cs2beamng` stages
+  (`derived`, `materials`, `networks`, `shapes`). `bake/materials._each` was already the
+  abstraction; it was private to one product while seven other places re-derived it.
+
+  It is one function because `QueueProgress` **subclasses** the bake's `Progress` — both sides
+  already share `check()` and `advance(n)`, so this is one protocol, not two that resemble
+  each other. The three rules it now owns in one place:
+
+  * a pool is not always faster, so below a per-caller threshold the serial loop wins;
+  * the serial path must behave exactly like the pooled one, or a bug appears at `jobs > 1` and
+    vanishes under a debugger at `jobs = 1`;
+  * cancellation is honoured between results — a pool that never calls `progress.check()` runs
+    to completion however hard the user presses stop.
+
+  Five keyword arguments, each a difference I verified rather than assumed: `ordered` (`tiles`
+  and two stages need `imap`; the rest do not), `chunksize`, `min_parallel`, `spawn` (the stages
+  need it — a forked worker inherits the parent's half-built level), and `advance` — because
+  **`stages/networks` counts SEGMENTS and advances by however many a tile held**, so one per
+  result would make its bar meaningless. Two stages also checked for cancellation only every
+  25th item; every item now, which is strictly more responsive.
+
+  **`bake/areas` is the eighth and stays as it is.** It passes `initializer`/`initargs` so the
+  workers own the heightfield raster instead of each copying it — the change that made the areas
+  conform parallelisable at all, per that module's own note. That is a memory strategy, not a
+  loop, and a sixth knob to express it would cost more than the eight lines it saves.
+
+* **`beamng/level.tsstatic()`** — the TSStatic literal was built by hand in `stages/derived`,
+  `stages/instances` and `stages/networks`, three places to remember that `decalType` and
+  `useInstanceRenderData` are not optional and that these objects are compared as TEXT between
+  builds, so an unrounded float makes an unchanged object look changed. The three roundings
+  (position 3, rotation 6, scale 5) turned out to agree, which is why one builder reproduces all
+  three byte-for-byte — checked, not assumed.
+
+* **`bake/terraincut` was in none of the estimate's tables, and that was a real gap.** The three
+  places that name products hold genuinely different things — `PRODUCT_MODULES` is bake ORDER,
+  `census.units` is how many units a product will do, `history.DEFAULT_RATES` is how fast — so
+  they cannot be one list. But they enumerate one set, and `terraincut` was missing from two:
+  it contributed nothing to the preflight's expected column and its **57.5 s** arrived as time
+  nobody had promised. Both are filled in, the rate from the 2026-08-27 rebuild's own report, and
+  `test_app_shell.test_bake_product_tables` now fails if a product is missing from any of the
+  three. Verified by removing the rate again and watching it fail.
+
+**Refused: unifying `Stage` with `Product`.**
+
+The plan calls them "structurally isomorphic". They are not. `Stage` has eleven fields
+(`key title enabled units run inputs settings_keys outputs shared_keys after version`) and
+`Product` six (`name inputs path run version options`); `BuildContext` has nine and the bake's
+`Context` five, overlapping in three. The shared core is `(name, inputs, run, version, options)`
+and the rest is a stage's UI, ordering and cross-stage handover.
+
+Merging them produces a record where half the fields are meaningless to half its users — which is
+exactly what `RipOrchestratorSystem.Stage` was, and what **Phase 7 of this same plan told me to
+split**, for "carrying two mutually exclusive contracts in one type with no compiler help". The
+plan asks for opposite things in two phases. The split is the one that is right, so the merge is
+not done and this is the record of why.
+
+What the two registries genuinely share is the *fingerprint* logic, and `pipeline/state.py`
+already imports the bake's primitives for it rather than copying them — the plan notes this
+itself. That is the seam, and it is already sewn.
+
+**The `ctx.shared` guard: a distinction, not duplication.** Five sites, two spellings.
+`(ctx.shared or {})` builds a throwaway dict when `shared` is empty; `(ctx.shared if ctx.shared
+is not None else {})` hands back the real one. The two sites calling `.setdefault(...)` —
+`stages/derived` and `stages/networks`, both recording which materials they bound — need the
+second, because `.setdefault` on a throwaway mutates nothing. Unifying them onto `or {}` would
+silently stop both stages recording. Left alone deliberately.
+
+### Phase 9 — in progress, 2026-08-27
+
+**Landed**
+
+* **"Reset to defaults" did not reset `RipTextureSize`.** `Settings.cs` states every default
+  twice — inline on the auto-property and again in `SetDefaults()`, which is what the options
+  screen's Reset button calls — with nothing keeping the two in step. All 147 pairs checked: none
+  disagree on a value, but `RipTextureSize` had an inline `= 1024` and **no `SetDefaults` line**,
+  so Reset restored every other ripper setting and left the texture size wherever the user had
+  put it. Fixed, and `tools/test_settings_defaults.py` now fails on either failure mode — a
+  missing assignment or a disagreeing value. Verified by reintroducing each and watching it fail.
+* **The six fork-declared `m_PascalCase` fields are `_camelCase`**, which is what `.editorconfig`
+  codifies for this repo. 41 renames, compile-checked.
 
 **Wrong in the plan**
 
-* **"Structurally isomorphic" overstates it, and unifying the whole record would build the exact
-  defect Phase 7 was told to remove.** `Stage` has eleven fields
-  (`key title enabled units run inputs settings_keys outputs shared_keys after version`),
-  `Product` has six (`name inputs path run version options`); `BuildContext` has nine and the
-  bake's `Context` five, overlapping in three. The genuinely shared core is
-  `(name, inputs, run, version, options)`. Merging the rest produces a type where half the fields
-  are meaningless to half its users — which is what `RipOrchestratorSystem.Stage` was, and Phase 7
-  **split** it for "carrying two mutually exclusive contracts in one type with no compiler help".
-  The plan asks for opposite things in two phases; the split is the one that is right.
-* **The five "stage-name string lists" are five different things.** `stages/__init__.py:87` is
-  `_resolve`, not a list. `stages/bake.py:_wanted_products` is a conditional settings→product
-  mapping. `pipeline/history.DEFAULT_RATES` is measured units-per-second. `server.CENSUS_KEYS` is
-  **settings keys, not stage names at all**. `bake/PRODUCT_MODULES` is bake order. The real
-  overlap is narrower and worth fixing: three of them enumerate the product-name set, so adding a
-  product means remembering three files.
-* **The `ctx.shared` guard is at five sites, in two spellings that are NOT equivalent.**
-  `(ctx.shared or {})` builds a throwaway dict when `shared` is empty or None;
-  `(ctx.shared if ctx.shared is not None else {})` hands back the real one. The two sites that
-  call `.setdefault(...)` — `stages/derived.py:91` and `stages/networks.py:100` — use the second
-  form, and they have to: `.setdefault` on a throwaway mutates nothing, so unifying them onto
-  `or {}` would silently stop both stages recording the materials they bound. The three read-only
-  sites use `or {}` and are fine. This is a distinction to preserve, not duplication to collapse.
-* **The four bake pools are not one block copy-pasted.** They differ where it matters: `tiles` and
-  `areas` need `imap` (ordered) and the other two do not; chunksize is 8, 4, 1 and pre-chunked;
-  and `areas` alone passes an `initializer` so the workers own the heightfield raster instead of
-  each copying it — the change that made the areas conform parallelisable at all. All four **do**
-  honour cancellation (I first read `tiles` as missing `progress.check()`; it is inside `absorb`,
-  which the pooled and serial paths both call).
+* **The two halves of `NetworkRipSystem` do not use "opposite field-naming conventions".** Almost
+  every `m_Name` in those files is the GAME's — `m_Bezier`, `m_Edge`, `m_StartNode` are CS2's own
+  ECS component fields, read and not ours to rename. Only **six** declarations were the fork's,
+  four in `.GameMesh.cs` and two in a nested struct in `NetworkRipSystem.cs`.
+* **`SetDefaults` has 17 assignments with no inline initializer, and that is correct.** They are
+  the ripper's `RipObjects` family, which are full properties over backing fields — a master's
+  setter writes all its subs and a sub recomputes its master. A property with a hand-written
+  setter cannot carry an inline initializer at all. This is the same mechanism behind the plan's
+  own warning that `Settings.cs`'s declaration order is load-bearing.
+
+**Not done.** The two god-methods — `RipTerrain` (332 lines, and its duplicated `4b`/`4c` section
+labels are real, at `:351/380` and `:361/385`) and `BuildGameComposition` (628, the longest in the
+repo) — plus the `AreaRipSystem` extraction. `RipTerrain`'s section 5 alone is 176 lines and hands
+about fifteen locals to the write pass, so it needs a captured-state record rather than a
+parameter list. That is a focused block of work, not something to leave half-finished.
 
 ### Phase 8 — in progress, 2026-08-27
 

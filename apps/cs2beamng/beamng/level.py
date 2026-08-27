@@ -217,6 +217,45 @@ class Level:
         return path
 
 
+# Rounding for a TSStatic's three transform fields. Not cosmetic: the level's object files are
+# rewritten every build and compared against the last one to decide what changed, so a float that
+# prints all seventeen digits makes an unchanged object look changed. Position to the millimetre,
+# rotation to a microradian-ish, scale to five places — enough that nothing visibly moves.
+_POSITION_PLACES = 3
+_ROTATION_PLACES = 6
+_SCALE_PLACES = 5
+
+
+def tsstatic(
+    name, shape_path, position, rotation_matrix, scale=(1, 1, 1), collision="None", **extra
+):
+    """One `TSStatic` — the class BeamNG draws a static mesh with.
+
+    Built by hand in three places before refactor Phase 3 (`stages/derived`, `stages/instances`,
+    `stages/networks`), which is three places to remember that `decalType` and
+    `useInstanceRenderData` are not optional and that a level object is compared as text.
+
+    `collision` is the caller's, and deliberately: "Visible Mesh Final" is BeamNG's own
+    "use only when required ... expensive", so which one a shape gets is a decision each stage
+    makes about its own geometry, not a default anything should inherit.
+
+    `extra` carries the fields only one caller sets — `castShadows`, `canSave`, `annotation`.
+    """
+    obj = {
+        "name": name,
+        "class": "TSStatic",
+        "shapeName": shape_path,
+        "position": [round(float(v), _POSITION_PLACES) for v in position],
+        "rotationMatrix": [round(float(v), _ROTATION_PLACES) for v in rotation_matrix],
+        "scale": [round(float(v), _SCALE_PLACES) for v in scale],
+        "collisionType": collision,
+        "decalType": "None",
+        "useInstanceRenderData": True,
+    }
+    obj.update(extra)
+    return obj
+
+
 def _write_lines_if_changed(path, objects):
     """One `items.level.json` — one JSON object per line — written only when it differs."""
     raw = "".join(

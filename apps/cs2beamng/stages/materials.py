@@ -24,11 +24,10 @@ library. It sits beside `mapto`, which it calls.
 """
 
 import json
-import multiprocessing
 import os
 import time
 
-from csiibundle import png
+from csiibundle import parallel, png
 
 from ..beamng import matbind
 from ..beamng import materials as bm
@@ -528,16 +527,12 @@ def _export_all(level, jobs, caps, workers, progress, use_dds=True):
     chunk_size = 16
     chunks = [jobs[i : i + chunk_size] for i in range(0, len(jobs), chunk_size)]
     args = [(level.dir, level.name, caps, use_dds, c) for c in chunks]
-    if workers and workers > 1 and len(chunks) > 1:
-        ctx = multiprocessing.get_context("spawn")
-        with ctx.Pool(min(workers, len(chunks))) as pool:
-            for results in pool.imap_unordered(_export_chunk, args):
-                _absorb(results, exported, progress)
-                progress.check()
-    else:
-        for a in args:
-            _absorb(_export_chunk(a), exported, progress)
-            progress.check()
+    # The jobs are already chunked by the caller, so chunksize stays 1 and one chunk is enough
+    # to be worth a pool; `_absorb` advances by the number of textures the chunk carried.
+    for results in parallel.each(
+        _export_chunk, args, workers or 1, progress, min_parallel=1, spawn=True, advance=False
+    ):
+        _absorb(results, exported, progress)
     return exported
 
 

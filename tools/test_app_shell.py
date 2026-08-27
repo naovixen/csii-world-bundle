@@ -8,8 +8,10 @@ headless check.
 """
 
 import http.client
+import inspect
 import json
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -1610,6 +1612,43 @@ def test_mapview():
     )
 
 
+def test_bake_product_tables():
+    """Every bake product is in all three tables that name products, and nothing else is.
+
+    They hold different things — `PRODUCT_MODULES` is bake ORDER, `census.units` is how many
+    units a product will do, `history.DEFAULT_RATES` is how fast it does them — so they cannot be
+    one list. But they enumerate the same set, and adding a product means remembering three
+    files. `terraincut` was missing from two of them until refactor Phase 3: it contributed
+    nothing to the preflight's expected column and its 57 s arrived as time nobody had promised.
+    """
+    from cs2beamng.pipeline import census as census_mod
+    from cs2beamng.pipeline.history import DEFAULT_RATES
+    from csiibundle.bake import PRODUCT_MODULES
+
+    print("bake product tables")
+    products = set(PRODUCT_MODULES)
+
+    rated = {k.split("/", 1)[1] for k in DEFAULT_RATES if k.startswith("bake/")}
+    check(
+        not (products - rated),
+        f"every product has a shipped rate; missing {sorted(products - rated)}",
+    )
+    check(not (rated - products), f"every rate names a product; extra {sorted(rated - products)}")
+
+    # `census.units` is built inside `run`, so read the keys out of the source rather than
+    # standing up a whole census over a bundle.
+    source = inspect.getsource(census_mod)
+    counted = set(re.findall(r'"bake/([a-z]+)":', source))
+    check(
+        not (products - counted),
+        f"every product is counted by the census; missing {sorted(products - counted)}",
+    )
+    check(
+        not (counted - products),
+        f"every counted key names a product; extra {sorted(counted - products)}",
+    )
+
+
 def main():
     tmp = tempfile.mkdtemp(prefix="cs2beamng_shell_")
     os.environ["CS2BEAMNG_HOME"] = os.path.join(tmp, "home")
@@ -1621,6 +1660,7 @@ def main():
         test_frozen_streams()
         test_modinstall(tmp)
         test_stage_declarations()
+        test_bake_product_tables()
         test_state_codec()
         test_cook_state(tmp)
         test_bake_stage_cancel()

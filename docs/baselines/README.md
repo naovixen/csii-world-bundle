@@ -137,6 +137,11 @@ moved because the spawn is the drivable lane nearest the region centre and the c
 against the rip's own `lights.json`: 654 rotations, 814 of 5,886 written floats moving by at most
 2e-06. A build cannot confirm it; a build with lights on would.
 
+**The in-game look: VERIFIED 2026-08-27.** Rule 6's last step, the one no automated check can
+stand in for, is done — the level was loaded and looked at, and it is right. That closes the
+hand-over debt for Phase 1 and Phase 2 together; both were committed ahead of it, which the
+commit messages said at the time.
+
 **One number needed chasing, and it was cache accounting.** `bake.materials.tintedTextures` reads
 57 in the golden and **2,575** here — a 45x jump in a counter fed by `_png_size`, which Phase 2
 rewrote onto `png.read_header`. If that rewrite were broken, every texture would be rewritten
@@ -148,3 +153,19 @@ warm writes **0** textures. The 2,575 is a cold cache — the new bundle re-bake
 (The first attempt at that check ran `--only materials` without the app's `paint_kinds`, so it
 baked a *different, smaller* job — 96 source albedos against 493 — and proved nothing. Recorded
 because the invalid test looked like a valid one.)
+
+## The Phase-3 rebuild, 2026-08-27
+
+`cs2_city_fine-report-after-phase3.json`: rebuilt in place, `cook: true`, `--force`, settings from
+its own report, BeamNG closed. **23 m 50 s, exit 0, one problem — the same budget warning.** The
+bake reported `fresh, skipped` for all eight products in 5 s, which is itself the check that the
+option-set restore was exact.
+
+Every count matches the Phase-2 build: 4,275 shapes, 7,289 segments in 1,024 tiles, 908,841 forest
+items over 3,104 types, 15,697 TSStatics, 15,393 navgraph roads, 36,502 terrain holes, 4,784
+materials, resident 4,272.7 MiB. **Nothing code-attributable moved.** The thirteen non-bake report
+differences are all state rather than behaviour: leftover temp `.cdae` files from the previous run
+(10 → 0), texture cache reuse (0 → 5,007, the previous run being the first after the cache was
+restored), and four budget-threshold fields that changed because BeamNG **logged a real resolution
+this time** — 3440x1440 instead of the REFERENCE 1080p fallback — since the level had been opened
+for the in-game look.

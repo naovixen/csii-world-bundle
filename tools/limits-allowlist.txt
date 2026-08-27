@@ -225,7 +225,6 @@ func tools/csiibundle/bake/runner.py::run
 func tools/csiibundle/bake/skirts.py::run
 func tools/csiibundle/bake/terraincut.py::run
 func tools/csiibundle/bake/terrainmask.py::run
-func tools/csiibundle/bake/tiles.py::flush
 func tools/csiibundle/colour.py::__init__
 func tools/csiibundle/colour.py::ocio_view_transform
 func tools/csiibundle/decimate.py::distance_to_surface

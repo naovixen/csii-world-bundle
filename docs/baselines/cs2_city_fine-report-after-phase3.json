@@ -1,0 +1,1213 @@
+{
+ "estimate": {
+  "predicted": {
+   "approximations": [
+    {
+     "measured": "257 of 7,973 files, 16.9 MiB of 558.2, on the reference city",
+     "what": "every material the bake resolved is counted, including the ones no shape in your city binds",
+     "why": "which materials are bound is decided by the shapes stage, which is the build. Counting them all makes this an upper bound rather than a guess"
+    },
+    {
+     "measured": "1.28 on the reference build (193.9 MiB of surfaces -> 247.4 MiB of ground), and about a fifth high on a level whose terrain settings differ - it is one ratio over a group that is not one thing",
+     "what": "the ground's own textures follow the bundle's surface pack at a measured ratio instead of being sized one by one",
+     "why": "they are re-encoded and split into base, detail and macro copies by the terrain stage rather than capped, so their sizes are not the source's"
+    },
+    {
+     "measured": "0.97 over the reference city's 4,272 object shapes, per kind 1.02 buildings / 0.65 props / 1.03 trees",
+     "what": "a cooked shape's bytes are its source glTF times a measured ratio, not the cooked file itself",
+     "why": "the cook is BeamNG's own compiler and only running it says what it produces"
+    },
+    {
+     "measured": "1.31 networks / 1.52 areas / 1.59 markings / 1.53 foundations",
+     "what": "a road, marking, area or foundation tile is sized from the bake product it is merged out of, scaled by how much of the map the region covers",
+     "why": "how the merge divides into tiles is the build's own tiling, and a tile is one shape however many records went into it"
+    },
+    {
+     "measured": "17 of 4,272 shapes and 5.9 MiB of 2,068 on the reference city (+5.7 % of the tree group, +0.3 % of all shapes)",
+     "what": "a recoloured prefab is counted once per colour the bake gave it, including the copies too thinly placed to be worth their own type",
+     "why": "which copies survive is decided by `forest_min_items` against the item count per colour, which is the build's own count and not the bake's"
+    },
+    {
+     "measured": "1,806 of 1,276,060 records on the reference city, 0 shapes",
+     "what": "trees standing in the road are still counted",
+     "why": "the clearance rule is a spatial pass over the lane layer and it has never removed a whole shape"
+    }
+   ],
+   "budget": {
+    "failureMiB": 5224,
+    "pixels": 4953600,
+    "residentMiB": 3473,
+    "source": "card from beamng.log, resolution from beamng.log",
+    "vramMiB": 8018
+   },
+   "diskBasis": "shapes, textures and the heightfield",
+   "diskBytes": 4650464680,
+   "meshes": {
+    "approximations": [
+     {
+      "measured": "0.97 over the reference city's 4,272 object shapes, per kind 1.02 buildings / 0.65 props / 1.03 trees",
+      "what": "a cooked shape's bytes are its source glTF times a measured ratio, not the cooked file itself",
+      "why": "the cook is BeamNG's own compiler and only running it says what it produces"
+     },
+     {
+      "measured": "1.31 networks / 1.52 areas / 1.59 markings / 1.53 foundations",
+      "what": "a road, marking, area or foundation tile is sized from the bake product it is merged out of, scaled by how much of the map the region covers",
+      "why": "how the merge divides into tiles is the build's own tiling, and a tile is one shape however many records went into it"
+     },
+     {
+      "measured": "17 of 4,272 shapes and 5.9 MiB of 2,068 on the reference city (+5.7 % of the tree group, +0.3 % of all shapes)",
+      "what": "a recoloured prefab is counted once per colour the bake gave it, including the copies too thinly placed to be worth their own type",
+      "why": "which copies survive is decided by `forest_min_items` against the item count per colour, which is the build's own count and not the bake's"
+     },
+     {
+      "measured": "1,806 of 1,276,060 records on the reference city, 0 shapes",
+      "what": "trees standing in the road are still counted",
+      "why": "the clearance rule is a spatial pass over the lane layer and it has never removed a whole shape"
+     }
+    ],
+    "basis": "from your own last 7 builds",
+    "bytes": 3601210210,
+    "groups": {
+     "areas": {
+      "bytes": 399095449,
+      "ratio": 1.495,
+      "section": "world",
+      "shapes": null,
+      "sourceBytes": 266927997
+     },
+     "building": {
+      "bytes": 1767740521,
+      "ratio": 1.009,
+      "section": "world",
+      "shapes": 1170,
+      "sourceBytes": 1752700392
+     },
+     "markings": {
+      "bytes": 134366123,
+      "ratio": 1.562,
+      "section": "world",
+      "shapes": null,
+      "sourceBytes": 86015304
+     },
+     "networks": {
+      "bytes": 812888224,
+      "ratio": 1.287,
+      "section": "world",
+      "shapes": null,
+      "sourceBytes": 631457852
+     },
+     "prop": {
+      "bytes": 200131552,
+      "ratio": 0.643,
+      "section": "world",
+      "shapes": 2852,
+      "sourceBytes": 311165548
+     },
+     "skirts": {
+      "bytes": 165133554,
+      "ratio": 1.51,
+      "section": "world",
+      "shapes": null,
+      "sourceBytes": 109365992
+     },
+     "terraincut": {
+      "bytes": 6323036,
+      "ratio": 1.832,
+      "section": "world",
+      "shapes": null,
+      "sourceBytes": 3451452
+     },
+     "tree": {
+      "bytes": 115531751,
+      "ratio": 1.014,
+      "section": "world",
+      "shapes": 270,
+      "sourceBytes": 113881520
+     }
+    }
+   },
+   "overSections": [],
+   "ready": true,
+   "residentBytes": 4449137937,
+   "residentMiB": 4243.0,
+   "rows": [
+    {
+     "advice": "This is more than your card is known to hold, and less than it is known to fail at. It may run; nobody has measured it.",
+     "band": "close",
+     "basis": "3,434 MiB of shapes from your own last 7 builds, 809 MiB of textures computed exactly",
+     "fraction": 0.8122128637059725,
+     "key": "vram",
+     "label": "Video memory",
+     "markFraction": 0.6648162327718223,
+     "of": "of 3,473 MiB known to fit",
+     "section": "world",
+     "value": "4,243 MiB"
+    }
+   ],
+   "textures": {
+    "approximations": [
+     {
+      "measured": "257 of 7,973 files, 16.9 MiB of 558.2, on the reference city",
+      "what": "every material the bake resolved is counted, including the ones no shape in your city binds",
+      "why": "which materials are bound is decided by the shapes stage, which is the build. Counting them all makes this an upper bound rather than a guess"
+     },
+     {
+      "measured": "1.28 on the reference build (193.9 MiB of surfaces -> 247.4 MiB of ground), and about a fifth high on a level whose terrain settings differ - it is one ratio over a group that is not one thing",
+      "what": "the ground's own textures follow the bundle's surface pack at a measured ratio instead of being sized one by one",
+      "why": "they are re-encoded and split into base, detail and macro copies by the terrain stage rather than capped, so their sizes are not the source's"
+     }
+    ],
+    "basis": "computed from your city's own textures at these caps",
+    "bytes": 847927727,
+    "files": 8031,
+    "format": "dds",
+    "groundBytes": 259496899,
+    "materialBytes": 588430828,
+    "unsized": 0,
+    "variantFiles": 2951
+   },
+   "waiting": null
+  },
+  "score": {
+   "mesh": {
+    "actualMiB": 3482.6,
+    "errorPercent": -1.4,
+    "estimatedMiB": 3434.4
+   },
+   "texture": {
+    "actualMiB": 790.1,
+    "errorPercent": 2.3,
+    "estimatedMiB": 808.6
+   },
+   "total": {
+    "actualMiB": 4272.7,
+    "errorPercent": -0.7,
+    "estimatedMiB": 4243.0
+   }
+  }
+ },
+ "finishedAt": "2026-08-27T20:45:27Z",
+ "settings": {
+  "ai_roads": true,
+  "areas": true,
+  "beamng_exe": null,
+  "buildings": true,
+  "bundle": "C:\\Users\\naomi\\AppData\\LocalLow\\Colossal Order\\Cities Skylines II\\ModsData\\Carto",
+  "collision_buildings": true,
+  "collision_furniture": true,
+  "collision_lights": false,
+  "collision_min_footprint": 0.8,
+  "collision_paint": false,
+  "collision_preset": "simplified",
+  "collision_props": true,
+  "collision_skirts": true,
+  "collision_trees": true,
+  "cook": true,
+  "foliage_density": 60,
+  "foliage_road_clearance": 2.5,
+  "forest_min_items": 10,
+  "forest_shadows": true,
+  "generate_lods": true,
+  "gpu_vram_mib": 0,
+  "groundcover": true,
+  "imposter_min_metres": 0,
+  "imposters": true,
+  "jobs": 0,
+  "keep_dae": false,
+  "keep_partial": false,
+  "lane_furniture": false,
+  "lane_furniture_categories": "fence,cable,lane",
+  "lane_max_tris": 0,
+  "level_name": "cs2_city_fine",
+  "level_title": "CS2 City Fine",
+  "lights": false,
+  "lights_max": 25000,
+  "lod0_max_error": 0.1,
+  "lod0_min_triangles": 1000,
+  "lod_detail_scale": 10.0,
+  "lod_detail_scale_prop": 4.0,
+  "lod_switch_error_px": 8.0,
+  "markings": true,
+  "navgraph_max_width": 0.0,
+  "navgraph_taxiways": false,
+  "networks": true,
+  "output": "C:\\Users\\naomi\\AppData\\Local\\BeamNG\\BeamNG.drive\\current\\levels",
+  "paint_factor_max_error": 4,
+  "paint_kinds": "tree,prop",
+  "paint_variants_prop": 1,
+  "paint_variants_tree": 2,
+  "poi_file": null,
+  "poi_max": 8,
+  "pois": true,
+  "prop_density": 100,
+  "props": true,
+  "quality_preset": "custom",
+  "rebuild": true,
+  "region": null,
+  "render_height": 0,
+  "render_width": 0,
+  "skirts": true,
+  "sweep_temp": true,
+  "terrain_blend_sharpen": 1.0,
+  "terrain_brightness": 1.0,
+  "terrain_cut": true,
+  "terrain_holes": "contain",
+  "terrain_upsample": 2,
+  "texture_dds": true,
+  "texture_max": 256,
+  "texture_max_data": 256,
+  "texture_max_normal": 256,
+  "texture_max_variant": 256,
+  "tile_lod": true,
+  "tile_size": 256,
+  "tod_hour": -1.0,
+  "tree_wind": false,
+  "trees": true,
+  "ui_browser": "window",
+  "ui_section": "navigation",
+  "view_distance": 4000,
+  "water": true
+ },
+ "stages": {
+  "bake": {
+   "result": {
+    "products": {
+     "areas": {
+      "reason": "inputs unchanged",
+      "seconds": 0.0,
+      "stats": {},
+      "status": "fresh"
+     },
+     "lods": {
+      "reason": "inputs unchanged",
+      "seconds": 0.0,
+      "stats": {},
+      "status": "fresh"
+     },
+     "markings": {
+      "reason": "inputs unchanged",
+      "seconds": 0.0,
+      "stats": {},
+      "status": "fresh"
+     },
+     "materials": {
+      "reason": "inputs unchanged",
+      "seconds": 0.0,
+      "stats": {},
+      "status": "fresh"
+     },
+     "skirts": {
+      "reason": "inputs unchanged",
+      "seconds": 0.0,
+      "stats": {},
+      "status": "fresh"
+     },
+     "terraincut": {
+      "reason": "inputs unchanged",
+      "seconds": 0.0,
+      "stats": {},
+      "status": "fresh"
+     },
+     "terrainmask": {
+      "reason": "inputs unchanged",
+      "seconds": 0.0,
+      "stats": {},
+      "status": "fresh"
+     }
+    }
+   },
+   "seconds": 4.9
+  },
+  "cook": {
+   "result": {
+    "autogeneratedMaterialsRemoved": 6,
+    "compiled": 7883,
+    "daeMiBFreed": 4545.1,
+    "daeSourcesRemoved": 7883,
+    "exe": "G:\\SteamLibrary\\steamapps\\common\\BeamNG.drive\\Bin64\\BeamNG.drive.x64.exe",
+    "exitCode": 0,
+    "seconds": 535.4,
+    "shapeLaddersIndexed": 7883,
+    "shapeLaddersScanned": 7883,
+    "shapes": 7883,
+    "tempCdaeRemoved": 0,
+    "tempMiBFreed": 0.0,
+    "toCompile": 7883,
+    "upToDate": 0,
+    "withCdae": 7883
+   },
+   "seconds": 535.4
+  },
+  "derived": {
+   "result": {
+    "jobs": 7,
+    "products": {
+     "areas": {
+      "collision": false,
+      "lod": {
+       "anchorMetresMedian": 4000.0,
+       "decimatedTriangles": [
+        11454919,
+        1781250
+       ],
+       "detailScale": 10.0,
+       "gameNullMetresMedian": 36792.6,
+       "levelsPerTile": 3.0,
+       "meanTrianglesKeptAtFarLevel": 0.8223,
+       "tiles": 747,
+       "tilesNeverCulled": 206
+      },
+      "orphansRemoved": 0,
+      "splitGeometries": 3,
+      "tiles": 747,
+      "tilesRewritten": 747,
+      "triangles": 8037933
+     },
+     "lanegeometry": {
+      "disabled": true,
+      "shapesRemoved": 0
+     },
+     "markings": {
+      "collision": false,
+      "lod": {
+       "anchorMetresMedian": 4000.0,
+       "decimatedTriangles": [
+        2272892,
+        409448
+       ],
+       "detailScale": 10.0,
+       "gameNullMetresMedian": 5794.5,
+       "levelsPerTile": 3.0,
+       "meanTrianglesKeptAtFarLevel": 0.6251,
+       "tiles": 1114,
+       "tilesNeverCulled": 0
+      },
+      "orphansRemoved": 0,
+      "splitGeometries": 0,
+      "tiles": 1114,
+      "tilesRewritten": 1114,
+      "triangles": 2018470
+     },
+     "skirts": {
+      "collision": true,
+      "lod": {
+       "anchorMetresMedian": 4000.0,
+       "decimatedTriangles": [
+        3342926,
+        152025
+       ],
+       "detailScale": 10.0,
+       "gameNullMetresMedian": null,
+       "levelsPerTile": 3.0,
+       "meanTrianglesKeptAtFarLevel": 1.0,
+       "tiles": 641,
+       "tilesNeverCulled": 641
+      },
+      "orphansRemoved": 0,
+      "splitGeometries": 0,
+      "tiles": 641,
+      "tilesRewritten": 641,
+      "triangles": 1804087
+     },
+     "terraincut": {
+      "collision": true,
+      "lod": {
+       "anchorMetresMedian": 4000.0,
+       "decimatedTriangles": [
+        152652,
+        24380
+       ],
+       "detailScale": 10.0,
+       "gameNullMetresMedian": null,
+       "levelsPerTile": 3.0,
+       "meanTrianglesKeptAtFarLevel": 1.0,
+       "tiles": 82,
+       "tilesNeverCulled": 82
+      },
+      "orphansRemoved": 0,
+      "splitGeometries": 0,
+      "tiles": 82,
+      "tilesRewritten": 82,
+      "triangles": 100706
+     }
+    },
+    "seconds": 99.1
+   },
+   "seconds": 99.1
+  },
+  "groundcover": {
+   "result": {
+    "covers": 5,
+    "deliberateDeviations": {
+     "groundcover": {
+      "count": 5,
+      "what": "5 GroundCover objects with synthesised billboard grass",
+      "why": "CS2 has no grass, detail-mesh or groundcover system at all - the ground is a textured heightfield. This is BeamNG dressing for a camera at driving height, off by default, and nothing here approximates a game rule."
+     }
+    },
+    "layers": [
+     "cs2_city_fine_grass",
+     "cs2_city_fine_extra1",
+     "cs2_city_fine_extra2",
+     "cs2_city_fine_extra3",
+     "cs2_city_fine_extra4"
+    ],
+    "seconds": 1.4
+   },
+   "seconds": 1.4
+  },
+  "instances": {
+   "result": {
+    "approximations": {
+     "forestCollidableThreshold": {
+      "count": 85,
+      "items": 538041,
+      "value": 0.5,
+      "what": "a forest type whose shape is under 0.5 m tall ships collidable:false",
+      "why": "CS2 states nothing about collision for a placed object, so there is no rule to port; BeamNG's own guidance is to disable it for small decorative items, and this height sits under a passenger wheel radius"
+     },
+     "forestFootprintThreshold": {
+      "count": 425,
+      "value": 0.8,
+      "what": "a forest type whose shape is under 0.8 m ACROSS ships collidable:false whatever its height - road signs, hydrants, bins, mailbox stands, bollards, traffic lights",
+      "why": "height alone let through the very things it was meant to catch (a hydrant is 0.97 m tall, a road sign 2.2 m); what decides whether a car should stop is the FOOTPRINT. OURS - CS2 states nothing about collision for a placed object. KNOWN WRONG for bollards, which are 0.24 m across and exist to stop vehicles; exempting them would mean matching a name"
+     },
+     "forestPaintVariants": {
+      "count": 908841,
+      "what": "a forest item is drawn in its prefab's nearest baked colorSet centre, not its own colour (a TSStatic gets instanceColor/1/2 exactly)",
+      "why": "a BeamNG forest item carries no per-item colour; the bake clusters each prefab's sets and tints one albedo per centre"
+     },
+     "forestPlantsDoNotCollide": {
+      "count": 77,
+      "what": "a forest type built from a CS2 `PlantObject` (bush, hedge, flower pot, garden bed, long grass) ships collidable:false whatever its height",
+      "why": "the `tree` kind is ALL vegetation - 376,187 of the reference city's 686,641 planted items are plants, not trees. CS2's own archetypes split them: `TreeObject` adds `Tree`, `PlantObject` does not, and the producer writes `attrs.growth` inside exactly that component's lookup, so this is the GAME's rule (csiibundle.instances.is_tree), not a height guess. A plant is driven through, and it has no trunk to fit a cylinder to"
+     },
+     "forestRotationPrecision": {
+      "count": 908841,
+      "what": "a forest item's rotationMatrix is written at 4 decimal places",
+      "why": "1e-4 of a unit vector is 0.6 mm of arc at 10 m; the file is parsed line by line at load and vanilla's largest forest is 151 MiB"
+     },
+     "forestVariantWithoutTintedAlbedo": {
+      "count": 0,
+      "what": "forest items whose variant had no tinted albedo baked, so they fell back to the untinted material",
+      "why": "the bake tints only `paint_kinds` (default trees); widen it to cover props"
+     },
+     "forestWindConstants": {
+      "count": 3104,
+      "what": "windScale / rigidity / mass on every TSForestItemData",
+      "why": "CS2 states nothing about wind or physics for a placed object; the values are the vanilla levels' medians, not a port"
+     }
+    },
+    "collisionTypes": {
+     "Collision Mesh": 15688,
+     "None": 9
+    },
+    "forestBytes": {
+     "bytes": 145181039,
+     "files": 3104,
+     "mib": 138.5
+    },
+    "forestCollision": {
+     "collidable": 2327,
+     "itemsNotCollidable": 538041,
+     "noCollider": 190,
+     "plant": 77,
+     "policyOff": 0,
+     "tooShort": 85,
+     "tooThin": 425,
+     "types": 3104
+    },
+    "forestItems": 908841,
+    "forestItemsMerged": 0,
+    "forestMinItems": 10,
+    "forestTypes": 3104,
+    "forestTypesMerged": 0,
+    "kept": 949270,
+    "noShape": 24732,
+    "placed": 924538,
+    "scanned": 1283009,
+    "seconds": 259.4,
+    "tsStatics": 15697
+   },
+   "seconds": 259.4
+  },
+  "materials": {
+   "result": {
+    "approximations": {
+     "colorMaskChannelOverlap": {
+      "count": null,
+      "value": 0.0176,
+      "what": "a colour-mask texel where TWO OR MORE of CS2's tint channels are non-zero is mixed by BeamNG where CS2 multiplies",
+      "why": "CS2 applies three INDEPENDENT lerps (bundle \u00a77.2) and BeamNG's `getColorPalette` normalises the mask RGB into a simplex, so it can only ever BLEND between the three palette colours. Where one channel is active the conversion in `beamng.materials._colormask_rgba` is EXACT (worst error 0.001, which is the alpha's own 8-bit step); where two are, no alpha can reproduce a product with a mix. \u00a77.2 states the channels are authored disjoint and MEASUREMENT AGREES: over 254 masks and 521.7 M texels, 39.0 % carry any tint at all and only 1.76 % of THOSE have two channels (median mask 0.29 %, 32 masks none at all)"
+     }
+    },
+    "areaMaterials": 40,
+    "canonical": 1573,
+    "format": "dds",
+    "named": 4784,
+    "orphanTexturesRemoved": 0,
+    "paintVariantKinds": {
+     "factor": 1724,
+     "texture": 2785
+    },
+    "paintVariantMaterials": 4509,
+    "seconds": 26.7,
+    "textureBytes": {
+     "bytes": 569114740,
+     "files": 7743,
+     "mib": 542.8
+    },
+    "textureCaps": {
+     "color": 256,
+     "colormask": 256,
+     "data": 256,
+     "normal": 256,
+     "opacity": 256
+    },
+    "textures": 7655,
+    "texturesMissing": 0,
+    "texturesReused": 5007
+   },
+   "seconds": 26.7
+  },
+  "navgraph": {
+   "result": {
+    "droppedOutsideRegion": 0,
+    "leftHandTraffic": false,
+    "notes": [
+     "navgraph: 25,793 SideConnection driveway stubs excluded from the carriageway - CS2's own flag, not a length threshold",
+     "navgraph: APPROXIMATION - 5,733 segments carry lanes in both directions and become ONE centerline down the middle of them; a median strip inside a single segment is not represented",
+     "navgraph: 571 segment ends weld to no turning movement - a dead end, or a join not found",
+     "navgraph: 13,132 node-owned car lanes touch a drivable segment at one end only (a movement into a lot or a path) and are not emitted",
+     "navgraph: APPROXIMATION - 88 segments had their width capped so their node radius stops short of a road stacked over or under them (worst 13.57 m); their width is understated by that much, and without it a consumer that asks 'is the car inside this radius' answers with the deck overhead",
+     "navgraph: 2,114 connectors/joints dropped as SELF-LOOPS - both ends land on one node once coincident terminal nodes merge, so they join nothing (map.lua:459 crashed on the 3-cycle they make)",
+     "navgraph: 112 connectors/joints dropped as DUPLICATE edges - a second road between one pair of nodes is not a second edge; the one carrying the turn's geometry is kept",
+     "navgraph: 50 joints where two segments abut with no turning movement between them (an asset change or a bridge abutment, not a junction)",
+     "navgraph: traffic drives on the RIGHT - MEASURED, 5,735 two-way segments put the with-flow lanes right and 1 put them left",
+     "navgraph: 15,393 roads / 51,197 nodes, 35 connected components, largest holds 96.5% of them"
+    ],
+    "roads": 15393,
+    "seconds": 26.4,
+    "stats": {
+     "carLanes": 131597,
+     "components": 35,
+     "connectors": 8676,
+     "connectorsUnmatched": 13132,
+     "connectorsUnused": 36710,
+     "dividedCarriagewaysAveraged": 5733,
+     "duplicateEdgesDropped": 112,
+     "endsWithNoJunction": 571,
+     "forwardLanesLeft": 1,
+     "forwardLanesRight": 5735,
+     "joints": 50,
+     "junctionLanes": 77734,
+     "largestComponent": 14860,
+     "largestComponentFraction": 0.9654,
+     "leftHandTraffic": false,
+     "nodes": 51197,
+     "roads": 15393,
+     "segmentOwned": 52956,
+     "segments": 6668,
+     "segmentsWithLanes": 6667,
+     "segmentsWithoutCenterline": 0,
+     "selfLoopsDropped": 2114,
+     "sideConnections": 25793,
+     "speedInferred": 0,
+     "widthClamped": 0,
+     "widthClearanceClamped": 88,
+     "widthClearanceWorst": 13.57
+    },
+    "trafficSideSource": "bundle.json leftHandTraffic"
+   },
+   "seconds": 26.4
+  },
+  "networks": {
+   "result": {
+    "approximations": {
+     "compositionHeightRange": {
+      "count": 7289,
+      "what": "a segment's composition height range is taken from the assembled mesh's own vertical extent, capped at its width",
+      "why": "the bundle ships a segment's `width` but not its composition's `m_HeightRange`; the term is a third of the rendering size at most, and the cap keeps the error on the draw-FURTHER side"
+     },
+     "compositionLodBias": {
+      "count": 7289,
+      "what": "the mean of the pieces' `MeshData.m_LodBias` is taken as 0",
+      "why": "the bundle ships assembled segment meshes, not the composition's piece list; a positive bias only ever pulls the distance IN, so 0 draws at least as far as the game"
+     }
+    },
+    "jobs": 7,
+    "lod": {
+     "anchorMetresMedian": 4000.0,
+     "decimatedTriangles": [
+      18533154,
+      3833702
+     ],
+     "detailScale": 10.0,
+     "gameNullMetresMedian": 41298.3,
+     "levelsPerTile": 3.0,
+     "meanTrianglesKeptAtFarLevel": 1.0,
+     "tiles": 1024,
+     "tilesNeverCulled": 28
+    },
+    "orphansRemoved": 0,
+    "refused": 0,
+    "seconds": 148.5,
+    "segments": 7289,
+    "splitGeometries": 25,
+    "tiles": 1024,
+    "tilesRewritten": 1024,
+    "triangles": 13100279,
+    "vertices": 14162710
+   },
+   "seconds": 148.5
+  },
+  "poi": {
+   "result": {
+    "authored": 0,
+    "derived": 8,
+    "districts": 0,
+    "infoSpawnPoints": 8,
+    "names": [
+     "Bramblewood Street",
+     "Autumn Street",
+     "Copperfield Street",
+     "Linden Lane",
+     "Ashridge Street",
+     "Hazelbrook Street",
+     "Birch Lane",
+     "Driftwood Highway"
+    ],
+    "points": 8,
+    "seconds": 2.4
+   },
+   "seconds": 2.4
+  },
+  "scene": {
+   "result": {
+    "seconds": 6.1,
+    "spawn": [
+     1404.325,
+     1167.748,
+     528.742
+    ],
+    "sunAzimuth": 179.7,
+    "sunColorTemperatureIgnored": false,
+    "sunElevation": 66.3,
+    "todHour": 12.05,
+    "todTime": 0.0021,
+    "visibleDistance": 4000.0
+   },
+   "seconds": 6.1
+  },
+  "shapes": {
+   "result": {
+    "approximations": {
+     "foliageRoadClearance": {
+      "count": 6587,
+      "ofTrees": 312082,
+      "value": 2.5,
+      "what": "a TREE standing within 2.50 m of a drivable lane centre is not placed",
+      "why": "A DECLARED DEVIATION, asked for, not a fidelity rule - CS2 clears objects when a road is BUILT and whatever survives in the save is what the city contains, so there is no game rule to port. Trees only: a bush or a flower pot is driven straight through once it stops colliding (A6.1), so removing it would cost fidelity and buy no drivability. The distance is the VEHICLE ENVELOPE, not an edge found in the data - the sweep showed trees per 0.25 m band are almost FLAT from 0.5 m out to 5 m, so there is no natural threshold to prefer. `foliage_road_clearance` 0 turns it off. Separately and always on, CS2's own `Overridden` rule removes what the game itself does not draw (instances.should_draw)"
+     },
+     "lodDetailScale": {
+      "count": 4275,
+      "value": 10.0,
+      "what": "every shape's cull threshold is CS2's own, multiplied by lod_detail_scale",
+      "why": "CS2 draws a median prop to 1 km and a median building to 7.3 km over 1.2M objects; BeamNG cannot. 1.0 restores the game exactly."
+     },
+     "lodDetailScalePerKind": {
+      "count": 2852,
+      "value": 4.0,
+      "what": "a PROP's cull threshold uses `lod_detail_scale_prop` instead of the global multiplier",
+      "why": "CS2 draws a median prop to 1,024 m and a median building to 13,008 m, a factor of 12.7, and one global divisor preserves that ratio while destroying the relationship - at 105 m a window frame is plainly visible where at CS2's 1,024 m it is sub-pixel, so facades read as construction sites (A6.2). DECLARED TUNING: the game has no per-kind divisor. The game's actual sub-object rule - cull at the OWNER's bounds, keep your own m_MinLod (audit \u00a770) - is NOT ported, because BeamNG holds detail thresholds per SHAPE and ownership is per INSTANCE"
+     },
+     "lodLadderSwitchPoints": {
+      "count": 4274,
+      "displacement": {
+       "LOD1": {
+        "deferred": 693,
+        "deferredMaxFactor": 14.08,
+        "deferredMedianFactor": 3.03,
+        "errorPxP50": 1.59,
+        "errorPxP90": 8.0,
+        "identical": 507,
+        "metresMax": 37.1607,
+        "metresP50": 0.0169,
+        "metresP90": 0.9976,
+        "shapes": 3624
+       },
+       "LOD2": {
+        "deferred": 713,
+        "deferredMaxFactor": 3.78,
+        "deferredMedianFactor": 1.7,
+        "errorPxP50": 1.4,
+        "errorPxP90": 7.97,
+        "identical": 616,
+        "metresMax": 29.5994,
+        "metresP50": 0.059,
+        "metresP90": 2.4045,
+        "shapes": 4020
+       },
+       "exemptLevels": 506
+      },
+      "kinds": [
+       "building",
+       "prop",
+       "decal"
+      ],
+      "value": 8.0,
+      "what": "where LOD1/LOD2 take over: the distance at which that level's own measured displacement from LOD 0 is worth 8 px",
+      "why": "CS2 ships no LOD chain for these prefabs (lodCap 0), so there is no game rule to port. The ladder used to be fixed multiples of the shape's CULL threshold, and that threshold is a statement about the shape's SIZE, not about its LOD's ERROR: a LOD1's displacement runs from 0 m on 603 of 4,261 shapes to 37 m on the worst, so one multiple cannot serve both ends and the coarse end reads as a roof moving under props that have not moved (A6.7). Each level now takes its threshold from its own displacement, measured by the bake as the p95 distance from the generated surface back to LOD 0's. The PIXEL BUDGET is still ours: about a pixel is what fidelity would ask for and costs +384 % to +630 % drawn triangles (measured over 1.16 M placements from four viewpoints), where 6 px costs +0 % to +16 %, so `lod_switch_error_px` is a declared budget and not a measurement"
+     },
+     "orphansOfAbsentOwners": {
+      "count": 7629,
+      "owners": 28,
+      "what": "a record whose owner the producer declared ABSENT is not placed either",
+      "why": "not a CS2 rule \u2014 the game had those prefabs and drew the buildings. It is a consumer's obligation against a DECLARED gap (\u00a710): the prefab did not resolve at rip time (an unowned asset pack), so we drop the building and would otherwise place its props in mid-air \u2014 6,714 records on the reference city, up to 292 m up, 695 of them hanging off ONE absent tower. Only the absent class is dropped: a prefab that exists WITHOUT GEOMETRY keeps its 5,806 children (the lamps and benches of car parks and sports pitches, whose own surface ships in the `areas` layer), and a construction site keeps its children too \u2014 measurement says they are the ConstructionCrane01 and the site's benches, which \u00a74 states are real. THE REMEDY AT SOURCE IS CHEAPER: enable those asset packs in CS2 and re-rip, which brings the buildings back instead of hiding their props"
+     },
+     "oversizedBoxColliders": {
+      "count": 30,
+      "value": 20.0,
+      "what": "a shape whose footprint is over 20 m keeps a MESH collider even past the triangle cap, instead of a padded box",
+      "why": "a padded box is a fine stand-in at the median shape's 1.6 m and a trap at 1,344 m: `InternationalAirport01`'s box was 1,344 x 1,245 x 82 m, an invisible solid block a kilometre wide, and driving onto the airport put the car inside it. 34 of 1,407 boxes were over 20 m - the harbour, the power plant, stadiums. CS2 has no collision for a placed object, so the 20 m is OURS and is declared here"
+     },
+     "renderingSizeSpecialCases": {
+      "count": null,
+      "what": "the human-object and Standing-leg shrinks in GetRenderingSize",
+      "why": "both need ObjectGeometryData flags the bundle does not ship; both only shrink the size, so the threshold errs towards drawing further"
+     },
+     "treeTrunkCylinderFit": {
+      "count": 22,
+      "what": "a tree whose trunk collider is wider than 50% of its own canopy - the trunk search found the canopy instead",
+      "why": "CS2 has no collision for a planted object, so there is no rule to port. `collision.trunk_group` prefers a material run NAMED trunk/bark/stem, and on a CS2 bundle that branch never fires - the game's material names are hashed asset ids - so every tree falls through to the geometric fallback (lowest band, smallest footprint). That is right for a clean bole and wrong where the lowest band is not the trunk: a spruce whose branches sweep the ground, or a wide shrub CS2 counts as a tree because it carries growth. MEASURED on the reference city: 5 of 32 tree prefabs, 4.5 % of tree items"
+     }
+    },
+    "colliders": {
+     "box": 1311,
+     "lightNone": 194,
+     "mesh": 2506,
+     "mesh_oversized": 30,
+     "plant": 77,
+     "trunk": 157
+    },
+    "detailScale": 10.0,
+    "detailScaleProp": 4.0,
+    "drawDistance": {
+     "building": {
+      "gameCullMedian": 13008.2,
+      "instances": 8723,
+      "ourCullMedian": 1330.4,
+      "shapes": 1170
+     },
+     "prop": {
+      "gameCullMedian": 1024.3,
+      "instances": 520821,
+      "ourCullMedian": 267.3,
+      "shapes": 2852
+     },
+     "tree": {
+      "gameCullMedian": 4097.3,
+      "instances": 394994,
+      "ourCullMedian": 413.8,
+      "shapes": 253
+     }
+    },
+    "errors": [],
+    "failed": 0,
+    "imposters": {
+     "minMetres": 3000.0,
+     "ofShapes": 4275,
+     "shapes": 190,
+     "vanillaShare": "west_coast_usa 3.1 %, italy 7.2 %, johnson_valley 4.4 %"
+    },
+    "levelOfDetail": 0.7,
+    "lod0KeptSmall": 2941,
+    "lod0Promoted": 397,
+    "orphansRemoved": 0,
+    "scan": {
+     "kept": 924538,
+     "noMesh": 24732,
+     "orphans": {
+      "absentPrefabs": 89,
+      "orphans": 7629,
+      "owners": 28,
+      "records": 1283009,
+      "withParent": 635398
+     },
+     "records": 1283009,
+     "roadclear": {
+      "clearance": 2.5,
+      "clipped": 6587,
+      "laneStations": 1581079,
+      "trees": 312082
+     },
+     "skippedBaked": 18493,
+     "skippedDensity": 274000,
+     "skippedKind": 0,
+     "skippedOrphan": 6327,
+     "skippedRegion": 0,
+     "skippedRoadclear": 1820,
+     "skippedState": 33099
+    },
+    "seconds": 183.2,
+    "shapes": 4275,
+    "shapesRewritten": 4275,
+    "triangles": 26441917,
+    "trunkFit": {
+     "medianRatio": 0.078,
+     "ratio": 0.5,
+     "shapes": 157,
+     "wide": 22
+    }
+   },
+   "seconds": 183.2
+  },
+  "terrain": {
+   "result": {
+    "carriagewayClamped": 11684,
+    "carriagewaySamples": 2297408,
+    "carriagewayWorstDrop": 0.313,
+    "fine": true,
+    "holes": 36502,
+    "materials": 7,
+    "minimap": "cs2_city_fine_minimap.png",
+    "seconds": 44.4,
+    "size": 8192,
+    "squareSize": 1.75
+   },
+   "seconds": 44.4
+  },
+  "validate": {
+   "result": {
+    "_report": {
+     "validation": {
+      "checks": {
+       "budgets": {
+        "DecalRoads": 15393,
+        "TSStatics": 19305,
+        "WaterBlocks": 188,
+        "forest items": 908841,
+        "forest types": 3104,
+        "lights": 0,
+        "shape files": 7883
+       },
+       "classes": {
+        "DecalRoad": 15393,
+        "Forest": 1,
+        "GroundCover": 5,
+        "LevelInfo": 1,
+        "ScatterSky": 1,
+        "SimGroup": 113,
+        "SpawnSphere": 9,
+        "TSStatic": 19305,
+        "TerrainBlock": 1,
+        "TimeOfDay": 1,
+        "WaterBlock": 188,
+        "WaterPlane": 1
+       },
+       "collisionTypeMismatch": {
+        "collisionMeshWithoutColmesh": 0,
+        "visibleMeshWithColmesh": 0
+       },
+       "cookedShapes": 7883,
+       "daeFiles": 0,
+       "duplicateMaterials": 0,
+       "forestItems": 908841,
+       "forestTypes": 3104,
+       "forestUnknownTypes": 0,
+       "groundCheck": {
+        "fraction": 0.9979181124219292,
+        "meanSigned": -0.02821537395091588,
+        "medianAbs": 0.014941329060775388,
+        "p95Abs": 0.03194323643856478,
+        "sampled": 1441,
+        "sampler": "bilinear"
+       },
+       "invalidDetailShapes": 0,
+       "lightManager": {
+        "lights": 0,
+        "manager": "Advanced Lighting 1.5",
+        "source": "game-settings.json"
+       },
+       "materialFiles": 5,
+       "missingFiles": 0,
+       "mixedClassMaterialFiles": 0,
+       "navgraph": {
+        "chords": 0,
+        "crashRisks": 0,
+        "decalRoads": 15393,
+        "drivable": 15393,
+        "endNodesMerged": 18703,
+        "mapNodes": 32494,
+        "nodes": 51197
+       },
+       "objects": 35019,
+       "oversizeGeometries": 0,
+       "parseErrors": 0,
+       "resident": {
+        "budgetMiB": 3473,
+        "budgetPixels": 4953600,
+        "budgetSource": "card from beamng.log, resolution from beamng.log",
+        "budgetVramMiB": 8018,
+        "cookedShapes": 7883,
+        "failureMiB": 5224,
+        "meshMiB": 3482.6,
+        "shapes": 0,
+        "textureMiB": 790.1,
+        "textureReduction": 0,
+        "textureReductionSource": "textureReductionLevel 0 (Normal+)",
+        "textureShippedMiB": 790.1,
+        "totalMiB": 4272.7,
+        "vanillaMaxMiB": 1375,
+        "vanillaRatio": 3.11
+       },
+       "spawnPoints": 9,
+       "strayMaterialFiles": 0,
+       "ter": {
+        "holes": 36502,
+        "materials": [
+         "cs2_city_fine_rock",
+         "cs2_city_fine_dirt",
+         "cs2_city_fine_grass",
+         "cs2_city_fine_extra1",
+         "cs2_city_fine_extra2",
+         "cs2_city_fine_extra3",
+         "cs2_city_fine_extra4"
+        ],
+        "maxStored": 11572,
+        "minStored": 7707,
+        "size": 8192
+       },
+       "unboundMaterials": 0
+      },
+      "problems": [
+       "budget: the level mounts 4,273 MiB (3,483 meshes + 790 textures, textureReductionLevel 0 (Normal+)) on a 8,018 MiB card at 4.95 Mpixel (card from beamng.log, resolution from beamng.log) - in the unmeasured band between what is known to fit and what is known to fail. Known to fit: 3,473 MiB. Known to fail: 5,224 MiB, where D3D12 failed 131,073 texture creates in one session. This level is 3.1x the 1,375 MiB of west_coast_usa, the biggest level BeamNG ships - see tools/level_budget.py for where the bytes are"
+      ]
+     }
+    },
+    "checks": {
+     "budgets": {
+      "DecalRoads": 15393,
+      "TSStatics": 19305,
+      "WaterBlocks": 188,
+      "forest items": 908841,
+      "forest types": 3104,
+      "lights": 0,
+      "shape files": 7883
+     },
+     "classes": {
+      "DecalRoad": 15393,
+      "Forest": 1,
+      "GroundCover": 5,
+      "LevelInfo": 1,
+      "ScatterSky": 1,
+      "SimGroup": 113,
+      "SpawnSphere": 9,
+      "TSStatic": 19305,
+      "TerrainBlock": 1,
+      "TimeOfDay": 1,
+      "WaterBlock": 188,
+      "WaterPlane": 1
+     },
+     "collisionTypeMismatch": {
+      "collisionMeshWithoutColmesh": 0,
+      "visibleMeshWithColmesh": 0
+     },
+     "cookedShapes": 7883,
+     "daeFiles": 0,
+     "duplicateMaterials": 0,
+     "forestItems": 908841,
+     "forestTypes": 3104,
+     "forestUnknownTypes": 0,
+     "groundCheck": {
+      "fraction": 0.9979181124219292,
+      "meanSigned": -0.02821537395091588,
+      "medianAbs": 0.014941329060775388,
+      "p95Abs": 0.03194323643856478,
+      "sampled": 1441,
+      "sampler": "bilinear"
+     },
+     "invalidDetailShapes": 0,
+     "lightManager": {
+      "lights": 0,
+      "manager": "Advanced Lighting 1.5",
+      "source": "game-settings.json"
+     },
+     "materialFiles": 5,
+     "missingFiles": 0,
+     "mixedClassMaterialFiles": 0,
+     "navgraph": {
+      "chords": 0,
+      "crashRisks": 0,
+      "decalRoads": 15393,
+      "drivable": 15393,
+      "endNodesMerged": 18703,
+      "mapNodes": 32494,
+      "nodes": 51197
+     },
+     "objects": 35019,
+     "oversizeGeometries": 0,
+     "parseErrors": 0,
+     "resident": {
+      "budgetMiB": 3473,
+      "budgetPixels": 4953600,
+      "budgetSource": "card from beamng.log, resolution from beamng.log",
+      "budgetVramMiB": 8018,
+      "cookedShapes": 7883,
+      "failureMiB": 5224,
+      "meshMiB": 3482.6,
+      "shapes": 0,
+      "textureMiB": 790.1,
+      "textureReduction": 0,
+      "textureReductionSource": "textureReductionLevel 0 (Normal+)",
+      "textureShippedMiB": 790.1,
+      "totalMiB": 4272.7,
+      "vanillaMaxMiB": 1375,
+      "vanillaRatio": 3.11
+     },
+     "spawnPoints": 9,
+     "strayMaterialFiles": 0,
+     "ter": {
+      "holes": 36502,
+      "materials": [
+       "cs2_city_fine_rock",
+       "cs2_city_fine_dirt",
+       "cs2_city_fine_grass",
+       "cs2_city_fine_extra1",
+       "cs2_city_fine_extra2",
+       "cs2_city_fine_extra3",
+       "cs2_city_fine_extra4"
+      ],
+      "maxStored": 11572,
+      "minStored": 7707,
+      "size": 8192
+     },
+     "unboundMaterials": 0
+    },
+    "problems": 1
+   },
+   "seconds": 28.6
+  },
+  "water": {
+   "result": {
+    "blocks": 188,
+    "bodies": 38,
+    "dropped": 0,
+    "lakeWaveScale": 0.13,
+    "pieces": 189,
+    "plane": true,
+    "seaLevel": 520.19,
+    "seaWaveScale": 1.0,
+    "seconds": 35.5,
+    "waveDirection": "APPROXIMATED (wind-driven in game; fixed here)"
+   },
+   "seconds": 35.5
+  }
+ },
+ "startedAt": "2026-08-27T20:21:37Z",
+ "status": "done",
+ "validation": {
+  "checks": {
+   "budgets": {
+    "DecalRoads": 15393,
+    "TSStatics": 19305,
+    "WaterBlocks": 188,
+    "forest items": 908841,
+    "forest types": 3104,
+    "lights": 0,
+    "shape files": 7883
+   },
+   "classes": {
+    "DecalRoad": 15393,
+    "Forest": 1,
+    "GroundCover": 5,
+    "LevelInfo": 1,
+    "ScatterSky": 1,
+    "SimGroup": 113,
+    "SpawnSphere": 9,
+    "TSStatic": 19305,
+    "TerrainBlock": 1,
+    "TimeOfDay": 1,
+    "WaterBlock": 188,
+    "WaterPlane": 1
+   },
+   "collisionTypeMismatch": {
+    "collisionMeshWithoutColmesh": 0,
+    "visibleMeshWithColmesh": 0
+   },
+   "cookedShapes": 7883,
+   "daeFiles": 0,
+   "duplicateMaterials": 0,
+   "forestItems": 908841,
+   "forestTypes": 3104,
+   "forestUnknownTypes": 0,
+   "groundCheck": {
+    "fraction": 0.9979181124219292,
+    "meanSigned": -0.02821537395091588,
+    "medianAbs": 0.014941329060775388,
+    "p95Abs": 0.03194323643856478,
+    "sampled": 1441,
+    "sampler": "bilinear"
+   },
+   "invalidDetailShapes": 0,
+   "lightManager": {
+    "lights": 0,
+    "manager": "Advanced Lighting 1.5",
+    "source": "game-settings.json"
+   },
+   "materialFiles": 5,
+   "missingFiles": 0,
+   "mixedClassMaterialFiles": 0,
+   "navgraph": {
+    "chords": 0,
+    "crashRisks": 0,
+    "decalRoads": 15393,
+    "drivable": 15393,
+    "endNodesMerged": 18703,
+    "mapNodes": 32494,
+    "nodes": 51197
+   },
+   "objects": 35019,
+   "oversizeGeometries": 0,
+   "parseErrors": 0,
+   "resident": {
+    "budgetMiB": 3473,
+    "budgetPixels": 4953600,
+    "budgetSource": "card from beamng.log, resolution from beamng.log",
+    "budgetVramMiB": 8018,
+    "cookedShapes": 7883,
+    "failureMiB": 5224,
+    "meshMiB": 3482.6,
+    "shapes": 0,
+    "textureMiB": 790.1,
+    "textureReduction": 0,
+    "textureReductionSource": "textureReductionLevel 0 (Normal+)",
+    "textureShippedMiB": 790.1,
+    "totalMiB": 4272.7,
+    "vanillaMaxMiB": 1375,
+    "vanillaRatio": 3.11
+   },
+   "spawnPoints": 9,
+   "strayMaterialFiles": 0,
+   "ter": {
+    "holes": 36502,
+    "materials": [
+     "cs2_city_fine_rock",
+     "cs2_city_fine_dirt",
+     "cs2_city_fine_grass",
+     "cs2_city_fine_extra1",
+     "cs2_city_fine_extra2",
+     "cs2_city_fine_extra3",
+     "cs2_city_fine_extra4"
+    ],
+    "maxStored": 11572,
+    "minStored": 7707,
+    "size": 8192
+   },
+   "unboundMaterials": 0
+  },
+  "problems": [
+   "budget: the level mounts 4,273 MiB (3,483 meshes + 790 textures, textureReductionLevel 0 (Normal+)) on a 8,018 MiB card at 4.95 Mpixel (card from beamng.log, resolution from beamng.log) - in the unmeasured band between what is known to fit and what is known to fail. Known to fit: 3,473 MiB. Known to fail: 5,224 MiB, where D3D12 failed 131,073 texture creates in one session. This level is 3.1x the 1,375 MiB of west_coast_usa, the biggest level BeamNG ships - see tools/level_budget.py for where the bytes are"
+  ]
+ }
+}

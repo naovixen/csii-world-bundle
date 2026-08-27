@@ -435,7 +435,7 @@ namespace Carto.Systems
             RipProgress.Report(RipProgress.Phase.Scan);
             // Keyed by piece entity; entities can be reused across runs, so the cache is per-rip.
             //
-            m_PieceGeometry.Clear();
+            _pieceGeometry.Clear();
             _rotatedEdges = 0;
             _roundaboutParts = 0;
             _skipBottomPieces = 0;
@@ -459,8 +459,8 @@ namespace Carto.Systems
             _authoredFramePieces = 0;
             _rebuiltFramePieces = 0;
             _pinnedFrameVerts = 0;
-            m_ConformProbes.Clear();
-            m_SectionProbes.Clear();
+            _conformProbes.Clear();
+            _sectionProbes.Clear();
 
             // A deselected half simply contributes an empty work list; the pipeline shares the
             // rest — writers, materials, progress — unchanged.
@@ -1096,7 +1096,7 @@ namespace Carto.Systems
                 // classify is a two-rail wall: its whole shape is the conform move, so it is
                 // the first suspect when a wall looks wrong.
                 //
-                List<KeyValuePair<string, ConformPieceProbe>> probes = new(m_ConformProbes);
+                List<KeyValuePair<string, ConformPieceProbe>> probes = new(_conformProbes);
                 probes.Sort((a, b) => string.CompareOrdinal(a.Key, b.Key));
                 foreach (KeyValuePair<string, ConformPieceProbe> kvp in probes)
                 {
@@ -1119,7 +1119,7 @@ namespace Carto.Systems
             //
             {
                 List<SectionProbe> collapsed = new();
-                foreach (SectionProbe s in m_SectionProbes.Values)
+                foreach (SectionProbe s in _sectionProbes.Values)
                 {
                     if ((s.Vertices == 0) || !s.HasBounds) continue;
                     // "Pinned across" needs the piece to have built no surface as well as to
@@ -1200,7 +1200,7 @@ namespace Carto.Systems
             // The conforming pass's heightmap copy (~33 MB) and per-piece bounds are only
             // needed while meshes build.
             _conformHeights = null;
-            m_PieceHeightBounds.Clear();
+            _pieceHeightBounds.Clear();
 
             _log.Info(report.ToString());
 
@@ -1933,8 +1933,8 @@ namespace Carto.Systems
         /// </summary>
         private readonly struct VertexSync
         {
-            private readonly float4 m_OffsetsLeft, m_TargetsLeft, m_OffsetsRight, m_TargetsRight;
-            private readonly bool m_Active;
+            private readonly float4 _offsetsLeft, _targetsLeft, _offsetsRight, _targetsRight;
+            private readonly bool _active;
 
             /// <summary>No remap — what an edge, and any composition without sync data, gets.
             ///</summary>
@@ -1942,19 +1942,19 @@ namespace Carto.Systems
 
             public VertexSync(NetCompositionData composition, EdgeNodeGeometry node)
             {
-                m_OffsetsLeft = composition.m_SyncVertexOffsetsLeft;
-                m_TargetsLeft = node.m_SyncVertexTargetsLeft;
-                m_OffsetsRight = composition.m_SyncVertexOffsetsRight;
-                m_TargetsRight = node.m_SyncVertexTargetsRight;
+                _offsetsLeft = composition.m_SyncVertexOffsetsLeft;
+                _targetsLeft = node.m_SyncVertexTargetsLeft;
+                _offsetsRight = composition.m_SyncVertexOffsetsRight;
+                _targetsRight = node.m_SyncVertexTargetsRight;
 
                 // An unset target arrives as NaN, and one NaN would propagate into every vertex of
                 // the flare. Where the two agree there is nothing to do anyway, so treat that as
                 // inactive too and keep the cost off the ordinary node.
                 //
-                m_Active = !math.any(math.isnan(m_OffsetsLeft)) && !math.any(math.isnan(m_TargetsLeft))
-                        && !math.any(math.isnan(m_OffsetsRight)) && !math.any(math.isnan(m_TargetsRight))
-                        && (math.any(m_OffsetsLeft != m_TargetsLeft)
-                            || math.any(m_OffsetsRight != m_TargetsRight));
+                _active = !math.any(math.isnan(_offsetsLeft)) && !math.any(math.isnan(_targetsLeft))
+                        && !math.any(math.isnan(_offsetsRight)) && !math.any(math.isnan(_targetsRight))
+                        && (math.any(_offsetsLeft != _targetsLeft)
+                            || math.any(_offsetsRight != _targetsRight));
             }
 
             /// <summary>
@@ -1976,9 +1976,9 @@ namespace Carto.Systems
             /// <returns>The remapped position.</returns>
             public float Apply(float s, bool leftHalf)
             {
-                if (!m_Active) return s;
-                return leftHalf ? Remap(s, m_OffsetsLeft, m_TargetsLeft)
-                                : Remap(s, m_OffsetsRight, m_TargetsRight);
+                if (!_active) return s;
+                return leftHalf ? Remap(s, _offsetsLeft, _targetsLeft)
+                                : Remap(s, _offsetsRight, _targetsRight);
             }
 
             // The end regions scale with pinned endpoints (0 → 0, 1 → 1) rather than translate:

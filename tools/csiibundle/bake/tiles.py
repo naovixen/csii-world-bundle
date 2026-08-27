@@ -16,11 +16,10 @@ something — the join a consumer relies on is still the NAME.
 import json
 import os
 from collections import defaultdict
-from multiprocessing import Pool
 
 import numpy
 
-from .. import glbwrite, reader
+from .. import glbwrite, parallel, reader
 
 WELD_MM = 0.5  # positions within half a millimetre AND equal UV/colour weld into one vertex
 
@@ -134,30 +133,11 @@ class TileSink:
             by_tile[(key[0], key[1])].append(key)
         order = sorted(by_tile)
 
-        def jobs_iter():
-            for tile_key in order:
-                buckets = [
-                    (k[2], self._buckets.pop(k))
-                    for k in sorted(by_tile[tile_key], key=lambda k: k[2])
-                ]
-                yield (
-                    self.out_dir,
-                    self.product,
-                    tile_key[0],
-                    tile_key[1],
-                    buckets,
-                    self.material_specs,
-                    texture_uri_base,
-                )
-
         tiles_written = []
         total_verts = total_tris = 0
 
         def absorb(result):
             nonlocal total_verts, total_tris
-            if progress is not None:
-                progress.check()
-                progress.advance()
             if result is None:
                 return
             tx, tz, verts, tris = result
@@ -165,19 +145,45 @@ class TileSink:
             total_verts += verts
             total_tris += tris
 
-        if jobs > 1 and len(order) > 4:
-            with Pool(processes=min(jobs, len(order))) as pool:
-                for result in pool.imap(_write_tile, jobs_iter(), chunksize=1):
-                    absorb(result)
-        else:
-            for job in jobs_iter():
-                absorb(_write_tile(job))
+        # ORDERED: `jobs_iter` pops each tile's buckets as it yields, so results have to come
+        # back against the order they went out. `parallel.each` checks and advances.
+        for result in parallel.each(
+            _write_tile,
+            self._tile_jobs(order, by_tile, texture_uri_base),
+            jobs,
+            progress,
+            ordered=True,
+            min_parallel=4,
+            total=len(order),
+        ):
+            absorb(result)
         return {
             "tiles": tiles_written,
             "files": len(tiles_written),
             "verts": total_verts,
             "tris": total_tris,
         }
+
+    def _tile_jobs(self, order, by_tile, texture_uri_base):
+        """One job per tile, **popping** its buckets out of the sink as it yields.
+
+        Lazy on purpose, and `flush` passes `total=` so it stays that way: the parent must not be
+        holding a second copy of a gigabyte of corners while the workers hold the first. Building
+        this into a list first is a memory spike the size of a whole product's geometry.
+        """
+        for tile_key in order:
+            buckets = [
+                (k[2], self._buckets.pop(k)) for k in sorted(by_tile[tile_key], key=lambda k: k[2])
+            ]
+            yield (
+                self.out_dir,
+                self.product,
+                tile_key[0],
+                tile_key[1],
+                buckets,
+                self.material_specs,
+                texture_uri_base,
+            )
 
     def _specs_for(self, prims, texture_uri_base):
         return _specs_for(self.material_specs, prims, texture_uri_base)

@@ -33,17 +33,17 @@ accounting. `imap` rather than `imap_unordered`, so the object list — and ther
 diff of a rebuild — does not depend on which worker finished first.
 """
 
-import multiprocessing
 import os
 import re
 import time
 
 import numpy
-from csiibundle import glb, lod
+from csiibundle import glb, lod, parallel
 from csiibundle import region as region_rule
 from csiibundle.bake.tiles import MIN_LOD_MARK, split_material_name
 
 from ..beamng import dae, frame, tilelod
+from ..beamng import level as level_mod
 from ..beamng.level import LevelPaths
 from ..beamng.matbind import aliases_of, mapto_name
 from . import Stage, level_of
@@ -155,35 +155,33 @@ def run(ctx, progress):
             counts["split_geoms"] += result["extraGeoms"]
             counts["rewritten"] += 1 if result["changed"] else 0
             names.add(result["name"])
-            obj = {
-                "name": result["name"],
-                "class": "TSStatic",
-                "shapeName": level.game_path("art", "shapes", product, result["name"] + ".dae"),
-                "position": [round(result["ox"], 3), round(result["oy"], 3), 0.0],
-                "rotationMatrix": frame.identity_matrix(),
-                "scale": [1, 1, 1],
-                "collisionType": "Visible Mesh Final" if collide else "None",
-                "decalType": "None",
-                "useInstanceRenderData": True,
-            }
+            obj = level_mod.tsstatic(
+                result["name"],
+                level.game_path("art", "shapes", product, result["name"] + ".dae"),
+                (result["ox"], result["oy"], 0.0),
+                frame.identity_matrix(),
+                collision="Visible Mesh Final" if collide else "None",
+            )
             if not shadows:
                 obj["castShadows"] = False
             level.add([group], obj, key=f"derived:{result['name']}")
             counts["written"] += 1
             counts["tris"] += result["triangles"]
 
-        if workers > 1 and len(jobs) > 4:
-            mp = multiprocessing.get_context("spawn")
-            with mp.Pool(min(workers, len(jobs))) as pool:
-                for index, result in enumerate(pool.imap(_tile_job, jobs, chunksize=4)):
-                    absorb(result)
-                    if index % 25 == 0:
-                        progress.check()
-        else:
-            for index, job in enumerate(jobs):
-                absorb(_tile_job(job))
-                if index % 25 == 0:
-                    progress.check()
+        # ORDERED so a tile lands in the level's object tree in the same place every build;
+        # `absorb` advances progress itself, per tile.
+        for result in parallel.each(
+            _tile_job,
+            jobs,
+            workers,
+            progress,
+            ordered=True,
+            chunksize=4,
+            min_parallel=4,
+            spawn=True,
+            advance=False,
+        ):
+            absorb(result)
         # each product owns art/shapes/<product>/ (the folder is no longer cleared at build start)
         orphans = dae.sweep_orphans(level.path("art", "shapes", product), names)
         progress.end(

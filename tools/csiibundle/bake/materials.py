@@ -41,11 +41,10 @@ import json
 import os
 import time
 from collections import Counter, defaultdict
-from multiprocessing import Pool
 
 import numpy
 
-from .. import colour, glb, images, instances, materials, png, reader, tints, water
+from .. import colour, glb, images, instances, materials, parallel, png, reader, tints, water
 from .. import lights as bundle_lights
 from . import Product, register
 
@@ -74,6 +73,13 @@ QUANT_STEPS = 31  # colour quantisation for counting distinct sets (1/31 ≈ 8 b
 
 
 # -- helpers ------------------------------------------------------------------------------------
+
+
+# Jobs per worker hand-off for this product's four parallel passes. They are all "one small file
+# per job" — a mask to split, a normal to rebuild, a mesh to scan, an albedo to tint — so the IPC
+# per job dominates unless several travel together. Also the threshold: below this many jobs a
+# pool costs more to start than it saves. TUNED.
+_CHUNK = 8
 
 
 def _sha_stem(path):
@@ -142,25 +148,6 @@ def _kmeans(points, weights, k, iterations=12):
 #
 # The jobs are module-level functions taking one tuple, which is what `Pool` (spawn on Windows)
 # needs; the same functions run in-process when `jobs <= 1`, so the serial path is the same code.
-
-
-def _each(job, args, jobs, progress, chunksize=8):
-    """Run `job` over `args`, yielding results as they arrive and advancing `progress` per item.
-    A pool when it is worth one, the plain loop otherwise; cancellation is honoured between
-    results, which is the same "at least every half second" promise the rest of the bake makes."""
-    if not args:
-        return
-    if jobs > 1 and len(args) > chunksize:
-        with Pool(processes=min(jobs, len(args))) as pool:
-            for result in pool.imap_unordered(job, args, chunksize=chunksize):
-                progress.check()
-                progress.advance()
-                yield result
-    else:
-        for a in args:
-            progress.check()
-            progress.advance()
-            yield job(a)
 
 
 def _split_mask_job(args):
@@ -567,8 +554,12 @@ def run(context, progress):
     progress.begin("materials: split masks", total=len(mask_paths), unit="masks")
     split_of = {}
     written = 0
-    for rel, outs, error in _each(
-        _split_mask_job, [(bundle, derived, rel) for rel in mask_paths], jobs, progress
+    for rel, outs, error in parallel.each(
+        _split_mask_job,
+        [(bundle, derived, rel) for rel in mask_paths],
+        jobs,
+        progress,
+        chunksize=_CHUNK,
     ):
         if error:
             progress.log(f"mask {rel}: unreadable ({error}), skipped")
@@ -583,8 +574,12 @@ def run(context, progress):
     progress.begin("materials: normals", total=len(normal_paths), unit="maps")
     rebuilt = {}
     checked = 0
-    for rel, entry, ok, error in _each(
-        _normal_job, [(bundle, derived, rel) for rel in normal_paths], jobs, progress
+    for rel, entry, ok, error in parallel.each(
+        _normal_job,
+        [(bundle, derived, rel) for rel in normal_paths],
+        jobs,
+        progress,
+        chunksize=_CHUNK,
     ):
         if error:
             progress.log(f"normal {rel}: unreadable ({error}), skipped")
@@ -660,8 +655,12 @@ def run(context, progress):
     lay = reader.resolve_layers(bundle)
     progress.begin("materials: prefab materials", total=len(paint_assets), unit="prefabs")
     materials_of = {}
-    for asset_id, names in _each(
-        _asset_materials_job, [(lay.meshes, a) for a in paint_assets], jobs, progress
+    for asset_id, names in parallel.each(
+        _asset_materials_job,
+        [(lay.meshes, a) for a in paint_assets],
+        jobs,
+        progress,
+        chunksize=_CHUNK,
     ):
         materials_of[asset_id] = names
     progress.end(f"{len(paint_assets)} prefabs of kind {list(paint_kinds)} named their materials")
@@ -703,7 +702,9 @@ def run(context, progress):
     textures_written = 0
     failed_bases = set()
     per_base = {}  # base_rel -> {vkey: {"factor", "maxErr", "path"}}
-    for base_rel, count, error, table in _each(_tint_job, args, jobs, progress):
+    for base_rel, count, error, table in parallel.each(
+        _tint_job, args, jobs, progress, chunksize=_CHUNK
+    ):
         if error:
             progress.log(f"tint {base_rel}: {error}, skipped")
             failed_bases.add(base_rel)

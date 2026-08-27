@@ -138,6 +138,10 @@ def take(values):
         "bake/areas": counts.get("areas", 0) * scale if values.get("areas", True) else 0,
         "bake/skirts": counts.get("instances", 0) if values.get("skirts", True) else 0,
         "bake/terrainmask": 1,
+        # Whole-map products, one unit each, like `terrainmask` above. `terraincut` was in
+        # neither this table nor `history.DEFAULT_RATES`, so it contributed nothing to the
+        # expected column and its 57 s showed up as time the preflight had not promised.
+        "bake/terraincut": 1 if values.get("terrain", True) else 0,
         "terrain": int(raster_size[0])
         * int(raster_size[1])
         * (values.get("terrain_upsample", 1) or 1) ** 2,

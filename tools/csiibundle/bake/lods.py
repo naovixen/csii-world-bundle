@@ -33,11 +33,10 @@ tell you which of two algorithms shaped every LOD in the level.
 import json
 import os
 import time
-from multiprocessing import Pool
 
 import numpy
 
-from .. import decimate, glb, glbwrite, png, reader
+from .. import decimate, glb, glbwrite, parallel, png, reader
 from .. import region as region_rule
 from . import Product, register
 
@@ -278,17 +277,10 @@ def run(context, progress):
             }
         elif status.startswith("failed"):
             progress.log(f"{asset_id}: {status}")
-        progress.advance()
 
-    if jobs > 1 and len(args) > 4:
-        with Pool(processes=jobs) as pool:
-            for result in pool.imap_unordered(_process_file, args, chunksize=4):
-                progress.check()
-                account(result)
-    else:
-        for a in args:
-            progress.check()
-            account(_process_file(a))
+    # `parallel.each` advances and checks; `account` did the advancing before it existed.
+    for result in parallel.each(_process_file, args, jobs, progress, chunksize=4):
+        account(result)
     stats["seconds"] = round(time.monotonic() - started, 1)
     ratio = [round(t / stats["trisIn"], 3) if stats["trisIn"] else None for t in stats["trisOut"]]
     stats["backend"] = stats["backend"] or backend

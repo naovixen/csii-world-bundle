@@ -24,17 +24,17 @@ list does not depend on which worker finished first.
 """
 
 import math
-import multiprocessing
 import os
 import time
 from collections import defaultdict
 
 import numpy
-from csiibundle import glb, lod, reader
+from csiibundle import glb, lod, parallel, reader
 from csiibundle import region as region_rule
 from csiibundle.bake.tiles import MIN_LOD_MARK
 
 from ..beamng import dae, frame, tilelod
+from ..beamng import level as level_mod
 from ..beamng.level import LevelPaths
 from ..beamng.matbind import aliases_of, mapto_name
 from . import Stage, level_of
@@ -127,18 +127,14 @@ def run(ctx, progress):
             names.add(shape["name"])
             level.add(
                 GROUP,
-                {
-                    "name": shape["name"],
-                    "class": "TSStatic",
-                    "shapeName": level.game_path(*shapes_dir, shape["name"] + ".dae"),
-                    "position": [round(shape["ox"], 3), round(shape["oy"], 3), 0.0],
-                    "rotationMatrix": frame.identity_matrix(),
-                    "scale": [1, 1, 1],
-                    "collisionType": "Visible Mesh Final",
-                    "decalType": "None",
-                    "useInstanceRenderData": True,
-                    "canSave": True,
-                },
+                level_mod.tsstatic(
+                    shape["name"],
+                    level.game_path(*shapes_dir, shape["name"] + ".dae"),
+                    (shape["ox"], shape["oy"], 0.0),
+                    frame.identity_matrix(),
+                    collision="Visible Mesh Final",
+                    canSave=True,
+                ),
                 key="networks:" + shape["name"],
             )
             counts["written"] += 1
@@ -146,18 +142,20 @@ def run(ctx, progress):
             counts["verts"] += shape["vertices"]
         progress.advance(result["segments"])
 
-    if workers > 1 and len(jobs) > 4:
-        mp = multiprocessing.get_context("spawn")
-        with mp.Pool(min(workers, len(jobs))) as pool:
-            for index, result in enumerate(pool.imap(_tile_job, jobs, chunksize=2)):
-                absorb(result)
-                if index % 25 == 0:
-                    progress.check()
-    else:
-        for index, job in enumerate(jobs):
-            absorb(_tile_job(job))
-            if index % 25 == 0:
-                progress.check()
+    # `advance=False`: this stage's progress total is SEGMENTS, and `absorb` advances by however
+    # many a tile carried. One per tile would make the bar mean nothing.
+    for result in parallel.each(
+        _tile_job,
+        jobs,
+        workers,
+        progress,
+        ordered=True,
+        chunksize=2,
+        min_parallel=4,
+        spawn=True,
+        advance=False,
+    ):
+        absorb(result)
     written, tris_total, verts_total = counts["written"], counts["tris"], counts["verts"]
     refused, split_geoms, rewritten = counts["refused"], counts["split_geoms"], counts["rewritten"]
     level.write_objects()

@@ -87,7 +87,7 @@ namespace Carto.Systems
             public string[] RangeMaterial;
         }
 
-        private readonly Dictionary<Entity, PieceGeometry> m_PieceGeometry = new();
+        private readonly Dictionary<Entity, PieceGeometry> _pieceGeometry = new();
 
         // ---- terrain conforming (LowerBottomToTerrain / RaiseTopToTerrain) ------------------
         // The game classifies each vertex of a flagged piece against per-z-slice height bounds
@@ -110,7 +110,7 @@ namespace Carto.Systems
             public float[] Max;
         }
 
-        private readonly Dictionary<Entity, PieceHeightBounds> m_PieceHeightBounds = new();
+        private readonly Dictionary<Entity, PieceHeightBounds> _pieceHeightBounds = new();
 
         /// <summary>
         /// Per-prefab aggregate of the conforming pass — the §38 probe. One row per flagged
@@ -127,7 +127,7 @@ namespace Carto.Systems
             public int FrontCutTris, BackCutTris, OutOfWindowTris;
         }
 
-        private readonly Dictionary<string, ConformPieceProbe> m_ConformProbes = new();
+        private readonly Dictionary<string, ConformPieceProbe> _conformProbes = new();
 
         /// <summary>
         /// Per piece, what the cross-section walk actually BUILT — the §42 probe.
@@ -205,7 +205,7 @@ namespace Carto.Systems
             }
         }
 
-        private readonly Dictionary<PieceKey, SectionProbe> m_SectionProbes = new();
+        private readonly Dictionary<PieceKey, SectionProbe> _sectionProbes = new();
 
         private ushort[] _conformHeights;
         private int2 _conformResolution;
@@ -285,7 +285,7 @@ namespace Carto.Systems
         /// </summary>
         private PieceHeightBounds GetPieceHeightBounds(Entity piece, PieceGeometry source, float sizeZ)
         {
-            if (m_PieceHeightBounds.TryGetValue(piece, out PieceHeightBounds cached)
+            if (_pieceHeightBounds.TryGetValue(piece, out PieceHeightBounds cached)
                 && (math.abs(cached.SizeZ - sizeZ) < 1e-3f))
             {
                 return cached;
@@ -334,7 +334,7 @@ namespace Carto.Systems
                 AddEdge(c, a, ic, ia);
             }
 
-            m_PieceHeightBounds[piece] = bounds;
+            _pieceHeightBounds[piece] = bounds;
             return bounds;
         }
 
@@ -693,12 +693,12 @@ namespace Carto.Systems
                 // accumulates. Resolving the name is the expensive half and happens on first
                 // sight of a piece, never per placement.
                 PieceKey sectionKey = new PieceKey(piece.m_Piece, composition, isNode);
-                if (!m_SectionProbes.TryGetValue(sectionKey, out SectionProbe section))
+                if (!_sectionProbes.TryGetValue(sectionKey, out SectionProbe section))
                 {
                     string sectionName = Instance.Prefab.TryGetPrefab(piece.m_Piece, out PrefabBase sectionPiece)
                                          && (sectionPiece != null)
                         ? sectionPiece.name : $"<entity {piece.m_Piece.Index}>";
-                    m_SectionProbes[sectionKey] = section = new SectionProbe
+                    _sectionProbes[sectionKey] = section = new SectionProbe
                     {
                         Name = sectionName,
                         Where = isNode ? "node" : "edge",
@@ -744,9 +744,9 @@ namespace Carto.Systems
                 if (conforming)
                 {
                     string probeName = Instance.Name.GetPrefabName(piece.m_Piece);
-                    if (!m_ConformProbes.TryGetValue(probeName, out probe))
+                    if (!_conformProbes.TryGetValue(probeName, out probe))
                     {
-                        m_ConformProbes[probeName] = probe = new ConformPieceProbe
+                        _conformProbes[probeName] = probe = new ConformPieceProbe
                         {
                             Flags = (lowerBottom && raiseTop) ? "LowerBottom+RaiseTop"
                                   : lowerBottom ? "LowerBottom" : "RaiseTop",
@@ -1194,7 +1194,7 @@ namespace Carto.Systems
         private PieceGeometry GetPieceGeometry(Entity piece, Dictionary<Entity, MeshAsset> cache)
         {
             if (piece == Entity.Null) return null;
-            if (m_PieceGeometry.TryGetValue(piece, out PieceGeometry cached)) return cached;
+            if (_pieceGeometry.TryGetValue(piece, out PieceGeometry cached)) return cached;
 
             PieceGeometry result = null;
 
@@ -1341,7 +1341,7 @@ namespace Carto.Systems
                 }
             }
 
-            m_PieceGeometry[piece] = result;
+            _pieceGeometry[piece] = result;
             return result;
         }
     }
