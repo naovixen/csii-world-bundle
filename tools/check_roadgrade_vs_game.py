@@ -320,7 +320,9 @@ if roadbed is not None:
 # -- 4. what the consumer does with that -------------------------------------------------------
 print()
 print("== 4. what the consumer does to the game's answer ==")
-print("   `carriageway.ground_heights` keeps the shipped heights and applies `clamp_carriageway` and")
+print(
+    "   `carriageway.ground_heights` keeps the shipped heights and applies `clamp_carriageway` and"
+)
 print("   nothing else: a sample standing above the game's own profile top is lowered onto it.")
 ceiling = cmax  # == lane + top - expansion, minus lane
 moved = over > ceiling

@@ -122,7 +122,9 @@ def test_ceiling_is_the_games_profile_top():
     # Crossfall: a tilted strip's ceiling must ramp across the width, not sit at the mean.
     tilted = numpy.full((h, w), numpy.inf)
     m2 = numpy.zeros((h, w), dtype=bool)
-    clipraster.fill_clip_quad(m2, terrain_y, w, h, quad, (100.0, 101.0), bottom, top, ceiling=tilted)
+    clipraster.fill_clip_quad(
+        m2, terrain_y, w, h, quad, (100.0, 101.0), bottom, top, ceiling=tilted
+    )
     row = tilted[6, :]
     live = numpy.isfinite(row)
     # Only the part of the width where the flat terrain still falls inside (lane + bottom,
