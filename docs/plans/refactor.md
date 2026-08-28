@@ -638,7 +638,7 @@ Each phase records here what landed and what it found, so this document stays th
 | 2 — One implementation of every shared rule | **DONE** 2026-08-27, in-game look verified — five of its claims needed correcting; see below |
 | 3 — One stage framework | **DONE** 2026-08-27 — 7 of 8 parallel blocks unified; the record merge refused, with reasons |
 | 4 — Split `csiibundle` and `tools/` | **in progress** — `terrain`, `navgraph`, `colour`, `validate_bundle`, `make_example_bundle` split and validated, `probe_point` refused with reasons; see below |
-| 5 — The app and its UI | **in progress** — `settings`, `server`, `validate_level` and `shapes` split; `terrain`, the UI and the 400-700 band remain; see below |
+| 5 — The app and its UI | **in progress** — `settings`, `server`, `validate_level`, `shapes`, `terrain` and the UI split; the 400-650 band remains; see below |
 | 6 — The Blender adapter | not started |
 | 7 — One rip-stage framework | **in progress** — extractions, the typed outcome, the frame loop and the report shape done; see below |
 | 8 — The IO writer layer | **in progress** — the writers, the attribute readers and the grading guard; see below |
@@ -1524,8 +1524,29 @@ in order with nothing checking they agreed. `lod_levels`' `if`/`elif` repeated e
 conditions (the promote branch and the kept-small branch differ only in the triangle floor), so
 the eight are one named condition now.
 
-**Still to do in this phase:** `ui/app.js` (1,667) and `ui/app.css` (576);
-`stages/terrain.py` (1,049); and the 400-700 band — `stages/instances.py`,
+**`stages/terrain.py` (1,049) → five modules** (`ceed967`), which the plan sized as "the ~290-line
+texture-authoring block" and is four subjects: the stage, the textures, the tiling and the
+materials. The `# ---- NOT PARITY` fence survives verbatim with the constants it fences, as does
+every other measured rule the file carries. `terrain_materials` was 226 lines and `_ground_mesh_maps`
+68; both decompose along banners the code already had. Two module-attribute shadows that ruff
+caught and a different structure would have hidden: `albedo_gain = albedo_gain(...)` and
+`= terrain_materials(...)`, where a local took the imported function's name.
+
+**`ui/app.js` (1,667) → nine ES modules, `ui/app.css` (576) → five sheets** (`653e642`). One IIFE,
+71 functions sharing one closure, so every function could reach every other and nothing said which
+were meant to. **`connectEvents` could not stay in `core`** — it calls three renderers, so the
+module every other one imports was importing the screen; it is in `app.js` with the rest of the
+wiring and `core` now imports nothing. All 303 CSS rule blocks are byte-identical, checked by
+parsing both and comparing the sets.
+
+Verified by **driving the browser**, because no test runs this code: the first split loaded and
+died on `buildControl is not defined`, a real import the scanner missed because it blanked
+template literals and `${buildControl(x)}` inside one is code. After the fix the page renders all
+six cards, the cost meter, every settings section, the reference page, the map with its road
+network and the POI suggestion chips. `test_app_shell` now asks for every static module rather
+than `app.js` alone — a missing one is a blank screen and the old check passed straight through it.
+
+**Still to do in this phase:** the 400-650 band — `stages/instances.py`,
 `pipeline/estimate.py`, `stages/materials.py`, `pipeline/runner.py`, `beamng/budget.py`,
 `pipeline/worker.py`, `beamng/dae.py`, `stages/cook.py`, `pipeline/state.py`,
 `beamng/tilelod.py`, `stages/poi.py`, `beamng/materials.py`, `stages/lights.py`,
