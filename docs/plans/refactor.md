@@ -1245,12 +1245,31 @@ delta — the stat counts textures NEWLY WRITTEN (an existing right-sized file i
 encode being deterministic), and the behaviour-bearing split, 1,770 as-factor / 3,190
 as-texture, is identical in both. The level is rebuilt in place and awaits the in-game look.
 
-Still open in Phase 4: `check_roadgrade_vs_game.py` (499) and `check_instances_vs_game.py`
-(477 — its sampler is decomposed; both remain linear measurement probes over the file ceiling,
-split-or-declare still to be decided), the two remaining oversized test files
-(`test_app_shell` 1,692, `test_a3_objects` 1,315), and the remaining over-60 functions on the
-allowlist. The consumer-phase gate (rebuild `cs2_city_fine`, hand over before commit) still
-stands for the phase as a whole.
+**Third landing (2026-08-28): the phase's work list is drained.**
+
+* The two vs-game probes are **declared single-file exceptions**, not splits (`bbe7980`):
+  `check_roadgrade_vs_game.py`'s nine numbered sections are one linear derivation, each
+  consuming the previous one's rasters, and `check_instances_vs_game.py` is read-the-level,
+  ask-the-five-questions, print-the-score. Both declare it in their docstring and ride the
+  shrink-only allowlist; every function in both is already under 60.
+* **The A3 gate is three files** (`e7d6eb6`): the stage tests stay in `test_a3_objects.py`
+  (1,315 → 640), the writer rules move to `test_a3_rules.py` and the classification rules
+  plus real-city sweeps to `test_a3_city.py`, tally shared via `a3common` (whose `start()`
+  reset keeps one pytest process from leaking failures across files). The five moved over-60
+  tests are decomposed per claim. 188 checks before, 76+74+38 = 188 after.
+* **The A0 gate is three files** (`e24747b`): the shell proper stays in `test_app_shell.py`
+  (1,692 → 1,036; its four big tests keep their allowlist keys), the A4 incremental build
+  moves to `test_app_incremental.py` and the delivery features to `test_app_features.py`,
+  harness shared via `shellcommon.run_gate`. The moved over-60 tests are decomposed per
+  claim. 232 checks before, 131+69+32 = 232 after.
+
+With that, every seam this phase named is closed: the csiibundle modules, `validate_bundle`
+(→ `bundlecheck`), all four oversized test files, and `probe_point`. What stays on the
+allowlist is the durable tail this phase never claimed — the C# producer files (later
+phases), the app and its stages (Phase 5), the Blender adapter, and the deliberately-kept
+long functions (`run()`s, `bend_part`, `_parse_glb_unguarded`, `resolve`, and kin), every one
+under the shrink-only rule. The phase's remaining gate is the in-game look at the rebuilt
+`cs2_city_fine` (second-landing rebuild, verified against after-phase3), which is Naomi's.
 
 ### Phase 9 — in progress, 2026-08-27
 
