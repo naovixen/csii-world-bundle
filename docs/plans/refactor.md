@@ -1073,7 +1073,7 @@ is not None else {})` hands back the real one. The two sites calling `.setdefaul
 second, because `.setdefault` on a throwaway mutates nothing. Unifying them onto `or {}` would
 silently stop both stages recording. Left alone deliberately.
 
-### Phase 4 — in progress, 2026-08-28
+### Phase 4 — DONE 2026-08-28 (in-game look accepted)
 
 The three seams the audit sized biggest are done, each verified before moving on. All three are
 behaviour-preserving by measurement, not by reading: the terrain split re-ran `test_clip_cut`'s
@@ -1268,8 +1268,9 @@ With that, every seam this phase named is closed: the csiibundle modules, `valid
 allowlist is the durable tail this phase never claimed — the C# producer files (later
 phases), the app and its stages (Phase 5), the Blender adapter, and the deliberately-kept
 long functions (`run()`s, `bend_part`, `_parse_glb_unguarded`, `resolve`, and kin), every one
-under the shrink-only rule. The phase's remaining gate is the in-game look at the rebuilt
-`cs2_city_fine` (second-landing rebuild, verified against after-phase3), which is Naomi's.
+under the shrink-only rule. The phase's last gate — Naomi's in-game look at the rebuilt
+`cs2_city_fine` (second-landing rebuild, verified against after-phase3) — was **accepted
+2026-08-28**, which closes the phase. Phase 5 (the app and its UI) has not been started.
 
 ### Phase 9 — in progress, 2026-08-27
 
