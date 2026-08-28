@@ -134,10 +134,8 @@ func tools/beamng/probe_ter.py::main
 func tools/blender_import_bundle.py::_apply_grading
 func tools/blender_import_bundle.py::_build_sky
 func tools/blender_import_bundle.py::_setup_lighting
-func tools/blender_import_bundle.py::_splat_ground_material
 func tools/blender_import_bundle.py::area_material
 func tools/blender_import_bundle.py::build_areas
-func tools/blender_import_bundle.py::build_terrain
 func tools/blender_import_bundle.py::main
 func tools/blender_import_level.py::build_terrain
 func tools/blender_import_level.py::read_dae
