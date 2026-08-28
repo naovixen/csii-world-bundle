@@ -42,14 +42,14 @@ from csiibundle import glb, lod, parallel
 from csiibundle import region as region_rule
 from csiibundle.bake.tiles import MIN_LOD_MARK, split_material_name
 
-from ..beamng import dae, frame, tilelod
+from ..beamng import dae, frame, tilemesh
 from ..beamng import level as level_mod
 from ..beamng.level import LevelPaths
 from ..beamng.matbind import aliases_of, mapto_name
 from . import Stage, level_of
 
 STAGE_KEY = "derived"
-TILE_DETAIL_PX = tilelod.ALWAYS_PX  # what a tile nothing culls still ships (see beamng/tilelod)
+TILE_DETAIL_PX = tilemesh.ALWAYS_PX  # what a tile nothing culls still ships (see beamng/tilelod)
 PRODUCTS = {
     # product: (setting toggle, group, collision setting or None for paint, castShadows)
     "markings": ("markings", "Markings", "collision_paint", False),
@@ -121,7 +121,7 @@ def run(ctx, progress):
         progress.begin(f"derived: {product}", total=len(files), unit="tiles")
         counts = {"written": 0, "tris": 0, "split_geoms": 0, "rewritten": 0}
         names = set()
-        ladder_stats = tilelod.new_stats()
+        ladder_stats = tilemesh.new_stats()
         jobs = [
             (
                 folder,
@@ -151,7 +151,7 @@ def run(ctx, progress):
             if result is None:
                 return
             shared_used.update(result["used"])
-            tilelod.account_compact(ladder_stats, result["lod"])
+            tilemesh.account_compact(ladder_stats, result["lod"])
             counts["split_geoms"] += result["extraGeoms"]
             counts["rewritten"] += 1 if result["changed"] else 0
             names.add(result["name"])
@@ -196,7 +196,7 @@ def run(ctx, progress):
             "triangles": counts["tris"],
             "collision": collide,
             "splitGeometries": counts["split_geoms"],
-            "lod": tilelod.ladder_summary(ladder_stats, detail_scale),
+            "lod": tilemesh.ladder_summary(ladder_stats, detail_scale),
         }
     level.write_objects()
     return {"products": summary, "jobs": workers, "seconds": round(time.monotonic() - started, 1)}
@@ -257,7 +257,7 @@ def _tile_job(args):
         "oy": oy,
         "triangles": stats["triangles"],
         "changed": bool(stats.get("changed")),
-        "lod": tilelod.compact(levels, ladder),
+        "lod": tilemesh.compact(levels, ladder),
         "extraGeoms": sum(len(ms) for _px, ms in levels) - len(levels),
         "used": sorted(shared.get("materials_used") or ()),
     }
@@ -305,7 +305,7 @@ OUTPUTS = ("art/shapes",)
 
 def _tile_levels(shape_name, mesh, detail_scale, view_distance=None, tile=None):
     """`([(px, [Mesh]), ...], ladder)` for one merged tile."""
-    return tilelod.build_levels(
+    return tilemesh.build_levels(
         dae,
         shape_name,
         mesh,
@@ -313,7 +313,7 @@ def _tile_levels(shape_name, mesh, detail_scale, view_distance=None, tile=None):
         lod.DEFAULT_LEVEL_OF_DETAIL,
         TILE_DETAIL_PX,
         view_distance=view_distance,
-        targets=tilelod.TILE_TARGETS if view_distance else None,
+        targets=tilemesh.TILE_TARGETS if view_distance else None,
         tile=tile,
     )
 

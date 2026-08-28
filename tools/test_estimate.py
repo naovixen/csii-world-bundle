@@ -93,16 +93,16 @@ def test_dds_arithmetic():
 
 def test_cap_arithmetic():
     import numpy
-    from cs2beamng.beamng import materials as bm
+    from cs2beamng.beamng import textureplan
 
     section("the size cap is arithmetic")
     ok = True
     for width, height in [(2048, 2048), (1024, 512), (300, 700), (64, 64), (5, 5)]:
         for cap in (0, 128, 256, 512, 1024, 2048):
             arr = numpy.zeros((height, width, 4), dtype=numpy.uint8)
-            capped = bm._cap(arr, cap)
+            capped = textureplan._cap(arr, cap)
             want = (capped.shape[1], capped.shape[0])
-            got = bm.capped_size(width, height, cap)
+            got = textureplan.capped_size(width, height, cap)
             if got != want:
                 ok = False
                 check(False, f"capped_size({width}x{height}, cap {cap}) = {got}, _cap gives {want}")
@@ -110,7 +110,7 @@ def test_cap_arithmetic():
 
 
 def test_formats_are_covered():
-    from cs2beamng.beamng import dds
+    from cs2beamng.beamng import dds, textureplan
     from cs2beamng.beamng import materials as bm
 
     section("every exported kind has a format")
@@ -118,18 +118,25 @@ def test_formats_are_covered():
     for kind in bm.KIND_CAP_SETTING:
         for grey in (False, True):
             for keep_alpha in (False, True):
-                fmt = bm.dxgi_format(kind, keep_alpha, grey)
+                fmt = textureplan.dxgi_format(kind, keep_alpha, grey)
                 if fmt not in dds._BLOCK_BYTES:
                     ok = False
                     check(False, f"dxgi_format({kind}, alpha={keep_alpha}, grey={grey}) = {fmt}")
     check(ok, "dxgi_format returns a known format for every kind, greyness and alpha")
     # the one case a flat table gets wrong: an RGB data map is BC7, not BC4
-    check(bm.dxgi_format("data", False, True) == dds.BC4_UNORM, "a grey data map is BC4")
+    check(textureplan.dxgi_format("data", False, True) == dds.BC4_UNORM, "a grey data map is BC4")
     check(
-        bm.dxgi_format("data", False, False) == dds.BC7_UNORM, "an RGB data map is BC7 (data_rgb)"
+        textureplan.dxgi_format("data", False, False) == dds.BC7_UNORM,
+        "an RGB data map is BC7 (data_rgb)",
     )
-    check(bm.dxgi_format("opacity", False, False) == dds.BC4_UNORM, "an opacity map is always BC4")
-    check(bm.dxgi_format("colormask", False, True) == dds.BC7_UNORM, "a colour mask is always BC7")
+    check(
+        textureplan.dxgi_format("opacity", False, False) == dds.BC4_UNORM,
+        "an opacity map is always BC4",
+    )
+    check(
+        textureplan.dxgi_format("colormask", False, True) == dds.BC7_UNORM,
+        "a colour mask is always BC7",
+    )
 
 
 # -- 2. the selection ------------------------------------------------------------------------------

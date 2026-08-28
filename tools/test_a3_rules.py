@@ -261,7 +261,7 @@ def test_color_palette():
     The old export forced the mask's alpha to 255, which is why an untinted texel rendered BLACK.
     """
     print("colour palette (A6.3)")
-    from cs2beamng.beamng.materials import _colormask_rgba
+    from cs2beamng.beamng.textureplan import _colormask_rgba
 
     base = [0.55, 0.50, 0.47]
     colours = [[0.90, 0.30, 0.20], [0.20, 0.55, 0.85], [0.0, 0.0, 0.0]]
@@ -347,10 +347,10 @@ def test_colormask_export():
     724 masks were dropped, and the built level carried ZERO `colorPaletteMap` — so the whole of
     A6.3 was in the build report and nowhere else. `material_v15` alone cannot see that."""
     print("colour palette: the export path")
-    from cs2beamng.beamng import materials as bm
+    from cs2beamng.beamng import textureplan
 
     try:
-        name = bm.texture_name("/src/abc.png", "colormask", use_dds=False)
+        name = textureplan.texture_name("/src/abc.png", "colormask", use_dds=False)
         ok = name.endswith(".colormask.png")
     except Exception as exc:
         name, ok = repr(exc), False
@@ -367,7 +367,7 @@ def test_colormask_export():
 
     with open(src, "wb") as h:
         h.write(_png.encode_rgb(numpy.array([[[200, 100, 0], [0, 0, 0]]], numpy.uint8)))
-    out = bm.export_texture(_LW(), src, "colormask", dds=False)
+    out = textureplan.export_texture(_LW(), src, "colormask", dds=False)
     check(bool(out) and written, f"a colormask actually exports ({out})")
     if written:
         tmp = os.path.join(tempfile.mkdtemp(), "out.png")

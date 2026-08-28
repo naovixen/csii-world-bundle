@@ -86,12 +86,11 @@ def _load_real_build():
 
 
 def test_against_a_real_build():
-    from cs2beamng.pipeline import census as census_mod
-    from cs2beamng.pipeline import (  # noqa: F401
+    from cs2beamng.pipeline import (
+        census as census_mod,
+    )
+    from cs2beamng.pipeline import (
         estimate,
-        estimatebase,
-        estimatescore,
-        estimatetextures,
         meshindex,
     )
 
@@ -269,6 +268,7 @@ def _texture_file_check(values, bundle, level):
     """`(exact, compared, worstError, unnamed)` over the DDS files the level actually holds."""
     from cs2beamng.beamng import dds as dds_mod
     from cs2beamng.beamng import materials as bm
+    from cs2beamng.beamng import textureplan
     from cs2beamng.pipeline import (  # noqa: F401
         estimate,
         estimatebase,
@@ -282,9 +282,9 @@ def _texture_file_check(values, bundle, level):
     predicted = {}
     for job, sizes in zip(_plan_jobs(bundle, values), plan["jobs"]):
         kind, keep_alpha, width, height, colour = sizes
-        width, height = bm.capped_size(width, height, int(caps.get(kind, 0) or 0))
-        predicted[bm.texture_name(job[0], kind, keep_alpha, True)] = dds_mod.encoded_bytes(
-            width, height, bm.dxgi_format(kind, keep_alpha, colour in (0, 4))
+        width, height = textureplan.capped_size(width, height, int(caps.get(kind, 0) or 0))
+        predicted[textureplan.texture_name(job[0], kind, keep_alpha, True)] = dds_mod.encoded_bytes(
+            width, height, textureplan.dxgi_format(kind, keep_alpha, colour in (0, 4))
         )
     directory = os.path.join(level, "art", "textures")
     if not os.path.isdir(directory):
@@ -309,7 +309,7 @@ def _texture_file_check(values, bundle, level):
 def _plan_jobs(bundle, values):
     """The job tuples in the order `_texture_plan` sized them — it drops the paths, and the
     per-file check needs them back to name the files."""
-    from cs2beamng.beamng import materials as bm
+    from cs2beamng.beamng import textureplan
     from cs2beamng.pipeline import (  # noqa: F401
         estimate,
         estimatebase,
@@ -323,12 +323,14 @@ def _plan_jobs(bundle, values):
         {rec.get("canonical") or name for name, rec in (table.get("materials") or {}).items()}
     )
     jobs = {}
-    for plan in bm.plan_canonical(bundle, derived_dir, table, canonical).values():
+    for plan in textureplan.plan_canonical(bundle, derived_dir, table, canonical).values():
         for job in plan.values():
             jobs[job] = None
     for job in estimatetextures._variant_jobs(values, derived_dir, table):
         jobs[job] = None
-    for job in bm.plan_areas(bundle, derived_dir, has_alpha=estimatetextures._header_has_alpha):
+    for job in textureplan.plan_areas(
+        bundle, derived_dir, has_alpha=estimatetextures._header_has_alpha
+    ):
         jobs[job] = None
     return [job for job in jobs if estimatetextures._png_header(job[0]) is not None]
 

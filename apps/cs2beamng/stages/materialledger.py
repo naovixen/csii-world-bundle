@@ -6,7 +6,7 @@ moved is left exactly where it is."""
 import json
 import os
 
-from ..beamng import materials as bm
+from ..beamng import textureplan
 
 # -- the texture ledger ----------------------------------------------------------------------------
 #
@@ -89,8 +89,8 @@ def partition(level, jobs, ledger, caps, use_dds):
         if not entry or stamp is None or entry.get("stamp") != stamp:
             todo.append(job)
             continue
-        name = bm.texture_name(src, kind, keep_alpha, use_dds)
-        if not os.path.isfile(level.path(*bm.TEXTURE_SUBDIR, name)):
+        name = textureplan.texture_name(src, kind, keep_alpha, use_dds)
+        if not os.path.isfile(level.path(*textureplan.TEXTURE_SUBDIR, name)):
             todo.append(job)  # the ledger remembers, the folder does not
             continue
         reusable[job] = entry["game"]

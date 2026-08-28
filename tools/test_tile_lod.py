@@ -25,7 +25,7 @@ Run: `python tools/test_tile_lod.py`  (system Python + numpy; no bundle needed).
 import sys
 
 import numpy
-from cs2beamng.beamng import dae, tilelod
+from cs2beamng.beamng import dae, tilelod, tilemesh
 from csiibundle import decimate, lod
 
 failures = 0
@@ -160,8 +160,8 @@ check(
     f"{int(pin_a.sum())} of {len(va)}",
 )
 
-out_a = tilelod._decimated(dae, "a", mesh_a, 0.25, TILE)
-out_b = tilelod._decimated(dae, "b", mesh_b, 0.25, TILE)
+out_a = tilemesh._decimated(dae, "a", mesh_a, 0.25, TILE)
+out_b = tilemesh._decimated(dae, "b", mesh_b, 0.25, TILE)
 check(
     len(out_a.tris) < len(ta) * 0.6,
     "the mesh really was decimated",
@@ -247,15 +247,15 @@ check(
 # this check nothing to inspect.
 runs = [("mat_a#L120", len(ta) // 2), ("mat_b#L96", len(ta) - len(ta) // 2)]
 mesh_runs = dae.Mesh("r", va, ta, runs)
-levels, ladder = tilelod.build_levels(
+levels, ladder = tilemesh.build_levels(
     dae,
     "r",
     mesh_runs,
     6.0,
     lod.DEFAULT_LEVEL_OF_DETAIL,
-    tilelod.ALWAYS_PX,
+    tilemesh.ALWAYS_PX,
     view_distance=4000.0,
-    targets=tilelod.TILE_TARGETS,
+    targets=tilemesh.TILE_TARGETS,
     tile=TILE,
 )
 nearest = sum(len(m.tris) for m in levels[0][1])

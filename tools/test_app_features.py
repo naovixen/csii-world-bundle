@@ -127,7 +127,7 @@ def test_modinstall(tmp):
 
 # E3 - the map's conversions. Everything the picker produces is read back by something else:
 # the region string by `settings.region_of` and every stage's own test, the point list by
-# `stages.poi._read_poi_file` on the far side of a bundle->BeamNG frame change. A pin that
+# `stages.poisources.read_poi_file` on the far side of a bundle->BeamNG frame change. A pin that
 # lands somewhere else in the built level than it sat on the map is the whole feature failing
 # silently, so the round trip is the gate and not the pixels.
 _WORLD = {"originX": -7166.25, "originZ": 7166.25, "metresPerPixel": 14.0, "pixels": 1024}
@@ -186,7 +186,7 @@ def test_map_georeference():
 def test_map_points():
     """The points survive the app -> build -> BeamNG frame change, with their names."""
     from cs2beamng.server import mappoints
-    from cs2beamng.stages import poi as poi_stage
+    from cs2beamng.stages import poisources
     from csiibundle.bake.progress import Progress
 
     print("the map: the points (E3)")
@@ -200,7 +200,7 @@ def test_map_points():
         len(clean) == 2 and path.startswith(home),
         "the app writes the point file into its own folder",
     )
-    read = poi_stage._read_poi_file(path, Progress())
+    read = poisources.read_poi_file(path, Progress())
     check(len(read) == 2, f"the build reads back every point the app wrote ({len(read)})")
     # bundle (x, y=up, z=north) -> BeamNG (x, y=north): the pin's X/Z become the map's X/Y, and a
     # transposition here puts every fast-travel point somewhere else in the level.

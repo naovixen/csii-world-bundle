@@ -29,7 +29,7 @@ import time
 
 from csiibundle import png
 
-from ..beamng import matbind
+from ..beamng import matbind, textureplan
 from ..beamng import materials as bm
 from . import Stage, level_of
 from .materialexport import export_all
@@ -60,8 +60,8 @@ def run(ctx, progress):
     caps = bm.caps_from_settings(settings)  # per kind: colour / normal / data (A4 2.1)
     # pre-compressed DDS (BC7/BC5/BC4 + mips, the cooker's own formats) unless the encoder is
     # missing or the setting turns it off; PNG means BeamNG cooks on the first load of the name
-    use_dds = bool(settings.get("texture_dds", True)) and bm.dds_mod.available()
-    if settings.get("texture_dds", True) and not bm.dds_mod.available():
+    use_dds = bool(settings.get("texture_dds", True)) and textureplan.dds_mod.available()
+    if settings.get("texture_dds", True) and not textureplan.dds_mod.available():
         progress.log(
             "materials: etcpak not installed - textures go out as PNG and BeamNG cooks them on first load "
             "(pip install etcpak)"
@@ -96,7 +96,7 @@ def run(ctx, progress):
     # The slot walk lives in `beamng.materials` because the cost meter runs the same one to SIZE
     # what this stage EXPORTS (`pipeline/estimate`); two copies would be two answers to "which
     # textures does this level ship". No occlusion slot: the mask's G is not AO (audit §54).
-    plans = bm.plan_canonical(ctx.bundle, ctx.derived_dir, table, canonical)
+    plans = textureplan.plan_canonical(ctx.bundle, ctx.derived_dir, table, canonical)
     for plan in plans.values():
         for job in plan.values():
             jobs.setdefault(job, None)
@@ -344,7 +344,7 @@ def _texture_bytes(level):
     `west_coast_usa`'s 0.58), so the build reports it rather than leaving it to be discovered
     on an 8 GB card."""
     total = files = 0
-    directory = level.path(*bm.TEXTURE_SUBDIR)
+    directory = level.path(*textureplan.TEXTURE_SUBDIR)
     if os.path.isdir(directory):
         for name in os.listdir(directory):
             try:
@@ -377,16 +377,16 @@ def _area_texture(level, ctx, rel, kind, caps, cache, use_dds, ledger, exported)
     cap = int(caps.get(kind, 0) or 0)
     entry = ledger.get(ledger_key(src, kind, False, caps, use_dds))
     stamp = file_stamp(src)
-    name = bm.texture_name(src, kind, False, use_dds)
+    name = textureplan.texture_name(src, kind, False, use_dds)
     if (
         entry
         and stamp is not None
         and entry.get("stamp") == stamp
-        and os.path.isfile(level.path(*bm.TEXTURE_SUBDIR, name))
+        and os.path.isfile(level.path(*textureplan.TEXTURE_SUBDIR, name))
     ):
         exported[job] = entry["game"]
         return entry["game"]
-    game = bm.export_texture(level, src, kind, cap, False, cache, dds=use_dds)
+    game = textureplan.export_texture(level, src, kind, cap, False, cache, dds=use_dds)
     exported[job] = game
     return game
 
@@ -398,7 +398,7 @@ def _sweep_orphans(level, keep):
     mtime so BeamNG keeps its cooked copy), so this is what stops a texture from an older build
     lingering — and it has to run after the LAST export, not in the middle.
     """
-    directory = level.path(*bm.TEXTURE_SUBDIR)
+    directory = level.path(*textureplan.TEXTURE_SUBDIR)
     if not os.path.isdir(directory):
         return 0
     removed = 0

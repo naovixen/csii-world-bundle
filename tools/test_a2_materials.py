@@ -104,7 +104,7 @@ def _check_blend_materials(lv):
 
 def _check_texture_export(tmp, lv):
     """PNG export: idempotence, the size cap, alpha handling and the opacity grey."""
-    from cs2beamng.beamng import materials as bm
+    from cs2beamng.beamng import textureplan
     from csiibundle import png
 
     # export_texture is idempotent: a second export of the same source leaves the file (and its
@@ -113,19 +113,19 @@ def _check_texture_export(tmp, lv):
     from PIL import Image as _Image
 
     _Image.fromarray(numpy.full((64, 64, 3), 90, numpy.uint8)).save(src_i)
-    p1 = bm.export_texture(lv, src_i, "color", 64)
+    p1 = textureplan.export_texture(lv, src_i, "color", 64)
     f1 = os.path.join(lv.dir, "art", "textures", os.path.basename(p1))
     st1 = os.stat(f1)
     import time as _time
 
     _time.sleep(0.05)
-    bm.export_texture(lv, src_i, "color", 64)
+    textureplan.export_texture(lv, src_i, "color", 64)
     st2 = os.stat(f1)
     check(
         st1.st_mtime_ns == st2.st_mtime_ns and st1.st_size == st2.st_size,
         "unchanged texture is not rewritten (mtime kept)",
     )
-    bm.export_texture(lv, src_i, "color", 32)
+    textureplan.export_texture(lv, src_i, "color", 32)
     st3 = os.stat(f1)
     check(st3.st_size != st1.st_size, "a different cap replaces the file")
     # texture export: RGBA 64x64 with alpha, cap 32
@@ -135,8 +135,8 @@ def _check_texture_export(tmp, lv):
     arr[..., 3] = 30
     with open(src, "wb") as f:
         f.write(png.encode_rgba(arr))
-    p1 = bm.export_texture(lv, src, "color", 32, keep_alpha=False, dds=False)
-    bm.export_texture(lv, src, "color", 32, keep_alpha=True, dds=False)
+    p1 = textureplan.export_texture(lv, src, "color", 32, keep_alpha=False, dds=False)
+    textureplan.export_texture(lv, src, "color", 32, keep_alpha=True, dds=False)
     d1 = open(lv.path("art", "textures", "t.color.png"), "rb").read()
     d2 = open(lv.path("art", "textures", "t_a.color.png"), "rb").read()
     import struct
@@ -148,7 +148,7 @@ def _check_texture_export(tmp, lv):
     check(
         p1.endswith(".color.png") and p1.startswith("/levels/lvl/art/textures/"), f"game path {p1}"
     )
-    p3 = bm.export_texture(lv, src, "opacity", 32, dds=False)
+    p3 = textureplan.export_texture(lv, src, "opacity", 32, dds=False)
     d3 = open(lv.path("art", "textures", "t_o.data.png"), "rb").read()
     check(
         p3.endswith("_o.data.png") and d3[25] == 0 and struct.unpack(">II", d3[16:24]) == (32, 32),
@@ -201,7 +201,7 @@ def _read_dds(lv, dds_mod, qs):
 def _check_dds_export(tmp, lv):
     """The DDS path (default when etcpak is installed): the cooker's own formats + mip chains."""
     from cs2beamng.beamng import dds as dds_mod
-    from cs2beamng.beamng import materials as bm
+    from cs2beamng.beamng import textureplan
 
     if not dds_mod.available():
         print("  (etcpak not installed: DDS export untested here)")
@@ -209,11 +209,11 @@ def _check_dds_export(tmp, lv):
     import time as _time
 
     src, nsrc, gsrc, garr = _dds_sources(tmp)
-    q1 = bm.export_texture(lv, src, "color", 0)
-    q2 = bm.export_texture(lv, src, "opacity", 0)
-    q3 = bm.export_texture(lv, nsrc, "normal", 0)
-    q4 = bm.export_texture(lv, gsrc, "data", 0)
-    q5 = bm.export_texture(lv, src, "data", 0)
+    q1 = textureplan.export_texture(lv, src, "color", 0)
+    q2 = textureplan.export_texture(lv, src, "opacity", 0)
+    q3 = textureplan.export_texture(lv, nsrc, "normal", 0)
+    q4 = textureplan.export_texture(lv, gsrc, "data", 0)
+    q5 = textureplan.export_texture(lv, src, "data", 0)
     check(
         q1.endswith("t.color.dds")
         and q2.endswith("t_o.data.dds")
@@ -231,7 +231,7 @@ def _check_dds_export(tmp, lv):
     f1 = lv.path(*q1.split("/")[3:])
     s1 = os.stat(f1)
     _time.sleep(0.05)
-    bm.export_texture(lv, src, "color", 0)
+    textureplan.export_texture(lv, src, "color", 0)
     s2 = os.stat(f1)
     check(s1.st_mtime_ns == s2.st_mtime_ns, "unchanged DDS is not rewritten")
 

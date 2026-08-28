@@ -25,9 +25,8 @@ from collections import deque
 from queue import Empty
 
 from .. import settings as settings_mod
-from ..stages import all_stages
 from . import census as census_mod
-from . import history
+from .runstate import copy_state, empty_state, initial_state, refresh_estimates
 from .worker import main as worker_main
 
 HARD_CANCEL_SECONDS = 15.0
@@ -44,7 +43,7 @@ class Runner:
         self._cancel = None
         self._hard_cancel = None
         self._reader = None
-        self._state = _empty_state()
+        self._state = empty_state()
         self._settings = None
         self._census = None
         self._cancel_requested_at = None
@@ -62,7 +61,7 @@ class Runner:
                 raise ValueError("; ".join(problems))
             self._settings = dict(settings)
             self._census = census or census_mod.take(settings)
-            self._state = _initial_state(self._settings, self._census)
+            self._state = initial_state(self._settings, self._census)
             self._log.clear()  # the seq keeps counting: SSE clients filter by it across builds
             ctx = multiprocessing.get_context("spawn")
             self._queue = ctx.Queue()
@@ -111,7 +110,7 @@ class Runner:
     def plan(settings, census):
         """The stage list a build with these settings would run, with per-stage estimates - what
         the UI shows before Start. Same code path as the state a real start begins from."""
-        return _initial_state(settings, census)["stages"]
+        return initial_state(settings, census)["stages"]
 
     def kill(self, reason="worker terminated at application exit"):
         """Terminate the worker outright (application exit, or the watchdog's last resort). The
@@ -158,13 +157,13 @@ class Runner:
 
     def state(self):
         with self._lock:
-            state = _copy_state(self._state)
+            state = copy_state(self._state)
             now = time.time()
             state["now"] = now
             state["heartbeatAge"] = (
                 (now - state["lastHeartbeat"]) if state.get("lastHeartbeat") else None
             )
-            _refresh_estimates(state, self._census, now)
+            refresh_estimates(state, self._census, now)
             if state["status"] == "running":
                 self._watchdog(now)
             state["log"] = list(self._log)
@@ -331,116 +330,3 @@ class Runner:
         last = self._state.get("lastHeartbeat")
         if last and now - last > DEAD_SECONDS and (process is None or not process.is_alive()):
             self._on_process_exit(process)
-
-
-# -- state helpers ---------------------------------------------------------------------------------
-
-
-def _empty_state():
-    return {
-        "status": "idle",
-        "stages": [],
-        "log": [],
-        "startedAt": None,
-        "finishedAt": None,
-        "lastHeartbeat": None,
-        "report": None,
-        "error": None,
-        "cancelRequested": False,
-    }
-
-
-def _initial_state(settings, census):
-    state = _empty_state()
-    rates = history.load()
-    for stage in all_stages():
-        enabled = stage.enabled(settings)
-        units = stage.units(census, settings) if enabled else 0
-        est = (
-            history.stage_estimate(stage.key, units, (census or {}).get("estimates"), rates)
-            if units
-            else 0.0
-        )
-        state["stages"].append(
-            {
-                "key": stage.key,
-                "title": stage.title,
-                "status": "pending" if enabled else "skipped",
-                "units": units,
-                "estimateSeconds": est,
-                "phase": None,
-                "phaseDone": 0,
-                "phaseTotal": None,
-                "unit": "",
-                "phaseRate": None,
-                "startedAt": None,
-                "finishedAt": None,
-                "summary": None,
-                "fraction": 0.0,
-            }
-        )
-    return state
-
-
-def _copy_state(state):
-    out = dict(state)
-    out["stages"] = [dict(s) for s in state["stages"]]
-    return out
-
-
-def _refresh_estimates(state, census, now):
-    """Fill elapsed / eta per stage and overall from what is known right now."""
-    overall_remaining = 0.0
-    known = True
-    for st in state["stages"]:
-        st["elapsed"] = (
-            ((st.get("finishedAt") or now) - st["startedAt"]) if st.get("startedAt") else 0.0
-        )
-        if st["status"] == "running":
-            # the current phase, from its live rate (row bar + a floor under the stage ETA)
-            phase_eta = phase_frac = None
-            if st.get("phaseTotal") and st.get("phaseRate"):
-                remaining_units = max(0, st["phaseTotal"] - st.get("phaseDone", 0))
-                phase_eta = remaining_units / max(st["phaseRate"], 1e-9)
-                phase_frac = min(1.0, st.get("phaseDone", 0) / st["phaseTotal"])
-            # the stage: what it reported about itself > history estimate > the phase alone
-            if st.get("stageFraction") is not None:
-                frac = min(1.0, max(0.0, st["stageFraction"]))
-                rem = st.get("stageRemaining")
-                eta = (
-                    None
-                    if rem is None
-                    else max(0.0, rem - (now - (st.get("stageProgressAt") or now)))
-                )
-                if eta is not None and phase_eta is not None:
-                    eta = max(eta, phase_eta)
-            elif st.get("estimateSeconds"):
-                eta = max(st["estimateSeconds"] - st["elapsed"], phase_eta or 0.0)
-                frac = min(0.99, st["elapsed"] / max(st["estimateSeconds"], 1e-9))
-            else:
-                eta, frac = phase_eta, phase_frac
-            st["eta"] = eta
-            st["fraction"] = frac if frac is not None else 0.0
-            st["phaseFraction"] = phase_frac
-            if eta is None:
-                known = False
-            else:
-                overall_remaining += eta
-        elif st["status"] == "pending":
-            st["eta"] = st.get("estimateSeconds")
-            if st["eta"] is None:
-                known = False
-            else:
-                overall_remaining += st["eta"]
-        else:
-            st["eta"] = 0.0
-    total = len([s for s in state["stages"] if s["status"] != "skipped"]) or 1
-    finished = len([s for s in state["stages"] if s["status"] in ("done", "fresh")])
-    running_frac = sum(s.get("fraction", 0.0) for s in state["stages"] if s["status"] == "running")
-    state["overall"] = {
-        "elapsed": ((state.get("finishedAt") or now) - state["startedAt"])
-        if state.get("startedAt")
-        else 0.0,
-        "eta": overall_remaining if (known and state["status"] == "running") else None,
-        "fraction": (finished + running_frac) / total,
-    }

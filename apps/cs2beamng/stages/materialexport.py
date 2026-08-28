@@ -4,7 +4,7 @@ import os
 
 from csiibundle import parallel
 
-from ..beamng import materials as bm
+from ..beamng import textureplan
 from ..beamng.level import Level
 
 # -- pool ---------------------------------------------------------------------------------------
@@ -21,7 +21,9 @@ def _export_chunk(args):
             out.append(
                 (
                     (src, kind, keep_alpha),
-                    bm.export_texture(level, src, kind, cap, keep_alpha, cache, dds=use_dds),
+                    textureplan.export_texture(
+                        level, src, kind, cap, keep_alpha, cache, dds=use_dds
+                    ),
                 )
             )
         except Exception as exc:

@@ -11,6 +11,7 @@ from csiibundle import png
 
 from ..beamng import dds as dds_mod
 from ..beamng import materials as bm
+from ..beamng import textureplan
 from . import history
 from .estimatebase import dir_bytes, load_json
 
@@ -36,9 +37,9 @@ def texture_estimate(values, bundle, derived_dir):
     use_dds = bool(values.get("texture_dds", True))
     total = files = 0
     for kind, keep_alpha, width, height, colour_type in plan["jobs"]:
-        width, height = bm.capped_size(width, height, int(caps.get(kind, 0) or 0))
+        width, height = textureplan.capped_size(width, height, int(caps.get(kind, 0) or 0))
         total += dds_mod.encoded_bytes(
-            width, height, bm.dxgi_format(kind, keep_alpha, colour_type in (0, 4))
+            width, height, textureplan.dxgi_format(kind, keep_alpha, colour_type in (0, 4))
         )
         files += 1
     ground = _ground_texture_bytes(bundle)
@@ -117,7 +118,7 @@ def _texture_plan(bundle, derived_dir, values):
     materials = table.get("materials") or {}
     canonical = sorted({rec.get("canonical") or name for name, rec in materials.items()})
     jobs = {}
-    for plan in bm.plan_canonical(bundle, derived_dir, table, canonical).values():
+    for plan in textureplan.plan_canonical(bundle, derived_dir, table, canonical).values():
         for job in plan.values():
             jobs[job] = None
     variant_files = 0
@@ -125,7 +126,7 @@ def _texture_plan(bundle, derived_dir, values):
         if job not in jobs:
             variant_files += 1
         jobs[job] = None
-    for job in bm.plan_areas(bundle, derived_dir, has_alpha=_header_has_alpha):
+    for job in textureplan.plan_areas(bundle, derived_dir, has_alpha=_header_has_alpha):
         jobs[job] = None
 
     sized, unsized = [], 0
@@ -172,7 +173,7 @@ def _variant_jobs(values, derived_dir, table):
     for _raw, rec in (table.get("materials") or {}).items():
         keys = sorted((rec.get("derived") or {}).get("variants") or {})
         for vkey in keys:
-            src = bm.variant_albedo(derived_dir, rec, vkey)
+            src = textureplan.variant_albedo(derived_dir, rec, vkey)
             if not src:
                 continue
             yield (src, "color", False)

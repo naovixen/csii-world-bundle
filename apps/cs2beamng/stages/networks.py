@@ -31,16 +31,16 @@ from collections import defaultdict
 import numpy
 from csiibundle import glb, lod, parallel, reader
 from csiibundle import region as region_rule
-from csiibundle.bake.tiles import MIN_LOD_MARK
 
-from ..beamng import dae, frame, tilelod
+from ..beamng import dae, frame, tilemesh
 from ..beamng import level as level_mod
 from ..beamng.level import LevelPaths
-from ..beamng.matbind import aliases_of, mapto_name
+from ..beamng.matbind import aliases_of
 from . import Stage, level_of
+from .networklod import merge_local, segment_min_lod, split_tile
 
 STAGE_KEY = "networks"
-TILE_DETAIL_PX = tilelod.ALWAYS_PX  # what a tile nothing culls still ships (see beamng/tilelod)
+TILE_DETAIL_PX = tilemesh.ALWAYS_PX  # what a tile nothing culls still ships (see beamng/tilelod)
 REACH = 150.0
 SPLIT_VERTS = 300_000
 GROUP = ["Networks"]
@@ -100,7 +100,7 @@ def run(ctx, progress):
     shared_used = (ctx.shared if ctx.shared is not None else {}).setdefault("materials_used", set())
     counts = {"written": 0, "tris": 0, "verts": 0, "refused": 0, "split_geoms": 0, "rewritten": 0}
     names = set()
-    ladder_stats = tilelod.new_stats()
+    ladder_stats = tilemesh.new_stats()
     jobs = [
         (
             lay.net_meshes,
@@ -121,7 +121,7 @@ def run(ctx, progress):
         counts["refused"] += result["refused"]
         for shape in result["shapes"]:
             shared_used.update(shape["used"])
-            tilelod.account_compact(ladder_stats, shape["lod"])
+            tilemesh.account_compact(ladder_stats, shape["lod"])
             counts["split_geoms"] += shape["extraGeoms"]
             counts["rewritten"] += 1 if shape["changed"] else 0
             names.add(shape["name"])
@@ -176,7 +176,7 @@ def run(ctx, progress):
         "refused": refused,
         "splitGeometries": split_geoms,
         "jobs": workers,
-        "lod": tilelod.ladder_summary(ladder_stats, options["detail_scale"]),
+        "lod": tilemesh.ladder_summary(ladder_stats, options["detail_scale"]),
         "approximations": {
             "compositionHeightRange": {
                 "what": "a segment's composition height range is taken from the assembled "
@@ -210,9 +210,9 @@ def _tile_job(args):
     pieces = parts["pieces"]
     if not pieces:
         return out
-    for sub_index, sub in enumerate(_split(pieces, SPLIT_VERTS)):
+    for sub_index, sub in enumerate(split_tile(pieces, SPLIT_VERTS)):
         ox, oy = (tx + 0.5) * tile, (tz + 0.5) * tile  # BeamNG x = bundle x, BeamNG y = bundle z
-        merged = _merge_local(sub, ox, oy, level, shared)
+        merged = merge_local(sub, ox, oy, level, shared)
         name = f"net_{tx}_{tz}" + (f"_{sub_index}" if sub_index else "")
         mesh = dae.group_by_material(
             dae.Mesh(
@@ -227,7 +227,7 @@ def _tile_job(args):
         # Same ladder as the derived tiles (`beamng/tilelod`): each level is the set of
         # segments CS2 still draws at that distance, carried in on the `#L<n>` marks the
         # merge kept on the material names.
-        levels, ladder = tilelod.build_levels(
+        levels, ladder = tilemesh.build_levels(
             dae,
             name,
             mesh,
@@ -235,7 +235,7 @@ def _tile_job(args):
             lod.DEFAULT_LEVEL_OF_DETAIL,
             TILE_DETAIL_PX,
             view_distance=view_distance,
-            targets=tilelod.TILE_TARGETS if view_distance else None,
+            targets=tilemesh.TILE_TARGETS if view_distance else None,
             tile=tile,
         )
         shape = dae.Shape(name, levels, collision=[], billboard_px=None, null_px=ladder["nullPx"])
@@ -248,7 +248,7 @@ def _tile_job(args):
                 "triangles": stats["triangles"],
                 "vertices": stats["vertices"],
                 "changed": bool(stats.get("changed")),
-                "lod": tilelod.compact(levels, ladder),
+                "lod": tilemesh.compact(levels, ladder),
                 "extraGeoms": sum(len(ms) for _px, ms in levels) - len(levels),
             }
         )
@@ -272,7 +272,7 @@ def _load_parts(net_meshes, recs):
             refused += 1
             continue
         pos = numpy.asarray(rec["pos"], dtype=numpy.float64)
-        min_lod = _segment_min_lod(rec, nodes)
+        min_lod = segment_min_lod(rec, nodes)
         for node in nodes:
             if len(node["tris"]) == 0:
                 continue
@@ -299,87 +299,6 @@ def _load_parts(net_meshes, recs):
                 )
             )
     return {"pieces": pieces, "refused": refused}
-
-
-# -- the game's own draw-distance limit, per segment -------------------------------------------------
-
-
-def _segment_min_lod(record, nodes):
-    """`NetCompositionData.m_MinLod` for one segment — `NetCompositionHelpers.CalculateMinLod`.
-
-    The game's input is the COMPOSITION's cross-section: `GetRenderingSize(float2(m_Width,
-    Size(m_HeightRange)))` with the mean of the pieces' mesh biases. The bundle ships `width` on
-    the segment record (§5) but not the height range and not the piece list, so:
-
-    * width comes from the record, falling back to the mesh's smaller horizontal extent;
-    * the height range is the assembled mesh's vertical extent CAPPED AT THE WIDTH — a bounded
-      over-estimate, because a composition's cross-section is never taller than it is wide and a
-      sloped bridge's mesh is. Over-estimating draws further, never shorter;
-    * the bias is 0, which is the same direction: a positive bias only pulls the distance in.
-
-    Both are declared in the stage's report. An edge is culled on the MINIMUM of its three
-    compositions (`PreCullingSystem`), i.e. the most generous — which is what a per-segment
-    number already is here, since we have one assembled mesh per segment rather than three.
-    """
-    width = (record.get("attrs") or {}).get("width")
-    lo = hi = None
-    for node in nodes or []:
-        verts = numpy.asarray(node["verts"], dtype=numpy.float64)
-        if len(verts) == 0:
-            continue
-        m = numpy.asarray(node["matrix"], dtype=numpy.float64)
-        world = verts @ m[:3, :3].T + m[:3, 3]
-        lo = world.min(axis=0) if lo is None else numpy.minimum(lo, world.min(axis=0))
-        hi = world.max(axis=0) if hi is None else numpy.maximum(hi, world.max(axis=0))
-    if lo is None:
-        return None
-    size = hi - lo
-    if width is None:
-        width = float(min(size[0], size[2]))
-    width = float(width)
-    if width <= 0.0:
-        return None
-    height_range = float(min(max(size[1], 0.0), width))
-    return lod.composition_min_lod(width, height_range, 0.0)
-
-
-def _split(pieces, limit):
-    """Quarter a tile's pieces by their origin until every part is under `limit` vertices."""
-    total = sum(len(p[0]) for p in pieces)
-    if total <= limit or len(pieces) <= 1:
-        return [pieces]
-    xs = numpy.array([p[5][0] for p in pieces])
-    zs = numpy.array([p[5][1] for p in pieces])
-    mx, mz = numpy.median(xs), numpy.median(zs)
-    quads = defaultdict(list)
-    for p in pieces:
-        quads[(p[5][0] >= mx, p[5][1] >= mz)].append(p)
-    if len(quads) <= 1:
-        return [pieces]
-    out = []
-    for q in quads.values():
-        out.extend(_split(q, limit))
-    return out
-
-
-def _merge_local(pieces, ox, oy, level, shared):
-    """Convert to BeamNG local (tile origin at (ox, oy)) and merge."""
-    parts = []
-    for v, n, uv, tris, runs, _origin, min_lod in pieces:
-        local, nn = dae.glb_to_local(v, n)
-        local[:, 0] -= ox
-        local[:, 1] -= oy
-        mark = "" if min_lod is None else f"{MIN_LOD_MARK}{int(min_lod)}"
-        runs2 = [(mapto_name(shared, level, name) + mark, count) for name, count in runs]
-        parts.append((local, nn, dae.glb_uvs(uv), None, tris, runs2))
-    merged = dae.merge_meshes("tile", parts)
-    return {
-        "verts": merged.verts,
-        "normals": merged.normals,
-        "uvs": merged.uvs,
-        "tris": merged.tris,
-        "runs": merged.runs,
-    }
 
 
 INPUTS = ("layer:networks", "layer:networkMeshes", "derived:materials.json")
