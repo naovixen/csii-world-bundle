@@ -121,7 +121,7 @@ def test_switch_points_only_ever_defer():
     level came back "cranes rotated and floating, highrises all diagonal". Surface distance is
     not visual error for thin geometry; the ladder's size-keyed spacing protects it."""
     print("LOD switch points defer, never advance")
-    from cs2beamng.stages import shapes as shapes_stage
+    from cs2beamng.stages import shapelods, shapewrite  # noqa: F401
 
     with tempfile.TemporaryDirectory() as tmp:
         mesh = _switch_fixture(tmp)
@@ -129,7 +129,7 @@ def test_switch_points_only_ever_defer():
         moved = 0
         for null_px in (3.0, 9.0, 40.0):
             for metres in (None, 0.0, 0.001, 0.5, 5.0):
-                _levels, stats, meshes = shapes_stage._lod_levels(
+                _levels, stats, meshes = shapelods.lod_levels(
                     tmp,
                     "src",
                     "shape",
@@ -146,7 +146,7 @@ def test_switch_points_only_ever_defer():
                 sizes = stats["detailSizes"]
                 ladder = [
                     max(2, int(round(null_px * r)))
-                    for r in reversed(shapes_stage.LADDER_RATIOS[: len(meshes)])
+                    for r in reversed(shapelods.LADDER_RATIOS[: len(meshes)])
                 ]
                 check(len(meshes) == 3, f"nullPx {null_px}: the two generated levels loaded")
                 check(
@@ -161,12 +161,12 @@ def test_switch_points_only_ever_defer():
                     moved += 1
         check(moved > 0, f"and a level that IS out of shape is deferred ({moved} of 15 cases)")
         # vegetation is exempt by kind, and exempt means exactly the ladder
-        _levels, veg, _m = shapes_stage._lod_levels(
+        _levels, veg, _m = shapelods.lod_levels(
             tmp, "src", "shape", mesh, 9.0, 8.0, [5.0, 5.0], "tree", {}, {}, "level", options
         )
         ladder = [
             max(2, int(round(9.0 * r)))
-            for r in reversed(shapes_stage.LADDER_RATIOS[: len(veg["triangles"])])
+            for r in reversed(shapelods.LADDER_RATIOS[: len(veg["triangles"])])
         ]
         check(
             veg["detailSizes"] == ladder,
@@ -179,7 +179,7 @@ def test_a8_performance_rules():
     print("A8 performance rules")
     from cs2beamng.beamng import materials as bm
     from cs2beamng.stages import instances as inst
-    from cs2beamng.stages import shapes as shp
+    from cs2beamng.stages import shapelods
 
     # P1: EVERY exported kind must be capped. A kind missing from the table reads as 0 = uncapped,
     # which is how 767 colour masks shipped at 1024 beside 256-pixel albedos for 1,025 MiB.
@@ -215,9 +215,9 @@ def test_a8_performance_rules():
     # P2: promotion is gated on the MEASURED displacement, and vegetation is exempt from it for
     # the same reason it is exempt from the switch rule (a lamp-post LOD measures 0.06 m and is
     # visually total, A6.7).
-    check(shp.LOD0_MAX_ERROR_DEFAULT > 0, "LOD0 promotion has a default threshold")
+    check(shapelods.LOD0_MAX_ERROR_DEFAULT > 0, "LOD0 promotion has a default threshold")
     check(
-        "tree" not in shp.DISPLACEMENT_RULE_KINDS,
+        "tree" not in shapelods.DISPLACEMENT_RULE_KINDS,
         "vegetation is exempt from the displacement rule, so it never loses LOD 0",
     )
 

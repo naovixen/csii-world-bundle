@@ -243,6 +243,7 @@ def _detail_nodes(path):
 def test_shapes_and_instances():
     print("the shapes and instances stages, end to end on the example bundle")
     from cs2beamng.stages import instances as instances_stage
+    from cs2beamng.stages import shapelods
     from cs2beamng.stages import shapes as shapes_stage
     from csiibundle.bake.progress import Progress
 
@@ -323,7 +324,7 @@ def test_shapes_and_instances():
         # the way, so a shape without one stops at the mesh threshold itself
         scaled = row["gamePx"] * 6.0
         expected = max(
-            1, round(scaled / shapes_stage.IMPOSTER_REACH if row.get("billboardPx") else scaled)
+            1, round(scaled / shapelods.IMPOSTER_REACH if row.get("billboardPx") else scaled)
         )
         check(
             abs(row["nullPx"] - expected) <= 1,

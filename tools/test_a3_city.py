@@ -100,7 +100,7 @@ def test_tree_vs_plant():
     the producer writes `attrs.growth` inside exactly that component's lookup.
     """
     print("tree vs plant (A6.1)")
-    from cs2beamng.stages import shapes as shapes_stage
+    from cs2beamng.stages import shapecollider
     from csiibundle import instances as bundle_instances
 
     oak = {"kind": "tree", "attrs": {"growth": 0.796, "treeState": "Adult"}}
@@ -131,8 +131,8 @@ def test_tree_vs_plant():
         tris=numpy.array([[0, 1, 2], [0, 1, 3]]),
         runs=[("bark", 2)],
     )
-    plant_cols, plant_kind = shapes_stage._collider("p", mesh, mesh, "tree", options, is_tree=False)
-    tree_cols, tree_kind = shapes_stage._collider("t", mesh, mesh, "tree", options, is_tree=True)
+    plant_cols, plant_kind = shapecollider.collider("p", mesh, mesh, "tree", options, is_tree=False)
+    tree_cols, tree_kind = shapecollider.collider("t", mesh, mesh, "tree", options, is_tree=True)
     check(plant_cols == () and plant_kind == "plant", "a plant gets no collider at all")
     check(len(tree_cols) == 1 and tree_kind == "trunk", "a tree still gets its trunk cylinder")
 

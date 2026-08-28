@@ -33,7 +33,6 @@ file apps/cs2beamng/stages/lights.py
 file apps/cs2beamng/stages/materials.py
 file apps/cs2beamng/stages/networks.py
 file apps/cs2beamng/stages/poi.py
-file apps/cs2beamng/stages/shapes.py
 file apps/cs2beamng/stages/terrain.py
 file apps/cs2beamng/ui/app.css
 file apps/cs2beamng/ui/app.js
@@ -141,12 +140,7 @@ func apps/cs2beamng/stages/navgraph.py::run
 func apps/cs2beamng/stages/networks.py::run
 func apps/cs2beamng/stages/poi.py::run
 func apps/cs2beamng/stages/scene.py::run
-func apps/cs2beamng/stages/shapes.py::_collider
-func apps/cs2beamng/stages/shapes.py::_lod_levels
-func apps/cs2beamng/stages/shapes.py::_report
-func apps/cs2beamng/stages/shapes.py::_shape_job
 func apps/cs2beamng/stages/shapes.py::run
-func apps/cs2beamng/stages/shapes.py::scan_demand
 func apps/cs2beamng/stages/terrain.py::_ground_mesh_maps
 func apps/cs2beamng/stages/terrain.py::_terrain_materials
 func apps/cs2beamng/stages/terrain.py::run
