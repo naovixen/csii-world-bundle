@@ -75,7 +75,7 @@ satisfied until its baseline list is empty or each survivor is a declared, count
 | 6 | **Separation of concerns** | Presentation out of pipeline, engine knowledge out of `csiibundle`, IO out of collection. | Import-graph check + review | `settings.py` is a view model every worker imports; `server.py` owns 9 caches and 5 background computations; 6 bundle layers bypass the IO layer entirely |
 | 7 | **Meaningful naming** | One name per concept, no decompiler artifacts, no unexplained abbreviations. A glossary in `docs/coding-standards.md` is the arbiter. | `ruff` naming rules + glossary review | 8 names for ground height, 8 for "placed object", 5 for prefab id, `colour`/`color` inside one module, `num7`/`num8`/`num10` |
 | 8 | **Self-explanatory code** | Comments carry rules and measurements, never restatement. Derivations live in docs; declared approximations stay in code. | Per-file comment-density measurement + the preservation list in Rule 4 | C# 24–31 % vs Python 7–10 %; `Instance.cs` 63 %; 22 copies of `/// Mod's logger.` |
-| 9 | **Consistent structure** | One return-shape convention, one docstring style, one field convention, one JSON idiom, one test style. | `ruff` + review | 5 return shapes and no `@dataclass`; 4 docstring styles; 3 C# field conventions inside one `partial class`; 4 JSON idioms; 5 `check()` signatures, two with reversed argument order |
+| 9 | **Consistent structure** | One return-shape convention, one docstring style, one field convention, one JSON idiom, one test style. | `ruff` + review | 5 return shapes and no `@dataclass`; 4 docstring styles; 3 C# field conventions inside one `partial class`; 4 JSON idioms; **12 `check()` signatures across 32 definitions** with the argument order reversed between them (re-measured 2026-08-28; the earlier figure of 5 was low); 2 test styles and neither is pytest, 122 `test_*()` functions never collected, no JS test runner at all |
 | 10 | **Efficiency, measured** | Vectorized over per-element loops; streamed/chunked over whole-file; no redundant passes. **Profile before optimizing, and never ship a regression.** | The Phase-0 profile table, re-run every phase | 1.27 M-record Python loops run 3–4× per build; `png.py` makes 6 copies of a raster; `write_objects()` runs 16× per build; zero Burst/jobs in the ripper; the network edge set walked 3× per rip |
 
 **Performance is a gate on every phase, not only Phase 10.** Any phase whose build or rip timings
@@ -439,7 +439,7 @@ one-liner. `stages/lights.py:334` composes 3×3 rotations with nested comprehens
 
 ## Phase 11 — Comment, naming and structure consistency
 
-**Principles served:** 7 naming, 8 self-explanatory code, 9 consistent structure.
+**Principles served:** 1 DRY, 7 naming, 8 self-explanatory code, 9 consistent structure.
 
 Applies to all 187 fork files, not just the split ones.
 
@@ -478,6 +478,225 @@ Structure, likewise repo-wide:
   `Settings.Fit(...)` is applied at 7 call sites and skipped at 5. One logger idiom, not two.
 - **Docstring style.** Four coexist; settle on one, with an explicit return-shape block where a
   function returns a dict.
+
+### Magic strings and numbers, and the constants modules that end them
+
+**The bundle contract is spelled as bare literals on both sides of its own seam.** `"bundle.json"`
+appears in **25 Python files**, `"materials.json"` 31 times, `"instances.jsonl"` 16,
+`"networks.jsonl"` 16, `"clipvolumes.jsonl"` 11 — **29 Python modules hard-code at least one
+bundle filename**, and the producer repeats the same twenty names across `IO/` and `Systems/`
+(four copies each of `instances.jsonl`, `networks.jsonl`, `materials.json`, `areas.jsonl`,
+`clipvolumes.jsonl`, `lanemeshes.jsonl`, …). These names *are* the contract. Renaming a layer is
+a repo-wide grep across two languages today, and nothing fails if the two halves disagree.
+
+The other three families, all counted:
+
+- **Closed string sets with no declaration.** `kind == "tree"` at 10 sites (and the set is
+  wider than those sites know — "tree" is *all* planting, `"growth" in attrs` is the real tree
+  test), `status == "baked"` 11, plus `"fresh"`, `"running"`, `"failed"`, `"cancelled"`;
+  material `kind` in `"opacity"`/`"colormask"`/`"glass"`/`"trunk"`; progress `kind` in
+  `"stage"`/`"stagep"`/`"phase"`/`"phase_end"`/`"log"`/`"hello"`. Every one of these is an enum
+  that was never written down, and each is compared by literal in a different module from the
+  one that produces it.
+- **The engine's key vocabulary, inline.** `"class"` 40 times, `"persistentId"` 16,
+  `"shapeName"`, `"materialTag0"`/`"materialTag1"`, `"internalName"`, `"__parent"` — BeamNG's
+  JSON keys typed out at each use, in a package whose whole job is emitting them.
+- **Magic numbers.** `ruff --select PLR2004` reports **648 magic-value comparisons repo-wide,
+  197 of them inside the two shipped packages** (`csiibundle` + `cs2beamng`).
+
+**The fix is dedicated constants modules at the boundaries, not a grab-bag `constants.py`** — a
+shared dumping ground would breach principle 5 as fast as the literals breach principle 1:
+
+- **`tools/csiibundle/bundlepaths.py`** — every filename and subdirectory the bundle contract
+  names, and nothing else. `reader.py`, `bundlecheck`, the bake and both consumers resolve
+  through it; after this phase **no module outside it opens a bundle path by literal**.
+- **`IO/BundleNames.cs`** — the same list on the producer side, one `internal static class`,
+  the single source for `BundleWriter`/`InstanceWriter`/`NetworkWriter`/`LaneWriter`/
+  `TextureWriter`/`WarningsFile`.
+- **The two lists are checked against each other**, the way `tools/gen_docs.py --check` already
+  keeps the settings docs from drifting: a check asserts the C# and Python name sets are equal,
+  so the two halves of the contract cannot diverge silently. This is the only new cross-language
+  coupling the phase adds, and it is a *test*, not an import.
+- **`apps/cs2beamng/beamng/keys.py`** — BeamNG's JSON key and class-name vocabulary, beside the
+  writers that emit it.
+- **Closed sets become enums** wherever they cross a file boundary: instance `kind`, material
+  channel `kind`, run `status`, progress event `kind`. A `str`-valued `Enum` (**not** `StrEnum`
+  — `pyproject.toml` targets 3.10), so the wire format on disk is byte-identical and Rule 1
+  holds. Declaring them is also how the `"tree"` trap above stops being folklore.
+- **Tuning numbers stay where their rule is derived.** A measured constant moves *only* if it is
+  repeated or crosses a module boundary, and it moves to the module that owns the rule, named,
+  with its derivation comment — never to a shared file. Hoisting `HEIGHT_SIGMA` away from the
+  algebra that explains it (`stages/terrain.py:393`) would be the same defect as deleting the
+  comment, which Rule 4 forbids.
+
+**Gates, and the specs that prove them.** Enable `PLR2004` through the existing shrink-only
+ledger (`tools/check_ruff_debt.py`, the pattern already running for `ARG`) so the 648 can fall but
+never rise, with specs exempt. Add `tools/check_literals.py`: a bundle filename or a BeamNG key
+spelled outside its constants module fails CI, in both languages. Three specs ship with the work,
+because a gate with no spec is a gate nobody notices has stopped firing:
+
+- `tests/python/tools/check_literals_spec.py` — the checker flags a planted literal and passes a
+  clean tree, and `packaging/cs2beamng.spec` (PyInstaller's, not a test) is not swept up.
+- `tests/python/csiibundle/bundlepaths_spec.py` — every name the contract lists resolves, and the
+  set matches `docs/example-bundle` on disk.
+- `tests/python/tools/bundlenames_parity_spec.py` — the cross-language check: `IO/BundleNames.cs`
+  and `bundlepaths.py` name the same set. This is the only thing holding the two halves of the
+  contract together, so it is a spec that runs on every CI leg, not a one-off script.
+
+The enum conversions are proved by a spec per closed set asserting the **serialised value is
+unchanged** (`str(Kind.TREE) == "tree"`), which is what makes them safe under Rule 1.
+
+### File structure and file names
+
+**Every split so far has invented its own naming idiom, and none of them is written down.** Three
+were coined inside one week of Phases 4 and 9:
+
+- `estimate.py` → `estimatebase` / `estimatemeshes` / `estimatescore` / `estimatetextures`
+  (run-together suffixes naming the *split*, not the thing);
+- `instances.py` → `instanceforest`, `materials.py` → `materialexport` / `materialledger`
+  (run-together, but noun-phrase);
+- C# partials `NetworkRipSystem.GameMesh.cs` and `TerrainRipSystem.FineCascade.cs` **and** a new
+  `Systems/Rip/` subdirectory whose five files all re-state the directory in the filename
+  (`Systems/Rip/RipWalk.cs`, `RipReport.cs`, `RipOutcome.cs`, `RipAssetIds.cs`,
+  `RipDiagnostics.cs`) — two structuring mechanisms for one concern.
+
+Repo-wide the same absence shows as:
+
+- **No word-separation rule.** `map_lua.py`, `matbind.py`, `validate_level.py` and the
+  `levelcheck/` package are four conventions for the same kind of thing inside one app.
+- **Families spelled by prefix only.** `csiibundle` is **60 flat modules** carrying implicit
+  packages: `nav*` (8), `lattice*` (3), `terrain*`/`clip*` (4+), `colour*` (3), `mesh*` (3).
+- **Tests are not in `tests/`.** All **48** Python `test_*.py` live in `tools/`, mixed in with the
+  library modules, the `check_*_vs_game.py` oracles and the `probe_*.py` / `ab_*.py` one-shots —
+  including the tests for `apps/cs2beamng`. `tests/` holds only `Carto.Tests` (C#). (Phase 12's
+  "no command runs all tests, 18 of 31 run nowhere" is **stale in its first half** and must be
+  corrected there: `ci.yml:83` runs `python -m pytest -q` and `pyproject.toml:128` records the
+  fix. What is left is *where* the files live and *what shape* they are — the section below.)
+
+**The convention to settle, apply repo-wide, and write into `docs/coding-standards.md` (Phase 12):**
+
+1. **One word-separation rule per language.** Python: a library module is a single lowercase word
+   naming one concept (`matbind`, `navgraph`, `drape`); `verb_noun` is reserved for scripts and
+   entry points (`check_limits.py`, `build_exe.py`); tests are `test_<module>.py`. C#: one type
+   per file, file named for the type; partial-class files `Type.Aspect.cs`.
+2. **A prefix family of ≥ 4 members becomes a package**, and the prefix moves into the directory
+   and drops off the file: `csiibundle/nav/graph.py`, `nav/junction.py`, `nav/merge.py`, … The
+   import-graph check that principle 5 already puts in CI decides which families are real (mostly
+   internal edges) — a prefix that is merely alphabetical stays flat rather than becoming a
+   package that lies about cohesion.
+3. **A split names the thing, not the split.** `estimate*` becomes `pipeline/estimate/` with
+   `base.py`, `meshes.py`, `score.py`, `textures.py`. `instanceforest` and `materialledger` are
+   re-read for what they actually own and named for that.
+4. **One structuring mechanism per C# concern** — partial-class suffixes *or* a subdirectory,
+   never both — and **no file name repeats its directory**: `Systems/Rip/Walk.cs`, not
+   `Systems/Rip/RipWalk.cs`.
+5. **Tests move out of `tools/` into `tests/`**, mirroring the source tree — the shape and the
+   naming are the next section's subject.
+6. **One file, one exported concept, and the file name is that concept's glossary term** — the
+   same glossary this phase settles for ground height, placed object, prefab id, `colour`/`color`
+   and `centre`/`center`.
+
+**How the moves land.** Every rename is `git mv` plus its import rewrite in one commit and nothing
+else (Rule 1: behaviour-preserving, and a rename mixed with an edit is unreviewable). Each rename
+also carries its **documentation references in the same commit** — the discipline Phase 12 applies
+to the 754 `§NN` code references — because a moved file is exactly how the eight dangling reference
+targets Phase 12 has to fix got there. `check_limits.py` grows the naming rules (per-directory
+regex, the no-repeat-the-directory rule, tests-live-in-`tests/`) so the convention is a CI gate and
+not discipline, per Rule 3 — with `tests/python/tools/check_limits_spec.py` covering the new rules,
+including the `packaging/*.spec` exclusion.
+
+**The renames are safe because the specs exist first.** A module is moved only once it has a spec
+(next section) pinning its behaviour; the spec is written against the pre-move code, and the move
+lands green. That ordering is what makes "behaviour-preserving" a measurement rather than a claim,
+and it applies to the Phase 4 and Phase 9 splits already recorded as done — where a split product
+has no spec, the spec is backfilled in this phase against today's behaviour.
+
+### Test structure: one harness, one layout, `.spec` naming
+
+Measured 2026-08-28; principle 9's baseline row is updated from these numbers:
+
+- **48 Python test files, 132 collected tests — and 122 `test_*()` functions that are never
+  collected.** They predate pytest and are internal helpers taking positional arguments, which is
+  precisely why `pyproject.toml:137` has to set `python_functions = ["gate"]`. For 44 of the 48
+  files that yields **one collected test per file**: a whole suite reports as a single pass/fail.
+- **Two styles, not one.** 44 files are `gate()` scripts; four are `unittest.TestCase` subclasses
+  (`ContractCase` in `test_bundle_contract.py`, `test_contract_assets.py`, `test_contract_ground.py`,
+  `test_contract_lanes.py`) which pytest collects *only* because unittest classes bypass the
+  `python_classes = []` override. Neither style is pytest.
+- **Every file brings its own print-based mini-harness.** Twelve carry a module-global
+  `FAILS`/`CHECKS` accumulator plus `section()`, and **`check()` is defined 32 times in 12 distinct
+  signatures** with the argument order reversed between them: `check(cond, what)` (8),
+  `check(ok, label)` (6), `check(ok, claim, detail="")` (3), `check(name, condition, detail="")` (2),
+  `check(label, ok, detail="")`, `check(label, decoder_name, path)`, and six more. This is
+  principle 1 as much as 9 — twelve copies of a test framework pytest already ships.
+- **A failure is a `print()`, not an assertion.** `check()` appends to a global and the single
+  `gate()` asserts at the end, so pytest can report *that* a file failed but never which claim,
+  which line, or what the values were. Every debugging session starts by re-running the file by
+  hand.
+- **`pytest --collect-only` takes 48 s**, because collection imports modules that do real work.
+- **The ES-module UI has no tests at all** — 9 modules under `apps/cs2beamng/ui/`, no
+  `package.json`, no runner; CI's only JS coverage is `check_limits.py`'s line count.
+- **C# has three test files** — `BundleFileTests.cs`, `JsonLinesWriterTests.cs`, `PngTests.cs`
+  (xUnit) — for a fork of 187 files, of which `IO/` alone is 27.
+
+**The structure to build.**
+
+1. **`tests/` is the one test root, mirroring the source tree**, three language subtrees beside
+   the existing `tests/Carto.Tests`:
+
+   ```
+   tests/python/csiibundle/drape_spec.py        ← tools/csiibundle/drape.py
+   tests/python/cs2beamng/stages/terrain_spec.py ← apps/cs2beamng/stages/terrain.py
+   tests/python/conftest.py                      ← tools/conftest.py, deleted there
+   tests/js/settings.spec.js                     ← apps/cs2beamng/ui/settings.js
+   tests/Carto.Tests/IO/BundleFileSpec.cs        ← IO/BundleFile.cs
+   ```
+
+   `tools/` keeps the library; the `probe_*.py` / `ab_*.py` one-shots go to `tools/probes/`; the
+   `check_*_vs_game.py` oracles stay in `tools/` — they are instruments the game validates, not
+   specs, and CLAUDE.md's rule that the game is the oracle is the reason they are separate.
+2. **`.spec` is the naming convention, spelled the way each language permits.** JS takes it
+   literally — `settings.spec.js`. C# takes `<Type>Spec.cs`, renaming the three `*Tests.cs`.
+   **Python cannot take `drape.spec.py`**: a dot is not legal in a module name and pytest's
+   default `prepend` import mode derives the module name from the basename, so the form is
+   `drape_spec.py` with `python_files = ["*_spec.py"]`. One trap to encode in the gate:
+   `packaging/cs2beamng.spec` is **PyInstaller's build spec**, not a test, and no `*spec*` glob
+   may collect it.
+3. **One spec per source module, named for it, and that mapping is a gate.** A new module with no
+   spec fails CI, the same shape `check_limits.py` already has. Coverage is measured as
+   *modules-with-a-spec*, not lines — a percentage nobody can read is not a gate.
+4. **One harness: plain pytest.** Delete the twelve mini-harnesses and the twelve `check()`
+   signatures. A claim becomes `def test_<claim>()` with a bare `assert`, which turns the 122
+   orphaned functions into real, individually-reported tests. `python_functions` and
+   `python_classes` overrides go away; `python_files` is the only one left. The four
+   `unittest.TestCase` contract classes convert to pytest functions with a shared fixture.
+5. **Tiers are markers, not filenames or `SKIPPED` lists.** `@pytest.mark.contract` (needs only
+   `docs/example-bundle`), `@pytest.mark.build` (needs a built level on this machine — today
+   spelled by the `test_estimate_build.py` split and by per-file `SKIPPED` accumulators),
+   `@pytest.mark.game` (opt-in, the game-comparison instruments). CI runs the first two. Moving
+   the heavy work behind fixtures is what takes the 48 s collection down.
+6. **JS gets a runner**: `node --test` (built into Node 18+, zero dependencies, and the UI is
+   plain ES modules — a bundler-shaped runner would be a dependency this repo has so far not
+   needed), `tests/js/*.spec.js`, wired into `ci.yml` beside `pytest` and `dotnet test`.
+   `check_limits.py` already counts `.js`, so the specs sit under the same 400/60 ceiling.
+7. **C# specs mirror `IO/`, `Domain/`, `Systems/`** — and the boundary is declared, not implied:
+   the rip systems cannot be unit-tested without the game assemblies, so the target is the pure
+   surface (`IO/`, `Domain/`, `Systems/Rip/`'s helpers, the geometry math ported in
+   `NetworkRipSystem.GameMesh.cs`). **What is untestable off-game is written down and counted**
+   in `docs/testing.md`, the same discipline CLAUDE.md requires of a declared approximation.
+   Producer specs are also the *only* producer work this plan can validate without a rip — Rule 5
+   applies to everything else, and a spec that passes offline still says nothing about what the
+   next in-game rip writes.
+8. **Every phase lands its specs with it, and this phase backfills.** From here on a split that
+   produces four modules produces four specs in the same commit. Phases 4 and 9 are already done,
+   so their products (`estimate*`, `instanceforest`, `materialledger`, `Systems/Rip/*`,
+   `TerrainRipSystem.FineCascade.cs`) are backfilled here, against today's behaviour, before the
+   renames in the previous section move them.
+
+**What this phase does not do.** It does not add coverage for behaviour that was never tested —
+that is new work, not a refactor, and Rule 1 forbids it changing what the producer writes or a
+build produces. The specs written here pin what the code does **today**, including its defects; a
+defect a spec exposes is logged and fixed as its own commit, per Rule 1's second sentence.
 
 ## Phase 12 — Documentation
 
