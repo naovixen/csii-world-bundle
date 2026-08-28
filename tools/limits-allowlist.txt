@@ -24,7 +24,6 @@ file apps/cs2beamng/pipeline/state.py
 file apps/cs2beamng/stages/instances.py
 file apps/cs2beamng/stages/lights.py
 file apps/cs2beamng/stages/materials.py
-file tools/blender_import_bundle.py
 file tools/blender_import_level.py
 file tools/check_instances_vs_game.py
 file tools/check_roadgrade_vs_game.py
@@ -131,7 +130,6 @@ func apps/cs2beamng/stages/water.py::run
 func tools/beamng/probe_cdae.py::read_cdae
 func tools/beamng/probe_diagonal.py::main
 func tools/beamng/probe_ter.py::main
-func tools/blender_import_bundle.py::main
 func tools/blender_import_level.py::build_terrain
 func tools/blender_import_level.py::read_dae
 func tools/check_tiles_vs_game.py::main
