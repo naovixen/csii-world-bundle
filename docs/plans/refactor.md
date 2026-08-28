@@ -1582,5 +1582,7 @@ both recording artifacts Phase 4 saw as well. The one genuinely new field is `da
 declared in `836632d`.
 
 `cs2beamng budget`: 4,273 MiB resident, 1,292,894 triangles drawn inside the view distance.
-Baseline captured as `docs/baselines/cs2_city_fine-report-after-phase5a.json`. **The level is
-rebuilt in place and the in-game look is owed to Naomi.**
+Baseline captured as `docs/baselines/cs2_city_fine-report-after-phase5a.json`. **Naomi's in-game
+look at the rebuilt level was accepted 2026-08-28**, which closes the Rule-6 gate for this block:
+the settings package, the server package, the levelcheck registry and the seven-way shapes split
+are all validated in a running game, not only against a report.
