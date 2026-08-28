@@ -143,7 +143,6 @@ import colour_model
 from csiibundle import areas as area_math
 from csiibundle import (
     bezier,
-    carriageway,
     clipgrid,
     containment,
     decals,
@@ -198,11 +197,7 @@ _BLENDER_GLTF_BASIS = frames.GLTF_YUP_TO_ZUP
 # path + the bend lift on 42% of samples, which is why bent markings vanish into the asphalt.
 # The game never sees the problem because a decal is a projector volume, painted onto whatever
 # surface it meets. The harness equivalent is a drape: sample the road surface under the marking
-# and snap onto it (`_drape_block`).
-_DECAL_LIFT = decals.BEND_LIFT
-_INSTANCE_DECAL_LIFT = decals.LIFT["instance_decal"]
-_DECAL_DRAPE_MARKING = decals.LIFT["lane_marking"]
-_DECAL_DRAPE_TINT = decals.LIFT["lane_tint"]
+# and snap onto it (`drape.drape_block`).
 
 _DRAPE_MISS_WARN = drape.MISS_WARN_FRACTION
 
@@ -211,12 +206,8 @@ _DRAPE_MISS_WARN = drape.MISS_WARN_FRACTION
 # neutral sun and ambient back. White, and deliberately uncalibrated -- the bundle ships
 # albedo, and the importer reproduces it 1:1 rather than grading it toward the game's look.
 #
-# Set by `--colour` to the `tools/colour_model.Grading` derived from this bundle's grading.json.
-# NOTHING is applied to materials from it: the whole chain rides Blender's display pipeline,
-# where it runs on final radiance in the game's own order and shows in the VIEWPORT. Putting any
-# of it on the albedo instead reorders the chain — measured on this city's grass, moving the
-# saturation onto the material alone costs 18% on the blue channel, which is the same size as the
-# effect this work is trying to measure.
+# `--colour` never touches this rig or any material: the whole grading chain rides Blender's
+# display pipeline instead, for the reasons `_apply_grading` sets out.
 #
 # Two constants that used to live here have been DELETED rather than tuned, because the model
 # they were compensating for was wrong:
@@ -232,7 +223,6 @@ _DRAPE_MISS_WARN = drape.MISS_WARN_FRACTION
 #   transform". Blender 5.2 ships ACES 1.3 and ACES 2.0 as view transforms; the premise was
 #   false. The game's contrast is now applied from its own number instead (grading.json's
 #   contrast +20, solved through the ACEScc pivot into an exact power law).
-_GRADING = None
 
 # The ambient share of the rig: how much of a fully-lit surface's light comes from the sky rather
 # than the sun. A uniform environment of radiance W gives a Lambertian surface outgoing radiance
@@ -990,8 +980,6 @@ _ALL_KINDS = networks.KINDS
 
 _UNSET = object()
 
-_segment_normals = networks.segment_normals
-
 
 def ribbon(centerline, width, lift, mitre_limit=networks.DEFAULT_MITRE_LIMIT):
     """`csiibundle.networks.ribbon`, converted into Blender's frame.
@@ -1214,22 +1202,8 @@ def build_networks(
 # maths under it, and `csiibundle.decals` everything about markings. All three are bpy-free and
 # their docstrings carry the reasoning; what remains in this file is the Blender side — loading
 # a part .glb, draping blocks onto the road, and turning the results into objects.
-_LANE_ARC_SAMPLES = bezier.ARC_SAMPLES
-_LANE_MAX_TILES = lanes.MAX_TILES
-_TILE_CHORD_TOL = lanes.TILE_CHORD_TOL
-_TILE_WIDTH_TOL = lanes.TILE_WIDTH_TOL
-_DECAL_SHAPE_TOLERANCE = decals.SHAPE_TOLERANCE
-_DECAL_DIP_FRACTION = decals.DIP_FRACTION
-_DECAL_MAX_ROWS = decals.MAX_ROWS
 
-_bezier_point_vec = bezier.evaluate
-_bezier_tangent_vec = bezier.tangent
-_cut_bezier = bezier.cut
-_arc_table_vec = bezier.arc_table
 _curve_length = bezier.length
-_lane_tile_count = lanes.tile_count
-_hang_drop_vec = lanes.hang_drop
-_quat_apply_vec = lanes.quat_apply
 
 
 class _ProjectionSurface(drape.ProjectionSurface):
@@ -1355,9 +1329,6 @@ class _ProjectionSurface(drape.ProjectionSurface):
 
 
 _decal_quad_info = decals.quad_info
-_decal_lattice = decals.lattice
-_quat_to_mat3 = lanes.quat_to_mat3
-_rigid_tile_matrix = lanes.rigid_tile_matrix
 _bend_lane_part = lanes.bend_part
 
 
@@ -1438,7 +1409,6 @@ def _load_lane_source(asset_id, lane_mesh_dir, cache):
     return source
 
 
-_DRAPE_DEDUP_MM = drape.DEDUP_MM
 _drape_block = drape.drape_block
 
 
@@ -1667,7 +1637,7 @@ def build_lanes(
             f"building {len(builders)} object(s)"
         )
 
-    # One ray-cast per unique WORLD (x, z), not per vertex (see _drape_block) — exact
+    # One ray-cast per unique WORLD (x, z), not per vertex (see drape.drape_block) — exact
     # because it samples each vertex's own laterally-offset position (fix round 1: an
     # earlier version deduped per curve STATION and broadcast one centerline sample to a
     # whole row, which was wrong for any part with width). The remaining cut versus the old
@@ -1889,10 +1859,7 @@ def build_lanes(
 # colour-management transform can touch the samples — they carry NUMBERS, not pictures. That
 # decoder is `csiibundle.png`, where it also serves as a reference implementation of §8's file
 # format for any consumer to port.
-_unfilter_slow = png_reader.unfilter_slow
-_unfilter_scanlines = png_reader.unfilter_scanlines
 _decode_png_gray = png_reader.decode_png_gray
-_decode_png_rgba = png_reader.decode_png_rgba
 
 
 class _Splat(splat_reader.Splat):
@@ -1946,18 +1913,12 @@ _SPLAT_CHANNELS_DEFAULT = splat_reader.SPLAT_CHANNELS_DEFAULT
 _GROUND_FALLBACK_COLOUR = splat_reader.GROUND_FALLBACK_COLOUR
 
 
-# The clip-strip rasteriser evaluated its own copy of the cubic Bézier — the same formula as
-# the lane bend's, written twice. One copy now, in `csiibundle.bezier`.
-_bezier_points = bezier.evaluate
-
-
 # The clip rasterisation, the corridor lattice, the hole-rim snap and the shallow-band clamp
 # are `csiibundle.clipraster`/`containment`/`clipgrid`/`carriageway`. Read their docstrings
 # before touching any of them — the containment invariant (only a DEEP band may carve; a
 # shallow one flattens and never deletes), the sub-sample deletion rule and the sideways-only
 # rim snap are each a correction this project shipped the wrong way round at least once.
 _clip_grid = clipgrid.clip_grid
-_clamp_carriageway = carriageway.clamp_carriageway
 
 
 _splat_mapping = splat_reader.channel_mapping
@@ -2738,7 +2699,7 @@ def build_terrain(bundle_dir, collection, center, radius, clip_floor=None, coars
         LOG.step(
             f"{band_clamped} lattice vertex(es) standing over a carriageway lowered onto "
             f"its profile top, worst drop {band_clamp_drop:.2f} m — the pixels the game "
-            f"discards there (see _clamp_carriageway)"
+            f"discards there (see csiibundle.carriageway.clamp_carriageway)"
         )
     band_samples = int(band_count.sum(dtype=numpy.int64))
     if cut_removed_m2 or band_samples:
@@ -2791,13 +2752,7 @@ def build_terrain(bundle_dir, collection, center, radius, clip_floor=None, coars
 
 # The §8b conformance rules are `csiibundle.areas` — an area triangle is a FOOTPRINT the game
 # projects onto the terrain, never a plane, and its docstring says what follows from that.
-_AREA_LIFT = area_math.AREA_LIFT
-_AREA_CONFORM_TOLERANCE = area_math.CONFORM_TOLERANCE
-_AREA_MAX_DEPTH = area_math.MAX_DEPTH
-_AREA_PIECES_PER_CELL = area_math.PIECES_PER_CELL
-_AREA_PIECE_BUDGET = area_math.PIECE_BUDGET
 _AREA_UV_SCALE_FALLBACK = area_math.UV_SCALE_FALLBACK
-_conform_area_triangle = area_math.conform_triangle
 
 
 def build_areas(bundle_dir, collection, center, radius, ground=None, cell=3.5):
@@ -2810,7 +2765,7 @@ def build_areas(bundle_dir, collection, center, radius, ground=None, cell=3.5):
     `ground` is a `_ProjectionSurface` over the terrain grid and `cell` its spacing. The game
     paints an area onto the terrain rather than laying a plane on it (audit §30), so with a
     ground to conform to, each triangle is split until it follows — see
-    `_conform_area_triangle`. Without one (`--areas` and no `--terrain`) the flat triangles
+    `area_math.conform_triangle`. Without one (`--areas` and no `--terrain`) the flat triangles
     are all there is, and the ground will cut through them wherever it is not level.
     """
     path = os.path.join(bundle_dir, "areas.jsonl")
@@ -3073,8 +3028,6 @@ def _apply_grading(bundle_dir):
         )
         return
 
-    global _GRADING
-    _GRADING = grading
     scene = bpy.context.scene
 
     available = _view_transform_available(grading.view_name)
