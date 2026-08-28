@@ -44,7 +44,7 @@ from collections import Counter, defaultdict
 
 import numpy
 
-from .. import colour, glb, images, instances, materials, parallel, png, reader, tints, water
+from .. import colourspace, glb, images, instances, materials, parallel, png, reader, tints, water
 from .. import lights as bundle_lights
 from . import Product, register
 
@@ -289,7 +289,7 @@ def _tint_job(args):
         base = png.downsample_box(base, factor)
         h, w = base.shape[:2]
     mask_r = _resample_mask(mask, h, w).astype(numpy.float64) / 255.0
-    base_lin = colour.srgb8_to_linear(base[:, :, :3])
+    base_lin = colourspace.srgb8_to_linear(base[:, :, :3])
     alpha = base[:, :, 3].astype(numpy.float64) / 255.0
     visible = alpha > 0.5
     any_visible = bool(visible.any())
@@ -305,7 +305,7 @@ def _tint_job(args):
             out[vkey] = {"factor": [round(float(v), 5) for v in lo], "maxErr": 0, "path": None}
             continue
         constant = tints.best_constant(multiplier, alpha)
-        exact8 = colour.linear_to_srgb8(base_lin * multiplier)
+        exact8 = colourspace.linear_to_srgb8(base_lin * multiplier)
         approx8 = _apply_lut(_srgb8_lut(constant), base[:, :, :3])
         delta = numpy.abs(exact8.astype(numpy.int16) - approx8.astype(numpy.int16))
         if any_visible:
@@ -346,13 +346,13 @@ def _png_size(path):
 
 
 def _srgb8_lut(constant):
-    """`(3, 256)` uint8: `colour.linear_to_srgb8(colour.srgb8_to_linear(v) * constant[j])` for every byte `v`.
+    """`(3, 256)` uint8: `colourspace.linear_to_srgb8(colourspace.srgb8_to_linear(v) * constant[j])` for every byte `v`.
 
     The albedo is uint8, so a constant multiplier has only 256 possible answers per channel and
     the whole `power()` over the texture is a gather. Same function, same inputs, same bits.
     """
-    lin = colour.srgb8_to_linear(numpy.arange(256, dtype=numpy.uint8))
-    return numpy.stack([colour.linear_to_srgb8(lin * float(constant[j])) for j in range(3)])
+    lin = colourspace.srgb8_to_linear(numpy.arange(256, dtype=numpy.uint8))
+    return numpy.stack([colourspace.linear_to_srgb8(lin * float(constant[j])) for j in range(3)])
 
 
 def _apply_lut(lut, rgb8):

@@ -16,7 +16,7 @@ import tempfile
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-import validate_bundle  # noqa: E402  (the repo's stdlib schema evaluator)
+from bundlecheck import schema as bundleschema  # noqa: E402  (the repo's stdlib schema evaluator)
 from csiibundle import bake  # noqa: E402
 from csiibundle.bake import manifest as bake_manifest  # noqa: E402
 from csiibundle.bake.progress import Progress  # noqa: E402
@@ -77,7 +77,7 @@ def main():
         outcomes = run(bundle, registry=registry, progress=prog)
         check([o.status for o in outcomes] == ["baked"], f"first run bakes the stub: {outcomes}")
         doc = json.load(open(os.path.join(derived, "derived.json"), encoding="utf-8"))
-        validator = validate_bundle.Validator(
+        validator = bundleschema.Validator(
             json.load(open(SCHEMA, encoding="utf-8")), "derived.schema.json"
         )
         errors = validator.validate(doc)

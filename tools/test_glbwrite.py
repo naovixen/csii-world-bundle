@@ -1,16 +1,17 @@
 """Gate for `csiibundle.glbwrite`: parse(write(x)) == x, in both frames, with and without UVs
 and vertex colours; and a written tile validates like a producer mesh through
-`tools/validate_bundle.py`'s GLB reader. Plain `python tools/test_glbwrite.py`.
+the validator's GLB reader (`bundlecheck.glbcheck`). Plain `python tools/test_glbwrite.py`.
 """
 
 import os
+import pathlib
 import sys
 import tempfile
 
 import numpy
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-import validate_bundle  # noqa: E402
+from bundlecheck.glbcheck import read_glb  # noqa: E402
 from csiibundle import glb, glbwrite  # noqa: E402
 
 
@@ -122,13 +123,13 @@ def main():
 
         # 3. the repo validator's GLB reader accepts it (same checks as a producer mesh)
         try:
-            doc, _ = validate_bundle.read_glb(validate_bundle.Path(path))
+            doc, _ = read_glb(pathlib.Path(path))
             check(
                 doc["asset"]["version"] == "2.0" and doc["materials"][0]["name"] == "paint_a",
-                "validate_bundle.read_glb parses it",
+                "bundlecheck read_glb parses it",
             )
         except Exception as exc:
-            check(False, f"validate_bundle.read_glb failed: {exc!r}")
+            check(False, f"bundlecheck read_glb failed: {exc!r}")
 
         # 4. flat normals for a caller that has none
         path3 = os.path.join(tmp, "c.glb")

@@ -15,7 +15,7 @@ is never to hand it that shape. Checked here, in three layers:
 
 * the **port** (`beamng.map_lua`) reproduces the crash on the topology that caused it — a
   three-node connector plus a stub between the same two segment ends — and says so;
-* the **rule** (`csiibundle.navgraph._simple_graph` and the terminal widths) removes it;
+* the **rule** (`csiibundle.navmerge.simple_graph` and the terminal widths) removes it;
 * the **emission** (`stages.navgraph.decal_road` over a real bundle) has none, which is the only
   one of the three that is a statement about what the level will contain.
 
@@ -29,6 +29,7 @@ import os
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 from cs2beamng.beamng import map_lua  # noqa: E402
+from csiibundle import navclearance, navjunction, navmerge  # noqa: E402
 from csiibundle import navgraph as navgraph_mod  # noqa: E402
 
 FAILURES = []
@@ -102,7 +103,7 @@ def test_port_reproduces_the_crash():
 
 
 def test_the_rule_removes_it():
-    """`_simple_graph` over the same topology, as `Road` records."""
+    """`simple_graph` over the same topology, as `Road` records."""
     print("csiibundle.navgraph")
     width = 21.834
     a = (-6249.2453, 516.062, -6671.4610, width)  # bundle frame: X, Y up, Z
@@ -123,7 +124,7 @@ def test_the_rule_removes_it():
         navgraph_mod.Road(key="conn_1_0_2_1", nodes=[a, mid, b], **fields),
         navgraph_mod.Road(key="joint_1_0_2_1", nodes=[a, b], **dict(fields, kind="joint")),
     ]
-    kept, stats = navgraph_mod._simple_graph(roads)
+    kept, stats = navmerge.simple_graph(roads)
     check(
         "both roads are dropped: each is a self-loop once the ends merge",
         not kept and stats["selfLoopsDropped"] == 2,
@@ -136,7 +137,7 @@ def test_the_rule_removes_it():
         navgraph_mod.Road(key="conn_1_0_2_1", nodes=[a, mid, far], **fields),
         navgraph_mod.Road(key="joint_1_0_2_1", nodes=[a, far], **dict(fields, kind="joint")),
     ]
-    kept, stats = navgraph_mod._simple_graph(roads)
+    kept, stats = navmerge.simple_graph(roads)
     check(
         "a duplicate across one pair keeps exactly the road with the geometry",
         [r.key for r in kept] == ["conn_1_0_2_1"] and stats["duplicateEdgesDropped"] == 1,
@@ -145,7 +146,7 @@ def test_the_rule_removes_it():
 
     # a segment is never thinned: a ring road legitimately begins and ends at one node
     ring = navgraph_mod.Road(key="seg_9", nodes=[a, mid, b], **dict(fields, kind="segment"))
-    kept, stats = navgraph_mod._simple_graph([ring])
+    kept, stats = navmerge.simple_graph([ring])
     check("a segment that closes on itself is kept", [r.key for r in kept] == ["seg_9"])
 
 
@@ -158,7 +159,7 @@ def test_terminal_widths():
             self.width = width
 
     spines = {7: _Spine(21.834), 9: _Spine(3.5)}
-    widths = navgraph_mod._terminal_widths(4, 3.5, spines, (7, 1), (9, 0))
+    widths = navjunction.terminal_widths(4, 3.5, spines, (7, 1), (9, 0))
     check(
         "the first node takes its own segment's width",
         widths[0] == 21.834 and widths[-1] == 3.5 and widths[1:3] == [3.5, 3.5],
@@ -182,7 +183,7 @@ def test_stacked_roads():
     }
     ground = [(0.0, 100.0, 0.0, 26.0), (200.0, 100.0, 0.0, 26.0)]  # 26 m, radius 13
     deck = [(100.0, 107.0, -60.0, 26.0), (100.0, 107.0, 60.0, 26.0)]  # crossing, 7 m up
-    hits = navgraph_mod.stacked_coverage(
+    hits = navclearance.stacked_coverage(
         [
             navgraph_mod.Road(key="seg_1", nodes=ground, **fields),
             navgraph_mod.Road(key="seg_2", nodes=deck, **fields),
@@ -195,7 +196,7 @@ def test_stacked_roads():
     # ...and the same pair once the clamp has taken the width below the clearance
     narrow_ground = [(x, y, z, 12.0) for x, y, z, _w in ground]
     narrow_deck = [(x, y, z, 12.0) for x, y, z, _w in deck]
-    hits = navgraph_mod.stacked_coverage(
+    hits = navclearance.stacked_coverage(
         [
             navgraph_mod.Road(key="seg_1", nodes=narrow_ground, **fields),
             navgraph_mod.Road(key="seg_2", nodes=narrow_deck, **fields),
@@ -204,7 +205,7 @@ def test_stacked_roads():
     check("at 12 m of width the same pair is clear", not hits, f"{len(hits)} covered points")
 
     # a ramp climbing away from the road it joins is stacked over it and is NOT a wrong snap
-    hits = navgraph_mod.stacked_coverage(
+    hits = navclearance.stacked_coverage(
         [
             navgraph_mod.Road(key="seg_7", nodes=ground, **fields),
             navgraph_mod.Road(key="conn_7_1_9_0", nodes=deck, **dict(fields, kind="connector")),
@@ -230,7 +231,7 @@ def test_real_bundle():
 
     graph = navgraph_mod.build(bundle)
     stats, risks = map_lua.check([decal_road(r) for r in graph.roads])
-    covered = navgraph_mod.stacked_coverage(graph.roads)
+    covered = navclearance.stacked_coverage(graph.roads)
     check(
         "no road point sits inside the radius of a road at another height",
         not covered,

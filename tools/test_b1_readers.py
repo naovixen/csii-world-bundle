@@ -1,5 +1,5 @@
 """Gate for the B1 reader additions: `lanes.part_source`, `splat.dominant_layer`,
-`water.bodies`, `terrain.hole_mask`, `materials.resolve/texture_set_key`, and the
+`water.bodies`, `clipgrid.hole_mask`, `materials.resolve/texture_set_key`, and the
 `instances` skirt/density/radius helpers. Runs on `docs/example-bundle` (always) and on the
 real bundle when present (`CARTO_BUNDLE` overrides). Plain `python tools/test_b1_readers.py`.
 """
@@ -11,6 +11,7 @@ import numpy
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 from csiibundle import (  # noqa: E402
+    clipgrid,
     glb,
     instances,
     lanes,
@@ -18,7 +19,6 @@ from csiibundle import (  # noqa: E402
     png,
     reader,
     splat,
-    terrain,
     water,
 )
 
@@ -151,7 +151,7 @@ def example_bundle():
     )
 
     # hole_mask on the example bundle
-    hm = terrain.hole_mask(EXAMPLE)
+    hm = clipgrid.hole_mask(EXAMPLE)
     check(
         hm.contain.shape == (heights.shape[0] - 1, heights.shape[1] - 1)
         and hm.contain.dtype == bool,

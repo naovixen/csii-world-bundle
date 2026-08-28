@@ -22,10 +22,11 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from csiibundle import colour as _colour
+from csiibundle import colourocio
 from csiibundle.colour import *  # noqa: F403 - the derivation, re-exported
-from csiibundle.colour import Grading, hex_of, hsv_of, srgb_to_linear  # noqa: F401
+from csiibundle.colour import Grading  # noqa: F401
 from csiibundle.colour import load as _load
+from csiibundle.colourspace import hex_of, hsv_of, srgb_to_linear
 
 
 def load(bundle_dir=None):
@@ -47,7 +48,7 @@ def write_ocio(grading, directory, blender_config, name="CS2 Graded"):
     A method on `csiibundle.colour.Grading` until refactor Phase 2, which is one Blender-shaped
     method on the class both consumers share: it takes the path to Blender's own shipped
     `config.ocio`, reads it, and writes a config only Blender loads. The grading itself — the
-    chain, `ocio_view_transform`, the `.cube` LUT — stays in the package, because OCIO and a cube
+    chain, `colourocio.view_transform`, the `.cube` LUT — stays in the package, because OCIO and a cube
     LUT are formats rather than an application.
 
     Blender's shipped config is read and extended rather than replaced, so every other view
@@ -69,7 +70,7 @@ def write_ocio(grading, directory, blender_config, name="CS2 Graded"):
     lut = None
     if grading.smh:
         lut = "cs2_smh.cube"
-        grading.write_smh_lut(os.path.join(directory, lut))
+        colourocio.write_smh_lut(grading, os.path.join(directory, lut))
 
     out = _grafted_lines(text, grading, name, lut, _search_path(directory, blender_config))
 
@@ -119,7 +120,7 @@ def _grafted_lines(text, grading, name, lut, search):
             )
         elif line.startswith("view_transforms:"):
             out.append(line)
-            line = grading.ocio_view_transform(f"{name} Rec.1886", lut).rstrip("\n")
+            line = colourocio.view_transform(grading, f"{name} Rec.1886", lut).rstrip("\n")
         out.append(line)
     return out
 
@@ -127,8 +128,8 @@ def _grafted_lines(text, grading, name, lut, search):
 def blender_config_path():
     """Blender's shipped OCIO config, if it can be found.
 
-    Installed as `csiibundle.colour.CONFIG_LOCATOR` at the bottom of this file, which is how
-    `Grading.pick_view` finds a config when `$OCIO` is unset without the package having to know
+    Installed as `csiibundle.colourocio.CONFIG_LOCATOR` at the bottom of this file, which is how
+    `colourocio.pick_view` finds a config when `$OCIO` is unset without the package having to know
     that Blender exists.
     """
     env = os.environ.get("CARTO_BLENDER_COLORMANAGEMENT")
@@ -160,7 +161,7 @@ def blender_config_path():
 
 
 # Give the package a way to find a config without it knowing what Blender is.
-_colour.CONFIG_LOCATOR = blender_config_path
+colourocio.CONFIG_LOCATOR = blender_config_path
 
 
 # -- CLI --------------------------------------------------------------------------------------
@@ -239,7 +240,7 @@ def main():
                 f"      in-game at ({coord[0]}, {coord[1]}): {reference}  "
                 f"hue {th:.1f} sat {ts:.3f} val {tv:.3f}   [{note}]"
             )
-            ev, model, used = grading.match_value(albedo, tv)
+            ev, model, used = colourocio.match_value(grading, albedo, tv)
             if model is None:
                 print("      (no PyOpenColorIO here, so no residual)")
                 continue
@@ -301,7 +302,7 @@ def _report_sample(grading, label, albedo):
         f"    {label:<14} albedo {tuple(round(v, 4) for v in albedo)} "
         f"-> graded {tuple(round(v, 4) for v in graded)}"
     )
-    shown, used = grading.on_screen(albedo)
+    shown, used = colourocio.on_screen(grading, albedo)
     if shown:
         hue, sat, val = hsv_of(shown)
         print(

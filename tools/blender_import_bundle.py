@@ -143,6 +143,9 @@ import colour_model
 from csiibundle import areas as area_math
 from csiibundle import (
     bezier,
+    carriageway,
+    clipgrid,
+    containment,
     decals,
     drape,
     frames,
@@ -156,9 +159,10 @@ from csiibundle import (
     water,
 )
 from csiibundle import glb as glb_reader
+from csiibundle import lattice as lattice_math
 from csiibundle import png as png_reader
 from csiibundle import splat as splat_reader
-from csiibundle import terrain as terrain_math
+from csiibundle import watersurface as watersurface_math
 
 # -- the frame conversion, contract §2 ------------------------------------------------------
 #
@@ -247,8 +251,6 @@ _WORLD_LEVEL = 0.25
 # the picture came out near-black — the game's own EV figures are relative to ITS light level,
 # not to a rig picked by eye. `_sun_energy_for` computes it from the sun's actual orientation.
 _SUN_TILT = (0.5, 0.3, 0.0)
-
-_ROCK_SLOPE = terrain_math.ROCK_SLOPE
 
 
 class _Log:
@@ -1950,33 +1952,19 @@ _bezier_points = bezier.evaluate
 
 
 # The clip rasterisation, the corridor lattice, the hole-rim snap and the shallow-band clamp
-# are all `csiibundle.terrain`. Read its docstring before touching any of them — the
-# containment invariant (only a DEEP band may carve; a shallow one flattens and never deletes),
-# the sub-sample deletion rule and the sideways-only rim snap are each a correction this
-# project shipped the wrong way round at least once.
-_CLIP_SCANLINE_VECTOR_ROWS = terrain_math.CLIP_SCANLINE_VECTOR_ROWS
-_CLIP_REF_STATION_BITS = terrain_math.CLIP_REF_STATION_BITS
-_CLIP_CONTAIN_SAMPLES = terrain_math.CLIP_CONTAIN_SAMPLES
-_CLIP_CONTAIN_BLOCK = terrain_math.CLIP_CONTAIN_BLOCK
-_CLIP_DEEP_BAND_TOP = terrain_math.CLIP_DEEP_BAND_TOP
-_lane_ramp = terrain_math.lane_ramp
-_clip_span = terrain_math.clip_span
-_fill_clip_quad_rows = terrain_math.fill_clip_quad_rows
-_fill_clip_quad = terrain_math.fill_clip_quad
-_face_footprint_reduce = terrain_math.face_footprint_reduce
-_dilate = terrain_math.dilate
-_mask_boundary = terrain_math.mask_boundary
-_transition_fans = terrain_math.transition_fans
-_contain_faces = terrain_math.contain_faces
-_clip_grid = terrain_math.clip_grid
-_clamp_carriageway = terrain_math.clamp_carriageway
+# are `csiibundle.clipraster`/`containment`/`clipgrid`/`carriageway`. Read their docstrings
+# before touching any of them — the containment invariant (only a DEEP band may carve; a
+# shallow one flattens and never deletes), the sub-sample deletion rule and the sideways-only
+# rim snap are each a correction this project shipped the wrong way round at least once.
+_clip_grid = clipgrid.clip_grid
+_clamp_carriageway = carriageway.clamp_carriageway
 
 
 _splat_mapping = splat_reader.channel_mapping
 
 
-_GROUND_FALLBACK_TILING = terrain_math.GROUND_FALLBACK_TILING
-_ground_tiling = terrain_math.ground_tiling
+_GROUND_FALLBACK_TILING = splat_reader.GROUND_FALLBACK_TILING
+_ground_tiling = splat_reader.ground_tiling
 
 
 def _splat_ground_material(surfaces_dir, splat, mapping, tiling_block=None):
@@ -2477,26 +2465,8 @@ def build_terrain(bundle_dir, collection, center, radius, clip_floor=None, coars
     # of the heightmap — the game hides it per-frame with a stencil pass — so the clip volumes
     # are rasterised here against this heightmap. The layer is mandatory; _clip_grid raises on
     # a bundle without it.
-    (
-        cut_grid,
-        contain_raster,
-        band_count_raster,
-        _deep_raster,
-        _cut_refs,
-        strip_geo,
-        band_ceiling_raster,
-    ) = _clip_grid(
-        bundle_dir,
-        width,
-        height,
-        heights,
-        cell,
-        origin_x,
-        origin_z,
-        elevation_scale,
-        elevation_offset,
-        floor_override=clip_floor,
-    )
+    grid = clipgrid.Grid(width, height, cell, origin_x, origin_z, elevation_scale, elevation_offset)
+    clip = _clip_grid(bundle_dir, grid, heights, floor_override=clip_floor)
     # The prisms themselves, for the EXACT cut (audit §46): the game hides terrain by discarding
     # the pixels inside its clip volume, so the hole's boundary is the prism's own surface and
     # the mesh is CUT on it — `csiibundle.terrainclip`, shared with the heightfield bake.
@@ -2532,31 +2502,11 @@ def build_terrain(bundle_dir, collection, center, radius, clip_floor=None, coars
         return 0, None
 
     # -- the lattice and its faces -----------------------------------------------------------
-    # `csiibundle.terrain.build_lattice` is the whole of it: the corridor that decides where the
+    # `csiibundle.lattice.build_lattice` is the whole of it: the corridor that decides where the
     # mesh goes native, the three face families welded onto one vertex set, the containment
     # deletion — which is now the EXACT cut against the clip prisms rather than a score.
-    lattice = terrain_math.build_lattice(
-        heights,
-        width,
-        height,
-        surface_ids,
-        levels,
-        row0,
-        col0,
-        row1,
-        col1,
-        stride,
-        cell,
-        origin_x,
-        origin_z,
-        elevation_scale,
-        elevation_offset,
-        cut_grid,
-        contain_raster,
-        band_count_raster,
-        band_ceiling_raster,
-        strip_geo,
-        prisms=prisms,
+    lattice = lattice_math.build_lattice(
+        heights, surface_ids, levels, grid, (row0, col0, row1, col1), stride, clip, prisms=prisms
     )
     if lattice is None:
         LOG.warn("terrain: the region window is smaller than one face — skipping terrain")
@@ -2728,10 +2678,10 @@ def build_terrain(bundle_dir, collection, center, radius, clip_floor=None, coars
     # level extends one sim cell past the shoreline (producer dilation), so the surface runs
     # flat into the bank and the ground cuts the shoreline where the game's own shoreline is.
     # The wet-face rules — the dilated shoreline ring, the ground-seated outer corners, and
-    # water NOT being filtered by the terrain cut — are `csiibundle.terrain.water_surface`.
+    # water NOT being filtered by the terrain cut — are `csiibundle.watersurface`.
     # NOT named `water` — that is the `csiibundle.water` module, and shadowing it here is a
     # bug this file has already made once.
-    water_mesh = terrain_math.water_surface(lattice, stride, cell, origin_x, origin_z, row0, col0)
+    water_mesh = watersurface_math.water_surface(lattice, stride, grid, (row0, col0, row1, col1))
     wet_faces = water_mesh.faces if water_mesh is not None else 0
     if water_mesh is not None:
         # The ocean's appearance is AUTHORED and shipped — `rasters.water` carries
@@ -2798,7 +2748,7 @@ def build_terrain(bundle_dir, collection, center, radius, clip_floor=None, coars
         # removed that no prism covers, i.e. sky; the cut cannot do that by construction (it only
         # ever subtracts a prism's own interior), so a warning here means the DENOMINATOR is
         # short — the containment sampling missed part of a prism.
-        sample = cell / terrain_math.contain_samples(cell)
+        sample = cell / containment.contain_samples(cell)
         clipped_area = band_samples * sample * sample
         ratio = (cut_removed_m2 / clipped_area) if clipped_area else float("nan")
         LOG.step(

@@ -37,14 +37,18 @@ sys.path.insert(0, HERE)
 
 import itertools  # noqa: E402 - after the sys.path bootstrap above
 
+from csiibundle import (  # noqa: E402
+    navclearance,
+    navspine,
+    reader,
+)
 from csiibundle import navgraph as navgraph_mod  # noqa: E402
-from csiibundle import reader  # noqa: E402 - after the sys.path bootstrap above
 
 # A sampled lane point is covered when an edge passes within this many metres of it. It is
 # half the road's own carriageway width plus a lane: the navgraph is a CENTERLINE, so a point on
 # the outermost lane of a 24 m road is legitimately 9 m from it, and demanding better would be
 # demanding the graph be a lane graph.
-COVERAGE_SLACK = navgraph_mod.LANE_HALF_WIDTH
+COVERAGE_SLACK = navspine.LANE_HALF_WIDTH
 
 # The fraction of sampled lane points that may be uncovered before this fails. Not zero: CS2
 # places car lanes on segments that carry no through route at all (a bus bay, a service spur off
@@ -200,7 +204,7 @@ def _stacked(graph, results):
     costs exactly zero, so a viaduct wide enough to reach the street beneath it is as good a place
     to start a route as the street. That is a route onto an overpass with no ramp (audit A7.6).
     """
-    hits = navgraph_mod.stacked_coverage(graph.roads)
+    hits = navclearance.stacked_coverage(graph.roads)
     sites = {(round(h["at"][0] / 50), round(h["at"][2] / 50)) for h in hits}
     note = f"{len(sites)} site(s)"
     if hits:

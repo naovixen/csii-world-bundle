@@ -21,8 +21,7 @@ cells are dropped as noise. Region builds keep only bodies intersecting the regi
 import time
 
 import numpy
-from csiibundle import colour as colour_mod
-from csiibundle import png, reader
+from csiibundle import colourspace, png, reader
 from csiibundle import region as region_rule
 from csiibundle import water as water_mod
 
@@ -254,12 +253,13 @@ def _appearance_fields(appearance):
     """WaterObject fields from the bundle's water appearance (§8 `rasters.water`)."""
     base = appearance.base_color
     srgb = [
-        int(round(255 * min(1.0, max(0.0, colour_mod.linear_to_srgb(float(c)))))) for c in base[:3]
+        int(round(255 * min(1.0, max(0.0, colourspace.linear_to_srgb(float(c)))))) for c in base[:3]
     ]
     alpha = int(round(255 * float(base[3]))) if len(base) > 3 else 255
     under = appearance.scattering_color
     under_srgb = [
-        int(round(255 * min(1.0, max(0.0, colour_mod.linear_to_srgb(float(c)))))) for c in under[:3]
+        int(round(255 * min(1.0, max(0.0, colourspace.linear_to_srgb(float(c))))))
+        for c in under[:3]
     ]
     fog = 1.0 / max(appearance.absorption_distance, 1.0)
     return {

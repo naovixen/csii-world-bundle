@@ -240,15 +240,8 @@ def _shape_base(name):
 # -- the questions ---------------------------------------------------------------------------------
 
 
-def _check_state_and_scale(bundle, settings, forest, statics, samples, results):
-    """For a sample of records: is the placed object at the position, rotation, size and mesh
-    state the game's own rule gives for that entity?"""
-    print("sampling instances...")
-    by_position = {}
-    for type_name, rows in forest.items():
-        for item in rows:
-            by_position.setdefault(_key(item["pos"]), []).append((type_name, item))
-
+def _sample_records(bundle, settings, samples):
+    """The records this build admits, sampled deterministically."""
     region = _region_of(settings)
     kept = []
     for record in bundle_instances.read_instances(bundle):
@@ -258,6 +251,77 @@ def _check_state_and_scale(bundle, settings, forest, statics, samples, results):
     if len(kept) > samples:
         kept = random.sample(kept, samples)
     print(f"{len(kept):,} sampled of the records this build admits\n")
+    return kept
+
+
+def _expected_state(record, mesh_dir, have):
+    """The mesh state the game would draw, resolved FIRST: it is also what tells two items
+    sharing a position apart. `_key` is not a unique join for the forest — a sub-object sits at
+    its parent's coordinate (`Clothesline01_Clt` on `Clothesline01`) and two pieces of street
+    furniture land on the same centimetre — and taking `[0]` blamed a record for the type
+    beside it. The check stays honest: it asks whether an item OF THE EXPECTED STATE is here,
+    which still fails if the level placed the wrong one."""
+    for candidate in bundle_instances.mesh_candidates(record):
+        if candidate not in have:
+            have[candidate] = os.path.isfile(os.path.join(mesh_dir, candidate + ".glb"))
+        if have[candidate]:
+            return candidate
+    return None
+
+
+def _find_placed(record, position, by_position, statics, expected):
+    """`((kind, shape, row), forest rows at the position)` for the placed object, or None."""
+    here = by_position.get(_key(position))
+    if here:
+        match = next((row for row in here if _shape_base(row[0]) == expected), here[0])
+        return ("forest", match[0], match[1]), here
+    obj = _static_for(record, position, statics[0], statics[1])
+    if obj is not None:
+        return ("static", os.path.splitext(os.path.basename(obj["shapeName"]))[0], obj), None
+    return None, None
+
+
+def _score_transform(placed, position, rotation, scale, where, size, turn):
+    """Position, size and rotation of one placed object against the record's own transform,
+    through the SAME serialisation the writers use (`beamng.frame.basis_flat`): the stored
+    nine floats are the object's own axes in groups of three, and flattening the matrix
+    row-major here would agree with a level that stored the inverse rotation - which it did
+    until A6.8. This row still only proves our own consistency; the convention itself is
+    anchored against vanilla in `test_a3_objects.test_rotation_matrix_is_basis_vectors`."""
+    flat = frame.basis_flat(rotation)
+    where["total"] += 1
+    if placed[0] == "forest":
+        item = placed[2]
+        where["agree"] += int(
+            max(abs(a - b) for a, b in zip(item["pos"], position)) <= TOLERANCE_POSITION
+        )
+        size["total"] += 1
+        size["agree"] += int(abs(item["scale"] - sum(scale) / 3.0) <= TOLERANCE_SCALE)
+        shipped = item.get("rotationMatrix")
+    else:
+        obj = placed[2]
+        where["agree"] += int(
+            max(abs(a - b) for a, b in zip(obj["position"], position)) <= TOLERANCE_POSITION
+        )
+        size["total"] += 1
+        size["agree"] += int(
+            max(abs(a - b) for a, b in zip(obj["scale"], scale)) <= TOLERANCE_SCALE
+        )
+        shipped = obj.get("rotationMatrix")
+    if shipped and len(shipped) == 9:
+        turn["total"] += 1
+        turn["agree"] += int(max(abs(a - b) for a, b in zip(shipped, flat)) <= TOLERANCE_ROTATION)
+
+
+def _check_state_and_scale(bundle, settings, forest, statics, samples, results):
+    """For a sample of records: is the placed object at the position, rotation, size and mesh
+    state the game's own rule gives for that entity?"""
+    print("sampling instances...")
+    by_position = {}
+    for type_name, rows in forest.items():
+        for item in rows:
+            by_position.setdefault(_key(item["pos"]), []).append((type_name, item))
+    kept = _sample_records(bundle, settings, samples)
 
     state = {"total": 0, "agree": 0}
     where = {"total": 0, "agree": 0}
@@ -273,30 +337,8 @@ def _check_state_and_scale(bundle, settings, forest, statics, samples, results):
     have = {}
     for record in kept:
         position, rotation, scale = _transform(record)
-        # -- the mesh state the game would draw, FIRST: it is also what tells two items sharing a
-        # position apart. `_key` is not a unique join for the forest — a sub-object sits at its
-        # parent's coordinate (`Clothesline01_Clt` on `Clothesline01`) and two pieces of street
-        # furniture land on the same centimetre — and taking `[0]` blamed a record for the type
-        # beside it. The check stays honest: it asks whether an item OF THE EXPECTED STATE is
-        # here, which still fails if the level placed the wrong one.
-        expected = None
-        for candidate in bundle_instances.mesh_candidates(record):
-            if candidate not in have:
-                have[candidate] = os.path.isfile(os.path.join(mesh_dir, candidate + ".glb"))
-            if have[candidate]:
-                expected = candidate
-                break
-
-        key = _key(position)
-        placed = None
-        here = by_position.get(key)
-        if here:
-            match = next((row for row in here if _shape_base(row[0]) == expected), here[0])
-            placed = ("forest", match[0], match[1])
-        else:
-            obj = _static_for(record, position, statics[0], statics[1])
-            if obj is not None:
-                placed = ("static", os.path.splitext(os.path.basename(obj["shapeName"]))[0], obj)
+        expected = _expected_state(record, mesh_dir, have)
+        placed, here = _find_placed(record, position, by_position, statics, expected)
         if placed is None:
             # the prefab ships no mesh (16 of 5,591 on the reference bundle) - reported, but not
             # scored: there is nothing for the level to have placed
@@ -312,37 +354,7 @@ def _check_state_and_scale(bundle, settings, forest, statics, samples, results):
             else:
                 state["agree"] += int(_shape_base(placed[1]) == expected)
 
-        # -- where, at what size, and TURNED WHICH WAY
-        # through the SAME serialisation the writers use (`beamng.frame.basis_flat`): the stored
-        # nine floats are the object's own axes in groups of three, and flattening the matrix
-        # row-major here would agree with a level that stored the inverse rotation - which it did
-        # until A6.8. This row still only proves our own consistency; the convention itself is
-        # anchored against vanilla in `test_a3_objects.test_rotation_matrix_is_basis_vectors`.
-        flat = frame.basis_flat(rotation)
-        where["total"] += 1
-        if placed[0] == "forest":
-            item = placed[2]
-            where["agree"] += int(
-                max(abs(a - b) for a, b in zip(item["pos"], position)) <= TOLERANCE_POSITION
-            )
-            size["total"] += 1
-            size["agree"] += int(abs(item["scale"] - sum(scale) / 3.0) <= TOLERANCE_SCALE)
-            shipped = item.get("rotationMatrix")
-        else:
-            obj = placed[2]
-            where["agree"] += int(
-                max(abs(a - b) for a, b in zip(obj["position"], position)) <= TOLERANCE_POSITION
-            )
-            size["total"] += 1
-            size["agree"] += int(
-                max(abs(a - b) for a, b in zip(obj["scale"], scale)) <= TOLERANCE_SCALE
-            )
-            shipped = obj.get("rotationMatrix")
-        if shipped and len(shipped) == 9:
-            turn["total"] += 1
-            turn["agree"] += int(
-                max(abs(a - b) for a, b in zip(shipped, flat)) <= TOLERANCE_ROTATION
-            )
+        _score_transform(placed, position, rotation, scale, where, size, turn)
 
     results["a record this build admits is placed"] = dict(
         found,

@@ -3,6 +3,13 @@
 The point of this tool is to end arguments about *which* patch of ground is being looked at.
 You pick a spot in Blender, it prints a coordinate block, and that block is unambiguous.
 
+DELIBERATELY ONE FILE, over the repo's 400-line ceiling (refactor Phase 4, declared): the
+documented way to run it is to PASTE THIS WHOLE FILE into Blender's Scripting tab, so a package
+split would break the tool's own usage. Its private PNG/sRGB copies are equally deliberate —
+"a diagnostic that only works when the thing it is diagnosing imports cleanly is not much of a
+diagnostic" — with one exception: the grading model is imported from `tools/colour_model.py`,
+because the probe exists to compare against exactly what the importer applies.
+
 TWO WAYS TO RUN IT
 ------------------
 
@@ -144,14 +151,13 @@ def _load_png(path):
     except ImportError:
         pass
 
+    return _decode_png(path)
+
+
+def _png_chunks(data):
+    """`(width, height, depth, colour, concatenated IDAT)` off the chunk walk."""
     import struct
-    import zlib
 
-    import numpy
-
-    data = open(path, "rb").read()
-    if not data.startswith(b"\x89PNG\r\n\x1a\n"):
-        raise ValueError(f"{path} is not a PNG")
     pos, idat = 8, []
     width = height = depth = colour = None
     while pos + 8 <= len(data):
@@ -166,14 +172,13 @@ def _load_png(path):
             idat.append(payload)
         elif tag == b"IEND":
             break
+    return width, height, depth, colour, b"".join(idat)
 
-    channels = {0: 1, 2: 3, 4: 2, 6: 4}.get(colour)
-    if channels is None or depth not in (8, 16):
-        raise ValueError(f"{path}: unsupported PNG (colour type {colour}, depth {depth})")
 
-    bpp = channels * (depth // 8)
-    stride = width * bpp
-    raw = zlib.decompress(b"".join(idat))
+def _defilter(raw, height, stride, bpp):
+    """Undo the per-scanline PNG filters; returns the (height, stride) uint8 array."""
+    import numpy
+
     out = numpy.zeros((height, stride), dtype=numpy.uint8)
     previous = numpy.zeros(stride, dtype=numpy.uint8)
     for y in range(height):
@@ -203,6 +208,27 @@ def _load_png(path):
             line = numpy.frombuffer(bytes(buf), dtype=numpy.uint8)
         out[y] = line
         previous = out[y]
+    return out
+
+
+def _decode_png(path):
+    """The self-contained decode `_load_png` falls back to when Pillow is absent."""
+    import zlib
+
+    import numpy
+
+    data = open(path, "rb").read()
+    if not data.startswith(b"\x89PNG\r\n\x1a\n"):
+        raise ValueError(f"{path} is not a PNG")
+    width, height, depth, colour, idat = _png_chunks(data)
+
+    channels = {0: 1, 2: 3, 4: 2, 6: 4}.get(colour)
+    if channels is None or depth not in (8, 16):
+        raise ValueError(f"{path}: unsupported PNG (colour type {colour}, depth {depth})")
+
+    bpp = channels * (depth // 8)
+    stride = width * bpp
+    out = _defilter(zlib.decompress(idat), height, stride, bpp)
 
     if depth == 16:
         arr = out.view(">u2" if sys.byteorder == "little" else "u2")
@@ -237,9 +263,14 @@ class Bundle:
 
 def probe(bundle, x, z):
     out = {"x": x, "z": z}
-    r = bundle.rasters
+    _probe_terrain(bundle, out, x, z)
+    _probe_splat(bundle, out, x, z)  # the splat grid is its own raster; probed regardless
+    return out
 
-    # --- terrain elevation and water
+
+def _probe_terrain(bundle, out, x, z):
+    """Elevation, water level and surface index at the point, into `out`."""
+    r = bundle.rasters
     top = {"originWorld": r["originWorld"], "resolution": r["resolution"]}
     col, row = bundle.texel(top, x, z)
     out["texel_terrain"] = (col, row)
@@ -265,7 +296,10 @@ def probe(bundle, x, z):
         except Exception:
             pass
 
-    # --- splat
+
+def _probe_splat(bundle, out, x, z):
+    """The splat texel, its decoded ground stack, and the composited albedo, into `out`."""
+    r = bundle.rasters
     sb = r.get("splatmap")
     if sb:
         scol, srow = bundle.texel(sb, x, z)
@@ -316,8 +350,6 @@ def probe(bundle, x, z):
             out["albedo_hex"] = _hex(tuple(_linear_to_srgb(c) for c in colour))
             out["contrib"] = contrib
 
-    return out
-
 
 _GRADING_MODEL = {}
 
@@ -333,10 +365,11 @@ def _grading_model(root):
         try:
             sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
             import colour_model
+            from csiibundle import colourocio
 
-            _GRADING_MODEL[root] = colour_model.load(root)
+            _GRADING_MODEL[root] = (colour_model.load(root), colourocio)
         except Exception:
-            _GRADING_MODEL[root] = None
+            _GRADING_MODEL[root] = (None, None)
     return _GRADING_MODEL[root]
 
 
@@ -424,14 +457,58 @@ def sample_render(x, z, metres, viewport=False):
     a person actually looks at, and it is not the same path: the compositor runs on rendered
     output only, so anything living there is visible in one and invisible in the other.
     """
+    scene = bpy.context.scene
+    cam, prev = _probe_camera(scene, x, z, metres)
+    try:
+        if viewport:
+            # Needs a real GL context, so this is the one number `blender -b` cannot produce.
+            # Run the probe from the Scripting tab to get it.
+            bpy.ops.render.opengl(write_still=True)
+        else:
+            bpy.ops.render.render(write_still=True)
+    except RuntimeError as exc:
+        _restore_scene(scene, cam, prev)
+        raise _NoRender(str(exc)) from exc
+
+    img = bpy.data.images.load(scene.render.filepath)
+    px = list(img.pixels)
+    n = len(px) // 4
+    side = int(round(n**0.5))
+    mean = [sum(px[i * 4 + k] for i in range(n)) / n for k in range(3)]
+    centre = (side // 2) * side + (side // 2)
+    texel = [px[centre * 4 + k] for k in range(3)]
+    # Guard the same trap from the other side: encode only what came back linear.
+    encode = _linear_to_srgb if img.is_float else (lambda c: c)
+
+    _restore_scene(scene, cam, prev)
+    bpy.data.images.remove(img)
+    return tuple(encode(c) for c in texel), tuple(encode(c) for c in mean)
+
+
+def _probe_camera(scene, x, z, metres):
+    """Rig the tiny ortho probe camera; returns `(camera object, previous scene state)`.
+
+    SIXTEEN BIT, NOT EIGHT, AND IT IS NOT ABOUT PRECISION. Blender hands back an 8-bit PNG's
+    `pixels` still sRGB-ENCODED (measured: a linear 0.25 reads back as 0.5333), while a 16-bit
+    one comes back linear (0.2500). Reading the 8-bit buffer and encoding it again double-
+    encodes: the result is too bright and too flat, which is exactly the shape of the
+    "our terrain is desaturated" reading this tool was built to settle.
+
+    And do NOT override the view transform here. Forcing "Standard" made this tool report the
+    same colour whatever the scene was set to, which silently invalidated a view-transform
+    comparison — a measurement tool must not change the thing being measured.
+    """
     import tempfile
 
     from mathutils import Vector
 
-    scene = bpy.context.scene
-    prev_cam, prev_path = scene.camera, scene.render.filepath
-    prev_x, prev_y = scene.render.resolution_x, scene.render.resolution_y
-
+    prev = (
+        scene.camera,
+        scene.render.filepath,
+        scene.render.resolution_x,
+        scene.render.resolution_y,
+        scene.render.image_settings.color_depth,
+    )
     cam_data = bpy.data.cameras.new("probe_cam")
     cam_data.type = "ORTHO"
     cam_data.ortho_scale = metres
@@ -442,48 +519,16 @@ def sample_render(x, z, metres, viewport=False):
     cam.rotation_euler = (0.0, 0.0, 0.0)
     scene.camera = cam
     scene.render.resolution_x = scene.render.resolution_y = 64
-    out = os.path.join(tempfile.gettempdir(), "carto_probe.png")
-    scene.render.filepath = out
-    # SIXTEEN BIT, NOT EIGHT, AND IT IS NOT ABOUT PRECISION. Blender hands back an 8-bit PNG's
-    # `pixels` still sRGB-ENCODED (measured: a linear 0.25 reads back as 0.5333), while a 16-bit
-    # one comes back linear (0.2500). Reading the 8-bit buffer and encoding it again double-
-    # encodes: the result is too bright and too flat, which is exactly the shape of the
-    # "our terrain is desaturated" reading this tool was built to settle.
-    prev_depth = scene.render.image_settings.color_depth
+    scene.render.filepath = os.path.join(tempfile.gettempdir(), "carto_probe.png")
     scene.render.image_settings.color_depth = "16"
-    # Do NOT override the view transform here. Forcing "Standard" made this tool report the same
-    # colour whatever the scene was set to, which silently invalidated a view-transform comparison
-    # — a measurement tool must not change the thing being measured.
-    try:
-        if viewport:
-            # Needs a real GL context, so this is the one number `blender -b` cannot produce.
-            # Run the probe from the Scripting tab to get it.
-            bpy.ops.render.opengl(write_still=True)
-        else:
-            bpy.ops.render.render(write_still=True)
-    except RuntimeError as exc:
-        scene.camera, scene.render.filepath = prev_cam, prev_path
-        scene.render.resolution_x, scene.render.resolution_y = prev_x, prev_y
-        scene.render.image_settings.color_depth = prev_depth
-        bpy.data.objects.remove(cam, do_unlink=True)
-        raise _NoRender(str(exc)) from exc
+    return cam, prev
 
-    img = bpy.data.images.load(out)
-    px = list(img.pixels)
-    n = len(px) // 4
-    side = int(round(n**0.5))
-    mean = [sum(px[i * 4 + k] for i in range(n)) / n for k in range(3)]
-    centre = (side // 2) * side + (side // 2)
-    texel = [px[centre * 4 + k] for k in range(3)]
-    # Guard the same trap from the other side: encode only what came back linear.
-    encode = _linear_to_srgb if img.is_float else (lambda c: c)
 
-    scene.camera, scene.render.filepath = prev_cam, prev_path
-    scene.render.resolution_x, scene.render.resolution_y = prev_x, prev_y
-    scene.render.image_settings.color_depth = prev_depth
+def _restore_scene(scene, cam, prev):
+    scene.camera, scene.render.filepath = prev[0], prev[1]
+    scene.render.resolution_x, scene.render.resolution_y = prev[2], prev[3]
+    scene.render.image_settings.color_depth = prev[4]
     bpy.data.objects.remove(cam, do_unlink=True)
-    bpy.data.images.remove(img)
-    return tuple(encode(c) for c in texel), tuple(encode(c) for c in mean)
 
 
 # -- main -----------------------------------------------------------------------------------
@@ -495,8 +540,8 @@ def _argv():
     return [a for a in sys.argv[1:] if a.endswith((".py",)) is False]
 
 
-def main():
-    argv = _argv()
+def _parse_args(argv):
+    """`(bundle_dir, at, do_render, patch)` off the tool's four options."""
     bundle_dir, at, do_render, patch = DEFAULT_BUNDLE, None, False, 8.0
     i = 0
     while i < len(argv):
@@ -515,6 +560,11 @@ def main():
             i += 2
         else:
             i += 1
+    return bundle_dir, at, do_render, patch
+
+
+def main():
+    bundle_dir, at, do_render, patch = _parse_args(_argv())
 
     if at is None:
         if not IN_BLENDER:
@@ -534,6 +584,22 @@ def main():
     def say(line=""):
         out.append(line)
 
+    _report_point(say, info, x, z, cursor_z)
+    _report_splat(say, info)
+    _report_areas(say, bundle, x, z)
+    grading, ocio = _grading_model(bundle.root)
+    shown = _report_model(say, grading, ocio, info)
+    if do_render and IN_BLENDER:
+        _report_render(say, grading, ocio, info, shown, x, z, patch)
+    say("=" * 78)
+    say()
+
+    report = "\n".join(out)
+    print(report)
+    _deliver(report)
+
+
+def _report_point(say, info, x, z, cursor_z):
     say()
     say("=" * 78)
     say("  CARTO POINT PROBE - paste this whole block back")
@@ -553,31 +619,37 @@ def main():
             idx, name = info["surface_index"]
             say(f"  surface_index     : {idx} ({name})")
     say()
-    if "splat_rgba" in info:
-        r_, g_, b_, a_ = info["splat_rgba"]
-        mult, power = info["splat_shape"]
-        say(f"  splat texel       : {info['texel_splat']}   RGBA = ({r_}, {g_}, {b_}, {a_})")
-        say(f"  splatMultiplier   : {mult}   splatPower: {power}")
-        ch = info["channels"]
-        say(f"  channel map       : R={ch.get('R')}  G={ch.get('G')}  base={ch.get('base')}")
-        say("                      B/A pack extra1..extra4 as low:high nibbles")
-        say()
-        say("  ground stack, base first, each composited over the last:")
-        # `ch["base"]` is None on a theme that binds no rock ground; `:<10` on None is a
-        # TypeError, and because the report is buffered it took the whole tool with it.
-        say(f"      {'base':<10} {ch.get('base') or 'unknown'!s:<10}")
-        for key, ground, weight, op in info["stack"]:
-            bar = "#" * int(round(op * 30))
-            say(f"      {key:<8} {ground:<8} weight {weight:>7}  opacity {op:5.3f} |{bar}")
-        say()
-        hsv = _hsv(tuple(_linear_to_srgb(c) for c in info["albedo_linear"]))
-        say(
-            f"  composite ALBEDO  : {info['albedo_hex']}   "
-            f"hue {hsv[0]:5.1f}  sat {hsv[1]:.3f}  val {hsv[2]:.3f}"
-        )
-        say("      (flat ground colour before lighting - NOT what an eyedropper on the")
-        say("       viewport reads; use --render for that)")
 
+
+def _report_splat(say, info):
+    if "splat_rgba" not in info:
+        return
+    r_, g_, b_, a_ = info["splat_rgba"]
+    mult, power = info["splat_shape"]
+    say(f"  splat texel       : {info['texel_splat']}   RGBA = ({r_}, {g_}, {b_}, {a_})")
+    say(f"  splatMultiplier   : {mult}   splatPower: {power}")
+    ch = info["channels"]
+    say(f"  channel map       : R={ch.get('R')}  G={ch.get('G')}  base={ch.get('base')}")
+    say("                      B/A pack extra1..extra4 as low:high nibbles")
+    say()
+    say("  ground stack, base first, each composited over the last:")
+    # `ch["base"]` is None on a theme that binds no rock ground; `:<10` on None is a
+    # TypeError, and because the report is buffered it took the whole tool with it.
+    say(f"      {'base':<10} {ch.get('base') or 'unknown'!s:<10}")
+    for key, ground, weight, op in info["stack"]:
+        bar = "#" * int(round(op * 30))
+        say(f"      {key:<8} {ground:<8} weight {weight:>7}  opacity {op:5.3f} |{bar}")
+    say()
+    hsv = _hsv(tuple(_linear_to_srgb(c) for c in info["albedo_linear"]))
+    say(
+        f"  composite ALBEDO  : {info['albedo_hex']}   "
+        f"hue {hsv[0]:5.1f}  sat {hsv[1]:.3f}  val {hsv[2]:.3f}"
+    )
+    say("      (flat ground colour before lighting - NOT what an eyedropper on the")
+    say("       viewport reads; use --render for that)")
+
+
+def _report_areas(say, bundle, x, z):
     hits = areas_covering(bundle, x, z)
     say()
     if hits:
@@ -589,10 +661,12 @@ def main():
     else:
         say("  area surfaces here: none - this point is plain terrain")
 
-    grading = _grading_model(bundle.root)
+
+def _report_model(say, grading, ocio, info):
+    """What `colour_model` predicts for the composited albedo; returns the on-screen colour."""
     shown = None
     if grading is not None and "albedo_linear" in info:
-        shown, used = grading.on_screen(info["albedo_linear"])
+        shown, used = ocio.on_screen(grading, info["albedo_linear"])
         say()
         say("  MODEL says         : this albedo, under this bundle's own grading")
         if shown:
@@ -610,52 +684,48 @@ def main():
             )
         say("      (exposure is the ONE term the bundle cannot supply - the game meters per")
         say("       frame - so compare HUE and SATURATION, and read VALUE as free)")
+    return shown
 
-    if do_render and IN_BLENDER:
-        settings = bpy.context.scene.view_settings
-        for label, viewport in (("VIEWPORT", True), ("RENDER", False)):
-            try:
-                texel, mean = sample_render(x, z, patch, viewport=viewport)
-            except _NoRender as exc:
-                say()
-                say(f"  {label} colour  : unavailable here - {exc}")
-                say("      (run the probe from Blender's Scripting tab; the viewport path is the")
-                say("       one a person looks at, so it is worth the extra step)")
-                continue
-            th, ts, tv = _hsv(texel)
-            mh, ms, mv = _hsv(mean)
+
+def _report_render(say, grading, ocio, info, shown, x, z, patch):
+    settings = bpy.context.scene.view_settings
+    for label, viewport in (("VIEWPORT", True), ("RENDER", False)):
+        try:
+            texel, mean = sample_render(x, z, patch, viewport=viewport)
+        except _NoRender as exc:
             say()
-            say(
-                f"  {label} colour  : {_hex(texel)}   "
-                f"hue {th:5.1f}  sat {ts:.3f}  val {tv:.3f}   <- compare to an eyedropper"
-            )
-            say(
-                f"      {patch:.0f} m patch mean: {_hex(mean)}   "
-                f"hue {mh:5.1f}  sat {ms:.3f}  val {mv:.3f}"
-            )
-            # The scene's own light level is not the game's, so the model is re-exposed to the
-            # measured VALUE before the comparison; what is being checked is hue and saturation.
-            if grading is not None and shown is not None:
-                ev, model, _ = grading.match_value(info["albedo_linear"], tv)
-                if model:
-                    hh, ss, vv = _hsv(model)
-                    say(
-                        f"      model at the same value ({ev:+.2f} EV): {_hex(model)}   "
-                        f"hue {hh:5.1f}  sat {ss:.3f}  val {vv:.3f}"
-                    )
-                    say(f"      -> difference: hue {th - hh:+.1f}, saturation {ts - ss:+.3f}")
+            say(f"  {label} colour  : unavailable here - {exc}")
+            say("      (run the probe from Blender's Scripting tab; the viewport path is the")
+            say("       one a person looks at, so it is worth the extra step)")
+            continue
+        th, ts, tv = _hsv(texel)
+        mh, ms, mv = _hsv(mean)
+        say()
         say(
-            f"      ({settings.view_transform} view transform, "
-            f"exposure {settings.exposure:+.2f}, gamma {settings.gamma:.2f})"
+            f"  {label} colour  : {_hex(texel)}   "
+            f"hue {th:5.1f}  sat {ts:.3f}  val {tv:.3f}   <- compare to an eyedropper"
         )
-        say("      VIEWPORT is what you look at; RENDER additionally runs the compositor. If")
-        say("      they differ, something is living in a path half the tools cannot see.")
-    say("=" * 78)
-    say()
-
-    report = "\n".join(out)
-    print(report)
-    _deliver(report)
+        say(
+            f"      {patch:.0f} m patch mean: {_hex(mean)}   "
+            f"hue {mh:5.1f}  sat {ms:.3f}  val {mv:.3f}"
+        )
+        # The scene's own light level is not the game's, so the model is re-exposed to the
+        # measured VALUE before the comparison; what is being checked is hue and saturation.
+        if grading is not None and shown is not None:
+            ev, model, _ = ocio.match_value(grading, info["albedo_linear"], tv)
+            if model:
+                hh, ss, vv = _hsv(model)
+                say(
+                    f"      model at the same value ({ev:+.2f} EV): {_hex(model)}   "
+                    f"hue {hh:5.1f}  sat {ss:.3f}  val {vv:.3f}"
+                )
+                say(f"      -> difference: hue {th - hh:+.1f}, saturation {ts - ss:+.3f}")
+    say(
+        f"      ({settings.view_transform} view transform, "
+        f"exposure {settings.exposure:+.2f}, gamma {settings.gamma:.2f})"
+    )
+    say("      VIEWPORT is what you look at; RENDER additionally runs the compositor. If")
+    say("      they differ, something is living in a path half the tools cannot see.")
 
 
 def _deliver(report):

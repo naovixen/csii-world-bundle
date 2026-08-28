@@ -637,7 +637,7 @@ Each phase records here what landed and what it found, so this document stays th
 | 1 — The three defects | **DONE** 2026-08-21, in-game look verified 2026-08-27 |
 | 2 — One implementation of every shared rule | **DONE** 2026-08-27, in-game look verified — five of its claims needed correcting; see below |
 | 3 — One stage framework | **DONE** 2026-08-27 — 7 of 8 parallel blocks unified; the record merge refused, with reasons |
-| 4 — Split `csiibundle` and `tools/` | not started |
+| 4 — Split `csiibundle` and `tools/` | **in progress** — `terrain`, `navgraph`, `colour`, `validate_bundle`, `make_example_bundle` split and validated, `probe_point` refused with reasons; see below |
 | 5 — The app and its UI | not started |
 | 6 — The Blender adapter | not started |
 | 7 — One rip-stage framework | **in progress** — extractions, the typed outcome, the frame loop and the report shape done; see below |
@@ -1072,6 +1072,137 @@ is not None else {})` hands back the real one. The two sites calling `.setdefaul
 `stages/derived` and `stages/networks`, both recording which materials they bound — need the
 second, because `.setdefault` on a throwaway mutates nothing. Unifying them onto `or {}` would
 silently stop both stages recording. Left alone deliberately.
+
+### Phase 4 — in progress, 2026-08-28
+
+The three seams the audit sized biggest are done, each verified before moving on. All three are
+behaviour-preserving by measurement, not by reading: the terrain split re-ran `test_clip_cut`'s
+full gate against the real bundle (fuzz agrees on 4,000 quads, all six windows within budget),
+the navgraph split re-ran `test_navgraph_map` (real graph build), and the colour split was
+compared numerically against the pre-split code via `git stash` — `apply()`, both
+`colour_management` forms, all matrices, `sources` and `warnings` bit-identical on the example
+bundle.
+
+**`terrain.py` (1,563) → seven modules**, per the audit's seams: `clipraster` (scanline fill +
+mask morphology), `containment` (the deletion rule), `clipgrid` (`clipvolumes.jsonl` onto the
+heightmap; the hole mask), `carriageway` (the ground-height rules), `lattice` + `latticefaces` +
+`latticecut` (the corridor lattice, its three face families, the exact prism cut), and
+`watersurface`; `ground_tiling` joined `splat.py` beside `GROUND_FALLBACK_COLOUR`. Two API
+records replaced loose positional args — `clipgrid.Grid` (the geo frame that was seven scalars
+on every signature) and `clipgrid.ClipGrid` (clip_grid's 7-tuple, now named; tuple-compatible).
+`fill_clip_quad_rows` became the two span enumerators `spans_scalar`/`spans_vector`, and the
+fuzz now forces BOTH on every quad instead of only exercising the vector path on tall ones —
+strictly stronger. `contain_faces`' stale "returns four things" docstring tail (it returns
+three) was dropped.
+
+**`navgraph.py` (1,249) → eight modules**: `navroad` (the Road/Navgraph model), `navread`,
+`navspine` (centerline derivation), `navjunction` (connectors + joints), `navmerge` (the
+consumer's node merge; simple graph; components), `navclearance` (the stacked-deck clamp +
+`stacked_coverage`), `navreport`, and `polyline` (generic polyline maths beside `bezier`).
+`navgraph.py` keeps `build`/`summarise`/`Road`/the category constants — the public entry.
+The externally-imported privates are public in their new homes (`navmerge.simple_graph`,
+`navjunction.terminal_widths`), and two dead parameters died: `_connectors`' unused
+`max_width`, and `build_lattice`'s unused `strip_geo`.
+
+**`colour.py` (944) → four modules**: `colourspace` (transfer curves, Rec.709<->ACEScg, the
+ported HDRP matrix operators), `colour` (the `Grading` port, `__init__` decomposed into
+per-block parsers), `colourocio` (view picking, on-screen evaluation, the generated view
+transform, the SMH LUT), `illumination` (sun/moon/sky/clock). And the module got the test the
+plan ordered: `tools/test_colour.py`, 27 checks over the transfer pair (all 256 bytes
+round-trip), the HDRP operators, the SMH asymmetry, the contrast algebra as a closed form, and
+the example bundle's grading end to end. `colour_model.py` keeps its CLI surface, retargeted.
+
+Also in this block, before any file moved: `each()`'s docstring had pushed it to 67 lines and
+the check_limits gate was RED — Phase 3 landed without re-running it (the gate counts a def's
+full span, docstring included). Trimmed and committed separately (`3497d23`).
+
+**`validate_bundle.py` (1,614) → `tools/bundlecheck/` + a 260-line entry**, honouring its
+stdlib-only contract package-wide (`bundlecheck` imports nothing but the standard library and
+says so). `bundlecheck.schema` is the general JSON-Schema-subset library the plan named;
+`report.Context` is the one blackboard every check takes — `check(ctx)` replaced the five
+incompatible `_check_*` signatures, so `validate_bundle.py` runs them as the registry the plan
+asked for (`polygons` §8b/§8c/§8d with the triangle rule written once instead of three times,
+`auxlayers` §5A/§7.2/§10/grading, `rasters`, and the joined passes in `assets`). Verified two
+ways: output byte-identical to the old validator on the example bundle AND on the full city
+(old copy run via `git show`, no stash), and `test_bundle_contract`'s 88 mutation cases green.
+
+**`make_example_bundle.py` (915) → `tools/examplebundle/` + a 72-line entry** (`payloads`,
+`layers`, `ground`, `grading`, `manifest`). The gate that matters: regeneration is still
+**byte-identical** to the committed `docs/example-bundle`.
+
+**`probe_point.py` — the file split is REFUSED, with the reason now in its docstring**: the
+documented way to run it is to paste the whole file into Blender's Scripting tab, so it stays
+one file, allowlisted, as a declared exception (and Phase 2 had already ruled its PNG/sRGB
+copies stay by contract). Its four over-60 functions were decomposed in place instead, and its
+two calls onto the removed `Grading.on_screen`/`match_value` methods — the one breakage the
+colour split caused anywhere — now route through `csiibundle.colourocio`.
+
+**Test files, first block (2026-08-28).** Each split had to decompose its over-60 functions in
+the same move — the shrink-only allowlist cannot re-admit an entry at a new path — and each was
+re-run before and after with identical results:
+
+* `test_clip_cut.py` (557) → the windows gate (260) + `test_clip_fuzz.py` (the scanline fuzz,
+  no bundle needed) + `cliptruth.py` (the independent truth rasteriser — support, not a test).
+  Same window numbers to the digit; the fuzz still agrees on the same 4,000 quads (the rng
+  sequence was preserved) and now reports every disagreement instead of the first three.
+* `test_terrain_blend.py` (622, a SCRIPT whose body ran at import — its own gate() docstring
+  said "Phase 4 turns the body into real per-claim functions") → per-claim functions split as
+  `test_terrain_blend.py` (the ported shader + HEIGHT_SIGMA + tier encoding) +
+  `test_terrain_tiling.py` (the bundle-facing half). 19 + 28 = the original 47 checks.
+* `test_a2_dae.py` (563) → the writer/frame half + `test_a2_materials.py` (material_v15,
+  texture export PNG/DDS, the compiler's placeholder files). 26 + 32 = the original 58 checks,
+  and one dead statement removed (an `export_texture` call guarded by a file-exists test that
+  was always false).
+* `test_lod.py` (418) → the LOD arithmetic (325) + `test_lod_displacement.py`.
+* `test_drape_pick.py` (446) → the gate (decomposed `main`) + `drapetruth.py` (the raw-.glb ray
+  target). Same sweep numbers.
+* `check_instances_vs_game.py`'s 113-line sampler decomposed in place.
+
+**Test files, second block (2026-08-28, while the A/B rebuild ran).** Same discipline —
+decompose the over-60 functions in the move, re-run before and after:
+
+* `test_bundle_contract.py` (986, one 949-line class) → `contractbase.py` (the pristine-copy
+  base every case mutates) + four files by contract section: the manifest/records core,
+  `test_contract_assets.py`, `test_contract_lanes.py`, `test_contract_ground.py`. All 88
+  original cases pass across the four.
+* `test_terrain_fine.py` (573) → the reader/hole-mask/fidelity half + `finecopy.py` (the
+  fine-raster example copy) + `test_terrain_fine_stage.py` (the cs2beamng terrain stage, the
+  terraincut ground meshes and the watertight seam). 13 + 13 checks, all green.
+* `test_estimate.py` (567) → the arithmetic/selection tiers + `test_estimate_build.py` (the
+  real-build tier, decomposed to per-claim helpers).
+* `test_bake_products.py` (466) → the example-bundle half + `test_bake_products_real.py`
+  (the real-bundle region bakes).
+
+**The rebuild (refactor Rule 6), 2026-08-28.** The whole bake re-forced through the split
+code (the first attempt was killed externally mid-`areas` and resumed with `--only` on the
+four unfinished products), then `cs2_city_fine` rebuilt in place, `cook: true`, settings from
+its own `cs2beamng_settings.json`, `--force`, 18m56s, status done. **Against the after-phase3
+baseline report, all 79 validation-check fields are identical and the problems list is
+identical** (the same 1: the standing budget-band warning) — objects, classes, forest items
+and types, cooked shapes, navgraph (roads 15,393 / nodes 51,197 / endNodesMerged 18,703),
+ground check, ter, spawn points, and the residency bytes to the decimal (3,482.6 MiB mesh +
+790.1 MiB texture = 4,272.7 MiB). `cs2beamng budget` is **byte-identical** to the baseline
+capture. `check_instances_vs_game` on the rebuilt level: 100 % on every exact question over
+800 sampled records, 15,697 TSStatic colorSets and 892,332 forest paints. The fresh report is
+`docs/baselines/cs2_city_fine-report-after-phase4a.json`. The in-game look remains owed to
+Naomi before the phase closes.
+
+**A defect found by the rebuild itself (2026-08-28), fixed as its own commit per Rule 1:**
+`cs2beamng build --settings` read only a FLAT dict and silently applied nothing from the app's
+own saved `cs2beamng_settings.json` (whose shape is `{"schema", "settings"}` — every key fell
+outside SCHEMA), so the build ran on the app settings store instead and rebuilt whatever level
+THAT named. The first A/B rebuild of this phase went to `cs2_city_network` because of it. The
+reader now unwraps the saved shape and refuses a file from which nothing applied, instead of
+proceeding silently.
+
+Still open in Phase 4: `bake/materials.py` (817), `decimate.py` (691), `drape.py` (612),
+`instances.py` (600), `materials.py` (527), `glb.py` (521), `lanes.py` (473),
+`check_roadgrade_vs_game.py` (499) and `check_instances_vs_game.py` (477 — its sampler is
+decomposed; both remain linear measurement probes over the file ceiling, split-or-declare
+still to be decided), `bake/markings` (439), `bake/areas` (433), `bake/terraincut` (401), the
+two remaining oversized test files (`test_app_shell` 1,692, `test_a3_objects` 1,315), and the
+remaining over-60 functions. The consumer-phase gate (rebuild `cs2_city_fine`, hand over
+before commit) still stands for the phase as a whole.
 
 ### Phase 9 — in progress, 2026-08-27
 

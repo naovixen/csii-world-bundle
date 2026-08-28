@@ -32,7 +32,7 @@ import numpy
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
-from csiibundle import colour, images, png, tints  # noqa: E402
+from csiibundle import colourspace, images, png, tints  # noqa: E402
 from csiibundle.bake.locate import default_bundle_dir  # noqa: E402
 
 
@@ -78,7 +78,7 @@ def measure(bundle, derived, limit=None, progress=True):
             base = png.downsample_box(base, factor_down)
             h, w = base.shape[:2]
         mask_r = images.resize_nearest(mask, h, w).astype(numpy.float64) / 255.0
-        base_lin = colour.srgb8_to_linear(base[:, :, :3])
+        base_lin = colourspace.srgb8_to_linear(base[:, :, :3])
         alpha = base[:, :, 3].astype(numpy.float64) / 255.0
         touched = float((mask_r[:, :, :3].max(axis=2) > 1.0 / 255.0).mean())
         for vkey in sorted((rec.get("derived") or {}).get("variants") or {}):
@@ -87,9 +87,11 @@ def measure(bundle, derived, limit=None, progress=True):
                 continue
             colours = [(*tuple(centre[i]), 1.0) for i in range(3)]
             m = tints.multiplier(mask_r[:, :, :3], colours)
-            exact8 = colour.linear_to_srgb8(base_lin * m).astype(numpy.int16)
+            exact8 = colourspace.linear_to_srgb8(base_lin * m).astype(numpy.int16)
             factor = tints.best_constant(m, alpha)
-            approx8 = colour.linear_to_srgb8(base_lin * factor[None, None, :]).astype(numpy.int16)
+            approx8 = colourspace.linear_to_srgb8(base_lin * factor[None, None, :]).astype(
+                numpy.int16
+            )
             err = numpy.abs(exact8 - approx8)
             visible = alpha > 0.5
             if visible.any():

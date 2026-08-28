@@ -25,7 +25,7 @@ approximation left to tune.
 clips the shallow ±0.3 m shell over every surface road too, but the ground there is under the
 carriageway that hides it, and removing it would rely on our road meshes covering every square
 metre the prism does (audit §41.7 measured where they do not). The shallow band instead lowers
-the samples that stand over the carriageway onto it — `terrain.ground_heights`, shared with the
+the samples that stand over the carriageway onto it — `carriageway.ground_heights`, shared with the
 consumer's own heightfield. The report states how many volumes were skipped this way.
 
 Outputs (`derived/terraincut/terraincut_<tx>_<tz>.glb`, plus `derived/terrain/corridor_faces.png`):
@@ -40,7 +40,7 @@ Outputs (`derived/terraincut/terraincut_<tx>_<tz>.glb`, plus `derived/terrain/co
 * `corridor_faces.png` — gray8 at FACE resolution `(h−1, w−1)`, 255 where the heightfield square
   is replaced by mesh (punch it), 0 elsewhere.
 
-Heights are `terrain.ground_heights` — the game's own graded heightmap with only the
+Heights are `carriageway.ground_heights` — the game's own graded heightmap with only the
 over-carriageway residual clamped (audit §51) — quantised to the elevation encoding, so a
 boundary vertex equals the consumer's own sample bit for bit.
 """
@@ -51,7 +51,7 @@ import time
 
 import numpy
 
-from .. import png, reader, terrain, terrainclip
+from .. import carriageway, png, reader, terrainclip
 from .. import splat as splat_mod
 from . import Product, register
 from .tiles import TileSink
@@ -150,14 +150,14 @@ def run(context, progress):
         surface = reader.resample_nearest(surface, raw.shape)
 
     # -- the ground the consumer's heightfield will hold ------------------------------------
-    # The same definition it applies itself (`terrain.ground_heights`: the game's grading, kept,
+    # The same definition it applies itself (`carriageway.ground_heights`: the game's grading, kept,
     # with only the over-carriageway residual clamped), quantised to the elevation encoding by the
     # consumer's own arithmetic (`beamng.ter.from_bundle_arrays` widens float32 to float64 before
     # `rint`).
     progress.begin("terraincut: ground", total=None, unit="")
     heights32 = raw.astype(numpy.float32) * numpy.float32(scale) + numpy.float32(offset)
     band_ceiling = _carriageway_ceiling(derived, heights32.shape, scale, offset)
-    ground_y, clamped, _drop = terrain.ground_heights(heights32, band_ceiling)
+    ground_y, clamped, _drop = carriageway.ground_heights(heights32, band_ceiling)
     ground_y = (
         numpy.rint((ground_y.astype(numpy.float64) - offset) / max(scale, 1e-12)) * scale + offset
     )

@@ -280,3 +280,36 @@ def dominant_layer(
         names.append(roadbed_name)
         index = numpy.where(surface == roadbed_id, len(names) - 1, index).astype(numpy.uint8)
     return index, names
+
+
+GROUND_FALLBACK_TILING = 8.0
+
+
+def ground_tiling(block, ground):
+    """`([near, mid, far] metres per repeat, [midStart, midEnd, farStart, farEnd] camera m)`
+    for one ground, from the shipped `rasters.terrainTiling`, or None when it is absent.
+
+    The game does not tile a ground at one scale: it blends THREE by camera distance
+    (`_Terrain*TextureTiling` / `_Terrain*TextureTilingBlend`, driven in
+    `Game.Rendering.TerrainMaterialSystem.UpdateGrassTiling`), which is its own anti-tiling.
+    The producer has shipped the authored numbers since 095322a and nothing read them (audit
+    P5, producer half done, consumer half never started) — the harness UV'd the whole terrain
+    at a hardcoded 8 m per repeat, tighter than the game's grass near tiling (14.34 m) and
+    8.5x tighter than rock (68.27 m), which is the repeating grid.
+
+    The extras have no tiling block of their own and take the GRASS layer's: the bundle's own
+    semantics string says so (`_TerrainExtraTextureTiling` is bound from `m_TerrainGrassTiling`).
+    """
+    layers = (block or {}).get("layers")
+    if not isinstance(layers, dict):
+        return None
+    entry = layers.get("grass" if str(ground).startswith("extra") else ground)
+    if not isinstance(entry, dict):
+        return None
+    repeats = entry.get("metresPerRepeat")
+    if not isinstance(repeats, list) or len(repeats) != 3 or not all(r > 0 for r in repeats):
+        return None
+    blend = entry.get("lodBlend")
+    if not isinstance(blend, list) or len(blend) != 4:
+        return None
+    return [float(r) for r in repeats], [float(b) for b in blend]

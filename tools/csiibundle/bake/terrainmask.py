@@ -1,6 +1,6 @@
 """Bake product `terrainmask` — the §8c decision rasters for a heightmap-native consumer.
 
-`terrain.hole_mask` rasterises `clipvolumes.jsonl` against the heightmap once (~80 s on a full
+`clipgrid.hole_mask` rasterises `clipvolumes.jsonl` against the heightmap once (~80 s on a full
 city) and answers two questions an engine terrain needs:
 
 * `derived/terrain/clip_cells.png` — gray8 at FACE resolution `(h−1, w−1)`: 255 where a
@@ -11,7 +11,7 @@ city) and answers two questions an engine terrain needs:
   own quantisation (`value·elevationScale + elevationOffset`, 0 = no shallow band): the top of
   the game's own road cross-section under the shallow band covering the sample
   (`lane + top − CLIP_BAND_EXPANSION`). A consumer lowers any sample standing above it onto it
-  — `terrain.clamp_carriageway`. That is the 1.1 % of covered samples the game's stencil
+  — `carriageway.clamp_carriageway`. That is the 1.1 % of covered samples the game's stencil
   discards and a heightfield cannot; the other 98.9 % are left exactly as the game graded them
   (audit §51). This replaced `shallow_floor.png`, which recorded the band FLOOR (`lane − 0.5`)
   and so dug 0.25 m of trench under every road in the city.
@@ -30,7 +30,7 @@ import time
 
 import numpy
 
-from .. import png, terrain
+from .. import clipgrid, png
 from . import Product, register
 
 PRODUCT_NAME = "terrainmask"
@@ -43,7 +43,7 @@ def run(context, progress):
     os.makedirs(out_dir, exist_ok=True)
     started = time.monotonic()
     progress.begin("terrainmask: clip volumes", total=None, unit="")
-    hm = terrain.hole_mask(bundle, prefer_fine=context.options.get("ground", "fine") == "fine")
+    hm = clipgrid.hole_mask(bundle, prefer_fine=context.options.get("ground", "fine") == "fine")
     progress.end(
         f"{int(hm.contain.sum()):,} contained faces, {int(hm.deep_touch.sum()):,} deep-touched, "
         f"{int(numpy.isfinite(hm.band_ceiling).sum()):,} samples under a shallow band"

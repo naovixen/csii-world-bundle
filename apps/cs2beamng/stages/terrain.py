@@ -31,7 +31,7 @@ What is exact and what is a choice:
 * Terrain materials point all three tiers (base/macro/detail) at the ground's own texture, at
   **the game's own three tilings**: BeamNG's base/macro/detail ARE CS2's far/mid/near, and the
   metres per repeat and the two distance ramps come from `rasters.terrainTiling` through the
-  shared `csiibundle.terrain.ground_tiling` (audit §47). The tier **strengths** are the game's own
+  shared `csiibundle.splat.ground_tiling` (audit §47). The tier **strengths** are the game's own
   cross-fade too: with `_tier_deviation`'s encoding a strength IS a lerp weight, so
   `detail = 1 − middle`, `macro = middle·(1 − far)` and the base is the remainder — the three
   always sum to 1, and both overlays read the one distance ramp `[0, midBlendStart, midBlendEnd,
@@ -46,9 +46,8 @@ import os
 import time
 
 import numpy
-from csiibundle import images, png, reader
+from csiibundle import carriageway, images, png, reader
 from csiibundle import splat as splat_mod
-from csiibundle import terrain as terrain_mod
 from csiibundle.bake import terraincut
 
 from ..beamng import ter as ter_mod
@@ -85,7 +84,7 @@ TIERS = ("base", "macro", "detail")
 # `blendDetailMacro`/`calculateStrenth`). near -> detail, mid -> macro, far -> base.
 #
 # The producer has shipped the game's authored numbers as `rasters.terrainTiling` since 095322a
-# and the shared reader `csiibundle.terrain.ground_tiling` has served them to the mesh harness
+# and the shared reader `csiibundle.splat.ground_tiling` has served them to the mesh harness
 # since the post-audit pass; this app guessed three global constants until 2026-08-17 (audit
 # §47). Grass near is 14.34 m per repeat and rock near is 68.27 m, against the one 4 m detail
 # tile every ground used to get — which is the repeating fine grid on every screenshot.
@@ -190,7 +189,7 @@ def run(ctx, progress):
         f"{'' if field.fine or not want_fine else ' - no layers.terrainFine in this rip'}"
         f"{' - terrain_upsample 1 keeps the base map' if paths.heightmap_fine and not want_fine else ''})"
     )
-    # the ground edit is `terrain.ground_heights` — the same definition the mesh harness and the
+    # the ground edit is `carriageway.ground_heights` — the same definition the mesh harness and the
     # bake's pre-clipped ground meshes use, so a mesh in a heightfield hole meets these samples
     # exactly. It is the carriageway clamp and nothing else; see the module docstring.
     lowered = 0
@@ -205,7 +204,7 @@ def run(ctx, progress):
                 numpy.float32
             )
     covered = int(numpy.isfinite(ceiling).sum())
-    heights, lowered, worst = terrain_mod.ground_heights(heights, ceiling)
+    heights, lowered, worst = carriageway.ground_heights(heights, ceiling)
     punch, holes_mode, corridor_holes = _punch_mask(ctx, settings, size)
     progress.check()
     # APPROXIMATION, counted: the game discards these pixels with its road stencil; a heightfield
@@ -770,7 +769,7 @@ def _tiling_of(tiling_block, ground):
     centred on mid-gray, so a mip that has converged to the tier's mean contributes exactly zero
     deviation, and at 250 m a 14 m repeat is long since mipped flat. DECLARED, not counted — it
     is a property of the arithmetic, not a per-level approximation."""
-    got = terrain_mod.ground_tiling(tiling_block, ground)
+    got = splat_mod.ground_tiling(tiling_block, ground)
     if got is None:
         blend = FALLBACK_LOD_BLEND
         ramp = [0.0, blend[0], blend[1], blend[3]]

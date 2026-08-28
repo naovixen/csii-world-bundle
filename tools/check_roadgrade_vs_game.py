@@ -36,7 +36,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import itertools  # noqa: E402 - after the sys.path bootstrap above
 
-from csiibundle import bezier, png, reader, terrain  # noqa: E402
+from csiibundle import bezier, clipraster, containment, png, reader  # noqa: E402
 from csiibundle.bake.locate import default_bundle_dir  # noqa: E402
 
 BUNDLE = default_bundle_dir()  # CS2_BUNDLE_DIR overrides; see `locate.BUNDLE_DIR_ENV`
@@ -60,7 +60,7 @@ print(
 )
 
 # -- the game's shallow road bands, rasterised, keeping lane / cmin / cmax per sample ------------
-# Same walk as `terrain.clip_grid`, but recording what the band was measured against instead of
+# Same walk as `clipgrid.clip_grid`, but recording what the band was measured against instead of
 # only whether the sample fell inside it. Lowest floor wins where two strips overlap, exactly as
 # `clip_span` does, so a cell under two roads is scored against the lower one.
 lane_r = numpy.full((H, W), numpy.nan)
@@ -81,7 +81,7 @@ def to_cell(points):
 
 def mark(quad, lane_y, bottom, top, sid=-1):
     """One station quad: mark the samples the band covers and record lane/cmin/cmax there."""
-    lane_u, ramp = terrain.lane_ramp(quad, lane_y)
+    lane_u, ramp = clipraster.lane_ramp(quad, lane_y)
     rows = [q[1] for q in quad]
     r0 = max(0, int(math.ceil(min(rows) - 0.5)))
     r1 = min(H - 1, int(math.floor(max(rows) - 0.5)))
@@ -151,7 +151,7 @@ for n, strip in enumerate(strips):
     top = float(strip["top"]) if strip.get("top") is not None else float("inf")
     # Only SHALLOW bands: a deep one is a trench or a portal, where the game hides the cover
     # rather than grading it, and there is no carriageway grade to test against.
-    if top > terrain.CLIP_DEEP_BAND_TOP:
+    if top > containment.CLIP_DEEP_BAND_TOP:
         deep += 1
         continue
     shallow += 1
@@ -315,7 +315,7 @@ if roadbed is not None:
 # -- 4. what the consumer does with that -------------------------------------------------------
 print()
 print("== 4. what the consumer does to the game's answer ==")
-print("   `terrain.ground_heights` keeps the shipped heights and applies `clamp_carriageway` and")
+print("   `carriageway.ground_heights` keeps the shipped heights and applies `clamp_carriageway` and")
 print("   nothing else: a sample standing above the game's own profile top is lowered onto it.")
 ceiling = cmax  # == lane + top - expansion, minus lane
 moved = over > ceiling
@@ -337,7 +337,7 @@ print("== 5. against the two rules audit §51 deleted ==")
 print("   For scale, what the retired constants would have done to this same rip:")
 SINK = 0.15
 if roadbed is not None:
-    sink_mask = terrain.dilate(roadbed, 1)
+    sink_mask = clipraster.dilate(roadbed, 1)
     print(
         f"   ROADBED_SINK {SINK} m would move {int(sink_mask.sum()):,} samples "
         f"({int(sink_mask.sum()) * cell * cell / 1e6:.2f} km2), "

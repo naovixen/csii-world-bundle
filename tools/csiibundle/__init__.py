@@ -35,16 +35,28 @@ Modules, roughly in the order a consumer needs them
 ``lights``    §4.3 photometry — and the two different record shapes in one file
 ``networks``  §5 centerline fallback: the ribbon, and its mitre
 ``lanegraph`` §5A `lanes.jsonl` — the lane GRAPH: paths, kinds, owners
+``navgraph``  the drivable network as a routable centerline graph, over `navroad`/`navread`/
+              `navspine`/`navjunction`/`navmerge`/`navclearance`/`navreport`
 ``bezier``    the curve maths every linear layer is stored as
+``polyline``  resampling, framing, simplification and weld keys over evaluated points
 ``lanes``     §5B: GetTileCount, the bend, the rigid-tile instancing gate
 ``decals``    §5B markings: the lift ladder, subdivision, the quad lattice
 ``png``       the §8 raster decode, 8/16-bit grayscale and RGBA8
 ``splat``     the §8 splatmap: channel map, packed-nibble decode, composite-over-base
-``terrain``   §8 ground: clip rasterisation, the corridor lattice, face generation
+``clipraster``  §8c clip-band quads rasterised onto a sample grid, and mask morphology
+``containment`` §8c: the deletion rule — only a deep band carves, and only a whole face
+``clipgrid``    §8c: `clipvolumes.jsonl` onto the heightmap grid, and the hole mask
+``carriageway`` §8: the shipped ground heights, and the one clamp a consumer applies
+``lattice``     §8 ground mesh: the corridor lattice and its three face families
+``latticecut``  §8c: the exact prism cut of lattice faces
+``watersurface`` §8 water surface, on the same lattice as the ground
 ``areas``     §8b surface areas: triangle conformance and the driver loop
 ``drape``     the ProjectionSurface protocol; a numpy heightfield AND a numpy triangle-soup
               surface implementing it (the road surface for a consumer with no ray-caster)
 ``colour``    the §11 grading derivation — `grading.json` into applicable constants
+``colourspace`` transfer curves, Rec.709<->ACEScg, and HDRP's matrix operators, ported
+``colourocio``  the grading as OCIO: view picking, on-screen evaluation, the view transform
+``illumination`` the §11 lighting block: sun, moon, sky, indirect and the clock
 ``glbwrite``  the inverse of `glb`: arrays back to a §6-shaped `.glb` (the bake's tiles)
 ``decimate``  generated LOD chains (quadric via optional `pyfqmr`, else vertex clustering)
 ``collision`` simple colliders: thickness rule, box, trunk cylinder, wind vertex colours
@@ -60,7 +72,7 @@ prop and tree correctly. Then, in rough order of how wrong the result looks with
 * `water` — or the sea is the wrong colour and every swimming pool is a rectangle of white
   paint. CS2 draws water with a shader, so those materials ship with no textures.
 * `tints` — or all the foliage is grey.
-* `terrain` + `png` + `splat` — the ground and its water surface.
+* `lattice` + `clipgrid` + `png` + `splat` — the ground and its water surface.
 * `lanes` + `decals` + `bezier` + `drape` — road markings and roadside furniture.
 * `lanegraph` — what a SIMULATION consumer wants, and a geometry consumer can skip entirely.
 * `colour` + `lights` last: the bundle ships albedo, and both the illumination and the grading
@@ -70,54 +82,90 @@ prop and tree correctly. Then, in rough order of how wrong the result looks with
 from . import (
     areas,
     bezier,
+    carriageway,
+    clipgrid,
+    clipraster,
     collision,
     colour,
+    colourocio,
+    colourspace,
+    containment,
     decals,
     decimate,
     drape,
     frames,
     glb,
     glbwrite,
+    illumination,
     instances,
     lanegraph,
     lanes,
+    lattice,
+    latticecut,
     lights,
     lod,
     materials,
+    navclearance,
+    navgraph,
+    navjunction,
+    navmerge,
+    navread,
+    navreport,
+    navroad,
+    navspine,
     networks,
     png,
+    polyline,
     reader,
     splat,
-    terrain,
     tints,
     water,
+    watersurface,
 )
 
 __all__ = [
     "areas",
     "bezier",
+    "carriageway",
+    "clipgrid",
+    "clipraster",
     "collision",
     "colour",
+    "colourocio",
+    "colourspace",
+    "containment",
     "decals",
     "decimate",
     "drape",
     "frames",
     "glb",
     "glbwrite",
+    "illumination",
     "images",
     "instances",
     "lanegraph",
     "lanes",
+    "lattice",
+    "latticecut",
     "lights",
     "lod",
     "materials",
+    "navclearance",
+    "navgraph",
+    "navjunction",
+    "navmerge",
+    "navread",
+    "navreport",
+    "navroad",
+    "navspine",
     "networks",
     "png",
+    "polyline",
     "reader",
     "splat",
-    "terrain",
     "tints",
     "water",
+    "watersurface",
 ]
 
 # Bundle schema version this package reads. `reader.schema_version` reports what a bundle on

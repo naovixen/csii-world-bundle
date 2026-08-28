@@ -25,7 +25,7 @@ import time
 
 import numpy
 from csiibundle import colour as colour_mod
-from csiibundle import reader
+from csiibundle import illumination, reader
 
 from ..beamng import frame
 from . import Stage, level_of
@@ -50,7 +50,7 @@ def run(ctx, progress):
     settings = ctx.settings
     manifest = reader.load_manifest(ctx.bundle) or {}
     grading = colour_mod.load(ctx.bundle)
-    lighting = getattr(grading, "lighting", None) or colour_mod.Lighting(None)
+    lighting = getattr(grading, "lighting", None) or illumination.Lighting(None)
     fog = (getattr(grading, "raw", None) or {}).get("fog") if grading is not None else None
     if fog is None and grading is not None:
         fog = getattr(grading, "fog", None)

@@ -20,7 +20,7 @@ Pure arithmetic, no bundle needed. The measured agreement against a real city is
 import sys
 
 import numpy
-from csiibundle import terrain
+from csiibundle import carriageway, clipraster
 
 FAILED = []
 
@@ -35,15 +35,15 @@ def test_no_tuned_sink():
     """The two constants audit §51 deleted must stay deleted, and nothing may re-derive them."""
     print("road grade: the deleted inventions")
     check(
-        not hasattr(terrain, "ROADBED_SINK"),
+        not hasattr(carriageway, "ROADBED_SINK"),
         "ROADBED_SINK is gone (it sank 914,616 samples 0.15 m below the game's own grade)",
     )
     check(
-        not hasattr(terrain, "clamp_shallow_bands"),
+        not hasattr(carriageway, "clamp_shallow_bands"),
         "clamp_shallow_bands is gone (it lowered 100 % of covered samples to lane - 0.5)",
     )
     check(
-        terrain.CLIP_BAND_EXPANSION == 0.3,
+        clipraster.CLIP_BAND_EXPANSION == 0.3,
         "CLIP_BAND_EXPANSION is the producer's own 0.3 m, inverted — not a tuned constant",
     )
 
@@ -56,7 +56,7 @@ def test_ground_heights_only_lowers():
 
     # No band anywhere: the heights are the game's and must come back bit for bit.
     ceiling = numpy.full(native.shape, numpy.inf, dtype=numpy.float32)
-    ground, clamped, drop = terrain.ground_heights(native, ceiling)
+    ground, clamped, drop = carriageway.ground_heights(native, ceiling)
     check(
         numpy.array_equal(ground, native) and clamped == 0 and drop == 0.0,
         "with no carriageway the shipped heights pass through untouched",
@@ -66,7 +66,7 @@ def test_ground_heights_only_lowers():
     # only downward. Nothing below the ceiling is raised — that is what the band FLOOR clamp got
     # wrong in the other direction.
     ceiling[20:30, :] = numpy.float32(native[20:30, :].mean())
-    ground, clamped, drop = terrain.ground_heights(native, ceiling)
+    ground, clamped, drop = carriageway.ground_heights(native, ceiling)
     over = native > ceiling
     check(
         clamped == int(over.sum()) and clamped > 0,
@@ -99,30 +99,30 @@ def test_ceiling_is_the_games_profile_top():
 
     mask = numpy.zeros((h, w), dtype=bool)
     ceiling = numpy.full((h, w), numpy.inf)
-    terrain.fill_clip_quad(mask, terrain_y, w, h, quad, lane, bottom, top, ceiling=ceiling)
+    clipraster.fill_clip_quad(mask, terrain_y, w, h, quad, lane, bottom, top, ceiling=ceiling)
     hit = numpy.isfinite(ceiling)
     check(
         hit.any() and numpy.array_equal(hit, mask),
         "every sample the band marks gets a ceiling, and only those",
     )
     check(
-        numpy.allclose(ceiling[hit], lane + top - terrain.CLIP_BAND_EXPANSION),
-        f"the ceiling is lane + top - {terrain.CLIP_BAND_EXPANSION} = "
-        f"{lane + top - terrain.CLIP_BAND_EXPANSION:.3f}, the game's carriageway profile top",
+        numpy.allclose(ceiling[hit], lane + top - clipraster.CLIP_BAND_EXPANSION),
+        f"the ceiling is lane + top - {clipraster.CLIP_BAND_EXPANSION} = "
+        f"{lane + top - clipraster.CLIP_BAND_EXPANSION:.3f}, the game's carriageway profile top",
     )
 
     # Two strips over the same cells: the LOWER carriageway must win, so the ground ends up
     # under both roads rather than under whichever was rasterised last.
-    terrain.fill_clip_quad(mask, terrain_y, w, h, quad, lane - 0.4, bottom, top, ceiling=ceiling)
+    clipraster.fill_clip_quad(mask, terrain_y, w, h, quad, lane - 0.4, bottom, top, ceiling=ceiling)
     check(
-        numpy.allclose(ceiling[hit], lane - 0.4 + top - terrain.CLIP_BAND_EXPANSION),
+        numpy.allclose(ceiling[hit], lane - 0.4 + top - clipraster.CLIP_BAND_EXPANSION),
         "where two carriageways overlap the LOWER ceiling wins",
     )
 
     # Crossfall: a tilted strip's ceiling must ramp across the width, not sit at the mean.
     tilted = numpy.full((h, w), numpy.inf)
     m2 = numpy.zeros((h, w), dtype=bool)
-    terrain.fill_clip_quad(m2, terrain_y, w, h, quad, (100.0, 101.0), bottom, top, ceiling=tilted)
+    clipraster.fill_clip_quad(m2, terrain_y, w, h, quad, (100.0, 101.0), bottom, top, ceiling=tilted)
     row = tilted[6, :]
     live = numpy.isfinite(row)
     # Only the part of the width where the flat terrain still falls inside (lane + bottom,
@@ -141,8 +141,8 @@ def test_clamp_is_idempotent():
     native = (rng.random((40, 40)) * 5.0 + 500.0).astype(numpy.float32)
     ceiling = numpy.full(native.shape, numpy.inf, dtype=numpy.float32)
     ceiling[:, 10:20] = numpy.float32(502.0)
-    once, n1, _ = terrain.ground_heights(native, ceiling)
-    twice, n2, _ = terrain.ground_heights(once, ceiling)
+    once, n1, _ = carriageway.ground_heights(native, ceiling)
+    twice, n2, _ = carriageway.ground_heights(once, ceiling)
     check(
         numpy.array_equal(once, twice) and n1 > 0 and n2 == 0,
         f"a second pass moves nothing ({n1} then {n2}) — mesh and heightfield cannot drift",

@@ -40,28 +40,25 @@ system Python — the same trick as `tools/test_decal_rows.py`). The TRUTH it is
 built here, at a finer sampling than the rule uses, so agreement means the cut respects the
 prisms rather than that one rasteriser agrees with itself.
 
+The scanline fuzz — both span-enumerator paths forced on every random quad — lives in
+`tools/test_clip_fuzz.py`, which needs no bundle; this file is the half that scores the real
+city's windows.
+
 Run: `python tools/test_clip_cut.py`  (system Python + numpy + PIL; skipped when no bundle is on
 disk).
 """
 
-import json
-import math
 import os
-import pathlib
-import random
 import sys
 
 import numpy
-from csiibundle import bezier as bezier_math
-from csiibundle import terrain as terrain_math
+from csiibundle import clipraster, containment
 
-BUNDLE = os.environ.get("CARTO_BUNDLE") or os.path.expandvars(
-    r"%USERPROFILE%\AppData\LocalLow\Colossal Order\Cities Skylines II\ModsData\Carto"
-)
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import cliptruth
+from cliptruth import TRUTH, carves, load_terrain, quads_of, road_cover, strips_near
 
-# Independent truth sampling, finer than the rule's own. A sliver narrower than this is below
-# what any 3.5 m mesh can represent and is not what this test is about.
-TRUTH = 12
+BUNDLE = cliptruth.BUNDLE
 
 # The five windows the 2026-08-11 defects were reported and located in: the user's two, the two
 # densest deep-band (trench / tunnel-portal) clusters, and the densest clip-area cluster.
@@ -93,304 +90,19 @@ ROAD_SKY_BUDGET = 1.0
 # (which imports `bpy` at module scope and cannot be imported under system Python). `H` stays as
 # the one place naming what this file pins, so a rename in the package fails loudly right here.
 H = {
-    "_CLIP_CONTAIN_SAMPLES": terrain_math.CLIP_CONTAIN_SAMPLES,
-    "_CLIP_CONTAIN_BLOCK": terrain_math.CLIP_CONTAIN_BLOCK,
-    "_CLIP_DEEP_BAND_TOP": terrain_math.CLIP_DEEP_BAND_TOP,
-    "_CLIP_SCANLINE_VECTOR_ROWS": terrain_math.CLIP_SCANLINE_VECTOR_ROWS,
-    "_bezier_points": bezier_math.evaluate,
-    "_lane_ramp": terrain_math.lane_ramp,
-    "_clip_span": terrain_math.clip_span,
-    "_fill_clip_quad_rows": terrain_math.fill_clip_quad_rows,
-    "_fill_clip_quad": terrain_math.fill_clip_quad,
-    "_dilate": terrain_math.dilate,
-    "_contain_faces": terrain_math.contain_faces,
+    "_CLIP_CONTAIN_SAMPLES": containment.CLIP_CONTAIN_SAMPLES,
+    "_CLIP_CONTAIN_BLOCK": containment.CLIP_CONTAIN_BLOCK,
+    "_CLIP_DEEP_BAND_TOP": containment.CLIP_DEEP_BAND_TOP,
+    "_fill_clip_quad": clipraster.fill_clip_quad,
+    "_dilate": clipraster.dilate,
+    "_contain_faces": containment.contain_faces,
 }
 
 failures = 0
 
 
-def fuzz_scanline_paths(trials=4000, seed=20260811):
-    """The whole-array scanline must agree with the per-row one, quad for quad.
-
-    `_fill_clip_quad` splits on row count: short quads take `_fill_clip_quad_rows`, tall ones
-    the whole-array path. A fast path that silently disagrees with its slow one is what sank
-    the exact clip reverted on 2026-08-11 (`2878393` -> `22a8ca2`), whose own note says the
-    missing test was exactly this. So: random quads, including the shapes the layer really
-    ships — triangles with a doubled corner (`area` records), degenerate zero-area quads (a
-    node strip whose far side collapses to a point) and self-intersecting bowties — against
-    both paths directly, bypassing the dispatch.
-    """
-    global failures
-    rng = random.Random(seed)
-    bad = 0
-    for trial in range(trials):
-        w, h = rng.randint(3, 24), rng.randint(3, 24)
-        terrain = numpy.asarray([[rng.uniform(-5.0, 5.0) for _ in range(w)] for _ in range(h)])
-        corner = [(rng.uniform(-3.0, w + 3.0), rng.uniform(-3.0, h + 3.0)) for _ in range(4)]
-        shape = trial % 4
-        if shape == 1:  # triangle, as `area` records ship
-            corner[3] = corner[2]
-        elif shape == 2:  # degenerate: both sides collapsed
-            corner = [corner[0], corner[1], corner[0], corner[1]]
-        elif shape == 3:  # bowtie
-            corner = [corner[0], corner[2], corner[1], corner[3]]
-        # Half the trials use the tilted `(left, right)` band, half the plain height an `area`
-        # record ships. Both reach the same span body, and a ramp that disagreed between the
-        # two paths would be exactly the class of defect this fuzz exists for.
-        lane = rng.uniform(-2.0, 2.0)
-        if trial % 2:
-            lane = (lane, lane + rng.uniform(-3.0, 3.0))
-        bottom = rng.uniform(-3.0, 0.0)
-        top = bottom + rng.uniform(0.0, 4.0)
-        offset = rng.choice([0.5, 1.0])
-        ys = [p[1] for p in corner]
-        row_lo = max(0, int(math.ceil(min(ys) - offset)))
-        row_hi = min(h - 1, int(math.floor(max(ys) - offset)))
-
-        rows_mask = numpy.zeros((h, w), dtype=bool)
-        rows_refs = numpy.full((h, w), -1, dtype=numpy.int32)
-        rows_ceiling = numpy.full((h, w), numpy.inf)
-        if row_hi >= row_lo:
-            H["_fill_clip_quad_rows"](
-                rows_mask,
-                terrain,
-                w,
-                h,
-                corner,
-                lane,
-                bottom,
-                top,
-                rows_refs,
-                7,
-                offset,
-                row_lo,
-                row_hi,
-                rows_ceiling,
-            )
-        both_mask = numpy.zeros((h, w), dtype=bool)
-        both_refs = numpy.full((h, w), -1, dtype=numpy.int32)
-        both_ceiling = numpy.full((h, w), numpy.inf)
-        H["_fill_clip_quad"](
-            both_mask,
-            terrain,
-            w,
-            h,
-            corner,
-            lane,
-            bottom,
-            top,
-            refs=both_refs,
-            ref_value=7,
-            offset=offset,
-            ceiling=both_ceiling,
-        )
-
-        # The ceiling raster carries the lateral ramp, so comparing it is what actually pins the
-        # two paths to the same per-sample lane height; the mask alone only sees its sign.
-        if not (
-            numpy.array_equal(rows_mask, both_mask)
-            and numpy.array_equal(rows_refs, both_refs)
-            and numpy.allclose(rows_ceiling, both_ceiling, equal_nan=True)
-        ):
-            bad += 1
-            if bad <= 3:
-                print(
-                    f"  FAIL scanline paths disagree: shape {shape}, offset {offset}, "
-                    f"lane {lane}, quad {corner}"
-                )
-    if bad:
-        print(f"  FAIL {bad} of {trials} random quads rasterise differently on the two paths")
-        failures += 1
-    else:
-        print(
-            f"  ok   scanline paths agree on {trials} random quads "
-            f"(triangles, degenerates, bowties)"
-        )
-
-
-def load_terrain():
-    from PIL import Image
-
-    rasters = json.load(open(os.path.join(BUNDLE, "terrain", "rasters.json"), encoding="utf-8"))
-    geo = json.load(open(os.path.join(BUNDLE, "bundle.json"), encoding="utf-8"))["rasters"]
-    pixels = numpy.asarray(Image.open(os.path.join(BUNDLE, "terrain", "heightmap.png")))
-    if pixels.ndim == 3:
-        pixels = pixels[..., 0]
-    heights = pixels.astype(numpy.float64) * float(rasters["elevationScale"]) + float(
-        rasters["elevationOffset"]
-    )
-    return (
-        heights,
-        float(rasters["resolution"]),
-        float(geo["originWorld"][0]),
-        float(geo["originWorld"][2]),
-    )
-
-
-def strips_near(x0, x1, z0, z1):
-    """Clip records whose control hull meets the window."""
-    found = []
-    with open(os.path.join(BUNDLE, "clipvolumes.jsonl"), encoding="utf-8") as handle:
-        for line in handle:
-            if not line.strip():
-                continue
-            record = json.loads(line)
-            if record.get("kind") == "area":
-                nodes = record.get("nodes") or []
-                if not nodes:
-                    continue
-                hull = numpy.asarray(nodes, dtype=numpy.float64)
-            else:
-                if not record.get("left") or not record.get("right"):
-                    continue
-                hull = numpy.asarray(record["left"] + record["right"], dtype=numpy.float64)
-            if (
-                hull[:, 0].max() < x0
-                or hull[:, 0].min() > x1
-                or hull[:, 2].max() < z0
-                or hull[:, 2].min() > z1
-            ):
-                continue
-            found.append(record)
-    return found
-
-
-def carves(record):
-    """Is this record one the shipped rule lets DELETE terrain?
-
-    A shallow band flattens and paints; only a trench or portal band carves. An `area` record
-    is an authored clip surface and keeps its own behaviour.
-    """
-    if record.get("kind") == "area":
-        return True
-    top = record.get("top")
-    return top is None or float(top) > H["_CLIP_DEEP_BAND_TOP"]
-
-
-def quads_of(record, to_cell, cell):
-    """`(quad, lane_y, bottom, top)` per station, in cell space — the harness's own stepping."""
-    bottom = float(record["bottom"])
-    top = float(record["top"]) if record.get("top") is not None else float("inf")
-    if record.get("kind") == "area":
-        nodes, triangles = record.get("nodes") or [], record.get("triangles") or []
-        for tri in triangles:
-            if any(not 0 <= i < len(nodes) for i in tri):
-                continue
-            pts = numpy.asarray([nodes[i] for i in tri], dtype=numpy.float64)
-            cells = to_cell(pts)
-            yield (
-                [tuple(cells[0]), tuple(cells[1]), tuple(cells[2]), tuple(cells[2])],
-                float(pts[:, 1].mean()),
-                bottom,
-                top,
-            )
-        return
-    left, right = record["left"], record["right"]
-    polygon = numpy.asarray(left, dtype=numpy.float64)
-    span = float(numpy.linalg.norm(numpy.diff(polygon, axis=0), axis=1).sum())
-    steps = int(min(1024, max(1, math.ceil(max(span, 1.0) / cell))))
-    t = numpy.linspace(0.0, 1.0, steps + 1)
-    left_pts, right_pts = H["_bezier_points"](left, t), H["_bezier_points"](right, t)
-    left_cells, right_cells = to_cell(left_pts), to_cell(right_pts)
-    # The two sides separately, as the harness rasterises them — a band is a prism between the
-    # road's own curves and they tilt across its width (`_lane_ramp`). Collapsing them to a
-    # mean here would test a band the harness no longer builds.
-    left_y, right_y = left_pts[:, 1], right_pts[:, 1]
-    for i in range(1, steps + 1):
-        yield (
-            [
-                tuple(left_cells[i - 1]),
-                tuple(right_cells[i - 1]),
-                tuple(right_cells[i]),
-                tuple(left_cells[i]),
-            ],
-            (float((left_y[i - 1] + left_y[i]) * 0.5), float((right_y[i - 1] + right_y[i]) * 0.5)),
-            bottom,
-            top,
-        )
-
-
-def road_cover(cx, cz, radius, origin_x, origin_z, col0, row0, cell, fine_h, fine_w):
-    """What the road meshes actually draw over, at TRUTH samples per cell.
-
-    The bundle's segment meshes are the only honest answer to "is this ground hidden?" — the
-    clip prism is not, which is the whole point of this test. glTF vertices are placed the way
-    contract §2.2 places an instance, with the mirror the harness applies:
-    `world = pos + diag(-1, 1, 1) * v` (every network record ships an identity rotation).
-    """
-    from inspect_glb import read_accessor, read_glb
-
-    cover = numpy.zeros((fine_h, fine_w), dtype=bool)
-    mesh_dir = os.path.join(BUNDLE, "networks")
-    if not os.path.isdir(mesh_dir):
-        return None
-    segments = 0
-    with open(os.path.join(BUNDLE, "networks.jsonl"), encoding="utf-8") as handle:
-        for line in handle:
-            if not line.strip():
-                continue
-            record = json.loads(line)
-            pos = record.get("pos")
-            # A segment's own length is its reach past `pos`; 120 m clears the longest.
-            if not pos or abs(pos[0] - cx) > radius + 120 or abs(pos[2] - cz) > radius + 120:
-                continue
-            path = os.path.join(mesh_dir, record["assetId"] + ".glb")
-            if not os.path.isfile(path):
-                continue
-            try:
-                gltf, blob = read_glb(pathlib.Path(path))
-            except ValueError:
-                continue
-            segments += 1
-            for mesh in gltf.get("meshes", []):
-                for prim in mesh.get("primitives", []):
-                    if prim.get("mode", 4) != 4 or "POSITION" not in prim.get("attributes", {}):
-                        continue
-                    verts = numpy.asarray(
-                        read_accessor(gltf, blob, prim["attributes"]["POSITION"]),
-                        dtype=numpy.float64,
-                    )
-                    if "indices" in prim:
-                        idx = numpy.asarray(
-                            read_accessor(gltf, blob, prim["indices"]), dtype=numpy.int64
-                        )
-                    else:
-                        idx = numpy.arange(len(verts), dtype=numpy.int64)
-                    tri = verts[idx].reshape(-1, 3, 3)
-                    wx = pos[0] - tri[:, :, 0]
-                    wz = pos[2] + tri[:, :, 2]
-                    px = ((wx - origin_x) / cell + 0.5 - col0 - 0.5) * TRUTH
-                    pz = ((origin_z - wz) / cell + 0.5 - row0 - 0.5) * TRUTH
-                    _fill_triangles(cover, px, pz)
-    return cover if segments else None
-
-
-def _fill_triangles(mask, px, pz):
-    """Scan-fill triangles given per-vertex in fine-pixel coordinates."""
-    fine_h, fine_w = mask.shape
-    for k in range(len(px)):
-        y0 = max(0, int(math.floor(pz[k].min())))
-        y1 = min(fine_h - 1, int(math.ceil(pz[k].max())))
-        x0 = max(0, int(math.floor(px[k].min())))
-        x1 = min(fine_w - 1, int(math.ceil(px[k].max())))
-        if y1 < y0 or x1 < x0:
-            continue
-        ax, bx, cx_ = px[k]
-        az, bz, cz_ = pz[k]
-        det = (bz - cz_) * (ax - cx_) + (cx_ - bx) * (az - cz_)
-        if abs(det) < 1e-12:
-            continue
-        gx, gz = numpy.meshgrid(numpy.arange(x0, x1 + 1) + 0.5, numpy.arange(y0, y1 + 1) + 0.5)
-        l1 = ((bz - cz_) * (gx - cx_) + (cx_ - bx) * (gz - cz_)) / det
-        l2 = ((cz_ - az) * (gx - cx_) + (ax - cx_) * (gz - cz_)) / det
-        inside = (l1 >= 0) & (l2 >= 0) & (l1 + l2 <= 1)
-        if inside.any():
-            mask[y0 : y1 + 1, x0 : x1 + 1] |= inside
-
-
-def check(label, cx, cz, radius, heights, cell, origin_x, origin_z):
-    """Score the harness's deletion mask on one window against a finer independent truth."""
-    global failures
+def _window_frame(label, cx, cz, radius, heights, cell, origin_x, origin_z):
+    """The window's terrain slice, its records and its cell-space mapping, or None when empty."""
     raster_h, raster_w = heights.shape
     col0 = max(0, int((cx - radius - origin_x) / cell) - 2)
     col1 = min(raster_w - 1, int((cx + radius - origin_x) / cell) + 2)
@@ -415,9 +127,12 @@ def check(label, cx, cz, radius, heights, cell, origin_x, origin_z):
     cutting = [q for record in records if carves(record) for q in quads_of(record, to_cell, cell)]
     if not quads:
         print(f"  {label:<16} no clip volumes in window — skipped")
-        return
+        return None
+    return terrain, records, to_cell, quads, cutting, (lat_h, lat_w, row0, col0)
 
-    # -- the harness's own rule ------------------------------------------------------------
+
+def _harness_rule(terrain, quads, cutting, lat_h, lat_w):
+    """The shipped deletion rule on this window: `(contain, deep_touch)`."""
     cell_cut = numpy.zeros((lat_h, lat_w), dtype=bool)
     for quad, lane_y, bottom, top in quads:
         H["_fill_clip_quad"](cell_cut, terrain, lat_w, lat_h, quad, lane_y, bottom, top)
@@ -430,27 +145,19 @@ def check(label, cx, cz, radius, heights, cell, origin_x, origin_z):
         H["_CLIP_CONTAIN_SAMPLES"],
         H["_CLIP_CONTAIN_BLOCK"],
     )
+    return contain, deep_touch
 
-    # -- truth: the band and the footprint at TRUTH samples per cell -----------------------
-    fine_h, fine_w = (lat_h - 1) * TRUTH, (lat_w - 1) * TRUTH
-    gc = numpy.clip((numpy.arange(fine_w) + 0.5) / TRUTH, 0, lat_w - 1.001)
-    gr = numpy.clip((numpy.arange(fine_h) + 0.5) / TRUTH, 0, lat_h - 1.001)
-    ci, ri = gc.astype(int), gr.astype(int)
-    fu, fv = gc - ci, gr - ri
-    fine_y = (
-        terrain[numpy.ix_(ri, ci)] * (1 - fu)[None, :]
-        + terrain[numpy.ix_(ri, ci + 1)] * fu[None, :]
-    ) * (1 - fv)[:, None] + (
-        terrain[numpy.ix_(ri + 1, ci)] * (1 - fu)[None, :]
-        + terrain[numpy.ix_(ri + 1, ci + 1)] * fu[None, :]
-    ) * fv[:, None]
-    band = numpy.zeros((fine_h, fine_w), dtype=bool)
-    footprint = numpy.zeros((fine_h, fine_w), dtype=bool)
-    for quad, lane_y, bottom, top in quads:
-        local = [((px - 0.5) * TRUTH, (py - 0.5) * TRUTH) for px, py in quad]
-        H["_fill_clip_quad"](band, fine_y, fine_w, fine_h, local, lane_y, bottom, top)
-        # Footprint: the same scanline with a band that cannot reject anything.
-        H["_fill_clip_quad"](footprint, fine_y, fine_w, fine_h, local, 0.0, -1e18, 1e18)
+
+def check(label, cx, cz, radius, heights, cell, origin_x, origin_z):
+    """Score the harness's deletion mask on one window against a finer independent truth."""
+    global failures
+    frame = _window_frame(label, cx, cz, radius, heights, cell, origin_x, origin_z)
+    if frame is None:
+        return
+    terrain, records, to_cell, quads, cutting, (lat_h, lat_w, row0, col0) = frame
+    contain, deep_touch = _harness_rule(terrain, quads, cutting, lat_h, lat_w)
+    fine_y, band, footprint = cliptruth.truth_rasters(terrain, quads, lat_h, lat_w)
+    fine_h, fine_w = band.shape
 
     area = (cell / TRUTH) ** 2
     deleted = numpy.kron(contain, numpy.ones((TRUTH, TRUTH), dtype=bool))
@@ -525,8 +232,6 @@ def check(label, cx, cz, radius, heights, cell, origin_x, origin_z):
 
 
 def main():
-    print("clip cut, scanline paths:")
-    fuzz_scanline_paths()
     if not os.path.isfile(os.path.join(BUNDLE, "clipvolumes.jsonl")):
         print(f"no bundle at {BUNDLE} — window checks skipped")
         return 1 if failures else 0

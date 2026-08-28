@@ -312,7 +312,7 @@ def load_prisms(bundle_dir, cell, deep_only=True):
     """
     import math
 
-    from . import bezier, reader, terrain
+    from . import bezier, containment, reader
 
     path = reader.layer_path(bundle_dir, "clipVolumes")
     if not os.path.isfile(path):
@@ -325,7 +325,7 @@ def load_prisms(bundle_dir, cell, deep_only=True):
     for record in reader.read_jsonl(path):
         bottom = float(record["bottom"])
         top = float(record["top"]) if record.get("top") is not None else float("inf")
-        if deep_only and not (top > terrain.CLIP_DEEP_BAND_TOP):
+        if deep_only and not (top > containment.CLIP_DEEP_BAND_TOP):
             skipped += 1
             continue
         if record.get("kind") == "area":
