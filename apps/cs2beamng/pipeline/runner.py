@@ -463,9 +463,21 @@ def build_headless(args):
         import json
 
         with open(args.settings, encoding="utf-8") as handle:
-            for key, value in json.load(handle).items():
-                if key in settings_mod.SCHEMA:
-                    values[key] = value
+            document = json.load(handle)
+        # Accept the app's own saved shape (`cs2beamng_settings.json`: {"schema", "settings"})
+        # as well as a flat dict. The flat-only reader silently applied NOTHING from a saved
+        # file — every wrapper key fell outside SCHEMA — and the build ran on the app settings
+        # store instead, against another level entirely (found 2026-08-28, refactor Phase 4).
+        if isinstance(document.get("settings"), dict):
+            document = document["settings"]
+        applied = 0
+        for key, value in document.items():
+            if key in settings_mod.SCHEMA:
+                values[key] = value
+                applied += 1
+        if not applied:
+            print(f"settings: nothing in {args.settings} matched a known setting", file=sys.stderr)
+            return 2
     if getattr(args, "preset", None):
         try:
             values = settings_mod.apply_preset(values, args.preset)
