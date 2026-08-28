@@ -185,7 +185,7 @@ def test_map_georeference():
 
 def test_map_points():
     """The points survive the app -> build -> BeamNG frame change, with their names."""
-    from cs2beamng.pipeline import mapview
+    from cs2beamng.server import mappoints
     from cs2beamng.stages import poi as poi_stage
     from csiibundle.bake.progress import Progress
 
@@ -195,7 +195,7 @@ def test_map_points():
         {"name": "The keys, bottom-left", "at": [-2861.5, -6398.6], "description": "south"},
         {"name": "Docks", "at": [4820.0, 1660.3]},
     ]
-    path, clean = mapview.save_pois(EXAMPLE, points)
+    path, clean = mappoints.save_pois(EXAMPLE, points)
     check(
         len(clean) == 2 and path.startswith(home),
         "the app writes the point file into its own folder",
@@ -208,24 +208,24 @@ def test_map_points():
         [p["at_beamng"] for p in read] == [(-2861.5, -6398.6), (4820.0, 1660.3)],
         f"...at the same places, through the frame change: {[p['at_beamng'] for p in read]}",
     )
-    _p, rounded = mapview.save_pois(EXAMPLE, [{"name": "n", "at": [1.234567, -2.987654]}])
+    _p, rounded = mappoints.save_pois(EXAMPLE, [{"name": "n", "at": [1.234567, -2.987654]}])
     check(
         rounded[0]["at"] == [1.2, -3.0], "a point is stored to a tenth of a metre, which is a road"
     )
     check([p["name"] for p in read] == [p["name"] for p in points], "...with their names")
-    _path, empty = mapview.save_pois(EXAMPLE, [{"at": [1, 2]}, {"name": "no place"}])
+    _path, empty = mappoints.save_pois(EXAMPLE, [{"at": [1, 2]}, {"name": "no place"}])
     check(empty == [], "a point with no name or no place is not stored")
-    mapview.save_pois(EXAMPLE, [])  # leave nothing behind for the next run
+    mappoints.save_pois(EXAMPLE, [])  # leave nothing behind for the next run
 
 
 def test_map_snap():
     """The snap's samples carry the street name as an index beside them (an off-by-one there
     names every point wrong), and a snap with no map says so instead of throwing."""
-    from cs2beamng.pipeline import mapview
+    from cs2beamng.server import mappoints, mapstore
 
     print("the map: the snap (E3)")
     samples = os.path.join(tempfile.mkdtemp(prefix="cs2beamng_samples_"), "s.npy")
-    mapview._save_samples(
+    mappoints.save_samples(
         samples,
         [
             (10.0, 0.0, 20.0, "Hickory Lane"),
@@ -247,10 +247,10 @@ def test_map_snap():
 
     # -- and it says what it is waiting for rather than throwing --------------------------------
     check(
-        mapview.load(os.path.join(REPO, "nowhere")) is None,
+        mapstore.load(os.path.join(REPO, "nowhere")) is None,
         "no map for a folder that is not a bundle",
     )
-    nowhere = mapview.snap(os.path.join(REPO, "nowhere"), (1.0, 2.0))
+    nowhere = mappoints.snap(os.path.join(REPO, "nowhere"), (1.0, 2.0))
     check(
         nowhere["snapped"] is False and nowhere["at"] == [1.0, 2.0],
         "a snap with no map leaves the point where it was put, and says it did not snap",

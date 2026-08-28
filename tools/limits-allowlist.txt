@@ -25,11 +25,9 @@ file apps/cs2beamng/beamng/materials.py
 file apps/cs2beamng/beamng/tilelod.py
 file apps/cs2beamng/beamng/validate_level.py
 file apps/cs2beamng/pipeline/estimate.py
-file apps/cs2beamng/pipeline/mapview.py
 file apps/cs2beamng/pipeline/runner.py
 file apps/cs2beamng/pipeline/state.py
 file apps/cs2beamng/pipeline/worker.py
-file apps/cs2beamng/server.py
 file apps/cs2beamng/stages/cook.py
 file apps/cs2beamng/stages/instances.py
 file apps/cs2beamng/stages/lights.py
