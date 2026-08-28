@@ -84,18 +84,26 @@ def upstream_paths() -> set[str]:
 
 
 def fork_sources() -> list[str]:
-    """Every tracked source file the fork owns, in sorted order.
+    """Every source file the fork owns, tracked or not yet, in sorted order.
 
     Settings.cs, Mod.cs and Instance.cs are MIXED — upstream files carrying fork-added members —
     and this gate exempts them whole, because authorship is per-file here and splitting it per
     member is not worth automating. Refactor Phase 9 moves those members (the ripper button
     handlers, `Fit()`, `SetDefaults`' 147 duplicate initializers) into fork-owned files, and the
     gate picks them up there.
+
+    `--others --exclude-standard` is why a NEW file is gated. This was `ls-files` alone, which
+    lists only what git already tracks, so a file written but not yet `git add`ed was invisible:
+    running the gate before committing a split — which is the moment it is for — passed on the
+    old files while the new ones went unread. Refactor Phase 5 committed three over-limit
+    functions that way and called the gate clean. `--exclude-standard` keeps `.gitignore` doing
+    its job, so build output and caches stay out.
     """
     exempt = upstream_paths()
+    listed = set(git("ls-files")) | set(git("ls-files", "--others", "--exclude-standard"))
     return sorted(
         path
-        for path in git("ls-files")
+        for path in listed
         if os.path.splitext(path)[1] in SOURCE_EXTENSIONS and path not in exempt
     )
 

@@ -105,23 +105,7 @@ def check_budgets(ctx):
     )
     ctx.checks["budgets"] = {name: value for name, value, _limit in over}
 
-    # A local light needs the DEFERRED renderer. Read the profile the level will actually be
-    # loaded on and say so, because nothing about the level itself can reveal this (§82).
-    placed_lights = len(ctx.by_class.get("PointLight", [])) + len(ctx.by_class.get("SpotLight", []))
-    manager, manager_source = light_manager()
-    ctx.checks["lightManager"] = {
-        "manager": manager,
-        "source": manager_source,
-        "lights": placed_lights,
-    }
-    if placed_lights and manager and "basic" in manager.lower():
-        ctx.note(
-            f"lighting: {placed_lights:,} local lights are placed, and BeamNG is set to "
-            f"{manager!r} ({manager_source}) - the BASIC (forward) renderer, which has no "
-            f"g-buffer prepass and shades no point or spot light at all. They will cost load "
-            f"time and scene memory and light NOTHING. Switch BeamNG to Advanced Lighting, or "
-            f"build with `lights false`"
-        )
+    _check_light_manager(ctx)
     for name, value, limit in over:
         if limit is not None and value > limit:
             ctx.note(
@@ -142,6 +126,29 @@ def check_budgets(ctx):
             ctx.note(f"{path}: not well-formed XML")
     ctx.checks["daeParseErrors"] = dae_bad
     ctx.checks["daeFiles"] = len(ctx.dae_files)
+
+
+def _check_light_manager(ctx):
+    """A local light needs the DEFERRED renderer.
+
+    Read the profile the level will actually be loaded on and say so, because nothing about the
+    level itself can reveal this (§82).
+    """
+    placed = len(ctx.by_class.get("PointLight", [])) + len(ctx.by_class.get("SpotLight", []))
+    manager, manager_source = light_manager()
+    ctx.checks["lightManager"] = {
+        "manager": manager,
+        "source": manager_source,
+        "lights": placed,
+    }
+    if placed and manager and "basic" in manager.lower():
+        ctx.note(
+            f"lighting: {placed:,} local lights are placed, and BeamNG is set to "
+            f"{manager!r} ({manager_source}) - the BASIC (forward) renderer, which has no "
+            f"g-buffer prepass and shades no point or spot light at all. They will cost load "
+            f"time and scene memory and light NOTHING. Switch BeamNG to Advanced Lighting, or "
+            f"build with `lights false`"
+        )
 
 
 def check_residency(ctx):
