@@ -638,7 +638,7 @@ Each phase records here what landed and what it found, so this document stays th
 | 2 — One implementation of every shared rule | **DONE** 2026-08-27, in-game look verified — five of its claims needed correcting; see below |
 | 3 — One stage framework | **DONE** 2026-08-27 — 7 of 8 parallel blocks unified; the record merge refused, with reasons |
 | 4 — Split `csiibundle` and `tools/` | **in progress** — `terrain`, `navgraph`, `colour`, `validate_bundle`, `make_example_bundle` split and validated, `probe_point` refused with reasons; see below |
-| 5 — The app and its UI | not started |
+| 5 — The app and its UI | **in progress** — `settings`, `server` and `validate_level` split; the stages and the UI remain; see below |
 | 6 — The Blender adapter | not started |
 | 7 — One rip-stage framework | **in progress** — extractions, the typed outcome, the frame loop and the report shape done; see below |
 | 8 — The IO writer layer | **in progress** — the writers, the attribute readers and the grading guard; see below |
@@ -1436,3 +1436,93 @@ folding it into a move. It needs its own commit, its own measurement of what the
 the file size do, and an answer to whether 8 points was ever a considered number. Left as it is,
 named here so the next pass does not "tidy" it by accident.
 
+
+### Phase 5 — in progress, 2026-08-28
+
+Three of the phase's named targets are done. **This is the first phase whose headline numbers
+the plan got exactly right** — `settings.py`'s sixteen tables are 79/79/79/35/23/15/9/5/3/3/3/2/2/1
+plus `SECTIONS` and `GROUPS`, counted — and two of its supporting claims were still wrong.
+
+**`settings.py` (1,724) → a 17-module package** (`ecbdcbc`). One `Setting` record per key,
+every table derived. `label` and `blurb` are required arguments, so the failure mode that
+mattered — a key with no `LABELS` entry raising `KeyError` on the settings page, at render time,
+in front of the user — is a `TypeError` at import. The 79 declarations are grouped as the screen
+groups them (`paths world collision textures navigation tuning build driven`); `sections.py`
+stays the placement authority, `screen.py` is the view model, `values.py` the coercion,
+`store`/`presets` the persistence, `discovery` the per-OS paths.
+
+Proved by a 37-observable before/after snapshot (every table, `schema_for_ui`, `coerce` over
+14 probes x 79 keys, `validate`/`region_of` over 11 dicts, every preset applied and diffed).
+**Two entries differ and both are intended:**
+
+* `region_of` no longer raises. It parsed the region string and `validate` parsed it again, and
+  the two disagreed: `"1 2 -3"` was a printed problem to one and a region of radius **-3** to the
+  other; `"nonsense"` was a printed problem to one and a `ValueError` out of the cost meter to
+  the other. One `parse_region`. Every build path already refuses to run with validate problems,
+  so the only reachable caller is the settings page's estimate.
+* `schema_for_ui` order. All 79 entries content-identical; the sequence is the screen's own,
+  which is what `docs/settings.md`'s header has always promised and did not deliver — the
+  Advanced section was listed in SCHEMA order, not the order it is drawn in. Both generated
+  artifacts are pure reorders, verified by sorting.
+
+2,346 lines against 1,724; the 622 are one field per line where sixteen tables held the same
+facts positionally.
+
+**`server.py` (834) → `server/`** (`75b85de`): `routes` (the shell), `app` (`AppServer`),
+`caches` (`BundleCaches`), and the map in four. The route table is not cosmetic — the token check
+was a statement in the MIDDLE of the GET chain, so whether a new route was authorised depended on
+where it was pasted, and `/api/start` is the one route answering `(payload, status)` where every
+other branch called `self._json(x)`. Both are columns of the table now. `pipeline/mapview.py`
+(444) moved out of `pipeline/` as the plan asked and split four ways, the fourth
+(`mapstore`) falling out of a real cycle: `mapview.build` calls `mappoints`, and `mappoints.snap`
+needs the cache key and stored document `mapview` owned.
+
+**`validate_level.py` (1,009) → `levelcheck/` + `machine.py`** (`836632d`). `check()` is **549
+lines, not the plan's 490**, and the file held a second thing the plan does not mention: a model
+of the MACHINE (`resident_budget_mib`, `render_target`, `light_manager`,
+`resident_failure_mib`), which has nine callers across `settings.discovery`, `doctor` and
+`estimate` — **none of which is validating a level**. Twelve `check(ctx)` functions over a
+`LevelContext`, the Phase-4 registry shape, every one under 60 lines. Proved by running the old
+`check()` and the new one against the built `cs2_city_fine`: problems list identical, every check
+measurement identical.
+
+The section label at `:261` was wrong and had been: "collisionType must match what the shape
+actually carries" headed 198 lines of which 38 are about collisionType, the other 160 being the
+material and shape-geometry checks under no heading at all.
+
+**Wrong in the plan**
+
+* **The Steam `.vdf` parser duplicates nothing.** `bake/locate.py` has no `.vdf` parser and needs
+  none: it finds the CS2 *bundle*, which sits at a fixed path under a Steam root, so where CS2 is
+  INSTALLED never comes up. Only BeamNG's executable can be on a second drive. What the two did
+  share is the list of Steam roots, in three copies; that is `locate.steam_roots_linux` now
+  (`26b44b1`), which adds `~/.steam/root` to two of them — a declared Linux-only change.
+* **`GROUPS` is not a partition to reconcile — it is dead** (`458c8a4`). `schema_for_ui`'s
+  `group` and `settings_payload`'s `groups` are read by nothing; the UI's `sec.group` is a
+  SECTION's band, the same word for a different thing. Its only reader was the test asserting it
+  partitioned SCHEMA, and that check could not fail without the stricter `section_of` partition
+  at `test_app_shell.py:285-304` failing first.
+* The region parse is in **four** places, not two: `tools/check_instances_vs_game.py` carried a
+  private copy the plan never counted.
+* 19 routes, not 23.
+
+**A regression this work introduced, and how it was found** (`e7ee137`). The settings split left
+`detected()`'s `from .beamng import machine` one level too shallow, and the block's blanket
+`except Exception` — which exists because a missing BeamNG log must not blank the settings page —
+caught the `ImportError` and set `budget` to None. That is indistinguishable from "BeamNG has
+never been run here", so nothing failed and no test could have caught it; a machine with no
+BeamNG is a legitimate answer. Found while repointing the callers at `beamng.machine`. The guard
+now carries `budgetError`, because one that hides its own bugs inside the condition it was
+written for is not a guard.
+
+**Still to do in this phase:** `ui/app.js` (1,667) and `ui/app.css` (576); `stages/shapes.py`
+(1,312); `stages/terrain.py` (1,049); and the 400-700 band — `stages/instances.py`,
+`pipeline/estimate.py`, `stages/materials.py`, `pipeline/runner.py`, `beamng/budget.py`,
+`pipeline/worker.py`, `beamng/dae.py`, `stages/cook.py`, `pipeline/state.py`,
+`beamng/tilelod.py`, `stages/poi.py`, `beamng/materials.py`, `stages/lights.py`,
+`stages/networks.py`. Then the Rule-6 rebuild of `cs2_city_fine` and the in-game look.
+
+**Also still open, found here and owned by the stages block:** `stages/lights.py:367` imports
+`_transform` out of `stages/instances.py`, so the standing gate's "no stage imports another
+stage's privates" is still breached — Phase 2 removed the `_quat_rows`/`_swap_yz` imports and
+left this one. `tools/check_instances_vs_game.py:53` imports the same private.
