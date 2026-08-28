@@ -14,8 +14,14 @@ This finds all of that in about a second. It imports every module in the two shi
 binds by import and every attribute taken off one, and asks the real module object whether that
 attribute is there.
 
-What it deliberately does not do: reach into `tools/`. Those are scripts, several of which run
-their body at import, and pytest covers them. This is the packages the app is built from.
+Some of ours cannot be imported here at all: the Blender adapter needs `bpy`, which only exists
+inside Blender. Those are checked by PARSING instead — a module's surface taken from what it
+writes down at its top level, which for this code is all of it. The check is otherwise the same,
+and without it the adapter's ~20 modules would be the one place a moved address goes unnoticed,
+which is exactly the failure this file was written for.
+
+What it deliberately does not do: import anything under `tools/`. Those are scripts, several of
+which run their body at import, and pytest covers them. The parsed ones are named below.
 
 Run: `python tools/check_references.py`  (needs the packages importable, i.e. `pip install -e .`;
 exits 1 on any finding).
@@ -30,6 +36,11 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PACKAGES = ("cs2beamng", "csiibundle")
 
+# Ours, but not importable outside Blender (`import bpy` at module scope). Parsed, not imported.
+# A path relative to the repo root: a directory is a package, a file is a single module named
+# after its stem.
+PARSED = ("tools/blenderbundle", "tools/blender_import_bundle.py", "tools/blender_import_level.py")
+
 # Modules whose attributes are built at run time rather than written down, so an AST walk cannot
 # know what they hold. Empty today; an entry here needs a reason beside it.
 DYNAMIC: set[str] = set()
@@ -42,6 +53,55 @@ def every_module(package):
     out[package] = root
     for info in pkgutil.walk_packages(root.__path__, package + "."):
         out[info.name] = importlib.import_module(info.name)
+    return out
+
+
+class ParsedModule:
+    """A module's public surface read off its source, for one that cannot be imported here.
+
+    Only what the file writes down at its top level: defs, classes, module-level assignments and
+    module-level imports. That is a complete answer for this code — nothing in the adapter builds
+    an attribute at run time — and a wrong answer would be a false POSITIVE, which is the safe
+    direction for a gate.
+    """
+
+    def __init__(self, path, tree):
+        self.__file__ = path
+        self._names = set()
+        for node in tree.body:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                self._names.add(node.name)
+            elif isinstance(node, ast.Assign):
+                self._names.update(t.id for t in node.targets if isinstance(t, ast.Name))
+            elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+                self._names.add(node.target.id)
+            elif isinstance(node, (ast.Import, ast.ImportFrom)):
+                for alias in node.names:
+                    self._names.add(alias.asname or alias.name.split(".")[0])
+
+    def __getattr__(self, name):
+        if name in self.__dict__.get("_names", ()):
+            return None
+        raise AttributeError(name)
+
+
+def parsed_modules(relative):
+    """`{dotted name: ParsedModule}` for one PARSED entry — a package directory or one file."""
+    path = os.path.join(ROOT, relative)
+    out = {}
+    if os.path.isfile(path):
+        files = [(os.path.splitext(os.path.basename(path))[0], path)]
+    else:
+        package = os.path.basename(path)
+        files = [(package, os.path.join(path, "__init__.py"))]
+        files += [
+            (f"{package}.{name[:-3]}", os.path.join(path, name))
+            for name in sorted(os.listdir(path))
+            if name.endswith(".py") and name != "__init__.py"
+        ]
+    for name, source in files:
+        with open(source, encoding="utf-8") as handle:
+            out[name] = ParsedModule(source, ast.parse(handle.read()))
     return out
 
 
@@ -134,6 +194,8 @@ def main():
             modules.update(every_module(package))
         except Exception as exc:  # an import error IS the finding
             problems.append(f"{package}: {type(exc).__name__}: {exc}")
+    for relative in PARSED:
+        modules.update(parsed_modules(relative))
     for name, module in sorted(modules.items()):
         try:
             check_module(name, module, modules, problems)
