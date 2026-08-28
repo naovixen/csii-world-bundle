@@ -78,18 +78,28 @@ makes the error count a function of the producer's honesty. An UNDECLARED missin
 import os
 
 from . import decals, frames, reader
+from .density import (  # noqa: F401  (re-export: the density subset rule)
+    DENSITY_WEIGHT,
+    density_keep,
+    density_rank,
+    object_radius,
+)
+from .orphans import absent_prefabs, orphans_of_absent_owners  # noqa: F401  (re-export)
+from .skirt import (  # noqa: F401  (re-export: the §4.1 skirt rules)
+    ON_GROUND,
+    SKIRT_RING_FRACTION,
+    SKIRT_SUFFIX,
+    drop_skirt,
+    skirt_asset_id,
+    skirt_flags_index,
+    skirt_rings,
+    wants_skirt,
+    wants_skirt_with_parents,
+)
 
 # §4's closed `kind` set. Listed rather than derived so a v2 addition shows up as a deliberate
 # edit instead of silently joining a wildcard. CONTRACT.
 KINDS = ("building", "prop", "tree", "fence", "decal", "poi")
-
-# The suffix the producer gives a building's foundation skirt (§4.1). CONTRACT.
-SKIRT_SUFFIX = "__base"
-
-# The only `elevationFlags` value that still counts as resting on the ground. An empty or absent
-# list means the same thing. CONTRACT.
-ON_GROUND = "OnGround"
-
 
 # `attrs.treeState` to the derived file's suffix (§6.1). `Adult` is the BASE state and has no
 # suffix — a healthy adult tree *is* `<assetId>.glb`. CONTRACT.
@@ -235,91 +245,6 @@ def vegetation_kind(record):
     return "tree" if is_tree(record) else "plant"
 
 
-def absent_prefabs(bundle_dir):
-    """assetIds the producer declared **absent** — the prefab itself did not resolve (§10).
-
-    NOT the same as "declared undeliverable". `InstanceRipSystem.InstanceDeclarations` emits
-    `kind: "prefab"` for two different gaps, and only one means the object is not there:
-
-    | kind | reason | what it means |
-    |---|---|---|
-    | `prefab` | *managed prefab did not resolve* | **absent** — an unowned asset pack; assetId is a synthetic `unresolved_<n>` |
-    | `prefab` | *prefab has no SubMesh buffer* | it EXISTS and simply has no mesh of its own |
-    | `mesh` | *none of N sub-mesh(es) yielded geometry* | same — it exists |
-
-    Measured on the reference city: 87 absent against 117 that exist without geometry. Keying on
-    `kind` alone would also drop the children of prefabs that are genuinely there — and those
-    children are real: the second and third rows are `ParkingLot02..14`, `CampfireSite01/02`,
-    `AmericanFootballField01`, whose paving ships in the `areas` layer while their lamps, benches
-    and planting ship here. `read_declared_gaps` cannot answer this because it collapses to
-    `{assetId: reason}`, last line wins, and an absent prefab carries a mesh warning too.
-    """
-    from . import reader
-
-    path = reader.layer_path(bundle_dir, "warnings")
-    absent = set()
-    if not path or not os.path.isfile(path):
-        return absent
-    for record in reader.read_jsonl(path):
-        asset = record.get("assetId")
-        if not isinstance(asset, str):
-            continue
-        if record.get("kind") == "prefab" and "did not resolve" in (record.get("reason") or ""):
-            absent.add(asset)
-    return absent
-
-
-def orphans_of_absent_owners(bundle_dir):
-    """`(ids, stats)` — records whose owner chain reaches a prefab the producer declared absent.
-
-    **A record whose owner was not placed because the producer could not deliver it is not
-    placeable either.** This is not a CS2 rule to port — the game had those prefabs and drew the
-    buildings — it is a consumer's obligation against a DECLARED gap (§10). Without it we drop
-    the building and place its props anyway, and on the reference city that is 6,714 records
-    hanging in clear sky, up to 292 m up, 695 of them belonging to one absent tower.
-
-    Only the absent class is dropped (`absent_prefabs`). A prefab that exists without geometry
-    keeps its children — 5,806 of them, the lamps and benches of car parks and sports pitches
-    whose own surface ships in the `areas` layer — and a construction site keeps its children
-    too, which measurement says are the `ConstructionCrane01` and the site's benches: §4 states
-    the crane and site fence are real entities, and they are exactly the tall ones.
-
-    Ownership is transitive and shallow — depth 4 at most on the reference city, 96 % of it depth
-    2 — but a sub-object of a sub-object is legal, so the walk follows `parent` to the root.
-    """
-    absent = absent_prefabs(bundle_dir)
-    stats = {"absentPrefabs": len(absent), "records": 0, "withParent": 0, "orphans": 0, "owners": 0}
-    if not absent:
-        return set(), stats
-
-    parent_of, absent_ids = {}, set()
-    for record in read_instances(bundle_dir):
-        rid = record.get("id")
-        if rid is None:
-            continue
-        stats["records"] += 1
-        if record.get("assetId") in absent:
-            absent_ids.add(rid)
-        parent = record.get("parent")
-        if parent is not None:
-            parent_of[rid] = parent
-            stats["withParent"] += 1
-
-    ids, owners = set(), set()
-    for rid in parent_of:
-        cur, seen = parent_of.get(rid), set()
-        while cur is not None and cur not in seen:
-            seen.add(cur)
-            if cur in absent_ids:
-                ids.add(rid)
-                owners.add(cur)
-                break
-            cur = parent_of.get(cur)
-    stats["orphans"] = len(ids)
-    stats["owners"] = len(owners)
-    return ids, stats
-
-
 # `attrs.state` values whose buildings the game does not draw at all. CONTRACT (§4, D4).
 NOT_DRAWN_STATES = ("construction",)
 
@@ -382,27 +307,6 @@ def decal_height(record):
     return float(value) if value is not None else None
 
 
-def wants_skirt(record):
-    """Whether this record should also place its `__base` foundation skirt (§4.1).
-
-    Buildings only, and only those resting on the ground. A building whose `elevationFlags` say
-    anything else — elevated, on water, in a tunnel — must not get one.
-    """
-    if record.get("kind") != "building":
-        return False
-    flags = (record.get("attrs") or {}).get("elevationFlags")
-    return not flags or flags == [ON_GROUND]
-
-
-def skirt_asset_id(record):
-    """The skirt's assetId for this record, or `None` if it should not have one.
-
-    The mesh may still be absent — not every building prefab has a skirt — so the caller checks
-    the file as usual and treats absence as "no skirt", not as a missing mesh.
-    """
-    return record["assetId"] + SKIRT_SUFFIX if wants_skirt(record) else None
-
-
 def placement_lift(record):
     """Metres to raise this record along the up axis before drawing it, from the lift ladder.
 
@@ -451,150 +355,3 @@ def instance_matrix(record, mesh_basis=None, zup=False):
         matrix = matrix if scale != 1.0 else matrix.copy()
         matrix[2 if zup else 1, 3] += lift
     return matrix
-
-
-# -- skirts: rings, parent flags, the drop -----------------------------------------------------
-
-# The authored band is 1 m tall (§4.1). Anything in the lower half of the band's own height is
-# the bottom ring; the tolerance is generous because the ring is found by GEOMETRY, not by UV —
-# §4.1 says the bottom ring is at `v = 0` but §6 says the producer flips V into glTF's top-left
-# origin, and which of the two a given reader sees depends on its loader. Height does not.
-SKIRT_RING_FRACTION = 0.5
-
-
-def skirt_rings(verts, up_axis=1):
-    """`(bottom_mask, top_mask)` over the vertices of a `__base` skirt band, by height.
-
-    `verts` is `(N, 3)` in any frame whose `up_axis` column is up (1 for bundle/glTF Y-up
-    arrays straight from `glb.parse_glb`, 2 for a Z-up world array). Every vertex is one or the
-    other: the band is two rings and nothing else.
-    """
-    import numpy
-
-    h = numpy.asarray(verts, dtype=numpy.float64)[:, up_axis]
-    lo, hi = float(h.min()), float(h.max())
-    if hi - lo < 1e-6:
-        bottom = numpy.zeros(len(h), dtype=bool)
-        return bottom, ~bottom
-    bottom = h < lo + (hi - lo) * SKIRT_RING_FRACTION
-    return bottom, ~bottom
-
-
-def drop_skirt(world_verts, bottom_mask, ground_height, up_axis=2):
-    """Move the bottom ring of a placed skirt to the ground: §4.1's "moves every `v = 0` vertex
-    down to the terrain surface at its world X/Z (never up above the top ring)".
-
-    `world_verts` `(N, 3)` in the consumer's frame with `up_axis` up; `ground_height` `(N,)`
-    heights sampled at each vertex's own (x, y) — NaN where the ground is unknown, in which
-    case that vertex keeps its authored height. The new height is `min(ground, top ring)` so a
-    ground rising above the base level can never invert the band. Returns a new array.
-    """
-    import numpy
-
-    out = numpy.array(world_verts, dtype=numpy.float64, copy=True)
-    bottom = numpy.asarray(bottom_mask, dtype=bool)
-    ground = numpy.asarray(ground_height, dtype=numpy.float64)
-    if not bottom.any():
-        return out
-    top_level = (
-        float(out[~bottom, up_axis].min()) if (~bottom).any() else float(out[:, up_axis].max())
-    )
-    target = numpy.minimum(ground[bottom], top_level - 1e-3)
-    keep = numpy.isnan(target)
-    current = out[bottom, up_axis]
-    out[bottom, up_axis] = numpy.where(keep, current, target)
-    return out
-
-
-def skirt_flags_index(records):
-    """`{id: elevationFlags}` for every BUILDING record — the parent lookup §4.1 asks for.
-
-    §4.1: "for a building extension — a record with `parent` — read the parent's flags". A
-    consumer streams `instances.jsonl` twice: once through this (buildings only, so the index is
-    thousands of entries, not a million), then once placing skirts with `wants_skirt(record,
-    parents=index)`.
-    """
-    index = {}
-    for record in records:
-        if record.get("kind") == "building" and "id" in record:
-            index[record["id"]] = (record.get("attrs") or {}).get("elevationFlags")
-    return index
-
-
-def wants_skirt_with_parents(record, parents):
-    """`wants_skirt` that reads an extension's PARENT flags when the record has a `parent` that
-    resolves in `parents` (from `skirt_flags_index`). Falls back to the record's own flags."""
-    if record.get("kind") != "building":
-        return False
-    parent = record.get("parent")
-    if parent is not None and parent in parents:
-        flags = parents[parent]
-    else:
-        flags = (record.get("attrs") or {}).get("elevationFlags")
-    return not flags or flags == [ON_GROUND]
-
-
-# -- density subsets and object size -----------------------------------------------------------
-
-# Weights that decide which instances survive FIRST as the density slider comes down. A lower
-# fraction is always a subset of a higher one (keep iff hash < fraction * weight), so thinning
-# is stable and monotone. Trees: mature states over young ones. TUNED.
-DENSITY_WEIGHT = {
-    "Adult": 1.0,
-    "Elderly": 1.0,
-    None: 1.0,
-    "Teen": 0.75,
-    "Child": 0.5,
-    "Dead": 0.9,
-    "Stump": 0.4,
-}
-
-
-def _stable_unit(value):
-    """A stable float in [0, 1) from an int id (or any repr) — the same on every platform,
-    unlike Python's salted `hash`."""
-    import hashlib
-
-    digest = hashlib.blake2b(str(value).encode("utf-8"), digest_size=8).digest()
-    return int.from_bytes(digest, "little") / float(1 << 64)
-
-
-def density_rank(record):
-    """The density fraction this record survives at: it is kept iff `rank < fraction`.
-
-    The subset rule turned inside out. `density_keep` answers "is this one in at 60 %"; this
-    answers "at what setting does this one come in", which is what lets a consumer decide a
-    whole prefab's fate for EVERY slider position from one pass over the layer instead of one
-    pass per position (`cs2beamng.pipeline.meshindex`: a shape ships iff its lowest-ranked
-    instance is below the slider). Monotone, so the two are the same rule seen from either end.
-    """
-    state = (record.get("attrs") or {}).get("treeState")
-    weight = DENSITY_WEIGHT.get(state, 1.0)
-    return _stable_unit(record.get("id")) / weight
-
-
-def density_keep(record, fraction):
-    """Whether to keep this record at foliage/prop density `fraction` (0..1).
-
-    Deterministic per record `id`, monotone in `fraction`, and weighted so that mature trees
-    survive longer than saplings. `fraction >= 1` keeps everything; `<= 0` keeps nothing.
-    """
-    if fraction >= 1.0:
-        return True
-    if fraction <= 0.0:
-        return False
-    return density_rank(record) < fraction
-
-
-def object_radius(bounds_min, bounds_max, scale=None):
-    """Half the bounding-box diagonal of a mesh, times its largest scale factor — the size a
-    consumer uses to pick imposter/cull thresholds and collider simplicity per object."""
-    import numpy
-
-    lo = numpy.asarray(bounds_min, dtype=numpy.float64)
-    hi = numpy.asarray(bounds_max, dtype=numpy.float64)
-    radius = 0.5 * float(numpy.linalg.norm(hi - lo))
-    if scale is not None:
-        s = numpy.asarray(scale, dtype=numpy.float64).ravel()
-        radius *= float(numpy.abs(s).max()) if s.size else 1.0
-    return radius

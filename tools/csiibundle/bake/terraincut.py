@@ -334,8 +334,7 @@ def run(context, progress):
 def _carriageway_ceiling(derived, shape, scale, offset):
     """The game's carriageway profile top per sample, as the consumer reads it — `terrainmask`'s
     `carriageway_ceiling.png`, decoded exactly as the app does. `+inf` where no shallow band
-    covers the sample. The bake runs `terrainmask` before this product (see
-    `bake.PRODUCT_MODULES`)."""
+    covers the sample. The bake runs `terrainmask` before this product (`bake.PRODUCT_MODULES`)."""
     ceiling = numpy.full(shape, numpy.inf, dtype=numpy.float32)
     path = os.path.join(derived, "terrain", "carriageway_ceiling.png")
     if not os.path.isfile(path):

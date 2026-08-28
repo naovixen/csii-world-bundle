@@ -20,11 +20,9 @@ here with several material runs, matching what a stock importer builds. Those pr
 share a single vertex buffer and differ only in which index range they select, so the attribute
 accessors are read once per unique POSITION accessor and the runs index into the concatenation.
 
-`clean_degenerate_polygons` is the other half of the module and belongs to no format: it is the
-policy for a face that carries no area. Read its docstring before deciding a degenerate face is
-someone's bug — for geometry read off a file it is a faithful rip of what the game shipped, and
-for geometry a consumer just computed it means the computation broke. The two are not the same
-finding and this repo reports them separately.
+`clean_degenerate_polygons` — the policy for a face that carries no area, which belongs to no
+format — lives in `csiibundle.meshclean` and is re-exported here; the JSON-chunk-only catalogue
+sweeps (`primitive_materials`, `material_names`) live in `csiibundle.glbjson`, likewise.
 """
 
 import json
@@ -36,6 +34,8 @@ import numpy
 # GLTF_YUP_TO_ZUP is re-exported: it is the basis a Y-up-to-Z-up loader applies, and a consumer
 # reading nodes here needs it in the same breath as the matrices below.
 from .frames import GLTF_YUP_TO_ZUP, quat_matrix, scale_matrix, translation_matrix  # noqa: F401
+from .glbjson import _CHUNK_JSON, material_names, primitive_materials  # noqa: F401  (re-export)
+from .meshclean import clean_degenerate_polygons  # noqa: F401  (re-export: the face policy)
 
 # glTF component-type codes, from the spec.
 COMPONENT_FLOAT = 5126
@@ -69,7 +69,6 @@ def lod_level(node_name):
     return match.group("base"), int(match.group("level"))
 
 
-_CHUNK_JSON = 0x4E4F534A
 _CHUNK_BIN = 0x004E4942
 
 
@@ -98,71 +97,6 @@ def conjugate(matrix, basis):
     """
     basis = numpy.asarray(basis, dtype=numpy.float64)
     return basis @ numpy.asarray(matrix, dtype=numpy.float64) @ numpy.linalg.inv(basis)
-
-
-def primitive_materials(path):
-    """The material name of every primitive of the `.glb`, in order, or `None` if unreadable.
-
-    **The position in this list is the mesh's own material slot.** The producer writes one
-    primitive per entry of the game's `MeshMaterial` buffer, in buffer order and with
-    `MaterialIndex = i` (`MeshRipSystem`), and that buffer position is what CS2 itself resolves a
-    surface by — and what `EmissiveProperties.SingleLightMapping.materialId` indexes. The one
-    thing that can break the correspondence is `GltfWriter.NormalizePrimitives` dropping a
-    primitive whose index range is out of bounds; it logs a warning when it does, and on the
-    reference city's rip it did so zero times.
-
-    Duplicates are kept, which is the difference from `material_names`: two slots may share a
-    surface, and dropping the repeat would shift every slot after it.
-    """
-    doc = _json_chunk(path)
-    if doc is None:
-        return None
-    names = [entry.get("name") for entry in doc.get("materials") or ()]
-    order = []
-    for mesh in doc.get("meshes") or ():
-        for primitive in mesh.get("primitives") or ():
-            index = primitive.get("material")
-            order.append(
-                names[index] if isinstance(index, int) and 0 <= index < len(names) else None
-            )
-    return order
-
-
-def _json_chunk(path):
-    """The `.glb`'s glTF JSON as a dict, reading the JSON chunk alone, or `None`."""
-    try:
-        with open(path, "rb") as handle:
-            head = handle.read(20)
-            if len(head) < 20 or head[:4] != b"glTF":
-                return None
-            _magic, version, _total = struct.unpack_from("<III", head, 0)
-            chunk_length, chunk_type = struct.unpack_from("<II", head, 12)
-            if version != 2 or chunk_type != _CHUNK_JSON:
-                return None
-            return json.loads(handle.read(chunk_length).decode("utf-8"))
-    except (OSError, ValueError, struct.error):
-        return None
-
-
-def material_names(path):
-    """The `.glb`'s material names in PRIMITIVE ORDER, deduplicated, or `None` if unreadable.
-
-    Reads the JSON chunk alone — no accessors, no vertex data — so the whole mesh catalogue can
-    be swept in seconds. `parse_glb` gives the same order inside `material_runs` and costs the
-    file's full geometry to get it; use this when the ORDER is the answer, which is what
-    `EmissiveProperties`' colour slots join on (`bake.materials`, contract §4.3).
-
-    The order is the writer's own sub-mesh order, which is the order CS2's `MeshMaterial` buffer
-    is in and therefore the order a `SingleLightMapping.materialId` indexes.
-    """
-    primitives = primitive_materials(path)
-    if primitives is None:
-        return None
-    order = []
-    for name in primitives:
-        if name and name not in order:
-            order.append(name)
-    return order
 
 
 def parse_glb(path):
@@ -418,104 +352,3 @@ def glb_uv_to_texture_uv(uvs):
     """
     uvs = numpy.asarray(uvs, dtype=numpy.float32)
     return numpy.stack([uvs[:, 0], 1.0 - uvs[:, 1]], axis=1)
-
-
-# -- the degenerate-face policy ----------------------------------------------------------------
-
-
-def clean_degenerate_polygons(verts, loops_flat, sizes, uv_layers=None, material_runs=None):
-    """Drop polygons that carry no area, keeping materials and UVs aligned to the survivors.
-
-    `verts` is `(N, 3)`; `loops_flat` is a flat array of loop vertex indices; `sizes` is `(M,)`
-    per-polygon loop counts summing to `len(loops_flat)`. `uv_layers` is
-    `{name: (len(loops_flat), 2)}` in the same loop order; `material_runs` is
-    `[(material, polygon_count)]` consumed in polygon order.
-
-    Returns `(loops_flat, sizes, uv_layers, material_runs, repeated_count, zero_area_count)`.
-
-    **Why this is not left to the mesh library.** Every validator this repo has met drops bad
-    polygons POSITIONALLY and says nothing, so afterwards a caller has no way to tell which of
-    ITS polygons a material run or a UV block was meant for. Re-zipping runs onto whatever
-    survived silently mis-assigns materials rather than failing loudly — so the drop happens
-    here, before the mesh is built, with the runs and UV blocks trimmed in the same pass.
-    Concatenated per-part arrays (lane meshes assembled from bent segments) are exactly the
-    shape most likely to contain one at a seam.
-
-    **The two classes are not equally diagnostic and are counted separately:**
-
-    * `repeated_count` — a polygon with the SAME vertex index twice. In geometry a consumer just
-      computed (a bend, a grid, a drape) this is the classic sign that the computation broke,
-      and it deserves to be loud.
-    * `zero_area_count` — distinct indices that still collapse to a line or a point. This one has
-      a well-understood non-defect source in computed lane geometry (a heavily tiled part's last
-      tile can clip a whole cross-section to a single arc position), and another in geometry read
-      verbatim off a `.glb`, where it is a faithful rip of what the game's own mesh contained.
-
-    Neither count is a verdict. What to do with them depends on where the arrays came from,
-    which only the caller knows — that is why this function reports and does not warn.
-    """
-    verts = numpy.asarray(verts, dtype=numpy.float64)
-    loops_flat = numpy.asarray(loops_flat, dtype=numpy.int64)
-    sizes = numpy.asarray(sizes, dtype=numpy.int64)
-    poly_count = len(sizes)
-    if not poly_count:
-        return loops_flat, sizes, uv_layers, material_runs, 0, 0
-
-    offsets = numpy.concatenate(([0], numpy.cumsum(sizes)))
-    # Fan-triangulated from vertex 0 (v0, v[i], v[i+1]) so the area test covers any polygon
-    # size. Sizes are processed group-wise so a mixed-size mesh (the terrain grid: 14 m quads,
-    # 3.5 m quads and transition-fan triangles in one buffer) shares the uniform path's
-    # arithmetic instead of needing its own.
-    repeated = numpy.zeros(poly_count, dtype=bool)
-    area2 = numpy.zeros(poly_count)
-    for size in numpy.unique(sizes):
-        group = numpy.nonzero(sizes == size)[0]
-        rows = loops_flat[offsets[group][:, None] + numpy.arange(size)[None, :]]
-        rep = numpy.zeros(len(group), dtype=bool)
-        for i in range(size):
-            for j in range(i + 1, size):
-                rep |= rows[:, i] == rows[:, j]
-        v0 = verts[rows[:, 0]]
-        a2 = numpy.zeros(len(group))
-        for i in range(1, size - 1):
-            edge_a = verts[rows[:, i]] - v0
-            edge_b = verts[rows[:, i + 1]] - v0
-            a2 += numpy.linalg.norm(numpy.cross(edge_a, edge_b), axis=1)
-        repeated[group] = rep
-        area2[group] = a2
-
-    zero_area = (~repeated) & (area2 < 1e-12)  # TUNED: below any real mesh's face area
-    degenerate = repeated | zero_area
-    repeated_count = int(repeated.sum())
-    zero_area_count = int(zero_area.sum())
-    if not degenerate.any():
-        return loops_flat, sizes, uv_layers, material_runs, 0, 0
-
-    keep = ~degenerate
-    if material_runs:
-        expanded = []
-        for material, count in material_runs:
-            expanded.extend([material] * count)
-        trimmed = []
-        for material, kept in zip(expanded, keep):
-            if not kept:
-                continue
-            if trimmed and trimmed[-1][0] is material:
-                trimmed[-1] = (material, trimmed[-1][1] + 1)
-            else:
-                trimmed.append((material, 1))
-        material_runs = trimmed
-    loop_keep = numpy.repeat(keep, sizes)
-    if uv_layers:
-        uv_layers = {
-            layer_name: numpy.asarray(uvs)[loop_keep] for layer_name, uvs in uv_layers.items()
-        }
-
-    return (
-        loops_flat[loop_keep],
-        sizes[keep],
-        uv_layers,
-        material_runs,
-        repeated_count,
-        zero_area_count,
-    )

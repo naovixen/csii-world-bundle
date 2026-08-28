@@ -1195,14 +1195,62 @@ THAT named. The first A/B rebuild of this phase went to `cs2_city_network` becau
 reader now unwraps the saved shape and refuses a file from which nothing applied, instead of
 proceeding silently.
 
-Still open in Phase 4: `bake/materials.py` (817), `decimate.py` (691), `drape.py` (612),
-`instances.py` (600), `materials.py` (527), `glb.py` (521), `lanes.py` (473),
-`check_roadgrade_vs_game.py` (499) and `check_instances_vs_game.py` (477 — its sampler is
-decomposed; both remain linear measurement probes over the file ceiling, split-or-declare
-still to be decided), `bake/markings` (439), `bake/areas` (433), `bake/terraincut` (401), the
-two remaining oversized test files (`test_app_shell` 1,692, `test_a3_objects` 1,315), and the
-remaining over-60 functions. The consumer-phase gate (rebuild `cs2_city_fine`, hand over
-before commit) still stands for the phase as a whole.
+**Second landing (2026-08-28): the whole `csiibundle` block is under the ceiling.** Every move
+verified behaviour-preserving — the `materials` bake re-run on the example bundle after each
+split of its code and compared identical mod `generatedAt`, and the targeted test sets green
+after each module's split. New modules, all split on story seams with the measured-rule
+docstrings moved verbatim (wide-use names re-exported from their old homes, the pattern the
+navgraph split set):
+
+* `bake/materials.py` 818 → 277 over four modules: `bake/materialmaps.py` (the per-file pool
+  jobs + `CHUNK`), `bake/emissive.py` (the colour-slot join; its coverage story is the module
+  docstring), `bake/paint.py` (the whole §7.2 pipeline — k-means, prefab materials, group-by-
+  source-albedo, factor split, the three-pass tint orchestration), and `run()` decomposed into
+  per-phase functions.
+* `decimate.py` 692 → 368 + `displacement.py` (level_displacement / distance_to_surface / the
+  triangle grid; `vertex_cluster` and `distance_to_surface` decomposed under 60). Retargeted
+  `bake/lods.py` and `test_lod_displacement.py`; a latent shadowing defect surfaced in the
+  move — `lods.py` had a local list named `displacement`, renamed.
+* `drape.py` 613 → 200 + `projection.py` (the protocol + `HEIGHT_CEILING`),
+  `heightsurface.py` (`HeightfieldSurface`), `meshsurface.py` (`TriangleSoupSurface`;
+  `_query` decomposed). Both surface classes re-exported from `drape`.
+* `instances.py` 601 → 357 + `skirt.py` (§4.1), `density.py`, `orphans.py` (self-contained on
+  `reader`, no import cycle).
+* `materials.py` 527 → 335 + `normalmaps.py` (packing detection) and `shaderonly.py` (the
+  textureless tables + substitutes); `resolve` stays in place.
+* `glb.py` 521 → 354 + `glbjson.py` (JSON-chunk sweeps) and `meshclean.py`
+  (`clean_degenerate_polygons` decomposed; its policy is the module docstring).
+* `lanes.py` 474 → 364 + `lanetile.py` (the rigid-tile gate + quaternion helpers;
+  `rigid_tile_matrix` decomposed via `_straight_chord`).
+* `bake/markings.py` 439 → 385 (`bake/markinglod.py`: the per-prefab/per-decal `m_MinLod`),
+  `bake/areas.py` 433 → 334 (`bake/areasclip.py`: the A6.5 decalLayers clip, decomposed),
+  `bake/terraincut.py` 401 → 400 (docstring rewrap).
+
+`check_limits` is **clean** — 0 unallowlisted violations; the csiibundle allowlist is down to
+19 entries (the deliberately-kept long functions: the product `run()`s, `bend_part`,
+`_parse_glb_unguarded`, `resolve`, and kin), from 248 at the phase's start.
+
+**Second-landing Rule-6 rebuild, verified (2026-08-28).** Full `bake --force` + `cs2_city_fine`
+build ran clean in 16 m 52 s (7,883 shapes compiled, validate problems = the standing budget
+advisory only). Against the pre-refactor after-phase3 report every build-stage count is
+IDENTICAL; the only differing fields are environmental (the budget bands ride the rolling
+build history and this run's beamng.log logged no resolution, so the estimate fell back to
+reference 1080p) or recording artifacts (phase 3 served the materials product from cache and
+logged no stats; `texturesReused` counts what the previous build left on disk). Baseline
+captured as `docs/baselines/cs2_city_fine-report-after-phase4b.json`. Two notes on the
+after-phase4a baseline this supersedes: its `estimate` block was the anomaly (prop 4,400 /
+tree 533 shapes against phase 3's and this run's identical 2,852 / 270 — a snapshot from the
+settings-bug turbulence), and its `tintedTextures: 0` vs this run's 56 is not a behaviour
+delta — the stat counts textures NEWLY WRITTEN (an existing right-sized file is reused, the
+encode being deterministic), and the behaviour-bearing split, 1,770 as-factor / 3,190
+as-texture, is identical in both. The level is rebuilt in place and awaits the in-game look.
+
+Still open in Phase 4: `check_roadgrade_vs_game.py` (499) and `check_instances_vs_game.py`
+(477 — its sampler is decomposed; both remain linear measurement probes over the file ceiling,
+split-or-declare still to be decided), the two remaining oversized test files
+(`test_app_shell` 1,692, `test_a3_objects` 1,315), and the remaining over-60 functions on the
+allowlist. The consumer-phase gate (rebuild `cs2_city_fine`, hand over before commit) still
+stands for the phase as a whole.
 
 ### Phase 9 — in progress, 2026-08-27
 

@@ -96,6 +96,24 @@ layer's unique content is `mask`, `colorMask`, `flags` and `tint`.
 """
 
 from . import reader
+from .normalmaps import (  # noqa: F401  (re-export: §7.1 normal packings)
+    NORMAL_AG,
+    NORMAL_RG,
+    NORMAL_RGB,
+    detect_normal_packing,
+    normal_x_channel,
+    unpack_normal,
+)
+from .shaderonly import (  # noqa: F401  (re-export: the textureless-material rules)
+    SHADER_ONLY_NAME_SUFFIXES,
+    SHADER_ONLY_SUBSTITUTE,
+    SHADER_ONLY_TEMPLATES,
+    TEXTURE_SLOTS,
+    is_textureless,
+    shader_only_kind,
+    template,
+    tint,
+)
 
 # Which colour space each map must be loaded in. Loading `mask` or `normal` as sRGB applies a
 # transfer curve to data that is not colour, which shifts every roughness and every normal.
@@ -129,57 +147,9 @@ GLTF_FALLBACK_ROUGHNESS = 0.9
 GLTF_FALLBACK_METALLIC = 0.0
 
 
-# The map slots whose presence means "this material has real texture data". A material with
-# none of them is drawn entirely by its shader template.
-TEXTURE_SLOTS = ("baseColor", "normal", "mask", "emissive")
-
-# Templates that are pure shader and ship no maps, with what each actually is. A consumer must
-# substitute an appearance for these or they render white. CONTRACT (the names; the treatment is
-# the consumer's).
-SHADER_ONLY_TEMPLATES = {
-    "DefaultGlassDoubleSided": "glass",
-    "WaterGeneric": "water",
-    "WaterStream": "water",
-    "Grass": "foliage",
-    "CurvedOverlay": "overlay",
-    "CurvedTransparent": "overlay",
-    "Placeholder": "placeholder",
-    # `Windows` is a real window template with 632 uses on the reference city, 625 of them
-    # carrying maps — so it reaches here only for the 7 whose maps did not bind, and those are
-    # window panes. Gated on `is_textureless`, as every entry in this table is.
-    "Windows": "glass",
-}
-
-# CS2's own material-name suffix, as the second-choice evidence when the template says nothing.
-# A textureless material whose template is the generic `Default` has no other signal, and on the
-# reference city there are five: `SmallFountain01/02/03_Wat_*`, `LargeFountain03_Wat_*`,
-# `HotTub02_Wat_*`. Left unclassified they render as flat white slabs, which is the exact defect
-# this module exists to prevent.
-#
-# This is NOT the assetId substring test that `decalRole` retired. That one guessed at a
-# distinction the producer could publish and did not; this one reads a naming convention the
-# bundle CORROBORATES 47 times over — every other `_Wat_` material on this city carries the
-# explicit `WaterGeneric` template, and every `_Gls_` one carries `DefaultGlassDoubleSided`. It
-# fires only when the template gives no answer at all. TUNED (the mapping is evidence-backed but
-# it is a naming convention, not a contract).
-SHADER_ONLY_NAME_SUFFIXES = (
-    ("_Wat_", "water"),
-    ("_Gls_", "glass"),
-    ("_Win_", "glass"),
-)
-
-
 def load(bundle_dir):
     """`materials.json` as `{materialId: entry}` — see `reader.load_materials`."""
     return reader.load_materials(bundle_dir)
-
-
-def template(entry):
-    """The CS2 shader template name from `flags`, e.g. `"WaterGeneric"`, or `None`."""
-    for flag in (entry or {}).get("flags", ()):
-        if flag.startswith("template:"):
-            return flag[9:]
-    return None
 
 
 def semantics(entry):
@@ -188,49 +158,6 @@ def semantics(entry):
     The producer's own classification, coarser than the template and stable across templates.
     """
     return frozenset(f for f in (entry or {}).get("flags", ()) if not f.startswith("template:"))
-
-
-def is_textureless(entry):
-    """Whether this material ships NO maps, so a glTF loader will render it flat white.
-
-    See the module docstring for the table of which templates these are and what each needs.
-    """
-    return not any(slot in (entry or {}) for slot in TEXTURE_SLOTS)
-
-
-def shader_only_kind(entry, material_id=None):
-    """`"water"`, `"glass"`, `"foliage"`, `"overlay"`, `"placeholder"` — or `None`.
-
-    What a textureless material actually is, so a consumer can substitute the right appearance
-    rather than leaving it white. `None` means the material has maps and needs no substitute —
-    or that it is textureless and nothing here can say what it is, which a caller should surface
-    rather than silently skip.
-
-    Pass `material_id` (the `materials.json` key) to enable the name-suffix fallback for
-    templates that carry no meaning of their own; see `SHADER_ONLY_NAME_SUFFIXES`. Without it,
-    the reference city leaves 5 fountains and hot tubs unclassified.
-    """
-    if not is_textureless(entry):
-        return None
-
-    kind = SHADER_ONLY_TEMPLATES.get(template(entry))
-    if kind is not None:
-        return kind
-
-    for suffix, named in SHADER_ONLY_NAME_SUFFIXES:
-        if material_id and (suffix in material_id):
-            return named
-
-    return None
-
-
-def tint(entry):
-    """The material's flat RGBA colour when it ships one, else `None`.
-
-    Present only on textureless materials, where it IS the base colour.
-    """
-    value = (entry or {}).get("tint")
-    return tuple(value[:4]) if value else None
 
 
 def texture_path(bundle_dir, entry, slot):
@@ -264,91 +191,6 @@ def wire_plan(entry):
     return [("mask", "R", "metallic", False), ("mask", "A", "roughness", True)]
 
 
-# The three layouts a normal map in this bundle can arrive in, and what carries X in each.
-# §7.1 promises the first; the other two are what a two-channel packing looks like when it
-# reaches disk unrebuilt, and reading one of them as if it were the first is silent and total —
-# see `detect_normal_packing`.
-NORMAL_RGB = "rgb"  # X in red, Y in green, Z in blue. The contract.
-NORMAL_AG = "ag"  # DXT5nm/BC3n: X in ALPHA, Y in green, red pinned white, Z reconstructed
-NORMAL_RG = "rg"  # BC5: X in red, Y in green, blue pinned black, Z reconstructed
-
-# What "pinned" means, in 0-1. Block compression dents a constant channel by a few counts, so
-# these are not exact tests, and the fraction below is what actually decides.
-_PINNED_HIGH = 250.0 / 255.0
-_PINNED_LOW = 5.0 / 255.0
-_PINNED_FRACTION = 0.9
-
-
-def detect_normal_packing(samples):
-    """Which of `NORMAL_RGB` / `NORMAL_AG` / `NORMAL_RG` a normal map is stored in.
-
-    **A packed normal read as an RGB one does not look subtly wrong, it looks black.** A
-    two-channel normal map ships X and Y and lets the shader reconstruct Z, and both of the
-    layouts Unity's own `UnpackNormalmapRGorAG` straddles reach this bundle: AG pins red at
-    white and hides X in alpha, so reading RGB gives `normal.x = +1` — a shading normal lying
-    flat along the surface, which on level ground faces 90 degrees away from any sun and shades
-    black. RG pins blue at black, so reading RGB gives `normal.z = -1`, a normal pointing into
-    the surface, which shades black too. Measured on the reference city: 20 of 35 area surface
-    normals are AG and 2 are RG, which is why every painted area rendered black.
-
-    `samples` is any iterable of `(r, g, b, a)` floats in 0-1 — a subsample of the image is
-    plenty, since what separates the layouts is a channel being CONSTANT across the whole map.
-    The tests are the producer's own (`MaterialRipSystem.ReconstructTwoChannelNormal`), so a
-    consumer and the ripper agree on what a packed map is.
-
-    Returns `NORMAL_RGB` for anything that matches neither signature — including a map this
-    cannot classify. Guessing at an unrecognised layout would invent relief the game does not
-    draw; leaving it alone renders what the bundle actually says.
-    """
-    total = high_red = low_blue = low_red = 0
-    varying_alpha = False
-    for r, _g, b, a in samples:
-        total += 1
-        if r >= _PINNED_HIGH:
-            high_red += 1
-        if r <= _PINNED_LOW:
-            low_red += 1
-        if b <= _PINNED_LOW:
-            low_blue += 1
-        if a < _PINNED_HIGH:
-            varying_alpha = True
-    if total == 0:
-        return NORMAL_RGB
-
-    threshold = total * _PINNED_FRACTION
-    # Each layout needs a POSITIVE signature as well as a pinned channel. AG needs alpha to be
-    # carrying something: a map whose alpha is constant has no X in it. RG needs the same of RED,
-    # which is where it keeps X — without that clause a black or near-black placeholder normal
-    # (blue dark everywhere, red nowhere near white) reads as RG and gets "unpacked" from
-    # x = y = -1 into a uniform sideways normal, which is the exact defect this detects.
-    if (high_red >= threshold) and varying_alpha:
-        return NORMAL_AG
-    if (low_blue >= threshold) and (high_red < threshold) and (low_red < threshold):
-        return NORMAL_RG
-    return NORMAL_RGB
-
-
-def normal_x_channel(packing):
-    """Which channel holds X under `packing` — `"A"`, `"R"`. Y is always green, Z always derived.
-
-    `None` for `NORMAL_RGB`, where nothing needs rebuilding.
-    """
-    return {NORMAL_AG: "A", NORMAL_RG: "R"}.get(packing)
-
-
-def unpack_normal(packing, r, g, b, a):
-    """One texel as a tangent-space `(x, y, z)` in -1..1. The reference the node graph mirrors.
-
-    Z is reconstructed rather than read for the packed layouts, exactly as the game's shader
-    does — the stored blue is meaningless in both of them.
-    """
-    if packing == NORMAL_RGB:
-        return (2.0 * r - 1.0, 2.0 * g - 1.0, 2.0 * b - 1.0)
-    x = 2.0 * (a if packing == NORMAL_AG else r) - 1.0
-    y = 2.0 * g - 1.0
-    return (x, y, max(0.0, 1.0 - x * x - y * y) ** 0.5)
-
-
 def coverage(catalogue):
     """`{slot: count}` over a whole catalogue — how much of each map the bundle actually has.
 
@@ -363,40 +205,6 @@ def coverage(catalogue):
 
 
 # -- the resolved material: what a renderer needs, decided once ----------------------------------
-
-# Substitutes for the shader-only kinds — a flat colour, roughness, and how the surface is
-# drawn. Glass and foliage are TUNED (the game's shaders are compiled and ship no numbers);
-# water is EXACT from `rasters.water` and is filled in by `resolve` from the bundle's block.
-SHADER_ONLY_SUBSTITUTE = {
-    "glass": {
-        "baseColorFactor": (0.92, 0.96, 1.0, 0.35),
-        "roughness": 0.05,
-        "metallic": 0.0,
-        "alphaMode": "blend",
-        "doubleSided": False,
-    },
-    "foliage": {
-        "baseColorFactor": (0.28, 0.42, 0.18, 1.0),
-        "roughness": 0.85,
-        "metallic": 0.0,
-        "alphaMode": "opaque",
-        "doubleSided": True,
-    },
-    "overlay": {
-        "baseColorFactor": (0.5, 0.5, 0.5, 0.5),
-        "roughness": 0.9,
-        "metallic": 0.0,
-        "alphaMode": "blend",
-        "doubleSided": False,
-    },
-    "placeholder": {
-        "baseColorFactor": (0.6, 0.6, 0.6, 1.0),
-        "roughness": 0.9,
-        "metallic": 0.0,
-        "alphaMode": "opaque",
-        "doubleSided": False,
-    },
-}
 
 
 def resolve(entry, material_id=None, water_appearance=None):

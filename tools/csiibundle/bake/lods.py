@@ -19,7 +19,7 @@ authored LODs beat generated ones. Options: `lod_targets` (default `[0.25, 0.06]
 
 Beside the meshes this writes `lods.json`: per asset, each level's triangle count **and its
 displacement** - the p95 distance from the generated surface back to LOD 0's, in metres
-(`decimate.level_displacement`). A consumer cannot pick a switch point from a triangle ratio: at
+(`displacement.level_displacement`). A consumer cannot pick a switch point from a triangle ratio: at
 the same 25 % ratio, 603 of the reference bundle's 4,261 LOD1s are geometrically IDENTICAL to
 LOD 0 and the worst is 37 m out (p50 0.018 m, p99 6.167 m). A ladder built from the shape's size
 cannot tell those apart, and the coarse end of that spread is what reads in-game as a roof moving
@@ -36,7 +36,7 @@ import time
 
 import numpy
 
-from .. import decimate, glb, glbwrite, parallel, png, reader
+from .. import decimate, displacement, glb, glbwrite, parallel, png, reader
 from .. import region as region_rule
 from . import Product, register
 
@@ -156,7 +156,7 @@ def _process_file(args):
             if len(level["tris"]) == 0:
                 continue
             tri_out[li] += len(level["tris"])
-            _, distances, weights = decimate.level_displacement(level, node)
+            _, distances, weights = displacement.level_displacement(level, node)
             if len(distances):
                 spread[li][0].append(distances)
                 spread[li][1].append(weights)
@@ -189,17 +189,17 @@ def _process_file(args):
         out = os.path.join(out_dir, f"{asset_id}_LOD{li + 1}.glb")
         glbwrite.write_glb(out, per_level_nodes[li])
         written.append(os.path.basename(out))
-    displacement = []
+    displacements = []
     for distances, weights in spread:
         if not distances:
-            displacement.append(None)
+            displacements.append(None)
             continue
-        displacement.append(
+        displacements.append(
             round(
-                decimate.weighted_percentile(
+                displacement.weighted_percentile(
                     numpy.concatenate(distances),
                     numpy.concatenate(weights),
-                    decimate.DISPLACEMENT_PERCENTILE,
+                    displacement.DISPLACEMENT_PERCENTILE,
                 ),
                 4,
             )
@@ -211,7 +211,7 @@ def _process_file(args):
             "tris": tri_in,
             "levels": tri_out,
             "files": written,
-            "displacement": displacement,
+            "displacement": displacements,
             "backend": resolved_backend,
         },
     )
@@ -285,13 +285,13 @@ def run(context, progress):
     ratio = [round(t / stats["trisIn"], 3) if stats["trisIn"] else None for t in stats["trisOut"]]
     stats["backend"] = stats["backend"] or backend
     stats["displacement"] = _displacement_summary(index, len(targets))
-    stats["displacementPercentile"] = decimate.DISPLACEMENT_PERCENTILE
+    stats["displacementPercentile"] = displacement.DISPLACEMENT_PERCENTILE
     with open(os.path.join(out_dir, INDEX_NAME), "w", encoding="utf-8") as handle:
         json.dump(
             {
                 "backend": stats["backend"],
                 "targets": list(targets),
-                "percentile": decimate.DISPLACEMENT_PERCENTILE,
+                "percentile": displacement.DISPLACEMENT_PERCENTILE,
                 "assets": index,
             },
             handle,

@@ -73,15 +73,15 @@ def test_displacement_switch_points():
 
 
 def test_surface_displacement():
-    print("decimate.level_displacement - the distance from a level's surface back to LOD 0's")
+    print("displacement.level_displacement - the distance from a level's surface back to LOD 0's")
     import numpy
-    from csiibundle import decimate
+    from csiibundle import displacement
 
     # a 10 m square in the z = 0 plane, as two triangles: a point above it is that high above
     # the SURFACE, which nearest-vertex would answer as the distance to a corner
     verts = numpy.array([[0.0, 0, 0], [10, 0, 0], [10, 10, 0], [0, 10, 0]])
     tris = numpy.array([[0, 1, 2], [0, 2, 3]])
-    d = decimate.distance_to_surface(
+    d = displacement.distance_to_surface(
         numpy.array([[5.0, 5, 1.0], [1, 1, 0.25], [-3, 5, 0]]), verts, tris
     )
     check("point-to-SURFACE, not point-to-vertex", near(d[0], 1.0) and near(d[1], 0.25), f"{d}")
@@ -96,7 +96,7 @@ def test_surface_displacement():
     points = numpy.column_stack(
         [rng.uniform(1, 9, 200), rng.uniform(1, 9, 200), rng.uniform(0.1, 2.0, 200)]
     )
-    got = decimate.distance_to_surface(points, mesh_v, mesh_t)
+    got = displacement.distance_to_surface(points, mesh_v, mesh_t)
     check(
         "a distant giant triangle does not hide the near small one",
         numpy.allclose(got, points[:, 2]),
@@ -105,9 +105,9 @@ def test_surface_displacement():
 
     # a level that IS the source measures zero; one lifted by a metre measures a metre
     source = {"verts": verts, "tris": tris, "material_runs": [(None, 2)]}
-    same, _d, _w = decimate.level_displacement(source, source)
+    same, _d, _w = displacement.level_displacement(source, source)
     lifted = dict(source, verts=verts + numpy.array([0.0, 0, 1.0]))
-    moved, _d, _w = decimate.level_displacement(lifted, source)
+    moved, _d, _w = displacement.level_displacement(lifted, source)
     check("an identical level is zero", near(same, 0.0, 1e-9), f"{same}")
     check("a level lifted 1 m measures 1 m", near(moved, 1.0, 1e-6), f"{moved}")
 
