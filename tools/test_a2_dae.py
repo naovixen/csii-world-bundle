@@ -70,7 +70,7 @@ def _read_dae(path):
 
 
 def test_writer(tmp):
-    from cs2beamng.beamng import dae
+    from cs2beamng.beamng import dae, daemesh
 
     print("dae writer")
     verts = numpy.array([[0, 0, 0], [2, 0, 0], [2, 3, 0], [0, 3, 0], [1, 1, 5]], float)
@@ -119,7 +119,7 @@ def test_writer(tmp):
     )
     # group_by_material reorders interleaved runs
     inter = dae.Mesh("i", verts, tris, [("a", 1), ("b", 1), ("a", 1), ("b", 1)])
-    grouped = dae.group_by_material(inter)
+    grouped = daemesh.group_by_material(inter)
     check(
         grouped.runs == [("a", 2), ("b", 2)] and len(grouped.tris) == 4,
         f"group_by_material {grouped.runs}",
@@ -127,9 +127,9 @@ def test_writer(tmp):
 
 
 def test_split(tmp):
-    """`dae.split_mesh`: a geometry over the per-mesh cap becomes several under it, triangles and
+    """`daemesh.split_mesh`: a geometry over the per-mesh cap becomes several under it, triangles and
     materials preserved, and the shape's nodes still END in `_a<px>` (load #10 shards)."""
-    from cs2beamng.beamng import dae, validate_level
+    from cs2beamng.beamng import dae, daemesh, validate_level
 
     print("dae split (per-geometry vertex cap)")
     rng = numpy.random.default_rng(7)
@@ -148,7 +148,7 @@ def test_split(tmp):
     mesh = dae.Mesh(
         "big", verts, tris, [("asphalt", len(strip)), ("kerb", len(fan))], normals=normals, uvs=uvs
     )
-    parts = dae.split_mesh(mesh, 60_000)
+    parts = daemesh.split_mesh(mesh, 60_000)
     check(
         len(parts) >= 3 and all(len(p.verts) <= 60_000 for p in parts),
         f"{len(parts)} parts, max verts {max(len(p.verts) for p in parts)}",
@@ -170,7 +170,9 @@ def test_split(tmp):
         "material runs stay contiguous and ordered",
     )
     check(
-        dae.split_mesh(dae.Mesh("small", verts[:100], tris[:50], [("asphalt", 50)]), 60_000)[0].name
+        daemesh.split_mesh(dae.Mesh("small", verts[:100], tris[:50], [("asphalt", 50)]), 60_000)[
+            0
+        ].name
         == "small",
         "a mesh under the cap is returned as is",
     )
@@ -217,7 +219,7 @@ def test_split(tmp):
 
 
 def test_frame():
-    from cs2beamng.beamng import dae
+    from cs2beamng.beamng import daemesh
 
     print("frame")
     # a triangle in bundle frame facing +Y (up): bundle verts (0,0,0),(1,0,0),(0,0,1) — CCW seen from +Y?
@@ -226,7 +228,7 @@ def test_frame():
     glb_verts = numpy.array(
         [[0, 0, 0], [-1, 0, 0], [0, 0, 1]], float
     )  # mirrored X of bundle (0,0,0),(1,0,0),(0,0,1)
-    local, _ = dae.glb_to_local(glb_verts)
+    local, _ = daemesh.glb_to_local(glb_verts)
     check(
         numpy.allclose(local, [[0, 0, 0], [1, 0, 0], [0, 1, 0]]),
         f"(-gx, gz, gy) mapping {local.tolist()}",
@@ -238,24 +240,29 @@ def test_frame():
     # space the normal of (0,1,2) is cross((-1,0,0),(0,0,1)) = (0,1,0)... = +Y up in glTF = up. After
     # the mapping the same order gives +Z. Both reflections cancel: winding kept.
     check(n[2] > 0, f"winding preserved: face normal points BeamNG up ({n.tolist()})")
-    uv = dae.glb_uvs(numpy.array([[0.25, 0.1]]))
+    uv = daemesh.glb_uvs(numpy.array([[0.25, 0.1]]))
     check(numpy.allclose(uv, [[0.25, 0.9]]), "glb_uvs flips V")
     nrm_in = numpy.array([[0, 1, 0]], float)
-    _l, nn = dae.glb_to_local(glb_verts[:1], nrm_in)
+    _l, nn = daemesh.glb_to_local(glb_verts[:1], nrm_in)
     check(numpy.allclose(nn, [[0, 0, 1]]), "normals map like positions (glTF +Y -> BeamNG +Z)")
 
 
 def test_example_cube(tmp):
-    from cs2beamng.beamng import dae
+    from cs2beamng.beamng import dae, daemesh
     from csiibundle import glb
 
     print("example cube through the writer")
     nodes = glb.parse_glb(os.path.join(EXAMPLE, "meshes", "carto_example_cube.glb"))
     check(nodes is not None and len(nodes) >= 1, "example cube parses")
     node = nodes[0]
-    local, nn = dae.glb_to_local(node["verts"], node["normals"], node["matrix"])
+    local, nn = daemesh.glb_to_local(node["verts"], node["normals"], node["matrix"])
     mesh = dae.Mesh(
-        "cube", local, node["tris"], node["material_runs"], normals=nn, uvs=dae.glb_uvs(node["uvs"])
+        "cube",
+        local,
+        node["tris"],
+        node["material_runs"],
+        normals=nn,
+        uvs=daemesh.glb_uvs(node["uvs"]),
     )
     stats = dae.write_shape(os.path.join(tmp, "cube.dae"), dae.Shape("cube", [(200, [mesh])]))
     _r, geoms, _n = _read_dae(os.path.join(tmp, "cube.dae"))

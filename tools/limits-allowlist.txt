@@ -20,10 +20,7 @@ file Systems/RipOrchestratorSystem.cs
 file Systems/TerrainRipSystem.FineCascade.cs
 file Systems/TerrainRipSystem.cs
 file apps/cs2beamng/beamng/budget.py
-file apps/cs2beamng/beamng/dae.py
 file apps/cs2beamng/pipeline/state.py
-file apps/cs2beamng/pipeline/worker.py
-file apps/cs2beamng/stages/cook.py
 file apps/cs2beamng/stages/instances.py
 file apps/cs2beamng/stages/lights.py
 file apps/cs2beamng/stages/materials.py

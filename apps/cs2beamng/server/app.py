@@ -16,7 +16,7 @@ from http import HTTPStatus
 from .. import __version__
 from .. import settings as settings_mod
 from ..pipeline.runner import Runner
-from ..pipeline.worker import REPORT_NAME
+from ..pipeline.workerstate import REPORT_NAME
 from . import mappoints
 from .caches import BundleCaches
 from .routes import _Handler, _Server

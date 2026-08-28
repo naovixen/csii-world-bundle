@@ -11,7 +11,7 @@ from typing import Any
 import numpy
 from csiibundle import glb, lod
 
-from ..beamng import dae, placement
+from ..beamng import dae, daemesh, placement
 from . import shapecollider, shapelods
 from .shapelods import (
     IMPOSTER_REACH,
@@ -62,7 +62,7 @@ def shape_job(job):
     detail_scale = shapelods.detail_scale(kind, options)
     null_px = max(1.0, game_px * detail_scale)
     shape_name = placement.shape_key(job.asset, job.suffix, job.variant)
-    base_mesh = dae.group_by_material(dae.merge_meshes(shape_name, parts))
+    base_mesh = daemesh.group_by_material(daemesh.merge_meshes(shape_name, parts))
     levels, lod_stats, ladder = shapelods.lod_levels(
         job.derived_dir,
         source,

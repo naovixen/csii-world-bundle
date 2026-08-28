@@ -14,21 +14,28 @@ that returns `_norecord`, which is how a stage says "I gave up for a reason the 
 see" (the cook, when BeamNG is running or absent).
 """
 
-import json
 import os
-import shutil
 import signal
 import time
 import traceback
 
-from csiibundle import reader
 from csiibundle.bake.progress import Cancelled
 
-from ..settings import SCHEMA as SETTINGS_SCHEMA
-from ..settings import app_dir, region_of
+from ..settings import region_of
 from ..stages import BuildContext, all_stages, level_of
-from . import history, state
+from . import history, state, statepayload
 from .progress import Heartbeat, QueueProgress
+from .workerstate import (
+    clear_generated,
+    manifest,
+    merge_report,
+    record,
+    remove_stale_report,
+    shared_snapshot,
+    summary,
+    write_report,
+    write_settings,
+)
 
 
 def _jobs(settings):
@@ -71,18 +78,18 @@ def main(settings, census, queue, cancel_event, hard_cancel=None):
     force = bool(settings.get("rebuild", False))
     previous = None if force else state.load(level_dir)
     current = state.new_document(settings)
-    manifest = _manifest(settings["bundle"])
+    bundle_manifest = manifest(settings["bundle"])
     skipped = {}
     try:
         os.makedirs(level_dir, exist_ok=True)
-        _write_settings(
+        write_settings(
             level_dir, settings, queue
         )  # first, so an interrupted build still says what it was
-        _remove_stale_report(
+        remove_stale_report(
             level_dir
         )  # a killed build must not be explained by the previous one's report
         if force:
-            _clear_generated(level_dir, queue)  # --force is the "start from nothing" path
+            clear_generated(level_dir, queue)  # --force is the "start from nothing" path
         for stage in all_stages():
             if not stage.enabled(settings):
                 queue.put(
@@ -93,7 +100,7 @@ def main(settings, census, queue, cancel_event, hard_cancel=None):
             sig = reason = None
             if state.incremental(stage) and not force:
                 try:
-                    sig = state.signature(stage, ctx, manifest, current)
+                    sig = state.signature(stage, ctx, bundle_manifest, current)
                     fresh, reason = state.check(previous, stage, sig, level_dir)
                 except (
                     OSError,
@@ -101,7 +108,7 @@ def main(settings, census, queue, cancel_event, hard_cancel=None):
                 ) as exc:  # a fingerprint that cannot be taken is not a skip
                     fresh, reason = False, f"could not fingerprint inputs ({exc!r})"
                 if fresh:
-                    result = state.replay(level_dir, stage.key, level_of(ctx), ctx.shared)
+                    result = statepayload.replay(level_dir, stage.key, level_of(ctx), ctx.shared)
                     if result is not None:
                         current["stages"][stage.key] = dict(
                             (previous.get("stages") or {})[stage.key]
@@ -109,7 +116,7 @@ def main(settings, census, queue, cancel_event, hard_cancel=None):
                         current["stages"][stage.key]["skippedAt"] = time.strftime(
                             "%Y-%m-%dT%H:%M:%SZ", time.gmtime()
                         )
-                        _merge_report(report, result)
+                        merge_report(report, result)
                         report["stages"][stage.key] = {
                             "seconds": 0.0,
                             "skipped": True,
@@ -145,7 +152,7 @@ def main(settings, census, queue, cancel_event, hard_cancel=None):
             recorder = state.Recorder(settings)
             stage_ctx = ctx._replace(settings=recorder)
             level_of(ctx).set_stage(stage.key)
-            before = _shared_snapshot(ctx.shared, stage.shared_keys)
+            before = shared_snapshot(ctx.shared, stage.shared_keys)
             queue.put({"t": "stage", "stage": stage.key, "status": "running", "at": time.time()})
             if sig is not None and reason:
                 queue.put(
@@ -188,7 +195,7 @@ def main(settings, census, queue, cancel_event, hard_cancel=None):
                 report["failed"] = {"stage": stage.key, "error": repr(exc)}
                 break
             seconds = time.monotonic() - started
-            _merge_report(report, result)
+            merge_report(report, result)
             report["stages"][stage.key] = {"seconds": round(seconds, 1), "result": result}
             per_key = result.pop("_history", None) if isinstance(result, dict) else None
             if per_key:  # heterogeneous stages learn per sub-key
@@ -203,7 +210,7 @@ def main(settings, census, queue, cancel_event, hard_cancel=None):
             # closing the game changes nothing this stage declares.
             norecord = bool(result.pop("_norecord", False)) if isinstance(result, dict) else False
             if sig is not None and not norecord:
-                _record(
+                record(
                     level_dir,
                     current,
                     stage,
@@ -222,7 +229,7 @@ def main(settings, census, queue, cancel_event, hard_cancel=None):
                     "stage": stage.key,
                     "status": "done",
                     "seconds": seconds,
-                    "summary": _summary(result),
+                    "summary": summary(result),
                     "at": time.time(),
                 }
             )
@@ -239,7 +246,7 @@ def main(settings, census, queue, cancel_event, hard_cancel=None):
             state.save(level_dir, current)
         report["status"] = "done" if ok else ("cancelled" if "cancelled" in report else "failed")
         report["finishedAt"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-        _write_report(level_dir, report, queue)
+        write_report(level_dir, report, queue)
         queue.put({"t": "done", "ok": ok, "report": report, "at": time.time()})
     except Exception:
         queue.put({"t": "error", "text": traceback.format_exc(), "at": time.time()})
@@ -316,220 +323,4 @@ def _score_estimate(report, settings, census, queue):
     estimatescore.observe(estimated, measured)
 
 
-REPORT_NAME = "cs2beamng_report.json"
-SETTINGS_NAME = "cs2beamng_settings.json"  # written first, never removed: see _write_settings
-
-
 # -- the incremental bookkeeping -------------------------------------------------------------------
-
-
-def _manifest(bundle_dir):
-    """`bundle.json` read once per build; every stage's layer fingerprints resolve through it."""
-    try:
-        return reader.load_manifest(bundle_dir)
-    except (OSError, ValueError):
-        return None
-
-
-def _shared_snapshot(shared, keys):
-    """A shallow copy of the declared `ctx.shared` entries before a stage runs, so its delta can
-    be worked out afterwards. Sets and dicts are copied one level deep because stages mutate
-    them in place (`materials_used.add(...)`)."""
-    out = {}
-    for key in keys or ():
-        value = (shared or {}).get(key)
-        if isinstance(value, (set, frozenset)):
-            out[key] = set(value)
-        elif isinstance(value, dict):
-            out[key] = {
-                k: (set(v) if isinstance(v, (set, frozenset)) else v) for k, v in value.items()
-            }
-        elif value is not None:
-            out[key] = value
-    return out
-
-
-def _record(level_dir, document, stage, sig, recorder, ctx, before, result, seconds, queue, report):
-    """Record what this stage was built from — unless it read a setting it did not declare, in
-    which case it must re-run next build rather than be trusted (that exact miss cost a
-    25-minute build on 2026-08-18)."""
-    missed = state.undeclared(recorder, stage, SETTINGS_SCHEMA)
-    if missed:
-        text = (
-            f"{stage.key}: reads settings it does not declare {missed} - not recorded, so it re-runs "
-            f"next build. Add them to the stage's settings_keys."
-        )
-        queue.put({"t": "log", "stage": stage.key, "text": text, "at": time.time()})
-        report.setdefault("stateWarnings", []).append(text)
-        return
-    try:
-        delta = state.diff_shared(before, ctx.shared or {}, stage.shared_keys)
-        state.write_payload(
-            level_dir, stage.key, level_of(ctx).stage_objects(stage.key), delta, result
-        )
-    except (OSError, ValueError, TypeError) as exc:
-        text = (
-            f"{stage.key}: could not write its replay payload ({exc!r}); it will re-run next build"
-        )
-        queue.put({"t": "log", "stage": stage.key, "text": text, "at": time.time()})
-        report.setdefault("stateWarnings", []).append(text)
-        return
-    present = [
-        rel
-        for rel in (stage.outputs or ())
-        if os.path.exists(os.path.join(level_dir, *rel.split("/")))
-    ]
-    document["stages"][stage.key] = {
-        "signature": sig,
-        "seconds": round(seconds, 1),
-        "outputs": present,
-        "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-    }
-
-
-# Folders `--force` / `rebuild` empties before starting. **Only on force** since A4: clearing
-# `art/shapes/` on every build threw away every `.cdae` too, and BeamNG's own compiler is built
-# to reuse them (`compileMeshes.lua`: "existing .cdae will be reused. Delete them beforehand if
-# a clean state is required") — that one `rmtree` was the whole 6m26s cook on a rebuild that
-# changed no geometry. The shape-writing stages now sweep their own orphans at the end instead,
-# which is the pattern art/textures/ already used and whose comment explains why: an unchanged
-# file keeps its mtime, so BeamNG keeps its cooked copy in temp/ (load #11 re-cooked all 260
-# textures on every first load because the folder was cleared and rewritten each build).
-GENERATED_DIRS = (("art", "shapes"),)
-
-
-def _clear_generated(level_dir, queue):
-    for parts in GENERATED_DIRS:
-        path = os.path.join(level_dir, *parts)
-        if os.path.isdir(path):
-            try:
-                shutil.rmtree(path)
-                queue.put(
-                    {
-                        "t": "log",
-                        "stage": "",
-                        "text": f"cleared {'/'.join(parts)}/ from the previous build",
-                        "at": time.time(),
-                    }
-                )
-            except OSError as exc:
-                queue.put(
-                    {
-                        "t": "log",
-                        "stage": "",
-                        "text": f"could not clear {'/'.join(parts)}/: {exc}",
-                        "at": time.time(),
-                    }
-                )
-
-
-def _write_settings(level_dir, settings, queue):
-    """`cs2beamng_settings.json` — every schema key this build ran with, written FIRST.
-
-    The report carries the settings too, but it is written last and deleted at the start of the
-    next build, so an interrupted or killed run leaves a level nobody can reproduce. It has
-    happened twice: on 2026-08-19 the settings behind `cs2_city_fine` had to be reconstructed out
-    of the per-stage results (terrain size, texture caps, collider counts), which recovers most of
-    them and guesses the rest. This file is small, it is written before any stage runs, and it is
-    never removed - a level folder now says what made it whatever else happens to the build.
-    """
-    try:
-        os.makedirs(level_dir, exist_ok=True)
-        recorded = {
-            key: settings.get(key, default)
-            for key, (default, _kind, _help) in SETTINGS_SCHEMA.items()
-        }
-        payload = {
-            "schema": "cs2beamng.settings/1",
-            "startedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-            "settings": recorded,
-        }
-        paths = [os.path.join(level_dir, SETTINGS_NAME)]
-        # ...and a copy outside the level, so deleting or rebuilding the folder cannot take the
-        # last record of it with them
-        keep = os.path.join(app_dir(), "levels")
-        os.makedirs(keep, exist_ok=True)
-        paths.append(os.path.join(keep, f"{settings.get('level_name')}.json"))
-        for path in paths:
-            # Unchanged settings must not rewrite the file: `validate` fingerprints the level
-            # FOLDER, so a new mtime here alone would re-run it on every no-op build.
-            if _same_settings(path, recorded):
-                continue
-            with open(path, "w", encoding="utf-8", newline="\n") as handle:
-                json.dump(payload, handle, indent=1, sort_keys=True, default=str)
-    except OSError as exc:
-        queue.put(
-            {
-                "t": "log",
-                "stage": "system",
-                "text": f"could not write {SETTINGS_NAME}: {exc}",
-                "at": time.time(),
-            }
-        )
-
-
-def _same_settings(path, recorded):
-    try:
-        with open(path, encoding="utf-8") as handle:
-            existing = json.load(handle)
-    except (OSError, ValueError):
-        return False
-    return isinstance(existing, dict) and existing.get("settings") == recorded
-
-
-def _remove_stale_report(level_dir):
-    try:
-        os.remove(os.path.join(level_dir, REPORT_NAME))
-    except FileNotFoundError:
-        pass
-    except OSError:
-        pass
-
-
-def _write_report(level_dir, report, queue):
-    """The build report lives beside the level; the worker writes it last so every stage — the
-    validator included — has its timing and result in it. A cancelled or failed build gets one
-    too (with `status` saying so), which is what makes a partial level explainable later."""
-    try:
-        os.makedirs(level_dir, exist_ok=True)
-        path = os.path.join(level_dir, REPORT_NAME)
-        with open(path, "w", encoding="utf-8", newline="\n") as handle:
-            json.dump(report, handle, indent=1, sort_keys=True, default=str)
-    except OSError as exc:
-        queue.put(
-            {
-                "t": "log",
-                "stage": "system",
-                "text": f"could not write {REPORT_NAME}: {exc}",
-                "at": time.time(),
-            }
-        )
-
-
-def _merge_report(report, result):
-    """Move a stage's `_report` delta into the report proper, and out of its result.
-
-    A stage that writes straight into `ctx.report` loses that write the moment it is SKIPPED: the
-    replay puts back its objects, its `shared` delta and its result, and nothing else. `validate`
-    did exactly that with `report["validation"]`, so an incremental rebuild dropped the level's
-    verdict from the report while still claiming the stage was fresh. Returning the delta instead
-    makes it part of the replayed payload, which is the one thing a skip is guaranteed to restore.
-    """
-    if isinstance(result, dict):
-        # `get`, not `pop`: the replay payload is written from this same dict a few lines later,
-        # and popping the delta out of it is exactly how the verdict failed to survive a skip the
-        # first time. It costs one duplicate copy under `stages.<key>.result`, which is what makes
-        # the payload self-describing.
-        delta = result.get("_report")
-        if isinstance(delta, dict):
-            report.update(delta)
-
-
-def _summary(result):
-    if not isinstance(result, dict):
-        return None
-    parts = []
-    for key, value in list(result.items())[:4]:
-        if isinstance(value, (int, float, str)):
-            parts.append(f"{key}={value}")
-    return ", ".join(parts) or None

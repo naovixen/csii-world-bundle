@@ -9,7 +9,7 @@ import numpy
 from csiibundle import lod
 from csiibundle.bake.tiles import MIN_LOD_MARK
 
-from ..beamng import dae
+from ..beamng import daemesh
 from ..beamng.matbind import mapto_name
 
 # -- the game's own draw-distance limit, per segment -------------------------------------------------
@@ -77,13 +77,13 @@ def merge_local(pieces, ox, oy, level, shared):
     """Convert to BeamNG local (tile origin at (ox, oy)) and merge."""
     parts = []
     for v, n, uv, tris, runs, _origin, min_lod in pieces:
-        local, nn = dae.glb_to_local(v, n)
+        local, nn = daemesh.glb_to_local(v, n)
         local[:, 0] -= ox
         local[:, 1] -= oy
         mark = "" if min_lod is None else f"{MIN_LOD_MARK}{int(min_lod)}"
         runs2 = [(mapto_name(shared, level, name) + mark, count) for name, count in runs]
-        parts.append((local, nn, dae.glb_uvs(uv), None, tris, runs2))
-    merged = dae.merge_meshes("tile", parts)
+        parts.append((local, nn, daemesh.glb_uvs(uv), None, tris, runs2))
+    merged = daemesh.merge_meshes("tile", parts)
     return {
         "verts": merged.verts,
         "normals": merged.normals,

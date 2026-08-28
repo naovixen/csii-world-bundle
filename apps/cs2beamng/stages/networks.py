@@ -5,13 +5,13 @@ Why tiles: 7,289 segment meshes as 7,289 TSStatics is 3× vanilla's whole-level 
 before a single building; 256 m tiles are a few hundred objects and one draw per material per
 tile. A tile whose vertex count passes `SPLIT_VERTS` is quartered by segment origin (dense
 junction clusters) so no single shape is a memory spike, and within a shape no geometry holds
-more than `dae.MAX_GEOMETRY_VERTS` vertices (`dae.split_mesh` — the load #10 junction shards
+more than `daemesh.MAX_GEOMETRY_VERTS` vertices (`daemesh.split_mesh` — the load #10 junction shards
 were the tiles that passed 65,535). Each tile's geometry is written
 relative to the tile's origin (float32 precision stays sub-millimetre) and the TSStatic sits at
 that origin.
 
 Frame: segment glb (glTF, X-mirrored) → node matrix → undo mirror → + `pos` (bundle world) →
-BeamNG `(x, z, y)`; that is `dae.glb_to_local` after adding the offset, so winding is kept.
+BeamNG `(x, z, y)`; that is `daemesh.glb_to_local` after adding the offset, so winding is kept.
 Materials bind the level-prefixed canonical name (`beamng.materials.mapto_name`).
 
 Region builds keep segments whose origin lies within the region (+`REACH` so a road entering
@@ -32,7 +32,7 @@ import numpy
 from csiibundle import glb, lod, parallel, reader
 from csiibundle import region as region_rule
 
-from ..beamng import dae, frame, tilemesh
+from ..beamng import dae, daemesh, frame, tilemesh
 from ..beamng import level as level_mod
 from ..beamng.level import LevelPaths
 from ..beamng.matbind import aliases_of
@@ -164,7 +164,7 @@ def run(ctx, progress):
     progress.end(
         f"{written} tiles ({rewritten} rewritten), {tris_total:,} triangles, {verts_total:,} vertices "
         f"({refused} meshes refused, {orphans} orphans removed, "
-        f"{split_geoms} extra geometries from the {dae.MAX_GEOMETRY_VERTS:,}-vertex cap)"
+        f"{split_geoms} extra geometries from the {daemesh.MAX_GEOMETRY_VERTS:,}-vertex cap)"
     )
     return {
         "segments": len(records),
@@ -214,7 +214,7 @@ def _tile_job(args):
         ox, oy = (tx + 0.5) * tile, (tz + 0.5) * tile  # BeamNG x = bundle x, BeamNG y = bundle z
         merged = merge_local(sub, ox, oy, level, shared)
         name = f"net_{tx}_{tz}" + (f"_{sub_index}" if sub_index else "")
-        mesh = dae.group_by_material(
+        mesh = daemesh.group_by_material(
             dae.Mesh(
                 name,
                 merged["verts"],
@@ -283,7 +283,7 @@ def _load_parts(net_meshes, recs):
                 n = numpy.asarray(n, dtype=numpy.float64) @ numpy.linalg.inv(m[:3, :3])
             # glTF axes with the mirror still applied: undoing the mirror is x -> -x, and the
             # bundle offset applies in bundle axes; keep everything in "mirrored glTF" form and
-            # add the offset mirrored too, so dae.glb_to_local does the whole conversion once
+            # add the offset mirrored too, so daemesh.glb_to_local does the whole conversion once
             v[:, 0] -= pos[0]  # bundle +x is glTF -x
             v[:, 1] += pos[1]
             v[:, 2] += pos[2]

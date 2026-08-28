@@ -10,7 +10,7 @@ import math
 import numpy
 from csiibundle import lod
 
-from ..beamng import dae, matbind
+from ..beamng import daemesh, matbind
 
 
 def collect_parts(nodes, aliases, tinted, level_name):
@@ -38,24 +38,24 @@ def collect_parts(nodes, aliases, tinted, level_name):
         normals_in = node["normals"]
         if normals_in is not None:
             normals_in = numpy.asarray(normals_in, dtype=numpy.float64) @ matrix[:3, :3].T
-        local, normals = dae.glb_to_local(world, normals_in)
+        local, normals = daemesh.glb_to_local(world, normals_in)
         runs = []
         for name, count in node["material_runs"]:
             bound = _bound_material(name, aliases, tinted, level_name)
             materials_used.add(aliases.get(name, name))
             runs.append((bound, count))
         parts.append(
-            (local, normals, dae.glb_uvs(node["uvs"]), node.get("colors"), node["tris"], runs)
+            (local, normals, daemesh.glb_uvs(node["uvs"]), node.get("colors"), node["tris"], runs)
         )
     return parts, lo, hi, area, materials_used
 
 
 def with_wind_colours(parts):
     """Replace each part's vertex colours with BeamNG's forest wind convention
-    (`dae.wind_vertex_colours`). Synthesised, cosmetic and off by default."""
+    (`daemesh.wind_vertex_colours`). Synthesised, cosmetic and off by default."""
     out = []
     for index, (verts, normals, uvs, _colors, tris, runs) in enumerate(parts):
-        colours = dae.wind_vertex_colours(
+        colours = daemesh.wind_vertex_colours(
             {"verts": verts, "tris": tris, "material_runs": runs}, up_axis=2, seed=index
         )
         out.append((verts, normals, uvs, colours, tris, runs))

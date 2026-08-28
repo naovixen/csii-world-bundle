@@ -9,7 +9,7 @@ pure — no list of a million decisions is carried between them.
 
 A record's world matrix is the contract's `T(pos) . R(rot) . S(scale) . diag(-1,1,1)` acting on
 glTF vertices (§2.2). The `.dae` already holds `P . diag(-1,1,1)` baked into its vertices
-(`dae.glb_to_local`), so what the object needs is the same transform conjugated into BeamNG
+(`daemesh.glb_to_local`), so what the object needs is the same transform conjugated into BeamNG
 axes and with the mesh basis divided out:
 
     M_beamng = P . T . R . S . P^-1

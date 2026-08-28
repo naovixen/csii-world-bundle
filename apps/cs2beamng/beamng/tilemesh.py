@@ -4,6 +4,7 @@ import numpy
 from csiibundle import decimate
 from csiibundle.bake.tiles import split_material_name
 
+from . import daemesh
 from .tilelod import ALWAYS_PX, boundary_pins, cull_distances, lod, tile_levels
 
 # How much of each level survives, nearest level first after LOD 0 (which is never touched: it is
@@ -32,7 +33,7 @@ def tri_distances(mesh, level_of_detail=lod.DEFAULT_LEVEL_OF_DETAIL):
 
     A limit is constant within a material run by construction — the bake puts triangles with
     different limits into different primitives, and the `#L<n>` mark travels on the material name
-    through `dae.group_by_material` — so this is one value per run, expanded.
+    through `daemesh.group_by_material` — so this is one value per run, expanded.
     """
     values = []
     for name, count in mesh.runs:
@@ -150,11 +151,11 @@ def build_levels(
             before = len(part.tris)
             part = _decimated(dae, shape_name, part, ratio, tile)
             decimated.append((before, len(part.tris)))
-        out.append((px, dae.split_mesh(part)))
+        out.append((px, daemesh.split_mesh(part)))
     ladder["decimated"] = decimated
     if not out:
         ladder["nullPx"] = None
-        return [(always_px, dae.split_mesh(mesh))], ladder
+        return [(always_px, daemesh.split_mesh(mesh))], ladder
     return out, ladder
 
 

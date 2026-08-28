@@ -74,7 +74,7 @@ def identity_matrix():
     return [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
 
 
-# The basis `dae.glb_to_local` bakes into every `.cdae` vertex: `(gx, gy, gz) -> (-gx, gz, gy)`,
+# The basis `daemesh.glb_to_local` bakes into every `.cdae` vertex: `(gx, gy, gz) -> (-gx, gz, gy)`,
 # which is `P_ZUP . MIRROR_X`. `instance_matrix` divides it out so the two do not compound.
 DAE_MESH_BASIS = frames.P_ZUP @ frames.MIRROR_X
 

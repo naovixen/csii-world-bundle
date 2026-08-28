@@ -32,7 +32,7 @@ gets, measured at median 0.005 m against it (audit §45.8). Two follow-ups from 
 (audit §45, 2026-08-16, awaiting the next rip + load): the terrain stage writes the `.ter`
 from the bundle's fine 1.75 m `terrainFine` raster when the rip carries it (the game's own
 near-camera grading, 8192²), and no COLLADA geometry exceeds 60,000 vertices
-(`dae.split_mesh` — the load-#10 junction shards were the tiles past 65,535). Buildings,
+(`daemesh.split_mesh` — the load-#10 junction shards were the tiles past 65,535). Buildings,
 props, trees (the 1.2 M instances) land in A3; performance tuning A4.
 
 ## Install & run

@@ -411,7 +411,7 @@ def _check_lod(bundle, shapes, settings, results):
         row["total"] += 1
         row["agree"] += int(entry["nullPx"] == expected)
         ratios.append(entry["nullPx"] / max(game_px, 1e-9))
-        # DISTINCT sizes must decrease: one detail level split by `dae.split_mesh` writes several
+        # DISTINCT sizes must decrease: one detail level split by `daemesh.split_mesh` writes several
         # nodes at the SAME px, which is legitimate (Hospital01: two geometries at 191 px)
         details = sorted(set(entry["details"]), reverse=True)
         ladder["total"] += 1

@@ -7,7 +7,7 @@ affordable, so the rule reads the shape's own bounds and its kind.
 
 from csiibundle import collision
 
-from ..beamng import dae
+from ..beamng import dae, daemesh
 
 # How wide a padded BOX collider may be before it is a trap rather than an approximation.
 # OURS: CS2 has no collision for a placed object, so there is no rule to port. 20 m is about the
@@ -63,7 +63,7 @@ def collider(shape_name, base_mesh, lod_mesh, kind, options, is_tree=True):
         cut = _from_geometry(shape_name, base_mesh, verts, tris, oversized, options)
         if cut is not None:
             return cut
-    box_v, box_t = collision.colbox(lo, hi, dae.MIN_COLLIDER_THICKNESS)
+    box_v, box_t = collision.colbox(lo, hi, daemesh.MIN_COLLIDER_THICKNESS)
     return (
         dae.Mesh(f"Colmesh_{shape_name}", box_v, box_t, [(base_mesh.runs[0][0], len(box_t))]),
     ), "box"
@@ -87,7 +87,9 @@ def _trunk(shape_name, base_mesh):
 
 def _from_geometry(shape_name, base_mesh, verts, tris, oversized, options):
     """The shape's own triangles as a colmesh, or None when there is nothing to cut."""
-    mesh = collision.colmesh_from_lod({"verts": verts, "tris": tris}, dae.MIN_COLLIDER_THICKNESS)
+    mesh = collision.colmesh_from_lod(
+        {"verts": verts, "tris": tris}, daemesh.MIN_COLLIDER_THICKNESS
+    )
     if mesh is None:
         return None
     return (

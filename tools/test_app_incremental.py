@@ -191,11 +191,11 @@ def test_cook_ladder_index(tmp):
     cost 4.4 GiB of XML per build) and keep the entry of a shape whose source a `keep_dae:
     false` build removed — the one case the index exists for, and one a rewrite emptied."""
     from cs2beamng.beamng import budget as budget_mod
-    from cs2beamng.stages import cook as cook_mod
+    from cs2beamng.stages import cooktidy
 
     print("cook state: the ladder index")
     level, shapes = _cook_level(os.path.join(tmp, "ladder"))
-    count, rescanned = cook_mod._write_ladder_index(
+    count, rescanned = cooktidy.write_ladder_index(
         level,
         os.path.join(level, "art", "shapes"),
         rescan=[os.path.join(shapes, "a.dae"), os.path.join(shapes, "b.dae")],
@@ -214,7 +214,7 @@ def test_cook_ladder_index(tmp):
     )
 
     _write_dae(shapes, "b", 30)  # only this one moved: only this one is re-read
-    count, rescanned = cook_mod._write_ladder_index(
+    count, rescanned = cooktidy.write_ladder_index(
         level, os.path.join(level, "art", "shapes"), rescan=[os.path.join(shapes, "b.dae")]
     )
     check(
@@ -229,7 +229,7 @@ def test_cook_ladder_index(tmp):
     )
 
     os.remove(os.path.join(shapes, "a.dae"))  # what `keep_dae: false` leaves behind
-    count, rescanned = cook_mod._write_ladder_index(
+    count, rescanned = cooktidy.write_ladder_index(
         level, os.path.join(level, "art", "shapes"), rescan=()
     )
     with open(ladder, encoding="utf-8") as handle:
@@ -239,7 +239,7 @@ def test_cook_ladder_index(tmp):
         f"a dropped .dae keeps its entry while the .cdae is there ({sorted(indexed)}, rescanned {rescanned})",
     )
     os.remove(os.path.join(shapes, "a.cdae"))
-    cook_mod._write_ladder_index(level, os.path.join(level, "art", "shapes"), rescan=())
+    cooktidy.write_ladder_index(level, os.path.join(level, "art", "shapes"), rescan=())
     with open(ladder, encoding="utf-8") as handle:
         indexed = json.load(handle)["shapes"]
     check(

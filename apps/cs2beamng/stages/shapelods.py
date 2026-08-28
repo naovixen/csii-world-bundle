@@ -10,7 +10,7 @@ import os
 
 from csiibundle import glb, lod
 
-from ..beamng import dae
+from ..beamng import daemesh
 from .shapeparts import collect_parts
 
 # The ladder, as multiples of the shape's null threshold, coarsest first — vanilla BeamNG's
@@ -208,7 +208,7 @@ def _load_generated(
         parts, _lo, _hi, _area, _used = collect_parts(nodes, aliases, tinted, level_name)
         if not parts:
             continue
-        mesh = dae.group_by_material(dae.merge_meshes(f"{shape_name}_LOD{level}", parts))
+        mesh = daemesh.group_by_material(daemesh.merge_meshes(f"{shape_name}_LOD{level}", parts))
         if len(mesh.tris) == 0:
             continue
         meshes.append(mesh)
@@ -309,5 +309,5 @@ def _fixed_ladder(thresholds, meshes):
             px = fixed[-1][0] - 1
         if px < 2:
             continue
-        fixed.append((px, dae.split_mesh(mesh)))
+        fixed.append((px, daemesh.split_mesh(mesh)))
     return fixed

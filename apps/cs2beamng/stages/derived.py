@@ -42,7 +42,7 @@ from csiibundle import glb, lod, parallel
 from csiibundle import region as region_rule
 from csiibundle.bake.tiles import MIN_LOD_MARK, split_material_name
 
-from ..beamng import dae, frame, tilemesh
+from ..beamng import dae, daemesh, frame, tilemesh
 from ..beamng import level as level_mod
 from ..beamng.level import LevelPaths
 from ..beamng.matbind import aliases_of, mapto_name
@@ -187,7 +187,7 @@ def run(ctx, progress):
         progress.end(
             f"{counts['written']} tiles ({counts['rewritten']} rewritten), {counts['tris']:,} triangles, collision "
             f"{'on' if collide else 'off'}, {orphans} orphans removed, "
-            f"{counts['split_geoms']} extra geometries from the {dae.MAX_GEOMETRY_VERTS:,}-vertex cap"
+            f"{counts['split_geoms']} extra geometries from the {daemesh.MAX_GEOMETRY_VERTS:,}-vertex cap"
         )
         summary[product] = {
             "tiles": counts["written"],
@@ -224,7 +224,7 @@ def _tile_job(args):
             continue
         mtx = numpy.asarray(node["matrix"], dtype=numpy.float64)
         v = numpy.asarray(node["verts"], dtype=numpy.float64) @ mtx[:3, :3].T + mtx[:3, 3]
-        local, nn = dae.glb_to_local(v, node["normals"])
+        local, nn = daemesh.glb_to_local(v, node["normals"])
         local[:, 0] -= ox
         local[:, 1] -= oy
         # The bake's material name carries the GAME's own draw-distance limit for these
@@ -243,11 +243,11 @@ def _tile_job(args):
                 else mapto_name(shared, level, base)
             )
             runs.append((bound if min_lod is None else f"{bound}{MIN_LOD_MARK}{min_lod}", count))
-        parts.append((local, nn, dae.glb_uvs(node["uvs"]), None, node["tris"], runs))
+        parts.append((local, nn, daemesh.glb_uvs(node["uvs"]), None, node["tris"], runs))
     if not parts:
         return None
     shape_name = f"{product}_{tx}_{tz}"
-    mesh = dae.group_by_material(dae.merge_meshes(shape_name, parts))
+    mesh = daemesh.group_by_material(daemesh.merge_meshes(shape_name, parts))
     levels, ladder = _tile_levels(shape_name, mesh, detail_scale, view_distance, tile)
     path = level.path("art", "shapes", product, f"{shape_name}.dae")
     stats = dae.write_shape(path, dae.Shape(shape_name, levels, null_px=ladder["nullPx"]))

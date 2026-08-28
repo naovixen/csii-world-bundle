@@ -261,6 +261,7 @@ def test_state_codec():
     """The `ctx.shared` payload survives a JSON round trip — sets, tuple-keyed dicts and all —
     and a delta composes the way three stages accumulating into one set need it to."""
     from cs2beamng.pipeline import state as state_mod
+    from cs2beamng.pipeline import statepayload
 
     print("state codec")
     value = {
@@ -276,20 +277,20 @@ def test_state_codec():
     check(back == value, "shared payload round-trips through JSON")
     before = {"materials_used": {"a"}}
     after = {"materials_used": {"a", "b"}}
-    delta = state_mod.diff_shared(before, after, ("materials_used",))
+    delta = statepayload.diff_shared(before, after, ("materials_used",))
     check(
         delta["materials_used"] == {"b"}, "a set delta is what the stage ADDED, not the whole set"
     )
     shared = {"materials_used": {"c"}}
-    state_mod.apply_shared(shared, delta)
+    statepayload.apply_shared(shared, delta)
     check(
         shared["materials_used"] == {"b", "c"}, "replaying a set delta unions rather than replaces"
     )
-    variants = state_mod.diff_shared(
+    variants = statepayload.diff_shared(
         {"v": {"k1": {"m"}}}, {"v": {"k1": {"m", "n"}, "k2": {"o"}}}, ("v",)
     )
     target = {"v": {"k1": {"m"}}}
-    state_mod.apply_shared(target, variants)
+    statepayload.apply_shared(target, variants)
     check(
         target["v"] == {"k1": {"m", "n"}, "k2": {"o"}}, "a nested dict-of-sets delta merges per key"
     )

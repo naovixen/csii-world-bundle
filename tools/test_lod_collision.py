@@ -10,7 +10,7 @@ import sys
 import numpy
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-from cs2beamng.beamng import dae  # noqa: E402
+from cs2beamng.beamng import daemesh  # noqa: E402
 from csiibundle import collision, decimate, glb  # noqa: E402
 
 failures = []
@@ -127,10 +127,10 @@ def main():
         "thickness is rotation-invariant (PCA)",
     )
     check(
-        collision.colmesh_from_lod(thin, dae.MIN_COLLIDER_THICKNESS) is None,
+        collision.colmesh_from_lod(thin, daemesh.MIN_COLLIDER_THICKNESS) is None,
         "a thin panel is refused as a colmesh",
     )
-    bv, bt = collision.colbox(*collision.bounds(thin["verts"]), dae.MIN_COLLIDER_THICKNESS)
+    bv, bt = collision.colbox(*collision.bounds(thin["verts"]), daemesh.MIN_COLLIDER_THICKNESS)
     ext = bv.max(axis=0) - bv.min(axis=0)
     check(
         abs(ext[2] - 0.3) < 1e-6 and abs(ext[0] - 10) < 1e-6 and len(bt) == 12,
@@ -141,7 +141,7 @@ def main():
         numpy.arange(len(thick["verts"])) % 2 == 0, 0.0, 1.0
     )  # 1 m tall
     check(
-        collision.colmesh_from_lod(thick, dae.MIN_COLLIDER_THICKNESS) is not None,
+        collision.colmesh_from_lod(thick, daemesh.MIN_COLLIDER_THICKNESS) is not None,
         "a thick mesh passes as a colmesh",
     )
 
@@ -168,7 +168,7 @@ def main():
         abs((cv2[:, 1].max() - cv2[:, 1].min()) - 3.0) < 1e-6,
         "trunk found by footprint when names say nothing",
     )
-    wc = dae.wind_vertex_colours(tree)
+    wc = daemesh.wind_vertex_colours(tree)
     check(
         wc.shape == (len(verts), 4)
         and (wc[:8, 0] == 0).all()

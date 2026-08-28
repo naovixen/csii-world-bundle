@@ -52,9 +52,13 @@ import time
 
 from csiibundle.bake import manifest as bake_manifest
 
-STATE_NAME = "level_state.json"
 STATE_DIR = "cs2beamng_state"
+
+
 SCHEMA = "cs2beamng.level_state/1"
+
+
+STATE_NAME = "level_state.json"
 
 # Bumped when the state format or the replay contract changes; every stage is stale across it.
 STATE_VERSION = 1
@@ -279,90 +283,12 @@ def check(document, stage, sig, level_dir):
     for rel in entry.get("outputs") or ():
         if not os.path.exists(os.path.join(level_dir, *rel.split("/"))):
             return False, f"output {rel!r} is missing"
-    if not os.path.isfile(_payload_path(level_dir, stage.key)):
+    if not os.path.isfile(payload_path(level_dir, stage.key)):
         return False, "no replay payload"
     return True, "inputs and settings unchanged"
 
 
-# -- the replay payload --------------------------------------------------------------------------
-
-
-def _payload_path(level_dir, stage_key):
-    return os.path.join(level_dir, STATE_DIR, f"{stage_key}.state.json")
-
-
-def write_payload(level_dir, stage_key, objects, shared_delta, result):
-    """Everything a skip of this stage has to put back: its level objects, its `ctx.shared`
-    delta, and the result dict its report entry carried."""
-    path = _payload_path(level_dir, stage_key)
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    document = {
-        "schema": SCHEMA,
-        "stage": stage_key,
-        "objects": objects,
-        "shared": encode(shared_delta),
-        "result": encode(result),
-    }
-    tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8", newline="\n") as handle:
-        json.dump(document, handle, separators=(",", ":"), default=str)
-    os.replace(tmp, path)
-
-
-def read_payload(level_dir, stage_key):
-    try:
-        with open(_payload_path(level_dir, stage_key), encoding="utf-8") as handle:
-            return json.load(handle)
-    except (OSError, ValueError):
-        return None
-
-
-def replay(level_dir, stage_key, level, shared):
-    """Put a skipped stage's contribution back. Returns its recorded result dict, or None when
-    the payload is unreadable — in which case the caller must run the stage."""
-    document = read_payload(level_dir, stage_key)
-    if not document:
-        return None
-    try:
-        level.replay(stage_key, document.get("objects") or [])
-        apply_shared(shared, decode(document.get("shared") or {}))
-        return decode(document.get("result") or {})
-    except (ValueError, KeyError, TypeError):
-        return None
-
-
-# -- `ctx.shared` deltas ---------------------------------------------------------------------------
-
-
-def diff_shared(before, after, keys):
-    """What this stage added to `ctx.shared`, per declared key.
-
-    A set yields the members it gained, a dict the entries it added or changed (recursively),
-    anything else its final value. That is what lets `materials_used` be accumulated by three
-    stages and still compose when any subset of them is skipped.
-    """
-    out = {}
-    for key in keys or ():
-        if key not in after:
-            continue
-        out[key] = _diff(before.get(key), after.get(key))
-    return out
-
-
-def _diff(old, new):
-    if isinstance(new, (set, frozenset)) and isinstance(old, (set, frozenset)):
-        return set(new) - set(old)
-    if isinstance(new, dict) and isinstance(old, dict):
-        return {k: _diff(old.get(k), v) for k, v in new.items() if k not in old or old[k] != v}
-    return new
-
-
-def apply_shared(shared, delta):
-    for key, value in (delta or {}).items():
-        shared[key] = _merge(shared.get(key), value)
-
-
-def _merge(old, new):
+def merge_values(old, new):
     if isinstance(new, (set, frozenset)):
         merged = set(old) if isinstance(old, (set, frozenset)) else set()
         merged.update(new)
@@ -370,7 +296,7 @@ def _merge(old, new):
     if isinstance(new, dict) and isinstance(old, dict):
         out = dict(old)
         for k, v in new.items():
-            out[k] = _merge(out.get(k), v)
+            out[k] = merge_values(out.get(k), v)
         return out
     return new
 
@@ -480,3 +406,7 @@ def undeclared(recorder, stage, known):
     input) and minus `NOT_FIDELITY_SETTINGS`. Sorted, so a report line is stable."""
     read = (set(recorder.read) & set(known)) - NOT_FIDELITY_SETTINGS
     return sorted(read - set(stage.settings_keys or ()))
+
+
+def payload_path(level_dir, stage_key):
+    return os.path.join(level_dir, STATE_DIR, f"{stage_key}.state.json")
