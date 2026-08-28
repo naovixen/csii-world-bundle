@@ -157,7 +157,6 @@ class AppServer:
         return {
             "values": values,
             "schema": settings_mod.schema_for_ui(),
-            "groups": settings_mod.GROUPS,
             "basic": settings_mod.BASIC,
             # E1: the redesigned screen's own model - the basics strip, the sidebar, and
             # what drives the settings that no longer have a control of their own.

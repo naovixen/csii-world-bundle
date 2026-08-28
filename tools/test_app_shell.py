@@ -52,15 +52,10 @@ def test_settings():
     from cs2beamng import settings as settings_mod
 
     print("settings")
-    grouped = [k for _t, keys in settings_mod.GROUPS for k in keys]
-    check(
-        sorted(grouped) == sorted(settings_mod.SCHEMA),
-        "every SCHEMA key is in exactly one UI group",
-    )
     ui = settings_mod.schema_for_ui()
     check(
-        len(ui) == len(settings_mod.SCHEMA) and all(e["group"] != "Other" for e in ui),
-        "schema_for_ui covers all keys",
+        [e["key"] for e in ui] == list(settings_mod.SCHEMA),
+        "schema_for_ui covers all keys, in declaration order",
     )
     for name, preset in settings_mod.PRESETS.items():
         check(all(k in settings_mod.SCHEMA for k in preset), f"preset {name} sets only known keys")
@@ -497,7 +492,8 @@ def test_settings_metadata():
     # `SECTIONS` is patched where it is declared, which is the only place a person adding a
     # section would touch. Nothing else is patched: `ui_section`'s choices used to be a second
     # hand-written statement of the section ids and had to be patched too, and are now derived.
-    from cs2beamng.settings import catalog, sections as sections_mod
+    from cs2beamng.settings import catalog
+    from cs2beamng.settings import sections as sections_mod
 
     real = sections_mod.SECTIONS
     try:

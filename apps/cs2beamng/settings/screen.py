@@ -16,7 +16,7 @@ the length and the language (no identifiers, no research figures, no section num
 from . import sections as sections_mod
 from .catalog import BY_KEY, SCHEMA, SETTINGS
 from .model import CONTROL_BY_KIND
-from .sections import BASIC, BASICS, GROUPS, SECTIONS
+from .sections import BASIC, BASICS, SECTIONS
 
 # `SECTIONS` is reached through the module rather than through the name bound above, so that
 # adding a section stays the data change `sections.py` says it is: the test suite appends one at
@@ -74,7 +74,6 @@ def schema_for_ui():
     `help` is always shown and is one sentence; `detail` is the long form and is shown only when
     the user asks for it. `tier` is "basic" or "advanced" — the basic ones are the default panel.
     """
-    group_of = {key: title for title, keys in GROUPS for key in keys}
     basic = set(BASIC)
     out = []
     for setting in SETTINGS:
@@ -84,7 +83,6 @@ def schema_for_ui():
             "kind": setting.base_kind,
             "default": setting.default,
             "help": setting.help,
-            "group": group_of.get(key, "Other"),
             "tier": "basic" if key in basic else "advanced",
             # E1: what the redesigned screen needs. `label`/`blurb` are the plain words,
             # `control` is how it is drawn, `section` is the one place it appears.
@@ -108,7 +106,6 @@ def schema_for_ui():
             entry["needs"] = setting.needs
         if setting.choice_set is not None:
             entry["choiceSet"] = [{"id": cid, "label": label} for cid, label in setting.choice_set]
-        entry["technical"] = is_technical(key)
         if setting.detail is not None:
             entry["detail"] = setting.detail
         if setting.choices is not None:
@@ -120,7 +117,6 @@ def schema_for_ui():
 __all__ = [
     "BASIC",
     "BASICS",
-    "GROUPS",
     "SECTIONS",
     "control_of",
     "is_technical",

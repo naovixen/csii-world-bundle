@@ -4,9 +4,9 @@ Everything the app knows about a knob — its type, its default, the three lengt
 describe it, how it is drawn, and what it depends on — is a field of this record. It used to be
 sixteen dictionaries all keyed by setting name (`SCHEMA`, `LABELS`, `BLURBS`, `DETAILS`, `UNITS`,
 `SUBSET_OF`, `CONTROLS`, `DRIVEN_BY`, `NEEDS`, `DRIVES`, `RANGES`, `CHOICE_SETS`, `ZERO_LABEL`,
-`PARENT_OFF`, plus `SECTIONS` and `GROUPS`), which meant adding a setting was up to sixteen edits
-and nothing caught a miss — a key with no `LABELS` entry raised `KeyError` on the settings page,
-at render time, in front of the user.
+`PARENT_OFF`, plus `SECTIONS` and a `GROUPS` nothing read), which meant adding a setting was up
+to sixteen edits and nothing caught a miss — a key with no `LABELS` entry raised `KeyError` on
+the settings page, at render time, in front of the user.
 
 Here a missing label is a `TypeError` at import: `label` and `blurb` are required arguments.
 The tables that other code still imports (`SCHEMA`, `LABELS`, …) are derived from these records

@@ -70,7 +70,7 @@ from .screen import (
     section_of,
     sections_for_ui,
 )
-from .sections import BASIC, BASIC_MAX, BASICS, GROUPS, SECTIONS
+from .sections import BASIC, BASIC_MAX, BASICS, SECTIONS
 from .store import SETTINGS_FILE, defaults, load, save
 from .values import DRIVES, coerce, driven_changes, parse_region, region_of, validate
 
@@ -88,7 +88,6 @@ __all__ = [
     "DETAILS",
     "DRIVEN_BY",
     "DRIVES",
-    "GROUPS",
     "LABELS",
     "NEEDS",
     "PARENT_OFF",
