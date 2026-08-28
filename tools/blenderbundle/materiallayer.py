@@ -115,12 +115,9 @@ def apply_shader_only_materials(bundle_dir):
         kind = materials.shader_only_kind(entry, material_id)
         if kind is None:
             continue
-        tree = getattr(mat, "node_tree", None)
-        if tree is None or any(node.label == _SHADER_LABEL for node in tree.nodes):
-            continue  # already done
-        bsdf = next((n for n in tree.nodes if n.type == "BSDF_PRINCIPLED"), None)
-        if bsdf is None or bsdf.inputs["Base Color"].links:
-            continue  # it has a texture after all; leave it
+        bsdf = _untextured_bsdf(mat)
+        if bsdf is None:
+            continue
 
         # Mark the BSDF itself, so a `--keep-existing` re-run can tell this material is done
         # without needing a node type to hang a label on.
@@ -128,32 +125,53 @@ def apply_shader_only_materials(bundle_dir):
 
         flat = materials.tint(entry)
         if kind == "water":
-            bsdf.inputs["Base Color"].default_value = appearance.base_color
-            bsdf.inputs["Roughness"].default_value = appearance.roughness
-            if "IOR" in bsdf.inputs:
-                bsdf.inputs["IOR"].default_value = water.WATER_IOR
-            if "Transmission Weight" in bsdf.inputs:
-                bsdf.inputs["Transmission Weight"].default_value = 1.0
-            else:
-                bsdf.inputs["Alpha"].default_value = appearance.surface_alpha()
-                shadernodes.set_alpha_blend(mat)
+            _make_water(mat, bsdf, appearance)
             counts["water"] += 1
         elif kind == "glass":
-            bsdf.inputs["Base Color"].default_value = flat or (0.92, 0.96, 1.0, 1.0)
-            bsdf.inputs["Roughness"].default_value = appearance.roughness
-            if "IOR" in bsdf.inputs:
-                bsdf.inputs["IOR"].default_value = 1.5  # architectural glass
-            if "Transmission Weight" in bsdf.inputs:
-                bsdf.inputs["Transmission Weight"].default_value = 1.0
-            else:
-                bsdf.inputs["Alpha"].default_value = 0.15
-                shadernodes.set_alpha_blend(mat)
+            _make_glass(mat, bsdf, appearance, flat)
             counts["glass"] += 1
         elif flat:
             bsdf.inputs["Base Color"].default_value = flat
             counts["tint"] += 1
 
     return counts["water"], counts["glass"], counts["tint"]
+
+
+def _untextured_bsdf(mat):
+    """This material's Principled BSDF, or None when it is already done or has a texture."""
+    tree = getattr(mat, "node_tree", None)
+    if tree is None or any(node.label == _SHADER_LABEL for node in tree.nodes):
+        return None  # already done
+    bsdf = next((n for n in tree.nodes if n.type == "BSDF_PRINCIPLED"), None)
+    if bsdf is None or bsdf.inputs["Base Color"].links:
+        return None  # it has a texture after all; leave it
+    return bsdf
+
+
+def _make_water(mat, bsdf, appearance):
+    """The authored `rasters.water` block, transmissive where this Blender supports it."""
+    bsdf.inputs["Base Color"].default_value = appearance.base_color
+    bsdf.inputs["Roughness"].default_value = appearance.roughness
+    if "IOR" in bsdf.inputs:
+        bsdf.inputs["IOR"].default_value = water.WATER_IOR
+    if "Transmission Weight" in bsdf.inputs:
+        bsdf.inputs["Transmission Weight"].default_value = 1.0
+    else:
+        bsdf.inputs["Alpha"].default_value = appearance.surface_alpha()
+        shadernodes.set_alpha_blend(mat)
+
+
+def _make_glass(mat, bsdf, appearance, flat):
+    """Architectural glass at the water block's close roughness — see-through, not white."""
+    bsdf.inputs["Base Color"].default_value = flat or (0.92, 0.96, 1.0, 1.0)
+    bsdf.inputs["Roughness"].default_value = appearance.roughness
+    if "IOR" in bsdf.inputs:
+        bsdf.inputs["IOR"].default_value = 1.5  # architectural glass
+    if "Transmission Weight" in bsdf.inputs:
+        bsdf.inputs["Transmission Weight"].default_value = 1.0
+    else:
+        bsdf.inputs["Alpha"].default_value = 0.15
+        shadernodes.set_alpha_blend(mat)
 
 
 _PBR_LABEL = "cs2_pbr"
@@ -197,37 +215,42 @@ def apply_pbr_masks(bundle_dir):
         if not mask_path or not os.path.isfile(mask_path):
             continue  # report_materials flags it
 
-        image = shadernodes.unpremultiply(bpy.data.images.load(mask_path, check_existing=True))
-        image.colorspace_settings.name = "Non-Color"
-
-        anchor = principled.location
-        tex = tree.nodes.new("ShaderNodeTexImage")
-        tex.image, tex.label = image, _PBR_LABEL
-        tex.location = (anchor.x - 1000, anchor.y + 300)
-        sep = tree.nodes.new("ShaderNodeSeparateColor")
-        sep.label = _PBR_LABEL
-        sep.location = (anchor.x - 700, anchor.y + 300)
-        tree.links.new(tex.outputs["Color"], sep.inputs["Color"])
-
-        for _slot, channel, target, invert in plan:
-            socket = (
-                tex.outputs["Alpha"]
-                if channel == "A"
-                else sep.outputs[{"R": "Red", "G": "Green", "B": "Blue"}[channel]]
-            )
-            if invert:
-                node = tree.nodes.new("ShaderNodeMath")
-                node.operation, node.label = "SUBTRACT", _PBR_LABEL
-                node.inputs[0].default_value = 1.0
-                node.location = (anchor.x - 450, anchor.y + 200)
-                tree.links.new(socket, node.inputs[1])
-                socket = node.outputs[0]
-            name = {"metallic": "Metallic", "roughness": "Roughness"}[target]
-            if name in principled.inputs:
-                tree.links.new(socket, principled.inputs[name])
+        _wire_mask(tree, principled, plan, mask_path)
         rigged += 1
 
     return rigged
+
+
+def _wire_mask(tree, principled, plan, mask_path):
+    """The mask texture, split into channels and linked to whatever `wire_plan` named."""
+    image = shadernodes.unpremultiply(bpy.data.images.load(mask_path, check_existing=True))
+    image.colorspace_settings.name = "Non-Color"
+
+    anchor = principled.location
+    tex = tree.nodes.new("ShaderNodeTexImage")
+    tex.image, tex.label = image, _PBR_LABEL
+    tex.location = (anchor.x - 1000, anchor.y + 300)
+    sep = tree.nodes.new("ShaderNodeSeparateColor")
+    sep.label = _PBR_LABEL
+    sep.location = (anchor.x - 700, anchor.y + 300)
+    tree.links.new(tex.outputs["Color"], sep.inputs["Color"])
+
+    for _slot, channel, target, invert in plan:
+        socket = (
+            tex.outputs["Alpha"]
+            if channel == "A"
+            else sep.outputs[{"R": "Red", "G": "Green", "B": "Blue"}[channel]]
+        )
+        if invert:
+            node = tree.nodes.new("ShaderNodeMath")
+            node.operation, node.label = "SUBTRACT", _PBR_LABEL
+            node.inputs[0].default_value = 1.0
+            node.location = (anchor.x - 450, anchor.y + 200)
+            tree.links.new(socket, node.inputs[1])
+            socket = node.outputs[0]
+        name = {"metallic": "Metallic", "roughness": "Roughness"}[target]
+        if name in principled.inputs:
+            tree.links.new(socket, principled.inputs[name])
 
 
 def apply_color_tints(bundle_dir):
@@ -265,33 +288,38 @@ def apply_color_tints(bundle_dir):
         mask_path = os.path.join(bundle_dir, entry["colorMask"])
         if not os.path.isfile(mask_path):
             continue  # report_materials already flagged it
-        image = shadernodes.unpremultiply(bpy.data.images.load(mask_path, check_existing=True))
-        image.colorspace_settings.name = "Non-Color"
-
-        anchor = principled.location
-        tex = tree.nodes.new("ShaderNodeTexImage")
-        tex.image, tex.label = image, _TINT_LABEL
-        tex.location = (anchor.x - 1000, anchor.y - 600)
-        sep = tree.nodes.new("ShaderNodeSeparateColor")
-        sep.label = _TINT_LABEL
-        sep.location = (anchor.x - 700, anchor.y - 600)
-        tree.links.new(tex.outputs["Color"], sep.inputs["Color"])
-
-        upstream = base_in.links[0].from_socket
-        for i, (prop, channel) in enumerate(zip(_TINT_PROPS, ("Red", "Green", "Blue"))):
-            attr = tree.nodes.new("ShaderNodeAttribute")
-            attr.attribute_type = "INSTANCER"  # instancer empty first, object itself second
-            attr.attribute_name, attr.label = prop, _TINT_LABEL
-            attr.location = (anchor.x - 700 + i * 60, anchor.y - 900)
-            mix = tree.nodes.new("ShaderNodeMix")
-            mix.data_type, mix.blend_type, mix.label = "RGBA", "MULTIPLY", _TINT_LABEL
-            mix.location = (anchor.x - 450 + i * 150, anchor.y - 500)
-            tree.links.new(sep.outputs[channel], shadernodes.mix_socket(mix, "Factor"))
-            tree.links.new(upstream, shadernodes.mix_socket(mix, "A"))
-            tree.links.new(attr.outputs["Color"], shadernodes.mix_socket(mix, "B"))
-            upstream = shadernodes.mix_socket(mix, "Result", outputs=True)
-
-        tree.links.new(upstream, base_in)  # replaces the existing link
+        _wire_tint(tree, principled, base_in, mask_path)
         rigged += 1
 
     return rigged
+
+
+def _wire_tint(tree, principled, base_in, mask_path):
+    """The colorMask split into three channels, each lerping the base toward one cs2_color."""
+    image = shadernodes.unpremultiply(bpy.data.images.load(mask_path, check_existing=True))
+    image.colorspace_settings.name = "Non-Color"
+
+    anchor = principled.location
+    tex = tree.nodes.new("ShaderNodeTexImage")
+    tex.image, tex.label = image, _TINT_LABEL
+    tex.location = (anchor.x - 1000, anchor.y - 600)
+    sep = tree.nodes.new("ShaderNodeSeparateColor")
+    sep.label = _TINT_LABEL
+    sep.location = (anchor.x - 700, anchor.y - 600)
+    tree.links.new(tex.outputs["Color"], sep.inputs["Color"])
+
+    upstream = base_in.links[0].from_socket
+    for i, (prop, channel) in enumerate(zip(_TINT_PROPS, ("Red", "Green", "Blue"))):
+        attr = tree.nodes.new("ShaderNodeAttribute")
+        attr.attribute_type = "INSTANCER"  # instancer empty first, object itself second
+        attr.attribute_name, attr.label = prop, _TINT_LABEL
+        attr.location = (anchor.x - 700 + i * 60, anchor.y - 900)
+        mix = tree.nodes.new("ShaderNodeMix")
+        mix.data_type, mix.blend_type, mix.label = "RGBA", "MULTIPLY", _TINT_LABEL
+        mix.location = (anchor.x - 450 + i * 150, anchor.y - 500)
+        tree.links.new(sep.outputs[channel], shadernodes.mix_socket(mix, "Factor"))
+        tree.links.new(upstream, shadernodes.mix_socket(mix, "A"))
+        tree.links.new(attr.outputs["Color"], shadernodes.mix_socket(mix, "B"))
+        upstream = shadernodes.mix_socket(mix, "Result", outputs=True)
+
+    tree.links.new(upstream, base_in)  # replaces the existing link

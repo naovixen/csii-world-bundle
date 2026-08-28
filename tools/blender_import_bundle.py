@@ -126,7 +126,7 @@ import time
 
 import bpy
 import numpy
-from mathutils import Matrix, Vector
+from mathutils import Vector
 
 # The engine-neutral half of the reconstruction lives in `tools/csiibundle/`, a package that
 # never imports bpy: the frame conversion, the GLB and PNG readers, the splat decode and the
@@ -145,8 +145,10 @@ import colour_model
 from blenderbundle import (
     frame,
     glbimport,
+    lanebuild,
     materiallayer,
     meshbuild,
+    netbuild,
     raysurface,
     sceneprep,
     shadernodes,
@@ -155,14 +157,10 @@ from blenderbundle import (
 from blenderbundle.log import LOG
 from csiibundle import areas as area_math
 from csiibundle import (
-    bezier,
     clipgrid,
     containment,
-    decals,
-    drape,
     frames,
     instances,
-    lanes,
     materials,
     networks,
     reader,
@@ -173,26 +171,6 @@ from csiibundle import lattice as lattice_math
 from csiibundle import png as png_reader
 from csiibundle import splat as splat_reader
 from csiibundle import watersurface as watersurface_math
-
-# The ground-paint ladder is `csiibundle.decals.LIFT_LADDER` — one table, because splitting it
-# across files is how it got broken. Its docstring records why the ORDER matters and the values
-# do not, and why the bend's pre-drape offset is deliberately not a rung of it.
-#
-#   0.000  terrain / road surface           the thing being painted on
-#   0.008  lane_tint                        lane wear tint          ) on the ROAD, draped
-#   0.014  lane_marking                     markings, crosswalks    )  onto it per vertex
-#   0.020  area                             §8b surface areas — pavement, driveways, paths
-#   0.030  instance_decal                   §4.2a decal instances — bay markings, arrows
-#
-# Lane decal parts (§5B `decal`) cannot use a fixed lift at all: the game stores lane curves at
-# the base plane of the carriageway, and the rendered surface crowns ABOVE them — measured on a
-# full-city rip, the road top near centre lines is a median 7 mm above the lane path and beats
-# path + the bend lift on 42% of samples, which is why bent markings vanish into the asphalt.
-# The game never sees the problem because a decal is a projector volume, painted onto whatever
-# surface it meets. The harness equivalent is a drape: sample the road surface under the marking
-# and snap onto it (`drape.drape_block`).
-
-_DRAPE_MISS_WARN = drape.MISS_WARN_FRACTION
 
 # The scene light rig. `sceneprep.clear_scene()` removes Blender's default light along with everything
 # else, so an imported scene would have no lights and no world at all; these put a plain
@@ -242,777 +220,12 @@ _SUN_TILT = (0.5, 0.3, 0.0)
 # always have; `resolve_layers` and `_terrain_paths` return namedtuples whose field order is
 # the tuple order these call sites unpack.
 
+# Sentinel for an option `--everything` may supply a default for but an explicit flag wins.
+_UNSET = object()
+
 read_jsonl = reader.read_jsonl
 read_declared_gaps = reader.read_declared_gaps
 resolve_layers = reader.resolve_layers
-
-
-# -- networks, contract §5 ------------------------------------------------------------------
-#
-# A network record carries geometry in exactly one of two forms, and §5 is explicit that a
-# consumer must implement both. Only the centerline form is implemented here, because that is
-# the only one the ripper emits (§5.1) — a mesh-form record is counted and reported
-# rather than silently dropped, so the day a producer starts emitting them this says so.
-
-# Colour by `form`, which is the whole Phase 5 acceptance question: an elevated run and a
-# tunnel have to be distinguishable without opening the JSON.
-_FORM_COLOURS = {
-    "normal": (0.22, 0.22, 0.24, 1.0),
-    "elevated": (0.20, 0.45, 0.85, 1.0),
-    "tunnel": (0.85, 0.30, 0.20, 1.0),
-    "bridge": (0.85, 0.70, 0.20, 1.0),
-}
-
-_DRIVABLE = networks.DRIVABLE
-_ALL_KINDS = networks.KINDS
-
-_UNSET = object()
-
-
-def ribbon(centerline, width, lift, mitre_limit=networks.DEFAULT_MITRE_LIMIT):
-    """`csiibundle.networks.ribbon`, converted into Blender's frame.
-
-    The mitre maths and the "a ribbon is a stand-in, not a road" caveat both live in the
-    package; this only swaps the axes and hands back the list-of-tuples shape `build_networks`
-    already merges.
-    """
-    built = networks.ribbon(centerline, width, lift, mitre_limit=mitre_limit)
-    if built is None:
-        return None
-    verts, quads = built
-    return (
-        [Vector(frames.bundle_to_zup_point(v)) for v in verts],
-        [tuple(int(i) for i in quad) for quad in quads],
-    )
-
-
-def place_network_mesh(record, mesh_dir, collection):
-    """Import <assetId>.glb and place it by the record's pos/rot, contract §2.2.
-
-    Unlike a prefab mesh, a network mesh is unique to its segment, so it is imported once and
-    used once — no collection instancing to set up.
-    """
-    path = os.path.join(mesh_dir, record["assetId"] + ".glb")
-    if not os.path.isfile(path):
-        return False
-
-    imported = glbimport.import_glb(path)
-    if not imported:
-        return False
-
-    matrix = frame.instance_matrix(record)
-    for obj in imported:
-        collection.objects.link(obj)
-        if obj.parent is None:
-            obj.matrix_world = matrix @ obj.matrix_world
-        # Lane records carry resolved paint too (contract §5B) — hedges are the visible case.
-        materiallayer.set_paint(obj, record.get("attrs"))
-
-    return True
-
-
-def build_networks(
-    networks_path,
-    categories,
-    collection,
-    net_mesh_dir=None,
-    lift=0.05,
-    center=None,
-    radius=None,
-    limit=None,
-):
-    """Extrude every centerline record into one merged mesh per (category, form).
-
-    Merged rather than one object per segment: a city has tens of thousands of edges, and
-    Blender's depsgraph is the thing that struggles with object count, not with polygons.
-    """
-    if not os.path.isfile(networks_path):
-        LOG.warn(f"no networks.jsonl at {networks_path} — skipping networks")
-        return 0
-
-    glbimport.counts_reset()
-    groups = {}
-    counts = {"form": {}, "category": {}}
-    mesh_form = 0
-    missing_mesh = 0
-    skipped_category = 0
-    skipped_region = 0
-    skipped_limit = 0
-    placed_records = 0
-    degenerate = 0
-    total = 0
-
-    for record in read_jsonl(networks_path):
-        total += 1
-        # Label deliberately avoids every ab_compare.py count marker ("networks:",
-        # "record(s)", …) — a live counter must never accidentally add a gated line the
-        # baseline log does not have, whatever stride the helper throttles it to.
-        LOG.progress("networks read", total, None)
-        attrs = record.get("attrs", {})
-        category = attrs.get("category", "other")
-        form = attrs.get("form", "normal")
-
-        if categories is not None and category not in categories:
-            skipped_category += 1
-            continue
-
-        # Importing a network mesh costs a fixed ~100 ms per file whatever its size, so a whole
-        # city is a quarter of an hour of overhead. Both filters exist to make looking at one
-        # neighbourhood cheap enough to do repeatedly.
-        if radius is not None and center is not None:
-            where = record["pos"] if "pos" in record else record.get("centerline", [[0, 0, 0]])[0]
-            if math.hypot(where[0] - center[0], where[2] - center[1]) > radius:
-                skipped_region += 1
-                continue
-
-        if limit is not None and placed_records >= limit:
-            skipped_limit += 1
-            continue
-
-        placed_records += 1
-
-        if "centerline" not in record:
-            # Mesh form: the producer assembled real geometry for this segment. It is placed the
-            # same way an instance is, and is unique per segment rather than deduped, so there is
-            # no point caching the collection — link the imported objects straight in.
-            mesh_form += 1
-            if net_mesh_dir is not None:
-                placed = place_network_mesh(record, net_mesh_dir, collection)
-                if placed:
-                    counts["form"][form] = counts["form"].get(form, 0) + 1
-                    counts["category"][category] = counts["category"].get(category, 0) + 1
-                else:
-                    missing_mesh += 1
-            continue
-
-        built = ribbon(record["centerline"], float(record["width"]), lift)
-        if built is None:
-            degenerate += 1
-            continue
-
-        verts, faces = built
-        key = (category, form)
-        if key not in groups:
-            groups[key] = ([], [])
-        all_verts, all_faces = groups[key]
-        base = len(all_verts)
-        all_verts.extend(verts)
-        all_faces.extend(tuple(index + base for index in face) for face in faces)
-
-        counts["form"][form] = counts["form"].get(form, 0) + 1
-        counts["category"][category] = counts["category"].get(category, 0) + 1
-
-    # Blender suffixes a duplicate material name on every import, so 7,380 segments sharing
-    # ~170 cross-section pieces produce ~91,000 datablocks that are all the same handful of
-    # materials. Collapse them back onto the first of each name: same look, a fraction of the
-    # memory, and a .blend that opens.
-    if net_mesh_dir is not None:
-        canonical = {}
-        merged = 0
-        for mat in list(bpy.data.materials):
-            base = mat.name.rsplit(".", 1)[0] if mat.name.rsplit(".", 1)[-1].isdigit() else mat.name
-            if base not in canonical:
-                canonical[base] = mat
-        for obj in collection.objects:
-            if obj.type != "MESH":
-                continue
-            for slot in obj.material_slots:
-                if slot.material is None:
-                    continue
-                name = slot.material.name
-                base = name.rsplit(".", 1)[0] if name.rsplit(".", 1)[-1].isdigit() else name
-                keep = canonical.get(base)
-                if keep is not None and keep is not slot.material:
-                    slot.material = keep
-                    merged += 1
-        for mat in list(bpy.data.materials):
-            if mat.users == 0:
-                bpy.data.materials.remove(mat)
-        if merged:
-            LOG.step(
-                f"merged {merged} duplicate material slot(s) onto "
-                f"{len(bpy.data.materials)} material(s)"
-            )
-
-    placed = 0
-    for (category, form), (verts, faces) in sorted(groups.items()):
-        mesh = bpy.data.meshes.new(f"net_{category}_{form}")
-        mesh.from_pydata([tuple(v) for v in verts], [], faces)
-        mesh.update()
-
-        material = bpy.data.materials.new(f"net_{form}")
-        material.diffuse_color = _FORM_COLOURS.get(form, (0.5, 0.5, 0.5, 1.0))
-        # New materials already carry a node tree; setting `use_nodes` is deprecated in 5.x.
-        tree = getattr(material, "node_tree", None)
-        principled = tree.nodes.get("Principled BSDF") if tree is not None else None
-        if principled is not None:
-            principled.inputs["Base Color"].default_value = material.diffuse_color
-            principled.inputs["Roughness"].default_value = 0.9
-        mesh.materials.append(material)
-
-        obj = bpy.data.objects.new(f"net_{category}_{form}", mesh)
-        collection.objects.link(obj)
-        placed += len(faces)
-
-    LOG.done(
-        f"networks:  {total} record(s) read, {sum(counts['category'].values())} extruded "
-        f"into {len(groups)} mesh(es), {placed} quad(s)"
-    )
-    if net_mesh_dir is not None and mesh_form:
-        glbimport.counts_log()
-    for form, count in sorted(counts["form"].items()):
-        LOG.step(f"form {form}: {count}")
-    for category, count in sorted(counts["category"].items()):
-        LOG.step(f"category {category}: {count}")
-    if skipped_category:
-        LOG.step(f"{skipped_category} skipped by --net-categories")
-    if skipped_region:
-        LOG.step(f"{skipped_region} skipped outside the region")
-    if skipped_limit:
-        LOG.step(f"{skipped_limit} skipped by --net-limit")
-    if degenerate:
-        LOG.warn(f"{degenerate} centerline(s) collapsed to a point")
-    if mesh_form:
-        LOG.step(f"{mesh_form} record(s) use the mesh form")
-    if missing_mesh:
-        # A referenced mesh that is not on disk is a broken reference, not a style choice.
-        LOG.warn(
-            f"CONTRACT VIOLATION: {missing_mesh} mesh-form record(s) reference a "
-            f"missing .glb under {net_mesh_dir}"
-        )
-
-    return sum(counts["category"].values())
-
-
-# -- lane geometry, contract §5B v2 ---------------------------------------------------------
-#
-# `csiibundle.lanes` is the reference implementation of the bend, `csiibundle.bezier` the curve
-# maths under it, and `csiibundle.decals` everything about markings. All three are bpy-free and
-# their docstrings carry the reasoning; what remains in this file is the Blender side — loading
-# a part .glb, draping blocks onto the road, and turning the results into objects.
-
-_curve_length = bezier.length
-
-
-_decal_quad_info = decals.quad_info
-_bend_lane_part = lanes.bend_part
-
-
-def _load_lane_source(asset_id, lane_mesh_dir, cache):
-    """Import one part .glb once and reduce it to bundle-frame arrays plus its materials.
-
-    The importer hands back Blender-local coordinates (glTF x, -z, y); the bundle frame is
-    recovered as (-x, z, -y) of those — the writer's X mirror undone, axes restored. That map
-    reverses the triangle's apparent winding (an odd number of axis negations/swaps,
-    determinant -1). `build_lanes` applies the SAME determinant-(-1) map again later
-    (`verts[:, [0, 2, 1]]`, converting the bent bundle-frame verts to Blender frame), so the
-    two cancel: net effect is a proper rotation (a 180° turn about the vertical axis — see
-    the frame comment at the top of this file). The triangle winding read straight off the
-    glTF mesh here, with NO reversal, already matches what the old load-then-from_pydata
-    double reversal produced (each reversal undid the other — checked directly against the
-    old pipeline's final loop order, not just the determinant argument). Road markings,
-    draped and lit from above, render black the moment this is wrong — the gorge/suburb A/B
-    renders catch it immediately.
-    """
-    if asset_id in cache:
-        return cache[asset_id]
-
-    path = os.path.join(lane_mesh_dir, asset_id + ".glb")
-    source = None
-    if os.path.isfile(path):
-        imported = glbimport.import_glb(path)
-        for obj in imported:
-            if obj.type != "MESH" or source is not None:
-                continue
-            mesh = obj.data
-            count = len(mesh.vertices)
-            co = numpy.empty(count * 3, dtype=numpy.float64)
-            mesh.vertices.foreach_get("co", co)
-            co = co.reshape(-1, 3)
-            verts = numpy.stack((-co[:, 0], co[:, 2], -co[:, 1]), axis=1)
-
-            mesh.calc_loop_triangles()
-            tri_count = len(mesh.loop_triangles)
-            tri_verts = numpy.empty(tri_count * 3, dtype=numpy.int64)
-            mesh.loop_triangles.foreach_get("vertices", tri_verts)
-            tris = tri_verts.reshape(-1, 3)
-
-            slot_materials = list(mesh.materials) if mesh.materials else [None]
-            if mesh.materials:
-                tri_poly = numpy.empty(tri_count, dtype=numpy.int64)
-                mesh.loop_triangles.foreach_get("polygon_index", tri_poly)
-                poly_material = numpy.empty(len(mesh.polygons), dtype=numpy.int64)
-                mesh.polygons.foreach_get("material_index", poly_material)
-                tri_material = poly_material[tri_poly]
-            else:
-                tri_material = numpy.zeros(tri_count, dtype=numpy.int64)
-
-            uv_layer = mesh.uv_layers.active
-            if uv_layer is not None and tri_count:
-                tri_loops = numpy.empty(tri_count * 3, dtype=numpy.int64)
-                mesh.loop_triangles.foreach_get("loops", tri_loops)
-                all_uv = numpy.empty(len(mesh.loops) * 2, dtype=numpy.float64)
-                uv_layer.data.foreach_get("uv", all_uv)
-                uvs = all_uv.reshape(-1, 2)[tri_loops].reshape(-1, 3, 2)
-            else:
-                uvs = numpy.zeros((tri_count, 3, 2), dtype=numpy.float64)
-
-            quad = _decal_quad_info(verts, tris, uvs)
-            if quad is not None:
-                quad["material"] = slot_materials[int(tri_material[0])] if tri_count else None
-            source = {
-                "verts": verts,
-                "tris": tris,
-                "uvs": uvs,
-                "tri_material": tri_material,
-                "materials": slot_materials,
-                "quad": quad,
-            }
-        for obj in imported:
-            bpy.data.objects.remove(obj, do_unlink=True)
-
-    cache[asset_id] = source
-    return source
-
-
-_drape_block = drape.drape_block
-
-
-def _lane_object_arrays(blocks):
-    """Concatenate one prefab's blocks into a single verts/tris/uvs/material_runs set, still
-    in bundle frame, ready for the one Blender-frame axis swap and `_mesh_from_arrays`."""
-    counts = [len(block["verts"]) for block in blocks]
-    offsets = numpy.concatenate(([0], numpy.cumsum(counts)))[:-1]
-    verts = numpy.concatenate([block["verts"] for block in blocks], axis=0)
-    tris = numpy.concatenate(
-        [block["tris"] + offset for block, offset in zip(blocks, offsets)], axis=0
-    )
-    uvs = numpy.concatenate([block["uvs"].reshape(-1, 2) for block in blocks], axis=0)
-    material_runs = [(block["material"], len(block["tris"])) for block in blocks]
-    return verts, tris, uvs, material_runs
-
-
-def _lane_part_object(asset_id, source, cache, parts_collection, degenerate_report):
-    """One shared Blender object per part mesh, at rest in the Blender frame, for instancing.
-
-    Built from the same bundle-frame arrays the baked path bends, through the same axis swap
-    (`[:, [0, 2, 1]]`), so a rigid instance of this datablock and a baked tile of the same
-    part are the same triangles in the same winding. Lives in an excluded collection: the
-    depsgraph still evaluates it for the instancers' Object Info, but it never draws itself.
-    """
-    if asset_id in cache:
-        return cache[asset_id]
-
-    verts = source["verts"][:, [0, 2, 1]]
-    tri_mat = source["tri_material"]
-    order = numpy.argsort(tri_mat, kind="stable")
-    tris = source["tris"][order]
-    uvs = source["uvs"][order].reshape(-1, 2)
-    material_runs = [
-        (source["materials"][m], int((tri_mat == m).sum())) for m in numpy.unique(tri_mat)
-    ]
-    mesh = meshbuild.from_arrays(
-        f"lanepart_{asset_id[:16]}",
-        verts,
-        tris,
-        uv_layers={"UVMap": uvs},
-        material_runs=material_runs,
-        poly_size=3,
-        smooth=False,
-        source_geometry=True,
-        degenerate_report=degenerate_report,
-    )
-    obj = bpy.data.objects.new(f"lanepart_{asset_id[:16]}", mesh)
-    parts_collection.objects.link(obj)
-    cache[asset_id] = obj
-    return obj
-
-
-def _tile_instance_group(part_obj, cache):
-    """One Geometry Nodes group per shared part object: Instance on Points of that part,
-    each instance's full 4×4 taken from the point's `tile_matrix` attribute. The part is the
-    Object Info node's own target (not a modifier input — object-socket modifier inputs are
-    not assignable from Python on every Blender build), so all instancers of one part share
-    one group and there are at most as many groups as part meshes."""
-    if part_obj.name in cache:
-        return cache[part_obj.name]
-    group = bpy.data.node_groups.new(f"carto_tiles_{part_obj.name}", "GeometryNodeTree")
-    group.interface.new_socket("Geometry", in_out="INPUT", socket_type="NodeSocketGeometry")
-    group.interface.new_socket("Geometry", in_out="OUTPUT", socket_type="NodeSocketGeometry")
-
-    n_in = group.nodes.new("NodeGroupInput")
-    n_out = group.nodes.new("NodeGroupOutput")
-    info = group.nodes.new("GeometryNodeObjectInfo")
-    info.inputs["Object"].default_value = part_obj
-    info.inputs["As Instance"].default_value = True
-    points = group.nodes.new("GeometryNodeInstanceOnPoints")
-    attr = group.nodes.new("GeometryNodeInputNamedAttribute")
-    attr.data_type = "FLOAT4X4"
-    attr.inputs["Name"].default_value = "tile_matrix"
-    setm = group.nodes.new("GeometryNodeSetInstanceTransform")
-
-    links = group.links
-    links.new(n_in.outputs["Geometry"], points.inputs["Points"])
-    links.new(info.outputs["Geometry"], points.inputs["Instance"])
-    links.new(points.outputs["Instances"], setm.inputs["Instances"])
-    links.new(attr.outputs["Attribute"], setm.inputs["Transform"])
-    links.new(setm.outputs["Instances"], n_out.inputs["Geometry"])
-    cache[part_obj.name] = group
-    return group
-
-
-def _tile_instancer_object(name, part_obj, matrices, group_cache):
-    """A point-cloud mesh (one vertex per tile) carrying each tile's 4×4, instancing the
-    shared part object through `_tile_instance_group`. Point positions duplicate the matrix
-    translations only so the object has sensible bounds; the transform node replaces the
-    instance matrix wholesale.
-
-    `matrices` arrive from `lanes.bend_part` in the BUNDLE frame and are conjugated here — the
-    same swap `_lane_part_object` applies to the shared datablock's vertices, which is what
-    makes an instanced tile and a baked tile the same triangles in the same place.
-    """
-    mats = numpy.asarray([frames.to_zup_transform(m) for m in matrices], dtype=numpy.float64)
-    mesh = bpy.data.meshes.new(name)
-    mesh.vertices.add(len(mats))
-    mesh.vertices.foreach_set(
-        "co", numpy.ascontiguousarray(mats[:, :3, 3], dtype=numpy.float32).ravel()
-    )
-    attr = mesh.attributes.new("tile_matrix", "FLOAT4X4", "POINT")
-    for i, mat in enumerate(mats):
-        attr.data[i].value = Matrix(mat.tolist())
-    mesh.update()
-
-    obj = bpy.data.objects.new(name, mesh)
-    modifier = obj.modifiers.new("tiles", "NODES")
-    modifier.node_group = _tile_instance_group(part_obj, group_cache)
-    return obj
-
-
-def build_lanes(
-    lanes_path,
-    catalogue_path,
-    lane_mesh_dir,
-    collection,
-    center=None,
-    radius=None,
-    limit=None,
-    road_surface=None,
-    markings_only=False,
-    ground_surface=None,
-):
-    """Bend every lane record's parts along its curve, merged into one object per prefab.
-
-    `markings_only` bends just the decal parts (road markings, wear tint) and skips the
-    roadside furniture — the light import for looking at carriageways without the fence,
-    hedge and sleeper geometry that dominates a full `--lanes` build.
-    """
-    if not os.path.isfile(lanes_path):
-        LOG.warn(f"no lanemeshes.jsonl at {lanes_path} — skipping lane geometry")
-        return 0
-    if not os.path.isfile(catalogue_path):
-        LOG.warn(f"CONTRACT VIOLATION: lanemeshes.jsonl without {catalogue_path}")
-        return 0
-
-    with open(catalogue_path, encoding="utf-8") as handle:
-        catalogue = json.load(handle)
-
-    # §5B: every decal part carries `decalRole`, which is what settles its lift (see
-    # `_bend_lane_part`). Checked once here rather than per part, and reported rather than
-    # guessed around — a decal with no role would silently take the wear tint's lower lift and
-    # bury a marking, the exact class of failure the field was added to end.
-    roleless = sorted(
-        {
-            part.get("assetId", "?")
-            for entry in catalogue.values()
-            for part in entry.get("parts", ())
-            if part.get("decal") and not part.get("decalRole")
-        }
-    )
-    if roleless:
-        LOG.warn(
-            f"CONTRACT VIOLATION: {len(roleless)} decal part(s) carry no §5B decalRole "
-            f"({', '.join(roleless[:4])}{' …' if len(roleless) > 4 else ''}) — they take "
-            "the wear-tint lift; re-rip the bundle"
-        )
-
-    sources = {}
-    builders = {}
-    counts = {}
-    bent = missing_prefab = missing_mesh = skipped_region = skipped_limit = 0
-
-    for record in read_jsonl(lanes_path):
-        entry = catalogue.get(record.get("prefab"))
-        if entry is None:
-            missing_prefab += 1
-            continue
-
-        curve = record["curve"]
-        if radius is not None and center is not None:
-            if math.hypot(curve[0][0] - center[0], curve[0][2] - center[1]) > radius:
-                skipped_region += 1
-                continue
-        if limit is not None and bent >= limit:
-            skipped_limit += 1
-            continue
-
-        curve_length = _curve_length(curve)
-        spans = record.get("spans") or [[0.0, 1.0]]
-        width_scale = record.get("widthScale", [1.0, 1.0])
-
-        hang = lanes.hang_curve(record, entry, curve_length)
-
-        # Grouped by (prefab, paint): one object per prefab would lose the per-lane colorSet
-        # (§7.2), and the distinct paints per prefab are few — the variation table is small.
-        color_set = record.get("colorSet")
-        key = (record["prefab"], json.dumps(color_set, sort_keys=True) if color_set else "")
-        sink = builders.setdefault(key, {"blocks": [], "instances": [], "colorSet": color_set})
-
-        for index in record.get("parts", []):
-            parts = entry.get("parts", [])
-            if not 0 <= index < len(parts):
-                continue
-            if markings_only and not parts[index].get("decal"):
-                continue
-            source = _load_lane_source(parts[index]["assetId"], lane_mesh_dir, sources)
-            if source is None:
-                missing_mesh += 1
-                continue
-            _bend_lane_part(
-                parts[index], source, curve, spans, curve_length, width_scale, hang, sink
-            )
-
-        bent += 1
-        category = record.get("category", "lane")
-        counts[category] = counts.get(category, 0) + 1
-        LOG.progress("lanes bent", bent, None)
-
-    # The bend loop above prints its progress; everything below (drape ray-casts, lazy
-    # road-surface BVH builds, object construction) is the quiet expensive part of a
-    # full-city run — announce it so a long silence reads as work, not a hang.
-    drape_blocks = [
-        block
-        for sink in builders.values()
-        for block in sink["blocks"]
-        if block["drape_eps"] is not None
-    ]
-    to_drape = sum(len(block["verts"]) for block in drape_blocks)
-    if road_surface is not None and to_drape:
-        LOG.step(
-            f"bending done; draping {len(drape_blocks)} marking(s) "
-            f"({to_drape} decal vertex(es)) onto the road surface and "
-            f"building {len(builders)} object(s)"
-        )
-
-    # One ray-cast per unique WORLD (x, z), not per vertex (see drape.drape_block) — exact
-    # because it samples each vertex's own laterally-offset position (fix round 1: an
-    # earlier version deduped per curve STATION and broadcast one centerline sample to a
-    # whole row, which was wrong for any part with width). The remaining cut versus the old
-    # per-vertex drape is genuinely-coincident positions (tiling-clip stations, duplicate
-    # source verts) plus Tier 1c's fewer stations overall — NOT the ~2x L/R dedup a
-    # station-keyed version would get, since a wide part's left and right edge now almost
-    # always cast separately, as they must. Progress strides in markings (blocks), not
-    # vertices or queries: there are two orders of magnitude fewer of them, and the "draped"
-    # count on the summary line below is the one tools/ab_compare.py's COUNT_MARKERS is
-    # expected to move (Tier 1c changed how many decal vertices exist at all) — quote old vs
-    # new there.
-    counters = {"draped": 0, "grounded": 0, "missed": 0, "queries": 0}
-    if road_surface is not None:
-        for seen, block in enumerate(drape_blocks, 1):
-            _drape_block(block, road_surface, counters, ground_surface=ground_surface)
-            if seen % 5000 == 0:
-                LOG.step(f"{seen}/{len(drape_blocks)} marking(s) draped")
-    draped, drape_missed = counters["draped"], counters["missed"]
-    drape_grounded = counters["grounded"]
-    if counters["queries"]:
-        LOG.step(f"{counters['queries']} drape ray-cast(s) issued for {to_drape} decal vertex(es)")
-
-    # A heavily tiled non-decal part (train sleepers/rails, catenary cable — a repeated
-    # section stamped along the whole curve) can have its LAST tile's clip window fall short
-    # of a full section: every station past the clip boundary gets clamped to the same arc
-    # position (see the `numpy.clip` in the tile loop above), so the vertices between them
-    # collapse onto one point-and-width axis — geometrically zero area (distinct indices),
-    # but not a hint of bad data, just where a fixed-size repeating section doesn't divide
-    # the span evenly. This is NOT specific to the array rewrite: the previous
-    # `mesh.from_pydata` pipeline built the identical degenerate triangles from the identical
-    # bend math, it just never noticed (an invisible, zero-area face costs nothing to leave
-    # in a mesh, so nothing ever caught it) — proven by direct old-vs-new classification, see
-    # task-6-report.md §5c. `_mesh_from_arrays` now does notice, and would otherwise print a
-    # `CONTRACT VIOLATION` per object for this ONE class — zero-area, distinct indices — which
-    # on a full city is ~2,000 lines about a phenomenon that is not a violation. One
-    # aggregated line at the end of the phase instead. This does NOT cover a repeated-vertex-
-    # index face: `_mesh_from_arrays` reports that class with the loud wording unconditionally,
-    # from every caller including this one — `degenerate_report` is never consulted for it, so
-    # a genuine future regression in the bend (not this known, benign tiling-clip artifact)
-    # still surfaces loudly instead of being swallowed by this aggregate.
-    degenerate_totals = {"faces": 0, "objects": 0}
-
-    def _report_lane_degenerate(_name, zero_area_count, repeated):
-        # `repeated` is always False here: lanes are COMPUTED geometry (source_geometry
-        # defaults to False on this call), so `_mesh_from_arrays` never routes a
-        # repeated-vertex-index count through this callback — only the zero-area class is
-        # ever downgradable for a computed caller. Asserting it costs nothing and pins the
-        # invariant in place if that ever changes.
-        assert not repeated
-        degenerate_totals["faces"] += zero_area_count
-        degenerate_totals["objects"] += 1
-
-    built = 0
-    for (prefab_key, _), sink in builders.items():
-        blocks = [block for block in sink["blocks"] if len(block["tris"])]
-        if not blocks:
-            continue
-
-        verts, tris, uvs, material_runs = _lane_object_arrays(blocks)
-        verts = verts[:, [0, 2, 1]]  # bundle -> Blender: X stays, Y<->Z swap, no sign flip
-        mesh = meshbuild.from_arrays(
-            f"lane_{prefab_key}",
-            verts,
-            tris,
-            uv_layers={"UVMap": uvs},
-            material_runs=material_runs,
-            poly_size=3,
-            smooth=False,
-            degenerate_report=_report_lane_degenerate,
-        )
-        obj = bpy.data.objects.new(f"lane_{prefab_key}", mesh)
-        collection.objects.link(obj)
-        if sink["colorSet"] is not None:
-            materiallayer.set_paint(obj, {"colorSet": sink["colorSet"]})
-        built += 1
-
-    # -- rigid tiles as instances ----------------------------------------------------------
-    # One instancer object per (prefab, paint, part): a point cloud of tile matrices,
-    # Geometry Nodes instancing one shared part mesh. set_paint lands on the instancer, where
-    # the materials' per-instance attribute reads pick it up exactly as they do for the
-    # collection-instance empties the prop layer uses.
-    part_degenerates = {"faces": 0}
-
-    def _report_part_degenerate(_name, count, _repeated):
-        part_degenerates["faces"] += count
-
-    instanced_tiles = 0
-    instancers = 0
-    part_cache = {}
-    group_cache = {}
-    parts_collection = None
-    for (prefab_key, _), sink in builders.items():
-        if not sink["instances"]:
-            continue
-        by_part = {}
-        for asset_id, matrix in sink["instances"]:
-            by_part.setdefault(asset_id, []).append(matrix)
-        for asset_id, matrices in by_part.items():
-            if parts_collection is None:
-                parts_collection = bpy.data.collections.new("bundle_laneparts")
-                bpy.context.scene.collection.children.link(parts_collection)
-            part_obj = _lane_part_object(
-                asset_id, sources[asset_id], part_cache, parts_collection, _report_part_degenerate
-            )
-            instancer = _tile_instancer_object(
-                f"lanetiles_{prefab_key}_{asset_id[:12]}", part_obj, matrices, group_cache
-            )
-            collection.objects.link(instancer)
-            if sink["colorSet"] is not None:
-                materiallayer.set_paint(instancer, {"colorSet": sink["colorSet"]})
-            instanced_tiles += len(matrices)
-            instancers += 1
-    if parts_collection is not None:
-        # The shared part meshes must never draw on their own — the instancers' Object Info
-        # still evaluates them from an excluded collection.
-        layer = sceneprep.find_layer_collection(parts_collection)
-        if layer is not None:
-            layer.exclude = True
-
-    LOG.done(
-        f"lanes:     {bent} record(s) bent into {built} object(s), "
-        f"{len(sources)} part mesh(es) loaded"
-    )
-    if instanced_tiles:
-        baked_tiles = sum(sink.get("tiles_baked", 0) for sink in builders.values())
-        LOG.step(
-            f"{instanced_tiles} straight tile(s) instanced across {instancers} "
-            f"instancer(s) ({len(part_cache)} shared part mesh(es)); "
-            f"{baked_tiles} tile(s) baked (curved, tapered, hung or clipped)"
-        )
-    if part_degenerates["faces"]:
-        LOG.step(
-            f"{part_degenerates['faces']} degenerate face(s) dropped from shared part "
-            "meshes (authored in the source .glb)"
-        )
-    dropped_decals = sum(sink.get("decal_dropped", 0) for sink in builders.values())
-    if dropped_decals:
-        # New line vs pre-§39 baselines (cf. the degenerate-face note below for the A/B gate).
-        LOG.step(
-            f"{dropped_decals} decal span(s) dropped (tiling clip 0 — the game draws "
-            "zero instances on a sub-half-period stub)"
-        )
-    if degenerate_totals["faces"]:
-        # tools/ab_compare.py's COUNT_MARKERS ("face(s)", "object(s)") match this line, so any
-        # two logs being diffed with --counts must have the identical number of degenerate
-        # faces/objects to compare equal — a run-to-run change here is a real signal, but note
-        # for lane-region regression scripts: this line did not exist before this task, so an
-        # otherwise-unchanged lane import will now always show ONE extra matched line versus a
-        # pre-this-task baseline (see task-6-report.md "Fix round 1" for how that was handled
-        # in this task's own A/B gate).
-        LOG.step(
-            f"{degenerate_totals['faces']} zero-area degenerate face(s) dropped across "
-            f"{degenerate_totals['objects']} object(s) — a heavily tiled part's last "
-            "tile clipping short of a full section, not a bundle defect"
-        )
-    if draped or drape_missed or drape_grounded:
-        LOG.step(
-            f"{draped} decal vertex(es) draped onto the road surface"
-            + (
-                f", {drape_grounded} onto the terrain instead (no road under them)"
-                if drape_grounded
-                else ""
-            )
-            + (f", {drape_missed} kept the fixed lift (no surface hit)" if drape_missed else "")
-        )
-        # A miss is a marking floating or sunk at an authored height with nothing beneath it.
-        # A few are expected at a region edge, where the marking is inside the window and the
-        # road carrying it is not; a large share means the drape is not doing its job.
-        total_drape = draped + drape_grounded + drape_missed
-        if total_drape and drape_missed > total_drape * _DRAPE_MISS_WARN:
-            LOG.warn(
-                f"{drape_missed / total_drape * 100:.1f}% of decal vertices found no "
-                f"surface within their own projector reach"
-                + (
-                    ""
-                    if ground_surface is not None
-                    else " — import --terrain as well and they fall back to the ground"
-                )
-            )
-    elif road_surface is None:
-        LOG.warn(
-            "networks layer not built — decals keep the fixed lift, expect "
-            "markings to z-fight or sink into the crown"
-        )
-    if road_surface is not None and road_surface.kerb_rejections:
-        # A low number here is the truth, not blindness: only 2.1% of drape samples have more
-        # than one object under them even at the city's densest junction, and 0% in a plain
-        # road window (tools/test_drape_pick.py). Nothing to reject, nothing counted.
-        LOG.step(
-            f"{road_surface.kerb_rejections} drape sample(s) where the nearest-surface "
-            "pick differed from the highest hit in range (Tier 0: kerb/wall snap avoided)"
-        )
-    for category, count in sorted(counts.items()):
-        LOG.step(f"category {category}: {count}")
-    if skipped_region:
-        LOG.step(f"{skipped_region} skipped outside the region")
-    if skipped_limit:
-        LOG.step(f"{skipped_limit} skipped by --net-limit")
-    if missing_prefab:
-        LOG.warn(
-            f"CONTRACT VIOLATION: {missing_prefab} record(s) name a prefab "
-            f"missing from laneprefabs.json"
-        )
-    if missing_mesh:
-        LOG.warn(
-            f"CONTRACT VIOLATION: {missing_mesh} part reference(s) missing "
-            f"their .glb under {lane_mesh_dir}"
-        )
-    return bent
 
 
 # -- terrain, contract §8 -------------------------------------------------------------------
@@ -2430,7 +1643,7 @@ def main():
         do_terrain = True
         do_areas = True
         if kinds is _UNSET:
-            kinds = set(_ALL_KINDS)
+            kinds = set(networks.KINDS)
         if net_categories is _UNSET:
             net_categories = None  # every category
         if limit is _UNSET:
@@ -2443,7 +1656,7 @@ def main():
     if kinds is _UNSET:
         kinds = {"building"}
     if net_categories is _UNSET:
-        net_categories = set(_DRIVABLE)
+        net_categories = set(networks.DRIVABLE)
     if limit is _UNSET:
         limit = 20000
 
@@ -2696,7 +1909,7 @@ def main():
         network_collection = bpy.data.collections.new("bundle_networks")
         bpy.context.scene.collection.children.link(network_collection)
         with sceneprep.parked_out_of_view_layer(network_collection):
-            network_count = build_networks(
+            network_count = netbuild.build_networks(
                 networks_path,
                 net_categories,
                 network_collection,
@@ -2705,7 +1918,7 @@ def main():
                 radius=radius,
                 limit=net_limit,
             )
-        LOG.end_phase()  # build_networks() may have early-returned before its own done()
+        LOG.end_phase()  # netbuild.build_networks() may have early-returned before its own done()
 
     # Terrain BEFORE lanes, since 2026-08-11. It depends on neither networks nor lanes, and
     # putting it first is what lets a lane marking that finds no road under it fall back to the
@@ -2750,7 +1963,7 @@ def main():
                 else None
             )
             with sceneprep.parked_out_of_view_layer(lane_collection):
-                lane_count = build_lanes(
+                lane_count = lanebuild.build_lanes(
                     lanes_path,
                     lane_prefabs_path,
                     lane_mesh_dir,
@@ -2762,7 +1975,7 @@ def main():
                     markings_only=not do_lanes,
                     ground_surface=ground_surface,
                 )
-            LOG.end_phase()  # build_lanes() may have early-returned before its own done()
+            LOG.end_phase()  # lanebuild.build_lanes() may have early-returned before its own done()
         else:
             LOG.warn(f"no lanemeshes.jsonl at {lanes_path} — skipping lane geometry")
 

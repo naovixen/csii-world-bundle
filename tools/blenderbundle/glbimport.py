@@ -170,10 +170,9 @@ def _fast_import_glb(path):
             if material_name not in _KNOWN_MATERIALS:
                 return None
 
-    axis_flip = numpy.array([1.0, -1.0, 1.0])
-    # Tracks both bare meshes (built, not yet wrapped in an object) and finished objects, in
-    # creation order, so the except handler below can tear down whichever partial state this
-    # attempt reached — including a mesh that built successfully but failed before
+    # `created` tracks both bare meshes (built, not yet wrapped in an object) and finished
+    # objects, in creation order, so `_tear_down` can undo whichever partial state an attempt
+    # reached — including a mesh that built successfully but failed before
     # `bpy.data.objects.new` ever ran (e.g. `normals_split_custom_set_from_vertices` raising
     # on a shape this parser did not anticipate). A mesh left dangling in `bpy.data.meshes`
     # would leak and, worse, hold `node["name"]`, forcing the stock-importer retry that
@@ -181,55 +180,68 @@ def _fast_import_glb(path):
     created = []
     try:
         for node in nodes:
-            # glTF -> Blender axis convention, exactly G: (x, y, z) -> (x, -z, y).
-            verts = node["verts"][:, (0, 2, 1)] * axis_flip
-            normals = node["normals"][:, (0, 2, 1)] * axis_flip
-            uv_layers = None
-            if node["uvs"] is not None:
-                loop_uv = glb_reader.glb_uv_to_texture_uv(node["uvs"][node["tris"].ravel()])
-                uv_layers = {"UVMap": loop_uv}
-            material_runs = [
-                (_KNOWN_MATERIALS[name], count) for name, count in node["material_runs"]
-            ]
-
-            # `smooth=True`: the stock importer's shading comes from the custom split normals
-            # it sets on the mesh, not from the per-polygon flat/smooth flag — matched below
-            # by setting those same custom normals, so `smooth` only has to be "not flat".
-            mesh = meshbuild.from_arrays(
-                node["name"],
-                verts,
-                node["tris"],
-                uv_layers=uv_layers,
-                material_runs=material_runs,
-                smooth=True,
-                degenerate_report=_record_fast_degenerate,
-                source_geometry=True,
-            )
-            created.append(mesh)
-            mesh.normals_split_custom_set_from_vertices(
-                numpy.ascontiguousarray(normals, dtype=numpy.float32)
-            )
-
-            obj = bpy.data.objects.new(node["name"], mesh)
-            obj.matrix_world = _gltf_node_matrix_to_blender(node["matrix"])
-            created[-1] = obj
+            created.append(_node_object(node, created))
     except Exception:
         # A guard above missed something about this file's shape. Undo whatever partial mesh
         # data this attempt already allocated and let the stock importer have it instead of
         # returning half-built geometry or propagating a crash out of a per-file fast path.
-        for item in created:
-            if isinstance(item, bpy.types.Object):
-                mesh = item.data
-                bpy.data.objects.remove(item)
-                if mesh is not None:
-                    bpy.data.meshes.remove(mesh)
-            else:
-                bpy.data.meshes.remove(item)
+        _tear_down(created)
         return None
 
     global _FAST_GLB_COUNT
     _FAST_GLB_COUNT += 1
     return created
+
+
+_AXIS_FLIP = numpy.array([1.0, -1.0, 1.0])
+
+
+def _node_object(node, created):
+    """One parsed node as a placed Blender object. Appends its mesh to `created` first, so a
+    failure between the mesh and the object still leaves the mesh for `_tear_down`."""
+    # glTF -> Blender axis convention, exactly G: (x, y, z) -> (x, -z, y).
+    verts = node["verts"][:, (0, 2, 1)] * _AXIS_FLIP
+    normals = node["normals"][:, (0, 2, 1)] * _AXIS_FLIP
+    uv_layers = None
+    if node["uvs"] is not None:
+        loop_uv = glb_reader.glb_uv_to_texture_uv(node["uvs"][node["tris"].ravel()])
+        uv_layers = {"UVMap": loop_uv}
+    material_runs = [(_KNOWN_MATERIALS[name], count) for name, count in node["material_runs"]]
+
+    # `smooth=True`: the stock importer's shading comes from the custom split normals
+    # it sets on the mesh, not from the per-polygon flat/smooth flag — matched below
+    # by setting those same custom normals, so `smooth` only has to be "not flat".
+    mesh = meshbuild.from_arrays(
+        node["name"],
+        verts,
+        node["tris"],
+        uv_layers=uv_layers,
+        material_runs=material_runs,
+        smooth=True,
+        degenerate_report=_record_fast_degenerate,
+        source_geometry=True,
+    )
+    created.append(mesh)
+    mesh.normals_split_custom_set_from_vertices(
+        numpy.ascontiguousarray(normals, dtype=numpy.float32)
+    )
+
+    obj = bpy.data.objects.new(node["name"], mesh)
+    obj.matrix_world = _gltf_node_matrix_to_blender(node["matrix"])
+    created.pop()
+    return obj
+
+
+def _tear_down(created):
+    """Remove every mesh and object a failed fast-path attempt allocated."""
+    for item in created:
+        if isinstance(item, bpy.types.Object):
+            mesh = item.data
+            bpy.data.objects.remove(item)
+            if mesh is not None:
+                bpy.data.meshes.remove(mesh)
+        else:
+            bpy.data.meshes.remove(item)
 
 
 def _register_known_materials(imported):
