@@ -140,20 +140,28 @@ def detected(values=None):
         "platform": sys.platform,
         "appDir": app_dir(),
     }
-    # The machine the level is FOR, read the same way the validator reads it, so the UI's
-    # "target machine" line and the build's own budget can never disagree. Never raises: this
-    # runs on every settings request and a missing BeamNG log must not blank the page.
+    # The machine the level is FOR, read the same way the build's own budget reads it, so the
+    # UI's "target machine" line and the build can never disagree. Never raises: this runs on
+    # every settings request and a missing BeamNG log must not blank the page.
+    #
+    # It says WHY it has no answer, rather than just having none. The blanket `except` here once
+    # swallowed an ImportError — a relative import left one level too shallow when this moved
+    # into a package — and the target-machine line simply went blank, which is indistinguishable
+    # from "BeamNG has never been run on this machine". A guard that hides its own bugs inside
+    # the condition it was written for is not a guard.
     try:
-        from .beamng import validate_level
+        from ..beamng import machine
 
-        vram, pixels, source = validate_level.render_target(values)
+        vram, pixels, source = machine.render_target(values)
         out["budget"] = {
             "vramMiB": vram,
             "pixels": pixels,
             "source": source,
-            "residentMiB": round(validate_level.resident_budget_mib(vram, pixels)),
-            "lighting": validate_level.light_manager()[0],
+            "residentMiB": round(machine.resident_budget_mib(vram, pixels)),
+            "lighting": machine.light_manager()[0],
         }
-    except Exception:
+        out["budgetError"] = None
+    except Exception as exc:
         out["budget"] = None
+        out["budgetError"] = f"{type(exc).__name__}: {exc}"
     return out
