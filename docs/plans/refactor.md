@@ -923,8 +923,8 @@ Each phase records here what landed and what it found, so this document stays th
 | 4 — Split `csiibundle` and `tools/` | **in progress** — `terrain`, `navgraph`, `colour`, `validate_bundle`, `make_example_bundle` split and validated, `probe_point` refused with reasons; see below |
 | 5 — The app and its UI | **DONE** 2026-08-28, in-game look accepted — see below |
 | 6 — The Blender adapter | **DONE** 2026-08-29 — in-Blender look owed; see below |
-| 7 — One rip-stage framework | **in progress** — extractions, the typed outcome, the frame loop and the report shape done; see below |
-| 8 — The IO writer layer | **in progress** — the writers, the attribute readers and the grading guard; see below |
+| 7 — One rip-stage framework | **DONE** 2026-08-29 (built, awaiting in-game re-rip) — three items deliberately deferred with reasons; see below |
+| 8 — The IO writer layer | **DONE** 2026-08-29 (built, awaiting in-game re-rip) — one declared byte change; see below |
 | 9 — Split the rip systems | **in progress** — the settings defaults and the field naming; the god-methods remain |
 | 10 — Performance | not started |
 | 11 — Comment, naming and structure | not started |
@@ -1591,7 +1591,7 @@ repo) — plus the `AreaRipSystem` extraction. `RipTerrain`'s section 5 alone is
 about fifteen locals to the write pass, so it needs a captured-state record rather than a
 parameter list. That is a focused block of work, not something to leave half-finished.
 
-### Phase 8 — in progress, 2026-08-27
+### Phase 8 — DONE 2026-08-29 (built, awaiting in-game re-rip)
 
 **Landed**
 
@@ -1634,12 +1634,34 @@ parameter list. That is a focused block of work, not something to leave half-fin
   `MeshRipSystem`'s two dead queries, and `NetworkRipSystem.SanitizeId` — which was **not** dead,
   as that commit recorded.
 
-**Not done yet:** the six layers that bypass the IO layer (`districts.jsonl`, `areas.jsonl`,
-`clipvolumes.jsonl`, `laneprefabs.json`, `materials.json`, `colors.json`/`lights.json`, written
-inline with `BundleFile.CreateText` + `JsonConvert`), and settling `BundleWriter` on one JSON
-idiom.
+**Closed 2026-08-29 — and the plan's six is eleven.** Counted: three JSONL layers
+(`districts.jsonl`, `areas.jsonl`, `clipvolumes.jsonl`) and eight JSON documents
+(`materials.json`, `colors.json`, `lights.json`, `laneprefabs.json`, `areaprefabs.json`,
+`terrain/rasters.json`, `terrain/surfaces/index.json`, `terrain/surfaces/sources.json`, plus
+`grading.json` and the manifest). `IO/RecordWriter.cs` and `IO/JsonFile.cs` take them.
 
-### Phase 7 — in progress, 2026-08-21
+They agreed on their idiom by habit rather than by construction, and two of them did not:
+
+* **`laneprefabs.json` was the one MINIFIED document in a bundle of indented ones** — it passed
+  no `Formatting` argument at all. Settled to indented. **This changes the bytes on disk** and
+  is declared here so the Phase 11 re-rip diff has an explanation waiting for it; the file is
+  26 KB, so the size is not the point.
+* **Only `materials.json` named an encoding** (`UTF8Encoding(false)`). The other seven relied on
+  `WriteAllText`'s default being BOM-less — true on .NET Core, and not a thing to leave to a
+  default, since a BOM in a bundle file breaks a consumer that reads bytes rather than text.
+
+`RecordWriter` also carries the counting invariant the typed writers already had: `RipDistricts`
+and `RipSurfaceAreas` take their record count off `writer.Count` instead of a hand-kept
+`written++` beside a loop with two `continue`s in it. The manifest reports those counts.
+
+**`BundleWriter`'s "three JSON idioms" is two, and they are two jobs.** It builds with
+`Dictionary<string, object>` and INSPECTS with `JObject`/`JToken` — reading materials.json, the
+rasters sidecar and the glTF JSON chunk. Building and inspecting are not the same job and a
+single idiom for both would be worse. Its write now goes through `JsonFile.Serialize`, keeping
+its own temp-file-and-`File.Replace` swap: a rip interrupted mid-manifest must leave the
+previous `bundle.json` intact rather than half of the new one.
+
+### Phase 7 — DONE 2026-08-29 (built, awaiting in-game re-rip)
 
 Started out of order, and deliberately: the Phase 1 consumer rebuild is a multi-hour block during
 which the Python tree has to stay still, and the two halves of this repo have independent gates.
@@ -1705,6 +1727,19 @@ inspection that is right rather than pending:
   frame of the DRAIN, which `RipWalk` does not, and its per-item catch is inside `ReadOne` rather
   than in the loop. Fitting it needs a ninth parameter on a function that already takes eight —
   the point at which a parameter list is a design smell rather than a shared rule.
+
+**Closed 2026-08-29: `Systems/Rip/RipQueue.cs`.** The bounded hand-off from a stage's walk to
+its writer task was the last duplicate on this phase's list, written twice, and
+`NetworkRipSystem`'s copy said so in its own comment ("This is `MeshRipSystem.Enqueue`, for the
+same reason") — the same signal `IO/BundlePrecision.cs` acted on one level down. The rule it
+carries is the Phase 1 defect: a plain `Add` on a bounded queue blocks until the writer makes
+room, and a FAULTED writer never will, so the main thread waits for the rest of the session with
+no dialog and no log line. Both call sites are one line; what stays local at each is the sentence
+naming the catch that counts the throw.
+
+The plan's remaining item for this phase, "warning declaration", turned out not to be
+duplication: every site builds `new RipWarning(kind, id, reason)` and adds it to its own run's
+list, which is already one shape with nothing shared to extract.
 
 **Not done, and not for lack of time: `Tessellate` should not be unified yet.**
 
