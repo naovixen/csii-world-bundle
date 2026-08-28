@@ -94,7 +94,7 @@ def main(argv=None):
     # `budget` has an argument parser of its own; hand it everything after the subcommand name
     # rather than teaching this parser its twelve options.
     if argv and argv[0] == "budget":
-        from .beamng.budget import main as budget_main
+        from .beamng.budgetreport import main as budget_main
 
         return budget_main(argv[1:])
     args = _parser().parse_args(argv)

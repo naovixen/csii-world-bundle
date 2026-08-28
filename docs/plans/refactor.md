@@ -1790,7 +1790,28 @@ the exceptions Phase 4 declared.
   three pointed at nothing. Five of the six failures that run were tests reaching for old
   addresses; the sixth was a production path.
 
-**Still to do in this phase:** the closing Rule-6 rebuild and Naomi's in-game look. — `stages/instances.py`,
+#### The closing Rule-6 rebuild (2026-08-28)
+
+`cs2_city_fine` rebuilt in place, `cook: true`, `--force`, 16 m 42 s, `status: done`, 7,883
+shapes compiled. Against `after-phase5a` — the baseline Naomi's accepted in-game look was taken
+on — **671 report fields are identical, every validation check is identical, and the problems
+list is byte-identical** (the one standing budget-band advisory). Resident 4,272.7 MiB and
+1,292,894 triangles drawn, both unchanged. All 27 differing fields are inside the `estimate`
+block, which is the meter's rolling calibration on the last builds' own measurements — a build
+moves it by design. Baseline captured as `cs2_city_fine-report-after-phase5b.json`.
+
+**The rebuild found the seventh and eighth address breaks, and neither was reachable any other
+way.** `cook.run` did `tidy = tidy(...)`, an `UnboundLocalError` the moment the split made
+`tidy` an import — and the cook stage does not run on the example bundle, so only a real
+16-minute city build could reach it. Then `cs2beamng budget` was dead: `main` had moved to
+`budgetreport` and the command reached the user through nothing else — no test, no stage — so
+the whole suite stayed green over it.
+
+Both classes are now gated. `tools/check_shadows.py` walks the AST for a local that shadows an
+import (ruff's F823 catches only some shapes of it; this phase produced seven), and
+`test_a1_level` `--help`s all six CLI entry points, which is enough to prove their imports.
+
+**Still to do in this phase:** Naomi's in-game look at the rebuilt level. — `stages/instances.py`,
 `pipeline/estimate.py`, `stages/materials.py`, `pipeline/runner.py`, `beamng/budget.py`,
 `pipeline/worker.py`, `beamng/dae.py`, `stages/cook.py`, `pipeline/state.py`,
 `beamng/tilelod.py`, `stages/poi.py`, `beamng/materials.py`, `stages/lights.py`,

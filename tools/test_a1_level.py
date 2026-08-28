@@ -333,6 +333,33 @@ def test_real_ground():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def test_cli_surface():
+    """Every subcommand still resolves what it imports.
+
+    `budget` reached the user through `cs2beamng budget` and nothing else — no test, no stage —
+    so when refactor Phase 5 moved `main` out of `beamng/budget.py` the command was dead and the
+    whole suite stayed green. A subcommand that only `--help`s is enough to prove its imports.
+    """
+    print("the CLI's four subcommands")
+    for args in (
+        ["--version"],
+        ["--help"],
+        ["build", "--help"],
+        ["doctor", "--help"],
+        ["budget", "--help"],
+        ["gui", "--help"],
+    ):
+        proc = subprocess.run(
+            [sys.executable, "-m", "cs2beamng", *args],
+            capture_output=True,
+            text=True,
+            cwd=REPO,
+        )
+        check(proc.returncode == 0, f"`cs2beamng {' '.join(args)}` exits 0 ({proc.returncode})")
+        if proc.returncode != 0:
+            print(proc.stderr[-600:])
+
+
 def main():
     tmp = tempfile.mkdtemp(prefix="cs2beamng_a1_")
     try:
@@ -343,6 +370,7 @@ def main():
         test_validator_catches(out)
         test_water_bands(tmp)
         test_real_ground()
+        test_cli_surface()
     finally:
         shutil.rmtree(os.path.join(EXAMPLE, "derived"), ignore_errors=True)
         shutil.rmtree(tmp, ignore_errors=True)
