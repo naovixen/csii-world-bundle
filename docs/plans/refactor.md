@@ -922,7 +922,7 @@ Each phase records here what landed and what it found, so this document stays th
 | 3 — One stage framework | **DONE** 2026-08-27 — 7 of 8 parallel blocks unified; the record merge refused, with reasons |
 | 4 — Split `csiibundle` and `tools/` | **in progress** — `terrain`, `navgraph`, `colour`, `validate_bundle`, `make_example_bundle` split and validated, `probe_point` refused with reasons; see below |
 | 5 — The app and its UI | **DONE** 2026-08-28, in-game look accepted — see below |
-| 6 — The Blender adapter | not started |
+| 6 — The Blender adapter | **DONE** 2026-08-29 — in-Blender look owed; see below |
 | 7 — One rip-stage framework | **in progress** — extractions, the typed outcome, the frame loop and the report shape done; see below |
 | 8 — The IO writer layer | **in progress** — the writers, the attribute readers and the grading guard; see below |
 | 9 — Split the rip systems | **in progress** — the settings defaults and the field naming; the god-methods remain |
@@ -1987,3 +1987,92 @@ Baseline captured as `docs/baselines/cs2_city_fine-report-after-phase5a.json`. *
 look at the rebuilt level was accepted 2026-08-28**, which closes the Rule-6 gate for this block:
 the settings package, the server package, the levelcheck registry and the seven-way shapes split
 are all validated in a running game, not only against a report.
+
+### Phase 6 — DONE 2026-08-29 (in-Blender look owed)
+
+`tools/blender_import_bundle.py` was **4,465 lines**, the largest file in the repo. It is now
+**138** — a docstring, a `sys.path` bootstrap and `sys.exit(run.main(__doc__))` — over
+`tools/blenderbundle/`, 24 modules, every one under 400 lines with every function under 60.
+`tools/blender_import_level.py` went 599 → 77 over `tools/blenderlevel/`, 8 modules. Ten
+commits.
+
+**The gate this phase needed did not exist, so it was the first thing built.** The pixel gate
+cannot answer a refactor's question: rendering the *same* `.blend` twice is not bit-identical,
+so "the render matches" is never proof. `tools/ab_scene.py` dumps the scene instead — every
+object's world matrix and custom properties, every mesh's vertex/loop/UV/colour digest, every
+material's full node graph and link set, the colour-management state. **Two independent imports
+of the same region produce byte-identical dumps, measured**, which is what makes it a gate. Six
+runs are baselined against the pre-phase code, and every landing was checked against all the
+ones it could touch:
+
+| | what it covers | result |
+| --- | --- | --- |
+| A | region 300 m: instances, skirts, terrain, networks, lanes, areas, colour, sky | identical, 25 count lines |
+| B | **full map, stride 8** — 11.6 M native faces, 844 k fans, 806 k coarse quads, 56,699 faces cut on a clip prism, the splat blend, seven ground normal maps | identical |
+| C | every network category | identical |
+| D | the survey paths, both .glb paths (7 fast / 46 stock), all three material rules | identical |
+| E | `--everything 200` — the base/override logic and `--center downtown` | identical |
+| L/N | the level oracle, on a cooked level and on one that still has its `.dae` | identical |
+
+**What the split found**
+
+* **32 module-level names assigned and never read** — `_LANE_ARC_SAMPLES`, `_bezier_point_vec`,
+  `_quat_to_mat3`, `_AREA_LIFT` and kin, one per engine-neutral constant that moved to
+  `csiibundle` and left its alias behind, plus `_GRADING`, written by `_apply_grading` and read
+  nowhere. `ruff` cannot see them: F841 is local variables only, and a module-level assignment
+  is public API as far as a linter is concerned.
+* **Four module names had to move around vocabulary that was already taken.** `mesh`, `scene`
+  and `shading` are what a Blender local is called at hundreds of sites in this file
+  (`scene = bpy.context.scene`, `shading = space.shading`), so a module of any of those names is
+  shadowed the moment it is used — ruff's F823 caught all three on the first run. `appearance`
+  and `grading` are locals too (`appearance = water.load(...)`, `grading =
+  colour_model.load(...)`). Hence `meshbuild`, `sceneprep`, `shadernodes`, `materiallayer`,
+  `colourgrade`. Every one was found by a gate rather than by reading.
+* **`--sky` was a module global**, set by `global _SKY` inside argument parsing and read three
+  functions away. It is a parameter now, and no module in the package carries mutable state
+  except `glbimport`'s own fast-path counters.
+* **`_splat_ground_material` was seven closures over four shared variables**, which is a class
+  with the `self` left out. Node creation ORDER had to be preserved exactly through that
+  change: Blender names a node from its type plus a creation-order suffix, and the scene dump is
+  keyed on those names, so the same graph built in a different order is a different scene.
+
+**`check_references` now parses what it cannot import.** The adapter needs `bpy`, so all 32 new
+modules and both entry scripts were invisible to the 1.3-second gate — the one blind spot that
+matters, since a split moving an address is what Phase 5 shipped eight times. `ParsedModule`
+reads a module's surface off its top-level defs, classes, assignments and imports; proved by
+planting both failure shapes and watching it report them.
+
+**A gate I was reading wrong for two commits.** `check_limits` was run through `tail -2`, which
+threw away its findings: moving a function moves its allowlist key, so `func
+tools/blender_import_bundle.py::_mesh_from_arrays` went stale while
+`tools/blenderbundle/meshbuild.py::from_arrays` was a new 186-line violation. It said so both
+times. Every gate is now run for its exit code, and the arrears were paid in the landing that
+found it. The allowlist went **187 → 167**; every `blender_import_bundle.py` and
+`blender_import_level.py` entry is gone from it.
+
+**Two specs, where the phase made testing possible.**
+
+* `tools/test_survey.py` — 26 claims over the one adapter module that never imports `bpy`, which
+  is the whole of the arithmetic behind `--center auto/downtown/interchange`. It pins the
+  judgement, not just the arithmetic: the skyline weight is height SQUARED so five 60 m towers
+  (18,000) outrank a hundred 4 m houses (1,600) where a plain count puts the houses twenty to
+  one.
+* `tools/test_daeread.py` — 20 claims, every one a ROUND TRIP through `dae.write_shape`.
+  `read_dae` had lived in the level oracle, parsing a format written by a module in a different
+  package with no shared schema between them; it is `beamng/daeread.py` now, beside the writer
+  whose node names (`_a<px>`, `Colmesh_*`, `bb_autobillboard<px>`, `nulldetail<px>`) its LOD
+  filter matches.
+
+**One plan claim is wrong and stays wrong.** "`blender_import_level.py` … stops putting `apps/`
+on `sys.path`" cannot happen: Blender ships its own Python, which has never had `pip install -e
+.` run into it — measured, `import csiibundle` and `import cs2beamng` both fail under `blender
+--background`. The oracle reads what BeamNG reads through `cs2beamng.beamng`, so both roots must
+go on the path. What changed is that the bootstrap now says why, once. That is the fifth plan
+claim this refactor has checked and found wrong; the plan's numbers remain hypotheses.
+
+**What is owed.** Phase 6's consumer is not a level build, so Rule 6's rebuild does not apply —
+its equivalent is a look in Blender. `E:\carto-out\phase6\phase6_interchange.blend` is the
+refactored adapter's own output over the interchange at 300 m (instances, skirts, terrain,
+networks, lanes, areas), with `phase6_interchange.png` beside it. A pre-phase render of the same
+region differs from it by **max=2**, which is the renderer's own noise floor measured on the
+same file rendered twice.
