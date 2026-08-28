@@ -638,7 +638,7 @@ Each phase records here what landed and what it found, so this document stays th
 | 2 — One implementation of every shared rule | **DONE** 2026-08-27, in-game look verified — five of its claims needed correcting; see below |
 | 3 — One stage framework | **DONE** 2026-08-27 — 7 of 8 parallel blocks unified; the record merge refused, with reasons |
 | 4 — Split `csiibundle` and `tools/` | **in progress** — `terrain`, `navgraph`, `colour`, `validate_bundle`, `make_example_bundle` split and validated, `probe_point` refused with reasons; see below |
-| 5 — The app and its UI | **in progress** — `settings`, `server` and `validate_level` split; the stages and the UI remain; see below |
+| 5 — The app and its UI | **in progress** — `settings`, `server`, `validate_level` and `shapes` split; `terrain`, the UI and the 400-700 band remain; see below |
 | 6 — The Blender adapter | not started |
 | 7 — One rip-stage framework | **in progress** — extractions, the typed outcome, the frame loop and the report shape done; see below |
 | 8 — The IO writer layer | **in progress** — the writers, the attribute readers and the grading guard; see below |
@@ -1515,14 +1515,38 @@ BeamNG is a legitimate answer. Found while repointing the callers at `beamng.mac
 now carries `budgetError`, because one that hides its own bugs inside the condition it was
 written for is not a guard.
 
-**Still to do in this phase:** `ui/app.js` (1,667) and `ui/app.css` (576); `stages/shapes.py`
-(1,312); `stages/terrain.py` (1,049); and the 400-700 band — `stages/instances.py`,
+**`stages/shapes.py` (1,312) → seven modules** (`419948f`), the largest stage and the one with
+the most over-length functions: six of them, 794 lines between them. `shapeparts` exists because
+of a cycle rather than a wish — `lod_levels` reads the bake's LOD glbs through `_collect`, which
+the shape writer also uses. **`ShapeJob` is the consumer's second `@dataclass`**: `shape_job` took
+a 14-element tuple and the two places building one, forty lines apart, each listed all fourteen
+in order with nothing checking they agreed. `lod_levels`' `if`/`elif` repeated eight of its nine
+conditions (the promote branch and the kept-small branch differ only in the triangle floor), so
+the eight are one named condition now.
+
+**Still to do in this phase:** `ui/app.js` (1,667) and `ui/app.css` (576);
+`stages/terrain.py` (1,049); and the 400-700 band — `stages/instances.py`,
 `pipeline/estimate.py`, `stages/materials.py`, `pipeline/runner.py`, `beamng/budget.py`,
 `pipeline/worker.py`, `beamng/dae.py`, `stages/cook.py`, `pipeline/state.py`,
 `beamng/tilelod.py`, `stages/poi.py`, `beamng/materials.py`, `stages/lights.py`,
 `stages/networks.py`. Then the Rule-6 rebuild of `cs2_city_fine` and the in-game look.
 
-**Also still open, found here and owned by the stages block:** `stages/lights.py:367` imports
-`_transform` out of `stages/instances.py`, so the standing gate's "no stage imports another
-stage's privates" is still breached — Phase 2 removed the `_quat_rows`/`_swap_yz` imports and
-left this one. `tools/check_instances_vs_game.py:53` imports the same private.
+**The stage-to-stage private import is closed** (`9c840d5`): `stages/lights.py` imported
+`_transform` out of `stages/instances.py` and so did `check_instances_vs_game`. Phase 2 removed
+the `_quat_rows`/`_swap_yz` imports from that same call site and left this one, so the standing
+gate has been reporting clean against a breach it could not see. It is `beamng.frame.record_transform`
+now — "a bundle record as the three fields a BeamNG SceneObject stores" was never the instance
+stage's fact.
+
+**A flaw in the size gate itself, found by it failing to fail** (`3330f94`).
+`check_limits.fork_sources()` listed `git ls-files` — TRACKED files only — so a file written but
+not yet `git add`ed was invisible. Running the gate before committing a split, which is exactly
+the moment it is for, read the old files and skipped every new one. **The `levelcheck` commit
+(`836632d`) says "every one is under 60 lines" and three were not** (`check_info` 86,
+`check_materials` 105, `check_budgets` 61); the gate had never read those files. Fixed with
+`--others --exclude-standard`, which took the file count 298 → 315 — the size of the blind spot
+on this tree alone — and the three functions are decomposed. Nothing else in the phase was
+affected: the settings and server packages are clean under the fixed gate.
+
+**The Rule-6 rebuild for these landings is still owed**, and every commit above says so. The
+shapes split is the one that most needs it: it writes every `.dae` in the level.
