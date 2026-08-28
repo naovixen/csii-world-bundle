@@ -39,7 +39,12 @@ PACKAGES = ("cs2beamng", "csiibundle")
 # Ours, but not importable outside Blender (`import bpy` at module scope). Parsed, not imported.
 # A path relative to the repo root: a directory is a package, a file is a single module named
 # after its stem.
-PARSED = ("tools/blenderbundle", "tools/blender_import_bundle.py", "tools/blender_import_level.py")
+PARSED = (
+    "tools/blenderbundle",
+    "tools/blenderlevel",
+    "tools/blender_import_bundle.py",
+    "tools/blender_import_level.py",
+)
 
 # Modules whose attributes are built at run time rather than written down, so an AST walk cannot
 # know what they hold. Empty today; an entry here needs a reason beside it.
