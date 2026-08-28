@@ -1,0 +1,102 @@
+/* The cost meter, the preset row, what the app detected, and the ripper-mod prompt.
+
+   A graphics settings menu whose frame takes two hours to render, so the feedback matters more
+   than it would anywhere else. */
+
+/* ---- the cost meter ----------------------------------------------------------------------- */
+/* A graphics settings menu whose frame takes two hours to render, so the feedback matters more
+   here rather than less. Two shapes: a BAR where the figure has a budget it can exceed, and a
+   TILE where it has none - and under every one of them, in words, where the number came from. */
+.cost { margin-top: 14px; padding: 12px 14px; border-radius: var(--radius-s); background: var(--bg-elev-2); border: 1px solid var(--line); }
+.cost-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
+.cost-head h4 { margin: 0; font-size: 11.5px; font-weight: 650; text-transform: uppercase; letter-spacing: 0.07em; color: var(--text-faint); }
+.cost-target { font-size: 11.5px; color: var(--text-faint); }
+
+.cost-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; }
+.cost-tile { display: flex; flex-direction: column; gap: 1px; padding: 9px 11px; border-radius: var(--radius-s); background: var(--bg); border: 1px solid var(--line); }
+.cost-tile-k { font-size: 10.5px; color: var(--text-faint); text-transform: uppercase; letter-spacing: 0.06em; }
+.cost-tile-v { font-size: 19px; font-weight: 650; font-variant-numeric: tabular-nums; letter-spacing: -0.01em; }
+.cost-tile-basis { font-size: 11px; color: var(--text-faint); font-style: italic; }
+.cost-tile.warn { border-color: color-mix(in srgb, var(--warn) 45%, var(--line)); }
+.cost-tile.warn .cost-tile-v { color: var(--warn); }
+
+.cost-row { display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px; }
+.cost-row-head { display: flex; align-items: baseline; gap: 8px; }
+.cost-row .cost-name { font-size: 12.5px; color: var(--text-dim); flex: 1; }
+.cost-row .cost-value { font-size: 15px; font-weight: 650; font-variant-numeric: tabular-nums; }
+.cost-row .cost-of { font-size: 11.5px; color: var(--text-faint); }
+.cost-row .cost-note { font-size: 11px; color: var(--text-faint); font-style: italic; }
+.cost-row .cost-advice { font-size: 11.5px; color: var(--text-dim); margin-top: 2px; }
+.cost-bar { position: relative; height: 12px; }
+.cost-bar .fill { background: linear-gradient(90deg, var(--ok), color-mix(in srgb, var(--ok) 70%, var(--accent))); }
+.cost-mark { position: absolute; top: -3px; bottom: -3px; width: 2px; background: var(--text-dim); border-radius: 1px; }
+.cost-row.close .fill { background: var(--warn); }
+.cost-row.close .cost-value { color: var(--warn); }
+.cost-row.over .fill { background: var(--danger); }
+.cost-row.over .cost-value { color: var(--danger); }
+.cost-warn { margin-top: 9px; padding: 7px 10px; border-radius: var(--radius-s); font-size: 11.5px;
+  border: 1px solid color-mix(in srgb, var(--warn) 50%, var(--line));
+  background: color-mix(in srgb, var(--warn) 10%, transparent); color: var(--text-dim); }
+
+/* A figure the app cannot arrive at yet says what it is waiting for. An empty bar would read as
+   "nothing to worry about", which is a promise, and the one thing this meter must never make. */
+.cost-waiting { margin-bottom: 10px; padding: 8px 10px; border-radius: var(--radius-s); font-size: 11.5px;
+  border: 1px dashed var(--line); color: var(--text-faint); }
+.cost-waiting.working::before { content: ""; display: inline-block; width: 8px; height: 8px; margin-right: 7px;
+  border-radius: 50%; background: var(--accent); animation: cost-pulse 1.4s ease-in-out infinite; }
+@keyframes cost-pulse { 0%, 100% { opacity: 0.25; } 50% { opacity: 1; } }
+
+/* The estimator's own score. It is small and permanent on purpose: a meter nobody can check
+   against a measurement is a meter nobody can trust. */
+.cost-score { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; margin-top: 9px;
+  font-size: 11px; color: var(--text-faint); }
+.cost-score-k { text-transform: uppercase; letter-spacing: 0.06em; }
+.cost-score-v { font-variant-numeric: tabular-nums; }
+
+.cost-approx { margin-top: 8px; font-size: 11px; color: var(--text-faint); }
+.cost-approx > summary { cursor: pointer; }
+.cost-approx-item { display: flex; flex-direction: column; gap: 1px; margin: 7px 0 0 12px;
+  padding-left: 9px; border-left: 2px solid var(--line); }
+.cost-approx-what { color: var(--text-dim); }
+.cost-approx-measured { font-variant-numeric: tabular-nums; font-style: italic; }
+
+/* the preset row, and what it has just done */
+.preset-info { font-size: 11.5px; color: var(--text-dim); margin: 6px 0 8px; min-height: 1.2em; }
+.preset-info .rec-note { color: var(--accent-2); }
+.segmented button.recommended:not(.active) { box-shadow: inset 0 -2px 0 var(--accent); }
+.segmented button.base { color: var(--text); background: var(--bg-elev-2); }
+
+.linkish {
+  background: none; border: 0; padding: 0 0 0 6px; margin: 0; cursor: pointer;
+  color: var(--accent-2); font: inherit; text-decoration: underline dotted;
+}
+
+/* what the app detected, said out loud instead of hidden in a <select> */
+.detect { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 11.5px; margin-top: 4px; }
+.detect .good { color: var(--ok); }
+.detect .warn { color: var(--warn); }
+.detect .bad { color: var(--danger); }
+.detect .good::before, .detect .warn::before, .detect .bad::before { margin-right: 5px; }
+.detect .good::before { content: "✓"; }
+.detect .warn::before { content: "•"; }
+.detect .bad::before { content: "✗"; }
+.btn.tiny {
+  padding: 2px 7px; font-size: 11px; font-family: var(--mono);
+  max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.setting .ctl.region { display: flex; gap: 8px; align-items: center; }
+.setting .ctl.region select { flex: 0 0 auto; }
+.setting .ctl.region input.region-value { flex: 1 1 auto; }
+.setting .ctl .val.zero { color: var(--warn); font-weight: 600; }
+
+/* the ripper-mod prompt in the Bundle card */
+.callout {
+  margin: 10px 0 4px; padding: 10px 12px; border-radius: var(--radius-s);
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--line));
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  font-size: 12.5px; display: flex; flex-direction: column; align-items: flex-start; gap: 8px;
+}
+.callout .muted { font-size: 11.5px; }
+.callout .good { color: var(--ok); }
+.callout .bad { color: var(--danger); }
+

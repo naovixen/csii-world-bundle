@@ -1,0 +1,95 @@
+/* The map: one drawing surface, the region's patch and the fast-travel pins on top of it. */
+
+/* ---- the map (E3) -------------------------------------------------------------------------- */
+/* One drawing surface, two things on top of it: the region's patch, and the fast-travel points.
+   Square, because the picture is — the bundle's rasters are, and so is the region the build
+   keeps. Everything over it is positioned in PERCENTAGES, so the box can be any size and the
+   georeference maths never has to know how big it ended up. */
+.mapview {
+  position: relative; width: 100%; aspect-ratio: 1 / 1; margin: 8px 0;
+  border: 1px solid var(--line-strong); border-radius: var(--radius-s);
+  background: var(--bg); overflow: hidden; touch-action: none; cursor: crosshair;
+}
+.mapview img { display: block; width: 100%; height: 100%; object-fit: cover; user-select: none; }
+.mapview svg { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.map-pins { position: absolute; inset: 0; }
+.map-note {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  padding: 0 22px; text-align: center; font-size: 12px; color: var(--text-faint);
+}
+.mapview.ready .map-note { display: none; }
+.mapview:not(.ready) { cursor: default; }
+
+.region-shape { fill: color-mix(in srgb, var(--accent) 16%, transparent); stroke: var(--accent); stroke-width: 0.4; }
+.map-pin {
+  position: absolute; transform: translate(-50%, -50%); cursor: grab; touch-action: none;
+  display: flex; align-items: center; justify-content: center;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.5);
+}
+.map-pin.dragging { cursor: grabbing; }
+/* A focused marker has to be findable on a picture of a city — the ring is the same one every
+   focused control here gets, and the arrow keys move whatever is wearing it. */
+.map-pin:focus { outline: none; }
+.map-pin:focus-visible, .map-pin:focus {
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 55%, transparent), 0 1px 4px rgba(0,0,0,0.5);
+  z-index: 2;
+}
+.poi-n { cursor: pointer; }
+.region-centre { width: 15px; height: 15px; border-radius: 50%; background: var(--accent); border: 2px solid #fff; }
+
+/* THE TIP IS THE PLACE. A region's centre is a dot and sits ON its coordinate; a fast-travel pin
+   is a teardrop and must POINT at one, which is a different anchor and was the wrong one until
+   2026-08-20 — the pin's tip sat about 7 px west and 21 px south of the point it named.
+
+   Why it went wrong is worth writing down, because it will happen to the next teardrop too. The
+   pin was one element carrying both `rotate: -45deg` and `transform: translate(-50%, -70%)`, and
+   CSS composes those as rotate THEN transform — so the offset was itself rotated 45°, sending
+   the pin diagonally away from its own anchor. Percentages of a box are also the wrong units for
+   this: what has to land on the coordinate is one CORNER of a rotated square, which is
+   `s x sqrt(2) / 2` below the square's centre and not any fraction of its height.
+
+   So the pin is two elements. The WRAPPER is unrotated, sized to cover the shape (which is what
+   takes the drag, the focus and the click), and `translate(-50%, -100%)` puts its BOTTOM CENTRE
+   on the coordinate. The teardrop inside is offset by MARGINS, which are applied before any
+   transform and are therefore not rotated: half its width to the left, and lifted by the
+   0.2071 x s that the rotation drops its corner past its own box. */
+.poi-pin {
+  width: 30px; height: 30px; transform: translate(-50%, -100%);
+  background: none; border: 0; box-shadow: none;
+}
+.poi-pin-body {
+  position: absolute; left: 50%; bottom: 0;
+  width: 20px; height: 20px; margin-left: -10px; margin-bottom: 4.14px;
+  display: flex; align-items: center; justify-content: center; line-height: 1;
+  border-radius: 50% 50% 50% 0; rotate: -45deg;
+  background: var(--warn); border: 2px solid #fff; color: #23272e;
+  font-size: 10px; font-weight: 700;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.5);
+}
+.poi-pin-body > span { rotate: 45deg; }            /* upright, inside a teardrop that is not */
+.poi-pin:focus-visible, .poi-pin:focus { box-shadow: none; }
+.poi-pin:focus-visible .poi-pin-body, .poi-pin:focus .poi-pin-body {
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 55%, transparent), 0 1px 4px rgba(0,0,0,0.5);
+}
+
+.region-body, .poi-body { margin-top: 4px; }
+.region-readout { font-size: 12px; color: var(--text-dim); font-variant-numeric: tabular-nums; }
+.region-radius { display: flex; align-items: center; gap: 10px; }
+.region-radius .k { font-size: 12px; color: var(--text-dim); white-space: nowrap; }
+.region-radius input[type="range"] { flex: 1; }
+.region-radius .val { font-size: 12px; font-variant-numeric: tabular-nums; min-width: 52px; text-align: right; }
+
+.poi-list { display: flex; flex-direction: column; gap: 4px; }
+.poi-row { display: flex; align-items: center; gap: 8px; }
+.poi-n {
+  width: 20px; height: 20px; flex: none; border-radius: 50%; background: var(--warn); color: #23272e;
+  font-size: 10px; font-weight: 700; display: flex; align-items: center; justify-content: center;
+}
+.poi-row .poi-name { flex: 1; min-width: 0; }
+.poi-at { font-size: 11.5px; color: var(--text-faint); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.poi-actions { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
+.poi-suggest { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 8px; }
+.poi-suggest-k { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-faint); }
+.poi-offer { cursor: pointer; color: var(--text-dim); }
+.poi-offer:hover { border-color: var(--accent); color: var(--text); }
+

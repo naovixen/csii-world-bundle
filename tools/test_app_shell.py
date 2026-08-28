@@ -797,8 +797,29 @@ def test_server(tmp):
             status == 200 and server.token in page and "app.js" in page,
             "GET / serves the UI with the token injected",
         )
-        status, _ = client.call("GET", "/static/app.js", token=False)
-        check(status == 200, "static app.js served")
+        # every module the page imports, not just the entry: a missing one is a blank screen
+        served = {}
+        for name in (
+            "app.js",
+            "core.js",
+            "settings.js",
+            "cost.js",
+            "detected.js",
+            "controls.js",
+            "map.js",
+            "mapcontrols.js",
+            "progress.js",
+            "app.css",
+            "settings.css",
+            "cost.css",
+            "map.css",
+            "progress.css",
+        ):
+            served[name] = client.call("GET", "/static/" + name, token=False)[0]
+        check(
+            all(v == 200 for v in served.values()),
+            f"every static module is served: {sorted(k for k, v in served.items() if v != 200)}",
+        )
         status, _ = client.call("GET", "/static/../server.py", token=False)
         check(status == 404, "static path traversal refused")
         status, _ = client.call("GET", "/api/state", token=False)

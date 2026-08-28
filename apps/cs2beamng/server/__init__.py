@@ -10,7 +10,7 @@ ephemeral port, so it is the same on Windows, Linux and macOS and needs no build
 Endpoints (all under the token — see below):
 
     GET  /                        the UI (index.html with the token injected)
-    GET  /static/<file>           app.css, app.js
+    GET  /static/<file>           the UI's ES modules and style sheets
     GET  /events?since=<seq>      SSE: `state` every 0.5 s (no log), `log` deltas, `bye` on quit
     GET  /api/state               the runner state incl. the log (polling fallback)
     GET  /api/settings            {values, schema, sections, basics, presets, problems, detected, canBrowse}

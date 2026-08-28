@@ -1,0 +1,140 @@
+/* The settings screen: a control, a subset drawn under its parent, the basics strip, the
+   sidebar, the content pane and the reference page. */
+
+/* ---- settings ----------------------------------------------------------------------------- */
+.segmented { display: inline-flex; border: 1px solid var(--line-strong); border-radius: var(--radius-s); overflow: hidden; }
+.segmented button {
+  appearance: none; border: 0; background: transparent; color: var(--text-dim);
+  padding: 5px 12px; cursor: pointer; font-weight: 600; font-size: 12px;
+  border-right: 1px solid var(--line-strong);
+}
+.segmented button:last-child { border-right: 0; }
+.segmented button.active { background: var(--accent); color: #fff; }
+.segmented button.custom { color: var(--warn); }
+.problems { margin: 6px 0 10px; padding: 8px 12px; border-radius: var(--radius-s); border: 1px solid color-mix(in srgb, var(--danger) 45%, var(--line)); background: color-mix(in srgb, var(--danger) 10%, transparent); font-size: 12.5px; }
+.problems div::before { content: "! "; color: var(--danger); font-weight: 700; }
+
+/* One control: its name, its control, and one line saying what it does. Nothing folds. */
+.setting { display: grid; grid-template-columns: 1fr auto; gap: 2px 10px; align-items: center; padding: 4px 0; }
+.setting.wide { grid-column: 1 / -1; grid-template-columns: 1fr; }
+.setting .name { font-size: 13px; }
+.setting .help { grid-column: 1 / -1; font-size: 11.5px; color: var(--text-faint); }
+.setting .ctl { display: flex; align-items: center; gap: 8px; min-width: 120px; justify-content: flex-end; }
+.setting .ctl input[type="number"] { width: 92px; text-align: right; }
+.setting .ctl select { width: auto; }
+.setting .ctl .val { min-width: 42px; text-align: right; font-variant-numeric: tabular-nums; color: var(--text-dim); font-size: 12px; }
+.setting .ctl input[type="range"] { width: 140px; }
+.setting.wide .ctl { justify-content: stretch; }
+.setting.wide .ctl input[type="text"] { width: 100%; font-family: var(--mono); font-size: 12.5px; }
+.setting.disabled { opacity: 0.45; }
+.setting .help:empty { display: none; }
+.setting .ctl .unit { font-size: 11.5px; color: var(--text-faint); min-width: 3.4em; }
+
+/* A setting that only means anything while another is on is drawn UNDER it. The rule line down
+   the left is the answer to "which of these belong to which", given by the layout instead of by
+   reading every description in the section. */
+.setting.subset { padding-left: 20px; position: relative; }
+.setting.subset::before {
+  content: ""; position: absolute; left: 7px; top: 4px; bottom: 4px;
+  width: 2px; border-radius: 1px; background: var(--line-strong);
+}
+.pane-body > .setting.subset { border-bottom-color: transparent; }
+.pane-body > .setting.subset + .setting:not(.subset) { border-top: 1px solid var(--line); }
+
+/* A switch reads as "[x] Thing", never as "Thing ......... [x]", so a section that is nothing
+   but switches lays out as the checklist it is. */
+.setting.switchrow { grid-template-columns: auto 1fr; align-items: center; gap: 0 9px; padding: 6px 0; }
+.setting.switchrow .ctl { order: -1; min-width: 0; justify-content: flex-start; }
+.setting.switchrow .name { font-size: 13px; }
+.setting.switchrow .help { grid-column: 2 / -1; }
+.setting.switchrow input[type="checkbox"] { width: 15px; height: 15px; accent-color: var(--accent); }
+
+/* ---- the basics strip -------------------------------------------------------------------- */
+/* The six things a person must actually supply, above the settings and never inside a section:
+   a full-width row each, with the two short names sharing a line. */
+#levelBasics .setting { grid-template-columns: 1fr; gap: 2px; padding: 7px 0; border-bottom: 1px solid var(--line); }
+#levelBasics .setting:last-child { border-bottom: 0; }
+#levelBasics .setting .name { font-size: 13px; color: var(--text-dim); font-weight: 500; }
+#levelBasics .setting .ctl { justify-content: stretch; }
+#levelBasics .setting .ctl input[type="text"] { width: 100%; }
+#levelBasics .setting.wide .ctl input[type="text"] { font-family: var(--mono); font-size: 12.5px; }
+.basics-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 0 16px; }
+.basics-pair > .setting { border-bottom: 1px solid var(--line); }
+@media (max-width: 1000px) { .basics-pair { grid-template-columns: 1fr; } }
+
+/* ---- the settings sidebar ------------------------------------------------------------------ */
+/* A sidebar rather than tabs because this list is going to grow: a tab row has a fixed width, so
+   every new section makes every existing label smaller. A column costs nothing to extend. */
+.settings-body { display: grid; grid-template-columns: 178px minmax(0, 1fr); gap: 0 16px; align-items: start; }
+.settings-nav { display: flex; flex-direction: column; gap: 4px; border-right: 1px solid var(--line); padding-right: 14px; position: sticky; top: 68px; }
+.nav-search { width: 100%; background: var(--bg); border: 1px solid var(--line-strong); border-radius: var(--radius-s); padding: 6px 9px; outline: none; font-size: 12.5px; margin-bottom: 4px; }
+.nav-search:focus { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent); }
+.nav-list { display: flex; flex-direction: column; gap: 1px; }
+.nav-group { font-size: 10.5px; font-weight: 650; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-faint); padding: 10px 6px 3px; }
+.nav-item {
+  appearance: none; cursor: pointer; text-align: left;
+  display: flex; align-items: center; gap: 7px;
+  border: 1px solid transparent; background: transparent; color: var(--text-dim);
+  padding: 6px 9px; border-radius: var(--radius-s); font-size: 13px; font-weight: 550;
+}
+.nav-item:hover { background: var(--bg-elev-2); color: var(--text); }
+.nav-item.active { background: color-mix(in srgb, var(--accent) 16%, transparent); border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); color: var(--text); }
+.nav-item .nav-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nav-badge {
+  flex: 0 0 auto; min-width: 17px; height: 17px; padding: 0 5px; border-radius: 999px;
+  background: var(--accent); color: #fff; font-size: 10.5px; font-weight: 700;
+  display: inline-flex; align-items: center; justify-content: center; font-variant-numeric: tabular-nums;
+}
+.nav-warn {
+  flex: 0 0 auto; width: 17px; height: 17px; border-radius: 50%;
+  background: var(--danger); color: #fff; font-size: 11px; font-weight: 800;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.nav-foot { margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--line); }
+.nav-reference { color: var(--accent-2); font-weight: 500; font-size: 12px; }
+.nav-reference::after { content: " ↗"; }
+
+/* Under a thousand pixels the whole layout is one column and the nav column has nowhere to go,
+   so it degrades to a row of chips above the content - the tab layout, as the fallback rather
+   than the design. */
+@media (max-width: 1000px) {
+  .settings-body { grid-template-columns: 1fr; gap: 10px; }
+  .settings-nav { flex-direction: row; flex-wrap: wrap; align-items: center; border-right: 0; border-bottom: 1px solid var(--line); padding: 0 0 10px; position: static; }
+  .nav-search { width: auto; flex: 1 1 160px; margin: 0; }
+  .nav-list { flex-direction: row; flex-wrap: wrap; gap: 4px; }
+  .nav-group { padding: 0 4px 0 8px; align-self: center; }
+  .nav-item { border: 1px solid var(--line); }
+  .nav-foot { margin: 0; padding: 0; border: 0; }
+}
+
+/* ---- the content pane ---------------------------------------------------------------------- */
+/* A section is a heading and then a flat list. No accordions inside a section, ever: that was
+   the last redesign's mistake and it does not come back with a sidebar attached. */
+.settings-pane { min-width: 0; max-height: 62vh; overflow-y: auto; padding-right: 4px; }
+.pane-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; padding: 0 0 4px; }
+.pane-head h3 { margin: 0; font-size: 15px; font-weight: 650; }
+.pane-tagline { font-size: 12px; color: var(--text-faint); }
+.pane-note { margin: 4px 0 10px; font-size: 11.5px; color: var(--text-faint); line-height: 1.5; }
+.block-title { margin: 16px 0 2px; font-size: 11.5px; font-weight: 650; text-transform: uppercase; letter-spacing: 0.07em; color: var(--text-faint); }
+.block-title .linkish { text-transform: none; letter-spacing: 0; font-size: 12px; }
+.pane-body { display: grid; grid-template-columns: 1fr; gap: 0; padding: 2px 0 4px; }
+.pane-body > .setting { padding: 8px 0; border-bottom: 1px solid var(--line); }
+/* after the shorthand above, or it resets the indent the rule line is drawn against */
+.pane-body > .setting.subset { padding-left: 22px; }
+.pane-body > .setting:last-child { border-bottom: 0; }
+.pane-body.checks { grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 0 16px; align-items: start; }
+.pane-body.checks > .setting { align-self: start; }
+.setting .ctl.checkset { flex-wrap: wrap; justify-content: flex-start; gap: 6px 16px; }
+
+/* ---- the reference pane --------------------------------------------------------------------- */
+/* Where the measured arguments live now: one page a person can read and search, instead of
+   seventy-nine popovers. Built from the same metadata the controls are, so it cannot drift. */
+.ref-item { padding: 9px 0; border-bottom: 1px solid var(--line); }
+.ref-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.ref-key { font-family: var(--mono); font-size: 12px; color: var(--accent-2); }
+.ref-label { font-size: 13px; font-weight: 600; }
+.ref-default { margin-left: auto; font-size: 11px; color: var(--text-faint); font-variant-numeric: tabular-nums; }
+.ref-blurb { font-size: 12.5px; color: var(--text-dim); margin-top: 2px; }
+.ref-driven { font-size: 11.5px; color: var(--warn); margin-top: 3px; }
+.ref-detail { font-size: 11.5px; color: var(--text-faint); line-height: 1.55; margin-top: 5px; padding-left: 10px; border-left: 2px solid var(--line-strong); }
+
