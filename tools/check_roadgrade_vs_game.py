@@ -24,6 +24,11 @@ per sample without any tuned constant. That is the predicate.
     python tools/check_roadgrade_vs_game.py [--base] [--limit N]
 
 Reads only the shipped bundle; no built level, no Blender. It is a probe, not a gate.
+
+DECLARED SINGLE-FILE EXCEPTION to the 400-line ceiling (Phase 4, 2026-08-28): the nine
+numbered sections are one linear derivation, each consuming the previous one's rasters, and
+splitting that narrative across modules would scatter a measurement a reader follows top to
+bottom. The file rides the shrink-only allowlist.
 """
 
 import math

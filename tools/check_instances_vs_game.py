@@ -23,6 +23,11 @@ of every approximation that remains, and exits non-zero if any exact question di
 
 Needs a built level, so it is a probe rather than a gate; `tools/test_a3_objects.py` is the unit
 gate for the rules themselves.
+
+DECLARED SINGLE-FILE EXCEPTION to the 400-line ceiling (Phase 4, 2026-08-28): this is one
+linear measurement — read the level back, ask the five questions, print the score — and
+splitting a probe's narrative across modules scatters the derivation a reader follows top to
+bottom. Its functions stay under the 60-line ceiling; the file rides the shrink-only allowlist.
 """
 
 import collections
