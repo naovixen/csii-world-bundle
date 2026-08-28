@@ -90,7 +90,6 @@ func Systems/TerrainRipSystem.cs::FillQuad
 func Systems/TerrainRipSystem.cs::OnCreate
 func Systems/TerrainRipSystem.cs::RipDistricts
 func Systems/TerrainRipSystem.cs::RipSurfaceAreas
-func Systems/TerrainRipSystem.cs::RipTerrain
 func Systems/TerrainRipSystem.cs::RoundaboutSecondPair
 func Systems/TerrainRipSystem.cs::StampClipAreas
 func Systems/TerrainRipSystem.cs::StampCutout

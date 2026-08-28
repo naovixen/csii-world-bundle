@@ -240,207 +240,351 @@ namespace Carto.Systems
             string terrainDirectory = IOUtils.CombinePath(outputDirectory, "terrain");
             if (!Directory.Exists(terrainDirectory)) Directory.CreateDirectory(terrainDirectory);
 
-            // ---- 1. Final heights: the cascade readback, waited for so the last road edit is in.
-            //
             TerrainHeightData heightData = Instance.Terrain.GetHeightData(waitForPending: true);
-            if (!heightData.isCreated || (heightData.resolution.x <= 2))
+            TerrainCapture capture = CaptureHeights(heightData, report);
+            if (capture == null)
             {
                 return "Terrain rip failed: no height data is resident (is a city loaded?).";
             }
 
-            int width = heightData.resolution.x;
-            int height = heightData.resolution.z;
-            ushort[] heightSamples = heightData.heights.ToArray();
-            float3 scale = heightData.scale;
-            float3 offset = heightData.offset;
-
-            report.AppendLine($"Terrain: {width}x{height} height samples, cell {1f / scale.x:F3} m, "
-                            + $"height range {-offset.y:F1}..{(65535f / scale.y) - offset.y:F1} m");
-
-            // ---- 2. The roadbed mask, stamped from the same net segments the game flattens with.
-            // Part of the ground-textures selection: the mask exists to tell a consumer which
-            // ground texture to show under roads.
-            byte[] surfaceIndex = null;
-            if (ground)
-            {
-                surfaceIndex = new byte[width * height];
-                _edgesStamped = _nodesStamped = _orphansStamped = _skippedForm = _skippedNoFlatten = _skippedWaterway = 0;
-                StampRoadbed(surfaceIndex, heightData);
-
-                int roadbedCells = 0;
-                foreach (byte cell in surfaceIndex) if (cell != 0) roadbedCells++;
-                report.AppendLine($"Roadbed: {_edgesStamped} edge(s), {_nodesStamped} node strip(s), {_orphansStamped} orphan cap(s) stamped; "
-                                + $"{roadbedCells} cell(s) = {roadbedCells * 100.0 / surfaceIndex.Length:F1}% of the map");
-                report.AppendLine($"  skipped {_skippedNoFlatten} edge(s) whose prefab does not flatten terrain, "
-                                + $"{_skippedForm} elevated/tunnel composition(s) (their ground is not pulled to the road), "
-                                + $"{_skippedWaterway} waterway composition(s) (canal beds are shifted down, not roadbed)");
-            }
-
-            // ---- 2b. The clip volumes, collected from the game's clip sections. The game never
-            // carves these holes into the heightmap: every frame the RoadClip stencil pass
-            // discards the terrain pixels covering tunnel portals and sunken trenches, so the
-            // readback legitimately contains ground that blocks them. These are the volumes that
-            // pass tests against — a consumer intersects them with the heightmap itself.
-            //
+            if (ground) CaptureRoadbed(capture, heightData, report);
             _cutEdges = _cutNodes = _cutOrphans = _cutAreas = _cutRoundaboutTransitions = 0;
+            if (clips) CollectClipVolumes(heightData, report);
+            if (water) CaptureWater(capture, heightData, report);
+            if (ground) CaptureGround(capture, terrainDirectory, report);
+            if (heights) CaptureBackdrop(capture, report);
+            if (heights) CaptureFine(capture, report);
+            RipAreaLayers(outputDirectory, terrainDirectory, areas, report);
 
-            if (clips)
+            SortedDictionary<string, object> rasters = BuildRasters(capture, terrainDirectory, heights);
+            WriteTerrain(capture, rasters, outputDirectory, terrainDirectory, heights, ground, clips, report);
+            if (heights) DeclareFineGap(capture, outputDirectory, report);
+            ReleaseFine();
+
+            report.AppendLine($"Output: {terrainDirectory}");
+            _log.Info(report.ToString());
+            return report.ToString();
+        }
+
+        /// <summary>
+        /// Everything one terrain rip captured on the main thread, for the writer task to encode.
+        /// </summary>
+        /// <remarks>
+        /// A record rather than a parameter list because section 5 needs about fifteen of these
+        /// at once, and a fifteen-argument writer is a worse thing than the god-method it came
+        /// out of. Every field is either a raster the writer encodes or a block that rides
+        /// <c>rasters.json</c>; nothing here is read back by the capture stages, so the flow is
+        /// one way and the order the stages run in is the order they are called.
+        /// </remarks>
+        private sealed class TerrainCapture
+        {
+            /// <summary>Base heightmap resolution, in samples.</summary>
+            public int Width, Height;
+
+            /// <summary>The cascade's world scale and offset, for the geo-reference.</summary>
+            public float3 Scale, Offset;
+
+            /// <summary>The final, road-flattened ground (§8).</summary>
+            public ushort[] HeightSamples;
+
+            /// <summary>The roadbed mask, or null when ground was deselected.</summary>
+            public byte[] SurfaceIndex;
+
+            /// <summary>The water SURFACE LEVEL grid, or null.</summary>
+            public ushort[] WaterLevel;
+
+            /// <summary>The theme's ground textures, id → relative path.</summary>
+            public Dictionary<string, string> SurfaceTextures;
+
+            /// <summary>The splat weight maps the terrain shader samples, or null.</summary>
+            public PendingTexture SplatPixels, UserSplatPixels;
+
+            /// <summary>The backdrop terrain beyond the playable border, or null.</summary>
+            public ushort[] WorldHeights;
+
+            /// <summary>Backdrop resolution, in samples.</summary>
+            public int WorldWidth, WorldHeight;
+
+            /// <summary>The near-camera fine cascade at 1.75 m, or null.</summary>
+            public ushort[] FineHeights;
+
+            /// <summary>Fine cascade resolution, in samples.</summary>
+            public int FineWidth, FineHeight;
+
+            /// <summary>The blocks that ride <c>rasters.json</c>, each null when not captured.</summary>
+            public Dictionary<string, object> SplatBlock, UserSplatBlock, WorldBlock, WaterBlock,
+                                              TilingBlock, FineBlock;
+        }
+
+        /// <summary>
+        /// Section 1 — final heights: the cascade readback, waited for so the last road edit is in.
+        /// </summary>
+        /// <param name="heightData">The cascade readback.</param>
+        /// <param name="report">The report to note the resolution in.</param>
+        /// <returns>The capture, or null when no height data is resident.</returns>
+        private static TerrainCapture CaptureHeights(TerrainHeightData heightData, StringBuilder report)
+        {
+            if (!heightData.isCreated || (heightData.resolution.x <= 2)) return null;
+
+            TerrainCapture capture = new TerrainCapture
             {
-                // The walk now *collects* the clip volumes instead of rasterising them (contract
-                // §8c). `cutout.png` used to be written here: the intersection of these volumes
-                // with this one heightmap, at 3.5 m, from directly above. It was retired because
-                // that intersection cannot express a volume open at one height and closed at
-                // another, and is stale the moment a consumer edits terrain — and there was no
-                // consumer of it in the field to keep it for. Passing a null mask skips the
-                // rasterisation entirely.
-                //
-                _clipVolumes = new List<Dictionary<string, object>>();
-                StampCutout(null, heightData);
+                Width = heightData.resolution.x,
+                Height = heightData.resolution.z,
+                HeightSamples = heightData.heights.ToArray(),
+                Scale = heightData.scale,
+                Offset = heightData.offset
+            };
 
-                report.AppendLine($"Clip: {_cutEdges} edge(s), {_cutNodes} node strip(s), "
-                                + $"{_cutOrphans} orphan cap(s), {_cutAreas} clip area(s) collected");
-                if (_cutRoundaboutTransitions > 0)
-                    report.AppendLine($"  {_cutRoundaboutTransitions} roundabout node(s) took AddNode's shed composition "
-                                    + "state and trimmed ring for their second strip pair");
-            }
+            report.AppendLine($"Terrain: {capture.Width}x{capture.Height} height samples, cell {1f / capture.Scale.x:F3} m, "
+                            + $"height range {-capture.Offset.y:F1}..{(65535f / capture.Scale.y) - capture.Offset.y:F1} m");
+            return capture;
+        }
 
-            // ---- 3. Water surface LEVEL, built on the sim grid and resampled onto the terrain
-            // grid. Depth was resampled directly once, and the river climbed its gorge: bilinear
-            // depth from the ~28 m sim grid, added to the much finer ground, reads a mid-channel
-            // depth halfway up a cliff face. Level (ground at the sim cell + depth) is what the
-            // water surface actually is, and it is smooth across the shoreline in the way depth
-            // is not.
-            //
-            ushort[] waterLevel = null;
-            if (water)
+        /// <summary>
+        /// Section 2 — the roadbed mask, stamped from the same net segments the game flattens
+        /// with. Part of the ground-textures selection: the mask exists to tell a consumer which
+        /// ground texture to show under roads.
+        /// </summary>
+        /// <param name="capture">The capture to fill.</param>
+        /// <param name="heightData">The cascade readback.</param>
+        /// <param name="report">The report to note the stamp counts in.</param>
+        private void CaptureRoadbed(TerrainCapture capture, TerrainHeightData heightData, StringBuilder report)
+        {
+            byte[] surfaceIndex = new byte[capture.Width * capture.Height];
+            _edgesStamped = _nodesStamped = _orphansStamped = _skippedForm = _skippedNoFlatten = _skippedWaterway = 0;
+            StampRoadbed(surfaceIndex, heightData);
+            capture.SurfaceIndex = surfaceIndex;
+
+            int roadbedCells = 0;
+            foreach (byte cell in surfaceIndex) if (cell != 0) roadbedCells++;
+            report.AppendLine($"Roadbed: {_edgesStamped} edge(s), {_nodesStamped} node strip(s), {_orphansStamped} orphan cap(s) stamped; "
+                            + $"{roadbedCells} cell(s) = {roadbedCells * 100.0 / surfaceIndex.Length:F1}% of the map");
+            report.AppendLine($"  skipped {_skippedNoFlatten} edge(s) whose prefab does not flatten terrain, "
+                            + $"{_skippedForm} elevated/tunnel composition(s) (their ground is not pulled to the road), "
+                            + $"{_skippedWaterway} waterway composition(s) (canal beds are shifted down, not roadbed)");
+        }
+
+        /// <summary>
+        /// Section 2b — the clip volumes, collected from the game's clip sections. The game never
+        /// carves these holes into the heightmap: every frame the RoadClip stencil pass discards
+        /// the terrain pixels covering tunnel portals and sunken trenches, so the readback
+        /// legitimately contains ground that blocks them. These are the volumes that pass tests
+        /// against — a consumer intersects them with the heightmap itself.
+        /// </summary>
+        /// <remarks>
+        /// The walk now <i>collects</i> the clip volumes instead of rasterising them (contract
+        /// §8c). <c>cutout.png</c> used to be written here: the intersection of these volumes with
+        /// this one heightmap, at 3.5 m, from directly above. It was retired because that
+        /// intersection cannot express a volume open at one height and closed at another, and is
+        /// stale the moment a consumer edits terrain — and there was no consumer of it in the
+        /// field to keep it for. Passing a null mask skips the rasterisation entirely.
+        /// </remarks>
+        /// <param name="heightData">The cascade readback.</param>
+        /// <param name="report">The report to note the collected counts in.</param>
+        private void CollectClipVolumes(TerrainHeightData heightData, StringBuilder report)
+        {
+            _clipVolumes = new List<Dictionary<string, object>>();
+            StampCutout(null, heightData);
+
+            report.AppendLine($"Clip: {_cutEdges} edge(s), {_cutNodes} node strip(s), "
+                            + $"{_cutOrphans} orphan cap(s), {_cutAreas} clip area(s) collected");
+            if (_cutRoundaboutTransitions > 0)
+                report.AppendLine($"  {_cutRoundaboutTransitions} roundabout node(s) took AddNode's shed composition "
+                                + "state and trimmed ring for their second strip pair");
+        }
+
+        /// <summary>
+        /// Sections 3 and 3a — the water surface LEVEL, built on the sim grid and resampled onto
+        /// the terrain grid, plus the appearance parameters the level grid alone cannot say.
+        /// </summary>
+        /// <remarks>
+        /// Depth was resampled directly once, and the river climbed its gorge: bilinear depth from
+        /// the ~28 m sim grid, added to the much finer ground, reads a mid-channel depth halfway up
+        /// a cliff face. Level (ground at the sim cell + depth) is what the water surface actually
+        /// is, and it is smooth across the shoreline in the way depth is not.
+        /// </remarks>
+        /// <param name="capture">The capture to fill.</param>
+        /// <param name="heightData">The cascade readback.</param>
+        /// <param name="report">The report to note the wet-cell count in.</param>
+        private void CaptureWater(TerrainCapture capture, TerrainHeightData heightData, StringBuilder report)
+        {
+            capture.WaterLevel = BuildWaterLevel(heightData, out int wetCells, out float maxDepth);
+            report.AppendLine((capture.WaterLevel != null)
+                ? $"Water: {wetCells} wet cell(s), max depth {maxDepth:F1} m (surface level grid, heightmap encoding)"
+                : "Water: no simulation data resident; layer omitted");
+
+            // Colour, absorption, smoothness, sea level. One managed prefab read.
+            capture.WaterBlock = CaptureWaterSettings(report);
+        }
+
+        /// <summary>
+        /// Sections 4, 4a and 4a2 — the theme's ground textures, the game's own splat weight maps,
+        /// and the tiling rates.
+        /// </summary>
+        /// <remarks>
+        /// Ripping the splatmap replaces the consumer's per-cell classification — the "square
+        /// splotches" — with the game's smooth per-pixel mix, painted surfaces and noise included.
+        /// GPU readback happens here on the main thread; the PNG encode joins the writer task.
+        /// The tiling parameters are the metres-per-repeat the theme authors per layer, without
+        /// which every consumer guesses (the §39 lesson, on terrain).
+        /// </remarks>
+        /// <param name="capture">The capture to fill.</param>
+        /// <param name="terrainDirectory">The bundle's terrain directory.</param>
+        /// <param name="report">The report to note the ground layers in.</param>
+        private void CaptureGround(TerrainCapture capture, string terrainDirectory, StringBuilder report)
+        {
+            capture.SurfaceTextures = CaptureSurfaceTextures(terrainDirectory, report);
+            capture.SplatPixels = CaptureSplatmap(capture.SurfaceTextures, out Dictionary<string, object> splatBlock, report);
+            capture.SplatBlock = splatBlock;
+            capture.UserSplatPixels = CaptureUserSplatmap(out Dictionary<string, object> userSplatBlock, report);
+            capture.UserSplatBlock = userSplatBlock;
+            capture.TilingBlock = CaptureTerrainTiling(report);
+        }
+
+        /// <summary>
+        /// Section 4b — the backdrop terrain that fills the horizon beyond the playable border.
+        /// </summary>
+        /// <param name="capture">The capture to fill.</param>
+        /// <param name="report">The report to note the backdrop in.</param>
+        private void CaptureBackdrop(TerrainCapture capture, StringBuilder report)
+        {
+            capture.WorldHeights = CaptureWorldHeightmap(out Dictionary<string, object> worldBlock,
+                                                         out int worldWidth, out int worldHeight, report);
+            capture.WorldBlock = worldBlock;
+            capture.WorldWidth = worldWidth;
+            capture.WorldHeight = worldHeight;
+        }
+
+        /// <summary>
+        /// Section 4c — the fine cascade capture (<c>TerrainRipSystem.FineCascade.cs</c>), if the
+        /// pipeline ran it: the ground the game draws near the camera, at 1.75 m. Written beside
+        /// the base heightmap; the block rides <c>rasters.json</c> like worldTerrain's.
+        /// </summary>
+        /// <param name="capture">The capture to fill.</param>
+        /// <param name="report">The report to note the fine layer in.</param>
+        private void CaptureFine(TerrainCapture capture, StringBuilder report)
+        {
+            if (TryGetFineHeights(out ushort[] fineHeights, out int fineWidth, out int fineHeight,
+                                  out double fineCell, out double2 _))
             {
-                waterLevel = BuildWaterLevel(heightData, out int wetCells, out float maxDepth);
-                report.AppendLine((waterLevel != null)
-                    ? $"Water: {wetCells} wet cell(s), max depth {maxDepth:F1} m (surface level grid, heightmap encoding)"
-                    : "Water: no simulation data resident; layer omitted");
-            }
-
-            // ---- 3a. The water appearance parameters — what the level grid alone cannot say:
-            // colour, absorption, smoothness, sea level. One managed prefab read.
-            //
-            Dictionary<string, object> waterBlock = water ? CaptureWaterSettings(report) : null;
-
-            // ---- 4. The theme's ground textures, read off the live global bindings.
-            //
-            Dictionary<string, string> surfaceTextures = ground ? CaptureSurfaceTextures(terrainDirectory, report) : null;
-
-            // ---- 4a. The game's own ground blend: the splat weight map the terrain shader
-            // samples per pixel. Ripping it replaces the consumer's per-cell classification —
-            // the "square splotches" — with the game's smooth per-pixel mix, painted surfaces
-            // and noise included. GPU readback happens here on the main thread; the PNG encode
-            // joins the writer task below.
-            //
-            PendingTexture splatPixels = null, userSplatPixels = null;
-            Dictionary<string, object> splatBlock = null, userSplatBlock = null;
-            if (ground)
-            {
-                splatPixels = CaptureSplatmap(surfaceTextures, out splatBlock, report);
-                userSplatPixels = CaptureUserSplatmap(out userSplatBlock, report);
-            }
-
-            // ---- 4a2. The ground tiling parameters — the metres-per-repeat the theme authors
-            // per layer, without which every consumer guesses (the §39 lesson, on terrain).
-            //
-            Dictionary<string, object> tilingBlock = ground ? CaptureTerrainTiling(report) : null;
-
-            // ---- 4b. The backdrop terrain that fills the horizon beyond the playable border.
-            //
-            ushort[] worldHeights = null;
-            Dictionary<string, object> worldBlock = null;
-            int worldWidth = 0, worldHeight = 0;
-            if (heights)
-            {
-                worldHeights = CaptureWorldHeightmap(out worldBlock, out worldWidth, out worldHeight, report);
-            }
-
-            // ---- 4c. The fine cascade capture (TerrainRipSystem.FineCascade.cs), if the pipeline
-            // ran it: the ground the game draws near the camera, at 1.75 m. Written beside the
-            // base heightmap; the block rides rasters.json like worldTerrain's.
-            //
-            ushort[] fineHeights = null;
-            int fineWidth = 0, fineHeight = 0;
-            Dictionary<string, object> fineBlock = null;
-            if (heights && TryGetFineHeights(out fineHeights, out fineWidth, out fineHeight, out double fineCell, out double2 _))
-            {
-                fineBlock = FineRastersBlock();
+                capture.FineHeights = fineHeights;
+                capture.FineWidth = fineWidth;
+                capture.FineHeight = fineHeight;
+                capture.FineBlock = FineRastersBlock();
                 report.AppendLine(_fineReport ?? $"Fine terrain: {fineWidth}x{fineHeight} @ {fineCell:F3} m");
-                report.AppendLine(DescribeFineVersusBase(fineHeights, fineWidth, fineHeight, heightSamples, width, height, scale, surfaceIndex));
+                report.AppendLine(DescribeFineVersusBase(fineHeights, fineWidth, fineHeight,
+                                                         capture.HeightSamples, capture.Width, capture.Height,
+                                                         capture.Scale, capture.SurfaceIndex));
             }
-            else if (heights)
+            else
             {
-                fineHeights = null;
+                capture.FineHeights = null;
                 report.AppendLine(_fineReport ?? "Fine terrain: not captured (the fine cascade stage did not run); layer omitted");
             }
+        }
 
-            // ---- 4b. Surface areas — the pavement patches nothing else carries.
-            //
+        /// <summary>
+        /// Sections 4b and 4c of the AREA layers — the pavement patches nothing else carries, and
+        /// the only place-names the city contains.
+        /// </summary>
+        /// <remarks>
+        /// Neither has anything to do with terrain; they ride this stage because they share its
+        /// writer task and its one toggle. Refactor Phase 9 has them named for extraction into an
+        /// <c>AreaRipSystem</c>, which is a change to system registration and the texture hand-off
+        /// rather than a move, so it is not folded in here.
+        /// </remarks>
+        /// <param name="outputDirectory">The bundle root.</param>
+        /// <param name="terrainDirectory">The bundle's terrain directory.</param>
+        /// <param name="areas">Whether painted surfaces were selected.</param>
+        /// <param name="report">The report to note the results in.</param>
+        private void RipAreaLayers(string outputDirectory, string terrainDirectory, bool areas, StringBuilder report)
+        {
             if (areas) RipSurfaceAreas(outputDirectory, terrainDirectory, report);
             else report.AppendLine("Painted surfaces deselected — areas.jsonl and areaprefabs.json untouched.");
 
-            // ---- 4c. Districts — the only place-names the city contains.
-            //
             if (areas) RipDistricts(outputDirectory, report);
             else report.AppendLine("Painted surfaces deselected — districts.jsonl untouched.");
+        }
 
-            // ---- 5. Encode and write everything off the main thread.
-            //
-            float cellSize = 1f / scale.x;
+        /// <summary>
+        /// The manifest <c>rasters</c> block (contract §3), merged over whatever a previous run
+        /// left on disk.
+        /// </summary>
+        /// <remarks>
+        /// The sidecar merges like <c>materials.json</c>: a block for a layer this run did not
+        /// touch survives, so a partial terrain re-rip (one sub-toggle) cannot orphan the layers a
+        /// previous run left on disk.
+        /// </remarks>
+        /// <param name="capture">The finished capture.</param>
+        /// <param name="terrainDirectory">The bundle's terrain directory.</param>
+        /// <param name="heights">Whether the height layers were selected this run.</param>
+        /// <returns>The block to write.</returns>
+        private SortedDictionary<string, object> BuildRasters(TerrainCapture capture, string terrainDirectory, bool heights)
+        {
+            float cellSize = 1f / capture.Scale.x;
             var rasters = new SortedDictionary<string, object>
             {
-                // The manifest `rasters` block, verbatim (contract §3): top-left cell centre,
-                // rows toward -Z. The stamp arrays run south-to-north, so rows are flipped at
-                // encode time below.
+                // Top-left cell centre, rows toward -Z. The stamp arrays run south-to-north, so
+                // rows are flipped at encode time.
                 //
                 ["resolution"] = Math.Round(cellSize, 6),
-                ["size"] = new[] { width, height },
+                ["size"] = new[] { capture.Width, capture.Height },
                 ["originWorld"] = new[]
                 {
-                    Math.Round(-offset.x, 3), 0.0,
-                    Math.Round(((height - 1) / scale.z) - offset.z, 3)
+                    Math.Round(-capture.Offset.x, 3), 0.0,
+                    Math.Round(((capture.Height - 1) / capture.Scale.z) - capture.Offset.z, 3)
                 },
                 ["elevationUnits"] = "m",
-                ["elevationScale"] = 1.0 / scale.y,
-                ["elevationOffset"] = (double)(-offset.y)
+                ["elevationScale"] = 1.0 / capture.Scale.y,
+                ["elevationOffset"] = (double)(-capture.Offset.y)
             };
-            if (splatBlock != null) rasters["splatmap"] = splatBlock;
-            if (userSplatBlock != null) rasters["userSplatmap"] = userSplatBlock;
-            if (worldBlock != null) rasters["worldTerrain"] = worldBlock;
-            if (waterBlock != null) rasters["water"] = waterBlock;
-            if (tilingBlock != null) rasters["terrainTiling"] = tilingBlock;
-            if (fineBlock != null) rasters["terrainFine"] = fineBlock;
+            if (capture.SplatBlock != null) rasters["splatmap"] = capture.SplatBlock;
+            if (capture.UserSplatBlock != null) rasters["userSplatmap"] = capture.UserSplatBlock;
+            if (capture.WorldBlock != null) rasters["worldTerrain"] = capture.WorldBlock;
+            if (capture.WaterBlock != null) rasters["water"] = capture.WaterBlock;
+            if (capture.TilingBlock != null) rasters["terrainTiling"] = capture.TilingBlock;
+            if (capture.FineBlock != null) rasters["terrainFine"] = capture.FineBlock;
 
-            // The sidecar merges like materials.json: a block for a layer this run did not touch
-            // survives, so a partial terrain re-rip (one sub-toggle) cannot orphan the layers a
-            // previous run left on disk.
             string rastersPath = IOUtils.CombinePath(terrainDirectory, "rasters.json");
-            if (File.Exists(rastersPath))
+            if (!File.Exists(rastersPath)) return rasters;
+
+            try
             {
-                try
+                var existing = JsonConvert.DeserializeObject<Dictionary<string, object>>(File.ReadAllText(rastersPath));
+                if (existing != null)
                 {
-                    var existing = JsonConvert.DeserializeObject<Dictionary<string, object>>(File.ReadAllText(rastersPath));
-                    if (existing != null)
+                    foreach (string block in new[] { "splatmap", "userSplatmap", "worldTerrain", "water", "terrainTiling", "terrainFine" })
                     {
-                        foreach (string block in new[] { "splatmap", "userSplatmap", "worldTerrain", "water", "terrainTiling", "terrainFine" })
-                        {
-                            // A heights re-rip that captured no fine map has had the old file
-                            // removed by the Clean stage; its block must go with it.
-                            if (block == "terrainFine" && heights) continue;
-                            if (!rasters.ContainsKey(block) && existing.TryGetValue(block, out object kept))
-                                rasters[block] = kept;
-                        }
+                        // A heights re-rip that captured no fine map has had the old file
+                        // removed by the Clean stage; its block must go with it.
+                        if (block == "terrainFine" && heights) continue;
+                        if (!rasters.ContainsKey(block) && existing.TryGetValue(block, out object kept))
+                            rasters[block] = kept;
                     }
                 }
-                catch (Exception ex)
-                {
-                    _log.Warn($"Could not merge the existing rasters.json; writing fresh: {ex.Message}");
-                }
             }
+            catch (Exception ex)
+            {
+                _log.Warn($"Could not merge the existing rasters.json; writing fresh: {ex.Message}");
+            }
+            return rasters;
+        }
 
+        /// <summary>
+        /// Section 5 — encode and write everything off the main thread.
+        /// </summary>
+        /// <param name="capture">The finished capture.</param>
+        /// <param name="rasters">The manifest block to write beside the rasters.</param>
+        /// <param name="outputDirectory">The bundle root.</param>
+        /// <param name="terrainDirectory">The bundle's terrain directory.</param>
+        /// <param name="heights">Whether the height layers were selected.</param>
+        /// <param name="ground">Whether the ground layers were selected.</param>
+        /// <param name="clips">Whether the clip layer was selected.</param>
+        /// <param name="report">The report to note the write outcome in.</param>
+        private void WriteTerrain(TerrainCapture capture, SortedDictionary<string, object> rasters,
+                                  string outputDirectory, string terrainDirectory,
+                                  bool heights, bool ground, bool clips, StringBuilder report)
+        {
             string clipVolumesNote = null;
             try
             {
@@ -451,88 +595,10 @@ namespace Carto.Systems
                     // thread-safe, so the task never touches `report` itself).
                     //
                     if (clips) clipVolumesNote = WriteClipVolumes(outputDirectory);
-
-                    if (_pendingAreaTextures != null)
-                    {
-                        foreach (KeyValuePair<string, PendingTexture> pending in _pendingAreaTextures)
-                        {
-                            File.WriteAllBytes(pending.Key,
-                                               Png.EncodeRgba(pending.Value.Pixels,
-                                                              pending.Value.Width, pending.Value.Height));
-                        }
-                        _pendingAreaTextures = null;
-                    }
-
-                    if (heights)
-                    {
-                        File.WriteAllBytes(IOUtils.CombinePath(terrainDirectory, "heightmap.png"),
-                                           Png.EncodeGray16(FlipRows(heightSamples, width, height), width, height));
-                    }
-                    if (fineHeights != null)
-                    {
-                        // The game's own near-camera ground (the fine cascade capture): same
-                        // encoding, same row convention once flipped.
-                        File.WriteAllBytes(IOUtils.CombinePath(terrainDirectory, "heightmap_fine.png"),
-                                           Png.EncodeGray16(FlipRows(fineHeights, fineWidth, fineHeight), fineWidth, fineHeight));
-                    }
-                    if (surfaceIndex != null)
-                    {
-                        File.WriteAllBytes(IOUtils.CombinePath(terrainDirectory, "surface_index.png"),
-                                           Png.EncodeGray8(FlipRows(surfaceIndex, width, height), width, height));
-                    }
-                    if (waterLevel != null)
-                    {
-                        File.WriteAllBytes(IOUtils.CombinePath(terrainDirectory, "water_level.png"),
-                                           Png.EncodeGray16(FlipRows(waterLevel, width, height), width, height));
-                    }
-                    if (splatPixels != null)
-                    {
-                        // Capture already returns rows top-first, and the splat's V axis runs
-                        // south→north, so row 0 is the north edge — the rasters convention —
-                        // with no further flip.
-                        //
-                        File.WriteAllBytes(IOUtils.CombinePath(terrainDirectory, "splatmap.png"),
-                                           Png.EncodeRgba(splatPixels.Pixels, splatPixels.Width, splatPixels.Height));
-                    }
-                    if (userSplatPixels != null)
-                    {
-                        File.WriteAllBytes(IOUtils.CombinePath(terrainDirectory, "user_splatmap.png"),
-                                           Png.EncodeRgba(userSplatPixels.Pixels, userSplatPixels.Width, userSplatPixels.Height));
-                    }
-                    if (worldHeights != null)
-                    {
-                        // The GPU readback hands rows V=0-first (south), like the stamp arrays.
-                        //
-                        File.WriteAllBytes(IOUtils.CombinePath(terrainDirectory, "world_heightmap.png"),
-                                           Png.EncodeGray16(FlipRows(worldHeights, worldWidth, worldHeight),
-                                                            worldWidth, worldHeight));
-                    }
-
+                    WriteAreaTextures();
+                    WriteRasters(capture, terrainDirectory, heights);
                     Carto.IO.JsonFile.Write(IOUtils.CombinePath(terrainDirectory, "rasters.json"), rasters);
-
-                    // Surface id → name and texture; contract §8. Id 0 is the ground the game
-                    // classifies procedurally (grass/dirt/rock by slope and noise); id 1 is
-                    // road-flattened ground, which in-game reads as dirt under the lane decals'
-                    // wear tint — so dirt is its representative texture.
-                    //
-                    if (ground)
-                    {
-                        var index = new SortedDictionary<string, object>
-                        {
-                            ["0"] = new Dictionary<string, string>
-                            {
-                                ["name"] = "natural",
-                                ["texture"] = surfaceTextures.TryGetValue("grass", out string grass) ? grass : null
-                            },
-                            ["1"] = new Dictionary<string, string>
-                            {
-                                ["name"] = "roadbed",
-                                ["texture"] = surfaceTextures.TryGetValue("dirt", out string dirt) ? dirt : null
-                            }
-                        };
-                        string surfacesDirectory = IOUtils.CombinePath(terrainDirectory, "surfaces");
-                        Carto.IO.JsonFile.Write(IOUtils.CombinePath(surfacesDirectory, "index.json"), index);
-                    }
+                    if (ground) WriteSurfaceIndexJson(capture, terrainDirectory);
                 });
                 writer.Wait();
             }
@@ -543,24 +609,125 @@ namespace Carto.Systems
             }
 
             if (clipVolumesNote != null) report.AppendLine(clipVolumesNote);
+        }
 
-            // §10: this pass owns the `terrain*` warning kinds. One declaration when the fine
-            // layer was wanted and is not there, so a consumer reading heightmap.png alone knows
-            // it is not looking at a rip that never tried.
-            //
+        /// <summary>
+        /// The area surface textures the area rip queued for this stage's writer task.
+        /// </summary>
+        private void WriteAreaTextures()
+        {
+            if (_pendingAreaTextures == null) return;
+            foreach (KeyValuePair<string, PendingTexture> pending in _pendingAreaTextures)
+            {
+                File.WriteAllBytes(pending.Key,
+                                   Png.EncodeRgba(pending.Value.Pixels,
+                                                  pending.Value.Width, pending.Value.Height));
+            }
+            _pendingAreaTextures = null;
+        }
+
+        /// <summary>
+        /// Every raster this run captured, as a PNG in the row convention contract §3 states.
+        /// </summary>
+        /// <param name="capture">The finished capture.</param>
+        /// <param name="terrainDirectory">The bundle's terrain directory.</param>
+        /// <param name="heights">Whether the height layers were selected.</param>
+        private static void WriteRasters(TerrainCapture capture, string terrainDirectory, bool heights)
+        {
             if (heights)
             {
-                List<Dictionary<string, object>> declarations = new();
-                if (fineHeights == null && _fineWarning != null)
-                    declarations.Add(WarningsFile.ByAsset("terrainFine", "terrain/heightmap_fine.png", _fineWarning));
-                WarningsFile.Rewrite(outputDirectory, line => WarningsFile.IsKindPrefixed(line, WarningsFile.TerrainKindPrefix), declarations);
-                if (declarations.Count > 0) report.AppendLine($"Recorded {declarations.Count} gap(s) in {WarningsFile.FileName}");
+                File.WriteAllBytes(IOUtils.CombinePath(terrainDirectory, "heightmap.png"),
+                                   Png.EncodeGray16(FlipRows(capture.HeightSamples, capture.Width, capture.Height),
+                                                    capture.Width, capture.Height));
             }
-            ReleaseFine();
+            if (capture.FineHeights != null)
+            {
+                // The game's own near-camera ground (the fine cascade capture): same encoding,
+                // same row convention once flipped.
+                File.WriteAllBytes(IOUtils.CombinePath(terrainDirectory, "heightmap_fine.png"),
+                                   Png.EncodeGray16(FlipRows(capture.FineHeights, capture.FineWidth, capture.FineHeight),
+                                                    capture.FineWidth, capture.FineHeight));
+            }
+            if (capture.SurfaceIndex != null)
+            {
+                File.WriteAllBytes(IOUtils.CombinePath(terrainDirectory, "surface_index.png"),
+                                   Png.EncodeGray8(FlipRows(capture.SurfaceIndex, capture.Width, capture.Height),
+                                                   capture.Width, capture.Height));
+            }
+            if (capture.WaterLevel != null)
+            {
+                File.WriteAllBytes(IOUtils.CombinePath(terrainDirectory, "water_level.png"),
+                                   Png.EncodeGray16(FlipRows(capture.WaterLevel, capture.Width, capture.Height),
+                                                    capture.Width, capture.Height));
+            }
+            if (capture.SplatPixels != null)
+            {
+                // Capture already returns rows top-first, and the splat's V axis runs
+                // south→north, so row 0 is the north edge — the rasters convention — with no
+                // further flip.
+                //
+                File.WriteAllBytes(IOUtils.CombinePath(terrainDirectory, "splatmap.png"),
+                                   Png.EncodeRgba(capture.SplatPixels.Pixels, capture.SplatPixels.Width, capture.SplatPixels.Height));
+            }
+            if (capture.UserSplatPixels != null)
+            {
+                File.WriteAllBytes(IOUtils.CombinePath(terrainDirectory, "user_splatmap.png"),
+                                   Png.EncodeRgba(capture.UserSplatPixels.Pixels, capture.UserSplatPixels.Width, capture.UserSplatPixels.Height));
+            }
+            if (capture.WorldHeights != null)
+            {
+                // The GPU readback hands rows V=0-first (south), like the stamp arrays.
+                //
+                File.WriteAllBytes(IOUtils.CombinePath(terrainDirectory, "world_heightmap.png"),
+                                   Png.EncodeGray16(FlipRows(capture.WorldHeights, capture.WorldWidth, capture.WorldHeight),
+                                                    capture.WorldWidth, capture.WorldHeight));
+            }
+        }
 
-            report.AppendLine($"Output: {terrainDirectory}");
-            _log.Info(report.ToString());
-            return report.ToString();
+        /// <summary>
+        /// Surface id → name and texture; contract §8.
+        /// </summary>
+        /// <remarks>
+        /// Id 0 is the ground the game classifies procedurally (grass/dirt/rock by slope and
+        /// noise); id 1 is road-flattened ground, which in-game reads as dirt under the lane
+        /// decals' wear tint — so dirt is its representative texture.
+        /// </remarks>
+        /// <param name="capture">The finished capture.</param>
+        /// <param name="terrainDirectory">The bundle's terrain directory.</param>
+        private static void WriteSurfaceIndexJson(TerrainCapture capture, string terrainDirectory)
+        {
+            var index = new SortedDictionary<string, object>
+            {
+                ["0"] = new Dictionary<string, string>
+                {
+                    ["name"] = "natural",
+                    ["texture"] = capture.SurfaceTextures.TryGetValue("grass", out string grass) ? grass : null
+                },
+                ["1"] = new Dictionary<string, string>
+                {
+                    ["name"] = "roadbed",
+                    ["texture"] = capture.SurfaceTextures.TryGetValue("dirt", out string dirt) ? dirt : null
+                }
+            };
+            string surfacesDirectory = IOUtils.CombinePath(terrainDirectory, "surfaces");
+            Carto.IO.JsonFile.Write(IOUtils.CombinePath(surfacesDirectory, "index.json"), index);
+        }
+
+        /// <summary>
+        /// §10: this pass owns the <c>terrain*</c> warning kinds. One declaration when the fine
+        /// layer was wanted and is not there, so a consumer reading <c>heightmap.png</c> alone
+        /// knows it is not looking at a rip that never tried.
+        /// </summary>
+        /// <param name="capture">The finished capture.</param>
+        /// <param name="outputDirectory">The bundle root.</param>
+        /// <param name="report">The report to note the declaration in.</param>
+        private void DeclareFineGap(TerrainCapture capture, string outputDirectory, StringBuilder report)
+        {
+            List<Dictionary<string, object>> declarations = new();
+            if (capture.FineHeights == null && _fineWarning != null)
+                declarations.Add(WarningsFile.ByAsset("terrainFine", "terrain/heightmap_fine.png", _fineWarning));
+            WarningsFile.Rewrite(outputDirectory, line => WarningsFile.IsKindPrefixed(line, WarningsFile.TerrainKindPrefix), declarations);
+            if (declarations.Count > 0) report.AppendLine($"Recorded {declarations.Count} gap(s) in {WarningsFile.FileName}");
         }
 
         /// <summary>
