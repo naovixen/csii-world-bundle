@@ -925,7 +925,7 @@ Each phase records here what landed and what it found, so this document stays th
 | 6 — The Blender adapter | **DONE** 2026-08-29 — in-Blender look owed; see below |
 | 7 — One rip-stage framework | **DONE** 2026-08-29 (built, awaiting in-game re-rip) — three items deliberately deferred with reasons; see below |
 | 8 — The IO writer layer | **DONE** 2026-08-29 (built, awaiting in-game re-rip) — one declared byte change; see below |
-| 9 — Split the rip systems | **in progress** — the settings defaults and the field naming; the god-methods remain |
+| 9 — Split the rip systems | **in progress** — `RipTerrain` done 2026-08-29; `BuildGameComposition`, `AreaRipSystem` and the file splits remain |
 | 10 — Performance | not started |
 | 11 — Comment, naming and structure | not started |
 | 12 — Documentation | not started |
@@ -1559,7 +1559,7 @@ under the shrink-only rule. The phase's last gate — Naomi's in-game look at th
 `cs2_city_fine` (second-landing rebuild, verified against after-phase3) — was **accepted
 2026-08-28**, which closes the phase. Phase 5 (the app and its UI) has not been started.
 
-### Phase 9 — in progress, 2026-08-27
+### Phase 9 — in progress, 2026-08-29
 
 **Landed**
 
@@ -1585,11 +1585,40 @@ under the shrink-only rule. The phase's last gate — Naomi's in-game look at th
   setter cannot carry an inline initializer at all. This is the same mechanism behind the plan's
   own warning that `Settings.cs`'s declaration order is load-bearing.
 
-**Not done.** The two god-methods — `RipTerrain` (332 lines, and its duplicated `4b`/`4c` section
-labels are real, at `:351/380` and `:361/385`) and `BuildGameComposition` (628, the longest in the
-repo) — plus the `AreaRipSystem` extraction. `RipTerrain`'s section 5 alone is 176 lines and hands
-about fifteen locals to the write pass, so it needs a captured-state record rather than a
-parameter list. That is a focused block of work, not something to leave half-finished.
+**`RipTerrain` is done, 2026-08-29.** It is eleven lines of sequence plus one function per
+contract section, and the fifteen locals section 5 needed are a `TerrainCapture` record — the
+captured-state shape this note called for, rather than a fifteen-argument writer. Two things
+were deliberately NOT changed, both invisible until a rip: the clip counters are still zeroed
+unconditionally outside `if (clips)` (moving the reset inside is unobservable today, which is
+the reasoning that ages badly), and every layer's null-guard still tests the same value —
+the writer asks `capture.FineHeights != null`, not `heights`, because a heights run whose fine
+cascade did not capture must write no fine PNG. Checked mechanically as well as by reading: a
+statement-multiset diff of the old region against the new reports 70 differences and every one
+is a local becoming a `capture.` field or a guard becoming a parameter.
+
+**Still not done, and each is its own block:**
+
+* **`BuildGameComposition` (628, the longest method in the repo).** Its shape is a ~70-line
+  preamble and then ONE `foreach` over the composition pieces that runs 554 lines. The seams
+  are real — flag decode, the conform/probe setup, the flip-select and scale/bias setup, the
+  vertex loop, the emit — but the body is the game's own generator ported line for line, with
+  `BatchMeshHelpers` line numbers, the §42 probe and the `select(float4…)` flip cited in
+  comments throughout. It is the most measured-rule-dense code in the producer and the one place
+  where a subtle slip produces geometry that is wrong in a way only a rip would show. It wants a
+  session that starts on it.
+* **The `AreaRipSystem` extraction.** `RipSurfaceAreas`, `RipDistricts` and `CatalogueAreaPrefab`
+  are ~570 lines that have nothing to do with terrain, but they are not free-standing: two
+  `EntityQuery` fields built in `OnCreate`, and `_pendingAreaTextures`, which the area catalogue
+  fills and the TERRAIN writer task drains. A separate `GameSystemBase` changes system
+  registration and needs its own writer task or a hand-back; that is a design change, not a move.
+  `RipAreaLayers` now names the seam and says so in its own comment.
+* **The file splits** — `TerrainRipSystem.cs` (3,380), `MeshRipSystem.cs` (2,390),
+  `NetworkRipSystem.cs` (2,367) + `.GameMesh.cs` (1,348), `InstanceRipSystem.cs`,
+  `MaterialRipSystem.cs`, and the nine smaller ones.
+* **The fork logic inside `Settings.cs`.** `Fit()` can move; the six ripper BUTTON HANDLERS
+  cannot, or not cheaply: they are properties, and moving a property to a partial file changes
+  the declaration order the settings load depends on — which is the trap this plan already warns
+  about at `Settings.cs:494`. It needs a way to prove the order is preserved, not just a move.
 
 ### Phase 8 — DONE 2026-08-29 (built, awaiting in-game re-rip)
 
