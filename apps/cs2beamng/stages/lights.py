@@ -364,9 +364,7 @@ def _world(record, entry):
     100 m. Not renormalising is the deliberate choice: a producer that ships a non-unit
     quaternion should show up, not be quietly corrected in one consumer.
     """
-    from .instances import _transform
-
-    base_pos, base_rot, base_scale = _transform(record)
+    base_pos, base_rot, base_scale = frame.record_transform(record)
     local = entry.get("position") or (0.0, 0.0, 0.0)
     local_beamng = (float(local[0]), float(local[2]), float(local[1]))
     world = [

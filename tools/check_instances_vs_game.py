@@ -51,7 +51,6 @@ from cs2beamng.beamng import (  # noqa: E402 - after the sys.path bootstrap abov
     placement,
 )
 from cs2beamng.beamng.level import read_objects  # noqa: E402
-from cs2beamng.stages.instances import _transform  # noqa: E402
 from cs2beamng.stages.shapes import IMPOSTER_REACH  # noqa: E402
 from csiibundle import glb, lod, tints  # noqa: E402
 from csiibundle import instances as bundle_instances  # noqa: E402
@@ -342,7 +341,7 @@ def _check_state_and_scale(bundle, settings, forest, statics, samples, results):
     mesh_dir = os.path.join(bundle, "meshes")
     have = {}
     for record in kept:
-        position, rotation, scale = _transform(record)
+        position, rotation, scale = frame.record_transform(record)
         expected = _expected_state(record, mesh_dir, have)
         placed, here = _find_placed(record, position, by_position, statics, expected)
         if placed is None:
@@ -459,7 +458,7 @@ def _check_colour(bundle, settings, statics, results):
             own = [float(c) for colour in colours[:3] for c in colour[:3]]
             errors.append(max(abs(a - b) for a, b in zip(own, centre[: len(own)])))
             continue
-        position, _r, _s = _transform(record)
+        position, _r, _s = frame.record_transform(record)
         obj = _static_for(record, position, statics[0], statics[1])
         if obj is None:
             continue

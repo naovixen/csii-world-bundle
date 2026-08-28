@@ -31,8 +31,8 @@ import json
 import os
 import time
 
-from csiibundle import frames, tints
 from csiibundle import instances as bundle_instances
+from csiibundle import tints
 
 from ..beamng import frame, placement
 from ..beamng import level as level_mod
@@ -190,7 +190,7 @@ def run(ctx, progress):
             counts["noShape"] += 1
             continue
         name = os.path.splitext(row["file"])[0]
-        position, rotation, scale = _transform(record)
+        position, rotation, scale = frame.record_transform(record)
         if forest:
             types.setdefault(name, (row, kind))
             type_source.setdefault(name, (asset, suffix, variant))
@@ -344,37 +344,6 @@ def _state_suffix(record, asset, mesh_dir, have, cache):
     answer = None if candidate is None else candidate[len(asset) :]
     cache[key] = answer
     return answer
-
-
-# The basis `dae.glb_to_local` bakes into every `.cdae` vertex: `(gx, gy, gz) -> (-gx, gz, gy)`,
-# which is `P_ZUP . MIRROR_X`. `instance_matrix` divides it out so the two do not compound.
-DAE_MESH_BASIS = frames.P_ZUP @ frames.MIRROR_X
-
-
-def _transform(record):
-    """`(position, rotation3x3_rowmajor, scale3)` in BeamNG world axes.
-
-    `P . T . R . S . P^-1`, but NOT written out here. It used to be, in three lines of
-    quaternion-to-matrix and axis swapping that reimplemented `csiibundle.instances`'
-    `instance_matrix` — the function whose docstring says "a forgotten decal lift flickers",
-    which exists so that the §4.2a lift and the tree growth scale cannot be left out one at a
-    time. The copy left out the lift.
-
-    **That was latent, not live** (measured 2026-08-21). `placement.BAKED_KINDS` is `("decal",)`,
-    so a decal record never reaches this function at all: `bake/markings.py:250` places decal
-    quads itself, deliberately without the lift in the matrix — "the drape sets the height" — and
-    hands `decals.LIFT["instance_decal"]` to the drape as its epsilon. Every record that DOES
-    reach here has a lift of 0.0. Rebuilding `cs2_city_fine` through this function moved 8,646
-    objects by 0.000000000 m.
-
-    What it changes is the quaternion. The copy renormalised, and `frames.quat_matrix`
-    deliberately does not: 6.9 % of the reference city's records store a quaternion off unity by
-    ~2e-6, and that is a signal about the producer, not noise to be corrected away here.
-    `frames.decompose` lets it through as a scale a hair off 1.0.
-    """
-    return frames.decompose(
-        bundle_instances.instance_matrix(record, mesh_basis=DAE_MESH_BASIS, zup=True)
-    )
 
 
 def _forest_line(type_name, position, rotation, scale):

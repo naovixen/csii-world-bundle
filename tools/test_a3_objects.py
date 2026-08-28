@@ -6,7 +6,7 @@ sweeps are `test_a3_city.py` (split in Phase 4; the tally is shared via `a3commo
 
 Checks, in the order the build runs them:
 
-* **the frame** — `stages.instances._transform` reproduces `csiibundle.frames`' own
+* **the frame** — `beamng.frame.record_transform` reproduces `csiibundle.frames`' own
   `P . T . R . S . P^-1` to machine precision over random transforms, which is the one identity
   in this phase that is silently wrong if it is wrong;
 * **the placement rule** — `beamng.placement` sends decals nowhere, buildings and non-uniformly
@@ -42,7 +42,7 @@ def test_frame():
     print("the instance transform is the contract's own composition")
     import random
 
-    from cs2beamng.stages import instances as stage
+    from cs2beamng.beamng import frame as frame_mod
     from csiibundle import frames
 
     random.seed(20260818)
@@ -58,7 +58,7 @@ def test_frame():
         # the .dae bakes `P . diag(-1,1,1)` into its vertices, so that basis divides out
         basis = frames.P_ZUP @ frames.MIRROR_X
         reference = frames.zup_instance_matrix(record, mesh_basis=basis)
-        position, rotation, scale = stage._transform(record)
+        position, rotation, scale = frame_mod.record_transform(record)
         mine = numpy.eye(4)
         mine[:3, :3] = numpy.array(rotation) @ numpy.diag(scale)
         mine[:3, 3] = position
@@ -66,37 +66,39 @@ def test_frame():
     check(worst < 1e-9, f"P.T.R.S.P^-1 reproduced to {worst:.2e}")
 
     # a rotation must stay a rotation: no second mirror anywhere
-    _p, rot, _s = stage._transform({"pos": [0, 0, 0], "rot": [0.0, 0.3826834, 0.0, 0.9238795]})
+    _p, rot, _s = frame_mod.record_transform(
+        {"pos": [0, 0, 0], "rot": [0.0, 0.3826834, 0.0, 0.9238795]}
+    )
     det = float(numpy.linalg.det(numpy.array(rot)))
     check(abs(det - 1.0) < 1e-9, f"the rotation has determinant +1 ({det:.6f})")
 
     # a tree's growthScale is uniform and multiplies the linear part only
-    _p, _r, scaled = stage._transform({"pos": [1, 2, 3], "attrs": {"growthScale": 0.5}})
+    _p, _r, scaled = frame_mod.record_transform({"pos": [1, 2, 3], "attrs": {"growthScale": 0.5}})
     check(
         all(abs(v - 0.5) < 1e-9 for v in scaled), "growthScale reaches the scale, not the position"
     )
-    pos, _r, _s = stage._transform({"pos": [1, 2, 3], "attrs": {"growthScale": 0.5}})
+    pos, _r, _s = frame_mod.record_transform({"pos": [1, 2, 3], "attrs": {"growthScale": 0.5}})
     check(pos == [1.0, 3.0, 2.0], "the position is the Y/Z swap and nothing else")
 
 
 def test_decal_lift_and_the_quaternion():
     print("the transform folds in the §4.2a lift, and lets a non-unit quaternion through")
-    from cs2beamng.stages import instances as stage
+    from cs2beamng.beamng import frame as frame_mod
 
     # §4.2a: a decal instance is coplanar paint and MUST be lifted clear of the surface it
-    # paints over, or it z-fights with it. No decal reaches `_transform` today —
+    # paints over, or it z-fights with it. No decal reaches `record_transform` today —
     # `placement.BAKED_KINDS` sends them to `bake/markings`, which applies the lift as the
     # drape's epsilon — so this pins a LATENT trap: the day a decal does reach here, it arrives
     # lifted, because the transform is the shared one rather than a copy that forgot.
     from csiibundle import decals
 
     lift = decals.LIFT["instance_decal"]
-    lifted, _r, _s = stage._transform({"pos": [1, 2, 3], "kind": "decal"})
+    lifted, _r, _s = frame_mod.record_transform({"pos": [1, 2, 3], "kind": "decal"})
     check(
         abs(lifted[2] - (2.0 + lift)) < 1e-12 and lifted[:2] == [1.0, 3.0],
         f"a decal is lifted by exactly {lift} m, on the up axis only",
     )
-    plain, _r, _s = stage._transform({"pos": [1, 2, 3], "kind": "prop"})
+    plain, _r, _s = frame_mod.record_transform({"pos": [1, 2, 3], "kind": "prop"})
     check(plain == [1.0, 3.0, 2.0], "and nothing else is lifted at all")
     check(
         lift > decals.LIFT["area"] > decals.LIFT["lane_marking"],
@@ -108,7 +110,9 @@ def test_decal_lift_and_the_quaternion():
     # arrive as a scale off 1.0.
     k = 1.001
     half = 0.7071067811865476
-    _p, _r, off = stage._transform({"pos": [0, 0, 0], "rot": [0.0, half * k, 0.0, half * k]})
+    _p, _r, off = frame_mod.record_transform(
+        {"pos": [0, 0, 0], "rot": [0.0, half * k, 0.0, half * k]}
+    )
     # The deviation lands on the two axes the turn acts on, at k^2 - 1, and not on the third.
     check(
         abs(max(off) - k**2) < 1e-5 and abs(min(off) - 1.0) < 1e-12,
