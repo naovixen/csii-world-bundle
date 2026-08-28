@@ -344,7 +344,7 @@ namespace Carto.IO
             //
             string manifestPath = Utils.IOUtils.CombinePath(outputDirectory, "bundle.json");
             string temporaryPath = manifestPath + ".tmp";
-            File.WriteAllText(temporaryPath, JsonConvert.SerializeObject(manifest, Formatting.Indented));
+            File.WriteAllText(temporaryPath, JsonFile.Serialize(manifest));
             if (File.Exists(manifestPath)) File.Replace(temporaryPath, manifestPath, null);
             else File.Move(temporaryPath, manifestPath);
 

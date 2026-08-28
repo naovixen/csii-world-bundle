@@ -709,23 +709,15 @@ namespace Carto.Systems
         }
 
         /// <summary>
-        /// Hand one item to the bounded queue without wedging on a dead writer.
-        /// A plain <c>Add</c> blocks until the writer makes room, and a writer task that has
-        /// faulted never will — several items can be queued per prefab between
-        /// <see cref="Advance"/>'s capacity checks, so the reader could block the main thread
-        /// forever mid-<see cref="ReadOne"/>. Throwing instead lets <see cref="ReadOne"/>'s
-        /// catch count the prefab failed, and the next <see cref="Advance"/> aborts the pass.
+        /// Hand one item to the bounded queue without wedging on a dead writer — the rule and
+        /// its history are <see cref="RipQueue"/>. What is local: several items are queued per
+        /// prefab between <see cref="Advance"/>'s capacity checks, so a throw here is caught by
+        /// <see cref="ReadOne"/> and counted against that prefab.
         /// </summary>
         /// <param name="run">The run in progress.</param>
         /// <param name="item">The item to queue.</param>
         private static void Enqueue(RipRun run, RipItem item)
-        {
-            while (!run.Queue.TryAdd(item, 200))
-            {
-                if (run.Writer.IsFaulted)
-                    throw new InvalidOperationException("the mesh writer task has faulted; the queue will never drain");
-            }
-        }
+            => RipQueue.Enqueue(run.Queue, run.Writer, "mesh writer", item);
 
         /// <summary>
         /// Abort a rip whose writer task has died mid-read. Nothing more can ever be written —

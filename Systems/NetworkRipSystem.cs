@@ -675,27 +675,16 @@ namespace Carto.Systems
         }
 
         /// <summary>
-        /// Hand one item to the bounded queue without wedging on a dead encoder.
+        /// Hand one item to the bounded queue without wedging on a dead encoder — the rule and
+        /// its history are <see cref="RipQueue"/>. What is local: several items are queued per
+        /// edge (one per piece mesh, plus every texture the material rip hands over through the
+        /// callback at <c>BeginRip</c>), so a throw here is caught by <see cref="RipStep"/> and
+        /// counted against that entity.
         /// </summary>
-        /// <remarks>
-        /// A plain <c>Add</c> blocks until the encoder makes room, and an encoder task that has
-        /// faulted never will. Several items are queued per edge — one per piece mesh, plus every
-        /// texture the material rip hands over through the callback at <c>BeginRip</c> — so the
-        /// reader can meet a full queue between <see cref="Advance"/>'s capacity checks and block
-        /// the main thread there for good. Throwing instead lets <see cref="RipStep"/> count the
-        /// entity failed and the next <see cref="Advance"/> abort the pass.
-        /// This is <c>MeshRipSystem.Enqueue</c>, for the same reason.
-        /// </remarks>
         /// <param name="run">The run in progress.</param>
         /// <param name="item">The item to queue.</param>
         private static void Enqueue(NetworkRun run, NetworkItem item)
-        {
-            while (!run.Queue.TryAdd(item, 200))
-            {
-                if (run.Encoder.IsFaulted)
-                    throw new InvalidOperationException("the network encoder task has faulted; the queue will never drain");
-            }
-        }
+            => RipQueue.Enqueue(run.Queue, run.Encoder, "network encoder", item);
 
         /// <summary>
         /// Rip one network edge into the run.
@@ -971,9 +960,8 @@ namespace Carto.Systems
             {
                 try
                 {
-                    System.IO.File.WriteAllText(
-                        IOUtils.CombinePath(run.OutputDirectory, "laneprefabs.json"),
-                        Newtonsoft.Json.JsonConvert.SerializeObject(run.LaneCatalogue));
+                    Carto.IO.JsonFile.Write(
+                        IOUtils.CombinePath(run.OutputDirectory, "laneprefabs.json"), run.LaneCatalogue);
                 }
                 catch (Exception ex)
                 {

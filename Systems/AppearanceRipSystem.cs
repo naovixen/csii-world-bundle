@@ -469,11 +469,7 @@ namespace Carto.Systems
                 return;
             }
 
-            string directory = System.IO.Path.GetDirectoryName(path);
-            if (!string.IsNullOrEmpty(directory) && !System.IO.Directory.Exists(directory))
-                System.IO.Directory.CreateDirectory(directory);
-
-            System.IO.File.WriteAllText(path, JsonConvert.SerializeObject(table, Formatting.Indented));
+            Carto.IO.JsonFile.Write(path, table);
         }
     }
 }

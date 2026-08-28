@@ -671,8 +671,7 @@ namespace Carto.IO
 
             try
             {
-                File.WriteAllText(IOUtils.CombinePath(directory, "grading.json"),
-                                  JsonConvert.SerializeObject(document, Formatting.Indented));
+                JsonFile.Write(IOUtils.CombinePath(directory, "grading.json"), document);
 
                 List<string> blocks = new List<string>();
                 foreach (string key in new[] { "exposure", "whiteBalance", "colorAdjustments",

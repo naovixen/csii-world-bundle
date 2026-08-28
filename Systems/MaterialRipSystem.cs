@@ -1682,12 +1682,7 @@ namespace Carto.Systems
 
             try
             {
-                string directory = System.IO.Path.GetDirectoryName(path);
-                if (!string.IsNullOrEmpty(directory) && !System.IO.Directory.Exists(directory))
-                    System.IO.Directory.CreateDirectory(directory);
-
-                System.IO.File.WriteAllText(path,
-                    JsonConvert.SerializeObject(table, Formatting.Indented), new UTF8Encoding(false));
+                Carto.IO.JsonFile.Write(path, table);
             }
             catch (Exception ex)
             {

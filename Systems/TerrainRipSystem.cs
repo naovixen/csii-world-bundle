@@ -508,8 +508,7 @@ namespace Carto.Systems
                                                             worldWidth, worldHeight));
                     }
 
-                    File.WriteAllText(IOUtils.CombinePath(terrainDirectory, "rasters.json"),
-                                      JsonConvert.SerializeObject(rasters, Formatting.Indented));
+                    Carto.IO.JsonFile.Write(IOUtils.CombinePath(terrainDirectory, "rasters.json"), rasters);
 
                     // Surface id → name and texture; contract §8. Id 0 is the ground the game
                     // classifies procedurally (grass/dirt/rock by slope and noise); id 1 is
@@ -532,9 +531,7 @@ namespace Carto.Systems
                             }
                         };
                         string surfacesDirectory = IOUtils.CombinePath(terrainDirectory, "surfaces");
-                        if (!Directory.Exists(surfacesDirectory)) Directory.CreateDirectory(surfacesDirectory);
-                        File.WriteAllText(IOUtils.CombinePath(surfacesDirectory, "index.json"),
-                                          JsonConvert.SerializeObject(index, Formatting.Indented));
+                        Carto.IO.JsonFile.Write(IOUtils.CombinePath(surfacesDirectory, "index.json"), index);
                     }
                 });
                 writer.Wait();
@@ -813,7 +810,7 @@ namespace Carto.Systems
 
             try
             {
-                using StreamWriter writer = Carto.IO.BundleFile.CreateText(
+                using var writer = new Carto.IO.RecordWriter(
                     IOUtils.CombinePath(outputDirectory, "districts.jsonl"));
 
                 foreach (Entity entity in districts)
@@ -863,9 +860,13 @@ namespace Carto.Systems
                     }
                     record["triangles"] = triangleArray;
 
-                    writer.WriteLine(JsonConvert.SerializeObject(record));
-                    written++;
+                    writer.Write(record);
                 }
+
+                // The count comes off the writer rather than a local: a loop with two
+                // `continue`s in it and a hand-kept tally is how a manifest ends up disagreeing
+                // with its own layer.
+                written = writer.Count;
             }
             catch (Exception ex)
             {
@@ -911,7 +912,7 @@ namespace Carto.Systems
 
             try
             {
-                using StreamWriter writer = Carto.IO.BundleFile.CreateText(
+                using var writer = new Carto.IO.RecordWriter(
                     IOUtils.CombinePath(outputDirectory, "areas.jsonl"));
 
                 foreach (Entity entity in areas)
@@ -983,9 +984,11 @@ namespace Carto.Systems
                     record["triangles"] = triangleArray;
                     if (anyRange) record["heightRanges"] = rangeArray;
 
-                    writer.WriteLine(JsonConvert.SerializeObject(record));
-                    written++;
+                    writer.Write(record);
                 }
+
+                // See RipDistricts: the count is what the writer wrote, not a hand-kept tally.
+                written = writer.Count;
             }
             catch (Exception ex)
             {
@@ -1000,8 +1003,7 @@ namespace Carto.Systems
 
             try
             {
-                File.WriteAllText(IOUtils.CombinePath(outputDirectory, "areaprefabs.json"),
-                                  JsonConvert.SerializeObject(catalogue, Formatting.Indented));
+                Carto.IO.JsonFile.Write(IOUtils.CombinePath(outputDirectory, "areaprefabs.json"), catalogue);
             }
             catch (Exception ex)
             {
@@ -1512,8 +1514,7 @@ namespace Carto.Systems
                 //
                 try
                 {
-                    File.WriteAllText(IOUtils.CombinePath(surfacesDirectory, "sources.json"),
-                                      JsonConvert.SerializeObject(sources, Formatting.Indented));
+                    Carto.IO.JsonFile.Write(IOUtils.CombinePath(surfacesDirectory, "sources.json"), sources);
                 }
                 catch (Exception ex)
                 {
@@ -3223,12 +3224,12 @@ namespace Carto.Systems
 
             try
             {
-                using StreamWriter writer = Carto.IO.BundleFile.CreateText(
+                using var writer = new Carto.IO.RecordWriter(
                     IOUtils.CombinePath(outputDirectory, "clipvolumes.jsonl"));
 
                 foreach (Dictionary<string, object> record in _clipVolumes)
                 {
-                    writer.WriteLine(JsonConvert.SerializeObject(record, Formatting.None));
+                    writer.Write(record);
                 }
 
                 return $"Clip volumes: {_clipVolumes.Count} strip(s) written to clipvolumes.jsonl "
