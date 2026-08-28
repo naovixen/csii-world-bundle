@@ -292,7 +292,7 @@ def _score_transform(placed, position, rotation, scale, where, size, turn):
     nine floats are the object's own axes in groups of three, and flattening the matrix
     row-major here would agree with a level that stored the inverse rotation - which it did
     until A6.8. This row still only proves our own consistency; the convention itself is
-    anchored against vanilla in `test_a3_objects.test_rotation_matrix_is_basis_vectors`."""
+    anchored against vanilla in `test_a3_rules.test_rotation_matrix_is_basis_vectors`."""
     flat = frame.basis_flat(rotation)
     where["total"] += 1
     if placed[0] == "forest":

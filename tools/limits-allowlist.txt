@@ -211,13 +211,8 @@ func tools/measure_paint_factor.py::measure
 func tools/shoot_ui.py::main
 func tools/test_a1_level.py::test_water_bands
 func tools/test_a2_dae.py::test_split
-func tools/test_a3_objects.py::test_color_palette
 func tools/test_a3_objects.py::test_forest_path
-func tools/test_a3_objects.py::test_orphans_of_absent_owners
-func tools/test_a3_objects.py::test_road_clearance
 func tools/test_a3_objects.py::test_shapes_and_instances
-func tools/test_a3_objects.py::test_switch_points_only_ever_defer
-func tools/test_a3_objects.py::test_tree_vs_plant
 func tools/test_app_shell.py::test_cook_state
 func tools/test_app_shell.py::test_incremental
 func tools/test_app_shell.py::test_mapview
