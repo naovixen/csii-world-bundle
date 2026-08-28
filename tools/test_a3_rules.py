@@ -178,6 +178,7 @@ def test_a8_performance_rules():
     """A8 — the two new predicates, both of which remove something a viewer can see."""
     print("A8 performance rules")
     from cs2beamng.beamng import materials as bm
+    from cs2beamng.stages import instanceforest as forest
     from cs2beamng.stages import instances as inst
     from cs2beamng.stages import shapelods
 
@@ -201,15 +202,16 @@ def test_a8_performance_rules():
     hydrant = {"boundsMin": [-0.23, 0.0, -0.23], "boundsMax": [0.23, 0.97, 0.23]}
     sign = {"boundsMin": [-0.27, 0.0, -0.05], "boundsMax": [0.27, 2.13, 0.05]}
     kiosk = {"boundsMin": [-1.2, 0.0, -1.2], "boundsMax": [1.2, 2.4, 1.2]}
-    check(inst._shape_footprint(hydrant) < 0.8, "a fire hydrant is under the footprint threshold")
-    check(inst._shape_footprint(sign) < 0.8, "a road sign is under it, though it is 2.13 m TALL")
+    check(forest._shape_footprint(hydrant) < 0.8, "a fire hydrant is under the footprint threshold")
+    check(forest._shape_footprint(sign) < 0.8, "a road sign is under it, though it is 2.13 m TALL")
     check(
-        inst._shape_height(sign) > inst.FOREST_COLLIDABLE_MIN_HEIGHT,
+        forest._shape_height(sign) > inst.FOREST_COLLIDABLE_MIN_HEIGHT,
         "...and the HEIGHT rule alone would have kept its collider - the defect A8 fixes",
     )
-    check(inst._shape_footprint(kiosk) >= 0.8, "a 2.4 m kiosk keeps its collider")
+    check(forest._shape_footprint(kiosk) >= 0.8, "a 2.4 m kiosk keeps its collider")
     check(
-        inst._shape_footprint({}) == float("inf"), "an unmeasurable shape NEVER loses its collider"
+        forest._shape_footprint({}) == float("inf"),
+        "an unmeasurable shape NEVER loses its collider",
     )
 
     # P2: promotion is gated on the MEASURED displacement, and vegetation is exempt from it for

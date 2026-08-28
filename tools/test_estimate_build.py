@@ -87,7 +87,13 @@ def _load_real_build():
 
 def test_against_a_real_build():
     from cs2beamng.pipeline import census as census_mod
-    from cs2beamng.pipeline import estimate, meshindex
+    from cs2beamng.pipeline import (  # noqa: F401
+        estimate,
+        estimatebase,
+        estimatescore,
+        estimatetextures,
+        meshindex,
+    )
 
     section("against a level that was actually built")
     loaded = _load_real_build()
@@ -143,6 +149,8 @@ def test_against_a_real_build():
 
 
 def _stale_bake(estimate, values, bundle):
+    from cs2beamng.pipeline import estimatebase
+
     """THE BAKE ON DISK HAS TO BE THE ONE THAT BUILT THIS LEVEL. Both halves of the estimate
     are sized from what the bake produced — the texture plan from its material table, the shape
     count from its colour centres — so a bake made under other recolouring settings describes a
@@ -150,7 +158,9 @@ def _stale_bake(estimate, values, bundle):
     `_stale_bake_note`, which the meter declares on screen. Scoring across it would be scoring
     something the estimate never claimed."""
     baked = (
-        (estimate._load_json(os.path.join(bundle, "derived", "derived.json")) or {}).get("options")
+        (estimatebase.load_json(os.path.join(bundle, "derived", "derived.json")) or {}).get(
+            "options"
+        )
         or {}
     ).get("paint_kinds")
     wanted = [k.strip() for k in str(values.get("paint_kinds") or "").split(",") if k.strip()]
@@ -194,8 +204,10 @@ def _check_texture_half(values, bundle, level, stale_bake, wanted, baked):
 
 
 def _check_score_and_bases(estimate, est, measured, stale_bake):
+    from cs2beamng.pipeline import estimatescore
+
     """The calibrated byte totals (a regression gate, not a proof) and the stated bases."""
-    score = estimate.score(est, measured)
+    score = estimatescore.score(est, measured)
     if stale_bake:
         SKIPPED.append("the byte totals: the bake on disk is not the one that built this level")
         for name in ("mesh", "texture", "total"):
@@ -257,9 +269,14 @@ def _texture_file_check(values, bundle, level):
     """`(exact, compared, worstError, unnamed)` over the DDS files the level actually holds."""
     from cs2beamng.beamng import dds as dds_mod
     from cs2beamng.beamng import materials as bm
-    from cs2beamng.pipeline import estimate
+    from cs2beamng.pipeline import (  # noqa: F401
+        estimate,
+        estimatebase,
+        estimatescore,
+        estimatetextures,
+    )
 
-    plan = estimate._texture_plan(bundle, os.path.join(bundle, "derived"), values)
+    plan = estimatetextures._texture_plan(bundle, os.path.join(bundle, "derived"), values)
     caps = bm.caps_from_settings(values)
     # `_texture_plan` keeps dimensions, not names, so the names are rebuilt from the same jobs
     predicted = {}
@@ -293,10 +310,15 @@ def _plan_jobs(bundle, values):
     """The job tuples in the order `_texture_plan` sized them — it drops the paths, and the
     per-file check needs them back to name the files."""
     from cs2beamng.beamng import materials as bm
-    from cs2beamng.pipeline import estimate
+    from cs2beamng.pipeline import (  # noqa: F401
+        estimate,
+        estimatebase,
+        estimatescore,
+        estimatetextures,
+    )
 
     derived_dir = os.path.join(bundle, "derived")
-    table = estimate._load_json(os.path.join(derived_dir, "materials.json")) or {}
+    table = estimatebase.load_json(os.path.join(derived_dir, "materials.json")) or {}
     canonical = sorted(
         {rec.get("canonical") or name for name, rec in (table.get("materials") or {}).items()}
     )
@@ -304,11 +326,11 @@ def _plan_jobs(bundle, values):
     for plan in bm.plan_canonical(bundle, derived_dir, table, canonical).values():
         for job in plan.values():
             jobs[job] = None
-    for job in estimate._variant_jobs(values, derived_dir, table):
+    for job in estimatetextures._variant_jobs(values, derived_dir, table):
         jobs[job] = None
-    for job in bm.plan_areas(bundle, derived_dir, has_alpha=estimate._header_has_alpha):
+    for job in bm.plan_areas(bundle, derived_dir, has_alpha=estimatetextures._header_has_alpha):
         jobs[job] = None
-    return [job for job in jobs if estimate._png_header(job[0]) is not None]
+    return [job for job in jobs if estimatetextures._png_header(job[0]) is not None]
 
 
 def main():

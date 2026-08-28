@@ -23,7 +23,6 @@ file apps/cs2beamng/beamng/budget.py
 file apps/cs2beamng/beamng/dae.py
 file apps/cs2beamng/beamng/materials.py
 file apps/cs2beamng/beamng/tilelod.py
-file apps/cs2beamng/pipeline/estimate.py
 file apps/cs2beamng/pipeline/runner.py
 file apps/cs2beamng/pipeline/state.py
 file apps/cs2beamng/pipeline/worker.py
@@ -118,17 +117,14 @@ func apps/cs2beamng/beamng/tilelod.py::tile_levels
 func apps/cs2beamng/cli.py::_parser
 func apps/cs2beamng/doctor.py::collect
 func apps/cs2beamng/pipeline/census.py::take
-func apps/cs2beamng/pipeline/estimate.py::mesh_estimate
 func apps/cs2beamng/pipeline/estimate.py::take
 func apps/cs2beamng/pipeline/meshindex.py::build
 func apps/cs2beamng/pipeline/runner.py::_apply
-func apps/cs2beamng/pipeline/runner.py::build_headless
 func apps/cs2beamng/pipeline/worker.py::_score_estimate
 func apps/cs2beamng/pipeline/worker.py::main
 func apps/cs2beamng/stages/cook.py::run
 func apps/cs2beamng/stages/derived.py::run
 func apps/cs2beamng/stages/groundcover.py::run
-func apps/cs2beamng/stages/instances.py::_write_item_data
 func apps/cs2beamng/stages/instances.py::run
 func apps/cs2beamng/stages/lights.py::run
 func apps/cs2beamng/stages/materials.py::_variant_plans

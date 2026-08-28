@@ -27,12 +27,19 @@ import json
 import os
 import time
 
-from csiibundle import parallel, png
+from csiibundle import png
 
 from ..beamng import matbind
 from ..beamng import materials as bm
-from ..beamng.level import Level
 from . import Stage, level_of
+from .materialexport import export_all
+from .materialledger import (
+    file_stamp,
+    ledger_key,
+    load_ledger,
+    partition,
+    save_ledger,
+)
 
 STAGE_KEY = "materials"
 
@@ -106,8 +113,8 @@ def run(ctx, progress):
     # What is already on disk from the same source bytes at the same cap: the encoder is the
     # expensive half and `write_bytes_if_changed` only saved the WRITE, so every build re-encoded
     # all 5,684 textures to discover it had nothing to write (2m17s).
-    ledger = _load_ledger(ctx.level_dir)
-    reusable, todo = _partition(level, job_list, ledger, caps, use_dds)
+    ledger = load_ledger(ctx.level_dir)
+    reusable, todo = partition(level, job_list, ledger, caps, use_dds)
     if reusable:
         progress.advance(len(reusable))
         progress.log(
@@ -115,7 +122,7 @@ def run(ctx, progress):
             f"and format all the same) - not re-encoded"
         )
     exported = dict(reusable)
-    exported.update(_export_all(level, todo, caps, ctx.jobs, progress, use_dds))
+    exported.update(export_all(level, todo, caps, ctx.jobs, progress, use_dds))
     missing = sum(1 for v in exported.values() if v is None)
     # art/textures/ is kept across builds so unchanged textures keep their mtime (BeamNG's cooked
     # cache is keyed on it); what this build did not export is an orphan and is swept at the END
@@ -212,7 +219,7 @@ def run(ctx, progress):
     level.write_materials("cs2", out)
     # NOW the orphan sweep: `keep` is everything this build exported, the area surfaces included.
     exported.update(area_exported)
-    _save_ledger(ctx.level_dir, exported, caps, use_dds)
+    save_ledger(ctx.level_dir, exported, caps, use_dds)
     keep |= {os.path.basename(v) for v in area_exported.values() if v}
     orphans = _sweep_orphans(level, keep)
     progress.end(
@@ -368,8 +375,8 @@ def _area_texture(level, ctx, rel, kind, caps, cache, use_dds, ledger, exported)
     if job in exported:
         return exported[job]
     cap = int(caps.get(kind, 0) or 0)
-    entry = ledger.get(_ledger_key(src, kind, False, caps, use_dds))
-    stamp = _stamp(src)
+    entry = ledger.get(ledger_key(src, kind, False, caps, use_dds))
+    stamp = file_stamp(src)
     name = bm.texture_name(src, kind, False, use_dds)
     if (
         entry
@@ -406,143 +413,6 @@ def _sweep_orphans(level, keep):
             except OSError:
                 pass
     return removed
-
-
-# -- the texture ledger ----------------------------------------------------------------------------
-#
-# `(source path, source mtime+size, kind, cap, keep_alpha, format)` -> the game path that came
-# out. It lives beside `level_state.json` because it describes THIS level's `art/textures/`, and
-# every reuse is checked against the destination file still being there — a ledger entry alone
-# is never enough to claim a texture is exported.
-
-LEDGER_NAME = "textures.ledger.json"
-LEDGER_SCHEMA = "cs2beamng.texture_ledger/1"
-
-
-def _ledger_path(level_dir):
-    from ..pipeline import state as state_mod
-
-    return os.path.join(level_dir, state_mod.STATE_DIR, LEDGER_NAME)
-
-
-def _load_ledger(level_dir):
-    try:
-        with open(_ledger_path(level_dir), encoding="utf-8") as handle:
-            document = json.load(handle)
-    except (OSError, ValueError):
-        return {}
-    if document.get("schema") != LEDGER_SCHEMA:
-        return {}
-    return document.get("entries") or {}
-
-
-def _save_ledger(level_dir, exported, caps, use_dds):
-    entries = {}
-    for (src, kind, keep_alpha), game in exported.items():
-        if not game:
-            continue
-        stamp = _stamp(src)
-        if stamp is None:
-            continue
-        entries[_ledger_key(src, kind, keep_alpha, caps, use_dds)] = {"stamp": stamp, "game": game}
-    path = _ledger_path(level_dir)
-    try:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        tmp = path + ".tmp"
-        with open(tmp, "w", encoding="utf-8", newline="\n") as handle:
-            json.dump(
-                {
-                    "schema": LEDGER_SCHEMA,
-                    "caps": caps,
-                    "format": "dds" if use_dds else "png",
-                    "entries": entries,
-                },
-                handle,
-                separators=(",", ":"),
-            )
-        os.replace(tmp, path)
-    except OSError:
-        pass  # a ledger that cannot be written costs time, not correctness
-
-
-def _ledger_key(src, kind, keep_alpha, caps, use_dds):
-    cap = int(caps.get(kind, 0) or 0)
-    return f"{src}|{kind}|{int(bool(keep_alpha))}|{cap}|{'dds' if use_dds else 'png'}"
-
-
-def _stamp(src):
-    try:
-        st = os.stat(src)
-    except OSError:
-        return None
-    return [int(st.st_size), int(st.st_mtime_ns)]
-
-
-def _partition(level, jobs, ledger, caps, use_dds):
-    """`(reusable, todo)`: the jobs whose source, cap and format are unchanged AND whose exported
-    file is still on disk, and the rest."""
-    reusable, todo = {}, []
-    for job in jobs:
-        src, kind, keep_alpha = job
-        entry = ledger.get(_ledger_key(src, kind, keep_alpha, caps, use_dds))
-        stamp = _stamp(src)
-        if not entry or stamp is None or entry.get("stamp") != stamp:
-            todo.append(job)
-            continue
-        name = bm.texture_name(src, kind, keep_alpha, use_dds)
-        if not os.path.isfile(level.path(*bm.TEXTURE_SUBDIR, name)):
-            todo.append(job)  # the ledger remembers, the folder does not
-            continue
-        reusable[job] = entry["game"]
-    return reusable, todo
-
-
-# -- pool ---------------------------------------------------------------------------------------
-
-
-def _export_chunk(args):
-    level_dir, level_name, caps, use_dds, chunk = args
-    level = Level(level_dir, level_name, level_name)
-    cache = {}
-    out = []
-    for src, kind, keep_alpha in chunk:
-        try:
-            cap = int(caps.get(kind, 0) or 0)
-            out.append(
-                (
-                    (src, kind, keep_alpha),
-                    bm.export_texture(level, src, kind, cap, keep_alpha, cache, dds=use_dds),
-                )
-            )
-        except Exception as exc:
-            out.append(((src, kind, keep_alpha), None))
-            out.append((("__log__", str(src), ""), f"texture {os.path.basename(src)}: {exc!r}"))
-    return out
-
-
-def _export_all(level, jobs, caps, workers, progress, use_dds=True):
-    exported = {}
-    if not jobs:
-        return exported
-    chunk_size = 16
-    chunks = [jobs[i : i + chunk_size] for i in range(0, len(jobs), chunk_size)]
-    args = [(level.dir, level.name, caps, use_dds, c) for c in chunks]
-    # The jobs are already chunked by the caller, so chunksize stays 1 and one chunk is enough
-    # to be worth a pool; `_absorb` advances by the number of textures the chunk carried.
-    for results in parallel.each(
-        _export_chunk, args, workers or 1, progress, min_parallel=1, spawn=True, advance=False
-    ):
-        _absorb(results, exported, progress)
-    return exported
-
-
-def _absorb(results, exported, progress):
-    for key, value in results:
-        if key[0] == "__log__":
-            progress.log(value)
-            continue
-        exported[key] = value
-        progress.advance(1)
 
 
 # `after` is load-bearing: this stage exports only the textures the shape and tile stages

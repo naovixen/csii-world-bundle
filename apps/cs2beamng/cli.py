@@ -99,7 +99,7 @@ def main(argv=None):
         return budget_main(argv[1:])
     args = _parser().parse_args(argv)
     if args.command == "build":
-        from .pipeline.runner import build_headless
+        from .pipeline.headless import build_headless
 
         return build_headless(args)
     if args.command == "doctor":

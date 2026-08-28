@@ -239,7 +239,12 @@ def test_density_rank_is_the_same_rule():
 
 
 def test_waiting_states():
-    from cs2beamng.pipeline import estimate
+    from cs2beamng.pipeline import (  # noqa: F401
+        estimate,
+        estimatebase,
+        estimatescore,
+        estimatetextures,
+    )
 
     section("an estimate it cannot make says what it is waiting for")
     out = estimate.take({"bundle": os.path.join(REPO, "nowhere")})
@@ -257,14 +262,21 @@ def test_waiting_states():
 
 
 def test_learn_floor():
-    from cs2beamng.pipeline import estimate
+    from cs2beamng.pipeline import (  # noqa: F401
+        estimate,
+        estimatebase,
+        estimatescore,
+        estimatetextures,
+    )
 
     section("a level too small to teach anything is not learned from")
     tiny = {"meshMiB": 0.2, "textureShippedMiB": 0.1, "totalMiB": 0.3}
     check(
-        estimate.score({"meshes": {"bytes": 1}, "textures": {"bytes": 1}, "residentBytes": 2}, tiny)
+        estimatescore.score(
+            {"meshes": {"bytes": 1}, "textures": {"bytes": 1}, "residentBytes": 2}, tiny
+        )
         is None,
-        f"a {tiny['totalMiB']} MiB level is under the {estimate.LEARN_FLOOR_MIB:.0f} MiB floor "
+        f"a {tiny['totalMiB']} MiB level is under the {estimatescore.LEARN_FLOOR_MIB:.0f} MiB floor "
         f"and is not scored",
     )
 

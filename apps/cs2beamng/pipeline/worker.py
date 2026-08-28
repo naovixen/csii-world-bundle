@@ -265,10 +265,10 @@ def _score_estimate(report, settings, census, queue):
     has run, and the derived tree the build used is the one that is there now.
     """
     from . import estimate as estimate_mod
-    from . import meshindex
+    from . import estimatescore, meshindex
 
     measured = ((report.get("validation") or {}).get("checks") or {}).get("resident")
-    if not measured or float(measured.get("totalMiB") or 0) < estimate_mod.LEARN_FLOOR_MIB:
+    if not measured or float(measured.get("totalMiB") or 0) < estimatescore.LEARN_FLOOR_MIB:
         return  # too small to score, let alone learn from
     try:
         index = meshindex.load(settings["bundle"])
@@ -284,7 +284,7 @@ def _score_estimate(report, settings, census, queue):
             )
             index = meshindex.build(settings["bundle"])
         estimated = estimate_mod.take(settings, census, index)
-        score = estimate_mod.score(estimated, measured)
+        score = estimatescore.score(estimated, measured)
     except Exception as exc:
         queue.put(
             {
@@ -313,7 +313,7 @@ def _score_estimate(report, settings, census, queue):
                     f"{row['actualMiB']:,.0f} MiB actual ({row['errorPercent']:+.1f} %)",
                 }
             )
-    estimate_mod.observe(estimated, measured)
+    estimatescore.observe(estimated, measured)
 
 
 REPORT_NAME = "cs2beamng_report.json"
