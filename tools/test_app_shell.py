@@ -494,26 +494,27 @@ def test_settings_metadata():
         "tagline": "Rain and cloud",
         "blocks": [(None, ["water"])],
     }
-    real, real_schema = settings_mod.SECTIONS, settings_mod.SCHEMA["ui_section"]
+    # `SECTIONS` is patched where it is declared, which is the only place a person adding a
+    # section would touch. Nothing else is patched: `ui_section`'s choices used to be a second
+    # hand-written statement of the section ids and had to be patched too, and are now derived.
+    from cs2beamng.settings import catalog, sections as sections_mod
+
+    real = sections_mod.SECTIONS
     try:
-        settings_mod.SECTIONS = [*real, extra]
-        settings_mod.SCHEMA["ui_section"] = (
-            real_schema[0],
-            "choice:" + "|".join(s["id"] for s in settings_mod.SECTIONS),
-            real_schema[2],
-        )
+        sections_mod.SECTIONS = [*real, extra]
         served = settings_mod.sections_for_ui()
         check(
             served[-1]["id"] == "weather"
             and served[-1]["blocks"] == [{"title": None, "keys": ["water"]}],
             "a section added to SECTIONS is served with no other edit",
         )
+        rebuilt = {s.key: s for s in catalog.build_settings()}
         check(
-            settings_mod.coerce("ui_section", "weather") == "weather",
+            "weather" in (rebuilt["ui_section"].choices or []),
             "...and the sidebar can remember it",
         )
     finally:
-        settings_mod.SECTIONS, settings_mod.SCHEMA["ui_section"] = real, real_schema
+        sections_mod.SECTIONS = real
 
     # -- what the page is served -----------------------------------------------------------------
     payload = settings_mod.sections_for_ui()
