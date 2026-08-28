@@ -756,25 +756,81 @@ Delete far more than is written.
 
 ## Verification
 
-**The standing per-phase gate.** Every phase, without exception, answers all ten before it lands.
-The first four are mechanical; the rest are a review against the phase's diff, using the baseline
-lists in the principles table as the closing checklist.
+### How to verify a move — cheapest instrument first
+
+**Binding from Phase 6 on.** Phase 5 spent over three hours waiting: fourteen full `pytest` runs
+at ~10 minutes, three full-city rebuilds at ~16 minutes, and one more wasted on a crash. Almost
+none of it bought anything. **Eight of its failures were a moved ADDRESS** — a `module.name` where
+the module no longer has the name — and every one was found by whatever happened to be running:
+five by a 3-second example build, one by the 10-minute suite, one by a **16-minute full-city
+build**, and one by a person typing `cs2beamng budget`. A one-second question was answered
+fourteen times by a ten-minute instrument.
+
+The ladder, measured on this repo on 2026-08-28. **Run a rung only when everything above it is
+clean, and never reach for a lower rung to answer a question a higher one can settle.**
+
+| | Instrument | Cost | What only it can catch |
+| --- | --- | --- | --- |
+| 1 | `ruff check` | 2 s | unbound names, unused imports, syntax |
+| 2 | `python tools/check_references.py` | **1.3 s** | `module.name` and `from ours import name` that no longer resolve; import errors; cycles |
+| 3 | `python tools/check_shadows.py` | 1 s | a local that shadows an import (`tidy = tidy(...)`) |
+| 4 | `python tools/check_limits.py` | 3 s | the size ceiling, and stale allowlist entries |
+| 5 | `python -m pytest -q -m "not slow"` | **2 m 45 s** | 123 of the 132 tests |
+| 6 | headless build of `docs/example-bundle` | 4 s | the pipeline end to end, minus cook and minus the real bundle |
+| 7 | `python -m pytest -q` | 10 m 24 s | the nine real-bundle files — 78 % of the suite's time |
+| 8 | rebuild `cs2_city_fine` (Rule 6) | 17 m | the cook, the real city, and residency |
+| 9 | Naomi's in-game look | hers | everything a report cannot say |
+
+**Rungs 1-4 are eleven seconds together and they are not optional.** Run them after every edit,
+not after every landing. Rungs 1-3 exist because of Phase 5: `check_references` and
+`check_shadows` were both written after the failures they would have caught, and between them
+they cover every address break that phase produced.
+
+**Rung 5 is the iteration loop.** `-m "not slow"` is a measured split, not a guess: nine files
+are 494 s of the suite's 635 s and every one walks the real bundle or a real built level; the
+other 39 come to 141 s. The list and the timings are in `tools/conftest.py`.
+
+**Rung 7 runs once per landing, not once per fix.** Phase 5's pattern was: full run, find
+failures, fix, full run again — twenty minutes to land one commit. Fix at rung 5 and spend rung 7
+once, on the way out.
+
+**Rung 8 runs once per PHASE, not once per landing**, unless a landing changes what the build
+writes and the next landing would stack on top of it. Phase 5's mid-phase rebuild was worth it
+for exactly that reason — the shapes split rewrites every `.dae` — and its second was the
+closing gate. A third was wasted on a crash rungs 3 and 6 would have caught.
+
+**What has no rung below 8, and must therefore be reasoned about rather than discovered.** The
+cook stage does not run on the example bundle (it needs a BeamNG userfolder), so nothing under
+rung 8 executes `stages/cook.py`. A change there is the one case where the expensive instrument
+is the first honest one — say so in the commit rather than pretending a green rung 6 covered it.
+
+**A command with no test is a command that will break silently.** `cs2beamng budget` was dead for
+an hour and the whole suite stayed green, because it reaches the user through no test and no
+stage. `test_a1_level` now `--help`s all six CLI entry points; anything new that a person invokes
+directly gets the same one-line proof.
+
+**The standing per-phase gate.** Every phase, without exception, answers all eleven before it
+lands. The first five are mechanical; the rest are a review against the phase's diff, using the
+baseline lists in the principles table as the closing checklist.
 
 1. `ruff` clean and `ruff format` idempotent over every fork file — not only the ones touched.
 2. `check_limits.py` clean; the phase's allowlist entries **removed, never added**.
-3. `pytest` green across all 31 test files; the `Carto.Tests` project green.
-4. The import-graph check clean: no `csiibundle` → consumer reference, no stage → stage private,
+3. `check_references.py` and `check_shadows.py` clean — the eleven-second rungs, run after every
+   edit rather than at the end.
+4. `pytest` green across all 48 test files (not the 31 of the plan's first draft; Phase 4's
+   splits raised it); the `Carto.Tests` project green.
+5. The import-graph check clean: no `csiibundle` → consumer reference, no stage → stage private,
    no cycle.
-5. **DRY** — did this phase leave any rule implemented twice? Every item it claimed from the
+6. **DRY** — did this phase leave any rule implemented twice? Every item it claimed from the
    principle-1 baseline is gone, not merely relocated.
-6. **YAGNI** — nothing was added "for later"; every symbol the phase introduces has a caller.
-7. **SRP / separation** — each new file states one responsibility in one sentence. If that
+7. **YAGNI** — nothing was added "for later"; every symbol the phase introduces has a caller.
+8. **SRP / separation** — each new file states one responsibility in one sentence. If that
    sentence needs an "and", the split is wrong.
-8. **Naming** — every new or renamed symbol matches the `docs/coding-standards.md` glossary; no
+9. **Naming** — every new or renamed symbol matches the `docs/coding-standards.md` glossary; no
    concept gained a second name.
-9. **Comments** — comment density did not rise; every derivation the phase moved is intact and
+10. **Comments** — comment density did not rise; every derivation the phase moved is intact and
    every declared approximation is still declared and still counted.
-10. **Performance** — the phase's stage timings are re-measured on the Phase-0 instrument and are
+11. **Performance** — the phase's stage timings are re-measured on the Phase-0 instrument and are
     within noise or better. A regression blocks the phase.
 
 Anything that cannot be satisfied is recorded as a declared, counted exception in the phase's
@@ -830,6 +886,10 @@ audits — read this instead.
 - **The `§NN` audits are split by subsystem** and all 754 code references rewritten with them.
 - **Scope is all 187 fork-owned files / 75,145 lines**, not the 57 that breach the 400-line
   ceiling.
+- **The verification ladder is not a suggestion.** Read "How to verify a move" before touching
+  anything. The eleven-second rungs run after every EDIT; `-m "not slow"` is the loop; the full
+  suite runs once per landing; the rebuild once per phase. Phase 5 ignored all of that and spent
+  three hours proving it matters.
 
 ### Traps this plan already accounts for
 
@@ -842,7 +902,11 @@ audits — read this instead.
 - Producer work cannot be validated by an agent. It batches into one block ending in a single
   re-rip request; until then the wording is "built, awaiting in-game re-rip".
 - Consumer work ends with a rebuild of `cs2_city_fine` handed over for an in-game look **before**
-  the commit, per the standing workflow.
+  the commit, per the standing workflow — **once per phase**, not once per landing, unless a
+  landing changes what the build writes and the next would stack on top of it.
+- **The cook stage has no cheap instrument.** It does not run on the example bundle (it needs a
+  BeamNG userfolder), so nothing under the 17-minute rebuild executes `stages/cook.py`. A change
+  there is the one place the expensive instrument is the first honest one.
 
 ---
 
@@ -857,7 +921,7 @@ Each phase records here what landed and what it found, so this document stays th
 | 2 — One implementation of every shared rule | **DONE** 2026-08-27, in-game look verified — five of its claims needed correcting; see below |
 | 3 — One stage framework | **DONE** 2026-08-27 — 7 of 8 parallel blocks unified; the record merge refused, with reasons |
 | 4 — Split `csiibundle` and `tools/` | **in progress** — `terrain`, `navgraph`, `colour`, `validate_bundle`, `make_example_bundle` split and validated, `probe_point` refused with reasons; see below |
-| 5 — The app and its UI | **in progress** — every `apps/cs2beamng` file is under the 400-line ceiling; awaiting the closing rebuild and in-game look |
+| 5 — The app and its UI | **DONE** 2026-08-28, in-game look accepted — see below |
 | 6 — The Blender adapter | not started |
 | 7 — One rip-stage framework | **in progress** — extractions, the typed outcome, the frame loop and the report shape done; see below |
 | 8 — The IO writer layer | **in progress** — the writers, the attribute readers and the grading guard; see below |
@@ -897,6 +961,10 @@ Commits: `156a90e` (the plan into the repo), `28d894d` (lint, format, gates), an
   allowlist entry is an error**, so the list can only shrink.
 * `tools/check_ruff_debt.py` + `tools/ruff-debt.txt` — the same shrink-only property for the one
   ruff rule family (`ARG`) that Phases 2 and 3 own. 62 entries.
+* **Added in Phase 5, after the failures that needed them** (all three in the `gates` CI job):
+  `tools/check_references.py` (every `module.name` a shipped package writes still exists — 1.3 s
+  over 193 modules), `tools/check_shadows.py` (a local that shadows an import), and the `slow`
+  marker in `tools/conftest.py` that splits the suite 2 m 45 s / 10 m 24 s.
 * `ruff` at 100 columns, whole tree formatted, `ruff check` clean. `.editorconfig` for both
   languages. C# analyzers with `TreatWarningsAsErrors`, upstream exempted per file the way
   Roslyn wants it.
@@ -1811,7 +1879,54 @@ Both classes are now gated. `tools/check_shadows.py` walks the AST for a local t
 import (ruff's F823 catches only some shapes of it; this phase produced seven), and
 `test_a1_level` `--help`s all six CLI entry points, which is enough to prove their imports.
 
-**Still to do in this phase:** Naomi's in-game look at the rebuilt level. — `stages/instances.py`,
+**Naomi's in-game look at the rebuilt level was accepted 2026-08-28, which closes the phase.**
+
+### Phase 5 — DONE 2026-08-28
+
+Every `apps/cs2beamng` file is under the 400-line ceiling and every function in the app is under
+60. The allowlist went **222 -> 187**; what remains on it is the C# producer (Phases 7-9), the
+Blender adapter (Phase 6), and the exceptions Phase 4 declared. Twenty-four commits, seven of
+which are defects found on the way and fixed as their own commit per Rule 1.
+
+**What landed**
+
+* `settings.py` (1,724) -> a 17-module package, one `Setting` record per key, every table derived.
+* `server.py` (834) -> `server/`: the route table, `AppServer`, `BundleCaches`, and the map in
+  four (`mapview` / `mapimage` / `mappoints` / `mapstore`).
+* `validate_level.py` (1,009) -> `levelcheck/`, twelve `check(ctx)` functions over one context,
+  plus `beamng/machine.py` — the model of the MACHINE, which is what most of that file's callers
+  actually wanted and which the plan never mentioned.
+* `stages/shapes.py` (1,312) -> seven modules and the consumer's second `@dataclass`.
+* `stages/terrain.py` (1,049) -> five, with the `NOT PARITY` fence intact.
+* `ui/app.js` (1,667) -> nine ES modules; `ui/app.css` (576) -> five sheets, all 303 rule blocks
+  byte-identical.
+* The 400-650 band, fifteen files, in three landings.
+* Seven defects fixed as their own commits, including one this work introduced (the settings
+  page's target-machine line, blanked by an import one level too shallow behind a broad `except`).
+
+**What the phase cost, and what the plan now does about it.** Fourteen full `pytest` runs at ~10
+minutes, three full-city rebuilds at ~16 minutes, and a fourth wasted on a crash — over three
+hours of waiting, most of it buying nothing. **Eight of the phase's failures were a moved
+ADDRESS**, a one-second question answered fourteen times by a ten-minute instrument. Verification
+now has a measured ladder (see "How to verify a move" above), two new one-second gates
+(`check_references`, `check_shadows`) that between them catch every address break this phase
+produced, and a `slow` marker that makes the iteration loop 2 m 45 s instead of 10 m 24 s.
+
+**Three findings about the work itself, kept because they will recur in Phases 6-12.**
+
+* **A split changes a module's ADDRESS, and nothing in the language notices.**
+  `beamng/materials.py` kept five names and lost nine; `tilelod` kept three and lost eight. Every
+  caller still parsed and still linted clean. This is the single most common failure of the whole
+  phase and it now has a 1.3-second gate.
+* **The gates themselves have blind spots, and the way to find one is to reintroduce the bug.**
+  `check_limits` read `git ls-files` — tracked files only — so a new file was invisible until
+  committed, which is precisely backwards for a refactor. It reported clean on a commit with
+  three over-limit functions. Every gate written since has been proved by putting the failure
+  back and watching it fail.
+* **The plan's numbers are hypotheses.** Phase 5 is the first whose headline count was exactly
+  right (`settings.py`'s sixteen tables), and four of its supporting claims were still wrong: the
+  `.vdf` parser duplicates nothing, `GROUPS` is dead rather than a partition to reconcile, the
+  region parse was in four places not two, and there are 19 routes not 23. — `stages/instances.py`,
 `pipeline/estimate.py`, `stages/materials.py`, `pipeline/runner.py`, `beamng/budget.py`,
 `pipeline/worker.py`, `beamng/dae.py`, `stages/cook.py`, `pipeline/state.py`,
 `beamng/tilelod.py`, `stages/poi.py`, `beamng/materials.py`, `stages/lights.py`,

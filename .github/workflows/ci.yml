@@ -81,6 +81,11 @@ jobs:
       # One command, all 31 test files. Anything that needs a real rip is marked `needs_rip` and
       # skips here, naming where it looked; anything that merely has MORE to say with a bundle
       # present reports "awaiting a rip" and still runs its offline half, by design.
+      # Before the ten-minute suite: the one-second check that every `module.name` the two
+      # shipped packages write still exists. A split moves an address without moving a line, and
+      # this is the cheapest thing that notices.
+      - name: Every cross-module reference resolves
+        run: python tools/check_references.py
       - name: pytest
         run: python -m pytest -q
       - name: The generated settings reference is current
