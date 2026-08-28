@@ -857,7 +857,7 @@ Each phase records here what landed and what it found, so this document stays th
 | 2 — One implementation of every shared rule | **DONE** 2026-08-27, in-game look verified — five of its claims needed correcting; see below |
 | 3 — One stage framework | **DONE** 2026-08-27 — 7 of 8 parallel blocks unified; the record merge refused, with reasons |
 | 4 — Split `csiibundle` and `tools/` | **in progress** — `terrain`, `navgraph`, `colour`, `validate_bundle`, `make_example_bundle` split and validated, `probe_point` refused with reasons; see below |
-| 5 — The app and its UI | **in progress** — `settings`, `server`, `validate_level`, `shapes`, `terrain` and the UI split; the 400-650 band remains; see below |
+| 5 — The app and its UI | **in progress** — every `apps/cs2beamng` file is under the 400-line ceiling; awaiting the closing rebuild and in-game look |
 | 6 — The Blender adapter | not started |
 | 7 — One rip-stage framework | **in progress** — extractions, the typed outcome, the frame loop and the report shape done; see below |
 | 8 — The IO writer layer | **in progress** — the writers, the attribute readers and the grading guard; see below |
@@ -1765,7 +1765,32 @@ six cards, the cost meter, every settings section, the reference page, the map w
 network and the POI suggestion chips. `test_app_shell` now asks for every static module rather
 than `app.js` alone — a missing one is a blank screen and the old check passed straight through it.
 
-**Still to do in this phase:** the 400-650 band — `stages/instances.py`,
+**The 400-650 band is done** — fifteen more files across three landings (`f9c4c4a`, `a989fbd`,
+`3c2df72`), each split along a section banner it already carried: `estimate` into four,
+`instances`, `materials`, `runner`, `poi`, `beamng/materials`, `tilelod`, `networks`, `budget`,
+`worker`, `dae`, `cook` and `state`. **Every `apps/cs2beamng` module is now under the ceiling**;
+what is left on the allowlist is the C# producer (Phases 7-9), the Blender adapter (Phase 6), and
+the exceptions Phase 4 declared.
+
+**Three findings worth keeping from that band.**
+
+* **Six more import cycles, all the same shape.** A module that composes two others cannot also
+  be what they share, so `estimatebase`, `shapeparts` and `mapstore` exist; and where the
+  dependency was genuinely one-way the function moved to the side that owns it
+  (`write_ladder_index` to `cooktidy`, `payload_path` back to `state`).
+* **A split changes a module's ADDRESS, and the linter cannot see it.** `beamng/materials` kept
+  five names and lost nine to `textureplan`; `tilelod` kept three and lost eight; `state`,
+  `dae` and `cook` the same. Every time ruff was clean and a build died —
+  `tilelod.new_stats`, `bm.dds_mod`, `state.diff_shared`, `dae.glb_to_local`,
+  `cook._write_ladder_index`. **`bm.dds_mod` should never have existed**: one module reaching
+  through another for its import. What caught all five was a headless build of the example
+  bundle, three seconds a time, after every fix.
+* **The full suite caught the one that mattered most.** `worker.py` scores every finished build
+  through `estimate_mod.LEARN_FLOOR_MIB`/`.score`/`.observe`, and after the estimate split those
+  three pointed at nothing. Five of the six failures that run were tests reaching for old
+  addresses; the sixth was a production path.
+
+**Still to do in this phase:** the closing Rule-6 rebuild and Naomi's in-game look. — `stages/instances.py`,
 `pipeline/estimate.py`, `stages/materials.py`, `pipeline/runner.py`, `beamng/budget.py`,
 `pipeline/worker.py`, `beamng/dae.py`, `stages/cook.py`, `pipeline/state.py`,
 `beamng/tilelod.py`, `stages/poi.py`, `beamng/materials.py`, `stages/lights.py`,
