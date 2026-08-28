@@ -45,6 +45,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), "apps"))
 
+from cs2beamng import settings as settings_mod  # noqa: E402
 from cs2beamng.beamng import (  # noqa: E402 - after the sys.path bootstrap above
     frame,
     placement,
@@ -247,7 +248,7 @@ def _shape_base(name):
 
 def _sample_records(bundle, settings, samples):
     """The records this build admits, sampled deterministically."""
-    region = _region_of(settings)
+    region = settings_mod.region_of(settings)
     kept = []
     for record in bundle_instances.read_instances(bundle):
         if placement.keep(record, settings, region):
@@ -436,7 +437,7 @@ def _check_colour(bundle, settings, statics, results):
     """A TSStatic must carry the record's own three colorSet channels exactly; a forest item
     cannot carry any, so what is measured there is the SIZE of the variant approximation."""
     print("checking paint...")
-    region = _region_of(settings)
+    region = settings_mod.region_of(settings)
     variants = {}
     derived = os.path.join(bundle, "derived", "paint_variants.json")
     if os.path.isfile(derived):
@@ -480,14 +481,6 @@ def _check_colour(bundle, settings, statics, results):
             "note": f"median channel error {errors[len(errors) // 2]:.4f}, "
             f"p95 {errors[int(0.95 * (len(errors) - 1))]:.4f} (0 = its own colour)",
         }
-
-
-def _region_of(settings):
-    region = settings.get("region")
-    if not region:
-        return None
-    x, z, r = [float(p) for p in str(region).replace(",", " ").split()]
-    return {"centerX": x, "centerZ": z, "radius": r}
 
 
 if __name__ == "__main__":

@@ -9,6 +9,8 @@ because it runs on every settings request and a missing BeamNG log must not blan
 import os
 import sys
 
+from csiibundle.bake.locate import steam_roots_linux
+
 APP_DIR_NAME = ".cs2beamng"
 
 
@@ -37,11 +39,7 @@ def candidate_userfolders():
         os.path.join(home, ".local", "share", "BeamNG.drive", "current"),
         os.path.join(home, ".local", "share", "BeamNG", "BeamNG.drive", "current"),
     ]
-    for steam in (
-        os.path.join(home, ".steam", "steam"),
-        os.path.join(home, ".local", "share", "Steam"),
-        os.path.join(home, ".var", "app", "com.valvesoftware.Steam", ".local", "share", "Steam"),
-    ):
+    for steam in steam_roots_linux():
         roots.append(
             os.path.join(
                 steam,
@@ -81,11 +79,7 @@ def candidate_beamng_exes():
         for lib in libraries:
             out.append(os.path.join(lib, "steamapps", "common", "BeamNG.drive", "BeamNG.drive.exe"))
     elif sys.platform.startswith("linux"):
-        home = os.path.expanduser("~")
-        for steam in (
-            os.path.join(home, ".steam", "steam"),
-            os.path.join(home, ".local", "share", "Steam"),
-        ):
+        for steam in steam_roots_linux():
             libraries = [
                 steam,
                 *_steam_libraries(os.path.join(steam, "steamapps", "libraryfolders.vdf")),
@@ -100,6 +94,14 @@ def candidate_beamng_exes():
 
 
 def _steam_libraries(vdf_path):
+    """The extra library folders named in Steam's `libraryfolders.vdf`, or none.
+
+    This has no counterpart in `csiibundle.bake.locate`, which the refactor plan expected it to
+    duplicate: that module finds the CS2 *bundle*, which lives in a userfolder at a fixed path
+    under a Steam root, so it never needs to know where a game is INSTALLED. Only BeamNG's
+    executable can be on a second drive, and only this reads the file that says so. What the two
+    genuinely shared was the list of Steam roots, and that is `steam_roots_linux` now.
+    """
     libs = []
     try:
         with open(vdf_path, encoding="utf-8", errors="replace") as handle:

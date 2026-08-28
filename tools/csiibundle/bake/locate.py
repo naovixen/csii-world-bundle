@@ -23,7 +23,13 @@ CS2_APP_ID = "949230"
 MODSDATA_TAIL = os.path.join("Colossal Order", "Cities Skylines II", "ModsData", "Carto")
 
 
-def _steam_roots_linux():
+def steam_roots_linux():
+    """Where Steam keeps its libraries on Linux, most likely first.
+
+    An OS fact rather than a fact about either game, which is why it is public: the cs2beamng
+    app asks the same question about BeamNG's Proton prefix and its install that this module asks
+    about CS2's, and three lists that agreed by inspection are three lists that can stop agreeing.
+    """
     home = os.path.expanduser("~")
     return [
         os.path.join(home, ".steam", "steam"),
@@ -71,7 +77,7 @@ def candidate_bundle_dirs():
         "LocalLow",
         MODSDATA_TAIL,
     )
-    return [os.path.join(root, proton_tail) for root in _steam_roots_linux()]
+    return [os.path.join(root, proton_tail) for root in steam_roots_linux()]
 
 
 def default_bundle_dir():
