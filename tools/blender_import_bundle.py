@@ -127,7 +127,6 @@ import time
 import bpy
 import numpy
 from mathutils import Matrix, Vector
-from mathutils.bvhtree import BVHTree
 
 # The engine-neutral half of the reconstruction lives in `tools/csiibundle/`, a package that
 # never imports bpy: the frame conversion, the GLB and PNG readers, the splat decode and the
@@ -143,7 +142,16 @@ import colour_model
 
 # The Blender half of the reconstruction, one module per concern. Same bootstrap: this
 # package sits beside the script, and Blender does not put a script's folder on the path.
-from blenderbundle import frame, meshbuild, sceneprep, shadernodes, survey
+from blenderbundle import (
+    frame,
+    glbimport,
+    materiallayer,
+    meshbuild,
+    raysurface,
+    sceneprep,
+    shadernodes,
+    survey,
+)
 from blenderbundle.log import LOG
 from csiibundle import areas as area_math
 from csiibundle import (
@@ -159,10 +167,8 @@ from csiibundle import (
     networks,
     reader,
     terrainclip,
-    tints,
     water,
 )
-from csiibundle import glb as glb_reader
 from csiibundle import lattice as lattice_math
 from csiibundle import png as png_reader
 from csiibundle import splat as splat_reader
@@ -241,286 +247,6 @@ read_declared_gaps = reader.read_declared_gaps
 resolve_layers = reader.resolve_layers
 
 
-def report_materials(bundle_dir):
-    """Say what the material layer offers, so a grey scene has a diagnosis rather than a shrug.
-
-    Reads materials.json only to count and to check that its texture paths resolve. The meshes
-    reference textures themselves (contract §6), so nothing here feeds the import.
-    """
-    path = os.path.join(bundle_dir, "materials.json")
-    if not os.path.isfile(path):
-        LOG.warn("materials: no materials.json — meshes will import untextured")
-        return
-
-    with open(path, encoding="utf-8") as handle:
-        table = json.load(handle)
-
-    slots = ("baseColor", "normal", "mask", "emissive", "colorMask")
-    referenced, dangling, mapless, masked = set(), [], 0, 0
-    for mat_id, material in table.items():
-        paths = [material[s] for s in slots if s in material]
-        if not paths:
-            mapless += 1
-        if "colorMask" in material:
-            masked += 1
-        for rel in paths:
-            referenced.add(rel)
-            if not os.path.isfile(os.path.join(bundle_dir, rel)):
-                dangling.append(f"{mat_id}.{rel}")
-
-    LOG.step(
-        f"materials: {len(table)} ({mapless} with no maps), {len(referenced)} distinct textures"
-    )
-
-    # colors.json is a palette; colorMask is what says where each channel of it lands. Counting
-    # them here is how "did the colour layer actually come out?" gets answered by the harness
-    # rather than by opening a texture folder and squinting.
-    LOG.step(f"materials: {masked} with a colorMask (the map colors.json needs to be applicable)")
-    if dangling:
-        # A path in the table with no file behind it is a producer bug: §7 lets a map be absent,
-        # but not present-and-broken.
-        LOG.warn(
-            f"CONTRACT VIOLATION: {len(dangling)} texture reference(s) do not resolve: {dangling[:5]}"
-        )
-
-
-_TINT_PROPS = ("cs2_color0", "cs2_color1", "cs2_color2")
-_TINT_LABEL = "cs2_tint"
-
-
-def set_paint(obj, attrs):
-    """Store a record's resolved paint (contract §7.2) as custom properties on its object.
-
-    The three colours land on the instancing empty (or the placed mesh object, for lane
-    geometry), where the material's Attribute nodes read them per instance — one shared
-    material, thousands of individually-painted copies, exactly the game's own split between
-    prefab data and per-object state. `csiibundle.tints` resolves them and explains why
-    ignoring this layer leaves every tree in the city grey.
-    """
-    for prop, channel in zip(_TINT_PROPS, tints.color_set(attrs)):
-        obj[prop] = list(channel)
-
-
-_SHADER_LABEL = "cs2_shader_only"
-
-
-def apply_shader_only_materials(bundle_dir):
-    """Give the textureless materials an appearance, instead of the white glTF leaves them.
-
-    CS2 draws water, glass and some foliage with a **shader and no texture**. The bundle cannot
-    export a compiled shader, so those materials ship with no maps at all — and a glTF loader
-    meeting a material with no `baseColorTexture` falls back to `baseColorFactor`, which is
-    `[1, 1, 1, 1]`. **That is why swimming pools render as flat white paint**, and every window
-    pane with them: 206 materials on the reference city, 109 of them glass and 51 water.
-
-    What each becomes:
-
-    * **water** — the authored `rasters.water` appearance (`csiibundle.water`), the same block
-      the ocean surface uses, because in the game it is the same shader.
-    * **glass** — transmissive, at the water block's close roughness. CS2's glass shader is not
-      readable, so this is the honest minimum: see-through rather than white.
-    * **foliage / overlay / placeholder** — the material's own `tint` when it ships one,
-      otherwise left alone; there is nothing in the bundle to do better with.
-
-    Returns `(water_count, glass_count, tinted_count)`.
-    """
-    table = reader.load_materials(bundle_dir)
-    if not table:
-        return 0, 0, 0
-    appearance = water.load(bundle_dir)
-
-    counts = {"water": 0, "glass": 0, "tint": 0}
-    for mat in bpy.data.materials:
-        material_id = shadernodes.bundle_material_id(mat.name)
-        entry = table.get(material_id)
-        # The id goes in too: a textureless material whose template is the generic `Default`
-        # is classified by CS2's own name suffix, which is the only signal left. Without it the
-        # reference city leaves five fountain bowls and a hot tub rendering as white slabs.
-        kind = materials.shader_only_kind(entry, material_id)
-        if kind is None:
-            continue
-        tree = getattr(mat, "node_tree", None)
-        if tree is None or any(node.label == _SHADER_LABEL for node in tree.nodes):
-            continue  # already done
-        bsdf = next((n for n in tree.nodes if n.type == "BSDF_PRINCIPLED"), None)
-        if bsdf is None or bsdf.inputs["Base Color"].links:
-            continue  # it has a texture after all; leave it
-
-        # Mark the BSDF itself, so a `--keep-existing` re-run can tell this material is done
-        # without needing a node type to hang a label on.
-        bsdf.label = _SHADER_LABEL
-
-        flat = materials.tint(entry)
-        if kind == "water":
-            bsdf.inputs["Base Color"].default_value = appearance.base_color
-            bsdf.inputs["Roughness"].default_value = appearance.roughness
-            if "IOR" in bsdf.inputs:
-                bsdf.inputs["IOR"].default_value = water.WATER_IOR
-            if "Transmission Weight" in bsdf.inputs:
-                bsdf.inputs["Transmission Weight"].default_value = 1.0
-            else:
-                bsdf.inputs["Alpha"].default_value = appearance.surface_alpha()
-                shadernodes.set_alpha_blend(mat)
-            counts["water"] += 1
-        elif kind == "glass":
-            bsdf.inputs["Base Color"].default_value = flat or (0.92, 0.96, 1.0, 1.0)
-            bsdf.inputs["Roughness"].default_value = appearance.roughness
-            if "IOR" in bsdf.inputs:
-                bsdf.inputs["IOR"].default_value = 1.5  # architectural glass
-            if "Transmission Weight" in bsdf.inputs:
-                bsdf.inputs["Transmission Weight"].default_value = 1.0
-            else:
-                bsdf.inputs["Alpha"].default_value = 0.15
-                shadernodes.set_alpha_blend(mat)
-            counts["glass"] += 1
-        elif flat:
-            bsdf.inputs["Base Color"].default_value = flat
-            counts["tint"] += 1
-
-    return counts["water"], counts["glass"], counts["tint"]
-
-
-_PBR_LABEL = "cs2_pbr"
-
-
-def apply_pbr_masks(bundle_dir):
-    """Wire each material's §7 `mask` into metallic and roughness. Returns how many were rigged.
-
-    **This is the difference between a city and a city made of plastic.** The producer writes no
-    `metallicRoughnessTexture` into its `.glb` files — measured, 1,449 of 1,449 glTF materials
-    carry none and every one hard-codes `roughnessFactor` 0.9 — so a stock glTF import renders
-    every window, metal roof, wet carriageway and polished floor at one flat roughness. The real
-    per-texel values are in `mask`, referenced only from `materials.json`, and 4,563 of the
-    bundle's 4,784 materials have one.
-
-    Only R (metallic) and A (smoothness, so roughness is `1 - A`) are wired.
-    `csiibundle.materials.wire_plan` decides that, and its docstring says why G and B are left
-    alone rather than fed in as ambient occlusion.
-
-    The mask is loaded Non-Color — it is data, and an sRGB curve on a roughness is a silent
-    error — and CHANNEL_PACKED, because its alpha is data too and Blender would otherwise
-    multiply the other three channels by it.
-    """
-    table = reader.load_materials(bundle_dir)
-    if not table:
-        return 0
-
-    rigged = 0
-    for mat in bpy.data.materials:
-        entry = table.get(shadernodes.bundle_material_id(mat.name))
-        plan = materials.wire_plan(entry)
-        if not plan:
-            continue
-        tree = getattr(mat, "node_tree", None)
-        if tree is None or any(node.label == _PBR_LABEL for node in tree.nodes):
-            continue  # already rigged
-        principled = next((n for n in tree.nodes if n.type == "BSDF_PRINCIPLED"), None)
-        if principled is None:
-            continue
-        mask_path = materials.texture_path(bundle_dir, entry, "mask")
-        if not mask_path or not os.path.isfile(mask_path):
-            continue  # report_materials flags it
-
-        image = shadernodes.unpremultiply(bpy.data.images.load(mask_path, check_existing=True))
-        image.colorspace_settings.name = "Non-Color"
-
-        anchor = principled.location
-        tex = tree.nodes.new("ShaderNodeTexImage")
-        tex.image, tex.label = image, _PBR_LABEL
-        tex.location = (anchor.x - 1000, anchor.y + 300)
-        sep = tree.nodes.new("ShaderNodeSeparateColor")
-        sep.label = _PBR_LABEL
-        sep.location = (anchor.x - 700, anchor.y + 300)
-        tree.links.new(tex.outputs["Color"], sep.inputs["Color"])
-
-        for _slot, channel, target, invert in plan:
-            socket = (
-                tex.outputs["Alpha"]
-                if channel == "A"
-                else sep.outputs[{"R": "Red", "G": "Green", "B": "Blue"}[channel]]
-            )
-            if invert:
-                node = tree.nodes.new("ShaderNodeMath")
-                node.operation, node.label = "SUBTRACT", _PBR_LABEL
-                node.inputs[0].default_value = 1.0
-                node.location = (anchor.x - 450, anchor.y + 200)
-                tree.links.new(socket, node.inputs[1])
-                socket = node.outputs[0]
-            name = {"metallic": "Metallic", "roughness": "Roughness"}[target]
-            if name in principled.inputs:
-                tree.links.new(socket, principled.inputs[name])
-        rigged += 1
-
-    return rigged
-
-
-def apply_color_tints(bundle_dir):
-    """Wire contract §7.2 into every imported material that carries a colorMask.
-
-    For each such material: base colour becomes
-    `lerp(base, base × colorN, colorMask.{R,G,B})`, chained over the three channels — the
-    per-texel selection the contract documents, with the per-instance colours read from the
-    `cs2_color*` properties `set_paint` stored. `colorMask.A` is snow coverage and a harness
-    city has no weather, so it is ignored. Returns how many materials were rigged.
-    """
-    path = os.path.join(bundle_dir, "materials.json")
-    if not os.path.isfile(path):
-        return 0
-    with open(path, encoding="utf-8") as handle:
-        table = json.load(handle)
-
-    rigged = 0
-    for mat in bpy.data.materials:
-        entry = table.get(shadernodes.bundle_material_id(mat.name))
-        if not entry or "colorMask" not in entry:
-            continue
-        tree = getattr(mat, "node_tree", None)
-        if tree is None:
-            continue
-        if any(node.label == _TINT_LABEL for node in tree.nodes):
-            continue  # already rigged (--keep-existing rerun)
-        principled = next((n for n in tree.nodes if n.type == "BSDF_PRINCIPLED"), None)
-        if principled is None:
-            continue
-        base_in = principled.inputs.get("Base Color")
-        if base_in is None or not base_in.links:
-            continue  # no base texture to tint
-
-        mask_path = os.path.join(bundle_dir, entry["colorMask"])
-        if not os.path.isfile(mask_path):
-            continue  # report_materials already flagged it
-        image = shadernodes.unpremultiply(bpy.data.images.load(mask_path, check_existing=True))
-        image.colorspace_settings.name = "Non-Color"
-
-        anchor = principled.location
-        tex = tree.nodes.new("ShaderNodeTexImage")
-        tex.image, tex.label = image, _TINT_LABEL
-        tex.location = (anchor.x - 1000, anchor.y - 600)
-        sep = tree.nodes.new("ShaderNodeSeparateColor")
-        sep.label = _TINT_LABEL
-        sep.location = (anchor.x - 700, anchor.y - 600)
-        tree.links.new(tex.outputs["Color"], sep.inputs["Color"])
-
-        upstream = base_in.links[0].from_socket
-        for i, (prop, channel) in enumerate(zip(_TINT_PROPS, ("Red", "Green", "Blue"))):
-            attr = tree.nodes.new("ShaderNodeAttribute")
-            attr.attribute_type = "INSTANCER"  # instancer empty first, object itself second
-            attr.attribute_name, attr.label = prop, _TINT_LABEL
-            attr.location = (anchor.x - 700 + i * 60, anchor.y - 900)
-            mix = tree.nodes.new("ShaderNodeMix")
-            mix.data_type, mix.blend_type, mix.label = "RGBA", "MULTIPLY", _TINT_LABEL
-            mix.location = (anchor.x - 450 + i * 150, anchor.y - 500)
-            tree.links.new(sep.outputs[channel], shadernodes.mix_socket(mix, "Factor"))
-            tree.links.new(upstream, shadernodes.mix_socket(mix, "A"))
-            tree.links.new(attr.outputs["Color"], shadernodes.mix_socket(mix, "B"))
-            upstream = shadernodes.mix_socket(mix, "Result", outputs=True)
-
-        tree.links.new(upstream, base_in)  # replaces the existing link
-        rigged += 1
-
-    return rigged
-
-
 # -- networks, contract §5 ------------------------------------------------------------------
 #
 # A network record carries geometry in exactly one of two forms, and §5 is explicit that a
@@ -570,7 +296,7 @@ def place_network_mesh(record, mesh_dir, collection):
     if not os.path.isfile(path):
         return False
 
-    imported = import_glb(path)
+    imported = glbimport.import_glb(path)
     if not imported:
         return False
 
@@ -580,7 +306,7 @@ def place_network_mesh(record, mesh_dir, collection):
         if obj.parent is None:
             obj.matrix_world = matrix @ obj.matrix_world
         # Lane records carry resolved paint too (contract §5B) — hedges are the visible case.
-        set_paint(obj, record.get("attrs"))
+        materiallayer.set_paint(obj, record.get("attrs"))
 
     return True
 
@@ -604,7 +330,7 @@ def build_networks(
         LOG.warn(f"no networks.jsonl at {networks_path} — skipping networks")
         return 0
 
-    _glb_fast_path_counts_reset()
+    glbimport.counts_reset()
     groups = {}
     counts = {"form": {}, "category": {}}
     mesh_form = 0
@@ -733,7 +459,7 @@ def build_networks(
         f"into {len(groups)} mesh(es), {placed} quad(s)"
     )
     if net_mesh_dir is not None and mesh_form:
-        _glb_fast_path_counts_log()
+        glbimport.counts_log()
     for form, count in sorted(counts["form"].items()):
         LOG.step(f"form {form}: {count}")
     for category, count in sorted(counts["category"].items()):
@@ -768,128 +494,6 @@ def build_networks(
 _curve_length = bezier.length
 
 
-class _ProjectionSurface(drape.ProjectionSurface):
-    """Ray-cast access to an imported surface, for the layers the game paints ONTO one.
-
-    Two layers need this and they need the same thing: lane decals project onto the road
-    (`build_lanes`), surface areas project onto the terrain (`build_areas`). Both are
-    projector volumes in the game (audit §19, §30) and both are reconstructed here as
-    geometry that has to be conformed to whatever it paints.
-
-    One BVH over every network mesh would hold ~10M triangles for a full city, most of it
-    never queried. Instead the objects are binned into a 128 m grid by bounding box and each
-    object's BVH (world space, Blender frame) is built lazily on first query — a
-    neighbourhood import builds only the handful it touches.
-    """
-
-    CELL = 128.0
-    _DOWN = Vector((0.0, 0.0, -1.0))
-
-    def __init__(self, objects):
-        self._objects = []
-        self._grid = {}
-        self._trees = {}
-        self.kerb_rejections = 0
-        for obj in objects:
-            if obj.type != "MESH":
-                continue
-            index = len(self._objects)
-            self._objects.append(obj)
-            matrix = obj.matrix_world
-            corners = [matrix @ Vector(corner) for corner in obj.bound_box]
-            xs = [c.x for c in corners]
-            ys = [c.y for c in corners]
-            for cx in range(int(min(xs) // self.CELL), int(max(xs) // self.CELL) + 1):
-                for cy in range(int(min(ys) // self.CELL), int(max(ys) // self.CELL) + 1):
-                    self._grid.setdefault((cx, cy), []).append(index)
-
-    def _tree(self, index):
-        if index not in self._trees:
-            obj = self._objects[index]
-            mesh = obj.data
-            if len(mesh.polygons) == 0:
-                self._trees[index] = None
-                return None
-            # foreach_get + one matmul instead of a Python matrix apply per vertex —
-            # a full city holds ~19M network vertices and this path builds most of them.
-            count = len(mesh.vertices)
-            co = numpy.empty(count * 3, dtype=numpy.float64)
-            mesh.vertices.foreach_get("co", co)
-            matrix = numpy.array(obj.matrix_world, dtype=numpy.float64)
-            world = co.reshape(-1, 3) @ matrix[:3, :3].T + matrix[:3, 3]
-            mesh.calc_loop_triangles()
-            tris = numpy.empty(len(mesh.loop_triangles) * 3, dtype=numpy.int64)
-            mesh.loop_triangles.foreach_get("vertices", tris)
-            self._trees[index] = BVHTree.FromPolygons(world.tolist(), tris.reshape(-1, 3).tolist())
-        return self._trees[index]
-
-    def drop(self, x, y, z, half_up, half_down):
-        """Road surface hit nearest the expected height z under (x, y), Blender frame, or
-        None if nothing falls inside `[z - half_down, z + half_up]`.
-
-        Tier 0 (2026-08-07 amendment): `half_up`/`half_down` come from the marking's OWN
-        projector half-height (laneprefabs.json `boundsMin`/`boundsMax` y-extent, median
-        1.00 m -> ±0.5 m) instead of the old fixed `probe=3.0, depth=8.0` window, and the
-        pick is the hit NEAREST z rather than the HIGHEST hit in range. Highest-wins snapped
-        ~2.5% of drape samples onto kerb tops, median walls and bridge railings even inside a
-        tightened window: a kerb 0.4 m above the road is still inside a ±0.5 m reach and
-        would still win on height alone. Nearest-to-expected cannot make that mistake — the
-        road surface is always the candidate closest to the un-draped height the lane curve
-        itself encodes, and `kerb_rejections` counts how often the two picks would disagree.
-
-        MEASURED AND LEFT ALONE, 2026-08-11. The regression plan proposed re-casting below
-        every hit so each object contributes all its surfaces rather than only its topmost,
-        on the theory that a kerb was shadowing the carriageway inside one merged segment
-        mesh. `tools/test_drape_pick.py` refutes both halves of that on the shipped bundle:
-
-          * There is nothing to enumerate. Segment meshes are single-layer shells — 24,059 of
-            24,060 samples have exactly ONE surface beneath them — so the carriageway is never
-            hiding under anything. Enumerating every hit and keeping this same nearest rule
-            reproduces this rule's numbers to the digit (0.21% of samples > 2 cm above their
-            own road, max +0.298 m, at the city's densest 300 m window).
-          * Choosing the highest candidate at or below the lane curve instead is WORSE, not
-            better: 0.46% > 2 cm, twice this rule's rate. Nearest-to-expected is the better
-            calibrated discriminator, and neighbouring objects — not one object's own kerbs —
-            are the only place a choice arises at all (2.1% of samples there, 0% in a plain
-            road window).
-
-        So the lift the plan set out to fix is not made here. Do not re-litigate this from
-        static reading of the code; run the test.
-        """
-        origin = Vector((x, y, z + half_up))
-        candidates = []
-        for index in self._grid.get((int(x // self.CELL), int(y // self.CELL)), ()):
-            tree = self._tree(index)
-            if tree is None:
-                continue
-            location = tree.ray_cast(origin, self._DOWN, half_up + half_down)[0]
-            if location is not None:
-                candidates.append(location.z)
-        if not candidates:
-            return None
-        nearest = min(candidates, key=lambda c: abs(c - z))
-        if len(candidates) > 1 and nearest != max(candidates):
-            self.kerb_rejections += 1
-        return nearest
-
-    def height(self, x, y, ceiling=4000.0):
-        """Topmost hit under (x, y) from far above, or None — the plain "what is the ground
-        here" query. `drop`'s nearest-to-expected pick exists to keep a lane marking off a
-        kerb it happens to pass; an area has no expected height to be near, only the surface
-        it is painted on, so this takes the highest hit in a window tall enough to clear any
-        terrain in the map."""
-        origin = Vector((x, y, ceiling))
-        best = None
-        for index in self._grid.get((int(x // self.CELL), int(y // self.CELL)), ()):
-            tree = self._tree(index)
-            if tree is None:
-                continue
-            location = tree.ray_cast(origin, self._DOWN, 2.0 * ceiling)[0]
-            if location is not None and (best is None or location.z > best):
-                best = location.z
-        return best
-
-
 _decal_quad_info = decals.quad_info
 _bend_lane_part = lanes.bend_part
 
@@ -916,7 +520,7 @@ def _load_lane_source(asset_id, lane_mesh_dir, cache):
     path = os.path.join(lane_mesh_dir, asset_id + ".glb")
     source = None
     if os.path.isfile(path):
-        imported = import_glb(path)
+        imported = glbimport.import_glb(path)
         for obj in imported:
             if obj.type != "MESH" or source is not None:
                 continue
@@ -1273,7 +877,7 @@ def build_lanes(
         obj = bpy.data.objects.new(f"lane_{prefab_key}", mesh)
         collection.objects.link(obj)
         if sink["colorSet"] is not None:
-            set_paint(obj, {"colorSet": sink["colorSet"]})
+            materiallayer.set_paint(obj, {"colorSet": sink["colorSet"]})
         built += 1
 
     # -- rigid tiles as instances ----------------------------------------------------------
@@ -1309,7 +913,7 @@ def build_lanes(
             )
             collection.objects.link(instancer)
             if sink["colorSet"] is not None:
-                set_paint(instancer, {"colorSet": sink["colorSet"]})
+                materiallayer.set_paint(instancer, {"colorSet": sink["colorSet"]})
             instanced_tiles += len(matrices)
             instancers += 1
     if parts_collection is not None:
@@ -2697,372 +2301,6 @@ def _setup_lighting(bundle_dir=None):
         )
 
 
-_SCRATCH_NAME = "_carto_import_scratch"
-
-
-# -- the direct .glb fast path ---------------------------------------------------------------
-#
-# The stock `bpy.ops.import_scene.gltf` call costs roughly 200 ms per file almost independent
-# of its size (measured: 1541 s for 7,380 network segment .glb over a full-city run, ~209
-# ms/file) — the operator/undo-stack/dependency-graph machinery Blender wraps around every
-# import, not the parsing itself. A city ripped from CS2 imports thousands of these, and most
-# of them reference materials Blender has already built from an earlier file in the same run
-# (contract §4/§5: materials are shared across meshes, dedup'd by the producer). This path
-# parses the handful of .glb it can prove are simple enough to build directly and reuses those
-# already-built materials — it never constructs one, so it can never be the thing that makes a
-# building render wrong.
-#
-# Every guard below exists to make one specific Blender feature the stock importer would apply
-# fall through to the stock importer instead of being silently skipped: morph targets, skins,
-# animations, non-float32 or sparse accessors, an unsupported primitive mode, an attribute this
-# path does not carry through (vertex colours), or a material this run has not built yet. A
-# file that trips none of them is one this path has fully accounted for.
-#
-# glTF is Y-up, right-handed; the bundle producer writes right-handed meshes for exactly this
-# reason (§2.2). Blender's importer maps that to its own Z-up, right-handed frame via
-# (x, y, z) -> (x, -z, y) — call it G, same letter the frame comment at the top of this file
-# already uses for it. That map is a proper rotation (determinant +1, checked: the 3x3 has a
-# single -1 off the diagonal and a matching +1, so two row swaps' worth of sign, not one) —
-# which is what licenses using the glTF triangle winding as-is below: a rotation preserves
-# which face is "front", a reflection would not.
-#
-# G itself is `frames.GLTF_YUP_TO_ZUP`, where the frame conventions all live; this is the same
-# matrix as a mathutils Matrix, for the call sites that stay in Blender's types.
-_GLTF_TO_BLENDER = Matrix(frames.GLTF_YUP_TO_ZUP.tolist())
-
-# Base material name -> the bpy.data.materials datablock a stock import first built for it.
-# Populated by `import_glb`'s stock-import branch after every glTF import, consulted by
-# `_fast_import_glb` before it will claim a file. Never written to by the fast path itself —
-# that is what makes "every material this path uses already exists" a true statement rather
-# than something the fast path could accidentally falsify for a later file.
-_KNOWN_MATERIALS = {}
-
-# How many .glb this run has built directly vs. handed to the stock importer, reset per phase
-# by `_glb_fast_path_counts_reset()` and reported by `_glb_fast_path_counts_log()` — the
-# headline number for this path (see module docstring above).
-_FAST_GLB_COUNT = 0
-_STOCK_GLB_COUNT = 0
-
-# A degenerate polygon `_mesh_from_arrays` drops on the fast path is not a new defect: the
-# stock importer builds the exact same source triangle from the exact same file and never
-# complains either — `mesh.validate()` silently drops a repeated-index polygon (the same one
-# this path's pre-clean removes) and silently keeps a distinct-index zero-area one as
-# invisible geometry (verified against Address_Beach_Resort_Dubai.glb and seg_106037.glb, see
-# task-7-report.md). Surfacing either class as a per-file CONTRACT VIOLATION here would be
-# reporting on the source .glb, not on anything this path did — and, because which file first
-# reaches the fast path depends on material-discovery order (a file only takes this path once
-# every material it needs has been seen by an earlier stock import), the *set* of files that
-# would shout is nondeterministic across --center/--radius/--limit even for the identical
-# bundle. Both classes are counted quietly instead (`_record_fast_degenerate`, passed as this
-# call's `degenerate_report` with `source_geometry=True`) and folded into one aggregate line
-# per phase — deliberately worded without any tools/ab_compare.py COUNT_MARKERS substring
-# ("polygon(s)", not "face(s)") so the line stays invisible to `--counts` and a live run's log
-# stays comparable to a baseline captured before this path existed, and stays IDENTICAL text
-# in shape across different --radius (only the two numbers move, and the gate never reads
-# them). Fast/stock split itself is likewise kept off the marker list for the same reason.
-_FAST_DEGENERATE_ZERO_AREA_POLYS = 0
-_FAST_DEGENERATE_REPEATED_POLYS = 0
-
-
-def _glb_fast_path_counts_reset():
-    global _FAST_GLB_COUNT, _STOCK_GLB_COUNT
-    global _FAST_DEGENERATE_ZERO_AREA_POLYS, _FAST_DEGENERATE_REPEATED_POLYS
-    _FAST_GLB_COUNT = 0
-    _STOCK_GLB_COUNT = 0
-    _FAST_DEGENERATE_ZERO_AREA_POLYS = 0
-    _FAST_DEGENERATE_REPEATED_POLYS = 0
-
-
-def _glb_fast_path_counts_log():
-    """`LOG.step` the fast/stock split since the last reset — kept off the count-gate markers
-    (no "record(s)"/"object(s)"/"face(s)"/… substring) so a live run can call this and stay
-    comparable against a baseline log captured before this path existed."""
-    LOG.step(f"{_FAST_GLB_COUNT} glb fast-path, {_STOCK_GLB_COUNT} glb via glTF importer")
-    total = _FAST_DEGENERATE_ZERO_AREA_POLYS + _FAST_DEGENERATE_REPEATED_POLYS
-    if total:
-        detail = []
-        if _FAST_DEGENERATE_ZERO_AREA_POLYS:
-            detail.append(f"{_FAST_DEGENERATE_ZERO_AREA_POLYS} zero-area")
-        if _FAST_DEGENERATE_REPEATED_POLYS:
-            detail.append(f"{_FAST_DEGENERATE_REPEATED_POLYS} repeated-index")
-        LOG.step(
-            f"{total} degenerate polygon(s) among them ({', '.join(detail)}), dropped "
-            "quietly — source .glb artifacts the stock importer tolerates identically "
-            "(silently drops the repeated-index kind, silently keeps the zero-area kind "
-            "invisible), not a defect this path introduced"
-        )
-
-
-def _record_fast_degenerate(_name, dropped, repeated):
-    global _FAST_DEGENERATE_ZERO_AREA_POLYS, _FAST_DEGENERATE_REPEATED_POLYS
-    if repeated:
-        _FAST_DEGENERATE_REPEATED_POLYS += dropped
-    else:
-        _FAST_DEGENERATE_ZERO_AREA_POLYS += dropped
-
-
-def _gltf_node_matrix_to_blender(matrix):
-    """Conjugate a glTF-space node matrix by G so it lands in Blender's Z-up frame.
-
-    `C @ M @ C.inverted()` with `C` = `_GLTF_TO_BLENDER` — a transform changes frames by
-    conjugation, not by a left-multiply. Verified against a stock import of
-    Address_Beach_Resort_Dubai.glb (root empty + one translated, multi-material child node):
-    `matrix_world` of the matching mesh object came out identical to the float ULP.
-    """
-    return Matrix(glb_reader.conjugate(matrix, frames.GLTF_YUP_TO_ZUP).tolist())
-
-
-# The container parse itself is `csiibundle.glb.parse_glb`: it returns per-node numpy arrays
-# with the node's world matrix in glTF space, or `None` the moment anything about the file is
-# a shape it has not proven it reads correctly. Every one of those refusals is deliberate, and
-# this caller's answer to `None` is always the stock importer, never a guess.
-_parse_glb_arrays = glb_reader.parse_glb
-
-
-def _fast_import_glb(path):
-    """Build `import_glb`'s result without the stock importer, when provably safe.
-
-    Only files whose every material name is already registered qualify (`_KNOWN_MATERIALS`,
-    populated from earlier stock imports in this run) — this path reuses materials and never
-    constructs one, which is what makes it unable to regress rendering. Returns `None` to mean
-    "use the stock importer", the same as every guard inside `_parse_glb_arrays`.
-    """
-    # The stock glTF importer scales every imported position/translation by
-    # `1 / scene.unit_settings.scale_length`; this path applies glTF coordinates directly with
-    # no such factor. Always 1.0 under `blender -b` with the default scene (unreachable today),
-    # but a non-default scale would silently mix scaled stock-imported geometry with unscaled
-    # fast-path geometry in the same city. Refuse rather than get it quietly wrong.
-    if bpy.context.scene.unit_settings.scale_length != 1.0:
-        return None
-    nodes = _parse_glb_arrays(path)
-    if not nodes:
-        # `None` means a guard bailed; `[]` means the parse completed but found no
-        # mesh-bearing node — a shape this path has never validated against the stock
-        # importer (untested edge case, not one of the guarded-and-proven ones above).
-        # Treat both the same: defer to the stock importer rather than have this path
-        # confidently claim "zero objects is correct" for a file it cannot vouch for. This
-        # also keeps `import_glb` — which treats *any* non-`None` return as "handled" — from
-        # ever seeing a same-shaped `[]` for a reason other than "the stock importer tried
-        # and failed", which is the only `[]` `load_prefab_collection` should read as missing.
-        return None
-    for node in nodes:
-        for material_name, _count in node["material_runs"]:
-            if material_name not in _KNOWN_MATERIALS:
-                return None
-
-    axis_flip = numpy.array([1.0, -1.0, 1.0])
-    # Tracks both bare meshes (built, not yet wrapped in an object) and finished objects, in
-    # creation order, so the except handler below can tear down whichever partial state this
-    # attempt reached — including a mesh that built successfully but failed before
-    # `bpy.data.objects.new` ever ran (e.g. `normals_split_custom_set_from_vertices` raising
-    # on a shape this parser did not anticipate). A mesh left dangling in `bpy.data.meshes`
-    # would leak and, worse, hold `node["name"]`, forcing the stock-importer retry that
-    # follows a fast-path failure into a `.001` name — object naming is a frozen contract.
-    created = []
-    try:
-        for node in nodes:
-            # glTF -> Blender axis convention, exactly G: (x, y, z) -> (x, -z, y).
-            verts = node["verts"][:, (0, 2, 1)] * axis_flip
-            normals = node["normals"][:, (0, 2, 1)] * axis_flip
-            uv_layers = None
-            if node["uvs"] is not None:
-                loop_uv = glb_reader.glb_uv_to_texture_uv(node["uvs"][node["tris"].ravel()])
-                uv_layers = {"UVMap": loop_uv}
-            material_runs = [
-                (_KNOWN_MATERIALS[name], count) for name, count in node["material_runs"]
-            ]
-
-            # `smooth=True`: the stock importer's shading comes from the custom split normals
-            # it sets on the mesh, not from the per-polygon flat/smooth flag — matched below
-            # by setting those same custom normals, so `smooth` only has to be "not flat".
-            mesh = meshbuild.from_arrays(
-                node["name"],
-                verts,
-                node["tris"],
-                uv_layers=uv_layers,
-                material_runs=material_runs,
-                smooth=True,
-                degenerate_report=_record_fast_degenerate,
-                source_geometry=True,
-            )
-            created.append(mesh)
-            mesh.normals_split_custom_set_from_vertices(
-                numpy.ascontiguousarray(normals, dtype=numpy.float32)
-            )
-
-            obj = bpy.data.objects.new(node["name"], mesh)
-            obj.matrix_world = _gltf_node_matrix_to_blender(node["matrix"])
-            created[-1] = obj
-    except Exception:
-        # A guard above missed something about this file's shape. Undo whatever partial mesh
-        # data this attempt already allocated and let the stock importer have it instead of
-        # returning half-built geometry or propagating a crash out of a per-file fast path.
-        for item in created:
-            if isinstance(item, bpy.types.Object):
-                mesh = item.data
-                bpy.data.objects.remove(item)
-                if mesh is not None:
-                    bpy.data.meshes.remove(mesh)
-            else:
-                bpy.data.meshes.remove(item)
-        return None
-
-    global _FAST_GLB_COUNT
-    _FAST_GLB_COUNT += 1
-    return created
-
-
-def _register_known_materials(imported):
-    """After a stock import, canonicalise its materials by base name and remember them.
-
-    Blender suffixes a duplicate material name (`.001`, `.002`, …) on every import that
-    re-declares one glTF already built earlier in this run — the same material, a fresh
-    datablock. The first copy of each base name becomes canonical; every later slot pointing
-    at a `.NNN` twin is repointed at it. That is what lets `_fast_import_glb` treat "the
-    material is already registered" as a stable fact — the pool of canonical materials only
-    grows, never forks — and it is also what keeps `build_networks`' own dedup pass (it runs
-    later, over the whole scene) a near no-op: most of the duplication it used to clean up
-    never gets created in the first place.
-    """
-    for obj in imported:
-        if obj.type != "MESH":
-            continue
-        for slot in obj.material_slots:
-            material = slot.material
-            if material is None:
-                continue
-            suffix = material.name.rsplit(".", 1)[-1]
-            base = material.name.rsplit(".", 1)[0] if suffix.isdigit() else material.name
-            canonical = _KNOWN_MATERIALS.setdefault(base, material)
-            if canonical is not material:
-                slot.material = canonical
-
-
-def _scratch_layer_collection():
-    """A collection the glTF importer drops its objects into, so they can be found in O(1).
-
-    The importer links what it creates into the view layer's *active* collection. Pointing that at
-    a small scratch collection does two things. It turns "what did this import produce" into
-    reading one short list, where the obvious `set(bpy.data.objects)` before/after diff is two
-    passes over the whole scene — quadratic across a city, though measurement put it well below
-    the costs that actually dominate. More importantly it is what lets the destination collection
-    be parked outside the view layer entirely (see `parked_out_of_view_layer`): the importer has
-    to link its output *somewhere* in the view layer, and if that somewhere is the scene's master
-    collection then the scene grows and the parking buys nothing.
-    """
-    scene_collection = bpy.context.scene.collection
-    scratch = bpy.data.collections.get(_SCRATCH_NAME)
-    if scratch is None:
-        scratch = bpy.data.collections.new(_SCRATCH_NAME)
-    if scratch.name not in scene_collection.children:
-        scene_collection.children.link(scratch)
-    for layer in bpy.context.view_layer.layer_collection.children:
-        if layer.collection is scratch:
-            return layer
-    return None
-
-
-class _quiet_gltf_import:  # noqa: N801 - used as a context
-    """Silence io_scene_gltf2's per-.glb INFO banner, for exactly the span of one operator call.
-
-    `logging.getLogger("glTFImporter").setLevel(logging.WARNING)` looks like the fix and is
-    not one: ImportGLTF2.import_gltf2 (io_scene_gltf2/__init__.py) runs
-    `self.loglevel = set_debug_log()` on *every* call, and `set_debug_log()` maps
-    `bpy.app.debug_value == 0` to `logging.INFO` — so the addon's own `Log` object
-    (io/com/debug.py) resets the logger's level right back to INFO before the next import's
-    first line, silently undoing whatever this script set beforehand. Confirmed by import —
-    the getLogger/setLevel call left the "Data are loaded" / "glTF import finished" banner
-    printing on the very next import.
-
-    `set_debug_log()` reads `bpy.app.debug_value` itself, and returns `logging.WARNING` at
-    debug_value 1 — a knob the addon re-reads every call rather than one this script has to
-    fight after the fact. Only import-time INFO chatter is affected: `glTFImporter_errors`
-    is always pinned to ERROR regardless, so a real warning or error from a malformed glb
-    still surfaces.
-
-    `bpy.app.debug_value` is Blender's, not this addon's — general-purpose, and read by
-    whatever else happens to check it. Pinning it for the whole session would leave it at 1
-    through terrain building, tinting and the final save, for no reason those steps need.
-    Scoped to just the `bpy.ops.import_scene.gltf(...)` call instead: saved on entry,
-    restored on exit (success, failure, or exception alike), so every other stage of the
-    import sees whatever value it would have without this script ever having run.
-    """
-
-    def __enter__(self):
-        self._previous = bpy.app.debug_value
-        bpy.app.debug_value = 1
-        return self
-
-    def __exit__(self, *exc):
-        bpy.app.debug_value = self._previous
-        return False
-
-
-def import_glb(path):
-    """Import one .glb and return the objects it created, unlinked from every collection.
-
-    The caller links them wherever they belong. Returns [] if the import failed, having already
-    said why — one unreadable file should not end a city-sized import.
-
-    Tries the direct-parse fast path first (see the block above `_scratch_layer_collection`):
-    a file every one of whose materials this run has already built via a stock import can be
-    built directly, skipping the ~200 ms/file stock-importer overhead that otherwise dominates
-    a city-sized import. Any file the fast path is not provably safe for — first sight of a
-    material, or any guard in `_parse_glb_arrays` — falls through to the stock importer
-    unchanged, which is also where new materials get built and registered for next time.
-    """
-    fast = _fast_import_glb(path)
-    if fast is not None:
-        return fast
-
-    layer = _scratch_layer_collection()
-    if layer is None:
-        return []
-
-    view_layer = bpy.context.view_layer
-    previous = view_layer.active_layer_collection
-    view_layer.active_layer_collection = layer
-    try:
-        with _quiet_gltf_import():
-            bpy.ops.import_scene.gltf(filepath=path)
-    except Exception as exc:
-        LOG.warn(f"! {os.path.basename(path)}: import failed — {exc}")
-        return []
-    finally:
-        view_layer.active_layer_collection = previous
-
-    imported = list(layer.collection.objects)
-    for obj in imported:
-        layer.collection.objects.unlink(obj)
-    _register_known_materials(imported)
-    global _STOCK_GLB_COUNT
-    _STOCK_GLB_COUNT += 1
-    return imported
-
-
-def load_prefab_collection(asset_id, mesh_dir, sources):
-    """Import <asset_id>.glb once and return a Collection holding it, or None.
-
-    Each prefab becomes a collection so that instances can be collection-instanced: one object
-    per instance in the scene, one copy of the geometry in memory, and multi-part prefabs keep
-    their node hierarchy and per-part offsets for free.
-    """
-    path = os.path.join(mesh_dir, asset_id + ".glb")
-    if not os.path.isfile(path):
-        return None
-
-    imported = import_glb(path)
-    if not imported:
-        return None
-
-    collection = bpy.data.collections.new(f"prefab_{asset_id}")
-    sources.children.link(collection)
-    for obj in imported:
-        collection.objects.link(obj)
-
-    return collection
-
-
 def main():
     argv = sys.argv[sys.argv.index("--") + 1 :] if "--" in sys.argv else []
 
@@ -3235,7 +2473,7 @@ def main():
         )
 
     LOG.phase("Instances")
-    _glb_fast_path_counts_reset()
+    glbimport.counts_reset()
 
     # Always survey before placing. Knowing where the selection is turns "nothing appeared" from
     # a mystery into an arithmetic error the user can see.
@@ -3300,7 +2538,7 @@ def main():
         LOG.step(f"region:    within {radius} m of X {center[0]:.0f} Z {center[1]:.0f}")
 
     LOG.step(f"declared gaps in warnings.jsonl: {len(declared_gaps)}")
-    report_materials(bundle_dir)
+    materiallayer.report_materials(bundle_dir)
 
     if not keep:
         sceneprep.clear_scene()
@@ -3382,7 +2620,7 @@ def main():
             if candidate not in prefabs:
                 path = os.path.join(mesh_dir, candidate + ".glb")
                 prefabs[candidate] = (
-                    load_prefab_collection(candidate, mesh_dir, sources)
+                    glbimport.load_prefab_collection(candidate, mesh_dir, sources)
                     if os.path.isfile(path)
                     else None
                 )
@@ -3402,7 +2640,7 @@ def main():
         empty.instance_collection = collection
         empty.empty_display_size = 0.01
         empty.matrix_world = frame.instance_matrix(record)
-        set_paint(empty, record.get("attrs"))
+        materiallayer.set_paint(empty, record.get("attrs"))
 
         # Decals go in their own collection. The producer ships a decal as the flat quad it
         # paints rather than as the projector volume it paints through, so these now lie on the
@@ -3419,7 +2657,7 @@ def main():
             if base_id not in skirt_prefabs:
                 base_path = os.path.join(mesh_dir, base_id + ".glb")
                 skirt_prefabs[base_id] = (
-                    load_prefab_collection(base_id, mesh_dir, sources)
+                    glbimport.load_prefab_collection(base_id, mesh_dir, sources)
                     if os.path.isfile(base_path)
                     else None
                 )
@@ -3429,7 +2667,7 @@ def main():
                 skirt.instance_collection = skirt_prefabs[base_id]
                 skirt.empty_display_size = 0.01
                 skirt.matrix_world = frame.instance_matrix(record)
-                set_paint(skirt, record.get("attrs"))
+                materiallayer.set_paint(skirt, record.get("attrs"))
                 placed_collection.objects.link(skirt)
                 skirts_placed += 1
 
@@ -3449,7 +2687,7 @@ def main():
     # which already existed before _Log and must stay exactly where it was, after every
     # other phase's own summary — see the comment above it.
     LOG.done(f"{placed} placed, {len(prefabs)} mesh source(s) loaded")
-    _glb_fast_path_counts_log()
+    glbimport.counts_log()
 
     network_count = 0
     network_collection = None
@@ -3503,9 +2741,13 @@ def main():
                 if not do_lanes
                 else "Lane geometry (lanemeshes.jsonl)"
             )
-            road_surface = _ProjectionSurface(network_collection.objects) if network_count else None
+            road_surface = (
+                raysurface.ProjectionSurface(network_collection.objects) if network_count else None
+            )
             ground_surface = (
-                _ProjectionSurface([terrain_ground[0]]) if terrain_ground is not None else None
+                raysurface.ProjectionSurface([terrain_ground[0]])
+                if terrain_ground is not None
+                else None
             )
             with sceneprep.parked_out_of_view_layer(lane_collection):
                 lane_count = build_lanes(
@@ -3532,7 +2774,7 @@ def main():
         # Areas are painted onto the terrain, so they need it built first — it is, above.
         ground_surface, ground_cell = (None, 3.5)
         if terrain_ground is not None:
-            ground_surface = _ProjectionSurface([terrain_ground[0]])
+            ground_surface = raysurface.ProjectionSurface([terrain_ground[0]])
             ground_cell = terrain_ground[1]
         area_objects = build_areas(
             bundle_dir, area_collection, center, radius, ground=ground_surface, cell=ground_cell
@@ -3549,8 +2791,8 @@ def main():
     sources_park.__exit__()
 
     # Every .glb is in, so every material exists: apply the per-instance paint rule (§7.2).
-    masked = apply_pbr_masks(bundle_dir)
-    shader_water, shader_glass, shader_tint = apply_shader_only_materials(bundle_dir)
+    masked = materiallayer.apply_pbr_masks(bundle_dir)
+    shader_water, shader_glass, shader_tint = materiallayer.apply_shader_only_materials(bundle_dir)
     if masked:
         LOG.step(
             f"pbr:       {masked} material(s) took metallic + roughness from their §7 mask "
@@ -3562,7 +2804,7 @@ def main():
             "material(s) given an appearance — CS2 draws these with a shader and no "
             "texture, so the .glb leaves them white"
         )
-    tinted = apply_color_tints(bundle_dir)
+    tinted = materiallayer.apply_color_tints(bundle_dir)
     if tinted:
         LOG.step(
             f"tinted:    {tinted} material(s) wired to per-instance colorSet via their colorMask"
@@ -3570,7 +2812,7 @@ def main():
 
     # The scratch collection is empty by construction — every import unlinks what it produced —
     # so drop it rather than leave an empty entry in the outliner.
-    scratch = bpy.data.collections.get(_SCRATCH_NAME)
+    scratch = bpy.data.collections.get(glbimport.SCRATCH_NAME)
     if scratch is not None:
         if scratch.name in bpy.context.scene.collection.children:
             bpy.context.scene.collection.children.unlink(scratch)
