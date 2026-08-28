@@ -131,7 +131,7 @@ def sample_height(heights_u16, max_height, position, square_size, x, y):
     one, so it is not the height a wheel would touch.
 
     It stays bilinear because the deviation was measured on the thing that uses it and is not
-    there. `validate_level._ground_check` asks whether a building sits within
+    there. `levelcheck.terrain._ground_check` asks whether a building sits within
     `GROUND_TOLERANCE` = 0.5 m of the ground; over 1,441 sampled buildings on `cs2_city_fine`
     (square size **1.75 m**, the fine cascade) bilinear and the measured `ne_sw` triangulation
     disagree by a median and p95 of **0.0000 m** and a maximum of **0.0154 m**, and **no**

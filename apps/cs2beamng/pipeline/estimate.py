@@ -4,7 +4,7 @@ A settings screen whose "frame" takes an hour and a half to render owes the pers
 sliders a live answer to "will this run": every game that ships a graphics menu puts a video
 memory bar under it, and this app is a graphics menu with a very slow preview. The number that
 decides whether a BeamNG level runs is what it MOUNTS - every shape and texture, whether or not
-it is on screen - which is what `beamng.validate_level.resident_budget_mib` is expressed in and
+it is on screen - which is what `beamng.machine.resident_budget_mib` is expressed in and
 what the build's own verdict is measured against.
 
 So this module predicts exactly the quantity the validator measures (`_resident_bytes`: the
@@ -497,15 +497,15 @@ def _budget(values):
     """What this machine's card is known to hold, read exactly the way the validator reads it, so
     the meter and the build's own verdict cannot disagree."""
     try:
-        from ..beamng import validate_level
+        from ..beamng import machine
 
-        vram, pixels, source = validate_level.render_target(values)
+        vram, pixels, source = machine.render_target(values)
         return {
             "vramMiB": vram,
             "pixels": pixels,
             "source": source,
-            "residentMiB": round(validate_level.resident_budget_mib(vram, pixels)),
-            "failureMiB": round(validate_level.resident_failure_mib(vram, pixels)),
+            "residentMiB": round(machine.resident_budget_mib(vram, pixels)),
+            "failureMiB": round(machine.resident_failure_mib(vram, pixels)),
         }
     except Exception:
         return None

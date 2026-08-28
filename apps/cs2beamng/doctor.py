@@ -143,10 +143,10 @@ def collect():
 
     # -- the machine the level is for ----------------------------------------------------------
     try:
-        from .beamng import validate_level
+        from .beamng import machine
 
-        vram, pixels, source = validate_level.render_target(values)
-        budget = validate_level.resident_budget_mib(vram, pixels)
+        vram, pixels, source = machine.render_target(values)
+        budget = machine.resident_budget_mib(vram, pixels)
         add(
             "target machine",
             OK if "fallback" not in source else WARN,
@@ -156,7 +156,7 @@ def collect():
             if "fallback" not in source
             else "run BeamNG once so it logs the card and resolution, or set gpu_vram_mib/render_width/render_height",
         )
-        profile, where = validate_level.light_manager()
+        profile, where = machine.light_manager()
         if profile and "basic" in profile.lower():
             add(
                 "BeamNG lighting",
