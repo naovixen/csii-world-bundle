@@ -1550,3 +1550,37 @@ affected: the settings and server packages are clean under the fixed gate.
 
 **The Rule-6 rebuild for these landings is still owed**, and every commit above says so. The
 shapes split is the one that most needs it: it writes every `.dae` in the level.
+
+#### The Rule-6 rebuild for Phase 5's first block, verified (2026-08-28)
+
+`cs2_city_fine` rebuilt in place, `cook: true`, `--force`, settings from its own
+`cs2beamng_settings.json`, BeamNG closed. Against
+`docs/baselines/cs2_city_fine-report-after-phase4b.json`, **645 report fields are identical and
+every build-bearing number is unchanged**:
+
+| | after-phase4b | after this block |
+| --- | ---: | ---: |
+| objects | 35,019 | 35,019 |
+| cooked shapes | 7,883 | 7,883 |
+| forest items / types | 908,841 / 3,104 | 908,841 / 3,104 |
+| navgraph roads / nodes / merged | 15,393 / 51,197 / 18,703 | identical |
+| resident mesh + texture | 3,482.6 + 790.1 = 4,272.7 MiB | identical to the decimal |
+| missing files, unbound materials, oversize geometries, invalid details | 0 | 0 |
+| `classes`, `ter`, `groundCheck`, `collisionTypeMismatch` | | all identical |
+
+That is the proof the shapes split needed: it rewrites every `.dae` in the level, and the level
+came out the same.
+
+**76 fields differ and every one is accounted for.** The budget band moved
+(`budgetPixels` 2,073,600 → 4,953,600, `budgetSource` "REFERENCE 1080p, no resolution logged" →
+"resolution from beamng.log"), which is a property of the machine and not of the level — the
+level mounts the same 4,273 MiB either way, and the single validation problem is the same
+standing budget-band advisory with the same mounted figure and a different threshold beside it.
+The cost estimate's predicted bytes ride that band and the last bake. `materials` was served from
+cache so it logged no stats, and `texturesReused` counts what the previous build left on disk —
+both recording artifacts Phase 4 saw as well. The one genuinely new field is `daeParseErrors: 0`,
+declared in `836632d`.
+
+`cs2beamng budget`: 4,273 MiB resident, 1,292,894 triangles drawn inside the view distance.
+Baseline captured as `docs/baselines/cs2_city_fine-report-after-phase5a.json`. **The level is
+rebuilt in place and the in-game look is owed to Naomi.**
