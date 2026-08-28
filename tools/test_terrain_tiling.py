@@ -32,7 +32,8 @@ BUNDLE = os.path.join(
 )
 SURFACES = os.path.join(BUNDLE, "terrain", "surfaces")
 
-from cs2beamng.stages import terrain as stage  # noqa: E402
+from cs2beamng.stages import terraintextures as textures  # noqa: E402
+from cs2beamng.stages import terraintiling as tiling  # noqa: E402
 from csiibundle import png  # noqa: E402
 
 CHECKS = 0
@@ -87,12 +88,12 @@ def test_tilings():
             _check_shipped_tiling(block)
     else:
         UNPROVEN.append("the bundle carries terrain/rasters.json (no bundle on this machine)")
-    missing, _, _, from_game = stage._tiling_of(None, "grass")
-    check(not from_game and missing == stage.FALLBACK_TILE_M, "no block falls back and says so")
+    missing, _, _, from_game = tiling._tiling_of(None, "grass")
+    check(not from_game and missing == tiling.FALLBACK_TILE_M, "no block falls back and says so")
 
 
 def _check_shipped_tiling(block):
-    metres, detail_d, macro_d, from_game = stage._tiling_of(block, "grass")
+    metres, detail_d, macro_d, from_game = tiling._tiling_of(block, "grass")
     want = block["layers"]["grass"]["metresPerRepeat"]
     blend = block["layers"]["grass"]["lodBlend"]
     check(from_game, "grass reads the shipped block")
@@ -107,7 +108,7 @@ def _check_shipped_tiling(block):
     # *TexSize is in LAYER TEXELS: the shader samples at (terrainUv * layerSize) / TexSize,
     # and vanilla's TexSize x squareSize lands on BeamNG's documented 2-8 / 30-80 / 128-2048 m
     for cell in (1.75, 3.5):
-        got = {t: stage._tex_size(metres[t], cell) for t in ("detail", "macro", "base")}
+        got = {t: tiling._tex_size(metres[t], cell) for t in ("detail", "macro", "base")}
         err = max(abs(got[t] * cell - metres[t]) / metres[t] for t in got)
         check(
             err < 0.04,
@@ -117,15 +118,15 @@ def _check_shipped_tiling(block):
             ),
         )
     check(
-        stage._tex_size(14.336, 1.75) == 8 and stage._tex_size(14.336, 1.0) == 14,
+        tiling._tex_size(14.336, 1.75) == 8 and tiling._tex_size(14.336, 1.0) == 14,
         "TexSize scales with squareSize - it is texels, not metres",
         "14.34 m is 8 texels at 1.75 m and 14 at 1.0 m",
     )
     check(
-        metres != stage.FALLBACK_TILE_M,
+        metres != tiling.FALLBACK_TILE_M,
         "the pre-§47 constants are gone",
-        f"was base {stage.FALLBACK_TILE_M['base']}/macro {stage.FALLBACK_TILE_M['macro']}/"
-        f"detail {stage.FALLBACK_TILE_M['detail']} m for every ground",
+        f"was base {tiling.FALLBACK_TILE_M['base']}/macro {tiling.FALLBACK_TILE_M['macro']}/"
+        f"detail {tiling.FALLBACK_TILE_M['detail']} m for every ground",
     )
     check(
         detail_d == [0.0, blend[0], blend[1], blend[3]] and macro_d == detail_d,
@@ -133,9 +134,9 @@ def _check_shipped_tiling(block):
         f"near->mid {blend[0]:.0f}-{blend[1]:.0f} m, mid->far ends {blend[3]:.0f} m",
     )
     # extras take the grass tiling: the bundle's own semantics string says so
-    extra, _, _, extra_from_game = stage._tiling_of(block, "extra2")
+    extra, _, _, extra_from_game = tiling._tiling_of(block, "extra2")
     check(extra_from_game and extra == metres, "an extra tiles with grass")
-    rock, _, _, _ = stage._tiling_of(block, "rock")
+    rock, _, _, _ = tiling._tiling_of(block, "rock")
     check(
         rock["detail"] > metres["detail"],
         "rock is coarser than grass, as authored",
@@ -204,7 +205,7 @@ def test_ground_mesh_maps():
         src = os.path.join(tmp2, "g.png")
         with open(src, "wb") as handle:
             handle.write(png.encode_rgb((rngc.random((64, 64, 3)) * 200 + 20).astype(numpy.uint8)))
-        base, detail = stage._ground_mesh_maps(lv, src, "gate_grass_ground_b", size=64)
+        base, detail = tiling._ground_mesh_maps(lv, src, "gate_grass_ground_b", size=64)
         check(
             base.endswith(".color.png"), "the base map is tagged .color (sRGB)", base.split("/")[-1]
         )
@@ -213,7 +214,7 @@ def test_ground_mesh_maps():
             "the detail map is tagged .data (raw linear)",
             detail.split("/")[-1],
         )
-        nrm, nrm_detail = stage._ground_mesh_maps(
+        nrm, nrm_detail = tiling._ground_mesh_maps(
             lv, src, "gate_grass_ground_nm", normal=True, size=64
         )
         check(
@@ -284,7 +285,7 @@ def test_mesh_composite_clamp():
             )  # the build's gain
             enc = _image2.fromarray((a ** (1 / 2.2) * 255).astype(numpy.uint8))
             low = numpy.asarray(
-                enc.resize((stage.BASE_LOWPASS,) * 2, _image2.BOX).resize(
+                enc.resize((textures.BASE_LOWPASS,) * 2, _image2.BOX).resize(
                     enc.size, _image2.BILINEAR
                 )
             )
@@ -330,7 +331,7 @@ def test_height_texture():
         rgba[:, :, 3] = numpy.clip(rng.normal(70, 25, size=(64, 64)), 0, 255).astype(numpy.uint8)
         with open(src, "wb") as handle:
             handle.write(png.encode_rgba(rgba))
-        out = stage._height_texture(level, src, "h.png")
+        out = textures._height_texture(level, src, "h.png")
         check(out is not None, "a source with alpha yields a height map", str(out))
         from PIL import Image
 
@@ -343,13 +344,13 @@ def test_height_texture():
         check(abs(written.mean() - 0.5) < 0.02, "centred on mid-gray", f"mean {written.mean():.4f}")
         # written at HALF sigma: the base tier is flat, so the additive overlay doubles it back
         check(
-            abs(written.std() - stage.HEIGHT_SIGMA * 0.5) < 0.01,
+            abs(written.std() - textures.HEIGHT_SIGMA * 0.5) < 0.01,
             "written at half HEIGHT_SIGMA",
-            f"sigma {written.std():.4f}, composite 0.5 + (2t - 1) = {stage.HEIGHT_SIGMA}",
+            f"sigma {written.std():.4f}, composite 0.5 + (2t - 1) = {textures.HEIGHT_SIGMA}",
         )
         composite = numpy.clip(0.5 + (2 * written - 1) * 1.0, 0.0, 1.0)
         check(
-            abs(composite.std() - stage.HEIGHT_SIGMA) < 0.01,
+            abs(composite.std() - textures.HEIGHT_SIGMA) < 0.01,
             "and the composite lands on HEIGHT_SIGMA",
             f"sigma {composite.std():.4f}",
         )
@@ -359,12 +360,12 @@ def test_height_texture():
         with open(flat_src, "wb") as handle:
             handle.write(png.encode_rgba(rgba))
         check(
-            stage._height_texture(level, flat_src, "flat_h.png") is None,
+            textures._height_texture(level, flat_src, "flat_h.png") is None,
             "a constant alpha is NOT a height map",
             "the material keeps the neutral 128",
         )
         check(
-            stage._height_texture(level, os.path.join(tmp, "nope.png"), "x.png") is None,
+            textures._height_texture(level, os.path.join(tmp, "nope.png"), "x.png") is None,
             "a missing source yields None",
         )
 

@@ -52,7 +52,8 @@ BUNDLE = os.path.join(
 )
 SURFACES = os.path.join(BUNDLE, "terrain", "surfaces")
 
-from cs2beamng.stages import terrain as stage  # noqa: E402
+from cs2beamng.stages import terraintextures as textures  # noqa: E402
+from cs2beamng.stages import terraintiling as tiling  # noqa: E402
 from csiibundle import png  # noqa: E402
 
 CHECKS = 0
@@ -199,7 +200,7 @@ def test_height_displacement():
     flat_band = band_fraction(numpy.full(4, 0.5))
     print(f"  soft band across a boundary texel: {flat_band * 100:.1f} % of it (flat 128)")
     rng = numpy.random.default_rng(47)
-    for sigma in (0.05, stage.HEIGHT_SIGMA, 0.25):
+    for sigma in (0.05, textures.HEIGHT_SIGMA, 0.25):
         pairs = rng.normal(0.5, sigma, size=(512, 2))
         band = numpy.mean(
             [band_fraction(numpy.array([lo, hi, lo, hi]), samples=8) for lo, hi in pairs]
@@ -208,7 +209,7 @@ def test_height_displacement():
             [boundary_u(numpy.array([lo, hi, lo, hi]), samples=256) for lo, hi in pairs]
         )
         print(f"  sigma {sigma:.3f}: band {band * 100:.1f} %, boundary sigma {shift:.3f} texel")
-        if abs(sigma - stage.HEIGHT_SIGMA) < 1e-9:
+        if abs(sigma - textures.HEIGHT_SIGMA) < 1e-9:
             measured_shift, measured_band = float(shift), float(band)
     check(
         abs(measured_band - flat_band) < 0.05,
@@ -231,19 +232,20 @@ def test_height_sigma(measured_shift):
     # HEIGHT_SIGMA is BeamNG's own median, not the closed form; both are reported so a future change
     # to either is visible. Vanilla: 189 TerrainMaterials, sigma median 0.178 / mean 0.156 / max 0.297.
     check(
-        0.10 <= stage.HEIGHT_SIGMA <= 0.30,
+        0.10 <= textures.HEIGHT_SIGMA <= 0.30,
         "HEIGHT_SIGMA sits inside vanilla BeamNG's own range",
-        f"{stage.HEIGHT_SIGMA} against median 0.178, max 0.297 over 189 vanilla terrain materials",
+        f"{textures.HEIGHT_SIGMA} against median 0.178, max 0.297 over 189 vanilla terrain materials",
     )
     check(
-        abs(2 * stage.HEIGHT_SIGMA / numpy.sqrt(2) - 2 * stage.HEIGHT_SIGMA / 1.41421356) < 1e-6,
-        f"+-2 sigma moves a boundary by +-{2 * stage.HEIGHT_SIGMA / numpy.sqrt(2):.2f} texel",
-        f"{2 * stage.HEIGHT_SIGMA / numpy.sqrt(2) * 1.75:.2f} m on the 1.75 m grid",
+        abs(2 * textures.HEIGHT_SIGMA / numpy.sqrt(2) - 2 * textures.HEIGHT_SIGMA / 1.41421356)
+        < 1e-6,
+        f"+-2 sigma moves a boundary by +-{2 * textures.HEIGHT_SIGMA / numpy.sqrt(2):.2f} texel",
+        f"{2 * textures.HEIGHT_SIGMA / numpy.sqrt(2) * 1.75:.2f} m on the 1.75 m grid",
     )
     check(
-        abs(measured_shift - stage.HEIGHT_SIGMA / numpy.sqrt(2)) < 0.02,
+        abs(measured_shift - textures.HEIGHT_SIGMA / numpy.sqrt(2)) < 0.02,
         "the sampled displacement matches that derivation",
-        f"measured {measured_shift:.3f} vs predicted {stage.HEIGHT_SIGMA / numpy.sqrt(2):.3f}",
+        f"measured {measured_shift:.3f} vs predicted {textures.HEIGHT_SIGMA / numpy.sqrt(2):.3f}",
     )
 
 
@@ -255,7 +257,7 @@ def test_tier_encoding():
     albedo8 = (rng2.random((64, 64, 3)) * 255).astype(numpy.uint8)
     albedo = albedo8.astype(numpy.float64) / 255.0
     base = albedo.reshape(-1, 3).mean(axis=0)[None, None, :]
-    tier = stage._tier_deviation(albedo8).astype(numpy.float64) / 255.0
+    tier = textures._tier_deviation(albedo8).astype(numpy.float64) / 255.0
     full = numpy.clip(base + (2 * tier - 1) * 1.0, 0.0, 1.0)
     check(
         float(numpy.abs(full - albedo).max()) < 3.0 / 255.0,
@@ -300,7 +302,7 @@ def _tier_encoding_shipped_grounds():
         a8 = png.rgba_array(path)[:, :, :3]
         a = a8.astype(numpy.float64) / 255.0
         b = a.reshape(-1, 3).mean(axis=0)[None, None, :]
-        t = stage._tier_deviation(a8).astype(numpy.float64) / 255.0
+        t = textures._tier_deviation(a8).astype(numpy.float64) / 255.0
         v = numpy.clip(b + (2 * t - 1) * 1.0, 0.0, 1.0)
         frac = float(((v <= 1e-9) | (v >= 1 - 1e-9)).any(axis=-1).mean())
         # what the old encoding did to the same pixels, at its own strengths
@@ -325,7 +327,7 @@ def test_tier_strengths():
     if os.path.isfile(rasters_path):
         _block = json.load(open(rasters_path, encoding="utf-8")).get("terrainTiling")
         if isinstance(_block, dict):
-            _m, dd, md, _f = stage._tiling_of(_block, "grass")
+            _m, dd, md, _f = tiling._tiling_of(_block, "grass")
             check(
                 dd == md,
                 "one distance ramp serves both tiers - the check that the mapping is right",

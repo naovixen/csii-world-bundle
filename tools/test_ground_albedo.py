@@ -66,7 +66,7 @@ def check(ok, label):
 def linear_luminance(rgb):
     """Rec.709 luminance of an sRGB-ish 8-bit image, in linear light.
 
-    The same 2.2 approximation `stages/terrain.py::_linear_luminance` uses, deliberately — the
+    The same 2.2 approximation `stages/terraintextures.py::_linear_luminance` uses, deliberately — the
     two numbers are only comparable if they are computed the same way.
     """
     lin = (rgb.astype(numpy.float64) / 255.0) ** 2.2
@@ -129,7 +129,7 @@ def main():
         print(f"BeamNG not installed at {LEVELS} — skipped")
         return 0
 
-    from cs2beamng.stages import terrain as stage
+    from cs2beamng.stages import terraintextures as textures
 
     rows = vanilla_ground_albedos()
     print(f"BeamNG vanilla ground albedos: {len(rows)} across {len({r[0] for r in rows})} levels")
@@ -148,7 +148,7 @@ def main():
             f"  median {numpy.median(grass):.4f}"
         )
 
-    target = float(stage.GRASS_TARGET_LUMINANCE)
+    target = float(textures.GRASS_TARGET_LUMINANCE)
     anchor = float(numpy.median(grass)) if len(grass) >= 5 else float(numpy.median(allv))
     gap = abs(target - anchor)
     print(
@@ -174,10 +174,10 @@ def main():
         f"{len(grass) if len(grass) >= 5 else len(allv)} textures)",
     )
     check(
-        hasattr(stage, "MEASURED_GRASS_ANCHOR")
-        and abs(float(stage.MEASURED_GRASS_ANCHOR) - anchor) <= TOLERANCE,
+        hasattr(textures, "MEASURED_GRASS_ANCHOR")
+        and abs(float(textures.MEASURED_GRASS_ANCHOR) - anchor) <= TOLERANCE,
         f"the app records the measured anchor beside the shipped value "
-        f"(MEASURED_GRASS_ANCHOR = {getattr(stage, 'MEASURED_GRASS_ANCHOR', None)})",
+        f"(MEASURED_GRASS_ANCHOR = {getattr(textures, 'MEASURED_GRASS_ANCHOR', None)})",
     )
 
     print()

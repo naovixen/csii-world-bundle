@@ -33,7 +33,6 @@ file apps/cs2beamng/stages/lights.py
 file apps/cs2beamng/stages/materials.py
 file apps/cs2beamng/stages/networks.py
 file apps/cs2beamng/stages/poi.py
-file apps/cs2beamng/stages/terrain.py
 file apps/cs2beamng/ui/app.css
 file apps/cs2beamng/ui/app.js
 file tools/blender_import_bundle.py
@@ -141,8 +140,6 @@ func apps/cs2beamng/stages/networks.py::run
 func apps/cs2beamng/stages/poi.py::run
 func apps/cs2beamng/stages/scene.py::run
 func apps/cs2beamng/stages/shapes.py::run
-func apps/cs2beamng/stages/terrain.py::_ground_mesh_maps
-func apps/cs2beamng/stages/terrain.py::_terrain_materials
 func apps/cs2beamng/stages/terrain.py::run
 func apps/cs2beamng/stages/water.py::run
 func apps/cs2beamng/ui/app.js::=>
