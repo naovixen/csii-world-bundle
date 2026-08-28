@@ -118,14 +118,12 @@ objects in the depsgraph. Buildings alone are usually only thousands and need no
 trees and props are the ones that need one.
 """
 
-import json
 import math
 import os
 import sys
 import time
 
 import bpy
-from mathutils import Vector
 
 # The engine-neutral half of the reconstruction lives in `tools/csiibundle/`, a package that
 # never imports bpy: the frame conversion, the GLB and PNG readers, the splat decode and the
@@ -137,14 +135,16 @@ from mathutils import Vector
 # Blender does not put a script's own folder on the path when it is run with `--python`, so add
 # it explicitly before importing either.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import colour_model
 
 # The Blender half of the reconstruction, one module per concern. Same bootstrap: this
 # package sits beside the script, and Blender does not put a script's folder on the path.
 from blenderbundle import (
+    areabuild,
+    colourgrade,
     frame,
     glbimport,
     lanebuild,
+    lighting,
     materiallayer,
     netbuild,
     raysurface,
@@ -154,56 +154,11 @@ from blenderbundle import (
     terrainbuild,
 )
 from blenderbundle.log import LOG
-from csiibundle import areas as area_math
 from csiibundle import (
-    frames,
     instances,
-    materials,
     networks,
     reader,
 )
-
-# The scene light rig. `sceneprep.clear_scene()` removes Blender's default light along with everything
-# else, so an imported scene would have no lights and no world at all; these put a plain
-# neutral sun and ambient back. White, and deliberately uncalibrated -- the bundle ships
-# albedo, and the importer reproduces it 1:1 rather than grading it toward the game's look.
-#
-# `--colour` never touches this rig or any material: the whole grading chain rides Blender's
-# display pipeline instead, for the reasons `_apply_grading` sets out.
-#
-# Two constants that used to live here have been DELETED rather than tuned, because the model
-# they were compensating for was wrong:
-#
-#   _GROUND_BRIGHTNESS = 3.09 lifted the terrain alone, on the argument that CS2 authors ground
-#   albedo 1.63 stops darker than its object textures. The relative measurement is real, but the
-#   game renders that dark ground too — the shipped sand albedo reaches the in-game eyedropper
-#   colour under the game's own grading at ordinary scene exposure, with no ground-only boost. A
-#   gain on the terrain alone therefore does not fix an imbalance, it creates one, and it is the
-#   reason everything that was NOT boosted read as too dark once exposure was pulled back.
-#
-#   _VIEW_GAMMA = 1.3 was a hand-set tone-curve compensation "because Blender has no ACES view
-#   transform". Blender 5.2 ships ACES 1.3 and ACES 2.0 as view transforms; the premise was
-#   false. The game's contrast is now applied from its own number instead (grading.json's
-#   contrast +20, solved through the ACEScc pivot into an exact power law).
-
-# The ambient share of the rig: how much of a fully-lit surface's light comes from the sky rather
-# than the sun. A uniform environment of radiance W gives a Lambertian surface outgoing radiance
-# albedo*W, so this is directly "a quarter of the light is skylight".
-_WORLD_LEVEL = 0.25
-
-# The sun's strength is DERIVED, not chosen, from one requirement: flat, unshadowed, fully-lit
-# ground should render at exactly its albedo. For a Lambertian surface under a sun of irradiance
-# E at incidence cos(theta) plus a uniform sky of radiance W,
-#     outgoing radiance = albedo * (E*cos(theta)/pi + W)
-# so radiance == albedo when  E = pi * (1 - W) / cos(theta).
-#
-# Why bother: it makes "scene-linear" and "albedo" the same number on the ground, which is the
-# assumption `tools/colour_model.py` works under. With an arbitrary sun the model's predictions
-# and the render can only be compared after re-exposing one to the other, and under `--colour`
-# the picture came out near-black — the game's own EV figures are relative to ITS light level,
-# not to a rig picked by eye. `_sun_energy_for` computes it from the sun's actual orientation.
-_SUN_TILT = (0.5, 0.3, 0.0)
-
 
 # -- bundle reading -------------------------------------------------------------------------
 #
@@ -219,580 +174,7 @@ read_declared_gaps = reader.read_declared_gaps
 resolve_layers = reader.resolve_layers
 
 
-# The §8b conformance rules are `csiibundle.areas` — an area triangle is a FOOTPRINT the game
-# projects onto the terrain, never a plane, and its docstring says what follows from that.
-_AREA_UV_SCALE_FALLBACK = area_math.UV_SCALE_FALLBACK
-
-
-def build_areas(bundle_dir, collection, center, radius, ground=None, cell=3.5):
-    """Place the §8b surface areas: driveways, parking-lot pavement, park paths.
-
-    These are the painted patches `AreaBatchSystem` draws from area triangles — the visible
-    ground of every meshless prefab (parking lots, sports courts, campsites) and of house
-    driveways. One object per area prefab, world-anchored UVs, catalogue texture or colour.
-
-    `ground` is a `_ProjectionSurface` over the terrain grid and `cell` its spacing. The game
-    paints an area onto the terrain rather than laying a plane on it (audit §30), so with a
-    ground to conform to, each triangle is split until it follows — see
-    `area_math.conform_triangle`. Without one (`--areas` and no `--terrain`) the flat triangles
-    are all there is, and the ground will cut through them wherever it is not level.
-    """
-    path = os.path.join(bundle_dir, "areas.jsonl")
-    if not os.path.isfile(path):
-        LOG.warn("no areas.jsonl — skipping surface areas (bundle predates §8b)")
-        return 0
-
-    catalogue = {}
-    catalogue_path = os.path.join(bundle_dir, "areaprefabs.json")
-    if os.path.isfile(catalogue_path):
-        with open(catalogue_path, encoding="utf-8") as handle:
-            catalogue = json.load(handle)
-
-    area_materials = {}
-    area_packings = {}
-
-    def area_material(prefab):
-        """The §8b surface as the PBR material the catalogue actually describes.
-
-        `areaprefabs.json` carries `normalMap`, `maskMap`, `metallic` and `smoothness` beside
-        the diffuse; before it did, pavement and plazas rendered flat-lit with guessed specular
-        (audit #40 P11). The maskMap packs §7's channels, so roughness is `1 - smoothness` and
-        metallic is R — the same two `csiibundle.materials` wires for object materials, and for
-        the same reason.
-        """
-        if prefab in area_materials:
-            return area_materials[prefab]
-        surface = area_math.surface_material(catalogue.get(prefab))
-        colour = surface["color"] or (0.42, 0.40, 0.38, 1.0)
-        material = shadernodes.ground_material(
-            f"area_{prefab}",
-            os.path.join(bundle_dir, surface["texture"]) if surface["texture"] else None,
-            (colour[0], colour[1], colour[2], 1.0),
-        )
-        tree = material.node_tree
-        bsdf = tree.nodes.get("Principled BSDF")
-
-        # Scalars first, so an entry with no maskMap still gets its authored values instead of
-        # the generic ground roughness.
-        if surface["metallic"] is not None:
-            bsdf.inputs["Metallic"].default_value = surface["metallic"]
-        if surface["roughness"] is not None:
-            bsdf.inputs["Roughness"].default_value = surface["roughness"]
-
-        normal_path = (
-            os.path.join(bundle_dir, surface["normal_map"]) if surface["normal_map"] else None
-        )
-        if normal_path and os.path.isfile(normal_path):
-            tex = tree.nodes.new("ShaderNodeTexImage")
-            tex.image = shadernodes.unpremultiply(
-                bpy.data.images.load(normal_path, check_existing=True)
-            )
-            tex.image.colorspace_settings.name = "Non-Color"  # set BEFORE sampling the pixels
-
-            # An area normal map is not reliably three-channel. Feeding a packed one straight
-            # into a Normal Map node points every shading normal sideways or into the surface,
-            # and the surface renders BLACK — see `materials.detect_normal_packing`. The
-            # producer rebuilds these to §7.1 as of this change; until a bundle is re-ripped,
-            # this is what keeps the ground lit.
-            packing = materials.detect_normal_packing(shadernodes.sample_rgba(tex.image))
-            area_packings[packing] = area_packings.get(packing, 0) + 1
-
-            nmap = tree.nodes.new("ShaderNodeNormalMap")  # CS2 authors OpenGL +Y, as Blender wants
-            tree.links.new(
-                shadernodes.tangent_normal_colour(tree, tex, packing, bsdf.location),
-                nmap.inputs["Color"],
-            )
-            tree.links.new(nmap.outputs["Normal"], bsdf.inputs["Normal"])
-
-        mask_path = os.path.join(bundle_dir, surface["mask_map"]) if surface["mask_map"] else None
-        if mask_path and os.path.isfile(mask_path):
-            tex = tree.nodes.new("ShaderNodeTexImage")
-            tex.image = shadernodes.unpremultiply(
-                bpy.data.images.load(mask_path, check_existing=True)
-            )
-            tex.image.colorspace_settings.name = "Non-Color"
-            sep = tree.nodes.new("ShaderNodeSeparateColor")
-            tree.links.new(tex.outputs["Color"], sep.inputs["Color"])
-            tree.links.new(sep.outputs["Red"], bsdf.inputs["Metallic"])
-            invert = tree.nodes.new("ShaderNodeMath")
-            invert.operation = "SUBTRACT"
-            invert.inputs[0].default_value = 1.0
-            tree.links.new(tex.outputs["Alpha"], invert.inputs[1])  # A is smoothness
-            tree.links.new(invert.outputs[0], bsdf.inputs["Roughness"])
-
-        area_materials[prefab] = material
-        return material
-
-    # The ground each area is painted onto (audit §30), memoised — the conformance re-samples
-    # the same points constantly. Without the terrain layer there is nothing to conform to and
-    # the flat triangles are all this can draw.
-    ground_at = area_math.memoised_sampler(ground)
-
-    # The whole loop is `csiibundle.areas.build_pieces`: region filter, frame change, winding
-    # reversal, and the adaptive split. What comes back is Z-up triangle soup per prefab.
-    builders, stats = area_math.build_pieces(
-        read_jsonl(path),
-        cell,
-        ground_at,
-        center=center,
-        radius=radius,
-        progress=lambda n: LOG.progress("areas conformed", n, None),
-        catalogue=catalogue,
-    )
-    placed = stats["placed"]
-    skipped_region = stats["skipped_region"]
-    dropped_bad = stats["dropped_bad"]
-    missed = stats["missed"]
-    source_tris = stats["source_tris"]
-    painted_area = stats["painted_area"]
-    counters = stats["counters"]
-
-    built = 0
-    for prefab, sink in builders.items():
-        if not sink["faces"]:
-            continue
-        mesh = bpy.data.meshes.new(f"area_{prefab}")
-        mesh.from_pydata(sink["verts"], [], sink["faces"])
-        mesh.materials.append(area_material(prefab))
-        uv_layer = mesh.uv_layers.new(name="UVMap")
-        # World-planar, at the prefab's own authored rate: `colossal_UVScale` is set straight
-        # from `RenderedArea.m_UVScale` (AreaBatchSystem line 2109) and multiplies the world
-        # position. `_AREA_UV_SCALE_FALLBACK` is the game's own field default, for a bundle
-        # ripped before §8b carried the value.
-        uv_scale = float((catalogue.get(prefab) or {}).get("uvScale") or _AREA_UV_SCALE_FALLBACK)
-        for loop in mesh.loops:
-            x, y, _ = mesh.vertices[loop.vertex_index].co
-            uv_layer.data[loop.index].uv = (x * uv_scale, y * uv_scale)
-        mesh.validate()
-        obj = bpy.data.objects.new(f"area_{prefab}", mesh)
-        collection.objects.link(obj)
-        built += 1
-
-    LOG.done(
-        f"areas:     {placed} surface area(s) into {built} object(s) "
-        f"over {len(builders)} prefab(s)"
-        + (f", {skipped_region} outside the region" if skipped_region else "")
-    )
-
-    # Say it out loud when a bundle ships normal maps the contract does not describe: rebuilt
-    # here they light correctly, but the fix belongs in the producer, and a silent rebuild is
-    # how a consumer written against §7.1 alone inherits black ground without ever knowing why.
-    packed = {k: v for k, v in area_packings.items() if k != materials.NORMAL_RGB}
-    if packed:
-        LOG.warn(
-            f"{sum(packed.values())} of {sum(area_packings.values())} area normal map(s) "
-            f"are two-channel packed ({', '.join(f'{n}x {k}' for k, n in sorted(packed.items()))}) "
-            "rather than the tangent RGB of contract §7.1 — rebuilt here (they would "
-            "otherwise shade black); re-rip to ship them unpacked"
-        )
-
-    # A prefab with neither texture nor colour renders the neutral grey fallback — say why,
-    # per prefab, instead of leaving grey boxes as a riddle. `unresolved` is the producer's
-    # flag for "the save references an asset (pack) that was not loaded in the rip session":
-    # the game itself drew those areas grey (Missing Area fallback), and the cure is enabling
-    # the pack in-game and re-ripping, not anything on this side.
-    grey = [
-        prefab
-        for prefab in builders
-        if not (catalogue.get(prefab) or {}).get("texture")
-        and not (catalogue.get(prefab) or {}).get("color")
-    ]
-    if grey:
-        unresolved = [p for p in grey if (catalogue.get(p) or {}).get("unresolved")]
-        for prefab in sorted(unresolved):
-            name = (catalogue.get(prefab) or {}).get("name", prefab)
-            LOG.warn(
-                f"area prefab did not resolve at rip time (asset pack not loaded "
-                f"or version mismatch): {name}"
-            )
-        if unresolved:
-            LOG.warn(
-                f"{len(unresolved)} area prefab(s) render grey because their asset "
-                "was missing in the rip session — the game drew them grey too "
-                "(Missing Area); enable the packs, load the save, re-rip"
-            )
-        for prefab in sorted(set(grey) - set(unresolved)):
-            LOG.warn(f"area prefab carries no colour and no texture: {prefab}")
-    if ground is None:
-        LOG.warn(
-            "terrain layer not built — surface areas stay flat, expect the ground to "
-            "cut through pavement on any slope (audit §30)"
-        )
-    else:
-        total = sum(len(sink["faces"]) for sink in builders.values())
-        LOG.step(
-            f"{int(source_tris)} area triangle(s) conformed to the terrain as "
-            f"{total} piece(s)" + (f", {missed} node(s) found no ground" if missed else "")
-        )
-        if counters["unconformed"]:
-            share = 100.0 * counters["unconformed_area"] / max(painted_area, 1e-9)
-            LOG.step(
-                f"{counters['unconformed_area']:.0f} m2 of {painted_area:.0f} m2 painted "
-                f"({share:.2f}%) stayed unconformed — ground up to "
-                f"{counters['worst'] * 100:.0f} cm above it, over "
-                f"{counters['unconformed']} piece(s)"
-            )
-    if dropped_bad:
-        LOG.warn(f"CONTRACT VIOLATION: {dropped_bad} triangle(s) index out of range")
-    return built
-
-
 # -- scene building -------------------------------------------------------------------------
-
-
-def _view_transform_available(name):
-    """Is `name` one of this Blender's view transforms?
-
-    The enum is OCIO-driven, so it cannot be read off `bl_rna` (that reports a placeholder); the
-    only reliable test is to try the assignment and put back what was there.
-    """
-    view_settings = bpy.context.scene.view_settings
-    previous = view_settings.view_transform
-    try:
-        view_settings.view_transform = name
-        return True
-    except (TypeError, AttributeError):
-        return False
-    finally:
-        try:
-            view_settings.view_transform = previous
-        except (TypeError, AttributeError):
-            pass
-
-
-def _apply_grading(bundle_dir):
-    """Replay the game's colour grading from `grading.json` (the `--colour` flag).
-
-    CS2 authors ground albedo near-grey (rock sRGB saturation 0.111, sand 0.143); the on-screen
-    palette is HDRP post-processing on top. The producer ships the game's **resolved** volume-stack
-    values, so this replays real numbers rather than approximating a screenshot. OFF by default:
-    a plain import stays a faithful 1:1 albedo view.
-
-    WHERE THE GRADING RUNS, AND WHY IT MATTERS MORE THAN THE NUMBERS
-
-    A colour grade is a transform on *final radiance*, applied in a fixed order. There are three
-    places to put it in Blender and only one of them is both correct and visible:
-
-      * the COMPOSITOR runs on rendered output only. A scene graded there looks raw in the
-        viewport, which is where an imported city is actually looked at. This is where the
-        previous version put contrast, and it is why measurements of "what the importer produces"
-        kept disagreeing with what was on screen.
-      * the MATERIALS are visible, but they carry albedo, not radiance, and they come before the
-        lighting rather than after it. Saturation happens to survive the move (it is homogeneous,
-        so it commutes with a scalar light), but it then runs BEFORE the contrast instead of
-        after, and measured on this city's grass that reordering costs 18% on the blue channel.
-      * the VIEW TRANSFORM runs on final radiance, in order, and shows in the viewport and in F12
-        alike. Everything cross-channel therefore belongs there — which needs an OCIO config, and
-        `tools/colour_model.py` writes one from this bundle's own numbers.
-
-    So: with the generated config active, this sets the view and the exposure and touches nothing
-    else. Without it, the per-channel part of the chain still goes into Blender's native Color
-    Management (exact, viewport-visible) and the cross-channel part is reported as MISSING rather
-    than being moved somewhere it would silently change order.
-
-    Exposure is left as the user's control on purpose. The game meters every frame
-    (`AutomaticHistogram`), so absolute brightness is a property of where the camera was pointed,
-    not of the city; the value set here is only the manual offset the bundle does know about.
-    """
-    grading = colour_model.load(bundle_dir)
-    if grading is None:
-        LOG.warn(
-            "--colour: this bundle has no grading.json (ripped before the grading layer); "
-            "leaving the scene ungraded"
-        )
-        return
-
-    scene = bpy.context.scene
-
-    available = _view_transform_available(grading.view_name)
-    view, exposure, gamma, gain, missing = grading.colour_management(available)
-
-    scene.view_settings.exposure = exposure
-    if hasattr(scene.view_settings, "gamma"):
-        scene.view_settings.gamma = gamma
-    if hasattr(scene.view_settings, "look"):
-        scene.view_settings.look = "None"
-    if hasattr(scene.view_settings, "use_curve_mapping"):
-        scene.view_settings.use_curve_mapping = False
-    if hasattr(scene.view_settings, "use_white_balance"):
-        # Blender's own white balance is a Kelvin control on a different scale from HDRP's
-        # -100..100; mapping between them would be a fit. The game's value is applied exactly
-        # instead, either in the view transform or as a light gain.
-        scene.view_settings.use_white_balance = False
-    try:
-        scene.view_settings.view_transform = view
-    except (AttributeError, TypeError):
-        LOG.warn(
-            f"--colour: this Blender has no '{view}' view transform; leaving "
-            f"{scene.view_settings.view_transform}"
-        )
-
-    # The per-channel gain rides the lights when it cannot ride the view. Scaling every light per
-    # channel scales the whole render per channel, bounces included, so this is exact rather than
-    # an approximation — but it is only reached on the fallback path.
-    if any(abs(c - 1.0) > 1e-6 for c in gain):
-        for ob in scene.objects:
-            if ob.type == "LIGHT":
-                ob.data.color = (gain[0], gain[1], gain[2])
-        background = (
-            scene.world.node_tree.nodes.get("Background")
-            if scene.world and scene.world.node_tree
-            else None
-        )
-        if background is not None:
-            base = background.inputs["Color"].default_value
-            background.inputs["Color"].default_value = (
-                base[0] * gain[0],
-                base[1] * gain[1],
-                base[2] * gain[2],
-                1.0,
-            )
-
-    LOG.step(
-        f"grading applied from grading.json: view transform {view}, "
-        f"exposure {exposure:+.2f} EV"
-        + (f", gamma {gamma:.4g}" if gamma != 1.0 else "")
-        + (
-            f", light gain {tuple(round(c, 4) for c in gain)}"
-            if any(abs(c - 1.0) > 1e-6 for c in gain)
-            else ""
-        )
-    )
-    for line in grading.warnings:
-        LOG.warn("--colour: " + line)
-
-    if available:
-        LOG.step(
-            f"the '{grading.view_name}' view is carrying the whole chain — gain, contrast, "
-            f"saturation and shadows/midtones/highlights all run on final radiance, in the "
-            f"viewport"
-        )
-        return
-
-    for line in missing:
-        LOG.warn("--colour: NOT applied - " + line)
-    config = colour_model.blender_config_path()
-    if config is None:
-        LOG.warn(
-            "--colour: could not find Blender's own config.ocio to extend; set "
-            "CARTO_BLENDER_COLORMANAGEMENT to the folder holding it"
-        )
-        return
-    try:
-        path = colour_model.write_ocio(grading, os.path.join(bundle_dir, "colour"), config)
-    except OSError as exc:
-        LOG.warn(f"--colour: could not write the OCIO config ({exc})")
-        return
-
-    # LOUD, because this is the one step a person can silently skip and then judge the whole
-    # feature by the result. Without the config Blender has no way to run a cross-channel
-    # operator before the display transform, so the scene loses the saturation entirely and
-    # reads flat and dark — which looks exactly like "the grading does not work".
-    LOG.warn("=" * 78)
-    LOG.warn("--colour is only HALF APPLIED. Blender loads its colour config at startup, so")
-    LOG.warn(f"the '{grading.view_name}' view cannot be switched on from inside this script.")
-    LOG.warn("")
-    LOG.warn("  1. close Blender")
-    LOG.warn(f'  2. setx OCIO "{path}"')
-    LOG.warn("  3. reopen Blender, re-import, and set Render Properties > Color Management >")
-    LOG.warn(f"     View Transform to '{grading.view_name}'")
-    LOG.warn("")
-    LOG.warn("`setx` sets it permanently and is safe: this config is Blender's own with one view")
-    LOG.warn("added, so Standard, AgX, Filmic and the rest keep working exactly as before.")
-    LOG.warn("=" * 78)
-
-
-def _sun_from_bundle(bundle_dir):
-    """The game's own sun direction, as a Blender-frame vector pointing AT the light.
-
-    `grading.json`'s `lighting.sun.direction` is the vector the light TRAVELS along, in the
-    bundle's frame (left-handed, X east, Y up, Z north — §2.1). Blender is right-handed with Z
-    up, and the importer maps bundle (x, y, z) to Blender (x, z, y) everywhere else, so the same
-    mapping applies here; negating it turns "where the light goes" into "where the light is".
-
-    Worth using rather than the arbitrary default: the placeholder tilt sits at 33 degrees, and
-    this city was ripped at noon with the sun at 66. Half the terrain that reads as shadow under
-    the placeholder is lit in the game, which is most of "the import looks too dark".
-
-    Returns None when the bundle predates the lighting block, and the placeholder stands.
-    """
-    if not bundle_dir:
-        return None
-    grading = colour_model.load(bundle_dir)
-    if grading is None:
-        return None
-    toward = grading.lighting.sun.toward  # None below the horizon: a night rip lights nothing
-    if toward is None:
-        return None
-    return Vector(frames.bundle_to_zup_point(toward)).normalized()
-
-
-# Set by `--sky`. Off by default ON PURPOSE: the default rig is a uniform grey world plus a sun
-# whose energy is DERIVED so that flat, fully-lit ground renders at exactly its albedo, which is
-# what makes "scene-linear" and "albedo" the same number and is the assumption
-# `tools/colour_model.py` works under. A sky replaces that uniform ambient with a directional
-# one and breaks the identity — worth it to see reflections, wrong as a default for measurement.
-_SKY = False
-
-# Mean radiance of Blender's atmosphere model over the UPPER hemisphere, measured with a 128x64
-# equirectangular Cycles render at the reference elevation below (`--sky` normalises against it;
-# see `_build_sky`). Re-measure with the same render if the sky model changes.
-_SKY_REFERENCE_MEAN = 14.28
-_SKY_REFERENCE_ELEVATION = 66.263
-
-
-def _build_sky(world, background, bundle_dir):
-    """Replace the flat grey world with a physical sky at the bundle's OWN sun position.
-
-    **Why this exists: a mirror needs something to be a mirror OF.** Water at roughness 0.05
-    reflects its environment faithfully, and a uniform grey environment reflects as uniform grey
-    — which reads as "the ocean has no reflection". The fix is not to change the water.
-
-    What is exact and what is not, in the manner of `csiibundle.colour`:
-
-    * the sun's ELEVATION and AZIMUTH are the game's own, from `grading.json`'s
-      `lighting.sun` — so the sky's gradient, its horizon glow and the specular glint on water
-      all sit where the game put them.
-    * the sky MODEL is Blender's, not CS2's. The game uses HDRP's PhysicallyBasedSky and ships
-      only its three tints and an exposure, not a sky texture, so an atmosphere model driven by
-      the right sun is the closest honest reconstruction. `groundTint` is applied as the
-      below-horizon colour, which is the one tint that is not white on the reference bundle.
-    * `sky.exposure` is applied as a strength multiplier on the result.
-    """
-    grading = colour_model.load(bundle_dir) if bundle_dir else None
-    lighting = grading.lighting if grading is not None else None
-
-    tree = world.node_tree
-    sky = tree.nodes.new("ShaderNodeTexSky")
-    available = sky.bl_rna.properties["sky_type"].enum_items.keys()
-    for preferred in ("MULTIPLE_SCATTERING", "SINGLE_SCATTERING", "HOSEK_WILKIE", "PREETHAM"):
-        if preferred in available:
-            sky.sky_type = preferred
-            break
-
-    if lighting is not None and lighting.sun.elevation_degrees is not None:
-        sky.sun_elevation = math.radians(float(lighting.sun.elevation_degrees))
-        # The bundle's azimuth is degrees clockwise from -Z toward the light; Blender's
-        # `sun_rotation` is counter-clockwise from +Y, and bundle -Z maps to Blender -Y.
-        sky.sun_rotation = math.radians(180.0 - float(lighting.sun.azimuth_degrees or 0.0))
-    if hasattr(sky, "sun_intensity"):
-        # The disc itself is the sun LAMP's job; leaving it in double-counts the key light.
-        sky.sun_intensity = 0.0
-
-    tree.links.new(sky.outputs["Color"], background.inputs["Color"])
-
-    # NORMALISE, or the sky bleaches the scene. Blender's atmosphere model emits physical
-    # radiance: measured with a 128x64 equirectangular render at this bundle's own sun
-    # elevation, its mean over the UPPER hemisphere is 14.28, against the flat rig's
-    # _WORLD_LEVEL of 0.25 — 57x. Left alone it blows out every surface and the whole city
-    # renders pale blue, which is what the first attempt at this did.
-    #
-    # So the sky is scaled to deliver the SAME mean ambient the grey world did. That keeps
-    # `_sun_energy_for`'s derivation intact — flat lit ground still renders at its albedo — and
-    # changes only the DIRECTIONALITY of the ambient, which is the whole point: a mirror needs
-    # something to be a mirror of.
-    #
-    # The elevation term is MODELLED, not measured: sky radiance falls roughly with the sine of
-    # the sun's height, so the reference measurement is scaled by sin(elev)/sin(reference). At
-    # this bundle's own elevation it is exact by construction; at another time of day it is
-    # approximate, which is acceptable for an ambient rig whose job is to be reflected.
-    elevation = getattr(sky, "sun_elevation", math.radians(_SKY_REFERENCE_ELEVATION))
-    reference = math.sin(math.radians(_SKY_REFERENCE_ELEVATION))
-    scale = max(math.sin(elevation), 0.05) / reference
-    strength = _WORLD_LEVEL / max(_SKY_REFERENCE_MEAN * scale, 1e-6)
-    if lighting is not None:
-        strength *= 2.0 ** float(lighting.sky.exposure)
-    background.inputs["Strength"].default_value = strength
-    LOG.step(
-        f"sky:       physical sky at the bundle's own sun ({math.degrees(elevation):.1f}° "
-        f"elevation), normalised to the rig's {_WORLD_LEVEL:g} ambient (strength "
-        f"{strength:.4f}) so reflections gain a horizon without changing exposure"
-    )
-    return sky
-
-
-def _setup_lighting(bundle_dir=None):
-    """Give the scene a plain neutral sun and ambient.
-
-    `sceneprep.clear_scene()` deletes Blender's default light along with everything else, so without this
-    an imported scene has no lights and no world at all — it only looks lit because the viewport
-    falls back to its own studio HDRI, whose warm tint then colours everything. A white sun and a
-    neutral grey world make what you see the albedo the bundle actually ships, not a studio
-    lighting look. The rig is not calibrated against the game and is not meant to be: matching
-    CS2's on-screen colour needs its HDR exposure and colour grading, neither of which is in the
-    bundle. Set up your own lighting if you want the game's look.
-    """
-    scene = bpy.context.scene
-
-    if not any(ob.type == "LIGHT" for ob in scene.objects):
-        sun_data = bpy.data.lights.new("carto_sun", type="SUN")
-        sun_data.color = (1.0, 1.0, 1.0)
-        sun = bpy.data.objects.new("carto_sun", sun_data)
-        scene.collection.objects.link(sun)
-        # A Blender sun shines along its local -Z, so the direction TOWARD it is local +Z, and
-        # its world Z component is the incidence cosine on level ground.
-        toward = _sun_from_bundle(bundle_dir)
-        if toward is not None:
-            sun.rotation_euler = toward.to_track_quat("Z", "Y").to_euler()
-            cos_theta = max(1e-3, toward.z)
-            LOG.step(
-                f"sun placed from the bundle: {math.degrees(math.asin(cos_theta)):.1f} deg "
-                f"above the horizon, as the game had it at rip time"
-            )
-        else:
-            sun.rotation_euler = _SUN_TILT
-            from mathutils import Euler
-
-            cos_theta = max(1e-3, Euler(_SUN_TILT, "XYZ").to_matrix().col[2].z)
-        sun_data.energy = math.pi * (1.0 - _WORLD_LEVEL) / cos_theta
-
-    world = scene.world
-    if world is None:
-        world = bpy.data.worlds.new("carto_world")
-        scene.world = world
-    shadernodes.ensure_nodes(world)
-    background = world.node_tree.nodes.get("Background")
-    if background is not None:
-        background.inputs["Color"].default_value = (_WORLD_LEVEL, _WORLD_LEVEL, _WORLD_LEVEL, 1.0)
-        background.inputs["Strength"].default_value = 1.0
-
-    if _SKY and background is not None:
-        _build_sky(world, background, bundle_dir)
-
-    # EEVEE ships with raytracing off, so nothing reflects — water included. Turn it on; a
-    # ripped city with flat, mirror-less water reads as plastic.
-    eevee = getattr(scene, "eevee", None)
-    if eevee is not None and hasattr(eevee, "use_raytracing"):
-        eevee.use_raytracing = True
-
-    # Make the viewport obey the scene rig instead of its warm studio HDRI, and REPORT what it
-    # found. A viewport left in Solid shading draws a uniform grey clay regardless of any
-    # material, which is indistinguishable from "the import produced no colour" — so say so out
-    # loud rather than leaving it to be guessed at.
-    seen = []
-    for screen in bpy.data.screens:
-        for area in screen.areas:
-            if area.type != "VIEW_3D":
-                continue
-            for space in area.spaces:
-                if space.type != "VIEW_3D":
-                    continue
-                shading = space.shading
-                if shading.type in ("SOLID", "WIREFRAME"):
-                    shading.type = "MATERIAL"
-                if shading.type == "MATERIAL":
-                    shading.use_scene_lights = True
-                    shading.use_scene_world = True
-                seen.append(shading.type)
-
-    if seen:
-        LOG.step(f"viewport shading set to {', '.join(sorted(set(seen)))} ({len(seen)} 3D view(s))")
-    else:
-        LOG.warn(
-            "no 3D viewport found to configure (headless run, or the .blend was opened "
-            "afterwards) — if the scene looks flat grey, set the viewport to Material "
-            "Preview or Rendered: Solid shading ignores materials entirely"
-        )
 
 
 def main():
@@ -834,6 +216,7 @@ def main():
     clip_floor = None
     coarse_terrain = False
     do_colour = False
+    do_sky = False
 
     i = 0
     while i < len(argv):
@@ -862,8 +245,7 @@ def main():
             do_colour = True
             i += 1
         elif arg == "--sky":
-            global _SKY
-            _SKY = True
+            do_sky = True
             i += 1
         elif arg == "--clip-floor":
             do_terrain = True
@@ -1041,9 +423,9 @@ def main():
     # exactly the path where a graded scene from a previous run would otherwise survive and make
     # the next import look like it changed something it did not.
     sceneprep.pin_view_transform()
-    _setup_lighting(bundle_dir)
+    lighting.setup_lighting(bundle_dir, sky=do_sky)
     if do_colour:
-        _apply_grading(bundle_dir)
+        colourgrade.apply_grading(bundle_dir)
 
     # Sources live in their own collection, excluded from the view layer, so the templates do
     # not render on top of the instances placed from them.
@@ -1270,10 +652,10 @@ def main():
         if terrain_ground is not None:
             ground_surface = raysurface.ProjectionSurface([terrain_ground[0]])
             ground_cell = terrain_ground[1]
-        area_objects = build_areas(
+        area_objects = areabuild.build_areas(
             bundle_dir, area_collection, center, radius, ground=ground_surface, cell=ground_cell
         )
-        LOG.end_phase()  # build_areas() may have early-returned before its own done()
+        LOG.end_phase()  # areabuild.build_areas() may have early-returned before its own done()
 
     # Everything is imported, so the placed instances can come back into the view layer. This is
     # deliberately after the networks: an instance parked here is an instance the segment imports
