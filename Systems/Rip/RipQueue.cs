@@ -45,12 +45,16 @@ namespace Carto.Systems
         /// <param name="writerName">What to call the writer in the exception — a person reads it.</param>
         /// <param name="item">The item to queue.</param>
         /// <exception cref="InvalidOperationException">The writer task has faulted.</exception>
-        public static void Enqueue<T>(BlockingCollection<T> queue, Task writer, string writerName, T item)
+        /// <param name="whileWaiting">Run between attempts — work the writer may be waiting on
+        /// that only this thread can do, such as landing a GPU readback. May be <c>null</c>.</param>
+        public static void Enqueue<T>(BlockingCollection<T> queue, Task writer, string writerName, T item,
+                                      Action whileWaiting = null)
         {
             while (!queue.TryAdd(item, PollMs))
             {
                 if (writer.IsFaulted)
                     throw new InvalidOperationException($"the {writerName} task has faulted; the queue will never drain");
+                whileWaiting?.Invoke();
             }
         }
     }

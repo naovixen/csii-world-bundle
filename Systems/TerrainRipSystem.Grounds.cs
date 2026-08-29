@@ -98,7 +98,7 @@ namespace Carto.Systems
                     // ground texture is never that small.
                     if (!core && ((texture.width <= 8) || (texture.height <= 8))) continue;
 
-                    PendingTexture captured = MaterialRipSystem.Capture(texture, name, name, 1024);
+                    PendingTexture captured = MaterialRipSystem.CaptureNow(texture, name, name, 1024);
                     if (captured?.Pixels == null)
                     {
                         report.AppendLine($"Surface texture '{name}': readback failed; skipped");

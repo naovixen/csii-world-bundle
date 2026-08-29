@@ -120,9 +120,12 @@ namespace Carto.Systems
         /// How many items may wait for the writer.
         /// Every item holds a full uncompressed payload — a prefab's vertex arrays, or a texture's
         /// pixels at four bytes each — so an unbounded queue would simply move the memory problem
-        /// rather than solve it. The reader pauses when the queue is full.
+        /// rather than solve it. The reader pauses when the queue is full. Thirty-two rather than
+        /// eight since the encoders went parallel: the writer drains textures faster than the
+        /// reader can issue them, and a texture's pixels only land a frame or two after its item
+        /// is queued.
         /// </summary>
-        private const int QueueCapacity = 8;
+        private const int QueueCapacity = 32;
 
         /// <summary>
         /// Whether a rip is currently running.
@@ -240,6 +243,7 @@ namespace Carto.Systems
 
             run.Writer = Task.Run(() => WriteQueued(run));
             _run = run;
+            ResetTrafficSide();
 
             RipProgress.Report(RipProgress.Phase.Meshes, 0, run.Items.Count);
 
@@ -298,6 +302,7 @@ namespace Carto.Systems
         private void Finish(RipRun run)
         {
             _run = null;
+            ForgetSystems();
             run.Clock.Stop();
             RipProgress.Clear();
 

@@ -45,6 +45,9 @@ namespace Carto.Systems
                 return;
             }
 
+            // Land the texture readbacks the previous frames issued before assembling more.
+            run.Materials.Pump();
+
             double started = run.Clock.Elapsed.TotalMilliseconds;
 
             while (run.Index < run.Edges.Length)
@@ -58,8 +61,28 @@ namespace Carto.Systems
                 if ((run.Clock.Elapsed.TotalMilliseconds - started) >= FrameBudgetMs) break;
             }
 
-            // Orphan caps after the edges, under the same frame budget.
-            //
+            AdvanceRest(run, started);
+
+            RipProgress.Report(RipProgress.Phase.Networks, run.Index + run.OrphanIndex + run.LaneIndex,
+                               run.Edges.Length + run.Orphans.Length + run.Lanes.Length);
+
+            if ((run.Index >= run.Edges.Length) && (run.OrphanIndex >= run.Orphans.Length)
+                && (run.LaneIndex >= run.Lanes.Length))
+            {
+                // Nothing after this frame pumps: every readback still in flight lands now, or an
+                // encoder waiting on one would wait forever.
+                run.Materials.Pump(force: true);
+                Finish(run);
+            }
+        }
+
+        /// <summary>
+        /// The orphan caps after the edges, then the lane-drawn geometry — hanging utility
+        /// cables, fence and hedge lanes, bent along their curves the way the game bends them —
+        /// each under what is left of the same frame budget.
+        /// </summary>
+        private void AdvanceRest(NetworkRun run, double started)
+        {
             if (run.Index >= run.Edges.Length)
             {
                 while ((run.OrphanIndex < run.Orphans.Length)
@@ -72,9 +95,6 @@ namespace Carto.Systems
                 }
             }
 
-            // Lane-drawn geometry last, still under the same budget: hanging utility cables,
-            // fence and hedge lanes, bent along their curves the way the game bends them.
-            //
             if ((run.Index >= run.Edges.Length) && (run.OrphanIndex >= run.Orphans.Length))
             {
                 while ((run.LaneIndex < run.Lanes.Length)
@@ -86,12 +106,6 @@ namespace Carto.Systems
                     run.LaneIndex++;
                 }
             }
-
-            RipProgress.Report(RipProgress.Phase.Networks, run.Index + run.OrphanIndex + run.LaneIndex,
-                               run.Edges.Length + run.Orphans.Length + run.Lanes.Length);
-
-            if ((run.Index >= run.Edges.Length) && (run.OrphanIndex >= run.Orphans.Length)
-                && (run.LaneIndex >= run.Lanes.Length)) Finish(run);
         }
 
         /// <summary>
@@ -167,7 +181,8 @@ namespace Carto.Systems
         /// <param name="run">The run in progress.</param>
         /// <param name="item">The item to queue.</param>
         private static void Enqueue(NetworkRun run, NetworkItem item)
-            => RipQueue.Enqueue(run.Queue, run.Encoder, "network encoder", item);
+            => RipQueue.Enqueue(run.Queue, run.Encoder, "network encoder", item,
+                                () => run.Materials.Pump(force: true));
 
         /// <summary>
         /// Rip one network edge into the run.

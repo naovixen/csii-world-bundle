@@ -46,6 +46,9 @@ namespace Carto.Systems
                     return;
                 }
 
+                // Land the readbacks the previous frames issued before reading more.
+                run.Materials.Pump();
+
                 Stopwatch budget = Stopwatch.StartNew();
 
                 while (run.Index < run.Items.Count)
@@ -64,6 +67,9 @@ namespace Carto.Systems
 
                 if (run.Index >= run.Items.Count)
                 {
+                    // Every readback still in flight is waited for now: nothing after this frame
+                    // pumps, and an encoder waiting on one would wait forever.
+                    run.Materials.Pump(force: true);
                     run.ReadingDone = true;
                     run.Queue.CompleteAdding();
                 }
@@ -176,6 +182,9 @@ namespace Carto.Systems
         /// <param name="run">The run in progress.</param>
         /// <param name="item">The item to queue.</param>
         private static void Enqueue(RipRun run, RipItem item)
-            => RipQueue.Enqueue(run.Queue, run.Writer, "mesh writer", item);
+            => RipQueue.Enqueue(run.Queue, run.Writer, "mesh writer", item,
+                                // While the main thread waits for room it must keep landing
+                                // readbacks — the writer may be waiting on one of them.
+                                () => run.Materials.Pump(force: true));
     }
 }

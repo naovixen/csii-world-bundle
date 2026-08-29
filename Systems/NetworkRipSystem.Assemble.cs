@@ -67,6 +67,9 @@ namespace Carto.Systems
                     _log.Warn($"Could not write a network {(item.Texture != null ? "texture" : "mesh")}: {ex.Message}");
                 }
             }
+
+            // The encoders run beside this loop; the run is not written until they are.
+            materials.DrainTextures();
         }
 
         /// <summary>

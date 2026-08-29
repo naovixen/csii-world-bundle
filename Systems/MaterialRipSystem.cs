@@ -71,13 +71,22 @@ namespace Carto.Systems
         /// <summary>
         /// Release a run in flight.
         /// </summary>
-        public void Abandon() => _run = null;
+        public void Abandon()
+        {
+            CancelReadbacks(_run);
+            _run = null;
+        }
 
         /// <summary>
         /// Encode and write one queued texture. Called on the rip's writer thread.
         /// </summary>
         /// <param name="texture">The texture to write.</param>
         public void WriteTexture(PendingTexture texture) => _run?.Textures.Write(texture);
+
+        /// <summary>
+        /// Wait for every texture encode in flight. Called by the writer once its queue drains.
+        /// </summary>
+        public void DrainTextures() => _run?.Textures.Drain();
 
 
         /// <summary>
@@ -127,8 +136,13 @@ namespace Carto.Systems
                 // Normal maps only: the slot decides, the packing signature merely confirms.
                 // Content sniffing alone was measured to false-positive on five mask maps of a
                 // full city (metallic-1, varying smoothness), which reconstruction would corrupt.
+                // Run on the encoder thread once the pixels have landed, not here.
                 //
-                if (property == NormalMap) ReconstructTwoChannelNormal(pending.Pixels);
+                if (property == NormalMap) pending.PostProcess = ReconstructTwoChannelNormal;
+
+                GpuReadback issued = _issued.Value;
+                _issued.Value = null;
+                if (issued != null) run.Readbacks.Add(issued);
 
                 run.Enqueue(pending);
                 run.TexturesRead++;

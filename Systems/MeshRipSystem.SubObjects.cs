@@ -61,14 +61,15 @@ namespace Carto.Systems
                 });
             }
 
-            if (!Instance.MaterialRip.IsRipping) return;
+            MaterialRipSystem materials = Materials;
+            if (!materials.IsRipping) return;
 
             foreach (MeshPrimitive primitive in mesh.Primitives)
             {
-                string materialId = Instance.MaterialRip.Resolve(renderPrefab, primitive.MaterialIndex);
+                string materialId = materials.Resolve(renderPrefab, primitive.MaterialIndex);
 
                 if (!string.IsNullOrEmpty(materialId)) primitive.MaterialId = materialId;
-                else Instance.MaterialRip.Declare(primitive.MaterialId,
+                else materials.Declare(primitive.MaterialId,
                     (renderPrefab == null) ? "no render prefab behind the mesh entity"
                                            : $"surface asset {primitive.MaterialIndex} did not resolve");
             }
@@ -82,7 +83,27 @@ namespace Carto.Systems
         private string GetPrefabName(Entity entity)
         {
             if (!EntityManager.HasComponent<PrefabData>(entity)) return null;
-            return Instance.Prefab.TryGetPrefab(EntityManager.GetComponentData<PrefabData>(entity), out PrefabBase prefab) ? prefab?.name : null;
+            return Prefabs.TryGetPrefab(EntityManager.GetComponentData<PrefabData>(entity), out PrefabBase prefab) ? prefab?.name : null;
+        }
+
+        /// <summary>
+        /// The prefab system, looked up once per rip. <c>Instance.Prefab</c> is a
+        /// <c>GetOrCreateSystemManaged</c> on every access and was reached from this class's
+        /// per-part and per-primitive paths — a system lookup for each of tens of thousands of
+        /// sub-meshes. Cleared when a run ends so a reloaded world is never served a dead system.
+        /// </summary>
+        private PrefabSystem Prefabs => _prefabs ??= Instance.Prefab;
+        private PrefabSystem _prefabs;
+
+        /// <inheritdoc cref="Prefabs"/>
+        private MaterialRipSystem Materials => _materials ??= Instance.MaterialRip;
+        private MaterialRipSystem _materials;
+
+        /// <summary>Forget the cached systems (the run is over; the world may change).</summary>
+        private void ForgetSystems()
+        {
+            _prefabs = null;
+            _materials = null;
         }
 
 

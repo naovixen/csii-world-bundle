@@ -219,6 +219,7 @@ namespace Carto.Systems
         private void Fail(RipRun run)
         {
             _run = null;
+            ForgetSystems();
             run.Clock.Stop();
             RipProgress.Clear();
 
@@ -229,7 +230,7 @@ namespace Carto.Systems
             // on the queue and let the material rip drop its half-built state.
             //
             try { run.Queue.CompleteAdding(); } catch { /* already completed */ }
-            Instance.MaterialRip.Abandon();
+            Instance.MaterialRip.Abandon(); // also releases any encoder waiting on a readback
 
             string summary = $"FAILED: the mesh writer faulted at {run.Index}/{run.Items.Count} prefab(s) — "
                            + $"meshes/ is incomplete ({System.Threading.Volatile.Read(ref run.Written)} file(s) before the fault): "

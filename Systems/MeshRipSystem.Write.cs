@@ -30,6 +30,8 @@ namespace Carto.Systems
         private static void WriteQueued(RipRun run)
         {
             MaterialRipSystem materials = run.Materials;
+            // Landing a readback is the main thread's job; the writer only ever waits for pixels
+            // that are on their way (`TextureWriter.Write`).
 
             foreach (RipItem item in run.Queue.GetConsumingEnumerable())
             {
@@ -67,6 +69,9 @@ namespace Carto.Systems
                     _log.Warn($"Failed to write `{prefab.AssetId}.glb`: {ex}");
                 }
             }
+
+            // The encoders run beside this loop; the run is not written until they are.
+            materials.DrainTextures();
         }
 
         /// <summary>

@@ -44,7 +44,7 @@ namespace Carto.Systems
                 // path clamps. The flags still matter: `Lowered` is how the game marks a
                 // deliberate below-ground placement, which a consumer cutting terrain needs.
                 //
-                string[] flags = FlagNames(elevation.m_Flags.ToString());
+                string[] flags = RipFlags.Names(elevation.m_Flags);
                 if (flags.Length > 0) record.Attributes["elevationFlags"] = flags;
             }
 
@@ -55,7 +55,7 @@ namespace Carto.Systems
             {
                 DecalInfo info = DecalOf(prefabEntity);
 
-                string[] onto = FlagNames(info.Layers.ToString());
+                string[] onto = RipFlags.Names(info.Layers);
                 if (onto.Length > 0) record.Attributes["decalLayers"] = onto;
 
                 // The mesh is the painted quad, so the volume it was projected through is the one
@@ -352,18 +352,5 @@ namespace Carto.Systems
             Math.Round(color.r, 4), Math.Round(color.g, 4), Math.Round(color.b, 4), Math.Round(color.a, 4)
         };
 
-        private static string[] FlagNames(string flags)
-        {
-            if (string.IsNullOrEmpty(flags) || char.IsDigit(flags[0])) return Array.Empty<string>();
-
-            List<string> names = new();
-            foreach (string name in flags.Split(','))
-            {
-                string trimmed = name.Trim();
-                if (trimmed.Length > 0) names.Add(trimmed);
-            }
-
-            return names.ToArray();
-        }
     }
 }

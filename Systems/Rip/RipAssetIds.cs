@@ -108,12 +108,13 @@ namespace Carto.Systems
             Dictionary<Entity, AssetIdEntry> result = new(prefabEntities.Count);
             Dictionary<string, List<Entity>> byBaseId = new(prefabEntities.Count);
             Dictionary<Entity, string> discriminators = new(prefabEntities.Count);
+            PrefabSystem prefabs = Instance.Prefab; // one lookup for the whole table, not one per prefab
 
             foreach (Entity prefabEntity in prefabEntities)
             {
                 PrefabBase prefab = null;
                 if (entityManager.HasComponent<PrefabData>(prefabEntity))
-                    Instance.Prefab.TryGetPrefab(entityManager.GetComponentData<PrefabData>(prefabEntity), out prefab);
+                    prefabs.TryGetPrefab(entityManager.GetComponentData<PrefabData>(prefabEntity), out prefab);
 
                 bool resolved = (prefab != null) && !string.IsNullOrEmpty(prefab.name);
                 string baseId = resolved ? SanitizeAssetId(prefab.name) : $"unresolved_{prefabEntity.Index}";

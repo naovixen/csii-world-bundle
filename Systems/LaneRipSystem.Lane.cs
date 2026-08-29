@@ -47,7 +47,7 @@ namespace Carto.Systems
                 CarLane lane = EntityManager.GetComponentData<CarLane>(entity);
                 record.SpeedLimit = lane.m_SpeedLimit * 3.6f;
                 record.Curviness = lane.m_Curviness;
-                AddFlags(record, lane.m_Flags.ToString());
+                AddFlags(record, RipFlags.Names(lane.m_Flags));
                 return;
             }
 
@@ -56,19 +56,19 @@ namespace Carto.Systems
                 TrackLane lane = EntityManager.GetComponentData<TrackLane>(entity);
                 record.SpeedLimit = lane.m_SpeedLimit * 3.6f;
                 record.Curviness = lane.m_Curviness;
-                AddFlags(record, lane.m_Flags.ToString());
+                AddFlags(record, RipFlags.Names(lane.m_Flags));
                 return;
             }
 
             if (EntityManager.HasComponent<PedestrianLane>(entity))
             {
-                AddFlags(record, EntityManager.GetComponentData<PedestrianLane>(entity).m_Flags.ToString());
+                AddFlags(record, RipFlags.Names(EntityManager.GetComponentData<PedestrianLane>(entity).m_Flags));
                 return;
             }
 
             if (EntityManager.HasComponent<ParkingLane>(entity))
             {
-                AddFlags(record, EntityManager.GetComponentData<ParkingLane>(entity).m_Flags.ToString());
+                AddFlags(record, RipFlags.Names(EntityManager.GetComponentData<ParkingLane>(entity).m_Flags));
             }
         }
 
@@ -79,16 +79,10 @@ namespace Carto.Systems
         /// simply stops seeing.
         /// </summary>
         /// <param name="record">The record to add to.</param>
-        /// <param name="flags">The enum's <c>ToString</c>.</param>
-        private static void AddFlags(LaneRecord record, string flags)
+        /// <param name="flags">The enum's set names (<see cref="RipFlags.Names{T}"/>).</param>
+        private static void AddFlags(LaneRecord record, string[] flags)
         {
-            if (string.IsNullOrEmpty(flags) || (flags == "0")) return;
-
-            foreach (string name in flags.Split(','))
-            {
-                string trimmed = name.Trim();
-                if (trimmed.Length > 0) record.Flags.Add(trimmed);
-            }
+            foreach (string name in flags) record.Flags.Add(name);
         }
     }
 }

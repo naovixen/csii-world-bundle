@@ -93,7 +93,7 @@ namespace Carto.Systems
                     return null;
                 }
 
-                PendingTexture captured = MaterialRipSystem.Capture(splat, "splatmap", "terrain splatmap", 0);
+                PendingTexture captured = MaterialRipSystem.CaptureNow(splat, "splatmap", "terrain splatmap", 0);
                 if (captured?.Pixels == null)
                 {
                     report.AppendLine("Splatmap: readback failed; consumers fall back to per-cell classification");
@@ -250,7 +250,7 @@ namespace Carto.Systems
                 Texture user = materials?.UserSplatmap;
                 if (user == null) return null;
 
-                PendingTexture captured = MaterialRipSystem.Capture(user, "user_splatmap", "user splatmap", 0);
+                PendingTexture captured = MaterialRipSystem.CaptureNow(user, "user_splatmap", "user splatmap", 0);
                 if (captured?.Pixels == null) return null;
 
                 bool painted = false;

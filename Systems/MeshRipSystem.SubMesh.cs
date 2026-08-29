@@ -52,6 +52,18 @@ namespace Carto.Systems
         /// </summary>
         public static SubMeshFlags DefaultState => SubMeshFlags.RequireSafe | SubMeshFlags.RequireAdult
             | SubMeshFlags.RequireEmpty | SubMeshFlags.RequireClear | SubMeshFlags.RequireForward
-            | (Instance.City.leftHandTraffic ? SubMeshFlags.RequireLeftHandTraffic : SubMeshFlags.RequireRightHandTraffic);
+            | (LeftHandTraffic ? SubMeshFlags.RequireLeftHandTraffic : SubMeshFlags.RequireRightHandTraffic);
+
+        /// <summary>
+        /// The city's traffic side, read from the city system once per rip rather than through
+        /// the service locator on every sub-mesh selection (a system lookup per call, per prefab
+        /// and per state variant). Refreshed at the start of a run; a city does not change sides
+        /// mid-rip.
+        /// </summary>
+        private static bool LeftHandTraffic => _leftHandTraffic ??= Instance.City.leftHandTraffic;
+        private static bool? _leftHandTraffic;
+
+        /// <summary>Forget the cached traffic side (a new run, possibly a new city).</summary>
+        private static void ResetTrafficSide() => _leftHandTraffic = null;
     }
 }

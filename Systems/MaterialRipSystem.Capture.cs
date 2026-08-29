@@ -1,3 +1,5 @@
+using System.Threading.Tasks;
+using UnityEngine.Rendering;
 using Carto.Domain;
 using Carto.IO;
 using Carto.Utils;
@@ -142,16 +144,18 @@ namespace Carto.Systems
             // gamma-mangling linear data, and the output still rendered: exactly the silent failure
             // §7.1 of the contract warns about. The Texture that came back cannot be stale.
             //
-            byte[] pixels = Blit(source, width, height, GraphicsFormatUtility.IsSRGBFormat(source.graphicsFormat));
-            if (pixels == null) return null;
-
+            GpuReadback readback = Blit(source, width, height, GraphicsFormatUtility.IsSRGBFormat(source.graphicsFormat));
+            if (readback == null) return null;
+            // The pixels arrive on a later frame (`Pump`); the encoder blocks on the promise.
+            TaskCompletionSource<byte[]> promise = readback.Pixels;
+            _issued.Value = readback;
             return new PendingTexture
             {
                 Key = key,
                 SourceName = name,
                 Width = width,
                 Height = height,
-                Pixels = pixels
+                AwaitPixels = () => promise.Task.Result
             };
         }
 
@@ -221,51 +225,6 @@ namespace Carto.Systems
                 pixels[i] = (byte)Mathf.RoundToInt(((x * 0.5f) + 0.5f) * 255f);
                 pixels[i + 2] = (byte)Mathf.RoundToInt(((z * 0.5f) + 0.5f) * 255f);
                 pixels[i + 3] = 255;
-            }
-        }
-
-        /// <summary>
-        /// Blit a texture through a render target and read the result back as <c>RGBA8</c>.
-        /// Rows come back bottom-up, which is Unity's convention and the opposite of PNG's, so they
-        /// are flipped here. The glTF writer separately flips <c>V</c> on the mesh side; both are
-        /// the same change of origin and the two must agree or every texture lands upside down.
-        /// </summary>
-        /// <param name="source">The loaded texture.</param>
-        /// <param name="width">The output width.</param>
-        /// <param name="height">The output height.</param>
-        /// <param name="srgb">Whether the source stores sRGB-encoded values.</param>
-        /// <returns>Row-major <c>RGBA8</c> pixels, top row first.</returns>
-        private static byte[] Blit(Texture source, int width, int height, bool srgb)
-        {
-            RenderTexture target = RenderTexture.GetTemporary(width, height, 0, RenderTextureFormat.ARGB32,
-                srgb ? RenderTextureReadWrite.sRGB : RenderTextureReadWrite.Linear);
-            RenderTexture previous = RenderTexture.active;
-            Texture2D readback = null;
-
-            try
-            {
-                Graphics.Blit(source, target);
-                RenderTexture.active = target;
-
-                readback = new Texture2D(width, height, TextureFormat.RGBA32, false, linear: !srgb);
-                readback.ReadPixels(new Rect(0f, 0f, width, height), 0, 0, false);
-                readback.Apply(false, false);
-
-                byte[] raw = readback.GetRawTextureData();
-                int stride = width * 4;
-                if ((raw == null) || (raw.Length < stride * height)) return null;
-
-                byte[] pixels = new byte[stride * height];
-                for (int y = 0; y < height; y++)
-                    Buffer.BlockCopy(raw, (height - 1 - y) * stride, pixels, y * stride, stride);
-
-                return pixels;
-            }
-            finally
-            {
-                RenderTexture.active = previous;
-                RenderTexture.ReleaseTemporary(target);
-                if (readback != null) UnityEngine.Object.Destroy(readback);
             }
         }
 

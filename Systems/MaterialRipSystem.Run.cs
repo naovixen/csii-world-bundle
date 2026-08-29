@@ -123,6 +123,9 @@ namespace Carto.Systems
             /// <summary>How long the main thread spent reading pixels back.</summary>
             public double ReadbackMilliseconds;
 
+            /// <summary>The GPU readbacks issued and not yet landed (main thread only).</summary>
+            public List<GpuReadback> Readbacks = new();
+
             /// <summary>How many material ids needed a suffix to stay distinct.</summary>
             public int Disambiguated;
 

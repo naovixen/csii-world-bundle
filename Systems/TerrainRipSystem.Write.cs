@@ -48,19 +48,16 @@ namespace Carto.Systems
             string clipVolumesNote = null;
             try
             {
-                Task writer = Task.Run(() =>
-                {
-                    // The ~50k-record serialisation used to run on the main thread; the note it
-                    // produces joins the report after the wait (a StringBuilder is not
-                    // thread-safe, so the task never touches `report` itself).
-                    //
-                    if (clips) clipVolumesNote = WriteClipVolumes(outputDirectory);
-                    WriteAreaTextures();
-                    WriteRasters(capture, terrainDirectory, heights);
-                    Carto.IO.JsonFile.Write(IOUtils.CombinePath(terrainDirectory, "rasters.json"), rasters);
-                    if (ground) WriteSurfaceIndexJson(capture, terrainDirectory);
-                });
-                writer.Wait();
+                // Written here, on the stage's own thread. This used to be a `Task.Run` waited on
+                // immediately — the same work plus a thread hop, with nothing running alongside it
+                // (refactor Phase 10, 2026-08-29). The stage is a synchronous one and its caller
+                // already expects the wait.
+                //
+                if (clips) clipVolumesNote = WriteClipVolumes(outputDirectory);
+                WriteAreaTextures();
+                WriteRasters(capture, terrainDirectory, heights);
+                Carto.IO.JsonFile.Write(IOUtils.CombinePath(terrainDirectory, "rasters.json"), rasters);
+                if (ground) WriteSurfaceIndexJson(capture, terrainDirectory);
             }
             catch (Exception ex)
             {

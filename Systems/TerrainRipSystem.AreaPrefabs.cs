@@ -217,7 +217,7 @@ namespace Carto.Systems
                             texture = material.GetTexture("_BaseColorMap");
 
                         if (texture != null)
-                            WriteAreaTexture(MaterialRipSystem.Capture(texture, key, name, 1024), "texture", "");
+                            WriteAreaTexture(MaterialRipSystem.CaptureNow(texture, key, name, 1024), "texture", "");
 
                         // The rest of the surface's PBR, which the batch build never touches for
                         // an `Original` prefab precisely because the baked material already
@@ -246,7 +246,7 @@ namespace Carto.Systems
                             if (!material.HasProperty(property)) return;
                             Texture map = material.GetTexture(property);
                             if (map != null)
-                                WriteAreaTexture(MaterialRipSystem.Capture(map, $"{key}{suffix}", name, 1024), field, suffix);
+                                WriteAreaTexture(MaterialRipSystem.CaptureNow(map, $"{key}{suffix}", name, 1024), field, suffix);
                         }
                     }
                     else
@@ -320,7 +320,7 @@ namespace Carto.Systems
                                 texture = material.GetTexture("_BaseColorMap");
 
                             if (texture != null)
-                                WriteAreaTexture(MaterialRipSystem.Capture(texture, key, name, 1024), "texture", "");
+                                WriteAreaTexture(MaterialRipSystem.CaptureNow(texture, key, name, 1024), "texture", "");
 
                             // None of the three overrides authored, so the base material keeps its
                             // own maps too — the same inheritance the base colour above relies on.
@@ -329,14 +329,14 @@ namespace Carto.Systems
                             {
                                 Texture map = material.GetTexture("_NormalMap");
                                 if (map != null)
-                                    WriteAreaTexture(MaterialRipSystem.Capture(map, $"{key}_n", name, 1024), "normalMap", "_n");
+                                    WriteAreaTexture(MaterialRipSystem.CaptureNow(map, $"{key}_n", name, 1024), "normalMap", "_n");
                             }
 
                             if (material.HasProperty("_MaskMap"))
                             {
                                 Texture map = material.GetTexture("_MaskMap");
                                 if (map != null)
-                                    WriteAreaTexture(MaterialRipSystem.Capture(map, $"{key}_m", name, 1024), "maskMap", "_m");
+                                    WriteAreaTexture(MaterialRipSystem.CaptureNow(map, $"{key}_m", name, 1024), "maskMap", "_m");
                             }
                         }
                     }

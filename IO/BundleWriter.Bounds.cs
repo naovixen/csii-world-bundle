@@ -1,3 +1,6 @@
+using System.Threading.Tasks;
+using System.Threading;
+using System.Collections.Concurrent;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using System;
@@ -22,15 +25,20 @@ namespace Carto.IO
         /// </summary>
         private static Dictionary<string, Aabb> ReadMeshBounds(string directory, StringBuilder report, ref int scanned, int total)
         {
-            Dictionary<string, Aabb> result = new();
-            if (!Directory.Exists(directory)) return result;
+            if (!Directory.Exists(directory)) return new Dictionary<string, Aabb>();
 
+            // Twelve thousand files, each a JSON chunk to parse, and none depending on another:
+            // across the cores rather than one after the other. The manifest stage was 145 s of
+            // the 2026-08-29 rip and this scan the largest part of it (refactor Phase 10).
+            //
+            ConcurrentDictionary<string, Aabb> result = new();
             int unreadable = 0;
-            foreach (string path in Directory.GetFiles(directory, "*.glb"))
+            int progress = scanned;
+            Parallel.ForEach(Directory.GetFiles(directory, "*.glb"), path =>
             {
                 // Any thread may report — this runs on the manifest worker (RipProgress contract).
                 //
-                RipProgress.Report(RipProgress.Phase.Manifest, ++scanned, total);
+                RipProgress.Report(RipProgress.Phase.Manifest, Interlocked.Increment(ref progress), total);
 
                 try
                 {
@@ -39,12 +47,13 @@ namespace Carto.IO
                 }
                 catch (Exception ex)
                 {
-                    if (unreadable++ == 0) Instance.Log.Warn($"Unreadable glb {path}: {ex.Message}");
+                    if (Interlocked.Increment(ref unreadable) == 1) Instance.Log.Warn($"Unreadable glb {path}: {ex.Message}");
                 }
-            }
+            });
+            scanned = progress;
             if (unreadable > 0) report.AppendLine($"{unreadable} glb file(s) in {Path.GetFileName(directory)}/ were unreadable; their instances contribute position only.");
 
-            return result;
+            return new Dictionary<string, Aabb>(result);
         }
 
         /// <summary>

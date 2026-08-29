@@ -21,6 +21,12 @@ namespace Carto.IO
     public static partial class GltfWriter
     {
         /// <summary>
+        /// The asset block's generator string, read once: <c>Instance.Version</c> is a reflection
+        /// call, and this was made 4,356 times per rip, once per <c>.glb</c>.
+        /// </summary>
+        private static readonly string Generator = $"csii-world-bundle {Instance.Version}";
+
+        /// <summary>
         /// Mod's logger.
         /// </summary>
         static readonly ILog _log = Instance.Log;
@@ -201,7 +207,7 @@ namespace Carto.IO
                 ["asset"] = new Dictionary<string, object>
                 {
                     ["version"] = "2.0",
-                    ["generator"] = $"csii-world-bundle {Instance.Version}"
+                    ["generator"] = Generator
                 },
                 ["scene"] = 0,
                 ["scenes"] = new object[] { new Dictionary<string, object> { ["nodes"] = new[] { 0 } } },

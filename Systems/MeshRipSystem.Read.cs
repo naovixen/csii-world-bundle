@@ -290,7 +290,7 @@ namespace Carto.Systems
             //
             RenderPrefab renderPrefab = null;
             if (EntityManager.HasComponent<PrefabData>(meshEntity)
-                && Instance.Prefab.TryGetPrefab(EntityManager.GetComponentData<PrefabData>(meshEntity), out PrefabBase prefabBase))
+                && Prefabs.TryGetPrefab(EntityManager.GetComponentData<PrefabData>(meshEntity), out PrefabBase prefabBase))
                 renderPrefab = prefabBase as RenderPrefab;
 
             // Prefer the geometry asset: the ECS buffers only ever hold the reduced LOD the game
