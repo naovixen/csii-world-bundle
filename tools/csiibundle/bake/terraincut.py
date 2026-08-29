@@ -156,7 +156,8 @@ def run(context, progress):
     plane_area = [0.0, 0.0, 0.0]
     corner_names = [f"ground:{n}" for n in layer_names] + [GROUND_FALLBACK]
     layer_of = numpy.where(layer_idx < len(layer_names), layer_idx, len(layer_names))
-    squares = list(by_face)  # insertion order — the prism index's — so the tiles' triangle order holds
+    # insertion order — the prism index's — so the tiles' triangle order holds
+    squares = list(by_face)
     jobs = max(1, int(context.options.get("jobs") or 1))
     batches = [
         terraincutsquare.cut_batch(

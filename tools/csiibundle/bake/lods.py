@@ -33,12 +33,14 @@ tell you which of two algorithms shaped every LOD in the level.
 import json
 import os
 import time
+from collections import Counter
 
 import numpy
 
 from .. import decimate, displacement, glb, glbwrite, parallel, png, reader
 from .. import region as region_rule
-from . import Product, register
+from . import Product, lodchoice, register
+from .lodchoice import best_levels
 
 PRODUCT_NAME = "lods"
 INPUTS = ("meshes", "materials", "textures")
@@ -141,22 +143,22 @@ def _process_file(args):
     per_level_nodes = [[] for _ in targets]
     tri_in = 0
     tri_out = [0] * len(targets)
-    resolved_backend = backend
+    backends = [Counter() for _ in targets]
     # every node's samples pool into one distribution per level, so a file's displacement is the
     # percentile over its whole surface rather than the mean of its nodes' percentiles
     spread = [([], []) for _ in targets]
     for node in nodes:
         tri_in += len(node["tris"])
         try:
-            levels, ladder_stats = decimate.lod_ladder(node, targets=targets, backend=backend)
+            levels, measured = best_levels(node, targets, backend)
         except Exception as exc:
             return asset_id, f"failed: {exc!r}", {}
-        resolved_backend = ladder_stats.get("backend", backend)
         for li, level in enumerate(levels):
             if len(level["tris"]) == 0:
                 continue
             tri_out[li] += len(level["tris"])
-            _, distances, weights = displacement.level_displacement(level, node)
+            backends[li][level["backend"]] += len(level["tris"])
+            distances, weights = measured[li]
             if len(distances):
                 spread[li][0].append(distances)
                 spread[li][1].append(weights)
@@ -212,7 +214,9 @@ def _process_file(args):
             "levels": tri_out,
             "files": written,
             "displacement": displacements,
-            "backend": resolved_backend,
+            # the backend that shaped most of each level's triangles
+            "backends": [c.most_common(1)[0][0] if c else None for c in backends],
+            "backendTris": [dict(c) for c in backends],
         },
     )
 
@@ -256,7 +260,12 @@ def run(context, progress):
         "trisIn": 0,
         "trisOut": [0] * len(targets),
         "backendRequested": backend,
-        "backend": None,
+        "backend": (
+            "best of cluster and quadric per level, by two-sided displacement"
+            if backend == "auto" and lodchoice.quadric_available()
+            else ("cluster" if backend == "auto" else backend)
+        ),
+        "backendTris": {},
     }
     index = {}
     started = time.monotonic()
@@ -269,11 +278,14 @@ def run(context, progress):
             stats["trisIn"] += st["tris"]
             for i, t in enumerate(st["levels"]):
                 stats["trisOut"][i] += t
-            stats["backend"] = st.get("backend") or stats["backend"]
+            for tris_by_backend in st.get("backendTris") or []:
+                for name, count in tris_by_backend.items():
+                    stats["backendTris"][name] = stats["backendTris"].get(name, 0) + count
             index[asset_id] = {
                 "tris": st["tris"],
                 "levels": st["levels"],
                 "displacement": st["displacement"],
+                "backends": st.get("backends"),
             }
         elif status.startswith("failed"):
             progress.log(f"{asset_id}: {status}")
@@ -283,7 +295,6 @@ def run(context, progress):
         account(result)
     stats["seconds"] = round(time.monotonic() - started, 1)
     ratio = [round(t / stats["trisIn"], 3) if stats["trisIn"] else None for t in stats["trisOut"]]
-    stats["backend"] = stats["backend"] or backend
     stats["displacement"] = _displacement_summary(index, len(targets))
     stats["displacementPercentile"] = displacement.DISPLACEMENT_PERCENTILE
     with open(os.path.join(out_dir, INDEX_NAME), "w", encoding="utf-8") as handle:

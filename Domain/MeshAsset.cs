@@ -105,6 +105,19 @@ namespace Carto.Domain
         public int Lod { get; set; }
 
         /// <summary>
+        /// The game's own coarser levels of this mesh, richest first — the render prefabs behind
+        /// <c>LodProperties.m_LodMeshes</c>, each with its own geometry and materials. Empty for a
+        /// prefab that ships none. A consumer draws these by distance instead of decimating.
+        /// </summary>
+        public List<MeshAsset> Lods { get; set; } = new();
+
+        /// <summary>
+        /// <c>LodProperties.m_Bias</c> — the authored LOD bias the game folds into every level's
+        /// switch distance. Zero when the prefab declares none.
+        /// </summary>
+        public float LodBias { get; set; }
+
+        /// <summary>
         /// The number of triangles across every primitive.
         /// </summary>
         public int TriangleCount => (Indices?.Length ?? 0) / 3;

@@ -173,8 +173,31 @@ namespace Carto.IO
                 if (part.Scale.HasValue && math.any(part.Scale.Value != new float3(1f)))
                     node["scale"] = new[] { part.Scale.Value.x, part.Scale.Value.y, part.Scale.Value.z };
 
+                // `LodProperties.m_Bias`, which the game folds into every level's switch distance;
+                // a consumer porting `RequiredBatchesSystem` needs it beside the levels, and a
+                // reader that walks mesh-bearing nodes finds it on the part rather than the root.
+                if (mesh.LodBias != 0f) node["extras"] = new Dictionary<string, object> { ["lodBias"] = mesh.LodBias };
+
                 nodes.Add(node);
                 children.Add(nodes.Count - 1);
+
+                // The game's own coarser levels: one node each, named `<node>_LOD<n>` (§6), with
+                // the part's transform — a level is the same part drawn further away.
+                foreach (MeshAsset lod in mesh.Lods)
+                {
+                    if ((lod.Vertices == null) || (lod.Vertices.Length == 0) || (lod.Indices == null) || (lod.Indices.Length == 0)) continue;
+                    string lodName = $"{name}_LOD{lod.Lod}";
+                    meshes.Add(new Dictionary<string, object>
+                    {
+                        ["name"] = lodName,
+                        ["primitives"] = BuildPrimitives(lod, bin, binStream, bufferViews, accessors, materials, materialPool, textures)
+                    });
+                    Dictionary<string, object> lodNode = new() { ["name"] = lodName, ["mesh"] = meshes.Count - 1 };
+                    foreach (string key in new[] { "translation", "rotation", "scale", "extras" })
+                        if (node.TryGetValue(key, out object value)) lodNode[key] = value;
+                    nodes.Add(lodNode);
+                    children.Add(nodes.Count - 1);
+                }
             }
 
             if (children.Count == 0)

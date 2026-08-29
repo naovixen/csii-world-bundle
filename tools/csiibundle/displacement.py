@@ -321,9 +321,15 @@ def level_displacement(
     CULL threshold cannot tell them apart, because that threshold is a statement about the
     shape's SIZE (A6.7).
 
-    One-sided (level -> source) on purpose: it answers "where has this level put its surface",
-    which is what a viewer sees as the roof moving. A source feature the level dropped shows up
-    too, because the level's surface has to be somewhere else to have dropped it.
+    **Two-sided.** Samples over the level are measured to the source (where has this level put
+    its surface — the roof moving) AND samples over the source are measured to the level (what
+    has this level dropped). The second half is the one a one-sided measurement cannot see: a
+    railing, a window frame or a crane boom that the decimator collapses onto the wall behind it
+    leaves the level's surface exactly on that wall, at zero distance from the source — and the
+    feature is gone. Measured from the source's side the railing's samples are metres from the
+    nearest level surface, which is what a viewer sees as pop-in when the level takes over.
+    (Refactor Phase 10, 2026-08-29: the quadric backend reaches 0.0 m one-sided on most
+    buildings, and it is this half that keeps a 0.0 honest.)
 
     Returns `(displacement, distances, weights)` so a caller pooling several nodes of one file
     can take the percentile over all of them at once rather than averaging percentiles.
@@ -331,5 +337,12 @@ def level_displacement(
     points, weights = _surface_samples(level.get("verts"), level.get("tris"), cap=samples)
     if len(points) == 0:
         return 0.0, numpy.zeros(0), numpy.zeros(0)
-    distances = distance_to_surface(points, source["verts"], source["tris"])
+    back, back_weights = _surface_samples(source.get("verts"), source.get("tris"), cap=samples)
+    distances = numpy.concatenate(
+        [
+            distance_to_surface(points, source["verts"], source["tris"]),
+            distance_to_surface(back, level["verts"], level["tris"]),
+        ]
+    )
+    weights = numpy.concatenate([weights, back_weights])
     return weighted_percentile(distances, weights, percentile), distances, weights

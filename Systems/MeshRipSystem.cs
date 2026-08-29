@@ -213,6 +213,9 @@ namespace Carto.Systems
             PlaceholderParts = 0;
             StackRestParts = 0;
             TreeStateVariants = 0;
+            LodChains = 0;
+            LodLevelsRead = 0;
+            LodCap = 0;
             FullnessVariants = 0;
 
             RipProgress.Report(RipProgress.Phase.Scan);
@@ -347,6 +350,7 @@ namespace Carto.Systems
             // states how often each fired instead of leaving them unobservable.
             //
             if (MultiMeshPrefabs > 0) run.Report.AppendLine($"Merged multi-mesh geometry assets: {MultiMeshPrefabs} prefab(s).");
+            run.Report.AppendLine($"Authored LOD chains: {LodChains} mesh(es) carry one, {LodLevelsRead} level(s) read, deepest {LodCap}; written as <node>_LOD<n> nodes (lodCap {LodCap}).");
             if (PartialMeshPrefabs > 0) run.Report.AppendLine($"Prefabs that lost meshes their geometry asset holds: {PartialMeshPrefabs} — see the log.");
             if (PipelinePartsSkipped > 0) run.Report.AppendLine($"Skipped {PipelinePartsSkipped} underground-only sub-mesh entr(ies) inside otherwise visible prefabs (Pipeline layers).");
             if (PlaceholderParts > 0) run.Report.AppendLine($"Missing-asset placeholder parts stretched to prefab bounds: {PlaceholderParts}.");

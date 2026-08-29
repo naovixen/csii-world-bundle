@@ -177,9 +177,20 @@ def example():
                 f"{os.path.basename(f)} is in the SOURCE's world frame, not the node's local one",
             )
         index = json.load(open(os.path.join(derived, "lods", "lods.json"), encoding="utf-8"))
+        # the decimator is resolved PER LEVEL now (bake/lodchoice): the file's top-level
+        # `backend` describes the contest, and every level names the decimator that made it
         check(
-            index.get("backend") in ("cluster", "quadric"),
+            bool(index.get("backend")) and index.get("backend") != "auto",
             f"lods.json records the RESOLVED decimator, not the requested one: {index.get('backend')}",
+        )
+        check(
+            all(
+                name in ("cluster", "quadric")
+                for entry in index.get("assets", {}).values()
+                for name in (entry.get("backends") or [])
+                if name is not None
+            ),
+            "every generated level names the decimator that made it (cluster or quadric)",
         )
         check(
             all(

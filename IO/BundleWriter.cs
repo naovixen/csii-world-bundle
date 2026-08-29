@@ -203,7 +203,7 @@ namespace Carto.IO
             manifest["ripOptions"] = new Dictionary<string, object>
             {
                 ["meshSource"] = "runtime",
-                ["lodCap"] = 0,
+                ["lodCap"] = Instance.MeshRip.LodCap,
                 ["meshLimit"] = snapshot.MeshLimit,
                 ["textureSizeCap"] = snapshot.TextureSizeCap,
                 ["includeSubObjects"] = true,

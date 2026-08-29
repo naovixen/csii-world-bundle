@@ -4,9 +4,11 @@
 `material_runs`) and returns simplified copies at the requested triangle ratios, per material
 run so material boundaries survive. Two backends behind one API:
 
-* **quadric** — `pyfqmr` (Fast-Quadric-Mesh-Simplification; `pip install pyfqmr`, the optional
-  `[lods]` extra) when importable. Better shape preservation; UVs are re-attached by nearest
-  original vertex, which is fine at the distances a LOD is seen.
+* **quadric** — `pyfqmr` (Fast-Quadric-Mesh-Simplification, a dependency since refactor Phase
+  10; `decimatequadric`). Leaves a building's surface where it was at ratios where clustering
+  moves it metres, but stalls on some meshes; `bake/lodchoice` runs both and keeps the better
+  per level by measured displacement. UVs are re-attached by nearest original vertex, which is
+  fine at the distances a LOD is seen.
 * **vertex clustering** — numpy only, always available. Positions are snapped to a grid whose
   cell is searched to hit the target ratio; vertices in the same cell AND the same coarse UV
   bin merge (so a texture seam does not smear across a cluster); degenerate and duplicate faces

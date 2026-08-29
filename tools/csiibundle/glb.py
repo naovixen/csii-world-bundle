@@ -243,7 +243,7 @@ def _parse_glb_unguarded(path):
         return None
     nodes = doc.get("nodes", [])
 
-    mesh_nodes = []  # (name, world matrix, mesh index)
+    mesh_nodes = []  # (name, world matrix, mesh index, extras)
 
     def walk(node_index, parent_matrix):
         node = nodes[node_index]
@@ -253,7 +253,7 @@ def _parse_glb_unguarded(path):
             if mesh_index >= len(meshes) or not meshes[mesh_index].get("primitives"):
                 raise ValueError(f"node {node_index} references an empty/missing mesh")
             name = node.get("name") or meshes[mesh_index].get("name") or f"mesh{mesh_index}"
-            mesh_nodes.append((name, world, mesh_index))
+            mesh_nodes.append((name, world, mesh_index, node.get("extras") or {}))
         for child_index in node.get("children", ()):
             walk(child_index, world)
 
@@ -261,7 +261,7 @@ def _parse_glb_unguarded(path):
         walk(root_index, numpy.identity(4))
 
     result = []
-    for name, world, mesh_index in mesh_nodes:
+    for name, world, mesh_index, extras in mesh_nodes:
         prims = meshes[mesh_index]["primitives"]
 
         # A mesh's primitives can share ONE vertex-attribute buffer — every primitive pointing
@@ -339,6 +339,8 @@ def _parse_glb_unguarded(path):
                 else None,
                 "tris": numpy.concatenate(tri_parts),
                 "material_runs": runs,
+                # the producer's per-node extras (`lodBias` on a part that ships an LOD chain)
+                "extras": extras,
             }
         )
 

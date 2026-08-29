@@ -2531,3 +2531,85 @@ small count drifts (+7 statics, +1 water block) are the save.
 distance — the survey's §0 — and that is the next performance lever (LOD 0 on the top 100 shapes,
 879 MiB, the a8 plan's P2 remainder), not anything measured in this phase. The producer block
 is built and unmeasured until the re-rip.
+
+### Phase 10 — the building LODs, 2026-08-29 (awaiting the in-game look)
+
+Naomi's look at the first rebuild: nothing regressed, but buildings are the FPS cost and "LOD for
+buildings seems to be impacted". The instrument agreed and said why: LOD 0 drew 2.73 M of the
+4.90 M building triangles in view, because the ladder had deferred the generated levels of every
+big building to a pixel before the cull — a 65k-triangle high-rise (r = 35 m) switched at
+`[27, 26, 19]` px, LOD 0 to 1.7 km. The deferral was honest: its clustered LOD 1 was **10.25 m**
+p95 from LOD 0, and the 8-px error budget will not show that nearer.
+
+**What changed.** Not the budget and not the ladder — the levels, and how they are measured:
+
+* `displacement.level_displacement` is **two-sided**. One-sided (level → source) could not see a
+  dropped feature: a railing collapsed onto its wall leaves the level's surface on the wall at
+  zero distance. Source → level sees it. Every switch and every LOD-0 promotion now uses the
+  stricter number (the high-rise's quadric LOD 1 reads 0.0 m one-sided, **2.2 m** two-sided).
+* `bake/lodchoice.best_levels` runs **both decimators per level and keeps the one with the
+  smaller two-sided displacement** (ties to fewer triangles). Neither wins outright — the quadric
+  collapse holds a high-rise's surface where clustering moves it 10 m, and stalls at half the
+  triangles on a parking hall where clustering hits the target at 0.05 m. On the city: cluster
+  won 6,792 level slots, quadric 1,616. `pyfqmr` is a dependency now; `lods.json` names each
+  level's backend.
+
+| in the 4 km view from spawn | after phase 10 | after the LOD change |
+| --- | ---: | ---: |
+| building triangles | 4,896,930 | **3,048,796** (−38 %) |
+| of which at LOD 0 / 1 / 2 | 2.73 M / 1.06 M / 1.11 M | **0.93 M** / 0.81 M / 1.31 M |
+| all groups | 6,171,530 | **4,323,396** |
+| LOD 1 deferred past the ladder | 1,004 shapes | 736 (median 1.87×, worst 16.3×) |
+| LOD 1 p95 displacement, city median | 0.020 m (one-sided) | 0.034 m (two-sided) |
+| resident meshes cs2 | 1,850 MiB | **2,013 MiB** (+163: quadric levels keep more vertices; LOD 2 ratio 0.075 vs 0.06) |
+| resident total | 4,117 MiB | 4,280 MiB |
+
+The bake's `lods` product is 461 s at `--jobs 7` (both decimators, both directions), against
+this phase's 8.5-minute full bake. Reports in `docs/baselines/*-after-phase10-lods.*`.
+
+**Still at LOD 0 far out, by design:** the airport (257k triangles at 2 km), Oracle Park, the
+parking hall, the nuclear plant — the ratio ceiling (`LADDER_RATIOS`) will not let a generated
+level nearer than a multiple of the shape's cull size, and for a shape with a 900 m radius that
+multiple is still kilometres. That is the a8 plan's P2 remainder (LOD 0 on the top 100 shapes,
+879 MiB) and it is the next lever; it was not touched here because it is the one that trades
+what a viewer looks at, and this change was to be free of that.
+
+### Phase 10 — the building LODs, take two: the game's own chain (built, awaiting the re-rip)
+
+Naomi's look at the best-of-both levels: "LOD is super inconsistent between buildings and other
+meshes … large amounts of the geometry on the building are missing and it just looks like
+artifacts from a distance." The screenshots show exactly that: every far high-rise a sparkling
+see-through lattice. **Both decimators do this to a CS2 facade**, which is unwelded window quads
+over an open wall — collapse or drop one and the wall behind it is open — and **no distance
+metric can see a hole**, one-sided or two-sided, which is why the measurement passed it.
+
+The game's rule settles it, and the ripper had been discarding it. Every render prefab carries a
+`LodMesh` buffer that `MeshSystem` fills from `LodProperties.m_LodMeshes` (richest first), the
+import pipeline names the levels `<asset>_LOD<n>` (`AssetImportPipeline.cs:1952`), and
+`RequiredBatchesSystem.InitializeBatchGroup` picks between them by distance. `TryResolveGeometry`
+walked that very buffer — to pick the RICHEST candidate and throw the rest away (`lodCap 0`);
+audit §62's "CS2 ships no LOD chain for these prefabs" was a statement about the bundle read
+back as one about the game. The fidelity audit had it right (`LodProperties.m_LodMeshes`).
+
+**Producer, built (`MeshRipSystem.Lods.cs`):** after LOD 0 is read from the geometry asset, each
+`LodMesh` entry's render prefab is read the same way with its own materials and written as a
+`<node>_LOD<n>` node beside the part, same transform; `LodProperties.m_Bias` rides on the part
+node's `extras.lodBias`; `ripOptions.lodCap` reports the deepest chain; the stage report counts
+chains and levels. Skirts, decals, stack parts and state variants read LOD 0 only, as before.
+
+**Consumer, built and validated on the example bundle:** `shapeparts.split_lod_nodes` separates
+the chain; `csiibundle.lodchain.authored_lod_limits` ports the game's per-level limits
+(`RequiredBatchesSystem`: coarsest first, `clamp(CalculateLodLimit(GetRenderingSize(groupSize,
+indexCount), bias) + 1, x + 1, 255 - j)`), `limit_px` turns a limit into the Torque detail size,
+and `shapelods.authored_chain` builds the ladder from them — scaled by `lod_detail_scale` exactly
+as the null threshold always was, so a chain shape switches where CS2 switches it and stops
+where CS2 stops. No displacement rule, no promotion, no generated level for a shape that ships a
+chain; the generated ladder stays only for prefabs that ship none (`authored_lods: false`
+restores it). The collider comes off the authored LOD 1. `tools/test_lod_authored.py` holds the
+port's invariants; the bake's `lods` product already skips authored chains.
+
+**What the re-rip must show:** the mesh stage report's `Authored LOD chains: N mesh(es) …`
+line — how many of the 4,304 prefabs carry one and how deep — and `lodCap` > 0 in `bundle.json`.
+Then a rebuild, and the look: buildings should step down through the artist's levels with no
+holes, at the game's own distances; anything that still lattices is a prefab with no chain, and
+the report names how many there are.

@@ -20,16 +20,18 @@ dependencies = [
     # `terrain.py` are deliberately numpy-only. `csiibundle.navgraph` is NOT numpy-only and the
     # adapter must not import it.
     "scipy>=1.10",
+    # Quadric mesh decimation for the generated LODs. Not optional any more: at the same ratio it
+    # leaves a building's surface where it was (0.0 m p95 two-sided on most) where clustering moves
+    # it metres, and the bake runs both and keeps the better per level (bake/lods._best_levels).
+    "pyfqmr>=0.2",
 ]
 
 [project.optional-dependencies]
 # Native window for the cs2beamng UI; without it the app opens the default browser.
 gui = ["pywebview>=5"]
-# Quadric mesh decimation for generated LODs; without it a numpy vertex-clustering fallback runs.
-lods = ["pyfqmr>=0.2"]
 # Pre-compressed DDS textures (BC7/BC5/BC4 + mips) so BeamNG never cooks them at load; without it PNGs ship.
 textures = ["etcpak>=0.9"]
-all = ["pywebview>=5", "pyfqmr>=0.2", "etcpak>=0.9"]
+all = ["pywebview>=5", "etcpak>=0.9"]
 # Building the standalone application zips (tools/build_exe.py).
 build = ["pyinstaller>=6.6"]
 

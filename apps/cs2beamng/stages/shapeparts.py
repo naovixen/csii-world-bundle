@@ -8,9 +8,29 @@ read meshes this way, and neither should have to import the other to do it.
 import math
 
 import numpy
-from csiibundle import lod
+from csiibundle import glb, lod
 
 from ..beamng import daemesh, matbind
+
+
+def split_lod_nodes(nodes):
+    """`(base_nodes, {level: nodes}, lod_bias)` — a `.glb`'s nodes by `glb.lod_level`.
+
+    Level 0 is what the game draws up close; the numbered levels are the game's own coarser
+    meshes (`<node>_LOD<n>`, the producer's `LodMesh` chain), and `lod_bias` is the prefab's
+    `LodProperties.m_Bias` off the part node's extras. A bundle ripped before the chain was
+    shipped has no numbered nodes and comes back as `(nodes, {}, 0.0)`."""
+    base, levels, bias = [], {}, 0.0
+    for node in nodes:
+        _stem, level = glb.lod_level(node["name"])
+        if level > 0:
+            levels.setdefault(level, []).append(node)
+        else:
+            base.append(node)
+        extra = (node.get("extras") or {}).get("lodBias")
+        if extra:
+            bias = float(extra)
+    return base, levels, bias
 
 
 def collect_parts(nodes, aliases, tinted, level_name):

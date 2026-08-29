@@ -301,6 +301,7 @@ namespace Carto.Systems
             {
                 AssignMaterials(fromAsset, renderPrefab);
                 TryFlattenDecal(fromAsset, renderPrefab, trace);
+                ReadLodChain(meshEntity, renderPrefab, fromAsset, assetId, sourceName);
                 return fromAsset;
             }
 

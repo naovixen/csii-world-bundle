@@ -16,7 +16,7 @@ from . import shapecollider, shapelods
 from .shapelods import (
     IMPOSTER_REACH,
 )
-from .shapeparts import collect_parts, with_wind_colours
+from .shapeparts import collect_parts, split_lod_nodes, with_wind_colours
 
 # -- writing one shape ---------------------------------------------------------------------------
 
@@ -55,14 +55,15 @@ def shape_job(job):
     geometry, error = _geometry(job, source)
     if error is not None:
         return key, {"error": error}
-    parts, lo, hi, area, materials_used = geometry
+    parts, lo, hi, area, materials_used, authored, lod_bias = geometry
     size = hi - lo
     radius = 0.5 * float(numpy.linalg.norm(size))
-    game_px = lod.game_detail_px(radius, size, area, level_of_detail=options["level_of_detail"])
     detail_scale = shapelods.detail_scale(kind, options)
-    null_px = max(1.0, game_px * detail_scale)
     shape_name = placement.shape_key(job.asset, job.suffix, job.variant)
     base_mesh = daemesh.group_by_material(daemesh.merge_meshes(shape_name, parts))
+    game_px, null_px, chain = _thresholds(
+        shape_name, authored, size, area, lod_bias, radius, detail_scale, options
+    )
     levels, lod_stats, ladder = shapelods.lod_levels(
         job.derived_dir,
         source,
@@ -76,6 +77,7 @@ def shape_job(job):
         job.tinted,
         job.level_name,
         options,
+        chain=chain,
     )
     colliders, collider_kind = _colliders(job, shape_name, base_mesh, ladder, lod_stats)
     trunk_ratio = _trunk_ratio(collider_kind, colliders, base_mesh)
@@ -171,6 +173,21 @@ def _colliders(job, shape_name, base_mesh, ladder, lod_stats):
     )
 
 
+def _thresholds(shape_name, authored, size, area, lod_bias, radius, detail_scale, options):
+    """`(game_px, null_px, chain)`: CS2's cull for the mesh, this level's null, and the game's
+    own LOD chain as a ladder when the shape ships one (its null replaces the single-mesh one)."""
+    game_px = lod.game_detail_px(
+        radius, size, area, authored_bias=lod_bias, level_of_detail=options["level_of_detail"]
+    )
+    null_px = max(1.0, game_px * detail_scale)
+    chain = shapelods.authored_chain(
+        shape_name, authored, size, area, lod_bias, radius, detail_scale, options
+    )
+    if chain is not None:
+        null_px = chain["nullPx"]
+    return game_px, null_px, chain
+
+
 def _geometry(job, source):
     """`((parts, lo, hi, area, materials), None)` or `(None, "why this shape cannot be written")`."""
     try:
@@ -179,14 +196,25 @@ def _geometry(job, source):
         return None, f"{source}: {exc}"
     if not nodes:
         return None, f"{source}: no mesh-bearing node"
+    base_nodes, lod_nodes, lod_bias = split_lod_nodes(nodes)
     parts, lo, hi, area, materials_used = collect_parts(
-        nodes, job.aliases, job.tinted, job.level_name
+        base_nodes, job.aliases, job.tinted, job.level_name
     )
     if not parts:
         return None, f"{source}: every node was empty"
     if job.kind == "tree" and job.options["tree_wind"]:
         parts = with_wind_colours(parts)
-    return (parts, lo, hi, area, materials_used), None
+    # the game's own coarser levels, in order, each as the parts a mesh is merged from
+    authored = []
+    for level in sorted(lod_nodes):
+        lod_parts, l_lo, l_hi, _area, used = collect_parts(
+            lod_nodes[level], job.aliases, job.tinted, job.level_name
+        )
+        if not lod_parts:
+            continue
+        materials_used |= used
+        authored.append((level, lod_parts, l_hi - l_lo))
+    return (parts, lo, hi, area, materials_used, authored, lod_bias), None
 
 
 def _trunk_ratio(collider_kind, colliders, base_mesh):

@@ -8,7 +8,7 @@ of them is either measured or a declared budget.
 
 import os
 
-from csiibundle import glb, lod
+from csiibundle import glb, lod, lodchain
 
 from ..beamng import daemesh
 from .shapeparts import collect_parts
@@ -141,6 +141,48 @@ def detail_scale(kind, options):
     return float(options["detail_scale"])
 
 
+def authored_chain(shape_name, authored, size, area, lod_bias, radius, detail_scale, options):
+    """The game's own LOD chain as a ladder, or None when the shape ships none.
+
+    `authored` is `[(level, parts, level_size), ...]` from `shapeparts.split_lod_nodes`. The
+    switch points are the game's (`lod.authored_lod_limits`, the `RequiredBatchesSystem` port),
+    scaled by `lod_detail_scale` exactly as the null threshold always was — so a chain shape
+    switches where CS2 switches it, `detail_scale` times nearer, and stops drawing where CS2
+    stops. No displacement rule, no promotion, no generated level: the artist's levels have no
+    holes and the game's rule is the authority (refactor Phase 10, 2026-08-29 — every decimator
+    turned a CS2 facade into a see-through lattice, and no distance metric could see it).
+    """
+    if not authored or not options.get("authored_lods", True):
+        return None
+    meshes, sized = [], []
+    for level, parts, level_size in authored:
+        mesh = daemesh.group_by_material(daemesh.merge_meshes(f"{shape_name}_LOD{level}", parts))
+        if len(mesh.tris) == 0:
+            continue
+        meshes.append(mesh)
+        sized.append((level_size, len(mesh.tris) * 3))
+    if not meshes:
+        return None
+    bias = lod.lod_bias(size, area, lod_bias)
+    limits = lodchain.authored_lod_limits(
+        size, sized, bias, min_lod=lod.mesh_min_lod(size, area, lod_bias)
+    )
+    px = [
+        max(1.0, lodchain.limit_px(radius, limit, options["level_of_detail"]) * detail_scale)
+        for limit in limits
+    ]
+    # A Torque detail's size is where that detail STARTS: LOD 0 at the size its own limit
+    # stops it, level j at the size limit j stops it, and the null a hair under the coarsest
+    # (the game draws the coarsest level right up to its cull; Torque wants the two sizes
+    # distinct, so the last 10 % before the cull is a rounding, not a rule).
+    return {
+        "meshes": meshes,
+        "thresholds": px,
+        "nullPx": px[-1] * 0.9,
+        "limits": limits,
+    }
+
+
 def lod_levels(
     derived_dir,
     source,
@@ -154,6 +196,7 @@ def lod_levels(
     tinted,
     level_name,
     options,
+    chain=None,
 ):
     """`[(px, [Mesh]), ...]` nearest-first: LOD 0 plus whatever the bake generated, each with the
     threshold its own measured displacement earns it.
@@ -168,6 +211,8 @@ def lod_levels(
     meshes = [base_mesh]
     generated = []
     stats = {"levels": 1, "triangles": [len(base_mesh.tris)], "lod0Promoted": False}
+    if chain is not None:
+        return _authored_ladder(base_mesh, chain, stats)
     if options["generate_lods"]:
         _load_generated(
             meshes, generated, stats, derived_dir, source, shape_name, aliases, tinted, level_name
@@ -191,6 +236,30 @@ def lod_levels(
             else None
         )
     stats["switches"] = shipped
+    return fixed, stats, meshes
+
+
+def _authored_ladder(base_mesh, chain, stats):
+    """The game's chain as the shape's ladder: LOD 0 then every authored level, each starting at
+    the pixel size the game's own limit puts it."""
+    meshes = [base_mesh, *chain["meshes"]]
+    thresholds = list(chain["thresholds"])
+    # strictly decreasing, as Torque needs; the limits are monotonic so this only guards rounding
+    for index in range(1, len(thresholds)):
+        thresholds[index] = min(thresholds[index], thresholds[index - 1] - 1.0)
+    thresholds = [max(1.0, px) for px in thresholds]
+    fixed = _fixed_ladder(thresholds, meshes)
+    stats.update(
+        {
+            "authored": len(chain["meshes"]),
+            "levels": len(meshes),
+            "triangles": [len(m.tris) for m in meshes],
+            "detailSizes": [px for px, _ms in fixed],
+            "splitGeometries": sum(len(ms) for _px, ms in fixed) - len(fixed),
+            "gameLodLimits": list(chain["limits"]),
+            "switches": [],
+        }
+    )
     return fixed, stats, meshes
 
 

@@ -921,10 +921,16 @@ Conventions, all frozen in v1:
 - **Root node** — the scene has one root node named exactly `<assetId>`.
 - **Sub-meshes** — parts of the same rigid prefab are glTF nodes under that root node, with
   their local transforms, one primitive per material.
-- **LODs** — no `MSFT_lod`. LOD *n* > 0 is a scene node named `<assetId>_LOD<n>`; LOD 0 is the
-  root node with no suffix. A consumer that ignores LODs renders only the unsuffixed node.
-  `ripOptions.lodCap` says how many were exported (0 on every rip so far: the producer ships the
-  highest detail level and a consumer generates its own ladder, `csiibundle.bake.lods`).
+- **LODs** — no `MSFT_lod`. LOD *n* > 0 is a scene node named `<node>_LOD<n>` beside the part
+  node it is a coarser level of, with the same transform; LOD 0 is the part node with no suffix.
+  These are the GAME's own levels — the render prefabs behind `LodProperties.m_LodMeshes`, in
+  the order `MeshSystem` sorts them (richest first) — each with its own materials. A consumer
+  that ignores LODs renders only the unsuffixed nodes. `ripOptions.lodCap` is the deepest chain
+  in the rip (0 before 2026-08-29, when the producer shipped LOD 0 only and consumers decimated
+  it themselves). A part whose prefab declares `LodProperties.m_Bias` carries it as the node's
+  `extras.lodBias`; the game folds it into every level's switch distance, and `csiibundle.lodchain.
+  authored_lod_limits` ports that rule (`RequiredBatchesSystem`) so a consumer switches where
+  CS2 switches.
 - **How far the game draws it is derivable from this file alone** — no bundle field carries it,
   and none needs to. CS2 computes a mesh's cull distance from **its bounding box and the sum of
   its triangle areas**, both of which are here; `csiibundle.lod` ports the arithmetic
