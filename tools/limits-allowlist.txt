@@ -15,7 +15,6 @@ file Systems/LaneRipSystem.cs
 file Systems/MaterialRipSystem.cs
 file Systems/MeshRipSystem.cs
 file Systems/NetworkRipSystem.GameMesh.cs
-file Systems/NetworkRipSystem.cs
 file Systems/RipOrchestratorSystem.cs
 file apps/cs2beamng/beamng/budget.py
 file apps/cs2beamng/pipeline/state.py
