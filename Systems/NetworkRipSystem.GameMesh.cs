@@ -544,8 +544,7 @@ namespace Carto.Systems
         /// One node side of an edge: parameters from its own geometry, mesh from its composition.
         /// </summary>
         private void BuildNodeSide(Entity composition, EdgeNodeGeometry geometry, float3 center,
-                                   string label, Dictionary<Entity, MeshAsset> cache,
-                                   MeshAssembly assembly, System.Text.StringBuilder report)
+                                   Dictionary<Entity, MeshAsset> cache, MeshAssembly assembly)
         {
             // Node compositions are never rotate-shared: `NetCompositionMeshRefSystem.
             // TryFindComposition` only attempts the mirrored match when the Node general flag is
@@ -555,635 +554,1009 @@ namespace Carto.Systems
 
             NetCompositionData data = EntityManager.GetComponentData<NetCompositionData>(composition);
             CompositionCurves curves = NodeCurves(geometry, data);
-            BuildGameComposition(composition, curves, center, label, cache, assembly, report);
+            BuildGameComposition(composition, curves, center, cache, assembly);
+        }
+
+        /// <summary>
+        /// Everything one COMPOSITION contributes to every piece it holds, read once.
+        /// </summary>
+        /// <remarks>
+        /// The generator's own preamble, as a record rather than eight locals threaded through a
+        /// 550-line loop. Nothing here changes once the composition is read, which is what makes
+        /// the piece and range walks below safe to read in isolation.
+        /// </remarks>
+        private sealed class CompositionSetup
+        {
+            /// <summary>The composition entity, for the §42 probe key.</summary>
+            public Entity Composition;
+
+            /// <summary>The composition's own data — width and offsets the maps are built from.</summary>
+            public NetCompositionData Data;
+
+            /// <summary>Whether this composition is a node's, and whether it is a roundabout's.</summary>
+            public bool IsNode, Roundabout;
+
+            /// <summary>An elevated composition standing clear of the ground; see the note below.</summary>
+            public bool ElevatedAwayFromGround;
+
+            /// <summary>The lateral offset of the middle curve from the centre line.</summary>
+            public float MiddleOffset;
+
+            /// <summary>
+            /// The two half widths, either side of the middle curve. The decompiler called these
+            /// <c>num7</c> and <c>num8</c>; the trailing comments in the original said what they
+            /// are, and now the names do.
+            /// </summary>
+            public float LeftHalfWidth, RightHalfWidth;
+
+            /// <summary>The composition's pieces, copied out of the ECS buffer.</summary>
+            public NetCompositionPiece[] Pieces;
+        }
+
+        /// <summary>
+        /// Everything one PIECE contributes to every range and vertex it holds, read once.
+        /// </summary>
+        private sealed class PieceSetup
+        {
+            /// <summary>The piece itself, and its authored geometry.</summary>
+            public NetCompositionPiece Piece;
+
+            /// <summary>The authored buffers this piece was read from.</summary>
+            public PieceGeometry Source;
+
+            /// <summary>The section flags, decoded.</summary>
+            public bool Invert, FlipMesh, Median, RightSide, HalfLength;
+
+            /// <summary>The piece flags, decoded.</summary>
+            public bool PreserveShape, DisableTiling, LowerBottom, RaiseTop, SmoothTop;
+
+            /// <summary>Which half of the authored tile the cuts remove, and whether x is pinned.</summary>
+            public bool FrontCut, BackCut, ZeroWidth;
+
+            /// <summary>The authored shading frame, or null where the piece carries none.</summary>
+            public float3[] Normals;
+
+            /// <summary>The authored tangents, or null.</summary>
+            public float4[] Tangents;
+
+            /// <summary>Whether this piece ships a shading frame at all.</summary>
+            public bool Authored;
+
+            /// <summary>The per-slice height bounds, when any conform or smoothing rule wants them.</summary>
+            public PieceHeightBounds HeightBounds;
+
+            /// <summary>Slices per authored metre along the piece.</summary>
+            public float BoundsScaleZ;
+
+            /// <summary>Whether terrain conforming is both wanted and available this run.</summary>
+            public bool Conforming;
+
+            /// <summary>The §42 section probe row for this piece in this composition.</summary>
+            public SectionProbe Section;
+
+            /// <summary>The conform probe row, when this piece conforms.</summary>
+            public ConformPieceProbe Probe;
+
+            /// <summary>The game's flip select, as three scalars.</summary>
+            public float Sx, Sz, Sw;
+
+            /// <summary>The piece's placement offset, after the half-length shift.</summary>
+            public float3 Offset;
+
+            /// <summary>The three map scales — full frame, left half, right half.</summary>
+            public float2 Scale4, Scale5, Scale6;
+
+            /// <summary>Their biases.</summary>
+            public float2 Bias7, Bias8, Bias9;
+
+            /// <summary>The index read order, reversed under Invert XOR FlipMesh.</summary>
+            public int3 Order;
+        }
+
+        /// <summary>One material range's window into the piece's arrays.</summary>
+        private readonly struct PieceRange
+        {
+            /// <summary>Where the range starts and how long it runs, in vertices and in indices.</summary>
+            public readonly int StartVertex, VertexCount, StartIndex, IndexCount;
+
+            /// <summary>Read one range out of the piece's parallel arrays.</summary>
+            /// <param name="source">The piece's authored geometry.</param>
+            /// <param name="r">The range index.</param>
+            public PieceRange(PieceGeometry source, int r)
+            {
+                StartVertex = source.RangeStartVertex[r];
+                VertexCount = source.RangeVertexCount[r];
+                StartIndex = source.RangeStartIndex[r];
+                IndexCount = source.RangeIndexCount[r];
+            }
+        }
+
+        /// <summary>Where one vertex lands in the composition's frame, before the curves are read.</summary>
+        private struct VertexMap
+        {
+            /// <summary>Which two of the composition's curves this vertex lerps between.</summary>
+            public int2 Pair;
+
+            /// <summary>The lerp coordinate across, and the curve parameter along.</summary>
+            public float XParam, ZParam;
+
+            /// <summary>
+            /// How much of the piece's own across/along metre each parameter is worth — the
+            /// diagonal of the map's Jacobian, kept per branch because each half frame has its
+            /// own width. <c>MapScale.x == 0</c> marks a pinned column, whose across direction
+            /// the map collapses.
+            /// </summary>
+            public float2 MapScale;
+
+            /// <summary>Whether this vertex went through a half frame, and which one.</summary>
+            public bool Halved, LeftHalf;
         }
 
         private void BuildGameComposition(Entity composition, in CompositionCurves p,
-                                          float3 center, string label, Dictionary<Entity, MeshAsset> cache,
-                                          MeshAssembly assembly, System.Text.StringBuilder report)
+                                          float3 center, Dictionary<Entity, MeshAsset> cache,
+                                          MeshAssembly assembly)
         {
-            if ((composition == Entity.Null) || !EntityManager.HasComponent<NetCompositionMeshRef>(composition)) return;
-            Entity meshEntity = EntityManager.GetComponentData<NetCompositionMeshRef>(composition).m_Mesh;
-            if ((meshEntity == Entity.Null) || !EntityManager.HasBuffer<NetCompositionPiece>(meshEntity)) return;
-            if (!EntityManager.HasComponent<NetCompositionData>(composition)) return;
+            CompositionSetup setup = ReadComposition(composition);
+            if (setup == null) return;
 
-            // The game replaces the Default batch layer with the mesh's own default layers when
-            // they name any (`UpdateNetInstances`) — and then still draws the mesh on those
-            // layers. `CommonUtils.GetBoundsMask` names the world-view set: Default, Moving,
-            // Tunnel and Marker are `NormalLayers`; only Pipeline/SubPipeline/Waterway select
-            // the utility-cutaway and overlay cameras. So the skip is for compositions whose
-            // layers hold no world bit — underground pipe and cable runs — and NOT for Tunnel
-            // compositions, which are the tunnel walls and decks themselves. (An earlier
-            // revision skipped every Default-less composition, which silenced all tunnels.)
-            //
-            if (EntityManager.HasComponent<NetCompositionMeshData>(meshEntity))
+            foreach (NetCompositionPiece piece in setup.Pieces)
             {
-                const MeshLayer world = MeshLayer.Default | MeshLayer.Moving | MeshLayer.Tunnel | MeshLayer.Marker;
-                MeshLayer defaultLayers = EntityManager.GetComponentData<NetCompositionMeshData>(meshEntity).m_DefaultLayers;
-                if ((defaultLayers != 0) && ((defaultLayers & world) == 0))
+                PieceGeometry source = GetPieceGeometry(piece.m_Piece, cache);
+                if (source == null)
                 {
-                    _pipelineCompositions++;
-                    return;
+                    RecordEmptyPiece(piece);
+                    continue;
+                }
+
+                PieceSetup pieceSetup = ReadPiece(setup, piece, source);
+                for (int r = 0; r < source.RangeMaterial.Length; r++)
+                {
+                    BuildRange(setup, pieceSetup, new PieceRange(source, r), r, p, center, assembly);
                 }
             }
+        }
+
+        /// <summary>
+        /// The composition's own preamble: the guards, the world-layer skip, and the eight values
+        /// every piece is placed against. Null when this composition contributes no mesh.
+        /// </summary>
+        /// <param name="composition">The composition entity.</param>
+        /// <returns>The setup, or null.</returns>
+        private CompositionSetup ReadComposition(Entity composition)
+        {
+            if ((composition == Entity.Null) || !EntityManager.HasComponent<NetCompositionMeshRef>(composition)) return null;
+            Entity meshEntity = EntityManager.GetComponentData<NetCompositionMeshRef>(composition).m_Mesh;
+            if ((meshEntity == Entity.Null) || !EntityManager.HasBuffer<NetCompositionPiece>(meshEntity)) return null;
+            if (!EntityManager.HasComponent<NetCompositionData>(composition)) return null;
+            if (SkipUnworldlyLayers(meshEntity)) return null;
 
             NetCompositionData data = EntityManager.GetComponentData<NetCompositionData>(composition);
-            bool isNode = (data.m_Flags.m_General & CompositionFlags.General.Node) != 0;
             bool roundabout = (data.m_Flags.m_General & CompositionFlags.General.Roundabout) != 0;
             if (roundabout) _roundaboutParts++;
-
-            // A deck standing 17 m above grade must not be dragged down to it. Terrain conforming
-            // was gated on PIECE flags alone (LowerBottomToTerrain / RaiseTopToTerrain), and
-            // RaiseTopToTerrain assigns `world.y = terrain` unconditionally — so any elevated
-            // composition whose pieces carry that flag would have its top edge pinned to the
-            // ground far below. The §38 downward clamp is no protection here: for a deck above
-            // grade `terrain < world.y` always holds, so clamp and assignment agree.
-            //
-            // Dormant in the city ripped 2026-08-10 (0.07% of elevated vertices sit within 2 cm
-            // of the heightmap, per-segment median 0.000%), so this changes no shipped geometry
-            // there — it closes a latent trap.
-            //
-            // The exemption is the roadbed walk's own rule, verbatim (`TryGetGroundComposition`):
-            // an elevated composition with a Low/HighTransition side is where the deck MEETS the
-            // ground, and that end still has to conform or the ramp separates from its approach.
-            //
-            // **This is a producer CHOICE, not a port** (stated plainly 2026-08-14, after a
-            // review found no counterpart for it in the game). `BatchMeshHelpers` sets the
-            // conform classification from `NetPieceFlags` alone — there is no `Elevated` test
-            // anywhere in that path — but it does not conform on the CPU at all: it writes the
-            // class into a vertex `Color32.b` and the SHADER decides what to do with it. CS2
-            // ships its shaders compiled, so what the GPU does with a raise-top vertex 17 m
-            // above its terrain sample is not readable, and the producer has to pick. It picks
-            // "leave the deck where it is", which cannot separate a deck from its own ramp
-            // because the transition sides are exempt. Recorded as a choice so the next person
-            // does not read it as a faithful port of something.
-            bool elevated = (data.m_Flags.m_General & CompositionFlags.General.Elevated) != 0;
-            CompositionFlags.Side conformSides = data.m_Flags.m_Left | data.m_Flags.m_Right;
-            bool elevatedAwayFromGround = elevated
-                && ((conformSides & (CompositionFlags.Side.LowTransition
-                                     | CompositionFlags.Side.HighTransition)) == 0);
-
-            float middleOffset = data.m_MiddleOffset;
-            float num7 = (data.m_Width * 0.5f) + middleOffset;   // left half width
-            float num8 = (data.m_Width * 0.5f) - middleOffset;   // right half width
 
             DynamicBuffer<NetCompositionPiece> buffer = EntityManager.GetBuffer<NetCompositionPiece>(meshEntity, true);
             NetCompositionPiece[] pieces = new NetCompositionPiece[buffer.Length];
             for (int i = 0; i < buffer.Length; i++) pieces[i] = buffer[i];
 
-            foreach (NetCompositionPiece piece in pieces)
+            return new CompositionSetup
             {
-                PieceGeometry source = GetPieceGeometry(piece.m_Piece, cache);
-                if (source == null)
+                Composition = composition,
+                Data = data,
+                IsNode = (data.m_Flags.m_General & CompositionFlags.General.Node) != 0,
+                Roundabout = roundabout,
+                ElevatedAwayFromGround = IsElevatedAwayFromGround(data),
+                MiddleOffset = data.m_MiddleOffset,
+                LeftHalfWidth = (data.m_Width * 0.5f) + data.m_MiddleOffset,
+                RightHalfWidth = (data.m_Width * 0.5f) - data.m_MiddleOffset,
+                Pieces = pieces
+            };
+        }
+
+        /// <summary>
+        /// Whether this composition's mesh draws on no world camera, and so is skipped.
+        /// </summary>
+        /// <remarks>
+        /// The game replaces the Default batch layer with the mesh's own default layers when
+        /// they name any (<c>UpdateNetInstances</c>) — and then still draws the mesh on those
+        /// layers. <c>CommonUtils.GetBoundsMask</c> names the world-view set: Default, Moving,
+        /// Tunnel and Marker are <c>NormalLayers</c>; only Pipeline/SubPipeline/Waterway select
+        /// the utility-cutaway and overlay cameras. So the skip is for compositions whose
+        /// layers hold no world bit — underground pipe and cable runs — and NOT for Tunnel
+        /// compositions, which are the tunnel walls and decks themselves. (An earlier
+        /// revision skipped every Default-less composition, which silenced all tunnels.)
+        /// </remarks>
+        /// <param name="meshEntity">The composition's mesh entity.</param>
+        /// <returns>Whether to skip it.</returns>
+        private bool SkipUnworldlyLayers(Entity meshEntity)
+        {
+            if (!EntityManager.HasComponent<NetCompositionMeshData>(meshEntity)) return false;
+
+            const MeshLayer world = MeshLayer.Default | MeshLayer.Moving | MeshLayer.Tunnel | MeshLayer.Marker;
+            MeshLayer defaultLayers = EntityManager.GetComponentData<NetCompositionMeshData>(meshEntity).m_DefaultLayers;
+            if ((defaultLayers != 0) && ((defaultLayers & world) == 0))
+            {
+                _pipelineCompositions++;
+                return true;
+            }
+            return false;
+        }
+
+        /// <summary>
+        /// Whether this composition is an elevated deck standing clear of the ground, whose
+        /// pieces must NOT be conformed to it.
+        /// </summary>
+        /// <remarks>
+        /// A deck standing 17 m above grade must not be dragged down to it. Terrain conforming
+        /// was gated on PIECE flags alone (LowerBottomToTerrain / RaiseTopToTerrain), and
+        /// RaiseTopToTerrain assigns <c>world.y = terrain</c> unconditionally — so any elevated
+        /// composition whose pieces carry that flag would have its top edge pinned to the
+        /// ground far below. The §38 downward clamp is no protection here: for a deck above
+        /// grade <c>terrain &lt; world.y</c> always holds, so clamp and assignment agree.
+        /// <para>
+        /// Dormant in the city ripped 2026-08-10 (0.07% of elevated vertices sit within 2 cm
+        /// of the heightmap, per-segment median 0.000%), so this changes no shipped geometry
+        /// there — it closes a latent trap.
+        /// </para>
+        /// <para>
+        /// The exemption is the roadbed walk's own rule, verbatim (<c>TryGetGroundComposition</c>):
+        /// an elevated composition with a Low/HighTransition side is where the deck MEETS the
+        /// ground, and that end still has to conform or the ramp separates from its approach.
+        /// </para>
+        /// <para>
+        /// <b>This is a producer CHOICE, not a port</b> (stated plainly 2026-08-14, after a
+        /// review found no counterpart for it in the game). <c>BatchMeshHelpers</c> sets the
+        /// conform classification from <c>NetPieceFlags</c> alone — there is no <c>Elevated</c>
+        /// test anywhere in that path — but it does not conform on the CPU at all: it writes the
+        /// class into a vertex <c>Color32.b</c> and the SHADER decides what to do with it. CS2
+        /// ships its shaders compiled, so what the GPU does with a raise-top vertex 17 m above
+        /// its terrain sample is not readable, and the producer has to pick. It picks "leave the
+        /// deck where it is", which cannot separate a deck from its own ramp because the
+        /// transition sides are exempt. Recorded as a choice so the next person does not read it
+        /// as a faithful port of something.
+        /// </para>
+        /// </remarks>
+        /// <param name="data">The composition's data.</param>
+        /// <returns>Whether its pieces stand clear of the ground.</returns>
+        private static bool IsElevatedAwayFromGround(NetCompositionData data)
+        {
+            bool elevated = (data.m_Flags.m_General & CompositionFlags.General.Elevated) != 0;
+            CompositionFlags.Side conformSides = data.m_Flags.m_Left | data.m_Flags.m_Right;
+            return elevated
+                && ((conformSides & (CompositionFlags.Side.LowTransition
+                                     | CompositionFlags.Side.HighTransition)) == 0);
+        }
+
+        /// <summary>
+        /// Name a piece whose geometry came back empty.
+        /// </summary>
+        /// <remarks>
+        /// The one exclusion in this walk that said nothing. A composition whose running surface
+        /// is dropped here still ships its RoadParts, so the segment looks present and is hollow
+        /// — measured on the 2026-08-11 rip, an elevated tram deck carries 12% of the up-facing
+        /// area its width and length imply against 72% for an elevated road or train. Name the
+        /// piece so the next rip says which one, instead of leaving it to be found by rendering
+        /// a viaduct.
+        /// </remarks>
+        /// <param name="piece">The piece with no geometry.</param>
+        private void RecordEmptyPiece(NetCompositionPiece piece)
+        {
+            _emptyPieces++;
+            if (_emptyPieceNames.Count < 64)
+            {
+                _emptyPieceNames.Add(Instance.Prefab.TryGetPrefab(piece.m_Piece, out PrefabBase emptyPiece)
+                                     && (emptyPiece != null)
+                    ? emptyPiece.name : $"<entity {piece.m_Piece.Index}>");
+            }
+        }
+
+        /// <summary>
+        /// One piece's flags, shading frame, conform decision and coordinate maps, read once.
+        /// </summary>
+        /// <param name="setup">The composition this piece belongs to.</param>
+        /// <param name="piece">The piece.</param>
+        /// <param name="source">Its authored geometry.</param>
+        /// <returns>The piece setup every range and vertex below is placed against.</returns>
+        private PieceSetup ReadPiece(CompositionSetup setup, NetCompositionPiece piece, PieceGeometry source)
+        {
+            PieceSetup ps = ReadPieceFlags(setup, piece, source);
+            ps.Section = ProbeSection(setup, piece);
+            ResolveConform(setup, ps, piece);
+            ComputeMaps(setup, ps, piece);
+            return ps;
+        }
+
+        /// <summary>
+        /// The section and piece flags, and the authored shading frame.
+        /// </summary>
+        /// <param name="setup">The composition this piece belongs to.</param>
+        /// <param name="piece">The piece.</param>
+        /// <param name="source">Its authored geometry.</param>
+        /// <returns>A partly-filled setup; the caller adds the probes and the maps.</returns>
+        private PieceSetup ReadPieceFlags(CompositionSetup setup, NetCompositionPiece piece, PieceGeometry source)
+        {
+            PieceSetup ps = new PieceSetup
+            {
+                Piece = piece,
+                Source = source,
+                Invert = (piece.m_SectionFlags & NetSectionFlags.Invert) != 0,
+                FlipMesh = (piece.m_SectionFlags & NetSectionFlags.FlipMesh) != 0,
+                Median = (piece.m_SectionFlags & NetSectionFlags.Median) != 0,
+                RightSide = (piece.m_SectionFlags & NetSectionFlags.Right) != 0,
+                HalfLength = (piece.m_SectionFlags & NetSectionFlags.HalfLength) != 0,
+                PreserveShape = (piece.m_PieceFlags & NetPieceFlags.PreserveShape) != 0,
+                DisableTiling = (piece.m_PieceFlags & NetPieceFlags.DisableTiling) != 0,
+                BackCut = (piece.m_PieceFlags & NetPieceFlags.SkipBottomHalf) != 0,
+                ZeroWidth = piece.m_Size.x == 0f,
+                LowerBottom = (piece.m_PieceFlags & NetPieceFlags.LowerBottomToTerrain) != 0,
+                RaiseTop = (piece.m_PieceFlags & NetPieceFlags.RaiseTopToTerrain) != 0,
+                SmoothTop = (piece.m_PieceFlags & NetPieceFlags.SmoothTopNormal) != 0
+            };
+            ps.FrontCut = (setup.IsNode && !setup.Roundabout && !ps.PreserveShape) || ps.HalfLength;
+            ps.Order = math.select(new int3(0, 1, 2), new int3(2, 1, 0), ps.Invert != ps.FlipMesh);
+
+            if (ps.PreserveShape) _railPieces++;
+            if (ps.BackCut) _skipBottomPieces++;
+            if (ps.LowerBottom) _lowerBottomPieces++;
+            if (ps.RaiseTop) _raiseTopPieces++;
+            if (ps.SmoothTop) _smoothTopPieces++;
+
+            // Authored shading frame, or the face rebuild for a piece that carries none.
+            //
+            ps.Normals = source.Normals;
+            ps.Tangents = source.Tangents;
+            ps.Authored = ps.Normals != null;
+            if (ps.Authored) _authoredFramePieces++;
+            else _rebuiltFramePieces++;
+            return ps;
+        }
+
+        /// <summary>
+        /// The §42 probe row for this piece in this composition: one row per piece, keyed before
+        /// the vertex loop so the loop only accumulates. Resolving the name is the expensive half
+        /// and happens on first sight of a piece, never per placement.
+        /// </summary>
+        /// <param name="setup">The composition this piece belongs to.</param>
+        /// <param name="piece">The piece.</param>
+        /// <returns>The probe row, with this placement already counted.</returns>
+        private SectionProbe ProbeSection(CompositionSetup setup, NetCompositionPiece piece)
+        {
+            PieceKey sectionKey = new PieceKey(piece.m_Piece, setup.Composition, setup.IsNode);
+            if (!_sectionProbes.TryGetValue(sectionKey, out SectionProbe section))
+            {
+                string sectionName = Instance.Prefab.TryGetPrefab(piece.m_Piece, out PrefabBase sectionPiece)
+                                     && (sectionPiece != null)
+                    ? sectionPiece.name : $"<entity {piece.m_Piece.Index}>";
+                _sectionProbes[sectionKey] = section = new SectionProbe
                 {
-                    // The one exclusion in this walk that said nothing. A composition whose
-                    // running surface is dropped here still ships its RoadParts, so the segment
-                    // looks present and is hollow — measured on the 2026-08-11 rip, an elevated
-                    // tram deck carries 12% of the up-facing area its width and length imply
-                    // against 72% for an elevated road or train. Name the piece so the next rip
-                    // says which one, instead of leaving it to be found by rendering a viaduct.
-                    _emptyPieces++;
-                    if (_emptyPieceNames.Count < 64)
+                    Name = sectionName,
+                    Where = setup.IsNode ? "node" : "edge",
+                    Composition = setup.Composition.Index,
+                    Size = piece.m_Size,
+                    OffsetX = piece.m_Offset.x
+                };
+            }
+            section.Placements++;
+            return section;
+        }
+
+        /// <summary>
+        /// Whether this piece conforms to the terrain, and the height bounds the classification
+        /// needs.
+        /// </summary>
+        /// <remarks>
+        /// The per-slice height bounds serve two rules, so they are built for either
+        /// (<c>BatchMeshHelpers</c> line 682: <c>flag17 || flag18 || flag19</c>). Terrain
+        /// conforming classifies each vertex against them and applies the vertex shader's terrain
+        /// move at rip time — the portal face over every tunnel mouth is a RaiseTopToTerrain
+        /// piece, and without it the mouth stands open above the arch. SmoothTopNormal needs no
+        /// terrain at all: it only replaces the authored normal at the top bound.
+        /// </remarks>
+        /// <param name="setup">The composition this piece belongs to.</param>
+        /// <param name="ps">The piece setup to fill.</param>
+        /// <param name="piece">The piece.</param>
+        private void ResolveConform(CompositionSetup setup, PieceSetup ps, NetCompositionPiece piece)
+        {
+            if (ps.LowerBottom || ps.RaiseTop || ps.SmoothTop)
+            {
+                ps.HeightBounds = GetPieceHeightBounds(piece.m_Piece, ps.Source, piece.m_Size.z);
+                ps.BoundsScaleZ = 256f / math.max(piece.m_Size.z, 0.001f);
+            }
+
+            // The gate applies to `RaiseTop` ONLY (narrowed 2026-08-14). The argument for
+            // it is about a TOP being dragged down to a ground the deck stands clear of; it
+            // says nothing about a bottom reaching down to meet the ground, and the game
+            // tags the two independently. Suppressing both left an elevated composition's
+            // abutment and retaining pieces floating.
+            //
+            bool wantsConform = ps.LowerBottom || (ps.RaiseTop && !setup.ElevatedAwayFromGround);
+            if (wantsConform)
+            {
+                // N-F2: a heightmap that cannot be captured used to leave the piece silently
+                // unconformed while the report still claimed it was conformed. Counted here,
+                // declared in warnings.jsonl and stated honestly in the report.
+                //
+                ps.Conforming = EnsureConformTerrain();
+                if (!ps.Conforming) _unconformedPieces++;
+            }
+
+            if (ps.RaiseTop && setup.ElevatedAwayFromGround)
+            {
+                // Deliberately not raised: an elevated composition clear of the ground.
+                // Counted separately from `_unconformedPieces`, which means "we wanted to
+                // and could not" — this one means "we must not".
+                _elevatedUnconformedPieces++;
+            }
+
+            if (!ps.Conforming) return;
+
+            string probeName = Instance.Name.GetPrefabName(piece.m_Piece);
+            if (!_conformProbes.TryGetValue(probeName, out ConformPieceProbe probe))
+            {
+                _conformProbes[probeName] = probe = new ConformPieceProbe
+                {
+                    Flags = (ps.LowerBottom && ps.RaiseTop) ? "LowerBottom+RaiseTop"
+                          : ps.LowerBottom ? "LowerBottom" : "RaiseTop",
+                    Size = piece.m_Size
+                };
+            }
+            ps.Probe = probe;
+        }
+
+        /// <summary>
+        /// The flip select, the placement offset, and the three coordinate maps.
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// The game's flip select — <c>select(float4(-1,1,-1,1), float4(1,1,1,-1),
+        /// bool4(Invert, false, FlipMesh, Invert != FlipMesh))</c>: authored pieces are x- and
+        /// z-negated by default; Invert restores x, FlipMesh restores z. The <c>w</c> term flips
+        /// tangent handedness, and now that the authored frame is shipped it is applied as the
+        /// game applies it (<c>tangent *= float3</c>, all four components).
+        /// </para>
+        /// <para>
+        /// The generator computes two more per-vertex quantities here that this port does not:
+        /// <c>v.z</c> — the piece's OWN cross-anchor in the same xParam coordinate the position
+        /// lerp uses (<c>offset.x/width + 0.5</c> on an edge or a rail, the half-frame forms
+        /// <c>1 + (offset.x − middleOffset)/leftHalf</c> and
+        /// <c>(offset.x − middleOffset)/rightHalf</c> at a node, 0 and 1 at a roundabout's island
+        /// and outer edge) — and <c>v.w</c>, the pre-rebase along coordinate scaled by 0.5 on an
+        /// edge, 20 at a node and 40 at a roundabout. Both go into the vertex's <c>UV0.zw</c> and
+        /// are read only by the compiled vertex shader, which is not decompilable, so what they
+        /// drive is unknown. They cannot be a position term: <c>m_Position</c> is written from
+        /// <c>vertex</c> alone, and this port evaluates the same map on the CPU and bakes the
+        /// result. So they are deliberately not computed — a value assigned to nothing reads as a
+        /// half-finished port, and this comment is the honest form of it. (Re-derived from
+        /// <c>GenerateCompositionMesh</c> 2026-08-17, audit §53.)
+        /// </para>
+        /// </remarks>
+        /// <param name="setup">The composition this piece belongs to.</param>
+        /// <param name="ps">The piece setup to fill.</param>
+        /// <param name="piece">The piece.</param>
+        private static void ComputeMaps(CompositionSetup setup, PieceSetup ps, NetCompositionPiece piece)
+        {
+            ps.Sx = ps.Invert ? 1f : -1f;
+            ps.Sz = ps.FlipMesh ? 1f : -1f;
+            ps.Sw = (ps.Invert != ps.FlipMesh) ? -1f : 1f;
+
+            ps.Offset = piece.m_Offset;
+            ps.Scale4 = new(1f / setup.Data.m_Width, 1f / (piece.m_Size.z * 0.5f));
+            ps.Scale5 = new(1f / setup.LeftHalfWidth, 1f / (piece.m_Size.z * 0.5f));
+            ps.Scale6 = new(1f / setup.RightHalfWidth, 1f / (piece.m_Size.z * 0.5f));
+            ps.Bias7 = new(0.5f, 1f);
+            ps.Bias8 = new(1f - (setup.MiddleOffset / setup.LeftHalfWidth), 1f);
+            ps.Bias9 = new((0f - setup.MiddleOffset) / setup.RightHalfWidth, 1f);
+
+            if (setup.IsNode && ps.PreserveShape)
+            {
+                float railScale = 0.5f * piece.m_Size.z / setup.Data.m_Width;
+                ps.Scale4.y *= railScale;
+                ps.Bias7.y *= railScale;
+            }
+            else if (setup.Roundabout)
+            {
+                // Deliberately empty, and load-bearing. The game's branch here sets only the
+                // `v.z` cross-anchor described above — but the branch itself must stay,
+                // because being an `else if` is what stops a HalfLength piece inside a
+                // roundabout composition from taking the halving below. That is the game's own
+                // else-if chain, and deleting the branch would silently change which pieces
+                // get `Sz *= 2`.
+                //
+            }
+            else if (ps.HalfLength)
+            {
+                ps.Sz *= 2f;
+                ps.Offset.z += 0.5f * piece.m_Size.z;
+            }
+        }
+
+        /// <summary>
+        /// One material range of one piece: the surviving vertices, their triangles, and the
+        /// primitive they become.
+        /// </summary>
+        /// <param name="setup">The composition.</param>
+        /// <param name="ps">The piece.</param>
+        /// <param name="range">The range's window into the piece's arrays.</param>
+        /// <param name="r">The range index, for its material id.</param>
+        /// <param name="p">The composition's curves.</param>
+        /// <param name="center">The mesh origin to rebase onto.</param>
+        /// <param name="assembly">The shared assembly lists.</param>
+        private void BuildRange(CompositionSetup setup, PieceSetup ps, in PieceRange range, int r,
+                                in CompositionCurves p, float3 center, MeshAssembly assembly)
+        {
+            int baseVertex = assembly.Vertices.Count;
+            int[] remap = BuildRemap(ps, range, baseVertex, out int kept);
+            MeasureDensity(ps, range, remap, out float density, out float rebase, out bool tiledV);
+
+            EmitVertices(setup, ps, range, remap, density, rebase, tiledV, p, center, assembly);
+
+            int primitiveStart = assembly.Indices.Count;
+            EmitTriangles(ps, range, remap, assembly);
+
+            if (assembly.Indices.Count > primitiveStart)
+            {
+                assembly.Primitives.Add(new MeshPrimitive
+                {
+                    StartIndex = primitiveStart,
+                    IndexCount = assembly.Indices.Count - primitiveStart,
+                    StartVertex = baseVertex,
+                    VertexCount = kept,
+                    MaterialIndex = assembly.Primitives.Count,
+                    MaterialId = ps.Source.RangeMaterial[r]
+                });
+            }
+        }
+
+        /// <summary>
+        /// The vertex filter and remap, as the generator's <c>nativeArray4</c> — built before the
+        /// V density because the game measures that density only over triangles that survive the
+        /// cut (its accumulation sits inside <c>math.all(int7 &gt;= 0)</c>).
+        /// </summary>
+        /// <param name="ps">The piece.</param>
+        /// <param name="range">The range window.</param>
+        /// <param name="baseVertex">Where this range's survivors start in the assembly.</param>
+        /// <param name="kept">How many survived.</param>
+        /// <returns>Local vertex index to assembly index, or -1 for a cut vertex.</returns>
+        private static int[] BuildRemap(PieceSetup ps, in PieceRange range, int baseVertex, out int kept)
+        {
+            int[] remap = new int[range.VertexCount];
+            kept = 0;
+            for (int i = 0; i < range.VertexCount; i++)
+            {
+                float rawZ = ps.Source.Vertices[range.StartVertex + i].z;
+                remap[i] = ((ps.FrontCut && (rawZ < -0.01f)) || (ps.BackCut && (rawZ > 0.01f)))
+                    ? -1
+                    : baseVertex + kept++;
+            }
+            return remap;
+        }
+
+        /// <summary>
+        /// The game's per-range V density: |ΔV| over |Δz| across surviving triangles whose V is
+        /// wholly non-negative; the others instead record the rebase ceiling. A front-cut piece's
+        /// removed half must not weigh the ratio.
+        /// </summary>
+        /// <param name="ps">The piece.</param>
+        /// <param name="range">The range window.</param>
+        /// <param name="remap">The vertex filter.</param>
+        /// <param name="density">V per metre along.</param>
+        /// <param name="rebase">The ceiling a non-tiled range subtracts instead.</param>
+        /// <param name="tiledV">Whether this range tiles V at all.</param>
+        private static void MeasureDensity(PieceSetup ps, in PieceRange range, int[] remap,
+                                           out float density, out float rebase, out bool tiledV)
+        {
+            PieceGeometry source = ps.Source;
+            tiledV = !ps.DisableTiling;
+            float2 accum = default;
+            rebase = 0f;
+            for (int t = 0; t < range.IndexCount; t += 3)
+            {
+                int ia = source.Indices[range.StartIndex + t + ps.Order.x];
+                int ib = source.Indices[range.StartIndex + t + ps.Order.y];
+                int ic = source.Indices[range.StartIndex + t + ps.Order.z];
+                int la = ia - range.StartVertex, lb = ib - range.StartVertex, lc = ic - range.StartVertex;
+                if ((la < 0) || (lb < 0) || (lc < 0)
+                    || (la >= range.VertexCount) || (lb >= range.VertexCount) || (lc >= range.VertexCount)) continue;
+                if ((remap[la] < 0) || (remap[lb] < 0) || (remap[lc] < 0)) continue;
+
+                float3 v = new(source.Uvs[ia].y, source.Uvs[ib].y, source.Uvs[ic].y);
+                if (tiledV && math.all(v >= 0f))
+                {
+                    float3 z = new(source.Vertices[ia].z, source.Vertices[ib].z, source.Vertices[ic].z);
+                    accum += new float2(math.csum(math.abs(v.yzx - v)), math.csum(math.abs(z.yzx - z)));
+                }
+                else
+                {
+                    rebase = math.max(rebase, math.cmax(v));
+                }
+            }
+            density = (accum.y > 1e-6f) ? (accum.x / accum.y) : 0f;
+            rebase = tiledV ? 0f : math.ceil(rebase);
+        }
+
+        /// <summary>
+        /// Every surviving vertex of one range: classified, mapped onto the composition's curves,
+        /// conformed, shaded and emitted.
+        /// </summary>
+        /// <param name="setup">The composition.</param>
+        /// <param name="ps">The piece.</param>
+        /// <param name="range">The range window.</param>
+        /// <param name="remap">The vertex filter.</param>
+        /// <param name="density">V per metre along.</param>
+        /// <param name="rebase">The ceiling a non-tiled range subtracts.</param>
+        /// <param name="tiledV">Whether this range tiles V.</param>
+        /// <param name="p">The composition's curves.</param>
+        /// <param name="center">The mesh origin to rebase onto.</param>
+        /// <param name="assembly">The shared assembly lists.</param>
+        private void EmitVertices(CompositionSetup setup, PieceSetup ps, in PieceRange range, int[] remap,
+                                  float density, float rebase, bool tiledV,
+                                  in CompositionCurves p, float3 center, MeshAssembly assembly)
+        {
+            PieceGeometry source = ps.Source;
+            for (int i = 0; i < range.VertexCount; i++)
+            {
+                if (remap[i] < 0) continue;
+
+                float3 raw = source.Vertices[range.StartVertex + i];
+                float3 normal = ps.Authored ? ps.Normals[range.StartVertex + i] : default;
+                float4 tangent = (ps.Tangents != null)
+                    ? ps.Tangents[range.StartVertex + i] : new float4(0f, 0f, 0f, 1f);
+
+                int conform = ClassifyConform(setup, ps, raw, ref normal);
+
+                float3 vertex = raw * new float3(ps.Sx, 1f, ps.Sz) + ps.Offset;
+                normal *= new float3(ps.Sx, 1f, ps.Sz);
+                tangent *= new float4(ps.Sx, 1f, ps.Sz, ps.Sw);
+                float2 uv = source.Uvs[range.StartVertex + i];
+
+                VertexMap map = MapVertex(setup, ps, ref vertex);
+                map.XParam = math.saturate(map.XParam);
+                map.ZParam = math.saturate(map.ZParam);
+
+                // The across-width sync the game hands the shader (§5.1). Each half's
+                // knots are stored in that half's own xParam coordinate (left: 0 at the
+                // outer edge; right: 0 at the middle — `GeometrySystem`'s
+                // `1 − offsetsLeft.wzyx` twin conversion and `CalculateVertexSyncTarget`'s
+                // right-branch anchoring both say so), so both halves apply directly.
+                // The earlier `1 − Apply(1 − xParam)` right-half flip mirrored every
+                // right-side curb knot — kerbs jutted into the roadway at flares (§21).
+                //
+                if (map.Halved && setup.IsNode)
+                {
+                    map.XParam = p.Sync.Apply(map.XParam, map.LeftHalf);
+                }
+
+                float3 a = MathUtils.Position(p.Curves[map.Pair.x], map.ZParam);
+                float3 b = MathUtils.Position(p.Curves[map.Pair.y], map.ZParam);
+                float3 world = math.lerp(a, b, map.XParam);
+                world.y += vertex.y;
+                if (conform != 0) ApplyConform(ps, conform, ref world);
+
+                RecordSectionExtent(ps.Section, world, center, map.XParam);
+                assembly.Vertices.Add(world - center);
+                ShadeVertex(ps, map, a, b, normal, tangent, p, assembly);
+
+                float metres = math.lerp(EvalMap(p.Maps[map.Pair.x], map.ZParam),
+                                         EvalMap(p.Maps[map.Pair.y], map.ZParam), map.XParam);
+                float v2 = (tiledV && (uv.y >= 0f)) ? (density * metres) : (uv.y - rebase);
+                assembly.Uvs.Add(new float2(uv.x, v2));
+            }
+        }
+
+        /// <summary>
+        /// Which terrain-conform class this vertex belongs to, and the SmoothTopNormal
+        /// replacement that shares the same bound.
+        /// </summary>
+        /// <remarks>
+        /// The game classifies on the AUTHORED vertex, before the flip and offset.
+        /// SmoothTopNormal discards the authored normal of the top row for straight up, so a
+        /// kerb's or a wall's cap shades with the surface beside it instead of keeping the crease
+        /// the tile was authored with — same bound and same epsilon as the RaiseTop test, but a
+        /// separate flag and no terrain involved.
+        /// </remarks>
+        /// <param name="setup">The composition.</param>
+        /// <param name="ps">The piece.</param>
+        /// <param name="raw">The authored vertex.</param>
+        /// <param name="normal">The authored normal, replaced where SmoothTopNormal applies.</param>
+        /// <returns>0 for no conform, 1 for lower-bottom, 2 for raise-top.</returns>
+        private int ClassifyConform(CompositionSetup setup, PieceSetup ps, float3 raw, ref float3 normal)
+        {
+            if (ps.HeightBounds == null) return 0;
+
+            int conform = 0;
+            int slice = math.clamp((int)math.round(raw.z * ps.BoundsScaleZ) + 128, 0, 256);
+            if (ps.Conforming && ps.LowerBottom && (raw.y <= ps.HeightBounds.Min[slice] + 0.01f)) conform = 1;
+            if (ps.Conforming && ps.RaiseTop && !setup.ElevatedAwayFromGround
+                && (raw.y >= ps.HeightBounds.Max[slice] - 0.01f)) conform = 2;
+
+            if (ps.SmoothTop && ps.Authored && (raw.y >= ps.HeightBounds.Max[slice] - 0.01f))
+            {
+                normal = new float3(0f, 1f, 0f);
+                _smoothTopVerts++;
+            }
+
+            if (ps.Probe != null)
+            {
+                ps.Probe.Vertices++;
+                if (conform == 1) ps.Probe.Class1++;
+                else if (conform == 2) ps.Probe.Class2++;
+            }
+            return conform;
+        }
+
+        /// <summary>
+        /// Which two curves this vertex lerps between, and where along and across them.
+        /// </summary>
+        /// <param name="setup">The composition.</param>
+        /// <param name="ps">The piece.</param>
+        /// <param name="vertex">The placed vertex; a median piece may pin its x.</param>
+        /// <returns>The map.</returns>
+        private static VertexMap MapVertex(CompositionSetup setup, PieceSetup ps, ref float3 vertex)
+        {
+            VertexMap map = default;
+            if (!setup.IsNode)
+            {
+                map.Pair = math.select(new int2(0, 2), new int2(1, 3), vertex.z >= 0f);
+                map.XParam = (vertex.x * ps.Scale4.x) + ps.Bias7.x;
+                map.ZParam = (vertex.z * ps.Scale4.y) + ps.Bias7.y;
+                if (vertex.z >= 0f) map.ZParam -= 1f;
+                map.MapScale = ps.Scale4;
+                return map;
+            }
+
+            if (ps.PreserveShape)
+            {
+                map.Pair = new int2(6, 7);
+                map.XParam = (vertex.x * ps.Scale4.x) + ps.Bias7.x;
+                map.ZParam = (vertex.z * ps.Scale4.y) + ps.Bias7.y;
+                map.MapScale = ps.Scale4;
+                return map;
+            }
+
+            if (ps.Median)
+            {
+                // dx keeps the AUTHORED spread even for a zero-width piece — the game computes it
+                // before pinning x. The pin only moves the lerp coordinate, so a zero-width
+                // intersection piece routes its side columns into the half frames where the
+                // pinned x lands them ON the inner boundary curves, while its centre column rides
+                // the middle to the junction centre: a three-rail ruled surface that paves the
+                // centre wedge. Treating zero width as all-centre — this port's previous reading,
+                // and audit §8's — collapsed the piece to a zero-area ribbon and left every
+                // median-less-looking junction wedge open (audit §18; the `* Intersection Piece 0`
+                // sections are exactly these).
+                //
+                float dx = vertex.x - ps.Piece.m_Offset.x;
+                if (ps.ZeroWidth) vertex.x = ps.Piece.m_Offset.x;
+                if (math.abs(dx) < 0.01f)
+                {
+                    // The game does NOT rebase the centre column's front half (its roundabout
+                    // side branches subtract `int8 - base`, this one has no subtraction): the
+                    // final saturate pins those vertices at the middle curve's end. Matched
+                    // exactly.
+                    //
+                    map.Pair = setup.Roundabout ? math.select(new int2(4, 2), new int2(5, 3), vertex.z >= 0f)
+                                                : new int2(4, 4);
+                    map.XParam = 0f;
+                    map.ZParam = (vertex.z * ps.Scale4.y) + ps.Bias7.y;
+                    map.MapScale = new float2(0f, ps.Scale4.y);
+                    return map;
+                }
+                if (dx > 0f) return RightHalfMap(setup, ps, vertex);
+                return LeftHalfMap(setup, ps, vertex);
+            }
+
+            return ps.RightSide ? RightHalfMap(setup, ps, vertex) : LeftHalfMap(setup, ps, vertex);
+        }
+
+        /// <summary>The right half frame — the map a Right or positive-dx node vertex takes.</summary>
+        /// <param name="setup">The composition.</param>
+        /// <param name="ps">The piece.</param>
+        /// <param name="vertex">The placed vertex.</param>
+        /// <returns>The map.</returns>
+        private static VertexMap RightHalfMap(CompositionSetup setup, PieceSetup ps, float3 vertex)
+        {
+            VertexMap map = default;
+            map.Pair = setup.Roundabout ? math.select(new int2(4, 2), new int2(5, 3), vertex.z >= 0f)
+                                        : new int2(1, 3);
+            map.XParam = (vertex.x * ps.Scale6.x) + ps.Bias9.x;
+            map.ZParam = (vertex.z * ps.Scale6.y) + ps.Bias9.y;
+            if (setup.Roundabout && (vertex.z >= 0f)) map.ZParam -= 1f;
+            map.MapScale = ps.Scale6;
+            map.Halved = true;
+            map.LeftHalf = false;
+            return map;
+        }
+
+        /// <summary>The left half frame — the map every other node vertex takes.</summary>
+        /// <param name="setup">The composition.</param>
+        /// <param name="ps">The piece.</param>
+        /// <param name="vertex">The placed vertex.</param>
+        /// <returns>The map.</returns>
+        private static VertexMap LeftHalfMap(CompositionSetup setup, PieceSetup ps, float3 vertex)
+        {
+            VertexMap map = default;
+            map.Pair = setup.Roundabout ? math.select(new int2(0, 4), new int2(1, 5), vertex.z >= 0f)
+                                        : new int2(0, 2);
+            map.XParam = (vertex.x * ps.Scale5.x) + ps.Bias8.x;
+            map.ZParam = (vertex.z * ps.Scale5.y) + ps.Bias8.y;
+            if (setup.Roundabout && (vertex.z >= 0f)) map.ZParam -= 1f;
+            map.MapScale = ps.Scale5;
+            map.Halved = true;
+            map.LeftHalf = true;
+            return map;
+        }
+
+        /// <summary>
+        /// Move a classified vertex onto the terrain.
+        /// </summary>
+        /// <remarks>
+        /// LowerBottomToTerrain buries the bottom edge: the shader move is a downward clamp,
+        /// never a lift — a trench wall's base stays at road level (§38: assignment collapsed
+        /// 10 m walls onto the terrain lip). RaiseTopToTerrain pins the top edge to the terrain
+        /// surface in both directions — the §34-validated portal stretch, unchanged.
+        /// </remarks>
+        /// <param name="ps">The piece.</param>
+        /// <param name="conform">1 for lower-bottom, 2 for raise-top.</param>
+        /// <param name="world">The placed vertex, moved in place.</param>
+        private void ApplyConform(PieceSetup ps, int conform, ref float3 world)
+        {
+            float terrain = SampleConformHeight(world);
+            if (conform == 1)
+            {
+                if (terrain < world.y) { world.y = terrain; _conformLoweredVerts++; ps.Probe.Lowered++; }
+                else { _conformKeptVerts++; ps.Probe.Kept++; }
+            }
+            else
+            {
+                world.y = terrain;
+                _conformRaisedVerts++;
+                ps.Probe.Raised++;
+            }
+        }
+
+        /// <summary>
+        /// What this piece actually built, in the frame's own coordinate and in metres.
+        /// </summary>
+        /// <remarks>
+        /// A collapsed piece has a healthy vertex count and a degenerate extent; a short half
+        /// frame has a healthy extent and an xParam that never reaches 1.
+        /// </remarks>
+        /// <param name="section">The §42 probe row.</param>
+        /// <param name="world">The placed vertex.</param>
+        /// <param name="center">The mesh origin.</param>
+        /// <param name="xParam">The across coordinate this vertex reached.</param>
+        private static void RecordSectionExtent(SectionProbe section, float3 world, float3 center, float xParam)
+        {
+            float3 relative = world - center;
+            section.Vertices++;
+            section.XMin = math.min(section.XMin, xParam);
+            section.XMax = math.max(section.XMax, xParam);
+            if (section.HasBounds)
+            {
+                section.Lo = math.min(section.Lo, relative);
+                section.Hi = math.max(section.Hi, relative);
+            }
+            else
+            {
+                section.Lo = section.Hi = relative;
+                section.HasBounds = true;
+            }
+        }
+
+        /// <summary>
+        /// The shading frame, rotated by the very map that placed the vertex.
+        /// </summary>
+        /// <remarks>
+        /// Position is <c>lerp(A(z), B(z), x) + (0, y, 0)</c>, so the Jacobian in the piece's own
+        /// metres is [across, up, along]: across = (B − A) per across-metre, up = (0,1,0),
+        /// along = the two curves' derivatives blended at the same x, per along-metre. The normal
+        /// takes the inverse transpose — the cofactor, which is that matrix times a determinant a
+        /// normalize removes — and the tangent takes the plain Jacobian with <c>w</c> passed
+        /// through, which is what keeps a stretched kerb's bevel at its authored angle where a
+        /// rotation-only frame would shear it. APPROXIMATION (counted): the game's vertex shader
+        /// is handed only these curves, so it can build no other frame, but whether it
+        /// orthonormalizes before rotating is shader-side and unknowable from the C# side; the two
+        /// coincide wherever the frame is orthogonal, which is everywhere the road is not both
+        /// flared and banked.
+        /// </remarks>
+        /// <param name="ps">The piece.</param>
+        /// <param name="map">Where this vertex landed.</param>
+        /// <param name="a">The first curve's point at this z.</param>
+        /// <param name="b">The second curve's point at this z.</param>
+        /// <param name="normal">The flipped authored normal.</param>
+        /// <param name="tangent">The flipped authored tangent.</param>
+        /// <param name="p">The composition's curves.</param>
+        /// <param name="assembly">The shared assembly lists.</param>
+        private void ShadeVertex(PieceSetup ps, in VertexMap map, float3 a, float3 b,
+                                 float3 normal, float4 tangent, in CompositionCurves p,
+                                 MeshAssembly assembly)
+        {
+            if (!ps.Authored)
+            {
+                // No authored buffer: leave the zero the finisher rebuilds from faces.
+                //
+                assembly.Normals.Add(default);
+                assembly.Tangents.Add(default);
+                assembly.Rebuilt++;
+                return;
+            }
+
+            float3 across = (b - a) * map.MapScale.x;
+            float3 up = new(0f, 1f, 0f);
+            float3 along = math.lerp(Derivative(p.Curves[map.Pair.x], map.ZParam),
+                                     Derivative(p.Curves[map.Pair.y], map.ZParam), map.XParam) * map.MapScale.y;
+
+            float3 rotated = (normal.x * math.cross(up, along))
+                           + (normal.y * math.cross(along, across))
+                           + (normal.z * math.cross(across, up));
+            float3 rotatedTangent = (tangent.x * across) + (tangent.y * up) + (tangent.z * along);
+
+            // A pinned column (the median centre, and any zero-width piece) maps its whole across
+            // direction onto one curve, so the frame has no across column to take a cofactor of.
+            // Fall back to the rotation the remaining two columns determine, and count it.
+            //
+            if (math.lengthsq(rotated) < 1e-12f)
+            {
+                float3 alongDirection = NormalizeOr(along, new float3(0f, 0f, 1f));
+                float3 acrossDirection = NormalizeOr(math.cross(up, alongDirection), new float3(1f, 0f, 0f));
+                rotated = (normal.x * acrossDirection) + (normal.y * up) + (normal.z * alongDirection);
+                rotatedTangent = (tangent.x * acrossDirection) + (tangent.y * up) + (tangent.z * alongDirection);
+                _pinnedFrameVerts++;
+            }
+
+            float3 shaded = NormalizeOr(rotated, new float3(0f, 1f, 0f));
+            assembly.Normals.Add(shaded);
+
+            // A piece with normals but no tangent buffer is normal-mapped by nothing, so any
+            // perpendicular serves — the same one a consumer would generate for itself, chosen
+            // here so the attribute is never a zero vector a renderer would divide by.
+            //
+            assembly.Tangents.Add((ps.Tangents != null)
+                ? new float4(NormalizeOr(rotatedTangent, new float3(1f, 0f, 0f)), tangent.w)
+                : AnyTangent(shaded));
+        }
+
+        /// <summary>
+        /// Triangles: the game's reversed read under Invert XOR FlipMesh, then only those whose
+        /// three corners survived the cut.
+        /// </summary>
+        /// <param name="ps">The piece.</param>
+        /// <param name="range">The range window.</param>
+        /// <param name="remap">The vertex filter.</param>
+        /// <param name="assembly">The shared assembly lists.</param>
+        private void EmitTriangles(PieceSetup ps, in PieceRange range, int[] remap, MeshAssembly assembly)
+        {
+            PieceGeometry source = ps.Source;
+            for (int t = 0; t < range.IndexCount; t += 3)
+            {
+                int ia = source.Indices[range.StartIndex + t + ps.Order.x] - range.StartVertex;
+                int ib = source.Indices[range.StartIndex + t + ps.Order.y] - range.StartVertex;
+                int ic = source.Indices[range.StartIndex + t + ps.Order.z] - range.StartVertex;
+                if ((ia < 0) || (ib < 0) || (ic < 0)
+                    || (ia >= range.VertexCount) || (ib >= range.VertexCount) || (ic >= range.VertexCount))
+                {
+                    // Data-contract guard: every scanned `.Geometry` asset keeps its
+                    // ranges self-contained (§38: 0 of 10,414 violate), so a triangle
+                    // reaching outside its window is corrupt input, counted so it
+                    // surfaces in the report instead of vanishing.
+                    //
+                    _conformOutOfWindowTris++;
+                    if (ps.Probe != null) ps.Probe.OutOfWindowTris++;
+                    continue;
+                }
+                if ((remap[ia] < 0) || (remap[ib] < 0) || (remap[ic] < 0))
+                {
+                    if (ps.Probe != null)
                     {
-                        _emptyPieceNames.Add(Instance.Prefab.TryGetPrefab(piece.m_Piece, out PrefabBase emptyPiece)
-                                             && (emptyPiece != null)
-                            ? emptyPiece.name : $"<entity {piece.m_Piece.Index}>");
+                        int culprit = (remap[ia] < 0) ? ia : ((remap[ib] < 0) ? ib : ic);
+                        if (ps.FrontCut && (source.Vertices[range.StartVertex + culprit].z < -0.01f)) ps.Probe.FrontCutTris++;
+                        else ps.Probe.BackCutTris++;
                     }
                     continue;
                 }
 
-                bool invert = (piece.m_SectionFlags & NetSectionFlags.Invert) != 0;
-                bool flipMesh = (piece.m_SectionFlags & NetSectionFlags.FlipMesh) != 0;
-                bool median = (piece.m_SectionFlags & NetSectionFlags.Median) != 0;
-                bool rightSide = (piece.m_SectionFlags & NetSectionFlags.Right) != 0;
-                bool halfLength = (piece.m_SectionFlags & NetSectionFlags.HalfLength) != 0;
-                bool preserveShape = (piece.m_PieceFlags & NetPieceFlags.PreserveShape) != 0;
-                bool disableTiling = (piece.m_PieceFlags & NetPieceFlags.DisableTiling) != 0;
-                bool frontCut = (isNode && !roundabout && !preserveShape) || halfLength;
-                bool backCut = (piece.m_PieceFlags & NetPieceFlags.SkipBottomHalf) != 0;
-                bool zeroWidth = piece.m_Size.x == 0f;
-                if (preserveShape) _railPieces++;
-                if (backCut) _skipBottomPieces++;
-                bool lowerBottom = (piece.m_PieceFlags & NetPieceFlags.LowerBottomToTerrain) != 0;
-                bool raiseTop = (piece.m_PieceFlags & NetPieceFlags.RaiseTopToTerrain) != 0;
-                bool smoothTop = (piece.m_PieceFlags & NetPieceFlags.SmoothTopNormal) != 0;
-                if (lowerBottom) _lowerBottomPieces++;
-                if (raiseTop) _raiseTopPieces++;
-                if (smoothTop) _smoothTopPieces++;
-
-                // Authored shading frame, or the face rebuild for a piece that carries none.
-                //
-                float3[] pieceNormals = source.Normals;
-                float4[] pieceTangents = source.Tangents;
-                bool authored = pieceNormals != null;
-                if (authored) _authoredFramePieces++;
-                else _rebuiltFramePieces++;
-
-                // The per-slice height bounds serve two rules, so they are built for either
-                // (`BatchMeshHelpers` line 682: `flag17 || flag18 || flag19`). Terrain conforming
-                // classifies each vertex against them and applies the vertex shader's terrain move
-                // at rip time — the portal face over every tunnel mouth is a RaiseTopToTerrain
-                // piece, and without it the mouth stands open above the arch. SmoothTopNormal
-                // needs no terrain at all: it only replaces the authored normal at the top bound.
-                //
-                PieceHeightBounds heightBounds = null;
-                float boundsScaleZ = 0f;
-                bool conforming = false;
-                // The §42 probe: one row per piece, keyed before the vertex loop so the loop only
-                // accumulates. Resolving the name is the expensive half and happens on first
-                // sight of a piece, never per placement.
-                PieceKey sectionKey = new PieceKey(piece.m_Piece, composition, isNode);
-                if (!_sectionProbes.TryGetValue(sectionKey, out SectionProbe section))
-                {
-                    string sectionName = Instance.Prefab.TryGetPrefab(piece.m_Piece, out PrefabBase sectionPiece)
-                                         && (sectionPiece != null)
-                        ? sectionPiece.name : $"<entity {piece.m_Piece.Index}>";
-                    _sectionProbes[sectionKey] = section = new SectionProbe
-                    {
-                        Name = sectionName,
-                        Where = isNode ? "node" : "edge",
-                        Composition = composition.Index,
-                        Size = piece.m_Size,
-                        OffsetX = piece.m_Offset.x
-                    };
-                }
-                section.Placements++;
-
-                ConformPieceProbe probe = null;
-                if (lowerBottom || raiseTop || smoothTop)
-                {
-                    heightBounds = GetPieceHeightBounds(piece.m_Piece, source, piece.m_Size.z);
-                    boundsScaleZ = 256f / math.max(piece.m_Size.z, 0.001f);
-                }
-
-                // The gate applies to `raiseTop` ONLY (narrowed 2026-08-14). The argument for
-                // it is about a TOP being dragged down to a ground the deck stands clear of; it
-                // says nothing about a bottom reaching down to meet the ground, and the game
-                // tags the two independently. Suppressing both left an elevated composition's
-                // abutment and retaining pieces floating.
-                //
-                bool wantsConform = lowerBottom || (raiseTop && !elevatedAwayFromGround);
-                if (wantsConform)
-                {
-                    // N-F2: a heightmap that cannot be captured used to leave the piece silently
-                    // unconformed while the report still claimed it was conformed. Counted here,
-                    // declared in warnings.jsonl and stated honestly in the report.
-                    //
-                    conforming = EnsureConformTerrain();
-                    if (!conforming) _unconformedPieces++;
-                }
-
-                if (raiseTop && elevatedAwayFromGround)
-                {
-                    // Deliberately not raised: an elevated composition clear of the ground.
-                    // Counted separately from `_unconformedPieces`, which means "we wanted to
-                    // and could not" — this one means "we must not".
-                    _elevatedUnconformedPieces++;
-                }
-
-                if (conforming)
-                {
-                    string probeName = Instance.Name.GetPrefabName(piece.m_Piece);
-                    if (!_conformProbes.TryGetValue(probeName, out probe))
-                    {
-                        _conformProbes[probeName] = probe = new ConformPieceProbe
-                        {
-                            Flags = (lowerBottom && raiseTop) ? "LowerBottom+RaiseTop"
-                                  : lowerBottom ? "LowerBottom" : "RaiseTop",
-                            Size = piece.m_Size
-                        };
-                    }
-                }
-
-                // The game's flip select — `select(float4(-1,1,-1,1), float4(1,1,1,-1),
-                // bool4(Invert, false, FlipMesh, Invert != FlipMesh))`: authored pieces are
-                // x- and z-negated by default; Invert restores x, FlipMesh restores z. The `w`
-                // term flips tangent handedness, and now that the authored frame is shipped it
-                // is applied as the game applies it (`tangent *= float3`, all four components).
-                //
-                float sx = invert ? 1f : -1f;
-                float sz = flipMesh ? 1f : -1f;
-                float sw = (invert != flipMesh) ? -1f : 1f;
-
-                float3 offset = piece.m_Offset;
-                float2 scale4 = new(1f / data.m_Width, 1f / (piece.m_Size.z * 0.5f));
-                float2 scale5 = new(1f / num7, 1f / (piece.m_Size.z * 0.5f));
-                float2 scale6 = new(1f / num8, 1f / (piece.m_Size.z * 0.5f));
-                float2 bias7 = new(0.5f, 1f);
-                float2 bias8 = new(1f - (middleOffset / num7), 1f);
-                float2 bias9 = new((0f - middleOffset) / num8, 1f);
-                // The generator computes two more per-vertex quantities here that this port does
-                // not: `v.z` — the piece's OWN cross-anchor in the same xParam coordinate the
-                // position lerp uses (`offset.x/width + 0.5` on an edge or a rail, the half-frame
-                // forms `1 + (offset.x − middleOffset)/leftHalf` and
-                // `(offset.x − middleOffset)/rightHalf` at a node, 0 and 1 at a roundabout's island
-                // and outer edge) — and `v.w`, the pre-rebase along coordinate scaled by 0.5 on an
-                // edge, 20 at a node and 40 at a roundabout. Both go into the vertex's `UV0.zw`
-                // and are read only by the compiled vertex shader, which is not decompilable, so
-                // what they drive is unknown. They cannot be a position term: `m_Position` is
-                // written from `vertex` alone, and this port evaluates the same map on the CPU and
-                // bakes the result. So they are deliberately not computed — a value assigned to
-                // nothing reads as a half-finished port, and this comment is the honest form of it.
-                // (Re-derived from `GenerateCompositionMesh` 2026-08-17, audit §53.)
-                //
-                if (isNode && preserveShape)
-                {
-                    float num10 = 0.5f * piece.m_Size.z / data.m_Width;
-                    scale4.y *= num10;
-                    bias7.y *= num10;
-                }
-                else if (roundabout)
-                {
-                    // Deliberately empty, and load-bearing. The game's branch here sets only the
-                    // `v.z` cross-anchor described above — but the branch itself must stay,
-                    // because being an `else if` is what stops a HalfLength piece inside a
-                    // roundabout composition from taking the halving below. That is the game's own
-                    // else-if chain, and deleting the branch would silently change which pieces
-                    // get `sz *= 2`.
-                    //
-                }
-                else if (halfLength)
-                {
-                    sz *= 2f;
-                    offset.z += 0.5f * piece.m_Size.z;
-                }
-
-                for (int r = 0; r < source.RangeMaterial.Length; r++)
-                {
-                    int startVertex = source.RangeStartVertex[r];
-                    int vertexCount = source.RangeVertexCount[r];
-                    int startIndex = source.RangeStartIndex[r];
-                    int indexCount = source.RangeIndexCount[r];
-
-                    // Vertex filter and remap, as the generator's `nativeArray4` — built before
-                    // the V density because the game measures that density only over triangles
-                    // that survive the cut (its accumulation sits inside `math.all(int7 >= 0)`).
-                    //
-                    int[] remap = new int[vertexCount];
-                    int baseVertex = assembly.Vertices.Count;
-                    int kept = 0;
-                    for (int i = 0; i < vertexCount; i++)
-                    {
-                        float rawZ = source.Vertices[startVertex + i].z;
-                        remap[i] = ((frontCut && (rawZ < -0.01f)) || (backCut && (rawZ > 0.01f)))
-                            ? -1
-                            : baseVertex + kept++;
-                    }
-
-                    // The game's per-range V density: |ΔV| over |Δz| across surviving triangles
-                    // whose V is wholly non-negative; the others instead record the rebase
-                    // ceiling. A front-cut piece's removed half must not weigh the ratio.
-                    //
-                    bool tiledV = !disableTiling;
-                    float2 accum = default;
-                    float rebase = 0f;
-                    int3 order = math.select(new int3(0, 1, 2), new int3(2, 1, 0), invert != flipMesh);
-                    for (int t = 0; t < indexCount; t += 3)
-                    {
-                        int ia = source.Indices[startIndex + t + order.x];
-                        int ib = source.Indices[startIndex + t + order.y];
-                        int ic = source.Indices[startIndex + t + order.z];
-                        int la = ia - startVertex, lb = ib - startVertex, lc = ic - startVertex;
-                        if ((la < 0) || (lb < 0) || (lc < 0)
-                            || (la >= vertexCount) || (lb >= vertexCount) || (lc >= vertexCount)) continue;
-                        if ((remap[la] < 0) || (remap[lb] < 0) || (remap[lc] < 0)) continue;
-
-                        float3 v = new(source.Uvs[ia].y, source.Uvs[ib].y, source.Uvs[ic].y);
-                        if (tiledV && math.all(v >= 0f))
-                        {
-                            float3 z = new(source.Vertices[ia].z, source.Vertices[ib].z, source.Vertices[ic].z);
-                            accum += new float2(math.csum(math.abs(v.yzx - v)), math.csum(math.abs(z.yzx - z)));
-                        }
-                        else
-                        {
-                            rebase = math.max(rebase, math.cmax(v));
-                        }
-                    }
-                    float density = (accum.y > 1e-6f) ? (accum.x / accum.y) : 0f;
-                    rebase = tiledV ? 0f : math.ceil(rebase);
-
-                    for (int i = 0; i < vertexCount; i++)
-                    {
-                        if (remap[i] < 0) continue;
-
-                        float3 raw = source.Vertices[startVertex + i];
-                        float3 normal = authored ? pieceNormals[startVertex + i] : default;
-                        float4 tangent = (pieceTangents != null)
-                            ? pieceTangents[startVertex + i] : new float4(0f, 0f, 0f, 1f);
-
-                        int conform = 0;
-                        if (heightBounds != null)
-                        {
-                            // The game classifies on the AUTHORED vertex, before the flip and
-                            // offset.
-                            int slice = math.clamp((int)math.round(raw.z * boundsScaleZ) + 128, 0, 256);
-                            if (conforming && lowerBottom && (raw.y <= heightBounds.Min[slice] + 0.01f)) conform = 1;
-                            if (conforming && raiseTop && !elevatedAwayFromGround
-                                && (raw.y >= heightBounds.Max[slice] - 0.01f)) conform = 2;
-
-                            // SmoothTopNormal: the authored normal of the top row is discarded for
-                            // straight up, so a kerb's or a wall's cap shades with the surface
-                            // beside it instead of keeping the crease the tile was authored with.
-                            // Same bound and same epsilon as the RaiseTop test, but a separate
-                            // flag and no terrain involved.
-                            //
-                            if (smoothTop && authored && (raw.y >= heightBounds.Max[slice] - 0.01f))
-                            {
-                                normal = new float3(0f, 1f, 0f);
-                                _smoothTopVerts++;
-                            }
-
-                            if (probe != null)
-                            {
-                                probe.Vertices++;
-                                if (conform == 1) probe.Class1++;
-                                else if (conform == 2) probe.Class2++;
-                            }
-                        }
-
-                        float3 vertex = raw * new float3(sx, 1f, sz) + offset;
-                        normal *= new float3(sx, 1f, sz);
-                        tangent *= new float4(sx, 1f, sz, sw);
-                        float2 uv = source.Uvs[startVertex + i];
-                        int2 pair;
-                        float xParam, zParam;
-
-                        // How much of the piece's own across/along metre each parameter is worth —
-                        // the diagonal of the map's Jacobian, kept per branch because each half
-                        // frame has its own width. `mapScale.x == 0` marks a pinned column, whose
-                        // across direction the map collapses.
-                        //
-                        float2 mapScale;
-                        bool halved = false, leftHalf = false;
-
-                        if (isNode)
-                        {
-                            if (preserveShape)
-                            {
-                                pair = new int2(6, 7);
-                                xParam = (vertex.x * scale4.x) + bias7.x;
-                                zParam = (vertex.z * scale4.y) + bias7.y;
-                                mapScale = scale4;
-                            }
-                            else if (median)
-                            {
-                                // dx keeps the AUTHORED spread even for a zero-width piece — the
-                                // game computes it before pinning x. The pin only moves the lerp
-                                // coordinate, so a zero-width intersection piece routes its side
-                                // columns into the half frames where the pinned x lands them ON
-                                // the inner boundary curves, while its centre column rides the
-                                // middle to the junction centre: a three-rail ruled surface that
-                                // paves the centre wedge. Treating zero width as all-centre —
-                                // this port's previous reading, and audit §8's — collapsed the
-                                // piece to a zero-area ribbon and left every median-less-looking
-                                // junction wedge open (audit §18; the `* Intersection Piece 0`
-                                // sections are exactly these).
-                                //
-                                float dx = vertex.x - piece.m_Offset.x;
-                                if (zeroWidth) vertex.x = piece.m_Offset.x;
-                                if (math.abs(dx) < 0.01f)
-                                {
-                                    // The game does NOT rebase the centre column's front half
-                                    // (its roundabout side branches subtract `int8 - base`, this
-                                    // one has no subtraction): the final saturate pins those
-                                    // vertices at the middle curve's end. Matched exactly.
-                                    //
-                                    pair = roundabout ? math.select(new int2(4, 2), new int2(5, 3), vertex.z >= 0f)
-                                                      : new int2(4, 4);
-                                    xParam = 0f;
-                                    zParam = (vertex.z * scale4.y) + bias7.y;
-                                    mapScale = new float2(0f, scale4.y);
-                                }
-                                else if (dx > 0f)
-                                {
-                                    pair = roundabout ? math.select(new int2(4, 2), new int2(5, 3), vertex.z >= 0f)
-                                                      : new int2(1, 3);
-                                    xParam = (vertex.x * scale6.x) + bias9.x;
-                                    zParam = (vertex.z * scale6.y) + bias9.y;
-                                    if (roundabout && (vertex.z >= 0f)) zParam -= 1f;
-                                    mapScale = scale6;
-                                    halved = true; leftHalf = false;
-                                }
-                                else
-                                {
-                                    pair = roundabout ? math.select(new int2(0, 4), new int2(1, 5), vertex.z >= 0f)
-                                                      : new int2(0, 2);
-                                    xParam = (vertex.x * scale5.x) + bias8.x;
-                                    zParam = (vertex.z * scale5.y) + bias8.y;
-                                    if (roundabout && (vertex.z >= 0f)) zParam -= 1f;
-                                    mapScale = scale5;
-                                    halved = true; leftHalf = true;
-                                }
-                            }
-                            else if (rightSide)
-                            {
-                                pair = roundabout ? math.select(new int2(4, 2), new int2(5, 3), vertex.z >= 0f)
-                                                  : new int2(1, 3);
-                                xParam = (vertex.x * scale6.x) + bias9.x;
-                                zParam = (vertex.z * scale6.y) + bias9.y;
-                                if (roundabout && (vertex.z >= 0f)) zParam -= 1f;
-                                mapScale = scale6;
-                                halved = true; leftHalf = false;
-                            }
-                            else
-                            {
-                                pair = roundabout ? math.select(new int2(0, 4), new int2(1, 5), vertex.z >= 0f)
-                                                  : new int2(0, 2);
-                                xParam = (vertex.x * scale5.x) + bias8.x;
-                                zParam = (vertex.z * scale5.y) + bias8.y;
-                                if (roundabout && (vertex.z >= 0f)) zParam -= 1f;
-                                mapScale = scale5;
-                                halved = true; leftHalf = true;
-                            }
-                        }
-                        else
-                        {
-                            pair = math.select(new int2(0, 2), new int2(1, 3), vertex.z >= 0f);
-                            xParam = (vertex.x * scale4.x) + bias7.x;
-                            zParam = (vertex.z * scale4.y) + bias7.y;
-                            if (vertex.z >= 0f) zParam -= 1f;
-                            mapScale = scale4;
-                        }
-
-                        xParam = math.saturate(xParam);
-                        zParam = math.saturate(zParam);
-
-                        // The across-width sync the game hands the shader (§5.1). Each half's
-                        // knots are stored in that half's own xParam coordinate (left: 0 at the
-                        // outer edge; right: 0 at the middle — `GeometrySystem`'s
-                        // `1 − offsetsLeft.wzyx` twin conversion and `CalculateVertexSyncTarget`'s
-                        // right-branch anchoring both say so), so both halves apply directly.
-                        // The earlier `1 − Apply(1 − xParam)` right-half flip mirrored every
-                        // right-side curb knot — kerbs jutted into the roadway at flares (§21).
-                        //
-                        if (halved && isNode)
-                        {
-                            xParam = p.Sync.Apply(xParam, leftHalf);
-                        }
-
-                        float3 a = MathUtils.Position(p.Curves[pair.x], zParam);
-                        float3 b = MathUtils.Position(p.Curves[pair.y], zParam);
-                        float3 world = math.lerp(a, b, xParam);
-                        world.y += vertex.y;
-                        if (conform != 0)
-                        {
-                            float terrain = SampleConformHeight(world);
-                            if (conform == 1)
-                            {
-                                // LowerBottomToTerrain buries the bottom edge: the shader move
-                                // is a downward clamp, never a lift — a trench wall's base stays
-                                // at road level (§38: assignment collapsed 10 m walls onto the
-                                // terrain lip).
-                                if (terrain < world.y) { world.y = terrain; _conformLoweredVerts++; probe.Lowered++; }
-                                else { _conformKeptVerts++; probe.Kept++; }
-                            }
-                            else
-                            {
-                                // RaiseTopToTerrain pins the top edge to the terrain surface in
-                                // both directions — the §34-validated portal stretch, unchanged.
-                                //
-                                world.y = terrain;
-                                _conformRaisedVerts++;
-                                probe.Raised++;
-                            }
-                        }
-                        // What this piece actually built, in the frame's own coordinate and in
-                        // metres. A collapsed piece has a healthy vertex count and a degenerate
-                        // extent; a short half frame has a healthy extent and an xParam that
-                        // never reaches 1.
-                        float3 relative = world - center;
-                        section.Vertices++;
-                        section.XMin = math.min(section.XMin, xParam);
-                        section.XMax = math.max(section.XMax, xParam);
-                        if (section.HasBounds)
-                        {
-                            section.Lo = math.min(section.Lo, relative);
-                            section.Hi = math.max(section.Hi, relative);
-                        }
-                        else
-                        {
-                            section.Lo = section.Hi = relative;
-                            section.HasBounds = true;
-                        }
-                        assembly.Vertices.Add(world - center);
-
-                        // The shading frame, rotated by the very map that placed the vertex.
-                        // Position is `lerp(A(z), B(z), x) + (0, y, 0)`, so the Jacobian in the
-                        // piece's own metres is [across, up, along]: across = (B − A) per across-
-                        // metre, up = (0,1,0), along = the two curves' derivatives blended at the
-                        // same x, per along-metre. The normal takes the inverse transpose — the
-                        // cofactor, which is that matrix times a determinant a normalize removes —
-                        // and the tangent takes the plain Jacobian with `w` passed through, which
-                        // is what keeps a stretched kerb's bevel at its authored angle where a
-                        // rotation-only frame would shear it. APPROXIMATION (counted): the game's
-                        // vertex shader is handed only these curves, so it can build no other
-                        // frame, but whether it orthonormalizes before rotating is shader-side and
-                        // unknowable from the C# side; the two coincide wherever the frame is
-                        // orthogonal, which is everywhere the road is not both flared and banked.
-                        //
-                        if (authored)
-                        {
-                            float3 across = (b - a) * mapScale.x;
-                            float3 up = new(0f, 1f, 0f);
-                            float3 along = math.lerp(Derivative(p.Curves[pair.x], zParam),
-                                                     Derivative(p.Curves[pair.y], zParam), xParam) * mapScale.y;
-
-                            float3 rotated = (normal.x * math.cross(up, along))
-                                           + (normal.y * math.cross(along, across))
-                                           + (normal.z * math.cross(across, up));
-                            float3 rotatedTangent = (tangent.x * across) + (tangent.y * up) + (tangent.z * along);
-
-                            // A pinned column (the median centre, and any zero-width piece) maps
-                            // its whole across direction onto one curve, so the frame has no
-                            // across column to take a cofactor of. Fall back to the rotation the
-                            // remaining two columns determine, and count it.
-                            //
-                            if (math.lengthsq(rotated) < 1e-12f)
-                            {
-                                float3 alongDirection = NormalizeOr(along, new float3(0f, 0f, 1f));
-                                float3 acrossDirection = NormalizeOr(math.cross(up, alongDirection), new float3(1f, 0f, 0f));
-                                rotated = (normal.x * acrossDirection) + (normal.y * up) + (normal.z * alongDirection);
-                                rotatedTangent = (tangent.x * acrossDirection) + (tangent.y * up) + (tangent.z * alongDirection);
-                                _pinnedFrameVerts++;
-                            }
-
-                            float3 shaded = NormalizeOr(rotated, new float3(0f, 1f, 0f));
-                            assembly.Normals.Add(shaded);
-
-                            // A piece with normals but no tangent buffer is normal-mapped by
-                            // nothing, so any perpendicular serves — the same one a consumer would
-                            // generate for itself, chosen here so the attribute is never a zero
-                            // vector a renderer would divide by.
-                            //
-                            assembly.Tangents.Add((pieceTangents != null)
-                                ? new float4(NormalizeOr(rotatedTangent, new float3(1f, 0f, 0f)), tangent.w)
-                                : AnyTangent(shaded));
-                        }
-                        else
-                        {
-                            // No authored buffer: leave the zero the finisher rebuilds from faces.
-                            //
-                            assembly.Normals.Add(default);
-                            assembly.Tangents.Add(default);
-                            assembly.Rebuilt++;
-                        }
-
-                        float metres = math.lerp(EvalMap(p.Maps[pair.x], zParam),
-                                                 EvalMap(p.Maps[pair.y], zParam), xParam);
-                        float v2 = (tiledV && (uv.y >= 0f)) ? (density * metres) : (uv.y - rebase);
-                        assembly.Uvs.Add(new float2(uv.x, v2));
-                    }
-
-                    // Triangles: the game's reversed read under Invert XOR FlipMesh, then only
-                    // those whose three corners survived the cut.
-                    //
-                    int primitiveStart = assembly.Indices.Count;
-                    for (int t = 0; t < indexCount; t += 3)
-                    {
-                        int ia = source.Indices[startIndex + t + order.x] - startVertex;
-                        int ib = source.Indices[startIndex + t + order.y] - startVertex;
-                        int ic = source.Indices[startIndex + t + order.z] - startVertex;
-                        if ((ia < 0) || (ib < 0) || (ic < 0)
-                            || (ia >= vertexCount) || (ib >= vertexCount) || (ic >= vertexCount))
-                        {
-                            // Data-contract guard: every scanned `.Geometry` asset keeps its
-                            // ranges self-contained (§38: 0 of 10,414 violate), so a triangle
-                            // reaching outside its window is corrupt input, counted so it
-                            // surfaces in the report instead of vanishing.
-                            //
-                            _conformOutOfWindowTris++;
-                            if (probe != null) probe.OutOfWindowTris++;
-                            continue;
-                        }
-                        if ((remap[ia] < 0) || (remap[ib] < 0) || (remap[ic] < 0))
-                        {
-                            if (probe != null)
-                            {
-                                int culprit = (remap[ia] < 0) ? ia : ((remap[ib] < 0) ? ib : ic);
-                                if (frontCut && (source.Vertices[startVertex + culprit].z < -0.01f)) probe.FrontCutTris++;
-                                else probe.BackCutTris++;
-                            }
-                            continue;
-                        }
-
-                        assembly.Indices.Add(remap[ia]);
-                        assembly.Indices.Add(remap[ib]);
-                        assembly.Indices.Add(remap[ic]);
-                    }
-
-                    if (assembly.Indices.Count > primitiveStart)
-                    {
-                        assembly.Primitives.Add(new MeshPrimitive
-                        {
-                            StartIndex = primitiveStart,
-                            IndexCount = assembly.Indices.Count - primitiveStart,
-                            StartVertex = baseVertex,
-                            VertexCount = kept,
-                            MaterialIndex = assembly.Primitives.Count,
-                            MaterialId = source.RangeMaterial[r]
-                        });
-                    }
-                }
+                assembly.Indices.Add(remap[ia]);
+                assembly.Indices.Add(remap[ib]);
+                assembly.Indices.Add(remap[ic]);
             }
         }
 

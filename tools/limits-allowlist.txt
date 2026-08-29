@@ -65,7 +65,6 @@ func Systems/MeshRipSystem.cs::ReadMesh
 func Systems/MeshRipSystem.cs::ReadOne
 func Systems/MeshRipSystem.cs::TryFlattenDecal
 func Systems/MeshRipSystem.cs::TryReadGeometryAsset
-func Systems/NetworkRipSystem.GameMesh.cs::BuildGameComposition
 func Systems/NetworkRipSystem.GameMesh.cs::GetPieceGeometry
 func Systems/NetworkRipSystem.cs::AddAttributes
 func Systems/NetworkRipSystem.cs::BeginRip

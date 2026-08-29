@@ -930,8 +930,7 @@ namespace Carto.Systems
 
             NetCompositionData data = EntityManager.GetComponentData<NetCompositionData>(composition);
             CompositionCurves curves = OrphanCurves(position, data, primary);
-            BuildGameComposition(composition, curves, position,
-                                 primary ? "orphan+" : "orphan-", cache, assembly, null);
+            BuildGameComposition(composition, curves, position, cache, assembly);
         }
 
         /// <summary>
@@ -1862,8 +1861,7 @@ namespace Carto.Systems
                 EdgeNodeGeometry node = EntityManager.GetComponentData<StartNodeGeometry>(entity).m_Geometry;
                 if (math.any(node.m_Left.m_Length > 0.05f) | math.any(node.m_Right.m_Length > 0.05f))
                 {
-                    BuildNodeSide(parts.m_StartNode, node, center, "startNode",
-                                  cache, assembly, report);
+                    BuildNodeSide(parts.m_StartNode, node, center, cache, assembly);
                 }
             }
 
@@ -1874,8 +1872,7 @@ namespace Carto.Systems
                 bool rotated = EntityManager.GetComponentData<NetCompositionMeshRef>(parts.m_Edge).m_Rotate;
                 if (rotated) _rotatedEdges++;
                 CompositionCurves curves = EdgeCurves(geometry, rotated);
-                BuildGameComposition(parts.m_Edge, curves, center, "edge",
-                                     cache, assembly, report);
+                BuildGameComposition(parts.m_Edge, curves, center, cache, assembly);
             }
 
             if (EntityManager.HasComponent<EndNodeGeometry>(entity))
@@ -1883,8 +1880,7 @@ namespace Carto.Systems
                 EdgeNodeGeometry node = EntityManager.GetComponentData<EndNodeGeometry>(entity).m_Geometry;
                 if (math.any(node.m_Left.m_Length > 0.05f) | math.any(node.m_Right.m_Length > 0.05f))
                 {
-                    BuildNodeSide(parts.m_EndNode, node, center, "endNode",
-                                  cache, assembly, report);
+                    BuildNodeSide(parts.m_EndNode, node, center, cache, assembly);
                 }
             }
 
