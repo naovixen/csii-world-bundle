@@ -925,7 +925,7 @@ Each phase records here what landed and what it found, so this document stays th
 | 6 — The Blender adapter | **DONE** 2026-08-29 — in-Blender look owed; see below |
 | 7 — One rip-stage framework | **DONE** 2026-08-29 (built, awaiting in-game re-rip) — three items deliberately deferred with reasons; see below |
 | 8 — The IO writer layer | **DONE** 2026-08-29 (built, awaiting in-game re-rip) — one declared byte change; see below |
-| 9 — Split the rip systems | **in progress** — `RipTerrain` done 2026-08-29; `BuildGameComposition`, `AreaRipSystem` and the file splits remain |
+| 9 — Split the rip systems | **in progress** — both god-methods done 2026-08-29; `AreaRipSystem` and the file splits remain |
 | 10 — Performance | not started |
 | 11 — Comment, naming and structure | not started |
 | 12 — Documentation | not started |
@@ -1598,14 +1598,26 @@ is a local becoming a `capture.` field or a guard becoming a parameter.
 
 **Still not done, and each is its own block:**
 
-* **`BuildGameComposition` (628, the longest method in the repo).** Its shape is a ~70-line
-  preamble and then ONE `foreach` over the composition pieces that runs 554 lines. The seams
-  are real — flag decode, the conform/probe setup, the flip-select and scale/bias setup, the
-  vertex loop, the emit — but the body is the game's own generator ported line for line, with
-  `BatchMeshHelpers` line numbers, the §42 probe and the `select(float4…)` flip cited in
-  comments throughout. It is the most measured-rule-dense code in the producer and the one place
-  where a subtle slip produces geometry that is wrong in a way only a rip would show. It wants a
-  session that starts on it.
+* ~~`BuildGameComposition` (628)~~ **— done 2026-08-29.** Seventeen lines plus twelve named
+  functions and four records: `CompositionSetup` (the generator's preamble), `PieceSetup` (one
+  piece's flags, frame, conform decision and maps), `PieceRange` (a range's window into the
+  piece's parallel arrays) and `VertexMap` (where a vertex lands before the curves are read).
+  A duplicate fell out with it: the right-half and left-half frames were written TWICE each,
+  byte-identical, once in the median `dx` branches and once in the `rightSide`/`else` ones —
+  they are `RightHalfMap`/`LeftHalfMap` now, and the branch finally says that what it decides
+  is which of two frames a vertex takes. `label` and `report` were dead parameters through
+  three functions and four call sites (one passed `null`), removed. `num7`/`num8`/`num10` are
+  `LeftHalfWidth`/`RightHalfWidth`/`railScale`, the names their own trailing comments gave them.
+
+  Verified as far as static analysis reaches: a statement-multiset diff with the field renames
+  normalised leaves 83 old statements and 78 new, every one a local becoming a record field or
+  an `out`, a guard inverted into an early return, or one of the twelve new calls — nothing
+  computational added, nothing dropped. The orders that would be invisible until a rip were
+  checked by hand: `vertex.x` is still pinned after `dx` is measured and before the half-frame
+  maps read it; SmoothTopNormal still replaces the AUTHORED normal before the flip; the section
+  probe still accumulates before the vertex is emitted and both before the shading; and the
+  roundabout's deliberately-empty branch is still an `else if`, which is what stops a HalfLength
+  piece inside a roundabout taking the `Sz *= 2`.
 * **The `AreaRipSystem` extraction.** `RipSurfaceAreas`, `RipDistricts` and `CatalogueAreaPrefab`
   are ~570 lines that have nothing to do with terrain, but they are not free-standing: two
   `EntityQuery` fields built in `OnCreate`, and `_pendingAreaTextures`, which the area catalogue
