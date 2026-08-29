@@ -27,6 +27,8 @@ producer ships them.
 
 import numpy
 
+from . import decimatequadric
+
 # Coarse UV bin used to keep seams apart while clustering: vertices whose UVs differ by more
 # than this fraction of the texture stay separate even in the same cell. TUNED.
 UV_BIN = 0.125
@@ -43,15 +45,6 @@ UV_BINS_PER_MESH = 8.0
 # Cell search bounds as fractions of the mesh's bounding-box diagonal. TUNED.
 CELL_MIN_FRACTION = 0.002
 CELL_MAX_FRACTION = 0.5
-
-
-def _quadric_available():
-    try:
-        import pyfqmr  # noqa: F401
-
-        return True
-    except Exception:
-        return False
 
 
 def split_runs(mesh):
@@ -261,55 +254,6 @@ def _cluster_to_ratio(verts, tris, uvs, normals, ratio, iterations=12, pinned=No
     return best
 
 
-# -- quadric (optional) --------------------------------------------------------------------------
-
-
-def _quadric_to_ratio(verts, tris, uvs, normals, ratio):
-    import pyfqmr
-
-    verts = numpy.asarray(verts, dtype=numpy.float64)
-    tris = numpy.asarray(tris, dtype=numpy.int64)
-    target = max(1, int(round(len(tris) * ratio)))
-    if len(tris) <= 4 or target >= len(tris):
-        return verts, normals, uvs, tris
-    simplifier = pyfqmr.Simplify()
-    simplifier.setMesh(verts, tris)
-    # `preserve_border=False` is deliberate. A CS2 mesh is split per material run and never
-    # welded across one, so on the reference bundle nearly every edge is a border: with the
-    # borders pinned the simplifier returned 17,809 of 18,017 triangles at a 25 % target, and
-    # every "LOD" was LOD 0 again (refactor Phase 10, 2026-08-29). Unpinned, the same mesh
-    # reached 4,504.
-    simplifier.simplify_mesh(
-        target_count=target, aggressiveness=7, preserve_border=False, verbose=0
-    )
-    new_verts, new_tris, _new_normals = simplifier.getMesh()
-    new_verts = numpy.asarray(new_verts, dtype=numpy.float64)
-    new_tris = numpy.asarray(new_tris, dtype=numpy.int64)
-    if len(new_tris) == 0:
-        return verts, normals, uvs, tris
-    # attributes by nearest original vertex (a k-d tree would be nicer; chunked brute force is
-    # fine at LOD sizes)
-    nearest = _nearest_index(new_verts, verts)
-    new_uvs = None if uvs is None else numpy.asarray(uvs)[nearest]
-    new_normals = None if normals is None else numpy.asarray(normals)[nearest]
-    return new_verts, new_normals, new_uvs, new_tris
-
-
-def _nearest_index(query, points):
-    """Index into `points` of each `query` row's nearest neighbour.
-
-    A k-d tree, not the chunked brute force this used to be: that built a `(2048, N, 3)` float64
-    temporary per chunk, which on a 100k-vertex building is 5 GB of memory traffic per chunk and
-    made the quadric backend SLOWER than the numpy clustering it was meant to replace — twelve
-    sample meshes took the cluster backend 24 s and the quadric backend more than 10 minutes
-    (refactor Phase 10, 2026-08-29).
-    """
-    from scipy.spatial import cKDTree
-
-    _, index = cKDTree(points).query(query, k=1, workers=1)
-    return numpy.asarray(index, dtype=numpy.int64)
-
-
 # -- the ladder ---------------------------------------------------------------------------------
 
 
@@ -321,8 +265,8 @@ def lod_ladder(mesh, targets=(0.25, 0.06), backend="auto"):
     `"quadric"`. Ratios are per material run; a run that collapses entirely is dropped from that
     level and counted in `stats["dropped_runs"]`.
     """
-    use_quadric = (backend == "quadric") or (backend == "auto" and _quadric_available())
-    reducer = _quadric_to_ratio if use_quadric else _cluster_to_ratio
+    use_quadric = (backend == "quadric") or (backend == "auto" and decimatequadric.available())
+    reducer = decimatequadric.to_ratio if use_quadric else _cluster_to_ratio
     parts = split_runs(mesh)
     levels = []
     dropped = 0

@@ -81,7 +81,8 @@ def _ground_check(terrain, bundle_dir, progress):
         return {"sampled": 0}
     dz = []
     seen = 0
-    for record in reader.read_jsonl(path):
+    # `contains` skips the 98 % of lines that are not buildings before parsing them
+    for record in reader.read_jsonl(path, contains='"building"'):
         if record.get("kind") != "building":
             continue
         attrs = record.get("attrs") or {}

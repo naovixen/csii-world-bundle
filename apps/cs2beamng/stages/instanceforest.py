@@ -68,6 +68,45 @@ FOREST_COLLIDABLE_MIN_FOOTPRINT = 0.8
 # -- the forest files --------------------------------------------------------------------------
 
 
+def drop_rare_types(forest_dir, types, type_source, item_counts, min_items):
+    """Drop every forest type placed fewer than `min_items` times. In place; returns
+    `{"types", "items", "heaviest"}`.
+
+    A `TSForestItemData` mounts its shape whole — LOD chain, materials, collision — for one
+    item or ten thousand, and MEASURED on the reference city 1,807 of 3,118 types existed to
+    place 4,713 items, 0.5 % of the forest, for 241 MiB of the 442 the forest mounted
+    (`docs/plans/a8-performance.md`, "Extras"). At 10 the heaviest things dropped are one-offs:
+    three moored pontoon boats at 9.8 MiB, three harbour cranes at 7.4 MiB. Runs AFTER
+    `merge_thin_types`, so a colour variant folded into its plain type counts toward that type
+    rather than being dropped as thin. 0 keeps every type. DECLARED APPROXIMATION, counted in
+    the report: the items are gone from the level, not moved.
+    """
+    dropped_types = dropped_items = 0
+    heaviest = []
+    if min_items <= 0:
+        return {"types": 0, "items": 0, "heaviest": heaviest}
+    for name in sorted(types):
+        count = int(item_counts.get(name, 0))
+        if count >= min_items:
+            continue
+        try:
+            os.remove(os.path.join(forest_dir, name + ".forest4.json"))
+        except OSError:
+            pass
+        heaviest.append((int(types[name][0].get("bytes") or 0), name, count))
+        del types[name]
+        type_source.pop(name, None)
+        item_counts.pop(name, None)
+        dropped_types += 1
+        dropped_items += count
+    heaviest.sort(reverse=True)
+    return {
+        "types": dropped_types,
+        "items": dropped_items,
+        "heaviest": [{"type": n, "items": c, "bytes": b} for b, n, c in heaviest[:10]],
+    }
+
+
 def merge_thin_types(forest_dir, types, type_source, item_counts, results, min_items):
     """Fold every forest type under `min_items` into its prefab's UNTINTED type. In place.
 

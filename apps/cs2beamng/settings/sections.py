@@ -124,6 +124,7 @@ SECTIONS = [
                     "lod0_max_error",
                     "lod0_min_triangles",
                     "forest_min_items",
+                    "forest_rare_type_min",
                     "lane_max_tris",
                     "paint_factor_max_error",
                     "foliage_road_clearance",

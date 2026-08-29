@@ -24,7 +24,7 @@ def tidy(ctx, level_dir, level_name, shapes_dir, progress, rescan=()):
     # BEFORE any sweep: the ladder index is read from the `.dae` sources one of them deletes
     try:
         out["shapeLaddersIndexed"], out["shapeLaddersScanned"] = write_ladder_index(
-            level_dir, shapes_dir, rescan
+            level_dir, shapes_dir, rescan, radii=_shape_radii(ctx)
         )
     except (OSError, ValueError) as exc:
         progress.log(
@@ -191,9 +191,22 @@ def kill_process(proc):
         pass
 
 
-def write_ladder_index(level_dir, shapes_dir, rescan=()):
-    """`shape_ladders.json` — every shape's detail ladder and collision count, read out of the
-    `.dae` sources while they are still there. Returns `(shapes, rescanned)`.
+def _shape_radii(ctx):
+    """`{rel: radius}` for every object shape the shapes stage wrote this build — its own
+    bounding-sphere measurement, which `budget` needs to pick the detail a shape draws at and
+    which nothing else on disk carries once the `.dae` is gone."""
+    shapes = ((getattr(ctx, "shared", None) or {}).get("shapes") or {}) or {}
+    subdir = shapes.get("dir") or "cs2"
+    radii = {}
+    for row in (shapes.get("results") or {}).values():
+        if row.get("file") and row.get("radius"):
+            radii[f"art/shapes/{subdir}/{row['file']}"] = float(row["radius"])
+    return radii
+
+
+def write_ladder_index(level_dir, shapes_dir, rescan=(), radii=None):
+    """`shape_ladders.json` — every shape's detail ladder, collision count and bounding radius,
+    read out of the `.dae` sources while they are still there. Returns `(shapes, rescanned)`.
 
     **`keep_dae: false` deletes the only place those numbers live.** `level_budget` derives the
     triangles a level actually draws by walking each shape's `<geometry>` blocks, so a level whose
@@ -217,6 +230,7 @@ def write_ladder_index(level_dir, shapes_dir, rescan=()):
     except (OSError, ValueError):
         previous = {}
     rescan = {os.path.abspath(p) for p in rescan}
+    radii = radii or {}
     shapes = {}
     rescanned = 0
     for path in find_process(shapes_dir, ".dae"):
@@ -224,12 +238,16 @@ def write_ladder_index(level_dir, shapes_dir, rescan=()):
         carried = previous.get(rel)
         if carried is not None and os.path.abspath(path) not in rescan:
             shapes[rel] = carried
+            if rel in radii:
+                carried["radius"] = radii[rel]
             continue
         levels, collision = level_budget.scan_dae(path)
         shapes[rel] = {
             "levels": {str(px): int(t) for px, t in (levels or {}).items()},
             "collision": int(collision or 0),
         }
+        if rel in radii:
+            shapes[rel]["radius"] = radii[rel]
         rescanned += 1
     for rel, entry in previous.items():  # source gone, cooked shape still there
         if rel in shapes:

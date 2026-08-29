@@ -153,6 +153,22 @@ TUNING_SETTINGS = (
         unit="items",
     ),
     Setting(
+        key="forest_rare_type_min",
+        default=10,
+        kind="int",
+        label="Rare forest type floor",
+        blurb="A forest type placed fewer times than this is not shipped at all.",
+        help="Drop a forest type placed fewer times than this. 0 ships every type",
+        detail="A kind of tree or prop planted fewer than this many times is left out of the "
+        "level. BeamNG mounts a kind whole — its shape, its detail levels, its textures — "
+        "for one member or ten thousand, and on a real city more than half the kinds "
+        "exist to place under a percent of the planting: at 10, 1,807 kinds holding 4,713 "
+        "items cost 241 MiB. The heaviest things dropped are one-offs, three moored boats "
+        "and three harbour cranes. Applied after the merge threshold above. 0 keeps every "
+        "kind.",
+        unit="items",
+    ),
+    Setting(
         key="lane_max_tris",
         default=0,
         kind="int",

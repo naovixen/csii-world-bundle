@@ -117,7 +117,11 @@ _LADDERS = {}
 
 
 def _ladder_from_sidecar(level_dir, rel):
-    """`(levels, collision)` for a shape whose `.dae` is gone, from the build's own index."""
+    """`(levels, collision, radius)` for a shape, from the build's own index.
+
+    The ladder and the collision count stand in for a `.dae` that is gone; the radius is the
+    build's own measurement of the shape's bounding sphere and is read whether the source is
+    there or not — `scan_dae` never computes it (`radius_hint` explains why it matters)."""
     if level_dir not in _LADDERS:
         path = os.path.join(level_dir, LADDER_INDEX)
         try:
@@ -127,9 +131,12 @@ def _ladder_from_sidecar(level_dir, rel):
             _LADDERS[level_dir] = {}
     entry = _LADDERS[level_dir].get(rel)
     if not entry:
-        return None, None
-    return {int(px): int(t) for px, t in (entry.get("levels") or {}).items()}, int(
-        entry.get("collision") or 0
+        return None, None, None
+    radius = entry.get("radius")
+    return (
+        {int(px): int(t) for px, t in (entry.get("levels") or {}).items()},
+        int(entry.get("collision") or 0),
+        float(radius) if radius else None,
     )
 
 
@@ -182,14 +189,16 @@ def measure(level_dir, view_distance, spawn=None, screen_height=1080.0):
             size, cooked = file_bytes(full)
             # the detail ladder and the collision count come out of the XML; with the source
             # dropped they are UNKNOWN rather than zero, and are reported as such
+            side_levels, side_collision, radius = _ladder_from_sidecar(level_dir, rel)
             levels, collision = (
-                scan_dae(full) if os.path.isfile(full) else _ladder_from_sidecar(level_dir, rel)
+                scan_dae(full) if os.path.isfile(full) else (side_levels, side_collision)
             )
             shapes[rel] = {
                 "bytes": size,
                 "cooked": cooked,
                 "levels": levels,
                 "collision": collision,
+                "radius": radius,
                 "group": group_of(rel),
             }
 
@@ -233,7 +242,7 @@ def measure(level_dir, view_distance, spawn=None, screen_height=1080.0):
         distance = math.hypot(x - spawn_xy[0], y - spawn_xy[1])
         if distance > view_distance:
             continue
-        radius = radius_hint(rel, shape)
+        radius = shape.get("radius") or radius_hint(rel, shape)
         if shape["levels"] is None:
             unknown_ladders.add(shape["group"])
             continue
@@ -332,13 +341,17 @@ def count_entries(raw):
 
 
 def radius_hint(rel, shape, tile=256.0):
-    """The bounding-sphere radius a Torque detail size is measured against.
+    """The bounding-sphere radius a Torque detail size is measured against, when the build's
+    index does not carry the shape's own (`shape_ladders.json` `radius`, written by the cook).
 
     A merged world tile is a `<product>_<tx>_<tz>` shape covering one tile of the grid, so its
     radius is the tile's own half-diagonal — the same quantity `beamng/tilelod.radius_of`
-    computed when the ladder was built. An object shape is small and its exact radius does not
-    change which detail it picks inside a view distance, so it takes a nominal 2 m. DECLARED
-    APPROXIMATION: this is the one input here that is not read off the file.
+    computed when the ladder was built. An object shape with no recorded radius takes a nominal
+    2 m — DECLARED APPROXIMATION, and a bad one: Torque picks the detail by projected pixel size,
+    which is linear in radius, so at 2 m every building past ~150 m read as "not drawn" and the
+    Phase-0 baseline reported 15,019 object triangles in view where a 20 m radius gives millions
+    (refactor Phase 10 survey §0). The index has carried the real radius since that survey; this
+    fallback is for a level built before it.
     """
     base = os.path.basename(rel)
     if re.match(r"^(net|markings|areas|skirts|lanegeometry|terraincut)_-?\d+_-?\d+", base):

@@ -64,6 +64,9 @@ def unfilter_slow(kind, line, previous, bpp):
 def unfilter_scanlines(raw, width, height, bpp):
     """Undo the PNG scanline filters with numpy where the filter allows it.
 
+    Returns the reconstructed pixel bytes as a `(height, width * bpp)` uint8 array — a VIEW
+    into `raw` when every row is filter 0, a fresh array otherwise.
+
     None(0) and Up(2) vectorise across the whole row (a straight copy / a row-wide add).
     Sub(1) is a running sum per interleaved byte lane — reshaping the row to (pixel, channel)
     and taking a cumulative sum down the pixel axis reproduces `recon[i] = filt[i] +
@@ -75,6 +78,12 @@ def unfilter_scanlines(raw, width, height, bpp):
     producer only ever writes filter 0, so in practice that fallback is cold).
     """
     stride = width * bpp
+    rows = numpy.frombuffer(raw, dtype=numpy.uint8, count=height * (stride + 1))
+    rows = rows.reshape(height, stride + 1)
+    if not rows[:, 0].any():
+        # Filter 0 on every row — the only case a producer-written raster ever hits: the pixel
+        # bytes are the file's own, one slice away, and no row loop is needed at all.
+        return rows[:, 1:]
     out = numpy.zeros((height, stride), dtype=numpy.uint8)
     previous = numpy.zeros(stride, dtype=numpy.uint8)
     for y in range(height):
@@ -93,7 +102,7 @@ def unfilter_scanlines(raw, width, height, bpp):
             line = numpy.frombuffer(bytes(slow), dtype=numpy.uint8)
         out[y] = line
         previous = out[y]
-    return bytearray(out.tobytes())
+    return out
 
 
 def _read_chunks(path):
@@ -141,11 +150,11 @@ def decode_png_gray(path):
 
     if depth == 16:
         # PNG stores 16-bit samples big-endian; `array("H")` reads host order.
-        samples = array("H", bytes(out))
+        samples = array("H", out.tobytes())
         if sys.byteorder == "little":
             samples.byteswap()
     else:
-        samples = array("B", bytes(out))
+        samples = array("B", out.tobytes())
     return width, height, samples
 
 
@@ -162,7 +171,7 @@ def decode_png_rgba(path):
         )
 
     raw = zlib.decompress(compressed)
-    return width, height, bytes(unfilter_scanlines(raw, width, height, 4))
+    return width, height, unfilter_scanlines(raw, width, height, 4).tobytes()
 
 
 def gray_array(path):
@@ -171,15 +180,28 @@ def gray_array(path):
     Same samples, same orientation (row 0 north), reshaped and typed. `uint16` for a 16-bit
     raster, `uint8` for an 8-bit one.
     """
-    width, height, samples = decode_png_gray(path)
-    dtype = numpy.uint16 if samples.typecode == "H" else numpy.uint8
-    return numpy.frombuffer(bytes(samples), dtype=dtype).reshape(height, width)
+    width, height, depth, colour_type, compressed = _read_chunks(path)
+    if colour_type != COLOUR_TYPE_GRAY or depth not in (8, 16):
+        raise ValueError(
+            f"{path}: contract §8 rasters are 8- or 16-bit grayscale, "
+            f"got colour type {colour_type} at depth {depth}"
+        )
+    out = unfilter_scanlines(zlib.decompress(compressed), width, height, depth // 8)
+    if depth == 16:
+        # big-endian on disk; a dtype view reads it, and one `astype` lands it in host order
+        return out.reshape(-1).view(">u2").astype(numpy.uint16).reshape(height, width)
+    return out.reshape(height, width).copy()
 
 
 def rgba_array(path):
     """`decode_png_rgba` as a `(height, width, 4)` uint8 numpy array."""
-    width, height, pixels = decode_png_rgba(path)
-    return numpy.frombuffer(pixels, dtype=numpy.uint8).reshape(height, width, 4)
+    width, height, depth, colour_type, compressed = _read_chunks(path)
+    if colour_type != COLOUR_TYPE_RGBA or depth != 8:
+        raise ValueError(
+            f"{path}: the splatmap is RGBA8, got colour type {colour_type} at depth {depth}"
+        )
+    out = unfilter_scanlines(zlib.decompress(compressed), width, height, 4)
+    return out.reshape(height, width, 4).copy()
 
 
 # -- encoding: the same shapes, written --------------------------------------------------------
@@ -196,7 +218,7 @@ def _chunk(tag, payload):
         struct.pack(">I", len(payload))
         + tag
         + payload
-        + struct.pack(">I", zlib.crc32(tag + payload) & 0xFFFFFFFF)
+        + struct.pack(">I", zlib.crc32(payload, zlib.crc32(tag)) & 0xFFFFFFFF)
     )
 
 

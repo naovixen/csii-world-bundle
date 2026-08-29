@@ -19,8 +19,28 @@ from .. import region as region_rule
 REACH = 150.0  # metres past the region a segment origin may sit and still matter (test_drape_pick's REACH)
 
 
+# The last surface built, keyed on what shaped it. Two products in one bake — `markings` and
+# `areas` — need the same road surface, and each built its own: 7,289 files and 9.3 M triangles
+# parsed and indexed twice per bake. One entry, not a cache: a bake has one bundle and one
+# region, so the second product is a hit and nothing else ever is.
+_last = None
+
+
 def load_road_surface(bundle_dir, region=None, progress=None, cell=8.0):
     """`(surface, stats)`; `surface` may be an empty soup when the layer is absent."""
+    global _last
+    key = (os.path.abspath(bundle_dir), None if region is None else tuple(region), cell)
+    if _last is not None and _last[0] == key:
+        if progress is not None:
+            progress.begin("road surface", total=1, unit="segments")
+            progress.end("reused the surface the previous product built")
+        return _last[1], dict(_last[2])
+    surface, stats = _build_road_surface(bundle_dir, region, progress, cell)
+    _last = (key, surface, stats)
+    return surface, dict(stats)
+
+
+def _build_road_surface(bundle_dir, region, progress, cell):
     lay = reader.resolve_layers(bundle_dir)
     if not os.path.isfile(lay.networks) or not os.path.isdir(lay.net_meshes):
         return drape.TriangleSoupSurface(

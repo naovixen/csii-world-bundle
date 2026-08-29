@@ -8,8 +8,8 @@ primitive per material); this stage is a frame change and a policy table:
 |--------------|----------------|-------------------------------------------|---------|
 | markings     | Markings       | none (`collision_paint` → Visible Mesh)   | off     |
 | areas        | Areas          | none (`collision_paint` → Visible Mesh)   | off     |
-| skirts       | Skirts         | Visible Mesh Final (`collision_skirts`)   | on      |
-| lanegeometry | LaneFurniture  | Visible Mesh Final (`collision_furniture`)| on      |
+| skirts       | Skirts         | Collision Mesh (`collision_skirts`)       | off     |
+| lanegeometry | LaneFurniture  | Collision Mesh (`collision_furniture`)    | on      |
 
 Paint is a projection lifted millimetres above a surface that already collides — a collider
 there is a lip that catches wheels (plan: collision policy). Each tile's geometry is written
@@ -54,7 +54,9 @@ PRODUCTS = {
     # product: (setting toggle, group, collision setting or None for paint, castShadows)
     "markings": ("markings", "Markings", "collision_paint", False),
     "areas": ("areas", "Areas", "collision_paint", False),
-    "skirts": ("skirts", "Skirts", "collision_skirts", True),
+    # a 1 m plinth casts nothing anyone sees, and 641 never-culled tiles of it were in the
+    # shadow pass (refactor Phase 10 survey §4)
+    "skirts": ("skirts", "Skirts", "collision_skirts", False),
     "lanegeometry": ("lane_furniture", "LaneFurniture", "collision_furniture", True),
     # the pre-clipped ground at trenches / portals: it IS the ground there (the heightfield is
     # punched underneath), so it always collides and casts shadows
@@ -64,6 +66,12 @@ PRODUCTS = {
 # TerrainMaterials, from the same detail textures)
 GROUND_MATERIAL_NAMES = {"ground:grass": "grass", "ground:dirt": "dirt", "ground:rock": "rock"}
 TILE_RE = re.compile(r"^(?P<product>[a-z]+)_(?P<tx>-?\d+)_(?P<tz>-?\d+)\.glb$")
+# Products whose tiles collide through a `Colmesh_` node cut from their COARSEST level rather
+# than through `Visible Mesh Final`, which BeamNG rasterises at detail 0: a skirt is a foundation
+# you can drive onto, not a surface you drive on, and at LOD 0 the skirts alone were 1.67 M
+# collision triangles (refactor Phase 10 survey §4). The terrain cut IS the ground there and keeps
+# the exact mesh.
+COLMESH_PRODUCTS = ("skirts", "lanegeometry")
 
 
 def enabled(settings):
@@ -155,12 +163,18 @@ def run(ctx, progress):
             counts["split_geoms"] += result["extraGeoms"]
             counts["rewritten"] += 1 if result["changed"] else 0
             names.add(result["name"])
+            if not collide:
+                collision = "None"
+            elif result["colmesh"]:
+                collision = "Collision Mesh"
+            else:
+                collision = "Visible Mesh Final"
             obj = level_mod.tsstatic(
                 result["name"],
                 level.game_path("art", "shapes", product, result["name"] + ".dae"),
                 (result["ox"], result["oy"], 0.0),
                 frame.identity_matrix(),
-                collision="Visible Mesh Final" if collide else "None",
+                collision=collision,
             )
             if not shadows:
                 obj["castShadows"] = False
@@ -218,6 +232,33 @@ def _tile_job(args):
     level = LevelPaths(level_dir, level_name)
     shared = {"materials_aliases": {"aliases": aliases}}
     ox, oy = (tx + 0.5) * tile, (tz + 0.5) * tile  # bundle x/z = BeamNG x/y
+    parts = _tile_parts(nodes, ox, oy, level, shared)
+    if not parts:
+        return None
+    shape_name = f"{product}_{tx}_{tz}"
+    mesh = daemesh.group_by_material(daemesh.merge_meshes(shape_name, parts))
+    levels, ladder = _tile_levels(shape_name, mesh, detail_scale, view_distance, tile)
+    collision = _tile_colmesh(shape_name, levels) if product in COLMESH_PRODUCTS else ()
+    path = level.path("art", "shapes", product, f"{shape_name}.dae")
+    stats = dae.write_shape(
+        path, dae.Shape(shape_name, levels, collision=collision, null_px=ladder["nullPx"])
+    )
+    return {
+        "name": shape_name,
+        "ox": ox,
+        "oy": oy,
+        "colmesh": bool(collision),
+        "triangles": stats["triangles"],
+        "changed": bool(stats.get("changed")),
+        "lod": tilemesh.compact(levels, ladder),
+        "extraGeoms": sum(len(ms) for _px, ms in levels) - len(levels),
+        "used": sorted(shared.get("materials_used") or ()),
+    }
+
+
+def _tile_parts(nodes, ox, oy, level, shared):
+    """Every non-empty node of a tile as a `merge_meshes` part, in BeamNG-local frame about the
+    tile's origin, with its material runs bound to the level's names."""
     parts = []
     for node in nodes:
         if len(node["tris"]) == 0:
@@ -244,23 +285,15 @@ def _tile_job(args):
             )
             runs.append((bound if min_lod is None else f"{bound}{MIN_LOD_MARK}{min_lod}", count))
         parts.append((local, nn, daemesh.glb_uvs(node["uvs"]), None, node["tris"], runs))
-    if not parts:
-        return None
-    shape_name = f"{product}_{tx}_{tz}"
-    mesh = daemesh.group_by_material(daemesh.merge_meshes(shape_name, parts))
-    levels, ladder = _tile_levels(shape_name, mesh, detail_scale, view_distance, tile)
-    path = level.path("art", "shapes", product, f"{shape_name}.dae")
-    stats = dae.write_shape(path, dae.Shape(shape_name, levels, null_px=ladder["nullPx"]))
-    return {
-        "name": shape_name,
-        "ox": ox,
-        "oy": oy,
-        "triangles": stats["triangles"],
-        "changed": bool(stats.get("changed")),
-        "lod": tilemesh.compact(levels, ladder),
-        "extraGeoms": sum(len(ms) for _px, ms in levels) - len(levels),
-        "used": sorted(shared.get("materials_used") or ()),
-    }
+    return parts
+
+
+def _tile_colmesh(shape_name, levels):
+    """The tile's coarsest level as one `Colmesh_` mesh, or `()` when it has no triangles."""
+    _px, meshes = levels[-1]
+    parts = [(m.verts, None, None, None, m.tris, m.runs) for m in meshes]
+    merged = daemesh.merge_meshes(f"Colmesh_{shape_name}", parts)
+    return (merged,) if len(merged.tris) else ()
 
 
 def _ground_mapto(level, mat):

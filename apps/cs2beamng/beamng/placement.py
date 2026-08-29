@@ -75,6 +75,13 @@ def wants_forest(record, forest_allowed=True):
     return not has_nonuniform_scale(record)
 
 
+# `variant_of`, memoised on the prefab's centres and the record's quantised paint: a city's
+# 1.2 M coloured records collapse to a few thousand distinct (centres, paint) pairs, and the
+# nearest-centre loop runs once per pair instead of twice per record (the shapes and instances
+# stages both ask). The centres list itself is held in the value so its `id` cannot be reused.
+_VARIANT_MEMO = {}
+
+
 def variant_of(record, centres):
     """Which baked paint variant this record's `colorSet` belongs to (`tints.variant_index`).
 
@@ -83,7 +90,14 @@ def variant_of(record, centres):
     tie). The residual approximation is the clustering itself, not this lookup — an instance is
     drawn in its centre's colour, not its own.
     """
-    return tints.variant_index(record.get("attrs") or {}, centres)
+    attrs = record.get("attrs") or {}
+    key = (id(centres), tuple(tints.variant_vector(attrs)))
+    hit = _VARIANT_MEMO.get(key)
+    if hit is not None and hit[0] is centres:
+        return hit[1]
+    index = tints.variant_index(attrs, centres)
+    _VARIANT_MEMO[key] = (centres, index)
+    return index
 
 
 def shape_key(asset_id, state_suffix="", variant=None):

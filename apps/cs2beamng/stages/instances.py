@@ -43,6 +43,7 @@ from .instanceforest import (
     FOREST_COLLIDABLE_MIN_HEIGHT,
     NO_COLLIDER,
     clear_forest,
+    drop_rare_types,
     flush,
     forest_bytes,
     merge_thin_types,
@@ -171,10 +172,15 @@ def run(ctx, progress):
         results,
         int(settings.get("forest_min_items") or 0),
     )
+    rare = drop_rare_types(
+        forest_dir, types, type_source, item_counts, int(settings.get("forest_rare_type_min") or 0)
+    )
+    counts["forest"] -= rare["items"]
     progress.end(
         f"{counts['forest']:,} forest items in {len(types):,} types "
         f"({merged['types']} thin types holding {merged['items']} items merged into their "
-        f"untinted twin), {counts['tsstatic']:,} TSStatics"
+        f"untinted twin; {rare['types']} rare types holding {rare['items']} items dropped), "
+        f"{counts['tsstatic']:,} TSStatics"
     )
 
     forest_stats = {}
@@ -188,6 +194,7 @@ def run(ctx, progress):
     report = {
         "forestItems": counts["forest"],
         "forestTypes": len(types),
+        "forestRareTypesDropped": rare,
         "tsStatics": counts["tsstatic"],
         "forestTypesMerged": merged["types"],
         "forestItemsMerged": merged["items"],
@@ -302,16 +309,18 @@ def _state_suffix(record, asset, mesh_dir, have, cache):
 
 def _forest_line(type_name, position, rotation, scale):
     """One `.forest4.json` line. A forest item carries ONE scalar scale, so a record that needed
-    three would not have reached here (`placement.wants_forest`)."""
+    three would not have reached here (`placement.wants_forest`).
+
+    Formatted directly rather than through `json.dumps` — the same bytes (`repr` of a float IS
+    the JSON float encoding, and the type name is JSON-quoted once), a million times per build.
+    """
     flat = frame.basis_flat(rotation)
-    item = {
-        "ctxid": 0,
-        "pos": [round(v, 4) for v in position],
-        "rotationMatrix": [round(v, ROTATION_DP) for v in flat],
-        "scale": round(float(sum(scale) / 3.0), 5),
-        "type": type_name,
-    }
-    return json.dumps(item, separators=(",", ":"))
+    pos = ",".join(repr(round(v, 4)) for v in position)
+    rot = ",".join(repr(round(v, ROTATION_DP)) for v in flat)
+    return (
+        f'{{"ctxid":0,"pos":[{pos}],"rotationMatrix":[{rot}],'
+        f'"scale":{round(float(sum(scale) / 3.0), 5)!r},"type":{json.dumps(type_name)}}}'
+    )
 
 
 def _add_static(level, record, name, row, kind, position, rotation, scale, collide, ordinal):
@@ -375,6 +384,7 @@ SETTINGS = (
     "collision_lights",
     "forest_shadows",
     "forest_min_items",
+    "forest_rare_type_min",
     "foliage_road_clearance",
 )
 OUTPUTS = ("forest",)

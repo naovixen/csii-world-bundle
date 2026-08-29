@@ -126,10 +126,17 @@ def _state_suffix(record, asset, mesh_dir, have):
     """The STATE SUFFIX of the first `mesh_candidates` entry on disk, or None if none is.
 
     The walk is `csiibundle.instances.first_mesh_state`; the slice is here because `asset` is
-    what is being sliced off and it is in scope here, not there.
+    what is being sliced off and it is in scope here, not there. Memoised in `have` on the
+    three fields `mesh_candidates` reads — the same collapse `stages/instances._state_suffix`
+    does, which this pass was missing: a candidate list per record, 1.28 M times.
     """
+    attrs = record.get("attrs") or {}
+    key = (asset, attrs.get("treeState"), attrs.get("fullness"))
+    if key in have:
+        return have[key]
     candidate = bundle_instances.first_mesh_state(record, mesh_dir, have)
-    return None if candidate is None else candidate[len(asset) :]
+    have[key] = None if candidate is None else candidate[len(asset) :]
+    return have[key]
 
 
 def paint_variants(ctx):

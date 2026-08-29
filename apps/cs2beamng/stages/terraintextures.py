@@ -148,8 +148,11 @@ MAX_HEIGHT_SHARPEN = 4.0
 
 
 def _neutral_map(level, kind, tier="detail", size=1024):
-    """A flat gray PNG for a map the bundle does not carry (written once per level and tier)."""
-    name = f"{level.name}_neutral_{kind}_{tier}.png"
+    """A flat gray PNG for a map the bundle does not carry — ONE file per kind, named in every
+    tier's slot. It used to be written once per tier as well: three byte-identical files, and
+    three texture objects in VRAM, for one flat gray (refactor Phase 10 survey §6)."""
+    del tier
+    name = f"{level.name}_neutral_{kind}.png"
     path = level.path("art", "terrains", name)
     if not os.path.isfile(path):
         os.makedirs(os.path.dirname(path), exist_ok=True)

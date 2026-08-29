@@ -158,27 +158,22 @@ def _tier_textures(level, surfaces_dir, name, gain, sharpen, missing_height):
     # up into purple/green). Vanilla terrain textures are colour type 2, no alpha.
     # the BASE tier carries the ground's colour; MACRO and DETAIL are signed deviations around
     # half their deviation from it (`_tier_deviation`) so the overlay reproduces a lerp
-    albedo = {
-        tier: _rgb_texture(
-            level,
-            albedo_src,
-            f"{level.name}_{source}_{tier}_b.png",
-            gain=gain,
-            deviation=(tier != "base"),
-        )
-        for tier in TIERS
-    }
-    normal = {
-        tier: _rgb_texture(level, normal_src, f"{level.name}_{source}_{tier}_nm.png")
-        for tier in TIERS
-    }
+    # ONE file per distinct image, named in every tier's slot that wants it. The base tier's
+    # albedo is the plain texture and the two overlay tiers share one deviation; the normal and
+    # the height are the same bytes at every tier. Written once per tier, the terrain shipped
+    # 57 MiB of byte-identical PNGs and three VRAM objects per image (refactor Phase 10 §6).
+    base_albedo = _rgb_texture(level, albedo_src, f"{level.name}_{source}_base_b.png", gain=gain)
+    overlay_albedo = _rgb_texture(
+        level, albedo_src, f"{level.name}_{source}_detail_b.png", gain=gain, deviation=True
+    )
+    albedo = {tier: (base_albedo if tier == "base" else overlay_albedo) for tier in TIERS}
+    normal_path = _rgb_texture(level, normal_src, f"{level.name}_{source}_detail_nm.png")
+    normal = dict.fromkeys(TIERS, normal_path)
     # the ground's own relief, so BeamNG's height blend has something to interlock with
-    height = {
-        tier: _height_texture(
-            level, normal_src, f"{level.name}_{source}_{tier}_h.png", sharpen=sharpen
-        )
-        for tier in TIERS
-    }
+    height_path = _height_texture(
+        level, normal_src, f"{level.name}_{source}_detail_h.png", sharpen=sharpen
+    )
+    height = dict.fromkeys(TIERS, height_path)
     if height["detail"] is None:
         missing_height.append(name)
     return {"albedo": albedo, "normal": normal, "height": height}

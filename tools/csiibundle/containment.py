@@ -105,6 +105,30 @@ def _block_heights(terrain_y, width, height, r0, c0, sh, sw, samples):
     return top_row * (1.0 - fv)[:, None] + bot_row * fv[:, None]
 
 
+def _block_bands(fine_y, sh, sw, r0, c0, samples, quads):
+    """`(band, deep)` — one block's sub-sample rasters of every band and of the deep bands only.
+
+    The deep quads are rasterised ONCE, into `deep`; `band` starts as a copy of it and takes
+    only the shallow quads on top. Every quad used to be filled into `band` and the deep ones a
+    second time into `deep` — and since `clipgrid` bins only carving strips into a block, nearly
+    every quad here IS deep, so the whole containment raster ran twice (refactor Phase 10,
+    2026-08-29: `terrainmask` 80 s → 47 s on the reference city).
+    """
+    deep = numpy.zeros((sh, sw), dtype=bool)
+    origin = (c0 + 0.5, r0 + 0.5)
+    shallow = []
+    for quad, lane_y, bottom, top in quads:
+        local = [((px - origin[0]) * samples, (py - origin[1]) * samples) for px, py in quad]
+        if top > CLIP_DEEP_BAND_TOP:
+            clipraster.fill_clip_quad(deep, fine_y, sw, sh, local, lane_y, bottom, top)
+        else:
+            shallow.append((local, lane_y, bottom, top))
+    band = deep.copy()
+    for local, lane_y, bottom, top in shallow:
+        clipraster.fill_clip_quad(band, fine_y, sw, sh, local, lane_y, bottom, top)
+    return band, deep
+
+
 def contain_faces(width, height, terrain_y, cell_cut, quad_source, samples, block):
     """Faces wholly inside the union of the DEEP clip bands — the deletion rule (contract §8c).
 
@@ -144,18 +168,7 @@ def contain_faces(width, height, terrain_y, cell_cut, quad_source, samples, bloc
             nfr, nfc = r1 - r0, c1 - c0
             sh, sw = nfr * samples, nfc * samples
             fine_y = _block_heights(terrain_y, width, height, r0, c0, sh, sw, samples)
-
-            band = numpy.zeros((sh, sw), dtype=bool)
-            deep = numpy.zeros((sh, sw), dtype=bool)
-            origin = (c0 + 0.5, r0 + 0.5)
-            for quad, lane_y, bottom, top in quad_source(r0, c0, r1, c1):
-                local = [
-                    ((px - origin[0]) * samples, (py - origin[1]) * samples) for px, py in quad
-                ]
-                clipraster.fill_clip_quad(band, fine_y, sw, sh, local, lane_y, bottom, top)
-                if top > CLIP_DEEP_BAND_TOP:
-                    clipraster.fill_clip_quad(deep, fine_y, sw, sh, local, lane_y, bottom, top)
-
+            band, deep = _block_bands(fine_y, sh, sw, r0, c0, samples, quad_source(r0, c0, r1, c1))
             per_face = band.reshape(nfr, samples, nfc, samples)
             contain[r0:r1, c0:c1] = per_face.all(axis=(1, 3))
             band_count[r0:r1, c0:c1] = per_face.sum(axis=(1, 3), dtype=numpy.uint16)

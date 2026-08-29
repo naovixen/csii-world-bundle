@@ -45,15 +45,14 @@ exactly that by keying off the shape's SIZE. So the ladder stays as the ceiling 
 measurement is only allowed to say "not yet".
 """
 
-import json
 import os
 import time
 
 from csiibundle import lod, parallel, tints
 from csiibundle.bake import lods as bake_lods
 
-from ..beamng import dae, matbind
-from . import Stage, level_of, shapedemand, shapereport, shapewrite
+from ..beamng import dae
+from . import Stage, level_of, shapedemand, shapematerials, shapereport, shapewrite
 from .shapedemand import units
 from .shapelods import (
     DEFAULT_SWITCH_ERROR_PX,
@@ -80,7 +79,7 @@ def run(ctx, progress):
     demand, scan_stats, dropped = shapedemand.scan_demand(ctx, progress)
 
     variants = shapedemand.paint_variants(ctx)
-    aliases, tinted_by_variant = _material_tables(ctx, level)
+    aliases, tinted_by_variant, bound_key = shapematerials.material_tables(ctx, level)
     out_dir = level.path("art", "shapes", SHAPES_SUBDIR)
     os.makedirs(out_dir, exist_ok=True)
 
@@ -109,7 +108,10 @@ def run(ctx, progress):
             or IMPOSTER_VIEW_FRACTION * float(settings.get("view_distance") or 4000)
         ),
         "collision_preset": str(settings.get("collision_preset") or "simplified"),
-        "colmesh_max_tris": 20000,
+        # A collider over this is clustered down to it (`shapecollider`). MEASURED on the
+        # reference city's LOD 1 hulls: median 58, p90 2,257, max 59,389 — so the cap touches
+        # about one shape in ten and leaves the small ones exact.
+        "colmesh_max_tris": 2000,
         "tree_wind": bool(settings.get("tree_wind", False)),
         # A6.7: how many pixels of surface error a generated level may show where it takes over
         "switch_error_px": float(settings.get("lod_switch_error_px") or DEFAULT_SWITCH_ERROR_PX),
@@ -218,7 +220,10 @@ def run(ctx, progress):
         used.update(value["materials"])
         key = value.get("variantKey")
         if key:
-            variant_used.setdefault(key, set()).update(value["materials"])
+            # recorded under the key the shape BOUND (`_material_tables`), which for a variant
+            # identical to an earlier one is that earlier key
+            for canonical in value["materials"]:
+                variant_used.setdefault(bound_key.get((canonical, key), key), set()).add(canonical)
     shared["shapes"] = {
         "dir": SHAPES_SUBDIR,
         "results": results,
@@ -285,32 +290,6 @@ def _collision_policy(settings):
         "prop": bool(settings.get("collision_props", True)),
         "tree": bool(settings.get("collision_trees", True)),
     }
-
-
-def _material_tables(ctx, level):
-    """`(aliases, {variantKey: {rawMaterial: boundName}})` from the bake's `materials.json`.
-
-    A variant's tinted albedo is a different TEXTURE for the same material, so it needs its own
-    BeamNG material; the materials stage writes it under this name when it sees it bound.
-    """
-
-    path = os.path.join(ctx.derived_dir, "materials.json")
-    aliases, by_variant = {}, {}
-    if not os.path.isfile(path):
-        return aliases, by_variant
-    with open(path, encoding="utf-8") as handle:
-        table = json.load(handle)
-    aliases = table.get("aliases") or {}
-    for name, entry in (table.get("materials") or {}).items():
-        derived = entry.get("derived") or {}
-        # `variantFactors` covers EVERY variant the bake measured; `variants` only the ones whose
-        # per-texel tint a single `baseColorFactor` could not stand in for (A4 §2.4). A shape binds
-        # a variant material either way — the difference is whether that material carries its own
-        # tinted albedo or just a multiplier on the canonical one.
-        for key in derived.get("variantFactors") or derived.get("variants") or {}:
-            canonical = entry.get("canonical") or name
-            by_variant.setdefault(key, {})[name] = matbind.mapto(level.name, f"{canonical}__v{key}")
-    return aliases, by_variant
 
 
 # `placement.admit` is the reason trees/props/buildings and the two density sliders are here:

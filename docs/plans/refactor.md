@@ -2338,3 +2338,95 @@ as it is written so a lost session loses nothing:
 * `docs/plans/phase10-survey-beamng-runtime.md`
 
 The work list, with its before/after numbers, is appended here as each item lands.
+
+**What the surveys corrected in this phase's own text.** The Phase 10 paragraph above was
+written from the audits' reading of the code, and four of its numbers did not survive
+measurement — each is recorded here so nobody optimises the wrong thing again:
+
+* **`png.py` is not where the consumer's time goes.** The rip caps textures at 1024², so a
+  decode is ~15 ms, ~60 s over all 4,102 textures per pass — not the "0.8 GiB per 8192²
+  decode" the audit priced. The filter-0 fast path landed anyway (15 → 9 ms, the heightmap
+  0.12 → 0.09 s, one copy instead of eight) because every raster in both halves goes through
+  it, but it is hygiene, not the win.
+* **An `instances.jsonl` pass is 6.9 s, not 15.** Seven passes are ~50 s of a 1,000 s build.
+  The shared column cache the plan sketched would buy ~40 s and cost a new representation
+  every stage reads; not worth it. The cheap collapses landed instead (below).
+* **The bake's serial loops are half what Phase 0 recorded** — that table was taken on a
+  machine sharing a `pytest` run and a `dotnet build`. Clean-room, at the last commit before
+  this phase's bake changes (`1760015`): terrainmask 80 s (of which `clip volumes` 77 s),
+  terraincut 60 s (`cut` 52 s), lanegeometry 82 s (`bend` 37 s, `tiles` 30 s), markings 94 s
+  (`bend` 44 s, `drape` 15 s, road surface 10 s), areas 65 s (road surface 7.5 s).
+* **`pyfqmr` is a trap, not the plan's "install it and win".** With it installed, `auto`
+  switches the LOD backend to quadric — and on CS2's per-material, unwelded meshes
+  `preserve_border=True` pins every edge, so the simplifier returned 17,809 of 18,017
+  triangles at a 25 % target: **every LOD came back as LOD 0**, and a level built that way would
+  have no LODs at all. Its nearest-vertex re-attach was also a chunked brute-force distance
+  matrix (12 sample meshes: > 10 min against the cluster backend's 24 s). Both defects are
+  fixed (`decimatequadric.py`: a k-d tree, and borders unpinned — the same mesh reaches 4,504),
+  and `pyfqmr` stays uninstalled: changing the algorithm that shapes every LOD is a visual
+  change, and waits for the freeze to lift.
+
+**Landed — consumer bake** (each measured on the reference bundle, same instrument, same box):
+
+| Item | Where | Before | After |
+| --- | --- | ---: | ---: |
+| Vertex clustering on a 1-D mixed-radix key instead of `numpy.unique(axis=0)` | `decimate.unique_rows` | 12 meshes across the size distribution: `lod_ladder` 20.0 s, product 24.1 s | 5.1 s / **9.3 s**; 28 of 28 levels bit-identical |
+| The containment raster ran twice (`deep` filled after `band`, and every quad is deep) | `containment._block_bands` | terrainmask 80 s | *(after-run below)* |
+| The road surface built once per bake, not once per product | `bake/roads.load_road_surface` | 10 s + 7.5 s | *(after-run below)* |
+| PNG filter-0 fast path, no row loop, one copy; `crc32(payload, crc32(tag))` | `png.py` | 1024² 15 ms, heightmap 0.12 s | 9 ms, 0.09 s; round-trips exact |
+
+**Landed — the level in BeamNG** (`apps/cs2beamng`; the survey's ranked list, in order, with the
+two it declined):
+
+* **The budget instrument was blind to buildings.** `budget.radius_hint` gave every object shape
+  a 2 m radius; Torque picks the detail by projected pixel size, linear in radius, so every
+  building past ~150 m read as "not drawn" and Phase 0's `cs2 15,019 triangles` was an artefact
+  (with a 20 m radius the same view is millions). The cook now writes each shape's own radius —
+  the shapes stage already measured it — into `shape_ladders.json`, and `budget` reads it; the
+  2 m stays only as the declared fallback for a level built before this.
+* **The "simplified" collision preset never simplified.** `colmesh_max_tris` was 20,000 and the
+  only thing over it fell back to a box, so a residential block shipped a 20,700-triangle
+  collider and the world held 25 M collision triangles from object statics alone (the engine's
+  own log: 3.7 GB of static collision). The cap is 2,000 — median hull 58, p90 2,257, so it
+  touches about one shape in ten — and over it the hull is **clustered down to the cap**, never
+  boxed (the airport trap stays closed by construction). Forest types carry the same shapes, so
+  the 500-2,100-triangle hammocks and rooftop AC units drop to the cap with them.
+* **Skirt and lane-furniture tiles collide through a `Colmesh_` cut from their coarsest level**
+  ("Collision Mesh") instead of `Visible Mesh Final`, which BeamNG rasterises at detail 0 —
+  1.67 M collision triangles of 1 m plinth on 641 tiles nothing ever culls. Skirts also stop
+  casting shadows. Networks keep the exact mesh: it is the surface the car drives on. The
+  terrain cut keeps it too: it is the ground.
+* **One BeamNG material per distinct paint variant** (the consumer plan's B2, never built). A
+  variant key is one prefab's paint centre, and dozens of prefabs bind the same billboard
+  material with centres that resolved to the same tinted albedo or the same factor: 1,240 of
+  6,123 materials were byte-identical apart from their name, 42 copies of one advertising
+  board. `stages/shapematerials.material_tables` now binds an identical later key to the
+  earlier key's name, and records the bound key so the materials stage writes exactly those.
+* **Terrain tiers share one file per image.** Normal, height and the two overlay albedos were
+  written once per tier under three names — 57 MiB of byte-identical PNG and three VRAM objects
+  per image; the neutral maps likewise. One file each now, named in every tier's slot.
+* **Rare forest types are dropped** (`forest_rare_type_min`, default 10 — the a8 plan's
+  measured "Extras" item: 1,807 types placing 4,713 items, 0.5 % of the forest, for 241 MiB of
+  the 442 it mounted; the heaviest things dropped are three moored boats and three cranes).
+  Declared and counted in the report (`forestRareTypesDropped`, with the ten heaviest by name);
+  a preset above "balanced" keeps it at 0. **This one changes what is in the level** and is
+  flagged for the in-game look.
+* Declined, with reasons: `castShadows` off on **network** tiles (bridges and elevated roads cast
+  shadows the viewer sees); loosening the **areas** conform tolerance (the lift is 2 cm and the
+  tolerance 1 cm — a looser fit dips under the terrain, and that is a look question, not a
+  performance one); the lights (none placed); the DecalRoads, imposters and network tiling (the
+  survey found them sound).
+
+**Landed — the level build** (small, measured or self-evident): `placement.variant_of` is
+memoised on (centres, quantised paint) — 2.4 M interpreted nearest-centre loops per build
+collapse to a few thousand; `shapedemand._state_suffix` gets the memo the instances stage
+already had (1.28 M candidate walks → thousands); `_forest_line` formats its 1.2 M lines directly
+(same bytes; `json.dumps` per item was a fifth of the placing loop); the validator's ground check
+prefilters the instance layer to buildings before parsing.
+
+**Not done, and why.** `write_objects` re-serialises the whole tree 11-13× per build (~13 s) —
+caching serialised lines per object needs a guarantee no caller mutates an object after `add`,
+which nothing states today; left for Phase 11's structure pass. The DAE float formatter
+(`ndarray.tofile(sep=)`) is 2× slower than a `%`-join but a few seconds per build; not worth the
+memory of a 9 MB string per tile. `networks._load_parts` has no glb memo because every segment
+is its own asset (7,289 records, 7,289 files) — there is nothing to memoise.
