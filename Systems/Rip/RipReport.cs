@@ -42,7 +42,7 @@ namespace Carto.Systems
         /// otherwise put <paramref name="dialogText"/> on screen.
         /// </summary>
         /// <remarks>
-        /// The dialog text goes through <see cref="Settings.Fit"/>, which caps it at 18 lines and
+        /// The dialog text goes through <see cref="Fit"/>, which caps it at 18 lines and
         /// points at the log for the rest. A modal cannot scroll, so a stage that handed its full
         /// report straight to one was showing a wall of text with the end cut off — the network
         /// rip and the orchestrator already fitted theirs and the other three did not.
@@ -70,13 +70,35 @@ namespace Carto.Systems
 
             try
             {
-                Game.UI.MessageDialog dialog = new(DialogTitle, Settings.Fit(dialogText ?? outcome.Summary), "Common.OK");
+                Game.UI.MessageDialog dialog = new(DialogTitle, Fit(dialogText ?? outcome.Summary), "Common.OK");
                 Instance.UI.appBindings.ShowMessageDialog(dialog, null);
             }
             catch (Exception ex)
             {
                 log?.Warn($"Could not show the {what} result dialog: {ex.Message}");
             }
+        }
+
+        /// <summary>
+        /// Trim a report to what a message dialog can show without pushing its button off screen.
+        /// </summary>
+        /// <remarks>
+        /// The dialog does not scroll, so a long report hides the only way to dismiss it. The
+        /// full text always reaches <c>Logs/Carto.log</c> either way, which is where anything
+        /// longer than a glance belongs.
+        /// </remarks>
+        /// <param name="report">The full report.</param>
+        /// <param name="maxLines">How many lines the dialog can hold.</param>
+        /// <returns>The trimmed text.</returns>
+        public static string Fit(string report, int maxLines = 18)
+        {
+            if (string.IsNullOrEmpty(report)) return report;
+
+            string[] lines = report.Replace("\r\n", "\n").Split('\n');
+            if (lines.Length <= maxLines) return report;
+
+            return string.Join("\n", lines, 0, maxLines)
+                 + $"\n… {lines.Length - maxLines} more line(s) — full report in Logs/Carto.log";
         }
     }
 }

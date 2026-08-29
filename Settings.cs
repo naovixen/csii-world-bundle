@@ -790,7 +790,7 @@ namespace Carto
                     summary = $"Instance rip failed to start:\n{ex.Message}";
                 }
 
-                Game.UI.MessageDialog dialog = new("Options.SECTION[Carto.Carto.Mod]", Fit(summary), "Common.OK");
+                Game.UI.MessageDialog dialog = new("Options.SECTION[Carto.Carto.Mod]", Carto.Systems.RipReport.Fit(summary), "Common.OK");
                 Instance.UI.appBindings.ShowMessageDialog(dialog, null);
             }
         }
@@ -835,7 +835,7 @@ namespace Carto
                         }
 
                         Game.UI.MessageDialog next = new("Options.SECTION[Carto.Carto.Mod]",
-                                                         Fit(lanes + "\n" + networks), "Common.OK");
+                                                         Carto.Systems.RipReport.Fit(lanes + "\n" + networks), "Common.OK");
                         Instance.UI.appBindings.ShowMessageDialog(next, null);
                     });
                 }
@@ -845,33 +845,11 @@ namespace Carto
                     summary = $"Network rip failed:\n{ex.Message}";
                 }
 
-                Game.UI.MessageDialog dialog = new("Options.SECTION[Carto.Carto.Mod]", Fit(summary), "Common.OK");
+                Game.UI.MessageDialog dialog = new("Options.SECTION[Carto.Carto.Mod]", Carto.Systems.RipReport.Fit(summary), "Common.OK");
                 Instance.UI.appBindings.ShowMessageDialog(dialog, null);
             }
         }
 
-        /// <summary>
-        /// Trim a report to what a message dialog can show without pushing its button off screen.
-        /// （將報告裁減至訊息對話框可顯示的長度，以免其按鈕被推出畫面之外。）<br/><br/>
-        /// The dialog does not scroll, so a long report hides the only way to dismiss it. The full
-        /// text always reaches <c>Logs/Carto.log</c> either way, which is where anything longer
-        /// than a glance belongs.<br/>
-        /// （對話框不會捲動，故過長的報告會遮蔽唯一的關閉方式。完整內容一律會寫入
-        /// <c>Logs/Carto.log</c>。）
-        /// </summary>
-        /// <param name="report">The full report.（完整報告。）</param>
-        /// <param name="maxLines">How many lines the dialog can hold.（對話框可容納的行數。）</param>
-        /// <returns>The trimmed text.（裁減後的文字。）</returns>
-        internal static string Fit(string report, int maxLines = 18)
-        {
-            if (string.IsNullOrEmpty(report)) return report;
-
-            string[] lines = report.Replace("\r\n", "\n").Split('\n');
-            if (lines.Length <= maxLines) return report;
-
-            return string.Join("\n", lines, 0, maxLines)
-                 + $"\n… {lines.Length - maxLines} more line(s) — full report in Logs/Carto.log";
-        }
         /// <summary>
         /// How many prefabs a mesh rip covers (PLAN Phase 3).
         /// （網格擷取涵蓋的預製模板數量（PLAN 第三階段）。）<br/><br/>
@@ -967,7 +945,7 @@ namespace Carto
                     summary = $"Terrain rip failed:\n{ex.Message}";
                 }
 
-                Game.UI.MessageDialog dialog = new("Options.SECTION[Carto.Carto.Mod]", Fit(summary), "Common.OK");
+                Game.UI.MessageDialog dialog = new("Options.SECTION[Carto.Carto.Mod]", Carto.Systems.RipReport.Fit(summary), "Common.OK");
                 Instance.UI.appBindings.ShowMessageDialog(dialog, null);
             }
         }
@@ -1036,7 +1014,7 @@ namespace Carto
                         summary = $"Manifest write failed:\n{ex.Message}";
                     }
 
-                    Game.UI.MessageDialog dialog = new("Options.SECTION[Carto.Carto.Mod]", Fit(summary), "Common.OK");
+                    Game.UI.MessageDialog dialog = new("Options.SECTION[Carto.Carto.Mod]", Carto.Systems.RipReport.Fit(summary), "Common.OK");
                     Instance.UI.appBindings.ShowMessageDialog(dialog, null);
                 });
             }

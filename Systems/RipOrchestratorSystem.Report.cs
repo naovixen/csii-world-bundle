@@ -78,7 +78,7 @@ namespace Carto.Systems
 
             try
             {
-                Game.UI.MessageDialog message = new("Options.SECTION[Carto.Carto.Mod]", Settings.Fit(dialog.ToString()), "Common.OK");
+                Game.UI.MessageDialog message = new("Options.SECTION[Carto.Carto.Mod]", RipReport.Fit(dialog.ToString()), "Common.OK");
                 Instance.UI.appBindings.ShowMessageDialog(message, null);
             }
             catch (Exception ex)
