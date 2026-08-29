@@ -36,6 +36,11 @@ namespace Carto.Systems
         {
             MaterialRun run = _run;
             if ((run == null) || string.IsNullOrEmpty(materialId)) return default;
+            // Called on the MAIN thread by the lane-prefab writer (`NetworkRipSystem.LanePrefabs`),
+            // this would wait for an encode that waits for pixels only this thread can land — the
+            // 2026-08-29 rip hung exactly there. Land every readback in flight first; the encodes
+            // then finish on the pool and the wait below is the encode itself.
+            if (System.Threading.Thread.CurrentThread.ManagedThreadId == run.MainThreadId) Pump(force: true);
             return run.Materials.TryGetValue(materialId, out MaterialAsset material)
                 ? material.Describe(run.Textures.Resolve) : default;
         }

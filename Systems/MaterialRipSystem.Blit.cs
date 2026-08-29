@@ -20,6 +20,14 @@ namespace Carto.Systems
         {
             public AsyncGPUReadbackRequest Request;
             public RenderTexture Target;
+
+            /// <summary>
+            /// Lets go of the SOURCE texture once the readback has landed — the blit that read it
+            /// has executed by then. The three read paths used to unload their source the moment
+            /// the blit was ISSUED, which <c>ReadPixels</c> tolerated because it forced the GPU
+            /// to finish first; an asynchronous request does not.
+            /// </summary>
+            public Action Release;
             public int Width, Height;
             public readonly TaskCompletionSource<byte[]> Pixels = new(TaskCreationOptions.RunContinuationsAsynchronously);
         }
@@ -86,6 +94,18 @@ namespace Carto.Systems
         /// never pump. The main-thread stall this keeps is theirs alone, a hundred textures
         /// against the mesh stage's four thousand.
         /// </summary>
+        /// <summary>
+        /// Hand the source's release to the readback the last <see cref="Capture"/> issued, so it
+        /// runs when the readback lands. False — release now — when no readback is in flight.
+        /// </summary>
+        private static bool DeferRelease(Action release)
+        {
+            GpuReadback issued = _issued.Value;
+            if (issued == null) return false;
+            issued.Release = release;
+            return true;
+        }
+
         internal static PendingTexture CaptureNow(Texture source, string key, string name, int cap)
         {
             PendingTexture pending = Capture(source, key, name, cap);
@@ -95,7 +115,7 @@ namespace Carto.Systems
             issued.Request.WaitForCompletion();
             Land(issued);
             pending.Pixels = issued.Pixels.Task.Result;
-            pending.AwaitPixels = null;
+            pending.PixelsTask = null;
             return pending.Pixels == null ? null : pending;
         }
     }

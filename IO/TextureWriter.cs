@@ -42,12 +42,13 @@ namespace Carto.IO
         public byte[] Pixels { get; set; }
 
         /// <summary>
-        /// Blocks until the GPU readback behind this texture has landed and returns its pixels
-        /// in the same layout as <see cref="Pixels"/>, or <c>null</c> when the readback failed.
-        /// Set instead of <see cref="Pixels"/> by a capture that issued the readback
-        /// asynchronously; called on an encoder thread, never on the main thread.
+        /// The pixels once the GPU readback behind this texture has landed, in the same layout
+        /// as <see cref="Pixels"/> — <c>null</c> when the readback failed. Set instead of
+        /// <see cref="Pixels"/> by a capture that issued the readback asynchronously. Awaited,
+        /// never blocked on: a thread parked in <c>.Result</c> per queued texture starved the
+        /// pool and stalled the writer behind it (the 2026-08-29 rip hang).
         /// </summary>
-        public Func<byte[]> AwaitPixels { get; set; }
+        public Task<byte[]> PixelsTask { get; set; }
 
         /// <summary>
         /// A per-texel pass to run on the pixels before encoding (the normal-map reconstruction),
@@ -177,13 +178,8 @@ namespace Carto.IO
             {
                 // The pixels may still be on the GPU: wait for them BEFORE taking an encoder
                 // slot, so a readback that has not landed never holds a core idle.
-                byte[] pixels = texture.Pixels;
-                if ((pixels == null) && (texture.AwaitPixels != null))
-                {
-                    Func<byte[]> await_ = texture.AwaitPixels;
-                    pixels = await Task.Run(await_).ConfigureAwait(false);
-                    texture.Pixels = pixels;
-                }
+                if ((texture.Pixels == null) && (texture.PixelsTask != null))
+                    texture.Pixels = await texture.PixelsTask.ConfigureAwait(false);
                 await _encoders.WaitAsync().ConfigureAwait(false);
                 try { Encode(texture); }
                 finally { _encoders.Release(); }

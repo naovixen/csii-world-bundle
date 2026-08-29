@@ -126,6 +126,9 @@ namespace Carto.Systems
             /// <summary>The GPU readbacks issued and not yet landed (main thread only).</summary>
             public List<GpuReadback> Readbacks = new();
 
+            /// <summary>The thread the run began on — the only one that may land a readback.</summary>
+            public int MainThreadId = System.Threading.Thread.CurrentThread.ManagedThreadId;
+
             /// <summary>How many material ids needed a suffix to stay distinct.</summary>
             public int Disambiguated;
 

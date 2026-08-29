@@ -145,7 +145,9 @@ namespace Carto.Systems
             try
             {
                 source = asset.Load(mipBias);
-                return Capture(source, key, asset.name, cap);
+                PendingTexture pending = Capture(source, key, asset.name, cap);
+                if (DeferRelease(() => asset.Unload(false))) source = null;
+                return pending;
             }
             finally
             {
@@ -179,10 +181,12 @@ namespace Carto.Systems
         private static PendingTexture ReadBackVirtual(MaterialRun run, TextureSource source, string surfaceName, string property)
         {
             VTTextureAsset packed = source.Packed;
+            bool deferred = false;
             try
             {
                 Texture texture = packed.Load();
                 PendingTexture pending = Capture(texture, source.Key, surfaceName, run.TextureSizeCap);
+                deferred = DeferRelease(() => packed.Unload(false));
                 if (pending == null)
                 {
                     Skip(run, source.Key, $"virtual-textured ({property}): preprocessed texture yielded no pixels");
@@ -205,7 +209,7 @@ namespace Carto.Systems
             }
             finally
             {
-                try { packed.Unload(false); } catch { /* nothing useful to do */ }
+                if (!deferred) { try { packed.Unload(false); } catch { /* nothing useful to do */ } }
             }
         }
     }

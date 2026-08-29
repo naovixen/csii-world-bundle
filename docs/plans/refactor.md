@@ -2613,3 +2613,14 @@ line — how many of the 4,304 prefabs carry one and how deep — and `lodCap` >
 Then a rebuild, and the look: buildings should step down through the artist's levels with no
 holes, at the game's own distances; anything that still lattices is a prefab with no chain, and
 the report names how many there are.
+
+**The 2026-08-29 20:53 rip hung (AppHangB1) — a deadlock in the async readback, fixed.**
+`NetworkRipSystem.LanePrefabs` calls `Materials.Describe` on the MAIN thread; `Describe →
+Resolve` now waits for the texture's encode, the encode waits for pixels only the main thread's
+`Pump` can land, and the main thread was the one waiting. A main-thread `Describe` now lands every
+readback in flight first. Two more defects went with it: encoder tasks blocked a pool thread each
+in `.Result` waiting for pixels (`PixelsTask` is awaited now), and every read path unloaded its
+source texture the moment the blit was ISSUED — tolerable under `ReadPixels`, which forced the GPU
+to finish, not under a request that does not (the release now runs when the readback lands).
+The mesh stage of that rip did complete, and measured the block before it hung: **1,305 → 797 s**
+while ripping 46 % more geometry (the LOD chains), readback on the main thread 412 → 266 s.

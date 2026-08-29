@@ -62,6 +62,8 @@ namespace Carto.Systems
             {
                 if (readback.Target != null) RenderTexture.ReleaseTemporary(readback.Target);
                 readback.Target = null;
+                try { readback.Release?.Invoke(); } catch { /* nothing useful to do */ }
+                readback.Release = null;
                 readback.Pixels.TrySetResult(pixels);
             }
         }
@@ -77,6 +79,8 @@ namespace Carto.Systems
             {
                 if (readback.Target != null) RenderTexture.ReleaseTemporary(readback.Target);
                 readback.Target = null;
+                try { readback.Release?.Invoke(); } catch { /* nothing useful to do */ }
+                readback.Release = null;
                 readback.Pixels.TrySetResult(null);
             }
             run.Readbacks = new List<GpuReadback>();

@@ -88,13 +88,16 @@ namespace Carto.Systems
         /// <returns>The pixels, or <c>null</c>.</returns>
         private static PendingTexture ReadBackLive(MaterialRun run, TextureSource source, string surfaceName)
         {
+            bool deferred = false;
             try
             {
-                return Capture(source.Live, source.Key, surfaceName, run.TextureSizeCap);
+                PendingTexture pending = Capture(source.Live, source.Key, surfaceName, run.TextureSizeCap);
+                deferred = DeferRelease(() => source.Owner?.ReleaseMaterials());
+                return pending;
             }
             finally
             {
-                try { source.Owner?.ReleaseMaterials(); } catch { /* nothing useful to do */ }
+                if (!deferred) { try { source.Owner?.ReleaseMaterials(); } catch { /* nothing useful to do */ } }
             }
         }
 
@@ -155,7 +158,7 @@ namespace Carto.Systems
                 SourceName = name,
                 Width = width,
                 Height = height,
-                AwaitPixels = () => promise.Task.Result
+                PixelsTask = promise.Task
             };
         }
 
