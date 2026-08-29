@@ -275,6 +275,27 @@ def functions_in(path: str, text: str) -> list[tuple[str, int, int]]:
     return []
 
 
+def function_key(path: str) -> str:
+    """The path a FUNCTION's allowlist entry is keyed by.
+
+    For a C# partial class the file is not part of a member's identity: `TerrainRipSystem.cs`
+    and `TerrainRipSystem.Areas.cs` are one type, and `Type.Aspect.cs` is the convention for
+    splitting one. Keying a member by its file would mean that moving it between two files of
+    the SAME class invalidates its allowlist entry and needs a new one — which the shrink-only
+    rule forbids, so a pure file split would be blocked on decomposing functions it never
+    touched. Keying by the type keeps the entry stable across exactly the move that does not
+    change the function, and no other: a member that moves to a DIFFERENT type still loses its
+    entry, which is right, because that is a real change.
+
+    Everything else keeps its own path — a Python module's file IS its identity.
+    """
+    if not path.endswith(".cs"):
+        return path
+    directory, _, filename = path.rpartition("/")
+    type_name = filename[: -len(".cs")].split(".")[0]
+    return f"{directory}/{type_name}" if directory else type_name
+
+
 def violations() -> list[tuple[str, str]]:
     """Every breach as (key, human description). The key is what the allowlist stores."""
     found = []
@@ -286,7 +307,7 @@ def violations() -> list[tuple[str, str]]:
         for name, start, end in functions_in(path, text):
             span = end - start + 1
             if span > FUNC_MAX:
-                key = f"func {path}::{name}"
+                key = f"func {function_key(path)}::{name}"
                 found.append((key, f"{path}:{start} {name}(): {span} lines (max {FUNC_MAX})"))
     return found
 
