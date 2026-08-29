@@ -5,17 +5,6 @@
 # visible, deliberate diff, and a phase that fixes a file cannot leave its entry behind.
 #
 # Regenerate after a phase:  python tools/check_limits.py --prune
-file IO/BundleWriter.cs
-file IO/GeometryAssetReader.cs
-file IO/GltfWriter.cs
-file IO/GradingWriter.cs
-file Systems/AppearanceRipSystem.cs
-file Systems/InstanceRipSystem.cs
-file Systems/LaneRipSystem.cs
-file Systems/MaterialRipSystem.cs
-file Systems/MeshRipSystem.cs
-file Systems/NetworkRipSystem.GameMesh.cs
-file Systems/RipOrchestratorSystem.cs
 file apps/cs2beamng/beamng/budget.py
 file apps/cs2beamng/pipeline/state.py
 file apps/cs2beamng/stages/instances.py
