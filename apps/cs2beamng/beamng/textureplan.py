@@ -8,13 +8,62 @@ import os
 import re
 
 import numpy
-from csiibundle import images, png
+from csiibundle import glbjson, images, png
 
 from . import dds as dds_mod
 
 TEXTURE_SUBDIR = ("art", "textures")
 
 # -- textures ----------------------------------------------------------------------------------
+
+
+# The edge cap for a texture bound ONLY by an authored level past LOD 0, by the nearest level
+# it is seen at. The game's chain switches to LOD 1 at a few hundred projected pixels of the
+# whole shape and to LOD 2 under about eighty (`csiibundle.lodchain`), so a 256-texel atlas on
+# a LOD 2 face is sixteen times the pixels it can ever cover. MEASURED on the reference city:
+# the chain brought 2,882 textures bound only by LOD 2 (613 MiB raw) and 242 only by LOD 1 —
+# per-building baked atlases — and the level went 4,280 → 5,125 MiB resident, a hundred short
+# of where D3D12 was seen to fail; at these caps it is 4,998. OURS, a budget; a texture any
+# LOD 0 material binds keeps its kind's cap whatever a chain does with it elsewhere.
+LOD_TEXTURE_CAPS = {1: 128, 2: 64}
+
+
+def lod_cap(level, kind_cap):
+    """The cap a texture seen no nearer than `level` exports at: its kind's, tightened by
+    `LOD_TEXTURE_CAPS` past LOD 0 (never loosened)."""
+    if level <= 0:
+        return int(kind_cap or 0)
+    tight = LOD_TEXTURE_CAPS[min(int(level), max(LOD_TEXTURE_CAPS))]
+    return tight if (not kind_cap or tight < int(kind_cap)) else int(kind_cap)
+
+
+_LEVELS_CACHE = {}
+
+
+def material_lod_levels(bundle, table):
+    """`{canonical material: nearest level any mesh binds it at}` over every `meshes/*.glb`,
+    from their JSON chunks. What the shapes stage measures from the geometry it actually wrote
+    (`materials_lod_level`), computed here without writing any — for the cost meter, which sizes
+    the textures before a shape exists. Cached on the mesh directory's own stamp."""
+    directory = os.path.join(bundle, "meshes")
+    try:
+        with os.scandir(directory) as it:
+            entries = [e for e in it if e.name.endswith(".glb")]
+    except OSError:
+        return {}
+    stamp = (directory, len(entries), max((e.stat().st_mtime_ns for e in entries), default=0))
+    hit = _LEVELS_CACHE.get(stamp)
+    if hit is not None:
+        return hit
+    aliases = table.get("aliases") or {}
+    levels = {}
+    for entry in entries:
+        for name, level in (glbjson.material_levels(entry.path) or {}).items():
+            canonical = aliases.get(name, name)
+            levels[canonical] = min(levels.get(canonical, level), level)
+    _LEVELS_CACHE.clear()
+    _LEVELS_CACHE[stamp] = levels
+    return levels
 
 
 def _cap(arr, max_size):

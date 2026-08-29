@@ -7,6 +7,7 @@ CS2's `MeshMaterial` buffer resolves a surface by and what
 """
 
 import json
+import re
 import struct
 
 # glTF chunk type code for the JSON chunk, from the spec.
@@ -39,6 +40,31 @@ def primitive_materials(path):
                 names[index] if isinstance(index, int) and 0 <= index < len(names) else None
             )
     return order
+
+
+def material_levels(path):
+    """`{material name: nearest LOD level it is bound at}` for the `.glb`, or `None` if
+    unreadable — 0 for a material any level-0 node binds, `n` for one bound only by
+    `<node>_LOD<n>` nodes (§6). From the JSON chunk alone, so a consumer sizing textures before
+    it has read any geometry can tell an atlas seen only at LOD 2 from a facade seen up close."""
+    doc = _json_chunk(path)
+    if doc is None:
+        return None
+    names = [entry.get("name") for entry in doc.get("materials") or ()]
+    levels = {}
+    for mesh in doc.get("meshes") or ():
+        level = _lod_suffix(mesh.get("name") or "")
+        for primitive in mesh.get("primitives") or ():
+            index = primitive.get("material")
+            name = names[index] if isinstance(index, int) and 0 <= index < len(names) else None
+            if name:
+                levels[name] = min(levels.get(name, level), level)
+    return levels
+
+
+def _lod_suffix(name):
+    match = re.search(r"_LOD(\d+)$", name)
+    return int(match.group(1)) if match else 0
 
 
 def _json_chunk(path):

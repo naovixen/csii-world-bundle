@@ -40,9 +40,24 @@ namespace Carto.Systems
                 if (!Prefabs.TryGetPrefab(EntityManager.GetComponentData<PrefabData>(lodEntity), out PrefabBase lodBase)
                     || lodBase is not RenderPrefab lodPrefab) continue;
 
+                // The game's IMPOSTOR level — a card its own shader textures procedurally
+                // (`MeshFlags.Impostor`; every vanilla tree's LOD 1) — is not a mesh a consumer
+                // can draw: no UVs, no normals. It is counted and left out.
+                if (EntityManager.HasComponent<MeshData>(lodEntity)
+                    && ((EntityManager.GetComponentData<MeshData>(lodEntity).m_State & MeshFlags.Impostor) != 0))
+                {
+                    ImpostorLevelsSkipped++;
+                    continue;
+                }
+
                 int level = mesh.Lods.Count + 1;
                 MeshAsset lod = TryReadGeometryAsset($"{assetId}_LOD{level}", $"{sourceName} LOD{level}", lodPrefab, null);
                 if (lod == null) continue;
+                if ((lod.Uvs == null) || (lod.Uvs.Length == 0) || (lod.Normals == null))
+                {
+                    ImpostorLevelsSkipped++;
+                    continue;
+                }
                 lod.Lod = level;
                 AssignMaterials(lod, lodPrefab);
                 mesh.Lods.Add(lod);
@@ -55,6 +70,9 @@ namespace Carto.Systems
                 LodCap = Math.Max(LodCap, mesh.Lods.Count);
             }
         }
+
+        /// <summary>Authored levels left out because they are impostor cards (no UVs), this run.</summary>
+        public int ImpostorLevelsSkipped { get; private set; }
 
         /// <summary>Meshes whose authored LOD chain was read, this run.</summary>
         public int LodChains { get; private set; }

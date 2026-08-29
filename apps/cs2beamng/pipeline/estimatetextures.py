@@ -36,8 +36,9 @@ def texture_estimate(values, bundle, derived_dir):
     caps = bm.caps_from_settings(values)
     use_dds = bool(values.get("texture_dds", True))
     total = files = 0
-    for kind, keep_alpha, width, height, colour_type in plan["jobs"]:
-        width, height = textureplan.capped_size(width, height, int(caps.get(kind, 0) or 0))
+    for kind, keep_alpha, width, height, colour_type, level in plan["jobs"]:
+        cap = textureplan.lod_cap(level, int(caps.get(kind, 0) or 0))
+        width, height = textureplan.capped_size(width, height, cap)
         total += dds_mod.encoded_bytes(
             width, height, textureplan.dxgi_format(kind, keep_alpha, colour_type in (0, 4))
         )
@@ -118,24 +119,27 @@ def _texture_plan(bundle, derived_dir, values):
     materials = table.get("materials") or {}
     canonical = sorted({rec.get("canonical") or name for name, rec in materials.items()})
     jobs = {}
-    for plan in textureplan.plan_canonical(bundle, derived_dir, table, canonical).values():
+    # a job's level is the nearest any material binding it is seen at; LOD 0 anywhere wins
+    levels = textureplan.material_lod_levels(bundle, table)
+    for name, plan in textureplan.plan_canonical(bundle, derived_dir, table, canonical).items():
+        level = int(levels.get(name, 0))
         for job in plan.values():
-            jobs[job] = None
+            jobs[job] = min(jobs.get(job) if jobs.get(job) is not None else level, level)
     variant_files = 0
     for job in _variant_jobs(values, derived_dir, table):
         if job not in jobs:
             variant_files += 1
-        jobs[job] = None
+        jobs[job] = 0
     for job in textureplan.plan_areas(bundle, derived_dir, has_alpha=_header_has_alpha):
-        jobs[job] = None
+        jobs[job] = 0
 
     sized, unsized = [], 0
-    for src, kind, keep_alpha in jobs:
+    for (src, kind, keep_alpha), level in jobs.items():
         info = _png_header(src)
         if info is None:
             unsized += 1
             continue
-        sized.append((kind, keep_alpha, info[0], info[1], info[2]))
+        sized.append((kind, keep_alpha, info[0], info[1], info[2], int(level or 0)))
     out = {"jobs": sized, "unsized": unsized, "variantFiles": variant_files}
     while len(_PLAN_CACHE) >= _PLAN_CACHE_MAX:
         _PLAN_CACHE.pop(next(iter(_PLAN_CACHE)))

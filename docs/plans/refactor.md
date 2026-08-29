@@ -2624,3 +2624,43 @@ source texture the moment the blit was ISSUED — tolerable under `ReadPixels`, 
 to finish, not under a request that does not (the release now runs when the readback lands).
 The mesh stage of that rip did complete, and measured the block before it hung: **1,305 → 797 s**
 while ripping 46 % more geometry (the LOD chains), readback on the main thread 412 → 266 s.
+
+### Phase 10 — the game's chain, ripped and built, 2026-08-29 (awaiting the in-game look)
+
+The re-rip after the deadlock fix ran all nine stages in **1,146 s (19 min) against 1,690 s**:
+the mesh stage 769 s against 1,305 while ripping 46 % more geometry (the chains), manifest
+124 s against 145, `validate_bundle.py` VALID with the one advisory warning, `lodCap 2`.
+**1,983 meshes carry a chain — 1,159 of the 1,168 buildings — 3,660 levels;** city-wide LOD 1
+holds 41 % of LOD 0's triangles and LOD 2 4.5 %. The full bake behind the rebuild was 10.7 min
+(`lods` skipped every authored chain).
+
+Two defects surfaced on the first build and were fixed before the look:
+
+* **Every vanilla tree's LOD 1 is the game's impostor card** — POSITION only, no normals, no UVs
+  (`MeshFlags.Impostor`, textured by the game's own shader). `glb.parse_glb` refused the whole
+  file for it and 165 tree shapes vanished from the level. The parser now skips a numbered node
+  without normals (a level-0 node still refuses), and the producer leaves impostor levels out
+  and counts them; trees keep the generated ladder they always had.
+* **The chain's own textures.** Each authored level binds its own materials: 6,156 materials
+  and 6,856 textures against 4,784 / 3,729, of which 2,882 textures are bound only at LOD 2 and
+  242 only at LOD 1 (per-building baked atlases, 761 MiB raw), and the level went 4,280 →
+  **5,125 MiB** resident, a hundred short of where D3D12 was seen to fail. A texture bound only
+  past LOD 0 now exports at the level's cap (`textureplan.LOD_TEXTURE_CAPS`: LOD 1 128, LOD 2
+  64 — a LOD 2 face is seen under ~80 px of the whole shape), decided from what the shapes stage
+  actually bound (`materials_lod_level`) and, in the cost meter, from the glb JSON chunks
+  (`glbjson.material_levels`). 3,619 jobs took the tighter cap; the DDS folder is back to 556 MiB.
+
+| in the 4 km view from spawn | after phase 10 | best-of-both LODs | **the game's chain** |
+| --- | ---: | ---: | ---: |
+| building triangles | 4,896,930 | 3,048,796 | **1,811,105** |
+| of which at LOD 0 / 1 / 2 | 2.73 / 1.06 / 1.11 M | 0.93 / 0.81 / 1.31 M | **0.08 / 0.17 / 1.56 M** |
+| all groups | 6,171,530 | 4,323,396 | **3,085,705** |
+| resident meshes cs2 | 1,850 MiB | 2,013 MiB | 2,731 MiB (the authored LOD 1s, 1,747 MiB raw) |
+| resident total | 4,117 MiB | 4,280 MiB | **4,998 MiB** |
+| shapes / failed | 4,275 / 0 | 4,275 / 0 | 4,237 / 0 |
+
+The residency is the trade this makes: the game mounts the same chain, and it is what makes
+every building step down through artist-made levels with no holes at the game's own distances.
+The next lever on it is LOD 1's bytes (1.7 GiB raw across the city), which is the a8 plan's P2
+remainder and a look question. `test_estimate_build` sizes by the same LOD caps; 130 fast tests
+green; Carto.Tests 24.

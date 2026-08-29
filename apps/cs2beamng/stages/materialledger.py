@@ -36,15 +36,17 @@ def load_ledger(level_dir):
     return document.get("entries") or {}
 
 
-def save_ledger(level_dir, exported, caps, use_dds):
+def save_ledger(level_dir, exported, caps, use_dds, job_caps=None):
     entries = {}
+    job_caps = job_caps or {}
     for (src, kind, keep_alpha), game in exported.items():
         if not game:
             continue
         stamp = file_stamp(src)
         if stamp is None:
             continue
-        entries[ledger_key(src, kind, keep_alpha, caps, use_dds)] = {"stamp": stamp, "game": game}
+        cap = effective_cap((src, kind, keep_alpha), caps, job_caps)
+        entries[ledger_key(src, kind, keep_alpha, cap, use_dds)] = {"stamp": stamp, "game": game}
     path = ledger_path(level_dir)
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -65,9 +67,19 @@ def save_ledger(level_dir, exported, caps, use_dds):
         pass  # a ledger that cannot be written costs time, not correctness
 
 
-def ledger_key(src, kind, keep_alpha, caps, use_dds):
+def ledger_key(src, kind, keep_alpha, cap, use_dds):
+    return f"{src}|{kind}|{int(bool(keep_alpha))}|{int(cap or 0)}|{'dds' if use_dds else 'png'}"
+
+
+def effective_cap(job, caps, job_caps):
+    """The edge cap one texture job exports at: its kind's cap, unless the job is bound only past
+    LOD 0 and `job_caps` names a tighter one for the level it is seen at."""
+    _src, kind, _keep_alpha = job
     cap = int(caps.get(kind, 0) or 0)
-    return f"{src}|{kind}|{int(bool(keep_alpha))}|{cap}|{'dds' if use_dds else 'png'}"
+    tighter = int(job_caps.get(job, 0) or 0)
+    if tighter and (not cap or tighter < cap):
+        return tighter
+    return cap
 
 
 def file_stamp(src):
@@ -78,13 +90,15 @@ def file_stamp(src):
     return [int(st.st_size), int(st.st_mtime_ns)]
 
 
-def partition(level, jobs, ledger, caps, use_dds):
+def partition(level, jobs, ledger, caps, use_dds, job_caps=None):
     """`(reusable, todo)`: the jobs whose source, cap and format are unchanged AND whose exported
     file is still on disk, and the rest."""
     reusable, todo = {}, []
+    job_caps = job_caps or {}
     for job in jobs:
         src, kind, keep_alpha = job
-        entry = ledger.get(ledger_key(src, kind, keep_alpha, caps, use_dds))
+        cap = effective_cap(job, caps, job_caps)
+        entry = ledger.get(ledger_key(src, kind, keep_alpha, cap, use_dds))
         stamp = file_stamp(src)
         if not entry or stamp is None or entry.get("stamp") != stamp:
             todo.append(job)

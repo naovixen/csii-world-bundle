@@ -281,8 +281,9 @@ def _texture_file_check(values, bundle, level):
     # `_texture_plan` keeps dimensions, not names, so the names are rebuilt from the same jobs
     predicted = {}
     for job, sizes in zip(_plan_jobs(bundle, values), plan["jobs"]):
-        kind, keep_alpha, width, height, colour = sizes
-        width, height = textureplan.capped_size(width, height, int(caps.get(kind, 0) or 0))
+        kind, keep_alpha, width, height, colour, lod = sizes
+        cap = textureplan.lod_cap(lod, int(caps.get(kind, 0) or 0))
+        width, height = textureplan.capped_size(width, height, cap)
         predicted[textureplan.texture_name(job[0], kind, keep_alpha, True)] = dds_mod.encoded_bytes(
             width, height, textureplan.dxgi_format(kind, keep_alpha, colour in (0, 4))
         )

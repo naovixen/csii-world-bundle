@@ -55,7 +55,7 @@ def shape_job(job):
     geometry, error = _geometry(job, source)
     if error is not None:
         return key, {"error": error}
-    parts, lo, hi, area, materials_used, authored, lod_bias = geometry
+    parts, lo, hi, area, materials_used, authored, lod_bias, material_levels = geometry
     size = hi - lo
     radius = 0.5 * float(numpy.linalg.norm(size))
     detail_scale = shapelods.detail_scale(kind, options)
@@ -101,6 +101,7 @@ def shape_job(job):
         thresholds=(game_px, final_null, billboard_px),
         options=options,
         materials_used=materials_used,
+        material_levels=material_levels,
         collider_kind=collider_kind,
         trunk_ratio=trunk_ratio,
         lod_stats=lod_stats,
@@ -118,6 +119,7 @@ def _result(
     thresholds,
     options,
     materials_used,
+    material_levels,
     collider_kind,
     trunk_ratio,
     lod_stats,
@@ -146,6 +148,9 @@ def _result(
         "triangles": written["triangles"],
         "vertices": written["vertices"],
         "materials": sorted(materials_used),
+        # the nearest authored level each material is seen at (0 = LOD 0); the materials stage
+        # caps a texture bound only past LOD 0 by that level's on-screen size
+        "materialLevels": {k: v for k, v in sorted(material_levels.items()) if v > 0},
         "collider": collider_kind,
         "trunkRatio": trunk_ratio,
         "lods": lod_stats,
@@ -204,17 +209,22 @@ def _geometry(job, source):
         return None, f"{source}: every node was empty"
     if job.kind == "tree" and job.options["tree_wind"]:
         parts = with_wind_colours(parts)
-    # the game's own coarser levels, in order, each as the parts a mesh is merged from
+    # the game's own coarser levels, in order, each as the parts a mesh is merged from; a
+    # material bound ONLY by a level records the nearest level it is seen at, so the materials
+    # stage can size its textures for that distance
     authored = []
+    material_levels = dict.fromkeys(materials_used, 0)
     for level in sorted(lod_nodes):
         lod_parts, l_lo, l_hi, _area, used = collect_parts(
             lod_nodes[level], job.aliases, job.tinted, job.level_name
         )
         if not lod_parts:
             continue
+        for name in used:
+            material_levels[name] = min(material_levels.get(name, level), level)
         materials_used |= used
         authored.append((level, lod_parts, l_hi - l_lo))
-    return (parts, lo, hi, area, materials_used, authored, lod_bias), None
+    return (parts, lo, hi, area, materials_used, authored, lod_bias, material_levels), None
 
 
 def _trunk_ratio(collider_kind, colliders, base_mesh):

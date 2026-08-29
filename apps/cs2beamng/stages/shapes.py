@@ -216,8 +216,15 @@ def run(ctx, progress):
     shared = ctx.shared if ctx.shared is not None else {}
     used = shared.setdefault("materials_used", set())
     variant_used = shared.setdefault("materials_variants_used", {})
+    material_level = shared.setdefault("materials_lod_level", {})
     for value in results.values():
         used.update(value["materials"])
+        # a material's level is the NEAREST any shape shows it at: bound by one shape's LOD 0,
+        # it is a LOD 0 material whatever another shape's chain does with it
+        levels = value.get("materialLevels") or {}
+        for name in value["materials"]:
+            level = int(levels.get(name, 0))
+            material_level[name] = min(material_level.get(name, level), level)
         key = value.get("variantKey")
         if key:
             # recorded under the key the shape BOUND (`_material_tables`), which for a variant
@@ -360,6 +367,6 @@ STAGE = Stage(
     inputs=INPUTS,
     settings_keys=SETTINGS,
     outputs=OUTPUTS,
-    shared_keys=("shapes", "materials_used", "materials_variants_used"),
+    shared_keys=("shapes", "materials_used", "materials_variants_used", "materials_lod_level"),
     version=13,
 )

@@ -159,6 +159,10 @@ def _parse_glb_unguarded(path):
                 return None
             attrs = prim.get("attributes", {})
             if not {"POSITION", "NORMAL"} <= set(attrs):
+                # an authored level without normals is the game's impostor card; the node walk
+                # below leaves it out rather than the file (a level-0 node still refuses)
+                if lod_level(mesh.get("name") or "")[1] > 0:
+                    continue
                 return None
             if set(attrs) - KNOWN_ATTRIBUTES:
                 return None  # COLOR_0 or anything exotic
@@ -272,6 +276,15 @@ def _parse_glb_unguarded(path):
         # accessors once per unique POSITION accessor, keyed by its index, handles both that
         # case and the "each primitive has its own buffer" case uniformly — the latter is just
         # every POSITION accessor index happening to be unique.
+        # A level-n node without normals or UVs is the game's IMPOSTOR level — a card the
+        # game's own shader textures procedurally (`MeshFlags.Impostor`; every vanilla tree's
+        # LOD 1 is one: POSITION only). Nothing here can draw it, and refusing the whole file
+        # for it dropped 165 tree shapes from the level (2026-08-29). Skip the node; a LEVEL-0
+        # node without them is still the contract violation it always was.
+        if any("NORMAL" not in prim["attributes"] for prim in prims):
+            if lod_level(name)[1] > 0:
+                continue
+            return None
         blocks = {}  # POSITION accessor index -> …
         block_order = []
         for prim in prims:

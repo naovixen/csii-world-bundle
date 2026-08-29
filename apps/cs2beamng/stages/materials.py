@@ -109,12 +109,18 @@ def run(ctx, progress):
         for job in plan["maps"].values():
             jobs.setdefault(job, None)
     job_list = sorted(jobs)
+    job_caps, lod_only = _lod_texture_caps(ctx, plans, caps)
+    if lod_only:
+        progress.log(
+            f"materials: {lod_only} textures are bound only past LOD 0 and export at the level's "
+            f"cap ({', '.join(f'LOD{k} {v}' for k, v in sorted(LOD_TEXTURE_CAPS.items()))})"
+        )
     progress.set_total(len(job_list))
     # What is already on disk from the same source bytes at the same cap: the encoder is the
     # expensive half and `write_bytes_if_changed` only saved the WRITE, so every build re-encoded
     # all 5,684 textures to discover it had nothing to write (2m17s).
     ledger = load_ledger(ctx.level_dir)
-    reusable, todo = partition(level, job_list, ledger, caps, use_dds)
+    reusable, todo = partition(level, job_list, ledger, caps, use_dds, job_caps)
     if reusable:
         progress.advance(len(reusable))
         progress.log(
@@ -122,7 +128,7 @@ def run(ctx, progress):
             f"and format all the same) - not re-encoded"
         )
     exported = dict(reusable)
-    exported.update(export_all(level, todo, caps, ctx.jobs, progress, use_dds))
+    exported.update(export_all(level, todo, caps, ctx.jobs, progress, use_dds, job_caps))
     missing = sum(1 for v in exported.values() if v is None)
     # art/textures/ is kept across builds so unchanged textures keep their mtime (BeamNG's cooked
     # cache is keyed on it); what this build did not export is an orphan and is swept at the END
@@ -219,7 +225,7 @@ def run(ctx, progress):
     level.write_materials("cs2", out)
     # NOW the orphan sweep: `keep` is everything this build exported, the area surfaces included.
     exported.update(area_exported)
-    save_ledger(ctx.level_dir, exported, caps, use_dds)
+    save_ledger(ctx.level_dir, exported, caps, use_dds, job_caps)
     keep |= {os.path.basename(v) for v in area_exported.values() if v}
     orphans = _sweep_orphans(level, keep)
     progress.end(
@@ -238,6 +244,8 @@ def run(ctx, progress):
         "texturesMissing": missing,
         "orphanTexturesRemoved": orphans,
         "textureCaps": caps,
+        "texturesLodOnly": lod_only,
+        "textureCapsLod": LOD_TEXTURE_CAPS,
         "textureBytes": _texture_bytes(level),
         "format": "dds" if use_dds else "png",
         "approximations": {
@@ -274,6 +282,32 @@ def run(ctx, progress):
 # binding changed nothing, and rejected the cases where it would have been wrong — it did no useful
 # work, and it read every mask off disk to decide that.
 # The bake stopped splitting the channel; BeamNG's own default AO is 1, which is the right answer.
+
+
+# the LOD caps live with the texture plan (`beamng.textureplan.LOD_TEXTURE_CAPS`): the cost
+# meter sizes by the same rule before a shape exists
+LOD_TEXTURE_CAPS = textureplan.LOD_TEXTURE_CAPS
+
+
+def _lod_texture_caps(ctx, plans, caps):
+    """`({job: cap}, count)`: a tighter cap for every texture job bound only past LOD 0, at the
+    NEAREST level any material binding it is seen — LOD 0 anywhere wins, and the cap never
+    exceeds the kind's own."""
+    levels = (ctx.shared or {}).get("materials_lod_level") or {}
+    nearest = {}
+    for name, plan in plans.items():
+        level = int(levels.get(name, 0))
+        for job in plan.values():
+            nearest[job] = min(nearest.get(job, level), level)
+    job_caps = {}
+    for job, level in nearest.items():
+        if level <= 0:
+            continue
+        kind_cap = int(caps.get(job[1], 0) or 0)
+        cap = textureplan.lod_cap(level, kind_cap)
+        if cap != kind_cap:
+            job_caps[job] = cap
+    return job_caps, len(job_caps)
 
 
 def _variant_plans(ctx, materials, plans):
@@ -375,7 +409,7 @@ def _area_texture(level, ctx, rel, kind, caps, cache, use_dds, ledger, exported)
     if job in exported:
         return exported[job]
     cap = int(caps.get(kind, 0) or 0)
-    entry = ledger.get(ledger_key(src, kind, False, caps, use_dds))
+    entry = ledger.get(ledger_key(src, kind, False, int(caps.get(kind, 0) or 0), use_dds))
     stamp = file_stamp(src)
     name = textureplan.texture_name(src, kind, False, use_dds)
     if (
