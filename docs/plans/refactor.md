@@ -922,7 +922,7 @@ Each phase records here what landed and what it found, so this document stays th
 | 3 — One stage framework | **DONE** 2026-08-27 — 7 of 8 parallel blocks unified; the record merge refused, with reasons |
 | 4 — Split `csiibundle` and `tools/` | **DONE** 2026-08-29 — the last two test files split; three single-file exceptions declared |
 | 5 — The app and its UI | **DONE** 2026-08-28, in-game look accepted — see below |
-| 6 — The Blender adapter | **DONE** 2026-08-29 — in-Blender look owed; see below |
+| 6 — The Blender adapter | **DONE** 2026-08-29, **in-Blender look accepted** — see below |
 | 7 — One rip-stage framework | **DONE** 2026-08-29, **re-rip verified** — three items deliberately deferred with reasons; see below |
 | 8 — The IO writer layer | **DONE** 2026-08-29, **re-rip verified** — one declared byte change; see below |
 | 9 — Split the rip systems | **DONE** 2026-08-29, **re-rip verified** — `AreaRipSystem` refused with reasons; see below |
@@ -1526,8 +1526,9 @@ ground check, ter, spawn points, and the residency bytes to the decimal (3,482.6
 790.1 MiB texture = 4,272.7 MiB). `cs2beamng budget` is **byte-identical** to the baseline
 capture. `check_instances_vs_game` on the rebuilt level: 100 % on every exact question over
 800 sampled records, 15,697 TSStatic colorSets and 892,332 forest paints. The fresh report is
-`docs/baselines/cs2_city_fine-report-after-phase4a.json`. The in-game look remains owed to
-Naomi before the phase closes.
+`docs/baselines/cs2_city_fine-report-after-phase4a.json`. The in-game look was outstanding
+when this was written; Naomi accepted it on 2026-08-28, which is what this section's heading
+records.
 
 **A defect found by the rebuild itself (2026-08-28), fixed as its own commit per Rule 1:**
 `cs2beamng build --settings` read only a FLAT dict and silently applied nothing from the app's
@@ -2201,7 +2202,7 @@ look at the rebuilt level was accepted 2026-08-28**, which closes the Rule-6 gat
 the settings package, the server package, the levelcheck registry and the seven-way shapes split
 are all validated in a running game, not only against a report.
 
-### Phase 6 — DONE 2026-08-29 (in-Blender look owed)
+### Phase 6 — DONE 2026-08-29, in-Blender look accepted 2026-08-29
 
 `tools/blender_import_bundle.py` was **4,465 lines**, the largest file in the repo. It is now
 **138** — a docstring, a `sys.path` bootstrap and `sys.exit(run.main(__doc__))` — over
@@ -2283,9 +2284,17 @@ on `sys.path`" cannot happen: Blender ships its own Python, which has never had 
 go on the path. What changed is that the bootstrap now says why, once. That is the fifth plan
 claim this refactor has checked and found wrong; the plan's numbers remain hypotheses.
 
-**What is owed.** Phase 6's consumer is not a level build, so Rule 6's rebuild does not apply —
-its equivalent is a look in Blender. `E:\carto-out\phase6\phase6_interchange.blend` is the
-refactored adapter's own output over the interchange at 300 m (instances, skirts, terrain,
+**The look, and it is accepted.** Phase 6's consumer is not a level build, so Rule 6's rebuild
+does not apply — its equivalent is a look in Blender. `E:\carto-out\phase6\phase6_interchange.blend`
+is the refactored adapter's own output over the interchange at 300 m (instances, skirts, terrain,
 networks, lanes, areas), with `phase6_interchange.png` beside it. A pre-phase render of the same
 region differs from it by **max=2**, which is the renderer's own noise floor measured on the
 same file rendered twice.
+
+**Naomi opened it in Blender on 2026-08-29 and accepted it.** That closes the phase. It is worth
+being precise about what the acceptance adds, because the two checks answer different questions
+and neither substitutes for the other: `ab_scene.py` proves the refactored adapter builds the
+*same scene* as the pre-phase code — same matrices, same mesh digests, same node graphs — and a
+human look proves that scene is *the right one*. A scene dump cannot notice that the whole
+region is subtly wrong in a way both versions share, and an eye cannot certify 24 modules of
+behaviour preservation. Phase 6 has both.
