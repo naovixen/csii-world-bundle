@@ -81,7 +81,9 @@ def shape_job(job):
     )
     colliders, collider_kind = _colliders(job, shape_name, base_mesh, ladder, lod_stats)
     trunk_ratio = _trunk_ratio(collider_kind, colliders, base_mesh)
-    billboard_px, final_null = _imposter_thresholds(null_px, detail_scale, size, area, options)
+    billboard_px, final_null = _imposter_thresholds(
+        null_px, detail_scale, size, area, options, chain
+    )
     shape = dae.Shape(
         shape_name,
         levels,
@@ -247,12 +249,20 @@ def _trunk_ratio(collider_kind, colliders, base_mesh):
     return round(trunk / canopy, 3) if canopy > 1e-6 else None
 
 
-def _imposter_thresholds(null_px, detail_scale, size, area, options):
+def _imposter_thresholds(null_px, detail_scale, size, area, options, chain=None):
     """`(billboard_px, null_px)` — where a billboard takes over, and where drawing stops.
 
     `gameCullMetres` divided by the declared `lod_detail_scale` is how far THIS level draws the
     mesh; an imposter only earns its atlas past `imposter_min_metres`.
+
+    A shape that ships the game's own LOD chain gets none: CS2 draws its coarsest authored level
+    right up to the cull and has no impostor for it (`RequiredBatchesSystem`), that level is
+    already a few per cent of LOD 0, and a runtime `bb_autobillboard` atlas is the one thing
+    BeamNG builds per shape at play time and never frees. The imposter stays a declared
+    consumer addition for the generated ladder only.
     """
+    if chain is not None:
+        return None, null_px
     reach_m = lod.cull_distance(lod.mesh_min_lod(size, area), options["level_of_detail"]) / max(
         detail_scale, 1e-6
     )

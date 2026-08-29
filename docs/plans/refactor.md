@@ -926,7 +926,7 @@ Each phase records here what landed and what it found, so this document stays th
 | 7 — One rip-stage framework | **DONE** 2026-08-29, **re-rip verified** — three items deliberately deferred with reasons; see below |
 | 8 — The IO writer layer | **DONE** 2026-08-29, **re-rip verified** — one declared byte change; see below |
 | 9 — Split the rip systems | **DONE** 2026-08-29, **re-rip verified** — `AreaRipSystem` refused with reasons; see below |
-| 10 — Performance | **in progress** 2026-08-29 — consumer landed and measured, level rebuilt (awaiting the in-game look), producer built (awaiting the re-rip); see below |
+| 10 — Performance | **in progress** 2026-08-29 — consumer landed and measured, level rebuilt (awaiting the in-game look), producer built (awaiting the re-rip); the LOD chain validated against the game and the draw-distance study written (`phase10-lod-validation-and-draw-distance.md`); see below |
 | 11 — Comment, naming and structure | not started |
 | 12 — Documentation | not started |
 
@@ -2664,3 +2664,37 @@ every building step down through artist-made levels with no holes at the game's 
 The next lever on it is LOD 1's bytes (1.7 GiB raw across the city), which is the a8 plan's P2
 remainder and a look question. `test_estimate_build` sizes by the same LOD caps; 130 fast tests
 green; Carto.Tests 24.
+
+### Phase 10 — the chain validated, the box on the beach, and the draw-distance study, 2026-08-29 (late)
+
+The record is `docs/plans/phase10-lod-validation-and-draw-distance.md`; this is the summary.
+
+* **The authored-chain port is exact against `RequiredBatchesSystem.InitializeBatchGroup`** —
+  sixteen rules, every one a match or a declared gap (the stacked overloads, the game's
+  0.25-second LOD cross-fade that BeamNG cannot do, the per-level shadow LOD, the owner-relative
+  sub-object cull). One approximation is now counted: with the impostor level left out, the level
+  above it inherits the impostor's limit, so our coarsest mesh runs out to where the game would
+  draw its card.
+* **Naomi's "2d square box" is a blank material, not a LOD.** The Alvear tower's LOD 1 binds
+  `TorreAlvear_LOD.001_…` — a Blender suffix in a custom asset — and `dae.sanitize` let the `.`
+  through to the `.dae`, the materials key, `name` and `mapTo` alike; BeamNG drew the level with
+  its placeholder (a 72 × 196 m glossy slab). Exactly one of the level's 8,799 material references
+  failed to resolve, this one. `sanitize` no longer admits `.`. Also on the game's rule: no
+  `bb_autobillboard` on a shape with an authored chain (190 shapes; CS2 draws the coarsest level
+  to the cull and has no impostor for these). **Rebuilt; awaiting the look.**
+* **Torque's detail size is not what every threshold assumes.** `tsShapeInstance.cpp` compares
+  `_a<px>` against `projectRadius × 2 × aspect`, not the projected radius alone: if BeamNG kept
+  it, every switch and cull in every level we have built fires 3.6× (16:9) to 4.8× (21:9) further
+  than the report says, and the 4 km view draws 5.2–7.2 M building triangles rather than 1.8 M.
+  **One in-game measurement settles it** (a house with a known `nulldetail` vanishes at ~520 m
+  under our formula, ~1,860 m under Torque's); the fix, if needed, is one declared constant.
+* **Raising `view_distance` alone buys nothing** (4 → 14 km: +0.4 M triangles; the ladders have
+  culled the horizon), and letting the coarsest authored level run to CS2's own cull costs
+  +3.5 M triangles and 15,000 whole-shape statics. The way to see the map from the other side is
+  a **far ring** — one merged silhouette mesh per 256–512 m cell (prisms or ≤ 50-triangle
+  proxies, `lod_vertcol`), starting where each building's own cull stops — plus a landmark ring;
+  ~0.1–0.4 M triangles and ~60 draw calls for the whole map. Lua distance culling, zones and
+  occlusion volumes were assessed and declined (they duplicate what Torque already does per shape,
+  with no game counterpart). Ranked list in the record's §4.5; the budget instrument's forest
+  blind spot is item 2.
+

@@ -80,8 +80,16 @@ class Shape:
 
 
 def sanitize(name):
-    """A COLLADA id / BeamNG material name: letters, digits, `_`, `-`, `.`."""
-    out = re.sub(r"[^A-Za-z0-9_.\-]", "_", str(name))
+    """A COLLADA id / BeamNG material name: letters, digits, `_`, `-`.
+
+    No `.`: a BeamNG material is a named SimObject, and the level built 2026-08-29 shipped
+    `cs2_city_fine_TorreAlvear_LOD.001_3e4b…` — a custom asset's Blender-suffixed LOD material —
+    as both the `.dae` material and the `materials.json` entry, byte-identical, and the tower's
+    LOD 1 still drew as the engine's blank placeholder (a 72 × 196 m white slab, Naomi's
+    "2d square box"). The name is used by the shape and the materials file through this one
+    function, so both sides change together.
+    """
+    out = re.sub(r"[^A-Za-z0-9_\-]", "_", str(name))
     return out or "m"
 
 
