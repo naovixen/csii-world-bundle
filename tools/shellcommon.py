@@ -1,6 +1,7 @@
-"""Shared tally and environment for the A0 app-shell gate's three files.
+"""Shared tally, environment and fixtures for the A0 app-shell gate's five files.
 
-The A0 gate is `test_app_shell.py` (settings, runner, server, headless),
+The A0 gate is `test_app_shell.py` (the runner and the headless CLI), `test_app_server.py`
+(the HTTP shell), `test_app_prose.py` (the words the app shows a person),
 `test_app_incremental.py` (the A4 incremental build) and `test_app_features.py` (the frozen
 build, the mod installer, the map, the product tables). Each file is its own pytest gate and
 its own script; `run_gate` is the harness they share — a scratch home, the stub-stage hook,
@@ -10,6 +11,7 @@ the tally, and the cleanup of what a real-stage build leaves in the example bund
 import os
 import shutil
 import tempfile
+import time
 import traceback
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -50,3 +52,27 @@ def run_gate(body):
             print("  FAIL:", f)
         return 1
     return 0
+
+
+def wait_until(pred, timeout, step=0.05):
+    t0 = time.monotonic()
+    while time.monotonic() - t0 < timeout:
+        if pred():
+            return time.monotonic() - t0
+        time.sleep(step)
+    return None
+
+
+def stub_settings(tmp, mode):
+    from cs2beamng import settings as settings_mod
+
+    values = settings_mod.defaults()
+    values.update(
+        {
+            "bundle": EXAMPLE,
+            "output": os.path.join(tmp, "levels"),
+            "level_name": "stub_" + mode,
+            "stub_mode": mode,
+        }
+    )
+    return values

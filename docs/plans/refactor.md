@@ -920,7 +920,7 @@ Each phase records here what landed and what it found, so this document stays th
 | 1 — The three defects | **DONE** 2026-08-21, in-game look verified 2026-08-27 |
 | 2 — One implementation of every shared rule | **DONE** 2026-08-27, in-game look verified — five of its claims needed correcting; see below |
 | 3 — One stage framework | **DONE** 2026-08-27 — 7 of 8 parallel blocks unified; the record merge refused, with reasons |
-| 4 — Split `csiibundle` and `tools/` | **in progress** — `terrain`, `navgraph`, `colour`, `validate_bundle`, `make_example_bundle` split and validated, `probe_point` refused with reasons; see below |
+| 4 — Split `csiibundle` and `tools/` | **DONE** 2026-08-29 — the last two test files split; three single-file exceptions declared |
 | 5 — The app and its UI | **DONE** 2026-08-28, in-game look accepted — see below |
 | 6 — The Blender adapter | **DONE** 2026-08-29 — in-Blender look owed; see below |
 | 7 — One rip-stage framework | **DONE** 2026-08-29 (built, awaiting in-game re-rip) — three items deliberately deferred with reasons; see below |
@@ -1559,6 +1559,44 @@ under the shrink-only rule. The phase's last gate — Naomi's in-game look at th
 `cs2_city_fine` (second-landing rebuild, verified against after-phase3) — was **accepted
 2026-08-28**, which closes the phase. Phase 5 (the app and its UI) has not been started.
 
+### Phase 4 — closed 2026-08-29
+
+The section above was already marked DONE while the progress table still said "in progress", and
+the table was the one telling the truth: **`tools/test_a3_objects.py` (645) and
+`tools/test_app_shell.py` (1,054) were still over the ceiling.** Phase 4's own third-landing note
+records splitting them "1,315 -> 640" and "1,692 -> 1,036" without saying that both numbers are
+still over 400. Closed now, by splitting each again along the seams it already had:
+
+* **The A3 gate is five files.** `test_a3_frame.py` (the transform — the axis convention, the
+  §4.2a decal lift, and the quaternion the app must NOT renormalise), `test_a3_objects.py` (the
+  shapes and instances stages), `test_a3_scatter.py` (forest, lights, groundcover — grouped
+  because none of them is a `TSStatic`, so each is a layer that fails by being MISSING rather
+  than wrong), plus the existing `test_a3_rules.py` and `test_a3_city.py`. The four fixtures all
+  three now share are public in `a3common`. **21 + 26 + 29 = 76, the count before the split.**
+* **The A0 gate is five files.** `test_app_shell.py` (the runner and the headless CLI),
+  `test_app_server.py` (the HTTP boundary), `test_app_prose.py` (the words the app puts in front
+  of a person), plus the existing `test_app_incremental.py` and `test_app_features.py`.
+  `wait_until` and `stub_settings` moved to `shellcommon`. **48 + 38 + 44 = 130, the count before
+  the split.**
+* **Two 200-line-plus test functions decomposed along their own comments.**
+  `test_settings_metadata` (264) had seven `# --` sections and is seven `_check_*` functions;
+  `test_server` (225) is eight, one per boundary a browser meets in order. `test_forest_path`
+  (63) is three.
+* **`proserules.py`** — the banned words, the cross-references, the working-note phrases and the
+  three problem-finders, out of the gate that runs them. They are the RULE and the gate is the
+  check: a new banned word is a change to what the app may SAY, and it should be readable
+  without reading a test.
+
+**What stays over 400, all declared exceptions Phase 4 already made:** `tools/probe_point.py`
+(759 — the documented way to run it is to paste the whole file into Blender's Scripting tab),
+and the two vs-game probes `check_roadgrade_vs_game.py` (506) and `check_instances_vs_game.py`
+(486), each one linear derivation that reads as a single argument. Every `tools/csiibundle/`
+module is under 400.
+
+Verified: ruff clean and formatted, `check_references` and `check_shadows` clean,
+`check_limits` clean with the allowlist 151 -> 146, and `pytest -m "not slow"` 129 passed
+(125 before — the four new files).
+
 ### Phase 9 — DONE 2026-08-29 (built, awaiting in-game re-rip)
 
 **Landed**
@@ -1995,8 +2033,16 @@ import (ruff's F823 catches only some shapes of it; this phase produced seven), 
 
 ### Phase 5 — DONE 2026-08-28
 
-Every `apps/cs2beamng` file is under the 400-line ceiling and every function in the app is under
-60. The allowlist went **222 -> 187**; what remains on it is the C# producer (Phases 7-9), the
+Every function in the app is under 60, and every file the phase named is split. The allowlist
+went **222 -> 187**;
+
+**Corrected 2026-08-29:** this paragraph used to open "every `apps/cs2beamng` file is under the
+400-line ceiling". It is not: five sit in the 403-460 band and are still allowlisted —
+`stages/materials.py` (460), `beamng/budget.py` (419), `stages/lights.py` (413),
+`pipeline/state.py` (412), `stages/instances.py` (403). They were that size when the phase
+closed, so the claim was wrong when it was written rather than having drifted since. Found while
+closing Phase 4, by reading the allowlist instead of the record.
+ what remains on it is the C# producer (Phases 7-9), the
 Blender adapter (Phase 6), and the exceptions Phase 4 declared. Twenty-four commits, seven of
 which are defects found on the way and fixed as their own commit per Rule 1.
 

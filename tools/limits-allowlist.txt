@@ -13,8 +13,6 @@ file apps/cs2beamng/stages/materials.py
 file tools/check_instances_vs_game.py
 file tools/check_roadgrade_vs_game.py
 file tools/probe_point.py
-file tools/test_a3_objects.py
-file tools/test_app_shell.py
 func IO/BaseSkirtBuilder::Build
 func IO/BaseSkirtBuilder::CollectBaseLines
 func IO/BaseSkirtBuilder::ResolveDistances
@@ -140,12 +138,9 @@ func tools/measure_paint_factor.py::measure
 func tools/shoot_ui.py::main
 func tools/test_a1_level.py::test_water_bands
 func tools/test_a2_dae.py::test_split
-func tools/test_a3_objects.py::test_forest_path
 func tools/test_a3_objects.py::test_shapes_and_instances
 func tools/test_app_shell.py::test_runner
-func tools/test_app_shell.py::test_server
 func tools/test_app_shell.py::test_settings
-func tools/test_app_shell.py::test_settings_metadata
 func tools/test_b1_readers.py::example_bundle
 func tools/test_bake_manifest.py::main
 func tools/test_bake_products.py::example
