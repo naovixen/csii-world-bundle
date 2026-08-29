@@ -925,7 +925,7 @@ Each phase records here what landed and what it found, so this document stays th
 | 6 — The Blender adapter | **DONE** 2026-08-29 — in-Blender look owed; see below |
 | 7 — One rip-stage framework | **DONE** 2026-08-29 (built, awaiting in-game re-rip) — three items deliberately deferred with reasons; see below |
 | 8 — The IO writer layer | **DONE** 2026-08-29 (built, awaiting in-game re-rip) — one declared byte change; see below |
-| 9 — Split the rip systems | **in progress** — both god-methods done 2026-08-29; `AreaRipSystem` and the file splits remain |
+| 9 — Split the rip systems | **DONE** 2026-08-29 (built, awaiting in-game re-rip) — `AreaRipSystem` refused with reasons; see below |
 | 10 — Performance | not started |
 | 11 — Comment, naming and structure | not started |
 | 12 — Documentation | not started |
@@ -1559,7 +1559,7 @@ under the shrink-only rule. The phase's last gate — Naomi's in-game look at th
 `cs2_city_fine` (second-landing rebuild, verified against after-phase3) — was **accepted
 2026-08-28**, which closes the phase. Phase 5 (the app and its UI) has not been started.
 
-### Phase 9 — in progress, 2026-08-29
+### Phase 9 — DONE 2026-08-29 (built, awaiting in-game re-rip)
 
 **Landed**
 
@@ -1618,19 +1618,55 @@ is a local becoming a `capture.` field or a guard becoming a parameter.
   probe still accumulates before the vertex is emitted and both before the shading; and the
   roundabout's deliberately-empty branch is still an `else if`, which is what stops a HalfLength
   piece inside a roundabout taking the `Sz *= 2`.
+* ~~The file splits~~ **— done 2026-08-29. Every fork-owned C# file is under 400 lines.** The
+  eleven that were not are now 61: `TerrainRipSystem` 3,547 -> fifteen, `NetworkRipSystem`
+  3,782 across two -> sixteen, `MeshRipSystem` 2,148 -> ten, `MaterialRipSystem` 1,763 -> seven,
+  `InstanceRipSystem` 1,717 -> eight, plus `RipOrchestratorSystem`, `LaneRipSystem`,
+  `AppearanceRipSystem`, `GeometryAssetReader`, `GltfWriter`, `GradingWriter` and `BundleWriter`.
+
+  **They are partials, which is what this plan's own rule permits.** "Partial only where ECS
+  demands it" — every group is the ECS surface of one system: `EntityManager` on nearly every
+  line, `EntityQuery` fields only `OnCreate` can build, instance counters the report reads. A
+  collaborator would hold a reference to the system and call back through it, which is
+  indirection rather than separation. The four static IO classes took `partial` for the same
+  reason: one namespace of one concern, split by job. The compiler proves each move — a partial
+  class is one type, so nothing crossed a boundary that did not already exist.
+
+  **The size gate had to change, and it is a fix rather than an accommodation.** `check_limits`
+  keyed a function's allowlist entry by its FILE; for a C# partial class the file is not part of
+  a member's identity. Under the old key, moving a member between two files of the same class
+  invalidated its entry and needed a new one, which the shrink-only rule forbids — so a pure
+  file split was blocked on decomposing functions it never touched. Members are keyed by TYPE
+  now (`function_key`), so an entry survives exactly the move that does not change the function
+  and no other. Proved by planting a 73-line function in a new partial and watching it report
+  OVER LIMIT with no entry to hide behind. That also makes the `Type.Aspect.cs` naming convention
+  load-bearing rather than aspirational: eight IO partials first named for their aspect alone
+  (`BundleScan.cs`, `GradingVolumes.cs`) orphaned their entries and were renamed
+  (`BundleWriter.Scan.cs`, `GradingWriter.Volumes.cs`).
+
+* ~~`Fit()` out of `Settings.cs`~~ **— done.** It is `RipReport.Fit`, beside the only other
+  thing answering the same question, with its bilingual comment rewritten to English (fork code
+  is English-only; the EN/中文 style is upstream Carto's).
+
+**Refused, with reasons:**
+
 * **The `AreaRipSystem` extraction.** `RipSurfaceAreas`, `RipDistricts` and `CatalogueAreaPrefab`
-  are ~570 lines that have nothing to do with terrain, but they are not free-standing: two
+  are ~570 lines with nothing to do with terrain — they are `TerrainRipSystem.Areas.cs` and
+  `.AreaPrefabs.cs` now, and each says so in its summary. They are not free-standing: two
   `EntityQuery` fields built in `OnCreate`, and `_pendingAreaTextures`, which the area catalogue
-  fills and the TERRAIN writer task drains. A separate `GameSystemBase` changes system
-  registration and needs its own writer task or a hand-back; that is a design change, not a move.
-  `RipAreaLayers` now names the seam and says so in its own comment.
-* **The file splits** — `TerrainRipSystem.cs` (3,380), `MeshRipSystem.cs` (2,390),
-  `NetworkRipSystem.cs` (2,367) + `.GameMesh.cs` (1,348), `InstanceRipSystem.cs`,
-  `MaterialRipSystem.cs`, and the nine smaller ones.
-* **The fork logic inside `Settings.cs`.** `Fit()` can move; the six ripper BUTTON HANDLERS
-  cannot, or not cheaply: they are properties, and moving a property to a partial file changes
-  the declaration order the settings load depends on — which is the trap this plan already warns
-  about at `Settings.cs:494`. It needs a way to prove the order is preserved, not just a move.
+  fills and the TERRAIN writer task drains. A separate `GameSystemBase` changes the rip's stage
+  list, its progress reporting and the texture hand-off. That is a design change with a
+  user-visible result, not a move, and Rule 1 forbids folding it into one.
+* **The six ripper button handlers in `Settings.cs`.** They are PROPERTIES, and `Settings.cs:494`
+  records that settings load assigns in declaration order and a master's setter stomps its subs.
+  Moving a property to a partial file changes that order — the compiler emits members in file
+  order and files in compilation order. Doing it safely needs a way to PROVE the order survived,
+  which is a test that does not exist and cannot be written from this side (it is a game-load
+  behaviour). The next pass starts on that test, not on the move.
+* **141 functions are still over 60 lines**, all allowlisted and all pre-existing. The two the
+  plan named — `RipTerrain` and `BuildGameComposition` — are done; the rest are the ported
+  generator's own long bodies and the stage `Finish`/`Capture` methods, and each is its own
+  reading job rather than a move.
 
 ### Phase 8 — DONE 2026-08-29 (built, awaiting in-game re-rip)
 
