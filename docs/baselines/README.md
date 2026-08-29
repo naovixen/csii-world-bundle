@@ -103,10 +103,94 @@ parameter that made `DescribeComponents` shareable. No geometry code (`GeometryA
 `BaseSkirtBuilder`, the sub-mesh state walk) is touched by any of the four. And an assetId change
 would rename a file, not refill one byte-for-byte the same size.
 
-**It cannot be settled from here**: the 08-20 bundle held only these hashes, not the bytes, and
+**CLOSED by the 2026-08-29 rip** — see below: all six files came back bit-identical
+to 08-20, which rules out both the save and every producer commit. The reasoning that
+follows was written before that result and is kept as the record of what was suspected.
+
+**It could not be settled at the time**: the 08-20 bundle held only these hashes, not the bytes, and
 the rip overwrote the files. The cheap experiment is the *next* rip — if these three change again
 with no producer change and no play between them, the mesh rip is non-deterministic (see the
 "rip residency is intermittent" note); if they hold, the save explained them after all.
+
+## 2026-08-29: Phases 7-9 ripped, and the three meshes explained
+
+`bundle-2026-08-29.json` covers the seven producer commits of Phases 7, 8 and 9 — including the
+decomposition of `BuildGameComposition`, the repo's longest method. Ripped **14:46:21-15:14:33**
+(28 min 12 s), ten stages, **zero failures and zero exceptions**, `validate_bundle.py` **VALID
+with one warning** (the same advisory-`parent` warning the golden and the 08-27 rip carried).
+17,016 files, 5.53 GB.
+
+The mod is provably the refactored code: `Carto.dll` is stamped **2026-08-29 02:22**, one minute
+after the last producer commit `d5efc52` (02:21), and no file under `Systems/ IO/` or
+`Settings.cs` has an mtime after that stamp.
+
+**Every deduped count is identical to 2026-08-27** — meshes 5,792, materials 4,784, textures
+3,729, clipVolumes 49,730, networkSegments 8,259, warnings 210, districts 0. Only the four
+save-driven layers moved: areas +11, instances +505, laneGeometry +10, lanes +313.
+
+**Not one file changed that the control pair did not also change, except the one declared.** Of
+the 13 root files that differ from 08-27, 12 are exactly the 12 that differ between 08-20 and
+08-27 — the set that moves every rip. The 13th is `laneprefabs.json`, 26,364 → 58,572 bytes:
+Phase 8's declared indentation change, and nothing else. It parses, and holds the same 85 prefabs
+the stage reports. `meshes/` changed the same six files as the control; `terrain/` the same four.
+
+### The three prefab meshes — CLOSED
+
+The open item above asked for exactly this experiment, and it answered: **all six files came back
+bit-identical to 2026-08-20.**
+
+| file | 08-20 | 08-27 | 08-29 |
+| --- | --- | --- | --- |
+| `IndustrialManufacturingDecoration03_1x3_Oil.glb` | `2adfdf70` | `57981873` | **`2adfdf70`** |
+| `…_Oil__base.glb` | 12,932 B `a059f972` | 11,972 B `ea7b87b1` | **12,932 B `a059f972`** |
+| `ShippingContainerPileSmallLow01.glb` | `16a5be76` | `e1ccaaf2` | **`16a5be76`** |
+| `…Low01__base.glb` | 45,960 B `cd2bb337` | 43,368 B `d8c38777` | **45,960 B `cd2bb337`** |
+| `SportParkStandSmall02.glb` | `e824eb68` | `b84ea8ca` | **`e824eb68`** |
+| `…Small02__base.glb` | 23,424 B `d71170e1` | 21,792 B `567ae93c` | **23,424 B `d71170e1`** |
+
+A → B → A, bit-exact. That settles the attribution completely:
+
+* **it is not the save.** The city was played in both intervals and moved monotonically forward.
+  No amount of play restores three meshes to a prior byte-exact state;
+* **it is not any producer commit.** The window 08-20 → 08-29 spans all eleven producer commits
+  of this refactor. Code changes do not undo themselves either;
+* **it is session-dependent non-determinism in the mesh rip, with two observed states** — the
+  same family as the 15 cross-section pieces this run had to read from the geometry asset
+  "because their render-cache buffers were not resident this session" (§42.6), and as the
+  "rip residency is intermittent" note.
+
+Three prefabs out of 4,356 `.glb` written. **What selects the state is still unknown**, and it is
+not worth guessing at: the three are single-node, single-primitive files, so the output structure
+gives nothing away, and the honest next step is to read what `MeshRipSystem` chooses between —
+not to invent a mechanism. Recorded as a standing item, no longer an anomaly.
+
+### The 239 network segments — the save, proven
+
+239 `networks/seg_*.glb` differ at byte-identical size, against 58 in the 08-20 → 08-27 control.
+Four times as many, over the phase that decomposed `BuildGameComposition` — so it was worth
+proving rather than assuming. Three measurements do:
+
+1. **Magnitude does not track the save's size.** The control's save moved thirteen times further
+   (+6,949 instances against +505) for 58 changed segments. Neither number is a function of how
+   much was built — both are a function of *where*.
+2. **The phenomenon pre-exists the refactor in the same shape.** The control changed partial
+   fractions of many assets — 26.3 % of `Large Road Oneway - 7 lanes`, 60 % of `Medium Road -
+   Double Sided Parking` — with the geometry code untouched.
+3. **No code change can produce the pattern.** Of 387 `Gravel Road` segments, 113 changed and 274
+   did not. All 113 are `normal` form, width 8.0, twoway, 2 lanes, 30 km/h — and so are 193 of
+   the unchanged. Those 193 share **every generator input the record carries** with the 113 that
+   moved. A deterministic function of composition cannot emit identical bytes for 193 segments
+   and different bytes for 113 given the same inputs. The only per-segment inputs left are the
+   curve and the ground under it.
+
+The asymmetries agree: the one asset that changed 100 % (`Large Road Oneway - 7 lanes`, 38 of 38)
+is the one whose every instance sits in a single 1.8 km square, and the over-represented types are
+rural (gravel 29 %, `Large Road Asymmetric` 25 %) against urban roads on graded ground
+(`Small Road` 0.9 %, `Alley` 2.4 %). That is terrain conforming re-sampling a heightmap the player
+moved — the mechanism the stage reports (35,461 `LowerBottomToTerrain` pieces, 23,698 vertices
+buried) — not a generator that changed.
+
+`bundle-2026-08-29.json` is the anchor for Phase 10 onward.
 
 ## The Phase-2 rebuild, 2026-08-27
 

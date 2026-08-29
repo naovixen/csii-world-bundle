@@ -923,12 +923,67 @@ Each phase records here what landed and what it found, so this document stays th
 | 4 — Split `csiibundle` and `tools/` | **DONE** 2026-08-29 — the last two test files split; three single-file exceptions declared |
 | 5 — The app and its UI | **DONE** 2026-08-28, in-game look accepted — see below |
 | 6 — The Blender adapter | **DONE** 2026-08-29 — in-Blender look owed; see below |
-| 7 — One rip-stage framework | **DONE** 2026-08-29 (built, awaiting in-game re-rip) — three items deliberately deferred with reasons; see below |
-| 8 — The IO writer layer | **DONE** 2026-08-29 (built, awaiting in-game re-rip) — one declared byte change; see below |
-| 9 — Split the rip systems | **DONE** 2026-08-29 (built, awaiting in-game re-rip) — `AreaRipSystem` refused with reasons; see below |
+| 7 — One rip-stage framework | **DONE** 2026-08-29, **re-rip verified** — three items deliberately deferred with reasons; see below |
+| 8 — The IO writer layer | **DONE** 2026-08-29, **re-rip verified** — one declared byte change; see below |
+| 9 — Split the rip systems | **DONE** 2026-08-29, **re-rip verified** — `AreaRipSystem` refused with reasons; see below |
 | 10 — Performance | not started |
 | 11 — Comment, naming and structure | not started |
 | 12 — Documentation | not started |
+
+### The 2026-08-29 re-rip — Phases 7, 8 and 9 verified
+
+The seven producer commits of Phases 7-9 carried "built, awaiting in-game re-rip". They are now
+ripped, and the result is the cleanest evidence the producer has produced:
+
+* ten stages, **zero failures, zero exceptions** in the whole 28-minute run (14:46 → 15:14);
+* **every deduped count identical** to the 2026-08-27 rip — meshes 5,792, materials 4,784,
+  textures 3,729, clipVolumes 49,730, networkSegments 8,259, warnings 210, districts 0. Only the
+  four save-driven layers moved (areas +11, instances +505, laneGeometry +10, lanes +313);
+* **not one file changed that the control pair did not also change, except the one declared.**
+  Of 13 root files that differ from 2026-08-27, 12 are exactly the 12 that differ between the
+  2026-08-20 and 2026-08-27 rips — the set that moves every rip. The 13th is `laneprefabs.json`,
+  26,364 → 58,572 bytes, which is Phase 8's declared indentation change and nothing else: it
+  parses, and still holds the same 85 prefabs the stage reports. `meshes/` changed the same six
+  files as the control, `terrain/` the same four;
+* both of Phase 8's declared behaviour changes are visible and self-consistent in the log —
+  `Districts: 0 written to districts.jsonl` and `Surface areas: 27156 area(s)` now come off the
+  writer, and both agree exactly with the layer's own record count;
+* the mod is provably the refactored code — `Carto.dll` stamped 2026-08-29 02:22, one minute
+  after the last producer commit `d5efc52` (02:21), with no `Systems/ IO/ Settings.cs` change since.
+
+**The 239 changed `networks/seg_*.glb` are the save, not `BuildGameComposition`.** This was the
+one result worth chasing: 239 segments differ from the previous rip at *byte-identical size*,
+against 58 in the control pair — four times as many, over a phase that decomposed the repo's
+longest method. Three measurements settle it.
+
+1. **The magnitude does not track the save's size.** The control's save moved thirteen times
+   further (+6,949 instances against +505) and changed 58 segments. So neither number is a
+   function of how much was built; both are a function of *where*.
+2. **The phenomenon pre-exists the refactor, in the same shape.** The control changed partial
+   fractions of many assets — including 26.3 % of `Large Road Oneway - 7 lanes` and 60 % of
+   `Medium Road - Double Sided Parking` — with the geometry code untouched.
+3. **A code change cannot produce the observed pattern.** Of 387 `Gravel Road` segments, 113
+   changed and 274 did not. The 113 are *all* `normal` form, width 8.0, twoway, 2 lanes,
+   30 km/h — and so are 193 of the ones that did not change. Those 193 share **every generator
+   input the record carries** with the 113 that moved. A deterministic function of composition
+   cannot emit identical bytes for 193 segments and different bytes for 113 with the same inputs.
+   The only per-segment inputs left are the curve and the ground sampled under it.
+
+The remaining asymmetries all point the same way: the one asset that changed 100 % (`Large Road
+Oneway - 7 lanes`, 38 of 38) is the one whose every instance sits inside a single 1.8 km square,
+and the over-represented types are the rural ones (gravel 29 %, `Large Road Asymmetric` 25 %)
+against the urban ones on graded ground (`Small Road` 0.9 %, `Alley` 2.4 %). That is terrain
+conforming re-sampling a heightmap the player moved — the mechanism the stage already reports
+(35,461 `LowerBottomToTerrain` pieces, 23,698 vertices buried) — not a generator that changed.
+
+**What this rip cannot settle**, and neither could the last one: the same three prefab meshes
+changed again (`IndustrialManufacturingDecoration03_1x3_Oil`, `ShippingContainerPileSmallLow01`,
+`SportParkStandSmall02`, each with its `__base` variant), in both pairs, at *growing* size. They
+changed across a pair with no geometry commits in it, so they are not attributable to this phase
+either; two rips now show it is recurring rather than a one-off. It belongs to the same family as
+the 15 cross-section pieces this run had to read from the geometry asset "because their
+render-cache buffers were not resident this session" — a residency effect, already recorded. It
+stays open, and is now a standing item rather than an anomaly.
 
 ### The 2026-08-27 re-rip — the producer's first evidence
 
@@ -1100,7 +1155,7 @@ plain blocking adds on a bounded(8) queue with zero `IsFaulted` checks and no `F
 abort into — the exact shape `MeshRipSystem.cs:744` documents as wrong. `Advance` also had no
 per-entity try/catch, so one throwing edge took the whole stage and every layer it writes.
 `Enqueue` (TryAdd + fault check), `RipStep` (per-entity catch, counted and reported) and `Fail`
-are all MeshRipSystem's, for MeshRipSystem's reasons. Built, awaiting in-game re-rip.
+are all MeshRipSystem's, for MeshRipSystem's reasons. Verified by the 2026-08-29 re-rip.
 
 **Two of the four items were not what the plan said.** Defect 1 was latent, not live, and the
 `Pump` item below was not a defect at all. That is now three plan claims out of four checked and
@@ -1597,7 +1652,7 @@ Verified: ruff clean and formatted, `check_references` and `check_shadows` clean
 `check_limits` clean with the allowlist 151 -> 146, and `pytest -m "not slow"` 129 passed
 (125 before — the four new files).
 
-### Phase 9 — DONE 2026-08-29 (built, awaiting in-game re-rip)
+### Phase 9 — DONE 2026-08-29, re-rip verified 2026-08-29
 
 **Landed**
 
@@ -1706,7 +1761,7 @@ is a local becoming a `capture.` field or a guard becoming a parameter.
   generator's own long bodies and the stage `Finish`/`Capture` methods, and each is its own
   reading job rather than a move.
 
-### Phase 8 — DONE 2026-08-29 (built, awaiting in-game re-rip)
+### Phase 8 — DONE 2026-08-29, re-rip verified 2026-08-29
 
 **Landed**
 
@@ -1776,7 +1831,7 @@ single idiom for both would be worse. Its write now goes through `JsonFile.Seria
 its own temp-file-and-`File.Replace` swap: a rip interrupted mid-manifest must leave the
 previous `bundle.json` intact rather than half of the new one.
 
-### Phase 7 — DONE 2026-08-29 (built, awaiting in-game re-rip)
+### Phase 7 — DONE 2026-08-29, re-rip verified 2026-08-29
 
 Started out of order, and deliberately: the Phase 1 consumer rebuild is a multi-hour block during
 which the Python tree has to stay still, and the two halves of this repo have independent gates.
