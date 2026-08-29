@@ -2698,3 +2698,19 @@ The record is `docs/plans/phase10-lod-validation-and-draw-distance.md`; this is 
   with no game counterpart). Ranked list in the record's §4.5; the budget instrument's forest
   blind spot is item 2.
 
+### Phase 10 — the far level, the kept landmarks, and the rest of the draw-distance list, 2026-08-30 (built, awaiting the look)
+
+Record: `phase10-lod-validation-and-draw-distance.md` §6. In one change set: every building shape
+carries a **far silhouette level** (`csiibundle.silhouette`: a closed voxel shell of the coarsest
+level, greedily meshed, vertex-coloured, on `lod_vertcol`) from its old null out to CS2's own
+cull (`far_detail_scale`, 1 = the game's) — the skyline from the other side of the map at ~12–80
+triangles a building; `view_distance` 8 km by default (14 km ultra) with `decalBias` scaled to
+it; forest triangles counted by `cs2beamng budget`; `castShadows` off under 3 m
+(`shadow_min_radius`); the LOD-chain worked example pinned in `test_lod_authored`. And the
+baseball ground's missing floodlight platforms turned out to be `forest_rare_type_min` dropping
+large one-off props (249 types, 695 items — cranes, piers, pylons among them); a rare type with
+a shape radius ≥ `forest_rare_keep_radius` (5 m) is kept now. The forest, once the instrument
+could see it, was 9.2 M of the 13.7 M triangles in an 8 km view; on the game's own rule (a tree past
+LOD 0 is an impostor card) every vegetation shape's coarsest level is now BeamNG's `bb_autobillboard`.
+Stage versions: shapes 14, instances 11, scene 4. Numbers on the rebuilt level go in the record.
+

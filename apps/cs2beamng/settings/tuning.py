@@ -153,6 +153,46 @@ TUNING_SETTINGS = (
         unit="items",
     ),
     Setting(
+        key="far_detail_scale",
+        default=1.0,
+        kind="float",
+        label="Silhouette reach",
+        blurb="How far a building's far silhouette is drawn, as a multiple of CS2's own reach.",
+        help="A building's far silhouette runs to CS2's own cull distance times this; 0 disables it",
+        detail="Past its detailed levels a building is drawn as a closed, blocky outline in its "
+        "own colours, out to the distance the game itself draws it (times this). It is what "
+        "lets you see the skyline from the other side of the map for a few triangles per "
+        "building. 0 draws nothing past the detailed levels, as before.",
+        unit="×",
+    ),
+    Setting(
+        key="forest_rare_keep_radius",
+        default=5.0,
+        kind="float",
+        label="Rare type keep size",
+        blurb="A rare forest type at least this big (bounding radius) is kept whatever the floor says.",
+        help="A rare forest type with a shape radius at or above this is never dropped",
+        detail="The rare-type floor exists to drop the long tail of small one-off props. A "
+        "one-off that is a harbour crane or a stadium floodlight tower is a landmark — a "
+        "city has a few hundred of them, and a floor that drops them empties its skyline. "
+        "Anything this big stays.",
+        unit="m",
+        subset_of="forest_rare_type_min",
+    ),
+    Setting(
+        key="shadow_min_radius",
+        default=3.0,
+        kind="float",
+        label="Smallest shadow caster",
+        blurb="A placed object smaller than this (bounding radius, metres) casts no shadow.",
+        help="TSStatics with a shape radius under this ship castShadows:false; 0 lets everything "
+        "cast",
+        detail="A bin or a bollard's shadow is a few pixels and its shadow-map pass is not. "
+        "CS2's own renderer stops small and sparse things' shadows before their meshes "
+        "(its per-level shadow LOD); BeamNG has only the switch, so this is the switch.",
+        unit="m",
+    ),
+    Setting(
         key="forest_rare_type_min",
         default=10,
         kind="int",

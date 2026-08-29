@@ -252,15 +252,40 @@ def measure(level_dir, view_distance, spawn=None, screen_height=1080.0):
         drawn[shape["group"]] += 1
 
     # -- forest -----------------------------------------------------------------------------
+    # Forest items are drawn by the same pixel rule as a TSStatic (`Forest` calls
+    # `setDetailFromDistance(dist / scale)` per item), so they are counted the same way, per
+    # item against the type's shape ladder. Until refactor Phase 10 (2026-08-30) the forest
+    # was invisible to this table — 900k trees and props, BeamNG's own second slow-scene cause.
     forest_items = 0
     forest_types = 0
     forest_dir = os.path.join(level_dir, "forest")
+    type_shapes = _forest_type_shapes(level_dir, name)
     if os.path.isdir(forest_dir):
         for file_name in os.listdir(forest_dir):
             if not file_name.endswith(".forest4.json"):
                 continue
             with open(os.path.join(forest_dir, file_name), "rb") as handle:
-                forest_items += count_entries(handle.read())
+                raw = handle.read()
+            forest_items += count_entries(raw)
+            for line in raw.decode("utf-8", "replace").splitlines():
+                if not line.strip():
+                    continue
+                try:
+                    item = json.loads(line)
+                except ValueError:
+                    continue
+                shape = shapes.get(type_shapes.get(str(item.get("type"))))
+                if shape is None or shape["levels"] is None:
+                    continue
+                pos = item.get("pos") or [0, 0, 0]
+                distance = math.hypot(float(pos[0]) - spawn_xy[0], float(pos[1]) - spawn_xy[1])
+                if distance > view_distance:
+                    continue
+                radius = (shape.get("radius") or radius_hint("", shape)) * float(item.get("scale") or 1.0)
+                in_view["forest"] += detail_at(
+                    shape["levels"], radius, max(distance, 1.0), screen_height
+                )
+                drawn["forest"] += 1
     for root, _dirs, files in os.walk(os.path.join(level_dir, "art")):
         for file_name in files:
             if file_name.lower().endswith(("forestitemdata.json", "manageditemdata.json")):
@@ -319,6 +344,33 @@ def measure(level_dir, view_distance, spawn=None, screen_height=1080.0):
         # the groups whose `.dae` sources were dropped, so their ladders could not be read
         "unknownLadders": sorted(unknown_ladders),
     }
+
+
+def _forest_type_shapes(level_dir, name):
+    """`{type name: shape rel path}` from every `managedItemData.json` under `art/`."""
+    out = {}
+    for root, _dirs, files in os.walk(os.path.join(level_dir, "art")):
+        for file_name in files:
+            if not file_name.lower().endswith(("forestitemdata.json", "manageditemdata.json")):
+                continue
+            try:
+                with open(os.path.join(root, file_name), encoding="utf-8") as handle:
+                    table = json.load(handle)
+            except (OSError, ValueError):
+                continue
+            rows = table.values() if isinstance(table, dict) else table
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                shape_file = str(row.get("shapeFile") or "")
+                rel = (
+                    shape_file.split(f"/levels/{name}/", 1)[-1]
+                    if f"/levels/{name}/" in shape_file
+                    else None
+                )
+                if rel:
+                    out[str(row.get("name") or row.get("internalName"))] = rel
+    return out
 
 
 def count_entries(raw):

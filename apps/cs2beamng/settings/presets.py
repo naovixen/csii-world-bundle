@@ -44,7 +44,7 @@ PRESETS = {
         "collision_preset": "exact",
         "lod_detail_scale": 3.0,
         "lod_switch_error_px": 4.0,
-        "view_distance": 8000,
+        "view_distance": 14000,
     },
     # 8.0 for `lod_switch_error_px`, not the 6.0 this shipped with until 2026-08-20. `high` is
     # what the defaults are, and the defaults are 8.0 - which is the value the reference city was
@@ -72,7 +72,7 @@ PRESETS = {
         "collision_preset": "simplified",
         "lod_detail_scale": 6.0,
         "lod_switch_error_px": 8.0,
-        "view_distance": 4000,
+        "view_distance": 8000,
     },
     # Everything `high` ships, plus the knobs that cost residency rather than geometry — see
     # `docs/cs2-api-audit.md` §64 and §65. The two texture caps came down to 256 in A6.0: at 512
@@ -106,7 +106,7 @@ PRESETS = {
         "lod_detail_scale": 10.0,
         "lod_detail_scale_prop": 4.0,
         "lod_switch_error_px": 8.0,
-        "view_distance": 4000,
+        "view_distance": 6000,
     },
     "medium": {
         "foliage_density": 60,
@@ -154,6 +154,7 @@ PRESETS = {
         "collision_preset": "simplified",
         "lod_detail_scale": 16.0,
         "lod_switch_error_px": 20.0,
+        "far_detail_scale": 0.0,
         "markings": True,
         "areas": False,
         "skirts": False,

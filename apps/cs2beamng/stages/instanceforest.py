@@ -68,9 +68,17 @@ FOREST_COLLIDABLE_MIN_FOOTPRINT = 0.8
 # -- the forest files --------------------------------------------------------------------------
 
 
-def drop_rare_types(forest_dir, types, type_source, item_counts, min_items):
-    """Drop every forest type placed fewer than `min_items` times. In place; returns
-    `{"types", "items", "heaviest"}`.
+def drop_rare_types(
+    forest_dir, types, type_source, item_counts, min_items, results=None, keep_radius=0.0
+):
+    """Drop every forest type placed fewer than `min_items` times — unless its shape's bounding
+    radius is at least `keep_radius` metres. In place; returns `{"types", "items", "heaviest",
+    "keptLarge"}`.
+
+    The keep: the floor exists to shed the long tail of small one-off props, and the 2026-08-29
+    build shed 249 large ones with it (695 items) — three harbour cranes, the marina piers, the
+    57 m pylons, the baseball ground's floodlight platforms. A one-off that size is a landmark.
+    `results` is the shapes stage's rows (`radius` per shape); with none, nothing is kept.
 
     A `TSForestItemData` mounts its shape whole — LOD chain, materials, collision — for one
     item or ten thousand, and MEASURED on the reference city 1,807 of 3,118 types existed to
@@ -83,11 +91,18 @@ def drop_rare_types(forest_dir, types, type_source, item_counts, min_items):
     """
     dropped_types = dropped_items = 0
     heaviest = []
+    kept = {"types": 0, "items": 0}
     if min_items <= 0:
-        return {"types": 0, "items": 0, "heaviest": heaviest}
+        return {"types": 0, "items": 0, "heaviest": heaviest, "keptLarge": kept}
     for name in sorted(types):
         count = int(item_counts.get(name, 0))
         if count >= min_items:
+            continue
+        source = type_source.get(name)
+        row = (results or {}).get(source) if source else None
+        if keep_radius > 0.0 and row is not None and float(row.get("radius") or 0.0) >= keep_radius:
+            kept["types"] += 1
+            kept["items"] += count
             continue
         try:
             os.remove(os.path.join(forest_dir, name + ".forest4.json"))
@@ -104,6 +119,7 @@ def drop_rare_types(forest_dir, types, type_source, item_counts, min_items):
         "types": dropped_types,
         "items": dropped_items,
         "heaviest": [{"type": n, "items": c, "bytes": b} for b, n, c in heaviest[:10]],
+        "keptLarge": kept,
     }
 
 

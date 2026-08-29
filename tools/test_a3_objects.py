@@ -23,6 +23,7 @@ Checks, in the order the build runs them:
 """
 
 import json
+import math
 import os
 import shutil
 import sys
@@ -68,7 +69,7 @@ def test_shapes_and_instances():
         )
         for kind, row in report["drawDistance"].items():
             check(
-                row["gameCullMedian"] > row["ourCullMedian"],
+                row["gameCullMedian"] >= row["ourCullMedian"],  # equal: the far level, rounded up
                 f"{kind}: CS2 draws to {row['gameCullMedian']:,.0f} m, this level to "
                 f"{row['ourCullMedian']:,.0f} m",
             )
@@ -134,10 +135,21 @@ def test_shapes_and_instances():
         expected = max(
             1, round(scaled / shapelods.IMPOSTER_REACH if row.get("billboardPx") else scaled)
         )
+        far = (row.get("lods") or {}).get("far")
+        if far:
+            # refactor Phase 10 (2026-08-30): a building's far silhouette runs to the game's own
+            # cull (`far_detail_scale` 1), rounded up so it never draws past it, and the old null
+            # is where the silhouette starts
+            expected = max(1, math.ceil(row["gamePx"] * 1.0))
+            check(
+                abs(far["px"] - max(1, round(scaled))) <= 1,
+                f"the far silhouette starts at the game's {row['gamePx']:.2f} px x 6",
+            )
         check(
             abs(row["nullPx"] - expected) <= 1,
-            f"the null threshold is the game's {row['gamePx']:.2f} px x 6"
-            f"{' / imposter reach' if row.get('billboardPx') else ' (no imposter)'}",
+            f"the null threshold is the game's {row['gamePx']:.2f} px"
+            + (" (far silhouette, x1)" if far else
+               f" x 6{' / imposter reach' if row.get('billboardPx') else ' (no imposter)'}"),
         )
 
         # -- placement

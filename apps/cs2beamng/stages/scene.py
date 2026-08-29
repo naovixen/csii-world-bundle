@@ -75,6 +75,12 @@ def run(ctx, progress):
             "canvasClearColor": "black",
             "enabled": "1",
             "visibleDistance": view,
+            # BeamNG: "NearPlane bias used when rendering Decal and DecalRoad. This should be
+            # tuned to the visibleDistance in your level" — documented default 0.0005 at the
+            # documented default 2000 m. DECLARED APPROXIMATION: scaled linearly from that pair
+            # (the docs give no formula); the navgraph DecalRoads are invisible, so it only ever
+            # shows on a decal somebody adds.
+            "decalBias": round(0.0005 * view / 2000.0, 7),
             "fogDensity": round(fog_density, 7),
             "fogAtmosphereHeight": round(min(fog_height, 3000.0), 1),
             "fogColor": fog_color,
@@ -336,6 +342,7 @@ OUTPUTS = ("info.json",)
 # version 2: the spawn sphere's `rotationMatrix` goes through `frame.basis_flat` like every other
 # SceneObject - it was flattened row-major, so the car spawned facing the mirror of the lane it
 # was placed on (A6.8)
+# version 4: `decalBias` scales with `view_distance`
 # version 3: the built hour is published to `shared["scene"]`, because the `lights` stage has to
 # say whether its night lights can be seen at it (A6.9/D2)
 STAGE = Stage(
@@ -347,5 +354,5 @@ STAGE = Stage(
     inputs=INPUTS,
     settings_keys=SETTINGS,
     outputs=OUTPUTS,
-    version=3,
+    version=4,
 )

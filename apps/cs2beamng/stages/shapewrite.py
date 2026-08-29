@@ -8,15 +8,25 @@ import os
 from dataclasses import dataclass
 from typing import Any
 
+import json
+import math
+
 import numpy
-from csiibundle import glb, lod
+from csiibundle import glb, lod, png, silhouette
 
 from ..beamng import dae, daemesh, placement
 from . import shapecollider, shapelods
 from .shapelods import (
     IMPOSTER_REACH,
 )
-from .shapeparts import collect_parts, split_lod_nodes, with_wind_colours
+from .shapeparts import _bound_material, collect_parts, split_lod_nodes, with_wind_colours
+
+# The untextured vertex-colour material BeamNG ships for a shape's last level (the level_creation
+# docs' `lod_vertcol`): one material, no texture bind, the colour is the vertex's own.
+FAR_MATERIAL = "lod_vertcol"
+# A far level is written only where it would be seen: its start (the shape's own null) has to
+# sit at least this many pixels above the far null, or the band is a rounding.
+FAR_MIN_BAND_PX = 2
 
 # -- writing one shape ---------------------------------------------------------------------------
 
@@ -55,7 +65,7 @@ def shape_job(job):
     geometry, error = _geometry(job, source)
     if error is not None:
         return key, {"error": error}
-    parts, lo, hi, area, materials_used, authored, lod_bias, material_levels = geometry
+    parts, lo, hi, area, materials_used, authored, lod_bias, material_levels, bound_raw = geometry
     size = hi - lo
     radius = 0.5 * float(numpy.linalg.norm(size))
     detail_scale = shapelods.detail_scale(kind, options)
@@ -84,6 +94,10 @@ def shape_job(job):
     billboard_px, final_null = _imposter_thresholds(
         null_px, detail_scale, size, area, options, chain
     )
+    far = _far_level(job, shape_name, ladder[-1], levels, final_null, game_px, bound_raw, lod_stats)
+    if far is not None:
+        levels, final_null = far
+    levels, billboard_px = _vegetation_imposter(job, levels, billboard_px, final_null, lod_stats)
     shape = dae.Shape(
         shape_name,
         levels,
@@ -226,7 +240,21 @@ def _geometry(job, source):
             material_levels[name] = min(material_levels.get(name, level), level)
         materials_used |= used
         authored.append((level, lod_parts, l_hi - l_lo))
-    return (parts, lo, hi, area, materials_used, authored, lod_bias, material_levels), None
+    bound_raw = {}
+    for node in [*base_nodes, *(n for level in lod_nodes.values() for n in level)]:
+        for raw, _count in node["material_runs"]:
+            bound_raw.setdefault(_bound_material(raw, job.aliases, job.tinted, job.level_name), raw)
+    return (
+        parts,
+        lo,
+        hi,
+        area,
+        materials_used,
+        authored,
+        lod_bias,
+        material_levels,
+        bound_raw,
+    ), None
 
 
 def _trunk_ratio(collider_kind, colliders, base_mesh):
@@ -270,3 +298,131 @@ def _imposter_thresholds(null_px, detail_scale, size, area, options, chain=None)
     if not wants_imposter:
         return None, null_px
     return null_px, null_px / IMPOSTER_REACH
+
+
+# -- the far level: the building's silhouette out to the game's own cull ------------------------
+#
+# The map is 14 km across and CS2 draws a house to ~9 km and a tower to the far edge
+# (`levelOfDetail 0.7`: until the rendering size is 1.43 px tall); `lod_detail_scale` culls
+# every shape that many times nearer, which is the pop-in at the horizon. This puts one more
+# level under the ladder — a closed voxel silhouette of the coarsest level (`csiibundle.silhouette`),
+# coloured per face by the material that put the voxel there and drawn with BeamNG's untextured
+# `lod_vertcol` — starting where the shape's own null was and stopping at CS2's own cull times
+# `far_detail_scale` (1 = the game's distance). Buildings only: CS2 culls a prop at ~1 km itself
+# and a tree's far look belongs to the forest. A box is 12 triangles; the shape's `nulldetail`
+# moves out to the game's.
+
+_CATALOGUE = {}
+_ALBEDO = {}
+
+
+def _far_level(job, shape_name, coarsest, levels, final_null, game_px, bound_raw, lod_stats):
+    """`(levels, far_null)` with the silhouette appended, or None when the shape gets none."""
+    scale = float(job.options.get("far_detail_scale") or 0.0)
+    if job.kind != "building" or scale <= 0.0 or not levels:
+        return None
+    # rounded UP: the far level may stop nearer than the game, never further (the same
+    # one-direction rule as the generated ladder)
+    far_null = float(max(1, math.ceil(float(game_px) * scale)))
+    start = min(int(round(final_null)), levels[-1][0] - 1)
+    if start < int(round(far_null)) + FAR_MIN_BAND_PX or start < 2:
+        return None  # the shape already draws to the game's cull, or the band would be a rounding
+    colours, ids = _run_colours(job, coarsest, bound_raw)
+    verts, normals, rgba, tris, stats = silhouette.silhouette(
+        coarsest.verts, coarsest.tris, ids, colours
+    )
+    if len(tris) == 0:
+        return None
+    far_mesh = dae.Mesh(
+        f"{shape_name}_FAR",
+        verts,
+        tris,
+        [(FAR_MATERIAL, len(tris))],
+        normals=normals,
+        uvs=numpy.zeros((len(verts), 2), dtype=numpy.float32),
+        colors=rgba,
+    )
+    lod_stats["far"] = {"px": start, "nullPx": int(round(far_null)), **stats}
+    lod_stats["detailSizes"] = [*lod_stats.get("detailSizes", []), start]
+    lod_stats["triangles"] = [*lod_stats.get("triangles", []), int(len(tris))]
+    return [*levels, (start, [far_mesh])], far_null
+
+
+def _run_colours(job, mesh, bound_raw):
+    """`(palette (K,3), per-triangle ids)` — each material run's mean albedo, in the run order of
+    `mesh.runs`. A variant shape keeps its canonical material's colour (DECLARED: the silhouette is
+    seen at 20 px; the tint is a hue on a box)."""
+    palette, ids = [], []
+    for bound, count in mesh.runs:
+        raw = bound_raw.get(bound, bound)
+        canonical = job.aliases.get(raw, raw)
+        palette.append(_mean_albedo(job.bundle, job.derived_dir, canonical))
+        ids.extend([len(palette) - 1] * int(count))
+    if not palette:
+        palette.append([0.6, 0.6, 0.6])
+    return numpy.asarray(palette, dtype=numpy.float64), numpy.asarray(ids, dtype=numpy.int64)
+
+
+def _mean_albedo(bundle_dir, derived_dir, canonical):
+    """The mean of a material's base-colour texels (alpha-weighted) times its factor, 0..1 sRGB;
+    mid grey when the material has no texture. Cached per worker."""
+    catalogue = _CATALOGUE.get(derived_dir)
+    if catalogue is None:
+        path = os.path.join(derived_dir, "materials.json")
+        try:
+            with open(path, encoding="utf-8") as handle:
+                catalogue = json.load(handle).get("materials") or {}
+        except (OSError, ValueError):
+            catalogue = {}
+        _CATALOGUE[derived_dir] = catalogue
+    entry = catalogue.get(canonical) or {}
+    factor = entry.get("baseColorFactor") or [1.0, 1.0, 1.0, 1.0]
+    rel = entry.get("baseColor")
+    mean = numpy.array([0.6, 0.6, 0.6])
+    if rel:
+        key = (bundle_dir, rel)
+        if key not in _ALBEDO:
+            try:
+                img = png.rgba_array(os.path.join(bundle_dir, rel)).astype(numpy.float64)
+                alpha = img[..., 3:4] / 255.0
+                weight = float(alpha.sum())
+                _ALBEDO[key] = (
+                    (img[..., :3] * alpha).sum(axis=(0, 1)) / (255.0 * weight)
+                    if weight > 0.0
+                    else mean
+                )
+            except Exception:  # noqa: BLE001 - an unreadable texture is mid grey
+                _ALBEDO[key] = mean
+        mean = _ALBEDO[key]
+    return [float(min(1.0, max(0.0, mean[i] * float(factor[i])))) for i in range(3)]
+
+
+# -- vegetation: the game's own far level for a tree is a CARD ---------------------------------
+#
+# Every vanilla tree's authored LOD 1 is `MeshFlags.Impostor` — a POSITION-only card the game's
+# shader textures from a baked atlas (the producer counts and skips them; the parser refuses a
+# node without normals). So past its LOD 0 the game draws a tree as a billboard, and that is the
+# rule to port: BeamNG's `bb_autobillboard` is the same mechanism (an atlas rendered once per
+# shape, batched per forest cell — `TSForestCellBatch` exists only for shapes with a billboard
+# detail). It takes over where the generated ladder's coarsest level did, which on the reference
+# city is where 9.2 M of the 13.7 M triangles inside an 8 km view were: 892,000 forest items at
+# their 6 % level. Vanilla ships it on 82 of west_coast_usa's 2,608 shapes and every one of them
+# is vegetation; ours goes on the 292 vegetation shapes, not on buildings (§1 of the record).
+
+
+def _vegetation_imposter(job, levels, billboard_px, final_null, lod_stats):
+    """`(levels, billboard_px)`: a vegetation shape's coarsest generated level replaced by the
+    engine billboard at the same switch size; anything else unchanged."""
+    if job.kind != "tree" or not job.options.get("imposters", True) or len(levels) < 2:
+        return levels, billboard_px
+    px = int(levels[-1][0])
+    if px <= int(round(final_null)) + 1:
+        return levels, billboard_px
+    lod_stats["imposter"] = {
+        "px": px,
+        "replacedTriangles": int(sum(len(m.tris) for m in levels[-1][1])),
+    }
+    lod_stats["levels"] = len(levels) - 1
+    lod_stats["detailSizes"] = [size for size, _ms in levels[:-1]]
+    lod_stats["triangles"] = lod_stats.get("triangles", [])[: len(levels) - 1]
+    return levels[:-1], float(px)

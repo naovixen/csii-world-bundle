@@ -123,6 +123,8 @@ def run(ctx, progress):
             if settings.get("lod0_min_triangles") is not None
             else LOD0_MIN_TRIANGLES
         ),
+        # the far silhouette level: CS2's own cull times this; 0 = none (`shapewrite._far_level`)
+        "far_detail_scale": float(settings.get("far_detail_scale", 1.0) or 0.0),
         "collide": _collision_policy(settings),
         # A prefab CS2 gives a photometric light to is a LAMP, and `collision_lights` says
         # whether one is solid. The set is the game's own answer to "is this a lamp" - see the
@@ -326,6 +328,7 @@ SETTINGS = (
     "lod_switch_error_px",
     "lod0_max_error",
     "lod0_min_triangles",
+    "far_detail_scale",
     "tree_wind",
     "collision_preset",
     "collision_buildings",
@@ -335,6 +338,7 @@ SETTINGS = (
 )
 OUTPUTS = ("art/shapes/cs2",)
 
+# version 14: the far silhouette level (`far_detail_scale`), and no billboard on a chain shape
 # version 13: a prefab CS2 gives a photometric light to ships NO collider while `collision_lights`
 # is off - it renders and a car drives through it (audit §88)
 # version 12: ...and that floor is on the count the shape SHIPS, not on LOD 0's. A ratio says
@@ -368,5 +372,5 @@ STAGE = Stage(
     settings_keys=SETTINGS,
     outputs=OUTPUTS,
     shared_keys=("shapes", "materials_used", "materials_variants_used", "materials_lod_level"),
-    version=13,
+    version=14,
 )

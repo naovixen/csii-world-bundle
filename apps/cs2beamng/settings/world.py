@@ -133,7 +133,7 @@ WORLD_SETTINGS = (
     ),
     Setting(
         key="view_distance",
-        default=4000,
+        default=8000,
         kind="int",
         label="How far you can see",
         blurb="The distance in metres past which nothing is drawn. The biggest lever on speed.",

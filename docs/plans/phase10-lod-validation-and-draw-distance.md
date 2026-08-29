@@ -287,3 +287,73 @@ SimGroup, level_creation §5/§8/§11/§12, texture streaming, extensions; forum
 World Partition), Simplygon HLOD/aggregation, DynDOLOD (Object LOD, Performance, Terminology),
 MSFS scenery LOD rules, Nanite (Karis 2021), BlockMap (Cignoni et al.). Full URL lists are in
 the two research transcripts of this session; the claims used here are the ones quoted above.
+
+---
+
+## 6. Built 2026-08-30 — the ranked list, and the stadium
+
+Everything in §4.5 that did not need the in-game measurement, plus the stadium report, in one
+change set (awaiting the rebuild and Naomi's look):
+
+* **The far level (§4.2, revised).** Not a merged cell: BeamNG loads every shape at level load
+  whatever is in view, so a merged ring saved no residency, only draw calls — and a merged cell
+  cannot hand over per building without drawing the proxy inside the still-drawn mesh. Instead
+  **each building shape gets one more detail level**: a closed voxel silhouette of its coarsest
+  level (`csiibundle.silhouette` — occupancy sampled from the triangles, filled from the outside
+  with the ground sealed, exposed faces greedily merged, coloured per face by the material that
+  put the voxel there), on BeamNG's untextured `lod_vertcol`, starting exactly where the
+  shape's own null was and running to **CS2's own cull** × `far_detail_scale` (default 1). The
+  hand-over is per shape and exact, no building is drawn twice, and holes cannot exist (the
+  lattice problem of every decimator). A box is 12 triangles; the Alvear tower 82, the airport
+  20, a 2×2 house 52. Buildings only — CS2 culls a prop at ~1 km itself.
+* **`view_distance`** default and `high` 8,000 m, `ultra` 14,000, `performance` 6,000; `LevelInfo.decalBias`
+  scales with it (declared approximation from the documented 0.0005 @ 2,000 m pair).
+* **Forest triangles are in the budget instrument** (`cs2beamng budget`: per item, the type's
+  ladder at `radius × scale`, the same pixel rule Torque's `Forest` applies).
+* **`castShadows: false` on TSStatics under `shadow_min_radius`** (3 m): CS2's per-level
+  shadow LOD stops small things' shadows first; BeamNG has only the switch.
+* **The worked example** in `tools/test_lod_authored.py`: one chain computed by hand from the
+  decompiled arithmetic (`[138, 132, 100]`), pinned.
+
+**The baseball ground's missing scaffolding / light platforms** (Naomi, 2026-08-30) is the
+rare-forest-type rule, not the rip: `Baseball_Field__2_revised2` is a custom asset whose
+building mesh is a 12-triangle field plane, and everything standing on it is a separate prop —
+`OracleParkSportLightBig` (1 placed), `…Small` (2), `OracleParkScreen` (1), `OracleParkSculpture`
+(1) — all in the bundle, all uniform-scale props, all forest types with fewer than 10 members,
+all dropped by `forest_rare_type_min`. So were 245 other large one-offs (695 items): three
+harbour cranes (117 m radius), the marina piers, the 57 m pylons, the container piles, the
+yachts. **Fixed by `forest_rare_keep_radius`** (default 5 m): a rare type whose shape radius is
+at least that is kept; the small tail (1,576 types) still goes. Counted in the report as
+`forestRareTypesDropped.keptLarge`.
+
+Not done: §2.4's in-game measurement (only Naomi can take it).
+
+**Then the forest, once the instrument could see it** (the first 2026-08-30 rebuild, 8 km view):
+forest **9,197,185** triangles in view over 892,042 items — against buildings 1.93 M, roads 1.6 M,
+areas 0.68 M. The game's own rule for a tree past LOD 0 is a **card** (every vanilla tree's
+authored LOD 1 is `MeshFlags.Impostor`, the level the producer skips), and BeamNG's
+`bb_autobillboard` is the same mechanism, batched per forest cell. So every vegetation shape's
+coarsest generated level is now the engine billboard at the same switch size
+(`shapewrite._vegetation_imposter`): `OakTree01` draws 11,295 triangles to 35 m, 3,013 to 141 m,
+a card to 870 m. 292 shapes get an atlas — vanilla's 82 are all vegetation too — and buildings
+keep none (§1). The budget instrument counts a billboard as no triangles (it is two, batched);
+the forest's remaining cost is its LOD 1 inside 141 m.
+
+**The rebuild, 2026-08-30 01:2x** (`docs/baselines/*-after-phase10-far.*`; 11 m 05 s, all 4,275
+object shapes rewritten and cooked): 1,170 building shapes carry a far silhouette, 244 vegetation
+shapes a billboard, 284 large rare forest types kept (773 items; the stadium's three floodlight
+types among them), 6,973 small statics without shadows, `visibleDistance 8000`. Validator: the
+one residency advisory (5,071 MiB). At 8 km from spawn, `screen_px` terms:
+
+| | first 2026-08-30 build | **this build** |
+| --- | ---: | ---: |
+| forest | 9,197,185 | **1,381,661** |
+| buildings/props (`cs2`) | 1,927,453 | 1,938,355 (+ the silhouettes) |
+| networks / areas / skirts / markings | 1.60 M / 0.68 M / 0.14 M / 0.11 M | unchanged |
+| **all groups** | **13,670,302** | **5,865,680** |
+
+Built with the far null ROUNDED (`round`); the committed code rounds it UP (`ceil`, never past
+the game's cull) after `test_a3_objects` caught a house drawn 24 % past CS2's distance — the
+level on disk draws silhouettes up to one pixel-size further than the next build will.
+**Awaiting Naomi's look.**
+

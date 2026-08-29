@@ -158,8 +158,21 @@ def run(ctx, progress):
                 pending = 0
         else:
             key = _add_static(
-                level, record, name, row, kind, position, rotation, scale, collide, statics
+                level,
+                record,
+                name,
+                row,
+                kind,
+                position,
+                rotation,
+                scale,
+                collide,
+                statics,
+                shadow_min_radius=float(settings.get("shadow_min_radius") or 0.0),
             )
+            if key.endswith(":noShadow"):
+                key = key[: -len(":noShadow")]
+                counts["noShadow"] = counts.get("noShadow", 0) + 1
             collision_types[key] = collision_types.get(key, 0) + 1
             statics += 1
             counts["tsstatic"] += 1
@@ -173,7 +186,13 @@ def run(ctx, progress):
         int(settings.get("forest_min_items") or 0),
     )
     rare = drop_rare_types(
-        forest_dir, types, type_source, item_counts, int(settings.get("forest_rare_type_min") or 0)
+        forest_dir,
+        types,
+        type_source,
+        item_counts,
+        int(settings.get("forest_rare_type_min") or 0),
+        results=results,
+        keep_radius=float(settings.get("forest_rare_keep_radius") or 0.0),
     )
     counts["forest"] -= rare["items"]
     progress.end(
@@ -196,6 +215,7 @@ def run(ctx, progress):
         "forestTypes": len(types),
         "forestRareTypesDropped": rare,
         "tsStatics": counts["tsstatic"],
+        "tsStaticsNoShadow": counts.get("noShadow", 0),
         "forestTypesMerged": merged["types"],
         "forestItemsMerged": merged["items"],
         "forestMinItems": int(settings.get("forest_min_items") or 0),
@@ -323,7 +343,9 @@ def _forest_line(type_name, position, rotation, scale):
     )
 
 
-def _add_static(level, record, name, row, kind, position, rotation, scale, collide, ordinal):
+def _add_static(
+    level, record, name, row, kind, position, rotation, scale, collide, ordinal, shadow_min_radius=0.0
+):
     """One `TSStatic`, with the record's own three `colorSet` channels as `instanceColor*`.
 
     `ordinal` disambiguates the persistentId: a record `id` is unique per LOGICAL object and
@@ -349,9 +371,14 @@ def _add_static(level, record, name, row, kind, position, rotation, scale, colli
     for index, colour in enumerate(colours[:3]):
         key = "instanceColor" if index == 0 else f"instanceColor{index}"
         obj[key] = [round(float(c), 6) for c in colour]
+    # a shape under `shadow_min_radius` casts no shadow — CS2's per-level shadow LOD stops small
+    # things' shadows before their meshes, and BeamNG has only the switch
+    no_shadow = bool(shadow_min_radius > 0.0 and float(row.get("radius") or 0.0) < shadow_min_radius)
+    if no_shadow:
+        obj["castShadows"] = False
     group = _group_of(position)
     level.add(["Objects", group], obj, key=f"instance:{record['id']}:{name}:{ordinal}")
-    return obj["collisionType"]
+    return obj["collisionType"] + (":noShadow" if no_shadow else "")
 
 
 def _group_of(position):
@@ -385,12 +412,16 @@ SETTINGS = (
     "forest_shadows",
     "forest_min_items",
     "forest_rare_type_min",
+    "forest_rare_keep_radius",
+    "shadow_min_radius",
     "foliage_road_clearance",
 )
 OUTPUTS = ("forest",)
 
 # version 4: `forest_min_items` folds a thin colour-variant type into its untinted twin —
 # only into a type this build is already declaring, or the items land on a type BeamNG drops
+# version 11: rare forest types at or above `forest_rare_keep_radius` are kept; TSStatics under
+# `shadow_min_radius` cast no shadow
 # version 10: a forest type and a TSStatic both follow the SHAPE's `collider` - `collision_lights`
 # off leaves a lamp with no `Colmesh_` node, and naming one anyway is an object that collides with
 # nothing (`NO_COLLIDER`, audit §88)
@@ -409,5 +440,5 @@ STAGE = Stage(
     settings_keys=SETTINGS,
     outputs=OUTPUTS,
     after=("shapes",),
-    version=10,
+    version=11,
 )
