@@ -167,6 +167,32 @@ def _compact_faces(inverse, tris, n_out):
     return remap[new_tris], used
 
 
+def unique_rows(composite):
+    """`(count, inverse)` for the distinct rows of an integer `(N, k)` array.
+
+    `numpy.unique(axis=0)` lexsorts a void view of every row and was the whole cost of a
+    clustering pass — and the cell search runs it twelve times per material run per level. The
+    columns here are small integers (grid coordinates, UV bins, a pin index), so the rows pack
+    into ONE int64 by mixed radix and a 1-D `numpy.unique` sorts plain integers instead. Only when
+    the ranges genuinely overflow 63 bits does it fall back to the row-wise sort; the result is
+    identical either way, which the cluster tests hold.
+    """
+    composite = numpy.asarray(composite, dtype=numpy.int64)
+    if composite.ndim != 2 or composite.shape[1] == 0:
+        raise ValueError("unique_rows wants an (N, k) integer array")
+    low = composite.min(axis=0)
+    spans = (composite.max(axis=0) - low + 1).astype(numpy.float64)
+    if spans.prod() < 2.0**62:
+        key = numpy.zeros(len(composite), dtype=numpy.int64)
+        for column in range(composite.shape[1]):
+            key = key * numpy.int64(spans[column]) + (composite[:, column] - low[column])
+        _, inverse = numpy.unique(key, return_inverse=True)
+    else:
+        _, inverse = numpy.unique(composite, axis=0, return_inverse=True)
+    inverse = inverse.reshape(-1)
+    return int(inverse.max()) + 1 if len(inverse) else 0, inverse
+
+
 def vertex_cluster(verts, tris, uvs=None, normals=None, cell=1.0, uv_bin=UV_BIN, pinned=None):
     """Snap vertices to a grid of `cell` metres and merge those that share a cell (and a UV bin).
 
@@ -202,10 +228,7 @@ def vertex_cluster(verts, tris, uvs=None, normals=None, cell=1.0, uv_bin=UV_BIN,
         columns.append(
             numpy.where(pins, numpy.arange(len(verts), dtype=numpy.int64), numpy.int64(-1))
         )
-    composite = numpy.stack(columns, axis=1)
-    _, first, inverse = numpy.unique(composite, axis=0, return_index=True, return_inverse=True)
-    inverse = inverse.reshape(-1)
-    n_out = len(first)
+    n_out, inverse = unique_rows(numpy.stack(columns, axis=1))
     new_verts, new_normals, new_uvs = _cluster_means(inverse, n_out, verts, normals, uvs)
     new_tris, used = _compact_faces(inverse, tris, n_out)
     return (
@@ -251,7 +274,14 @@ def _quadric_to_ratio(verts, tris, uvs, normals, ratio):
         return verts, normals, uvs, tris
     simplifier = pyfqmr.Simplify()
     simplifier.setMesh(verts, tris)
-    simplifier.simplify_mesh(target_count=target, aggressiveness=7, preserve_border=True, verbose=0)
+    # `preserve_border=False` is deliberate. A CS2 mesh is split per material run and never
+    # welded across one, so on the reference bundle nearly every edge is a border: with the
+    # borders pinned the simplifier returned 17,809 of 18,017 triangles at a 25 % target, and
+    # every "LOD" was LOD 0 again (refactor Phase 10, 2026-08-29). Unpinned, the same mesh
+    # reached 4,504.
+    simplifier.simplify_mesh(
+        target_count=target, aggressiveness=7, preserve_border=False, verbose=0
+    )
     new_verts, new_tris, _new_normals = simplifier.getMesh()
     new_verts = numpy.asarray(new_verts, dtype=numpy.float64)
     new_tris = numpy.asarray(new_tris, dtype=numpy.int64)
@@ -265,13 +295,19 @@ def _quadric_to_ratio(verts, tris, uvs, normals, ratio):
     return new_verts, new_normals, new_uvs, new_tris
 
 
-def _nearest_index(query, points, chunk=2048):
-    out = numpy.empty(len(query), dtype=numpy.int64)
-    for s in range(0, len(query), chunk):
-        q = query[s : s + chunk]
-        d = ((q[:, None, :] - points[None, :, :]) ** 2).sum(axis=2)
-        out[s : s + chunk] = d.argmin(axis=1)
-    return out
+def _nearest_index(query, points):
+    """Index into `points` of each `query` row's nearest neighbour.
+
+    A k-d tree, not the chunked brute force this used to be: that built a `(2048, N, 3)` float64
+    temporary per chunk, which on a 100k-vertex building is 5 GB of memory traffic per chunk and
+    made the quadric backend SLOWER than the numpy clustering it was meant to replace — twelve
+    sample meshes took the cluster backend 24 s and the quadric backend more than 10 minutes
+    (refactor Phase 10, 2026-08-29).
+    """
+    from scipy.spatial import cKDTree
+
+    _, index = cKDTree(points).query(query, k=1, workers=1)
+    return numpy.asarray(index, dtype=numpy.int64)
 
 
 # -- the ladder ---------------------------------------------------------------------------------
