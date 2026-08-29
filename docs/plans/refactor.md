@@ -926,7 +926,7 @@ Each phase records here what landed and what it found, so this document stays th
 | 7 — One rip-stage framework | **DONE** 2026-08-29, **re-rip verified** — three items deliberately deferred with reasons; see below |
 | 8 — The IO writer layer | **DONE** 2026-08-29, **re-rip verified** — one declared byte change; see below |
 | 9 — Split the rip systems | **DONE** 2026-08-29, **re-rip verified** — `AreaRipSystem` refused with reasons; see below |
-| 10 — Performance | not started |
+| 10 — Performance | **in progress** 2026-08-29 — surveys live-logged in `docs/plans/phase10-survey-*.md`; see below |
 | 11 — Comment, naming and structure | not started |
 | 12 — Documentation | not started |
 
@@ -2298,3 +2298,43 @@ and neither substitutes for the other: `ab_scene.py` proves the refactored adapt
 human look proves that scene is *the right one*. A scene dump cannot notice that the whole
 region is subtly wrong in a way both versions share, and an eye cannot certify 24 modules of
 behaviour preservation. Phase 6 has both.
+
+### Phase 10 — in progress, 2026-08-29
+
+**Measured before touching anything** (the 2026-08-29 rip log, `Carto.log`, and the live
+`cs2_city_fine` report of 2026-08-28):
+
+| Rip stage | Seconds |
+| --- | ---: |
+| Meshes, materials & textures | **1,304.6** — of which "texture readback held the main thread **411.8 s**"; 4,304 prefabs, 4,356 glb / 1,761 MiB, 4,102 textures / 2,033 MiB |
+| Manifest | 144.5 (17,016 files, 5.53 GB) |
+| Networks & lane geometry | 74.7 |
+| Terrain & water | 68.5 |
+| Instances | 54.8 (1,310,692 objects) |
+| Lane graph | 42.3 (680,772 lanes) |
+| Terrain (fine cascade) | 1.9 |
+
+| Build stage (all layers on, `cook: true`, 16 m 42 s) | Seconds |
+| --- | ---: |
+| cook | 462.8 |
+| instances | 146.5 |
+| shapes | 91.7 |
+| networks | 69.7 |
+| derived | 54.6 |
+| terrain | 39.4 |
+| water | 28.6 |
+| validate | 25.0 |
+| navgraph | 20.6 |
+
+The Phase-0 bake table (`docs/baselines/profile.md` §3) still stands: lods 62 %, materials 17 %.
+
+**The plan's Phase 10 list is not trusted to be complete.** Three surveys were run first — the
+producer's hot paths, the consumer's, and the *built level's runtime cost inside BeamNG*
+(duplicated meshes, collision shape, area/marking representation) — and each is live-logged
+as it is written so a lost session loses nothing:
+
+* `docs/plans/phase10-survey-producer.md`
+* `docs/plans/phase10-survey-consumer.md`
+* `docs/plans/phase10-survey-beamng-runtime.md`
+
+The work list, with its before/after numbers, is appended here as each item lands.
