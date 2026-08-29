@@ -178,3 +178,23 @@ file is only comparable to one taken on a box doing nothing else.
 `pytest` collection alone is ~43 s because seven test files are still module-level scripts whose
 body runs at **import**, so collecting them runs them. Phase 4 turns those into real per-claim
 functions and that cost goes away.
+
+## 7. Phase 10 — the numbers that replaced §3's, and where the afters live
+
+§3's per-product seconds were taken on a shared box (see the note above §3's table) and are
+about double a quiet run. Clean-room on 2026-08-29, at `1760015` (the last commit before Phase
+10's bake changes), `--jobs 7`, the bake's own `done in` lines:
+
+| Product | Seconds | Of which |
+| --- | ---: | --- |
+| terrainmask | 80 | `clip volumes` 77 |
+| terraincut | 60 | `cut` 52 |
+| lanegeometry | 82 | `bend` 37, `tiles` 30 |
+| markings | 94 | `bend` 44, `drape` 15, road surface 10 |
+| areas | 65 | road surface 7.5, `tiles` 6.5 |
+
+The afters, item by item and with what each was measured on, are in `docs/plans/refactor.md`
+under "Phase 10 — in progress" — this file keeps the instrument, the plan keeps the ledger.
+Two of §4's rows are known to be instrument artefacts and must not be compared against:
+`cs2 15,019` triangles (a 2 m radius for every object shape; the budget now reads the shape's
+own) and the collision count (per shape file; the world holds ~72 M per instance).
