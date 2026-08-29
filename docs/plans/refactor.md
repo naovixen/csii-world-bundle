@@ -926,7 +926,7 @@ Each phase records here what landed and what it found, so this document stays th
 | 7 — One rip-stage framework | **DONE** 2026-08-29, **re-rip verified** — three items deliberately deferred with reasons; see below |
 | 8 — The IO writer layer | **DONE** 2026-08-29, **re-rip verified** — one declared byte change; see below |
 | 9 — Split the rip systems | **DONE** 2026-08-29, **re-rip verified** — `AreaRipSystem` refused with reasons; see below |
-| 10 — Performance | **in progress** 2026-08-29 — surveys live-logged in `docs/plans/phase10-survey-*.md`; see below |
+| 10 — Performance | **in progress** 2026-08-29 — consumer landed and measured, level rebuilt (awaiting the in-game look), producer built (awaiting the re-rip); see below |
 | 11 — Comment, naming and structure | not started |
 | 12 — Documentation | not started |
 
@@ -2497,3 +2497,37 @@ materials 4,784, textures 3,729); every texture file name unchanged (the hash is
 bytes); the Manifest stage under 145 s. Any texture that lands upside down or in the wrong colour
 space is the async readback's orientation or format — `FlipRows` keeps the old flip, and the
 request asks for `RGBA32` explicitly.
+
+### Phase 10 — the rebuild, 2026-08-29 (awaiting the in-game look)
+
+`cs2_city_fine` rebuilt in place from the 2026-08-29 bundle, settings from its own report plus
+`forest_rare_type_min: 10`, `cook: true`, BeamNG closed: **24 m 43 s including a full bake of
+8 m 31 s** — the rip had removed `derived/`, so this run is the bake's after-measurement too
+(Phase 0: 42 m 20 s; `materials` 435 s → ~90 s, `lods` 1,575 s → the bulk of the 8.5 min).
+Reports in `docs/baselines/cs2_city_fine-{report,budget}-after-phase10.*`. Validator: the same
+one advisory as before (the unmeasured residency band). Full `pytest`: see the commit.
+
+| | after phase 5b | after phase 10 | why |
+| --- | ---: | ---: | --- |
+| resident MiB | 4,272.7 | **4,116.9** | forest types, terrain tiers, materials |
+| meshes cs2 MiB | 2,002 | **1,850** | 1,806 rare forest types not mounted |
+| forest types / items | 3,104 / 908,841 | **1,298 / 904,613** | `forest_rare_type_min` 10: 4,685 items, 0.5 % |
+| materials written | 6,123 | **5,055** | one per distinct paint variant (factor variants 1,724 → 656) |
+| object shape triangles | 26.44 M | **24.02 M** | colliders clustered to the cap |
+| colliders mesh / decimated / box / oversized | 2,506 / – / 1,311 / 30 | 2,069 / **474** / 1,304 / **0** | the cap simplifies instead of boxing |
+| collision triangles (per shape file) | 4,327,133 | **1,995,069** | same instrument; the per-instance figure is the survey's 72 M |
+| object triangles in view (real radii) | *15,019 (artefact)* | **4,896,930** | the instrument fixed — this is the number to reduce next |
+| triangles in view, all groups | 1,292,894 | 6,171,530 | as above; networks/areas/markings/skirts unchanged |
+
+**What Naomi's look must settle**, in order: the rare forest types (the one change that removes
+things — three moored boats, three harbour cranes, and 1,800 one-offs; the ten heaviest are
+named in the report under `forestRareTypesDropped`); the decimated colliders on the 474 largest
+buildings (contact should feel the same at driving speed); skirts on a `Colmesh_` and without
+shadows; the terrain grounds (same bytes, one file per image); the collapsed paint variants (42
+identical billboards now share one material). Nothing else in the level changed by design; the
+small count drifts (+7 statics, +1 water block) are the save.
+
+**Open after this phase**, for the record: buildings draw 4.9 M triangles inside the view
+distance — the survey's §0 — and that is the next performance lever (LOD 0 on the top 100 shapes,
+879 MiB, the a8 plan's P2 remainder), not anything measured in this phase. The producer block
+is built and unmeasured until the re-rip.

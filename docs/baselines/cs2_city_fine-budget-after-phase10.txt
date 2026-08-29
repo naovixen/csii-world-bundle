@@ -1,0 +1,42 @@
+level cs2_city_fine — 4000 m view from (1404, 1168)
+
+  resident                    MiB
+    meshes cs2                      1850
+    meshes networks                  787
+    meshes areas                     387
+    meshes skirts                    166
+    meshes markings                  130
+    meshes terraincut                  6
+    meshes TOTAL                    3327
+    textures .dds                    555
+    textures .png                    235
+    RESIDENT TOTAL                 4117
+
+  the heaviest shapes — a shape is mounted WHOLE for one instance in view
+    top 100 of 7,883 shape files             879 MiB (26 % of all mesh bytes)
+    art/shapes/cs2/MedicalUniversity01.dae          24.0 MiB
+    art/shapes/cs2/InternationalAirport01.dae       23.7 MiB
+    art/shapes/cs2/USSW_Hospital_16x14.dae          21.1 MiB
+    art/shapes/cs2/asset_aae7632a.dae               21.0 MiB
+    art/shapes/cs2/Kinsman_Plaza.dae                21.0 MiB
+    art/shapes/cs2/OfficeHighSignature02.dae        20.8 MiB
+    art/shapes/cs2/NA_ResidentialHighSignature03    20.5 MiB
+    art/shapes/cs2/NA_ResidentialHighSignature02    19.0 MiB
+
+  triangles inside the view distance
+    cs2                           4,896,930  (12448 statics)
+    networks                        793,090  (531 statics)
+    areas                           348,970  (525 statics)
+    markings                         63,423  (573 statics)
+    skirts                           61,429  (420 statics)
+    terraincut                        7,688  (36 statics)
+    TOTAL                         6,171,530
+
+  counts                        this   west_coast_usa
+    shape files                7,883       2,608    3.0x
+    TSStatics                 19,312      22,067    0.9x
+    forest types               1,298         226    5.7x
+    forest items             904,613     133,375    6.8x
+    materials                  5,076         586    8.7x
+    collision triangles    1,995,069
+    cooked shapes              7,883 of 7,883
