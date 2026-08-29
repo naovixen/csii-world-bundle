@@ -33,7 +33,7 @@ import numpy
 
 from .. import bezier, decals, drape, frames, glb, instances, lanes, reader
 from .. import region as region_rule
-from . import Product, markinglod, register
+from . import Product, lanebend, markinglod, register
 from .roads import load_road_surface
 from .tiles import TileSink, material_specs, texture_uri_base
 
@@ -74,6 +74,72 @@ def _subdivide_quad(corners, uvs, step):
             tris.append([k, k + m + 1, k + m + 2])
             tris.append([k, k + m + 2, k + 1])
     return verts, numpy.asarray(tris, dtype=numpy.int64), uv
+
+
+def _bend_chunk(args):
+    """Worker: bend the decal parts of one chunk of lane records (`lanebend.each_chunk`)."""
+    records, bundle, region, catalogue = args
+    lay = reader.resolve_layers(bundle)
+    sources, prefab_lods = lanebend.part_cache(lay)
+    blocks = []
+    sink = {"blocks": blocks, "instances": [], "tiles_instanced": 0, "tiles_baked": 0}
+    sink["decal_dropped"] = 0
+    out = {"seen": len(records), "bent": 0, "skipped_region": 0, "missing_prefab": 0}
+    out.update({"missing_mesh": 0, "with_colorset": 0})
+    for record in records:
+        entry = catalogue.get(record.get("prefab"))
+        if entry is None:
+            out["missing_prefab"] += 1
+            continue
+        curve = record["curve"]
+        if not region_rule.contains(curve[0][0], curve[0][2], region):
+            out["skipped_region"] += 1
+            continue
+        parts = entry.get("parts", [])
+        decal_indices = [
+            i for i in record.get("parts", []) if 0 <= i < len(parts) and parts[i].get("decal")
+        ]
+        if not decal_indices:
+            continue
+        if record.get("colorSet"):
+            out["with_colorset"] += 1
+        _bend_decals(record, entry, decal_indices, lay, sources, prefab_lods, sink, out)
+        out["bent"] += 1
+    out["blocks"] = blocks
+    out["decal_dropped"] = sink["decal_dropped"]
+    return out
+
+
+def _bend_decals(record, entry, decal_indices, lay, sources, prefab_lods, sink, out):
+    """One record's decal parts bent into `sink`, each block stamped with the prefab's limit."""
+    parts = entry.get("parts", [])
+    curve = record["curve"]
+    curve_length = bezier.length(curve)
+    spans = record.get("spans") or [[0.0, 1.0]]
+    width_scale = record.get("widthScale", [1.0, 1.0])
+    hang = lanes.hang_curve(record, entry, curve_length)
+    prefab_lod = markinglod.lane_prefab_min_lod(
+        record.get("prefab"), entry, sources, lay, prefab_lods
+    )
+    blocks = sink["blocks"]
+    for index in decal_indices:
+        asset_id = parts[index]["assetId"]
+        if asset_id not in sources:
+            path = os.path.join(lay.lane_meshes, asset_id + ".glb")
+            sources[asset_id] = (
+                lanes.part_source(glb.parse_glb(path)) if os.path.isfile(path) else None
+            )
+        source = sources[asset_id]
+        if source is None:
+            out["missing_mesh"] += 1
+            continue
+        # The game's limit is a property of the PREFAB (the min over all its meshes,
+        # `NetLaneGeometryData.m_MinLod`), not of the part being bent, so it is stamped on
+        # whatever blocks this bend produced rather than passed down into `bend_part`.
+        first = len(blocks)
+        lanes.bend_part(parts[index], source, curve, spans, curve_length, width_scale, hang, sink)
+        for block in blocks[first:]:
+            block["min_lod"] = prefab_lod
 
 
 def _decal_quad(node):
@@ -120,84 +186,33 @@ def run(context, progress):
 
     # -- 2. bend the decal parts ------------------------------------------------------------
     progress.begin("markings: bend", total=total_records, unit="lanes")
-    sources = {}
-    prefab_lods = {}
     blocks = []
-    sink = {
-        "blocks": blocks,
-        "instances": [],
-        "tiles_instanced": 0,
-        "tiles_baked": 0,
-        "decal_dropped": 0,
-    }
-    bent = skipped_region = missing_prefab = missing_mesh = with_colorset = 0
-    seen = 0
+    bent = skipped_region = missing_prefab = missing_mesh = with_colorset = decal_dropped = 0
     if os.path.isfile(lay.lane_geometry):
-        for record in reader.read_jsonl(lay.lane_geometry):
-            seen += 1
-            if seen % 2000 == 0:
-                progress.advance(2000)
-                progress.check()
-            entry = catalogue.get(record.get("prefab"))
-            if entry is None:
-                missing_prefab += 1
-                continue
-            curve = record["curve"]
-            if not region_rule.contains(curve[0][0], curve[0][2], region):
-                skipped_region += 1
-                continue
-            parts = entry.get("parts", [])
-            decal_indices = [
-                i for i in record.get("parts", []) if 0 <= i < len(parts) and parts[i].get("decal")
-            ]
-            if not decal_indices:
-                continue
-            curve_length = bezier.length(curve)
-            spans = record.get("spans") or [[0.0, 1.0]]
-            width_scale = record.get("widthScale", [1.0, 1.0])
-            hang = lanes.hang_curve(record, entry, curve_length)
-            if record.get("colorSet"):
-                with_colorset += 1
-            prefab_lod = markinglod.lane_prefab_min_lod(
-                record.get("prefab"), entry, sources, lay, prefab_lods
-            )
-            for index in decal_indices:
-                asset_id = parts[index]["assetId"]
-                if asset_id not in sources:
-                    path = os.path.join(lay.lane_meshes, asset_id + ".glb")
-                    sources[asset_id] = (
-                        lanes.part_source(glb.parse_glb(path)) if os.path.isfile(path) else None
-                    )
-                source = sources[asset_id]
-                if source is None:
-                    missing_mesh += 1
-                    continue
-                # The game's limit is a property of the PREFAB (the min over all its meshes,
-                # `NetLaneGeometryData.m_MinLod`), not of the part being bent, so it is stamped on
-                # whatever blocks this bend produced rather than passed down into `bend_part`.
-                first = len(blocks)
-                lanes.bend_part(
-                    parts[index], source, curve, spans, curve_length, width_scale, hang, sink
-                )
-                for block in blocks[first:]:
-                    block["min_lod"] = prefab_lod
-            bent += 1
+        jobs = max(1, int(options.get("jobs") or 1))
+        for part in lanebend.each_chunk(_bend_chunk, bundle, (region, catalogue), jobs, progress):
+            blocks.extend(part["blocks"])
+            bent += part["bent"]
+            skipped_region += part["skipped_region"]
+            missing_prefab += part["missing_prefab"]
+            missing_mesh += part["missing_mesh"]
+            with_colorset += part["with_colorset"]
+            decal_dropped += part["decal_dropped"]
     progress.end(
         f"{bent} lanes bent into {len(blocks)} marking blocks "
         f"({skipped_region} outside region, {missing_prefab} no prefab, {missing_mesh} no mesh, "
-        f"{with_colorset} carry a colorSet, {sink['decal_dropped']} dropped by clip)"
+        f"{with_colorset} carry a colorSet, {decal_dropped} dropped by clip)"
     )
     stats.update(
         {
             "lanesBent": bent,
             "markingBlocks": len(blocks),
-            "decalDropped": sink["decal_dropped"],
+            "decalDropped": decal_dropped,
             "lanesWithColorSet": with_colorset,
         }
     )
 
     # -- 3. instance decals -------------------------------------------------------------------
-    int(((manifest.get("counts") or {}).get("instances")) or 0) or None
     # prefiltered to decal records, so the manifest's instance count is not the total
     progress.begin("markings: instance decals", total=None, unit="decals")
     decal_meshes = {}

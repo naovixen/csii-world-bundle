@@ -51,9 +51,9 @@ import time
 
 import numpy
 
-from .. import carriageway, png, reader, terrainclip
+from .. import carriageway, parallel, png, reader, terrainclip
 from .. import splat as splat_mod
-from . import Product, register
+from . import Product, register, terraincutsquare
 from .tiles import TileSink
 
 PRODUCT_NAME = "terraincut"
@@ -73,55 +73,14 @@ VERSION = 18  # v13: the EXACT cut (audit §46) — `terrainclip` against the pr
 #      projected in the plane it is most parallel to, not always in (x, z)
 #      (audit §61)
 
-# metres per texture repeat on the ground mesh: the terrain material's MACRO tier period
-GROUND_UV_M = 40.0
-GROUND_FALLBACK = "ground:grass"
-# a kept piece smaller than this is a rounding sliver of the cut, not ground anybody sees
-MIN_PIECE_M2 = 1e-4
-# A square that loses less ground than this is treated as untouched and left to the heightfield.
-# The prism only grazed it — a ribbon a few millimetres wide, which the cut drops anyway
-# (`terrainclip.MIN_WIDTH_M`) — and punching it would trade a terrain-shaded square for a
-# mesh-shaded one over 0.3 % of its area. On the reference city the threshold is the difference
-# between 46,550 punched squares and 43,043.
-MIN_REMOVED_M2 = 0.01
-
-# Which plane a face's ground texture is projected in. PORTED, with a declared collapse.
-#
-# CS2's terrain samples its grounds TRIPLANAR. `Game.Rendering.TerrainMaterialSystem` sets two
-# shader globals from the theme's `TerrainRenderSettingsPrefab`, beside `_SplatMultiplier` and
-# the `_TerrainExtra*` set the rest of this bake already ports:
-#
-#     _TriplanarHeightmapBlending      <- m_TriplanarHeightMapBlending  (class default 0.5)
-#     _TerrainTriplanarBlendStrengthY  <- m_TriplanarBlendStrengthY     (class default 0.2)
-#
-# and the producer already ships both, per map, as `rasters.terrainTiling.triplanar*` — on the
-# reference city's `DefaultTerrainRenderSettings` they are **0.25 and 0.75**, not the class
-# defaults. So a steep face in the game is textured from its SIDE projection, not smeared from
-# above.
-# A pure `(x, z)` projection stretches a face by `1/cos(slope)`: measured on the built level,
-# 11.6 % of the cut mesh's area sits on faces at 85 deg or more (real 10-13 m steps between
-# adjacent 1.75 m samples, where CS2 graded a corridor into a hillside), and 11.0 % of the area
-# samples the ground at 4-10x the intended period. A 4-10x magnified 68 m rock tiling is one
-# texel over a whole wall, which renders as a flat single-colour slab — the cream and near-black
-# patches of load #26. Predicted colour for the worst of them (198, 186, 172) against (200, 186,
-# 173) measured off the screenshot; audit §61.
-#
-# APPROXIMATED, declared and counted: the game blends the three projections PER PIXEL, weighted
-# by the two globals above and by the grounds' own height maps. Those weights live in an HLSL
-# shader that is not in the managed assemblies, and a mesh carries ONE baked UV set, so this
-# collapses the blend to the single dominant plane PER FACE — `argmax(|n|)`, the limit every
-# triplanar formulation agrees on, and the choice with no density error at the 45 deg crossover
-# (both planes stretch by 1.41 there). The cost is a texture-pattern discontinuity across an edge
-# whose two faces pick different planes; the run report counts the faces and area per plane.
-# The shipped `triplanarBlendStrengthY` is deliberately NOT used as a weight: whether it scales
-# the Y projection up, scales it down, or is an exponent is not determinable without the shader,
-# and reading it as a Y weight would move the crossover to 36.9 deg (at 0.75) or 11.3 deg (at the
-# class default 0.2) and send near-flat ground to a side projection. When the weighting curve is
-# recovered, that is the upgrade path — and it needs the multi-stage `inLayer.opacity` mechanism,
-# not a different UV.
-# Faces flatter than 45 deg keep the `(x, z)` projection they had, so 83 % of the mesh is
-# unchanged.
-TRIPLANAR_PLANES = ((2, 1), (0, 2), (0, 1))  # per dominant normal axis x/y/z: the two axes kept
+# The cut's constants — `GROUND_UV_M`, the piece and removal floors, `TRIPLANAR_PLANES` — and
+# the rules behind them live with the per-square work in `terraincutsquare`; this product reads
+# them from there.
+GROUND_UV_M = terraincutsquare.GROUND_UV_M
+GROUND_FALLBACK = terraincutsquare.GROUND_FALLBACK
+MIN_REMOVED_M2 = terraincutsquare.MIN_REMOVED_M2
+# squares per worker job: enough to amortise the pool's pickling, few enough to balance
+CUT_CHUNK = 512
 
 
 def run(context, progress):
@@ -182,40 +141,10 @@ def run(context, progress):
     gx[:, 1:-1] = (heights32[:, 2:] - heights32[:, :-2]) / (2.0 * cell)
     gz[1:-1, :] = (heights32[2:, :] - heights32[:-2, :]) / (2.0 * cell)
 
-    def raster_normals(x, z):
-        c = numpy.clip((numpy.asarray(x) - origin_x) / cell, 0, width - 1.001)
-        r = numpy.clip((origin_z - numpy.asarray(z)) / cell, 0, height - 1.001)
-        ci = c.astype(numpy.int64)
-        ri = r.astype(numpy.int64)
-        fu = c - ci
-        fv = r - ri
-
-        def bil(a):
-            return (a[ri, ci] * (1 - fu) + a[ri, ci + 1] * fu) * (1 - fv) + (
-                a[ri + 1, ci] * (1 - fu) + a[ri + 1, ci + 1] * fu
-            ) * fv
-
-        dx, dz = bil(gx), bil(gz)
-        n = numpy.stack((-dx, numpy.ones_like(dx), dz), axis=-1)
-        return n / numpy.linalg.norm(n, axis=1)[:, None]
-
-    def layer_at(x, z):
-        r = numpy.clip(
-            numpy.rint((origin_z - numpy.asarray(z)) / cell).astype(numpy.int64), 0, height - 1
-        )
-        c = numpy.clip(
-            numpy.rint((numpy.asarray(x) - origin_x) / cell).astype(numpy.int64), 0, width - 1
-        )
-        idx = layer_idx[r, c]
-        return numpy.asarray(
-            [
-                f"ground:{layer_names[i]}" if i < len(layer_names) else GROUND_FALLBACK
-                for i in idx.reshape(-1)
-            ],
-            dtype=object,
-        ).reshape(idx.shape)
-
     # -- cut every square a deep prism reaches ------------------------------------------------
+    # Across worker processes: each square is independent, and everything it needs from the
+    # rasters — its four corner heights, gradients and layer ids — travels with it, so no worker
+    # holds a 4096² array (refactor Phase 10, 2026-08-29: the serial `cut` was 52 s clean-room).
     replaced = numpy.zeros((height - 1, width - 1), dtype=bool)
     sink = TileSink(tile, PRODUCT_NAME, out_dir)
     progress.begin("terraincut: cut", total=len(by_face), unit="squares")
@@ -225,74 +154,47 @@ def run(context, progress):
     materials_used = set()
     plane_tris = [0, 0, 0]  # faces projected in zy / xz / xy (dominant normal x/y/z)
     plane_area = [0.0, 0.0, 0.0]
-    done = 0
-    for (r, c), station_ids in by_face.items():
-        done += 1
-        if done % 4096 == 0:
-            progress.advance(4096)
-            progress.check()
-        # the square's four corners, north-west first, at the consumer's own heights
-        x0 = origin_x + c * cell
-        x1 = x0 + cell
-        z0 = origin_z - r * cell
-        z1 = z0 - cell
-        nw = (x0, float(ground_y[r, c]), z0)
-        ne = (x1, float(ground_y[r, c + 1]), z0)
-        sw = (x0, float(ground_y[r + 1, c]), z1)
-        se = (x1, float(ground_y[r + 1, c + 1]), z1)
-        local = [prisms[i] for i in station_ids]
-        whole = cell * cell
-        kept = []
-        for tri in ((nw, ne, se), (nw, se, sw)):  # the NW-SE diagonal, as `drape` assumes
-            kept.extend(terrainclip.clip_triangle(tri, local, stats))
-        kept = [
-            p
-            for p in kept
-            if abs(terrainclip.polygon_area([(q[0], q[2]) for q in p])) > MIN_PIECE_M2
-        ]
-        kept_area = sum(abs(terrainclip.polygon_area([(q[0], q[2]) for q in p])) for p in kept)
-        if whole - kept_area < MIN_REMOVED_M2:
-            continue  # the prism only grazed it: leave it be
-        replaced[r, c] = True
-        removed_m2 += whole - kept_area
-        faces_cut += 1
-        if not kept:
-            continue  # wholly inside the band: a hole, as in game
-        verts = []
-        tris = []
-        for poly in kept:
-            base = len(verts)
-            verts.extend(poly)
-            for a, b, d in terrainclip.fan(poly):
-                tris.append((base + a, base + b, base + d))
-            pieces_out += 1
-        verts = numpy.asarray(verts, dtype=numpy.float64)
-        tris = numpy.asarray(tris, dtype=numpy.int64)
-        # every ground face looks up
-        a, b, d = verts[tris[:, 0]], verts[tris[:, 1]], verts[tris[:, 2]]
-        nrm = numpy.cross(b - a, d - a)
-        flip = nrm[:, 1] < 0
-        tris[flip] = tris[flip][:, ::-1]
-        # triplanar: project each face in the plane it is most parallel to (see TRIPLANAR_PLANES)
-        corners = verts[tris]  # (M, 3, 3)
-        dominant = numpy.abs(nrm).argmax(axis=1)
-        uvs = numpy.empty((len(tris), 3, 2), dtype=numpy.float64)
-        for axis, (u_ax, v_ax) in enumerate(TRIPLANAR_PLANES):
-            on = dominant == axis
-            if not on.any():
-                continue
-            uvs[on, :, 0] = corners[on, :, u_ax] / GROUND_UV_M
-            uvs[on, :, 1] = corners[on, :, v_ax] / GROUND_UV_M
-            plane_tris[axis] += int(on.sum())
-            plane_area[axis] += float(0.5 * numpy.linalg.norm(nrm[on], axis=1).sum())
-        normals = raster_normals(verts[:, 0], verts[:, 2])
-        centres = corners.mean(axis=1)
-        tri_mat = layer_at(centres[:, 0], centres[:, 2])
-        for name in sorted(set(tri_mat.tolist())):
-            pick = tri_mat == name
-            sink.add(verts, tris[pick], uvs[pick], name, normals=normals)
-            tris_out += int(pick.sum())
-            materials_used.add(name)
+    corner_names = [f"ground:{n}" for n in layer_names] + [GROUND_FALLBACK]
+    layer_of = numpy.where(layer_idx < len(layer_names), layer_idx, len(layer_names))
+    squares = list(by_face)  # insertion order — the prism index's — so the tiles' triangle order holds
+    jobs = max(1, int(context.options.get("jobs") or 1))
+    batches = [
+        terraincutsquare.cut_batch(
+            squares[start : start + CUT_CHUNK],
+            by_face,
+            prisms,
+            (ground_y, gx, gz, layer_of, corner_names),
+            (cell, origin_x, origin_z, width, height),
+        )
+        for start in range(0, len(squares), CUT_CHUNK)
+    ]
+    for result in parallel.each(
+        terraincutsquare.cut_chunk,
+        batches,
+        jobs,
+        progress,
+        ordered=True,
+        min_parallel=2,
+        advance=False,
+    ):
+        progress.advance(result["seen"])
+        for key, value in result["stats"].items():
+            stats[key] = stats.get(key, 0) + value
+        for axis in range(3):
+            plane_tris[axis] += result["plane_tris"][axis]
+            plane_area[axis] += result["plane_area"][axis]
+        for r, c, removed, pieces, verts, tris, uvs, normals, tri_mat in result["squares"]:
+            replaced[r, c] = True
+            removed_m2 += removed
+            faces_cut += 1
+            pieces_out += pieces
+            if verts is None:
+                continue  # wholly inside the band: a hole, as in game
+            for name in sorted(set(tri_mat.tolist())):
+                pick = tri_mat == name
+                sink.add(verts, tris[pick], uvs[pick], name, normals=normals)
+                tris_out += int(pick.sum())
+                materials_used.add(name)
     written = sink.flush(progress, jobs=max(1, int(context.options.get("jobs") or 1)))
     side_tris = plane_tris[0] + plane_tris[2]
     side_area = plane_area[0] + plane_area[2]

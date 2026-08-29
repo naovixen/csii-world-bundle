@@ -31,7 +31,7 @@ import numpy
 
 from .. import bezier, glb, lanes, lod, reader
 from .. import region as region_rule
-from . import Product, register
+from . import Product, lanebend, register
 from .tiles import TileSink, material_specs, texture_uri_base
 
 PRODUCT_NAME = "lanegeometry"
@@ -76,102 +76,24 @@ def run(context, progress):
     total_records = int(((manifest.get("counts") or {}).get("laneGeometry")) or 0) or None
 
     progress.begin("lanegeometry: bend", total=total_records, unit="lanes")
-    sources = {}
-    prefab_lods = {}
     per_category = Counter()
     placements = []  # (assetId, category, prefab, matrix)
     baked_blocks = []  # per-vertex bent tiles
     sheared = 0
     bent = skipped_region = skipped_category = missing_mesh = 0
-    seen = 0
     if os.path.isfile(lay.lane_geometry):
-        for record in reader.read_jsonl(lay.lane_geometry):
-            seen += 1
-            if seen % 2000 == 0:
-                progress.advance(2000)
-                progress.check()
-            entry = catalogue.get(record.get("prefab"))
-            if entry is None:
-                continue
-            category = record.get("category") or "lane"
-            if category not in categories:
-                skipped_category += 1
-                continue
-            curve = record["curve"]
-            if not region_rule.contains(curve[0][0], curve[0][2], region):
-                skipped_region += 1
-                continue
-            parts = entry.get("parts", [])
-            solid = [
-                i
-                for i in record.get("parts", [])
-                if 0 <= i < len(parts) and not parts[i].get("decal")
-            ]
-            if not solid:
-                continue
-            curve_length = bezier.length(curve)
-            spans = record.get("spans") or [[0.0, 1.0]]
-            width_scale = record.get("widthScale", [1.0, 1.0])
-            hang = lanes.hang_curve(record, entry, curve_length)
-            sink = {
-                "blocks": [],
-                "instances": [],
-                "tiles_instanced": 0,
-                "tiles_baked": 0,
-                "decal_dropped": 0,
-            }
-            # The game's own limit for this fence / cable / kerb: the min over the PREFAB's
-            # meshes (`NetLaneGeometryData.m_MinLod`), stamped on everything this record produces.
-            prefab_lod = _prefab_min_lod(record.get("prefab"), entry, sources, lay, prefab_lods)
-            for index in solid:
-                asset_id = parts[index]["assetId"]
-                if asset_id not in sources:
-                    path = os.path.join(lay.lane_meshes, asset_id + ".glb")
-                    sources[asset_id] = (
-                        lanes.part_source(glb.parse_glb(path)) if os.path.isfile(path) else None
-                    )
-                source = sources[asset_id]
-                if source is None:
-                    missing_mesh += 1
-                    continue
-                lanes.bend_part(
-                    parts[index], source, curve, spans, curve_length, width_scale, hang, sink
-                )
-            for asset_id, matrix in sink["instances"]:
-                level, scale, uniform = _classify(matrix)
-                if level:
-                    placements.append(
-                        (asset_id, category, record.get("prefab"), matrix, scale, uniform)
-                    )
-                else:
-                    # bake the sheared tile as world geometry from the same part source
-                    src = sources.get(asset_id)
-                    if src is None:
-                        continue
-                    world = (
-                        src["verts"] @ numpy.asarray(matrix)[:3, :3].T
-                        + numpy.asarray(matrix)[:3, 3]
-                    )
-                    tri_mat = src["tri_material"]
-                    for m_index in numpy.unique(tri_mat):
-                        rows = numpy.nonzero(tri_mat == m_index)[0]
-                        baked_blocks.append(
-                            {
-                                "verts": world,
-                                "tris": src["tris"][rows],
-                                "uvs": src["uvs"][rows],
-                                "material": src["materials"][int(m_index)],
-                                "category": category,
-                                "min_lod": prefab_lod,
-                            }
-                        )
-                    sheared += 1
-            for block in sink["blocks"]:
-                block["category"] = category
-                block["min_lod"] = prefab_lod
-                baked_blocks.append(block)
-            per_category[category] += 1
-            bent += 1
+        jobs = max(1, int(options.get("jobs") or 1))
+        for part in lanebend.each_chunk(
+            _bend_chunk, bundle, (region, categories, catalogue), jobs, progress
+        ):
+            placements.extend(part["placements"])
+            baked_blocks.extend(part["blocks"])
+            per_category.update(part["per_category"])
+            sheared += part["sheared"]
+            bent += part["bent"]
+            skipped_region += part["skipped_region"]
+            skipped_category += part["skipped_category"]
+            missing_mesh += part["missing_mesh"]
     progress.end(
         f"{bent} lanes: {len(placements)} level rigid tiles as placements, {sheared} sheared rigid tiles "
         f"and {len(baked_blocks)} baked blocks; "
@@ -286,6 +208,108 @@ def run(context, progress):
         "_tiles": written["tiles"],
         "seconds": round(time.monotonic() - started, 1),
     }
+
+
+def _bend_chunk(args):
+    """Worker: bend the solid parts of one chunk of lane records (`lanebend.each_chunk`)."""
+    records, bundle, region, categories, catalogue = args
+    lay = reader.resolve_layers(bundle)
+    sources, prefab_lods = lanebend.part_cache(lay)
+    out = {
+        "seen": len(records),
+        "placements": [],
+        "blocks": [],
+        "per_category": Counter(),
+        "sheared": 0,
+        "bent": 0,
+        "skipped_region": 0,
+        "skipped_category": 0,
+        "missing_mesh": 0,
+    }
+    for record in records:
+        entry = catalogue.get(record.get("prefab"))
+        if entry is None:
+            continue
+        category = record.get("category") or "lane"
+        if category not in categories:
+            out["skipped_category"] += 1
+            continue
+        curve = record["curve"]
+        if not region_rule.contains(curve[0][0], curve[0][2], region):
+            out["skipped_region"] += 1
+            continue
+        parts = entry.get("parts", [])
+        solid = [
+            i for i in record.get("parts", []) if 0 <= i < len(parts) and not parts[i].get("decal")
+        ]
+        if not solid:
+            continue
+        _bend_record(record, entry, solid, category, lay, sources, prefab_lods, out)
+        out["per_category"][category] += 1
+        out["bent"] += 1
+    return out
+
+
+def _bend_record(record, entry, solid, category, lay, sources, prefab_lods, out):
+    """One lane record's solid parts: placements for the rigid tiles, baked blocks for the rest."""
+    parts = entry.get("parts", [])
+    curve = record["curve"]
+    curve_length = bezier.length(curve)
+    spans = record.get("spans") or [[0.0, 1.0]]
+    width_scale = record.get("widthScale", [1.0, 1.0])
+    hang = lanes.hang_curve(record, entry, curve_length)
+    sink = {
+        "blocks": [],
+        "instances": [],
+        "tiles_instanced": 0,
+        "tiles_baked": 0,
+        "decal_dropped": 0,
+    }
+    # The game's own limit for this fence / cable / kerb: the min over the PREFAB's meshes
+    # (`NetLaneGeometryData.m_MinLod`), stamped on everything this record produces.
+    prefab_lod = _prefab_min_lod(record.get("prefab"), entry, sources, lay, prefab_lods)
+    for index in solid:
+        asset_id = parts[index]["assetId"]
+        if asset_id not in sources:
+            path = os.path.join(lay.lane_meshes, asset_id + ".glb")
+            sources[asset_id] = (
+                lanes.part_source(glb.parse_glb(path)) if os.path.isfile(path) else None
+            )
+        source = sources[asset_id]
+        if source is None:
+            out["missing_mesh"] += 1
+            continue
+        lanes.bend_part(parts[index], source, curve, spans, curve_length, width_scale, hang, sink)
+    for asset_id, matrix in sink["instances"]:
+        level, scale, uniform = _classify(matrix)
+        if level:
+            out["placements"].append(
+                (asset_id, category, record.get("prefab"), matrix, scale, uniform)
+            )
+            continue
+        # bake the sheared tile as world geometry from the same part source
+        src = sources.get(asset_id)
+        if src is None:
+            continue
+        world = src["verts"] @ numpy.asarray(matrix)[:3, :3].T + numpy.asarray(matrix)[:3, 3]
+        tri_mat = src["tri_material"]
+        for m_index in numpy.unique(tri_mat):
+            rows = numpy.nonzero(tri_mat == m_index)[0]
+            out["blocks"].append(
+                {
+                    "verts": world,
+                    "tris": src["tris"][rows],
+                    "uvs": src["uvs"][rows],
+                    "material": src["materials"][int(m_index)],
+                    "category": category,
+                    "min_lod": prefab_lod,
+                }
+            )
+        out["sheared"] += 1
+    for block in sink["blocks"]:
+        block["category"] = category
+        block["min_lod"] = prefab_lod
+        out["blocks"].append(block)
 
 
 def _prefab_min_lod(prefab, entry, sources, lay, cache):

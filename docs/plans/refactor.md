@@ -2430,3 +2430,70 @@ which nothing states today; left for Phase 11's structure pass. The DAE float fo
 (`ndarray.tofile(sep=)`) is 2× slower than a `%`-join but a few seconds per build; not worth the
 memory of a 9 MB string per tile. `networks._load_parts` has no glb memo because every segment
 is its own asset (7,289 records, 7,289 files) — there is nothing to memoise.
+
+**Landed — the bake's serial loops across the workers** (`bake/lanebend.py`, `bake/terraincutsquare.py`;
+clean-room, `--jobs 7`, same instrument as the "before" run above; every product's output
+byte-identical to the serial run's, checked file by file):
+
+| Loop | Before | After |
+| --- | ---: | ---: |
+| `lanegeometry: bend` | 37.3 s | **16.4 s** |
+| `markings: bend` | 43.6 s | **9.4 s** |
+| `terraincut: cut` | 52.3 s | **12.2 s** (serial path unchanged at 56.8 s) |
+
+Records go to the workers in consecutive chunks and come back in order, so the tile sinks see
+the blocks in the sequence the serial loop produced — which is what keeps the tiles the same
+bytes. The terraincut worker carries each square's four corner heights, gradients and layer ids
+inline, so no worker holds a raster; its first version iterated the squares sorted and moved the
+triangle order inside every tile, and its second built a 16-million-entry name array per batch
+(the serial path took 154 s against 52) — both caught by the byte comparison and the `--jobs 1`
+timing before anything landed.
+
+**Measured and reverted.** The `terrainmask` profile put 65 of its 92 profiled seconds in
+`clipgrid._rasterise_strip → fill_clip_quad → clip_span` (2.15 M calls) and 12 in
+`_block_heights`; vectorising `fill_clip_quad` over all of a quad's spans at once — same
+arithmetic per sample, one gather instead of a `clip_span` per row — measured 73 → 79 s. The
+cost is per-quad Python overhead in `_rasterise_strip`'s station loop, not the per-row work, and
+the honest fix is rasterising a whole strip's stations in one numpy pass. Not done: it is a
+different algorithm on a rule the audits fought over for weeks (`terrain-cut-face-centre-rule`),
+and 75 s once per rip is not the bake's problem — `lods` is. Recorded so the next reader does
+not vectorise the inner loop again.
+
+**Built — the producer, awaiting the in-game re-rip** (every item from the producer survey's
+ranked list that could be built without the game to measure against):
+
+* **Texture readback is asynchronous.** `Blit` issues an `AsyncGPUReadback.Request` — the same
+  request the fine-terrain cascade already uses — instead of `Texture2D.ReadPixels`, which
+  flushed the pipeline per texture and held the main thread for 411.8 s of the mesh stage. The
+  mesh and network walks land the finished requests once per frame (`MaterialRipSystem.Pump`),
+  force-land them when the walk ends or blocks on a full queue (a writer may be waiting on one,
+  and only the main thread can deliver it), and abandon them with the run. The terrain stages,
+  which encode on the spot, keep a synchronous `CaptureNow`.
+* **PNG encoding fans out behind the single ordered writer.** `TextureWriter.Write` dispatches
+  each encode to a task (one slot per core, minus one), and the writer waits — in `Resolve`, for
+  a mesh's own textures only — on encodes already running. The queue is 32 deep rather than 8.
+  The contract is untouched: a texture's file name is still the SHA-256 of the PNG it became,
+  and a `.glb` still names its textures by that hash; only the waiting moved off the thread that
+  serialises meshes. 3.8 GiB used to go through one thread; this is the change the mesh stage's
+  1,305 s hinges on, and the re-rip is what measures it.
+* `TerrainRipSystem.Write`'s `Task.Run(...).Wait()` runs inline — the same work without the
+  thread hop. Flag names come from `RipFlags.Names`, one `Enum.ToString`+`Split` per distinct
+  value instead of one per lane and per elevated or tree record (680,772 lanes). `Instance.Version`
+  (a reflection call per `.glb`, 4,356×), `Instance.City.leftHandTraffic` (per sub-mesh selection)
+  and `Instance.Prefab`/`Instance.MaterialRip` (per part and per primitive) are read once per run.
+  The manifest's `.glb` bounds scan runs across the cores.
+* **Not done, with reasons.** The lane rip's `ComponentLookup`s (a 15-call `EntityManager` walk
+  per lane) — a mechanical change but 42 s of a 28-minute rip, and every producer change here is
+  unmeasured until the rip; the flag tables already take the lane stage's known hot spot. The
+  hand-written JSON writer — Newtonsoft's double formatting is reproducible but a byte-identity
+  risk on 1.3 M lines with no way to check it before the rip. Per-stage sidecars for the manifest
+  — the parallel scan is the cheap half; the sidecars touch every writer. The shared
+  exclusion bitarrays between the instance and mesh rips, and the `ReadMesh` cache across state
+  variants — both real, both second-order next to the mesh stage's writer.
+
+**What the re-rip must show.** The mesh stage well under 1,305 s with "readback held the main
+thread" a fraction of 411.8 s; every deduped count identical to 2026-08-29 (meshes 5,792,
+materials 4,784, textures 3,729); every texture file name unchanged (the hash is of the same
+bytes); the Manifest stage under 145 s. Any texture that lands upside down or in the wrong colour
+space is the async readback's orientation or format — `FlipRows` keeps the old flip, and the
+request asks for `RGBA32` explicitly.
