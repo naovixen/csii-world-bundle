@@ -39,7 +39,7 @@ projection — §2.4 — so it cannot be the thing standing 500 m off the beach)
 **Fixed** (`apps/cs2beamng/beamng/dae.py`): `sanitize` no longer admits `.`; the shape and the
 materials file go through the same function, so both sides rename together. Rebuilt in place
 (the build is running as this is written; the Alvear `.dae` changes bytes, its `.cdae` is
-re-cooked, `main.materials.json` is rewritten). **Awaiting Naomi's look.**
+re-cooked, `main.materials.json` is rewritten). **Naomi's look, 2026-08-30: "no more squares" — accepted.**
 
 **Also removed, on the game's rule:** `bb_autobillboard` on every shape that ships an authored
 chain (`shapewrite._imposter_thresholds`). CS2 draws the coarsest authored level right up to

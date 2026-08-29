@@ -2681,7 +2681,7 @@ The record is `docs/plans/phase10-lod-validation-and-draw-distance.md`; this is 
   its placeholder (a 72 × 196 m glossy slab). Exactly one of the level's 8,799 material references
   failed to resolve, this one. `sanitize` no longer admits `.`. Also on the game's rule: no
   `bb_autobillboard` on a shape with an authored chain (190 shapes; CS2 draws the coarsest level
-  to the cull and has no impostor for these). **Rebuilt; awaiting the look.**
+  to the cull and has no impostor for these). **Rebuilt; Naomi's look 2026-08-30: "no more squares" — accepted.**
 * **Torque's detail size is not what every threshold assumes.** `tsShapeInstance.cpp` compares
   `_a<px>` against `projectRadius × 2 × aspect`, not the projected radius alone: if BeamNG kept
   it, every switch and cull in every level we have built fires 3.6× (16:9) to 4.8× (21:9) further
