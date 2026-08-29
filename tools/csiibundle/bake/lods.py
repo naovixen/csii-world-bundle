@@ -355,13 +355,15 @@ def _displacement_summary(index, levels):
 # 75.9 m the moment they switched (A6.7).
 # v2: every level carries its measured displacement from LOD 0, and the index records the
 # RESOLVED decimator - a consumer picks its switch points from those (A6.7).
+# v4: `glb.parse_glb` no longer refuses a file for its POSITION-only impostor level, so every
+# tree shape the v3 index silently skipped (165 on the reference city) now gets its levels.
 register(
     Product(
         PRODUCT_NAME,
         INPUTS,
         "lods/",
         run,
-        version=3,
+        version=4,
         options=("lod_targets", "lod_backend", "region"),
     )
 )

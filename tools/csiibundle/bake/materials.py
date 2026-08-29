@@ -261,13 +261,19 @@ def run(context, progress):
 # version 6: the join takes the game's own `materialId` when the rip ships it (2026-08-19 and
 # after), which retires the ordinal guess entirely - 765 of 778 meshes exact, 0 ambiguous, and
 # the 13 that are left name a material LAYER and are counted as such rather than as a failure
+# version 7: `glb.parse_glb` skips an authored impostor level (a vanilla tree's POSITION-only
+# LOD 1 card) instead of refusing the whole file. The version-6 table was baked through the
+# refusing parser, so `paint` saw NO materials for any tree whose `.glb` carried one - 282 of
+# the reference city's 387 tintable tree materials shipped without a variant, and every tinted
+# forest type bound the untinted, palette-only material a forest item cannot colour: grey trees
+# (2026-08-30). A product's inputs are bundle bytes, so a parser fix has to bump this by hand.
 register(
     Product(
         PRODUCT_NAME,
         INPUTS,
         "materials.json",
         run,
-        version=6,
+        version=7,
         options=("paint_kinds", "paint_variants", "variant_max_size", "paint_factor_max_error"),
     )
 )
