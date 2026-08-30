@@ -341,6 +341,7 @@ SETTINGS = (
 )
 OUTPUTS = ("art/shapes/cs2",)
 
+# version 16: `authored_lod1_drop` hands the authored LOD 1's band to LOD 0, not LOD 2
 # version 15: `authored_lod1_drop` hands the authored LOD 1's band to LOD 2 (residency)
 # version 14: the far silhouette level (`far_detail_scale`), and no billboard on a chain shape
 # version 13: a prefab CS2 gives a photometric light to ships NO collider while `collision_lights`
@@ -376,5 +377,5 @@ STAGE = Stage(
     settings_keys=SETTINGS,
     outputs=OUTPUTS,
     shared_keys=("shapes", "materials_used", "materials_variants_used", "materials_lod_level"),
-    version=15,
+    version=16,
 )
