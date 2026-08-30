@@ -21,6 +21,7 @@
 
 import math
 import os
+import shutil
 import time
 
 import numpy
@@ -239,6 +240,13 @@ def run(ctx, progress):
         "defaultSpawnPointName": SPAWN_NAME if spawns else "",
     }
     level.write_info(info)
+    # the streaming experiment's loader (record §8.8) is gone; a level it left behind keeps
+    # nothing of it
+    stale_loader = level.path("mainLevel.lua")
+    if os.path.isfile(stale_loader):
+        os.remove(stale_loader)
+    if os.path.isdir(level.path("prefabs")):
+        shutil.rmtree(level.path("prefabs"), ignore_errors=True)
     return {
         "visibleDistance": view,
         "sunAzimuth": round(azimuth, 1),
@@ -345,6 +353,7 @@ OUTPUTS = ("info.json",)
 # version 4: `decalBias` scales with `view_distance`
 # version 3: the built hour is published to `shared["scene"]`, because the `lights` stage has to
 # say whether its night lights can be seen at it (A6.9/D2)
+# version 8: cell streaming taken out again (record §8.8); 5-7 were its versions
 STAGE = Stage(
     STAGE_KEY,
     "Sky, spawn and level info",
@@ -354,5 +363,5 @@ STAGE = Stage(
     inputs=INPUTS,
     settings_keys=SETTINGS,
     outputs=OUTPUTS,
-    version=4,
+    version=8,
 )

@@ -66,6 +66,16 @@ the measured argument behind a default — what it cost, what the alternative di
 *why* on the row, and generated into [`docs/settings.md`](../../docs/settings.md) by
 `tools/gen_docs.py` (CI fails if that file drifts from `settings.py`).
 
+## Playing a big city: the renderer matters
+
+BeamNG streams texture mips — loads and evicts them against the card's budget — on **Vulkan
+(0.37+) and Direct3D 12 (0.39+)**, and never on Direct3D 11. Meshes are never streamed by any
+renderer: every shape the level places is on the card for the whole session, which is what
+`cs2beamng budget` measures. So on a card that is short of memory, run D3D12 or Vulkan (0.39.1
+falls back to D3D11 on small cards — check Options > Graphics), and cut mesh bytes with the
+`performance`/`low` presets (`authored_lod1_drop`, `authored_lod0_max_tris`) or a `--region`.
+The validator says which renderer the last session used.
+
 ## Rebuilds are incremental (A4)
 
 A stage is **skipped when nothing it reads has changed**. Each declares its bundle layers, its

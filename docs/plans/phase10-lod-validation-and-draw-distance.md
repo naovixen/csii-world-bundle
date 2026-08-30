@@ -401,3 +401,497 @@ camera — 87, then 8 more from elsewhere: 95 of 102 cells, the city visibly gon
 instance data and draw calls, not residency. The lever is the level's file bytes (×~1.7 on the
 card) and, when a city does not fit, a region build. Recorded so nobody builds the prefab layer.
 
+
+## 8. Residency, 2026-08-30 (second pass) — what the bytes are, and the levers that reach them
+
+Research session after §7's 3,625 MiB level read 6.17 GB of a 6.88 GB GPU budget with Texture
+Quality Low (`beamng.log`, 0.39.4, D3D12). Measured on the built level, the bundle, and Torque's
+source; everything below is a number, not a guess.
+
+### 8.1 Where the 3,625 MiB is
+
+| | MiB | what it is |
+| --- | ---: | --- |
+| `art/shapes/cs2` | 1,983 | 4,031 shapes, **20.2 M top-level triangles at ~100 B each**; LOD 2 4 %, colmesh 2.4 M tris; LOD 1 already dropped |
+| networks | 787 | 1,024 tiles, 9.3 M LOD-0 triangles at 63 B (three levels summed), the game's own cross-sections |
+| markings / areas / terraincut | 218 | |
+| textures | 402 dds + 235 png | at Low, /4 |
+
+The top 120 custom assets in the bundle are 9.0 M LOD-0 triangles / 1,197 MiB of source.
+`Kinsman_Plaza.cdae` is 37.7 MB for 176,587 triangles because its authored LOD 1 is a
+**byte-identical copy of LOD 0** — 12 such levels on the city (also
+`EU_ResidentialHighSignature03`), ~30 MiB in all.
+
+**Welding is not a lever.** Objects: 14.8 M vertices for 9.0 M triangles over the top 120
+meshes, of which 14.2 M are unique in (position, normal, uv) — 4 %. Network tiles: 5 %. CS2's
+meshes are split on purpose.
+
+### 8.2 What the card does with a file (Torque3D source, BeamNG docs)
+
+* `TSMesh::__TSMeshVertexBase` is **48 bytes** (position, tangentW, normal, tangent, uv), full
+  float, no packing; +4 B with vertex colour, +8 B with a second UV. Indices 16-bit on the GPU.
+  One vertex buffer per shape spanning **every** detail level; the CPU copy is kept. So the
+  ~1.7× file→VRAM ratio is arithmetic, `detailAdjust` (Mesh Quality) frees nothing, and a far
+  level ADDS to the buffer.
+* **BeamNG streams texture mips** — `documentation.beamng.com/modding/materials/texture_streaming`:
+  0.37 on Vulkan, **0.39 on D3D12**, never D3D11; evicts unused high mips above ~50 % of the
+  driver's budget, stops loading near ~90 %. The `getMemoryInfo` "budget" is that budget. So
+  textures self-regulate and the meshes are what squeezes them — a higher Texture Quality
+  needs mesh bytes gone, not texture bytes.
+* Shadow Quality scales the PSSM texture 0.25/0.5/1/2/4 (Lowest→Ultra): ~16/64/256 MiB.
+* The TSStatic page: `useInstanceRenderData` "should be used only when needed … for normal level
+  props and buildings, it should be left false"; a static without it "can be rendered through
+  the static shape manager", which batches repeated shapes. The level set it on all 16,428.
+* Known Issues: "some levels use almost 4 GB VRAM to load just non-streamable data".
+* **§7's experiment tested unloading, not never-loading.** `TSStatic::_createShape()` runs in
+  `onAdd()`; a `Prefab` with `loadMode "Manual"` adds nothing until `:load()`. Untested, and
+  the one thing that could take the whole map's bytes off the card at once.
+
+### 8.3 Built (shapes v17, instances v12, derived v6, networks v6, terrain v3)
+
+* **`authored_lod0_max_tris`** (`shapelods.authored_chain`): a shape whose LOD 0 is at or over
+  N triangles ships the game's LOD 1 as its nearest level and leaves LOD 0 out; LOD 1 is then
+  kept even under `authored_lod1_drop`, the collider still comes off it. Sized on the bundle:
+  N = 20,000 → 189 shapes in the level, −6.28 M triangles ≈ **−599 MiB** of files; 50,000 → 63
+  / −378; 5,000 → 591 / −854. Presets: performance and medium 20,000, low 5,000. Declared and
+  counted in the report (`lod0Dropped`, `lod0DroppedTriangles`).
+* An authored level **byte-identical to LOD 0** (sha1 of indices + positions after the same
+  merge) is left out; LOD 0 keeps its band (`identicalLevelsDropped`).
+* `useInstanceRenderData` only on a TSStatic that carries an `instanceColor`
+  (`level.tsstatic(instanced=)`); road, paint, marking, area tiles ship it false.
+* Terrain stage bumped to v3 so the one-file-per-image writer of 095455b actually runs — the
+  level built after it still carried **57.2 MiB** of byte-identical tier PNGs (27 groups).
+* `tools/beamng/cellprefab.py`: rewrites every `Objects/km_x_y` cell beyond a radius of the
+  spawn into `prefabs/<cell>.prefab.json` with a `loadMode "Manual"` `Prefab` in its place
+  (backup beside; `--restore`). The never-loading experiment, on the level as built.
+
+Not built, with the reason: **BC1 for opaque colour** (−76 MiB of 152) would thread a format
+through `partition`/`export_all`/the ledger key and into the spawned texture workers, for an
+off-by-default option on the half that streams — dropped. **Decimating** the no-chain custom
+assets and the road LOD 0 needs an attribute-aware simplifier with a position weld first
+(cluster decimation made lattices); an offline experiment on `Kinsman_Plaza` and one net tile,
+not a build.
+
+### 8.4 The experiments Naomi runs (one session, no rebuild needed for E1/E2)
+
+1. **E1 — never-loading.** `python tools/beamng/cellprefab.py <level_dir> --keep-radius 2000`,
+   load, `dump(Engine.Render.getMemoryInfo())`, then
+   `for _, n in ipairs(scenetree.findClassObjects('Prefab')) do scenetree.findObject(n):load() end`,
+   `be:reloadCollision()`, read again. A jump on `load()` = lazy loading is real and a
+   `stream_radius_m` cell layer (record §7's design, never unloading) is worth building.
+   `--restore` afterwards.
+2. **E2 — the settings delta.** Texture Quality Normal, Shadows High, dynamic reflections on;
+   `getMemoryInfo`. That is the number the build must clear.
+3. **E3** — FPS at the spawn on the rebuilt level (instance data off on 15,000 statics).
+
+### 8.5 The rebuild — numbers
+
+Rebuilt 2026-08-30 03:5x with `authored_lod0_max_tris 20000` on the §7 settings
+(`docs/baselines/*-after-phase10-lod0drop.*`), validator 0 problems:
+
+| | §7 build | this build | |
+| --- | ---: | ---: | --- |
+| meshes cs2 | 1,983 | **1,505** | 192 shapes ship the game's LOD 1 as their nearest level (10,352,647 LOD 0 triangles left out); 1 identical authored level dropped (the other copies sat on shapes A already reached) |
+| networks / markings / areas / cut | 1,005 | 1,005 | untouched |
+| textures .dds | 402 | 402 | |
+| textures .png (terrain) | 235 | **156** | 55 orphaned per-tier copies swept (79 MiB); 53 files, one per distinct image |
+| **RESIDENT TOTAL** | **3,625** | **3,069** | −556 MiB of files ≈ −0.9 GB on the card |
+
+Top 100 shapes 862 → 568 MiB; `Kinsman_Plaza` 36.0 → 18.1 MiB. Triangles in view unchanged
+(1.93 → 1.95 M cs2 at 8 km — LOD 1 draws at every distance for those 192). At 5,000 the
+setting reaches ~590 shapes for roughly another 250 MiB; that is the `low` preset's value.
+
+**Awaiting Naomi:** the look at the 192 buildings up close; E1 (`cellprefab.py`, §8.4) and E2's
+`getMemoryInfo` at Normal textures / High shadows on this build. The 6.17 GB of §7 should read
+~5.2–5.3 GB at Low before the settings go up.
+
+### 8.6 E1 run 2026-08-30 — never-loading WORKS, and it is not where the bytes are
+
+On the 3,069 MiB build with 87 cells beyond 2 km of the spawn as `loadMode "Manual"` prefabs
+(`cellprefab.py`), Texture Quality Low: `usageBytes` **5.02 GB** at spawn, **5.77 GB** after
+`prefab:load()` on every cell (`budgetBytes` 6.29 → 6.77). The far cells' shapes were not on the
+card until asked for — §7's verdict covered unloading only. But the near-ring level is 5.02 GB
+with 85 % of the city absent: the FIXED part (road tiles, markings/areas, forest types, the
+8192² terrain, textures, the engine's own targets at 3440×1440) is ~5 GB, and object streaming
+reaches 0.75. Next reading: a tiny vanilla level at the target settings, to split the engine's
+baseline from the level's fixed part.
+
+### 8.7 E2 and the baseline — the level costs ~3.5 GB at the target settings
+
+Same day, separate sessions, settings changed from the main menu only (Mesh Normal, Terrain
+Normal, **Texture Normal, Lighting Ultra, Shadows High**):
+
+| | usage | budget | |
+| --- | ---: | ---: | --- |
+| `gridmap_v2` | 2.89 GB | 7.60 GB | engine + a small level — the baseline is ~2–2.5 GB at 3440×1440 |
+| `cs2_city_fine` (3,069 MiB build) | **5.98 GB** | 6.78 GB | 30–40 fps, dips to 10; **88 % of budget**, where texture streaming stops loading (docs: ~90 %) — the dips |
+
+So the level is ~3.5 GB on the card at these settings and needs ~1 GB more off to sit near
+70 % with streaming steady. Buildings can give ~0.75 of that if the far cells never load
+(§8.6); the rest is the fixed part — road tiles first (787 MiB of files ≈ 1.3 GB), forest
+types (~0.5), markings/areas (~0.35), terrain. Also: 5.98 → 2.89 on the level switch, so
+memory IS given back between levels on 0.39.4 — the "restart the game" lore does not hold.
+
+**Phase 3, built (Naomi chose objects + tiles, 2.5 km):** `stream_radius_m` (0 = off;
+performance preset 2,500). Every placing stage buckets by `level.cell_of` — `Objects/km_x_y`,
+`Networks/networks_km_x_y`, `Markings/markings_km_x_y`, areas, skirts, lane furniture;
+`terraincut` stays resident (a hole with nothing over it is a fall). `Level.stream_group`
+writes a cell as `prefabs/<cell>.prefab.json` (root SimGroup, zero `groupPosition`, world
+positions — vanilla's own dialect) with a `loadMode "Manual"` `Prefab` in its place;
+`Level.write_main_lua` writes `mainLevel.lua`: each frame the nearest unloaded cell whose
+square is within the radius of `core_camera.getPosition()` is `load()`ed (one per frame),
+`be:reloadCollision()` at most every 5 s after a load, **nothing is ever unloaded** (§7).
+`read_objects` reads the prefabs too, so the validator, the budget's in-view count and the
+POI stage see the same objects as before. Versions: instances 13, derived 7, networks 7,
+scene 5.
+
+What it costs, declared: a road or building beyond 2.5 km is not drawn until approached
+(today a building is culled at ~1.4 km anyway; a road was drawn to the horizon); a cell load
+is a stall proportional to the cell, and the collision rebuild ~2 s — both while driving into
+a new district. The far ring (§4.2) is what puts outlines back.
+
+### 8.8 Cell streaming, built and withdrawn the same night — the limit is the main thread
+
+Built as §8.7 describes and loaded three times (2026-08-30 late):
+
+| build | what happened |
+| --- | --- |
+| 1 | the cell's root `SimGroup` shared the `Prefab`'s name → "did not create root SimGroup", cells parentless; and the cook had been skipped with the game open, so every tile was `Importing COLLADA` at runtime — a minute at 1 fps at spawn |
+| 2 (cooked, `_root`) | spawn **5.07 GB** (5.98 resident), no errors; then a **4.5–5 s freeze every 30 s** while entering new ground — every one a `be:reloadCollision` + `Loaded Static Collision` (1.3 + 3.2 s, growing with what is loaded) |
+| 3 (no rebuild) | **the car fell through a streamed bridge**; one manual `be:reloadCollision()` fixed it. So a prefab's `load()` does NOT register collision, and BeamNG rebuilds the whole static collision (2 GB, 45–51 M triangles) or nothing. And dense downtown cells stutter on load regardless — the load is a main-thread add |
+
+Naomi's verdict: a no-go. Stalls interrupt play; smaller stalls are still stalls. Memory-wise it
+worked exactly as §8.6 predicted (5.07 → 5.48 GB over a drive, against 5.98 resident), and
+that is the record of what the mechanism is worth. **Withdrawn**: `stream_radius_m`,
+`stream_collision_s`, `Level.stream_group`, the loader, the cell buckets on tiles — all out
+(instances v15, derived v9, networks v9, scene v8); `level.cell_of` stays as the object
+group naming; `tools/beamng/cellprefab.py` stays as the experiment. What could change the
+verdict is an engine change (off-thread shape loading, incremental collision), not a builder
+one.
+
+**Where that leaves residency:** 3,069 MiB of files = 5.98 GB at Normal textures / Ultra
+lighting / High shadows on the 8 GB card (88 % of the streaming budget: playable at 30–40 fps
+with dips). The levers left are all "less city": `authored_lod0_max_tris 5000` (~−250 MiB),
+`forest_rare_type_min` up (types mount, items do not), Shadows Normal instead of High
+(−48 MiB) — and the region build, which is the one that fits with room at these settings.
+
+### 8.9 Experiment G (decimating LOD 0) — closed without a lever; the renderer check; where it ends
+
+`fast_simplification` (Fast-Quadric, position-only) after an exact position weld, on
+`Kinsman_Plaza` (176,587 tris), `EU_ResidentialHighSignature03` (77,772) and the heaviest road
+segment (128,114), 2026-08-30: the collapse stalls at 67–86 % of the triangles on the two
+buildings whatever the target, and the surface it leaves is metres off the original (p95
+two-sided distance 0.4–2.3 m even at a 14 % cut) — it collapses across the unwelded seams, the
+same lattice failure the cluster decimator had. The metric (nearest-centroid + exact
+point-triangle) also overstates on large triangles, so the numbers are an upper bound, but the
+Blender-free reading is enough: a position-only quadric cannot be bounded to centimetres on
+these meshes. An error-bounded, attribute-aware simplifier (meshoptimizer's `simplify` with
+`target_error`) needs a C++ toolchain here (no wheel for this Python); **deferred**, library
+uninstalled, nothing in the build depends on it.
+
+Built instead: the validator reads the renderer out of `beamng.log` (`machine.graphics_api`)
+and notes Direct3D 11 — no texture streaming there, and 0.39.1 falls back to it on small
+cards; `resident.graphicsApi` / `textureStreaming` in the report; a README section.
+
+**State at the end of the session (uncommitted, awaiting the one in-game validation):**
+`cs2_city_fine` fully resident at **3,069 MiB** (from 3,625 at the session's start; 192
+shapes start at the game's LOD 1, terrain orphans swept, instance data only on coloured
+statics), validator 0 problems; measured 5.98 GB at Normal/Ultra/High, 30–40 fps. Streaming
+withdrawn (§8.8). The levers that remain are all "less city": `authored_lod0_max_tris 5000`
+(~−250 MiB), fewer forest types, Shadows Normal — or a `--region` for the district in play.
+
+### 8.10 The draw-distance items closed out (2026-08-30, late)
+
+§4.5's list, item by item:
+
+| item | outcome |
+| --- | --- |
+| §2.4 Torque's detail size | still Naomi's one measurement; nothing here depends on it being either value |
+| forest triangles in the budget | done earlier the same day |
+| **the far ring** (§4.2) | **built**: `stages/farring.py`, `far_ring_metres` (default 2,500 m). Every building's silhouette (already computed per shape by `_far_level`) is carried in the shape result (`lods.farRing`), placed by the instances stage with the building's transform, merged per 512 m cell into one `lod_vertcol` shape (`art/shapes/farring/farring_<cx>_<cy>.dae`, `TSStatic` at the cell origin, no collision, no shadows). The hand-over is ONE distance for the level: a building whose detailed levels stop nearer than D keeps a per-building silhouette only up to D and is in the ring beyond; one that reaches past D (the towers) keeps its own silhouette to the game's cull and is not — a shape's thresholds are per shape and the shape stands in many cells, so a per-cell hand-over is not expressible. Cell start `group_detail_px(cell radius, D)`, null at the largest member's game cull × `far_detail_scale`, rounded up. Nothing drawn twice, nothing absent; the step from authored coarsest level to 1 m voxel hull now happens at D for everything (declared). Instances v16, shapes v19. |
+| `decalBias` / fog / shadow distance with the view | already there since scene v4 (`decalBias` and `fogAtmosphereHeight` scale with `view_distance`); vanilla sets no `shadowDistance` and neither do we — closed |
+| one material per LOD 2 | measured on the bundle: 1,528 of 1,615 LOD 2 levels already bind ONE material; the 87 that bind 2–4 would lose their texturing under a merge — not done, on purpose |
+| `castShadows` by size | done (`shadow_min_radius`) |
+| worked-example test for `authored_lod_limits` | `tools/test_a3_rules.py::test_authored_lod_limits_worked_example` — a 24 × 12 × 18 m house with a 6,000- and an 800-triangle level gives limits [142, 133, 103]: LOD 0 to 181 m, LOD 1 to 512 m, LOD 2 to 16 km; the coarsest level's limit is the mesh's own `m_MinLod`; a 0.5 bias lifts every limit by three. Plus the ring's two-box case. |
+
+### 8.9 Locating the loader and the collision builder in the engine binary (step 2 of the DLL route)
+
+Naomi asked whether an in-process C++ DLL (loaded ReShade-style as a proxy `dxgi.dll`; the
+community's Volumetric Smoke mod is one) could make shape loading asynchronous. The gated first
+step — *find* the functions without changing anything — ran 2026-08-30 with
+`tools/beamng/locate_engine.py` (pefile only, no disassembler) on build 20972 (0.39.x,
+`BeamNG.drive.x64.exe` 46 MB, 107,156 functions in `.pdata`, 12,762 RTTI class names, PDB
+`c:\symbols\BeamNG.drive.x64.pdb` not shipped). Took an hour, not the week estimated: RTTI gives
+every vtable, asserts carry `D:\jenkins\workspace\gameengine\...\*.cpp` paths, and the log
+strings are `{}`-format literals. All anchors are strings, so the script survives updates.
+
+| What | Where (VA, build 20972) | Evidence |
+|---|---|---|
+| `TSStatic` vtable | `0x141f6f3a0`, 78 slots, 17 override `SceneObject` | RTTI `.?AVTSStatic@engine@@` |
+| `TSStatic::onAdd` | slot 16, `0x1409f6510`, 435 B | refs `engine::TSStatic::onAdd`, `TSStatic::onAdd() - Shape creation failed!`, `usePolysoup`, `scene\objects\staticMesh…cpp` |
+| generic `Resource<TSShape>` loader wrapper | `0x1401bdcd0`, 673 B, **15 callers** (TSStatic, vehicles, GroundCover, …) | 2 hops below `onAdd` |
+| `Resource2<TSShape>::create` (the parser) | `0x1402fc3a0`–`0x1402fe6c4`, 9 KB, monolithic | refs `cdae`/`gltf`/`Failed to load Collada shape (assimp)`, `Failed to find TSShapeConstructor for`, **`Importing CS script`, `exec("`** |
+| bulk "Mesh Cache" loader | `0x1401d04a0`, 4.6 KB | `Mesh Cache rebuilt summary: {} of {} files freshly loaded`, `{} of {} meshes loaded -> {:0.2f} %` |
+| static collision rebuild | `0x14019b3a0`–`0x14019ba98` | `Physics collision reloading...`, `generateCollision` (PhysicsPlugin), `world triangles: {}` |
+| its callers | `PrefabV2::onFileChanged` (`0x1409c9c60`) and the Lua binding table fn `0x14055e8e0` (`reloadCollision`) | only two |
+| `Prefab::load` Lua entry / `Prefab::_loadFile` | `0x1409c7740` / `0x1409c1660` | log strings |
+
+What the map says about step 3 (making it async), before any code:
+
+* The parser is one 9 KB function that, besides reading `.cdae`, resolves `TSShapeConstructor`
+  scripts and **executes console scripts** (`exec(`, `Importing CS/DSO script`). A loader that
+  calls into the script VM is main-thread by construction; detouring it onto a worker means
+  re-implementing the cdae path *without* those side effects, blind.
+* The loader wrapper is shared by 15 callers — vehicles, ground cover, everything. Any hook is
+  global, not "level statics only".
+* The collision builder has no incremental entry: the only two callers rebuild the world
+  (`world triangles`/`world vertices` are whole-scene counters). Nothing to hook; it would have
+  to be replaced.
+* The engine already has a bulk shape pre-loader with a progress counter (the "Mesh Cache" path).
+  Whether it runs threaded is unknown — but it points at the one cheap experiment left.
+
+**The decisive Lua-only measurement (no DLL):** shapes never unload (§7), so a cell's second
+`Prefab:load()` after an `:unload()` is a resource-cache hit — the parse is gone and only object
+creation, scene insertion and material binding remain. If the second load stalls as long as the
+first, the parse is not the cost and no async loader, hooked or native, would remove the stall.
+If it is far shorter, the parse is the cost and the remaining question is the collision rebuild,
+which the map shows has no incremental path. Either way that reading closes the DLL question
+for a tenth of the effort of step 3; take it before writing a proxy DLL.
+
+### 8.11 The first look at the ring (Naomi, 2026-08-30 late) — three fixes
+
+1. **Boxes drawn together with the meshes.** A ring cell had ONE detail, and Torque draws a
+   shape's largest detail for any pixel size above its threshold — so inside the hand-over the
+   cell was drawn on top of the real buildings. Each cell now carries an empty near detail (a
+   1 mm triangle 500 m underground) one pixel above the ring's start; the ring draws only beyond.
+2. **Boxes up close on the small houses.** A house's detailed levels end at CS2's cull ÷
+   `lod_detail_scale` — a few hundred metres at scale 10 — and the per-building box ran from
+   there to the hand-over. A ring member now ships NO box: its coarsest authored level runs out
+   to the hand-over (its null moves to D) and the ring takes over there. The band is drawn
+   triangles (the game's LOD 2, median 499), not a box. Shapes v20.
+3. **The rare-type drop is gone** (`forest_rare_type_min`, `forest_rare_keep_radius`,
+   `drop_rare_types`): it left prop families half-built — the rarer members of a set missing
+   from every instance of it — for 0.5 % of the forest. Every placed type ships. Instances v17.
+4. **And the ring's own sizes were inverted** (caught by the instrument: 117 ring triangles in
+   an 8 km view). A Torque detail's size is where it STARTS as the camera approaches, so the
+   ring level's size is its far end (the cull) and the empty near detail's the hand-over.
+   Right way round: 167,859 ring triangles in view at 8 km, 179 draw calls. Instances v18.
+   Level: 3,103 MiB, 2,860 forest types (every placed type), validator 0 problems.
+
+**The reading (2026-08-30, `tools/beamng/stall_probe.lua`, keep-radius 500, three largest
+never-loaded cells, `os.clock` on the main thread):**
+
+| cell | TSStatics | unique shapes | first `load()` | `unload()` | second `load()` | GPU Δ |
+|---|---|---|---|---|---|---|
+| km_1_0 | 957 | 136 | **2,906 ms** | 2 ms | **151 ms** | +81 MB |
+| km_2_1 | 805 | 268 | **4,445 ms** | 3 ms | **195 ms** | +240 MB |
+| km_1_-1 | 806 | 104 | **1,409 ms** | 4 ms | **133 ms** | +246 MB |
+
+Then `be:reloadCollision()`: **1,370 ms** synchronous (313,003 instances, 5,170 unique meshes,
+1,495 MB), followed by `staticCollision … Loaded Static Collision in 2.657s` (43.5 M tris,
+1,783 MB) logged *after* the Lua call returned — that part runs off the main thread.
+
+* The parse is **93–96 %** of the stall. Per unique shape it is **14–21 ms** (2,906/136,
+  4,445/268, 1,409/104) — under one 30 fps frame. Object creation is ~0.15–0.25 ms per TSStatic.
+* So an async loader is not what the parse needs: **Lua can amortise it below a frame** — mount
+  each of an approaching cell's unique shapes one per frame (a hidden TSStatic, or a per-shape
+  micro-prefab) from 2–3 km out, and the later cell `load()` is the 130–200 ms creation cost,
+  itself divisible by smaller cells. No DLL, no engine change.
+* The collision rebuild is the residue and the only true freeze: 1.37 s blocking per rebuild,
+  no incremental entry in the binary (§8.9 table), and a DLL cannot add one. With a 3 km
+  lookahead it fires once per ~3 km driven. Whether one 1.4 s freeze every few minutes of
+  driving is acceptable is Naomi's call; the §8.8 verdict said no to stalls.
+
+**DLL route: closed on the evidence.** The parse does not need it; the collision cannot use it.
+
+### 8.12 The second look (Naomi, 2026-08-30) — the switch points were ours, not the game's
+
+Three symptoms, three rules of ours:
+
+| symptom | rule | fix (shapes v21) |
+| --- | --- | --- |
+| trees full at 20 m, bare after, full again at 100–200 m | LOD 0 → the bake's clustered LOD 1 (a canopy comes out as sticks) → the billboard (a picture of the full tree) | a tree ships LOD 0 and hands straight to the billboard where the generated level would have started — the game's own trees do exactly this (their LOD 1 is an impostor card) |
+| building LOD "way too close", inconsistent between buildings, every switch visible | `lod_detail_scale` (10) multiplied the CHAIN switch points, not only the cull: a house the game keeps at LOD 0 to 181 m lost it at 18 m; no-chain buildings switched by the displacement rule instead | chain switch points are the game's limits, UNSCALED; `lod_detail_scale` moves only a chainless shape's null; this build at scale 1 for everything (props included) |
+| gaps in a few buildings | generated (clustered) levels on buildings: the 66 LOD-0 promotions and the chainless ladders are the lattices | generated levels for PROPS only; a building is LOD 0 / its chain + the ring |
+
+The first build of that (shapes v21) failed its own budget twice, and the instrument caught
+both before a load: **1.65 billion** forest triangles in view (a tree with no generated level
+had nothing for the billboard to take its switch size from, so LOD 0 ran to the cull) and **no
+ring at all** with 9.1 M building triangles at 8 km (at the game's own switch points a house's
+LOD 2 reaches 16 km, so "detail reaching past D" exempted every building). Shapes v22: a
+tree's generated levels are loaded for their sizes only and the billboard replaces them all;
+every building is a ring member, towers included.
+
+### 8.13 The LOD audit — `tools/beamng/lod_audit.py`
+
+"Validate everything in the LOD implementation is correct, this is the 3rd build" (Naomi).
+The audit reads what the shapes stage recorded for every shape (detail sizes, null,
+billboard, radius, the game's limits, ring membership) and the ring cells' thresholds from
+the instances report, and walks the camera from 10 m to the cull for every one of them asking
+Torque's own question - the detail with the largest size not above the projected pixel size -
+then checks seven rules: R1 sizes strictly decreasing and above the null, the billboard
+between; R2 a ring member drawn at every distance up to the hand-over and never beyond, its
+cell beyond and never nearer, no billboard under the ring; R3 a tree is LOD 0 then the
+billboard; R4 no generated level on a building; R5 chain switch sizes are the game's; R6 a
+LOD-0-dropped shape starts smaller; R7 props' ladders. Exit 1 on any failure; it runs before
+any load.
+
+Its first run, on the third build, found four defects no report showed: (1) the recorded
+ladder went stale after the clamp / imposter / lift steps, so report and audit read pre-clamp
+sizes - the stats are now taken once from the final levels; (2) 1,028 props had their
+coarsest level AND their null at 2 px at the game's own distances - `_above_null` lifts every
+level strictly over the null and the billboard between; (3) ring members still carried a
+runtime billboard (1 px under a 111 px null) - none now; (4) a ring member's null rounded UP,
+so a 6 m house stopped at 1,940 m and its cell started at 2,500 m - a 560 m gap - the null
+rounds DOWN now (an overlap is a hull inside a building at 2.5 km; a gap is a missing house).
+Shapes v25.
+
+Second and third runs (v26–v28): (5) lifting a mesh to `null+1` left a band `[null, null+1)`
+where the null is chosen — 1,678–2,510 m of no warehouse — so the mesh keeps its size and the
+null comes DOWN under it; (6) "the null at the hand-over" was the wrong model altogether: a
+level is drawn for `p >= its size`, so a house left at 44 px with a null at 3 px vanishes at
+181 m and the null is chosen from there to 2.5 km — a ring member's coarsest level now TAKES
+the hand-over's pixel size, the null one under it (`shapewrite._far_level`); (7) the 2 px
+floor stopped two 2.9 m sheds 616 m short of the ring — a 1 px coarsest level with no null is
+allowed. The v27 build's shapes stage also failed with a KeyError and the audit read the
+previous state — it now refuses to run without a finished report. Torque's selection rule is
+pinned as `tools/test_a3_rules.py::test_torque_detail_selection`.
+
+v28 audited clean and its budget said **32.4 M building triangles in view at 4 km**: with
+`authored_lod1_drop` on, a house's LOD 2 (game start 16 km) fell under the hand-over and was
+dropped, so LOD 0 ran to 2.5 km for every house. v29: the COARSEST level under the hand-over
+covers the band to it - LOD 0 to where the game's LOD 1 ended (512 m), the game's LOD 2 from
+there to the ring. Declared: in that band the game draws LOD 1; LOD 1 is the residency trade.
+
+v29 audited clean at 23.5 M building triangles inside 4 km — per shape, the custom packs:
+`USSW_BonusResidentialMedium01_L3_3x2` ×112 at 9,757 triangles each to 2.5 km, and its
+siblings; their LOD biases keep CS2 drawing LOD 0 for kilometres. At the game's own switch
+points this city is what CS2 draws, and BeamNG cannot draw it. **v30: one uniform
+`lod_detail_scale` on every chain again** — what v20 got wrong was three scales (buildings
+10, props 4, generated ladders their own), not the scaling — built at 3 for buildings and
+props, trees at 10 (the billboard), ring at 2.5 km. And the level shown AT the hand-over is
+the nearest one under it (the game's choice at that pixel size), not the coarsest.
+
+**v30, audited clean, 2026-08-31:** 3,069 MiB resident; inside 4 km 5.78 M triangles (buildings
+and props 3.63 M, roads 1.12 M, forest 0.67 M, ring 0.15 M) against 27 M unscaled and the §7
+build's ~5 M. A house: LOD 0 to ~60 m, the game's LOD 2 to 2.5 km, then its cell's ring; the
+custom packs' 10k-triangle LOD 0 to ~100 px; the airport its LOD 1 (57k) to 2.5 km; a tree LOD 0
+to ~100-200 m then the billboard; props the same 3× uniform scale. Settings on the level:
+`lod_detail_scale 3`, `lod_detail_scale_prop 3`, `lod_detail_scale_tree 10`, `far_ring_metres
+2500`, `authored_lod0_max_tris 20000`, `authored_lod1_drop` on. Awaiting Naomi's look.
+
+**Naomi's look at v30 (2026-08-31):** houses "perfect"; big city buildings keep full detail
+too long (she asks ~0.66 of the distance); trees can switch nearer (~0.5) and their canopy
+tops thin out at the crossover; 10–30 fps at Normal mesh/terrain/texture, High shadows, Ultra
+lighting. Calibration read from the game: Mesh Quality is `$pref::TS::detailAdjust` —
+Lowest 0.5, Low 0.75, **Normal 1.0**, High 1.5, Ultra 2.0 (`lua/ge/extensions/core/settings/
+meshQuality.lua`); every threshold here assumes 1.0, so on Normal the level switches where
+the build says. The tops: the imposter atlas is 256 × 128 for a whole tree (measured in
+`temp/`), Torque's 64 px default cell. v31: `lod_detail_scale_large` (4.5, for buildings of
+radius ≥ `lod_large_radius_m` 30 — OURS, declared: CS2's limits scale with size and keep a
+tower sharp for kilometres), `lod_detail_scale_tree` 20, `tree_billboard_px` 128 written as the
+billboard node's FCOLLADA user property `bb_dimension` with `bb_includePoles`.
+
+**v31, audited clean (2026-08-31):** 5.65 M triangles inside 4 km (buildings and props
+3.60 M, roads 1.12 M, forest 0.57 M, ring 0.15 M), 3,069 MiB. What the large scale changed:
+`USSW_ResidentialHigh01_L3_5x4` (35 m radius, LOD 0 dropped) was its 20,596-triangle LOD 1
+from the kerb to 2.5 km in v30 — LOD 1's size at 3× (18 px) sat under the hand-over, so it
+was the level shown at it; at 4.5× it is 159 px (~290 m) and the 500-triangle LOD 2 covers
+the band to the ring. Trees: LOD 0 to ~30 m then a 128 px-cell billboard. The audit now takes
+the shape's kind from the build (`kind` in the shape result) rather than guessing it.
+v32 (buildings 2x, large 3x): audit clean, 6.08 M triangles in 4 km, 3,069 MiB.
+v33 (buildings 4x, large 6x, props 3x, trees 20x): audit clean, 5.41 M triangles in 4 km, 3,069 MiB. Naomi's pick after clarifying scale direction.
+
+### 8.14 The FPS isolation sweep, and what still holds detail to the ring
+
+Naomi at v33: 20–30 fps in the city; some tall hotels never change LOD; a tree crossover
+where the mesh vanishes before the billboard shows.
+
+* **The hotels are the 11 no-chain landmarks** (state query): `Five_Luxe_JBR_` 243k,
+  `Kinsman_Plaza` 176k, `LuxuryTowerResidence` 92k, `Address_Beach_Resort_Dubai` 87k, three
+  floating boats (chain, LOD 0 dropped), `Two_Seventy_Hennepin`, `Torre_Tetris`,
+  `Amazon_Warehouse`, `HotelMondial1` — workshop assets whose LOD slots held copies of LOD 0,
+  so nothing coarser exists; each holds its one level to the 2.5 km ring. The closed
+  decimation experiment (§8.9) is the only path to a mid level for them; whether they matter
+  is what the sweep is for.
+* **`tools/beamng/cs2diag.lua`** (installed to the userfolder's `lua/ge/extensions/`):
+  `extensions.load('cs2diag')` then `cs2diag.start()` — measures a baseline where you stand,
+  hides one group at a time (Objects, Networks, Markings, Areas, Vegetation, FarRing,
+  TerrainCut, LaneFurniture) for 8 s each, restores it, ranks the FPS gain per group, prints
+  the summary and writes `cs2diag_report.json` (with `getMemoryInfo` before/after and a
+  baseline-drift line so noise is visible). Run parked downtown and again overlooking the
+  city.
+* The tree crossover is unexplained until the sweep session: check the imposter atlas size in
+  `temp/` (did `bb_dimension=128` take?) and whether the vanish band is the atlas being built
+  on first sight (`Creating imposters` in the log at that moment).
+
+**First sweep (Naomi, overlook at (2991, 154), v33, Normal/Ultra/High): the FPS is MEMORY.**
+`usageBytes` 5.85 GB of a 6.09 GB driver budget — 96 %, 0.24 GB available — and the sweep
+proves it the other way round: hiding buildings, vegetation, roads, markings each moved FPS by
+under ±1 at a 13.4 fps baseline (hiding frees no residency), and the FPS jumped to ~27 mid-
+sweep and STAYED for the closing baseline — the texture streamer settling, not the group that
+happened to be hidden ("+14.1 without TerrainCut" is that artefact; drift +12.8 says so).
+Note the budget itself was 6.09 GB this session against 6.78 before — something else on the
+machine held ~0.7 GB. And the tree-billboard `bb_dimension=128` did NOT take: atlases rebuilt
+this session (41 min old, `VFP_SylvesterPalmTree01…`) are still 256 × 128 — the FCOLLADA
+user-properties route is ignored by BeamNG's importer; UNVERIFIED-FAILED, the harmless extra
+stays in the .dae, the knob does nothing yet.
+
+**The billboard cell, the real mechanism (2026-08-31):** vanilla GridMap's oak ships a
+`TSShapeConstructor` companion (`untitled.cs`: `addImposter("0","0","0","0","64","0","0")`) —
+so the atlas cell is set from a `.cs` beside the shape, not from the node. `shapewrite` now
+writes `<tree>.cs` (`addImposter(switch px, 8 equator views, poles on, dim = tree_billboard_px)`)
+for every tree with a billboard and drops the dae's `bb_autobillboard` node for those (one
+billboard, one owner); `dae.sweep_orphans` sweeps `.cs` too. Shapes v32. Verify after Naomi's
+next load: the rebuilt atlases in `temp/` should read 1024 x N (8 views x 128) instead of
+256 x 128 — a per-tree VRAM cost, ~0.5 MB BC per type, ~130 MB over 253 tree shapes if all
+rebuild, which the streamer can evict.
+
+Same build carries Naomi's picks: `authored_lod0_max_tris` 5000 (637 shapes, 14.7 M LOD 0
+triangles left out), `forest_rare_type_min` 3 / keep 5 m (955 one-and-two-item types dropped,
+164 landmarks kept), `foliage_density` 33 (576k items, 1,890 types). Resident 2,911 MiB
+before the .cs build; audit clean.
+
+**The billboard saga's end (2026-08-31):** the `.cs` companions "disappeared" because the
+engine's shape loader IMPORTS a `TSShapeConstructor` script and rewrites it as
+`<shape>.dae.asset.json`, deleting the script as obsolete (`Resource2<TSShape>::create`,
+watched live through a 20 s poll: 238 written by the shapes stage, converted one by one across
+the compiler's run). The level now carries 238 asset companions with
+`imposters: [{dimension: 128, equatorSteps: 8, includePoles: true, size: <switch px>}]` — and
+v33 writes that file DIRECTLY (no .cs, no per-cook conversion), with `dae.sweep_orphans`
+taught the double extension so a rebuild keeps them. Verify on Naomi's next load: rebuilt
+atlases in temp/ should be larger than 256 x 128, and the canopy tops should survive the
+crossover (poles are in the atlas now).
+
+Level as handed over (force-built, audit clean, 2,911 MiB): `authored_lod0_max_tris` 5000,
+buildings 4x / large 6x / props 3x / trees 20x, ring 2.5 km, rare floor 3 (keep 5 m),
+foliage 33 %, billboards 128 px 8 views with poles.
+
+**...and the asset.json route bakes ORANGE (2026-08-31, reverted in v34).** The size took (238
+atlases rebuilt at 512 x 512) but Naomi's screenshot showed every distant tree flat orange, and
+decoding a fresh atlas put the orange IN the atlas: opaque pixels mean RGB (215, 65, 4) —
+BeamNG's no-material colour — while the same trees render normally up close. The imposter
+bake under an asset-file config runs without the shape's materials; mechanism unknown, one
+suspicion is the bake running earlier in the load than the material mount. v34 reverts to the
+dae `bb_autobillboard` node (engine default bake, known good), `tree_billboard_px` marked
+INERT in its own help text. The 11 no-chain landmarks stay as the one open visual item
+(nothing coarser exists; the error-bounded decimator remains the only path).
+
+**Correction, same hour (Naomi: "why revert something that worked?"):** the asset.json route is
+vanilla's own — 611 `.dae.asset.json` ship in the game's levels, trees included
+(`tree_aspen_blocker_a`: `equatorSteps 16, includePoles false, dimension 128`). The orange
+bake came with OUR parameter choice (8 views, poles on); v34's revert was over-broad and was
+stopped mid-build. v35 keeps the route with vanilla's tree parameters verbatim (16 views, no
+poles, 128 px). If v35 still bakes orange, the parameters are exonerated and the suspect
+becomes the bake's material context - then the revert is right.
+
+**Verdict (2026-08-31, two in-game confirmations):** the asset.json imposter bakes orange for
+this level's shapes even with vanilla's parameters verbatim — worse on the second look ("orange
+blobs for a lot of trees"). The one delta left standing against vanilla: material LOCATION.
+Vanilla defines a shape's materials in a `materials.json` beside the shape; ours live in
+`art/cs2/main.materials.json`, and the asset-route bake runs at shape load, plausibly before
+that file mounts — the node-route bake runs later and has never failed. v36: asset.json
+imposters off for good, the dae `bb_autobillboard` node is the billboard (engine-default 64 px
+cell — the soft-but-correct look), `tree_billboard_px` inert with the reason in its help. The
+untested candidate fix, for another day: a shape-adjacent materials.json for the tree
+materials only.

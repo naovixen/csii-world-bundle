@@ -166,6 +166,97 @@ TUNING_SETTINGS = (
         unit="×",
     ),
     Setting(
+        key="lod_detail_scale_tree",
+        default=10.0,
+        kind="float",
+        label="Tree detail reach",
+        blurb="How many times nearer than the game a tree turns into its flat billboard.",
+        help="Trees' own cull/billboard scale (like lod_detail_scale_prop); 0 = the global scale",
+        detail="A tree is its full mesh up close and a flat picture of itself beyond. The game "
+        "keeps the mesh out to about a kilometre; that is sixteen million triangles of "
+        "canopy in view on a large city. At 10 the picture takes over around a hundred to "
+        "two hundred metres, which is where it stops being noticeable.",
+        unit="×",
+    ),
+    Setting(
+        key="forest_rare_type_min",
+        default=0,
+        kind="int",
+        label="Rarest planting floor",
+        blurb="A kind of tree or prop placed fewer times than this is left out. 0 keeps all.",
+        help="Drop a forest type placed fewer than this many times (big one-offs stay); 0 = keep "
+        "every kind",
+        detail="Every kind of planting is held in memory whole, for one member or ten "
+        "thousand, and a city carries a long tail of kinds placed once or twice. At 3 only "
+        "that tail is left out; anything landmark-sized stays whatever its count. Higher "
+        "floors were tried and thinned prop families visibly.",
+        unit="items",
+    ),
+    Setting(
+        key="forest_rare_keep_radius",
+        default=5.0,
+        kind="float",
+        label="Rare planting keep size",
+        blurb="A rare kind at least this big (bounding radius) is kept whatever the floor says.",
+        help="A rare forest type with a shape radius at or above this is never dropped",
+        detail="The floor exists for the small one-off clutter. A one-off the size of a "
+        "harbour crane or a floodlight tower is a landmark, and dropping it empties the "
+        "skyline. Anything this big stays.",
+        unit="m",
+        subset_of="forest_rare_type_min",
+    ),
+    Setting(
+        key="lod_detail_scale_large",
+        default=0.0,
+        kind="float",
+        label="Big building detail reach",
+        blurb="Big buildings' own version of the detail scale; 0 uses the buildings' scale.",
+        help="Detail scale for buildings at or over lod_large_radius_m; 0 = lod_detail_scale",
+        detail="The game keeps a big building sharp for kilometres, in proportion to its size, "
+        "and at the scale that suits the houses a tower or a mall keeps its full mesh for "
+        "too long. This is the same kind of number as the detail scale, applied to the big "
+        "ones only. 4.5 is two thirds of the distance the houses get at 3.",
+        unit="×",
+    ),
+    Setting(
+        key="lod_large_radius_m",
+        default=30.0,
+        kind="float",
+        label="Big building size",
+        blurb="A building whose bounding radius is at least this counts as big.",
+        help="Radius from which a building takes lod_detail_scale_large",
+        detail="Half the diagonal of the building's box. Thirty metres is a mid-rise block; a "
+        "detached house is six to ten.",
+        unit="m",
+    ),
+    Setting(
+        key="tree_billboard_px",
+        default=128,
+        kind="choice:64|128|256",
+        label="Tree billboard sharpness",
+        blurb="The size of each angle of a tree's distant picture, in pixels.",
+        help="Imposter atlas cell for vegetation billboards (Torque's default is 64)",
+        detail="CURRENTLY INERT. Setting the size through the shape's asset file bakes the "
+        "picture without its materials — flat orange trees — even with the game's own "
+        "parameters, because this level's materials do not live beside the shapes the way "
+        "the game's do. The engine default is used until that is solved.",
+    ),
+    Setting(
+        key="far_ring_metres",
+        default=2500.0,
+        kind="float",
+        label="Skyline hand-over",
+        blurb="Beyond this distance the skyline is one merged outline per block; 0 = one per building.",
+        help="Distance at which buildings hand over to a merged per-cell silhouette; 0 = "
+        "per-building silhouettes only",
+        detail="Past its detailed levels a building is drawn as a blocky outline in its own "
+        "colours out to the distance the game itself draws it. Beyond this distance those "
+        "outlines are merged into one mesh per half-kilometre block — a few dozen draw calls "
+        "for the whole skyline instead of one per building. Towers whose detail reaches "
+        "further than this keep their own outline.",
+        unit="m",
+    ),
+    Setting(
         key="authored_lod1_drop",
         default=False,
         kind="bool",
@@ -177,6 +268,23 @@ TUNING_SETTINGS = (
         "Dropping it hands its band — roughly fifty to a hundred and fifty metres — to the "
         "coarse level, which is visible up close in that band, and takes about a gigabyte "
         "off what the card has to hold.",
+    ),
+    Setting(
+        key="authored_lod0_max_tris",
+        default=0,
+        kind="int",
+        label="Full detail up to",
+        blurb="Buildings over this many triangles show the game's second level up close. 0 = all full.",
+        help="A building whose full mesh is over this many triangles ships the game's LOD 1 as "
+        "its nearest level; 0 = keep LOD 0 for all",
+        detail="BeamNG holds every building's full mesh in memory for the whole session, and the "
+        "few hundred heaviest ones — stadiums, hospitals, towers of a hundred thousand "
+        "triangles and more — are most of what an 8 GB card runs out of. Above this count a "
+        "building is drawn with the game's own second level instead, which has under half the "
+        "triangles and is what the game itself shows from a street away. At 20,000 that is "
+        "about 190 buildings and 600 MB less on the card; at 5,000 about 600 buildings and "
+        "850 MB.",
+        unit="triangles",
     ),
     Setting(
         key="area_conform_cm",
@@ -193,20 +301,6 @@ TUNING_SETTINGS = (
         unit="cm",
     ),
     Setting(
-        key="forest_rare_keep_radius",
-        default=5.0,
-        kind="float",
-        label="Rare type keep size",
-        blurb="A rare forest type at least this big (bounding radius) is kept whatever the floor says.",
-        help="A rare forest type with a shape radius at or above this is never dropped",
-        detail="The rare-type floor exists to drop the long tail of small one-off props. A "
-        "one-off that is a harbour crane or a stadium floodlight tower is a landmark — a "
-        "city has a few hundred of them, and a floor that drops them empties its skyline. "
-        "Anything this big stays.",
-        unit="m",
-        subset_of="forest_rare_type_min",
-    ),
-    Setting(
         key="shadow_min_radius",
         default=3.0,
         kind="float",
@@ -218,22 +312,6 @@ TUNING_SETTINGS = (
         "CS2's own renderer stops small and sparse things' shadows before their meshes "
         "(its per-level shadow LOD); BeamNG has only the switch, so this is the switch.",
         unit="m",
-    ),
-    Setting(
-        key="forest_rare_type_min",
-        default=10,
-        kind="int",
-        label="Rare forest type floor",
-        blurb="A forest type placed fewer times than this is not shipped at all.",
-        help="Drop a forest type placed fewer times than this. 0 ships every type",
-        detail="A kind of tree or prop planted fewer than this many times is left out of the "
-        "level. BeamNG mounts a kind whole — its shape, its detail levels, its textures — "
-        "for one member or ten thousand, and on a real city more than half the kinds "
-        "exist to place under a percent of the planting: at 10, 1,807 kinds holding 4,713 "
-        "items cost 241 MiB. The heaviest things dropped are one-offs, three moored boats "
-        "and three harbour cranes. Applied after the merge threshold above. 0 keeps every "
-        "kind.",
-        unit="items",
     ),
     Setting(
         key="lane_max_tris",

@@ -72,28 +72,18 @@ def drop_rare_types(
     forest_dir, types, type_source, item_counts, min_items, results=None, keep_radius=0.0
 ):
     """Drop every forest type placed fewer than `min_items` times — unless its shape's bounding
-    radius is at least `keep_radius` metres. In place; returns `{"types", "items", "heaviest",
-    "keptLarge"}`.
+    radius is at least `keep_radius` metres. In place; returns `{"types", "items", "keptLarge"}`.
 
-    The keep: the floor exists to shed the long tail of small one-off props, and the 2026-08-29
-    build shed 249 large ones with it (695 items) — three harbour cranes, the marina piers, the
-    57 m pylons, the baseball ground's floodlight platforms. A one-off that size is a landmark.
-    `results` is the shapes stage's rows (`radius` per shape); with none, nothing is kept.
-
-    A `TSForestItemData` mounts its shape whole — LOD chain, materials, collision — for one
-    item or ten thousand, and MEASURED on the reference city 1,807 of 3,118 types existed to
-    place 4,713 items, 0.5 % of the forest, for 241 MiB of the 442 the forest mounted
-    (`docs/plans/a8-performance.md`, "Extras"). At 10 the heaviest things dropped are one-offs:
-    three moored pontoon boats at 9.8 MiB, three harbour cranes at 7.4 MiB. Runs AFTER
-    `merge_thin_types`, so a colour variant folded into its plain type counts toward that type
-    rather than being dropped as thin. 0 keeps every type. DECLARED APPROXIMATION, counted in
-    the report: the items are gone from the level, not moved.
+    A `TSForestItemData` mounts its shape whole for one item or ten thousand. The v17 removal
+    took the floor out entirely because 10 dropped the rarer members of prop FAMILIES (a
+    half-built scene); Naomi asked the middle back at 3: only the one-and-two-item tail goes,
+    and anything of `keep_radius` (a crane, a floodlight tower) stays whatever its count.
+    0 keeps every type. DECLARED APPROXIMATION, counted in the report.
     """
     dropped_types = dropped_items = 0
-    heaviest = []
     kept = {"types": 0, "items": 0}
     if min_items <= 0:
-        return {"types": 0, "items": 0, "heaviest": heaviest, "keptLarge": kept}
+        return {"types": 0, "items": 0, "keptLarge": kept}
     for name in sorted(types):
         count = int(item_counts.get(name, 0))
         if count >= min_items:
@@ -108,19 +98,12 @@ def drop_rare_types(
             os.remove(os.path.join(forest_dir, name + ".forest4.json"))
         except OSError:
             pass
-        heaviest.append((int(types[name][0].get("bytes") or 0), name, count))
         del types[name]
         type_source.pop(name, None)
         item_counts.pop(name, None)
         dropped_types += 1
         dropped_items += count
-    heaviest.sort(reverse=True)
-    return {
-        "types": dropped_types,
-        "items": dropped_items,
-        "heaviest": [{"type": n, "items": c, "bytes": b} for b, n, c in heaviest[:10]],
-        "keptLarge": kept,
-    }
+    return {"types": dropped_types, "items": dropped_items, "keptLarge": kept}
 
 
 def merge_thin_types(forest_dir, types, type_source, item_counts, results, min_items):

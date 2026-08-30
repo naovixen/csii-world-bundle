@@ -1,0 +1,3301 @@
+{
+ "estimate": {
+  "predicted": {
+   "approximations": [
+    {
+     "measured": "257 of 7,973 files, 16.9 MiB of 558.2, on the reference city",
+     "what": "every material the bake resolved is counted, including the ones no shape in your city binds",
+     "why": "which materials are bound is decided by the shapes stage, which is the build. Counting them all makes this an upper bound rather than a guess"
+    },
+    {
+     "measured": "1.28 on the reference build (193.9 MiB of surfaces -> 247.4 MiB of ground), and about a fifth high on a level whose terrain settings differ - it is one ratio over a group that is not one thing",
+     "what": "the ground's own textures follow the bundle's surface pack at a measured ratio instead of being sized one by one",
+     "why": "they are re-encoded and split into base, detail and macro copies by the terrain stage rather than capped, so their sizes are not the source's"
+    },
+    {
+     "measured": "0.97 over the reference city's 4,272 object shapes, per kind 1.02 buildings / 0.65 props / 1.03 trees",
+     "what": "a cooked shape's bytes are its source glTF times a measured ratio, not the cooked file itself",
+     "why": "the cook is BeamNG's own compiler and only running it says what it produces"
+    },
+    {
+     "measured": "1.31 networks / 1.52 areas / 1.59 markings / 1.53 foundations",
+     "what": "a road, marking, area or foundation tile is sized from the bake product it is merged out of, scaled by how much of the map the region covers",
+     "why": "how the merge divides into tiles is the build's own tiling, and a tile is one shape however many records went into it"
+    },
+    {
+     "measured": "17 of 4,272 shapes and 5.9 MiB of 2,068 on the reference city (+5.7 % of the tree group, +0.3 % of all shapes)",
+     "what": "a recoloured prefab is counted once per colour the bake gave it, including the copies too thinly placed to be worth their own type",
+     "why": "which copies survive is decided by `forest_min_items` against the item count per colour, which is the build's own count and not the bake's"
+    },
+    {
+     "measured": "1,806 of 1,276,060 records on the reference city, 0 shapes",
+     "what": "trees standing in the road are still counted",
+     "why": "the clearance rule is a spatial pass over the lane layer and it has never removed a whole shape"
+    }
+   ],
+   "budget": {
+    "failureMiB": 5224,
+    "pixels": 4953600,
+    "residentMiB": 3473,
+    "source": "card from beamng.log, resolution from beamng.log",
+    "vramMiB": 8018
+   },
+   "diskBasis": "shapes, textures and the heightfield",
+   "diskBytes": 3344146947,
+   "meshes": {
+    "approximations": [
+     {
+      "measured": "0.97 over the reference city's 4,272 object shapes, per kind 1.02 buildings / 0.65 props / 1.03 trees",
+      "what": "a cooked shape's bytes are its source glTF times a measured ratio, not the cooked file itself",
+      "why": "the cook is BeamNG's own compiler and only running it says what it produces"
+     },
+     {
+      "measured": "1.31 networks / 1.52 areas / 1.59 markings / 1.53 foundations",
+      "what": "a road, marking, area or foundation tile is sized from the bake product it is merged out of, scaled by how much of the map the region covers",
+      "why": "how the merge divides into tiles is the build's own tiling, and a tile is one shape however many records went into it"
+     },
+     {
+      "measured": "17 of 4,272 shapes and 5.9 MiB of 2,068 on the reference city (+5.7 % of the tree group, +0.3 % of all shapes)",
+      "what": "a recoloured prefab is counted once per colour the bake gave it, including the copies too thinly placed to be worth their own type",
+      "why": "which copies survive is decided by `forest_min_items` against the item count per colour, which is the build's own count and not the bake's"
+     },
+     {
+      "measured": "1,806 of 1,276,060 records on the reference city, 0 shapes",
+      "what": "trees standing in the road are still counted",
+      "why": "the clearance rule is a spatial pass over the lane layer and it has never removed a whole shape"
+     }
+    ],
+    "basis": "from your own last 8 builds",
+    "bytes": 2478347923,
+    "groups": {
+     "areas": {
+      "bytes": 80955243,
+      "ratio": 0.975,
+      "section": "world",
+      "shapes": null,
+      "sourceBytes": 83047851
+     },
+     "building": {
+      "bytes": 1558114834,
+      "ratio": 0.658,
+      "section": "world",
+      "shapes": 1170,
+      "sourceBytes": 2369488988
+     },
+     "markings": {
+      "bytes": 87603960,
+      "ratio": 1.018,
+      "section": "world",
+      "shapes": null,
+      "sourceBytes": 86015308
+     },
+     "networks": {
+      "bytes": 529986450,
+      "ratio": 0.839,
+      "section": "world",
+      "shapes": null,
+      "sourceBytes": 631457852
+     },
+     "prop": {
+      "bytes": 129276754,
+      "ratio": 0.419,
+      "section": "world",
+      "shapes": 2608,
+      "sourceBytes": 308292136
+     },
+     "terraincut": {
+      "bytes": 4122489,
+      "ratio": 1.194,
+      "section": "world",
+      "shapes": null,
+      "sourceBytes": 3451452
+     },
+     "tree": {
+      "bytes": 88288193,
+      "ratio": 0.661,
+      "section": "world",
+      "shapes": 252,
+      "sourceBytes": 133481352
+     }
+    }
+   },
+   "overSections": [],
+   "ready": true,
+   "residentBytes": 3142820204,
+   "residentMiB": 2997.2,
+   "rows": [
+    {
+     "band": "fits",
+     "basis": "2,364 MiB of shapes from your own last 8 builds, 634 MiB of textures computed exactly",
+     "fraction": 0.5737366003062787,
+     "key": "vram",
+     "label": "Video memory",
+     "markFraction": 0.6648162327718223,
+     "of": "of 3,473 MiB known to fit",
+     "section": "world",
+     "value": "2,997 MiB"
+    }
+   ],
+   "textures": {
+    "approximations": [
+     {
+      "measured": "257 of 7,973 files, 16.9 MiB of 558.2, on the reference city",
+      "what": "every material the bake resolved is counted, including the ones no shape in your city binds",
+      "why": "which materials are bound is decided by the shapes stage, which is the build. Counting them all makes this an upper bound rather than a guess"
+     },
+     {
+      "measured": "1.28 on the reference build (193.9 MiB of surfaces -> 247.4 MiB of ground), and about a fifth high on a level whose terrain settings differ - it is one ratio over a group that is not one thing",
+      "what": "the ground's own textures follow the bundle's surface pack at a measured ratio instead of being sized one by one",
+      "why": "they are re-encoded and split into base, detail and macro copies by the terrain stage rather than capped, so their sizes are not the source's"
+     }
+    ],
+    "basis": "computed from your city's own textures at these caps",
+    "bytes": 664472281,
+    "files": 11988,
+    "format": "dds",
+    "groundBytes": 232857953,
+    "materialBytes": 431614328,
+    "unsized": 0,
+    "variantFiles": 3030
+   },
+   "waiting": null
+  },
+  "score": {
+   "mesh": {
+    "actualMiB": 2354.5,
+    "errorPercent": 0.4,
+    "estimatedMiB": 2363.5
+   },
+   "texture": {
+    "actualMiB": 556.9,
+    "errorPercent": 13.8,
+    "estimatedMiB": 633.7
+   },
+   "total": {
+    "actualMiB": 2911.4,
+    "errorPercent": 2.9,
+    "estimatedMiB": 2997.2
+   }
+  }
+ },
+ "finishedAt": "2026-08-30T22:08:11Z",
+ "settings": {
+  "ai_roads": true,
+  "area_conform_cm": 5.0,
+  "areas": true,
+  "authored_lod0_max_tris": 5000,
+  "authored_lod1_drop": true,
+  "beamng_exe": null,
+  "buildings": true,
+  "bundle": "C:\\Users\\naomi\\AppData\\LocalLow\\Colossal Order\\Cities Skylines II\\ModsData\\Carto",
+  "collision_buildings": true,
+  "collision_furniture": true,
+  "collision_lights": false,
+  "collision_min_footprint": 0.8,
+  "collision_paint": false,
+  "collision_preset": "simplified",
+  "collision_props": true,
+  "collision_skirts": true,
+  "collision_trees": true,
+  "cook": true,
+  "far_detail_scale": 1.0,
+  "far_ring_metres": 2500.0,
+  "foliage_density": 33,
+  "foliage_road_clearance": 2.5,
+  "forest_min_items": 10,
+  "forest_rare_keep_radius": 5.0,
+  "forest_rare_type_min": 3,
+  "forest_shadows": true,
+  "generate_lods": true,
+  "gpu_vram_mib": 0,
+  "groundcover": true,
+  "imposter_min_metres": 0,
+  "imposters": true,
+  "jobs": 0,
+  "keep_dae": false,
+  "keep_partial": false,
+  "lane_furniture": false,
+  "lane_furniture_categories": "fence,cable,lane",
+  "lane_max_tris": 0,
+  "level_name": "cs2_city_fine",
+  "level_title": "CS2 City Fine",
+  "lights": false,
+  "lights_max": 25000,
+  "lod0_max_error": 0.1,
+  "lod0_min_triangles": 1000,
+  "lod_detail_scale": 4.0,
+  "lod_detail_scale_large": 6.0,
+  "lod_detail_scale_prop": 3.0,
+  "lod_detail_scale_tree": 20.0,
+  "lod_large_radius_m": 30.0,
+  "lod_switch_error_px": 8.0,
+  "markings": true,
+  "navgraph_max_width": 0.0,
+  "navgraph_taxiways": false,
+  "networks": true,
+  "output": "C:\\Users\\naomi\\AppData\\Local\\BeamNG\\BeamNG.drive\\current\\levels",
+  "paint_factor_max_error": 4,
+  "paint_kinds": "tree,prop",
+  "paint_variants_prop": 1,
+  "paint_variants_tree": 2,
+  "poi_file": null,
+  "poi_max": 8,
+  "pois": true,
+  "prop_density": 70,
+  "props": true,
+  "quality_preset": "custom",
+  "rebuild": true,
+  "region": null,
+  "render_height": 0,
+  "render_width": 0,
+  "shadow_min_radius": 3.0,
+  "skirts": false,
+  "sweep_temp": true,
+  "terrain_blend_sharpen": 1.0,
+  "terrain_brightness": 1.0,
+  "terrain_cut": true,
+  "terrain_holes": "contain",
+  "terrain_upsample": 2,
+  "texture_dds": true,
+  "texture_max": 256,
+  "texture_max_data": 256,
+  "texture_max_normal": 256,
+  "texture_max_variant": 128,
+  "tile_lod": true,
+  "tile_size": 256,
+  "tod_hour": -1.0,
+  "tree_billboard_px": 128,
+  "tree_wind": false,
+  "trees": true,
+  "ui_browser": "window",
+  "ui_section": "navigation",
+  "view_distance": 8000,
+  "water": true
+ },
+ "stages": {
+  "bake": {
+   "result": {
+    "products": {
+     "areas": {
+      "reason": "inputs unchanged",
+      "seconds": 0.0,
+      "stats": {},
+      "status": "fresh"
+     },
+     "lods": {
+      "reason": "inputs unchanged",
+      "seconds": 0.0,
+      "stats": {},
+      "status": "fresh"
+     },
+     "markings": {
+      "reason": "inputs unchanged",
+      "seconds": 0.0,
+      "stats": {},
+      "status": "fresh"
+     },
+     "materials": {
+      "reason": "inputs unchanged",
+      "seconds": 0.0,
+      "stats": {},
+      "status": "fresh"
+     },
+     "terraincut": {
+      "reason": "inputs unchanged",
+      "seconds": 0.0,
+      "stats": {},
+      "status": "fresh"
+     },
+     "terrainmask": {
+      "reason": "inputs unchanged",
+      "seconds": 0.0,
+      "stats": {},
+      "status": "fresh"
+     }
+    }
+   },
+   "seconds": 4.9
+  },
+  "cook": {
+   "result": {
+    "autogeneratedMaterialsRemoved": 5,
+    "compiled": 7180,
+    "daeMiBFreed": 3097.7,
+    "daeSourcesRemoved": 7180,
+    "exe": "G:\\SteamLibrary\\steamapps\\common\\BeamNG.drive\\Bin64\\BeamNG.drive.x64.exe",
+    "exitCode": 0,
+    "seconds": 309.8,
+    "shapeLaddersIndexed": 7180,
+    "shapeLaddersScanned": 7180,
+    "shapes": 7180,
+    "tempCdaeRemoved": 0,
+    "tempMiBFreed": 0.0,
+    "toCompile": 7180,
+    "upToDate": 0,
+    "withCdae": 7180
+   },
+   "seconds": 309.8
+  },
+  "derived": {
+   "result": {
+    "jobs": 7,
+    "products": {
+     "areas": {
+      "collision": false,
+      "lod": {
+       "anchorMetresMedian": 8000.0,
+       "decimatedTriangles": [
+        1836433,
+        327327
+       ],
+       "detailScale": 4.0,
+       "gameNullMetresMedian": 36792.6,
+       "levelsPerTile": 2.99,
+       "meanTrianglesKeptAtFarLevel": 0.649,
+       "tiles": 736,
+       "tilesNeverCulled": 194
+      },
+      "orphansRemoved": 0,
+      "splitGeometries": 0,
+      "tiles": 736,
+      "tilesRewritten": 736,
+      "triangles": 1453174
+     },
+     "lanegeometry": {
+      "disabled": true,
+      "shapesRemoved": 0
+     },
+     "markings": {
+      "collision": false,
+      "lod": {
+       "anchorMetresMedian": 5794.5,
+       "decimatedTriangles": [
+        1867481,
+        377825
+       ],
+       "detailScale": 4.0,
+       "gameNullMetresMedian": 5794.5,
+       "levelsPerTile": 3.0,
+       "meanTrianglesKeptAtFarLevel": 0.4933,
+       "tiles": 1114,
+       "tilesNeverCulled": 0
+      },
+      "orphansRemoved": 0,
+      "splitGeometries": 0,
+      "tiles": 1114,
+      "tilesRewritten": 1114,
+      "triangles": 1986912
+     },
+     "skirts": {
+      "disabled": true,
+      "shapesRemoved": 0
+     },
+     "terraincut": {
+      "collision": true,
+      "lod": {
+       "anchorMetresMedian": 8000.0,
+       "decimatedTriangles": [
+        152652,
+        24380
+       ],
+       "detailScale": 4.0,
+       "gameNullMetresMedian": null,
+       "levelsPerTile": 3.0,
+       "meanTrianglesKeptAtFarLevel": 1.0,
+       "tiles": 82,
+       "tilesNeverCulled": 82
+      },
+      "orphansRemoved": 0,
+      "splitGeometries": 0,
+      "tiles": 82,
+      "tilesRewritten": 82,
+      "triangles": 100706
+     }
+    },
+    "seconds": 15.5
+   },
+   "seconds": 15.5
+  },
+  "groundcover": {
+   "result": {
+    "covers": 5,
+    "deliberateDeviations": {
+     "groundcover": {
+      "count": 5,
+      "what": "5 GroundCover objects with synthesised billboard grass",
+      "why": "CS2 has no grass, detail-mesh or groundcover system at all - the ground is a textured heightfield. This is BeamNG dressing for a camera at driving height, off by default, and nothing here approximates a game rule."
+     }
+    },
+    "layers": [
+     "cs2_city_fine_grass",
+     "cs2_city_fine_extra1",
+     "cs2_city_fine_extra2",
+     "cs2_city_fine_extra3",
+     "cs2_city_fine_extra4"
+    ],
+    "seconds": 0.9
+   },
+   "seconds": 0.9
+  },
+  "instances": {
+   "result": {
+    "approximations": {
+     "forestCollidableThreshold": {
+      "count": 82,
+      "items": 340762,
+      "value": 0.5,
+      "what": "a forest type whose shape is under 0.5 m tall ships collidable:false",
+      "why": "CS2 states nothing about collision for a placed object, so there is no rule to port; BeamNG's own guidance is to disable it for small decorative items, and this height sits under a passenger wheel radius"
+     },
+     "forestFootprintThreshold": {
+      "count": 268,
+      "value": 0.8,
+      "what": "a forest type whose shape is under 0.8 m ACROSS ships collidable:false whatever its height - road signs, hydrants, bins, mailbox stands, bollards, traffic lights",
+      "why": "height alone let through the very things it was meant to catch (a hydrant is 0.97 m tall, a road sign 2.2 m); what decides whether a car should stop is the FOOTPRINT. OURS - CS2 states nothing about collision for a placed object. KNOWN WRONG for bollards, which are 0.24 m across and exist to stop vehicles; exempting them would mean matching a name"
+     },
+     "forestPaintVariants": {
+      "count": 576148,
+      "what": "a forest item is drawn in its prefab's nearest baked colorSet centre, not its own colour (a TSStatic gets instanceColor/1/2 exactly)",
+      "why": "a BeamNG forest item carries no per-item colour; the bake clusters each prefab's sets and tints one albedo per centre"
+     },
+     "forestPlantsDoNotCollide": {
+      "count": 63,
+      "what": "a forest type built from a CS2 `PlantObject` (bush, hedge, flower pot, garden bed, long grass) ships collidable:false whatever its height",
+      "why": "the `tree` kind is ALL vegetation - 376,187 of the reference city's 686,641 planted items are plants, not trees. CS2's own archetypes split them: `TreeObject` adds `Tree`, `PlantObject` does not, and the producer writes `attrs.growth` inside exactly that component's lookup, so this is the GAME's rule (csiibundle.instances.is_tree), not a height guess. A plant is driven through, and it has no trunk to fit a cylinder to"
+     },
+     "forestRotationPrecision": {
+      "count": 576148,
+      "what": "a forest item's rotationMatrix is written at 4 decimal places",
+      "why": "1e-4 of a unit vector is 0.6 mm of arc at 10 m; the file is parsed line by line at load and vanilla's largest forest is 151 MiB"
+     },
+     "forestVariantWithoutTintedAlbedo": {
+      "count": 0,
+      "what": "forest items whose variant had no tinted albedo baked, so they fell back to the untinted material",
+      "why": "the bake tints only `paint_kinds` (default trees); widen it to cover props"
+     },
+     "forestWindConstants": {
+      "count": 1890,
+      "what": "windScale / rigidity / mass on every TSForestItemData",
+      "why": "CS2 states nothing about wind or physics for a placed object; the values are the vanilla levels' medians, not a port"
+     }
+    },
+    "collisionTypes": {
+     "Collision Mesh": 13463,
+     "None": 9
+    },
+    "farRing": {
+     "cells": [
+      {
+       "cullMetres": 161449.4,
+       "members": 31,
+       "name": "farring_-10_9",
+       "nearPx": 217,
+       "nullPx": 3,
+       "radius": 414.91,
+       "ringPx": 4,
+       "triangles": 1362
+      },
+      {
+       "cullMetres": 68572.5,
+       "members": 84,
+       "name": "farring_-10_10",
+       "nearPx": 184,
+       "nullPx": 6,
+       "radius": 351.345,
+       "ringPx": 7,
+       "triangles": 3478
+      },
+      {
+       "cullMetres": 28989.0,
+       "members": 52,
+       "name": "farring_-10_11",
+       "nearPx": 173,
+       "nullPx": 14,
+       "radius": 330.948,
+       "ringPx": 15,
+       "triangles": 1940
+      },
+      {
+       "cullMetres": 18649.6,
+       "members": 3,
+       "name": "farring_-10_12",
+       "nearPx": 59,
+       "nullPx": 7,
+       "radius": 111.609,
+       "ringPx": 8,
+       "triangles": 76
+      },
+      {
+       "cullMetres": 120104.0,
+       "members": 69,
+       "name": "farring_-9_9",
+       "nearPx": 230,
+       "nullPx": 4,
+       "radius": 440.672,
+       "ringPx": 5,
+       "triangles": 2328
+      },
+      {
+       "cullMetres": 120104.0,
+       "members": 88,
+       "name": "farring_-9_10",
+       "nearPx": 219,
+       "nullPx": 4,
+       "radius": 418.69,
+       "ringPx": 5,
+       "triangles": 3328
+      },
+      {
+       "cullMetres": 23139.7,
+       "members": 91,
+       "name": "farring_-9_11",
+       "nearPx": 190,
+       "nullPx": 20,
+       "radius": 363.039,
+       "ringPx": 21,
+       "triangles": 3442
+      },
+      {
+       "cullMetres": 198254.2,
+       "members": 1,
+       "name": "farring_-8_4",
+       "nearPx": 359,
+       "nullPx": 4,
+       "radius": 688.114,
+       "ringPx": 5,
+       "triangles": 20
+      },
+      {
+       "cullMetres": 48039.8,
+       "members": 1,
+       "name": "farring_-8_5",
+       "nearPx": 52,
+       "nullPx": 2,
+       "radius": 99.27,
+       "ringPx": 3,
+       "triangles": 12
+      },
+      {
+       "cullMetres": 22121.2,
+       "members": 13,
+       "name": "farring_-8_7",
+       "nearPx": 91,
+       "nullPx": 10,
+       "radius": 173.396,
+       "ringPx": 11,
+       "triangles": 468
+      },
+      {
+       "cullMetres": 32839.3,
+       "members": 6,
+       "name": "farring_-8_8",
+       "nearPx": 82,
+       "nullPx": 6,
+       "radius": 156.882,
+       "ringPx": 7,
+       "triangles": 624
+      },
+      {
+       "cullMetres": 100075.8,
+       "members": 11,
+       "name": "farring_-8_9",
+       "nearPx": 110,
+       "nullPx": 2,
+       "radius": 209.492,
+       "ringPx": 3,
+       "triangles": 516
+      },
+      {
+       "cullMetres": 30372.4,
+       "members": 12,
+       "name": "farring_-8_10",
+       "nearPx": 173,
+       "nullPx": 14,
+       "radius": 331.057,
+       "ringPx": 15,
+       "triangles": 374
+      },
+      {
+       "cullMetres": 15283.1,
+       "members": 4,
+       "name": "farring_-8_11",
+       "nearPx": 49,
+       "nullPx": 7,
+       "radius": 93.426,
+       "ringPx": 8,
+       "triangles": 166
+      },
+      {
+       "cullMetres": 62063.4,
+       "members": 1,
+       "name": "farring_-8_12",
+       "nearPx": 167,
+       "nullPx": 6,
+       "radius": 319.923,
+       "ringPx": 7,
+       "triangles": 48
+      },
+      {
+       "cullMetres": 68078.7,
+       "members": 8,
+       "name": "farring_-7_-13",
+       "nearPx": 138,
+       "nullPx": 5,
+       "radius": 262.94,
+       "ringPx": 6,
+       "triangles": 96
+      },
+      {
+       "cullMetres": 24610.8,
+       "members": 3,
+       "name": "farring_-7_-2",
+       "nearPx": 28,
+       "nullPx": 2,
+       "radius": 52.413,
+       "ringPx": 3,
+       "triangles": 136
+      },
+      {
+       "cullMetres": 24610.8,
+       "members": 48,
+       "name": "farring_-7_-1",
+       "nearPx": 128,
+       "nullPx": 12,
+       "radius": 245.362,
+       "ringPx": 13,
+       "triangles": 2044
+      },
+      {
+       "cullMetres": 20100.7,
+       "members": 47,
+       "name": "farring_-7_0",
+       "nearPx": 176,
+       "nullPx": 21,
+       "radius": 336.701,
+       "ringPx": 22,
+       "triangles": 2076
+      },
+      {
+       "cullMetres": 125699.7,
+       "members": 1,
+       "name": "farring_-7_1",
+       "nearPx": 80,
+       "nullPx": 1,
+       "radius": 152.752,
+       "ringPx": 2,
+       "triangles": 40
+      },
+      {
+       "cullMetres": 41287.1,
+       "members": 8,
+       "name": "farring_-7_5",
+       "nearPx": 117,
+       "nullPx": 7,
+       "radius": 222.547,
+       "ringPx": 8,
+       "triangles": 408
+      },
+      {
+       "cullMetres": 24033.4,
+       "members": 28,
+       "name": "farring_-7_6",
+       "nearPx": 160,
+       "nullPx": 16,
+       "radius": 305.01,
+       "ringPx": 17,
+       "triangles": 1172
+      },
+      {
+       "cullMetres": 24610.8,
+       "members": 75,
+       "name": "farring_-7_7",
+       "nearPx": 191,
+       "nullPx": 19,
+       "radius": 365.171,
+       "ringPx": 20,
+       "triangles": 3212
+      },
+      {
+       "cullMetres": 21666.9,
+       "members": 55,
+       "name": "farring_-7_8",
+       "nearPx": 193,
+       "nullPx": 22,
+       "radius": 370.062,
+       "ringPx": 23,
+       "triangles": 2284
+      },
+      {
+       "cullMetres": 24610.8,
+       "members": 27,
+       "name": "farring_-7_9",
+       "nearPx": 180,
+       "nullPx": 18,
+       "radius": 344.367,
+       "ringPx": 19,
+       "triangles": 882
+      },
+      {
+       "cullMetres": 24610.8,
+       "members": 19,
+       "name": "farring_-7_10",
+       "nearPx": 157,
+       "nullPx": 15,
+       "radius": 301.021,
+       "ringPx": 16,
+       "triangles": 694
+      },
+      {
+       "cullMetres": 68078.7,
+       "members": 11,
+       "name": "farring_-6_-13",
+       "nearPx": 157,
+       "nullPx": 5,
+       "radius": 300.552,
+       "ringPx": 6,
+       "triangles": 232
+      },
+      {
+       "cullMetres": 11164.1,
+       "members": 8,
+       "name": "farring_-6_-1",
+       "nearPx": 51,
+       "nullPx": 11,
+       "radius": 97.65,
+       "ringPx": 12,
+       "triangles": 370
+      },
+      {
+       "cullMetres": 24610.8,
+       "members": 7,
+       "name": "farring_-6_0",
+       "nearPx": 99,
+       "nullPx": 10,
+       "radius": 189.525,
+       "ringPx": 11,
+       "triangles": 232
+      },
+      {
+       "cullMetres": 41287.1,
+       "members": 1,
+       "name": "farring_-6_2",
+       "nearPx": 33,
+       "nullPx": 1,
+       "radius": 63.067,
+       "ringPx": 2,
+       "triangles": 12
+      },
+      {
+       "cullMetres": 19060.2,
+       "members": 4,
+       "name": "farring_-6_6",
+       "nearPx": 34,
+       "nullPx": 4,
+       "radius": 64.699,
+       "ringPx": 5,
+       "triangles": 96
+      },
+      {
+       "cullMetres": 19060.2,
+       "members": 1,
+       "name": "farring_-6_7",
+       "nearPx": 14,
+       "nullPx": 1,
+       "radius": 26.74,
+       "ringPx": 2,
+       "triangles": 24
+      },
+      {
+       "cullMetres": 23774.2,
+       "members": 6,
+       "name": "farring_-6_8",
+       "nearPx": 59,
+       "nullPx": 6,
+       "radius": 111.789,
+       "ringPx": 7,
+       "triangles": 292
+      },
+      {
+       "cullMetres": 17955.5,
+       "members": 11,
+       "name": "farring_-6_9",
+       "nearPx": 140,
+       "nullPx": 19,
+       "radius": 266.969,
+       "ringPx": 20,
+       "triangles": 434
+      },
+      {
+       "cullMetres": 24893.7,
+       "members": 2,
+       "name": "farring_-6_12",
+       "nearPx": 24,
+       "nullPx": 2,
+       "radius": 44.304,
+       "ringPx": 3,
+       "triangles": 48
+      },
+      {
+       "cullMetres": 60734.4,
+       "members": 1,
+       "name": "farring_-6_13",
+       "nearPx": 43,
+       "nullPx": 1,
+       "radius": 80.573,
+       "ringPx": 2,
+       "triangles": 48
+      },
+      {
+       "cullMetres": 5743.8,
+       "members": 2,
+       "name": "farring_-5_-3",
+       "nearPx": 37,
+       "nullPx": 15,
+       "radius": 69.86,
+       "ringPx": 16,
+       "triangles": 96
+      },
+      {
+       "cullMetres": 23774.2,
+       "members": 3,
+       "name": "farring_-5_7",
+       "nearPx": 52,
+       "nullPx": 5,
+       "radius": 99.063,
+       "ringPx": 6,
+       "triangles": 112
+      },
+      {
+       "cullMetres": 60734.4,
+       "members": 1,
+       "name": "farring_-5_12",
+       "nearPx": 43,
+       "nullPx": 1,
+       "radius": 80.654,
+       "ringPx": 2,
+       "triangles": 48
+      },
+      {
+       "cullMetres": 21602.9,
+       "members": 63,
+       "name": "farring_-4_-6",
+       "nearPx": 166,
+       "nullPx": 19,
+       "radius": 317.737,
+       "ringPx": 20,
+       "triangles": 3194
+      },
+      {
+       "cullMetres": 16730.5,
+       "members": 11,
+       "name": "farring_-4_-5",
+       "nearPx": 67,
+       "nullPx": 9,
+       "radius": 128.119,
+       "ringPx": 10,
+       "triangles": 390
+      },
+      {
+       "cullMetres": 5743.8,
+       "members": 2,
+       "name": "farring_-4_-4",
+       "nearPx": 98,
+       "nullPx": 42,
+       "radius": 187.921,
+       "ringPx": 43,
+       "triangles": 96
+      },
+      {
+       "cullMetres": 110168.8,
+       "members": 5,
+       "name": "farring_-4_-3",
+       "nearPx": 166,
+       "nullPx": 3,
+       "radius": 316.518,
+       "ringPx": 4,
+       "triangles": 380
+      },
+      {
+       "cullMetres": 110168.8,
+       "members": 2,
+       "name": "farring_-4_-2",
+       "nearPx": 118,
+       "nullPx": 2,
+       "radius": 225.409,
+       "ringPx": 3,
+       "triangles": 134
+      },
+      {
+       "cullMetres": 91557.7,
+       "members": 2,
+       "name": "farring_-4_3",
+       "nearPx": 85,
+       "nullPx": 2,
+       "radius": 162.585,
+       "ringPx": 3,
+       "triangles": 76
+      },
+      {
+       "cullMetres": 21666.9,
+       "members": 6,
+       "name": "farring_-4_5",
+       "nearPx": 60,
+       "nullPx": 6,
+       "radius": 114.905,
+       "ringPx": 7,
+       "triangles": 164
+      },
+      {
+       "cullMetres": 21666.9,
+       "members": 16,
+       "name": "farring_-4_6",
+       "nearPx": 153,
+       "nullPx": 17,
+       "radius": 292.348,
+       "ringPx": 18,
+       "triangles": 580
+      },
+      {
+       "cullMetres": 8332.2,
+       "members": 1,
+       "name": "farring_-4_7",
+       "nearPx": 8,
+       "nullPx": 2,
+       "radius": 14.152,
+       "ringPx": 3,
+       "triangles": 12
+      },
+      {
+       "cullMetres": 46661.8,
+       "members": 1,
+       "name": "farring_-3_-13",
+       "nearPx": 25,
+       "nullPx": 1,
+       "radius": 46.529,
+       "ringPx": 2,
+       "triangles": 134
+      },
+      {
+       "cullMetres": 24913.8,
+       "members": 57,
+       "name": "farring_-3_-6",
+       "nearPx": 176,
+       "nullPx": 17,
+       "radius": 336.146,
+       "ringPx": 18,
+       "triangles": 3022
+      },
+      {
+       "cullMetres": 20640.6,
+       "members": 5,
+       "name": "farring_-3_-5",
+       "nearPx": 63,
+       "nullPx": 7,
+       "radius": 120.43,
+       "ringPx": 8,
+       "triangles": 198
+      },
+      {
+       "cullMetres": 15902.6,
+       "members": 1,
+       "name": "farring_-2_5",
+       "nearPx": 17,
+       "nullPx": 2,
+       "radius": 32.289,
+       "ringPx": 3,
+       "triangles": 72
+      },
+      {
+       "cullMetres": 13820.4,
+       "members": 1,
+       "name": "farring_-2_6",
+       "nearPx": 19,
+       "nullPx": 3,
+       "radius": 34.622,
+       "ringPx": 4,
+       "triangles": 50
+      },
+      {
+       "cullMetres": 15512.7,
+       "members": 2,
+       "name": "farring_-1_-13",
+       "nearPx": 35,
+       "nullPx": 5,
+       "radius": 65.873,
+       "ringPx": 6,
+       "triangles": 88
+      },
+      {
+       "cullMetres": 16730.5,
+       "members": 1,
+       "name": "farring_-1_-12",
+       "nearPx": 15,
+       "nullPx": 2,
+       "radius": 28.345,
+       "ringPx": 3,
+       "triangles": 30
+      },
+      {
+       "cullMetres": 16013.6,
+       "members": 12,
+       "name": "farring_-1_-9",
+       "nearPx": 65,
+       "nullPx": 10,
+       "radius": 123.471,
+       "ringPx": 11,
+       "triangles": 228
+      },
+      {
+       "cullMetres": 21434.7,
+       "members": 17,
+       "name": "farring_-1_0",
+       "nearPx": 66,
+       "nullPx": 7,
+       "radius": 125.891,
+       "ringPx": 8,
+       "triangles": 862
+      },
+      {
+       "cullMetres": 116529.4,
+       "members": 2,
+       "name": "farring_-1_3",
+       "nearPx": 200,
+       "nullPx": 4,
+       "radius": 382.261,
+       "ringPx": 5,
+       "triangles": 64
+      },
+      {
+       "cullMetres": 13254.6,
+       "members": 1,
+       "name": "farring_-1_5",
+       "nearPx": 17,
+       "nullPx": 3,
+       "radius": 31.749,
+       "ringPx": 4,
+       "triangles": 36
+      },
+      {
+       "cullMetres": 198254.2,
+       "members": 4,
+       "name": "farring_-1_6",
+       "nearPx": 359,
+       "nullPx": 4,
+       "radius": 687.946,
+       "ringPx": 5,
+       "triangles": 116
+      },
+      {
+       "cullMetres": 35803.8,
+       "members": 27,
+       "name": "farring_-1_7",
+       "nearPx": 163,
+       "nullPx": 11,
+       "radius": 310.878,
+       "ringPx": 12,
+       "triangles": 1368
+      },
+      {
+       "cullMetres": 51672.7,
+       "members": 67,
+       "name": "farring_-1_8",
+       "nearPx": 180,
+       "nullPx": 8,
+       "radius": 343.38,
+       "ringPx": 9,
+       "triangles": 3470
+      },
+      {
+       "cullMetres": 18394.6,
+       "members": 16,
+       "name": "farring_-1_9",
+       "nearPx": 62,
+       "nullPx": 8,
+       "radius": 118.251,
+       "ringPx": 9,
+       "triangles": 976
+      },
+      {
+       "cullMetres": 25838.5,
+       "members": 18,
+       "name": "farring_0_-13",
+       "nearPx": 98,
+       "nullPx": 9,
+       "radius": 186.374,
+       "ringPx": 10,
+       "triangles": 1004
+      },
+      {
+       "cullMetres": 22121.2,
+       "members": 57,
+       "name": "farring_0_-12",
+       "nearPx": 190,
+       "nullPx": 21,
+       "radius": 363.261,
+       "ringPx": 22,
+       "triangles": 3132
+      },
+      {
+       "cullMetres": 15509.2,
+       "members": 1,
+       "name": "farring_0_-7",
+       "nearPx": 11,
+       "nullPx": 1,
+       "radius": 21.059,
+       "ringPx": 2,
+       "triangles": 62
+      },
+      {
+       "cullMetres": 17341.1,
+       "members": 92,
+       "name": "farring_0_-6",
+       "nearPx": 159,
+       "nullPx": 22,
+       "radius": 304.577,
+       "ringPx": 23,
+       "triangles": 6084
+      },
+      {
+       "cullMetres": 91557.7,
+       "members": 30,
+       "name": "farring_0_-5",
+       "nearPx": 135,
+       "nullPx": 3,
+       "radius": 258.398,
+       "ringPx": 4,
+       "triangles": 1408
+      },
+      {
+       "cullMetres": 480388.0,
+       "members": 1,
+       "name": "farring_0_-2",
+       "nearPx": 478,
+       "nullPx": 2,
+       "radius": 916.571,
+       "ringPx": 3,
+       "triangles": 40
+      },
+      {
+       "cullMetres": 22622.1,
+       "members": 92,
+       "name": "farring_0_0",
+       "nearPx": 163,
+       "nullPx": 17,
+       "radius": 311.916,
+       "ringPx": 18,
+       "triangles": 4338
+      },
+      {
+       "cullMetres": 12131.2,
+       "members": 2,
+       "name": "farring_0_1",
+       "nearPx": 14,
+       "nullPx": 2,
+       "radius": 25.84,
+       "ringPx": 3,
+       "triangles": 80
+      },
+      {
+       "cullMetres": 17955.5,
+       "members": 5,
+       "name": "farring_0_5",
+       "nearPx": 28,
+       "nullPx": 3,
+       "radius": 53.344,
+       "ringPx": 4,
+       "triangles": 220
+      },
+      {
+       "cullMetres": 120104.0,
+       "members": 45,
+       "name": "farring_0_6",
+       "nearPx": 177,
+       "nullPx": 3,
+       "radius": 338.705,
+       "ringPx": 4,
+       "triangles": 1982
+      },
+      {
+       "cullMetres": 91794.4,
+       "members": 69,
+       "name": "farring_0_7",
+       "nearPx": 192,
+       "nullPx": 5,
+       "radius": 367.043,
+       "ringPx": 6,
+       "triangles": 3102
+      },
+      {
+       "cullMetres": 81515.7,
+       "members": 75,
+       "name": "farring_0_8",
+       "nearPx": 197,
+       "nullPx": 6,
+       "radius": 375.875,
+       "ringPx": 7,
+       "triangles": 3542
+      },
+      {
+       "cullMetres": 21451.3,
+       "members": 10,
+       "name": "farring_0_9",
+       "nearPx": 68,
+       "nullPx": 7,
+       "radius": 128.845,
+       "ringPx": 8,
+       "triangles": 444
+      },
+      {
+       "cullMetres": 22081.9,
+       "members": 24,
+       "name": "farring_1_-12",
+       "nearPx": 139,
+       "nullPx": 15,
+       "radius": 266.291,
+       "ringPx": 16,
+       "triangles": 1214
+      },
+      {
+       "cullMetres": 35076.1,
+       "members": 75,
+       "name": "farring_1_-11",
+       "nearPx": 177,
+       "nullPx": 12,
+       "radius": 337.869,
+       "ringPx": 13,
+       "triangles": 3612
+      },
+      {
+       "cullMetres": 7148.2,
+       "members": 1,
+       "name": "farring_1_-10",
+       "nearPx": 6,
+       "nullPx": 1,
+       "radius": 10.429,
+       "ringPx": 2,
+       "triangles": 12
+      },
+      {
+       "cullMetres": 22121.2,
+       "members": 51,
+       "name": "farring_1_-7",
+       "nearPx": 170,
+       "nullPx": 19,
+       "radius": 324.421,
+       "ringPx": 20,
+       "triangles": 1916
+      },
+      {
+       "cullMetres": 27579.6,
+       "members": 110,
+       "name": "farring_1_-6",
+       "nearPx": 193,
+       "nullPx": 17,
+       "radius": 369.582,
+       "ringPx": 18,
+       "triangles": 5264
+      },
+      {
+       "cullMetres": 82458.0,
+       "members": 38,
+       "name": "farring_1_-5",
+       "nearPx": 200,
+       "nullPx": 6,
+       "radius": 381.637,
+       "ringPx": 7,
+       "triangles": 1956
+      },
+      {
+       "cullMetres": 30851.5,
+       "members": 32,
+       "name": "farring_1_-4",
+       "nearPx": 156,
+       "nullPx": 12,
+       "radius": 299.001,
+       "ringPx": 13,
+       "triangles": 1620
+      },
+      {
+       "cullMetres": 21811.1,
+       "members": 18,
+       "name": "farring_1_-3",
+       "nearPx": 81,
+       "nullPx": 9,
+       "radius": 154.46,
+       "ringPx": 10,
+       "triangles": 830
+      },
+      {
+       "cullMetres": 21434.7,
+       "members": 14,
+       "name": "farring_1_0",
+       "nearPx": 144,
+       "nullPx": 16,
+       "radius": 275.329,
+       "ringPx": 17,
+       "triangles": 654
+      },
+      {
+       "cullMetres": 27579.6,
+       "members": 36,
+       "name": "farring_1_1",
+       "nearPx": 165,
+       "nullPx": 14,
+       "radius": 316.102,
+       "ringPx": 15,
+       "triangles": 1814
+      },
+      {
+       "cullMetres": 62164.0,
+       "members": 23,
+       "name": "farring_1_2",
+       "nearPx": 166,
+       "nullPx": 6,
+       "radius": 318.272,
+       "ringPx": 7,
+       "triangles": 970
+      },
+      {
+       "cullMetres": 31075.3,
+       "members": 1,
+       "name": "farring_1_3",
+       "nearPx": 56,
+       "nullPx": 4,
+       "radius": 106.029,
+       "ringPx": 5,
+       "triangles": 20
+      },
+      {
+       "cullMetres": 110168.8,
+       "members": 1,
+       "name": "farring_1_5",
+       "nearPx": 85,
+       "nullPx": 1,
+       "radius": 162.799,
+       "ringPx": 2,
+       "triangles": 106
+      },
+      {
+       "cullMetres": 138637.9,
+       "members": 11,
+       "name": "farring_1_6",
+       "nearPx": 137,
+       "nullPx": 2,
+       "radius": 261.7,
+       "ringPx": 3,
+       "triangles": 450
+      },
+      {
+       "cullMetres": 95400.0,
+       "members": 40,
+       "name": "farring_1_7",
+       "nearPx": 223,
+       "nullPx": 5,
+       "radius": 426.031,
+       "ringPx": 6,
+       "triangles": 1566
+      },
+      {
+       "cullMetres": 19938.1,
+       "members": 9,
+       "name": "farring_1_8",
+       "nearPx": 130,
+       "nullPx": 16,
+       "radius": 248.264,
+       "ringPx": 17,
+       "triangles": 230
+      },
+      {
+       "cullMetres": 22186.6,
+       "members": 40,
+       "name": "farring_2_-11",
+       "nearPx": 116,
+       "nullPx": 13,
+       "radius": 222.337,
+       "ringPx": 14,
+       "triangles": 2186
+      },
+      {
+       "cullMetres": 26616.7,
+       "members": 33,
+       "name": "farring_2_-10",
+       "nearPx": 128,
+       "nullPx": 11,
+       "radius": 243.745,
+       "ringPx": 12,
+       "triangles": 1612
+      },
+      {
+       "cullMetres": 23479.6,
+       "members": 6,
+       "name": "farring_2_-7",
+       "nearPx": 100,
+       "nullPx": 10,
+       "radius": 190.136,
+       "ringPx": 11,
+       "triangles": 238
+      },
+      {
+       "cullMetres": 22948.2,
+       "members": 50,
+       "name": "farring_2_-6",
+       "nearPx": 191,
+       "nullPx": 20,
+       "radius": 364.604,
+       "ringPx": 21,
+       "triangles": 2334
+      },
+      {
+       "cullMetres": 27579.6,
+       "members": 95,
+       "name": "farring_2_-5",
+       "nearPx": 198,
+       "nullPx": 17,
+       "radius": 378.822,
+       "ringPx": 18,
+       "triangles": 4680
+      },
+      {
+       "cullMetres": 22121.2,
+       "members": 178,
+       "name": "farring_2_-4",
+       "nearPx": 197,
+       "nullPx": 22,
+       "radius": 377.507,
+       "ringPx": 23,
+       "triangles": 7646
+      },
+      {
+       "cullMetres": 55965.2,
+       "members": 176,
+       "name": "farring_2_-3",
+       "nearPx": 203,
+       "nullPx": 9,
+       "radius": 388.633,
+       "ringPx": 10,
+       "triangles": 10362
+      },
+      {
+       "cullMetres": 76540.0,
+       "members": 39,
+       "name": "farring_2_-2",
+       "nearPx": 205,
+       "nullPx": 6,
+       "radius": 393.065,
+       "ringPx": 7,
+       "triangles": 944
+      },
+      {
+       "cullMetres": 95400.0,
+       "members": 4,
+       "name": "farring_2_-1",
+       "nearPx": 127,
+       "nullPx": 3,
+       "radius": 243.053,
+       "ringPx": 4,
+       "triangles": 100
+      },
+      {
+       "cullMetres": 29138.7,
+       "members": 57,
+       "name": "farring_2_0",
+       "nearPx": 181,
+       "nullPx": 15,
+       "radius": 346.716,
+       "ringPx": 16,
+       "triangles": 3028
+      },
+      {
+       "cullMetres": 20742.1,
+       "members": 153,
+       "name": "farring_2_1",
+       "nearPx": 201,
+       "nullPx": 24,
+       "radius": 383.675,
+       "ringPx": 25,
+       "triangles": 8508
+      },
+      {
+       "cullMetres": 22121.2,
+       "members": 156,
+       "name": "farring_2_2",
+       "nearPx": 195,
+       "nullPx": 22,
+       "radius": 373.796,
+       "ringPx": 23,
+       "triangles": 8502
+      },
+      {
+       "cullMetres": 24610.8,
+       "members": 99,
+       "name": "farring_2_3",
+       "nearPx": 158,
+       "nullPx": 16,
+       "radius": 302.949,
+       "ringPx": 17,
+       "triangles": 4502
+      },
+      {
+       "cullMetres": 15216.4,
+       "members": 2,
+       "name": "farring_2_4",
+       "nearPx": 14,
+       "nullPx": 2,
+       "radius": 24.985,
+       "ringPx": 3,
+       "triangles": 64
+      },
+      {
+       "cullMetres": 48512.6,
+       "members": 1,
+       "name": "farring_2_5",
+       "nearPx": 51,
+       "nullPx": 2,
+       "radius": 96.646,
+       "ringPx": 3,
+       "triangles": 44
+      },
+      {
+       "cullMetres": 15512.7,
+       "members": 1,
+       "name": "farring_2_6",
+       "nearPx": 17,
+       "nullPx": 2,
+       "radius": 31.221,
+       "ringPx": 3,
+       "triangles": 24
+      },
+      {
+       "cullMetres": 13877.3,
+       "members": 6,
+       "name": "farring_2_7",
+       "nearPx": 60,
+       "nullPx": 10,
+       "radius": 114.196,
+       "ringPx": 11,
+       "triangles": 228
+      },
+      {
+       "cullMetres": 120104.0,
+       "members": 1,
+       "name": "farring_3_-7",
+       "nearPx": 83,
+       "nullPx": 1,
+       "radius": 158.08,
+       "ringPx": 2,
+       "triangles": 100
+      },
+      {
+       "cullMetres": 100075.8,
+       "members": 5,
+       "name": "farring_3_-6",
+       "nearPx": 176,
+       "nullPx": 4,
+       "radius": 337.267,
+       "ringPx": 5,
+       "triangles": 420
+      },
+      {
+       "cullMetres": 26725.2,
+       "members": 95,
+       "name": "farring_3_-5",
+       "nearPx": 201,
+       "nullPx": 18,
+       "radius": 384.448,
+       "ringPx": 19,
+       "triangles": 3660
+      },
+      {
+       "cullMetres": 39561.5,
+       "members": 138,
+       "name": "farring_3_-4",
+       "nearPx": 198,
+       "nullPx": 12,
+       "radius": 379.384,
+       "ringPx": 13,
+       "triangles": 6580
+      },
+      {
+       "cullMetres": 59522.7,
+       "members": 126,
+       "name": "farring_3_-3",
+       "nearPx": 198,
+       "nullPx": 8,
+       "radius": 378.838,
+       "ringPx": 9,
+       "triangles": 6440
+      },
+      {
+       "cullMetres": 64015.3,
+       "members": 155,
+       "name": "farring_3_-2",
+       "nearPx": 196,
+       "nullPx": 7,
+       "radius": 374.608,
+       "ringPx": 8,
+       "triangles": 7738
+      },
+      {
+       "cullMetres": 28213.5,
+       "members": 79,
+       "name": "farring_3_-1",
+       "nearPx": 186,
+       "nullPx": 16,
+       "radius": 355.31,
+       "ringPx": 17,
+       "triangles": 4572
+      },
+      {
+       "cullMetres": 34070.2,
+       "members": 125,
+       "name": "farring_3_0",
+       "nearPx": 198,
+       "nullPx": 14,
+       "radius": 378.981,
+       "ringPx": 15,
+       "triangles": 7086
+      },
+      {
+       "cullMetres": 55265.3,
+       "members": 132,
+       "name": "farring_3_1",
+       "nearPx": 200,
+       "nullPx": 9,
+       "radius": 383.291,
+       "ringPx": 10,
+       "triangles": 6882
+      },
+      {
+       "cullMetres": 154105.1,
+       "members": 74,
+       "name": "farring_3_2",
+       "nearPx": 197,
+       "nullPx": 3,
+       "radius": 376.846,
+       "ringPx": 4,
+       "triangles": 3782
+      },
+      {
+       "cullMetres": 22121.2,
+       "members": 169,
+       "name": "farring_3_3",
+       "nearPx": 193,
+       "nullPx": 21,
+       "radius": 369.254,
+       "ringPx": 22,
+       "triangles": 8740
+      },
+      {
+       "cullMetres": 20113.4,
+       "members": 56,
+       "name": "farring_3_4",
+       "nearPx": 141,
+       "nullPx": 17,
+       "radius": 269.922,
+       "ringPx": 18,
+       "triangles": 3256
+      },
+      {
+       "cullMetres": 13820.4,
+       "members": 2,
+       "name": "farring_3_6",
+       "nearPx": 104,
+       "nullPx": 18,
+       "radius": 198.739,
+       "ringPx": 19,
+       "triangles": 94
+      },
+      {
+       "cullMetres": 13877.3,
+       "members": 1,
+       "name": "farring_3_7",
+       "nearPx": 8,
+       "nullPx": 1,
+       "radius": 14.91,
+       "ringPx": 2,
+       "triangles": 12
+      },
+      {
+       "cullMetres": 21451.3,
+       "members": 2,
+       "name": "farring_4_-6",
+       "nearPx": 30,
+       "nullPx": 3,
+       "radius": 56.118,
+       "ringPx": 4,
+       "triangles": 96
+      },
+      {
+       "cullMetres": 24151.4,
+       "members": 18,
+       "name": "farring_4_-5",
+       "nearPx": 144,
+       "nullPx": 14,
+       "radius": 274.707,
+       "ringPx": 15,
+       "triangles": 834
+      },
+      {
+       "cullMetres": 67381.6,
+       "members": 80,
+       "name": "farring_4_-4",
+       "nearPx": 185,
+       "nullPx": 6,
+       "radius": 354.029,
+       "ringPx": 7,
+       "triangles": 3474
+      },
+      {
+       "cullMetres": 110375.6,
+       "members": 108,
+       "name": "farring_4_-3",
+       "nearPx": 208,
+       "nullPx": 4,
+       "radius": 397.635,
+       "ringPx": 5,
+       "triangles": 4526
+      },
+      {
+       "cullMetres": 108186.0,
+       "members": 64,
+       "name": "farring_4_-2",
+       "nearPx": 208,
+       "nullPx": 4,
+       "radius": 397.23,
+       "ringPx": 5,
+       "triangles": 2764
+      },
+      {
+       "cullMetres": 84466.1,
+       "members": 99,
+       "name": "farring_4_-1",
+       "nearPx": 204,
+       "nullPx": 6,
+       "radius": 390.66,
+       "ringPx": 7,
+       "triangles": 4294
+      },
+      {
+       "cullMetres": 84744.7,
+       "members": 92,
+       "name": "farring_4_0",
+       "nearPx": 206,
+       "nullPx": 6,
+       "radius": 394.973,
+       "ringPx": 7,
+       "triangles": 4226
+      },
+      {
+       "cullMetres": 44692.8,
+       "members": 104,
+       "name": "farring_4_1",
+       "nearPx": 193,
+       "nullPx": 10,
+       "radius": 369.504,
+       "ringPx": 11,
+       "triangles": 4374
+      },
+      {
+       "cullMetres": 29208.7,
+       "members": 147,
+       "name": "farring_4_2",
+       "nearPx": 204,
+       "nullPx": 17,
+       "radius": 390.075,
+       "ringPx": 18,
+       "triangles": 7362
+      },
+      {
+       "cullMetres": 27579.6,
+       "members": 147,
+       "name": "farring_4_3",
+       "nearPx": 200,
+       "nullPx": 18,
+       "radius": 381.638,
+       "ringPx": 19,
+       "triangles": 7470
+      },
+      {
+       "cullMetres": 22081.9,
+       "members": 132,
+       "name": "farring_4_4",
+       "nearPx": 195,
+       "nullPx": 22,
+       "radius": 372.986,
+       "ringPx": 23,
+       "triangles": 6992
+      },
+      {
+       "cullMetres": 27579.6,
+       "members": 77,
+       "name": "farring_4_5",
+       "nearPx": 157,
+       "nullPx": 14,
+       "radius": 300.604,
+       "ringPx": 15,
+       "triangles": 4870
+      },
+      {
+       "cullMetres": 24610.8,
+       "members": 34,
+       "name": "farring_4_6",
+       "nearPx": 138,
+       "nullPx": 13,
+       "radius": 263.094,
+       "ringPx": 14,
+       "triangles": 1264
+      },
+      {
+       "cullMetres": 16305.9,
+       "members": 20,
+       "name": "farring_4_7",
+       "nearPx": 133,
+       "nullPx": 20,
+       "radius": 253.145,
+       "ringPx": 21,
+       "triangles": 1164
+      },
+      {
+       "cullMetres": 11164.1,
+       "members": 3,
+       "name": "farring_4_10",
+       "nearPx": 16,
+       "nullPx": 3,
+       "radius": 30.294,
+       "ringPx": 4,
+       "triangles": 132
+      },
+      {
+       "cullMetres": 24913.8,
+       "members": 55,
+       "name": "farring_4_11",
+       "nearPx": 161,
+       "nullPx": 16,
+       "radius": 307.885,
+       "ringPx": 17,
+       "triangles": 2452
+      },
+      {
+       "cullMetres": 60364.1,
+       "members": 33,
+       "name": "farring_5_-3",
+       "nearPx": 94,
+       "nullPx": 3,
+       "radius": 179.77,
+       "ringPx": 4,
+       "triangles": 1688
+      },
+      {
+       "cullMetres": 132550.5,
+       "members": 74,
+       "name": "farring_5_-2",
+       "nearPx": 212,
+       "nullPx": 3,
+       "radius": 405.469,
+       "ringPx": 4,
+       "triangles": 2060
+      },
+      {
+       "cullMetres": 132550.5,
+       "members": 77,
+       "name": "farring_5_-1",
+       "nearPx": 212,
+       "nullPx": 3,
+       "radius": 405.083,
+       "ringPx": 4,
+       "triangles": 2394
+      },
+      {
+       "cullMetres": 100933.2,
+       "members": 109,
+       "name": "farring_5_0",
+       "nearPx": 204,
+       "nullPx": 5,
+       "radius": 390.224,
+       "ringPx": 6,
+       "triangles": 3410
+      },
+      {
+       "cullMetres": 207346.7,
+       "members": 50,
+       "name": "farring_5_1",
+       "nearPx": 214,
+       "nullPx": 2,
+       "radius": 409.683,
+       "ringPx": 3,
+       "triangles": 1802
+      },
+      {
+       "cullMetres": 156100.9,
+       "members": 109,
+       "name": "farring_5_2",
+       "nearPx": 211,
+       "nullPx": 3,
+       "radius": 403.926,
+       "ringPx": 4,
+       "triangles": 4430
+      },
+      {
+       "cullMetres": 28463.5,
+       "members": 124,
+       "name": "farring_5_3",
+       "nearPx": 195,
+       "nullPx": 17,
+       "radius": 373.455,
+       "ringPx": 18,
+       "triangles": 5828
+      },
+      {
+       "cullMetres": 74999.4,
+       "members": 38,
+       "name": "farring_5_4",
+       "nearPx": 203,
+       "nullPx": 6,
+       "radius": 388.04,
+       "ringPx": 7,
+       "triangles": 1740
+      },
+      {
+       "cullMetres": 24610.8,
+       "members": 157,
+       "name": "farring_5_5",
+       "nearPx": 194,
+       "nullPx": 19,
+       "radius": 371.01,
+       "ringPx": 20,
+       "triangles": 8456
+      },
+      {
+       "cullMetres": 22121.2,
+       "members": 181,
+       "name": "farring_5_6",
+       "nearPx": 197,
+       "nullPx": 22,
+       "radius": 376.051,
+       "ringPx": 23,
+       "triangles": 8748
+      },
+      {
+       "cullMetres": 22121.2,
+       "members": 100,
+       "name": "farring_5_7",
+       "nearPx": 183,
+       "nullPx": 20,
+       "radius": 350.779,
+       "ringPx": 21,
+       "triangles": 4660
+      },
+      {
+       "cullMetres": 13094.5,
+       "members": 5,
+       "name": "farring_5_8",
+       "nearPx": 31,
+       "nullPx": 5,
+       "radius": 58.377,
+       "ringPx": 6,
+       "triangles": 186
+      },
+      {
+       "cullMetres": 16698.2,
+       "members": 2,
+       "name": "farring_5_11",
+       "nearPx": 27,
+       "nullPx": 3,
+       "radius": 50.734,
+       "ringPx": 4,
+       "triangles": 84
+      },
+      {
+       "cullMetres": 127385.0,
+       "members": 27,
+       "name": "farring_6_-2",
+       "nearPx": 190,
+       "nullPx": 3,
+       "radius": 362.786,
+       "ringPx": 4,
+       "triangles": 1134
+      },
+      {
+       "cullMetres": 75006.2,
+       "members": 10,
+       "name": "farring_6_-1",
+       "nearPx": 112,
+       "nullPx": 3,
+       "radius": 213.583,
+       "ringPx": 4,
+       "triangles": 520
+      },
+      {
+       "cullMetres": 68078.7,
+       "members": 7,
+       "name": "farring_6_0",
+       "nearPx": 137,
+       "nullPx": 5,
+       "radius": 261.498,
+       "ringPx": 6,
+       "triangles": 284
+      },
+      {
+       "cullMetres": 107804.8,
+       "members": 6,
+       "name": "farring_6_1",
+       "nearPx": 179,
+       "nullPx": 4,
+       "radius": 341.596,
+       "ringPx": 5,
+       "triangles": 414
+      },
+      {
+       "cullMetres": 82888.4,
+       "members": 12,
+       "name": "farring_6_2",
+       "nearPx": 156,
+       "nullPx": 4,
+       "radius": 298.192,
+       "ringPx": 5,
+       "triangles": 670
+      },
+      {
+       "cullMetres": 64017.8,
+       "members": 52,
+       "name": "farring_6_3",
+       "nearPx": 160,
+       "nullPx": 6,
+       "radius": 305.845,
+       "ringPx": 7,
+       "triangles": 2162
+      },
+      {
+       "cullMetres": 74999.4,
+       "members": 64,
+       "name": "farring_6_4",
+       "nearPx": 196,
+       "nullPx": 6,
+       "radius": 375.643,
+       "ringPx": 7,
+       "triangles": 2832
+      },
+      {
+       "cullMetres": 29208.7,
+       "members": 118,
+       "name": "farring_6_5",
+       "nearPx": 196,
+       "nullPx": 16,
+       "radius": 374.365,
+       "ringPx": 17,
+       "triangles": 5770
+      },
+      {
+       "cullMetres": 25642.5,
+       "members": 68,
+       "name": "farring_6_6",
+       "nearPx": 196,
+       "nullPx": 19,
+       "radius": 374.895,
+       "ringPx": 20,
+       "triangles": 2568
+      },
+      {
+       "cullMetres": 242708.9,
+       "members": 37,
+       "name": "farring_6_7",
+       "nearPx": 256,
+       "nullPx": 2,
+       "radius": 490.099,
+       "ringPx": 3,
+       "triangles": 1450
+      },
+      {
+       "cullMetres": 22081.9,
+       "members": 11,
+       "name": "farring_6_8",
+       "nearPx": 45,
+       "nullPx": 4,
+       "radius": 84.437,
+       "ringPx": 5,
+       "triangles": 644
+      },
+      {
+       "cullMetres": 76845.8,
+       "members": 39,
+       "name": "farring_7_-1",
+       "nearPx": 195,
+       "nullPx": 6,
+       "radius": 373.933,
+       "ringPx": 7,
+       "triangles": 1908
+      },
+      {
+       "cullMetres": 15509.2,
+       "members": 4,
+       "name": "farring_7_0",
+       "nearPx": 52,
+       "nullPx": 8,
+       "radius": 98.404,
+       "ringPx": 9,
+       "triangles": 182
+      },
+      {
+       "cullMetres": 20867.8,
+       "members": 15,
+       "name": "farring_7_1",
+       "nearPx": 95,
+       "nullPx": 11,
+       "radius": 181.186,
+       "ringPx": 12,
+       "triangles": 628
+      },
+      {
+       "cullMetres": 59567.8,
+       "members": 35,
+       "name": "farring_7_2",
+       "nearPx": 158,
+       "nullPx": 6,
+       "radius": 302.266,
+       "ringPx": 7,
+       "triangles": 2026
+      },
+      {
+       "cullMetres": 16641.3,
+       "members": 14,
+       "name": "farring_7_3",
+       "nearPx": 62,
+       "nullPx": 9,
+       "radius": 117.082,
+       "ringPx": 10,
+       "triangles": 580
+      },
+      {
+       "cullMetres": 28463.5,
+       "members": 10,
+       "name": "farring_7_4",
+       "nearPx": 61,
+       "nullPx": 5,
+       "radius": 116.105,
+       "ringPx": 6,
+       "triangles": 490
+      },
+      {
+       "cullMetres": 25944.1,
+       "members": 18,
+       "name": "farring_7_5",
+       "nearPx": 109,
+       "nullPx": 10,
+       "radius": 207.267,
+       "ringPx": 11,
+       "triangles": 1000
+      },
+      {
+       "cullMetres": 24610.8,
+       "members": 89,
+       "name": "farring_7_6",
+       "nearPx": 172,
+       "nullPx": 17,
+       "radius": 328.203,
+       "ringPx": 18,
+       "triangles": 3126
+      },
+      {
+       "cullMetres": 25944.1,
+       "members": 136,
+       "name": "farring_7_7",
+       "nearPx": 198,
+       "nullPx": 19,
+       "radius": 379.203,
+       "ringPx": 20,
+       "triangles": 5172
+      },
+      {
+       "cullMetres": 61175.3,
+       "members": 29,
+       "name": "farring_7_8",
+       "nearPx": 183,
+       "nullPx": 7,
+       "radius": 350.64,
+       "ringPx": 8,
+       "triangles": 1268
+      },
+      {
+       "cullMetres": 15216.4,
+       "members": 1,
+       "name": "farring_7_13",
+       "nearPx": 9,
+       "nullPx": 1,
+       "radius": 16.826,
+       "ringPx": 2,
+       "triangles": 20
+      },
+      {
+       "cullMetres": 125699.7,
+       "members": 53,
+       "name": "farring_8_-1",
+       "nearPx": 183,
+       "nullPx": 3,
+       "radius": 350.255,
+       "ringPx": 4,
+       "triangles": 3142
+      },
+      {
+       "cullMetres": 41287.1,
+       "members": 4,
+       "name": "farring_8_0",
+       "nearPx": 93,
+       "nullPx": 5,
+       "radius": 178.275,
+       "ringPx": 6,
+       "triangles": 80
+      },
+      {
+       "cullMetres": 25944.1,
+       "members": 41,
+       "name": "farring_8_1",
+       "nearPx": 119,
+       "nullPx": 11,
+       "radius": 228.004,
+       "ringPx": 12,
+       "triangles": 2248
+      },
+      {
+       "cullMetres": 33625.7,
+       "members": 14,
+       "name": "farring_8_2",
+       "nearPx": 105,
+       "nullPx": 7,
+       "radius": 200.02,
+       "ringPx": 8,
+       "triangles": 762
+      },
+      {
+       "cullMetres": 22690.7,
+       "members": 28,
+       "name": "farring_8_3",
+       "nearPx": 144,
+       "nullPx": 15,
+       "radius": 274.9,
+       "ringPx": 16,
+       "triangles": 1528
+      },
+      {
+       "cullMetres": 86616.0,
+       "members": 65,
+       "name": "farring_8_4",
+       "nearPx": 177,
+       "nullPx": 5,
+       "radius": 338.493,
+       "ringPx": 6,
+       "triangles": 3296
+      },
+      {
+       "cullMetres": 23479.6,
+       "members": 57,
+       "name": "farring_8_6",
+       "nearPx": 181,
+       "nullPx": 19,
+       "radius": 346.548,
+       "ringPx": 20,
+       "triangles": 1994
+      },
+      {
+       "cullMetres": 24719.9,
+       "members": 75,
+       "name": "farring_8_7",
+       "nearPx": 159,
+       "nullPx": 15,
+       "radius": 303.009,
+       "ringPx": 16,
+       "triangles": 3054
+      },
+      {
+       "cullMetres": 22690.7,
+       "members": 22,
+       "name": "farring_8_8",
+       "nearPx": 85,
+       "nullPx": 9,
+       "radius": 161.769,
+       "ringPx": 10,
+       "triangles": 1128
+      },
+      {
+       "cullMetres": 111538.4,
+       "members": 1,
+       "name": "farring_8_13",
+       "nearPx": 113,
+       "nullPx": 2,
+       "radius": 214.807,
+       "ringPx": 3,
+       "triangles": 66
+      },
+      {
+       "cullMetres": 35035.2,
+       "members": 4,
+       "name": "farring_9_-2",
+       "nearPx": 74,
+       "nullPx": 5,
+       "radius": 141.782,
+       "ringPx": 6,
+       "triangles": 370
+      },
+      {
+       "cullMetres": 161449.4,
+       "members": 6,
+       "name": "farring_9_-1",
+       "nearPx": 239,
+       "nullPx": 3,
+       "radius": 457.71,
+       "ringPx": 4,
+       "triangles": 238
+      },
+      {
+       "cullMetres": 53244.1,
+       "members": 39,
+       "name": "farring_9_0",
+       "nearPx": 165,
+       "nullPx": 7,
+       "radius": 315.319,
+       "ringPx": 8,
+       "triangles": 1412
+      },
+      {
+       "cullMetres": 88639.0,
+       "members": 45,
+       "name": "farring_9_1",
+       "nearPx": 163,
+       "nullPx": 4,
+       "radius": 311.947,
+       "ringPx": 5,
+       "triangles": 2630
+      },
+      {
+       "cullMetres": 88639.0,
+       "members": 34,
+       "name": "farring_9_2",
+       "nearPx": 167,
+       "nullPx": 4,
+       "radius": 319.569,
+       "ringPx": 5,
+       "triangles": 2128
+      },
+      {
+       "cullMetres": 39561.5,
+       "members": 49,
+       "name": "farring_9_3",
+       "nearPx": 198,
+       "nullPx": 12,
+       "radius": 378.444,
+       "ringPx": 13,
+       "triangles": 2204
+      },
+      {
+       "cullMetres": 39561.5,
+       "members": 121,
+       "name": "farring_9_4",
+       "nearPx": 203,
+       "nullPx": 12,
+       "radius": 388.391,
+       "ringPx": 13,
+       "triangles": 5014
+      },
+      {
+       "cullMetres": 60677.4,
+       "members": 37,
+       "name": "farring_9_5",
+       "nearPx": 158,
+       "nullPx": 6,
+       "radius": 301.542,
+       "ringPx": 7,
+       "triangles": 1852
+      },
+      {
+       "cullMetres": 15990.6,
+       "members": 3,
+       "name": "farring_9_6",
+       "nearPx": 26,
+       "nullPx": 4,
+       "radius": 49.736,
+       "ringPx": 5,
+       "triangles": 52
+      },
+      {
+       "cullMetres": 35035.2,
+       "members": 6,
+       "name": "farring_10_-3",
+       "nearPx": 107,
+       "nullPx": 7,
+       "radius": 203.51,
+       "ringPx": 8,
+       "triangles": 590
+      },
+      {
+       "cullMetres": 60734.4,
+       "members": 5,
+       "name": "farring_10_-2",
+       "nearPx": 150,
+       "nullPx": 6,
+       "radius": 287.145,
+       "ringPx": 7,
+       "triangles": 298
+      },
+      {
+       "cullMetres": 94144.6,
+       "members": 11,
+       "name": "farring_10_-1",
+       "nearPx": 198,
+       "nullPx": 5,
+       "radius": 379.512,
+       "ringPx": 6,
+       "triangles": 716
+      },
+      {
+       "cullMetres": 94144.6,
+       "members": 100,
+       "name": "farring_10_0",
+       "nearPx": 202,
+       "nullPx": 5,
+       "radius": 387.061,
+       "ringPx": 6,
+       "triangles": 4542
+      },
+      {
+       "cullMetres": 33625.7,
+       "members": 132,
+       "name": "farring_10_1",
+       "nearPx": 196,
+       "nullPx": 14,
+       "radius": 375.826,
+       "ringPx": 15,
+       "triangles": 6592
+      },
+      {
+       "cullMetres": 49646.4,
+       "members": 121,
+       "name": "farring_10_2",
+       "nearPx": 207,
+       "nullPx": 10,
+       "radius": 395.684,
+       "ringPx": 11,
+       "triangles": 6112
+      },
+      {
+       "cullMetres": 140635.3,
+       "members": 102,
+       "name": "farring_10_3",
+       "nearPx": 208,
+       "nullPx": 3,
+       "radius": 397.286,
+       "ringPx": 4,
+       "triangles": 5348
+      },
+      {
+       "cullMetres": 140635.3,
+       "members": 77,
+       "name": "farring_10_4",
+       "nearPx": 185,
+       "nullPx": 3,
+       "radius": 354.523,
+       "ringPx": 4,
+       "triangles": 3104
+      },
+      {
+       "cullMetres": 83900.3,
+       "members": 22,
+       "name": "farring_10_5",
+       "nearPx": 93,
+       "nullPx": 2,
+       "radius": 176.494,
+       "ringPx": 3,
+       "triangles": 854
+      },
+      {
+       "cullMetres": 33625.7,
+       "members": 2,
+       "name": "farring_11_-2",
+       "nearPx": 41,
+       "nullPx": 2,
+       "radius": 76.904,
+       "ringPx": 3,
+       "triangles": 114
+      },
+      {
+       "cullMetres": 23800.3,
+       "members": 1,
+       "name": "farring_11_-1",
+       "nearPx": 19,
+       "nullPx": 1,
+       "radius": 35.211,
+       "ringPx": 2,
+       "triangles": 50
+      },
+      {
+       "cullMetres": 27453.2,
+       "members": 2,
+       "name": "farring_11_0",
+       "nearPx": 84,
+       "nullPx": 7,
+       "radius": 160.702,
+       "ringPx": 8,
+       "triangles": 74
+      },
+      {
+       "cullMetres": 3001.2,
+       "members": 3,
+       "name": "farring_11_1",
+       "nearPx": 100,
+       "nullPx": 82,
+       "radius": 190.284,
+       "ringPx": 83,
+       "triangles": 84
+      },
+      {
+       "cullMetres": 47875.3,
+       "members": 3,
+       "name": "farring_11_2",
+       "nearPx": 51,
+       "nullPx": 2,
+       "radius": 97.284,
+       "ringPx": 3,
+       "triangles": 254
+      },
+      {
+       "cullMetres": 22849.1,
+       "members": 1,
+       "name": "farring_11_3",
+       "nearPx": 13,
+       "nullPx": 1,
+       "radius": 24.577,
+       "ringPx": 2,
+       "triangles": 72
+      }
+     ],
+     "handOverMetres": 2500.0,
+     "members": 8730,
+     "orphansRemoved": 0,
+     "rewritten": 208,
+     "triangles": 409676
+    },
+    "forestBytes": {
+     "bytes": 91871815,
+     "files": 1890,
+     "mib": 87.6
+    },
+    "forestCollision": {
+     "collidable": 1350,
+     "itemsNotCollidable": 340762,
+     "noCollider": 127,
+     "plant": 63,
+     "policyOff": 0,
+     "tooShort": 82,
+     "tooThin": 268,
+     "types": 1890
+    },
+    "forestItems": 576148,
+    "forestItemsMerged": 0,
+    "forestMinItems": 10,
+    "forestTypes": 1890,
+    "forestTypesMerged": 0,
+    "kept": 608216,
+    "noShape": 17317,
+    "placed": 589620,
+    "scanned": 1283541,
+    "seconds": 92.1,
+    "tsStatics": 13472,
+    "tsStaticsNoShadow": 4742
+   },
+   "seconds": 92.1
+  },
+  "materials": {
+   "result": {
+    "approximations": {
+     "colorMaskChannelOverlap": {
+      "count": null,
+      "value": 0.0176,
+      "what": "a colour-mask texel where TWO OR MORE of CS2's tint channels are non-zero is mixed by BeamNG where CS2 multiplies",
+      "why": "CS2 applies three INDEPENDENT lerps (bundle \u00a77.2) and BeamNG's `getColorPalette` normalises the mask RGB into a simplex, so it can only ever BLEND between the three palette colours. Where one channel is active the conversion in `beamng.materials._colormask_rgba` is EXACT (worst error 0.001, which is the alpha's own 8-bit step); where two are, no alpha can reproduce a product with a mix. \u00a77.2 states the channels are authored disjoint and MEASUREMENT AGREES: over 254 masks and 521.7 M texels, 39.0 % carry any tint at all and only 1.76 % of THOSE have two channels (median mask 0.29 %, 32 masks none at all)"
+     }
+    },
+    "areaMaterials": 40,
+    "canonical": 2184,
+    "format": "dds",
+    "named": 6156,
+    "orphanTexturesRemoved": 0,
+    "paintVariantKinds": {
+     "factor": 626,
+     "texture": 2674
+    },
+    "paintVariantMaterials": 3300,
+    "seconds": 8.2,
+    "textureBytes": {
+     "bytes": 407477860,
+     "files": 11137,
+     "mib": 388.6
+    },
+    "textureCaps": {
+     "color": 256,
+     "colormask": 256,
+     "data": 256,
+     "normal": 256,
+     "opacity": 256
+    },
+    "textureCapsLod": {
+     "1": 128,
+     "2": 64
+    },
+    "textures": 11063,
+    "texturesLodOnly": 3593,
+    "texturesMissing": 0,
+    "texturesReused": 11063
+   },
+   "seconds": 8.2
+  },
+  "navgraph": {
+   "result": {
+    "droppedOutsideRegion": 0,
+    "leftHandTraffic": false,
+    "notes": [
+     "navgraph: 25,811 SideConnection driveway stubs excluded from the carriageway - CS2's own flag, not a length threshold",
+     "navgraph: APPROXIMATION - 5,733 segments carry lanes in both directions and become ONE centerline down the middle of them; a median strip inside a single segment is not represented",
+     "navgraph: 571 segment ends weld to no turning movement - a dead end, or a join not found",
+     "navgraph: 13,132 node-owned car lanes touch a drivable segment at one end only (a movement into a lot or a path) and are not emitted",
+     "navgraph: APPROXIMATION - 88 segments had their width capped so their node radius stops short of a road stacked over or under them (worst 13.57 m); their width is understated by that much, and without it a consumer that asks 'is the car inside this radius' answers with the deck overhead",
+     "navgraph: 2,114 connectors/joints dropped as SELF-LOOPS - both ends land on one node once coincident terminal nodes merge, so they join nothing (map.lua:459 crashed on the 3-cycle they make)",
+     "navgraph: 112 connectors/joints dropped as DUPLICATE edges - a second road between one pair of nodes is not a second edge; the one carrying the turn's geometry is kept",
+     "navgraph: 50 joints where two segments abut with no turning movement between them (an asset change or a bridge abutment, not a junction)",
+     "navgraph: traffic drives on the RIGHT - MEASURED, 5,735 two-way segments put the with-flow lanes right and 1 put them left",
+     "navgraph: 15,393 roads / 51,197 nodes, 35 connected components, largest holds 96.5% of them"
+    ],
+    "roads": 15393,
+    "seconds": 20.0,
+    "stats": {
+     "carLanes": 131618,
+     "components": 35,
+     "connectors": 8676,
+     "connectorsUnmatched": 13132,
+     "connectorsUnused": 36713,
+     "dividedCarriagewaysAveraged": 5733,
+     "duplicateEdgesDropped": 112,
+     "endsWithNoJunction": 571,
+     "forwardLanesLeft": 1,
+     "forwardLanesRight": 5735,
+     "joints": 50,
+     "junctionLanes": 77737,
+     "largestComponent": 14860,
+     "largestComponentFraction": 0.9654,
+     "leftHandTraffic": false,
+     "nodes": 51197,
+     "roads": 15393,
+     "segmentOwned": 52974,
+     "segments": 6668,
+     "segmentsWithLanes": 6667,
+     "segmentsWithoutCenterline": 0,
+     "selfLoopsDropped": 2114,
+     "sideConnections": 25811,
+     "speedInferred": 0,
+     "widthClamped": 0,
+     "widthClearanceClamped": 88,
+     "widthClearanceWorst": 13.57
+    },
+    "trafficSideSource": "bundle.json leftHandTraffic"
+   },
+   "seconds": 20.0
+  },
+  "networks": {
+   "result": {
+    "approximations": {
+     "compositionHeightRange": {
+      "count": 7289,
+      "what": "a segment's composition height range is taken from the assembled mesh's own vertical extent, capped at its width",
+      "why": "the bundle ships a segment's `width` but not its composition's `m_HeightRange`; the term is a third of the rendering size at most, and the cap keeps the error on the draw-FURTHER side"
+     },
+     "compositionLodBias": {
+      "count": 7289,
+      "what": "the mean of the pieces' `MeshData.m_LodBias` is taken as 0",
+      "why": "the bundle ships assembled segment meshes, not the composition's piece list; a positive bias only ever pulls the distance IN, so 0 draws at least as far as the game"
+     }
+    },
+    "jobs": 7,
+    "lod": {
+     "anchorMetresMedian": 8000.0,
+     "decimatedTriangles": [
+      18533154,
+      3833699
+     ],
+     "detailScale": 4.0,
+     "gameNullMetresMedian": 41298.3,
+     "levelsPerTile": 3.0,
+     "meanTrianglesKeptAtFarLevel": 1.0,
+     "tiles": 1024,
+     "tilesNeverCulled": 28
+    },
+    "orphansRemoved": 0,
+    "refused": 0,
+    "seconds": 29.9,
+    "segments": 7289,
+    "splitGeometries": 25,
+    "tiles": 1024,
+    "tilesRewritten": 1024,
+    "triangles": 13100276,
+    "vertices": 14162733
+   },
+   "seconds": 29.9
+  },
+  "poi": {
+   "result": {
+    "authored": 0,
+    "derived": 8,
+    "districts": 0,
+    "infoSpawnPoints": 8,
+    "names": [
+     "Bramblewood Street",
+     "Autumn Street",
+     "Copperfield Street",
+     "Linden Lane",
+     "Ashridge Street",
+     "Hazelbrook Street",
+     "Birch Lane",
+     "Driftwood Highway"
+    ],
+    "points": 8,
+    "seconds": 1.9
+   },
+   "seconds": 1.9
+  },
+  "scene": {
+   "result": {
+    "seconds": 5.3,
+    "spawn": [
+     1404.325,
+     1167.748,
+     528.742
+    ],
+    "sunAzimuth": 179.1,
+    "sunColorTemperatureIgnored": false,
+    "sunElevation": 66.3,
+    "todHour": 12.033,
+    "todTime": 0.0014,
+    "visibleDistance": 8000.0
+   },
+   "seconds": 5.3
+  },
+  "shapes": {
+   "result": {
+    "approximations": {
+     "foliageRoadClearance": {
+      "count": 6587,
+      "ofTrees": 312092,
+      "value": 2.5,
+      "what": "a TREE standing within 2.50 m of a drivable lane centre is not placed",
+      "why": "A DECLARED DEVIATION, asked for, not a fidelity rule - CS2 clears objects when a road is BUILT and whatever survives in the save is what the city contains, so there is no game rule to port. Trees only: a bush or a flower pot is driven straight through once it stops colliding (A6.1), so removing it would cost fidelity and buy no drivability. The distance is the VEHICLE ENVELOPE, not an edge found in the data - the sweep showed trees per 0.25 m band are almost FLAT from 0.5 m out to 5 m, so there is no natural threshold to prefer. `foliage_road_clearance` 0 turns it off. Separately and always on, CS2's own `Overridden` rule removes what the game itself does not draw (instances.should_draw)"
+     },
+     "lodDetailScale": {
+      "count": 4016,
+      "value": 4.0,
+      "what": "every shape's cull threshold is CS2's own, multiplied by lod_detail_scale",
+      "why": "CS2 draws a median prop to 1 km and a median building to 7.3 km over 1.2M objects; BeamNG cannot. 1.0 restores the game exactly."
+     },
+     "lodDetailScalePerKind": {
+      "count": 2608,
+      "value": 3.0,
+      "what": "a PROP's cull threshold uses `lod_detail_scale_prop` instead of the global multiplier",
+      "why": "CS2 draws a median prop to 1,024 m and a median building to 13,008 m, a factor of 12.7, and one global divisor preserves that ratio while destroying the relationship - at 105 m a window frame is plainly visible where at CS2's 1,024 m it is sub-pixel, so facades read as construction sites (A6.2). DECLARED TUNING: the game has no per-kind divisor. The game's actual sub-object rule - cull at the OWNER's bounds, keep your own m_MinLod (audit \u00a770) - is NOT ported, because BeamNG holds detail thresholds per SHAPE and ownership is per INSTANCE"
+     },
+     "lodLadderSwitchPoints": {
+      "count": 3742,
+      "displacement": {
+       "LOD1": {
+        "deferred": 149,
+        "deferredMaxFactor": 14.62,
+        "deferredMedianFactor": 1.68,
+        "errorPxP50": 1.51,
+        "errorPxP90": 7.3,
+        "identical": 231,
+        "metresMax": 0.98,
+        "metresP50": 0.0213,
+        "metresP90": 0.07,
+        "shapes": 2023
+       },
+       "LOD2": {
+        "deferred": 117,
+        "deferredMaxFactor": 4.09,
+        "deferredMedianFactor": 1.5,
+        "errorPxP50": 1.19,
+        "errorPxP90": 6.3,
+        "identical": 160,
+        "metresMax": 4.0596,
+        "metresP50": 0.0628,
+        "metresP90": 0.3585,
+        "shapes": 2089
+       },
+       "exemptLevels": 380
+      },
+      "kinds": [
+       "building",
+       "prop",
+       "decal"
+      ],
+      "value": 8.0,
+      "what": "where LOD1/LOD2 take over: the distance at which that level's own measured displacement from LOD 0 is worth 8 px",
+      "why": "CS2 ships no LOD chain for these prefabs (lodCap 0), so there is no game rule to port. The ladder used to be fixed multiples of the shape's CULL threshold, and that threshold is a statement about the shape's SIZE, not about its LOD's ERROR: a LOD1's displacement runs from 0 m on 603 of 4,261 shapes to 37 m on the worst, so one multiple cannot serve both ends and the coarse end reads as a roof moving under props that have not moved (A6.7). Each level now takes its threshold from its own displacement, measured by the bake as the p95 distance from the generated surface back to LOD 0's. The PIXEL BUDGET is still ours: about a pixel is what fidelity would ask for and costs +384 % to +630 % drawn triangles (measured over 1.16 M placements from four viewpoints), where 6 px costs +0 % to +16 %, so `lod_switch_error_px` is a declared budget and not a measurement"
+     },
+     "orphansOfAbsentOwners": {
+      "count": 7629,
+      "owners": 28,
+      "what": "a record whose owner the producer declared ABSENT is not placed either",
+      "why": "not a CS2 rule \u2014 the game had those prefabs and drew the buildings. It is a consumer's obligation against a DECLARED gap (\u00a710): the prefab did not resolve at rip time (an unowned asset pack), so we drop the building and would otherwise place its props in mid-air \u2014 6,714 records on the reference city, up to 292 m up, 695 of them hanging off ONE absent tower. Only the absent class is dropped: a prefab that exists WITHOUT GEOMETRY keeps its 5,806 children (the lamps and benches of car parks and sports pitches, whose own surface ships in the `areas` layer), and a construction site keeps its children too \u2014 measurement says they are the ConstructionCrane01 and the site's benches, which \u00a74 states are real. THE REMEDY AT SOURCE IS CHEAPER: enable those asset packs in CS2 and re-rip, which brings the buildings back instead of hiding their props"
+     },
+     "oversizedBoxColliders": {
+      "count": 0,
+      "value": 20.0,
+      "what": "a shape whose footprint is over 20 m keeps a MESH collider even past the triangle cap, instead of a padded box",
+      "why": "a padded box is a fine stand-in at the median shape's 1.6 m and a trap at 1,344 m: `InternationalAirport01`'s box was 1,344 x 1,245 x 82 m, an invisible solid block a kilometre wide, and driving onto the airport put the car inside it. 34 of 1,407 boxes were over 20 m - the harbour, the power plant, stadiums. CS2 has no collision for a placed object, so the 20 m is OURS and is declared here"
+     },
+     "renderingSizeSpecialCases": {
+      "count": null,
+      "what": "the human-object and Standing-leg shrinks in GetRenderingSize",
+      "why": "both need ObjectGeometryData flags the bundle does not ship; both only shrink the size, so the threshold errs towards drawing further"
+     },
+     "treeTrunkCylinderFit": {
+      "count": 22,
+      "what": "a tree whose trunk collider is wider than 50% of its own canopy - the trunk search found the canopy instead",
+      "why": "CS2 has no collision for a planted object, so there is no rule to port. `collision.trunk_group` prefers a material run NAMED trunk/bark/stem, and on a CS2 bundle that branch never fires - the game's material names are hashed asset ids - so every tree falls through to the geometric fallback (lowest band, smallest footprint). That is right for a clean bole and wrong where the lowest band is not the trunk: a spruce whose branches sweep the ground, or a wide shrub CS2 counts as a tree because it carries growth. MEASURED on the reference city: 5 of 32 tree prefabs, 4.5 % of tree items"
+     }
+    },
+    "colliders": {
+     "box": 1197,
+     "lightNone": 169,
+     "mesh": 1643,
+     "mesh_decimated": 784,
+     "plant": 75,
+     "trunk": 148
+    },
+    "detailScale": 4.0,
+    "detailScaleProp": 3.0,
+    "drawDistance": {
+     "building": {
+      "gameCullMedian": 13008.2,
+      "instances": 8730,
+      "ourCullMedian": 2846.6,
+      "shapes": 1170
+     },
+     "prop": {
+      "gameCullMedian": 1024.3,
+      "instances": 364921,
+      "ourCullMedian": 361.4,
+      "shapes": 2608
+     },
+     "tree": {
+      "gameCullMedian": 4097.3,
+      "instances": 217248,
+      "ourCullMedian": 203.7,
+      "shapes": 238
+     }
+    },
+    "errors": [],
+    "failed": 0,
+    "identicalLevelsDropped": 1,
+    "imposters": {
+     "minMetres": 6000.0,
+     "ofShapes": 4016,
+     "shapes": 243,
+     "vanillaShare": "west_coast_usa 3.1 %, italy 7.2 %, johnson_valley 4.4 %"
+    },
+    "levelOfDetail": 0.7,
+    "lod0Dropped": 637,
+    "lod0DroppedTriangles": 14715381,
+    "lod0KeptSmall": 1887,
+    "lod0Promoted": 66,
+    "orphansRemoved": 0,
+    "scan": {
+     "kept": 590899,
+     "noMesh": 17317,
+     "orphans": {
+      "absentPrefabs": 89,
+      "orphans": 7629,
+      "owners": 28,
+      "records": 1283541,
+      "withParent": 635923
+     },
+     "records": 1283541,
+     "roadclear": {
+      "clearance": 2.5,
+      "clipped": 6587,
+      "laneStations": 1581304,
+      "trees": 312092
+     },
+     "skippedBaked": 18493,
+     "skippedDensity": 618420,
+     "skippedKind": 0,
+     "skippedOrphan": 4288,
+     "skippedRegion": 0,
+     "skippedRoadclear": 1016,
+     "skippedState": 33108
+    },
+    "seconds": 85.6,
+    "shapes": 4016,
+    "shapesRewritten": 4016,
+    "triangles": 15684071,
+    "trunkFit": {
+     "medianRatio": 0.084,
+     "ratio": 0.5,
+     "shapes": 148,
+     "wide": 22
+    }
+   },
+   "seconds": 85.6
+  },
+  "terrain": {
+   "result": {
+    "carriagewayClamped": 11684,
+    "carriagewaySamples": 2297408,
+    "carriagewayWorstDrop": 0.313,
+    "fine": true,
+    "holes": 36502,
+    "materials": 7,
+    "minimap": "cs2_city_fine_minimap.png",
+    "orphansRemoved": 0,
+    "seconds": 33.3,
+    "size": 8192,
+    "squareSize": 1.75
+   },
+   "seconds": 33.4
+  },
+  "validate": {
+   "result": {
+    "_report": {
+     "validation": {
+      "checks": {
+       "budgets": {
+        "DecalRoads": 15393,
+        "TSStatics": 16636,
+        "WaterBlocks": 187,
+        "forest items": 576148,
+        "forest types": 1890,
+        "lights": 0,
+        "shape files": 7180
+       },
+       "classes": {
+        "DecalRoad": 15393,
+        "Forest": 1,
+        "GroundCover": 5,
+        "LevelInfo": 1,
+        "ScatterSky": 1,
+        "SimGroup": 113,
+        "SpawnSphere": 9,
+        "TSStatic": 16636,
+        "TerrainBlock": 1,
+        "TimeOfDay": 1,
+        "WaterBlock": 187,
+        "WaterPlane": 1
+       },
+       "collisionTypeMismatch": {
+        "collisionMeshWithoutColmesh": 0,
+        "visibleMeshWithColmesh": 0
+       },
+       "cookedShapes": 7180,
+       "daeFiles": 0,
+       "daeParseErrors": 0,
+       "duplicateMaterials": 0,
+       "forestItems": 576148,
+       "forestTypes": 1890,
+       "forestUnknownTypes": 0,
+       "groundCheck": {
+        "fraction": 0.9979195561719834,
+        "meanSigned": -0.025546787605361984,
+        "medianAbs": 0.01555867093929919,
+        "p95Abs": 0.032401846341554116,
+        "sampled": 1442,
+        "sampler": "bilinear"
+       },
+       "invalidDetailShapes": 0,
+       "lightManager": {
+        "lights": 0,
+        "manager": "Advanced Lighting 1.5",
+        "source": "game-settings.json"
+       },
+       "materialFiles": 5,
+       "missingFiles": 0,
+       "mixedClassMaterialFiles": 0,
+       "navgraph": {
+        "chords": 0,
+        "crashRisks": 0,
+        "decalRoads": 15393,
+        "drivable": 15393,
+        "endNodesMerged": 18703,
+        "mapNodes": 32494,
+        "nodes": 51197
+       },
+       "objects": 32349,
+       "oversizeGeometries": 0,
+       "parseErrors": 0,
+       "resident": {
+        "budgetMiB": 3473,
+        "budgetPixels": 4953600,
+        "budgetSource": "card from beamng.log, resolution from beamng.log",
+        "budgetVramMiB": 8018,
+        "cookedShapes": 7180,
+        "failureMiB": 5224,
+        "graphicsApi": "DirectX 12",
+        "graphicsApiSource": "from beamng.1.log",
+        "meshMiB": 2354.5,
+        "shapes": 0,
+        "textureMiB": 556.9,
+        "textureReduction": 0,
+        "textureReductionSource": "textureReductionLevel 0 (Normal+)",
+        "textureShippedMiB": 556.9,
+        "textureStreaming": true,
+        "totalMiB": 2911.4,
+        "vanillaMaxMiB": 1375,
+        "vanillaRatio": 2.12
+       },
+       "spawnPoints": 9,
+       "strayMaterialFiles": 0,
+       "ter": {
+        "holes": 36502,
+        "materials": [
+         "cs2_city_fine_rock",
+         "cs2_city_fine_dirt",
+         "cs2_city_fine_grass",
+         "cs2_city_fine_extra1",
+         "cs2_city_fine_extra2",
+         "cs2_city_fine_extra3",
+         "cs2_city_fine_extra4"
+        ],
+        "maxStored": 11572,
+        "minStored": 7707,
+        "size": 8192
+       },
+       "unboundMaterials": 0
+      },
+      "problems": []
+     }
+    },
+    "checks": {
+     "budgets": {
+      "DecalRoads": 15393,
+      "TSStatics": 16636,
+      "WaterBlocks": 187,
+      "forest items": 576148,
+      "forest types": 1890,
+      "lights": 0,
+      "shape files": 7180
+     },
+     "classes": {
+      "DecalRoad": 15393,
+      "Forest": 1,
+      "GroundCover": 5,
+      "LevelInfo": 1,
+      "ScatterSky": 1,
+      "SimGroup": 113,
+      "SpawnSphere": 9,
+      "TSStatic": 16636,
+      "TerrainBlock": 1,
+      "TimeOfDay": 1,
+      "WaterBlock": 187,
+      "WaterPlane": 1
+     },
+     "collisionTypeMismatch": {
+      "collisionMeshWithoutColmesh": 0,
+      "visibleMeshWithColmesh": 0
+     },
+     "cookedShapes": 7180,
+     "daeFiles": 0,
+     "daeParseErrors": 0,
+     "duplicateMaterials": 0,
+     "forestItems": 576148,
+     "forestTypes": 1890,
+     "forestUnknownTypes": 0,
+     "groundCheck": {
+      "fraction": 0.9979195561719834,
+      "meanSigned": -0.025546787605361984,
+      "medianAbs": 0.01555867093929919,
+      "p95Abs": 0.032401846341554116,
+      "sampled": 1442,
+      "sampler": "bilinear"
+     },
+     "invalidDetailShapes": 0,
+     "lightManager": {
+      "lights": 0,
+      "manager": "Advanced Lighting 1.5",
+      "source": "game-settings.json"
+     },
+     "materialFiles": 5,
+     "missingFiles": 0,
+     "mixedClassMaterialFiles": 0,
+     "navgraph": {
+      "chords": 0,
+      "crashRisks": 0,
+      "decalRoads": 15393,
+      "drivable": 15393,
+      "endNodesMerged": 18703,
+      "mapNodes": 32494,
+      "nodes": 51197
+     },
+     "objects": 32349,
+     "oversizeGeometries": 0,
+     "parseErrors": 0,
+     "resident": {
+      "budgetMiB": 3473,
+      "budgetPixels": 4953600,
+      "budgetSource": "card from beamng.log, resolution from beamng.log",
+      "budgetVramMiB": 8018,
+      "cookedShapes": 7180,
+      "failureMiB": 5224,
+      "graphicsApi": "DirectX 12",
+      "graphicsApiSource": "from beamng.1.log",
+      "meshMiB": 2354.5,
+      "shapes": 0,
+      "textureMiB": 556.9,
+      "textureReduction": 0,
+      "textureReductionSource": "textureReductionLevel 0 (Normal+)",
+      "textureShippedMiB": 556.9,
+      "textureStreaming": true,
+      "totalMiB": 2911.4,
+      "vanillaMaxMiB": 1375,
+      "vanillaRatio": 2.12
+     },
+     "spawnPoints": 9,
+     "strayMaterialFiles": 0,
+     "ter": {
+      "holes": 36502,
+      "materials": [
+       "cs2_city_fine_rock",
+       "cs2_city_fine_dirt",
+       "cs2_city_fine_grass",
+       "cs2_city_fine_extra1",
+       "cs2_city_fine_extra2",
+       "cs2_city_fine_extra3",
+       "cs2_city_fine_extra4"
+      ],
+      "maxStored": 11572,
+      "minStored": 7707,
+      "size": 8192
+     },
+     "unboundMaterials": 0
+    },
+    "problems": 0
+   },
+   "seconds": 16.1
+  },
+  "water": {
+   "result": {
+    "blocks": 187,
+    "bodies": 38,
+    "dropped": 0,
+    "lakeWaveScale": 0.13,
+    "pieces": 188,
+    "plane": true,
+    "seaLevel": 520.19,
+    "seaWaveScale": 1.0,
+    "seconds": 27.4,
+    "waveDirection": "APPROXIMATED (wind-driven in game; fixed here)"
+   },
+   "seconds": 27.4
+  }
+ },
+ "startedAt": "2026-08-30T21:56:48Z",
+ "status": "done",
+ "validation": {
+  "checks": {
+   "budgets": {
+    "DecalRoads": 15393,
+    "TSStatics": 16636,
+    "WaterBlocks": 187,
+    "forest items": 576148,
+    "forest types": 1890,
+    "lights": 0,
+    "shape files": 7180
+   },
+   "classes": {
+    "DecalRoad": 15393,
+    "Forest": 1,
+    "GroundCover": 5,
+    "LevelInfo": 1,
+    "ScatterSky": 1,
+    "SimGroup": 113,
+    "SpawnSphere": 9,
+    "TSStatic": 16636,
+    "TerrainBlock": 1,
+    "TimeOfDay": 1,
+    "WaterBlock": 187,
+    "WaterPlane": 1
+   },
+   "collisionTypeMismatch": {
+    "collisionMeshWithoutColmesh": 0,
+    "visibleMeshWithColmesh": 0
+   },
+   "cookedShapes": 7180,
+   "daeFiles": 0,
+   "daeParseErrors": 0,
+   "duplicateMaterials": 0,
+   "forestItems": 576148,
+   "forestTypes": 1890,
+   "forestUnknownTypes": 0,
+   "groundCheck": {
+    "fraction": 0.9979195561719834,
+    "meanSigned": -0.025546787605361984,
+    "medianAbs": 0.01555867093929919,
+    "p95Abs": 0.032401846341554116,
+    "sampled": 1442,
+    "sampler": "bilinear"
+   },
+   "invalidDetailShapes": 0,
+   "lightManager": {
+    "lights": 0,
+    "manager": "Advanced Lighting 1.5",
+    "source": "game-settings.json"
+   },
+   "materialFiles": 5,
+   "missingFiles": 0,
+   "mixedClassMaterialFiles": 0,
+   "navgraph": {
+    "chords": 0,
+    "crashRisks": 0,
+    "decalRoads": 15393,
+    "drivable": 15393,
+    "endNodesMerged": 18703,
+    "mapNodes": 32494,
+    "nodes": 51197
+   },
+   "objects": 32349,
+   "oversizeGeometries": 0,
+   "parseErrors": 0,
+   "resident": {
+    "budgetMiB": 3473,
+    "budgetPixels": 4953600,
+    "budgetSource": "card from beamng.log, resolution from beamng.log",
+    "budgetVramMiB": 8018,
+    "cookedShapes": 7180,
+    "failureMiB": 5224,
+    "graphicsApi": "DirectX 12",
+    "graphicsApiSource": "from beamng.1.log",
+    "meshMiB": 2354.5,
+    "shapes": 0,
+    "textureMiB": 556.9,
+    "textureReduction": 0,
+    "textureReductionSource": "textureReductionLevel 0 (Normal+)",
+    "textureShippedMiB": 556.9,
+    "textureStreaming": true,
+    "totalMiB": 2911.4,
+    "vanillaMaxMiB": 1375,
+    "vanillaRatio": 2.12
+   },
+   "spawnPoints": 9,
+   "strayMaterialFiles": 0,
+   "ter": {
+    "holes": 36502,
+    "materials": [
+     "cs2_city_fine_rock",
+     "cs2_city_fine_dirt",
+     "cs2_city_fine_grass",
+     "cs2_city_fine_extra1",
+     "cs2_city_fine_extra2",
+     "cs2_city_fine_extra3",
+     "cs2_city_fine_extra4"
+    ],
+    "maxStored": 11572,
+    "minStored": 7707,
+    "size": 8192
+   },
+   "unboundMaterials": 0
+  },
+  "problems": []
+ }
+}

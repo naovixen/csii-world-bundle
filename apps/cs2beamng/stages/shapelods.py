@@ -6,7 +6,10 @@ no LOD chain for these prefabs at all (`lodCap 0`), so the switch points are our
 of them is either measured or a declared budget.
 """
 
+import hashlib
 import os
+
+import numpy
 
 from csiibundle import glb, lod, lodchain
 
@@ -121,7 +124,7 @@ LOD0_MAX_ERROR_DEFAULT = 0.10
 LOD0_MIN_TRIANGLES = 1000
 
 
-def detail_scale(kind, options):
+def detail_scale(kind, options, radius=0.0):
     """How many times closer than CS2 this level culls a shape of `kind`.
 
     One global multiplier over two things whose own distances differ by 12.7x is the A6.2 defect:
@@ -138,10 +141,36 @@ def detail_scale(kind, options):
     """
     if kind == "prop" and options.get("detail_scale_prop"):
         return float(options["detail_scale_prop"])
+    if kind == "tree" and options.get("detail_scale_tree"):
+        return float(options["detail_scale_tree"])
+    # OURS, declared: CS2 keeps a big building detailed for kilometres (its limits scale with
+    # rendering size) and "big city buildings keep their full res for too long" (Naomi, v30,
+    # while the houses at the same uniform scale were "perfect"). A building at or over
+    # `lod_large_radius_m` takes `lod_detail_scale_large` instead; 0 = the buildings' scale.
+    if (
+        kind == "building"
+        and options.get("detail_scale_large")
+        and float(radius or 0.0) >= float(options.get("large_radius_m") or 0.0)
+    ):
+        return float(options["detail_scale_large"])
     return float(options["detail_scale"])
 
 
-def authored_chain(shape_name, authored, size, area, lod_bias, radius, detail_scale, options):
+def _mesh_digest(mesh):
+    """A content hash of a merged, material-grouped mesh: the triangle indices and the vertex
+    positions. Two levels built by the same `merge_meshes` + `group_by_material` path from the
+    same source bytes hash the same; anything else differs."""
+    # Order-independent: `group_by_material` reorders triangles by material name, and a copied
+    # level binds its own material names (`TorreAlvear_LOD.001_...`), so the same surface comes
+    # out in a different triangle order. Hash the sorted corner positions instead.
+    corners = numpy.ascontiguousarray(mesh.verts)[numpy.asarray(mesh.tris)].reshape(-1, 9)
+    corners = corners[numpy.lexsort(corners.T[::-1])]
+    return hashlib.sha1(numpy.ascontiguousarray(corners).tobytes()).digest()
+
+
+def authored_chain(
+    shape_name, authored, size, area, lod_bias, radius, detail_scale, options, base_mesh=None
+):
     """The game's own LOD chain as a ladder, or None when the shape ships none.
 
     `authored` is `[(level, parts, level_size), ...]` from `shapeparts.split_lod_nodes`. The
@@ -154,10 +183,19 @@ def authored_chain(shape_name, authored, size, area, lod_bias, radius, detail_sc
     """
     if not authored or not options.get("authored_lods", True):
         return None
-    meshes, sized = [], []
+    meshes, sized, identical = [], [], []
+    base_digest = _mesh_digest(base_mesh) if base_mesh is not None else None
     for level, parts, level_size in authored:
         mesh = daemesh.group_by_material(daemesh.merge_meshes(f"{shape_name}_LOD{level}", parts))
         if len(mesh.tris) == 0:
+            continue
+        # An authored level that is BYTE-IDENTICAL to LOD 0 is not a LOD: a workshop asset
+        # shipped with its LOD slots filled by copies of the full mesh (Kinsman_Plaza: 176,587
+        # triangles twice, 37 MiB; 12 such levels on the reference city). The game draws the
+        # copy where its limit says; drawing LOD 0 there instead is the same pixels for none of
+        # the bytes, so the level is left out and LOD 0 keeps its band. Counted per shape.
+        if base_digest is not None and _mesh_digest(mesh) == base_digest:
+            identical.append(level)
             continue
         meshes.append(mesh)
         sized.append((level_size, len(mesh.tris) * 3))
@@ -167,6 +205,11 @@ def authored_chain(shape_name, authored, size, area, lod_bias, radius, detail_sc
     limits = lodchain.authored_lod_limits(
         size, sized, bias, min_lod=lod.mesh_min_lod(size, area, lod_bias)
     )
+    # The switch points are the game's limits times ONE uniform scale. Unscaled (v21-v29) this
+    # city is 23.5 M building triangles inside 4 km - the custom packs carry LOD biases that keep
+    # CS2 drawing their 10k-triangle LOD 0 for kilometres, and CS2 can, BeamNG cannot. What made
+    # v20 "way too close and inconsistent" (Naomi) was three scales - buildings 10, props 4,
+    # generated ladders their own - not the scaling; one scale for every chain is consistent.
     px = [
         max(1.0, lodchain.limit_px(radius, limit, options["level_of_detail"]) * detail_scale)
         for limit in limits
@@ -182,7 +225,24 @@ def authored_chain(shape_name, authored, size, area, lod_bias, radius, detail_sc
         "limits": limits,
         "colliderMesh": meshes[0],
         "lod1Dropped": False,
+        "lod0Dropped": False,
+        "identicalLevels": identical,
     }
+    # `authored_lod0_max_tris`: the residency lever that reaches the bytes `authored_lod1_drop`
+    # cannot. With LOD 1 gone, LOD 0 is ~90 % of an object shape's bytes and the reference
+    # city's 20.2 M top-level triangles at ~100 B each are what an 8 GB card pages on
+    # (record §7-§8). For a shape whose LOD 0 is at or over this many triangles, the game's own
+    # LOD 1 becomes the NEAREST level shipped and LOD 0 is left out: LOD 1 is a median 41 % of
+    # LOD 0 (measured: >= 20,000 tris reaches 189 shapes for -599 MiB of cooked files; >= 5,000
+    # reaches 591 for -854 MiB). What it costs is declared: those shapes draw the game's LOD 1 at
+    # every distance, including up close — nothing the game does not draw somewhere, but nearer.
+    # The collider still comes off LOD 1, and `authored_lod1_drop` yields to this: LOD 1 is now
+    # the top and LOD 2 keeps its own band. 0 = off.
+    max_tris = int(options.get("authored_lod0_max_tris") or 0)
+    if max_tris > 0 and base_mesh is not None and len(base_mesh.tris) >= max_tris:
+        chain["thresholds"] = px[1:]
+        chain["lod0Dropped"] = True
+        return chain
     # `authored_lod1_drop`: the game's LOD 1 is a median 41 % of LOD 0's triangles and, mounted
     # whole by BeamNG for every shape whether or not an instance is near, ~1 GB of the reference
     # level's 2.9 GB of object meshes — for a band between where LOD 0 stops and where LOD 2
@@ -230,7 +290,13 @@ def lod_levels(
     stats = {"levels": 1, "triangles": [len(base_mesh.tris)], "lod0Promoted": False}
     if chain is not None:
         return _authored_ladder(base_mesh, chain, stats)
-    if options["generate_lods"]:
+    # Generated (vertex-clustered) levels are for PROPS only. On a building they are the
+    # see-through lattices (a facade's window quads unwelded), on a tree a bare canopy - Naomi's
+    # look, 2026-08-30: "full at 20 m, very bare, then full again at 100-200 m" (the billboard).
+    # A building ships LOD 0 or its chain and the far ring; a tree ships LOD 0 and the billboard
+    # - its generated levels are loaded only for their switch sizes, and `_vegetation_imposter`
+    # replaces every one of them with the billboard at the first one's size.
+    if options["generate_lods"] and kind in ("prop", "tree"):
         _load_generated(
             meshes, generated, stats, derived_dir, source, shape_name, aliases, tinted, level_name
         )
@@ -259,7 +325,7 @@ def lod_levels(
 def _authored_ladder(base_mesh, chain, stats):
     """The game's chain as the shape's ladder: LOD 0 then every authored level, each starting at
     the pixel size the game's own limit puts it."""
-    meshes = [base_mesh, *chain["meshes"]]
+    meshes = list(chain["meshes"]) if chain.get("lod0Dropped") else [base_mesh, *chain["meshes"]]
     thresholds = list(chain["thresholds"])
     # strictly decreasing, as Torque needs; the limits are monotonic so this only guards rounding
     for index in range(1, len(thresholds)):
@@ -275,6 +341,9 @@ def _authored_ladder(base_mesh, chain, stats):
             "splitGeometries": sum(len(ms) for _px, ms in fixed) - len(fixed),
             "gameLodLimits": list(chain["limits"]),
             "lod1Dropped": bool(chain.get("lod1Dropped")),
+            "lod0Dropped": bool(chain.get("lod0Dropped")),
+            "lod0Triangles": len(base_mesh.tris),
+            "identicalLevels": list(chain.get("identicalLevels") or ()),
             "switches": [],
         }
     )

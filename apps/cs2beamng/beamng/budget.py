@@ -406,6 +406,8 @@ def radius_hint(rel, shape, tile=256.0):
     fallback is for a level built before it.
     """
     base = os.path.basename(rel)
+    if re.match(r"^farring_-?\d+_-?\d+", base):
+        return 512.0 * math.sqrt(2.0) * 0.5
     if re.match(r"^(net|markings|areas|skirts|lanegeometry|terraincut)_-?\d+_-?\d+", base):
         return tile * math.sqrt(2.0) * 0.5
     return 2.0

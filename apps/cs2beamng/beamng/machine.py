@@ -240,6 +240,29 @@ def _target_from_logs():
     return log_vram, log_pixels
 
 
+def graphics_api():
+    """`(api, source)`: the renderer BeamNG last started with, out of its `Graphics API:` log
+    line — `"DirectX 12"`, `"DirectX 11"`, `"Vulkan"` — or `(None, ...)` with no log.
+
+    Why it matters to residency: BeamNG streams texture mips (loads and evicts them against the
+    driver's budget) on Vulkan since 0.37 and on Direct3D 12 since 0.39, and **never on
+    Direct3D 11** — where every texture is fully resident at its quality level. 0.39.1 added an
+    automatic fall-back to D3D11 on cards with less VRAM than the game wants, so the small card
+    that most needs the streaming is the one that can silently lose it
+    (documentation.beamng.com/modding/materials/texture_streaming, read 2026-08-30).
+    """
+    for path in _beamng_logs():
+        try:
+            with open(path, encoding="utf-8", errors="replace") as handle:
+                for line in handle:
+                    found = re.search(r"Graphics API:\s*(DirectX 1[12]|Vulkan)", line)
+                    if found:
+                        return found.group(1), f"from {os.path.basename(path)}"
+        except OSError:
+            continue
+    return None, "no BeamNG log"
+
+
 def _beamng_logs():
     """Every `beamng*.log` under the user's BeamNG folder, newest first.
 

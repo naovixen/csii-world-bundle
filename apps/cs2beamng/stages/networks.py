@@ -302,11 +302,16 @@ def _load_parts(net_meshes, recs):
 
 
 INPUTS = ("layer:networks", "layer:networkMeshes", "derived:materials.json")
-SETTINGS = ("networks", "tile_size", "region", "lod_detail_scale", "view_distance", "tile_lod")
+SETTINGS = (
+    "networks",
+    "tile_size",
+    "region",
+    "lod_detail_scale",
+    "view_distance",
+    "tile_lod",
+)
 OUTPUTS = ("art/shapes/networks",)
 
-# version 5: `lod_detail_scale` no longer multiplies the LADDER, only the null threshold
-# version 4: the decimator's UV bin scales with the mesh's own UV range
 STAGE = Stage(
     STAGE_KEY,
     "Roads and networks",
@@ -317,5 +322,5 @@ STAGE = Stage(
     settings_keys=SETTINGS,
     outputs=OUTPUTS,
     shared_keys=("materials_used",),
-    version=5,
+    version=9,
 )

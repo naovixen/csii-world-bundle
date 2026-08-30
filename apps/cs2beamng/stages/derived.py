@@ -352,9 +352,6 @@ def _tile_levels(shape_name, mesh, detail_scale, view_distance=None, tile=None):
     )
 
 
-# version 5: `lod_detail_scale` no longer multiplies the LADDER, only the null threshold
-# version 4: an uncullable tile (skirts, terraincut) gets a detail ladder too, and the
-# decimator's UV bin scales with the mesh's own UV range
 STAGE = Stage(
     STAGE_KEY,
     "Markings, areas, skirts, furniture",
@@ -365,5 +362,5 @@ STAGE = Stage(
     settings_keys=SETTINGS,
     outputs=OUTPUTS,
     shared_keys=("materials_used",),
-    version=5,
+    version=9,
 )

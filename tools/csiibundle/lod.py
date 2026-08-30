@@ -354,6 +354,12 @@ def displacement_error_px(radius, displacement, detail_px):
     return float(detail_px) * float(displacement) / float(radius)
 
 
+def distance_at_px(world_length, px, screen_height=REFERENCE_SCREEN_HEIGHT, fov_degrees=45.0):
+    """The distance at which `world_length` projects to `px` pixels — `screen_px` inverted."""
+    tan_half = math.tan(math.radians(float(fov_degrees) * 0.5))
+    return float(world_length) * (screen_height * 0.5) / (max(float(px), 1e-6) * tan_half)
+
+
 def screen_px(world_length, distance, screen_height=REFERENCE_SCREEN_HEIGHT, fov_degrees=45.0):
     """The projected height in pixels of `world_length` at `distance`. Torque's
     `SceneRenderState::projectRadius` and Unity's projection are the same expression."""

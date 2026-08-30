@@ -226,8 +226,32 @@ _ROTATION_PLACES = 6
 _SCALE_PLACES = 5
 
 
+CELL_METRES = 1000.0
+
+
+def cell_of(position, prefix=""):
+    """The object cell a level position falls in: `<prefix>km_<x>_<y>`, one kilometre square —
+    the SimGroup the instances stage files a TSStatic under, which is what let the streaming
+    experiment (record §8.6-§8.8, `tools/beamng/cellprefab.py`) turn cells into prefabs."""
+    x = int(float(position[0]) // CELL_METRES)
+    y = int(float(position[1]) // CELL_METRES)
+    return f"{prefix}km_{x}_{y}"
+
+
+def identity_basis():
+    """The nine floats of an unrotated object (`frame.identity_matrix`, without the import)."""
+    return [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
+
+
 def tsstatic(
-    name, shape_path, position, rotation_matrix, scale=(1, 1, 1), collision="None", **extra
+    name,
+    shape_path,
+    position,
+    rotation_matrix,
+    scale=(1, 1, 1),
+    collision="None",
+    instanced=False,
+    **extra,
 ):
     """One `TSStatic` — the class BeamNG draws a static mesh with.
 
@@ -240,6 +264,13 @@ def tsstatic(
     makes about its own geometry, not a default anything should inherit.
 
     `extra` carries the fields only one caller sets — `castShadows`, `canSave`, `annotation`.
+
+    `instanced` is `useInstanceRenderData`, and it is FALSE unless the object carries an
+    `instanceColor`. BeamNG's own TSStatic page: a static without animation "can be rendered
+    through the static shape manager", which batches repeated shapes, and `useInstanceRenderData`
+    "should be used only when needed ... for normal level props and buildings, it should be left
+    false or omitted". Phase 10 (2026-08-30) found it set on every one of 16,428 statics,
+    including 1,747 road/paint tiles that carry no colour at all.
     """
     obj = {
         "name": name,
@@ -250,7 +281,7 @@ def tsstatic(
         "scale": [round(float(v), _SCALE_PLACES) for v in scale],
         "collisionType": collision,
         "decalType": "None",
-        "useInstanceRenderData": True,
+        "useInstanceRenderData": bool(instanced),
     }
     obj.update(extra)
     return obj

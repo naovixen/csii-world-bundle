@@ -66,8 +66,11 @@ class Shape:
     """`levels`: [(px, [Mesh, ...]), ...] from nearest (largest px) to farthest; `collision`:
     [Mesh, ...] (`Colmesh_<name>-N`); `billboard_px` / `null_px`: thresholds or None."""
 
-    def __init__(self, name, levels, collision=(), billboard_px=None, null_px=None):
+    def __init__(
+        self, name, levels, collision=(), billboard_px=None, null_px=None, billboard_dimension=None
+    ):
         self.name = name
+        self.billboard_dimension = billboard_dimension  # imposter atlas cell px (Torque: 64)
         self.levels = list(levels)
         for px, _ms in self.levels:
             if int(px) <= 0:
@@ -163,8 +166,20 @@ def write_shape(path, shape):
         f.write('      <node id="base00" name="base00" type="NODE">\n')
         if shape.billboard_px is not None:
             px = int(shape.billboard_px)
+            # Torque reads a node's user properties out of the FCOLLADA <user_properties> text
+            # (`ColladaAppNode`): `bb_dimension` is the imposter atlas CELL in pixels, default
+            # 64 - the whole tree in a 256 x 128 atlas (measured), its canopy thinning to
+            # nothing at the crossover (Naomi, v30). `bb_includePoles` keeps the top view.
+            props = (
+                f"<extra><technique profile=\"FCOLLADA\"><user_properties>"
+                f"bb_dimension={int(shape.billboard_dimension)};bb_includePoles=1;"
+                f"</user_properties></technique></extra>"
+                if shape.billboard_dimension
+                else ""
+            )
             f.write(
-                f'        <node id="bb_autobillboard{px}" name="bb_autobillboard{px}" type="NODE"/>\n'
+                f'        <node id="bb_autobillboard{px}" name="bb_autobillboard{px}" type="NODE">'
+                f"{props}</node>\n"
             )
         if shape.null_px is not None:
             px = int(shape.null_px)
@@ -226,8 +241,11 @@ def sweep_orphans(directory, keep):
         return 0
     removed = 0
     for name in os.listdir(directory):
-        stem, ext = os.path.splitext(name)
-        if ext not in (".dae", ".cdae") or stem in keep:
+        if name.endswith(".dae.asset.json"):  # the shape's asset companion (imposter config)
+            stem, ext = name[: -len(".dae.asset.json")], ".asset"
+        else:
+            stem, ext = os.path.splitext(name)
+        if ext not in (".dae", ".cdae", ".cs", ".asset") or stem in keep:
             continue
         try:
             os.remove(os.path.join(directory, name))

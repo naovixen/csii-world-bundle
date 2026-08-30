@@ -101,6 +101,15 @@ def run(ctx, progress):
         # A6.2: props are given up at their own rate. 0 = the global one, so nothing changes
         # unless it is asked for.
         "detail_scale_prop": float(settings.get("lod_detail_scale_prop") or 0.0),
+        # trees: where the billboard takes over rides on this (the generated ladder's sizes are
+        # multiples of the null); the game's own tree cull is ~1 km and a full canopy to 580 m
+        # is 16 M triangles in view - 10 puts the billboard at the 100-200 m Naomi saw
+        "detail_scale_tree": float(settings.get("lod_detail_scale_tree") or 0.0),
+        # big buildings' own scale (see `shapelods.detail_scale`); 0 = the buildings' scale
+        "detail_scale_large": float(settings.get("lod_detail_scale_large") or 0.0),
+        "large_radius_m": float(settings.get("lod_large_radius_m") or 30.0),
+        # the billboard atlas cell size for vegetation (`dae.Shape.billboard_dimension`)
+        "billboard_dimension": int(settings.get("tree_billboard_px") or 0),
         "generate_lods": bool(settings.get("generate_lods", True)),
         "imposters": bool(settings.get("imposters", True)),
         "imposter_min_metres": (
@@ -127,6 +136,11 @@ def run(ctx, progress):
         "far_detail_scale": float(settings.get("far_detail_scale", 1.0) or 0.0),
         # residency: hand the authored LOD 1's band to LOD 2 and do not ship LOD 1
         "authored_lod1_drop": bool(settings.get("authored_lod1_drop", False)),
+        # residency: a shape whose LOD 0 is at or over this ships the game's LOD 1 as its nearest
+        # level; 0 = off (`shapelods.authored_chain`)
+        "authored_lod0_max_tris": int(settings.get("authored_lod0_max_tris") or 0),
+        # the far ring's hand-over distance (`stages/farring`); 0 = per-building silhouettes only
+        "far_ring_metres": float(settings.get("far_ring_metres") or 0.0),
         "collide": _collision_policy(settings),
         # A prefab CS2 gives a photometric light to is a LAMP, and `collision_lights` says
         # whether one is solid. The set is the game's own answer to "is this a lamp" - see the
@@ -327,11 +341,17 @@ SETTINGS = (
     "view_distance",
     "lod_detail_scale",
     "lod_detail_scale_prop",
+    "lod_detail_scale_tree",
+    "lod_detail_scale_large",
+    "lod_large_radius_m",
+    "tree_billboard_px",
     "lod_switch_error_px",
     "lod0_max_error",
     "lod0_min_triangles",
     "far_detail_scale",
     "authored_lod1_drop",
+    "authored_lod0_max_tris",
+    "far_ring_metres",
     "tree_wind",
     "collision_preset",
     "collision_buildings",
@@ -341,6 +361,45 @@ SETTINGS = (
 )
 OUTPUTS = ("art/shapes/cs2",)
 
+# version 36: asset.json imposters OFF for good - orange with vanilla's own parameters too; the
+# dae bb node (engine-default bake) is the billboard
+# version 35: the asset.json imposter with VANILLA'S tree parameters (equatorSteps 16, no poles) -
+# 611 vanilla shapes ship this route; orange came with our 8-views-plus-poles variant
+# version 34: the asset.json imposter REVERTED - it sizes the atlas but the bake renders orange
+# (no material found in the imposter pass); the dae bb node is the billboard again
+# version 33: the imposter config is written as `<shape>.dae.asset.json` directly - the format the
+# engine converts the .cs into anyway (watched live: 'Removed obsolete file ... replaced by')
+# version 32: the tree billboard's atlas cell rides a TSShapeConstructor .cs (`addImposter`),
+# the mechanism vanilla GridMap uses; the dae's bb node is dropped for those trees
+# version 31: `lod_detail_scale_large` / `lod_large_radius_m` (big buildings' own scale) and
+# `tree_billboard_px` (the billboard atlas cell, was Torque's 64)
+# version 30: chain switch points scaled by ONE uniform `lod_detail_scale` again (unscaled: 23.5 M
+# building triangles in 4 km); the level shown at the hand-over is the nearest one under it
+# version 29: the coarsest level under the hand-over covers the band to it (not dropped) - LOD 0
+# to 2.5 km was 32 M triangles in view
+# version 28: a 1 px coarsest level with no null is allowed (sheds under 4 m reach the ring)
+# version 27: a ring member's coarsest level takes the hand-over's SIZE (a level draws for p >= its
+# size; the null under it), so it reaches the ring instead of vanishing at its own limit
+# version 26: the coarsest mesh keeps its size and the null comes down under it (lifting the mesh
+# left a band where the null was chosen)
+# version 25: a ring member's null rounds DOWN (no gap before the ring) and it ships no billboard;
+# the ladder stats are taken from the final levels
+# version 24: every detail strictly above the null and the billboard between them (`_above_null`)
+# version 23: a ring member's levels under the hand-over null are dropped (Torque picks by size);
+# `lod_detail_scale_tree`
+# version 22: every building is a ring member (towers too); a tree's generated levels are loaded
+# for their switch sizes only, the billboard replaces them all
+# version 21: generated levels for PROPS only (buildings: lattices; trees: bare canopies); a tree
+# is LOD 0 then the billboard, as the game's own trees are; chain switch points UNSCALED
+# version 20: a far-ring member keeps its coarsest level out to the hand-over and ships NO box of
+# its own (the box up close on small houses was the band from its detail's end to the ring)
+# version 19: `far_ring_metres` - a building's far level stops at the hand-over and its silhouette
+# goes to the ring (`stages/farring`); towers reaching past it keep their own level
+# version 18: the identical-level digest is order-independent (a copied level binds its own
+# material names, so `group_by_material` reorders it; v17 caught none of the 12)
+# version 17: `authored_lod0_max_tris` - a shape whose LOD 0 is at or over it ships the game's LOD 1
+# as its nearest level (residency: LOD 0 is ~90 % of object bytes once LOD 1 is dropped); and an
+# authored level byte-identical to LOD 0 is left out (Kinsman_Plaza carried its 176,587 triangles twice)
 # version 16: `authored_lod1_drop` hands the authored LOD 1's band to LOD 0, not LOD 2
 # version 15: `authored_lod1_drop` hands the authored LOD 1's band to LOD 2 (residency)
 # version 14: the far silhouette level (`far_detail_scale`), and no billboard on a chain shape
@@ -377,5 +436,5 @@ STAGE = Stage(
     settings_keys=SETTINGS,
     outputs=OUTPUTS,
     shared_keys=("shapes", "materials_used", "materials_variants_used", "materials_lod_level"),
-    version=16,
+    version=36,
 )

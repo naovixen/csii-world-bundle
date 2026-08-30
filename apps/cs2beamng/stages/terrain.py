@@ -65,6 +65,43 @@ def units(census, settings):
     return int(size[0]) * int(size[1]) * factor * factor
 
 
+def _referenced_textures(doc, out):
+    """Every `art/terrains/<file>` a materials document names, recursively."""
+    if isinstance(doc, dict):
+        for value in doc.values():
+            _referenced_textures(value, out)
+    elif isinstance(doc, (list, tuple)):
+        for value in doc:
+            _referenced_textures(value, out)
+    elif isinstance(doc, str) and "/art/terrains/" in doc:
+        out.add(doc.rsplit("/", 1)[1].lower())
+
+
+def _sweep_terrain_orphans(level, *material_docs):
+    """Delete the textures in `art/terrains/` that no material of this build names.
+
+    The counterpart of `dae.sweep_orphans` for the ground: the one-file-per-image writer
+    (095455b) left the previous build's per-tier copies in place - 55 files, 79 MiB - and
+    a file nothing names is not mounted by BeamNG, but it is counted by every instrument that
+    reads the folder and it is shipped with the level. Surviving files keep their mtime.
+    """
+    keep = set()
+    for doc in material_docs:
+        _referenced_textures(doc, keep)
+    directory = level.path("art", "terrains")
+    if not keep or not os.path.isdir(directory):
+        return 0
+    removed = 0
+    for name in os.listdir(directory):
+        if name.lower().endswith((".png", ".dds")) and name.lower() not in keep:
+            try:
+                os.remove(os.path.join(directory, name))
+                removed += 1
+            except OSError:
+                pass
+    return removed
+
+
 def run(ctx, progress):
     bundle = ctx.bundle
     level = level_of(ctx)
@@ -229,6 +266,9 @@ def run(ctx, progress):
     )
     level.write_materials("terrains", materials)  # TerrainMaterial only - vanilla convention
     level.write_materials("ground", ground_materials)  # the cut meshes' plain v1.5 Materials
+    orphans = _sweep_terrain_orphans(level, materials, ground_materials)
+    if orphans:
+        progress.log(f"terrain: {orphans} textures in art/terrains/ no material names any more, removed")
     level.write_objects()
     progress.check()
     for note in notes:  # every approximation is counted where it is made
@@ -258,6 +298,7 @@ def run(ctx, progress):
         "size": size,
         "squareSize": cell,
         "materials": len(names),
+        "orphansRemoved": orphans,
         "holes": holes,
         "minimap": minimap,
         "carriagewaySamples": covered,
@@ -333,6 +374,9 @@ OUTPUTS = ("art/terrains/main.materials.json",)
 
 # version 2: the block carries `minimapImage` and the stage writes the 2048 px `<name>_minimap.png`
 # it names (A7.2) - the old dashboard map drew nothing without it
+# version 4: textures in art/terrains/ that no material names are removed (the v3 run left 79 MiB)
+# version 3: one terrain PNG per distinct image (095455b landed the writer; the stage never re-ran, so
+# the built level still carried 57 MiB of byte-identical tier copies - Phase 10 residency)
 STAGE = Stage(
     STAGE_KEY,
     "Terrain",
@@ -343,5 +387,5 @@ STAGE = Stage(
     settings_keys=SETTINGS,
     outputs=OUTPUTS,
     shared_keys=("terrain",),
-    version=2,
+    version=4,
 )

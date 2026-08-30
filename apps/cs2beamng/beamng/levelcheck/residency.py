@@ -10,6 +10,7 @@ import os
 import xml.etree.ElementTree as ET
 
 from ..machine import (
+    graphics_api,
     VANILLA_MAX_RESIDENT_MIB,
     _texture_reduction,
     light_manager,
@@ -163,7 +164,11 @@ def check_residency(ctx):
     vram_mib, pixels, target_source = render_target(ctx.settings)
     budget_mib = resident_budget_mib(vram_mib, pixels)
     failure_mib = resident_failure_mib(vram_mib, pixels)
+    api, api_source = graphics_api()
     ctx.checks["resident"] = {
+        "graphicsApi": api,
+        "graphicsApiSource": api_source,
+        "textureStreaming": api in ("DirectX 12", "Vulkan"),
         "meshMiB": round(resident["meshes"] / (1024.0 * 1024.0), 1),
         "textureShippedMiB": round(resident["textures"] / (1024.0 * 1024.0), 1),
         "textureMiB": round(texture_mib, 1),
@@ -180,6 +185,13 @@ def check_residency(ctx):
         "cookedShapes": resident["cookedShapes"],
         "shapes": resident["shapes"],
     }
+    if api == "DirectX 11":
+        ctx.note(
+            f"renderer: BeamNG last ran on Direct3D 11 ({api_source}), which does NOT stream "
+            f"texture mips - every texture is fully resident there. Vulkan (0.37+) and Direct3D "
+            f"12 (0.39+) evict unused mips against the card's budget; 0.39.1 falls back to D3D11 "
+            f"on cards with too little VRAM, so check Options > Graphics > Renderer"
+        )
     if total_mib > budget_mib:
         where = (
             "AT OR OVER the measured failure point"

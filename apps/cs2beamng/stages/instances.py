@@ -37,13 +37,14 @@ from csiibundle import tints
 from ..beamng import frame, placement
 from ..beamng import level as level_mod
 from . import Stage, level_of
+from . import farring
 from .instanceforest import (
+    drop_rare_types,
     ANNOTATION,
     FOREST_COLLIDABLE_MIN_FOOTPRINT,
     FOREST_COLLIDABLE_MIN_HEIGHT,
     NO_COLLIDER,
     clear_forest,
-    drop_rare_types,
     flush,
     forest_bytes,
     merge_thin_types,
@@ -61,7 +62,6 @@ COLLISION_TYPE = "Collision Mesh"
 
 # SimGroup granularity for TSStatics, in metres. Vanilla levels group by district; a kilometre
 # keeps each `items.level.json` a few hundred lines on a city map. OURS.
-GROUP_METRES = 1000.0
 
 
 # Decimal places on a forest item's `rotationMatrix`. 4 dp is 1e-4 of a unit vector = 0.6 mm of
@@ -103,6 +103,13 @@ def run(ctx, progress):
     pending = 0
     types = {}  # type -> the shape row behind it
     type_source = {}  # type -> (asset, suffix, variant)
+    ring_m = float(settings.get("far_ring_metres") or 0.0)
+    ring = (
+        farring.Ring(ring_m, float(settings.get("far_detail_scale") or 1.0)) if ring_m > 0 else None
+    )
+    if ring is None:
+        # a level built with a ring before and without one now keeps no cells
+        farring.dae.sweep_orphans(level.path("art", "shapes", farring.PRODUCT), set())
     statics = 0
     counts = {"forest": 0, "tsstatic": 0, "noShape": 0, "kept": 0, "records": 0}
     untinted_forest = 0
@@ -173,10 +180,19 @@ def run(ctx, progress):
             if key.endswith(":noShadow"):
                 key = key[: -len(":noShadow")]
                 counts["noShadow"] = counts.get("noShadow", 0) + 1
+            ring_data = ((row.get("lods") or {}).get("farRing")) if ring is not None else None
+            if ring_data:
+                ring.add(ring_data, position, rotation, scale)
             collision_types[key] = collision_types.get(key, 0) + 1
             statics += 1
             counts["tsstatic"] += 1
     flush(forest_dir, lines)
+    if ring is not None:
+        counts["farRing"] = ring.write(level, settings)
+        progress.log(
+            f"instances: far ring - {counts['farRing']['members']:,} silhouettes in "
+            f"{len(counts['farRing']['cells'])} cells from {ring.d:.0f} m ({counts['farRing']['triangles']:,} triangles)"
+        )
     merged = merge_thin_types(
         forest_dir,
         types,
@@ -198,8 +214,8 @@ def run(ctx, progress):
     progress.end(
         f"{counts['forest']:,} forest items in {len(types):,} types "
         f"({merged['types']} thin types holding {merged['items']} items merged into their "
-        f"untinted twin; {rare['types']} rare types holding {rare['items']} items dropped), "
-        f"{counts['tsstatic']:,} TSStatics"
+        f"untinted twin; {rare['types']} rare types holding {rare['items']} items dropped, "
+        f"{rare['keptLarge']['types']} kept for size), {counts['tsstatic']:,} TSStatics"
     )
 
     forest_stats = {}
@@ -213,9 +229,9 @@ def run(ctx, progress):
     report = {
         "forestItems": counts["forest"],
         "forestTypes": len(types),
-        "forestRareTypesDropped": rare,
         "tsStatics": counts["tsstatic"],
         "tsStaticsNoShadow": counts.get("noShadow", 0),
+        "farRing": counts.get("farRing"),
         "forestTypesMerged": merged["types"],
         "forestItemsMerged": merged["items"],
         "forestMinItems": int(settings.get("forest_min_items") or 0),
@@ -344,7 +360,17 @@ def _forest_line(type_name, position, rotation, scale):
 
 
 def _add_static(
-    level, record, name, row, kind, position, rotation, scale, collide, ordinal, shadow_min_radius=0.0
+    level,
+    record,
+    name,
+    row,
+    kind,
+    position,
+    rotation,
+    scale,
+    collide,
+    ordinal,
+    shadow_min_radius=0.0,
 ):
     """One `TSStatic`, with the record's own three `colorSet` channels as `instanceColor*`.
 
@@ -358,6 +384,7 @@ def _add_static(
     # "Visible Mesh Final - uses rendered mesh polygons intentionally. Use only when required",
     # and "expensive". A3 shipped 14,658 statics on the expensive one while carrying the cheap
     # one in the file unused.
+    colours = tints.color_set(record.get("attrs") or {})
     obj = level_mod.tsstatic(
         f"{name}_{record['id']}_{ordinal}",
         level.game_path("art", "shapes", "cs2", row["file"]),
@@ -365,9 +392,9 @@ def _add_static(
         frame.basis_flat(rotation),
         scale=scale,
         collision="None" if row.get("collider", "none") in NO_COLLIDER else COLLISION_TYPE,
+        instanced=bool(colours),  # per-instance render data only where there is a colour to carry
         annotation=ANNOTATION.get(kind, "OBSTACLES"),
     )
-    colours = tints.color_set(record.get("attrs") or {})
     for index, colour in enumerate(colours[:3]):
         key = "instanceColor" if index == 0 else f"instanceColor{index}"
         obj[key] = [round(float(c), 6) for c in colour]
@@ -376,13 +403,11 @@ def _add_static(
     no_shadow = bool(shadow_min_radius > 0.0 and float(row.get("radius") or 0.0) < shadow_min_radius)
     if no_shadow:
         obj["castShadows"] = False
-    group = _group_of(position)
+    group = level_mod.cell_of(position)
     level.add(["Objects", group], obj, key=f"instance:{record['id']}:{name}:{ordinal}")
     return obj["collisionType"] + (":noShadow" if no_shadow else "")
 
 
-def _group_of(position):
-    return f"km_{int(position[0] // GROUP_METRES)}_{int(position[1] // GROUP_METRES)}"
 
 
 def _collision_policy(settings):
@@ -395,6 +420,11 @@ def _collision_policy(settings):
     }
 
 
+# version 19: the rare-type floor is back as DEFAULT-OFF (the middle ground: at 3 only the one-
+# and-two-item tail goes, landmarks kept by radius) - v17 removed it outright
+# version 18: the ring cell's detail sizes the right way round (ring = its cull, near = the hand-over)
+# version 17: the rare-type drop (`forest_rare_type_min`) is GONE - it left half-built scenes
+# (a prop family's rarer members missing from every instance of it); every placed type ships
 INPUTS = ("layer:instances", "layer:meshes", "derived:paint_variants.json")
 SETTINGS = (
     "trees",
@@ -415,21 +445,12 @@ SETTINGS = (
     "forest_rare_keep_radius",
     "shadow_min_radius",
     "foliage_road_clearance",
+    "far_ring_metres",
+    "far_detail_scale",
 )
-OUTPUTS = ("forest",)
+OUTPUTS = ("forest", "art/shapes/farring")
 
-# version 4: `forest_min_items` folds a thin colour-variant type into its untinted twin —
-# only into a type this build is already declaring, or the items land on a type BeamNG drops
-# version 11: rare forest types at or above `forest_rare_keep_radius` are kept; TSStatics under
-# `shadow_min_radius` cast no shadow
-# version 10: a forest type and a TSStatic both follow the SHAPE's `collider` - `collision_lights`
-# off leaves a lamp with no `Colmesh_` node, and naming one anyway is an object that collides with
-# nothing (`NO_COLLIDER`, audit §88)
-# version 9: A8/P4 - a forest type narrower than `collision_min_footprint` ships
-# collidable:false whatever its height, because height let through every road sign and hydrant
-# version 8: `rotationMatrix` is written as the object's own axes in groups of three - it
-# was flattened row-major, i.e. every TSStatic and forest item carried the INVERSE of its
-# rotation, which is why buildings stood diagonally on their own plots (A6.8)
+# version 16: the far ring - merged silhouette cells from `far_ring_metres` (`stages/farring`)
 STAGE = Stage(
     STAGE_KEY,
     "Trees, props and buildings",
@@ -440,5 +461,5 @@ STAGE = Stage(
     settings_keys=SETTINGS,
     outputs=OUTPUTS,
     after=("shapes",),
-    version=11,
+    version=19,
 )

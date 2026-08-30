@@ -1,0 +1,43 @@
+level cs2_city_fine — 8000 m view from (1404, 1168)
+
+  resident                    MiB
+    meshes cs2                      1304
+    meshes networks                  787
+    meshes markings                  128
+    meshes areas                      84
+    meshes farring                    46
+    meshes terraincut                  6
+    meshes TOTAL                    2355
+    textures .dds                    401
+    textures .png                    156
+    RESIDENT TOTAL                 2911
+
+  the heaviest shapes — a shape is mounted WHOLE for one instance in view
+    top 100 of 7,180 shape files             554 MiB (24 % of all mesh bytes)
+    art/shapes/cs2/Kinsman_Plaza.dae                18.1 MiB
+    art/shapes/cs2/Five_Luxe_JBR_.dae               17.1 MiB
+    art/shapes/cs2/asset_aae7632a.dae               16.1 MiB
+    art/shapes/networks/net_-17_17_1.dae            15.2 MiB
+    art/shapes/cs2/MedicalUniversity01.dae          13.4 MiB
+    art/shapes/networks/net_-16_17.dae              12.4 MiB
+    art/shapes/networks/net_-18_18.dae              11.3 MiB
+    art/shapes/networks/net_-17_17.dae              11.0 MiB
+
+  triangles inside the view distance
+    cs2                           3,342,146  (13417 statics)
+    networks                      1,598,408  (962 statics)
+    forest                          569,475  (568268 statics)
+    farring                         216,859  (203 statics)
+    areas                           136,313  (729 statics)
+    markings                        109,511  (1043 statics)
+    terraincut                       18,509  (77 statics)
+    TOTAL                         5,991,221
+
+  counts                        this   west_coast_usa
+    shape files                7,180       2,608    2.8x
+    TSStatics                 16,636      22,067    0.8x
+    forest types               1,890         226    8.4x
+    forest items             576,664     133,375    4.3x
+    materials                  5,546         586    9.5x
+    collision triangles    2,404,376
+    cooked shapes              7,180 of 7,180

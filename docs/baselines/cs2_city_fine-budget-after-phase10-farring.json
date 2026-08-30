@@ -1,0 +1,133 @@
+{
+ "collisionTriangles": 2404376,
+ "cooked": 7180,
+ "forestItems": 576664,
+ "forestTypes": 1890,
+ "heaviestShapes": [
+  [
+   18940916,
+   "art/shapes/cs2/Kinsman_Plaza.dae"
+  ],
+  [
+   17936313,
+   "art/shapes/cs2/Five_Luxe_JBR_.dae"
+  ],
+  [
+   16860644,
+   "art/shapes/cs2/asset_aae7632a.dae"
+  ],
+  [
+   15955577,
+   "art/shapes/networks/net_-17_17_1.dae"
+  ],
+  [
+   14100585,
+   "art/shapes/cs2/MedicalUniversity01.dae"
+  ],
+  [
+   13038005,
+   "art/shapes/networks/net_-16_17.dae"
+  ],
+  [
+   11804494,
+   "art/shapes/networks/net_-18_18.dae"
+  ],
+  [
+   11549910,
+   "art/shapes/networks/net_-17_17.dae"
+  ],
+  [
+   11508007,
+   "art/shapes/cs2/OfficeHighSignature02.dae"
+  ],
+  [
+   9949284,
+   "art/shapes/cs2/LuxuryTowerResidence.dae"
+  ],
+  [
+   9806380,
+   "art/shapes/cs2/asset_49c34b1d.dae"
+  ],
+  [
+   9679854,
+   "art/shapes/cs2/OfficeHighSignature03.dae"
+  ],
+  [
+   9312979,
+   "art/shapes/cs2/Address_Beach_Resort_Dubai.dae"
+  ],
+  [
+   9170348,
+   "art/shapes/networks/net_-7_-12.dae"
+  ],
+  [
+   8464520,
+   "art/shapes/cs2/USSW_Hospital_16x14.dae"
+  ],
+  [
+   8337157,
+   "art/shapes/networks/net_19_0.dae"
+  ],
+  [
+   7759777,
+   "art/shapes/cs2/NA_ResidentialHighSignature03.dae"
+  ],
+  [
+   7597624,
+   "art/shapes/cs2/EU_ResidentialHighSignature02.dae"
+  ],
+  [
+   7569129,
+   "art/shapes/cs2/NA_ResidentialHighSignature02.dae"
+  ],
+  [
+   7466795,
+   "art/shapes/cs2/OfficeHighSignature01.dae"
+  ]
+ ],
+ "level": "cs2_city_fine",
+ "materials": 5546,
+ "meshBytes": {
+  "areas": 87927569,
+  "cs2": 1367350930,
+  "farring": 47781245,
+  "markings": 134058231,
+  "networks": 825338612,
+  "terraincut": 6419243
+ },
+ "meshBytesTotal": 2468875830,
+ "residentTotal": 3052858872,
+ "shapeBytesTop100": 580868030,
+ "shapeFiles": 7180,
+ "spawn": [
+  1404.325,
+  1167.748
+ ],
+ "staticsInView": {
+  "areas": 729,
+  "cs2": 13417,
+  "farring": 203,
+  "forest": 568268,
+  "markings": 1043,
+  "networks": 962,
+  "terraincut": 77
+ },
+ "textureBytes": {
+  ".dds": 420141708,
+  ".png": 163841334
+ },
+ "textureBytesTotal": 583983042,
+ "trianglesInView": {
+  "areas": 136313,
+  "cs2": 3342146,
+  "farring": 216859,
+  "forest": 569475,
+  "markings": 109511,
+  "networks": 1598408,
+  "terraincut": 18509
+ },
+ "trianglesInViewTotal": 5991221,
+ "tsStatics": 16636,
+ "unknownLadders": [],
+ "viewDistance": 8000.0
+}

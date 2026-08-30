@@ -78,11 +78,30 @@ def report(results, demand, scan_stats, options, errors, started, progress, rewr
     trunk_wide = sum(1 for r in trunk_ratios if r > TRUNK_WIDE_RATIO)
     promoted = [r for r in results.values() if (r.get("lods") or {}).get("lod0Promoted")]
     kept_small = [r for r in results.values() if (r.get("lods") or {}).get("lod0KeptSmall")]
+    # residency (Phase 10 §8): shapes shipping the game's LOD 1 as their nearest level, and the
+    # authored levels left out for being byte-identical to LOD 0 - both declared, both counted
+    lod0_dropped = [r for r in results.values() if (r.get("lods") or {}).get("lod0Dropped")]
+    identical_levels = sum(
+        len((r.get("lods") or {}).get("identicalLevels") or ()) for r in results.values()
+    )
+    if lod0_dropped:
+        progress.log(
+            f"shapes: {len(lod0_dropped):,} shapes over authored_lod0_max_tris ship the game's "
+            f"LOD 1 as their nearest level ({sum((r['lods'].get('lod0Triangles') or 0) for r in lod0_dropped):,} "
+            f"LOD 0 triangles left out)"
+        )
+    if identical_levels:
+        progress.log(
+            f"shapes: {identical_levels} authored levels left out for being identical to LOD 0"
+        )
     _log_ladder(progress, switch_summary, promoted, kept_small, options)
     return {
         "shapes": len(results),
         "lod0Promoted": len(promoted),
         "lod0KeptSmall": len(kept_small),
+        "lod0Dropped": len(lod0_dropped),
+        "lod0DroppedTriangles": sum((r["lods"].get("lod0Triangles") or 0) for r in lod0_dropped),
+        "identicalLevelsDropped": identical_levels,
         "shapesRewritten": rewritten,
         "orphansRemoved": orphans,
         "failed": len(errors),

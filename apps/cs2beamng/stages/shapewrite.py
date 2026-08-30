@@ -68,11 +68,11 @@ def shape_job(job):
     parts, lo, hi, area, materials_used, authored, lod_bias, material_levels, bound_raw = geometry
     size = hi - lo
     radius = 0.5 * float(numpy.linalg.norm(size))
-    detail_scale = shapelods.detail_scale(kind, options)
+    detail_scale = shapelods.detail_scale(kind, options, radius)
     shape_name = placement.shape_key(job.asset, job.suffix, job.variant)
     base_mesh = daemesh.group_by_material(daemesh.merge_meshes(shape_name, parts))
     game_px, null_px, chain = _thresholds(
-        shape_name, authored, size, area, lod_bias, radius, detail_scale, options
+        shape_name, authored, size, area, lod_bias, radius, detail_scale, options, base_mesh
     )
     levels, lod_stats, ladder = shapelods.lod_levels(
         job.derived_dir,
@@ -96,19 +96,38 @@ def shape_job(job):
     billboard_px, final_null = _imposter_thresholds(
         null_px, detail_scale, size, area, options, chain
     )
-    far = _far_level(job, shape_name, ladder[-1], levels, final_null, game_px, bound_raw, lod_stats)
+    far = _far_level(
+        job, shape_name, ladder[-1], levels, final_null, game_px, bound_raw, lod_stats, radius
+    )
     if far is not None:
         levels, final_null = far
+        if (lod_stats.get("far") or {}).get("ring"):
+            billboard_px = None  # the ring is the far look; a runtime billboard would sit under it
     levels, billboard_px = _vegetation_imposter(job, levels, billboard_px, final_null, lod_stats)
+    levels, billboard_px = _above_null(levels, billboard_px, final_null, lod_stats)
+    final_null = float(lod_stats["nullPx"])
+    # (1) the record of the ladder is the ladder that ships - one source, after every step
+    lod_stats["detailSizes"] = [int(px) for px, _ms in levels]
+    lod_stats["triangles"] = [int(sum(len(m.tris) for m in ms)) for _px, ms in levels]
+    lod_stats["levels"] = len(levels)
+    # The asset.json imposter route bakes ORANGE for our shapes even with vanilla's tree
+    # parameters verbatim (two in-game confirmations, record §8.14). Vanilla's work; the delta
+    # left standing is WHERE the materials live - theirs beside the shape, ours in
+    # art/cs2/main.materials.json - and the asset route bakes at shape-load, before ours mount.
+    # The dae `bb_autobillboard` node bakes later and has rendered correctly in every build, so
+    # it is the billboard; `tree_billboard_px` is INERT until the bake's material context is
+    # solved (a shape-adjacent materials.json is the untested candidate).
+    cs_billboard = None
     shape = dae.Shape(
         shape_name,
         levels,
         collision=colliders,
         billboard_px=int(max(1, round(billboard_px))) if billboard_px else None,
-        null_px=int(max(1, round(final_null))),
+        null_px=int(round(final_null)) or None,
     )
     path = os.path.join(job.out_dir, shape_name + ".dae")
     written = dae.write_shape(path, shape)
+    _write_constructor(job.out_dir, shape_name, cs_billboard, lod_stats)
     return key, _result(
         shape_name,
         written,
@@ -124,6 +143,47 @@ def shape_job(job):
         trunk_ratio=trunk_ratio,
         lod_stats=lod_stats,
     )
+
+
+def _write_constructor(out_dir, shape_name, cs_billboard, lod_stats):
+    """The shape's `<name>.dae.asset.json` imposter config, or none (and no stale file).
+
+    First shipped as a `TSShapeConstructor` `.cs` (vanilla GridMap's route); the engine's shape
+    loader IMPORTS that and rewrites it as `<shape>.dae.asset.json`, deleting the script as
+    "obsolete ... replaced by" (`Resource2<TSShape>::create`, watched live 2026-08-31). So this
+    writes the destination format directly - one file, no per-shape convert on every cook.
+    """
+    path = os.path.join(out_dir, shape_name + ".dae.asset.json")
+    cs_path = os.path.join(out_dir, shape_name + ".cs")
+    if os.path.isfile(cs_path):
+        os.remove(cs_path)
+    if cs_billboard is None:
+        if os.path.isfile(path):
+            os.remove(path)
+        return
+    px, dim = cs_billboard
+    doc = {
+        "imposters": [
+            {
+                "detailLevel": 0,
+                "dimension": int(dim),
+                "equatorSteps": 16,  # vanilla's trees, verbatim
+                "includePoles": False,
+                "polarAngle": 0,
+                "polarSteps": 0,
+                "size": int(px),
+            }
+        ]
+    }
+    text = json.dumps(doc, indent=2, sort_keys=True).encode("utf-8")
+    try:
+        if os.path.isfile(path) and open(path, "rb").read() == text:
+            return
+    except OSError:
+        pass
+    with open(path, "wb") as handle:
+        handle.write(text)
+    lod_stats["imposterConstructor"] = {"px": int(px), "dim": int(dim)}
 
 
 def _result(
@@ -147,6 +207,7 @@ def _result(
     game_px, final_null, billboard_px = thresholds
     return {
         "file": shape_name + ".dae",
+        "kind": kind,
         "changed": bool(written.get("changed")),
         # the game's tree/plant split (`csiibundle.instances.is_tree`), carried to the instances
         # stage so a forest type made from a bush does not ship collidable
@@ -159,7 +220,7 @@ def _result(
         "gameCullMetres": round(
             lod.cull_distance(lod.mesh_min_lod(size, area), options["level_of_detail"]), 1
         ),
-        "nullPx": int(max(1, round(final_null))),
+        "nullPx": int(max(0, round(final_null))),
         "billboardPx": int(max(1, round(billboard_px))) if billboard_px else None,
         "boundsMin": [round(float(v), 4) for v in lo],
         "boundsMax": [round(float(v), 4) for v in hi],
@@ -198,7 +259,9 @@ def _colliders(job, shape_name, base_mesh, ladder, lod_stats, chain=None):
     )
 
 
-def _thresholds(shape_name, authored, size, area, lod_bias, radius, detail_scale, options):
+def _thresholds(
+    shape_name, authored, size, area, lod_bias, radius, detail_scale, options, base_mesh=None
+):
     """`(game_px, null_px, chain)`: CS2's cull for the mesh, this level's null, and the game's
     own LOD chain as a ladder when the shape ships one (its null replaces the single-mesh one)."""
     game_px = lod.game_detail_px(
@@ -206,7 +269,7 @@ def _thresholds(shape_name, authored, size, area, lod_bias, radius, detail_scale
     )
     null_px = max(1.0, game_px * detail_scale)
     chain = shapelods.authored_chain(
-        shape_name, authored, size, area, lod_bias, radius, detail_scale, options
+        shape_name, authored, size, area, lod_bias, radius, detail_scale, options, base_mesh
     )
     if chain is not None:
         null_px = chain["nullPx"]
@@ -320,7 +383,9 @@ _CATALOGUE = {}
 _ALBEDO = {}
 
 
-def _far_level(job, shape_name, coarsest, levels, final_null, game_px, bound_raw, lod_stats):
+def _far_level(
+    job, shape_name, coarsest, levels, final_null, game_px, bound_raw, lod_stats, radius=None
+):
     """`(levels, far_null)` with the silhouette appended, or None when the shape gets none."""
     scale = float(job.options.get("far_detail_scale") or 0.0)
     if job.kind != "building" or scale <= 0.0 or not levels:
@@ -329,7 +394,22 @@ def _far_level(job, shape_name, coarsest, levels, final_null, game_px, bound_raw
     # one-direction rule as the generated ladder)
     far_null = float(max(1, math.ceil(float(game_px) * scale)))
     start = min(int(round(final_null)), levels[-1][0] - 1)
-    if start < int(round(far_null)) + FAR_MIN_BAND_PX or start < 2:
+    # The far ring (`stages/farring`): below the hand-over distance D the per-building level
+    # runs only up to D and the cell's merged ring takes over; a shape whose detailed levels
+    # already reach past D keeps its own level to the game's cull and stays out of the ring.
+    # With the ring on EVERY building hands over at D - towers included: at the game's own
+    # switch points a house's LOD 2 reaches 16 km, so "detail reaching past D" was true of all
+    # of them and nothing joined the ring (budget: 9.1 M building triangles at 8 km, no ring).
+    # A tower's 1 m voxel hull at 2.5 km is what the ring is for.
+    ring_m = float(job.options.get("far_ring_metres") or 0.0)
+    in_ring = False
+    if ring_m > 0.0 and radius:
+        in_ring = True
+        # rounded DOWN: the building must reach the hand-over (an overlap with the ring is a
+        # hull inside a building at 2.5 km; a gap is a house that is not there). One pixel at
+        # that distance is 600 m for a 6 m house (`lod_audit` R2, 2026-08-30).
+        far_null = float(max(1, math.floor(lod.screen_px(radius, ring_m))))
+    if not in_ring and (start < int(round(far_null)) + FAR_MIN_BAND_PX or start < 2):
         return None  # the shape already draws to the game's cull, or the band would be a rounding
     colours, ids = _run_colours(job, coarsest, bound_raw)
     verts, normals, rgba, tris, stats = silhouette.silhouette(
@@ -337,6 +417,45 @@ def _far_level(job, shape_name, coarsest, levels, final_null, game_px, bound_raw
     )
     if len(tris) == 0:
         return None
+    if in_ring:
+        # A ring member gets NO per-building box: its coarsest level runs out to the hand-over
+        # (the shape's null moves from CS2's cull / `lod_detail_scale` to D) and the cell's
+        # merged silhouette takes over there. Naomi's look, 2026-08-30: boxes "up close" on the
+        # small houses were this band - a house's detailed levels stop a few hundred metres out
+        # at scale 10, and a box from there is not a skyline, it is the house.
+        lod_stats["farRing"] = {
+            "verts": numpy.asarray(verts, dtype=numpy.float32).round(3).tolist(),
+            "normals": numpy.asarray(normals, dtype=numpy.float32).round(4).tolist(),
+            "colors": numpy.asarray(rgba, dtype=numpy.float32).round(4).tolist(),
+            "tris": numpy.asarray(tris, dtype=numpy.int64).tolist(),
+            "cullMetres": round(float(lod.distance_at_px(radius, max(float(game_px), 1e-6))), 1),
+        }
+        lod_stats["far"] = {"px": None, "nullPx": int(round(far_null)), "ring": True, **stats}
+        # Torque picks the detail by SIZE, so a level whose size sits under the new null (a
+        # house's LOD 2 starts at the game's 16 km, 2 px, and the null at 2.5 km is 4 px) would
+        # still be drawn beyond the hand-over. Levels under the null go; the finer level above
+        # them covers the band to D. A shape whose LOD 0 itself sits under the null keeps it at
+        # one pixel over (drawn to D, then the ring).
+        # ...and the coarsest surviving level's SIZE becomes the hand-over's pixel size: Torque
+        # draws a level for p >= its size, so a level left at 44 px with a null at 3 px vanishes
+        # at 181 m and the null is chosen from there to 2.5 km (`lod_audit` R2: "not drawn at
+        # 2,480 m"). The null sits one pixel under it.
+        # 1 px is allowed here: a shed under 4 m projects to less than 2 px at 2.5 km, and a
+        # 2 px floor stopped it 600 m short of the ring; at 1 px it has no null and is drawn
+        # until it is under a pixel, which costs nothing
+        hand_px = int(max(1, far_null))
+        above = [(px, ms) for px, ms in levels if int(px) > hand_px]
+        under = [(px, ms) for px, ms in levels if int(px) <= hand_px]
+        if under:
+            # the level the game shows AT the hand-over - the nearest of those under it (the
+            # largest size not above p at D) - covers the band up to it. Dropping every level
+            # under the hand-over ran LOD 0 to 2.5 km: 32 M building triangles (budget, v28)
+            kept = [*above, (hand_px, under[0][1])]
+        else:
+            kept = [*above[:-1], (hand_px, above[-1][1])]
+        if len(kept) != len(levels):
+            lod_stats["levelsUnderHandOver"] = len(levels) - len(kept)
+        return kept, float(hand_px - 1)
     far_mesh = dae.Mesh(
         f"{shape_name}_FAR",
         verts,
@@ -414,19 +533,56 @@ def _mean_albedo(bundle_dir, derived_dir, canonical):
 # is vegetation; ours goes on the 292 vegetation shapes, not on buildings (§1 of the record).
 
 
+def _above_null(levels, billboard_px, final_null, lod_stats):
+    """Every detail strictly above the null, the billboard between the meshes and the null.
+
+    Torque orders details by size and a mesh at the null's own size is a coin toss between
+    "drawn" and "gone" (`tools/beamng/lod_audit.py` R1: 1,028 props at the game's own distances
+    had their coarsest level and their null both at 2 px). The coarsest level is lifted to one
+    pixel over the null (or over the billboard), and every nearer level lifted as little as
+    keeps the ladder strictly decreasing. Counted in `lod_stats["liftedAboveNull"]`.
+    """
+    # The coarsest mesh's own size IS where the shape stops (Torque draws it for p >= size and
+    # nothing sits below it); the null only has to be smaller. Lifting the mesh instead moved
+    # the stop and left a band [null, null+1) where the null was chosen - 1,678-2,510 m of no
+    # warehouse (`lod_audit` R2, 2026-08-30). So: the mesh keeps its size, the null comes down.
+    null = int(max(0, round(final_null)))  # 0 = no null detail at all
+    bb = None if not billboard_px else int(max(1, round(billboard_px)))
+    lod_stats["nullPx"] = null
+    if not levels:
+        return levels, billboard_px
+    coarsest = int(levels[-1][0])
+    if bb is not None and bb >= coarsest:
+        bb = coarsest - 1 if coarsest > 2 else None
+        lod_stats["billboardLowered"] = True
+    floor = bb if bb is not None else coarsest
+    if null >= floor:
+        lod_stats["nullLowered"] = {"from": null, "to": max(0, floor - 1)}
+        null = max(0, floor - 1)
+        if bb is not None and bb <= null:
+            bb = None
+            lod_stats["billboardLowered"] = "dropped"
+    lod_stats["nullPx"] = null
+    return list(levels), (float(bb) if bb is not None else None)
+
+
 def _vegetation_imposter(job, levels, billboard_px, final_null, lod_stats):
-    """`(levels, billboard_px)`: a vegetation shape's coarsest generated level replaced by the
-    engine billboard at the same switch size; anything else unchanged."""
+    """`(levels, billboard_px)`: a vegetation shape keeps LOD 0 and hands straight to the engine
+    billboard where its first generated level would have started; anything else unchanged.
+
+    The game's own vanilla trees do exactly this - their authored LOD 1 IS an impostor card
+    (`MeshFlags.Impostor`, skipped by the producer) - so LOD 0 -> billboard is the game's rule,
+    and the clustered canopy that used to sit between them was ours (record §8.12)."""
     if job.kind != "tree" or not job.options.get("imposters", True) or len(levels) < 2:
         return levels, billboard_px
-    px = int(levels[-1][0])
+    px = int(levels[1][0])
     if px <= int(round(final_null)) + 1:
         return levels, billboard_px
     lod_stats["imposter"] = {
         "px": px,
-        "replacedTriangles": int(sum(len(m.tris) for m in levels[-1][1])),
+        "replacedTriangles": int(sum(len(m.tris) for _px, ms in levels[1:] for m in ms)),
     }
-    lod_stats["levels"] = len(levels) - 1
-    lod_stats["detailSizes"] = [size for size, _ms in levels[:-1]]
-    lod_stats["triangles"] = lod_stats.get("triangles", [])[: len(levels) - 1]
-    return levels[:-1], float(px)
+    lod_stats["levels"] = 1
+    lod_stats["detailSizes"] = [size for size, _ms in levels[:1]]
+    lod_stats["triangles"] = lod_stats.get("triangles", [])[:1]
+    return levels[:1], float(px)
