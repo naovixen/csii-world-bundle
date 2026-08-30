@@ -45,6 +45,35 @@ def _jobs(settings):
     return jobs
 
 
+def guard_level_dir(settings, level_dir):
+    """Refuse to build into anything that is not one level's own directory.
+
+    Twice a build has written a level's insides straight into the user's `levels/` folder -
+    6.5 GB of `art/`, `forest/` and state beside every other level, and BeamNG probing each
+    fragment as a level on every scan (2026-08-03 and 2026-08-29, found 2026-08-31). The join
+    `output + level_name` makes that a one-empty-string accident, so the worker checks the
+    RESULT: a blank name, a level_dir that IS the output dir, or one that already contains
+    other levels' `info.json` folders is refused before a byte is written.
+    """
+    if not str(settings.get("level_name") or "").strip():
+        raise RuntimeError("level_name is empty - the build would write into the output folder itself")
+    if os.path.normcase(os.path.normpath(level_dir)) == os.path.normcase(
+        os.path.normpath(settings["output"])
+    ):
+        raise RuntimeError(f"level_dir equals the output folder ({level_dir!r}) - refusing")
+    if os.path.isdir(level_dir):
+        others = [
+            child
+            for child in os.listdir(level_dir)
+            if os.path.isfile(os.path.join(level_dir, child, "info.json"))
+        ]
+        if others and not os.path.isfile(os.path.join(level_dir, "info.json")):
+            raise RuntimeError(
+                f"{level_dir!r} contains other levels ({', '.join(others[:3])}...) - it is a "
+                f"levels ROOT, not a level; check output and level_name"
+            )
+
+
 def main(settings, census, queue, cancel_event, hard_cancel=None):
     # Ctrl-C in the parent's console reaches this process too; cancellation must arrive through
     # the event (between chunks), never as a KeyboardInterrupt in the middle of a write.
@@ -62,6 +91,7 @@ def main(settings, census, queue, cancel_event, hard_cancel=None):
         "stages": {},
     }
     level_dir = os.path.join(settings["output"], settings["level_name"])
+    guard_level_dir(settings, level_dir)
     derived_dir = os.path.join(settings["bundle"], "derived")
     ctx = BuildContext(
         settings=settings,

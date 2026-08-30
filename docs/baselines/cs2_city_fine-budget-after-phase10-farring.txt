@@ -1,37 +1,37 @@
 level cs2_city_fine — 8000 m view from (1404, 1168)
 
   resident                    MiB
-    meshes cs2                      1304
+    meshes cs2                      1345
     meshes networks                  787
     meshes markings                  128
     meshes areas                      84
     meshes farring                    46
     meshes terraincut                  6
-    meshes TOTAL                    2355
+    meshes TOTAL                    2396
     textures .dds                    401
     textures .png                    156
-    RESIDENT TOTAL                 2911
+    RESIDENT TOTAL                 2953
 
   the heaviest shapes — a shape is mounted WHOLE for one instance in view
-    top 100 of 7,180 shape files             554 MiB (24 % of all mesh bytes)
-    art/shapes/cs2/Kinsman_Plaza.dae                18.1 MiB
-    art/shapes/cs2/Five_Luxe_JBR_.dae               17.1 MiB
+    top 100 of 7,180 shape files             587 MiB (25 % of all mesh bytes)
+    art/shapes/cs2/Kinsman_Plaza.dae                24.8 MiB
+    art/shapes/cs2/Five_Luxe_JBR_.dae               21.0 MiB
     art/shapes/cs2/asset_aae7632a.dae               16.1 MiB
     art/shapes/networks/net_-17_17_1.dae            15.2 MiB
     art/shapes/cs2/MedicalUniversity01.dae          13.4 MiB
     art/shapes/networks/net_-16_17.dae              12.4 MiB
-    art/shapes/networks/net_-18_18.dae              11.3 MiB
-    art/shapes/networks/net_-17_17.dae              11.0 MiB
+    art/shapes/cs2/Two_Seventy_Hennepin.dae         12.4 MiB
+    art/shapes/cs2/Address_Beach_Resort_Dubai.da    12.2 MiB
 
   triangles inside the view distance
-    cs2                           3,342,146  (13417 statics)
+    cs2                           2,939,973  (13417 statics)
     networks                      1,598,408  (962 statics)
-    forest                          569,475  (568268 statics)
-    farring                         216,859  (203 statics)
+    forest                          719,992  (568268 statics)
+    farring                         216,855  (203 statics)
     areas                           136,313  (729 statics)
     markings                        109,511  (1043 statics)
     terraincut                       18,509  (77 statics)
-    TOTAL                         5,991,221
+    TOTAL                         5,739,561
 
   counts                        this   west_coast_usa
     shape files                7,180       2,608    2.8x
@@ -39,5 +39,5 @@ level cs2_city_fine — 8000 m view from (1404, 1168)
     forest types               1,890         226    8.4x
     forest items             576,664     133,375    4.3x
     materials                  5,546         586    9.5x
-    collision triangles    2,404,376
+    collision triangles    2,403,850
     cooked shapes              7,180 of 7,180

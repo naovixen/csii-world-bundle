@@ -267,8 +267,15 @@ def lod_ladder(mesh, targets=(0.25, 0.06), backend="auto"):
     `"quadric"`. Ratios are per material run; a run that collapses entirely is dropped from that
     level and counted in `stats["dropped_runs"]`.
     """
-    use_quadric = (backend == "quadric") or (backend == "auto" and decimatequadric.available())
-    reducer = decimatequadric.to_ratio if use_quadric else _cluster_to_ratio
+    if backend == "meshlab":
+        from . import decimatemeshlab
+
+        reducer = decimatemeshlab.to_ratio
+        resolved = "meshlab"
+    else:
+        use_quadric = (backend == "quadric") or (backend == "auto" and decimatequadric.available())
+        reducer = decimatequadric.to_ratio if use_quadric else _cluster_to_ratio
+        resolved = "quadric" if use_quadric else "cluster"
     parts = split_runs(mesh)
     levels = []
     dropped = 0
@@ -282,7 +289,7 @@ def lod_ladder(mesh, targets=(0.25, 0.06), backend="auto"):
             reduced.append((name, rv, rn, ruv, rt))
         levels.append(merge_runs(reduced))
     stats = {
-        "backend": "quadric" if use_quadric else "cluster",
+        "backend": resolved,
         "input_tris": len(mesh["tris"]),
         "levels": [len(level["tris"]) for level in levels],
         "dropped_runs": dropped,

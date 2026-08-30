@@ -1,15 +1,15 @@
 {
- "collisionTriangles": 2404376,
+ "collisionTriangles": 2403850,
  "cooked": 7180,
  "forestItems": 576664,
  "forestTypes": 1890,
  "heaviestShapes": [
   [
-   18940916,
+   26050766,
    "art/shapes/cs2/Kinsman_Plaza.dae"
   ],
   [
-   17936313,
+   21995068,
    "art/shapes/cs2/Five_Luxe_JBR_.dae"
   ],
   [
@@ -29,6 +29,14 @@
    "art/shapes/networks/net_-16_17.dae"
   ],
   [
+   12968531,
+   "art/shapes/cs2/Two_Seventy_Hennepin.dae"
+  ],
+  [
+   12798604,
+   "art/shapes/cs2/Address_Beach_Resort_Dubai.dae"
+  ],
+  [
    11804494,
    "art/shapes/networks/net_-18_18.dae"
   ],
@@ -41,10 +49,6 @@
    "art/shapes/cs2/OfficeHighSignature02.dae"
   ],
   [
-   9949284,
-   "art/shapes/cs2/LuxuryTowerResidence.dae"
-  ],
-  [
    9806380,
    "art/shapes/cs2/asset_49c34b1d.dae"
   ],
@@ -53,12 +57,16 @@
    "art/shapes/cs2/OfficeHighSignature03.dae"
   ],
   [
-   9312979,
-   "art/shapes/cs2/Address_Beach_Resort_Dubai.dae"
+   9510417,
+   "art/shapes/cs2/Torre_Tetris.dae"
   ],
   [
    9170348,
    "art/shapes/networks/net_-7_-12.dae"
+  ],
+  [
+   8758235,
+   "art/shapes/cs2/Helipad03_v0.dae"
   ],
   [
    8464520,
@@ -73,31 +81,23 @@
    "art/shapes/cs2/NA_ResidentialHighSignature03.dae"
   ],
   [
-   7597624,
-   "art/shapes/cs2/EU_ResidentialHighSignature02.dae"
-  ],
-  [
-   7569129,
-   "art/shapes/cs2/NA_ResidentialHighSignature02.dae"
-  ],
-  [
-   7466795,
-   "art/shapes/cs2/OfficeHighSignature01.dae"
+   7628395,
+   "art/shapes/cs2/LuxuryTowerResidence.dae"
   ]
  ],
  "level": "cs2_city_fine",
  "materials": 5546,
  "meshBytes": {
   "areas": 87927569,
-  "cs2": 1367350930,
-  "farring": 47781245,
+  "cs2": 1410420017,
+  "farring": 47775677,
   "markings": 134058231,
   "networks": 825338612,
   "terraincut": 6419243
  },
- "meshBytesTotal": 2468875830,
- "residentTotal": 3052858872,
- "shapeBytesTop100": 580868030,
+ "meshBytesTotal": 2511939349,
+ "residentTotal": 3095922391,
+ "shapeBytesTop100": 615826516,
  "shapeFiles": 7180,
  "spawn": [
   1404.325,
@@ -119,14 +119,14 @@
  "textureBytesTotal": 583983042,
  "trianglesInView": {
   "areas": 136313,
-  "cs2": 3342146,
-  "farring": 216859,
-  "forest": 569475,
+  "cs2": 2939973,
+  "farring": 216855,
+  "forest": 719992,
   "markings": 109511,
   "networks": 1598408,
   "terraincut": 18509
  },
- "trianglesInViewTotal": 5991221,
+ "trianglesInViewTotal": 5739561,
  "tsStatics": 16636,
  "unknownLadders": [],
  "viewDistance": 8000.0

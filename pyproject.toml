@@ -31,7 +31,9 @@ dependencies = [
 gui = ["pywebview>=5"]
 # Pre-compressed DDS textures (BC7/BC5/BC4 + mips) so BeamNG never cooks them at load; without it PNGs ship.
 textures = ["etcpak>=0.9"]
-all = ["pywebview>=5", "etcpak>=0.9"]
+# Texture-aware LOD generation for heavy no-chain buildings (csiibundle.decimatemeshlab).
+lods = ["pymeshlab>=2023.12"]
+all = ["pywebview>=5", "etcpak>=0.9", "pymeshlab>=2023.12"]
 # Building the standalone application zips (tools/build_exe.py).
 build = ["pyinstaller>=6.6"]
 

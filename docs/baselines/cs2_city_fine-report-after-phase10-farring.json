@@ -31,6 +31,11 @@
      "measured": "1,806 of 1,276,060 records on the reference city, 0 shapes",
      "what": "trees standing in the road are still counted",
      "why": "the clearance rule is a spatial pass over the lane layer and it has never removed a whole shape"
+    },
+    {
+     "measured": null,
+     "what": "the figures are for the last bake; 1 of its products (lods) will be rebuilt with these settings",
+     "why": "both halves are sized from what the bake produced, and what the next bake produces is what the build will ship"
     }
    ],
    "budget": {
@@ -41,7 +46,7 @@
     "vramMiB": 8018
    },
    "diskBasis": "shapes, textures and the heightfield",
-   "diskBytes": 3344146947,
+   "diskBytes": 3357001270,
    "meshes": {
     "approximations": [
      {
@@ -66,74 +71,74 @@
      }
     ],
     "basis": "from your own last 8 builds",
-    "bytes": 2478347923,
+    "bytes": 2491202246,
     "groups": {
      "areas": {
-      "bytes": 80955243,
-      "ratio": 0.975,
+      "bytes": 80545719,
+      "ratio": 0.97,
       "section": "world",
       "shapes": null,
       "sourceBytes": 83047851
      },
      "building": {
-      "bytes": 1558114834,
-      "ratio": 0.658,
+      "bytes": 1569376747,
+      "ratio": 0.654,
       "section": "world",
       "shapes": 1170,
-      "sourceBytes": 2369488988
+      "sourceBytes": 2398749856
      },
      "markings": {
-      "bytes": 87603960,
-      "ratio": 1.018,
+      "bytes": 87160803,
+      "ratio": 1.013,
       "section": "world",
       "shapes": null,
       "sourceBytes": 86015308
      },
      "networks": {
-      "bytes": 529986450,
-      "ratio": 0.839,
+      "bytes": 527305438,
+      "ratio": 0.835,
       "section": "world",
       "shapes": null,
       "sourceBytes": 631457852
      },
      "prop": {
-      "bytes": 129276754,
-      "ratio": 0.419,
+      "bytes": 133362223,
+      "ratio": 0.417,
       "section": "world",
       "shapes": 2608,
-      "sourceBytes": 308292136
+      "sourceBytes": 319651944
      },
      "terraincut": {
-      "bytes": 4122489,
-      "ratio": 1.194,
+      "bytes": 4101635,
+      "ratio": 1.188,
       "section": "world",
       "shapes": null,
       "sourceBytes": 3451452
      },
      "tree": {
-      "bytes": 88288193,
-      "ratio": 0.661,
+      "bytes": 89349681,
+      "ratio": 0.658,
       "section": "world",
       "shapes": 252,
-      "sourceBytes": 133481352
+      "sourceBytes": 135773024
      }
     }
    },
    "overSections": [],
    "ready": true,
-   "residentBytes": 3142820204,
-   "residentMiB": 2997.2,
+   "residentBytes": 3155674527,
+   "residentMiB": 3009.5,
    "rows": [
     {
      "band": "fits",
-     "basis": "2,364 MiB of shapes from your own last 8 builds, 634 MiB of textures computed exactly",
-     "fraction": 0.5737366003062787,
+     "basis": "2,376 MiB of shapes from your own last 8 builds, 634 MiB of textures computed exactly",
+     "fraction": 0.5760911179173047,
      "key": "vram",
      "label": "Video memory",
      "markFraction": 0.6648162327718223,
      "of": "of 3,473 MiB known to fit",
      "section": "world",
-     "value": "2,997 MiB"
+     "value": "3,010 MiB"
     }
    ],
    "textures": {
@@ -162,9 +167,9 @@
   },
   "score": {
    "mesh": {
-    "actualMiB": 2354.5,
-    "errorPercent": 0.4,
-    "estimatedMiB": 2363.5
+    "actualMiB": 2395.6,
+    "errorPercent": -0.8,
+    "estimatedMiB": 2375.8
    },
    "texture": {
     "actualMiB": 556.9,
@@ -172,13 +177,13 @@
     "estimatedMiB": 633.7
    },
    "total": {
-    "actualMiB": 2911.4,
-    "errorPercent": 2.9,
-    "estimatedMiB": 2997.2
+    "actualMiB": 2952.5,
+    "errorPercent": 1.9,
+    "estimatedMiB": 3009.5
    }
   }
  },
- "finishedAt": "2026-08-30T22:08:11Z",
+ "finishedAt": "2026-08-30T23:35:13Z",
  "settings": {
   "ai_roads": true,
   "area_conform_cm": 5.0,
@@ -283,10 +288,53 @@
       "status": "fresh"
      },
      "lods": {
-      "reason": "inputs unchanged",
-      "seconds": 0.0,
-      "stats": {},
-      "status": "fresh"
+      "reason": "product version 6 != 7",
+      "seconds": 154.3,
+      "stats": {
+       "authored": 1731,
+       "backend": "best of cluster and quadric per level, by two-sided displacement",
+       "backendRequested": "auto",
+       "backendTris": {
+        "cluster": 439262,
+        "meshlab": 902908,
+        "quadric": 696694
+       },
+       "baked": 2625,
+       "displacement": [
+        {
+         "max": 17.8479,
+         "p50": 0.0228,
+         "p90": 0.1131,
+         "p99": 0.7074,
+         "shapes": 2625,
+         "zero": 344
+        },
+        {
+         "max": 22.5298,
+         "p50": 0.0656,
+         "p90": 0.3858,
+         "p99": 1.7525,
+         "shapes": 2625,
+         "zero": 263
+        }
+       ],
+       "displacementPercentile": 95.0,
+       "empty": 0,
+       "failed": 0,
+       "meshes": 4356,
+       "ratios": [
+        0.32,
+        0.211
+       ],
+       "refused": 0,
+       "seconds": 152.9,
+       "trisIn": 3840493,
+       "trisOut": [
+        1228825,
+        810039
+       ]
+      },
+      "status": "baked"
      },
      "markings": {
       "reason": "inputs unchanged",
@@ -314,17 +362,17 @@
      }
     }
    },
-   "seconds": 4.9
+   "seconds": 157.0
   },
   "cook": {
    "result": {
     "autogeneratedMaterialsRemoved": 5,
     "compiled": 7180,
-    "daeMiBFreed": 3097.7,
+    "daeMiBFreed": 3161.2,
     "daeSourcesRemoved": 7180,
     "exe": "G:\\SteamLibrary\\steamapps\\common\\BeamNG.drive\\Bin64\\BeamNG.drive.x64.exe",
     "exitCode": 0,
-    "seconds": 309.8,
+    "seconds": 303.5,
     "shapeLaddersIndexed": 7180,
     "shapeLaddersScanned": 7180,
     "shapes": 7180,
@@ -334,7 +382,7 @@
     "upToDate": 0,
     "withCdae": 7180
    },
-   "seconds": 309.8
+   "seconds": 303.5
   },
   "derived": {
    "result": {
@@ -412,9 +460,9 @@
       "triangles": 100706
      }
     },
-    "seconds": 15.5
+    "seconds": 15.0
    },
-   "seconds": 15.5
+   "seconds": 15.0
   },
   "groundcover": {
    "result": {
@@ -433,9 +481,9 @@
      "cs2_city_fine_extra3",
      "cs2_city_fine_extra4"
     ],
-    "seconds": 0.9
+    "seconds": 0.8
    },
-   "seconds": 0.9
+   "seconds": 0.8
   },
   "instances": {
    "result": {
@@ -1061,7 +1109,7 @@
        "name": "farring_-1_3",
        "nearPx": 200,
        "nullPx": 4,
-       "radius": 382.261,
+       "radius": 382.21,
        "ringPx": 5,
        "triangles": 64
       },
@@ -1623,7 +1671,7 @@
        "nullPx": 8,
        "radius": 378.838,
        "ringPx": 9,
-       "triangles": 6440
+       "triangles": 6400
       },
       {
        "cullMetres": 64015.3,
@@ -1753,7 +1801,7 @@
        "nullPx": 4,
        "radius": 397.635,
        "ringPx": 5,
-       "triangles": 4526
+       "triangles": 4506
       },
       {
        "cullMetres": 108186.0,
@@ -1783,7 +1831,7 @@
        "nullPx": 6,
        "radius": 394.973,
        "ringPx": 7,
-       "triangles": 4226
+       "triangles": 4186
       },
       {
        "cullMetres": 44692.8,
@@ -1903,7 +1951,7 @@
        "nullPx": 3,
        "radius": 405.083,
        "ringPx": 4,
-       "triangles": 2394
+       "triangles": 2386
       },
       {
        "cullMetres": 100933.2,
@@ -1923,7 +1971,7 @@
        "nullPx": 2,
        "radius": 409.683,
        "ringPx": 3,
-       "triangles": 1802
+       "triangles": 1810
       },
       {
        "cullMetres": 156100.9,
@@ -1931,9 +1979,9 @@
        "name": "farring_5_2",
        "nearPx": 211,
        "nullPx": 3,
-       "radius": 403.926,
+       "radius": 403.906,
        "ringPx": 4,
-       "triangles": 4430
+       "triangles": 4414
       },
       {
        "cullMetres": 28463.5,
@@ -2021,7 +2069,7 @@
        "name": "farring_6_-1",
        "nearPx": 112,
        "nullPx": 3,
-       "radius": 213.583,
+       "radius": 213.58,
        "ringPx": 4,
        "triangles": 520
       },
@@ -2061,9 +2109,9 @@
        "name": "farring_6_3",
        "nearPx": 160,
        "nullPx": 6,
-       "radius": 305.845,
+       "radius": 305.782,
        "ringPx": 7,
-       "triangles": 2162
+       "triangles": 2174
       },
       {
        "cullMetres": 74999.4,
@@ -2481,9 +2529,9 @@
        "name": "farring_10_3",
        "nearPx": 208,
        "nullPx": 3,
-       "radius": 397.286,
+       "radius": 397.263,
        "ringPx": 4,
-       "triangles": 5348
+       "triangles": 5404
       },
       {
        "cullMetres": 140635.3,
@@ -2570,7 +2618,7 @@
      "members": 8730,
      "orphansRemoved": 0,
      "rewritten": 208,
-     "triangles": 409676
+     "triangles": 409628
     },
     "forestBytes": {
      "bytes": 91871815,
@@ -2596,11 +2644,11 @@
     "noShape": 17317,
     "placed": 589620,
     "scanned": 1283541,
-    "seconds": 92.1,
+    "seconds": 88.4,
     "tsStatics": 13472,
     "tsStaticsNoShadow": 4742
    },
-   "seconds": 92.1
+   "seconds": 88.4
   },
   "materials": {
    "result": {
@@ -2622,7 +2670,7 @@
      "texture": 2674
     },
     "paintVariantMaterials": 3300,
-    "seconds": 8.2,
+    "seconds": 5.5,
     "textureBytes": {
      "bytes": 407477860,
      "files": 11137,
@@ -2644,7 +2692,7 @@
     "texturesMissing": 0,
     "texturesReused": 11063
    },
-   "seconds": 8.2
+   "seconds": 5.5
   },
   "navgraph": {
    "result": {
@@ -2663,7 +2711,7 @@
      "navgraph: 15,393 roads / 51,197 nodes, 35 connected components, largest holds 96.5% of them"
     ],
     "roads": 15393,
-    "seconds": 20.0,
+    "seconds": 19.8,
     "stats": {
      "carLanes": 131618,
      "components": 35,
@@ -2695,7 +2743,7 @@
     },
     "trafficSideSource": "bundle.json leftHandTraffic"
    },
-   "seconds": 20.0
+   "seconds": 19.8
   },
   "networks": {
    "result": {
@@ -2727,7 +2775,7 @@
     },
     "orphansRemoved": 0,
     "refused": 0,
-    "seconds": 29.9,
+    "seconds": 33.0,
     "segments": 7289,
     "splitGeometries": 25,
     "tiles": 1024,
@@ -2735,7 +2783,7 @@
     "triangles": 13100276,
     "vertices": 14162733
    },
-   "seconds": 29.9
+   "seconds": 33.0
   },
   "poi": {
    "result": {
@@ -2754,13 +2802,13 @@
      "Driftwood Highway"
     ],
     "points": 8,
-    "seconds": 1.9
+    "seconds": 1.7
    },
-   "seconds": 1.9
+   "seconds": 1.7
   },
   "scene": {
    "result": {
-    "seconds": 5.3,
+    "seconds": 5.0,
     "spawn": [
      1404.325,
      1167.748,
@@ -2773,7 +2821,7 @@
     "todTime": 0.0014,
     "visibleDistance": 8000.0
    },
-   "seconds": 5.3
+   "seconds": 5.0
   },
   "shapes": {
    "result": {
@@ -2798,31 +2846,31 @@
       "why": "CS2 draws a median prop to 1,024 m and a median building to 13,008 m, a factor of 12.7, and one global divisor preserves that ratio while destroying the relationship - at 105 m a window frame is plainly visible where at CS2's 1,024 m it is sub-pixel, so facades read as construction sites (A6.2). DECLARED TUNING: the game has no per-kind divisor. The game's actual sub-object rule - cull at the OWNER's bounds, keep your own m_MinLod (audit \u00a770) - is NOT ported, because BeamNG holds detail thresholds per SHAPE and ownership is per INSTANCE"
      },
      "lodLadderSwitchPoints": {
-      "count": 3742,
+      "count": 3760,
       "displacement": {
        "LOD1": {
-        "deferred": 149,
-        "deferredMaxFactor": 14.62,
+        "deferred": 160,
+        "deferredMaxFactor": 16.13,
         "deferredMedianFactor": 1.68,
         "errorPxP50": 1.51,
         "errorPxP90": 7.3,
         "identical": 231,
-        "metresMax": 0.98,
-        "metresP50": 0.0213,
-        "metresP90": 0.07,
-        "shapes": 2023
+        "metresMax": 17.8479,
+        "metresP50": 0.0219,
+        "metresP90": 0.0751,
+        "shapes": 2042
        },
        "LOD2": {
-        "deferred": 117,
-        "deferredMaxFactor": 4.09,
+        "deferred": 123,
+        "deferredMaxFactor": 4.13,
         "deferredMedianFactor": 1.5,
         "errorPxP50": 1.19,
         "errorPxP90": 6.3,
-        "identical": 160,
-        "metresMax": 4.0596,
-        "metresP50": 0.0628,
-        "metresP90": 0.3585,
-        "shapes": 2089
+        "identical": 162,
+        "metresMax": 22.5298,
+        "metresP50": 0.0654,
+        "metresP90": 0.3647,
+        "shapes": 2108
        },
        "exemptLevels": 380
       },
@@ -2859,9 +2907,9 @@
      }
     },
     "colliders": {
-     "box": 1197,
+     "box": 1203,
      "lightNone": 169,
-     "mesh": 1643,
+     "mesh": 1637,
      "mesh_decimated": 784,
      "plant": 75,
      "trunk": 148
@@ -2900,7 +2948,7 @@
     "levelOfDetail": 0.7,
     "lod0Dropped": 637,
     "lod0DroppedTriangles": 14715381,
-    "lod0KeptSmall": 1887,
+    "lod0KeptSmall": 1890,
     "lod0Promoted": 66,
     "orphansRemoved": 0,
     "scan": {
@@ -2928,10 +2976,10 @@
      "skippedRoadclear": 1016,
      "skippedState": 33108
     },
-    "seconds": 85.6,
+    "seconds": 85.3,
     "shapes": 4016,
     "shapesRewritten": 4016,
-    "triangles": 15684071,
+    "triangles": 16219997,
     "trunkFit": {
      "medianRatio": 0.084,
      "ratio": 0.5,
@@ -2939,7 +2987,7 @@
      "wide": 22
     }
    },
-   "seconds": 85.6
+   "seconds": 85.3
   },
   "terrain": {
    "result": {
@@ -2951,11 +2999,11 @@
     "materials": 7,
     "minimap": "cs2_city_fine_minimap.png",
     "orphansRemoved": 0,
-    "seconds": 33.3,
+    "seconds": 29.1,
     "size": 8192,
     "squareSize": 1.75
    },
-   "seconds": 33.4
+   "seconds": 29.1
   },
   "validate": {
    "result": {
@@ -3033,17 +3081,17 @@
         "cookedShapes": 7180,
         "failureMiB": 5224,
         "graphicsApi": "DirectX 12",
-        "graphicsApiSource": "from beamng.1.log",
-        "meshMiB": 2354.5,
+        "graphicsApiSource": "from beamng.3.log",
+        "meshMiB": 2395.6,
         "shapes": 0,
         "textureMiB": 556.9,
         "textureReduction": 0,
         "textureReductionSource": "textureReductionLevel 0 (Normal+)",
         "textureShippedMiB": 556.9,
         "textureStreaming": true,
-        "totalMiB": 2911.4,
+        "totalMiB": 2952.5,
         "vanillaMaxMiB": 1375,
-        "vanillaRatio": 2.12
+        "vanillaRatio": 2.15
        },
        "spawnPoints": 9,
        "strayMaterialFiles": 0,
@@ -3139,17 +3187,17 @@
       "cookedShapes": 7180,
       "failureMiB": 5224,
       "graphicsApi": "DirectX 12",
-      "graphicsApiSource": "from beamng.1.log",
-      "meshMiB": 2354.5,
+      "graphicsApiSource": "from beamng.3.log",
+      "meshMiB": 2395.6,
       "shapes": 0,
       "textureMiB": 556.9,
       "textureReduction": 0,
       "textureReductionSource": "textureReductionLevel 0 (Normal+)",
       "textureShippedMiB": 556.9,
       "textureStreaming": true,
-      "totalMiB": 2911.4,
+      "totalMiB": 2952.5,
       "vanillaMaxMiB": 1375,
-      "vanillaRatio": 2.12
+      "vanillaRatio": 2.15
      },
      "spawnPoints": 9,
      "strayMaterialFiles": 0,
@@ -3172,7 +3220,7 @@
     },
     "problems": 0
    },
-   "seconds": 16.1
+   "seconds": 15.6
   },
   "water": {
    "result": {
@@ -3184,13 +3232,13 @@
     "plane": true,
     "seaLevel": 520.19,
     "seaWaveScale": 1.0,
-    "seconds": 27.4,
+    "seconds": 22.5,
     "waveDirection": "APPROXIMATED (wind-driven in game; fixed here)"
    },
-   "seconds": 27.4
+   "seconds": 22.5
   }
  },
- "startedAt": "2026-08-30T21:56:48Z",
+ "startedAt": "2026-08-30T23:21:29Z",
  "status": "done",
  "validation": {
   "checks": {
@@ -3265,17 +3313,17 @@
     "cookedShapes": 7180,
     "failureMiB": 5224,
     "graphicsApi": "DirectX 12",
-    "graphicsApiSource": "from beamng.1.log",
-    "meshMiB": 2354.5,
+    "graphicsApiSource": "from beamng.3.log",
+    "meshMiB": 2395.6,
     "shapes": 0,
     "textureMiB": 556.9,
     "textureReduction": 0,
     "textureReductionSource": "textureReductionLevel 0 (Normal+)",
     "textureShippedMiB": 556.9,
     "textureStreaming": true,
-    "totalMiB": 2911.4,
+    "totalMiB": 2952.5,
     "vanillaMaxMiB": 1375,
-    "vanillaRatio": 2.12
+    "vanillaRatio": 2.15
    },
    "spawnPoints": 9,
    "strayMaterialFiles": 0,

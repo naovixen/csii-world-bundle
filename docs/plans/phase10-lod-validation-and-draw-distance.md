@@ -895,3 +895,50 @@ imposters off for good, the dae `bb_autobillboard` node is the billboard (engine
 cell — the soft-but-correct look), `tree_billboard_px` inert with the reason in its help. The
 untested candidate fix, for another day: a shape-adjacent materials.json for the tree
 materials only.
+
+### 8.15 LODs for the no-chain landmarks — the MeshLab backend
+
+"Investigate LODs for buildings that don't have LODs" (Naomi). The 11 landmarks hold their
+single full mesh to the 2.5 km ring because clustering webs their facades and pyfqmr pulls
+metres of error across the unwelded seams (§8.9). The investigation, all measured:
+
+* `pymeshlab`'s `meshing_decimation_quadric_edge_collapse_with_texture` after a WELD
+  (unwelded, every edge is a "boundary" and the collapse refuses: 176,587 -> 176,583) and
+  with **`optimalplacement=False`** — a collapse lands ON an existing vertex, so the
+  simplified surface lies on the original by construction (decimated->original Hausdorff
+  max 0.0 m on the balcony tower, against 18 m with free-floating placement).
+* Kinsman_Plaza: 176,587 -> 70,995 triangles at 0.7 cm mean error — a clean mid level,
+  confirmed in a Blender render. LuxuryTowerResidence: usable. The perforated balcony
+  facade (`EU_ResidentialHighSignature03`) still webs shut — visible in the render even
+  where the metric is happy; its measured displacement is what defers it out.
+* My centroid-kNN Hausdorff overstated on large triangles (a roof's own face lost to 48
+  nearer window facets); MeshLab's `get_hausdorff_distance` replaced it in the probe.
+
+Built: `csiibundle/decimatemeshlab.py` (the reducer behind `decimate.lod_ladder`'s interface;
+OBJ round-trip because `pymeshlab.Mesh(w_tex_coords_matrix=...)` leaves the wedge texture
+index unset; wedge UVs welded back per unique (vertex, uv); `pymeshlab` optional, extras
+`[lods]`). `lodchoice.best_levels` enters it in the CONTEST for meshes >= 20,000 triangles —
+judged, like every candidate, by measured two-sided displacement (lods product v5). The
+consumer's building gate opens ONLY for shapes whose baked levels the meshlab backend won
+(`_lod_backend` -> `ShapeJob.lod_backend` -> `lod_levels(meshlab_generated=)`, shapes v37);
+every other building still refuses generated levels (§8.12's lattice rule). The switch
+points stay displacement-gated, so a webbed level only ever shows where its error projects
+under `lod_switch_error_px`.
+
+First bake of §8.15 (lods v5, 4m38s): 2,599 baked, MeshLab won levels on 15 heavy assets —
+`LuxuryTowerResidence` at 0.06 m displacement for 61k of 92k, `Address_Beach_Resort_Dubai`,
+`Torre_Tetris`, `Two_Seventy_Hennepin`, `HotelMondial1` — and `Five_Luxe_JBR_` went to cluster
+because cluster MEASURED better there (the contest doing its job). Two defects kept it out of
+the level: the index records `backends` (per-level winners) and the consumer read `backend`
+(gate never opened); and `Kinsman_Plaza`-class assets were counted among the 1,757 "authored"
+skips because their LOD slots hold byte-copies of LOD 0 — the bake now digests the copies
+(order-independent sorted corners, the consumer's own rule) and generates real levels for
+them (lods v6, shapes v38).
+
+Second bake (lods v6, shapes v38): 26 identical-copy assets now generate — Kinsman ships
+44k + 43k instead of 176,587 (LOD 0 promoted at its measured sub-centimetre error), the
+landmark ladders are real, 2,927 MiB, cs2 3.12 M triangles in 4 km, audit clean. One holdout
+taught the last rule: `Five_Luxe_JBR_` lost the contest to cluster by 12 cm of p95 — and a
+p95 cannot see a cluster lattice, the very defect that banned generated levels from
+buildings. **lods v7: meshes of 20,000 triangles and up take the MeshLab backend outright**
+(on-surface by construction); the contest remains for the small, which are never buildings.

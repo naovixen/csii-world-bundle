@@ -537,6 +537,34 @@ def test_torque_detail_selection():
     check(sel([200, 20], 5, None, 4) == "none", "under every size: nothing")
 
 
+def test_level_dir_guard():
+    """The worker refuses to build into the levels ROOT (twice it wrote a level's insides
+    beside every other level - 6.5 GB of art/ and forest/ under levels/ itself)."""
+    print("the level-dir guard")
+    import os, tempfile
+    from cs2beamng.pipeline.worker import guard_level_dir
+
+    root = tempfile.mkdtemp(prefix="cs2guard_")
+    os.makedirs(os.path.join(root, "some_level"))
+    open(os.path.join(root, "some_level", "info.json"), "w").write("{}")
+
+    def refuses(settings, level_dir):
+        try:
+            guard_level_dir(settings, level_dir)
+            return False
+        except RuntimeError:
+            return True
+
+    check(refuses({"output": root, "level_name": ""}, root), "an empty level_name is refused")
+    check(refuses({"output": root, "level_name": "x"}, root), "level_dir == output is refused")
+    check(
+        refuses({"output": os.path.dirname(root), "level_name": os.path.basename(root)}, root),
+        "a dir already holding other levels is refused",
+    )
+    ok_dir = os.path.join(root, "new_level")
+    check(not refuses({"output": root, "level_name": "new_level"}, ok_dir), "a fresh level dir passes")
+
+
 def main():
     start()
     test_rotation_matrix_is_basis_vectors()
@@ -545,6 +573,7 @@ def main():
     test_residency_chain_rules()
     test_authored_lod_limits_worked_example()
     test_torque_detail_selection()
+    test_level_dir_guard()
     test_color_palette()
     test_palette_material()
     test_colormask_export()

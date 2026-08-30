@@ -178,6 +178,7 @@ def run(ctx, progress):
                     tinted=tinted,
                     is_tree=entry["tree"],
                     displacement=_displacement(lod_index, asset, suffix),
+                    lod_backend=_lod_backend(lod_index, asset, suffix),
                 ),
             )
         # the UNTINTED shape: what a TSStatic binds (it keeps `colorPaletteMap` and carries its
@@ -200,6 +201,7 @@ def run(ctx, progress):
                     tinted={},
                     is_tree=entry["tree"],
                     displacement=_displacement(lod_index, asset, suffix),
+                    lod_backend=_lod_backend(lod_index, asset, suffix),
                 ),
             )
     jobs = list(jobs.values())
@@ -260,6 +262,14 @@ def run(ctx, progress):
     return shapereport.report(
         results, demand, scan_stats, options, errors, started, progress, rewritten, orphans
     )
+
+
+def _lod_backend(lod_index, asset, suffix):
+    """The bake's resolved decimator for this mesh state (a string, or a per-level counter
+    the contest recorded); "meshlab" anywhere in it opens the building gate in `shapelods`."""
+    entry = lod_index.get(asset + suffix) or {}
+    # the index records `backends`, one per level (the contest's winner); older bakes `backend`
+    return "meshlab" if "meshlab" in str(entry.get("backends") or entry.get("backend") or "") else None
 
 
 def _displacement(lod_index, asset, suffix):
@@ -361,6 +371,9 @@ SETTINGS = (
 )
 OUTPUTS = ("art/shapes/cs2",)
 
+# version 38: ...reading the index's `backends` (per-level winners), which v37 misread as `backend`
+# version 37: a building whose baked levels the MESHLAB backend won takes them - the texture-aware
+# collapse the no-chain landmarks needed; every other building still refuses generated levels
 # version 36: asset.json imposters OFF for good - orange with vanilla's own parameters too; the
 # dae bb node (engine-default bake) is the billboard
 # version 35: the asset.json imposter with VANILLA'S tree parameters (equatorSteps 16, no poles) -
@@ -436,5 +449,5 @@ STAGE = Stage(
     settings_keys=SETTINGS,
     outputs=OUTPUTS,
     shared_keys=("shapes", "materials_used", "materials_variants_used", "materials_lod_level"),
-    version=36,
+    version=38,
 )

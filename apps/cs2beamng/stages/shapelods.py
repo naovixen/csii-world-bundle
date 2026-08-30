@@ -274,6 +274,7 @@ def lod_levels(
     level_name,
     options,
     chain=None,
+    meshlab_generated=False,
 ):
     """`[(px, [Mesh]), ...]` nearest-first: LOD 0 plus whatever the bake generated, each with the
     threshold its own measured displacement earns it.
@@ -296,7 +297,12 @@ def lod_levels(
     # A building ships LOD 0 or its chain and the far ring; a tree ships LOD 0 and the billboard
     # - its generated levels are loaded only for their switch sizes, and `_vegetation_imposter`
     # replaces every one of them with the billboard at the first one's size.
-    if options["generate_lods"] and kind in ("prop", "tree"):
+    # ...and a BUILDING whose baked levels the MeshLab texture-aware collapse won: the one
+    # generated-level exception for buildings, because those levels lie on the original surface
+    # by construction (`decimatemeshlab`, §8.15) where the cluster levels were the lattices
+    if options["generate_lods"] and (
+        kind in ("prop", "tree") or (kind == "building" and meshlab_generated)
+    ):
         _load_generated(
             meshes, generated, stats, derived_dir, source, shape_name, aliases, tinted, level_name
         )

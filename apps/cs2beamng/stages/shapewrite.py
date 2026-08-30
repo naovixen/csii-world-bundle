@@ -54,6 +54,7 @@ class ShapeJob:
     tinted: dict
     is_tree: Any
     displacement: Any
+    lod_backend: Any = None
 
 
 def shape_job(job):
@@ -88,6 +89,7 @@ def shape_job(job):
         job.level_name,
         options,
         chain=chain,
+        meshlab_generated=(job.lod_backend == "meshlab"),
     )
     colliders, collider_kind = _colliders(
         job, shape_name, base_mesh, ladder, lod_stats, chain=chain

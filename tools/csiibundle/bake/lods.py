@@ -13,7 +13,9 @@ colour texture — so an engine can bind an untextured vertex-colour material to
 
 A source file that already contains `_LOD<n>` nodes (a producer that ripped LODs) is skipped:
 authored LODs beat generated ones. Options: `lod_targets` (default `[0.25, 0.06]`),
-`lod_backend` (`auto`|`cluster`|`quadric`), `jobs` (worker processes; each file is independent).
+`lod_backend` (`auto`|`cluster`|`quadric`|`meshlab`), `jobs` (worker processes; each file is
+independent). `auto` also contests the texture-aware MeshLab collapse on meshes of 20,000
+triangles and up when `pymeshlab` is installed (`decimatemeshlab`, the no-chain landmarks).
 
 ## What each level COST, and which decimator ran
 
@@ -127,6 +129,27 @@ def _flatten(node):
     return out
 
 
+def _authored_is_copy(nodes, lod_nodes):
+    """True when every authored level's geometry is a copy of level 0's (order-independent:
+    the sorted corner positions per level; the consumer's identical-level rule, §8.13)."""
+    def digest(group):
+        corners = []
+        for node in group:
+            verts = numpy.asarray(node["verts"], dtype=numpy.float64)
+            tris = numpy.asarray(node["tris"], dtype=numpy.int64)
+            if len(tris):
+                corners.append(verts[tris].reshape(-1, 9))
+        if not corners:
+            return b""
+        stack = numpy.concatenate(corners).round(4)
+        return stack[numpy.lexsort(stack.T[::-1])].tobytes()
+    base = digest([n for n in nodes if glb.lod_level(n["name"])[1] == 0])
+    levels = {}
+    for node in lod_nodes:
+        levels.setdefault(glb.lod_level(node["name"])[1], []).append(node)
+    return all(digest(group) == base for group in levels.values())
+
+
 def _process_file(args):
     """Worker: one source glb → its LOD files. Returns (assetId, status, stats)."""
     bundle_dir, meshes_dir, out_dir, asset_id, targets, backend, catalogue = args
@@ -136,8 +159,12 @@ def _process_file(args):
         return asset_id, "refused", {}
     if not nodes:
         return asset_id, "empty", {}
-    if any(glb.lod_level(n["name"])[1] > 0 for n in nodes):
+    lod_nodes = [n for n in nodes if glb.lod_level(n["name"])[1] > 0]
+    if lod_nodes and not _authored_is_copy(nodes, lod_nodes):
         return asset_id, "authored", {}
+    if lod_nodes:  # every authored level is a byte-copy of LOD 0 (Kinsman_Plaza and its kin:
+        # the workshop filled the LOD slots with the full mesh) - generate real levels instead
+        nodes = [n for n in nodes if glb.lod_level(n["name"])[1] == 0]
     sampler = _albedo_sampler_factory(bundle_dir, catalogue)
     nodes = [_flatten(node) for node in nodes]
     per_level_nodes = [[] for _ in targets]
@@ -355,6 +382,13 @@ def _displacement_summary(index, levels):
 # 75.9 m the moment they switched (A6.7).
 # v2: every level carries its measured displacement from LOD 0, and the index records the
 # RESOLVED decimator - a consumer picks its switch points from those (A6.7).
+# v7: meshes of 20,000 triangles and up take the MeshLab backend outright - the p95 contest cannot
+# see a cluster lattice, and Five_Luxe_JBR_ lost to one by 12 cm
+# v6: LOD slots filled with byte-copies of LOD 0 (Kinsman_Plaza and its kin) no longer count as an
+# authored chain - real levels are generated for them (the consumer already drops the copies)
+# v5: `auto` contests the texture-aware MeshLab collapse (`decimatemeshlab`) on meshes of 20,000
+# triangles and up - the no-chain landmark buildings' levels, judged like every candidate by
+# measured displacement; the index's backend then names the winner per level
 # v4: `glb.parse_glb` no longer refuses a file for its POSITION-only impostor level, so every
 # tree shape the v3 index silently skipped (165 on the reference city) now gets its levels.
 register(
@@ -363,7 +397,7 @@ register(
         INPUTS,
         "lods/",
         run,
-        version=4,
+        version=7,
         options=("lod_targets", "lod_backend", "region"),
     )
 )
