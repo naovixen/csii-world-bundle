@@ -324,6 +324,7 @@ SETTINGS = tuple(
             "lod_detail_scale",
             "view_distance",
             "tile_lod",
+            "area_conform_cm",
         }
     )
 )

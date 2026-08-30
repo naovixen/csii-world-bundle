@@ -190,7 +190,7 @@ def height_range(record, index):
     return (float(band[0]), float(band[1])) if band and len(band) >= 2 else None
 
 
-def conform_triangle(tri, cell, sample, counters):
+def conform_triangle(tri, cell, sample, counters, tolerance=CONFORM_TOLERANCE):
     """Split one area triangle until every piece follows the ground, and emit the pieces.
 
     `tri` is three (x, y, z) Blender-frame corners already dropped onto the ground; `sample`
@@ -231,8 +231,8 @@ def conform_triangle(tri, cell, sample, counters):
             worst = max(worst, centre - (a[2] + b[2] + c[2]) / 3.0)
         longest = max(math.dist(p[:2], q[:2]) for p, q in ((a, b), (b, c), (c, a)))
         spent = len(out) + len(work)
-        if worst <= CONFORM_TOLERANCE or depth >= MAX_DEPTH or longest <= floor or spent >= budget:
-            if worst > CONFORM_TOLERANCE:
+        if worst <= tolerance or depth >= MAX_DEPTH or longest <= floor or spent >= budget:
+            if worst > tolerance:
                 # Report the GROUND left unconformed, not the piece count: a piece is an
                 # arbitrary unit (a budget stop leaves few big ones, a floor stop many small
                 # ones) and only the square metres say how much of the city still shows it.
@@ -292,7 +292,15 @@ def memoised_sampler(surface):
 
 
 def build_pieces(
-    records, cell, sample, center=None, radius=None, lift=AREA_LIFT, progress=None, catalogue=None
+    records,
+    cell,
+    sample,
+    center=None,
+    radius=None,
+    lift=AREA_LIFT,
+    progress=None,
+    catalogue=None,
+    tolerance=CONFORM_TOLERANCE,
 ):
     """Conform every area record into Z-up triangle soup, grouped by prefab.
 
@@ -371,7 +379,7 @@ def build_pieces(
             stats["painted_area"] += (
                 abs((b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])) * 0.5
             )
-            for piece in conform_triangle((a, b, c), cell, sample, counters):
+            for piece in conform_triangle((a, b, c), cell, sample, counters, tolerance):
                 base = len(sink["verts"])
                 sink["verts"].extend((p[0], p[1], p[2] + piece_lift) for p in piece)
                 sink["faces"].append((base, base + 1, base + 2))

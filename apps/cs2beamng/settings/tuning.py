@@ -179,6 +179,20 @@ TUNING_SETTINGS = (
         "off what the card has to hold.",
     ),
     Setting(
+        key="area_conform_cm",
+        default=1.0,
+        kind="float",
+        label="Paint fit",
+        blurb="How closely painted surfaces follow the ground, in centimetres. Bigger is fewer "
+        "triangles.",
+        help="Painted surfaces are split until the ground is within this many cm; 1 = exact",
+        detail="A painted surface is cut into pieces until the ground stands no higher than "
+        "this above any piece. At one centimetre a city's paint is six million triangles; "
+        "at five it is a fraction of that and the paint dips into a slope now and then, "
+        "which shows as a faint patch where the ground shows through.",
+        unit="cm",
+    ),
+    Setting(
         key="forest_rare_keep_radius",
         default=5.0,
         kind="float",

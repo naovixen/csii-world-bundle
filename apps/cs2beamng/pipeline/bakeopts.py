@@ -69,4 +69,7 @@ def bake_options(settings, jobs=1):
         # the ground the level will have: the fine 1.75 m raster only when the .ter is built from
         # it (terrain_upsample 2 = 8192); the paint must be conformed to the same surface
         "ground": "fine" if int(settings.get("terrain_upsample") or 1) == 2 else "base",
+        # painted surfaces: how far the ground may stand above a piece (cm → m); 1 cm is the
+        # rule's own half-lift, the presets for a smaller card trade it for bytes
+        "area_tolerance": float(settings.get("area_conform_cm", 1.0) or 1.0) / 100.0,
     }

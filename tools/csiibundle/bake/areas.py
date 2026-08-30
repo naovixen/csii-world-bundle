@@ -58,6 +58,7 @@ def _worker_init(
     radius,
     bundle_dir,
     prefer_fine,
+    tolerance,
 ):
     """Attach the shared heightfield (or decode our own if the parent could not share one)."""
     if spec is not None:
@@ -73,6 +74,7 @@ def _worker_init(
         area_rules.memoised_sampler(ground) if ground.present else (lambda x, y: None)
     )
     _WORKER["catalogue"] = catalogue
+    _WORKER["tolerance"] = tolerance
     _WORKER["center"] = center
     _WORKER["radius"] = radius
 
@@ -85,6 +87,7 @@ def _conform_chunk(records):
         center=_WORKER["center"],
         radius=_WORKER["radius"],
         catalogue=_WORKER["catalogue"],
+        tolerance=_WORKER["tolerance"],
     )
     return _to_arrays(pieces), stats
 
@@ -156,6 +159,9 @@ def run(context, progress):
     jobs = max(1, int(options.get("jobs") or 1))
     diagonal = options.get("diagonal", ground_mod.MEASURED_DIAGONAL)
     prefer_fine = options.get("ground", "fine") == "fine"
+    # how far the ground may stand above a piece before it is split again; the module's own
+    # half-lift (1 cm) unless the consumer trades it for bytes (`area_tolerance`, metres)
+    tolerance = float(options.get("area_tolerance") or area_rules.CONFORM_TOLERANCE)
     out_dir = os.path.join(derived, PRODUCT_NAME)
     os.makedirs(out_dir, exist_ok=True)
     started = time.monotonic()
@@ -197,6 +203,7 @@ def run(context, progress):
             radius,
             bundle,
             prefer_fine,
+            tolerance,
         )
         del ground  # the workers own the raster now; the parent samples nothing
         try:
@@ -223,7 +230,14 @@ def run(context, progress):
                 progress.check()
 
         pieces, stats = area_rules.build_pieces(
-            records, cell, sample, center=center, radius=radius, progress=tick, catalogue=catalogue
+            records,
+            cell,
+            sample,
+            center=center,
+            radius=radius,
+            progress=tick,
+            catalogue=catalogue,
+            tolerance=tolerance,
         )
         _merge(merged, _to_arrays(pieces))
         del pieces
@@ -331,4 +345,13 @@ def run(context, progress):
 # version 2: tile primitives carry the game's per-triangle draw-distance limit (`#L<n>`)
 # version 4: the decalLayers clip actually reads the catalogue's own key and the
 #            vectorised query, both of which the first cut got wrong (it clipped 0 m2)
-register(Product(PRODUCT_NAME, INPUTS, "areas/", run, version=4, options=("ground", "region")))
+register(
+    Product(
+        PRODUCT_NAME,
+        INPUTS,
+        "areas/",
+        run,
+        version=4,
+        options=("ground", "region", "area_tolerance"),
+    )
+)
