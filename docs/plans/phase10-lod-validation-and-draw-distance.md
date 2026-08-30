@@ -357,3 +357,38 @@ the game's cull) after `test_a3_objects` caught a house drawn 24 % past CS2's di
 level on disk draws silhouettes up to one pixel-size further than the next build will.
 **Awaiting Naomi's look.**
 
+## 7. Residency, 2026-08-30 — the constraint was never triangles
+
+Naomi's load of the 01:03 build: **8 fps wherever the camera pointed**, unmoved by
+`theForest.hidden`, `detailAdjust 0.1` or `visibleDistance 4000`; Task Manager: dedicated GPU
+memory 7.8 / 8 GB, **shared GPU memory 6.9 GB**, GPU utilisation 16 %. The card was paging.
+5,071 MiB of level files had become 14.2 GB of GPU memory (a ~2.8× expansion: Torque's vertex
+buffers, per-instance data, collision, imposters, shadow maps, the 3440×1440 targets, the
+engine's own baseline). BeamNG loads every level of every shape at level start and streams
+nothing, so the LOD chain that cut drawn triangles ADDED bytes. Vanilla's biggest level is
+1,375 MiB of files.
+
+Cut, in two builds (`docs/baselines/*-after-phase10-residency.*`):
+
+| | files MiB | what |
+| --- | ---: | --- |
+| 01:03 build | 5,056 | the far levels + billboards on the chain level |
+| `authored_lod1_drop`, textures 256/128 | 4,120 | the game's LOD 1 left out where a LOD 2 exists (LOD 2 takes its band; collider still from LOD 1); −767 object, −197 texture |
+| `area_conform_cm 5`, `skirts off`, forest 60/70 | **3,625** | areas 380 → 84; skirts 166 → 0; forest 905k → 752k items; validator 0 problems |
+
+Dropped without building: terrain textures as DDS — vanilla ships its terrain textures as PNG
+too (italy, small_island, west_coast_usa), so the terrain packer handles them natively and the
+conversion buys nothing. Still resident at 3,625: object meshes 1,983 (the top 100 custom
+assets' LOD 0 dominate), road tiles 787 (the game's exact cross-sections, never culled).
+
+**Streaming (§4.4 revisited).** Everything a distance-streamed near ring needs is in the game
+and used by its own Lua: `Prefab` with `loadMode "Manual"`, `prefab:load()`/`:unload()`
+/`:isLoaded()`, `be:reloadCollision()` once per batch (collision is NOT rebuilt on load),
+`levels/<level>/mainLevel.lua` with `onUpdate`, `core_camera.getPosition()`,
+`Engine.Render.getMemoryInfo()`. The `.prefab.json` is the items.level.json dialect with a root
+`SimGroup` and prefab-relative positions. Nobody has built it; the one unknown that decides
+whether it is worth building is whether unloading frees the shapes' GPU memory (Torque
+refcounts `Resource<TSShape>`; BeamNG may cache). The experiment is on the level as built:
+delete every `km_x_y` SimGroup past 2 km of the camera and read `getMemoryInfo` before and
+after.
+

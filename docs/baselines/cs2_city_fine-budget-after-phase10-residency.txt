@@ -1,0 +1,41 @@
+level cs2_city_fine — 8000 m view from (1404, 1168)
+
+  resident                    MiB
+    meshes cs2                      1983
+    meshes networks                  787
+    meshes markings                  128
+    meshes areas                      84
+    meshes terraincut                  6
+    meshes TOTAL                    2988
+    textures .dds                    402
+    textures .png                    235
+    RESIDENT TOTAL                 3625
+
+  the heaviest shapes — a shape is mounted WHOLE for one instance in view
+    top 100 of 6,987 shape files             862 MiB (29 % of all mesh bytes)
+    art/shapes/cs2/Kinsman_Plaza.dae                36.0 MiB
+    art/shapes/cs2/asset_aae7632a.dae               25.9 MiB
+    art/shapes/cs2/Five_Luxe_JBR_.dae               20.5 MiB
+    art/shapes/cs2/MedicalUniversity01.dae          20.1 MiB
+    art/shapes/cs2/InternationalAirport01.dae       20.1 MiB
+    art/shapes/cs2/OfficeHighSignature02.dae        18.0 MiB
+    art/shapes/cs2/USSW_Hospital_16x14.dae          17.1 MiB
+    art/shapes/cs2/NA_ResidentialHighSignature03    17.0 MiB
+
+  triangles inside the view distance
+    cs2                           1,929,280  (13417 statics)
+    networks                      1,598,408  (962 statics)
+    forest                        1,236,700  (739451 statics)
+    areas                           136,313  (729 statics)
+    markings                        109,511  (1043 statics)
+    terraincut                       18,509  (77 statics)
+    TOTAL                         5,028,721
+
+  counts                        this   west_coast_usa
+    shape files                6,987       2,608    2.7x
+    TSStatics                 16,428      22,067    0.7x
+    forest types               1,471         226    6.5x
+    forest items             752,416     133,375    5.6x
+    materials                  5,579         586    9.5x
+    collision triangles    2,404,531
+    cooked shapes              6,987 of 6,987
