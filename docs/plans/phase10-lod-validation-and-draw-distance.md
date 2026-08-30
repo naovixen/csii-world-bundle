@@ -392,3 +392,12 @@ refcounts `Resource<TSShape>`; BeamNG may cache). The experiment is on the level
 delete every `km_x_y` SimGroup past 2 km of the camera and read `getMemoryInfo` before and
 after.
 
+**The streaming experiment, run 2026-08-30 03:xx — streaming is out.** On the 3,625 MiB level
+(`Engine.Render.getMemoryInfo`: usage 6.17 GB of a 6.88 GB budget with Texture Quality Low,
+i.e. ~1.7× the files), Naomi deleted the `km_x_y` object SimGroups further than 2 km from the
+camera — 87, then 8 more from elsewhere: 95 of 102 cells, the city visibly gone — and usage read
+6.10 → 6.20 → 6.17 GB over the next three minutes. `purgeResources` does not exist in BeamNG.
+**Once a shape is loaded its GPU memory is never released**; unloading prefabs would free
+instance data and draw calls, not residency. The lever is the level's file bytes (×~1.7 on the
+card) and, when a city does not fit, a region build. Recorded so nobody builds the prefab layer.
+
