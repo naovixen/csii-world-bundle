@@ -175,12 +175,27 @@ def authored_chain(shape_name, authored, size, area, lod_bias, radius, detail_sc
     # stops it, level j at the size limit j stops it, and the null a hair under the coarsest
     # (the game draws the coarsest level right up to its cull; Torque wants the two sizes
     # distinct, so the last 10 % before the cull is a rounding, not a rule).
-    return {
+    chain = {
         "meshes": meshes,
         "thresholds": px,
         "nullPx": px[-1] * 0.9,
         "limits": limits,
+        "colliderMesh": meshes[0],
+        "lod1Dropped": False,
     }
+    # `authored_lod1_drop`: the game's LOD 1 is a median 41 % of LOD 0's triangles and, mounted
+    # whole by BeamNG for every shape whether or not an instance is near, ~1 GB of the reference
+    # level's 2.9 GB of object meshes — for a band between where LOD 0 stops and where LOD 2
+    # would have started. Dropping it hands that band to LOD 2 (4.5 %): a mid-range fidelity
+    # trade, declared and counted, taken by the presets that exist for a card the level does
+    # not fit on (2026-08-30: 5,071 MiB mounted on an 8 GB card read 7.8 GB dedicated and 8 fps
+    # wherever the camera pointed). The collider still comes off LOD 1 — contact is not a
+    # residency question — and a chain with only one level keeps it.
+    if options.get("authored_lod1_drop") and len(meshes) >= 2:
+        chain["meshes"] = meshes[1:]
+        chain["thresholds"] = [px[0], *px[2:]]
+        chain["lod1Dropped"] = True
+    return chain
 
 
 def lod_levels(
@@ -257,6 +272,7 @@ def _authored_ladder(base_mesh, chain, stats):
             "detailSizes": [px for px, _ms in fixed],
             "splitGeometries": sum(len(ms) for _px, ms in fixed) - len(fixed),
             "gameLodLimits": list(chain["limits"]),
+            "lod1Dropped": bool(chain.get("lod1Dropped")),
             "switches": [],
         }
     )

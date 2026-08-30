@@ -89,7 +89,9 @@ def shape_job(job):
         options,
         chain=chain,
     )
-    colliders, collider_kind = _colliders(job, shape_name, base_mesh, ladder, lod_stats)
+    colliders, collider_kind = _colliders(
+        job, shape_name, base_mesh, ladder, lod_stats, chain=chain
+    )
     trunk_ratio = _trunk_ratio(collider_kind, colliders, base_mesh)
     billboard_px, final_null = _imposter_thresholds(
         null_px, detail_scale, size, area, options, chain
@@ -173,7 +175,7 @@ def _result(
     }
 
 
-def _colliders(job, shape_name, base_mesh, ladder, lod_stats):
+def _colliders(job, shape_name, base_mesh, ladder, lod_stats, chain=None):
     """The collision meshes for one shape, and which rule produced them.
 
     The collider comes off LOD 1 where the bake generated one — `collision.colmesh_from_lod` is
@@ -187,6 +189,8 @@ def _colliders(job, shape_name, base_mesh, ladder, lod_stats):
         if lod_stats.get("lod0Promoted")
         else (ladder[1] if len(ladder) > 1 else base_mesh)
     )
+    if chain is not None and chain.get("colliderMesh") is not None:
+        lod1_mesh = chain["colliderMesh"]  # the authored LOD 1, even when the ladder dropped it
     if job.asset in job.options.get("no_collide", ()):
         return (), "lightNone"
     return shapecollider.collider(

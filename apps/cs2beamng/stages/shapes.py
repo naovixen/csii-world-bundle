@@ -125,6 +125,8 @@ def run(ctx, progress):
         ),
         # the far silhouette level: CS2's own cull times this; 0 = none (`shapewrite._far_level`)
         "far_detail_scale": float(settings.get("far_detail_scale", 1.0) or 0.0),
+        # residency: hand the authored LOD 1's band to LOD 2 and do not ship LOD 1
+        "authored_lod1_drop": bool(settings.get("authored_lod1_drop", False)),
         "collide": _collision_policy(settings),
         # A prefab CS2 gives a photometric light to is a LAMP, and `collision_lights` says
         # whether one is solid. The set is the game's own answer to "is this a lamp" - see the
@@ -329,6 +331,7 @@ SETTINGS = (
     "lod0_max_error",
     "lod0_min_triangles",
     "far_detail_scale",
+    "authored_lod1_drop",
     "tree_wind",
     "collision_preset",
     "collision_buildings",
@@ -338,6 +341,7 @@ SETTINGS = (
 )
 OUTPUTS = ("art/shapes/cs2",)
 
+# version 15: `authored_lod1_drop` hands the authored LOD 1's band to LOD 2 (residency)
 # version 14: the far silhouette level (`far_detail_scale`), and no billboard on a chain shape
 # version 13: a prefab CS2 gives a photometric light to ships NO collider while `collision_lights`
 # is off - it renders and a car drives through it (audit §88)
@@ -372,5 +376,5 @@ STAGE = Stage(
     settings_keys=SETTINGS,
     outputs=OUTPUTS,
     shared_keys=("shapes", "materials_used", "materials_variants_used", "materials_lod_level"),
-    version=14,
+    version=15,
 )

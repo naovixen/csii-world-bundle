@@ -127,6 +127,7 @@ SECTIONS = [
                     "forest_rare_type_min",
                     "forest_rare_keep_radius",
                     "far_detail_scale",
+                    "authored_lod1_drop",
                     "shadow_min_radius",
                     "lane_max_tris",
                     "paint_factor_max_error",

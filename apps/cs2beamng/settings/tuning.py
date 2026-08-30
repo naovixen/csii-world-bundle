@@ -166,6 +166,19 @@ TUNING_SETTINGS = (
         unit="×",
     ),
     Setting(
+        key="authored_lod1_drop",
+        default=False,
+        kind="bool",
+        label="Drop the game's LOD 1",
+        blurb="Ship a building's LOD 0 and LOD 2 only; LOD 2 takes over where LOD 1 did.",
+        help="Do not ship the game's LOD 1 for buildings that also have a LOD 2; frees ~1 GB",
+        detail="BeamNG keeps every level of every shape in memory whether or not anything is "
+        "near it, and the game's middle level is close to half the size of the full one. "
+        "Dropping it hands its band — roughly fifty to a hundred and fifty metres — to the "
+        "coarse level, which is visible up close in that band, and takes about a gigabyte "
+        "off what the card has to hold.",
+    ),
+    Setting(
         key="forest_rare_keep_radius",
         default=5.0,
         kind="float",
