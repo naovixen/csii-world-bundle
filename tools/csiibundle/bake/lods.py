@@ -161,9 +161,20 @@ def _authored_is_copy(nodes, lod_nodes):
     return all(digest(group) == base for group in levels.values())
 
 
+_WORKER_CATALOGUE = {}
+
+
+def _init_worker(catalogue):
+    """Pool initializer: the materials catalogue every mesh's albedo sampler reads - it used
+    to ride every argument tuple, pickled once per chunk (validation pass 2026-08-31, D5)."""
+    global _WORKER_CATALOGUE
+    _WORKER_CATALOGUE = catalogue
+
+
 def _process_file(args):
     """Worker: one source glb → its LOD files. Returns (assetId, status, stats)."""
-    bundle_dir, meshes_dir, out_dir, asset_id, targets, backend, catalogue = args
+    bundle_dir, meshes_dir, out_dir, asset_id, targets, backend = args
+    catalogue = _WORKER_CATALOGUE
     src = os.path.join(meshes_dir, asset_id + ".glb")
     nodes = glb.parse_glb(src)
     if nodes is None:
@@ -301,7 +312,7 @@ def run(context, progress):
                     wanted.add(cand)
         names = [n for n in names if n in wanted]
     progress.begin("lods", total=len(names), unit="meshes")
-    args = [(bundle, lay.meshes, out_dir, n, targets, backend, catalogue) for n in names]
+    args = [(bundle, lay.meshes, out_dir, n, targets, backend) for n in names]
     stats = {
         "meshes": len(names),
         "identicalLevels": 0,  # generated levels left unwritten as copies of the one above
@@ -346,7 +357,15 @@ def run(context, progress):
             progress.log(f"{asset_id}: {status}")
 
     # `parallel.each` advances and checks; `account` did the advancing before it existed.
-    for result in parallel.each(_process_file, args, jobs, progress, chunksize=4):
+    for result in parallel.each(
+        _process_file,
+        args,
+        jobs,
+        progress,
+        chunksize=4,
+        initializer=_init_worker,
+        initargs=(catalogue,),
+    ):
         account(result)
     stats["seconds"] = round(time.monotonic() - started, 1)
     ratio = [round(t / stats["trisIn"], 3) if stats["trisIn"] else None for t in stats["trisOut"]]

@@ -90,3 +90,37 @@ networks 0.81 M, ring 0.15 M, areas 0.12 M, markings 0.09 M — 5.13 M total. Dr
   if a build is felt to be slow.
 * The markings tiles now draw to the game's own cull, not `detail_scale`× nearer — declared in
   `tilelod`; the alternative (pull the anchor in) would have pulled LOD 0 in with it.
+
+## Follow-up, same day ("do the rest")
+
+**Wave 1 — build performance, verified byte-identical on a forced rebuild (0 of 18,585 art/ +
+main/ files changed size):** the ring silhouettes ride per-shape `.npz` files
+(`cs2beamng_state/farring/`, 1,170 files / 1.4 MiB compressed) instead of Python lists through
+the pool pipe and `shapes.state.json` (15.4 of its 19.7 MiB; the JSON shrinks on the next real
+shapes run — a replayed stage keeps its recorded rows, which `farring.Ring.add` still accepts
+inline); a one-entry parse memo covers a prefab's paint variants; the water stage builds its
+coarse grid once and hoists the band index; one decode per texture source and a header-first
+`_has_alpha`; `parallel.each` grew `initializer`/`initargs` and the alias table / materials
+catalogue stopped riding every argument tuple (networks, derived, bake lods);
+`write_materials` byte-compares; the navgraph progress overshoot, the census `terrain_cut`
+key and the second `networks.jsonl` pass in navread are gone. The estimator's ground-texture
+ratio is now measured per build (`groundShippedMiB` → `estimatescore.observe`); the default
+and its test moved to the measured 0.965 (the `> 1.0` assertion described the pre-Phase-10
+world). **Declined with a measurement:** rewriting `splat.dominant_layer` to a running-best
+(saves ~1 s and ~400 MB transient) flips 20 of 16.8 M texels on float near-ties — a
+byte-visible change for a negligible win.
+
+**Wave 2 — the two look-affecting items:** C5 — a network tile of flat carriageway (every
+segment `form: normal`) stops casting shadows; any tile holding an `elevated` or `tunnel`
+segment keeps the pass. On the reference city that is **650 of 1,024 tiles out of the shadow
+pass, 374 kept** (the Phase 10 decline, refined per segment). C6 — sRGB albedo mips are
+averaged in linear light (a black/white checker's first mip is now code 188, not 128) and BC5
+normal mips are renormalised as vectors (no more flattened relief at distance), behind
+`TEXTURE_PIPELINE_VERSION 3`, so all 11,063 textures re-encoded exactly once. Build green:
+validator 0, audit R1–R9 clean.
+
+**Still open:** B14 (one in-game load: a known-`colorSet` building vs its CS2 colour), the
+C1 residual (the network far level stops at 2.81 M against a 0.8 M target — the cluster
+decimator's per-run floor, not the pins), and the D-items declined above. The look items for
+Naomi are unchanged, plus: bridge shadows still present / flat roads no longer self-shadowing,
+and distant texture colour (mips are slightly brighter and truer now).

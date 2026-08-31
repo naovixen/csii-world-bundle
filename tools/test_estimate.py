@@ -296,9 +296,12 @@ def test_history_sizes():
     for kind in ("building", "prop", "tree", "networks", "areas", "markings", "skirts"):
         check(f"size/cdae_per_source_{kind}" in rates, f"a shipped ratio for {kind}")
     check(
-        rates.get("size/ground_texture_per_source", 0) > 1.0,
+        rates.get("size/ground_texture_per_source", 0) > 0.0,
         "a shipped ratio for the ground textures",
     )
+    # `> 1.0` until 2026-08-31: the surface pack used to GROW into the level (1.276). Phase 10
+    # deduplicated the tier copies and the validation pass shrank the ground-mesh base maps, so
+    # the measured ratio is now under 1 (0.965) and learns per build (`estimatescore.observe`).
 
 
 # -- 4. against a real build ------------------------------------------------------------------------

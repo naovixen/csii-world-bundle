@@ -108,7 +108,14 @@ def run(ctx, progress):
     heights = png.gray_array(paths.heightmap).astype(numpy.float64) * scale + offset
     grid = water_mod.coarse_grid(levels, heights, DOWNSAMPLE)
     bodies = water_mod.bodies(
-        levels, heights, cell, origin_x, origin_z, downsample=DOWNSAMPLE, min_cells=MIN_CELLS
+        levels,
+        heights,
+        cell,
+        origin_x,
+        origin_z,
+        downsample=DOWNSAMPLE,
+        min_cells=MIN_CELLS,
+        grid=grid,  # built once; `bodies` used to build the same 134 MB grid again (D3)
     )
     progress.end(f"{len(bodies)} bodies")
     if grid is None or not bodies:
@@ -123,9 +130,9 @@ def run(ctx, progress):
     progress.begin("water: bands", total=len(bodies), unit="bodies")
     pieces = []  # dicts: level, min_ground, cells, bbox rows/cols, touches_edge
     region = ctx.region
+    band_of = numpy.rint(level_c / BAND_M).astype(numpy.int64)  # hoisted: loop-invariant (D3)
     for body in bodies:
         mask = body.mask
-        band_of = numpy.rint(level_c / BAND_M).astype(numpy.int64)
         for band in numpy.unique(band_of[mask]):
             sub = mask & (band_of == band)
             labels, count = water_mod.label_components(sub)

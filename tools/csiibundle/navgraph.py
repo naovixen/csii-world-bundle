@@ -218,9 +218,11 @@ def build(
     """
     log = progress.log if progress is not None else (lambda _text: None)
     wanted = tuple(categories)
-    attrs = navread.read_segments(bundle_dir, wanted)
+    attrs, all_network_ids = navread.read_segments(bundle_dir, wanted)
     log(f"navgraph: {len(attrs):,} {'/'.join(wanted)} segments in networks.jsonl")
-    seg_lanes, junction_lanes, counts = navread.read_car_lanes(bundle_dir, set(attrs), progress)
+    seg_lanes, junction_lanes, counts = navread.read_car_lanes(
+        bundle_dir, set(attrs), progress, networks=all_network_ids
+    )
     log(
         f"navgraph: {counts['carLanes']:,} car lanes - {counts['segmentOwned']:,} on those "
         f"segments ({counts['sideConnections']:,} SideConnection stubs dropped), "

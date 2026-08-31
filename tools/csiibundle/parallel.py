@@ -35,6 +35,8 @@ def each(
     spawn=False,
     advance=True,
     total=None,
+    initializer=None,
+    initargs=(),
 ):
     """Yield `job(a)` for every `a` in `args`, in a pool when that is worth it.
 
@@ -53,6 +55,11 @@ def each(
         advance: advance progress by one per result — for a caller whose progress total counts
             JOBS. `False` for one whose total counts something else and advances itself:
             `stages/networks` counts SEGMENTS and advances by however many a tile held.
+        initializer / initargs: run once per worker process (and once before the serial loop),
+            for state every job shares - a materials catalogue, an alias table. Without it that
+            state rides in every argument tuple: pickled, sent and unpickled once per CHUNK,
+            which on the shapes and networks stages was a multi-MB dict hundreds of times per
+            build (validation pass 2026-08-31, D5).
         total: how many jobs `args` will yield, when `args` is a GENERATOR that must stay lazy.
             Only the threshold and the process count need the length, and `imap` consumes lazily,
             so a caller that streams can keep streaming. `bake/tiles` must: its generator POPS
@@ -70,7 +77,9 @@ def each(
     if workers > 1 and total > threshold:
         context = get_context("spawn") if spawn else None
         pool_of = context.Pool if context is not None else Pool
-        with pool_of(processes=min(workers, total)) as pool:
+        with pool_of(
+            processes=min(workers, total), initializer=initializer, initargs=tuple(initargs)
+        ) as pool:
             imap = pool.imap if ordered else pool.imap_unordered
             for result in imap(job, args, chunksize=chunksize):
                 progress.check()
@@ -79,6 +88,8 @@ def each(
                 yield result
         return
 
+    if initializer is not None:
+        initializer(*initargs)
     for a in args:
         progress.check()
         if advance:

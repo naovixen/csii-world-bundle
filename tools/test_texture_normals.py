@@ -92,6 +92,29 @@ def main():
         check(
             src == os.path.join(tmp, "textures/n.png"), "one it did not plans the bundle's map", src
         )
+    # C6: the mip chain. A black/white checker's first sRGB mip is linear half-grey (code 188,
+    # not the naive 128); a tilted normal's first mip stays unit length.
+    from cs2beamng.beamng import dds as dds_mod
+
+    checker = numpy.zeros((8, 8, 4), dtype=numpy.uint8)
+    checker[::2, ::2] = checker[1::2, 1::2] = 255
+    checker[..., 3] = 255
+    mip = dds_mod._reduce2_srgb(checker)
+    check(
+        abs(int(mip[0, 0, 0]) - 188) <= 1,
+        f"an sRGB checker mips to linear half-grey (code {int(mip[0, 0, 0])}, not 128)",
+    )
+    check(int(mip[0, 0, 3]) == 255, "...and its alpha stays a plain average")
+    steep, n = _tilted(8)
+    flat = numpy.full((8, 8, 4), 255, dtype=numpy.uint8)
+    flat[..., 0] = flat[..., 1] = 128
+    flat[..., 2] = 255
+    mixed = steep.copy()
+    mixed[::2, ::2] = flat[::2, ::2]
+    mip = dds_mod._reduce2_normal(mixed)
+    xy = mip[0, 0, :2].astype(numpy.float64) / 127.5 - 1.0
+    z2 = 1.0 - xy[0] ** 2 - xy[1] ** 2
+    check(z2 > -1e-6, "a normal mip is renormalised - x^2 + y^2 never exceeds 1")
     print("test_texture_normals: " + ("FAILED" if failures else "OK"))
     return 1 if failures else 0
 

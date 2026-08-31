@@ -141,7 +141,9 @@ def take(values):
         # Whole-map products, one unit each, like `terrainmask` above. `terraincut` was in
         # neither this table nor `history.DEFAULT_RATES`, so it contributed nothing to the
         # expected column and its 57 s showed up as time the preflight had not promised.
-        "bake/terraincut": 1 if values.get("terrain", True) else 0,
+        # `terrain_cut` is the setting that gates the product (`stages/bake._wanted_products`);
+        # `terrain` does not exist in the schema, so this always budgeted the ~57 s (D6)
+        "bake/terraincut": 1 if values.get("terrain_cut", True) else 0,
         "terrain": int(raster_size[0])
         * int(raster_size[1])
         * (values.get("terrain_upsample", 1) or 1) ** 2,

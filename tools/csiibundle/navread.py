@@ -15,19 +15,26 @@ from . import reader
 
 
 def read_segments(bundle_dir, categories):
-    """`{id: attrs}` for every network segment in the wanted categories."""
+    """`({id: attrs} for the wanted categories, frozenset of EVERY network id)`.
+
+    One pass serves both questions: `read_car_lanes` needs the full id set to tell a node-owned
+    lane from a segment-owned one, and used to walk `networks.jsonl` a second time for it (D6).
+    """
     out = {}
+    ids = set()
     path = reader.layer_path(bundle_dir, "networks")
     if not path:
-        return out
+        return out, frozenset()
     for record in reader.read_jsonl(path):
+        if "id" in record:
+            ids.add(record["id"])
         a = record.get("attrs") or {}
         if a.get("category") in categories:
             out[record["id"]] = a
-    return out
+    return out, frozenset(ids)
 
 
-def read_car_lanes(bundle_dir, segment_ids, progress=None):
+def read_car_lanes(bundle_dir, segment_ids, progress=None, networks=None):
     """One pass over `lanes.jsonl`.
 
     Returns `(seg_lanes, junction_lanes, counts)`:
@@ -43,7 +50,8 @@ def read_car_lanes(bundle_dir, segment_ids, progress=None):
     seg_lanes = defaultdict(list)
     junction_lanes = []
     counts = {"carLanes": 0, "segmentOwned": 0, "sideConnections": 0}
-    networks = network_ids(bundle_dir)
+    if networks is None:
+        networks = network_ids(bundle_dir)
     n = 0
     for lane in reader.read_jsonl(reader.layer_path(bundle_dir, "lanes")):
         n += 1

@@ -240,7 +240,7 @@ class Body:
         )
 
 
-def bodies(levels, heights, cell, origin_x, origin_z, downsample=8, min_cells=2):
+def bodies(levels, heights, cell, origin_x, origin_z, downsample=8, min_cells=2, grid=None):
     """Connected water bodies from the §8 level and height rasters.
 
     `levels` and `heights` are `(rows, cols)` world-metre arrays (row 0 north); `levels` is 0

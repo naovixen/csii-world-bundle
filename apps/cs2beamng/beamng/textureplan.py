@@ -23,7 +23,9 @@ TEXTURE_SUBDIR = ("art", "textures")
 # any change to what a given source becomes.
 #   1: the ledger's original key
 #   2: a two-channel (AG / RG) normal map is rebuilt to RGB before encoding (`_rebuilt_normal`)
-TEXTURE_PIPELINE_VERSION = 2
+#   3: sRGB albedo mips averaged in linear light; normal mips renormalised (`dds._reduce2_srgb`,
+#      `dds._reduce2_normal`, C6)
+TEXTURE_PIPELINE_VERSION = 3
 
 # -- textures ----------------------------------------------------------------------------------
 
@@ -250,7 +252,17 @@ def export_texture(
     # texture keeps its mtime and BeamNG keeps its cooked copy in temp/ (load #11: every first
     # load re-cooked all 260 textures because the folder was cleared and rewritten each build).
     # A same-name file with different bytes (another cap, another rip) is replaced, never reused.
-    arr, form = images.load_any(src_path)
+    #
+    # One decode per SOURCE: a non-opaque albedo is two jobs (`color` + `opacity`), sorted
+    # adjacent, and each used to decode the same file (validation pass 2026-08-31, D4). One
+    # entry only - a decoded 1024 RGBA is 4 MB and the chunk cache lives per worker.
+    last = cache.get("__last_decode__") if cache is not None else None
+    if last is not None and last[0] == src_path:
+        arr, form = last[1], last[2]
+    else:
+        arr, form = images.load_any(src_path)
+        if cache is not None:
+            cache["__last_decode__"] = (src_path, arr, form)
     arr = _cap(arr, max_size)
     if kind == "normal" and form == "rgba":
         # A two-channel normal read as RGB shades BLACK (AG: x = +1, flat along the surface;

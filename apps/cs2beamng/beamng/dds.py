@@ -91,6 +91,72 @@ def _encode_level(rgba, fmt):
     raise ValueError(f"unsupported DXGI format {fmt}")
 
 
+# uint8 sRGB code value -> linear (float32), and the pieces to go back: averaging sRGB CODE
+# VALUES darkens every mip (the encode is concave), worst on high-contrast texels - a black
+# and white checker's true half-grey is code 188, the naive average 128 (validation pass
+# 2026-08-31, C6). The LUT keeps the mip walk vectorised.
+_SRGB_TO_LINEAR = numpy.empty(256, dtype=numpy.float32)
+for _i in range(256):
+    _c = _i / 255.0
+    _SRGB_TO_LINEAR[_i] = _c / 12.92 if _c <= 0.04045 else ((_c + 0.055) / 1.055) ** 2.4
+
+
+def _linear_to_srgb(linear):
+    linear = numpy.clip(linear, 0.0, 1.0)
+    small = linear <= 0.0031308
+    out = numpy.where(small, linear * 12.92, 1.055 * numpy.power(linear, 1.0 / 2.4) - 0.055)
+    return numpy.clip(numpy.rint(out * 255.0), 0, 255).astype(numpy.uint8)
+
+
+def _reduce2_srgb(arr):
+    """One mip step of an sRGB-encoded (h, w, 4) uint8 array: decode, average in LINEAR light,
+    re-encode. The alpha channel is coverage and stays a plain average."""
+    h, w = arr.shape[:2]
+    if h == 1 and w == 1:
+        return arr
+    rgb = _SRGB_TO_LINEAR[arr[..., :3]]
+    h2, w2 = max(1, h // 2), max(1, w // 2)
+    rgb = rgb[: h2 * 2, : w2 * 2]
+    if h >= 2 and w >= 2:
+        lin = (rgb[0::2, 0::2] + rgb[1::2, 0::2] + rgb[0::2, 1::2] + rgb[1::2, 1::2]) * 0.25
+    elif h >= 2:
+        lin = (rgb[0::2] + rgb[1::2]) * 0.5
+    else:
+        lin = (rgb[:, 0::2] + rgb[:, 1::2]) * 0.5
+    out = numpy.empty((*lin.shape[:2], 4), dtype=numpy.uint8)
+    out[..., :3] = _linear_to_srgb(lin)
+    out[..., 3] = _reduce2(arr[..., 3:4])[..., 0]
+    return out
+
+
+def _reduce2_normal(arr):
+    """One mip step of a BC5-bound normal map: decode to unit vectors (Z reconstructed as the
+    shader does), average the VECTORS, renormalise, re-encode X and Y. A plain channel average
+    shortens every mip's normal - flattened relief at distance (C6)."""
+    h, w = arr.shape[:2]
+    if h == 1 and w == 1:
+        return arr
+    f = arr[..., :2].astype(numpy.float32) / 255.0 * 2.0 - 1.0
+    z = numpy.sqrt(numpy.clip(1.0 - f[..., 0] ** 2 - f[..., 1] ** 2, 0.0, None))
+    vec = numpy.dstack((f, z))
+    h2, w2 = max(1, h // 2), max(1, w // 2)
+    vec = vec[: h2 * 2, : w2 * 2]
+    if h >= 2 and w >= 2:
+        mean = vec[0::2, 0::2] + vec[1::2, 0::2] + vec[0::2, 1::2] + vec[1::2, 1::2]
+    elif h >= 2:
+        mean = vec[0::2] + vec[1::2]
+    else:
+        mean = vec[:, 0::2] + vec[:, 1::2]
+    length = numpy.linalg.norm(mean, axis=2, keepdims=True)
+    mean = numpy.divide(mean, length, out=numpy.zeros_like(mean), where=length > 1e-9)
+    mean[..., 2] = numpy.abs(mean[..., 2])  # tangent space: Z is up by construction
+    out = numpy.empty((*mean.shape[:2], 4), dtype=numpy.uint8)
+    out[..., :2] = numpy.clip(numpy.rint((mean[..., :2] + 1.0) * 127.5), 0, 255)
+    out[..., 2] = numpy.clip(numpy.rint((mean[..., 2] + 1.0) * 127.5), 0, 255)
+    out[..., 3] = 255
+    return out
+
+
 def _reduce2(arr):
     """Box-filter one mip step of a (h, w, c) uint8 array; odd sizes drop the last row/column
     (all our textures are powers of two, this is only for robustness)."""
@@ -156,11 +222,21 @@ def encode(rgba, fmt, mipmaps=True):
     if arr.ndim != 3 or arr.shape[2] != 4 or arr.dtype != numpy.uint8:
         raise ValueError("encode wants (h, w, 4) uint8")
     h, w = arr.shape[:2]
+    # each format's mip walk in the space its data lives in: sRGB albedo in linear light,
+    # a BC5 normal as renormalised vectors, everything else (linear data, coverage, the
+    # colour mask whose alpha is load-bearing) a plain average (C6)
+    reduce_step = (
+        _reduce2_srgb
+        if fmt == BC7_UNORM_SRGB
+        else _reduce2_normal
+        if fmt == BC5_UNORM
+        else _reduce2
+    )
     levels = [_encode_level(arr, fmt)]
     if mipmaps:
         cur = arr
         while cur.shape[0] > 1 or cur.shape[1] > 1:
-            cur = _reduce2(cur)
+            cur = reduce_step(cur)
             levels.append(_encode_level(cur, fmt))
     return header(w, h, len(levels), fmt, len(levels[0])) + b"".join(levels)
 

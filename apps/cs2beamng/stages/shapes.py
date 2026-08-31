@@ -148,6 +148,7 @@ def run(ctx, progress):
         else frozenset(),
     }
 
+    ring_dir = os.path.join(ctx.level_dir, "cs2beamng_state", "farring")
     jobs = {}
     for (asset, suffix), entry in sorted(demand.items()):
         wanted = sorted(entry["variants"]) if entry["forest"] and entry["variants"] else []
@@ -177,6 +178,7 @@ def run(ctx, progress):
                     is_tree=entry["tree"],
                     displacement=_displacement(lod_index, asset, suffix),
                     lod_backend=_lod_backend(lod_index, asset, suffix),
+                    ring_dir=ring_dir,
                 ),
             )
         # the UNTINTED shape: what a TSStatic binds (it keeps `colorPaletteMap` and carries its
@@ -200,6 +202,7 @@ def run(ctx, progress):
                     is_tree=entry["tree"],
                     displacement=_displacement(lod_index, asset, suffix),
                     lod_backend=_lod_backend(lod_index, asset, suffix),
+                    ring_dir=ring_dir,
                 ),
             )
     jobs = list(jobs.values())
@@ -226,6 +229,7 @@ def run(ctx, progress):
     # build is an orphan and goes now, .cdae included.
     rewritten = sum(1 for v in results.values() if v.get("changed"))
     orphans = dae.sweep_orphans(out_dir, {os.path.splitext(v["file"])[0] for v in results.values()})
+    _sweep_ring_dir(ring_dir, results)
     progress.end(
         f"{len(results):,} shapes ({rewritten:,} rewritten, {len(results) - rewritten:,} unchanged), "
         f"{orphans} orphans removed, {len(errors)} failed"
@@ -260,6 +264,19 @@ def run(ctx, progress):
     return shapereport.report(
         results, demand, scan_stats, options, errors, started, progress, rewritten, orphans
     )
+
+
+def _sweep_ring_dir(ring_dir, results):
+    """Remove silhouette `.npz` files no shape of this build wrote (D1)."""
+    if not os.path.isdir(ring_dir):
+        return
+    keep = {((v.get("lods") or {}).get("farRing") or {}).get("path") for v in results.values()}
+    for name in os.listdir(ring_dir):
+        if name not in keep:
+            try:
+                os.remove(os.path.join(ring_dir, name))
+            except OSError:
+                pass
 
 
 def _lod_backend(lod_index, asset, suffix):

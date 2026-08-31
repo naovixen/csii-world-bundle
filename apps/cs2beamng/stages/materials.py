@@ -406,6 +406,9 @@ def _texture_bytes(level):
 
 
 def _has_alpha(path):
+    header = png.read_header(path)
+    if header is None or header[3] not in (4, 6):
+        return False  # no alpha channel in the file at all - nothing to decode (D4)
     try:
         arr = png.rgba_array(path)
     except ValueError:

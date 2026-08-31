@@ -135,6 +135,7 @@ def run(ctx, progress):
         counts = {"written": 0, "tris": 0, "split_geoms": 0, "rewritten": 0}
         names = set()
         ladder_stats = tilemesh.new_stats()
+        # `aliases` rides the pool initializer (`_init_worker`), not every tuple (D5)
         jobs = [
             (
                 folder,
@@ -143,7 +144,6 @@ def run(ctx, progress):
                 tile,
                 level.dir,
                 level.name,
-                aliases,
                 detail_scale,
                 view_distance,
             )
@@ -199,6 +199,8 @@ def run(ctx, progress):
             min_parallel=4,
             spawn=True,
             advance=False,
+            initializer=_init_worker,
+            initargs=(aliases,),
         ):
             absorb(result)
         # each product owns art/shapes/<product>/ (the folder is no longer cleared at build start)
@@ -221,6 +223,15 @@ def run(ctx, progress):
     return {"products": summary, "jobs": workers, "seconds": round(time.monotonic() - started, 1)}
 
 
+_WORKER_ALIASES = {}
+
+
+def _init_worker(aliases):
+    """Pool initializer: the alias table every tile job binds materials against (D5)."""
+    global _WORKER_ALIASES
+    _WORKER_ALIASES = aliases
+
+
 def _tile_job(args):
     """One baked tile → its `.dae`, in a worker process.
 
@@ -228,7 +239,8 @@ def _tile_job(args):
     other tile writes. It hands back only what the parent needs to place the `TSStatic` and to
     account for the ladder — never the mesh, and never the ladder's per-triangle masks.
     """
-    folder, name, product, tile, level_dir, level_name, aliases, detail_scale, view_distance = args
+    folder, name, product, tile, level_dir, level_name, detail_scale, view_distance = args
+    aliases = _WORKER_ALIASES
     m = TILE_RE.match(name)
     tx, tz = int(m.group("tx")), int(m.group("tz"))
     nodes = glb.parse_glb(os.path.join(folder, name))

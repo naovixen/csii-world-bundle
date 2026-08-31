@@ -52,10 +52,22 @@ class Ring:
         self.cells = {}  # (cx, cy) -> {"verts": [...], "normals": [...], "colors": [...], "tris": [...], "cull": max metres, "members": n}
         self.members = 0
         self.triangles = 0
+        self._payloads = {}  # loaded silhouette .npz files, one per SHAPE (many instances share)
 
-    def add(self, ring, position, rotation, scale):
-        """`ring` is the shape result's `lods.far.ring` (local verts/normals/colours/tris and the
-        game's cull in metres); the transform is the instance's, as `_add_static` wrote it."""
+    def add(self, ring, position, rotation, scale, base_dir=None):
+        """`ring` is the shape result's `lods.farRing` - the silhouette arrays inline, or a
+        `path` to the `.npz` the shapes stage wrote beside its state (D1); the transform is the
+        instance's, as `_add_static` wrote it."""
+        if "path" in ring:
+            path = os.path.join(base_dir or "", "cs2beamng_state", "farring", ring["path"])
+            key = ("npz", path)
+            cached = self._payloads.get(key)
+            if cached is None:
+                with numpy.load(path) as data:
+                    cached = {name: data[name] for name in data.files}
+                cached["cullMetres"] = ring.get("cullMetres")
+                self._payloads[key] = cached
+            ring = cached
         verts = numpy.asarray(ring["verts"], dtype=numpy.float64)
         if len(verts) == 0:
             return

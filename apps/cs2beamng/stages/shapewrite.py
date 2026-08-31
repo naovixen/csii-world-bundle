@@ -55,6 +55,11 @@ class ShapeJob:
     is_tree: Any
     displacement: Any
     lod_backend: Any = None
+    # where a ring member's silhouette payload is written as a small `.npz` (D1): the verts /
+    # normals / colours / tris used to ride the result dict as Python lists - through the pool
+    # pipe and into `shapes.state.json`, 15.4 of whose 19.7 MiB they were, parsed whole by the
+    # audit for a handful of scalars
+    ring_dir: Any = None
 
 
 def shape_job(job):
@@ -250,10 +255,25 @@ def _thresholds(
     return game_px, null_px, chain
 
 
+_PARSE_MEMO = {}
+
+
+def _parse_glb_memo(path):
+    """`glb.parse_glb` with a one-entry memo per worker: a prefab's paint variants are adjacent
+    in the job list (sorted), and each used to re-parse the same source (110 extra parses on the
+    reference city, D2). One entry, because two shapes' node lists are big."""
+    hit = _PARSE_MEMO.get(path)
+    if hit is None:
+        _PARSE_MEMO.clear()
+        hit = glb.parse_glb(path)
+        _PARSE_MEMO[path] = hit
+    return hit
+
+
 def _geometry(job, source):
     """`((parts, lo, hi, area, materials), None)` or `(None, "why this shape cannot be written")`."""
     try:
-        nodes = glb.parse_glb(os.path.join(job.bundle, "meshes", source + ".glb"))
+        nodes = _parse_glb_memo(os.path.join(job.bundle, "meshes", source + ".glb"))
     except Exception as exc:
         return None, f"{source}: {exc}"
     if not nodes:
@@ -370,6 +390,30 @@ _CATALOGUE = {}
 _ALBEDO = {}
 
 
+def _ring_payload(job, shape_name, verts, normals, rgba, tris, radius, game_px):
+    """A ring member's silhouette for `stages/farring` - an `.npz` beside the state, and the
+    scalars inline. The arrays used to ride the result dict as lists (D1); the rounding is the
+    old JSON one so the merged cells are the same bytes."""
+    cull = round(float(lod.distance_at_px(radius, max(float(game_px), 1e-6))), 1)
+    arrays = {
+        "verts": numpy.asarray(verts, dtype=numpy.float32).round(3),
+        "normals": numpy.asarray(normals, dtype=numpy.float32).round(4),
+        "colors": numpy.asarray(rgba, dtype=numpy.float32).round(4),
+        "tris": numpy.asarray(tris, dtype=numpy.int64),
+    }
+    if not job.ring_dir:
+        return {**{k: v.tolist() for k, v in arrays.items()}, "cullMetres": cull}
+    os.makedirs(job.ring_dir, exist_ok=True)
+    path = os.path.join(job.ring_dir, shape_name + ".npz")
+    with open(path, "wb") as handle:
+        numpy.savez_compressed(handle, **arrays)
+    return {
+        "path": os.path.basename(path),
+        "cullMetres": cull,
+        "triangles": int(len(arrays["tris"])),
+    }
+
+
 def _far_level(
     job, shape_name, coarsest, levels, final_null, game_px, bound_raw, lod_stats, radius=None
 ):
@@ -410,13 +454,9 @@ def _far_level(
         # merged silhouette takes over there. Naomi's look, 2026-08-30: boxes "up close" on the
         # small houses were this band - a house's detailed levels stop a few hundred metres out
         # at scale 10, and a box from there is not a skyline, it is the house.
-        lod_stats["farRing"] = {
-            "verts": numpy.asarray(verts, dtype=numpy.float32).round(3).tolist(),
-            "normals": numpy.asarray(normals, dtype=numpy.float32).round(4).tolist(),
-            "colors": numpy.asarray(rgba, dtype=numpy.float32).round(4).tolist(),
-            "tris": numpy.asarray(tris, dtype=numpy.int64).tolist(),
-            "cullMetres": round(float(lod.distance_at_px(radius, max(float(game_px), 1e-6))), 1),
-        }
+        lod_stats["farRing"] = _ring_payload(
+            job, shape_name, verts, normals, rgba, tris, radius, game_px
+        )
         lod_stats["far"] = {"px": None, "nullPx": int(round(far_null)), "ring": True, **stats}
         # Torque picks the detail by SIZE, so a level whose size sits under the new null (a
         # house's LOD 2 starts at the game's 16 km, 2 px, and the null at 2.5 km is 4 px) would

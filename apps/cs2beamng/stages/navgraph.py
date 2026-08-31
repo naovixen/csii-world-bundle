@@ -127,7 +127,7 @@ def run(ctx, progress):
     emitted = 0
     dropped = 0
     for i, road in enumerate(graph.roads):
-        if i % 2000 == 0:
+        if i and i % 2000 == 0:  # not at i == 0: firing there overshot the total by 2,000 (D6)
             progress.advance(2000)
             progress.check()
         if region is not None and not _in_region(road, region):

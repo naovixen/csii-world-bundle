@@ -182,7 +182,7 @@ def run(ctx, progress):
                 counts["noShadow"] = counts.get("noShadow", 0) + 1
             ring_data = ((row.get("lods") or {}).get("farRing")) if ring is not None else None
             if ring_data:
-                ring.add(ring_data, position, rotation, scale)
+                ring.add(ring_data, position, rotation, scale, base_dir=ctx.level_dir)
             collision_types[key] = collision_types.get(key, 0) + 1
             statics += 1
             counts["tsstatic"] += 1

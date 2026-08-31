@@ -167,12 +167,24 @@ class Level:
     # -- materials, textures, info -------------------------------------------------------------
 
     def write_materials(self, art_subdir, materials):
-        """`art/<art_subdir>/main.materials.json` from `{name: {...}}` (v1.5 style objects)."""
+        """`art/<art_subdir>/main.materials.json` from `{name: {...}}` (v1.5 style objects).
+
+        Written only when the bytes differ, like every other writer here: an unconditional
+        rewrite moved the mtime on every build, and the validate stage - whose freshness is a
+        stat walk of the level - re-ran on builds that changed nothing (D6)."""
         directory = self.path("art", *art_subdir.split("/"))
         os.makedirs(directory, exist_ok=True)
         path = os.path.join(directory, "main.materials.json")
-        with open(path, "w", encoding="utf-8", newline="\n") as handle:
-            json.dump(materials, handle, indent=1, sort_keys=True)
+        data = json.dumps(materials, indent=1, sort_keys=True).encode("utf-8")
+        try:
+            if os.path.isfile(path) and os.path.getsize(path) == len(data):
+                with open(path, "rb") as handle:
+                    if handle.read() == data:
+                        return path
+        except OSError:
+            pass
+        with open(path, "wb") as handle:
+            handle.write(data)
         return path
 
     def write_bytes_if_changed(self, data, *rel_dst):

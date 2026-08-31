@@ -106,9 +106,12 @@ def run(ctx, progress):
         "missing": 0,
         "split_geoms": 0,
         "rewritten": 0,
+        "noShadow": 0,
     }
     names = set()
     ladder_stats = tilemesh.new_stats()
+    # `aliases` goes through the pool initializer (`_init_worker`), not every tuple: a
+    # multi-MB dict pickled once per chunk was the cost (validation pass 2026-08-31, D5)
     jobs = [
         (
             lay.net_meshes,
@@ -118,7 +121,6 @@ def run(ctx, progress):
             tile,
             level.dir,
             level.name,
-            aliases,
             options["detail_scale"],
             options["view_distance"],
         )
@@ -134,18 +136,18 @@ def run(ctx, progress):
             counts["split_geoms"] += shape["extraGeoms"]
             counts["rewritten"] += 1 if shape["changed"] else 0
             names.add(shape["name"])
-            level.add(
-                GROUP,
-                level_mod.tsstatic(
-                    shape["name"],
-                    level.game_path(*shapes_dir, shape["name"] + ".dae"),
-                    (shape["ox"], shape["oy"], 0.0),
-                    frame.identity_matrix(),
-                    collision="Visible Mesh Final",
-                    canSave=True,
-                ),
-                key="networks:" + shape["name"],
+            obj = level_mod.tsstatic(
+                shape["name"],
+                level.game_path(*shapes_dir, shape["name"] + ".dae"),
+                (shape["ox"], shape["oy"], 0.0),
+                frame.identity_matrix(),
+                collision="Visible Mesh Final",
+                canSave=True,
             )
+            if not result.get("castShadows", True):
+                obj["castShadows"] = False
+                counts["noShadow"] += 1
+            level.add(GROUP, obj, key="networks:" + shape["name"])
             counts["written"] += 1
             counts["tris"] += shape["triangles"]
             counts["verts"] += shape["vertices"]
@@ -163,6 +165,8 @@ def run(ctx, progress):
         min_parallel=4,
         spawn=True,
         advance=False,
+        initializer=_init_worker,
+        initargs=(aliases,),
     ):
         absorb(result)
     written, tris_total, verts_total = counts["written"], counts["tris"], counts["verts"]
@@ -189,6 +193,8 @@ def run(ctx, progress):
         "vertices": verts_total,
         "refused": refused,
         "missingMesh": counts["missing"],
+        # ground-form tiles out of the shadow pass; a tile with any elevated/tunnel segment keeps it
+        "tilesNoShadow": counts["noShadow"],
         "splitGeometries": split_geoms,
         "jobs": workers,
         "lod": tilemesh.ladder_summary(ladder_stats, options["detail_scale"]),
@@ -213,18 +219,33 @@ def run(ctx, progress):
     }
 
 
+_WORKER_ALIASES = {}
+
+
+def _init_worker(aliases):
+    """Pool initializer: the alias table every tile job binds materials against (D5)."""
+    global _WORKER_ALIASES
+    _WORKER_ALIASES = aliases
+
+
 def _tile_job(args):
     """One tile of segments to its `.dae` file(s), in a worker process."""
-    net_meshes, recs, tx, tz, tile, level_dir, level_name, aliases, detail_scale, view_distance = (
-        args
-    )
+    net_meshes, recs, tx, tz, tile, level_dir, level_name, detail_scale, view_distance = args
+    aliases = _WORKER_ALIASES
     level = LevelPaths(level_dir, level_name)
     shared = {"materials_aliases": {"aliases": aliases}}
     parts = _load_parts(net_meshes, recs)
+    # Whether this tile's roads can cast a shadow anyone sees: a bridge deck or a portal does,
+    # flat carriageway at grade shadows only itself. Phase 10 declined shadows OFF for all
+    # network tiles because bridges cast real ones; the refinement reads each segment's own
+    # `form` - 6,707 of the reference city's 8,259 are `normal` - and keeps the pass for any
+    # tile holding an `elevated` or `tunnel` segment (validation pass 2026-08-31, C5).
+    casts = any((rec.get("attrs") or {}).get("form", "normal") != "normal" for rec in recs)
     out = {
         "refused": parts["refused"],
         "missing": parts["missing"],
         "segments": len(recs),
+        "castShadows": casts,
         "shapes": [],
     }
     pieces = parts["pieces"]
@@ -345,6 +366,8 @@ SETTINGS = (
 )
 OUTPUTS = ("art/shapes/networks",)
 
+# version 13: a tile of flat carriageway (every segment `form: normal`) stops casting shadows;
+# one with an elevated or tunnel segment keeps the pass - the Phase 10 decline, refined (C5)
 # version 12: the tile ladder is decimated WITHOUT boundary pins - a network tile shares no
 # vertex with its neighbours, and the pins held its far level at ~5x the target (C1)
 # version 11: a segment record with no mesh file is counted (`missingMesh`) and logged (B9)
@@ -361,5 +384,5 @@ STAGE = Stage(
     settings_keys=SETTINGS,
     outputs=OUTPUTS,
     shared_keys=("materials_used",),
-    version=12,
+    version=13,
 )
