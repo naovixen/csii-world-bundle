@@ -173,6 +173,7 @@ def run(ctx, progress):
         "districts": len(districts),
         "derived": len(derived),
         "infoSpawnPoints": added,
+        "roadNetworkSource": getattr(network, "source", None),
         "names": [e["translationId"] for e in entries],
         "seconds": round(time.monotonic() - started, 1),
     }
@@ -207,8 +208,15 @@ class Network:
 
 
 def _road_network(ctx):
+    """The `navgraph` stage's DecalRoads out of THIS BUILD's object tree - a stage that ran
+    added them, a stage the worker skipped had them replayed (`Level.replay`). Reading them off
+    DISK was wrong on an incremental build: `write_objects` rewrites `main/` whole from the
+    tree, so a later-writing stage that re-ran while `navgraph` was replayed had already swept
+    the navgraph group's file by the time this looked, and the points silently came from the
+    lane fallback instead - a different set with different names (validation pass 2026-08-31,
+    B7). The result reports which source was used."""
     points, headings, names = [], [], []
-    for _rel, _n, obj in read_objects(level_dir_of(ctx)):
+    for _path, obj in level_of(ctx).stage_objects("navgraph"):
         if not obj or obj.get("class") != "DecalRoad":
             continue
         nodes = obj.get("nodes") or []
@@ -221,8 +229,11 @@ def _road_network(ctx):
     if points:
         network = Network(points, headings)
         network.labels = names
+        network.source = "navgraph"
         return network
-    return _lane_network(ctx)
+    network = _lane_network(ctx)
+    network.source = "lanes"
+    return network
 
 
 def _lane_network(ctx):
@@ -283,12 +294,12 @@ def _patch_info(level, entries):
     """
     path = level.path("info.json")
     if not os.path.isfile(path):
-        return 0
+        return 0, 0  # `(added, replaced)` - a bare 0 here raised at the unpack and killed the build
     with open(path, encoding="utf-8") as handle:
         try:
             info = json.load(handle)
         except ValueError:
-            return 0
+            return 0, 0
     default = info.get("defaultSpawnPointName")
     kept = [
         e
@@ -324,6 +335,11 @@ INPUTS = ("layer:lanes", "layer:networks")
 SETTINGS = ("pois", "poi_file", "poi_max", "ai_roads", "region")
 OUTPUTS = ("info.json",)
 
+# version 3: `_patch_info` returns `(0, 0)` on a missing or unreadable info.json - the bare 0 it
+# returned raised at the caller's unpack and the build died in the one stage that would have
+# rewritten the file (B6)
+# version 4: the road network comes from the build's own object tree, never from disk (B7)
+# version 3: `_patch_info` returns `(0, 0)` on a missing or unreadable info.json (B6)
 # version 2: `info.json`'s spawnPoints are REPLACED, not appended to. Appending left six entries
 # naming SpawnSpheres a later build no longer placed, which `levels.lua` drops with a log line and
 # nothing visible - caught by this repo's own level validator on the first real build.
@@ -337,5 +353,5 @@ STAGE = Stage(
     settings_keys=SETTINGS,
     outputs=OUTPUTS,
     after=("scene", "navgraph"),
-    version=2,
+    version=4,
 )

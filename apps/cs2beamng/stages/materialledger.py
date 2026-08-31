@@ -68,7 +68,12 @@ def save_ledger(level_dir, exported, caps, use_dds, job_caps=None):
 
 
 def ledger_key(src, kind, keep_alpha, cap, use_dds):
-    return f"{src}|{kind}|{int(bool(keep_alpha))}|{int(cap or 0)}|{'dds' if use_dds else 'png'}"
+    # `TEXTURE_PIPELINE_VERSION` is in the key so a change to the conversion re-encodes: without
+    # it a fixed encoder reported every texture "unchanged" and shipped the old bytes (B3)
+    return (
+        f"{src}|{kind}|{int(bool(keep_alpha))}|{int(cap or 0)}|{'dds' if use_dds else 'png'}"
+        f"|v{textureplan.TEXTURE_PIPELINE_VERSION}"
+    )
 
 
 def effective_cap(job, caps, job_caps):

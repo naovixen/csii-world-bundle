@@ -109,8 +109,9 @@ def run(ctx, progress):
     started = time.monotonic()
     paths = reader.terrain_paths(bundle)
     # terrain_upsample 2 = the 8192 grid: the rip's fine 1.75 m raster when present (else the
-    # bilinear upsample below); 1 = the 4096 base map. 8192 hung BeamNG on load #11 (2026-08-16),
-    # so 1 is the default; the bake's `ground` option follows the same choice (stages/bake.py).
+    # bilinear upsample below); 1 = the 4096 base map. 8192 hung BeamNG on load #11 (2026-08-16)
+    # and 1 was the default until the fine raster landed; the schema ships 2 now
+    # (`settings/textures.py`) and the bake's `ground` option follows the same choice.
     want_fine = int(settings.get("terrain_upsample") or 1) == 2
     field = reader.load_heightfield(bundle, prefer_fine=want_fine)
     if field is None:
@@ -374,6 +375,10 @@ OUTPUTS = ("art/terrains/main.materials.json",)
 
 # version 2: the block carries `minimapImage` and the stage writes the 2048 px `<name>_minimap.png`
 # it names (A7.2) - the old dashboard map drew nothing without it
+# version 6: the ground-mesh base map is written at 16 px, the size of its content (C2)
+# version 5: an explicit neutral normal map (B11); an unreadable ground texture fails the stage
+# instead of shipping a raw copy in the wrong encoding (B10); a ground with no textures at all is
+# noted (B12)
 # version 4: textures in art/terrains/ that no material names are removed (the v3 run left 79 MiB)
 # version 3: one terrain PNG per distinct image (095455b landed the writer; the stage never re-ran, so
 # the built level still carried 57 MiB of byte-identical tier copies - Phase 10 residency)
@@ -387,5 +392,5 @@ STAGE = Stage(
     settings_keys=SETTINGS,
     outputs=OUTPUTS,
     shared_keys=("terrain",),
-    version=4,
+    version=6,
 )

@@ -136,6 +136,7 @@ def _check_bindings(ctx, mapto):
     (`ENGINE_COMMON_MATERIALS`) - else BeamNG's orange checker."""
     mat_re = re.compile(r'<material id="[^"]*" name="([^"]+)"')
     mapto = set(mapto) | ENGINE_COMMON_MATERIALS
+    ctx.mapto = set(mapto)  # what `shapes.check_cooked_shapes` binds against
     for name, path in ctx.dae_files:
         try:
             with open(path, encoding="utf-8", errors="replace") as handle:

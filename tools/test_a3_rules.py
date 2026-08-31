@@ -537,6 +537,43 @@ def test_torque_detail_selection():
     check(sel([200, 20], 5, None, 4) == "none", "under every size: nothing")
 
 
+def test_budget_detail_at_matches_the_audit():
+    """Two implementations of Torque's one rule - `budget.detail_at` (what the budget instrument
+    counts) and `lod_audit.select` (what the audit checks) - must agree on every ladder, null
+    and billboard, or one of them is not measuring the engine (E5)."""
+    print("budget.detail_at agrees with lod_audit.select")
+    import importlib.util
+    import random
+
+    from cs2beamng.beamng import budget
+
+    spec = importlib.util.spec_from_file_location(
+        "lod_audit", os.path.join(os.path.dirname(__file__), "beamng", "lod_audit.py")
+    )
+    audit = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(audit)
+    rng = random.Random(7)
+    disagreements = 0
+    for _ in range(300):
+        sizes = sorted({rng.randint(2, 800) for _ in range(rng.randint(1, 3))}, reverse=True)
+        null_px = rng.choice([None, rng.randint(1, sizes[-1] + 5)])
+        bb = rng.choice([None, rng.randint(1, sizes[-1] + 5)])
+        levels = {s: 100 * (i + 1) for i, s in enumerate(sizes)}
+        for p in (0.5, 1, 3, 10, 40, 200, 900):
+            picked = audit.select(sizes, null_px, bb, p)
+            expect = (
+                0
+                if picked in ("null", "none")
+                else budget.BILLBOARD_TRIANGLES
+                if picked == "billboard"
+                else levels[sizes[int(picked.split(":")[1])]]
+            )
+            # `detail_at` takes a radius/distance; feed it a pair that projects to exactly p px
+            got = budget.detail_at(levels, p, budget.screen_px(1.0, 1.0), null_px=null_px, billboard_px=bb)
+            disagreements += int(got != expect)
+    check(disagreements == 0, f"the two selections agree on 2,100 cases ({disagreements} differ)")
+
+
 def test_billboard_runs_to_the_null():
     """A billboard detail's SIZE is its far stop, like any Torque detail - vanilla's
     pine_radiata_forest.dae ships meshes a800/a350/a150 and `bb_autobillboard25`, the card one
@@ -589,10 +626,149 @@ def test_level_dir_guard():
     check(not refuses({"output": root, "level_name": "new_level"}, ok_dir), "a fresh level dir passes")
 
 
+def test_coarsest_level_stops_one_pixel_over_the_null():
+    """A Torque detail's size is where it STOPS, so the coarsest generated level sits ONE pixel
+    over the null - the same rule as the tree billboard (`bb = null + 1`, R8). At 1.5x the null
+    (the ladder's old last rung) every generated-ladder shape stopped at D_null / 1.5 while the
+    report read D_null off the null, so `lod_detail_scale` 4 behaved as 6 and the draw distance
+    the build printed was 1.5x optimistic (validation pass 2026-08-31, A5)."""
+    print("the coarsest generated level stops one pixel over the null")
+    from cs2beamng.stages import shapelods
+
+    with tempfile.TemporaryDirectory() as tmp:
+        mesh = _switch_fixture(tmp)
+        options = {"generate_lods": True, "switch_error_px": 6.0}
+        for null_px in (3.0, 9.0, 40.0):
+            _levels, stats, meshes = shapelods.lod_levels(
+                tmp, "src", "shape", mesh, null_px, 8.0, [None, None], "prop", {}, {}, "level", options
+            )
+            sizes = stats["detailSizes"]
+            check(
+                len(meshes) == 3 and sizes[-1] == int(round(null_px + 1)),
+                f"nullPx {null_px}: the coarsest level is at {sizes[-1]} px (null + 1), ladder {sizes}",
+            )
+
+
+def test_tree_with_one_generated_level_keeps_its_billboard():
+    """A tree hands from LOD 0 straight to the engine billboard; the band the card needs is
+    between LOD 0's own size (where it stops) and the null. The guard used to read the first
+    GENERATED level's size instead - with that level one pixel over the null (A5) it read "no
+    band" and 28 trees shipped a bare mid-level and no card (audit R3, Batch 1 rebuild)."""
+    print("a tree with one generated level at the floor still gets its billboard")
+    from types import SimpleNamespace
+
+    from cs2beamng.beamng import dae
+    from cs2beamng.stages import shapewrite
+
+    def job():
+        return SimpleNamespace(kind="tree", options={"imposters": True})
+
+    tri = numpy.array([[0, 1, 2]], dtype=numpy.int64)
+    verts = numpy.array([[0, 0, 0], [1, 0, 0], [0, 1, 0]], dtype=numpy.float32)
+    lod0 = dae.Mesh("lod0", verts, tri, [("m", 1)])
+    lod1 = dae.Mesh("lod1", verts, tri, [("m", 1)])
+    null = 10.0
+    levels = [(50, [lod0]), (int(null) + 1, [lod1])]  # LOD 0 stops at 50 px; LOD 1 at null + 1
+    stats = {}
+    out, bb = shapewrite._vegetation_imposter(job(), levels, None, null, stats)
+    check(len(out) == 1 and out[0][0] == 50, f"LOD 0 alone remains ({[p for p, _m in out]})")
+    check(bb == null + 1, f"and the card runs from LOD 0's stop to the null ({bb} px)")
+    check(stats.get("imposter", {}).get("handoverPx") == 50, "the hand-over recorded is LOD 0's stop")
+    # a runtime billboard is for vegetation only (C3): a prop or a building never earns one,
+    # whatever its reach - the engine bakes one atlas per shape at play time and never frees it
+    opts = {"imposters": True, "imposter_min_metres": 0.0, "level_of_detail": 0.7}
+    size = numpy.array([30.0, 30.0, 60.0])
+    bb, _null = shapewrite._imposter_thresholds(20.0, 4.0, size, 0.0, opts, None, kind="prop")
+    check(bb is None, "a prop gets no runtime billboard")
+    bb, _null = shapewrite._imposter_thresholds(20.0, 4.0, size, 0.0, opts, None, kind="building")
+    check(bb is None, "a building gets no runtime billboard")
+    bb, null_out = shapewrite._imposter_thresholds(20.0, 4.0, size, 0.0, opts, None, kind="tree")
+    check(bb is not None and null_out < 20.0, f"a tree does ({bb} px, null {null_out:.1f})")
+    # no band at all: LOD 0 itself stops at the null - nothing to replace
+    out, bb = shapewrite._vegetation_imposter(job(), [(int(null) + 1, [lod0]), (int(null) + 1, [lod1])], None, null, {})
+    check(bb is None and len(out) == 2, "a tree whose LOD 0 already stops at the null gets no card")
+
+
+def test_thin_oversized_shape_has_no_collider():
+    """The 20 m box guard covers the THIN path too: a shape under the colmesh thickness that is
+    wider than a padded box may be gets no collider, not a slab. `Baseball_Field__2_revised2`
+    (a 138 m field plane 0.1 m tall) shipped as a padded box with a 20 cm step round the whole
+    outfield (validation pass 2026-08-31, A4); a small thin sign keeps its box."""
+    print("a thin, oversized shape ships no collider")
+    from cs2beamng.beamng import dae
+    from cs2beamng.stages import instanceforest, shapecollider
+
+    def plane(size):
+        h = size / 2.0
+        verts = numpy.array(
+            [[-h, -h, 0], [h, -h, 0], [h, h, 0], [-h, h, 0],
+             [-h, -h, 0.05], [h, -h, 0.05], [h, h, 0.05], [-h, h, 0.05]],
+            dtype=numpy.float32,
+        )
+        tris = numpy.array([[0, 1, 2], [0, 2, 3], [4, 6, 5], [4, 7, 6]], dtype=numpy.int64)
+        return dae.Mesh("plane", verts, tris, [("mat", len(tris))])
+
+    options = {"collide": {"prop": True}, "colmesh_max_tris": 2000, "collision_preset": "simplified"}
+    big = plane(138.0)
+    meshes, status = shapecollider.collider("field", big, big, "prop", options, is_tree=False)
+    check(status == "oversizedThin" and meshes == (), f"a 138 m plane 5 cm tall: {status!r}, no colmesh")
+    check(status in instanceforest.NO_COLLIDER, "and the instances stage reads that as 'no collision'")
+    small = plane(2.0)
+    meshes, status = shapecollider.collider("sign", small, small, "prop", options, is_tree=False)
+    check(status == "box" and len(meshes) == 1, f"a 2 m plane 5 cm tall keeps its padded box: {status!r}")
+    check(
+        shapecollider.BOX_COLLIDER_MAX_METRES == 20.0,
+        "the guard is the declared 20 m (the constant's first test)",
+    )
+
+
+def test_far_ring_cell_is_split_at_the_vertex_cap():
+    """A ring cell merges more geometry into one node than any other product, and a geometry
+    past `MAX_GEOMETRY_VERTS` shards in-game (load #10) - so it goes through `split_mesh` like
+    every other writer's does (validation pass 2026-08-31, B5)."""
+    print("a far-ring cell over the vertex cap is split")
+    from cs2beamng.beamng import daemesh
+    from cs2beamng.beamng import level as level_mod
+    from cs2beamng.stages import farring
+
+    d = tempfile.mkdtemp(prefix="cs2ringcap_")
+    lv = level_mod.Level(os.path.join(d, "demo"), "demo", "Demo")
+    lv.set_stage("instances")
+    box = numpy.array(
+        [[0, 0, 0], [10, 0, 0], [10, 10, 0], [0, 10, 0], [0, 0, 20], [10, 0, 20], [10, 10, 20], [0, 10, 20]],
+        dtype=float,
+    )
+    ring_data = {
+        "verts": box.tolist(),
+        "normals": [[0, 0, 1]] * 8,
+        "colors": [[0.5, 0.5, 0.5, 1]] * 8,
+        "tris": [[0, 1, 2], [0, 2, 3], [4, 5, 6], [4, 6, 7]],
+        "cullMetres": 9000.0,
+    }
+    ring = farring.Ring(2500.0, 1.0)
+    members = daemesh.MAX_GEOMETRY_VERTS // 8 + 50  # just over the cap, all inside one 512 m cell
+    for i in range(members):
+        ring.add(ring_data, [100 + (i % 40), 100 + i // 40, 50], numpy.eye(3).tolist(), [1, 1, 1])
+    report = ring.write(lv, {})
+    check(
+        report["cellCount"] == 1 and len(report["cells"]) == 1,
+        f"one cell, counted under its own key ({report['cellCount']} / {len(report['cells'])})",
+    )
+    text = open(os.path.join(d, "demo", "art", "shapes", "farring", "farring_0_0.dae"), encoding="utf-8").read()
+    import re
+    # the writer names the first part `<name>_a<px>` and every further one `<name>_p<i>_a<px>`
+    parts = re.findall(r'<node id="farring_0_0_p\d+_a\d+"', text)
+    check(len(parts) >= 1, f"the cell's geometry is split into {len(parts) + 1} parts under the vertex cap")
+
+
 def main():
     start()
     test_rotation_matrix_is_basis_vectors()
     test_switch_points_only_ever_defer()
+    test_coarsest_level_stops_one_pixel_over_the_null()
+    test_tree_with_one_generated_level_keeps_its_billboard()
+    test_thin_oversized_shape_has_no_collider()
+    test_far_ring_cell_is_split_at_the_vertex_cap()
     test_a8_performance_rules()
     test_residency_chain_rules()
     test_authored_lod_limits_worked_example()

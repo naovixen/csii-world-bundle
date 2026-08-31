@@ -83,7 +83,7 @@ def run(context, progress):
         lowered = int(hit.sum())
         worst = float(drop[hit].max()) if hit.any() else 0.0
     doc = {
-        "schema": "csiibundle.bake.terrainmask/4",
+        "schema": "csiibundle.bake.terrainmask/5",
         "faceSize": [int(cells.shape[0]), int(cells.shape[1])],
         "sampleSize": [int(q.shape[0]), int(q.shape[1])],
         "cell": hm.cell,
@@ -98,6 +98,9 @@ def run(context, progress):
             "shallowSamples": int(has.sum()),
             "wouldLower": lowered,
             "worstDrop": round(worst, 3),
+            # shallow `area` clip records: they never carve, and until v5 they were the one
+            # record class the containment pass took unconditionally (clipgrid._bin_deep, A3)
+            "areaShallow": int(hm.area_shallow),
         },
     }
     with open(os.path.join(out_dir, "mask.json"), "w", encoding="utf-8", newline="\n") as handle:
@@ -108,10 +111,13 @@ def run(context, progress):
         "shallowSamples": doc["counts"]["shallowSamples"],
         "wouldLower": lowered,
         "worstDrop": round(worst, 3),
+        "areaShallow": int(hm.area_shallow),
         "seconds": round(time.monotonic() - started, 1),
     }
 
 
 # v4: shallow_floor.png (the band FLOOR) replaced by carriageway_ceiling.png (the game's own
 # road cross-section top) — audit §51.
-register(Product(PRODUCT_NAME, INPUTS, "terrain/", run, version=4, options=("ground",)))
+# v5: a SHALLOW `area` clip record no longer reaches the deletion test — the rule "only a deep
+# band carves" applied to area records as well as strips (validation pass 2026-08-31, A3).
+register(Product(PRODUCT_NAME, INPUTS, "terrain/", run, version=5, options=("ground",)))

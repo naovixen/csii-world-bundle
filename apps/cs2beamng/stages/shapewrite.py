@@ -89,14 +89,14 @@ def shape_job(job):
         job.level_name,
         options,
         chain=chain,
-        meshlab_generated=(job.lod_backend == "meshlab"),
+        meshlab_levels=tuple(job.lod_backend or ()),
     )
     colliders, collider_kind = _colliders(
         job, shape_name, base_mesh, ladder, lod_stats, chain=chain
     )
     trunk_ratio = _trunk_ratio(collider_kind, colliders, base_mesh)
     billboard_px, final_null = _imposter_thresholds(
-        null_px, detail_scale, size, area, options, chain
+        null_px, detail_scale, size, area, options, chain, kind=kind
     )
     far = _far_level(
         job, shape_name, ladder[-1], levels, final_null, game_px, bound_raw, lod_stats, radius
@@ -112,6 +112,13 @@ def shape_job(job):
     lod_stats["detailSizes"] = [int(px) for px, _ms in levels]
     lod_stats["triangles"] = [int(sum(len(m.tris) for m in ms)) for _px, ms in levels]
     lod_stats["levels"] = len(levels)
+    # Where the shape STOPS: the smallest detail Torque can still pick - the coarsest mesh, or
+    # the billboard under it. The null is only the size that stop has to stay over, and the
+    # report's draw distance is read off the stop (`shapereport._cull_summary`), not the null.
+    stops = [int(px) for px, _ms in levels]
+    if billboard_px:
+        stops.append(int(max(1, round(billboard_px))))
+    lod_stats["stopPx"] = min(stops) if stops else int(round(final_null))
     # The billboard is the dae `bb_autobillboard` node at the engine's default cell (64 px).
     # Sizing the cell was tried three ways in Phase 10 (record §8.14) - FCOLLADA user
     # properties (ignored by the importer), a TSShapeConstructor `.cs` and the engine's own
@@ -141,6 +148,7 @@ def shape_job(job):
         collider_kind=collider_kind,
         trunk_ratio=trunk_ratio,
         lod_stats=lod_stats,
+        lod_bias=lod_bias,
     )
 
 
@@ -159,6 +167,7 @@ def _result(
     collider_kind,
     trunk_ratio,
     lod_stats,
+    lod_bias=0.0,
 ):
     """What the report and the instances stage need from one written shape."""
     lo, hi, size, area, radius = bounds
@@ -175,10 +184,17 @@ def _result(
         "renderingSize": round(lod.rendering_size(size), 4),
         "lodBias": round(lod.lod_bias(size, area), 4),
         "gamePx": round(float(game_px), 4),
+        # with the prefab's authored `LodProperties.m_Bias`, as `gamePx` is (`_thresholds`):
+        # the two are divided by each other in `shapereport._cull_summary` and read as one
+        # sweep limit by `lod_audit` R2, and they described different meshes (E4)
         "gameCullMetres": round(
-            lod.cull_distance(lod.mesh_min_lod(size, area), options["level_of_detail"]), 1
+            lod.cull_distance(
+                lod.mesh_min_lod(size, area, authored_bias=lod_bias), options["level_of_detail"]
+            ),
+            1,
         ),
         "nullPx": int(max(0, round(final_null))),
+        "stopPx": lod_stats.get("stopPx"),
         "billboardPx": int(max(1, round(billboard_px))) if billboard_px else None,
         "boundsMin": [round(float(v), 4) for v in lo],
         "boundsMax": [round(float(v), 4) for v in hi],
@@ -302,8 +318,15 @@ def _trunk_ratio(collider_kind, colliders, base_mesh):
     return round(trunk / canopy, 3) if canopy > 1e-6 else None
 
 
-def _imposter_thresholds(null_px, detail_scale, size, area, options, chain=None):
+def _imposter_thresholds(null_px, detail_scale, size, area, options, chain=None, kind=None):
     """`(billboard_px, null_px)` — where a billboard takes over, and where drawing stops.
+
+    VEGETATION ONLY. Vanilla ships `bb_autobillboard` on 82 of west_coast_usa's 2,608 shapes
+    and every one is vegetation; the engine bakes the atlas at play time and never frees it
+    (the 14-minute imposter bake of 2026-08-18, one atlas per shape). Nothing here gated on the
+    kind - a large no-chain building passed `imposter_min_metres` first of all, and only the
+    far level happened to unset it; on the lowest preset (`far_detail_scale` 0) every landmark
+    would have shipped an atlas (validation pass 2026-08-31, C3; audit R9).
 
     `gameCullMetres` divided by the declared `lod_detail_scale` is how far THIS level draws the
     mesh; an imposter only earns its atlas past `imposter_min_metres`.
@@ -314,7 +337,7 @@ def _imposter_thresholds(null_px, detail_scale, size, area, options, chain=None)
     BeamNG builds per shape at play time and never frees. The imposter stays a declared
     consumer addition for the generated ladder only.
     """
-    if chain is not None:
+    if chain is not None or kind != "tree":
         return None, null_px
     reach_m = lod.cull_distance(lod.mesh_min_lod(size, area), options["level_of_detail"]) / max(
         detail_scale, 1e-6
@@ -539,7 +562,12 @@ def _vegetation_imposter(job, levels, billboard_px, final_null, lod_stats):
     and the clustered canopy that used to sit between them was ours (record §8.12)."""
     if job.kind != "tree" or not job.options.get("imposters", True) or len(levels) < 2:
         return levels, billboard_px
-    px = int(levels[1][0])
+    # The card takes over where LOD 0 STOPS - LOD 0's own size, `levels[0][0]` - so that is the
+    # size to test for a band above the null. This used to test the first generated level's
+    # size instead, which is where THAT level stops; with the coarsest generated level now one
+    # pixel over the null (A5) that size IS null + 1 for a tree with a single generated level,
+    # and 28 trees lost their billboard and kept a bare mid-level (audit R3, Batch 1 rebuild).
+    px = int(levels[0][0])
     if px <= int(round(final_null)) + 1:
         return levels, billboard_px
     # The card takes over where LOD 0 stops (LOD 0's own size is that boundary) and must run to

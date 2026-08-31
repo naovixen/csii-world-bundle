@@ -87,6 +87,12 @@ def run(ctx, progress):
             "fogColor": fog_color,
             "gravity": -9.81,
             "nearClip": 0.1,
+            # The cubemap a vehicle's static reflections sample. Every vanilla LevelInfo names
+            # one; without it the engine logs `LevelInfo dont have defined globalEnviromentMap`
+            # and falls back to `$defaultLevelEnviromentMap` - which is this one, named
+            # explicitly so the fallback is a choice rather than an error. A level-specific
+            # cubemap would need an asset of its own (validation pass 2026-08-31, C7).
+            "globalEnviromentMap": "BNG_Sky_02_cubemap",
         },
     )
     progress.end(f"visibleDistance {view:.0f} m, fog 1/{mean_free:.0f} m")
@@ -354,6 +360,7 @@ OUTPUTS = ("info.json",)
 # version 3: the built hour is published to `shared["scene"]`, because the `lights` stage has to
 # say whether its night lights can be seen at it (A6.9/D2)
 # version 8: cell streaming taken out again (record §8.8); 5-7 were its versions
+# version 9: `LevelInfo.globalEnviromentMap` names the engine's default cubemap (C7)
 STAGE = Stage(
     STAGE_KEY,
     "Sky, spawn and level info",
@@ -363,5 +370,5 @@ STAGE = Stage(
     inputs=INPUTS,
     settings_keys=SETTINGS,
     outputs=OUTPUTS,
-    version=8,
+    version=9,
 )

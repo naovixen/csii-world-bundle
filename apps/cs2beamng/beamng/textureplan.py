@@ -9,10 +9,21 @@ import re
 
 import numpy
 from csiibundle import glbjson, images, png
+from csiibundle import materials as bundle_materials
 
 from . import dds as dds_mod
 
 TEXTURE_SUBDIR = ("art", "textures")
+
+# The version of the CONVERSION this module applies between a source image and the texture it
+# writes - part of the texture ledger's key (`stages/materialledger.ledger_key`). The ledger
+# used to key on the source bytes, the cap and the format alone, so a fix to `_colormask_rgba`,
+# `_encode_dds` or the mip chain reported every texture "unchanged... not re-encoded" and
+# shipped nothing - the trap `stages/materials` v5 already fell into one layer up. Bump it with
+# any change to what a given source becomes.
+#   1: the ledger's original key
+#   2: a two-channel (AG / RG) normal map is rebuilt to RGB before encoding (`_rebuilt_normal`)
+TEXTURE_PIPELINE_VERSION = 2
 
 # -- textures ----------------------------------------------------------------------------------
 
@@ -128,7 +139,6 @@ def plan_canonical(bundle, derived_dir, table, names):
     where the material is tintable. No occlusion slot - the mask's G is not AO (audit 54).
     """
     materials = table.get("materials") or {}
-    rebuilt = table.get("normalsRebuilt") or {}
     plans = {}
     for name in names:
         rec = materials.get(name) or {}
@@ -138,9 +148,16 @@ def plan_canonical(bundle, derived_dir, table, names):
             plan["baseColor"] = (os.path.join(bundle, rec["baseColor"]), "color", False)
             if mode != "opaque":
                 plan["opacity"] = (os.path.join(bundle, rec["baseColor"]), "opacity", False)
-        normal_rel = rebuilt.get(name) or rec.get("normal")
+        # The bake rebuilds a PACKED normal to §7.1 RGB and records the per-material path in
+        # `derived.normalRgb` (`bake/materials._write_tables`). This used to read the table's
+        # `normalsRebuilt`, which is keyed by normal-map PATH with dict values, by material NAME
+        # - a lookup that could never hit, so every material took the raw bundle map
+        # (validation pass 2026-08-31, B1). `export_texture` rebuilds a packed map it meets
+        # anyway (B2); this is the bake's answer reaching the level, as intended.
+        derived_maps = rec.get("derived") or {}
+        normal_rel = derived_maps.get("normalRgb") or rec.get("normal")
         if normal_rel:
-            base = derived_dir if normal_rel.endswith("_normal_rgb.png") else bundle
+            base = derived_dir if derived_maps.get("normalRgb") == normal_rel else bundle
             plan["normal"] = (os.path.join(base, normal_rel), "normal", False)
         for slot in ("roughness", "metallic"):
             rel = (rec.get("derived") or {}).get(slot)
@@ -212,7 +229,9 @@ def texture_name(src_path, kind, keep_alpha=False, use_dds=True):
     return f"{stem}.{kind}.{ext}" if not keep_alpha else f"{stem}_a.{kind}.{ext}"
 
 
-def export_texture(level, src_path, kind, max_size=0, keep_alpha=False, cache=None, dds=None):
+def export_texture(
+    level, src_path, kind, max_size=0, keep_alpha=False, cache=None, dds=None, stats=None
+):
     """Write `src_path` into the level's `art/textures/` as `<stem>.<kind>.dds` (`kind` in
     color / normal / data / opacity) capped at `max_size` — a pre-compressed, mipmapped DDS in
     the format BeamNG's cooker would have chosen (`dds.KIND_FORMAT`), so the game never cooks
@@ -233,6 +252,14 @@ def export_texture(level, src_path, kind, max_size=0, keep_alpha=False, cache=No
     # A same-name file with different bytes (another cap, another rip) is replaced, never reused.
     arr, form = images.load_any(src_path)
     arr = _cap(arr, max_size)
+    if kind == "normal" and form == "rgba":
+        # A two-channel normal read as RGB shades BLACK (AG: x = +1, flat along the surface;
+        # RG: z = -1, into it) - `csiibundle.normalmaps`. The producer rebuilds the packed ones
+        # it sees and the bake the rest (`derived.normalRgb`), so a packed map reaching this
+        # point is a bundle from a rip that missed one; the level is not the place to find out.
+        arr, packing = _rebuilt_normal(arr)
+        if packing and stats is not None:
+            stats["normalsUnpacked"] = stats.get("normalsUnpacked", 0) + 1
     if kind == "opacity":
         alpha = arr[:, :, 3] if form == "rgba" else (numpy.full(arr.shape[:2], 255, numpy.uint8))
         data = (
@@ -269,6 +296,28 @@ def export_texture(level, src_path, kind, max_size=0, keep_alpha=False, cache=No
     if cache is not None:
         cache[key] = game
     return game
+
+
+def _rebuilt_normal(arr):
+    """`(rgba, packing)`: an AG- or RG-packed normal rebuilt to §7.1 RGB (Z reconstructed as
+    the game's shader does), or the array untouched with `packing` None for an RGB map. The
+    per-texel rule is `csiibundle.normalmaps.unpack_normal`; this is the same arithmetic over
+    the whole image."""
+    sample = arr[::16, ::16].reshape(-1, arr.shape[2]).astype(numpy.float64) / 255.0
+    packing = bundle_materials.detect_normal_packing(tuple(row[:4]) for row in sample)
+    if packing == bundle_materials.NORMAL_RGB:
+        return arr, None
+    f = arr.astype(numpy.float64) / 255.0
+    x = 2.0 * (f[..., 3] if packing == bundle_materials.NORMAL_AG else f[..., 0]) - 1.0
+    y = 2.0 * f[..., 1] - 1.0
+    z = numpy.sqrt(numpy.clip(1.0 - x * x - y * y, 0.0, None))
+    out = numpy.empty_like(arr)
+    for channel, value in enumerate((x, y, z)):
+        out[..., channel] = numpy.clip(numpy.rint((value + 1.0) * 127.5), 0, 255).astype(
+            numpy.uint8
+        )
+    out[..., 3] = 255
+    return out, packing
 
 
 def _colormask_rgba(arr, form):

@@ -165,12 +165,26 @@ def check_residency(ctx):
     budget_mib = resident_budget_mib(vram_mib, pixels)
     failure_mib = resident_failure_mib(vram_mib, pixels)
     api, api_source = graphics_api()
+    # the ground's own textures (art/terrains + art/ground), so the estimate's one calibrated
+    # texture ratio (`size/ground_texture_per_source`) can be scored and learnt like the mesh
+    # ratios are - it never was, and drifted 32 % from the level (validation pass 2026-08-31)
+    ground_bytes = 0
+    for sub in ("terrains", "ground"):
+        folder = os.path.join(ctx.level_dir, "art", sub)
+        if os.path.isdir(folder):
+            for root, _dirs, names in os.walk(folder):
+                for name in names:
+                    try:
+                        ground_bytes += os.path.getsize(os.path.join(root, name))
+                    except OSError:
+                        pass
     ctx.checks["resident"] = {
         "graphicsApi": api,
         "graphicsApiSource": api_source,
         "textureStreaming": api in ("DirectX 12", "Vulkan"),
         "meshMiB": round(resident["meshes"] / (1024.0 * 1024.0), 1),
         "textureShippedMiB": round(resident["textures"] / (1024.0 * 1024.0), 1),
+        "groundShippedMiB": round(ground_bytes / (1024.0 * 1024.0), 1),
         "textureMiB": round(texture_mib, 1),
         "textureReduction": reduction,
         "textureReductionSource": reduction_source,

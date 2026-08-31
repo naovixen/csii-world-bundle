@@ -99,7 +99,12 @@ def run(ctx, progress):
     shared_used = (ctx.shared if ctx.shared is not None else {}).setdefault("materials_used", set())
     summary = {}
     for product, (toggle, group, coll_setting, shadows) in PRODUCTS.items():
-        if not settings.get(toggle, True):
+        # a skirt is a building's foundation band: with `buildings` off it would stand on
+        # empty ground (B8)
+        wanted = settings.get(toggle, True) and (
+            product != "skirts" or settings.get("buildings", True)
+        )
+        if not wanted:
             # A PRODUCT TURNED OFF MUST ALSO HAVE ITS SHAPES REMOVED. `Level.write_objects`
             # already sweeps a group this build did not produce, so the `TSStatic`s go — but the
             # SHAPE FILES they pointed at are swept only by `sweep_orphans`, which this `continue`
@@ -325,6 +330,7 @@ SETTINGS = tuple(
             "view_distance",
             "tile_lod",
             "area_conform_cm",
+            "buildings",
         }
     )
 )
@@ -352,6 +358,10 @@ def _tile_levels(shape_name, mesh, detail_scale, view_distance=None, tile=None):
     )
 
 
+# version 11: skirts need `buildings` on as well as `skirts` (B8)
+# version 10: a tile's `nulldetail` is kept UNDER its coarsest detail (`tilelod.tile_levels`);
+# it sat `detail_scale` times above it wherever the game's own cull was inside the view
+# distance, and Torque drew nothing there (validation pass 2026-08-31, A1)
 STAGE = Stage(
     STAGE_KEY,
     "Markings, areas, skirts, furniture",
@@ -362,5 +372,5 @@ STAGE = Stage(
     settings_keys=SETTINGS,
     outputs=OUTPUTS,
     shared_keys=("materials_used",),
-    version=9,
+    version=11,
 )

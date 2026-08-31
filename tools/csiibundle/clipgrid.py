@@ -45,7 +45,11 @@ Grid = namedtuple("Grid", "width height cell origin_x origin_z elevation_scale e
 # whether that strip is allowed to DELETE terrain (see `CLIP_DEEP_BAND_TOP`); and the
 # carriageway ceiling raster `clamp_carriageway` reads. Every strip contributes to `mask` and
 # `refs`, because those drive the refine corridor, not the deletion.
-ClipGrid = namedtuple("ClipGrid", "mask contain band_count deep_touch refs strip_geo band_ceiling")
+ClipGrid = namedtuple(
+    "ClipGrid",
+    "mask contain band_count deep_touch refs strip_geo band_ceiling area_shallow",
+    defaults=(0,),
+)
 
 
 def _to_cell(points, cell, origin_x, origin_z):
@@ -175,10 +179,20 @@ def _bin_deep(strip_cells, area_geo, width, height, block):
         (c[:, 1].min(), c[:, 0].min(), c[:, 1].max(), c[:, 0].max()) for c, _, _, _ in area_geo
     ]
     bins = {}
+    shallow_areas = 0
     for index, (top_, left_, bottom_, right_) in enumerate(boxes):
         # A shallow band never deletes, so it is never binned: it costs nothing in the
-        # containment pass and cannot open a hole. See `contain_faces` for why.
-        if index < len(strip_cells) and not strip_cells[index][-1]:
+        # containment pass and cannot open a hole. See `contain_faces` for why. The test is
+        # per RECORD: a strip's `carves` flag, and an area record's own `top` - the area
+        # records used to be binned unconditionally, and every one of the reference city's 266
+        # is shallow (median top 0.3 m), so each could delete the faces under it while
+        # `deep_touch` stayed False and the report showed nothing (validation pass 2026-08-31, A3).
+        if index < len(strip_cells):
+            carves = bool(strip_cells[index][-1])
+        else:
+            carves = float(area_geo[index - len(strip_cells)][3]) > containment.CLIP_DEEP_BAND_TOP
+            shallow_areas += 0 if carves else 1
+        if not carves:
             continue
         br0 = max(0, int((top_ - 1.5) // block))
         br1 = min((height - 2) // block, int((bottom_ + 0.5) // block))
@@ -187,7 +201,7 @@ def _bin_deep(strip_cells, area_geo, width, height, block):
         for br in range(br0, br1 + 1):
             for bc in range(bc0, bc1 + 1):
                 bins.setdefault((br, bc), []).append(index)
-    return bins
+    return bins, shallow_areas
 
 
 def _make_quad_source(strip_cells, area_geo, bins, block):
@@ -304,7 +318,7 @@ def clip_grid(bundle_dir, grid, heights, floor_override=None):
     )
     block = containment.CLIP_CONTAIN_BLOCK
     strip_cells = _station_bounds(strip_geo, to_cell)
-    bins = _bin_deep(strip_cells, area_geo, width, height, block)
+    bins, shallow_areas = _bin_deep(strip_cells, area_geo, width, height, block)
     contain, band_count, deep_touch = containment.contain_faces(
         width,
         height,
@@ -314,7 +328,9 @@ def clip_grid(bundle_dir, grid, heights, floor_override=None):
         containment.contain_samples(grid.cell),
         block,
     )
-    return ClipGrid(mask, contain, band_count, deep_touch, refs, strip_geo, band_ceiling)
+    return ClipGrid(
+        mask, contain, band_count, deep_touch, refs, strip_geo, band_ceiling, shallow_areas
+    )
 
 
 # -- the hole mask for a heightmap-native consumer -----------------------------------------------
@@ -344,10 +360,13 @@ def clip_grid(bundle_dir, grid, heights, floor_override=None):
 # Face `(r, c)` spans samples `(r..r+1, c..c+1)`, i.e. world x from `origin_x + c·cell` to
 # `+ (c+1)·cell` and z from `origin_z − r·cell` down to `− (r+1)·cell` — the same squares a
 # BeamNG-style terrain triangulates between adjacent samples.
+# * `area_shallow` — how many `area` clip records were shallow (`top <= CLIP_DEEP_BAND_TOP`) and
+#   therefore never entered the deletion test at all; a counted fact, not an approximation.
 HoleMask = namedtuple(
     "HoleMask",
     "contain deep_touch band_count band_ceiling heights cell "
-    "origin_x origin_z elevation_scale elevation_offset fine",
+    "origin_x origin_z elevation_scale elevation_offset fine area_shallow",
+    defaults=(0,),
 )
 
 
@@ -384,4 +403,5 @@ def hole_mask(bundle_dir, floor_override=None, prefer_fine=True):
         grid.elevation_scale,
         grid.elevation_offset,
         field.fine,
+        clip.area_shallow,
     )

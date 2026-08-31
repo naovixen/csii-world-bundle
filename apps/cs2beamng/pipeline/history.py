@@ -63,11 +63,13 @@ DEFAULT_SIZES = {
     "size/cdae_per_source_markings": 1.586,
     "size/cdae_per_source_skirts": 1.533,
     "size/cdae_per_source_terraincut": 1.860,
-    # The ground's textures against the bundle's surface pack: 193.9 MiB of surfaces became
-    # 235.3 MiB in `art/terrains/` plus 12.1 MiB of blend maps in `art/ground/`. They are
-    # re-encoded and split into base/detail/macro copies rather than capped, so they follow
-    # their source rather than the texture caps.
-    "size/ground_texture_per_source": 1.276,
+    # The ground's textures against the bundle's surface pack. They are re-encoded and split
+    # into base/detail/macro copies rather than capped, so they follow their source rather
+    # than the texture caps. Was 1.276 (193.9 MiB of surfaces -> 235.3 + 12.1 MiB) before
+    # Phase 10 wrote one file per distinct tier image and the validation pass of 2026-08-31
+    # wrote the ground-mesh base maps at 16 px; RE-MEASURED on that build: 174.0 MiB of
+    # surfaces -> 167.9 MiB in art/terrains/ + art/ground/.
+    "size/ground_texture_per_source": 0.965,
     "size/builds": 0.0,
 }
 DEFAULT_RATES.update(DEFAULT_SIZES)

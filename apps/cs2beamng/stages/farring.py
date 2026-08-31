@@ -34,7 +34,7 @@ import numpy
 
 from csiibundle import lod
 
-from ..beamng import dae
+from ..beamng import dae, daemesh
 from ..beamng import level as level_mod
 
 CELL_METRES = 512.0
@@ -129,9 +129,15 @@ class Ring:
                 colors=numpy.zeros((3, 4), dtype=numpy.float32),
             )
             os.makedirs(out_dir, exist_ok=True)
+            # `split_mesh` caps every geometry at `MAX_GEOMETRY_VERTS`, as every other writer
+            # does: BeamNG's per-mesh index buffers wrap past 65,535 and the shape shards
+            # (load #10). A cell is the one product that merges the most geometry into one
+            # node - a downtown cell of a few hundred hulls at four unshared vertices per face.
             stats = dae.write_shape(
                 os.path.join(out_dir, name + ".dae"),
-                dae.Shape(name, [(near_px, [near]), (ring_px, [mesh])], null_px=null_px),
+                dae.Shape(
+                    name, [(near_px, [near]), (ring_px, daemesh.split_mesh(mesh))], null_px=null_px
+                ),
             )
             names.add(name)
             written += 1 if stats.get("changed") else 0
@@ -159,7 +165,7 @@ class Ring:
         orphans = dae.sweep_orphans(out_dir, names)
         return {
             "handOverMetres": self.d,
-            "cells": len(self.cells),
+            "cellCount": len(self.cells),
             "members": self.members,
             "triangles": self.triangles,
             "rewritten": written,

@@ -166,11 +166,13 @@ def _cull_summary(rows_by_pair, demand, progress):
         for row in rows:
             bucket["gameCull"].append(row["gameCullMetres"])
             # distance scales inversely with the pixel threshold, so ours is the game's distance
-            # times (game px / shipped px). `nullPx` is what the level actually stops drawing at,
-            # imposter reach included.
-            bucket["ourCull"].append(
-                row["gameCullMetres"] * row["gamePx"] / max(row["nullPx"], 1e-6)
-            )
+            # times (game px / shipped px). `stopPx` is the smallest detail the shape still
+            # draws - its coarsest mesh, or the billboard under it - which is where the level
+            # actually stops drawing it; the null is only the size that stop stays over, and
+            # reading the distance off the null overstated it by the gap between the two
+            # (1.5x on every generated ladder before A5).
+            stop = row.get("stopPx") or row["nullPx"]
+            bucket["ourCull"].append(row["gameCullMetres"] * row["gamePx"] / max(stop, 1e-6))
     return _cull_medians(by_kind, progress)
 
 
@@ -302,14 +304,20 @@ def _placement_approximations(results, options, scan_stats, trunk_wide):
         },
         "oversizedBoxColliders": {
             "what": f"a shape whose footprint is over {BOX_COLLIDER_MAX_METRES:.0f} m keeps a "
-            f"MESH collider even past the triangle cap, instead of a padded box",
+            f"MESH collider even past the triangle cap, instead of a padded box - and ships NO "
+            f"collider when it is also too thin for a mesh one (`oversizedThin`)",
             "why": "a padded box is a fine stand-in at the median shape's 1.6 m and a trap at "
             "1,344 m: `InternationalAirport01`'s box was 1,344 x 1,245 x 82 m, an "
             "invisible solid block a kilometre wide, and driving onto the airport put "
             "the car inside it. 34 of 1,407 boxes were over 20 m - the harbour, the "
             "power plant, stadiums. CS2 has no collision for a placed object, so the "
             "20 m is OURS and is declared here",
-            "count": sum(1 for r in results.values() if r.get("collider") == "mesh_oversized"),
+            "count": sum(
+                1
+                for r in results.values()
+                if r.get("collider") in ("mesh_oversized", "oversizedThin")
+            ),
+            "thinDropped": sum(1 for r in results.values() if r.get("collider") == "oversizedThin"),
             "value": BOX_COLLIDER_MAX_METRES,
         },
         "orphansOfAbsentOwners": {

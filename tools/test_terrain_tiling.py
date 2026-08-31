@@ -236,10 +236,15 @@ def _check_deviation_maps(tmp2, src):
         ).astype(numpy.float64)
         / 255.0
     )
+    base_img = _Img.open(os.path.join(tmp2, "art", "terrains", "gate_grass_ground_b.color.png"))
+    check(
+        base_img.size == (tiling.BASE_MAP_PX, tiling.BASE_MAP_PX),
+        f"the base map is written at {tiling.BASE_MAP_PX} px - the size of its content, not the albedo's",
+        f"{base_img.size}",
+    )
+    # the sampler's bilinear filter is what brings it back to the albedo's size in the shader
     bas = (
-        numpy.asarray(
-            _Img.open(os.path.join(tmp2, "art", "terrains", "gate_grass_ground_b.color.png"))
-        ).astype(numpy.float64)
+        numpy.asarray(base_img.resize(det.shape[1::-1], _Img.BILINEAR)).astype(numpy.float64)
         / 255.0
     )
     lin = (numpy.asarray(_Img.open(src).convert("RGB")).astype(numpy.float64) / 255.0) ** 2.2

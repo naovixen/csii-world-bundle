@@ -18,6 +18,8 @@ size?" - then checks the rules the level is built to:
   R7  a prop's ladder is the deferred generated ladder, no billboard unless asked
   R8  a billboard sits one pixel over the null (its size is its far stop, so the card runs
       from the coarsest mesh to the cull with no null band in between)
+  R9  only a tree carries a runtime billboard (the engine bakes one atlas per shape at play
+      time and never frees it; vanilla's are all vegetation)
 
 Exit status 1 when any rule fails. The same numbers `cs2beamng budget` reads, asked a
 different question: not "how many triangles" but "is anything drawn twice, or not at all".
@@ -163,15 +165,25 @@ def main():
                 # a flower pot never earns a billboard; a canopy always must
                 fail("R3", name, f"a tree of {tris0:,} triangles with no billboard")
         elif kind == "building":
+            if bb is not None:
+                fail("R9", name, "a building with a runtime billboard")
             entry = lod_index.get(f"{key[0]}{key[1]}") or {}
-            meshlab_won = "meshlab" in str(entry.get("backends") or entry.get("backend") or "")
-            if generated and not lods.get("authored") and not meshlab_won:
-                fail("R4", name, f"a building with {len(generated)} generated levels")
-            if lods.get("lod0Promoted") and not meshlab_won:
-                fail("R4", name, "a building with LOD 0 promoted to a generated level")
+            backends = entry.get("backends")
+            if backends is None or isinstance(backends, str):
+                backends = [entry.get("backend") if backends is None else backends] * 2
+            # PER LEVEL: a generated level on a building is legal only where THAT level's
+            # backend is MeshLab (`stages/shapes._lod_backend`), not where either level's was
+            meshlab_levels = {i + 1 for i, b in enumerate(backends) if b == "meshlab"}
+            bad = [s["level"] for s in generated if s["level"] not in meshlab_levels]
+            if bad and not lods.get("authored"):
+                fail("R4", name, f"a building with generated level(s) {bad} not shaped by MeshLab")
+            if lods.get("lod0Promoted") and 1 not in meshlab_levels:
+                fail("R4", name, "a building with LOD 0 promoted to a level MeshLab did not shape")
         else:
             if bb is not None and not options.get("imposters", True):
                 fail("R7", name, "a prop billboard with imposters off")
+            if bb is not None:
+                fail("R9", name, "a prop with a runtime billboard")
         # R5: chain switch distances are the game's
         limits = lods.get("gameLodLimits")
         if limits and radius > 0:
@@ -261,7 +273,7 @@ def main():
     else:
         print("no ring cells recorded in instances.state.json (built before the report carried them)")
     ok = True
-    for rule in ("R1", "R2", "R3", "R4", "R5", "R6", "R7", "R8"):
+    for rule in ("R1", "R2", "R3", "R4", "R5", "R6", "R7", "R8", "R9"):
         bad = fails.get(rule) or []
         print(f"  {rule}: {'ok' if not bad else f'{len(bad):,} FAIL'}")
         for name, why in bad[: args.examples]:

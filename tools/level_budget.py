@@ -17,7 +17,7 @@ sys.path.insert(
 )
 
 from cs2beamng.beamng.budget import *  # noqa: F403 - re-export the whole module
-from cs2beamng.beamng.budget import main
+from cs2beamng.beamng.budgetreport import main  # the CLI entry moved with the report (E1)
 
 if __name__ == "__main__":
     sys.exit(main())

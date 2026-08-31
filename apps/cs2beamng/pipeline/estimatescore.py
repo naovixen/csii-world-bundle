@@ -64,4 +64,13 @@ def observe(estimated, measured, index=None, values=None):
     for key in list(rates):
         if key.startswith("size/cdae_per_source_"):
             history.observe(key, rates[key] * correction)
+    # The ground textures are the texture half's one RATIO (`estimatetextures`), and it never
+    # learnt: the stored 1.276 stood while Phase 10 deduplicated the tiers and the 2026-08-31
+    # pass shrank the base maps, 32 % off the level. Scored against the validator's own
+    # `groundShippedMiB` and blended like the mesh ratios.
+    ground_actual = measured.get("groundShippedMiB")
+    ground_predicted = (estimated.get("textures") or {}).get("groundBytes", 0) / MIB
+    if ground_actual and ground_predicted > 0:
+        key = "size/ground_texture_per_source"
+        history.observe(key, (rates.get(key) or 1.0) * float(ground_actual) / ground_predicted)
     history.observe("size/builds", min(8, int(rates.get("size/builds") or 0) + 1), blend=False)

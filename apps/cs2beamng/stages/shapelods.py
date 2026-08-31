@@ -18,7 +18,8 @@ from .shapeparts import collect_parts
 
 # The ladder, as multiples of the shape's null threshold, coarsest first — vanilla BeamNG's
 # spacing read in A2. It is no longer what DECIDES a switch point (the measured displacement is,
-# below) but it is still the CEILING on one, and the last rung is still the floor.
+# below) but it is still the CEILING on one. The coarsest mesh's own size is one pixel over the
+# null (`_switch_thresholds`), not the first rung: a Torque detail's size is where it stops.
 #
 # **The displacement rule may only ever DEFER a level, never advance it**, and that is the whole
 # lesson of the 13:24 build. Allowing it both ways looked principled — a level whose surface is
@@ -288,7 +289,7 @@ def lod_levels(
     level_name,
     options,
     chain=None,
-    meshlab_generated=False,
+    meshlab_levels=(),
 ):
     """`[(px, [Mesh]), ...]` nearest-first: LOD 0 plus whatever the bake generated, each with the
     threshold its own measured displacement earns it.
@@ -314,11 +315,19 @@ def lod_levels(
     # ...and a BUILDING whose baked levels the MeshLab texture-aware collapse won: the one
     # generated-level exception for buildings, because those levels lie on the original surface
     # by construction (`decimatemeshlab`, §8.15) where the cluster levels were the lattices
-    if options["generate_lods"] and (
-        kind in ("prop", "tree") or (kind == "building" and meshlab_generated)
-    ):
+    allowed = (1, 2) if kind in ("prop", "tree") else tuple(meshlab_levels)
+    if options["generate_lods"] and allowed:
         _load_generated(
-            meshes, generated, stats, derived_dir, source, shape_name, aliases, tinted, level_name
+            meshes,
+            generated,
+            stats,
+            derived_dir,
+            source,
+            shape_name,
+            aliases,
+            tinted,
+            level_name,
+            allowed,
         )
 
     meshes, generated = _promote_lod0(meshes, generated, stats, kind, displacement, options)
@@ -373,10 +382,20 @@ def _authored_ladder(base_mesh, chain, stats):
 
 
 def _load_generated(
-    meshes, generated, stats, derived_dir, source, shape_name, aliases, tinted, level_name
+    meshes,
+    generated,
+    stats,
+    derived_dir,
+    source,
+    shape_name,
+    aliases,
+    tinted,
+    level_name,
+    allowed=(1, 2),
 ):
     """Append the bake's LOD1/LOD2 meshes, skipping any it did not write, that came out empty,
-    or that is the same geometry as the level above it (`identicalGenerated`, counted).
+    that is the same geometry as the level above it (`identicalGenerated`, counted), or that is
+    not in `allowed` (a building's MeshLab-shaped levels only; `generatedRefused`, counted).
 
     The last is the authored chain's identical-level rule (`authored_chain`, §8.13) applied to
     the bake's own output: a decimator that stalls at one count for two targets
@@ -388,6 +407,9 @@ def _load_generated(
         path = os.path.join(derived_dir, "lods", f"{source}_LOD{level}.glb")
         if not os.path.isfile(path):
             continue
+        if level not in allowed:
+            stats["generatedRefused"] = stats.get("generatedRefused", 0) + 1
+            continue
         nodes = glb.parse_glb(path)
         if not nodes:
             continue
@@ -397,6 +419,11 @@ def _load_generated(
         mesh = daemesh.group_by_material(daemesh.merge_meshes(f"{shape_name}_LOD{level}", parts))
         if len(mesh.tris) == 0:
             continue
+        # The bake samples an albedo per vertex onto its last level for an engine that binds an
+        # untextured vertex-colour material to it (`lod_vertcol`); this level binds the shape's
+        # own textured materials, which BeamNG shades without vertex colour (no `vertColor`),
+        # so the stream was bytes in every `.cdae` for nothing (validation pass 2026-08-31, C4)
+        mesh.colors = None
         if _mesh_digest(mesh) == _mesh_digest(meshes[-1]):
             stats["identicalGenerated"] = stats.get("identicalGenerated", 0) + 1
             continue
@@ -455,7 +482,14 @@ def _switch_thresholds(generated, meshes, null_px, radius, displacement, kind, o
     is the CEILING — the measured error may push a level further out, never nearer than the
     spacing that has always been there.
     """
-    floor = max(2.0, null_px * LADDER_RATIOS[0])
+    # The coarsest mesh's size IS the shape's stop - Torque draws a detail for p >= its size and
+    # nothing sits under it but the null - so it goes ONE pixel over the null, where
+    # `shapewrite._above_null` documents it and where the tree billboard is written (`bb = null +
+    # 1`, audit R8). At `1.5 x null` (the ladder's old last rung) every generated-ladder shape
+    # stopped at D_null / 1.5 while the report read D_null off the null: `lod_detail_scale` 4
+    # behaved as 6, and `ourCullMedian` was 1.5x optimistic on the 96 % of shapes with no
+    # billboard (validation pass 2026-08-31, A5).
+    floor = max(2.0, null_px + 1.0)
     thresholds = []
     shipped = []
     exempt = kind not in DISPLACEMENT_RULE_KINDS

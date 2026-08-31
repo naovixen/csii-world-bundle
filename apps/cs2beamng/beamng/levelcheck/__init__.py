@@ -24,6 +24,7 @@ CHECKS = (
     collision.check_collision_types,
     materials.check_materials,
     shapes.check_shape_geometry,
+    shapes.check_cooked_shapes,
     deferred.check_deferred,
     terrain.check_terrain,
     info.check_info,
@@ -36,6 +37,7 @@ def check(level_dir, bundle_dir, progress=None, settings=None):
     ctx = LevelContext(level_dir, bundle_dir, progress=progress, settings=settings)
     for one in CHECKS:
         one(ctx)
+    ctx.checks["fatal"] = list(ctx.fatal_problems)
     return ctx.checks, ctx.problems
 
 

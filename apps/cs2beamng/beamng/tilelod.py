@@ -230,10 +230,29 @@ def tile_levels(
             continue
         fixed.append((px, mask))
     kept = int(fixed[-1][1].sum()) if fixed else len(d)
+    null = int(max(ALWAYS_PX, round(null_px)))
+    null_lowered = None
+    if fixed and null >= fixed[-1][0]:
+        # THE NULL SITS UNDER THE COARSEST LEVEL, ALWAYS. The null is the game's cull scaled by
+        # `detail_scale`; the coarsest level's size is the tile's projected size at the ANCHOR,
+        # unscaled - so wherever the game's own cull is INSIDE the view distance (every
+        # markings tile: a lane marking's cull is a few km) the anchor IS that cull and the null
+        # lands `detail_scale` times ABOVE the coarsest level. Torque picks the largest detail
+        # size at or under the projected size, so the whole band from the null's size up to
+        # LOD 0 went to the null: the tile vanished in the mid-range and came back nearer
+        # (validation pass 2026-08-31, A1; `tools/beamng/lod_audit.select` states the rule).
+        # A Torque detail's size is where it STOPS, so the ladder keeps its sizes and the null
+        # comes down under the coarsest one - the rule `stages/shapewrite._above_null` applies
+        # to object shapes. DECLARED: such a tile draws to its ladder's anchor (the game's own
+        # cull, or the view distance), not to the scaled cull - the scale is a residency lever
+        # for object shapes, and pulling the anchor in with it would pull LOD 0 in too.
+        null_lowered = {"from": null, "to": max(1, fixed[-1][0] - 1)}
+        null = max(1, fixed[-1][0] - 1)
     return {
-        "nullPx": int(max(ALWAYS_PX, round(null_px))),
+        "nullPx": null,
         "levels": fixed,
         "gameNullMetres": far,
         "anchorMetres": anchor,
         "culledFraction": round(1.0 - kept / max(1, len(d)), 4),
+        "nullLowered": null_lowered,
     }

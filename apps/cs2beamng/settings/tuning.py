@@ -263,8 +263,8 @@ TUNING_SETTINGS = (
         kind="int",
         label="Full detail up to",
         blurb="Buildings over this many triangles show the game's second level up close. 0 = all full.",
-        help="A building whose full mesh is over this many triangles ships the game's LOD 1 as "
-        "its nearest level; 0 = keep LOD 0 for all",
+        help="A building with more than this many triangles ships the game's LOD 1 as its "
+        "nearest level; 0 = keep LOD 0 for all",
         detail="BeamNG holds every building's full mesh in memory for the whole session, and the "
         "few hundred heaviest ones — stadiums, hospitals, towers of a hundred thousand "
         "triangles and more — are most of what an 8 GB card runs out of. Above this count a "

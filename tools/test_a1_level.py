@@ -284,6 +284,12 @@ def test_water_bands(tmp):
     )
     check(all(b["scale"][2] >= 1.0 for b in blocks), "blocks extend below their surface")
     check(result["plane"] and result["blocks"] == len(blocks), "result reports the counts")
+    # every vanilla WaterBlock names its depth ramp; without it the engine logs
+    # `WaterObject::initTextures| Texture missing:` per block (188x on the 2026-08-31 load)
+    check(
+        all(o.get("depthGradientTex") for o in planes + blocks),
+        "every water object names its depthGradientTex (the depth-to-colour ramp)",
+    )
 
 
 def test_real_ground():

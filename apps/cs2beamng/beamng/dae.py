@@ -74,6 +74,23 @@ class Shape:
                 raise ValueError(
                     f"{name}: detail size must be > 0 (BeamNG rejects the shape: 'invalid detail levels')"
                 )
+        # Torque draws the detail with the LARGEST size at or under the projected size, so a
+        # null or a billboard sized at or over the coarsest mesh takes that mesh's whole band:
+        # nothing (or the card) is drawn where the mesh should be. Every writer keeps its
+        # thresholds under the coarsest level (`stages/shapewrite._above_null`,
+        # `tilelod.tile_levels`, `stages/farring`); this refuses the shape if one does not,
+        # because the level validator cannot see it on a cooked level (`keep_dae: false`).
+        sizes = [int(px) for px, _ms in self.levels]
+        if sizes and null_px is not None and int(null_px) >= min(sizes):
+            raise ValueError(
+                f"{name}: nulldetail{int(null_px)} is not under the coarsest detail "
+                f"({min(sizes)} px) - Torque would draw nothing where that level should be"
+            )
+        if sizes and billboard_px is not None and int(billboard_px) >= min(sizes):
+            raise ValueError(
+                f"{name}: bb_autobillboard{int(billboard_px)} is not under the coarsest detail "
+                f"({min(sizes)} px) - the card would replace that level's whole band"
+            )
         self.collision = list(collision)
         self.billboard_px = billboard_px
         self.null_px = null_px

@@ -38,8 +38,9 @@ BAKE_VERSION = 1
 # `version` is the product's own output version: bump it when a product's outputs change shape
 # (a new raster, a new field) so only THAT product re-bakes — BAKE_VERSION re-bakes everything.
 # `options` names the bake options THIS product's outputs depend on beyond the shaping ones
-# (tile/diagonal/region, which reshape every product): a change to one of them re-bakes this
-# product alone — `ground` for the products that conform to the terrain, not for materials/lods.
+# (tile/diagonal, which reshape every product): a change to one of them re-bakes this product
+# alone — `ground` for the products that conform to the terrain, `region` for the ones that
+# read it (it left the shaping set: `manifest.SHAPING_OPTIONS`), not for materials/lods.
 Product = namedtuple("Product", "name inputs path run version options", defaults=(1, ()))
 
 # name -> Product. Filled by the product modules on import (see `products()`), kept empty at

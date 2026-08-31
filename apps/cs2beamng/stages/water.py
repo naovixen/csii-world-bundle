@@ -282,6 +282,13 @@ def _appearance_fields(appearance):
         "foamRippleInfluence": 0.005,
         "foamTex": "core/art/water/foam.dds",
         "rippleTex": "core/art/water/ripple.dds",
+        # The depth-to-colour ramp the shader reads against `depthGradientMax`. Every vanilla
+        # WaterBlock names one (west_coast_usa: this file; italy: its muddy variant); without it
+        # the engine logged `WaterObject::initTextures| Texture missing:` once per block - 188
+        # times on Naomi's 2026-08-31 load - and the shore had no depth gradient at all
+        # (validation pass 2026-08-31, A2). A game asset (`content/assets/materials/tileable.zip`),
+        # so nothing is shipped.
+        "depthGradientTex": "assets/materials/tileable/water/depthcolor_ramp/depthcolor_ramp_b.png",
         "wetDarkening": 0.3,
         "wetDepth": 0.5,
         "viscosity": 0.001,
@@ -292,4 +299,7 @@ def _appearance_fields(appearance):
 INPUTS = ("layer:water", "layer:terrain", "layer:terrainFine")
 SETTINGS = ("water", "terrain_upsample")
 
-STAGE = Stage(STAGE_KEY, "Water", enabled, units, run, inputs=INPUTS, settings_keys=SETTINGS)
+# version 2: every water object names its `depthGradientTex` (A2)
+STAGE = Stage(
+    STAGE_KEY, "Water", enabled, units, run, inputs=INPUTS, settings_keys=SETTINGS, version=2
+)

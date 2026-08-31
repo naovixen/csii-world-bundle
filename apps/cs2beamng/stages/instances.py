@@ -244,6 +244,16 @@ def run(ctx, progress):
         "noShape": counts["noShape"],
         "seconds": round(time.monotonic() - started, 1),
         "approximations": {
+            "instanceColorGamma": {
+                "what": "a TSStatic's instanceColor/1/2 are the bundle's colorSet values written "
+                "as they are; BeamNG's `getColorPalette` runs `toLinearColor(unpackColor(...))` "
+                "on them, i.e. reads them as sRGB",
+                "why": "UNMEASURED (docs/cs2-api-audit.md, 'test it on the next load'): if "
+                "`attrs.colorSet` is a LINEAR multiplier every tinted building lands one gamma "
+                "decode darker than CS2. The test is one load: a building with a known colorSet "
+                "against its CS2 colour; if darker, encode the values sRGB in `tints.color_set`",
+                "count": counts["tsstatic"],
+            },
             "forestPaintVariants": {
                 "what": "a forest item is drawn in its prefab's nearest baked colorSet centre, "
                 "not its own colour (a TSStatic gets instanceColor/1/2 exactly)",

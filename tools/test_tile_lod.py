@@ -84,10 +84,59 @@ check(
     f"{new['anchorMetres']}",
 )
 check(
-    new["nullPx"] == old["nullPx"],
-    "nullPx is unchanged — the tile still disappears where CS2 stops drawing it",
-    f"{new['nullPx']} vs {old['nullPx']}",
+    new["nullPx"] == int(max(tilelod.ALWAYS_PX, round(lod.group_detail_px(radius, far) * 6.0))),
+    "nullPx is the game's cull scaled by detail_scale — the tile still disappears where CS2 stops drawing it",
+    f"{new['nullPx']} vs game {lod.group_detail_px(radius, far):.2f} px x 6",
 )
+
+
+# -- 1b. a tile whose OWN cull is inside the view distance (every markings tile) ---------------
+# Torque draws the detail with the largest size at or under the projected size. The null is the
+# game's cull scaled by `detail_scale`; the coarsest level is sized at the anchor, UNSCALED —
+# so when the anchor is the game's cull the null landed `detail_scale` times above the coarsest
+# level and took the whole band up to LOD 0: the tile vanished mid-range and came back nearer
+# (validation pass 2026-08-31, A1). `test_a3_rules.test_torque_detail_selection` states the rule;
+# this pins that a tile ladder obeys it.
+def torque_pick(sizes, null_px, p):
+    cands = [(s, f"mesh:{i}") for i, s in enumerate(sizes)] + [(null_px, "null")]
+    cands = [c for c in cands if c[0] <= p]
+    return max(cands)[1] if cands else "none"
+
+
+near_far = 600.0
+inside = numpy.full(4000, near_far)
+inside[:1000] = near_far / 3.0
+lad = tilelod.tile_levels(
+    radius, inside, detail_scale=6.0, view_distance=4000.0, distinct_only=False
+)
+sizes = [px for px, _m in lad["levels"]]
+check(
+    lad["nullPx"] < min(sizes),
+    "a tile culled inside the view distance keeps its null UNDER its coarsest level",
+    f"null {lad['nullPx']} px, levels {sizes}",
+)
+check(bool(lad.get("nullLowered")), "and says it lowered it", f"{lad.get('nullLowered')}")
+p = float(min(sizes))
+gaps = []
+while p <= max(sizes) * 4:
+    if torque_pick(sizes, lad["nullPx"], p) == "null":
+        gaps.append(round(p))
+    p *= 1.05
+check(
+    not gaps,
+    "so Torque never picks the null while a level's band is on screen",
+    f"null chosen at px {gaps[:5]}",
+)
+try:
+    dae.Shape("bad", [(100, []), (10, [])], null_px=20)
+    check(False, "dae.Shape refuses a null at or over the coarsest detail")
+except ValueError:
+    check(True, "dae.Shape refuses a null at or over the coarsest detail")
+try:
+    dae.Shape("bad", [(100, []), (10, [])], billboard_px=10)
+    check(False, "dae.Shape refuses a billboard at or over the coarsest detail")
+except ValueError:
+    check(True, "dae.Shape refuses a billboard at or over the coarsest detail")
 
 
 # A detail of size `px` is used from the distance at which the tile projects to `px` inwards,
@@ -193,6 +242,15 @@ check(
     == int(pin_a[numpy.isclose(numpy.asarray(mesh_a.verts, numpy.float64)[:, 0], TILE / 2)].sum()),
     "and every one of them survived — a pinned vertex is never merged away",
     f"{len(a_edge)} out of {int(numpy.isclose(numpy.asarray(mesh_a.verts, numpy.float64)[:, 0], TILE / 2).sum())}",
+)
+
+# a product with nothing to protect at the seam (networks: whole segments, bucketed by origin)
+# decimates WITHOUT the pins, and the edge is then free to be simplified like the interior
+free_out = tilemesh._decimated(dae, "a", mesh_a, 0.25, TILE, pins=False)
+check(
+    len(edge_points(free_out, TILE / 2)) < len(a_edge),
+    "with pins off the boundary is decimated like the interior",
+    f"{len(edge_points(free_out, TILE / 2))} edge points against {len(a_edge)} pinned",
 )
 
 # without the pins the same two tiles must DISAGREE, or this test proves nothing

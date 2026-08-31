@@ -98,7 +98,15 @@ def run(ctx, progress):
     workers = ctx.jobs or 1
     aliases = aliases_of(ctx.shared, level)
     shared_used = (ctx.shared if ctx.shared is not None else {}).setdefault("materials_used", set())
-    counts = {"written": 0, "tris": 0, "verts": 0, "refused": 0, "split_geoms": 0, "rewritten": 0}
+    counts = {
+        "written": 0,
+        "tris": 0,
+        "verts": 0,
+        "refused": 0,
+        "missing": 0,
+        "split_geoms": 0,
+        "rewritten": 0,
+    }
     names = set()
     ladder_stats = tilemesh.new_stats()
     jobs = [
@@ -119,6 +127,7 @@ def run(ctx, progress):
 
     def absorb(result):
         counts["refused"] += result["refused"]
+        counts["missing"] += result.get("missing", 0)
         for shape in result["shapes"]:
             shared_used.update(shape["used"])
             tilemesh.account_compact(ladder_stats, shape["lod"])
@@ -166,6 +175,11 @@ def run(ctx, progress):
         f"({refused} meshes refused, {orphans} orphans removed, "
         f"{split_geoms} extra geometries from the {daemesh.MAX_GEOMETRY_VERTS:,}-vertex cap)"
     )
+    if counts["missing"]:
+        progress.log(
+            f"networks: {counts['missing']} segment record(s) have NO mesh file under "
+            f"networks/ - those roads are absent from the level (an undeclared missing mesh)"
+        )
     return {
         "segments": len(records),
         "tiles": written,
@@ -174,6 +188,7 @@ def run(ctx, progress):
         "triangles": tris_total,
         "vertices": verts_total,
         "refused": refused,
+        "missingMesh": counts["missing"],
         "splitGeometries": split_geoms,
         "jobs": workers,
         "lod": tilemesh.ladder_summary(ladder_stats, options["detail_scale"]),
@@ -206,7 +221,12 @@ def _tile_job(args):
     level = LevelPaths(level_dir, level_name)
     shared = {"materials_aliases": {"aliases": aliases}}
     parts = _load_parts(net_meshes, recs)
-    out = {"refused": parts["refused"], "segments": len(recs), "shapes": []}
+    out = {
+        "refused": parts["refused"],
+        "missing": parts["missing"],
+        "segments": len(recs),
+        "shapes": [],
+    }
     pieces = parts["pieces"]
     if not pieces:
         return out
@@ -237,6 +257,14 @@ def _tile_job(args):
             view_distance=view_distance,
             targets=tilemesh.TILE_TARGETS if view_distance else None,
             tile=tile,
+            # NO boundary pins: `boundary_pins` exists for products clipped at the tile edge
+            # (a triangle belongs to the tile its centroid is in), where two neighbours share
+            # vertices along the seam. A network tile is bucketed by SEGMENT ORIGIN and holds
+            # every segment WHOLE, so its geometry reaches ~100 m past the edge and shares no
+            # vertex with any neighbour - the 2 m band pinned a large share of every tile
+            # (a pinned vertex is its own cluster) and the far level came out ~5x its target,
+            # 3.8 M triangles against 0.8 M (validation pass 2026-08-31, C1).
+            pins=False,
         )
         shape = dae.Shape(name, levels, collision=[], billboard_px=None, null_px=ladder["nullPx"])
         stats = dae.write_shape(level.path("art", "shapes", "networks", f"{name}.dae"), shape)
@@ -263,9 +291,14 @@ def _load_parts(net_meshes, recs):
     with verts still in glTF axes but placed in bundle WORLD (mirror undone, `pos` added)."""
     pieces = []
     refused = 0
+    missing = 0
     for rec in recs:
         path = os.path.join(net_meshes, rec["assetId"] + ".glb")
         if not os.path.isfile(path):
+            # a segment record with no mesh file: the road is simply absent from the level, and
+            # an undeclared missing mesh is a real error (`csiibundle.instances`), so it is
+            # counted and logged rather than skipped in silence (B9)
+            missing += 1
             continue
         nodes = glb.parse_glb(path)
         if nodes is None:
@@ -298,7 +331,7 @@ def _load_parts(net_meshes, recs):
                     min_lod,
                 )
             )
-    return {"pieces": pieces, "refused": refused}
+    return {"pieces": pieces, "refused": refused, "missing": missing}
 
 
 INPUTS = ("layer:networks", "layer:networkMeshes", "derived:materials.json")
@@ -312,6 +345,12 @@ SETTINGS = (
 )
 OUTPUTS = ("art/shapes/networks",)
 
+# version 12: the tile ladder is decimated WITHOUT boundary pins - a network tile shares no
+# vertex with its neighbours, and the pins held its far level at ~5x the target (C1)
+# version 11: a segment record with no mesh file is counted (`missingMesh`) and logged (B9)
+# version 10: a tile's `nulldetail` is kept UNDER its coarsest detail (`tilelod.tile_levels`);
+# it sat `detail_scale` times above it wherever the game's own cull was inside the view
+# distance, and Torque drew nothing there (validation pass 2026-08-31, A1)
 STAGE = Stage(
     STAGE_KEY,
     "Roads and networks",
@@ -322,5 +361,5 @@ STAGE = Stage(
     settings_keys=SETTINGS,
     outputs=OUTPUTS,
     shared_keys=("materials_used",),
-    version=9,
+    version=12,
 )

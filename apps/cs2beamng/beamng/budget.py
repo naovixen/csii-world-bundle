@@ -40,6 +40,8 @@ GEOM_RE = re.compile(rb'<geometry id="([^"]+)"')
 TRIS_RE = re.compile(rb'<triangles [^>]*count="(\d+)"')
 INSTANCE_RE = re.compile(rb'<instance_geometry url="#([^"]+)"')
 DETAIL_RE = re.compile(r"_a(\d+)$")
+NULL_RE = re.compile(rb'<node id="nulldetail(\d+)"')
+BILLBOARD_RE = re.compile(rb'<node id="bb_autobillboard(\d+)"')
 
 
 def scan_dae(path):
@@ -85,20 +87,44 @@ def scan_dae(path):
     return dict(levels), collision
 
 
-def detail_at(levels, radius, distance, screen_height=1080.0, fov_degrees=45.0):
-    """Which detail level a shape of `radius` uses at `distance`, as its triangle count.
+BILLBOARD_TRIANGLES = 2  # a card
 
-    Torque compares the shape's projected pixel size against each detail's size and takes the
-    first whose size is at or below it (details descending), so this is the same walk the renderer
-    does. `None` when every detail is above the projected size — the shape is not drawn.
+
+def detail_at(
+    levels, radius, distance, screen_height=1080.0, fov_degrees=45.0, null_px=None, billboard_px=None
+):
+    """Which detail a shape of `radius` uses at `distance`, as its triangle count.
+
+    Torque takes the detail with the LARGEST size at or under the projected pixel size, and the
+    null and the billboard are details like any other (`tools/beamng/lod_audit.select` is the
+    same rule, asked of the same numbers): the null wins with 0 triangles, the card with two.
+    Without the two thresholds this walked the mesh levels alone and could not see a null
+    sitting over a level (validation pass 2026-08-31, E5; the A1 defect).
     """
-    if not levels:
+    if not levels and not billboard_px:
         return 0
     px = screen_px(radius, distance, screen_height, fov_degrees)
-    for size in sorted(levels, reverse=True):
-        if size <= px:
-            return levels[size]
-    return 0
+    best = None  # (size, triangles)
+    for size, tris in levels.items():
+        if size <= px and (best is None or size > best[0]):
+            best = (size, tris)
+    if billboard_px and billboard_px <= px and (best is None or billboard_px > best[0]):
+        best = (billboard_px, BILLBOARD_TRIANGLES)
+    if null_px and null_px <= px and (best is None or null_px > best[0]):
+        return 0
+    return best[1] if best else 0
+
+
+def scan_thresholds(path):
+    """`(null_px, billboard_px)` from a `.dae`'s scene nodes (None where absent)."""
+    with open(path, "rb") as handle:
+        data = handle.read()
+    scene = data.find(b"<library_visual_scenes>")
+    if scene < 0:
+        return None, None
+    null = NULL_RE.search(data, scene)
+    card = BILLBOARD_RE.search(data, scene)
+    return (int(null.group(1)) if null else None, int(card.group(1)) if card else None)
 
 
 def screen_px(radius, distance, screen_height=1080.0, fov_degrees=45.0):
@@ -131,12 +157,14 @@ def _ladder_from_sidecar(level_dir, rel):
             _LADDERS[level_dir] = {}
     entry = _LADDERS[level_dir].get(rel)
     if not entry:
-        return None, None, None
+        return None, None, None, None, None
     radius = entry.get("radius")
     return (
         {int(px): int(t) for px, t in (entry.get("levels") or {}).items()},
         int(entry.get("collision") or 0),
         float(radius) if radius else None,
+        entry.get("null"),
+        entry.get("billboard"),
     )
 
 
@@ -189,16 +217,22 @@ def measure(level_dir, view_distance, spawn=None, screen_height=1080.0):
             size, cooked = file_bytes(full)
             # the detail ladder and the collision count come out of the XML; with the source
             # dropped they are UNKNOWN rather than zero, and are reported as such
-            side_levels, side_collision, radius = _ladder_from_sidecar(level_dir, rel)
-            levels, collision = (
-                scan_dae(full) if os.path.isfile(full) else (side_levels, side_collision)
+            side_levels, side_collision, radius, null_px, billboard_px = _ladder_from_sidecar(
+                level_dir, rel
             )
+            if os.path.isfile(full):
+                levels, collision = scan_dae(full)
+                null_px, billboard_px = scan_thresholds(full)
+            else:
+                levels, collision = side_levels, side_collision
             shapes[rel] = {
                 "bytes": size,
                 "cooked": cooked,
                 "levels": levels,
                 "collision": collision,
                 "radius": radius,
+                "null": null_px,
+                "billboard": billboard_px,
                 "group": group_of(rel),
             }
 
@@ -258,7 +292,12 @@ def measure(level_dir, view_distance, spawn=None, screen_height=1080.0):
             unknown_ladders.add(shape["group"])
             continue
         in_view[shape["group"]] += detail_at(
-            shape["levels"], radius, max(distance, 1.0), screen_height
+            shape["levels"],
+            radius,
+            max(distance, 1.0),
+            screen_height,
+            null_px=shape.get("null"),
+            billboard_px=shape.get("billboard"),
         )
         drawn[shape["group"]] += 1
 
@@ -296,7 +335,12 @@ def measure(level_dir, view_distance, spawn=None, screen_height=1080.0):
                     continue
                 radius = (shape.get("radius") or radius_hint("", shape)) * float(item.get("scale") or 1.0)
                 in_view["forest"] += detail_at(
-                    shape["levels"], radius, max(distance, 1.0), screen_height
+                    shape["levels"],
+                    radius,
+                    max(distance, 1.0),
+                    screen_height,
+                    null_px=shape.get("null"),
+                    billboard_px=shape.get("billboard"),
                 )
                 drawn["forest"] += 1
     for root, _dirs, files in os.walk(os.path.join(level_dir, "art")):

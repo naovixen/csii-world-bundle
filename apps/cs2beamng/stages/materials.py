@@ -128,8 +128,12 @@ def run(ctx, progress):
             f"and format all the same) - not re-encoded"
         )
     exported = dict(reusable)
-    exported.update(export_all(level, todo, caps, ctx.jobs, progress, use_dds, job_caps))
-    missing = sum(1 for v in exported.values() if v is None)
+    texture_stats = {}
+    exported.update(
+        export_all(level, todo, caps, ctx.jobs, progress, use_dds, job_caps, stats=texture_stats)
+    )
+    encode_failed = int(texture_stats.get("encodeFailed", 0))
+    missing = sum(1 for v in exported.values() if v is None) - encode_failed
     # art/textures/ is kept across builds so unchanged textures keep their mtime (BeamNG's cooked
     # cache is keyed on it); what this build did not export is an orphan and is swept at the END
     # of the stage, not here. **It used to be swept here**, before the area surfaces were
@@ -138,8 +142,16 @@ def run(ctx, progress):
     # the no-op-rebuild A/B (A4): 34,965 files identical, 89 mtimes moved, all of them these.
     keep = {os.path.basename(v) for v in exported.values() if v}
     progress.end(
-        f"{len(job_list)} textures exported ({len(reusable)} reused, {missing} sources missing)"
+        f"{len(job_list)} textures exported ({len(reusable)} reused, {missing} sources missing, "
+        f"{encode_failed} failed to encode, {texture_stats.get('normalsUnpacked', 0)} packed "
+        f"normals rebuilt)"
     )
+    if encode_failed:
+        # a material shipped without its map renders as BeamNG's default and nothing in the
+        # level says why; the log names each one
+        raise RuntimeError(
+            f"{encode_failed} texture(s) failed to encode - see the log lines marked ENCODE FAILED"
+        )
 
     # -- material objects -------------------------------------------------------------------
     progress.begin("materials: write", total=len(canonical), unit="materials")
@@ -185,6 +197,7 @@ def run(ctx, progress):
                     use_dds,
                     ledger,
                     area_exported,
+                    texture_stats,
                 )
             arec = {
                 "alphaMode": "mask" if keep_alpha else "opaque",
@@ -242,6 +255,9 @@ def run(ctx, progress):
         "textures": len(job_list),
         "texturesReused": len(reusable),
         "texturesMissing": missing,
+        # a packed (AG / RG) normal the level rebuilt itself: zero on a bundle whose producer
+        # and bake did their part; non-zero names a rip to look at (B2)
+        "normalsUnpacked": int(texture_stats.get("normalsUnpacked", 0)),
         "orphanTexturesRemoved": orphans,
         "textureCaps": caps,
         "texturesLodOnly": lod_only,
@@ -397,7 +413,7 @@ def _has_alpha(path):
     return bool((arr[::8, ::8, 3] < 250).any())
 
 
-def _area_texture(level, ctx, rel, kind, caps, cache, use_dds, ledger, exported):
+def _area_texture(level, ctx, rel, kind, caps, cache, use_dds, ledger, exported, stats=None):
     """One §8b area-surface texture, through the same ledger the pooled export uses.
 
     The area surfaces sat outside it: 88 textures BC7-encoded on every build even when nothing
@@ -420,7 +436,7 @@ def _area_texture(level, ctx, rel, kind, caps, cache, use_dds, ledger, exported)
     ):
         exported[job] = entry["game"]
         return entry["game"]
-    game = textureplan.export_texture(level, src, kind, cap, False, cache, dds=use_dds)
+    game = textureplan.export_texture(level, src, kind, cap, False, cache, dds=use_dds, stats=stats)
     exported[job] = game
     return game
 
@@ -476,6 +492,9 @@ OUTPUTS = ("art/cs2/main.materials.json", "art/textures")
 #            where the bake could join one, instead of white at a flat 200 (A6.9/D5)
 # version 7: a joined slot of ZERO nits is honoured rather than falling back to the flat 200 -
 #            115 slots say zero and every one is the UNLIT face of a billboard (A6.9/D5)
+# version 9: the bake's rebuilt normal (`derived.normalRgb`) reaches the plan (B1); a packed
+# normal met at export is rebuilt to RGB (B2); the texture ledger keys on the pipeline version
+# (B3); an encode failure fails the stage instead of counting as a missing source (B10)
 # version 8: A8/P1 - the colour mask takes the colour cap like every other map. `colormask` was
 #            missing from `KIND_CAP_SETTING`, which means UNCAPPED, so 767 of 771 masks shipped
 #            at 1024 against everything else's 256: 1,025 MiB, 58 % of all texture bytes
@@ -490,5 +509,5 @@ STAGE = Stage(
     outputs=OUTPUTS,
     shared_keys=("materials",),
     after=("shapes", "networks", "derived"),
-    version=8,
+    version=9,
 )

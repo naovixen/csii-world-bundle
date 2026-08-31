@@ -52,9 +52,11 @@ TEXTURE_FALLBACK = {
 # for flat faces** — a 5.4x stretch, correlating with verticality at +0.800. That is why it shows
 # up on "the side of deep terrain" and gets worse the deeper the cut.
 #
-# Until that is fixed and the look is re-validated, this stays at the value the last accepted
-# build used. The measurement is not withdrawn — `tools/test_ground_albedo.py` still reports
-# BeamNG's anchor every run and the gap to it — it is simply not being acted on yet.
+# THAT DEFECT IS FIXED: `bake/terraincut.py` v18 projects each face in the plane it is most
+# parallel to (triplanar UVs, audit §61), so the rationale above for holding the gain has
+# expired. The value is still the last accepted look's: moving it to the anchor is a visual
+# change on the whole terrain and waits for a look, not for another reason (validation pass
+# 2026-08-31, E7). `tools/test_ground_albedo.py` still reports BeamNG's anchor and the gap.
 GRASS_TARGET_LUMINANCE = 0.16
 
 # What the measurement says this should be: the median linear luminance of BeamNG's own 26
@@ -67,6 +69,10 @@ MAX_GAIN = 6.0
 NEUTRAL_MAPS = {  # every v1.5 terrain material must name all five maps at all three tiers
     "ao": 255,  # no occlusion
     "height": 128,  # flat mid height - the LAST RESORT: see _height_texture
+    # a flat tangent-space normal, written RGB (128, 128, 255) = (0, 0, +1): the height
+    # neutral (one channel, 128) read as a normal decodes to (0, 0, 0) - a zero-length
+    # normal, not "up" - under a three-channel read, and nothing cites BeamNG reading two (B11)
+    "normal": (128, 128, 255),
     "roughness": 217,  # 0.85: matte ground. HYPOTHESIS pending sweep area #4 - the ground
     # albedo's own alpha is a plausible smoothness (means 9-34/255,
     # correlating +0.31..+0.83 with the height), but nothing in the game's
@@ -154,14 +160,14 @@ def _neutral_map(level, kind, tier="detail", size=1024):
     del tier
     name = f"{level.name}_neutral_{kind}.png"
     path = level.path("art", "terrains", name)
-    if not os.path.isfile(path):
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "wb") as handle:
-            handle.write(
-                png.encode_gray(
-                    numpy.full((size, size), NEUTRAL_MAPS[kind], dtype=numpy.uint8), bit_depth=8
-                )
-            )
+    value = NEUTRAL_MAPS[kind]
+    if isinstance(value, tuple):
+        data = png.encode_rgb(numpy.tile(numpy.asarray(value, dtype=numpy.uint8), (size, size, 1)))
+    else:
+        data = png.encode_gray(numpy.full((size, size), value, dtype=numpy.uint8), bit_depth=8)
+    # written when the BYTES differ, not only when the file is absent: a neutral left by an
+    # older build with another value or size was never corrected
+    level.write_bytes_if_changed(data, "art", "terrains", name)
     return level.game_path("art", "terrains", name)
 
 
@@ -206,12 +212,14 @@ def albedo_gain(surfaces_dir, user_gain):
     path = os.path.join(surfaces_dir, "grass.png")
     gain = 1.0
     if os.path.isfile(path):
+        # an unreadable grass albedo used to fall back to gain 1.0 in silence - the whole
+        # terrain up to 6x darker with no log line (B10); the ground stage fails instead
         try:
             lum = _linear_luminance(images.load_rgb(path))
-            if lum > 1e-4:
-                gain = min(MAX_GAIN, GRASS_TARGET_LUMINANCE / lum)
-        except Exception:
-            gain = 1.0
+        except (OSError, ValueError) as exc:
+            raise RuntimeError(f"terrain: the grass albedo {path} is unreadable ({exc})") from exc
+        if lum > 1e-4:
+            gain = min(MAX_GAIN, GRASS_TARGET_LUMINANCE / lum)
     return gain * float(user_gain or 1.0)
 
 
@@ -252,14 +260,18 @@ def _rgb_texture(level, src, name, gain=1.0, deviation=False):
         return None
     dst = level.path("art", "terrains", name)
     os.makedirs(os.path.dirname(dst), exist_ok=True)
+    # An unreadable source used to be COPIED raw instead - alpha and all, which BeamNG's
+    # terrain packer reads as coverage (load #2's purple/green), ungained, and for an overlay
+    # tier at full contrast where the shader expects a signed deviation (load #25). A texture
+    # in the wrong encoding is worse than a failed stage, so this raises (B10).
     try:
         rgb = images.load_rgb(src)
-        if abs(gain - 1.0) > 1e-3:
-            lin = (rgb.astype(numpy.float64) / 255.0) ** 2.2 * gain
-            rgb = (numpy.clip(lin, 0.0, 1.0) ** (1 / 2.2) * 255.0 + 0.5).astype(numpy.uint8)
-        if deviation:
-            rgb = _tier_deviation(rgb)
-        level.write_bytes_if_changed(png.encode_rgb(rgb), "art", "terrains", name)
-    except Exception:
-        level.copy_file(src, "art", "terrains", name)
+    except (OSError, ValueError) as exc:
+        raise RuntimeError(f"terrain: {src} is unreadable ({exc})") from exc
+    if abs(gain - 1.0) > 1e-3:
+        lin = (rgb.astype(numpy.float64) / 255.0) ** 2.2 * gain
+        rgb = (numpy.clip(lin, 0.0, 1.0) ** (1 / 2.2) * 255.0 + 0.5).astype(numpy.uint8)
+    if deviation:
+        rgb = _tier_deviation(rgb)
+    level.write_bytes_if_changed(png.encode_rgb(rgb), "art", "terrains", name)
     return level.game_path("art", "terrains", name)

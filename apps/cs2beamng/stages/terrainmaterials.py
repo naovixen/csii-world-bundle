@@ -101,8 +101,15 @@ def _terrain_materials_per_ground(
     for name in names:
         tiers = _tier_textures(level, surfaces_dir, name, gain, sharpen, missing_height)
         if tiers is None:
-            continue
+            # no albedo and no normal for this ground OR its fallback: a material of pure
+            # neutrals with a note, instead of one with no note (B12: this `append` sat after
+            # the `continue`, unreachable, and `_tier_textures` never returned None)
             missing_height.append(name)
+            tiers = {
+                "albedo": dict.fromkeys(TIERS),
+                "normal": dict.fromkeys(TIERS),
+                "height": dict.fromkeys(TIERS),
+            }
         pid = level.pid(f"terrain:material:{name}")
         size, detail_distances, macro_distances, from_game = _tiling_of(tiling_block, name)
         if not from_game:
@@ -162,6 +169,8 @@ def _tier_textures(level, surfaces_dir, name, gain, sharpen, missing_height):
     # albedo is the plain texture and the two overlay tiers share one deviation; the normal and
     # the height are the same bytes at every tier. Written once per tier, the terrain shipped
     # 57 MiB of byte-identical PNGs and three VRAM objects per image (refactor Phase 10 §6).
+    if not os.path.isfile(albedo_src) and not os.path.isfile(normal_src):
+        return None  # neither the ground nor its fallback ships a texture: the caller notes it
     base_albedo = _rgb_texture(level, albedo_src, f"{level.name}_{source}_base_b.png", gain=gain)
     overlay_albedo = _rgb_texture(
         level, albedo_src, f"{level.name}_{source}_detail_b.png", gain=gain, deviation=True
@@ -212,7 +221,7 @@ def _material(name, internal, pid, size, cell, detail_distances, macro_distances
         mat[f"baseColor{cap}Tex"] = (
             albedo[tier] or neutral[("ao", tier)]
         )  # no texture at all: flat white
-        mat[f"normal{cap}Tex"] = normal[tier] or neutral[("height", tier)]  # mid gray reads as up
+        mat[f"normal{cap}Tex"] = normal[tier] or neutral[("normal", tier)]  # flat (0, 0, +1)
         mat[f"ao{cap}Tex"] = neutral[("ao", tier)]
         # the base tier is the neutral flat 128 by design: height rides the additive
         # overlay, so the relief belongs in macro/detail only (`_height_texture`)

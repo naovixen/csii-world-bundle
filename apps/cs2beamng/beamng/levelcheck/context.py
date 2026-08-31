@@ -29,6 +29,12 @@ class LevelContext:
         self.checks = {}
         #: What is wrong, in the order it was found.
         self.problems = []
+        #: The subset of `problems` the level cannot ship with - a load that CRASHES. The
+        #: validate stage fails the build on these; everything else stays a note (E3).
+        self.fatal_problems = []
+        #: The level's `mapTo` names (lower-case) plus the engine's own, once
+        #: `materials.check_materials` has read them; the cooked-shape check binds against it.
+        self.mapto = set()
 
         #: `[(relative file, line number, object)]` for every object in the level tree.
         self.objects = []
@@ -53,6 +59,11 @@ class LevelContext:
     def note(self, text):
         """Record something wrong with the level."""
         self.problems.append(text)
+
+    def fatal(self, text):
+        """Record something the level cannot ship with: the build fails on it."""
+        self.problems.append(text)
+        self.fatal_problems.append(text)
 
     def resolve(self, game_path):
         """A BeamNG `/levels/<name>/...` path as a real one, or None if it is not ours.

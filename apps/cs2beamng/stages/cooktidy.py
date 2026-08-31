@@ -242,9 +242,14 @@ def write_ladder_index(level_dir, shapes_dir, rescan=(), radii=None):
                 carried["radius"] = radii[rel]
             continue
         levels, collision = level_budget.scan_dae(path)
+        null_px, billboard_px = level_budget.scan_thresholds(path)
         shapes[rel] = {
             "levels": {str(px): int(t) for px, t in (levels or {}).items()},
             "collision": int(collision or 0),
+            # the null and the billboard are details too (`budget.detail_at`): without them the
+            # instrument could not see a null over a level, or a card drawn past the meshes
+            "null": null_px,
+            "billboard": billboard_px,
         }
         if rel in radii:
             shapes[rel]["radius"] = radii[rel]

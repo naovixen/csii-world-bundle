@@ -89,7 +89,9 @@ def _check_navgraph(ctx, info):
     ctx.checks["navgraph"].update(map_stats)
     if risks:
         example = risks[0]
-        ctx.note(
+        # FATAL: the stage's own changelog promised the build FAILS on this class since v6,
+        # and it only ever noted it - a level with a map.lua:459 crash shipped as `done` (E3)
+        ctx.fatal(
             f"{len(risks)} navgraph node{'s' if len(risks) != 1 else ''} take"
             f"{'' if len(risks) != 1 else 's'} map.lua's optimiser into its "
             f"unguarded lane compare (map.lua:459): the load dies with "

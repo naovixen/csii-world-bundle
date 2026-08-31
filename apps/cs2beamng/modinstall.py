@@ -125,6 +125,17 @@ def _verify(path):
                 )
 
 
+def member_dest(mods_dir, rel):
+    """Where an archive member lands - inside `mods_dir`, or a `ValueError`. `Carto/../../x`
+    passes the folder-prefix test the caller makes, and a user-supplied archive carries no sha
+    to vouch for it (validation pass 2026-08-31, B13)."""
+    root = os.path.abspath(mods_dir)
+    dest = os.path.abspath(os.path.join(root, *rel.split("/")))
+    if os.path.commonpath([root, dest]) != root:
+        raise ValueError(f"mod archive member escapes the mods folder: {rel}")
+    return dest
+
+
 def install(zip_path=None, version=None):
     """Unpack the mod into the CS2 mods folder. Returns the folder it wrote.
 
@@ -152,7 +163,7 @@ def install(zip_path=None, version=None):
             rel = member.replace("\\", "/")
             if not rel.startswith(MOD_FOLDER_NAME + "/") or rel.endswith("/"):
                 continue
-            dest = os.path.join(os.path.dirname(target), *rel.split("/"))
+            dest = member_dest(os.path.dirname(target), rel)
             os.makedirs(os.path.dirname(dest), exist_ok=True)
             with archive.open(member) as src, open(dest, "wb") as out:
                 shutil.copyfileobj(src, out)

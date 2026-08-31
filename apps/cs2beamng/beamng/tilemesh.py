@@ -112,8 +112,13 @@ def build_levels(
     view_distance=None,
     targets=TILE_TARGETS,
     tile=None,
+    pins=True,
 ):
     """`([(px, [Mesh]), ...], ladder)` for one merged tile, ready for `dae.Shape`.
+
+    `pins=False` decimates without holding the tile's boundary band: for a product whose
+    geometry is not clipped at the tile edge there is no seam to protect, and the band
+    only prevents the decimation (`boundary_pins`, `stages/networks`).
 
     `dae` is passed in rather than imported so this module stays a pure function of its inputs
     and the `.dae` writer keeps its one home.
@@ -149,7 +154,7 @@ def build_levels(
             ratio = float(targets[index - 1])
         if ratio and len(part.tris) > 16:
             before = len(part.tris)
-            part = _decimated(dae, shape_name, part, ratio, tile)
+            part = _decimated(dae, shape_name, part, ratio, tile, pins)
             decimated.append((before, len(part.tris)))
         out.append((px, daemesh.split_mesh(part)))
     ladder["decimated"] = decimated
@@ -159,8 +164,9 @@ def build_levels(
     return out, ladder
 
 
-def _decimated(dae, shape_name, part, ratio, tile):
-    """One level clustered to `ratio` of its triangles, boundary band pinned."""
+def _decimated(dae, shape_name, part, ratio, tile, pins=True):
+    """One level clustered to `ratio` of its triangles, boundary band pinned unless `pins`
+    is off."""
     source = {
         "verts": numpy.asarray(part.verts, dtype=numpy.float64),
         "normals": None
@@ -170,7 +176,8 @@ def _decimated(dae, shape_name, part, ratio, tile):
         "tris": numpy.asarray(part.tris, dtype=numpy.int64),
         "material_runs": list(part.runs),
     }
-    result = decimate.cluster_mesh(source, ratio, pinned=boundary_pins(source["verts"], tile))
+    pinned = boundary_pins(source["verts"], tile) if pins else None
+    result = decimate.cluster_mesh(source, ratio, pinned=pinned)
     if len(result["tris"]) == 0:
         return part
     return dae.Mesh(
@@ -199,6 +206,9 @@ def ladder_summary(stats, detail_scale):
         "anchorMetresMedian": round(anchors[len(anchors) // 2], 1) if anchors else None,
         "decimatedTriangles": [stats.get("decimatedFrom", 0), stats.get("decimatedTo", 0)],
         "detailScale": detail_scale,
+        # tiles whose scaled cull sat inside their own ladder, so the null was lowered under the
+        # coarsest level (`tilelod.tile_levels`, A1) - they draw to the anchor, not the scaled cull
+        "nullLoweredTiles": stats.get("nullLowered", 0),
     }
 
 
@@ -212,6 +222,7 @@ def new_stats():
         "decimatedFrom": 0,
         "decimatedTo": 0,
         "anchorMetres": [],
+        "nullLowered": 0,
     }
 
 
@@ -231,6 +242,7 @@ def compact(levels, ladder):
         "anchorMetres": ladder.get("anchorMetres"),
         "decimatedFrom": sum(a for a, _b in pairs),
         "decimatedTo": sum(b for _a, b in pairs),
+        "nullLowered": bool(ladder.get("nullLowered")),
     }
 
 
@@ -244,6 +256,7 @@ def account_compact(stats, item):
     stats["culled"] += item["culledFraction"] or 0.0
     stats["decimatedFrom"] = stats.get("decimatedFrom", 0) + (item.get("decimatedFrom") or 0)
     stats["decimatedTo"] = stats.get("decimatedTo", 0) + (item.get("decimatedTo") or 0)
+    stats["nullLowered"] = stats.get("nullLowered", 0) + (1 if item.get("nullLowered") else 0)
     if item.get("anchorMetres") is not None:
         stats.setdefault("anchorMetres", []).append(item["anchorMetres"])
     if item.get("gameNullMetres") is not None:

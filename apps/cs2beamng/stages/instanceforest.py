@@ -9,7 +9,12 @@ import os
 # (`none`), or `collision_lights` took a light-bearing prefab's collider off (`lightNone`, audit
 # §88). Naming `Collision Mesh` on either is a TSStatic that collides with nothing, which the
 # level validator now calls out - so both paths that decide collision read this one tuple.
-NO_COLLIDER = ("none", "lightNone")
+# ...or the shape is thin AND wider than a padded box may be (`oversizedThin`,
+# `shapecollider.collider`): a field plane or a roundabout's paint lies on terrain that collides.
+# ...or the shape is a PLANT (`plant`: a bush, a hedge - no collider is cut for it, so a
+# TSStatic of one asked for a `Collision Mesh` it does not have and collided with nothing;
+# the cooked-shape validator check is what surfaced it, E2)
+NO_COLLIDER = ("none", "lightNone", "oversizedThin", "plant")
 
 # BeamNG's semantic-segmentation tag per record kind, from the vanilla levels' own usage
 # (`NATURE` on trees and bushes, `OBSTACLES` on street furniture, `BUILDINGS` on buildings).

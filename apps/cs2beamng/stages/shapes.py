@@ -263,11 +263,21 @@ def run(ctx, progress):
 
 
 def _lod_backend(lod_index, asset, suffix):
-    """The bake's resolved decimator for this mesh state (a string, or a per-level counter
-    the contest recorded); "meshlab" anywhere in it opens the building gate in `shapelods`."""
+    """The generated levels (1-based) the MeshLab backend shaped for this mesh state - the
+    only generated levels a BUILDING may take (`shapelods.lod_levels`, §8.15).
+
+    PER LEVEL, from the index's `backends` list (one winner per level). This used to test
+    `"meshlab" in str(backends)`, so one MeshLab level admitted BOTH levels - a cluster lattice
+    on the other one - and a multi-node building whose railings went through `cluster` still
+    read as MeshLab by triangle plurality (validation pass 2026-08-31, B4). `lod_audit` R4
+    reads the same list the same way."""
     entry = lod_index.get(asset + suffix) or {}
-    # the index records `backends`, one per level (the contest's winner); older bakes `backend`
-    return "meshlab" if "meshlab" in str(entry.get("backends") or entry.get("backend") or "") else None
+    backends = entry.get("backends")
+    if backends is None:  # older bakes: one `backend` string for every level
+        backends = [entry.get("backend")] * 2
+    if isinstance(backends, str):
+        backends = [backends] * 2
+    return tuple(i + 1 for i, b in enumerate(backends) if b == "meshlab")
 
 
 def _displacement(lod_index, asset, suffix):
@@ -368,9 +378,19 @@ SETTINGS = (
 )
 OUTPUTS = ("art/shapes/cs2",)
 
+# version 43: a runtime billboard is for trees only (`_imposter_thresholds(kind=)`, C3); a
+# generated level ships no vertex-colour stream (C4)
+# version 42: a building takes a generated level only where THAT level's bake backend is
+# MeshLab (`_lod_backend` per level), not both levels when either was (B4)
+# version 41: the coarsest generated level sits ONE pixel over the null, not 1.5x it - the
+# shape's stop is the coarsest mesh's size and the report reads `stopPx` (A5); a shape that is
+# thin AND wider than `BOX_COLLIDER_MAX_METRES` ships no collider instead of a padded slab (A4)
 # version 40: a generated level identical to the one above it is left out (the authored
 # chain's identical-level rule, on the bake's output - 182 shapes); `tree_billboard_px`
 # removed (inert since v34: every route to a larger imposter cell failed in-game, §8.14)
+# version 39: the billboard's size is its FAR STOP - `bb = null + 1` (trees drew nothing from
+# 99 m to 601 m with the card at the takeover size, §8.16, audit R8); `authored_lod0_max_tris`
+# keeps LOD 0 where the authored LOD 1 is under `DEGENERATE_LOD1_RATIO` of it (the stadium)
 # version 38: ...reading the index's `backends` (per-level winners), which v37 misread as `backend`
 # version 37: a building whose baked levels the MESHLAB backend won takes them - the texture-aware
 # collapse the no-chain landmarks needed; every other building still refuses generated levels
@@ -449,5 +469,5 @@ STAGE = Stage(
     settings_keys=SETTINGS,
     outputs=OUTPUTS,
     shared_keys=("shapes", "materials_used", "materials_variants_used", "materials_lod_level"),
-    version=40,
+    version=43,
 )

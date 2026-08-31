@@ -14,6 +14,10 @@ from csiibundle import splat as splat_mod
 
 from .terraintextures import BASE_LOWPASS, _rgb_texture
 
+# The pixel size the low-passed ground-mesh base map is written at (`_mesh_colour_maps`): it
+# holds `BASE_LOWPASS` texels of information, and the sampler's bilinear filter upsamples.
+BASE_MAP_PX = 16
+
 TIERS = ("base", "macro", "detail")
 # BeamNG's three terrain tiers ARE CS2's three ground tilings. Both engines draw one ground at
 # three scales and cross-blend them by camera distance: CS2 as `_Terrain*TextureTiling` =
@@ -80,14 +84,16 @@ def _ground_mesh_maps(level, src, name, gain=1.0, normal=False, size=2048):
     """
     if not os.path.isfile(src):
         return None, None
+    # The fallback this had - the SAME full-contrast `.color` map in both the base and the
+    # detail slot - is the double-contrast defect of load #25 (32.5 % of `extra2` clamped),
+    # reintroduced by any read error. A wrong encoding is worse than a failed stage (B10).
     try:
         rgb = _mesh_source(src, gain, normal, size)
-        if normal:
-            return _mesh_normal_maps(level, rgb, f"{name}.normal.png")
-        return _mesh_colour_maps(level, rgb, name, size)
-    except Exception:
-        plain = _rgb_texture(level, src, f"{name}.color.png", gain=gain if not normal else 1.0)
-        return plain, plain
+    except (OSError, ValueError) as exc:
+        raise RuntimeError(f"terrain: ground mesh source {src} is unreadable ({exc})") from exc
+    if normal:
+        return _mesh_normal_maps(level, rgb, f"{name}.normal.png")
+    return _mesh_colour_maps(level, rgb, name, size)
 
 
 def _mesh_source(src, gain, normal, size):
@@ -132,10 +138,15 @@ def _mesh_colour_maps(level, rgb, name, size):
 
     linear = (rgb.astype(numpy.float64) / 255.0) ** 2.2
     base_name = f"{name}.color.png"
+    # The base map is band-limited to `BASE_LOWPASS` texels by construction, so it is written
+    # at `BASE_MAP_PX`, not at `size`: a 2048 x 2048 texture carrying 16 pixels of information
+    # was 12.6 MiB of VRAM per ground (7-10 grounds) on a level whose limiter is memory
+    # (validation pass 2026-08-31, C2). The sampler's bilinear filter does the same upsampling
+    # the resize did.
     low = numpy.asarray(
         Image.fromarray(rgb)
         .resize((BASE_LOWPASS, BASE_LOWPASS), Image.BOX)
-        .resize((size, size), Image.BILINEAR)
+        .resize((BASE_MAP_PX, BASE_MAP_PX), Image.BILINEAR)
     )
     level.write_bytes_if_changed(
         png.encode_rgb(numpy.ascontiguousarray(low)), "art", "terrains", base_name

@@ -27,6 +27,15 @@ PRODUCT_NAME = "skirts"
 INPUTS = ("instances", "meshes", "terrain", "terrainFine")
 
 
+def admit(record, parents):
+    """Whether a building record gets a skirt: it must be DRAWN at all (contract §4 -
+    `state: "construction"` and `attrs.overridden` are not; the instances stage applies the
+    same rule to every object it places) and stand on the ground (`wants_skirt_with_parents`).
+    A plinth under a building site was a plinth under nothing (validation pass 2026-08-31,
+    B8)."""
+    return instances.should_draw(record) and instances.wants_skirt_with_parents(record, parents)
+
+
 def run(context, progress):
     bundle = context.bundle_dir
     derived = context.derived
@@ -82,7 +91,7 @@ def run(context, progress):
         pos = record.get("pos") or (0, 0, 0)
         if not region_rule.contains(pos[0], pos[2], region):
             continue
-        if not instances.wants_skirt_with_parents(record, parents):
+        if not admit(record, parents):
             not_ground += 1
             continue
         asset_id = record["assetId"] + instances.SKIRT_SUFFIX
@@ -153,4 +162,5 @@ def run(context, progress):
     }
 
 
-register(Product(PRODUCT_NAME, INPUTS, "skirts/", run, options=("ground", "region")))
+# v2: a building the game does not draw (construction, overridden) gets no skirt (B8)
+register(Product(PRODUCT_NAME, INPUTS, "skirts/", run, version=2, options=("ground", "region")))

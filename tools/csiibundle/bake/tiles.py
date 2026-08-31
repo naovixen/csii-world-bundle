@@ -300,21 +300,24 @@ def material_specs(derived, bundle):
     """
     path = os.path.join(derived, "materials.json")
     specs = {}
-    try:
-        if os.path.isfile(path):
-            doc = json.load(open(path, encoding="utf-8"))
-            for key, entry in doc.get("materials", {}).items():
-                specs[key] = {
-                    "baseColor": entry.get("baseColor"),
-                    "normal": entry.get("normal"),
-                    "alphaMode": entry.get("alphaMode"),
-                    "alphaCutoff": entry.get("alphaCutoff"),
-                    "doubleSided": entry.get("doubleSided"),
-                    "baseColorFactor": entry.get("baseColorFactor"),
-                }
-            return specs
-    except Exception:
-        pass
+    if os.path.isfile(path):
+        # a corrupt derived table used to fall through to the BUNDLE table in silence, which
+        # changes every tile's base-colour URIs with no log line (B10)
+        try:
+            with open(path, encoding="utf-8") as handle:
+                doc = json.load(handle)
+        except (OSError, ValueError) as exc:
+            raise RuntimeError(f"{path} is unreadable ({exc}); re-bake materials") from exc
+        for key, entry in doc.get("materials", {}).items():
+            specs[key] = {
+                "baseColor": entry.get("baseColor"),
+                "normal": entry.get("normal"),
+                "alphaMode": entry.get("alphaMode"),
+                "alphaCutoff": entry.get("alphaCutoff"),
+                "doubleSided": entry.get("doubleSided"),
+                "baseColorFactor": entry.get("baseColorFactor"),
+            }
+        return specs
     for key, entry in (reader.load_materials(bundle) or {}).items():
         specs[key] = {
             "baseColor": entry.get("baseColor"),

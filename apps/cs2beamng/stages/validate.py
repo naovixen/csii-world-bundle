@@ -41,6 +41,15 @@ def run(ctx, progress):
     progress.end(f"{len(problems)} problem(s)")
     for p in problems[:20]:
         progress.log(f"validate: {p}")
+    fatal = list(checks.get("fatal") or []) if isinstance(checks, dict) else []
+    if fatal:
+        # the report still carries every problem (`_report` below is merged by the worker
+        # before the stage's exception is recorded), and the build is marked failed
+        ctx.report.setdefault("validation", {}).update({"problems": problems, "checks": checks})
+        raise RuntimeError(
+            f"the level cannot ship: {fatal[0]}"
+            + (f" (+{len(fatal) - 1} more fatal)" if len(fatal) > 1 else "")
+        )
     # `_report` is merged into the report by the worker and travels in the replay payload, so a
     # SKIPPED validate still leaves its verdict in `cs2beamng_report.json` — writing straight to
     # `ctx.report` did not (see `pipeline/worker._merge_report`).
@@ -66,6 +75,9 @@ def run(ctx, progress):
 # version 6: `map.lua`'s own node build is run over the level's OWN `DecalRoad`s and the build
 #            FAILS on a triangle - the shape that reaches map.lua:459's unguarded `lanes`
 #            compare and takes the game down before the level opens (A7.5, audit §85)
+# version 7: ...and it really does fail now: a `fatal` class of problem raises out of the stage
+#            (v6 only noted it); the checks a dropped `.dae` blinded run from the shapes
+#            stage's own record (`levelcheck.shapes.check_cooked_shapes`) (E2, E3)
 STAGE = Stage(
     "validate",
     "Validate level",
@@ -74,5 +86,5 @@ STAGE = Stage(
     run,
     inputs=("level:",),
     settings_keys=("gpu_vram_mib", "render_width", "render_height"),
-    version=6,
+    version=7,
 )

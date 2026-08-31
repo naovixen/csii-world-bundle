@@ -72,6 +72,16 @@ def collider(shape_name, base_mesh, lod_mesh, kind, options, is_tree=True):
     cut = _from_geometry(shape_name, base_mesh, verts, tris, status)
     if cut is not None:
         return cut
+    if oversized:
+        # A shape that is THIN (under the 0.3 m a colmesh needs, so `_from_geometry` refused
+        # it) AND wider than a box may be gets NO collider. The guard above only ever covered
+        # the triangle-cap path; this path boxed unconditionally, and shipped
+        # `Baseball_Field__2_revised2` - a 138 x 138 m field plane 0.1 m tall - as a padded
+        # slab with a 20 cm step round the whole outfield, and a 30 m roundabout the same way
+        # (validation pass 2026-08-31, A4). A large flat prop lies on terrain that already
+        # collides; a small thin one (a sign, a fence panel) keeps the padded box that holds a
+        # wheel. Counted per shape as `oversizedThin`.
+        return (), "oversizedThin"
     box_v, box_t = collision.colbox(lo, hi, daemesh.MIN_COLLIDER_THICKNESS)
     return (
         dae.Mesh(f"Colmesh_{shape_name}", box_v, box_t, [(base_mesh.runs[0][0], len(box_t))]),
