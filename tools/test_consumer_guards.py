@@ -278,7 +278,48 @@ def test_ground_surface_fallback():
         )
 
 
+def test_road_clip_splits_straddling_pieces():
+    """The decalLayers clip decides per piece; a piece STRADDLING the kerb is midpoint-split
+    first, or a flat dockland's huge conform triangles leave spikes of paint lapping the road
+    and slivers of missing paint beside it (Naomi's docks, 2026-08-31)."""
+    import numpy
+    import types
+
+    from csiibundle.bake import areasclip
+
+    class HalfPlaneRoad:
+        count = 1
+
+        def height_many(self, x, y):  # a road covering x >= 50, level with the paint
+            return numpy.where(numpy.asarray(x) >= 50.0, 0.0, numpy.nan)
+
+    # one huge triangle: two corners off-road, one deep on it - old rule: centroid at
+    # x = 40 -> off-road -> the WHOLE spike (including 70 m of road) survived
+    verts = numpy.array([[0, 0, 0], [0, 30, 0], [120, 15, 0]], dtype=numpy.float64)
+    pieces = {"conc": (verts, numpy.zeros(1, dtype=numpy.int64))}
+    catalogue = {"conc": {"decal_layers": ["Terrain"]}}
+    progress = types.SimpleNamespace(log=lambda *a, **k: None)
+    out, stats = areasclip.clip_roads(pieces, catalogue, HalfPlaneRoad(), None, progress)
+    kept = out.get("conc", (numpy.zeros((0, 3)), None))[0].reshape(-1, 3, 3)
+    check(
+        stats.get("split", 0) > 0, f"the straddling piece was split ({stats.get('split')} splits)"
+    )
+    over = kept[:, :, 0].max(axis=1) > 50.0 + 8.0  # corners well past the kerb
+    check(not over.any(), f"no kept piece reaches deep onto the road ({int(over.sum())} do)")
+    check(len(kept) > 0 and kept[:, :, 0].min() < 10.0, "the off-road paint survives")
+    # a Roads-layered surface is untouched - the game paints those onto roads
+    out2, _ = areasclip.clip_roads(
+        {"g": (verts.copy(), numpy.zeros(1, dtype=numpy.int64))},
+        {"g": {"decal_layers": ["Terrain", "Roads"]}},
+        HalfPlaneRoad(),
+        None,
+        progress,
+    )
+    check(len(out2["g"][0]) == 3, "a Roads-layered surface keeps its whole piece")
+
+
 def main():
+    test_road_clip_splits_straddling_pieces()
     test_ground_surface_fallback()
     test_cooked_shape_checks_read_the_stage_record()
     test_meshlab_gate_per_level()

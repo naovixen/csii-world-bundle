@@ -149,3 +149,30 @@ the instrument showed everything drawn at 8 km - so all three were render-side:
    onto the bundle's own ground albedo (moss/grass -> grass, terrain/soil -> dirt, materials
    v10, counted as `areaGroundFallbacks`); `Missing Area` and unknown names keep the grey,
    which is the game's own fallback colour.
+
+## The dock screenshots (2026-08-31, late) — three distinct defects behind "black squares"
+
+Naomi's five screenshots split what looked like one report into three:
+
+1. **The black jagged squares under houses ARE water — phantom water.** The rip re-bases the
+   sim's coarse (~28 m) water depth onto a POINT sample of the fine terrain: a cell straddling
+   a dock basin and its quay computes `quay top + basin depth` and floats the sea's level over
+   whole neighbourhoods of lower land. All 37 inland bodies sat at the sea's level (520±2) over
+   ground 6–10 m lower — the smear's signature. Consumer: `_drop_phantom_bodies` (water v4)
+   drops them, counted and logged with positions. Producer: `MinTerrainHeightOverCell`
+   (TerrainRipSystem.Water) re-bases onto the LOWEST fine ground in the cell — built, 0 errors,
+   deployed, **awaiting the in-game re-rip** (a terrain-only rip suffices; after it, anything
+   the consumer guard still drops deserves a look, since it could then be real).
+2. **The grey jagged sheet at the docks is NOT water** — it is the A6.5 `decalLayers` road
+   clip's declared shortcut biting: per-piece whole-in/whole-out decisions on conform pieces
+   that are ENORMOUS on flat dockland (the conform splits on curvature). `areasclip` now
+   midpoint-splits any piece whose corners and centroid disagree about the road, down to
+   ~1 m², before deciding (areas product v5): 126,207 straddling pieces split, 278,390 m²
+   clipped at the kerb. Pinned by a half-plane-road test.
+3. **The grey colour** was the texture-less modded concrete surface; it takes the bundle's own
+   `area_Concrete_Surface_01.png` as its stand-in now (materials v11).
+
+The water block splitter also learnt its lesson twice: fill-ratio splitting shatters every
+winding river (a river's bbox is mostly dry by nature) and overflowed the vanilla-calibrated
+200-block budget; the split is OVERHANG-driven now (v5) — it fires on a big box over mostly-dry
+ground (the dock class) and leaves rivers whole.

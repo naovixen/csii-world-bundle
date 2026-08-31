@@ -351,7 +351,7 @@ register(
         INPUTS,
         "areas/",
         run,
-        version=4,
+        version=5,  # v5: the decalLayers clip splits straddling pieces at the kerb (areasclip)
         options=("ground", "region", "area_tolerance"),
     )
 )

@@ -14,9 +14,12 @@ Runs in the PARENT, after the conform, because the road soup is far too large to
 every conform worker and this is the only place both surfaces exist at once. Vectorised over
 all of a prefab's pieces at once.
 
-DECLARED APPROXIMATION: the cut follows the conform's own piece boundaries (sub-cell, so
-<= 1.75 m on the fine raster), not the kerb, so the edge is ragged by up to one piece. And
-the test is per-CENTROID, so a piece straddling a kerb goes whole or stays whole.
+DECLARED APPROXIMATION: the decision is per-CENTROID, but a piece that STRADDLES the road
+edge is midpoint-split first (`CLIP_SPLIT_ROUNDS`), because the conform subdivides on
+CURVATURE and flat dockland pieces are huge: whole-piece decisions left triangular spikes of
+paint lapping the carriageway and slivers of missing paint beside it (Naomi's docks,
+2026-08-31). After the splits the raggedness is bounded by `CLIP_SPLIT_MIN_AREA_M2`, not by
+the terrain's flatness.
 """
 
 import numpy
@@ -27,6 +30,55 @@ ROAD_AT_GRADE_M = 1.0
 # and how far BELOW, so a road that is a hair under the lifted paint still counts as covering it
 # (the paint carries `AREA_LIFT` plus its priority rung — 2 cm and up — by construction).
 ROAD_UNDER_TOLERANCE_M = 0.30
+# A piece whose corners and centroid disagree about the road is split into four at its edge
+# midpoints, up to this many rounds, before the per-piece decision - and never below this area,
+# which is the raggedness the module docstring declares.
+CLIP_SPLIT_ROUNDS = 4
+CLIP_SPLIT_MIN_AREA_M2 = 1.0
+
+
+def _covered_points(road, pts):
+    """Whether a road surface sits on top of each (x, y, z) point, by the module's tolerances."""
+    road_z = road.height_many(pts[:, 0], pts[:, 1])
+    delta = road_z - pts[:, 2]
+    return (~numpy.isnan(road_z)) & (delta <= ROAD_AT_GRADE_M) & (delta >= -ROAD_UNDER_TOLERANCE_M)
+
+
+def _refine_straddlers(road, tri, lods, stats):
+    """Midpoint-split every piece whose three corners and centroid disagree about the road,
+    so the per-piece decision that follows cuts near the kerb instead of at the conform's own
+    (curvature-driven, on flat ground enormous) piece size."""
+    for _ in range(CLIP_SPLIT_ROUNDS):
+        corners = _covered_points(road, tri.reshape(-1, 3)).reshape(-1, 3)
+        centroid = _covered_points(road, tri.mean(axis=1))
+        agree = (
+            (corners[:, 0] == corners[:, 1])
+            & (corners[:, 1] == corners[:, 2])
+            & (corners[:, 0] == centroid)
+        )
+        edge1 = tri[:, 1, :2] - tri[:, 0, :2]
+        edge2 = tri[:, 2, :2] - tri[:, 0, :2]
+        area2 = numpy.abs(edge1[:, 0] * edge2[:, 1] - edge1[:, 1] * edge2[:, 0])
+        split = (~agree) & (area2 > 2.0 * CLIP_SPLIT_MIN_AREA_M2)
+        if not split.any():
+            break
+        stats["split"] = stats.get("split", 0) + int(split.sum())
+        keep_tri, keep_lod = tri[~split], lods[~split]
+        s, sl = tri[split], lods[split]
+        m01 = (s[:, 0] + s[:, 1]) * 0.5
+        m12 = (s[:, 1] + s[:, 2]) * 0.5
+        m20 = (s[:, 2] + s[:, 0]) * 0.5
+        quarters = numpy.concatenate(
+            [
+                numpy.stack([s[:, 0], m01, m20], axis=1),
+                numpy.stack([m01, s[:, 1], m12], axis=1),
+                numpy.stack([m20, m12, s[:, 2]], axis=1),
+                numpy.stack([m01, m12, m20], axis=1),
+            ]
+        )
+        tri = numpy.concatenate([keep_tri, quarters])
+        lods = numpy.concatenate([keep_lod, numpy.tile(sl, 4)])
+    return tri, lods
 
 
 def _log_clip(stats, progress):
@@ -36,7 +88,8 @@ def _log_clip(stats, progress):
     if stats["pieces"]:
         progress.log(
             f"areas: decalLayers - {stats['area']:,.0f} m2 of terrain-only paint clipped "
-            f"off carriageways ({stats['pieces']:,} pieces over {stats['prefabs']} prefabs)"
+            f"off carriageways ({stats['pieces']:,} pieces over {stats['prefabs']} prefabs, "
+            f"{stats.get('split', 0):,} straddling pieces split at the kerb)"
         )
     elif not stats["terrainOnlyPrefabs"]:
         progress.log(
@@ -79,16 +132,10 @@ def clip_roads(pieces, catalogue, road, ground, progress):
             continue
         stats["terrainOnlyPrefabs"] += 1
         tri = verts.reshape(-1, 3, 3)
-        centroid = tri.mean(axis=1)
-        # `height` is the SCALAR api on every ProjectionSurface and returns None for arrays;
-        # `height_many` is the vectorised one. Getting this wrong reads as "no road anywhere".
-        road_z = road.height_many(centroid[:, 0], centroid[:, 1])
-        delta = road_z - centroid[:, 2]
-        covered = (
-            (~numpy.isnan(road_z)) & (delta <= ROAD_AT_GRADE_M) & (delta >= -ROAD_UNDER_TOLERANCE_M)
-        )
+        tri, min_lods = _refine_straddlers(road, tri, min_lods, stats)
+        covered = _covered_points(road, tri.mean(axis=1))
         if not covered.any():
-            out[prefab] = (verts, min_lods)
+            out[prefab] = (tri.reshape(-1, 3), min_lods)
             continue
         edge1 = tri[covered, 1, :2] - tri[covered, 0, :2]
         edge2 = tri[covered, 2, :2] - tri[covered, 0, :2]

@@ -525,6 +525,8 @@ OUTPUTS = ("art/cs2/main.materials.json", "art/textures")
 #            where the bake could join one, instead of white at a flat 200 (A6.9/D5)
 # version 7: a joined slot of ZERO nits is honoured rather than falling back to the flat 200 -
 #            115 slots say zero and every one is the UNLIT face of a billboard (A6.9/D5)
+# version 11: ...and a CONCRETE one takes the bundle's own concrete area surface albedo
+# (the grey placeholder read as bare placeholder on the whole dockside, 2026-08-31)
 # version 10: a texture-less Terrain-decal surface takes the bundle's ground albedo by name
 # (moss/grass -> grass, terrain/soil -> dirt); unknown names keep the game's own grey
 # version 9: the bake's rebuilt normal (`derived.normalRgb`) reaches the plan (B1); a packed
@@ -544,5 +546,5 @@ STAGE = Stage(
     outputs=OUTPUTS,
     shared_keys=("materials",),
     after=("shapes", "networks", "derived"),
-    version=10,
+    version=11,
 )
