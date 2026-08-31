@@ -430,29 +430,9 @@ def _texture_bytes(level):
     return {"files": files, "bytes": total, "mib": round(total / (1 << 20), 1)}
 
 
-# name keyword -> the bundle ground whose albedo stands in for a texture-less Terrain-decal
-# surface (`terrain/surfaces/<ground>.png`); checked in order, first hit wins
-GROUND_FALLBACK_KEYWORDS = (
-    ("moss", "grass"),
-    ("grass", "grass"),
-    ("terrain", "dirt"),
-    ("soil", "dirt"),
-    ("rock", "rock"),
-)
-
-
 def _ground_surface_fallback(ctx, rec):
-    """`terrain/surfaces/<ground>.png` (bundle-relative) for a texture-less Terrain-decal
-    surface whose name says which ground it paints, or None (the grey placeholder stays)."""
-    if "Terrain" not in (rec.get("decal_layers") or ()):
-        return None
-    name = str(rec.get("name") or "").lower()
-    for keyword, ground in GROUND_FALLBACK_KEYWORDS:
-        if keyword in name:
-            rel = f"terrain/surfaces/{ground}.png"
-            if os.path.isfile(os.path.join(ctx.bundle, rel)):
-                return rel
-    return None
+    """The shared rule (`textureplan.ground_surface_fallback`), with the stage's context."""
+    return textureplan.ground_surface_fallback(ctx.bundle, rec)
 
 
 def _has_alpha(path):

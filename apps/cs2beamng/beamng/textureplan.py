@@ -189,6 +189,35 @@ def variant_albedo(derived_dir, rec, vkey):
     return path if os.path.isfile(path) else None
 
 
+# name keyword -> the bundle ground whose albedo stands in for a texture-less Terrain-decal
+# surface (a modded terrain-painting pack: CS2 draws the terrain's own ground through it, so
+# there is nothing to rip). Shared by the build (`stages/materials`) and the cost meter, so the
+# enumeration names every file the build writes. First hit wins.
+GROUND_FALLBACK_KEYWORDS = (
+    ("moss", "grass"),
+    ("grass", "grass"),
+    ("terrain", "dirt"),
+    ("soil", "dirt"),
+    ("rock", "rock"),
+)
+
+
+def ground_surface_fallback(bundle, rec):
+    """`terrain/surfaces/<ground>.png` (bundle-relative) for a texture-less Terrain-decal
+    surface whose name says which ground it paints, or None (the grey placeholder stays)."""
+    if rec.get("texture") or rec.get("unresolved"):
+        return None
+    if "Terrain" not in (rec.get("decal_layers") or ()):
+        return None
+    name = str(rec.get("name") or "").lower()
+    for keyword, ground in GROUND_FALLBACK_KEYWORDS:
+        if keyword in name:
+            rel = f"terrain/surfaces/{ground}.png"
+            if os.path.isfile(os.path.join(bundle, rel)):
+                return rel
+    return None
+
+
 def plan_areas(bundle, derived_dir, has_alpha=None):
     """`[(src, kind, keep_alpha), ...]` for the 8b area-surface materials.
 
@@ -211,6 +240,10 @@ def plan_areas(bundle, derived_dir, has_alpha=None):
             jobs.append((src, "color", False))
             if has_alpha is not None and has_alpha(src):
                 jobs.append((src, "opacity", False))
+        if not tex:
+            fallback = ground_surface_fallback(bundle, rec)
+            if fallback:
+                jobs.append((os.path.join(bundle, fallback), "color", False))
         normal = rec.get("normal_map")
         if normal and os.path.isfile(os.path.join(bundle, normal)):
             jobs.append((os.path.join(bundle, normal), "normal", False))
