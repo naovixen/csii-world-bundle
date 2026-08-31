@@ -122,9 +122,20 @@ def _report_definitions(ctx, defined_in, stray, mixed_class_files):
         )
 
 
+# Materials the ENGINE defines for every level: `content/art_shapes.zip` ->
+# `art/shapes/common/common.materials.json` (BeamNG 0.39: `lod_vertcol` - `vertColor: true`, no
+# maps - `SOFT_COLLISION_GENERAL`, `shock_absorber`). A shape may bind these without the level
+# defining them; the far ring and every far silhouette bind `lod_vertcol` on purpose (the
+# vertex-coloured last level is BeamNG's own convention). Before this set the check only ever
+# ran on a level that kept its `.dae` sources, and `tools/test_a1_level.py` failed on the ring.
+ENGINE_COMMON_MATERIALS = frozenset({"lod_vertcol", "soft_collision_general", "shock_absorber"})
+
+
 def _check_bindings(ctx, mapto):
-    """Every material a `.dae` binds is a `mapTo` somewhere, else BeamNG's orange checker."""
+    """Every material a `.dae` binds is a `mapTo` somewhere - the level's or the engine's
+    (`ENGINE_COMMON_MATERIALS`) - else BeamNG's orange checker."""
     mat_re = re.compile(r'<material id="[^"]*" name="([^"]+)"')
+    mapto = set(mapto) | ENGINE_COMMON_MATERIALS
     for name, path in ctx.dae_files:
         try:
             with open(path, encoding="utf-8", errors="replace") as handle:

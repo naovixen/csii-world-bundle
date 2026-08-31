@@ -108,8 +108,6 @@ def run(ctx, progress):
         # big buildings' own scale (see `shapelods.detail_scale`); 0 = the buildings' scale
         "detail_scale_large": float(settings.get("lod_detail_scale_large") or 0.0),
         "large_radius_m": float(settings.get("lod_large_radius_m") or 30.0),
-        # the billboard atlas cell size for vegetation (`dae.Shape.billboard_dimension`)
-        "billboard_dimension": int(settings.get("tree_billboard_px") or 0),
         "generate_lods": bool(settings.get("generate_lods", True)),
         "imposters": bool(settings.get("imposters", True)),
         "imposter_min_metres": (
@@ -354,7 +352,6 @@ SETTINGS = (
     "lod_detail_scale_tree",
     "lod_detail_scale_large",
     "lod_large_radius_m",
-    "tree_billboard_px",
     "lod_switch_error_px",
     "lod0_max_error",
     "lod0_min_triangles",
@@ -371,6 +368,9 @@ SETTINGS = (
 )
 OUTPUTS = ("art/shapes/cs2",)
 
+# version 40: a generated level identical to the one above it is left out (the authored
+# chain's identical-level rule, on the bake's output - 182 shapes); `tree_billboard_px`
+# removed (inert since v34: every route to a larger imposter cell failed in-game, §8.14)
 # version 38: ...reading the index's `backends` (per-level winners), which v37 misread as `backend`
 # version 37: a building whose baked levels the MESHLAB backend won takes them - the texture-aware
 # collapse the no-chain landmarks needed; every other building still refuses generated levels
@@ -449,5 +449,5 @@ STAGE = Stage(
     settings_keys=SETTINGS,
     outputs=OUTPUTS,
     shared_keys=("shapes", "materials_used", "materials_variants_used", "materials_lod_level"),
-    version=39,
+    version=40,
 )

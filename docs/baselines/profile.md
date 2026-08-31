@@ -194,7 +194,9 @@ about double a quiet run. Clean-room on 2026-08-29, at `1760015` (the last commi
 | areas | 65 | road surface 7.5, `tiles` 6.5 |
 
 The afters, item by item and with what each was measured on, are in `docs/plans/refactor.md`
-under "Phase 10 — in progress" — this file keeps the instrument, the plan keeps the ledger.
+under "Phase 10" (the ledger, and the close-out's before/after gate table) — this file keeps the
+instrument, the plan keeps the ledger.
 Two of §4's rows are known to be instrument artefacts and must not be compared against:
 `cs2 15,019` triangles (a 2 m radius for every object shape; the budget now reads the shape's
-own) and the collision count (per shape file; the world holds ~72 M per instance).
+own) and the collision count (per shape file; the budget now also reports `collision placed`,
+per object and forest item — 61.1 M on the 2026-08-31 level against the engine's own 53.8 M).

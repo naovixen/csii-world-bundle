@@ -157,9 +157,19 @@ def example():
         pv = json.load(open(os.path.join(derived, "paint_variants.json"), encoding="utf-8"))
         check("prefabs" in pv, "paint_variants.json shape")
         lods = sorted(glob.glob(os.path.join(derived, "lods", "*.glb")))
+        # The example cube's two targets collapse to the same 12 triangles; a level that is the
+        # geometry of the one above it is left unwritten and recorded (`identical`), so ONE file.
         check(
-            len(lods) == 2,
-            f"two LOD files for the one example mesh: {[os.path.basename(x) for x in lods]}",
+            len(lods) == 1,
+            f"one LOD file for the example cube - its second target is a copy of the first and is "
+            f"left unwritten: {[os.path.basename(x) for x in lods]}",
+        )
+        cube_index = json.load(open(os.path.join(derived, "lods", "lods.json"), encoding="utf-8"))
+        cube_entries = [e for e in cube_index.get("assets", {}).values() if e.get("identical")]
+        check(
+            len(cube_entries) == 1 and cube_entries[0]["identical"] == [2],
+            f"lods.json records the unwritten copy as identical [2]: "
+            f"{[e.get('identical') for e in cube_index.get('assets', {}).values()]}",
         )
         for f in lods:
             nodes = glb.parse_glb(f)

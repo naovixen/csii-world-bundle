@@ -224,7 +224,9 @@ def measure(level_dir, view_distance, spawn=None, screen_height=1080.0):
             else None
         )
         position = obj.get("position") or [0, 0, 0]
-        statics.append((rel, float(position[0]), float(position[1])))
+        statics.append(
+            (rel, float(position[0]), float(position[1]), str(obj.get("collisionType") or ""))
+        )
     if spawn_xy is None:
         spawn_xy = (0.0, 0.0)
 
@@ -235,10 +237,19 @@ def measure(level_dir, view_distance, spawn=None, screen_height=1080.0):
     # otherwise — see `radius_hint`.
     in_view = defaultdict(int)
     drawn = defaultdict(int)
-    for rel, x, y in statics:
+    # Collision as the WORLD holds it: per placed object, by its `collisionType`, plus every
+    # forest item's collision mesh. `collisionTriangles` (below) is per shape FILE and was the
+    # instrument's blind spot (Phase 10 runtime survey §10: 4.3 M reported, ~72 M real); this is
+    # the number the engine's own `Loaded Static Collision ... Tris:` line counts.
+    placed_collision = defaultdict(int)
+    placed_instances = 0  # objects and items that contribute collision at all
+    for rel, x, y, collision_type in statics:
         shape = shapes.get(rel)
         if shape is None:
             continue
+        tris = placed_collision_tris(shape, collision_type)
+        placed_collision[shape["group"]] += tris
+        placed_instances += 1 if tris else 0
         distance = math.hypot(x - spawn_xy[0], y - spawn_xy[1])
         if distance > view_distance:
             continue
@@ -277,6 +288,8 @@ def measure(level_dir, view_distance, spawn=None, screen_height=1080.0):
                 shape = shapes.get(type_shapes.get(str(item.get("type"))))
                 if shape is None or shape["levels"] is None:
                     continue
+                placed_collision["forest"] += shape["collision"] or 0
+                placed_instances += 1 if shape["collision"] else 0
                 pos = item.get("pos") or [0, 0, 0]
                 distance = math.hypot(float(pos[0]) - spawn_xy[0], float(pos[1]) - spawn_xy[1])
                 if distance > view_distance:
@@ -341,9 +354,33 @@ def measure(level_dir, view_distance, spawn=None, screen_height=1080.0):
         "forestTypes": forest_types,
         "materials": materials,
         "collisionTriangles": sum(s["collision"] or 0 for s in shapes.values()),
+        # what the engine builds at load: every placed object's collision by its type, and
+        # every forest item's collision mesh (`placed_collision_tris`)
+        "collisionTrianglesPlaced": sum(placed_collision.values()),
+        "collisionPlacedInstances": placed_instances,
+        "collisionPlacedByGroup": dict(placed_collision),
         # the groups whose `.dae` sources were dropped, so their ladders could not be read
         "unknownLadders": sorted(unknown_ladders),
     }
+
+
+def placed_collision_tris(shape, collision_type):
+    """Collision triangles ONE placed `TSStatic` of `shape` contributes, by its `collisionType`.
+
+    `Collision Mesh` is the shape's `Colmesh_` nodes; `Visible Mesh` / `Visible Mesh Final`
+    rasterise the shape's finest detail (the ground and road tiles keep this on purpose - the
+    visible surface IS the driving surface); a box is 12 triangles; anything else (`None`, or a
+    shape whose ladder could not be read) contributes nothing.
+    """
+    kind = collision_type.lower()
+    if kind.startswith("collision mesh"):
+        return shape["collision"] or 0
+    if kind.startswith("visible mesh"):
+        levels = shape["levels"] or {}
+        return levels[max(levels)] if levels else 0
+    if kind.startswith("bounding box") or kind.startswith("bounds"):
+        return 12
+    return 0
 
 
 def _forest_type_shapes(level_dir, name):

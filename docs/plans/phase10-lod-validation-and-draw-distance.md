@@ -1000,3 +1000,57 @@ open: `LuxuryTowerResidence` ships two generated levels of 61,594 triangles each
 stalled at the same count for both targets) — a few wasted MiB, not a defect the switch points
 can show. **Awaiting Naomi's look**: the trees mid-range, the stadium up close, the beach
 towers switching.
+
+### 8.17 Close-out (2026-08-31) — what the last open items turned out to be
+
+* **The v39 level was loaded** once, 02:43–02:54 local on 2026-08-31 (`beamng.log`: level
+  loaded at 226 s, ended at 648 s; every tree imposter atlas rebuilt at 94–99 s, 256 × 128 as
+  expected from the engine-default node). No verdict from Naomi is on record; the look list
+  (trees mid-range, the stadium up close, the beach towers switching) carries to v40. What the
+  load did give: `Loaded Static Collision in 3.819s, Verts: 39,256,103, Tris: 53,812,337,
+  Memory: 2193.07MB`; `collisionCache unique 400 MB, total 1,849 MB, saved by sharing 1,448 MB`;
+  `Physics collision reloaded in 5.728s (251,434 instances)`. That is the re-measurement the
+  runtime survey's §10 called OPEN (89.1 M / 3,720 MB before the collider cap).
+* **`lod_vertcol` is the engine's.** The a1 gate failed on `material 'lod_vertcol' bound by
+  farring_0_-1 has no mapTo`, and no `main.materials.json` of the real level defines it either
+  — because BeamNG does: `content/art_shapes.zip` → `art/shapes/common/common.materials.json`
+  (`vertColor: true`, no maps; the file's other two are `SOFT_COLLISION_GENERAL` and
+  `shock_absorber`). The ring and the far silhouettes have drawn their vertex colours all along.
+  The validator knows the set now (`ENGINE_COMMON_MATERIALS`). The gap it exposed: bindings are
+  checked from `.dae` text, and a `keep_dae: false` level has none (`daeFiles: 0` in v39's
+  validation), so the real level's bindings have never been checked — Phase 11 follow-up: read
+  them from the shapes stage's `materials_used`.
+* **The identical generated levels** (§8.16's LuxuryTowerResidence observation) were 182 of
+  2,625 LOD 2 files byte-identical to their LOD 1 — 247k triangles, 18.5 MiB — MeshLab stalling
+  at one count for two targets and the cluster backend doing the same on small props and
+  trees. The bake now leaves the copy unwritten and records it (`lods.json` `identical: [2]`,
+  `identicalLevels` in the stats; the example cube's two targets collapse this way, and the
+  bake test says so); the consumer applies the §8.13 identical-level rule to generated levels
+  (`identicalGenerated`), which is what catches the 182 in the existing bake without a re-bake.
+  Shapes v40.
+* **`tree_billboard_px` removed** (§8.14's verdict made permanent): the knob, the
+  `billboard_dimension` plumbing, the `.dae.asset.json` writer and the audit's allowance for it.
+  The dae `bb_autobillboard` node at the engine default is the billboard; the three failed
+  routes and the untested candidate are written beside it in `dae.py` and `shapewrite.py`.
+  `dae.sweep_orphans` still knows the `.cs` / `.dae.asset.json` companions so a level built
+  between v32 and v35 is swept clean.
+* **The budget instrument counts collision as the world holds it**: `collision placed` per
+  object by `collisionType` (`Collision Mesh` → the colmesh, `Visible Mesh*` → the finest
+  detail, a box → 12) and per forest item by its type's colmesh — 61,129,915 triangles over
+  371,007 instances on v39 (forest 35.8 M, cs2 16.0 M, networks 9.3 M, terraincut 76k). Against
+  the engine's 53.8 M / 251k: 14 % over on triangles, 48 % over on instances, so the engine
+  builds collision for fewer forest items than carry a colmesh (the type table's 1,890 types
+  all place a `Colmesh_` shape); declared, not chased — the engine's number is the one to
+  quote, the instrument's is the one that says where it is.
+* **Terrain PNG (156 MiB in `art/terrains`)** — declined: vanilla ships terrain textures as
+  PNG only (0 DDS references across west_coast_usa, italy, utah), cooked once into `temp/`.
+
+**The v40 rebuild (2026-08-31 14:03Z, 7m05s; the cook recompiled all 4,224 shapes because a
+`keep_dae: false` level has no `.dae` to compare against, so a shapes version bump is always a
+full cook - 191 s):** validator 0 problems, audit R1-R8 clean, **2,953 MiB** (from 2,970),
+budget at 4 km 5,394,721 (cs2 3.14 M, networks 1.11 M, forest 0.77 M, ring 0.15 M). 92 shapes
+in the level dropped a generated copy (75 props, 14 trees, 3 buildings - LuxuryTowerResidence
+now one 61,594 level from its promoted LOD 0 to 40 px, Two_Seventy_Hennepin 48k/35k,
+Torre_Tetris 47k/30k); their single generated level takes its ceiling from a shorter ladder,
+which is the +1 % in view against v39. **Awaiting Naomi's look** - the same three things as
+v39: trees mid-range, the stadium up close, the beach towers switching.

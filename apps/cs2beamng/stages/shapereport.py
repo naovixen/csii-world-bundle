@@ -84,6 +84,11 @@ def report(results, demand, scan_stats, options, errors, started, progress, rewr
     identical_levels = sum(
         len((r.get("lods") or {}).get("identicalLevels") or ()) for r in results.values()
     )
+    # ...and the bake's generated levels left out for being the geometry of the level above them
+    # (`shapelods._load_generated`; MeshLab stalling at one count for two targets)
+    identical_generated = sum(
+        int((r.get("lods") or {}).get("identicalGenerated") or 0) for r in results.values()
+    )
     if lod0_dropped:
         progress.log(
             f"shapes: {len(lod0_dropped):,} shapes over authored_lod0_max_tris ship the game's "
@@ -94,6 +99,11 @@ def report(results, demand, scan_stats, options, errors, started, progress, rewr
         progress.log(
             f"shapes: {identical_levels} authored levels left out for being identical to LOD 0"
         )
+    if identical_generated:
+        progress.log(
+            f"shapes: {identical_generated} generated levels left out for being identical to the "
+            "level above them"
+        )
     _log_ladder(progress, switch_summary, promoted, kept_small, options)
     return {
         "shapes": len(results),
@@ -102,6 +112,7 @@ def report(results, demand, scan_stats, options, errors, started, progress, rewr
         "lod0Dropped": len(lod0_dropped),
         "lod0DroppedTriangles": sum((r["lods"].get("lod0Triangles") or 0) for r in lod0_dropped),
         "identicalLevelsDropped": identical_levels,
+        "identicalGeneratedDropped": identical_generated,
         "shapesRewritten": rewritten,
         "orphansRemoved": orphans,
         "failed": len(errors),

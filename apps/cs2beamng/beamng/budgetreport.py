@@ -88,7 +88,17 @@ def report(result, compare=None):
         theirs = reference.get(key)
         ratio = f"{result[key] / theirs:5.1f}x" if theirs else "    —"
         add(f"    {label:<22}{result[key]:>10,}{(theirs or 0):>12,}  {ratio}")
-    add(f"    {'collision triangles':<22}{result['collisionTriangles']:>10,}")
+    add(f"    {'collision triangles':<22}{result['collisionTriangles']:>10,}  (per shape file)")
+    placed = result.get("collisionTrianglesPlaced")
+    if placed is not None:
+        by_group = ", ".join(
+            f"{g} {n:,}" for g, n in sorted(result.get("collisionPlacedByGroup", {}).items(), key=lambda kv: -kv[1])
+        )
+        add(f"    {'collision placed':<22}{placed:>10,}  ({by_group})")
+        add(
+            f"    {'collision instances':<22}{result.get('collisionPlacedInstances', 0):>10,}  "
+            "(objects and forest items with any collision)"
+        )
     add(f"    {'cooked shapes':<22}{result['cooked']:>10,} of {result['shapeFiles']:,}")
     return "\n".join(lines)
 

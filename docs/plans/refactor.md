@@ -2299,7 +2299,7 @@ human look proves that scene is *the right one*. A scene dump cannot notice that
 region is subtly wrong in a way both versions share, and an eye cannot certify 24 modules of
 behaviour preservation. Phase 6 has both.
 
-### Phase 10 — in progress, 2026-08-29
+### Phase 10 — opened 2026-08-29; closed out 2026-08-31 (the ledger; the close-out is the last section)
 
 **Measured before touching anything** (the 2026-08-29 rip log, `Carto.log`, and the live
 `cs2_city_fine` report of 2026-08-28):
@@ -2714,3 +2714,115 @@ could see it, was 9.2 M of the 13.7 M triangles in an 8 km view; on the game's o
 LOD 0 is an impostor card) every vegetation shape's coarsest level is now BeamNG's `bb_autobillboard`.
 Stage versions: shapes 14, instances 11, scene 4. Numbers on the rebuilt level go in the record.
 
+
+### Phase 10 — closed out, 2026-08-31
+
+Every item the phase opened is either landed and measured, declined with its reason written
+beside it, or named below as Naomi's with the recipe. Record of the LOD/residency work:
+`docs/plans/phase10-lod-validation-and-draw-distance.md` (§8.17 is the close-out); the three
+surveys are unchanged except the runtime survey's §10 table, whose statuses are current.
+
+**The gate table — before and after, same instrument each row.**
+
+| Rip stage (`Carto.log`) | 2026-08-20 golden rip | 2026-08-29 21:10 (after the producer block) |
+| --- | ---: | ---: |
+| Instances | 72.3 s | 65.3 s |
+| Meshes, materials & textures | 1,298.2 s (readback on the main thread 411.8 s on 08-29 a.m.) | **769.3 s** (readback 267.2 s) — while ripping the LOD chains, 46 % more geometry |
+| Lane graph | 46.3 s | 49.9 s |
+| Networks & lane geometry | 73.6 s | 70.3 s |
+| Terrain & water | 71.4 s | 64.5 s |
+| Manifest | 155.4 s | 124.3 s |
+| **Whole rip** | **1,719 s** | **1,146 s** |
+
+| Build stage (`cs2beamng_report.json`) | 2026-08-28, all layers, `cook: true`, 16 m 42 s | v39 2026-08-31 00:52Z, 11 m 22 s (incremental cook: changed shapes only) |
+| --- | ---: | ---: |
+| cook | 462.8 s | 327.6 s |
+| instances | 146.5 s | 95.5 s |
+| shapes | 91.7 s | 78.0 s |
+| networks | 69.7 s | 28.7 s |
+| derived | 54.6 s | 15.9 s |
+| terrain | 39.4 s | 30.2 s |
+| water | 28.6 s | 23.4 s |
+| validate | 25.0 s | 15.7 s |
+| navgraph | 20.6 s | 19.8 s |
+
+| Bake product (`done in`) | clean-room at `1760015`, `--jobs 7` | the current `derived.json` (v7 lods with MeshLab) |
+| --- | ---: | ---: |
+| terrainmask | 80 s | 72.3 s (the strip rasteriser was declined — see the ledger) |
+| terraincut | 60 s | 17.5 s |
+| lanegeometry | 82 s | 75.2 s |
+| markings | 94 s | 68.7 s |
+| areas | 65 s | 27.6 s |
+| lods | (62 % of the Phase-0 bake) | 154.3 s — a different product: MeshLab for ≥ 20k meshes, identical-copy slots generated |
+
+| Level (`cs2beamng budget`, 4 km) | Phase 0 (2026-08-20) | v39 (2026-08-31) |
+| --- | ---: | ---: |
+| resident files | 4,256 MiB | **2,970 MiB** |
+| triangles in view | 1,278,860 — an artefact: every object shape at a 2 m radius | 5,287,248 with the shapes' own radii (cs2 3.09 M, networks 1.11 M, forest 0.72 M, ring 0.15 M) |
+| static collision, the engine's own line | 3,720 MB / 89.1 M tris (`docs/cs2-api-audit.md:5440`, the A8 measurement) | **2,193 MB / 53.8 M tris**, loaded in 3.8 s (`beamng.log`, the v39 load) |
+| GPU at Normal/Ultra/High (Naomi, `getMemoryInfo`) | — | 5.85 of a 6.09 GB budget (96 %): the FPS is memory, not triangles (§8.14) |
+
+The close-out's own rebuild (v40, 14:03Z, 7 m 05 s): **2,953 MiB**, validator 0 problems, audit
+R1–R8 clean, 5,394,721 triangles in 4 km — record §8.17.
+
+**Closed today (2026-08-31), the last open items:**
+
+* **The a1 gate's one failure (`lod_vertcol` has no mapTo).** Not a test artefact and not a
+  level defect either: `lod_vertcol` is BeamNG's OWN material — `content/art_shapes.zip` →
+  `art/shapes/common/common.materials.json`, `vertColor: true`, no maps, beside
+  `SOFT_COLLISION_GENERAL` and `shock_absorber` — so the far ring and every far silhouette that
+  bind it draw with the engine's vertex-colour material, which is the convention they were
+  written to. The validator now knows the engine's common set (`levelcheck/materials.py`
+  `ENGINE_COMMON_MATERIALS`); 42/42. What the failure DID expose: the binding check reads
+  `.dae` text, and the real level is cooked with `keep_dae: false` (`daeFiles: 0`), so a built
+  level's bindings are never checked at all. Follow-up for Phase 11: check bindings from the
+  shapes stage's own `materials_used` instead of the source XML.
+* **`LuxuryTowerResidence`'s two identical generated levels** were one instance of a rule the
+  bake lacked: 182 of the reference bake's 2,625 LOD 2 files were byte-copies of their LOD 1
+  (247k triangles, 18.5 MiB — MeshLab stalling at one count for two targets, the cluster
+  backend too). The bake leaves such a level unwritten and records it (`lods.json` `identical`,
+  stats `identicalLevels`); the consumer applies the authored chain's identical-level rule to
+  generated levels as well (`shapelods._load_generated`, `identicalGenerated`), which catches
+  them in a bake made before this. Shapes v40.
+* **`tree_billboard_px` is gone.** Inert since v34: the three routes to a larger imposter cell
+  (FCOLLADA user properties — ignored by the importer; a `TSShapeConstructor` `.cs` and the
+  engine's own `<shape>.dae.asset.json` — both bake the atlas without the shape's materials,
+  flat orange, twice confirmed in-game with vanilla's parameters verbatim) are written up in
+  the record §8.14 and in `dae.py` beside the node that works. The untested candidate (tree
+  materials in a materials.json beside the shapes, the one delta left against vanilla) is
+  recorded there; a knob that does nothing is not kept for it.
+* **Static collision, "never re-measured".** The engine measured it on the v39 load: 53.8 M
+  triangles, 2,193 MB, 251,434 collision instances (from 89.1 M / 3,720 MB before the 2,000
+  cap, the `Colmesh_` skirts and the forest cap). The instrument's blind spot (2) is closed
+  with it: `cs2beamng budget` now reports `collision placed` — per object by its
+  `collisionType`, per forest item by its type's colmesh — at 61.1 M (forest 35.8 M, cs2 16.0 M,
+  networks 9.3 M) over 371k instances. It runs 14 % over the engine's triangles and 48 % over
+  its instances, so the engine builds collision for fewer forest items than carry a colmesh —
+  declared, mechanism not chased; the number to quote is the engine's.
+* **Terrain ships `.png` (156 MiB, `art/terrains`)** — declined: vanilla ships terrain textures
+  as PNG only (west_coast_usa 165, italy 225, utah 195 references, 0 DDS), and the cook is once
+  per texture into `temp/` and reused across loads. The duplication half of that item (one file
+  per image across tiers) landed on 2026-08-29.
+* **The runtime survey's other rows** — P8.1 (closed by the real radius), P3 rare types (built,
+  then removed at Naomi's request; the floor 3 / keep 5 m are her picks), P2 LOD 0 on the top
+  shapes (closed by `authored_lod0_max_tris` 5000, 637 shapes; the error-bounded decimator
+  route stays deferred, Experiment G), B2 (built) — statuses updated in the survey's table.
+
+**Declined in the ledger above, still declined:** the strip rasteriser for `terrainmask`; the lane
+`ComponentLookup`s, the hand-written JSON writer and the manifest sidecars (producer, unmeasured
+until a rip); `write_objects` caching (Phase 11's structure pass); the areas conform tolerance
+(a look question, now a setting). The Blender adapter was not touched by this phase and its LOD
+reading of `derived/lods` is unchanged (an absent level file was always a legal state).
+
+**Naomi's, with the recipe, and not blocking the phase:**
+
+1. **The look at the rebuilt level** (v40, 2,953 MiB — record §8.17): trees mid-range, the
+   stadium up close, the beach towers switching. The v39 level was loaded once, 02:43–02:54 on
+   2026-08-31 (`beamng.log`); no verdict is on record.
+2. **Torque's detail size** (record §2.4, `torque-detail-size-is-2x-aspect`): one vanish
+   distance for `EU_ResidentialLow01_L1_2x2` — ≈ 520 m under our `screen_px`, ≈ 1,860 m under
+   Torque's `2 × aspect`. Every scale since v30 was set against her looks, so the constant is
+   absorbed in `lod_detail_scale` either way; it decides only what the metres in the reports mean.
+3. **System RAM during a load** (P8.2) — Task Manager once; nothing has measured it.
+4. The old levels (`cs2_city`, `_8192`, `_a1`, `_nocut`, `_network`, `cs2_region`, the 1.66 GB
+   zip) under `levels/` — hers to keep or drop.

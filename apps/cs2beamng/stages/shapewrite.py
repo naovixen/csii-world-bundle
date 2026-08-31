@@ -112,14 +112,12 @@ def shape_job(job):
     lod_stats["detailSizes"] = [int(px) for px, _ms in levels]
     lod_stats["triangles"] = [int(sum(len(m.tris) for m in ms)) for _px, ms in levels]
     lod_stats["levels"] = len(levels)
-    # The asset.json imposter route bakes ORANGE for our shapes even with vanilla's tree
-    # parameters verbatim (two in-game confirmations, record §8.14). Vanilla's work; the delta
-    # left standing is WHERE the materials live - theirs beside the shape, ours in
-    # art/cs2/main.materials.json - and the asset route bakes at shape-load, before ours mount.
-    # The dae `bb_autobillboard` node bakes later and has rendered correctly in every build, so
-    # it is the billboard; `tree_billboard_px` is INERT until the bake's material context is
-    # solved (a shape-adjacent materials.json is the untested candidate).
-    cs_billboard = None
+    # The billboard is the dae `bb_autobillboard` node at the engine's default cell (64 px).
+    # Sizing the cell was tried three ways in Phase 10 (record §8.14) - FCOLLADA user
+    # properties (ignored by the importer), a TSShapeConstructor `.cs` and the engine's own
+    # `<shape>.dae.asset.json` (both bake the atlas without the shape's materials: flat orange
+    # trees, twice confirmed in-game, vanilla's parameters verbatim). The one delta left against
+    # vanilla is where the materials live (theirs beside the shape); untested.
     shape = dae.Shape(
         shape_name,
         levels,
@@ -129,7 +127,6 @@ def shape_job(job):
     )
     path = os.path.join(job.out_dir, shape_name + ".dae")
     written = dae.write_shape(path, shape)
-    _write_constructor(job.out_dir, shape_name, cs_billboard, lod_stats)
     return key, _result(
         shape_name,
         written,
@@ -145,47 +142,6 @@ def shape_job(job):
         trunk_ratio=trunk_ratio,
         lod_stats=lod_stats,
     )
-
-
-def _write_constructor(out_dir, shape_name, cs_billboard, lod_stats):
-    """The shape's `<name>.dae.asset.json` imposter config, or none (and no stale file).
-
-    First shipped as a `TSShapeConstructor` `.cs` (vanilla GridMap's route); the engine's shape
-    loader IMPORTS that and rewrites it as `<shape>.dae.asset.json`, deleting the script as
-    "obsolete ... replaced by" (`Resource2<TSShape>::create`, watched live 2026-08-31). So this
-    writes the destination format directly - one file, no per-shape convert on every cook.
-    """
-    path = os.path.join(out_dir, shape_name + ".dae.asset.json")
-    cs_path = os.path.join(out_dir, shape_name + ".cs")
-    if os.path.isfile(cs_path):
-        os.remove(cs_path)
-    if cs_billboard is None:
-        if os.path.isfile(path):
-            os.remove(path)
-        return
-    px, dim = cs_billboard
-    doc = {
-        "imposters": [
-            {
-                "detailLevel": 0,
-                "dimension": int(dim),
-                "equatorSteps": 16,  # vanilla's trees, verbatim
-                "includePoles": False,
-                "polarAngle": 0,
-                "polarSteps": 0,
-                "size": int(px),
-            }
-        ]
-    }
-    text = json.dumps(doc, indent=2, sort_keys=True).encode("utf-8")
-    try:
-        if os.path.isfile(path) and open(path, "rb").read() == text:
-            return
-    except OSError:
-        pass
-    with open(path, "wb") as handle:
-        handle.write(text)
-    lod_stats["imposterConstructor"] = {"px": int(px), "dim": int(dim)}
 
 
 def _result(

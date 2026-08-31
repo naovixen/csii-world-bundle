@@ -375,7 +375,15 @@ def _authored_ladder(base_mesh, chain, stats):
 def _load_generated(
     meshes, generated, stats, derived_dir, source, shape_name, aliases, tinted, level_name
 ):
-    """Append the bake's LOD1/LOD2 meshes, skipping any it did not write or that came out empty."""
+    """Append the bake's LOD1/LOD2 meshes, skipping any it did not write, that came out empty,
+    or that is the same geometry as the level above it (`identicalGenerated`, counted).
+
+    The last is the authored chain's identical-level rule (`authored_chain`, §8.13) applied to
+    the bake's own output: a decimator that stalls at one count for two targets
+    (LuxuryTowerResidence, 61,594 twice; 182 of the reference bake's 2,625 LOD 2 files) hands
+    Torque a switch that redraws the same pixels for the bytes. The bake stops writing those
+    (`bake/lods._nodes_digest`); this catches them in a bake made before it did.
+    """
     for level in (1, 2):
         path = os.path.join(derived_dir, "lods", f"{source}_LOD{level}.glb")
         if not os.path.isfile(path):
@@ -388,6 +396,9 @@ def _load_generated(
             continue
         mesh = daemesh.group_by_material(daemesh.merge_meshes(f"{shape_name}_LOD{level}", parts))
         if len(mesh.tris) == 0:
+            continue
+        if _mesh_digest(mesh) == _mesh_digest(meshes[-1]):
+            stats["identicalGenerated"] = stats.get("identicalGenerated", 0) + 1
             continue
         meshes.append(mesh)
         generated.append(level)

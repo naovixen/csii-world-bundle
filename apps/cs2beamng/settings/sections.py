@@ -123,7 +123,6 @@ SECTIONS = [
                     "lod_detail_scale_tree",
                     "lod_detail_scale_large",
                     "lod_large_radius_m",
-                    "tree_billboard_px",
                     "lod_switch_error_px",
                     "lod0_max_error",
                     "lod0_min_triangles",

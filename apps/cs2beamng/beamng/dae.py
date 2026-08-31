@@ -66,11 +66,8 @@ class Shape:
     """`levels`: [(px, [Mesh, ...]), ...] from nearest (largest px) to farthest; `collision`:
     [Mesh, ...] (`Colmesh_<name>-N`); `billboard_px` / `null_px`: thresholds or None."""
 
-    def __init__(
-        self, name, levels, collision=(), billboard_px=None, null_px=None, billboard_dimension=None
-    ):
+    def __init__(self, name, levels, collision=(), billboard_px=None, null_px=None):
         self.name = name
-        self.billboard_dimension = billboard_dimension  # imposter atlas cell px (Torque: 64)
         self.levels = list(levels)
         for px, _ms in self.levels:
             if int(px) <= 0:
@@ -166,20 +163,15 @@ def write_shape(path, shape):
         f.write('      <node id="base00" name="base00" type="NODE">\n')
         if shape.billboard_px is not None:
             px = int(shape.billboard_px)
-            # Torque reads a node's user properties out of the FCOLLADA <user_properties> text
-            # (`ColladaAppNode`): `bb_dimension` is the imposter atlas CELL in pixels, default
-            # 64 - the whole tree in a 256 x 128 atlas (measured), its canopy thinning to
-            # nothing at the crossover (Naomi, v30). `bb_includePoles` keeps the top view.
-            props = (
-                f"<extra><technique profile=\"FCOLLADA\"><user_properties>"
-                f"bb_dimension={int(shape.billboard_dimension)};bb_includePoles=1;"
-                f"</user_properties></technique></extra>"
-                if shape.billboard_dimension
-                else ""
-            )
+            # The engine's default imposter: a 64 px atlas cell, the whole tree in a 256 x 128
+            # atlas (measured in temp/). Sizing the cell was tried three ways in Phase 10
+            # (record §8.14): FCOLLADA `bb_dimension` user properties (ignored by the importer),
+            # a TSShapeConstructor `.cs` and the engine's `<shape>.dae.asset.json` (both bake
+            # the atlas without the shape's materials - flat orange trees). This node has
+            # rendered correctly in every build.
             f.write(
                 f'        <node id="bb_autobillboard{px}" name="bb_autobillboard{px}" type="NODE">'
-                f"{props}</node>\n"
+                f"</node>\n"
             )
         if shape.null_px is not None:
             px = int(shape.null_px)

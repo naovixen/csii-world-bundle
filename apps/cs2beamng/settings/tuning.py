@@ -230,18 +230,6 @@ TUNING_SETTINGS = (
         unit="m",
     ),
     Setting(
-        key="tree_billboard_px",
-        default=128,
-        kind="choice:64|128|256",
-        label="Tree billboard sharpness",
-        blurb="The size of each angle of a tree's distant picture, in pixels.",
-        help="Imposter atlas cell for vegetation billboards (Torque's default is 64)",
-        detail="CURRENTLY INERT. Setting the size through the shape's asset file bakes the "
-        "picture without its materials — flat orange trees — even with the game's own "
-        "parameters, because this level's materials do not live beside the shapes the way "
-        "the game's do. The engine default is used until that is solved.",
-    ),
-    Setting(
         key="far_ring_metres",
         default=2500.0,
         kind="float",

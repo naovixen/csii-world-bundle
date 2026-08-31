@@ -129,20 +129,31 @@ def _flatten(node):
     return out
 
 
+def _corner_digest(pieces):
+    """Order-independent geometry digest: the sorted, rounded corner positions of every triangle
+    in `pieces` (each a dict with `verts` and `tris`). Two levels built from the same source in
+    a different triangle or material order digest the same; anything else differs."""
+    corners = []
+    for piece in pieces:
+        verts = numpy.asarray(piece["verts"], dtype=numpy.float64)
+        tris = numpy.asarray(piece["tris"], dtype=numpy.int64)
+        if len(tris):
+            corners.append(verts[tris].reshape(-1, 9))
+    if not corners:
+        return b""
+    stack = numpy.concatenate(corners).round(4)
+    return stack[numpy.lexsort(stack.T[::-1])].tobytes()
+
+
+def _nodes_digest(level_nodes):
+    """`_corner_digest` over a written level's `{"name", "primitives": [...]}` nodes."""
+    return _corner_digest([prim for node in level_nodes for prim in node["primitives"]])
+
+
 def _authored_is_copy(nodes, lod_nodes):
     """True when every authored level's geometry is a copy of level 0's (order-independent:
     the sorted corner positions per level; the consumer's identical-level rule, §8.13)."""
-    def digest(group):
-        corners = []
-        for node in group:
-            verts = numpy.asarray(node["verts"], dtype=numpy.float64)
-            tris = numpy.asarray(node["tris"], dtype=numpy.int64)
-            if len(tris):
-                corners.append(verts[tris].reshape(-1, 9))
-        if not corners:
-            return b""
-        stack = numpy.concatenate(corners).round(4)
-        return stack[numpy.lexsort(stack.T[::-1])].tobytes()
+    digest = _corner_digest
     base = digest([n for n in nodes if glb.lod_level(n["name"])[1] == 0])
     levels = {}
     for node in lod_nodes:
@@ -212,9 +223,22 @@ def _process_file(args):
                 prims.append(prim)
             per_level_nodes[li].append({"name": node["name"], "primitives": prims})
     written = []
+    identical = []
+    previous = None
     for li in range(len(targets)):
         if not per_level_nodes[li]:
             continue
+        # A level whose geometry is the level above it is not a LOD: MeshLab stalls at the same
+        # count for two targets on a hard facade (LuxuryTowerResidence: 61,594 twice) and the
+        # cluster backend can too. 182 of the reference bake's 2,625 LOD 2 files were byte-copies
+        # of their LOD 1 (18.5 MiB). The switch to it would draw the same pixels for the bytes,
+        # so it is left unwritten and counted; the consumer's identical-level rule catches the
+        # same case in a bake made before this.
+        digest = _nodes_digest(per_level_nodes[li])
+        if previous is not None and digest == previous:
+            identical.append(li + 1)
+            continue
+        previous = digest
         out = os.path.join(out_dir, f"{asset_id}_LOD{li + 1}.glb")
         glbwrite.write_glb(out, per_level_nodes[li])
         written.append(os.path.basename(out))
@@ -240,6 +264,7 @@ def _process_file(args):
             "tris": tri_in,
             "levels": tri_out,
             "files": written,
+            "identical": identical,
             "displacement": displacements,
             # the backend that shaped most of each level's triangles
             "backends": [c.most_common(1)[0][0] if c else None for c in backends],
@@ -279,6 +304,7 @@ def run(context, progress):
     args = [(bundle, lay.meshes, out_dir, n, targets, backend, catalogue) for n in names]
     stats = {
         "meshes": len(names),
+        "identicalLevels": 0,  # generated levels left unwritten as copies of the one above
         "baked": 0,
         "authored": 0,
         "refused": 0,
@@ -302,6 +328,7 @@ def run(context, progress):
         key = status.split(":")[0]
         stats[key] = stats.get(key, 0) + 1
         if status == "baked":
+            stats["identicalLevels"] += len(st.get("identical") or ())
             stats["trisIn"] += st["tris"]
             for i, t in enumerate(st["levels"]):
                 stats["trisOut"][i] += t
@@ -313,6 +340,7 @@ def run(context, progress):
                 "levels": st["levels"],
                 "displacement": st["displacement"],
                 "backends": st.get("backends"),
+                "identical": st.get("identical") or [],
             }
         elif status.startswith("failed"):
             progress.log(f"{asset_id}: {status}")

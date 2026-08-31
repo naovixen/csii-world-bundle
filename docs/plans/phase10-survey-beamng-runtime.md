@@ -259,14 +259,14 @@ commensurate. What it does well: `heaviestShapes` / `shapeBytesTop100` (`:293-29
 | item | where | status |
 | --- | --- | --- |
 | Runtime imposters | `docs/cs2-api-audit.md:5399-5445` | CLOSED — `imposter_min_metres`; 190 of 4,275 shapes = 4.4 % |
-| Static collision 3,720 MB / 89.1 M tris, 3,062 MB forest | `docs/cs2-api-audit.md:5440-5445` | **OPEN** — never re-measured |
+| Static collision 3,720 MB / 89.1 M tris, 3,062 MB forest | `docs/cs2-api-audit.md:5440-5445` | CLOSED 2026-08-31 — the engine's own line on the v39 load: **2,193 MB / 53.8 M tris**, 251k instances; `cs2beamng budget` reports `collision placed` (record §8.17) |
 | Oversized box colliders | `stages/shapecollider.py:48-57` | CLOSED — `BOX_COLLIDER_MAX_METRES = 20` |
-| P8.1 — object drawn-triangle count is not measuring objects | `a8-performance.md:314-318` | **OPEN** — §0 |
-| P8.2 — nothing has measured system RAM | `a8-performance.md:319-321` | OPEN |
-| P3 Extras — `forest_rare_type_min` (N=10 → 241 MiB) | `a8-performance.md:362-380` | **OPEN, deferred** |
-| P2 rest — decimate LOD 0 on the top 100 shapes (964 MiB) | `a8-performance.md:382-385` | OPEN |
-| B2 material dedup by texture set | `beamng-consumer-plan.md:190` | **"adopt", never built** |
-| Terrain ships `.png`, cooked at first load | `a8-performance.md:309-311` | OPEN — 235 MiB |
+| P8.1 — object drawn-triangle count is not measuring objects | `a8-performance.md:314-318` | CLOSED — the cook writes each shape's radius into `shape_ladders.json`; cs2 15,019 → 3.09 M in the same view |
+| P8.2 — nothing has measured system RAM | `a8-performance.md:319-321` | OPEN — Naomi's (Task Manager during a load); GPU is measured: 5.85 of 6.09 GB at Normal/Ultra/High |
+| P3 Extras — `forest_rare_type_min` (N=10 → 241 MiB) | `a8-performance.md:362-380` | CLOSED — built at 10, dropped half-built prop families and the stadium floodlights, removed at Naomi's request; her picks are floor 3 with `forest_rare_keep_radius` 5 m |
+| P2 rest — decimate LOD 0 on the top 100 shapes (964 MiB) | `a8-performance.md:382-385` | CLOSED — `authored_lod0_max_tris` 5000 leaves LOD 0 out of 637 shapes (the game's LOD 1 nearest; degenerate LOD 1s under 5 % keep LOD 0); decimating LOD 0 itself failed (Experiment G, record §8.9) and the MeshLab backend serves the no-chain landmarks (§8.15) |
+| B2 material dedup by texture set | `beamng-consumer-plan.md:190` | CLOSED — built 2026-08-29 (`shapematerials.material_tables`: one material per distinct paint variant; 1,240 of 6,123 were byte-copies) |
+| Terrain ships `.png`, cooked at first load | `a8-performance.md:309-311` | CLOSED as declined (156 MiB after the tier dedup) — vanilla ships terrain textures as PNG only (0 DDS refs in west_coast_usa/italy/utah); the cook is once per texture into `temp/` |
 | BeamNG's slow-scene order: (1) unique materials, (2) vegetation, (3) shadow lights, (4) overdraw, (5) textures, (6) heavy collision on touched objects | `beamng-consumer-plan.md:154-160` | our level is worst on (1) and (6) |
 | BeamNG guidance: simple collision for buildings/props; avoid Visible Mesh collision | `beamng-consumer-plan.md:158-160` | contradicted by the 20k cap and by skirts |
 

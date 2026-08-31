@@ -159,9 +159,7 @@ def main():
                 # vegetation with the game's own chain (flower pots, beds) keeps the chain
                 fail("R3", name, f"a tree ships {len(sizes)} mesh levels, not 1")
             tris0 = (lods.get("triangles") or [0])[0]
-            if lods.get("imposterConstructor"):
-                pass  # the billboard rides the TSShapeConstructor .cs (v32), not the dae node
-            elif bb is None and tris0 > 1000 and not lods.get("authored"):
+            if bb is None and tris0 > 1000 and not lods.get("authored"):
                 # a flower pot never earns a billboard; a canopy always must
                 fail("R3", name, f"a tree of {tris0:,} triangles with no billboard")
         elif kind == "building":
