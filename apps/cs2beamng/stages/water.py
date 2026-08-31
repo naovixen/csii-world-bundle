@@ -31,6 +31,9 @@ from . import Stage, level_of
 STAGE_KEY = "water"
 BAND_M = 1.0
 MIN_CELLS = 3
+# how far down the depth-to-colour ramp runs (`depthGradientMax`, and the span `_depth_ramp`
+# attenuates over)
+DEPTH_GRADIENT_MAX_M = 50.0
 MAX_BLOCKS = 200
 DOWNSAMPLE = 8
 SEA_MIN_FRACTION = 0.02  # a band must cover this share of the coarse grid to be "the sea"
@@ -181,7 +184,7 @@ def run(ctx, progress):
 
     # -- objects ---------------------------------------------------------------------------
     progress.begin("water: objects", total=len(blocks) + (1 if sea else 0), unit="objects")
-    common = _appearance_fields(appearance)
+    common = _appearance_fields(appearance, ramp_path=_depth_ramp(level, appearance))
     if sea is not None:
         obj = {
             "name": "sea",
@@ -256,7 +259,29 @@ def _intersects(region, min_x, min_z, max_x, max_z):
     return region_rule.intersects_box(region, min_x, min_z, max_x, max_z)
 
 
-def _appearance_fields(appearance):
+def _depth_ramp(level, appearance):
+    """`art/water/depthcolor_ramp.png` — OUR depth-to-colour ramp, from the bundle's own water.
+
+    The first ramp shipped was vanilla west_coast_usa's (validation pass A2): it stopped the
+    per-block `Texture missing` errors, but its pale-teal shallow end painted the sea's coastal
+    level-band blocks as milky squares along the map borders — Naomi's "square fog", and the
+    wall that read as a halved view distance. The ramp is BeamNG's mechanism; the colours are
+    CS2's: Beer-Lambert from the water's own scattering colour down over `depthGradientMax`
+    metres at the bundle's `absorptionDistance` — the same attenuation the fog density models.
+    """
+    base = [max(0.0, float(c)) for c in (appearance.scattering_color or (0.1, 0.2, 0.3, 1))[:3]]
+    absorption = max(1.0, float(appearance.absorption_distance))
+    t = numpy.arange(256, dtype=numpy.float64) / 255.0
+    linear = numpy.outer(numpy.exp(-(t * DEPTH_GRADIENT_MAX_M) / absorption), base)
+    srgb = numpy.clip(
+        [[colourspace.linear_to_srgb(float(v)) for v in row] for row in linear], 0.0, 1.0
+    )
+    ramp = (numpy.asarray(srgb).reshape(1, 256, 3) * 255.0 + 0.5).astype(numpy.uint8)
+    level.write_bytes_if_changed(png.encode_rgb(ramp), "art", "water", "depthcolor_ramp.png")
+    return level.game_path("art", "water", "depthcolor_ramp.png")
+
+
+def _appearance_fields(appearance, ramp_path=None):
     """WaterObject fields from the bundle's water appearance (§8 `rasters.water`)."""
     base = appearance.base_color
     srgb = [
@@ -280,7 +305,7 @@ def _appearance_fields(appearance):
         "fullReflect": False,
         "reflectivity": 0.3,
         "specularPower": 200,
-        "depthGradientMax": 50,
+        "depthGradientMax": DEPTH_GRADIENT_MAX_M,
         "distortStartDist": 0.1,
         "distortEndDist": 20,
         "distortFullDepth": 3.5,
@@ -290,12 +315,12 @@ def _appearance_fields(appearance):
         "foamTex": "core/art/water/foam.dds",
         "rippleTex": "core/art/water/ripple.dds",
         # The depth-to-colour ramp the shader reads against `depthGradientMax`. Every vanilla
-        # WaterBlock names one (west_coast_usa: this file; italy: its muddy variant); without it
-        # the engine logged `WaterObject::initTextures| Texture missing:` once per block - 188
-        # times on Naomi's 2026-08-31 load - and the shore had no depth gradient at all
-        # (validation pass 2026-08-31, A2). A game asset (`content/assets/materials/tileable.zip`),
-        # so nothing is shipped.
-        "depthGradientTex": "assets/materials/tileable/water/depthcolor_ramp/depthcolor_ramp_b.png",
+        # WaterBlock names one; without one the engine logged `WaterObject::initTextures|
+        # Texture missing:` once per block - 188 times on the 2026-08-31 load (A2). OURS,
+        # generated from the bundle's water colours (`_depth_ramp`); the vanilla teal ramp is
+        # the declared fallback for a caller with no level to write into.
+        "depthGradientTex": ramp_path
+        or "assets/materials/tileable/water/depthcolor_ramp/depthcolor_ramp_b.png",
         "wetDarkening": 0.3,
         "wetDepth": 0.5,
         "viscosity": 0.001,
@@ -307,6 +332,9 @@ INPUTS = ("layer:water", "layer:terrain", "layer:terrainFine")
 SETTINGS = ("water", "terrain_upsample")
 
 # version 2: every water object names its `depthGradientTex` (A2)
+# version 3: ...and the ramp is OURS, from the bundle's scattering colour and absorption -
+# vanilla's pale-teal ramp painted the sea's coastal level-band blocks as milky squares along
+# the map borders ("square fog", a halved-looking view distance)
 STAGE = Stage(
-    STAGE_KEY, "Water", enabled, units, run, inputs=INPUTS, settings_keys=SETTINGS, version=2
+    STAGE_KEY, "Water", enabled, units, run, inputs=INPUTS, settings_keys=SETTINGS, version=3
 )

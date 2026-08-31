@@ -164,6 +164,7 @@ def run(ctx, progress):
         progress.advance(1)
     # areas
     area_count = 0
+    area_ground_fallbacks = 0
     area_exported = {}  # (src, kind, keep_alpha) -> game path
     areas_path = os.path.join(ctx.derived_dir, "areas", "materials.json")
     if os.path.isfile(areas_path):
@@ -199,6 +200,28 @@ def run(ctx, progress):
                     area_exported,
                     texture_stats,
                 )
+            if not maps.get("baseColor") and not rec.get("unresolved"):
+                # A texture-less surface on the `Terrain` decal layer paints the game's own
+                # ground (modded terrain-painting packs: moss, grass, plain "Terrain") - CS2
+                # draws the terrain through it, so there is no texture to rip. Surfaced BY NAME
+                # onto the bundle's own ground albedo (contract 8b's advice for the lookalike
+                # case); a name the table does not know keeps the grey, which is the game's own
+                # Missing Area colour. Naomi's "large grey field" was a moss surface (2026-08-31).
+                fallback = _ground_surface_fallback(ctx, rec)
+                if fallback:
+                    maps["baseColor"] = _area_texture(
+                        level,
+                        ctx,
+                        fallback,
+                        "color",
+                        caps,
+                        cache,
+                        use_dds,
+                        ledger,
+                        area_exported,
+                        texture_stats,
+                    )
+                    area_ground_fallbacks += 1
             arec = {
                 "alphaMode": "mask" if keep_alpha else "opaque",
                 "alphaCutoff": 0.5,
@@ -250,6 +273,8 @@ def run(ctx, progress):
         "named": len(materials),
         "canonical": len(canonical),
         "areaMaterials": area_count,
+        # texture-less Terrain-decal surfaces surfaced by name onto the bundle's ground albedo
+        "areaGroundFallbacks": area_ground_fallbacks,
         "paintVariantMaterials": variant_count,
         "paintVariantKinds": variant_kinds,
         "textures": len(job_list),
@@ -405,6 +430,31 @@ def _texture_bytes(level):
     return {"files": files, "bytes": total, "mib": round(total / (1 << 20), 1)}
 
 
+# name keyword -> the bundle ground whose albedo stands in for a texture-less Terrain-decal
+# surface (`terrain/surfaces/<ground>.png`); checked in order, first hit wins
+GROUND_FALLBACK_KEYWORDS = (
+    ("moss", "grass"),
+    ("grass", "grass"),
+    ("terrain", "dirt"),
+    ("soil", "dirt"),
+    ("rock", "rock"),
+)
+
+
+def _ground_surface_fallback(ctx, rec):
+    """`terrain/surfaces/<ground>.png` (bundle-relative) for a texture-less Terrain-decal
+    surface whose name says which ground it paints, or None (the grey placeholder stays)."""
+    if "Terrain" not in (rec.get("decal_layers") or ()):
+        return None
+    name = str(rec.get("name") or "").lower()
+    for keyword, ground in GROUND_FALLBACK_KEYWORDS:
+        if keyword in name:
+            rel = f"terrain/surfaces/{ground}.png"
+            if os.path.isfile(os.path.join(ctx.bundle, rel)):
+                return rel
+    return None
+
+
 def _has_alpha(path):
     header = png.read_header(path)
     if header is None or header[3] not in (4, 6):
@@ -495,6 +545,8 @@ OUTPUTS = ("art/cs2/main.materials.json", "art/textures")
 #            where the bake could join one, instead of white at a flat 200 (A6.9/D5)
 # version 7: a joined slot of ZERO nits is honoured rather than falling back to the flat 200 -
 #            115 slots say zero and every one is the UNLIT face of a billboard (A6.9/D5)
+# version 10: a texture-less Terrain-decal surface takes the bundle's ground albedo by name
+# (moss/grass -> grass, terrain/soil -> dirt); unknown names keep the game's own grey
 # version 9: the bake's rebuilt normal (`derived.normalRgb`) reaches the plan (B1); a packed
 # normal met at export is rebuilt to RGB (B2); the texture ledger keys on the pipeline version
 # (B3); an encode failure fails the stage instead of counting as a missing source (B10)
@@ -512,5 +564,5 @@ STAGE = Stage(
     outputs=OUTPUTS,
     shared_keys=("materials",),
     after=("shapes", "networks", "derived"),
-    version=9,
+    version=10,
 )

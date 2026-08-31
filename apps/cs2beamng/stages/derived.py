@@ -72,6 +72,8 @@ TILE_RE = re.compile(r"^(?P<product>[a-z]+)_(?P<tx>-?\d+)_(?P<tz>-?\d+)\.glb$")
 # collision triangles (refactor Phase 10 survey §4). The terrain cut IS the ground there and keeps
 # the exact mesh.
 COLMESH_PRODUCTS = ("skirts", "lanegeometry")
+# products that are PAINT: their far levels stay exact subsets, never decimated (see `_tile_job`)
+PAINT_PRODUCTS = ("markings", "areas")
 
 
 def enabled(settings):
@@ -254,7 +256,14 @@ def _tile_job(args):
         return None
     shape_name = f"{product}_{tx}_{tz}"
     mesh = daemesh.group_by_material(daemesh.merge_meshes(shape_name, parts))
-    levels, ladder = _tile_levels(shape_name, mesh, detail_scale, view_distance, tile)
+    # PAINT is never decimated: a marking or an area is thin alpha-masked quads, and the
+    # vertex clusterer that serves a road tile defaces them - the A1 fix made the mid and far
+    # bands VISIBLE (they used to vanish where the null tied a level's size), and what showed
+    # there was clustered paint reading as black and colourless blotches (Naomi, 2026-08-31).
+    # A paint tile's levels are the game's own culled subsets - a real ladder, nothing moved.
+    levels, ladder = _tile_levels(
+        shape_name, mesh, detail_scale, view_distance, tile, decimate=product not in PAINT_PRODUCTS
+    )
     collision = _tile_colmesh(shape_name, levels) if product in COLMESH_PRODUCTS else ()
     path = level.path("art", "shapes", product, f"{shape_name}.dae")
     stats = dae.write_shape(
@@ -355,7 +364,7 @@ OUTPUTS = ("art/shapes",)
 # whole argument and every helper live in `beamng/tilelod.py`, shared with the networks stage.
 
 
-def _tile_levels(shape_name, mesh, detail_scale, view_distance=None, tile=None):
+def _tile_levels(shape_name, mesh, detail_scale, view_distance=None, tile=None, decimate=True):
     """`([(px, [Mesh]), ...], ladder)` for one merged tile."""
     return tilemesh.build_levels(
         dae,
@@ -365,11 +374,14 @@ def _tile_levels(shape_name, mesh, detail_scale, view_distance=None, tile=None):
         lod.DEFAULT_LEVEL_OF_DETAIL,
         TILE_DETAIL_PX,
         view_distance=view_distance,
-        targets=tilemesh.TILE_TARGETS if view_distance else None,
+        targets=tilemesh.TILE_TARGETS if (view_distance and decimate) else None,
         tile=tile,
     )
 
 
+# version 12: paint tiles (markings, areas) are never decimated - their far levels are the
+# game's own culled subsets; the clustered paint read as black/colourless blotches once the A1
+# fix made those bands visible (Naomi, 2026-08-31)
 # version 11: skirts need `buildings` on as well as `skirts` (B8)
 # version 10: a tile's `nulldetail` is kept UNDER its coarsest detail (`tilelod.tile_levels`);
 # it sat `detail_scale` times above it wherever the game's own cull was inside the view
@@ -384,5 +396,5 @@ STAGE = Stage(
     settings_keys=SETTINGS,
     outputs=OUTPUTS,
     shared_keys=("materials_used",),
-    version=11,
+    version=12,
 )

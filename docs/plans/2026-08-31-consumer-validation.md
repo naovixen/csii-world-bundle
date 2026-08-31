@@ -124,3 +124,28 @@ C1 residual (the network far level stops at 2.81 M against a 0.8 M target — th
 decimator's per-run floor, not the pins), and the D-items declined above. The look items for
 Naomi are unchanged, plus: bridge shadows still present / flat roads no longer self-shadowing,
 and distant texture colour (mips are slightly brighter and truer now).
+
+## Naomi's first look at the pass (2026-08-31 evening) — three reports, three fixes
+
+Her load's log was clean (the 188 water errors GONE - A2 works), `LevelInfo` ships 8 km, and
+the instrument showed everything drawn at 8 km - so all three were render-side:
+
+1. **"Square fog covering the borders" / "view distance cut in half"** - vanilla's
+   `depthcolor_ramp_b.png` (the A2 ramp) has a PALE TEAL shallow end, and the sea's coastal
+   level-band WaterBlocks (only the largest band becomes the infinite plane; the rest are
+   literal boxes along the coast) went from sampling a missing (black) ramp to milky teal:
+   fog-like squares along the map borders that walled off the view across the bay. Fix: the
+   ramp is OURS now - `stages/water._depth_ramp` writes `art/water/depthcolor_ramp.png` as
+   Beer-Lambert over `depthGradientMax` from the bundle's own scattering colour and
+   `absorptionDistance` (water v3). The A2 no-missing-texture fix stays.
+2. **"Black patches under houses"** - the A1 fix made the mid/far bands of paint tiles VISIBLE
+   (they used to vanish where the null tied a level), and what showed there was the
+   vertex-CLUSTERED far level of alpha-masked paint. Paint is never decimated now: a
+   markings/areas tile's levels are the game's own culled subsets, exact (`PAINT_PRODUCTS`,
+   derived v12).
+3. **"A large field just grey"** - a modded terrain-painting surface (`TTP Moss/Grass`,
+   `Terrain01/02`, `I8MOSS01F`): texture-less BY DESIGN (CS2 paints the terrain's own ground
+   through them; there is nothing to rip), so it fell to the grey placeholder. Surfaced BY NAME
+   onto the bundle's own ground albedo (moss/grass -> grass, terrain/soil -> dirt, materials
+   v10, counted as `areaGroundFallbacks`); `Missing Area` and unknown names keep the grey,
+   which is the game's own fallback colour.

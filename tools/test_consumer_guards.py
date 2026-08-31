@@ -244,7 +244,42 @@ def test_cooked_shape_checks_read_the_stage_record():
         )
 
 
+def test_ground_surface_fallback():
+    """A texture-less Terrain-decal surface takes the bundle's ground albedo BY NAME (a modded
+    moss/grass/terrain paint has no texture to rip - CS2 draws the terrain through it); an
+    unknown name keeps the game's own grey (the Missing Area colour)."""
+    import types
+
+    from cs2beamng.stages import materials
+
+    with tempfile.TemporaryDirectory() as tmp:
+        os.makedirs(os.path.join(tmp, "terrain", "surfaces"))
+        for ground in ("grass", "dirt"):
+            open(os.path.join(tmp, "terrain", "surfaces", ground + ".png"), "wb").write(b"x")
+        ctx = types.SimpleNamespace(bundle=tmp)
+        pick = materials._ground_surface_fallback
+        check(
+            pick(ctx, {"name": "TTP - Moss 1 S Surface", "decal_layers": ["Terrain"]})
+            == "terrain/surfaces/grass.png",
+            "a moss surface takes the grass albedo",
+        )
+        check(
+            pick(ctx, {"name": "Terrain01", "decal_layers": ["Terrain"]})
+            == "terrain/surfaces/dirt.png",
+            "a terrain surface takes the dirt albedo",
+        )
+        check(
+            pick(ctx, {"name": "Missing Area", "decal_layers": ["Terrain"]}) is None,
+            "an unknown name keeps the grey",
+        )
+        check(
+            pick(ctx, {"name": "Moss thing", "decal_layers": ["Roads"]}) is None,
+            "a surface not on the Terrain decal layer is left alone",
+        )
+
+
 def main():
+    test_ground_surface_fallback()
     test_cooked_shape_checks_read_the_stage_record()
     test_meshlab_gate_per_level()
     test_poi_roads_come_from_the_tree()
