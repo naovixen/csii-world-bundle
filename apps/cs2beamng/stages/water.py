@@ -41,6 +41,11 @@ DEPTH_GRADIENT_MAX_M = 50.0
 # conservation - so those bodies are dropped, counted and logged. A pond or lake at its OWN
 # level is untouched. Removed when the producer's re-based rip lands (TerrainRipSystem.Water).
 PHANTOM_LEVEL_EPS_M = 2.0
+# Water shallower than this never renders in the game (the shader fades by depth), so it does
+# not become an opaque block here. TUNED - the exact fade is in the compiled shader. Inert on a
+# pre-fix bundle (the smeared depths are metres); the finishing guard for the producer's
+# re-based rip, whose honest levels leave millimetre films where the sim had surface moisture.
+MIN_RENDER_DEPTH_M = 0.15
 # A band component becomes one axis-aligned box, and a box that is mostly dry covers things -
 # the dock basin's rectangle lay across the quay road (Naomi, 2026-08-31). The refinement is
 # BUDGETED (`_refine_worst_boxes`): every component is collected first, then the box covering
@@ -127,6 +132,7 @@ def run(ctx, progress):
     levels = png.gray_array(paths.water).astype(numpy.float64)
     levels = numpy.where(levels > 0, levels * scale + offset, 0.0)
     heights = png.gray_array(paths.heightmap).astype(numpy.float64) * scale + offset
+    levels, fine_stats = _drop_enclosed_water(levels, heights, progress)
     grid = water_mod.coarse_grid(levels, heights, DOWNSAMPLE)
     bodies = water_mod.bodies(
         levels,
@@ -264,6 +270,8 @@ def run(ctx, progress):
         # signature (`PHANTOM_LEVEL_EPS_M`); the real cure is the re-based rip
         "phantomBodiesDropped": phantom["count"],
         "phantomCells": phantom["cells"],
+        "enclosedTexelsDropped": fine_stats["enclosedTexels"],
+        "filmTexelsDropped": fine_stats["filmTexels"],
         "seaWaveScale": round(appearance.sea_wave_scale, 4),
         "lakeWaveScale": round(appearance.lake_wave_scale, 4),
         # APPROXIMATED unless the game says the wind branch is dead: with
@@ -274,6 +282,47 @@ def run(ctx, progress):
         else "APPROXIMATED (wind-driven in game; fixed here)",
         "seconds": round(time.monotonic() - started, 1),
     }
+
+
+def _drop_enclosed_water(levels, heights, progress):
+    """Hydraulic sanity at the FINE resolution, where quay walls and roads exist as barriers.
+
+    Sea-level water that is ENCLOSED - no wet path to open water at the raster's own
+    resolution - cannot stand there; it is the producer's level smear over low land
+    (`PHANTOM_LEVEL_EPS_M` tells the story). Only ~0.5 km2 on the reference city, but it is
+    the 0.5 km2 under people's houses; the smear that stays CONNECTED (it rides over quays
+    that sit below the overshot level) is not separable consumer-side and is what the
+    producer's re-based rip removes. Also drops films under `MIN_RENDER_DEPTH_M`, which the
+    game's own depth fade never shows."""
+    stats = {"enclosedTexels": 0, "filmTexels": 0}
+    wet = levels > heights
+    if wet.any():
+        try:
+            from scipy import ndimage
+        except ImportError:
+            progress.log("water: scipy not installed - enclosed-water check skipped")
+        else:
+            labels, _count = ndimage.label(wet, structure=numpy.ones((3, 3), dtype=bool))
+            edge = numpy.unique(
+                numpy.concatenate([labels[0], labels[-1], labels[:, 0], labels[:, -1]])
+            )
+            open_water = numpy.isin(labels, edge[edge != 0])
+            if open_water.any():
+                sea = float(numpy.median(levels[open_water]))
+                drop = wet & ~open_water & (numpy.abs(levels - sea) <= PHANTOM_LEVEL_EPS_M)
+                stats["enclosedTexels"] = int(drop.sum())
+                if stats["enclosedTexels"]:
+                    levels = numpy.where(drop, 0.0, levels)
+                    progress.log(
+                        f"water: {stats['enclosedTexels']:,} texels of ENCLOSED sea-level water "
+                        f"dropped ({stats['enclosedTexels'] * 12.25 / 1e6:.2f} km2) - the "
+                        f"producer's level smear, walled off at the fine resolution"
+                    )
+    film = (levels > heights) & (levels <= heights + MIN_RENDER_DEPTH_M)
+    stats["filmTexels"] = int(film.sum())
+    if stats["filmTexels"]:
+        levels = numpy.where(film, 0.0, levels)
+    return levels, stats
 
 
 def _drop_phantom_bodies(bodies, level_c, rows, cols):
@@ -433,6 +482,9 @@ INPUTS = ("layer:water", "layer:terrain", "layer:terrainFine")
 SETTINGS = ("water", "terrain_upsample")
 
 # version 2: every water object names its `depthGradientTex` (A2)
+# version 6: enclosed sea-level water is dropped at the FINE resolution (quay walls exist
+# there; the connected smear is the re-rip's to remove), and films under `MIN_RENDER_DEPTH_M`
+# never become blocks - the finishing guard for the producer's re-based rip
 # version 5: the block split is OVERHANG-driven (a fill-ratio split shattered every river and
 # overflowed the vanilla-calibrated 200-block budget)
 # version 4: phantom bodies (the producer's sea-level smear over docklands) are dropped and
@@ -442,5 +494,5 @@ SETTINGS = ("water", "terrain_upsample")
 # vanilla's pale-teal ramp painted the sea's coastal level-band blocks as milky squares along
 # the map borders ("square fog", a halved-looking view distance)
 STAGE = Stage(
-    STAGE_KEY, "Water", enabled, units, run, inputs=INPUTS, settings_keys=SETTINGS, version=5
+    STAGE_KEY, "Water", enabled, units, run, inputs=INPUTS, settings_keys=SETTINGS, version=6
 )
