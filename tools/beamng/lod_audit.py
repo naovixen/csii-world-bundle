@@ -16,6 +16,8 @@ size?" - then checks the rules the level is built to:
   R5  a chain shape's switch sizes are the game's limits times the one uniform scale
   R6  a shape over `authored_lod0_max_tris` starts at the game's LOD 1
   R7  a prop's ladder is the deferred generated ladder, no billboard unless asked
+  R8  a billboard sits one pixel over the null (its size is its far stop, so the card runs
+      from the coarsest mesh to the cull with no null band in between)
 
 Exit status 1 when any rule fails. The same numbers `cs2beamng budget` reads, asked a
 different question: not "how many triangles" but "is anything drawn twice, or not at all".
@@ -107,6 +109,17 @@ def main():
         print("no cs2beamng_report.json - a build is in progress or never finished; not auditing")
         return 2
     rows, options = shape_rows(args.level_dir)
+    # The §8.15 building gate: generated levels ARE legal on a building whose baked levels the
+    # MeshLab backend won (`stages/shapes._lod_backend` — on-surface by construction, the
+    # lattice rule does not apply). The bake index is the authority that gate read, so R4
+    # reads the same one rather than trusting a second recording of it.
+    lod_index = {}
+    try:
+        bundle = (report.get("settings") or {}).get("bundle") or ""
+        with open(os.path.join(bundle, "derived", "lods", "lods.json"), encoding="utf-8") as handle:
+            lod_index = json.load(handle).get("assets") or {}
+    except (OSError, ValueError):
+        pass
     hand_over = args.hand_over or float(options.get("far_ring_metres") or 0.0)
     try:
         cells = (load_state(args.level_dir, "instances")["result"].get("farRing") or {}).get("cells") or []
@@ -152,9 +165,11 @@ def main():
                 # a flower pot never earns a billboard; a canopy always must
                 fail("R3", name, f"a tree of {tris0:,} triangles with no billboard")
         elif kind == "building":
-            if generated and not lods.get("authored"):
+            entry = lod_index.get(f"{key[0]}{key[1]}") or {}
+            meshlab_won = "meshlab" in str(entry.get("backends") or entry.get("backend") or "")
+            if generated and not lods.get("authored") and not meshlab_won:
                 fail("R4", name, f"a building with {len(generated)} generated levels")
-            if lods.get("lod0Promoted"):
+            if lods.get("lod0Promoted") and not meshlab_won:
                 fail("R4", name, "a building with LOD 0 promoted to a generated level")
         else:
             if bb is not None and not options.get("imposters", True):
@@ -194,6 +209,13 @@ def main():
         if lods.get("lod0Dropped"):
             if lods.get("triangles") and lods.get("lod0Triangles") and lods["triangles"][0] >= lods["lod0Triangles"]:
                 fail("R6", name, "LOD 0 dropped but the nearest level is not smaller than it")
+        # R8: a billboard's own size is its FAR STOP, so it must sit one pixel over the null -
+        # the card then draws from the coarsest mesh down to the cull (vanilla:
+        # pine_radiata_forest.dae ships meshes a800/a350/a150 and bb_autobillboard25). A
+        # billboard parked at the old takeover size leaves [null, bb) selecting the null:
+        # SpruceTree01 vanished from 99 m to 601 m while R1 passed (2026-08-31).
+        if bb is not None and bb > null_px + 1:
+            fail("R8", name, f"billboard {bb} not adjacent to the null {null_px} - nothing drawn in [{null_px}, {bb}) px")
         # R2: the ring pair
         far = lods.get("far") or {}
         if far.get("ring") and hand_over > 0 and radius > 0:
@@ -241,7 +263,7 @@ def main():
     else:
         print("no ring cells recorded in instances.state.json (built before the report carried them)")
     ok = True
-    for rule in ("R1", "R2", "R3", "R4", "R5", "R6", "R7"):
+    for rule in ("R1", "R2", "R3", "R4", "R5", "R6", "R7", "R8"):
         bad = fails.get(rule) or []
         print(f"  {rule}: {'ok' if not bad else f'{len(bad):,} FAIL'}")
         for name, why in bad[: args.examples]:

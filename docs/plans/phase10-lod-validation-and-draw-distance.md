@@ -942,3 +942,61 @@ taught the last rule: `Five_Luxe_JBR_` lost the contest to cluster by 12 cm of p
 p95 cannot see a cluster lattice, the very defect that banned generated levels from
 buildings. **lods v7: meshes of 20,000 triangles and up take the MeshLab backend outright**
 (on-surface by construction); the contest remains for the small, which are never buildings.
+
+### 8.16 Naomi's screenshots (2026-08-31 01:29) — the chimera level, the billboard's size, and the stadium
+
+Six screenshots against the level on disk: buildings that never change LOD (the JBR beach
+towers, the AON tower), buildings that only ever render coarse (the baseball stadium, harbour
+warehouses), and a band where trees stop rendering between the mesh and the billboard. Three
+distinct causes, none of them what the audit was watching:
+
+1. **The level she looked at is a mid-session chimera.** The force build ran 20:37→00:35 and its
+   shapes stage executed at 21:18 — from the working tree as it stood mid-§8.15, before either
+   evening commit (947e37c at 23:32, a0bada1 at 00:36). Its state still shows Kinsman_Plaza as
+   one 176,587-triangle level and 25 single-level ≥20k shapes; the §8.15 ladders never reached
+   the disk she flew over. Its tree rows carry `imposterConstructor` (the v33 asset.json route)
+   with **no `.dae.asset.json` and no `.cs` left beside the shapes** — the revert removed the
+   configs but not the state. No new defect; the fix is the v39 rebuild from HEAD.
+   `NewAonCenter` stays single-level by design: 12,727 triangles to the ring is under every
+   threshold and costs nothing — CS2 keeps a landmark sharp for kilometres too.
+
+2. **The billboard's size is its far stop, and we wrote the takeover size there.** Vanilla's
+   own `pine_radiata_forest.dae` is the rule: meshes `a800/a350/a150` and `bb_autobillboard25`
+   — the card's detail size sits one step over nothing, so it draws from where the meshes end
+   all the way out. `_vegetation_imposter` instead gave the card the replaced level's switch
+   size (SpruceTree01: mesh 655, bb 164, null 27), and Torque's selection then hands
+   `[null, bb)` to the null: **the tree drew nothing from 99 m to 601 m** — the bare mid-range
+   of every look since v30, previously blamed on the atlas cell size. `_imposter_thresholds`
+   had the same defect one octave down for props (bb at the old null, final null at
+   null/IMPOSTER_REACH — the declared 3× reach never drew). Both now write the billboard at
+   `null + 1`; audit **R8** pins the adjacency (R1 allowed bb anywhere between null and mesh,
+   which is exactly the defect) and `test_billboard_runs_to_the_null` pins the arithmetic.
+   Trees now: LOD 0 to ~25 m, the card to ~1.8 km (the scaled cull × IMPOSTER_REACH).
+
+3. **The `authored_lod0_max_tris` drop assumed the game's LOD 1 is a usable stand-in, and for
+   the stadium it is not.** `Oracle_Park_by_Dmscopio` ships 927 of 147,867 triangles — 0.6 %,
+   a smooth teal hull at the kerb. The distribution has a knee: below 5 % sit 7 shapes
+   (Oracle Park plus EU railing/window-guard props, ~19 MiB of LOD 0 kept); the next ratio up
+   is 6.5 %. `DEGENERATE_LOD1_RATIO = 0.05`: a shape whose authored LOD 1 is under 5 % of
+   LOD 0 keeps LOD 0 (counted per shape, `lod0DropSkippedDegenerate`). The airport-class
+   shapes (LOD 1 at 20–40 %) keep the drop — that trade is the declared one.
+
+   Also hers to know: the flat-white warehouse look is `texture_max 256`, a residency setting,
+   not a LOD; and `Baseball_Field__2_revised2` itself is a 12-triangle field plane in CS2 —
+   the visible bowl is the separate Oracle_Park building above.
+
+**The v39 rebuild (2026-08-31, 11m23s, validator 0 problems): 2,970 MiB**, budget at 4 km:
+cs2 3,086,913, networks 1.11 M, forest 717 k, ring 146 k — **5,287,248 total** (v33 was 5.41 M
+with none of the landmark ladders). `lod0Dropped` 630 (+7 degenerate keeps: Oracle Park 0.6 %,
+Planetario 5.0 %, the EU railings/window guard). All 238 trees at `bb == null + 1`
+(SpruceTree01: mesh to 25 m, card to 579 m). Kinsman 176k/44k/43k at 284 m / 1,132 m / ring;
+Oracle Park LOD 0 to 684 m then its 927; Five_Luxe LOD 0 to 1,084 m then 65,778 — its MeshLab
+level measured 1.47 m of displacement and the switch gate holds it out to where that projects
+under 8 px, which is the gate doing its declared job on a hard facade, not the ~90 m the first
+§8.15 bake note hoped. Audit **R1–R8 clean** after R4 learned the §8.15 gate (it reads the bake
+index's `backends` — the same authority `stages/shapes._lod_backend` read — instead of banning
+every generated level on a building; LOD 0 promotion gated the same way). One observation left
+open: `LuxuryTowerResidence` ships two generated levels of 61,594 triangles each (MeshLab
+stalled at the same count for both targets) — a few wasted MiB, not a defect the switch points
+can show. **Awaiting Naomi's look**: the trees mid-range, the stadium up close, the beach
+towers switching.

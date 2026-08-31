@@ -366,7 +366,13 @@ def _imposter_thresholds(null_px, detail_scale, size, area, options, chain=None)
     wants_imposter = options["imposters"] and reach_m >= options["imposter_min_metres"]
     if not wants_imposter:
         return None, null_px
-    return null_px, null_px / IMPOSTER_REACH
+    # A Torque detail's size is its own FAR STOP, and the billboard is a detail like any other:
+    # vanilla's pine_radiata_forest.dae ships meshes a800/a350/a150 and `bb_autobillboard25` -
+    # the card's size sits at the far end of its band, one step over where drawing ends. Parking
+    # the billboard at the mesh's null instead left [null / IMPOSTER_REACH, null) selecting the
+    # null: the declared 3x reach never drew (found on the trees, 2026-08-31 - the same shape).
+    far_px = null_px / IMPOSTER_REACH
+    return far_px + 1.0, far_px
 
 
 # -- the far level: the building's silhouette out to the game's own cull ------------------------
@@ -580,11 +586,19 @@ def _vegetation_imposter(job, levels, billboard_px, final_null, lod_stats):
     px = int(levels[1][0])
     if px <= int(round(final_null)) + 1:
         return levels, billboard_px
+    # The card takes over where LOD 0 stops (LOD 0's own size is that boundary) and must run to
+    # the cull, so the billboard detail's SIZE is one pixel over the null - a Torque detail's
+    # size is its far stop, not its takeover (vanilla: pine_radiata_forest.dae, meshes
+    # a800/a350/a150 and `bb_autobillboard25`). Written at the takeover size (v30-v33) the band
+    # [null, takeover) selected the null: SpruceTree01 vanished from 99 m to 601 m - the bare
+    # mid-range of Naomi's 2026-08-30/31 looks - while audit R1 passed (R8 pins this now).
+    bb_px = float(int(round(final_null)) + 1)
     lod_stats["imposter"] = {
-        "px": px,
+        "px": int(bb_px),
+        "handoverPx": px,
         "replacedTriangles": int(sum(len(m.tris) for _px, ms in levels[1:] for m in ms)),
     }
     lod_stats["levels"] = 1
     lod_stats["detailSizes"] = [size for size, _ms in levels[:1]]
     lod_stats["triangles"] = lod_stats.get("triangles", [])[:1]
-    return levels[:1], float(px)
+    return levels[:1], bb_px

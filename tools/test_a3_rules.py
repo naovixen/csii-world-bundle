@@ -537,6 +537,30 @@ def test_torque_detail_selection():
     check(sel([200, 20], 5, None, 4) == "none", "under every size: nothing")
 
 
+def test_billboard_runs_to_the_null():
+    """A billboard detail's SIZE is its far stop, like any Torque detail - vanilla's
+    pine_radiata_forest.dae ships meshes a800/a350/a150 and `bb_autobillboard25`, the card one
+    step over nothing. Written at the takeover size instead (v30-v33), the band [null, bb)
+    selected the null: SpruceTree01 (mesh 655, bb 164, null 27) drew NOTHING from 99 m to
+    601 m while every level and the billboard individually looked legal (audit R8 pins this)."""
+    print("the billboard runs to the null")
+    import importlib.util, os
+    spec = importlib.util.spec_from_file_location(
+        "lod_audit", os.path.join(os.path.dirname(__file__), "beamng", "lod_audit.py")
+    )
+    audit = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(audit)
+    sel = audit.select
+    # the defect shape: billboard at the takeover size - the mid-range selects the null
+    check(sel([655], 27, 164, 700) == "mesh:0", "near: LOD 0")
+    check(sel([655], 27, 164, 300) == "billboard", "the takeover band still draws the card")
+    check(sel([655], 27, 164, 100) == "null", "the defect: [null, bb) draws NOTHING mid-range")
+    # the fix: billboard adjacent to the null - the card covers the whole band to the cull
+    check(sel([655], 27, 28, 300) == "billboard", "fixed: the card at 300 px")
+    check(sel([655], 27, 28, 100) == "billboard", "fixed: the card at 100 px")
+    check(sel([655], 27, 28, 27.5) == "null", "the null is still the far stop")
+
+
 def test_level_dir_guard():
     """The worker refuses to build into the levels ROOT (twice it wrote a level's insides
     beside every other level - 6.5 GB of art/ and forest/ under levels/ itself)."""
@@ -573,6 +597,7 @@ def main():
     test_residency_chain_rules()
     test_authored_lod_limits_worked_example()
     test_torque_detail_selection()
+    test_billboard_runs_to_the_null()
     test_level_dir_guard()
     test_color_palette()
     test_palette_material()

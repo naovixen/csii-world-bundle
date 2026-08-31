@@ -59,6 +59,10 @@ DEFAULT_SWITCH_ERROR_PX = 8.0
 # of CS2's draw distance at billboard cost.
 IMPOSTER_REACH = 3.0
 
+# `authored_lod0_max_tris` keeps LOD 0 where the authored LOD 1 is under this fraction of it -
+# a stand-in that coarse is not the same building (Oracle_Park: 0.6 %).
+DEGENERATE_LOD1_RATIO = 0.05
+
 # ...but only for a shape that is still being drawn out there. **BeamNG builds an imposter atlas
 # at RUNTIME**, rendering the shape from every angle the first time it comes into view, and keeps
 # it: `beamng.log` on the A5 load shows `Creating imposters for:` 2,652 times between 64 s and
@@ -240,9 +244,19 @@ def authored_chain(
     # the top and LOD 2 keeps its own band. 0 = off.
     max_tris = int(options.get("authored_lod0_max_tris") or 0)
     if max_tris > 0 and base_mesh is not None and len(base_mesh.tris) >= max_tris:
-        chain["thresholds"] = px[1:]
-        chain["lod0Dropped"] = True
-        return chain
+        # The drop banks on LOD 1 being a usable near stand-in (the median 41 %). Where the
+        # authored LOD 1 is under DEGENERATE_LOD1_RATIO of LOD 0 that premise fails on its
+        # face - Oracle_Park_by_Dmscopio ships 927 of 147,867 triangles, a smooth hull at the
+        # kerb (Naomi's look, 2026-08-31) - so LOD 0 stays for those. Declared and counted per
+        # shape; on the reference city at 5 % this keeps 7 shapes (~19 MiB), and the next
+        # ratio above the cut-off is 6.5 %.
+        ratio = len(meshes[0].tris) / float(len(base_mesh.tris))
+        if ratio < DEGENERATE_LOD1_RATIO:
+            chain["lod0DropSkippedDegenerate"] = round(ratio, 4)
+        else:
+            chain["thresholds"] = px[1:]
+            chain["lod0Dropped"] = True
+            return chain
     # `authored_lod1_drop`: the game's LOD 1 is a median 41 % of LOD 0's triangles and, mounted
     # whole by BeamNG for every shape whether or not an instance is near, ~1 GB of the reference
     # level's 2.9 GB of object meshes — for a band between where LOD 0 stops and where LOD 2
@@ -353,6 +367,8 @@ def _authored_ladder(base_mesh, chain, stats):
             "switches": [],
         }
     )
+    if "lod0DropSkippedDegenerate" in chain:
+        stats["lod0DropSkippedDegenerate"] = chain["lod0DropSkippedDegenerate"]
     return fixed, stats, meshes
 
 

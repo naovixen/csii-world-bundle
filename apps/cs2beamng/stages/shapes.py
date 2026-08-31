@@ -449,5 +449,5 @@ STAGE = Stage(
     settings_keys=SETTINGS,
     outputs=OUTPUTS,
     shared_keys=("shapes", "materials_used", "materials_variants_used", "materials_lod_level"),
-    version=38,
+    version=39,
 )
