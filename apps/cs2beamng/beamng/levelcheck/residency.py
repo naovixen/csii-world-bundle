@@ -37,7 +37,10 @@ def _budget_notes(by_class, item_data, dae_files, forest_items):
         # default to 25,000 (the smallest cap that takes every street light in the reference
         # city); 60,000 is ~11 s of load and where the walk reaches 1/3 of the whole city.
         ("lights", len(by_class.get("PointLight", [])) + len(by_class.get("SpotLight", [])), 60000),
-        ("WaterBlocks", len(by_class.get("WaterBlock", [])), 200),
+        # water v7 boxes the sea too (no WaterPlane - the city has land below sea level), so
+        # the count carries the ocean's flood-safe cover; 199 was proven on the reference
+        # machine, 1,000 is the stage's own `MAX_BLOCKS` (its comment carries the reasoning)
+        ("WaterBlocks", len(by_class.get("WaterBlock", [])), 1000),
         # NOT a vanilla maximum either. `west_coast_usa` carries 12,752 DecalRoads over a 2,048 m
         # square; ours cover 14,336 m, 49x the area, so per-metre-of-road the comparison is the
         # one that matters and the absolute count is not. What a navgraph road costs is one entry

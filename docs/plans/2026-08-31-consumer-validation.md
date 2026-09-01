@@ -203,3 +203,42 @@ Also: the stale `levels/cs2_city_fine.zip` (2026-08-20) was moved to
 `current/level_backups/cs2_city_fine_2026-08-20.zip` — BeamNG merges zip and loose files in
 the VFS, and a 12-day-old zip shadowing a rebuilt level is exactly the class of "nothing
 changed" that survives restarts. Reversible; nothing deleted.
+
+## The theory dies, and the water is rebuilt (2026-09-01, after the re-rip)
+
+Naomi's full 9-stage re-rip (00:38–00:57) landed with the fixed ripper — and the "smear"
+barely moved: 41,068 disconnected sea-level texels against 42,221 before, still metres deep
+(p50 7.9 m). The deployed DLL verifiably carried `MinTerrainHeightOverCell` (byte-searched),
+so the fix was live and the theory was wrong. Three measurements against the bundle's own
+data finished it off:
+
+1. **Distance**: the "smear" sits up to 1.7 km from open water — no dilation or bilinear
+   fringe reaches that far. The sim itself holds the depth.
+2. **The map**: the biggest cluster is a perfect 500 m square at the city centre; other
+   clusters trace the canal network. A geometric artefact doesn't draw squares and canals.
+3. **The instances**: 7,592 objects stand ON the "smear" — `Vertical_Pillar__stack_*` stilts,
+   trees at y=553 over ground at 509 (roof decks), road-arrow decals on bridge decks at 527.
+   And the central square's 149 trees sit exactly ON the heightmap around a 512 m-deep pit
+   filled to 521.5. These are piers, decks and bridges over REAL water.
+
+**The disconnected sea-level water is real**: dug basins and canals that filled from the sea
+and were sealed — the sim's volume conservation holds them at exactly the sea's level forever.
+v4's "conservation" argument had it exactly backwards. So v4's phantom-body drop and v6's
+enclosed drop were deleting real water, and the black planes over streets were OURS all along:
+
+- the **infinite WaterPlane** floods every piece of dry land below the sea's surface — and
+  this city has 155.8 ha of it more than 0.5 m under (docklands behind quays, measured);
+- the **band-component bboxes** overhung the dockland weave on top of that.
+
+**Water v7** (built): no WaterPlane; the sea is flood-safe boxes like everything else, with
+raster-edge boxes extruded 12 km outward where their edge strip is open water (the horizon
+stays water). `_flood_safe_boxes` carves every band component at FINE (3.5 m) resolution
+against dry ground > 0.5 m below the piece's surface, in clusters ≥ ~0.2 ha (8,729 speck
+clusters are puddles, not obstacles — treating them as obstacles cost 5,000+ boxes), merged
+into ~52 m district windows so one subtraction isolates a street grid instead of shattering
+the ocean. Both v4/v6 drops removed; the 0.15 m film guard stays. `MAX_BLOCKS` 1,000 (450
+still dropped whole canals into the budget's tail; the residency table's lights/DecalRoads
+reasoning applies). Measured on the real rasters: 1,446 boxes → 1,000 kept = **97.0 % of
+water covered, 73.9 ha tolerated puddle specks (vs 155.8 ha plane-flooded before), 82.7 ha
+left dry** — the dockland weave's smallest slivers — all counted in the report
+(`floodedHa`, `leftDryHa`, `piecesOverBudget`).
