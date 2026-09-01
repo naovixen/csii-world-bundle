@@ -217,8 +217,7 @@ def test_validator_catches(level_dir):
 
 def test_water_bands(tmp):
     """A synthetic raster: a sea at 10 m along the west edge and a river descending from 40 m to
-    12 m eastwards; the split must give level-band blocks with NO WaterPlane (water v7 - the
-    plane floods land below sea level), the sea's edge box extruded past the raster edge."""
+    12 m eastwards; the split must give one plane and several level-band blocks."""
     from cs2beamng.beamng import level as level_mod
     from cs2beamng.stages import BuildContext
     from cs2beamng.stages import water as water_stage
@@ -273,25 +272,18 @@ def test_water_bands(tmp):
     objs = [o for _f, _n, o in level_mod.read_objects(ldir)]
     planes = [o for o in objs if o["class"] == "WaterPlane"]
     blocks = [o for o in objs if o["class"] == "WaterBlock"]
-    check(len(planes) == 0, "no WaterPlane (v7: an infinite plane floods land below sea level)")
-    check(len(blocks) >= 8, f"the sea + descending river split into blocks ({len(blocks)})")
-    sea_blocks = [b for b in blocks if abs(b["position"][2] - 10.0) < 0.6]
-    check(bool(sea_blocks), "the sea is covered by blocks at ~10 m")
-    widest = max(sea_blocks, key=lambda b: b["scale"][0], default=None)
     check(
-        widest is not None and widest["scale"][0] > 512 * 3.5,
-        "the sea's edge box is extruded past the raster edge (the horizon stays water)",
+        len(planes) == 1 and abs(planes[0]["position"][2] - 10.0) < 0.6,
+        f"the sea is one WaterPlane at ~10 m ({planes and planes[0]['position']})",
     )
+    check(len(blocks) >= 8, f"the descending river split into level-band blocks ({len(blocks)})")
     tops = sorted(b["position"][2] for b in blocks)
     check(
         tops[0] < 16.0 and tops[-1] > 36.0,
         f"block levels span the river's descent ({tops[0]:.1f}..{tops[-1]:.1f})",
     )
     check(all(b["scale"][2] >= 1.0 for b in blocks), "blocks extend below their surface")
-    check(
-        (not result["plane"]) and result["blocks"] == len(blocks),
-        "result reports the counts and no plane",
-    )
+    check(result["plane"] and result["blocks"] == len(blocks), "result reports the counts")
     # every vanilla WaterBlock names its depth ramp; without it the engine logs
     # `WaterObject::initTextures| Texture missing:` per block (188x on the 2026-08-31 load)
     check(

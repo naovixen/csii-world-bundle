@@ -4,31 +4,18 @@
 whose level is one number is a lake; the reference city's sea+river is ONE body spanning
 508–527 m, and a single flat plane over it would drown the valley floor or leave the sea dry —
 so every body is split into LEVEL BANDS (`BAND_M` tall) and each 4-connected component of a
-band becomes `WaterBlock`s sitting at the band's mean level, extending down past the deepest
-ground under them.
-
-THERE IS NO `WaterPlane`. BeamNG's plane is infinite, and this city has land BELOW sea level —
-dug dock basins behind quays, a 500 m excavated lake, canal districts — 155.8 ha of dry streets
-more than 0.5 m under the sea's surface on the reference city (measured 2026-09-01). An
-infinite plane floods every one of them; CS2 decides water per-texel from its simulation grid
-and BeamNG has no counterpart, so the sea is boxes like everything else, and the boxes that
-reach the raster's edge with an open-water edge strip are extruded `HORIZON_EXTEND_M` outward
-so the horizon is still water, not a cliff to nothing.
-
-DECLARED APPROXIMATION (BeamNG's water vocabulary is axis-aligned boxes; CS2's is a texture):
-a box may cover dry land. `_flood_safe_boxes` carves every band component against the land
-that would VISIBLY flood — dry ground more than `FLOOD_MARGIN_M` below the piece's surface, in
-clusters big enough to see (`MIN_FLOOD_CLUSTER_TEXELS`); nearby clusters merge into district
-windows (`WINDOW_MERGE_TEXELS`) so one cut isolates a dockland street grid instead of
-shattering the ocean. What ships is counted in the report: `floodedHa` (tolerated speck
-puddles under boxes), `leftDryHa` (real water dropped — slivers under `MIN_WET_TEXELS`,
-uncleanable window remnants, and pieces beyond `MAX_BLOCKS`).
+band becomes a `WaterBlock` sitting at the band's mean level, extending down past the deepest
+ground under it. The one band that reaches the raster's edge with the largest area — the sea —
+becomes a `WaterPlane` instead (infinite, so the horizon is water, not a cliff to nothing).
 
 `WaterBlock`: `position` is the centre of the top face (the surface), `scale = [width, height,
 depth]` and the block extends DOWN by `depth` (Torque's box is `(-.5,-.5,-1)..(.5,.5,0)`).
 Appearance from `water.Appearance` (§8 `rasters.water`): base colour, fog density from the
 absorption distance; the wave/foam/ripple tables are BeamNG's own defaults from `small_island`
 because the bundle's shader-side wave parameters do not map onto them.
+
+Budget: at most `MAX_BLOCKS` blocks (largest first); components under `MIN_CELLS` coarse
+cells are dropped as noise. Region builds keep only bodies intersecting the region.
 """
 
 import time
@@ -47,38 +34,32 @@ MIN_CELLS = 3
 # how far down the depth-to-colour ramp runs (`depthGradientMax`, and the span `_depth_ramp`
 # attenuates over)
 DEPTH_GRADIENT_MAX_M = 50.0
+# An inland body whose surface sits within this of the SEA's own level is the producer's level
+# smear, not water: the rip re-bases the sim's coarse depth onto a point sample of the fine
+# ground and dilates, which floats the sea's level over low land beside deep water (docklands).
+# Standing water disconnected from the sea cannot hold the sea's level - the sim's own
+# conservation - so those bodies are dropped, counted and logged. A pond or lake at its OWN
+# level is untouched. Removed when the producer's re-based rip lands (TerrainRipSystem.Water).
+PHANTOM_LEVEL_EPS_M = 2.0
 # Water shallower than this never renders in the game (the shader fades by depth), so it does
-# not become an opaque block here. TUNED - the exact fade is in the compiled shader. The rip's
-# honest levels leave millimetre films where the sim had surface moisture.
+# not become an opaque block here. TUNED - the exact fade is in the compiled shader. Inert on a
+# pre-fix bundle (the smeared depths are metres); the finishing guard for the producer's
+# re-based rip, whose honest levels leave millimetre films where the sim had surface moisture.
 MIN_RENDER_DEPTH_M = 0.15
-# -- the flood-safe cover (all measured on the reference city, 2026-09-01) -----------------
-# Dry ground this far under a piece's surface floods VISIBLY if a box covers it; nearer the
-# surface it is the shoreline's own discretisation (a beach texel a hand-width under the
-# waterline) and covering it is correct rendering.
-FLOOD_MARGIN_M = 0.5
-# A flood cluster smaller than this (~0.2 ha) is a puddle, not a defect; treating the 8,729
-# speck clusters on the reference city as obstacles forced 5,000+ boxes for nothing.
-MIN_FLOOD_CLUSTER_TEXELS = 160
-# Flood clusters within this many fine texels (~52 m) merge into one window, so a dockland
-# street GRID is carved out with one subtraction instead of a cut per street.
-WINDOW_MERGE_TEXELS = 15
-# A box covering less wet than this (~0.05 ha) is noise; its water is counted `leftDryHa`.
-MIN_WET_TEXELS = 40
-# NOT a vanilla maximum, deliberately (the residency table's lights and DecalRoads carry the
-# same reasoning): 199 blocks are proven on the reference machine, and vanilla never boxed a
-# SEA. At 450 the budget's tail still held whole canals - long, thin, unmistakable when dry -
-# while at 1,000 the tail is sub-0.1 ha slivers. A block the camera is nowhere near is culled;
-# what a level pays per block is scene-graph load cost. `levelcheck/residency` carries the
-# same number. If a load ever stutters on water, this is the first knob.
-MAX_BLOCKS = 1000
-# Sea boxes on the raster's edge extend this far outward so the horizon stays water. Only a
-# side whose edge strip is nearly all open water extends - a below-sea CORNER pocket's boxes
-# also touch the edge, and extruding those would flood the far ring's continuation of the
-# same low land.
-HORIZON_EXTEND_M = 12000.0
-HORIZON_WET_FRACTION = 0.9
-SEA_LEVEL_EPS_M = 0.75
+# A band component becomes one axis-aligned box, and a box that is mostly dry covers things -
+# the dock basin's rectangle lay across the quay road (Naomi, 2026-08-31). The refinement is
+# BUDGETED (`_refine_worst_boxes`): every component is collected first, then the box covering
+# the most dry cells is bisected, again and again, while the total stays inside `MAX_BLOCKS` -
+# so the dock class tightens and a winding river, whose box is mostly dry BY NATURE (a
+# fill-ratio or absolute-overhang rule shatters every one: 746 and 612 pieces against the
+# budget on the first two cuts, with real slivers dropped to pay for it), keeps its one piece
+# unless it is among the worst.
+BLOCK_SPLIT_MIN_OVERHANG_CELLS = 100  # a box covering less dry area than this is never split
+MAX_BLOCKS = (
+    200  # the vanilla-calibrated budget (`levelcheck/residency`); the refinement stays inside
+)
 DOWNSAMPLE = 8
+SEA_MIN_FRACTION = 0.02  # a band must cover this share of the coarse grid to be "the sea"
 
 # BeamNG's own animation tables (small_island's Ocean1); the bundle has no equivalent
 FOAM = [
@@ -151,7 +132,7 @@ def run(ctx, progress):
     levels = png.gray_array(paths.water).astype(numpy.float64)
     levels = numpy.where(levels > 0, levels * scale + offset, 0.0)
     heights = png.gray_array(paths.heightmap).astype(numpy.float64) * scale + offset
-    levels, film_texels = _drop_thin_films(levels, heights)
+    levels, fine_stats = _drop_enclosed_water(levels, heights, progress)
     grid = water_mod.coarse_grid(levels, heights, DOWNSAMPLE)
     bodies = water_mod.bodies(
         levels,
@@ -167,11 +148,17 @@ def run(ctx, progress):
     if grid is None or not bodies:
         level.write_objects()
         return {"bodies": 0, "blocks": 0, "plane": False}
-    level_c, _ground_c, _wet = grid
+    level_c, ground_c, wet = grid
+    rows, cols = wet.shape
+    bodies, phantom = _drop_phantom_bodies(bodies, level_c, rows, cols)
+    for note in phantom["notes"][:5]:
+        progress.log("water: " + note)
+    coarse = cell * DOWNSAMPLE
     appearance = water_mod.load(ctx.bundle)
 
     # -- split every body into level bands, each band into components ------------------------
     progress.begin("water: bands", total=len(bodies), unit="bodies")
+    pieces = []  # dicts: level, min_ground, cells, bbox rows/cols, touches_edge
     region = ctx.region
     band_of = numpy.rint(level_c / BAND_M).astype(numpy.int64)  # hoisted: loop-invariant (D3)
     components = []
@@ -184,49 +171,71 @@ def run(ctx, progress):
                 rr, cc = numpy.nonzero(labels == k)
                 if len(rr) >= MIN_CELLS:
                     components.append((rr, cc))
-    progress.end(f"{len(components)} level-band components")
-
-    progress.begin("water: flood-safe cover", total=len(components), unit="components")
-    fine_wet = levels > heights
-    boxes, stats = _flood_safe_boxes(fine_wet, heights, level_c, components, progress)
-    boxes.sort(key=lambda b: -b[0])
-    if len(boxes) > MAX_BLOCKS:
-        stats["leftDryTexels"] += sum(b[0] for b in boxes[MAX_BLOCKS:])
-        stats["piecesOverBudget"] = len(boxes) - MAX_BLOCKS
-        boxes = boxes[:MAX_BLOCKS]
-    ha = cell * cell / 1e4
-    progress.end(
-        f"{len(boxes)} flood-safe boxes; tolerated puddles {stats['floodedTexels'] * ha:.1f} ha, "
-        f"left dry {stats['leftDryTexels'] * ha:.1f} ha"
-    )
-
-    # -- the sea: the level of the largest edge-touching box; its edge boxes reach the horizon --
-    sea_level = None
-    fh, fw = fine_wet.shape
-    edge_boxes = [b for b in boxes if b[2] == 0 or b[3] >= fh or b[4] == 0 or b[5] >= fw]
-    if edge_boxes:
-        sea_level = max(edge_boxes, key=lambda b: b[0])[1]
-
-    # -- objects ---------------------------------------------------------------------------
-    progress.begin("water: objects", total=len(boxes), unit="objects")
-    common = _appearance_fields(appearance, ramp_path=_depth_ramp(level, appearance))
-    placed = 0
-    for i, (_wet_n, lv, r0, r1, c0, c1) in enumerate(boxes):
-        # fine texel c spans origin + c*cell +- cell/2 (r southward); r1/c1 exclusive
-        min_x = origin_x + c0 * cell - 0.5 * cell
-        max_x = origin_x + c1 * cell - 0.5 * cell
-        max_z = origin_z - r0 * cell + 0.5 * cell
-        min_z = origin_z - r1 * cell + 0.5 * cell
-        min_ground = float(heights[r0:r1, c0:c1].min())
-        if sea_level is not None and abs(lv - sea_level) <= SEA_LEVEL_EPS_M:
-            min_x, min_z, max_x, max_z = _extrude_to_horizon(
-                fine_wet, r0, r1, c0, c1, cell, min_x, min_z, max_x, max_z
-            )
+        progress.advance(1)
+        progress.check()
+    for rr, cc in _refine_worst_boxes(components):
+        if len(rr) < MIN_CELLS:
+            continue
+        lv = float(level_c[rr, cc].mean())
+        min_ground = float(ground_c[rr, cc].min())
+        touches = bool(
+            rr.min() == 0 or cc.min() == 0 or rr.max() == rows - 1 or cc.max() == cols - 1
+        )
+        # bundle-frame bbox (x east, z north); coarse cell (r, c) covers r*d..(r+1)*d
+        min_x = origin_x + cc.min() * coarse - 0.5 * cell
+        max_x = origin_x + (cc.max() + 1) * coarse - 0.5 * cell
+        max_z = origin_z - rr.min() * coarse + 0.5 * cell
+        min_z = origin_z - (rr.max() + 1) * coarse + 0.5 * cell
         if region is not None and not _intersects(region, min_x, min_z, max_x, max_z):
             continue
+        pieces.append(
+            {
+                "level": lv,
+                "minGround": min_ground,
+                "cells": len(rr),
+                "touches": touches,
+                "bbox": (min_x, min_z, max_x, max_z),
+            }
+        )
+    progress.end(f"{len(pieces)} level-band pieces")
+
+    # -- the sea: the largest edge-touching piece over the size threshold -> WaterPlane --------
+    sea = None
+    candidates = [
+        p for p in pieces if p["touches"] and p["cells"] >= SEA_MIN_FRACTION * rows * cols
+    ]
+    if candidates and region is None:
+        sea = max(candidates, key=lambda p: p["cells"])
+    blocks = [p for p in pieces if p is not sea]
+    blocks.sort(key=lambda p: -p["cells"])
+    dropped = max(0, len(blocks) - MAX_BLOCKS)
+    blocks = blocks[:MAX_BLOCKS]
+
+    # -- objects ---------------------------------------------------------------------------
+    progress.begin("water: objects", total=len(blocks) + (1 if sea else 0), unit="objects")
+    common = _appearance_fields(appearance, ramp_path=_depth_ramp(level, appearance))
+    if sea is not None:
+        obj = {
+            "name": "sea",
+            "class": "WaterPlane",
+            "position": [0.0, 0.0, round(sea["level"], 3)],
+            "gridElementSize": 8.0,
+            "gridSize": 400,
+            "Foam": FOAM,
+            "Ripples (texture animation)": RIPPLES,
+            "Waves (vertex undulation)": WAVES,
+            "overallWaveMagnitude": round(WAVE_MAGNITUDE_REF * appearance.sea_wave_scale, 5),
+            "overallRippleMagnitude": 1,
+            "overallFoamOpacity": 1.2,
+        }
+        obj.update(common)
+        level.add(["Level_objects", "water"], obj, key="water:sea")
+        progress.advance(1)
+    for i, p in enumerate(blocks):
+        min_x, min_z, max_x, max_z = p["bbox"]
         cx, cz = 0.5 * (min_x + max_x), 0.5 * (min_z + max_z)
-        depth = max(1.0, lv - min_ground + 1.0)
-        bx, by, bz = frame.to_beamng(cx, lv, cz)
+        depth = max(1.0, p["level"] - p["minGround"] + 1.0)
+        bx, by, bz = frame.to_beamng(cx, p["level"], cz)
         obj = {
             "name": f"water_{i:03d}",
             "class": "WaterBlock",
@@ -236,38 +245,33 @@ def run(ctx, progress):
             "Foam": FOAM[:1],
             "Ripples (texture animation)": RIPPLES,
             "Waves (vertex undulation)": WAVES,
-            "overallWaveMagnitude": round(
-                WAVE_MAGNITUDE_REF
-                * (
-                    appearance.sea_wave_scale
-                    if sea_level is not None and abs(lv - sea_level) <= SEA_LEVEL_EPS_M
-                    else appearance.lake_wave_scale
-                ),
-                5,
-            ),
+            "overallWaveMagnitude": round(WAVE_MAGNITUDE_REF * appearance.lake_wave_scale, 5),
             "overallRippleMagnitude": 0.5,
             "overallFoamOpacity": 0.6,
         }
         obj.update(common)
         level.add(["Level_objects", "water"], obj, key=f"water:block:{i}")
-        placed += 1
         progress.advance(1)
         if i % 32 == 0:
             progress.check()
     level.write_objects()
-    progress.end(f"{placed} WaterBlocks (no plane - the city has land below sea level)")
+    progress.end(
+        f"{'1 WaterPlane + ' if sea else ''}{len(blocks)} WaterBlocks"
+        + (f", {dropped} small pieces dropped" if dropped else "")
+    )
     return {
         "bodies": len(bodies),
-        "pieces": len(components),
-        "blocks": placed,
-        "plane": False,
-        "seaLevel": None if sea_level is None else round(sea_level, 2),
-        # the box-vocabulary approximation, counted (module docstring): puddle specks a box
-        # tolerates, and real water no flood-safe box could ship
-        "floodedHa": round(stats["floodedTexels"] * ha, 1),
-        "leftDryHa": round(stats["leftDryTexels"] * ha, 1),
-        "piecesOverBudget": stats.get("piecesOverBudget", 0),
-        "filmTexelsDropped": film_texels,
+        "pieces": len(pieces),
+        "blocks": len(blocks),
+        "plane": sea is not None,
+        "seaLevel": None if sea is None else round(sea["level"], 2),
+        "dropped": dropped,
+        # the producer's level smear over low land beside deep water, dropped by the sea-level
+        # signature (`PHANTOM_LEVEL_EPS_M`); the real cure is the re-based rip
+        "phantomBodiesDropped": phantom["count"],
+        "phantomCells": phantom["cells"],
+        "enclosedTexelsDropped": fine_stats["enclosedTexels"],
+        "filmTexelsDropped": fine_stats["filmTexels"],
         "seaWaveScale": round(appearance.sea_wave_scale, 4),
         "lakeWaveScale": round(appearance.lake_wave_scale, 4),
         # APPROXIMATED unless the game says the wind branch is dead: with
@@ -280,157 +284,119 @@ def run(ctx, progress):
     }
 
 
-def _drop_thin_films(levels, heights):
-    """Zero water shallower than `MIN_RENDER_DEPTH_M`; the game's own depth fade never shows it."""
-    film = (levels > heights) & (levels <= heights + MIN_RENDER_DEPTH_M)
-    n = int(film.sum())
-    if n:
-        levels = numpy.where(film, 0.0, levels)
-    return levels, n
+def _drop_enclosed_water(levels, heights, progress):
+    """Hydraulic sanity at the FINE resolution, where quay walls and roads exist as barriers.
 
-
-def _flood_safe_boxes(fine_wet, heights, level_c, components, progress):
-    """Fine-resolution flood-safe rectangles per band component — the module's declared
-    approximation, carved.
-
-    Per component: dry ground more than `FLOOD_MARGIN_M` under the piece's surface, in clusters
-    over `MIN_FLOOD_CLUSTER_TEXELS`, is an obstacle; nearby clusters merge into windows
-    (`WINDOW_MERGE_TEXELS`). Each window is subtracted as a unit — four clean slabs around it
-    keep the open water in big pieces, and the window itself recurses so basins INSIDE a
-    dockland district still get their boxes. A region no cut can clean drops its water,
-    counted. Returns `([(wet, level, r0, r1, c0, c1)], stats)` in fine raster coordinates.
-    """
-    from scipy import ndimage
-
-    D = DOWNSAMPLE
-    out = []
-    stats = {"floodedTexels": 0, "leftDryTexels": 0}
-    eight = numpy.ones((3, 3), dtype=bool)
-    for rr, cc in components:
-        piece_level = float(level_c[rr, cc].mean())
-        R0, C0 = int(rr.min()) * D, int(cc.min()) * D
-        member = numpy.zeros((int(rr.max() - rr.min()) + 1, int(cc.max() - cc.min()) + 1), bool)
-        member[rr - rr.min(), cc - cc.min()] = True
-        member_f = numpy.kron(member, numpy.ones((D, D), dtype=bool))
-        H, W = member_f.shape
-        win_wet = fine_wet[R0 : R0 + H, C0 : C0 + W]
-        if win_wet.shape != member_f.shape:  # a raster not divisible by DOWNSAMPLE
-            member_f = member_f[: win_wet.shape[0], : win_wet.shape[1]]
-            H, W = member_f.shape
-        w = win_wet & member_f
-        harm_raw = (~win_wet) & (heights[R0 : R0 + H, C0 : C0 + W] < piece_level - FLOOD_MARGIN_M)
-        labels, n = ndimage.label(harm_raw, structure=eight)
-        if n:
-            sizes = ndimage.sum(harm_raw, labels, range(1, n + 1))
-            big = numpy.zeros(n + 1, bool)
-            big[1:] = sizes >= MIN_FLOOD_CLUSTER_TEXELS
-            harm = big[labels]
+    Sea-level water that is ENCLOSED - no wet path to open water at the raster's own
+    resolution - cannot stand there; it is the producer's level smear over low land
+    (`PHANTOM_LEVEL_EPS_M` tells the story). Only ~0.5 km2 on the reference city, but it is
+    the 0.5 km2 under people's houses; the smear that stays CONNECTED (it rides over quays
+    that sit below the overshot level) is not separable consumer-side and is what the
+    producer's re-based rip removes. Also drops films under `MIN_RENDER_DEPTH_M`, which the
+    game's own depth fade never shows."""
+    stats = {"enclosedTexels": 0, "filmTexels": 0}
+    wet = levels > heights
+    if wet.any():
+        try:
+            from scipy import ndimage
+        except ImportError:
+            progress.log("water: scipy not installed - enclosed-water check skipped")
         else:
-            harm = harm_raw
-        windows = []
-        if harm.any():
-            merged = (
-                ndimage.maximum_filter(harm.astype(numpy.uint8), size=2 * WINDOW_MERGE_TEXELS + 1)
-                > 0
+            labels, _count = ndimage.label(wet, structure=numpy.ones((3, 3), dtype=bool))
+            edge = numpy.unique(
+                numpy.concatenate([labels[0], labels[-1], labels[:, 0], labels[:, -1]])
             )
-            mlab, _mn = ndimage.label(merged, structure=eight)
-            windows = ndimage.find_objects(mlab)
-        # integral images (int32: counts stay far under 2^31)
-        IW = numpy.zeros((H + 1, W + 1), numpy.int32)
-        IH = numpy.zeros_like(IW)
-        IR = numpy.zeros_like(IW)
-        numpy.cumsum(numpy.cumsum(w, 0, dtype=numpy.int32), 1, out=IW[1:, 1:])
-        numpy.cumsum(numpy.cumsum(harm, 0, dtype=numpy.int32), 1, out=IH[1:, 1:])
-        numpy.cumsum(numpy.cumsum(harm_raw, 0, dtype=numpy.int32), 1, out=IR[1:, 1:])
-
-        def s(mat, r0, r1, c0, c1):
-            return int(mat[r1, c1] - mat[r0, c1] - mat[r1, c0] + mat[r0, c0])
-
-        stack = [(0, H, 0, W)]
-        while stack:
-            r0, r1, c0, c1 = stack.pop()
-            if r1 <= r0 or c1 <= c0 or s(IW, r0, r1, c0, c1) == 0:
-                continue
-            while s(IW, r0, r0 + 1, c0, c1) == 0:
-                r0 += 1
-            while s(IW, r1 - 1, r1, c0, c1) == 0:
-                r1 -= 1
-            while s(IW, r0, r1, c0, c0 + 1) == 0:
-                c0 += 1
-            while s(IW, r0, r1, c1 - 1, c1) == 0:
-                c1 -= 1
-            nw = s(IW, r0, r1, c0, c1)
-            if s(IH, r0, r1, c0, c1) == 0:
-                if nw >= MIN_WET_TEXELS:
-                    out.append((nw, piece_level, r0 + R0, r1 + R0, c0 + C0, c1 + C0))
-                    stats["floodedTexels"] += s(IR, r0, r1, c0, c1)
-                else:
-                    stats["leftDryTexels"] += nw
-                continue
-            best, best_n = None, 0
-            for win in windows:
-                wr0, wr1 = max(win[0].start, r0), min(win[0].stop, r1)
-                wc0, wc1 = max(win[1].start, c0), min(win[1].stop, c1)
-                if wr0 >= wr1 or wc0 >= wc1:
-                    continue
-                n_in = s(IH, wr0, wr1, wc0, wc1)
-                if n_in > best_n:
-                    best_n, best = n_in, (wr0, wr1, wc0, wc1)
-            if best is None:
-                # filtered harm with no window can't happen; defensive: ship if small wet
-                stats["leftDryTexels"] += nw
-                continue
-            wr0, wr1, wc0, wc1 = best
-            if wr0 <= r0 and wr1 >= r1 and wc0 <= c0 and wc1 >= c1:
-                # the window swallows the whole box: one guillotine cut at the harm median,
-                # then each half faces its own (smaller) windows
-                sub = numpy.nonzero(numpy.diff(IH[r0 : r1 + 1, c1] - IH[r0 : r1 + 1, c0]) > 0)[0]
-                if (r1 - r0) >= (c1 - c0):
-                    mid = r0 + (int(numpy.median(sub)) + 1 if len(sub) else (r1 - r0) // 2)
-                    if mid <= r0 or mid >= r1:
-                        mid = (r0 + r1) // 2
-                    if mid <= r0 or mid >= r1:
-                        stats["leftDryTexels"] += nw
-                        continue
-                    stack += [(r0, mid, c0, c1), (mid, r1, c0, c1)]
-                else:
-                    subc = numpy.nonzero(numpy.diff(IH[r1, c0 : c1 + 1] - IH[r0, c0 : c1 + 1]) > 0)[
-                        0
-                    ]
-                    mid = c0 + (int(numpy.median(subc)) + 1 if len(subc) else (c1 - c0) // 2)
-                    if mid <= c0 or mid >= c1:
-                        mid = (c0 + c1) // 2
-                    if mid <= c0 or mid >= c1:
-                        stats["leftDryTexels"] += nw
-                        continue
-                    stack += [(r0, r1, c0, mid), (r0, r1, mid, c1)]
-                continue
-            stack += [
-                (r0, wr0, c0, c1),  # slab above the window
-                (wr1, r1, c0, c1),  # below
-                (max(r0, wr0), min(r1, wr1), c0, wc0),  # left
-                (max(r0, wr0), min(r1, wr1), wc1, c1),  # right
-                (max(r0, wr0), min(r1, wr1), max(c0, wc0), min(c1, wc1)),  # the window itself
-            ]
-        progress.advance(1)
-        progress.check()
-    return out, stats
+            open_water = numpy.isin(labels, edge[edge != 0])
+            if open_water.any():
+                sea = float(numpy.median(levels[open_water]))
+                drop = wet & ~open_water & (numpy.abs(levels - sea) <= PHANTOM_LEVEL_EPS_M)
+                stats["enclosedTexels"] = int(drop.sum())
+                if stats["enclosedTexels"]:
+                    levels = numpy.where(drop, 0.0, levels)
+                    progress.log(
+                        f"water: {stats['enclosedTexels']:,} texels of ENCLOSED sea-level water "
+                        f"dropped ({stats['enclosedTexels'] * 12.25 / 1e6:.2f} km2) - the "
+                        f"producer's level smear, walled off at the fine resolution"
+                    )
+    film = (levels > heights) & (levels <= heights + MIN_RENDER_DEPTH_M)
+    stats["filmTexels"] = int(film.sum())
+    if stats["filmTexels"]:
+        levels = numpy.where(film, 0.0, levels)
+    return levels, stats
 
 
-def _extrude_to_horizon(fine_wet, r0, r1, c0, c1, cell, min_x, min_z, max_x, max_z):
-    """Extend a sea box's raster-edge sides outward so the horizon stays water — only sides
-    whose edge strip is nearly all open water (`HORIZON_WET_FRACTION`), so a below-sea corner
-    pocket's boxes stay put."""
-    H, W = fine_wet.shape
-    if r0 == 0 and fine_wet[0, c0:c1].mean() >= HORIZON_WET_FRACTION:
-        max_z += HORIZON_EXTEND_M
-    if r1 == H and fine_wet[H - 1, c0:c1].mean() >= HORIZON_WET_FRACTION:
-        min_z -= HORIZON_EXTEND_M
-    if c0 == 0 and fine_wet[r0:r1, 0].mean() >= HORIZON_WET_FRACTION:
-        min_x -= HORIZON_EXTEND_M
-    if c1 == W and fine_wet[r0:r1, W - 1].mean() >= HORIZON_WET_FRACTION:
-        max_x += HORIZON_EXTEND_M
-    return min_x, min_z, max_x, max_z
+def _drop_phantom_bodies(bodies, level_c, rows, cols):
+    """`(kept bodies, {"count", "cells", "notes"})` - see `PHANTOM_LEVEL_EPS_M`."""
+    stats = {"count": 0, "cells": 0, "notes": []}
+    if not bodies:
+        return bodies, stats
+
+    def touches_edge(mask):
+        rr, cc = numpy.nonzero(mask)
+        return bool(rr.min() == 0 or cc.min() == 0 or rr.max() == rows - 1 or cc.max() == cols - 1)
+
+    edged = [b for b in bodies if touches_edge(b.mask)]
+    if not edged:
+        return bodies, stats
+    sea = max(edged, key=lambda b: int(b.mask.sum()))
+    sea_level = float(numpy.median(level_c[sea.mask]))
+    kept = []
+    for body in bodies:
+        if body is sea or touches_edge(body.mask):
+            kept.append(body)
+            continue
+        lv = float(numpy.median(level_c[body.mask]))
+        if abs(lv - sea_level) <= PHANTOM_LEVEL_EPS_M:
+            stats["count"] += 1
+            stats["cells"] += int(body.mask.sum())
+            rr, cc = numpy.nonzero(body.mask)
+            stats["notes"].append(
+                f"phantom body dropped: {int(body.mask.sum())} cells at the sea's level "
+                f"({lv:.1f} vs {sea_level:.1f} m) around coarse cell "
+                f"({int(rr.mean())}, {int(cc.mean())}) - the producer's level smear, not standing water"
+            )
+        else:
+            kept.append(body)
+    return kept, stats
+
+
+def _refine_worst_boxes(components):
+    """Bisect the components whose boxes cover the most dry cells, while the count stays
+    inside `MAX_BLOCKS` - see the constants above. `components` is `[(rows, cols), ...]`."""
+    import heapq
+
+    def overhang(rr, cc):
+        if len(rr) == 0:
+            return 0
+        h = int(rr.max() - rr.min() + 1)
+        w = int(cc.max() - cc.min() + 1)
+        return h * w - len(rr)
+
+    out = list(components)
+    heap = [(-overhang(rr, cc), i) for i, (rr, cc) in enumerate(out)]
+    heapq.heapify(heap)
+    while heap and len(out) < MAX_BLOCKS:
+        neg, i = heapq.heappop(heap)
+        if -neg <= BLOCK_SPLIT_MIN_OVERHANG_CELLS:
+            break  # every remaining box already fits its water well enough
+        rr, cc = out[i]
+        h = int(rr.max() - rr.min() + 1)
+        w = int(cc.max() - cc.min() + 1)
+        if h >= w:
+            mid = int(numpy.median(rr))
+            near = rr <= mid
+        else:
+            mid = int(numpy.median(cc))
+            near = cc <= mid
+        if not near.any() or near.all():
+            continue  # degenerate; this box cannot improve
+        a = (rr[near], cc[near])
+        b = (rr[~near], cc[~near])
+        out[i] = a
+        out.append(b)
+        heapq.heappush(heap, (-overhang(*a), i))
+        heapq.heappush(heap, (-overhang(*b), len(out) - 1))
+    return out
 
 
 def _isfile(path):
@@ -515,21 +481,18 @@ def _appearance_fields(appearance, ramp_path=None):
 INPUTS = ("layer:water", "layer:terrain", "layer:terrainFine")
 SETTINGS = ("water", "terrain_upsample")
 
-# version 7: the phantom-water theory is DEAD - the 2026-09-01 re-rip plus the bundle's own
-# instances (stilt pillars, deck trees, bridge decals standing over the "smear") proved the
-# disconnected sea-level water REAL: dug basins sealed at the sea's level by the sim's own
-# conservation. v4's body drop and v6's enclosed drop deleted real water and are removed. The
-# actual defect was OURS: the infinite WaterPlane floods 155.8 ha of genuinely below-sea dry
-# streets, and band-component bboxes overhang docklands - both replaced by the flood-safe
-# fine-resolution cover (no plane, `_flood_safe_boxes`, horizon extrusion, counted tolerances)
-# version 6: enclosed sea-level water dropped at the fine resolution [REVERTED in v7]
+# version 2: every water object names its `depthGradientTex` (A2)
+# version 6: enclosed sea-level water is dropped at the FINE resolution (quay walls exist
+# there; the connected smear is the re-rip's to remove), and films under `MIN_RENDER_DEPTH_M`
+# never become blocks - the finishing guard for the producer's re-based rip
 # version 5: the block split is OVERHANG-driven (a fill-ratio split shattered every river and
 # overflowed the vanilla-calibrated 200-block budget)
-# version 4: phantom bodies dropped and counted [REVERTED in v7]; band-component box split
+# version 4: phantom bodies (the producer's sea-level smear over docklands) are dropped and
+# counted; a band component's box is split until it fits its water (the dock rectangle covered
+# the quay road) - both from Naomi's screenshots, 2026-08-31
 # version 3: ...and the ramp is OURS, from the bundle's scattering colour and absorption -
 # vanilla's pale-teal ramp painted the sea's coastal level-band blocks as milky squares along
 # the map borders ("square fog", a halved-looking view distance)
-# version 2: every water object names its `depthGradientTex` (A2)
 STAGE = Stage(
-    STAGE_KEY, "Water", enabled, units, run, inputs=INPUTS, settings_keys=SETTINGS, version=7
+    STAGE_KEY, "Water", enabled, units, run, inputs=INPUTS, settings_keys=SETTINGS, version=6
 )
