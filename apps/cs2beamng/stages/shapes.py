@@ -130,6 +130,12 @@ def run(ctx, progress):
             if settings.get("lod0_min_triangles") is not None
             else LOD0_MIN_TRIANGLES
         ),
+        # residency: ship the bake's refined copy of a level where it wrote one
+        # (`shapelods.refined_level`). The bake made the decision and the measurement.
+        "lod0_refine": bool(settings.get("lod0_refine", True)),
+        # ...and refuse the `authored_lod0_max_tris` drop where the game's own LOD 1 is measurably
+        # this far from LOD 0 - the shapes that "look awful up close" (`authored_chain`)
+        "authored_lod0_max_error": float(settings.get("authored_lod0_max_error", 0.25) or 0.0),
         # the far silhouette level: CS2's own cull times this; 0 = none (`shapewrite._far_level`)
         "far_detail_scale": float(settings.get("far_detail_scale", 1.0) or 0.0),
         # residency: hand the authored LOD 1's band to LOD 2 and do not ship LOD 1
@@ -177,6 +183,9 @@ def run(ctx, progress):
                     tinted=tinted,
                     is_tree=entry["tree"],
                     displacement=_displacement(lod_index, asset, suffix),
+                    chain_displacement=(lod_index.get(asset + suffix) or {}).get(
+                        "chainDisplacement"
+                    ),
                     lod_backend=_lod_backend(lod_index, asset, suffix),
                     ring_dir=ring_dir,
                 ),
@@ -201,6 +210,9 @@ def run(ctx, progress):
                     tinted={},
                     is_tree=entry["tree"],
                     displacement=_displacement(lod_index, asset, suffix),
+                    chain_displacement=(lod_index.get(asset + suffix) or {}).get(
+                        "chainDisplacement"
+                    ),
                     lod_backend=_lod_backend(lod_index, asset, suffix),
                     ring_dir=ring_dir,
                 ),
@@ -382,6 +394,8 @@ SETTINGS = (
     "lod_switch_error_px",
     "lod0_max_error",
     "lod0_min_triangles",
+    "lod0_refine",
+    "authored_lod0_max_error",
     "far_detail_scale",
     "authored_lod1_drop",
     "authored_lod0_max_tris",
@@ -395,6 +409,12 @@ SETTINGS = (
 )
 OUTPUTS = ("art/shapes/cs2",)
 
+# version 44: `lod0_refine` - the bake's refined copy of a level (`_LOD<n>R.glb`) ships in place
+# of that level on buildings and props wherever the bake MEASURED that the collapse left the
+# surface inside the tolerance (19-30 % of the triangles at a p95 of 0.000-0.005 m). And
+# `authored_lod0_max_error`: the `authored_lod0_max_tris` drop is REFUSED where the game's own
+# LOD 1 is measurably far from LOD 0 - the ratio guard only saw badly reduced, never moderately
+# reduced and geometrically far, which is what looked awful up close.
 # version 43: a runtime billboard is for trees only (`_imposter_thresholds(kind=)`, C3); a
 # generated level ships no vertex-colour stream (C4)
 # version 42: a building takes a generated level only where THAT level's bake backend is
@@ -486,5 +506,5 @@ STAGE = Stage(
     settings_keys=SETTINGS,
     outputs=OUTPUTS,
     shared_keys=("shapes", "materials_used", "materials_variants_used", "materials_lod_level"),
-    version=43,
+    version=44,
 )

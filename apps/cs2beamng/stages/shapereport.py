@@ -95,6 +95,26 @@ def report(results, demand, scan_stats, options, errors, started, progress, rewr
             f"LOD 1 as their nearest level ({sum((r['lods'].get('lod0Triangles') or 0) for r in lod0_dropped):,} "
             f"LOD 0 triangles left out)"
         )
+    # the refined levels, declared and counted like every other approximation
+    refined = [r for r in results.values() if (r.get("lods") or {}).get("refinedFrom")]
+    r_from = sum((r["lods"].get("refinedFrom") or 0) for r in refined)
+    r_to = sum((r["lods"].get("refinedTo") or 0) for r in refined)
+    if refined:
+        progress.log(
+            f"shapes: {len(refined):,} shapes ship a refined level ({r_from:,} -> {r_to:,} "
+            f"triangles, {100.0 * (1.0 - r_to / r_from):.1f} % out) inside the bake's measured "
+            "surface tolerance"
+        )
+    # ...and the shapes that KEPT full detail because the game's own LOD 1 was too far from it
+    kept_far = [
+        r for r in results.values() if (r.get("lods") or {}).get("lod0DropSkippedDistance")
+    ]
+    if kept_far:
+        worst = max(r["lods"]["lod0DropSkippedDistance"] for r in kept_far)
+        progress.log(
+            f"shapes: {len(kept_far):,} shapes keep their full-detail mesh - the game's own LOD 1 "
+            f"is up to {worst:.2f} m from it (authored_lod0_max_error)"
+        )
     if identical_levels:
         progress.log(
             f"shapes: {identical_levels} authored levels left out for being identical to LOD 0"
@@ -111,6 +131,10 @@ def report(results, demand, scan_stats, options, errors, started, progress, rewr
         "lod0KeptSmall": len(kept_small),
         "lod0Dropped": len(lod0_dropped),
         "lod0DroppedTriangles": sum((r["lods"].get("lod0Triangles") or 0) for r in lod0_dropped),
+        "refinedShapes": len(refined),
+        "refinedFromTriangles": r_from,
+        "refinedToTriangles": r_to,
+        "lod0DropSkippedDistance": len(kept_far),
         "identicalLevelsDropped": identical_levels,
         "identicalGeneratedDropped": identical_generated,
         "shapesRewritten": rewritten,

@@ -9,7 +9,7 @@ TEXTURE_SETTINGS = (
     Setting(
         key="texture_max",
         default=512,
-        kind="choice:256|512|1024|2048|0",
+        kind="choice:128|256|512|1024|2048|0",
         label="Texture detail",
         blurb="The largest a colour picture may be, in pixels. The main cost on your card.",
         help="Colour texture edge cap in pixels (0 = full size). Also caps the emissive and "
@@ -22,7 +22,7 @@ TEXTURE_SETTINGS = (
     Setting(
         key="texture_max_normal",
         default=512,
-        kind="choice:256|512|1024|2048|0",
+        kind="choice:128|256|512|1024|2048|0",
         label="Surface bumpiness detail",
         blurb="How finely bricks, planks and grooves are described. Lower is flatter and lighter.",
         help="How large a surface-bumpiness picture may be, in pixels (0 = as large as it came)",
@@ -33,7 +33,7 @@ TEXTURE_SETTINGS = (
     Setting(
         key="texture_max_data",
         default=256,
-        kind="choice:128|256|512|1024|0",
+        kind="choice:64|128|256|512|1024|0",
         label="Shine and roughness detail",
         blurb="How finely wet, matt and metal surfaces are described. Rarely needs to be large.",
         help="Edge cap for data maps in pixels: roughness, metallic and the CS2 colour mask",
@@ -108,7 +108,7 @@ TEXTURE_SETTINGS = (
     Setting(
         key="texture_max_variant",
         default=256,
-        kind="choice:128|256|512|1024|0",
+        kind="choice:64|128|256|512|1024|0",
         label="Recoloured texture detail",
         blurb="How large the recoloured copies may be, in pixels.",
         help="Colour cap for a paint variant's tinted albedo, separately from the main colour cap",

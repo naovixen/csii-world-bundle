@@ -84,6 +84,27 @@ COLLISION_SETTINGS = (
         subset_of="collision_preset",
     ),
     Setting(
+        key="collision_max_clearance_m",
+        # DEFAULT OFF (Naomi, 2026-09-01): the rule ships, but the build that measures the shadow
+        # far stop measures only that. 2.5 is the number to turn it on at - above a door head,
+        # below a first-floor slab.
+        default=0.0,
+        kind="float",
+        label="Ignore objects higher than",
+        blurb="A prop this far above the ground loses its collider and its shadow. 0 = off.",
+        help="Props whose base is this many metres above the terrain do not collide or cast "
+        "shadows; 0 = off",
+        detail="A planter on a roof, a light on a balcony, a sign under a bridge deck: none of "
+        "them can ever be driven into, and the shadow each one casts lands on the roof it "
+        "stands on. Both cost something every frame, so anything standing clear of the "
+        "ground by more than this gives up both. Buildings are exempt, and so is the road "
+        "surface itself — this only ever removes a prop's collider, never the ground under "
+        "the car. The measurement is against the TERRAIN, so a prop on a high viaduct "
+        "counts as elevated too. 0 turns it off.",
+        unit="m",
+        subset_of="collision_preset",
+    ),
+    Setting(
         key="collision_lights",
         default=False,
         kind="bool",

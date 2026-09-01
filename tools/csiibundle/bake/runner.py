@@ -47,7 +47,12 @@ DEFAULT_OPTIONS = {
 }
 
 
-Context = namedtuple("Context", "bundle_dir manifest derived options layer_path")
+# `force` is NOT an option: options are FINGERPRINTED (a change to one makes a product stale), and
+# "the caller asked for a redo" is not a property of the output. It rides the context so a product
+# that reuses its own previous per-asset output (`lods`) can start clean when asked to.
+Context = namedtuple(
+    "Context", "bundle_dir manifest derived options layer_path force", defaults=(False,)
+)
 
 
 class Outcome(namedtuple("Outcome", "name status reason seconds stats")):
@@ -55,13 +60,15 @@ class Outcome(namedtuple("Outcome", "name status reason seconds stats")):
     absent-unknown."""
 
 
-def make_context(bundle_dir, derived, options):
+def make_context(bundle_dir, derived, options, force=False):
     manifest = reader.load_manifest(bundle_dir)
 
     def layer_path(key):
         return reader.layer_path(bundle_dir, key, manifest)
 
-    return Context(os.path.abspath(bundle_dir), manifest, derived, dict(options), layer_path)
+    return Context(
+        os.path.abspath(bundle_dir), manifest, derived, dict(options), layer_path, bool(force)
+    )
 
 
 def plan(bundle_dir, derived, options, only=None, force=False, registry=None):
@@ -140,7 +147,9 @@ def run(
         document["options"] = dict(options)
     _manifest.save(derived, document)
 
-    context = make_context(bundle_dir, derived, options)
+    # `--force` means redo the work, not just re-run the product: a product that reuses its own
+    # previous per-asset output (`lods`) must see it and start clean.
+    context = make_context(bundle_dir, derived, options, force=force)
     for product, status, reason in todo:
         if status == "fresh":
             progress.log(f"{product.name}: fresh ({reason}), skipped")

@@ -41,6 +41,25 @@ FOREST_DEFAULTS = {
 # drops the shadow immediately. INFERRED from vanilla usage, not from documentation.
 NO_SHADOW_DETAIL_SIZE = 100000
 
+# ...and when they are ON, the size at which each type's shadow STOPS — vanilla's own number.
+#
+# `shadowNullDetailSize` is a detail size like any other, so it is the pixel size below which the
+# item stops casting: a NEAR shadow is kept and the far tail leaves the pass. Until now this was
+# on/off, and "on" meant 576,148 forest items in the shadow pass with no far stop at all, against
+# vanilla shipping 40 px on the 138 items that set it. Shadow-caster submission roughly doubles
+# geometry work for the objects in the pass, and it is BeamNG's own #3 slow-scene cause.
+#
+# INFERRED from vanilla data, not documentation (the field is undocumented) — so it is a setting,
+# and 0 restores the old behaviour of no far stop.
+FOREST_SHADOW_NULL_PX = 40
+
+# The suffix `stages.instances` puts on a forest type carrying the ELEVATED items of another type
+# (a prop on a roof or a deck). The twin names the same `shapeFile` — Torque mounts a shape once
+# per path, so it costs one `TSForestItemData` and no mesh residency — and ships `collidable:
+# false` with its shadow off, which is the only way a per-INSTANCE decision can be expressed in
+# `.forest4.json` at all (a forest item has no per-item collision or shadow flag).
+ELEVATED_SUFFIX = "__elevated"
+
 # Below this SHAPE height in metres a forest type ships `collidable: false`. BeamNG's own
 # guidance is "disable collision for small decorative objects that vehicles should not hit", and
 # 1.16M collidable items is 1.16M entries in the physics broadphase for flower beds and kerb
@@ -93,6 +112,12 @@ def drop_rare_types(
         count = int(item_counts.get(name, 0))
         if count >= min_items:
             continue
+        if name.endswith(ELEVATED_SUFFIX):
+            # The elevated split makes a twin per prefab, so it manufactures exactly the thin
+            # types this floor removes — and here that would DELETE a roof's props rather than
+            # coarsen them. The rare-type floor exists to stop a type mounting a shape for one
+            # item; a twin mounts nothing its parent has not already mounted.
+            continue
         source = type_source.get(name)
         row = (results or {}).get(source) if source else None
         if keep_radius > 0.0 and row is not None and float(row.get("radius") or 0.0) >= keep_radius:
@@ -130,6 +155,11 @@ def merge_thin_types(forest_dir, types, type_source, item_counts, results, min_i
         return out
     for name in sorted(types):
         if item_counts.get(name, 0) >= min_items:
+            continue
+        if name.endswith(ELEVATED_SUFFIX):
+            # An elevated twin is a type BECAUSE of what it does not ship (collision, shadow), so
+            # folding it into the untinted type would hand both back — the merge would silently
+            # undo the rule on exactly the thin twins it was most likely to catch.
             continue
         asset, suffix, variant = type_source.get(name, (None, None, None))
         if variant is None:
@@ -228,6 +258,7 @@ def write_item_data(level, types, settings, collide):
     the collision hygiene split the report declares.
     """
     shadows = bool(settings.get("forest_shadows", True))
+    shadow_null_px = int(settings.get("forest_shadow_null_px", FOREST_SHADOW_NULL_PX) or 0)
     document = {}
     stats = {
         "types": 0,
@@ -238,6 +269,8 @@ def write_item_data(level, types, settings, collide):
         "noCollider": 0,
         "plant": 0,
         "itemsNotCollidable": 0,
+        "shadowNullPx": shadow_null_px if shadows else None,
+        "elevatedTypes": 0,
     }
     min_footprint = float(
         settings.get("collision_min_footprint", FOREST_COLLIDABLE_MIN_FOOTPRINT) or 0.0
@@ -254,6 +287,15 @@ def write_item_data(level, types, settings, collide):
         }
         entry.update(FOREST_DEFAULTS.get(kind, FOREST_DEFAULTS["prop"]))
         stats["types"] += 1
+        elevated = name.endswith(ELEVATED_SUFFIX)
+        if elevated:
+            # the twin's whole reason for existing: neither cost, whatever its shape says
+            entry["collidable"] = False
+            entry["shadowNullDetailSize"] = NO_SHADOW_DETAIL_SIZE
+            stats["elevatedTypes"] = stats.get("elevatedTypes", 0) + 1
+            stats["itemsNotCollidable"] += int(row.get("_items") or 0)
+            document[name] = entry
+            continue
         if not _is_collidable(row, kind, collide, min_footprint, stats):
             entry["collidable"] = False
             stats["itemsNotCollidable"] += int(row.get("_items") or 0)
@@ -261,6 +303,8 @@ def write_item_data(level, types, settings, collide):
             stats["collidable"] += 1
         if not shadows:
             entry["shadowNullDetailSize"] = NO_SHADOW_DETAIL_SIZE
+        elif shadow_null_px > 0:
+            entry["shadowNullDetailSize"] = shadow_null_px
         document[name] = entry
     level.write_json(document, "art", "forest", "managedItemData.json")
     return stats

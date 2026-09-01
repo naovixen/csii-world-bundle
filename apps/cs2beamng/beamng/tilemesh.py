@@ -1,7 +1,7 @@
 """Applying a LOD ladder to a merged tile mesh."""
 
 import numpy
-from csiibundle import decimate
+from csiibundle import decimate, decimatemeshlab, displacement
 from csiibundle.bake.tiles import split_material_name
 
 from . import daemesh
@@ -113,6 +113,7 @@ def build_levels(
     targets=TILE_TARGETS,
     tile=None,
     pins=True,
+    refine_error=0.0,
 ):
     """`([(px, [Mesh]), ...], ladder)` for one merged tile, ready for `dae.Shape`.
 
@@ -130,8 +131,12 @@ def build_levels(
     still meet (`boundary_pins`). `targets=None` or `tile=None` keeps A4's behaviour: the levels
     are exact subsets and nothing is simplified.
 
-    The nearest level is never decimated. It is what you stand on, and it is the detail a
-    `Visible Mesh` collider rasterises.
+    The nearest level is never CLUSTERED, for the reason above: it is what you stand on, and it
+    is the detail a `Visible Mesh` collider rasterises. `refine_error` is the one thing allowed
+    to touch it — a MeshLab collapse whose every edge lands on an EXISTING vertex and whose
+    measured p95 displacement is held under that many metres, so the surface the car drives on
+    provably does not move. It is a far tighter number than a shape's (1 cm against 3), because
+    here a centimetre is a bump and not a silhouette. 0 keeps the level exactly as it was.
     """
     distances = tri_distances(mesh, level_of_detail)
     mesh = strip_marks(dae, mesh)
@@ -145,6 +150,7 @@ def build_levels(
     )
     out = []
     decimated = []
+    refined = []
     for index, (px, mask) in enumerate(ladder["levels"]):
         part = subset(dae, shape_name, mesh, mask)
         if part is None:
@@ -156,12 +162,72 @@ def build_levels(
             before = len(part.tris)
             part = _decimated(dae, shape_name, part, ratio, tile, pins)
             decimated.append((before, len(part.tris)))
+        elif index == 0 and refine_error and len(part.tris) >= REFINE_MIN_TRIS:
+            before = len(part.tris)
+            part, moved = _refined(dae, shape_name, part, refine_error)
+            if len(part.tris) != before:
+                refined.append((before, len(part.tris), moved))
         out.append((px, daemesh.split_mesh(part)))
     ladder["decimated"] = decimated
+    ladder["refined"] = refined
     if not out:
         ladder["nullPx"] = None
         return [(always_px, daemesh.split_mesh(mesh))], ladder
     return out, ladder
+
+
+# The nearest level of a tile is refined only where at least this many triangles make the MeshLab
+# round trip worth its seconds; a small tile has nothing to find.
+REFINE_MIN_TRIS = 2_000
+# Deepest first, first pass wins - the shape rule's ladder (`bake/lods.REFINE_TARGETS`).
+REFINE_TARGETS = (0.5, 0.6, 0.7, 0.8, 0.9)
+
+
+def _refined(dae, shape_name, part, max_error):
+    """`(part, moved)` - the deepest MeshLab collapse of the NEAREST level whose measured p95
+    displacement stays under `max_error` metres, or the level untouched.
+
+    This is the only simplification the nearest level of a tile is allowed, and the bound is what
+    makes it allowed: a road tile ships `Visible Mesh Final`, so this mesh IS the surface the car
+    drives on. MeshLab's collapse lands on existing vertices, so a flat run of coplanar road
+    triangles merges at literally zero displacement while a crowned or kerbed one measures and is
+    refused. Every candidate is judged on its own (the error is not monotone in the reduction).
+    """
+    if not decimatemeshlab.available():
+        return part, None
+    source = {
+        "verts": numpy.asarray(part.verts, dtype=numpy.float64),
+        "normals": None if part.normals is None else numpy.asarray(part.normals, dtype=numpy.float64),
+        "uvs": None if part.uvs is None else numpy.asarray(part.uvs, dtype=numpy.float64),
+        "tris": numpy.asarray(part.tris, dtype=numpy.int64),
+        "material_runs": list(part.runs),
+    }
+    for ratio in REFINE_TARGETS:
+        try:
+            level = decimate.lod_ladder(source, targets=(ratio,), backend="meshlab")[0][0]
+        except Exception:
+            continue
+        if len(level["tris"]) == 0 or len(level["tris"]) >= len(source["tris"]):
+            continue
+        try:
+            p95 = float(displacement.level_displacement(level, source)[0])
+        except Exception:
+            continue
+        if p95 > max_error:
+            continue
+        return (
+            dae.Mesh(
+                shape_name,
+                level["verts"],
+                level["tris"],
+                level["material_runs"],
+                normals=level["normals"],
+                uvs=level["uvs"],
+                colors=None,
+            ),
+            round(p95, 4),
+        )
+    return part, None
 
 
 def _decimated(dae, shape_name, part, ratio, tile, pins=True):
@@ -189,6 +255,20 @@ def _decimated(dae, shape_name, part, ratio, tile, pins=True):
         uvs=result["uvs"],
         colors=None,
     )
+
+
+def refined_summary(stats):
+    """What refining the nearest levels bought, or None when it bought nothing."""
+    if not stats.get("refinedTiles"):
+        return None
+    a, b = stats["refinedFrom"], stats["refinedTo"]
+    return {
+        "tiles": stats["refinedTiles"],
+        "from": a,
+        "to": b,
+        "percentOut": round(100.0 * (1.0 - b / a), 1) if a else 0.0,
+        "worstMetres": round(stats.get("refinedWorst") or 0.0, 4),
+    }
 
 
 def ladder_summary(stats, detail_scale):
@@ -221,6 +301,10 @@ def new_stats():
         "nullMetres": [],
         "decimatedFrom": 0,
         "decimatedTo": 0,
+        "refinedTiles": 0,
+        "refinedFrom": 0,
+        "refinedTo": 0,
+        "refinedWorst": 0.0,
         "anchorMetres": [],
         "nullLowered": 0,
     }
@@ -243,6 +327,10 @@ def compact(levels, ladder):
         "decimatedFrom": sum(a for a, _b in pairs),
         "decimatedTo": sum(b for _a, b in pairs),
         "nullLowered": bool(ladder.get("nullLowered")),
+        # the NEAREST level's measured refinement (`_refined`), which the ladder never touches
+        "refined": [
+            (a, b, m) for a, b, m in (ladder.get("refined") or []) if a is not None
+        ],
     }
 
 
@@ -257,6 +345,12 @@ def account_compact(stats, item):
     stats["decimatedFrom"] = stats.get("decimatedFrom", 0) + (item.get("decimatedFrom") or 0)
     stats["decimatedTo"] = stats.get("decimatedTo", 0) + (item.get("decimatedTo") or 0)
     stats["nullLowered"] = stats.get("nullLowered", 0) + (1 if item.get("nullLowered") else 0)
+    for before, after, moved in item.get("refined") or ():
+        stats["refinedTiles"] = stats.get("refinedTiles", 0) + 1
+        stats["refinedFrom"] = stats.get("refinedFrom", 0) + before
+        stats["refinedTo"] = stats.get("refinedTo", 0) + after
+        if moved is not None:
+            stats["refinedWorst"] = max(stats.get("refinedWorst", 0.0), moved)
     if item.get("anchorMetres") is not None:
         stats.setdefault("anchorMetres", []).append(item["anchorMetres"])
     if item.get("gameNullMetres") is not None:

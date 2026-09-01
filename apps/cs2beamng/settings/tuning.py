@@ -136,6 +136,94 @@ TUNING_SETTINGS = (
         "things without giving back the saving on the heavy ones. 0 removes it.",
         unit="triangles",
     ),
+    # The refined shipped level. LOD 0 is ~66 % of a shape's bytes and a shape is mounted WHOLE
+    # for one instance in view, so the level a shape ships IS the level's resident mesh cost -
+    # 2,396 MiB of the reference city's 2,953, on a card measured at 88-96 % of its driver budget
+    # where BeamNG's streamer stops loading mips and cycles them under a still camera ("the FPS is
+    # MEMORY", phase10 §8.14). Unlike every other residency lever, this one is not "less city":
+    # MeshLab's collapse lands on existing vertices, so the surface stays where it was, and the
+    # bake writes a refined level only where it MEASURED that it did. 19-30 % out at a p95 of
+    # 0.000-0.005 m on the shapes it was tried on.
+    Setting(
+        key="lod0_refine",
+        default=True,
+        kind="bool",
+        label="Thin and clean the meshes",
+        blurb="Rebuild the heaviest meshes with fewer triangles wherever the surface provably "
+        "does not move.",
+        help="Thin and clean the heaviest meshes where their surface provably does not move",
+        detail="Every shape you can see is held in memory in full, whether you are next to it "
+        "or looking at it from across the city — so the meshes are what fill the graphics "
+        "card, and a full card is what makes the frame rate lurch. This thins them and "
+        "then MEASURES how far the surface actually moved; anything that moved further "
+        "than the tolerance below is shipped whole instead. Turning it off ships every "
+        "mesh as it came.",
+    ),
+    Setting(
+        key="lod0_refine_cm",
+        default=3.0,
+        kind="float",
+        label="How much to thin",
+        blurb="How far a thinned surface may move. Higher thins more and frees more memory.",
+        help="How far a thinned mesh's surface may move, in centimetres - higher thins more",
+        detail="This is the strength dial. It is written as a distance because that is what is "
+        "actually measured: every candidate is thinned, the result is compared against the "
+        "original surface, and anything that moved further than this is thrown away and "
+        "the mesh shipped whole. Higher thins more of the city and frees more memory; "
+        "lower protects detail you can only see up close. Above about 5 cm the flat faces "
+        "of a building start to break up into visible diagonal facets, so the useful range "
+        "is small.",
+        control="distance",
+        range=(0.0, 12.0, 0.5, " cm"),
+        zero_label="off",
+    ),
+    Setting(
+        key="lod0_refine_peak_cm",
+        default=25.0,
+        kind="float",
+        label="Refinement worst-case limit",
+        blurb="The furthest ANY point of a refined mesh may move. 0 = no limit.",
+        help="The furthest any single point of a thinned mesh may move, in centimetres",
+        detail="The tolerance above is a 95th percentile, which says nothing about the worst "
+        "twentieth of a surface — a tower measured 2 cm of typical movement while one "
+        "corner of it had travelled a full metre, and that corner is the torn, spiky "
+        "look on a ruined building. This bounds the worst point instead of the typical "
+        "one. Raising it frees more memory and risks those artifacts; lowering it is "
+        "safer and thins less. 0 removes the limit.",
+        unit="cm",
+    ),
+    Setting(
+        key="authored_lod0_max_error",
+        default=0.25,
+        kind="float",
+        label="Keep full detail when off by",
+        blurb="Keep the full mesh where the game's own lower version is further than this.",
+        help="Do not drop full detail where the game's own lower LOD sits further than this (m) "
+        "from it",
+        detail="The triangle cap above drops a shape's full-detail mesh on SIZE alone, and for "
+        "most shapes the game's own lower version is indistinguishable from it. For a few "
+        "it is a different building — a sculpture that becomes a blob, a tower that loses "
+        "its balconies — and those are the ones that look wrong close up. This measures "
+        "the actual distance between the two and keeps the full mesh, thinned, wherever "
+        "that distance is too large. A handful of shapes are usually affected. 0 turns "
+        "it off.",
+        unit="m",
+    ),
+    Setting(
+        key="tile_refine_cm",
+        default=1.0,
+        kind="float",
+        label="Road surface tolerance",
+        blurb="How far a refined road surface may move. Tight: this mesh is what the car drives "
+        "on.",
+        help="How far a thinned road surface may move, in centimetres; 0 = never thin it",
+        detail="Roads are the second largest thing in memory after the buildings, and unlike a "
+        "building the road mesh is also the surface the car physically drives on — so it "
+        "is held to a far tighter tolerance than anything else. A flat run of carriageway "
+        "thins with no measurable change at all; a crown, a kerb or a camber measures and "
+        "is left alone. 0 ships every road exactly as built.",
+        unit="cm",
+    ),
     Setting(
         key="forest_min_items",
         default=10,
@@ -360,6 +448,22 @@ TUNING_SETTINGS = (
         blurb="Forest items cast shadows. One of the heaviest per-frame costs a dense canopy "
         "carries.",
         help="Forest items cast shadows",
+    ),
+    Setting(
+        key="forest_shadow_null_px",
+        default=40,
+        kind="int",
+        label="Forest shadow far stop",
+        blurb="The pixel size at which a forest item stops casting — vanilla ships 40. 0 = no far "
+        "stop.",
+        help="Stop a forest item's shadow at this pixel size (vanilla uses 40); 0 = never",
+        detail="Shadow casting is one of the most expensive things a scene does, and with the "
+        "shadows switch on every one of half a million forest items was in the shadow "
+        "pass at any distance — no far stop at all. This gives a tree's shadow the same "
+        "kind of vanishing point its mesh has: near trees keep theirs, the far tail "
+        "leaves the pass. 40 is the number BeamNG's own levels use. Larger stops "
+        "shadows sooner and buys more; 0 restores no far stop.",
+        unit="px",
     ),
     Setting(
         key="tree_wind",

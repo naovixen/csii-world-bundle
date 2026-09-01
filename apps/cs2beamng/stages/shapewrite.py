@@ -55,6 +55,10 @@ class ShapeJob:
     is_tree: Any
     displacement: Any
     lod_backend: Any = None
+    # How far the game's own LOD 1 is from LOD 0 for this shape, in metres (`bake/lods`
+    # `_chain_displacement`), or None. What `authored_lod0_max_tris` never asked before dropping
+    # LOD 0 on a triangle count alone.
+    chain_displacement: Any = None
     # where a ring member's silhouette payload is written as a small `.npz` (D1): the verts /
     # normals / colours / tris used to ride the result dict as Python lists - through the pool
     # pipe and into `shapes.state.json`, 15.4 of whose 19.7 MiB they were, parsed whole by the
@@ -78,7 +82,16 @@ def shape_job(job):
     shape_name = placement.shape_key(job.asset, job.suffix, job.variant)
     base_mesh = daemesh.group_by_material(daemesh.merge_meshes(shape_name, parts))
     game_px, null_px, chain = _thresholds(
-        shape_name, authored, size, area, lod_bias, radius, detail_scale, options, base_mesh
+        shape_name,
+        authored,
+        size,
+        area,
+        lod_bias,
+        radius,
+        detail_scale,
+        options,
+        base_mesh,
+        chain_displacement=job.chain_displacement,
     )
     levels, lod_stats, ladder = shapelods.lod_levels(
         job.derived_dir,
@@ -239,7 +252,16 @@ def _colliders(job, shape_name, base_mesh, ladder, lod_stats, chain=None):
 
 
 def _thresholds(
-    shape_name, authored, size, area, lod_bias, radius, detail_scale, options, base_mesh=None
+    shape_name,
+    authored,
+    size,
+    area,
+    lod_bias,
+    radius,
+    detail_scale,
+    options,
+    base_mesh=None,
+    chain_displacement=None,
 ):
     """`(game_px, null_px, chain)`: CS2's cull for the mesh, this level's null, and the game's
     own LOD chain as a ladder when the shape ships one (its null replaces the single-mesh one)."""
@@ -248,7 +270,16 @@ def _thresholds(
     )
     null_px = max(1.0, game_px * detail_scale)
     chain = shapelods.authored_chain(
-        shape_name, authored, size, area, lod_bias, radius, detail_scale, options, base_mesh
+        shape_name,
+        authored,
+        size,
+        area,
+        lod_bias,
+        radius,
+        detail_scale,
+        options,
+        base_mesh,
+        chain_displacement=chain_displacement,
     )
     if chain is not None:
         null_px = chain["nullPx"]

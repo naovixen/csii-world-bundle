@@ -72,4 +72,10 @@ def bake_options(settings, jobs=1):
         # painted surfaces: how far the ground may stand above a piece (cm → m); 1 cm is the
         # rule's own half-lift, the presets for a smaller card trade it for bytes
         "area_tolerance": float(settings.get("area_conform_cm", 1.0) or 1.0) / 100.0,
+        # the refined shipped level: on, and how far its surface may move (cm -> m)
+        "lod0_refine": bool(settings.get("lod0_refine", True)),
+        "lod0_refine_error": float(settings.get("lod0_refine_cm", 3.0) or 0.0) / 100.0,
+        # the WORST-CASE bound - the one that protects a facade (a p95 leaves the worst 5 %
+        # unbounded, which is what "ruined some buildings" was)
+        "lod0_refine_peak": float(settings.get("lod0_refine_peak_cm", 25.0) or 0.0) / 100.0,
     }

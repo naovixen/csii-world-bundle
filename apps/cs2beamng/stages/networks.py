@@ -66,6 +66,9 @@ def run(ctx, progress):
         "view_distance": float(settings.get("view_distance") or 0)
         if settings.get("tile_lod", True)
         else None,
+        # metres the road surface may move when its nearest level is refined (cm -> m); the
+        # driving surface, so a far tighter number than a shape's
+        "refine_error": float(settings.get("tile_refine_cm", 1.0) or 0.0) / 100.0,
     }
     lay = reader.resolve_layers(ctx.bundle)
     if not os.path.isfile(lay.networks) or not os.path.isdir(lay.net_meshes):
@@ -123,6 +126,7 @@ def run(ctx, progress):
             level.name,
             options["detail_scale"],
             options["view_distance"],
+            options["refine_error"],
         )
         for (tx, tz), recs in sorted(buckets.items())
     ]
@@ -198,6 +202,8 @@ def run(ctx, progress):
         "splitGeometries": split_geoms,
         "jobs": workers,
         "lod": tilemesh.ladder_summary(ladder_stats, options["detail_scale"]),
+        # the nearest level's measured refinement - the driving surface, so it is declared
+        "refined": tilemesh.refined_summary(ladder_stats),
         "approximations": {
             "compositionHeightRange": {
                 "what": "a segment's composition height range is taken from the assembled "
@@ -230,7 +236,18 @@ def _init_worker(aliases):
 
 def _tile_job(args):
     """One tile of segments to its `.dae` file(s), in a worker process."""
-    net_meshes, recs, tx, tz, tile, level_dir, level_name, detail_scale, view_distance = args
+    (
+        net_meshes,
+        recs,
+        tx,
+        tz,
+        tile,
+        level_dir,
+        level_name,
+        detail_scale,
+        view_distance,
+        refine_error,
+    ) = args
     aliases = _WORKER_ALIASES
     level = LevelPaths(level_dir, level_name)
     shared = {"materials_aliases": {"aliases": aliases}}
@@ -286,6 +303,10 @@ def _tile_job(args):
             # (a pinned vertex is its own cluster) and the far level came out ~5x its target,
             # 3.8 M triangles against 0.8 M (validation pass 2026-08-31, C1).
             pins=False,
+            # ...and the NEAREST level, which the ladder never touches, is refined under a
+            # measured bound: a road tile ships `Visible Mesh Final`, so this mesh is the surface
+            # the car drives on and the bound is what keeps it there (`tilemesh._refined`).
+            refine_error=refine_error,
         )
         shape = dae.Shape(name, levels, collision=[], billboard_px=None, null_px=ladder["nullPx"])
         stats = dae.write_shape(level.path("art", "shapes", "networks", f"{name}.dae"), shape)
@@ -363,9 +384,15 @@ SETTINGS = (
     "lod_detail_scale",
     "view_distance",
     "tile_lod",
+    "tile_refine_cm",
 )
 OUTPUTS = ("art/shapes/networks",)
 
+# version 14: the NEAREST level is refined under a measured displacement bound
+# (`tile_refine_cm`, 1 cm) - the ladder never touched it because a road tile ships
+# `Visible Mesh Final` and this mesh IS the surface the car drives on. MeshLab's collapse lands on
+# existing vertices, so a flat run of road merges at zero displacement while a crowned or kerbed
+# one measures and is refused. 698 MiB of network mesh was the level's second-biggest pool.
 # version 13: a tile of flat carriageway (every segment `form: normal`) stops casting shadows;
 # one with an elevated or tunnel segment keeps the pass - the Phase 10 decline, refined (C5)
 # version 12: the tile ladder is decimated WITHOUT boundary pins - a network tile shares no
@@ -384,5 +411,5 @@ STAGE = Stage(
     settings_keys=SETTINGS,
     outputs=OUTPUTS,
     shared_keys=("materials_used",),
-    version=13,
+    version=14,
 )

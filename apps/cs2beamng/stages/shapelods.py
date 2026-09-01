@@ -174,7 +174,16 @@ def _mesh_digest(mesh):
 
 
 def authored_chain(
-    shape_name, authored, size, area, lod_bias, radius, detail_scale, options, base_mesh=None
+    shape_name,
+    authored,
+    size,
+    area,
+    lod_bias,
+    radius,
+    detail_scale,
+    options,
+    base_mesh=None,
+    chain_displacement=None,
 ):
     """The game's own LOD chain as a ladder, or None when the shape ships none.
 
@@ -188,7 +197,7 @@ def authored_chain(
     """
     if not authored or not options.get("authored_lods", True):
         return None
-    meshes, sized, identical = [], [], []
+    meshes, sized, identical, kept_levels = [], [], [], []
     base_digest = _mesh_digest(base_mesh) if base_mesh is not None else None
     for level, parts, level_size in authored:
         mesh = daemesh.group_by_material(daemesh.merge_meshes(f"{shape_name}_LOD{level}", parts))
@@ -203,6 +212,7 @@ def authored_chain(
             identical.append(level)
             continue
         meshes.append(mesh)
+        kept_levels.append(level)
         sized.append((level_size, len(mesh.tris) * 3))
     if not meshes:
         return None
@@ -228,6 +238,9 @@ def authored_chain(
         "thresholds": px,
         "nullPx": px[-1] * 0.9,
         "limits": limits,
+        # the authored level number behind each kept mesh, so the ladder can ask for that
+        # level's refined copy (`refined_level`); stays aligned through every drop below
+        "levels": list(kept_levels),
         "colliderMesh": meshes[0],
         "lod1Dropped": False,
         "lod0Dropped": False,
@@ -252,8 +265,21 @@ def authored_chain(
         # shape; on the reference city at 5 % this keeps 7 shapes (~19 MiB), and the next
         # ratio above the cut-off is 6.5 %.
         ratio = len(meshes[0].tris) / float(len(base_mesh.tris))
+        # ...and the same premise fails, less visibly, where LOD 1 is a MEASURABLY different
+        # building. The ratio only sees BADLY reduced; it cannot see moderately reduced and
+        # geometrically far, which is what "some meshes look awful up close" was (Naomi,
+        # 2026-09-01). Measured over the 644 capped shapes, LOD 1's p95 distance from LOD 0 is
+        # p50 0.005 m / p75 0.025 m / p90 0.072 m - so the cap is right for almost all of them -
+        # and then `OracleParkSculpture` at 1.088 m (5,974 -> 784 triangles),
+        # `Planetario_Galileo_Galilei` 0.892 m, `Alvear_Tower_Buenos_Aires` 0.423 m, `Prison01`
+        # 0.316 m, every one of which the ratio guard passes. Refusing the drop past 0.25 m costs
+        # 8 shapes and ~26 MiB, and those shapes keep a REFINED LOD 0 rather than the full one.
+        far = float(options.get("authored_lod0_max_error") or 0.0)
+        measured = chain_displacement
         if ratio < DEGENERATE_LOD1_RATIO:
             chain["lod0DropSkippedDegenerate"] = round(ratio, 4)
+        elif far > 0.0 and measured is not None and float(measured) > far:
+            chain["lod0DropSkippedDistance"] = round(float(measured), 4)
         else:
             chain["thresholds"] = px[1:]
             chain["lod0Dropped"] = True
@@ -270,6 +296,7 @@ def authored_chain(
     # pointed). The collider still comes off LOD 1, and a chain with only one level keeps it.
     if options.get("authored_lod1_drop") and len(meshes) >= 2:
         chain["meshes"] = meshes[1:]
+        chain["levels"] = kept_levels[1:]
         chain["thresholds"] = [px[1], *px[2:]]
         chain["lod1Dropped"] = True
     return chain
@@ -301,11 +328,29 @@ def lod_levels(
     node-local metre is a world metre), which is what makes the ratio between them a pure pixel
     count.
     """
+    stats = {"levels": 1, "triangles": [len(base_mesh.tris)], "lod0Promoted": False}
+
+    def refine(mesh, level):
+        return refined_level(
+            derived_dir,
+            source,
+            shape_name,
+            mesh,
+            level,
+            kind,
+            aliases,
+            tinted,
+            level_name,
+            options,
+            stats,
+        )
+
+    if chain is not None:
+        return _authored_ladder(base_mesh, chain, stats, refine=refine)
+    base_mesh = refine(base_mesh, 0)
+    stats["triangles"] = [len(base_mesh.tris)]
     meshes = [base_mesh]
     generated = []
-    stats = {"levels": 1, "triangles": [len(base_mesh.tris)], "lod0Promoted": False}
-    if chain is not None:
-        return _authored_ladder(base_mesh, chain, stats)
     # Generated (vertex-clustered) levels are for PROPS only. On a building they are the
     # see-through lattices (a facade's window quads unwelded), on a tree a bare canopy - Naomi's
     # look, 2026-08-30: "full at 20 m, very bare, then full again at 100-200 m" (the billboard).
@@ -351,10 +396,22 @@ def lod_levels(
     return fixed, stats, meshes
 
 
-def _authored_ladder(base_mesh, chain, stats):
+def _authored_ladder(base_mesh, chain, stats, refine=None):
     """The game's chain as the shape's ladder: LOD 0 then every authored level, each starting at
-    the pixel size the game's own limit puts it."""
+    the pixel size the game's own limit puts it.
+
+    `refine` is `(mesh, level) -> mesh`, swapping in the bake's refined copy of that level. It
+    matters as much here as on LOD 0: with `authored_lod0_max_tris` on, the level whose bytes are
+    resident on a heavy shape is the game's own LOD 1.
+    """
     meshes = list(chain["meshes"]) if chain.get("lod0Dropped") else [base_mesh, *chain["meshes"]]
+    if refine is not None:
+        levels = list(chain.get("levels") or ())
+        if not chain.get("lod0Dropped"):
+            levels = [0, *levels]
+        meshes = [
+            refine(mesh, levels[i]) if i < len(levels) else mesh for i, mesh in enumerate(meshes)
+        ]
     thresholds = list(chain["thresholds"])
     # strictly decreasing, as Torque needs; the limits are monotonic so this only guards rounding
     for index in range(1, len(thresholds)):
@@ -371,6 +428,7 @@ def _authored_ladder(base_mesh, chain, stats):
             "gameLodLimits": list(chain["limits"]),
             "lod1Dropped": bool(chain.get("lod1Dropped")),
             "lod0Dropped": bool(chain.get("lod0Dropped")),
+            "lod0DropSkippedDistance": chain.get("lod0DropSkippedDistance"),
             "lod0Triangles": len(base_mesh.tris),
             "identicalLevels": list(chain.get("identicalLevels") or ()),
             "switches": [],
@@ -379,6 +437,47 @@ def _authored_ladder(base_mesh, chain, stats):
     if "lod0DropSkippedDegenerate" in chain:
         stats["lod0DropSkippedDegenerate"] = chain["lod0DropSkippedDegenerate"]
     return fixed, stats, meshes
+
+
+# The kinds that may ship the bake's REFINED copy of a level in place of the level itself.
+#
+# Vegetation is exempt for the same reason it is exempt from the displacement switch rule
+# (`DISPLACEMENT_RULE_KINDS`): the metric is a surface distance and a canopy is a cloud of
+# alpha-tested cards, so moving its leaves measures like moving a wall and reads as nothing - the
+# number cannot admit the level honestly. A decal is a projection, not a mesh to thin.
+REFINED_KINDS = ("building", "prop")
+
+
+def refined_level(
+    derived_dir, source, shape_name, mesh, level, kind, aliases, tinted, level_name, options, stats
+):
+    """`mesh`, or the bake's refined copy of that level where one was earned.
+
+    The bake made the decision AND the measurement (`bake/lods._refine_one`: the deepest of three
+    MeshLab targets whose measured p95 surface displacement passed the tolerance, each candidate
+    judged on its own). This only loads it. Nothing else about the shape moves - the thresholds,
+    the bounds and the collider are all computed from the source geometry - so this changes the
+    shape's BYTES and not its distances.
+    """
+    if not options.get("lod0_refine", True) or kind not in REFINED_KINDS:
+        return mesh
+    path = os.path.join(derived_dir, "lods", f"{source}_LOD{level}R.glb")
+    if not os.path.isfile(path):
+        return mesh
+    nodes = glb.parse_glb(path)
+    if not nodes:
+        return mesh
+    parts, _lo, _hi, _area, _used = collect_parts(nodes, aliases, tinted, level_name)
+    if not parts:
+        return mesh
+    refined = daemesh.group_by_material(daemesh.merge_meshes(shape_name, parts))
+    if len(refined.tris) == 0 or len(refined.tris) >= len(mesh.tris):
+        return mesh
+    refined.colors = None  # the vertex-albedo stream belongs to the far level (C4)
+    stats["refinedFrom"] = stats.get("refinedFrom", 0) + len(mesh.tris)
+    stats["refinedTo"] = stats.get("refinedTo", 0) + len(refined.tris)
+    stats.setdefault("refinedLevels", []).append(level)
+    return refined
 
 
 def _load_generated(

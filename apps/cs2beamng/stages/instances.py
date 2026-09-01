@@ -41,6 +41,7 @@ from . import farring
 from .instanceforest import (
     drop_rare_types,
     ANNOTATION,
+    ELEVATED_SUFFIX,
     FOREST_COLLIDABLE_MIN_FOOTPRINT,
     FOREST_COLLIDABLE_MIN_HEIGHT,
     NO_COLLIDER,
@@ -116,6 +117,11 @@ def run(ctx, progress):
     item_counts = {}
     collision_types = {}
     collide = _collision_policy(settings)
+    # the elevated rule: a prop whose own bottom stands this far over the terrain loses its
+    # collider and its shadow (`_clearance`). None = the rule is off or there is no heightfield.
+    ground = _ground_surface(ctx, settings)
+    max_clearance = float(settings.get("collision_max_clearance_m") or 0.0)
+    elevated_counts = {"statics": 0, "forestItems": 0, "forestTypes": 0}
     # The road-clearance deviation, as the shapes stage computed it. Read from `shared` rather
     # than recomputed so the two passes cannot disagree — and a SKIPPED shapes stage replays its
     # shared delta, so this is present either way.
@@ -153,7 +159,28 @@ def run(ctx, progress):
             continue
         name = os.path.splitext(row["file"])[0]
         position, rotation, scale = frame.record_transform(record)
+        clearance = None if ground is None else _clearance(ground, position, row, scale)
+        elevated = clearance is not None and clearance > max_clearance
         if forest:
+            # A forest item carries no per-item collision or shadow flag - both live on the TYPE
+            # (`instanceforest.write_item_data`) - so an elevated item is routed to a twin type
+            # that names the SAME shape file and ships neither. Torque mounts a shape once per
+            # path, so the twin costs a `TSForestItemData` and no mesh residency at all.
+            if elevated:
+                twin = name + ELEVATED_SUFFIX
+                if twin not in types:
+                    elevated_counts["forestTypes"] += 1
+                types.setdefault(twin, (row, kind))
+                type_source.setdefault(twin, (asset, suffix, variant))
+                item_counts[twin] = item_counts.get(twin, 0) + 1
+                lines.setdefault(twin, []).append(_forest_line(twin, position, rotation, scale))
+                pending += 1
+                counts["forest"] += 1
+                elevated_counts["forestItems"] += 1
+                if pending >= FLUSH_EVERY:
+                    flush(forest_dir, lines)
+                    pending = 0
+                continue
             types.setdefault(name, (row, kind))
             type_source.setdefault(name, (asset, suffix, variant))
             item_counts[name] = item_counts.get(name, 0) + 1
@@ -176,7 +203,12 @@ def run(ctx, progress):
                 collide,
                 statics,
                 shadow_min_radius=float(settings.get("shadow_min_radius") or 0.0),
+                # buildings stand on the ground by construction and their colliders are the
+                # ground under the car on a bridge deck; only props may lose theirs
+                elevated=bool(elevated and kind != "building"),
             )
+            if elevated and kind != "building":
+                elevated_counts["statics"] += 1
             if key.endswith(":noShadow"):
                 key = key[: -len(":noShadow")]
                 counts["noShadow"] = counts.get("noShadow", 0) + 1
@@ -192,6 +224,13 @@ def run(ctx, progress):
         progress.log(
             f"instances: far ring - {counts['farRing']['members']:,} silhouettes in "
             f"{len(counts['farRing']['cells'])} cells from {ring.d:.0f} m ({counts['farRing']['triangles']:,} triangles)"
+        )
+    if elevated_counts["statics"] or elevated_counts["forestItems"]:
+        progress.log(
+            f"instances: {elevated_counts['statics']:,} statics and "
+            f"{elevated_counts['forestItems']:,} forest items in "
+            f"{elevated_counts['forestTypes']:,} twin types stand over {max_clearance:g} m clear "
+            "of the terrain - no collider, no shadow"
         )
     merged = merge_thin_types(
         forest_dir,
@@ -231,6 +270,8 @@ def run(ctx, progress):
         "forestTypes": len(types),
         "tsStatics": counts["tsstatic"],
         "tsStaticsNoShadow": counts.get("noShadow", 0),
+        # the elevated rule, declared and counted (`_clearance`) - OURS, no counterpart in CS2
+        "elevated": dict(elevated_counts, maxClearanceMetres=max_clearance if ground else None),
         "farRing": counts.get("farRing"),
         "forestTypesMerged": merged["types"],
         "forestItemsMerged": merged["items"],
@@ -353,6 +394,59 @@ def _state_suffix(record, asset, mesh_dir, have, cache):
     return answer
 
 
+# -- the elevated instances ------------------------------------------------------------------------
+#
+# A prop bolted to a roof, a balcony or the underside of a bridge deck is a prop no car will ever
+# touch, and it is one no shadow-caster budget should carry either: its shadow lands on a roof
+# nobody stands on. Both costs are per instance and both are avoidable, and the test is the same
+# one — how far the thing's own bottom stands above the TERRAIN under it.
+#
+# **THE NUMBER IS OURS.** CS2 has no notion of collision for a placed object and no rule about
+# elevation, so this has no counterpart in the game to port: it is declared here, counted in the
+# report, and set where it can only catch things that are plainly off the ground. 2.5 m is above
+# a door head and above every kerbside object measured (a road sign is 2.2 m tall but stands ON
+# the ground, so its bottom is 0), and it is below a first-floor slab.
+#
+# The measurement is the TERRAIN, which is exactly the right surface to ask about and exactly the
+# wrong one to ask about a bridge: an object on a deck 8 m over a valley floor reads as elevated
+# whether it is bolted to the deck or floating. That is the approximation, and it is one-sided in
+# the safe direction for the shadow half; for collision it means a bollard on a high viaduct can
+# lose a collider the deck's own mesh still provides (networks keep `Visible Mesh Final`), so the
+# ground under the car is never what this removes.
+DEFAULT_MAX_CLEARANCE_M = 2.5
+
+
+def _ground_surface(ctx, settings):
+    """The terrain the clearance rule measures against, or None when the rule is off or the
+    bundle carries no heightfield. Built once per build and read per record."""
+    if float(settings.get("collision_max_clearance_m") or 0.0) <= 0.0:
+        return None
+    from csiibundle.bake import ground as bake_ground
+
+    surface = bake_ground.GroundSurface(ctx.bundle)
+    return surface if getattr(surface, "present", False) else None
+
+
+def _clearance(surface, position, row, scale):
+    """Metres from the terrain to this instance's own BOTTOM, or None when unknown.
+
+    Bounds are the shape's, in glTF space where Y is up (`instanceforest._shape_height`), and the
+    world is z-up (`frame.record_transform`), so the bottom is `z + boundsMin.y * scale`. Rotation
+    is ignored: a prop's placement is a yaw in all but a handful of cases and a yaw leaves the
+    vertical alone — a roll would only ever move the bottom DOWN, towards keeping the collider.
+    """
+    if surface is None:
+        return None
+    ground = surface.height(float(position[0]), float(position[1]))
+    if ground is None or ground != ground:  # off the raster (NaN): unknown, so nothing is removed
+        return None
+    lo = row.get("boundsMin")
+    bottom = float(position[2])
+    if lo and len(lo) >= 2:
+        bottom += float(lo[1]) * float(scale[2] if len(scale) > 2 else 1.0)
+    return bottom - float(ground)
+
+
 def _forest_line(type_name, position, rotation, scale):
     """One `.forest4.json` line. A forest item carries ONE scalar scale, so a record that needed
     three would not have reached here (`placement.wants_forest`).
@@ -381,6 +475,7 @@ def _add_static(
     collide,
     ordinal,
     shadow_min_radius=0.0,
+    elevated=False,
 ):
     """One `TSStatic`, with the record's own three `colorSet` channels as `instanceColor*`.
 
@@ -401,7 +496,9 @@ def _add_static(
         position,
         frame.basis_flat(rotation),
         scale=scale,
-        collision="None" if row.get("collider", "none") in NO_COLLIDER else COLLISION_TYPE,
+        collision=(
+            "None" if (elevated or row.get("collider", "none") in NO_COLLIDER) else COLLISION_TYPE
+        ),
         instanced=bool(colours),  # per-instance render data only where there is a colour to carry
         annotation=ANNOTATION.get(kind, "OBSTACLES"),
     )
@@ -410,7 +507,10 @@ def _add_static(
         obj[key] = [round(float(c), 6) for c in colour]
     # a shape under `shadow_min_radius` casts no shadow — CS2's per-level shadow LOD stops small
     # things' shadows before their meshes, and BeamNG has only the switch
-    no_shadow = bool(shadow_min_radius > 0.0 and float(row.get("radius") or 0.0) < shadow_min_radius)
+    no_shadow = bool(
+        elevated  # a roof prop's shadow falls on the roof it stands on
+        or (shadow_min_radius > 0.0 and float(row.get("radius") or 0.0) < shadow_min_radius)
+    )
     if no_shadow:
         obj["castShadows"] = False
     group = level_mod.cell_of(position)
@@ -430,6 +530,11 @@ def _collision_policy(settings):
     }
 
 
+# version 20: the ELEVATED rule (`collision_max_clearance_m`) - a prop whose own bottom stands
+# clear of the terrain by more than the threshold ships no collider and casts no shadow; a forest
+# item does it through a twin type naming the same shape (a `.forest4.json` item has no per-item
+# flag for either), and `forest_shadow_null_px` gives every forest type vanilla's own 40 px shadow
+# far stop instead of no far stop at all.
 # version 19: the rare-type floor is back as DEFAULT-OFF (the middle ground: at 3 only the one-
 # and-two-item tail goes, landmarks kept by radius) - v17 removed it outright
 # version 18: the ring cell's detail sizes the right way round (ring = its cull, near = the hand-over)
@@ -448,8 +553,10 @@ SETTINGS = (
     "collision_props",
     "collision_trees",
     "collision_min_footprint",
+    "collision_max_clearance_m",
     "collision_lights",
     "forest_shadows",
+    "forest_shadow_null_px",
     "forest_min_items",
     "forest_rare_type_min",
     "forest_rare_keep_radius",
@@ -471,5 +578,5 @@ STAGE = Stage(
     settings_keys=SETTINGS,
     outputs=OUTPUTS,
     after=("shapes",),
-    version=19,
+    version=20,
 )
