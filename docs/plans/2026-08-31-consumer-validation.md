@@ -149,3 +149,19 @@ the instrument showed everything drawn at 8 km - so all three were render-side:
    onto the bundle's own ground albedo (moss/grass -> grass, terrain/soil -> dirt, materials
    v10, counted as `areaGroundFallbacks`); `Missing Area` and unknown names keep the grey,
    which is the game's own fallback colour.
+
+## Reverted (2026-09-01 02:16)
+
+Everything after the Wave-3 build — the dock "fixes" (areasclip straddler split, the concrete
+stand-in, the producer's `MinTerrainHeightOverCell`) and water v4–v7 (phantom-body drop, box
+refinement, enclosed drop, the no-plane flood-safe cover) — is reverted (91d3d9e, d9ee679,
+d8a6eb7) at Naomi's word: "this has NOTHING to do with the water. It's created some weird
+blocks of water in the ocean. These things are the AREAS. a black reflective surface and the
+dock is a grey concrete area." Water is back to v3 (our depth ramp, WaterPlane sea, 200-block
+budget); the mod DLL is rebuilt and deployed on the reverted producer.
+
+The lesson is the diagnosis, not the code: the black squares were never confirmed to be water
+objects before two nights of water theory. Next step, if she wants one: identify the object
+class at the screenshot position from the level's own `items.level.json` (an area tile with a
+black reflective material is a MATERIAL symptom — a missing/black albedo with specular), and
+touch nothing else until that is confirmed.
