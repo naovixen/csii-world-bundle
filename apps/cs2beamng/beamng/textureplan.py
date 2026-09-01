@@ -194,12 +194,11 @@ def variant_albedo(derived_dir, rec, vkey):
 # there is nothing to rip). Shared by the build (`stages/materials`) and the cost meter, so the
 # enumeration names every file the build writes. First hit wins.
 GROUND_FALLBACK_KEYWORDS = (
-    ("moss", "terrain/surfaces/grass.png"),
-    ("grass", "terrain/surfaces/grass.png"),
-    ("concrete", "terrain/surfaces/area_Concrete_Surface_01.png"),
-    ("terrain", "terrain/surfaces/dirt.png"),
-    ("soil", "terrain/surfaces/dirt.png"),
-    ("rock", "terrain/surfaces/rock.png"),
+    ("moss", "grass"),
+    ("grass", "grass"),
+    ("terrain", "dirt"),
+    ("soil", "dirt"),
+    ("rock", "rock"),
 )
 
 
@@ -211,9 +210,11 @@ def ground_surface_fallback(bundle, rec):
     if "Terrain" not in (rec.get("decal_layers") or ()):
         return None
     name = str(rec.get("name") or "").lower()
-    for keyword, rel in GROUND_FALLBACK_KEYWORDS:
-        if keyword in name and os.path.isfile(os.path.join(bundle, rel)):
-            return rel
+    for keyword, ground in GROUND_FALLBACK_KEYWORDS:
+        if keyword in name:
+            rel = f"terrain/surfaces/{ground}.png"
+            if os.path.isfile(os.path.join(bundle, rel)):
+                return rel
     return None
 
 

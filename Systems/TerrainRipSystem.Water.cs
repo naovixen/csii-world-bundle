@@ -81,16 +81,7 @@ namespace Carto.Systems
                     if (!(depth > 0f)) continue;
 
                     float worldX = (x / water.scale.x) - water.offset.x;
-
-                    // The ground the depth is re-based onto is the MINIMUM fine height over the
-                    // sim cell's footprint, not a corner point sample. A ~28 m cell straddling a
-                    // dock basin and its quay put the point on the quay top, and quay + depth
-                    // floated the sea's level over whole neighbourhoods of lower land behind it
-                    // (the consumer's phantom flooded docklands, 2026-08-31). The depth belongs
-                    // to the basin floor; floor + depth can only ever UNDERSTATE the surface at
-                    // a mixed cell, which trims the shoreline inward - the safe side, since the
-                    // ground plane cuts the surface there anyway.
-                    level[(z * simWidth) + x] = MinTerrainHeightOverCell(heightData, worldX, worldZ, water.scale) + depth;
+                    level[(z * simWidth) + x] = SampleTerrainHeight(heightData, worldX, worldZ) + depth;
                 }
             }
 
@@ -184,30 +175,6 @@ namespace Carto.Systems
         /// Terrain height in metres at a world position, bilinear over the height samples —
         /// <c>TerrainUtils.SampleHeight</c>'s mapping.
         /// </summary>
-        /// <summary>
-        /// The lowest fine terrain height inside one water sim cell's footprint (the cell spans
-        /// <c>1 / scale</c> metres from its origin). 4x4 samples: the sim cell is ~28 m and the
-        /// fine grid ~3.5-14 m, so that is at or below the fine spacing.
-        /// </summary>
-        private static float MinTerrainHeightOverCell(TerrainHeightData heightData, float worldX, float worldZ, float3 simScale)
-        {
-            float cellW = 1f / simScale.x;
-            float cellH = 1f / simScale.z;
-            float lowest = float.MaxValue;
-            for (int sz = 0; sz < 4; sz++)
-            {
-                for (int sx = 0; sx < 4; sx++)
-                {
-                    float h = SampleTerrainHeight(
-                        heightData,
-                        worldX + (cellW * ((sx + 0.5f) / 4f)),
-                        worldZ + (cellH * ((sz + 0.5f) / 4f)));
-                    lowest = math.min(lowest, h);
-                }
-            }
-            return lowest;
-        }
-
         private static float SampleTerrainHeight(TerrainHeightData heightData, float worldX, float worldZ)
         {
             float cellX = (worldX + heightData.offset.x) * heightData.scale.x;

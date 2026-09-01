@@ -34,25 +34,7 @@ MIN_CELLS = 3
 # how far down the depth-to-colour ramp runs (`depthGradientMax`, and the span `_depth_ramp`
 # attenuates over)
 DEPTH_GRADIENT_MAX_M = 50.0
-# An inland body whose surface sits within this of the SEA's own level is the producer's level
-# smear, not water: the rip re-bases the sim's coarse depth onto a point sample of the fine
-# ground and dilates, which floats the sea's level over low land beside deep water (docklands).
-# Standing water disconnected from the sea cannot hold the sea's level - the sim's own
-# conservation - so those bodies are dropped, counted and logged. A pond or lake at its OWN
-# level is untouched. Removed when the producer's re-based rip lands (TerrainRipSystem.Water).
-PHANTOM_LEVEL_EPS_M = 2.0
-# A band component becomes one axis-aligned box, and a box that is mostly dry covers things -
-# the dock basin's rectangle lay across the quay road (Naomi, 2026-08-31). The refinement is
-# BUDGETED (`_refine_worst_boxes`): every component is collected first, then the box covering
-# the most dry cells is bisected, again and again, while the total stays inside `MAX_BLOCKS` -
-# so the dock class tightens and a winding river, whose box is mostly dry BY NATURE (a
-# fill-ratio or absolute-overhang rule shatters every one: 746 and 612 pieces against the
-# budget on the first two cuts, with real slivers dropped to pay for it), keeps its one piece
-# unless it is among the worst.
-BLOCK_SPLIT_MIN_OVERHANG_CELLS = 100  # a box covering less dry area than this is never split
-MAX_BLOCKS = (
-    200  # the vanilla-calibrated budget (`levelcheck/residency`); the refinement stays inside
-)
+MAX_BLOCKS = 200
 DOWNSAMPLE = 8
 SEA_MIN_FRACTION = 0.02  # a band must cover this share of the coarse grid to be "the sea"
 
@@ -144,9 +126,6 @@ def run(ctx, progress):
         return {"bodies": 0, "blocks": 0, "plane": False}
     level_c, ground_c, wet = grid
     rows, cols = wet.shape
-    bodies, phantom = _drop_phantom_bodies(bodies, level_c, rows, cols)
-    for note in phantom["notes"][:5]:
-        progress.log("water: " + note)
     coarse = cell * DOWNSAMPLE
     appearance = water_mod.load(ctx.bundle)
 
@@ -155,42 +134,40 @@ def run(ctx, progress):
     pieces = []  # dicts: level, min_ground, cells, bbox rows/cols, touches_edge
     region = ctx.region
     band_of = numpy.rint(level_c / BAND_M).astype(numpy.int64)  # hoisted: loop-invariant (D3)
-    components = []
     for body in bodies:
         mask = body.mask
         for band in numpy.unique(band_of[mask]):
             sub = mask & (band_of == band)
             labels, count = water_mod.label_components(sub)
             for k in range(1, count + 1):
-                rr, cc = numpy.nonzero(labels == k)
-                if len(rr) >= MIN_CELLS:
-                    components.append((rr, cc))
+                comp = labels == k
+                n = int(comp.sum())
+                if n < MIN_CELLS:
+                    continue
+                rr, cc = numpy.nonzero(comp)
+                lv = float(level_c[comp].mean())
+                min_ground = float(ground_c[comp].min())
+                touches = bool(
+                    rr.min() == 0 or cc.min() == 0 or rr.max() == rows - 1 or cc.max() == cols - 1
+                )
+                # bundle-frame bbox (x east, z north); coarse cell (r, c) covers texels r*d..(r+1)*d
+                min_x = origin_x + cc.min() * coarse - 0.5 * cell
+                max_x = origin_x + (cc.max() + 1) * coarse - 0.5 * cell
+                max_z = origin_z - rr.min() * coarse + 0.5 * cell
+                min_z = origin_z - (rr.max() + 1) * coarse + 0.5 * cell
+                if region is not None and not _intersects(region, min_x, min_z, max_x, max_z):
+                    continue
+                pieces.append(
+                    {
+                        "level": lv,
+                        "minGround": min_ground,
+                        "cells": n,
+                        "touches": touches,
+                        "bbox": (min_x, min_z, max_x, max_z),
+                    }
+                )
         progress.advance(1)
         progress.check()
-    for rr, cc in _refine_worst_boxes(components):
-        if len(rr) < MIN_CELLS:
-            continue
-        lv = float(level_c[rr, cc].mean())
-        min_ground = float(ground_c[rr, cc].min())
-        touches = bool(
-            rr.min() == 0 or cc.min() == 0 or rr.max() == rows - 1 or cc.max() == cols - 1
-        )
-        # bundle-frame bbox (x east, z north); coarse cell (r, c) covers r*d..(r+1)*d
-        min_x = origin_x + cc.min() * coarse - 0.5 * cell
-        max_x = origin_x + (cc.max() + 1) * coarse - 0.5 * cell
-        max_z = origin_z - rr.min() * coarse + 0.5 * cell
-        min_z = origin_z - (rr.max() + 1) * coarse + 0.5 * cell
-        if region is not None and not _intersects(region, min_x, min_z, max_x, max_z):
-            continue
-        pieces.append(
-            {
-                "level": lv,
-                "minGround": min_ground,
-                "cells": len(rr),
-                "touches": touches,
-                "bbox": (min_x, min_z, max_x, max_z),
-            }
-        )
     progress.end(f"{len(pieces)} level-band pieces")
 
     # -- the sea: the largest edge-touching piece over the size threshold -> WaterPlane --------
@@ -260,10 +237,6 @@ def run(ctx, progress):
         "plane": sea is not None,
         "seaLevel": None if sea is None else round(sea["level"], 2),
         "dropped": dropped,
-        # the producer's level smear over low land beside deep water, dropped by the sea-level
-        # signature (`PHANTOM_LEVEL_EPS_M`); the real cure is the re-based rip
-        "phantomBodiesDropped": phantom["count"],
-        "phantomCells": phantom["cells"],
         "seaWaveScale": round(appearance.sea_wave_scale, 4),
         "lakeWaveScale": round(appearance.lake_wave_scale, 4),
         # APPROXIMATED unless the game says the wind branch is dead: with
@@ -274,80 +247,6 @@ def run(ctx, progress):
         else "APPROXIMATED (wind-driven in game; fixed here)",
         "seconds": round(time.monotonic() - started, 1),
     }
-
-
-def _drop_phantom_bodies(bodies, level_c, rows, cols):
-    """`(kept bodies, {"count", "cells", "notes"})` - see `PHANTOM_LEVEL_EPS_M`."""
-    stats = {"count": 0, "cells": 0, "notes": []}
-    if not bodies:
-        return bodies, stats
-
-    def touches_edge(mask):
-        rr, cc = numpy.nonzero(mask)
-        return bool(rr.min() == 0 or cc.min() == 0 or rr.max() == rows - 1 or cc.max() == cols - 1)
-
-    edged = [b for b in bodies if touches_edge(b.mask)]
-    if not edged:
-        return bodies, stats
-    sea = max(edged, key=lambda b: int(b.mask.sum()))
-    sea_level = float(numpy.median(level_c[sea.mask]))
-    kept = []
-    for body in bodies:
-        if body is sea or touches_edge(body.mask):
-            kept.append(body)
-            continue
-        lv = float(numpy.median(level_c[body.mask]))
-        if abs(lv - sea_level) <= PHANTOM_LEVEL_EPS_M:
-            stats["count"] += 1
-            stats["cells"] += int(body.mask.sum())
-            rr, cc = numpy.nonzero(body.mask)
-            stats["notes"].append(
-                f"phantom body dropped: {int(body.mask.sum())} cells at the sea's level "
-                f"({lv:.1f} vs {sea_level:.1f} m) around coarse cell "
-                f"({int(rr.mean())}, {int(cc.mean())}) - the producer's level smear, not standing water"
-            )
-        else:
-            kept.append(body)
-    return kept, stats
-
-
-def _refine_worst_boxes(components):
-    """Bisect the components whose boxes cover the most dry cells, while the count stays
-    inside `MAX_BLOCKS` - see the constants above. `components` is `[(rows, cols), ...]`."""
-    import heapq
-
-    def overhang(rr, cc):
-        if len(rr) == 0:
-            return 0
-        h = int(rr.max() - rr.min() + 1)
-        w = int(cc.max() - cc.min() + 1)
-        return h * w - len(rr)
-
-    out = list(components)
-    heap = [(-overhang(rr, cc), i) for i, (rr, cc) in enumerate(out)]
-    heapq.heapify(heap)
-    while heap and len(out) < MAX_BLOCKS:
-        neg, i = heapq.heappop(heap)
-        if -neg <= BLOCK_SPLIT_MIN_OVERHANG_CELLS:
-            break  # every remaining box already fits its water well enough
-        rr, cc = out[i]
-        h = int(rr.max() - rr.min() + 1)
-        w = int(cc.max() - cc.min() + 1)
-        if h >= w:
-            mid = int(numpy.median(rr))
-            near = rr <= mid
-        else:
-            mid = int(numpy.median(cc))
-            near = cc <= mid
-        if not near.any() or near.all():
-            continue  # degenerate; this box cannot improve
-        a = (rr[near], cc[near])
-        b = (rr[~near], cc[~near])
-        out[i] = a
-        out.append(b)
-        heapq.heappush(heap, (-overhang(*a), i))
-        heapq.heappush(heap, (-overhang(*b), len(out) - 1))
-    return out
 
 
 def _isfile(path):
@@ -433,14 +332,9 @@ INPUTS = ("layer:water", "layer:terrain", "layer:terrainFine")
 SETTINGS = ("water", "terrain_upsample")
 
 # version 2: every water object names its `depthGradientTex` (A2)
-# version 5: the block split is OVERHANG-driven (a fill-ratio split shattered every river and
-# overflowed the vanilla-calibrated 200-block budget)
-# version 4: phantom bodies (the producer's sea-level smear over docklands) are dropped and
-# counted; a band component's box is split until it fits its water (the dock rectangle covered
-# the quay road) - both from Naomi's screenshots, 2026-08-31
 # version 3: ...and the ramp is OURS, from the bundle's scattering colour and absorption -
 # vanilla's pale-teal ramp painted the sea's coastal level-band blocks as milky squares along
 # the map borders ("square fog", a halved-looking view distance)
 STAGE = Stage(
-    STAGE_KEY, "Water", enabled, units, run, inputs=INPUTS, settings_keys=SETTINGS, version=5
+    STAGE_KEY, "Water", enabled, units, run, inputs=INPUTS, settings_keys=SETTINGS, version=3
 )
