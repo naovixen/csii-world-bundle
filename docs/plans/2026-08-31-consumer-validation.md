@@ -176,30 +176,3 @@ The water block splitter also learnt its lesson twice: fill-ratio splitting shat
 winding river (a river's bbox is mostly dry by nature) and overflowed the vanilla-calibrated
 200-block budget; the split is OVERHANG-driven now (v5) — it fires on a big box over mostly-dry
 ground (the dock class) and leaves rivers whole.
-
-## The restart test, the connectivity measurement, and water v6 (2026-09-01)
-
-"Closed game, restarted. still the same" — and the fresh load was real (beamng.log:
-`Level loading: '/levels/cs2_city_fine/'`, 149.7 s), so the coarse phantom-body drop (v4)
-was measured insufficient, not stale. The fine-resolution (3.5 m) hydraulic connectivity of
-the actual rasters says why: of 9,826,341 wet texels only **42,484 (0.52 km²) are disconnected**
-from the map edge — the rest of the smear is CONNECTED to the sea, because the quay tops
-(~520.5 m) sit *below* the smeared level (521.1 m), so the coarse body containing the black
-planes under the houses IS the sea body and no consumer rule can separate them. That remainder
-is the producer defect's share, and the fixed ripper is already deployed: **the terrain-only
-re-rip is the cure** for everything the consumer cannot reach.
-
-Water stage v6 takes what CAN be taken safely:
-
-* `_drop_enclosed_water` — flood-fill (scipy, 8-connectivity) on the fine wet mask; enclosed
-  sea-level water (|level − sea| ≤ 2 m, sea = median level of edge-connected water) is zeroed
-  before bodies are formed. Enclosed standing water above local ground with no outlet cannot
-  exist; a pond or lake at its own level is untouched. Counted as `enclosedTexelsDropped`.
-* `MIN_RENDER_DEPTH_M = 0.15` — films thinner than the game's own depth fade never become
-  blocks. Inert on the pre-fix bundle (smeared depths are metres); the finishing guard for the
-  producer's re-based rip, whose honest levels leave millimetre films. `filmTexelsDropped`.
-
-Also: the stale `levels/cs2_city_fine.zip` (2026-08-20) was moved to
-`current/level_backups/cs2_city_fine_2026-08-20.zip` — BeamNG merges zip and loose files in
-the VFS, and a 12-day-old zip shadowing a rebuilt level is exactly the class of "nothing
-changed" that survives restarts. Reversible; nothing deleted.
