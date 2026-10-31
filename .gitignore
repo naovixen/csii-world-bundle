@@ -440,3 +440,6 @@ packaging/mod/
 
 # Bake caches must never be committed (they live beside a bundle, but a test may point one anywhere)
 derived/
+
+# Generated LODs of game meshes, from a local bake: game assets, never committed
+tools/lods/
