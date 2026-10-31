@@ -205,7 +205,7 @@ How many of the small street objects to keep. At zero none are placed.
 
 The distance in metres past which nothing is drawn. The biggest lever on speed.
 
-*int, default `4000`*
+*int, default `8000`*
 
 <details><summary>Why this default</summary>
 
@@ -222,6 +222,36 @@ What hour the sun sits at, either your city's own or one you pick.
 *float, default `-1.0`*
 
 Time of day in hours 0-24 for the level's sun (-1 = the in-game clock at rip time)
+
+### Thin and clean the meshes
+
+`--set lod0_refine=`
+
+Rebuild the heaviest meshes with fewer triangles wherever the surface provably does not move.
+
+*bool, default `True`*
+
+<details><summary>Why this default</summary>
+
+Every shape you can see is held in memory in full, whether you are next to it or looking at it from across the city — so the meshes are what fill the graphics card, and a full card is what makes the frame rate lurch. This thins them and then MEASURES how far the surface actually moved; anything that moved further than the tolerance below is shipped whole instead. Turning it off ships every mesh as it came.
+
+</details>
+
+### How much to thin
+
+`--set lod0_refine_cm=`
+
+How far a thinned surface may move. Higher thins more and frees more memory.
+
+*float, default `3.0`*
+
+How far a thinned mesh's surface may move, in centimetres - higher thins more
+
+<details><summary>Why this default</summary>
+
+This is the strength dial. It is written as a distance because that is what is actually measured: every candidate is thinned, the result is compared against the original surface, and anything that moved further than this is thrown away and the mesh shipped whole. Higher thins more of the city and frees more memory; lower protects detail you can only see up close. Above about 5 cm the flat faces of a building start to break up into visible diagonal facets, so the useful range is small.
+
+</details>
 
 ## Collision
 
@@ -291,6 +321,22 @@ Anything thinner than this across is driven straight through.
 
 *float in m, default `0.8`*
 
+### Ignore objects higher than
+
+`--set collision_max_clearance_m=`
+
+A prop this far above the ground loses its collider and its shadow. 0 = off.
+
+*float in m, default `0.0`*
+
+Props whose base is this many metres above the terrain do not collide or cast shadows; 0 = off
+
+<details><summary>Why this default</summary>
+
+A planter on a roof, a light on a balcony, a sign under a bridge deck: none of them can ever be driven into, and the shadow each one casts lands on the roof it stands on. Both cost something every frame, so anything standing clear of the ground by more than this gives up both. Buildings are exempt, and so is the road surface itself — this only ever removes a prop's collider, never the ground under the car. The measurement is against the TERRAIN, so a prop on a high viaduct counts as elevated too. 0 turns it off.
+
+</details>
+
 ### Lampposts
 
 `--set collision_lights=`
@@ -317,7 +363,7 @@ How sharp it looks
 
 The largest a colour picture may be, in pixels. The main cost on your card.
 
-*one of 256, 512, 1024, 2048, 0, default `512`*
+*one of 128, 256, 512, 1024, 2048, 0, default `512`*
 
 Colour texture edge cap in pixels (0 = full size). Also caps the emissive and opacity maps
 
@@ -333,7 +379,7 @@ The largest a colour picture may be. It is the main cost your card carries, and 
 
 How finely bricks, planks and grooves are described. Lower is flatter and lighter.
 
-*one of 256, 512, 1024, 2048, 0, default `512`*
+*one of 128, 256, 512, 1024, 2048, 0, default `512`*
 
 <details><summary>Why this default</summary>
 
@@ -347,7 +393,7 @@ The largest a surface-bumpiness picture may be. This is the tier that carries br
 
 How finely wet, matt and metal surfaces are described. Rarely needs to be large.
 
-*one of 128, 256, 512, 1024, 0, default `256`*
+*one of 64, 128, 256, 512, 1024, 0, default `256`*
 
 <details><summary>Why this default</summary>
 
@@ -423,7 +469,7 @@ How many shades each kind of small object comes in. 1 is its average colour, whi
 
 How large the recoloured copies may be, in pixels.
 
-*one of 128, 256, 512, 1024, 0, default `256`*
+*one of 64, 128, 256, 512, 1024, 0, default `256`*
 
 Colour cap for a paint variant's tinted albedo, separately from the main colour cap
 
@@ -667,6 +713,52 @@ A floor under the promotion: never drop the full-detail version if that would le
 
 </details>
 
+### Refinement worst-case limit
+
+`--set lod0_refine_peak_cm=`
+
+The furthest ANY point of a refined mesh may move. 0 = no limit.
+
+*float in cm, default `25.0`*
+
+The furthest any single point of a thinned mesh may move, in centimetres
+
+<details><summary>Why this default</summary>
+
+The tolerance above is a 95th percentile, which says nothing about the worst twentieth of a surface — a tower measured 2 cm of typical movement while one corner of it had travelled a full metre, and that corner is the torn, spiky look on a ruined building. This bounds the worst point instead of the typical one. Raising it frees more memory and risks those artifacts; lowering it is safer and thins less. 0 removes the limit.
+
+</details>
+
+### Keep full detail when off by
+
+`--set authored_lod0_max_error=`
+
+Keep the full mesh where the game's own lower version is further than this.
+
+*float in m, default `0.25`*
+
+Do not drop full detail where the game's own lower LOD sits further than this (m) from it
+
+<details><summary>Why this default</summary>
+
+The triangle cap above drops a shape's full-detail mesh on SIZE alone, and for most shapes the game's own lower version is indistinguishable from it. For a few it is a different building — a sculpture that becomes a blob, a tower that loses its balconies — and those are the ones that look wrong close up. This measures the actual distance between the two and keeps the full mesh, thinned, wherever that distance is too large. A handful of shapes are usually affected. 0 turns it off.
+
+</details>
+
+### Road surface tolerance
+
+`--set tile_refine_cm=`
+
+How far a refined road surface may move. Tight: this mesh is what the car drives on.
+
+*float in cm, default `1.0`*
+
+<details><summary>Why this default</summary>
+
+Roads are the second largest thing in memory after the buildings, and unlike a building the road mesh is also the surface the car physically drives on — so it is held to a far tighter tolerance than anything else. A flat run of carriageway thins with no measurable change at all; a crown, a kerb or a camber measures and is left alone. 0 ships every road exactly as built.
+
+</details>
+
 ### Forest type merge threshold
 
 `--set forest_min_items=`
@@ -680,6 +772,176 @@ Merge a forest type holding fewer items than this into its prefab's plain type. 
 <details><summary>Why this default</summary>
 
 A kind of plant with fewer than this many placed is folded in with its plain, untinted version instead of being its own kind. BeamNG loads a kind whole whether it has one member or ten thousand, and a city ends up with thousands of kinds holding a handful each — more than half of them, for well under a percent of the planting. 0 keeps every one.
+
+</details>
+
+### Silhouette reach
+
+`--set far_detail_scale=`
+
+How far a building's far silhouette is drawn, as a multiple of CS2's own reach.
+
+*float in ×, default `1.0`*
+
+A building's far silhouette runs to CS2's own cull distance times this; 0 disables it
+
+<details><summary>Why this default</summary>
+
+Past its detailed levels a building is drawn as a closed, blocky outline in its own colours, out to the distance the game itself draws it (times this). It is what lets you see the skyline from the other side of the map for a few triangles per building. 0 draws nothing past the detailed levels, as before.
+
+</details>
+
+### Tree detail reach
+
+`--set lod_detail_scale_tree=`
+
+How many times nearer than the game a tree turns into its flat billboard.
+
+*float in ×, default `10.0`*
+
+Trees' own cull/billboard scale (like lod_detail_scale_prop); 0 = the global scale
+
+<details><summary>Why this default</summary>
+
+A tree is its full mesh up close and a flat picture of itself beyond. The game keeps the mesh out to about a kilometre; that is sixteen million triangles of canopy in view on a large city. At 10 the picture takes over around a hundred to two hundred metres, which is where it stops being noticeable.
+
+</details>
+
+### Rarest planting floor
+
+`--set forest_rare_type_min=`
+
+A kind of tree or prop placed fewer times than this is left out. 0 keeps all.
+
+*int in items, default `0`*
+
+Drop a forest type placed fewer than this many times (big one-offs stay); 0 = keep every kind
+
+<details><summary>Why this default</summary>
+
+Every kind of planting is held in memory whole, for one member or ten thousand, and a city carries a long tail of kinds placed once or twice. At 3 only that tail is left out; anything landmark-sized stays whatever its count. Higher floors were tried and thinned prop families visibly.
+
+</details>
+
+### Rare planting keep size
+
+`--set forest_rare_keep_radius=`
+
+A rare kind at least this big (bounding radius) is kept whatever the floor says.
+
+*float in m, default `5.0`*
+
+<details><summary>Why this default</summary>
+
+The floor exists for the small one-off clutter. A one-off the size of a harbour crane or a floodlight tower is a landmark, and dropping it empties the skyline. Anything this big stays.
+
+</details>
+
+### Big building detail reach
+
+`--set lod_detail_scale_large=`
+
+Big buildings' own version of the detail scale; 0 uses the buildings' scale.
+
+*float in ×, default `0.0`*
+
+Detail scale for buildings at or over lod_large_radius_m; 0 = lod_detail_scale
+
+<details><summary>Why this default</summary>
+
+The game keeps a big building sharp for kilometres, in proportion to its size, and at the scale that suits the houses a tower or a mall keeps its full mesh for too long. This is the same kind of number as the detail scale, applied to the big ones only. 4.5 is two thirds of the distance the houses get at 3.
+
+</details>
+
+### Big building size
+
+`--set lod_large_radius_m=`
+
+A building whose bounding radius is at least this counts as big.
+
+*float in m, default `30.0`*
+
+<details><summary>Why this default</summary>
+
+Half the diagonal of the building's box. Thirty metres is a mid-rise block; a detached house is six to ten.
+
+</details>
+
+### Skyline hand-over
+
+`--set far_ring_metres=`
+
+Beyond this distance the skyline is one merged outline per block; 0 = one per building.
+
+*float in m, default `2500.0`*
+
+Distance at which buildings hand over to a merged per-cell silhouette; 0 = per-building silhouettes only
+
+<details><summary>Why this default</summary>
+
+Past its detailed levels a building is drawn as a blocky outline in its own colours out to the distance the game itself draws it. Beyond this distance those outlines are merged into one mesh per half-kilometre block — a few dozen draw calls for the whole skyline instead of one per building. Towers whose detail reaches further than this keep their own outline.
+
+</details>
+
+### Drop the game's LOD 1
+
+`--set authored_lod1_drop=`
+
+Ship a building's LOD 0 and LOD 2 only; LOD 2 takes over where LOD 1 did.
+
+*bool, default `False`*
+
+Do not ship the game's LOD 1 for buildings that also have a LOD 2; frees ~1 GB
+
+<details><summary>Why this default</summary>
+
+BeamNG keeps every level of every shape in memory whether or not anything is near it, and the game's middle level is close to half the size of the full one. Dropping it hands its band — roughly fifty to a hundred and fifty metres — to the coarse level, which is visible up close in that band, and takes about a gigabyte off what the card has to hold.
+
+</details>
+
+### Full detail up to
+
+`--set authored_lod0_max_tris=`
+
+Buildings over this many triangles show the game's second level up close. 0 = all full.
+
+*int in triangles, default `0`*
+
+A building with more than this many triangles ships the game's LOD 1 as its nearest level; 0 = keep LOD 0 for all
+
+<details><summary>Why this default</summary>
+
+BeamNG holds every building's full mesh in memory for the whole session, and the few hundred heaviest ones — stadiums, hospitals, towers of a hundred thousand triangles and more — are most of what an 8 GB card runs out of. Above this count a building is drawn with the game's own second level instead, which has under half the triangles and is what the game itself shows from a street away. At 20,000 that is about 190 buildings and 600 MB less on the card; at 5,000 about 600 buildings and 850 MB.
+
+</details>
+
+### Paint fit
+
+`--set area_conform_cm=`
+
+How closely painted surfaces follow the ground, in centimetres. Bigger is fewer triangles.
+
+*float in cm, default `1.0`*
+
+<details><summary>Why this default</summary>
+
+A painted surface is cut into pieces until the ground stands no higher than this above any piece. At one centimetre a city's paint is six million triangles; at five it is a fraction of that and the paint dips into a slope now and then, which shows as a faint patch where the ground shows through.
+
+</details>
+
+### Smallest shadow caster
+
+`--set shadow_min_radius=`
+
+A placed object smaller than this (bounding radius, metres) casts no shadow.
+
+*float in m, default `3.0`*
+
+TSStatics with a shape radius under this ship castShadows:false; 0 lets everything cast
+
+<details><summary>Why this default</summary>
+
+A bin or a bollard's shadow is a few pixels and its shadow-map pass is not. CS2's own renderer stops small and sparse things' shadows before their meshes (its per-level shadow LOD); BeamNG has only the switch, so this is the switch.
 
 </details>
 
@@ -738,6 +1000,20 @@ Removes a tree whose trunk stands within this distance of the middle of a drivab
 Forest items cast shadows. One of the heaviest per-frame costs a dense canopy carries.
 
 *bool, default `True`*
+
+### Forest shadow far stop
+
+`--set forest_shadow_null_px=`
+
+The pixel size at which a forest item stops casting — vanilla ships 40. 0 = no far stop.
+
+*int in px, default `40`*
+
+<details><summary>Why this default</summary>
+
+Shadow casting is one of the most expensive things a scene does, and with the shadows switch on every one of half a million forest items was in the shadow pass at any distance — no far stop at all. This gives a tree's shadow the same kind of vanishing point its mesh has: near trees keep theirs, the far tail leaves the pass. 40 is the number BeamNG's own levels use. Larger stops shadows sooner and buys more; 0 restores no far stop.
+
+</details>
 
 ### Synthesised wind vertex colours
 

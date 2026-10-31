@@ -24,6 +24,8 @@
   "prop_density",
   "texture_max",
   "view_distance",
+  "lod0_refine",
+  "lod0_refine_cm",
   "collision_preset",
   "cook"
  ],
@@ -218,7 +220,7 @@
   {
    "key": "view_distance",
    "kind": "int",
-   "default": 4000,
+   "default": 8000,
    "help": "The distance in metres past which nothing is drawn at all",
    "label": "How far you can see",
    "blurb": "The distance in metres past which nothing is drawn. The biggest lever on speed.",
@@ -321,6 +323,16 @@
    "tier": "advanced"
   },
   {
+   "key": "collision_max_clearance_m",
+   "kind": "float",
+   "default": 0.0,
+   "help": "Props whose base is this many metres above the terrain do not collide or cast shadows; 0 = off",
+   "label": "Ignore objects higher than",
+   "blurb": "A prop this far above the ground loses its collider and its shadow. 0 = off.",
+   "section": "collision",
+   "tier": "advanced"
+  },
+  {
    "key": "collision_lights",
    "kind": "bool",
    "default": false,
@@ -340,6 +352,7 @@
    "section": "textures",
    "tier": "basic",
    "choices": [
+    "128",
     "256",
     "512",
     "1024",
@@ -357,6 +370,7 @@
    "section": "textures",
    "tier": "advanced",
    "choices": [
+    "128",
     "256",
     "512",
     "1024",
@@ -374,6 +388,7 @@
    "section": "textures",
    "tier": "advanced",
    "choices": [
+    "64",
     "128",
     "256",
     "512",
@@ -431,6 +446,7 @@
    "section": "textures",
    "tier": "advanced",
    "choices": [
+    "64",
     "128",
     "256",
     "512",
@@ -603,12 +619,172 @@
    "tier": "advanced"
   },
   {
+   "key": "lod0_refine",
+   "kind": "bool",
+   "default": true,
+   "help": "Thin and clean the heaviest meshes where their surface provably does not move",
+   "label": "Thin and clean the meshes",
+   "blurb": "Rebuild the heaviest meshes with fewer triangles wherever the surface provably does not move.",
+   "section": "world",
+   "tier": "basic"
+  },
+  {
+   "key": "lod0_refine_cm",
+   "kind": "float",
+   "default": 3.0,
+   "help": "How far a thinned mesh's surface may move, in centimetres - higher thins more",
+   "label": "How much to thin",
+   "blurb": "How far a thinned surface may move. Higher thins more and frees more memory.",
+   "section": "world",
+   "tier": "basic"
+  },
+  {
+   "key": "lod0_refine_peak_cm",
+   "kind": "float",
+   "default": 25.0,
+   "help": "The furthest any single point of a thinned mesh may move, in centimetres",
+   "label": "Refinement worst-case limit",
+   "blurb": "The furthest ANY point of a refined mesh may move. 0 = no limit.",
+   "section": "advanced",
+   "tier": "advanced"
+  },
+  {
+   "key": "authored_lod0_max_error",
+   "kind": "float",
+   "default": 0.25,
+   "help": "Do not drop full detail where the game's own lower LOD sits further than this (m) from it",
+   "label": "Keep full detail when off by",
+   "blurb": "Keep the full mesh where the game's own lower version is further than this.",
+   "section": "advanced",
+   "tier": "advanced"
+  },
+  {
+   "key": "tile_refine_cm",
+   "kind": "float",
+   "default": 1.0,
+   "help": "How far a thinned road surface may move, in centimetres; 0 = never thin it",
+   "label": "Road surface tolerance",
+   "blurb": "How far a refined road surface may move. Tight: this mesh is what the car drives on.",
+   "section": "advanced",
+   "tier": "advanced"
+  },
+  {
    "key": "forest_min_items",
    "kind": "int",
    "default": 10,
    "help": "Merge a forest type holding fewer items than this into its prefab's plain type. 0 keeps every type",
    "label": "Forest type merge threshold",
    "blurb": "A forest type holding fewer items than this is merged into its prefab's untinted type.",
+   "section": "advanced",
+   "tier": "advanced"
+  },
+  {
+   "key": "far_detail_scale",
+   "kind": "float",
+   "default": 1.0,
+   "help": "A building's far silhouette runs to CS2's own cull distance times this; 0 disables it",
+   "label": "Silhouette reach",
+   "blurb": "How far a building's far silhouette is drawn, as a multiple of CS2's own reach.",
+   "section": "advanced",
+   "tier": "advanced"
+  },
+  {
+   "key": "lod_detail_scale_tree",
+   "kind": "float",
+   "default": 10.0,
+   "help": "Trees' own cull/billboard scale (like lod_detail_scale_prop); 0 = the global scale",
+   "label": "Tree detail reach",
+   "blurb": "How many times nearer than the game a tree turns into its flat billboard.",
+   "section": "advanced",
+   "tier": "advanced"
+  },
+  {
+   "key": "forest_rare_type_min",
+   "kind": "int",
+   "default": 0,
+   "help": "Drop a forest type placed fewer than this many times (big one-offs stay); 0 = keep every kind",
+   "label": "Rarest planting floor",
+   "blurb": "A kind of tree or prop placed fewer times than this is left out. 0 keeps all.",
+   "section": "advanced",
+   "tier": "advanced"
+  },
+  {
+   "key": "forest_rare_keep_radius",
+   "kind": "float",
+   "default": 5.0,
+   "help": "A rare forest type with a shape radius at or above this is never dropped",
+   "label": "Rare planting keep size",
+   "blurb": "A rare kind at least this big (bounding radius) is kept whatever the floor says.",
+   "section": "advanced",
+   "tier": "advanced"
+  },
+  {
+   "key": "lod_detail_scale_large",
+   "kind": "float",
+   "default": 0.0,
+   "help": "Detail scale for buildings at or over lod_large_radius_m; 0 = lod_detail_scale",
+   "label": "Big building detail reach",
+   "blurb": "Big buildings' own version of the detail scale; 0 uses the buildings' scale.",
+   "section": "advanced",
+   "tier": "advanced"
+  },
+  {
+   "key": "lod_large_radius_m",
+   "kind": "float",
+   "default": 30.0,
+   "help": "Radius from which a building takes lod_detail_scale_large",
+   "label": "Big building size",
+   "blurb": "A building whose bounding radius is at least this counts as big.",
+   "section": "advanced",
+   "tier": "advanced"
+  },
+  {
+   "key": "far_ring_metres",
+   "kind": "float",
+   "default": 2500.0,
+   "help": "Distance at which buildings hand over to a merged per-cell silhouette; 0 = per-building silhouettes only",
+   "label": "Skyline hand-over",
+   "blurb": "Beyond this distance the skyline is one merged outline per block; 0 = one per building.",
+   "section": "advanced",
+   "tier": "advanced"
+  },
+  {
+   "key": "authored_lod1_drop",
+   "kind": "bool",
+   "default": false,
+   "help": "Do not ship the game's LOD 1 for buildings that also have a LOD 2; frees ~1 GB",
+   "label": "Drop the game's LOD 1",
+   "blurb": "Ship a building's LOD 0 and LOD 2 only; LOD 2 takes over where LOD 1 did.",
+   "section": "advanced",
+   "tier": "advanced"
+  },
+  {
+   "key": "authored_lod0_max_tris",
+   "kind": "int",
+   "default": 0,
+   "help": "A building with more than this many triangles ships the game's LOD 1 as its nearest level; 0 = keep LOD 0 for all",
+   "label": "Full detail up to",
+   "blurb": "Buildings over this many triangles show the game's second level up close. 0 = all full.",
+   "section": "advanced",
+   "tier": "advanced"
+  },
+  {
+   "key": "area_conform_cm",
+   "kind": "float",
+   "default": 1.0,
+   "help": "Painted surfaces are split until the ground is within this many cm; 1 = exact",
+   "label": "Paint fit",
+   "blurb": "How closely painted surfaces follow the ground, in centimetres. Bigger is fewer triangles.",
+   "section": "advanced",
+   "tier": "advanced"
+  },
+  {
+   "key": "shadow_min_radius",
+   "kind": "float",
+   "default": 3.0,
+   "help": "TSStatics with a shape radius under this ship castShadows:false; 0 lets everything cast",
+   "label": "Smallest shadow caster",
+   "blurb": "A placed object smaller than this (bounding radius, metres) casts no shadow.",
    "section": "advanced",
    "tier": "advanced"
   },
@@ -649,6 +825,16 @@
    "help": "Forest items cast shadows",
    "label": "Forest shadow casting",
    "blurb": "Forest items cast shadows. One of the heaviest per-frame costs a dense canopy carries.",
+   "section": "advanced",
+   "tier": "advanced"
+  },
+  {
+   "key": "forest_shadow_null_px",
+   "kind": "int",
+   "default": 40,
+   "help": "Stop a forest item's shadow at this pixel size (vanilla uses 40); 0 = never",
+   "label": "Forest shadow far stop",
+   "blurb": "The pixel size at which a forest item stops casting \u2014 vanilla ships 40. 0 = no far stop.",
    "section": "advanced",
    "tier": "advanced"
   },
