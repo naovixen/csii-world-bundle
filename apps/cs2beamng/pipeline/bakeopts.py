@@ -28,11 +28,7 @@ def bake_options(settings, jobs=1):
     as stale forever. The cache itself was fine — the build skipped those products — but the
     preflight said "stale" and the estimate promised a re-bake that never happened.
     """
-    categories = [
-        c.strip()
-        for c in str(settings.get("lane_furniture_categories") or "fence,cable,lane").split(",")
-        if c.strip()
-    ]
+    categories = _lane_furniture_categories(settings)
     return {
         "tile": float(settings.get("tile_size") or 256),
         # MEASURED, not hard-coded conservatism: BeamNG splits SW-NE (audit §73)
@@ -79,3 +75,12 @@ def bake_options(settings, jobs=1):
         # unbounded, which is what "ruined some buildings" was)
         "lod0_refine_peak": float(settings.get("lod0_refine_peak_cm", 25.0) or 0.0) / 100.0,
     }
+
+
+def _lane_furniture_categories(settings):
+    """The lane-furniture categories the bake cuts as parts, from the comma-separated setting."""
+    return [
+        c.strip()
+        for c in str(settings.get("lane_furniture_categories") or "fence,cable,lane").split(",")
+        if c.strip()
+    ]

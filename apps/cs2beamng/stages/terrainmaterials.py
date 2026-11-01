@@ -99,17 +99,7 @@ def _terrain_materials_per_ground(
 ):
     """One `TerrainMaterial` per ground, three tiers each at the game's own tilings."""
     for name in names:
-        tiers = _tier_textures(level, surfaces_dir, name, gain, sharpen, missing_height)
-        if tiers is None:
-            # no albedo and no normal for this ground OR its fallback: a material of pure
-            # neutrals with a note, instead of one with no note (B12: this `append` sat after
-            # the `continue`, unreachable, and `_tier_textures` never returned None)
-            missing_height.append(name)
-            tiers = {
-                "albedo": dict.fromkeys(TIERS),
-                "normal": dict.fromkeys(TIERS),
-                "height": dict.fromkeys(TIERS),
-            }
+        tiers = _tiers_or_neutral(level, surfaces_dir, name, gain, sharpen, missing_height)
         pid = level.pid(f"terrain:material:{name}")
         size, detail_distances, macro_distances, from_game = _tiling_of(tiling_block, name)
         if not from_game:
@@ -151,6 +141,22 @@ def _terrain_materials_per_ground(
             tiers,
             neutral,
         )
+
+
+def _tiers_or_neutral(level, surfaces_dir, name, gain, sharpen, missing_height):
+    """`_tier_textures` for one ground, or all-neutral tiers (noted) where it has none."""
+    tiers = _tier_textures(level, surfaces_dir, name, gain, sharpen, missing_height)
+    if tiers is None:
+        # no albedo and no normal for this ground OR its fallback: a material of pure
+        # neutrals with a note, instead of one with no note (B12: this `append` sat after
+        # the `continue`, unreachable, and `_tier_textures` never returned None)
+        missing_height.append(name)
+        tiers = {
+            "albedo": dict.fromkeys(TIERS),
+            "normal": dict.fromkeys(TIERS),
+            "height": dict.fromkeys(TIERS),
+        }
+    return tiers
 
 
 def _tier_textures(level, surfaces_dir, name, gain, sharpen, missing_height):

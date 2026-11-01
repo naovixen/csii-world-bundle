@@ -12,8 +12,8 @@ a user's explicit changes after picking a preset stick.
 Where things are:
 
 * `model` — the `Setting` record: one declaration per knob, and what each of its fields means.
-* `paths`, `world`, `collision`, `textures`, `navigation`, `tuning`, `build`, `driven` — the
-  settings themselves, grouped the way the screen groups them.
+* `paths`, `world`, `collision`, `textures`, `navigation`, `tuning`, `scenery`, `build`,
+  `driven` — the settings themselves, grouped the way the screen groups them.
 * `catalog` — joins those into `SETTINGS` and derives `SCHEMA`, `LABELS`, `BLURBS` and the rest.
 * `sections` — where each key appears on screen; the placement authority.
 * `screen` — the view model: `schema_for_ui`, `control_of`, `section_of`.

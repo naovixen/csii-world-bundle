@@ -75,19 +75,32 @@ def each(
 
     threshold = chunksize if min_parallel is None else min_parallel
     if workers > 1 and total > threshold:
-        context = get_context("spawn") if spawn else None
-        pool_of = context.Pool if context is not None else Pool
-        with pool_of(
-            processes=min(workers, total), initializer=initializer, initargs=tuple(initargs)
-        ) as pool:
+        with _pool(min(workers, total), spawn, initializer, initargs) as pool:
             imap = pool.imap if ordered else pool.imap_unordered
-            for result in imap(job, args, chunksize=chunksize):
-                progress.check()
-                if advance:
-                    progress.advance()
-                yield result
+            yield from _reported(imap(job, args, chunksize=chunksize), progress, advance)
         return
 
+    yield from _serial(job, args, progress, advance, initializer, initargs)
+
+
+def _pool(processes, spawn, initializer, initargs):
+    """The pool `each` runs its jobs in, from a spawn context when `spawn` asks for one."""
+    context = get_context("spawn") if spawn else None
+    pool_of = context.Pool if context is not None else Pool
+    return pool_of(processes=processes, initializer=initializer, initargs=tuple(initargs))
+
+
+def _reported(results, progress, advance):
+    """Yield each pooled result as it arrives, checking for cancellation first."""
+    for result in results:
+        progress.check()
+        if advance:
+            progress.advance()
+        yield result
+
+
+def _serial(job, args, progress, advance, initializer, initargs):
+    """The serial loop: the same checks as the pooled path, each job run in this process."""
     if initializer is not None:
         initializer(*initargs)
     for a in args:

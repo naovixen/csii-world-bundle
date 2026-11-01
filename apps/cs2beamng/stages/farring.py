@@ -2,7 +2,7 @@
 out to the game's own cull (refactor Phase 10, record §4.2 / §8.10).
 
 Every building shape already carries a closed voxel silhouette of its coarsest level
-(`shapewrite._far_level`, `lod_vertcol`, coloured per face). Drawn PER BUILDING to the game's
+(`shapefar.far_level`, `lod_vertcol`, coloured per face). Drawn PER BUILDING to the game's
 cull that is ~8,700 TSStatics each a draw call for a dozen triangles, and BeamNG's own slow-scene
 list starts with draw calls. This stage takes the same silhouettes, places them where the
 instances stage placed their buildings, and merges them by cell (`CELL_METRES`) into one shape
@@ -98,83 +98,10 @@ class Ring:
         written = 0
         recorded = []
         for (cx, cy), cell in sorted(self.cells.items()):
-            verts = numpy.concatenate(cell["verts"])
-            normals = numpy.concatenate(cell["normals"])
-            colors = numpy.concatenate(cell["colors"])
-            tris = numpy.concatenate(cell["tris"])
-            ox, oy = cx * CELL_METRES, cy * CELL_METRES
-            local = verts - numpy.array([ox, oy, 0.0])
-            lo, hi = local.min(axis=0), local.max(axis=0)
-            radius = 0.5 * float(numpy.linalg.norm(hi - lo))
-            # A Torque detail's size is the pixel size at which it STARTS as the camera
-            # approaches (it is used for p >= size, until a larger detail's size is reached), so
-            # the ring level's size is its FAR end - the cull - and the empty near detail's size
-            # is the hand-over. First build had them the other way round: 117 triangles of ring
-            # in an 8 km view (record §8.11).
-            cull_m = max(cell["cull"] * self.scale, self.d + 1.0)
-            # rounded UP: the ring may stop nearer than the game, never further
-            ring_px = max(2, int(math.ceil(lod.group_detail_px(radius, cull_m))))
-            near_px = max(ring_px + 1, int(math.ceil(lod.group_detail_px(radius, self.d))))
-            null_px = ring_px - 1
-            name = f"{PRODUCT}_{cx}_{cy}"
-            mesh = dae.Mesh(
-                name,
-                local.astype(numpy.float32),
-                tris,
-                [(MATERIAL, len(tris))],
-                normals=normals.astype(numpy.float32),
-                uvs=numpy.zeros((len(local), 2), dtype=numpy.float32),
-                colors=colors.astype(numpy.float32),
-            )
-            # Torque draws a shape's LARGEST detail for any pixel size above its size, so a
-            # one-level cell would be drawn on top of the real buildings whenever the camera is
-            # nearer than the hand-over (Naomi's look, 2026-08-30: boxes through the meshes).
-            # The near detail is a 1 mm triangle 500 m underground: drawn, and invisible.
-            near = dae.Mesh(
-                f"{name}_NEAR",
-                numpy.array(
-                    [[0, 0, -500], [0.001, 0, -500], [0, 0.001, -500]], dtype=numpy.float32
-                ),
-                numpy.array([[0, 1, 2]], dtype=numpy.int64),
-                [(MATERIAL, 1)],
-                normals=numpy.array([[0, 0, 1]] * 3, dtype=numpy.float32),
-                uvs=numpy.zeros((3, 2), dtype=numpy.float32),
-                colors=numpy.zeros((3, 4), dtype=numpy.float32),
-            )
-            os.makedirs(out_dir, exist_ok=True)
-            # `split_mesh` caps every geometry at `MAX_GEOMETRY_VERTS`, as every other writer
-            # does: BeamNG's per-mesh index buffers wrap past 65,535 and the shape shards
-            # (load #10). A cell is the one product that merges the most geometry into one
-            # node - a downtown cell of a few hundred hulls at four unshared vertices per face.
-            stats = dae.write_shape(
-                os.path.join(out_dir, name + ".dae"),
-                dae.Shape(
-                    name, [(near_px, [near]), (ring_px, daemesh.split_mesh(mesh))], null_px=null_px
-                ),
-            )
+            name, changed, record = self._write_cell(level, out_dir, cx, cy, cell)
             names.add(name)
-            written += 1 if stats.get("changed") else 0
-            recorded.append(
-                {
-                    "name": name,
-                    "radius": round(radius, 3),
-                    "nearPx": near_px,
-                    "ringPx": ring_px,
-                    "nullPx": null_px,
-                    "members": cell["members"],
-                    "cullMetres": round(cull_m, 1),
-                    "triangles": int(len(tris)),
-                }
-            )
-            obj = level_mod.tsstatic(
-                name,
-                level.game_path("art", "shapes", PRODUCT, name + ".dae"),
-                (ox, oy, 0.0),
-                level_mod.identity_basis(),
-                collision="None",
-                castShadows=False,
-            )
-            level.add([GROUP], obj, key=f"farring:{name}")
+            written += 1 if changed else 0
+            recorded.append(record)
         orphans = dae.sweep_orphans(out_dir, names)
         return {
             "handOverMetres": self.d,
@@ -185,3 +112,90 @@ class Ring:
             "orphansRemoved": orphans,
             "cells": recorded,  # what tools/beamng/lod_audit.py pairs the buildings against
         }
+
+    def _write_cell(self, level, out_dir, cx, cy, cell):
+        """Write one cell's `.dae` and place its `TSStatic`. Returns `(name, changed, record)`."""
+        verts = numpy.concatenate(cell["verts"])
+        normals = numpy.concatenate(cell["normals"])
+        colors = numpy.concatenate(cell["colors"])
+        tris = numpy.concatenate(cell["tris"])
+        ox, oy = cx * CELL_METRES, cy * CELL_METRES
+        local = verts - numpy.array([ox, oy, 0.0])
+        radius, cull_m, near_px, ring_px, null_px = self._detail_sizes(local, cell)
+        name = f"{PRODUCT}_{cx}_{cy}"
+        mesh = dae.Mesh(
+            name,
+            local.astype(numpy.float32),
+            tris,
+            [(MATERIAL, len(tris))],
+            normals=normals.astype(numpy.float32),
+            uvs=numpy.zeros((len(local), 2), dtype=numpy.float32),
+            colors=colors.astype(numpy.float32),
+        )
+        near = _near_detail(name)
+        os.makedirs(out_dir, exist_ok=True)
+        # `split_mesh` caps every geometry at `MAX_GEOMETRY_VERTS`, as every other writer
+        # does: BeamNG's per-mesh index buffers wrap past 65,535 and the shape shards
+        # (load #10). A cell is the one product that merges the most geometry into one
+        # node - a downtown cell of a few hundred hulls at four unshared vertices per face.
+        stats = dae.write_shape(
+            os.path.join(out_dir, name + ".dae"),
+            dae.Shape(
+                name, [(near_px, [near]), (ring_px, daemesh.split_mesh(mesh))], null_px=null_px
+            ),
+        )
+        record = {
+            "name": name,
+            "radius": round(radius, 3),
+            "nearPx": near_px,
+            "ringPx": ring_px,
+            "nullPx": null_px,
+            "members": cell["members"],
+            "cullMetres": round(cull_m, 1),
+            "triangles": int(len(tris)),
+        }
+        obj = level_mod.tsstatic(
+            name,
+            level.game_path("art", "shapes", PRODUCT, name + ".dae"),
+            (ox, oy, 0.0),
+            level_mod.identity_basis(),
+            collision="None",
+            castShadows=False,
+        )
+        level.add([GROUP], obj, key=f"farring:{name}")
+        return name, stats.get("changed"), record
+
+    def _detail_sizes(self, local, cell):
+        """`(radius, cull_m, near_px, ring_px, null_px)` for one cell's merged hull."""
+        lo, hi = local.min(axis=0), local.max(axis=0)
+        radius = 0.5 * float(numpy.linalg.norm(hi - lo))
+        # A Torque detail's size is the pixel size at which it STARTS as the camera
+        # approaches (it is used for p >= size, until a larger detail's size is reached), so
+        # the ring level's size is its FAR end - the cull - and the empty near detail's size
+        # is the hand-over. First build had them the other way round: 117 triangles of ring
+        # in an 8 km view (record §8.11).
+        cull_m = max(cell["cull"] * self.scale, self.d + 1.0)
+        # rounded UP: the ring may stop nearer than the game, never further
+        ring_px = max(2, int(math.ceil(lod.group_detail_px(radius, cull_m))))
+        near_px = max(ring_px + 1, int(math.ceil(lod.group_detail_px(radius, self.d))))
+        null_px = ring_px - 1
+        return radius, cull_m, near_px, ring_px, null_px
+
+
+def _near_detail(name):
+    """The empty near detail below a cell's ring level.
+
+    Torque draws a shape's LARGEST detail for any pixel size above its size, so a one-level cell
+    would be drawn on top of the real buildings whenever the camera is nearer than the hand-over
+    (Naomi's look, 2026-08-30: boxes through the meshes). The near detail is a 1 mm triangle
+    500 m underground: drawn, and invisible.
+    """
+    return dae.Mesh(
+        f"{name}_NEAR",
+        numpy.array([[0, 0, -500], [0.001, 0, -500], [0, 0.001, -500]], dtype=numpy.float32),
+        numpy.array([[0, 1, 2]], dtype=numpy.int64),
+        [(MATERIAL, 1)],
+        normals=numpy.array([[0, 0, 1]] * 3, dtype=numpy.float32),
+        uvs=numpy.zeros((3, 2), dtype=numpy.float32),
+        colors=numpy.zeros((3, 4), dtype=numpy.float32),
+    )

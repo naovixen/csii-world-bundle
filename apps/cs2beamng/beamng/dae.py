@@ -77,7 +77,7 @@ class Shape:
         # Torque draws the detail with the LARGEST size at or under the projected size, so a
         # null or a billboard sized at or over the coarsest mesh takes that mesh's whole band:
         # nothing (or the card) is drawn where the mesh should be. Every writer keeps its
-        # thresholds under the coarsest level (`stages/shapewrite._above_null`,
+        # thresholds under the coarsest level (`stages/shapebillboard.above_null`,
         # `tilelod.tile_levels`, `stages/farring`); this refuses the shape if one does not,
         # because the level validator cannot see it on a cooked level (`keep_dae: false`).
         sizes = [int(px) for px, _ms in self.levels]

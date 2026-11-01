@@ -28,8 +28,7 @@ import os
 import time
 from collections import defaultdict
 
-import numpy
-from csiibundle import glb, lod, parallel, reader
+from csiibundle import lod, parallel, reader
 from csiibundle import region as region_rule
 
 from ..beamng import dae, daemesh, frame, tilemesh
@@ -37,7 +36,8 @@ from ..beamng import level as level_mod
 from ..beamng.level import LevelPaths
 from ..beamng.matbind import aliases_of
 from . import Stage, level_of
-from .networklod import merge_local, segment_min_lod, split_tile
+from .networklod import merge_local, split_tile
+from .networkparts import _load_parts
 
 STAGE_KEY = "networks"
 TILE_DETAIL_PX = tilemesh.ALWAYS_PX  # what a tile nothing culls still ships (see beamng/tilelod)
@@ -282,98 +282,58 @@ def _tile_job(args):
                 uvs=merged["uvs"],
             )
         )
-        # Same ladder as the derived tiles (`beamng/tilelod`): each level is the set of
-        # segments CS2 still draws at that distance, carried in on the `#L<n>` marks the
-        # merge kept on the material names.
-        levels, ladder = tilemesh.build_levels(
-            dae,
-            name,
-            mesh,
-            detail_scale,
-            lod.DEFAULT_LEVEL_OF_DETAIL,
-            TILE_DETAIL_PX,
-            view_distance=view_distance,
-            targets=tilemesh.TILE_TARGETS if view_distance else None,
-            tile=tile,
-            # NO boundary pins: `boundary_pins` exists for products clipped at the tile edge
-            # (a triangle belongs to the tile its centroid is in), where two neighbours share
-            # vertices along the seam. A network tile is bucketed by SEGMENT ORIGIN and holds
-            # every segment WHOLE, so its geometry reaches ~100 m past the edge and shares no
-            # vertex with any neighbour - the 2 m band pinned a large share of every tile
-            # (a pinned vertex is its own cluster) and the far level came out ~5x its target,
-            # 3.8 M triangles against 0.8 M (validation pass 2026-08-31, C1).
-            pins=False,
-            # ...and the NEAREST level, which the ladder never touches, is refined under a
-            # measured bound: a road tile ships `Visible Mesh Final`, so this mesh is the surface
-            # the car drives on and the bound is what keeps it there (`tilemesh._refined`).
-            refine_error=refine_error,
-        )
-        shape = dae.Shape(name, levels, collision=[], billboard_px=None, null_px=ladder["nullPx"])
-        stats = dae.write_shape(level.path("art", "shapes", "networks", f"{name}.dae"), shape)
-        out["shapes"].append(
-            {
-                "name": name,
-                "ox": ox,
-                "oy": oy,
-                "triangles": stats["triangles"],
-                "vertices": stats["vertices"],
-                "changed": bool(stats.get("changed")),
-                "lod": tilemesh.compact(levels, ladder),
-                "extraGeoms": sum(len(ms) for _px, ms in levels) - len(levels),
-            }
-        )
+        levels, ladder = _tile_levels(name, mesh, tile, detail_scale, view_distance, refine_error)
+        out["shapes"].append(_write_tile_shape(level, name, ox, oy, levels, ladder))
     used = sorted(shared.get("materials_used") or ())
     for shape in out["shapes"]:
         shape["used"] = used
     return out
 
 
-def _load_parts(net_meshes, recs):
-    """`{"pieces": [(verts_bundle_world, normals_glb, uvs, tris, runs, origin_xz)], "refused": n}`
-    with verts still in glTF axes but placed in bundle WORLD (mirror undone, `pos` added)."""
-    pieces = []
-    refused = 0
-    missing = 0
-    for rec in recs:
-        path = os.path.join(net_meshes, rec["assetId"] + ".glb")
-        if not os.path.isfile(path):
-            # a segment record with no mesh file: the road is simply absent from the level, and
-            # an undeclared missing mesh is a real error (`csiibundle.instances`), so it is
-            # counted and logged rather than skipped in silence (B9)
-            missing += 1
-            continue
-        nodes = glb.parse_glb(path)
-        if nodes is None:
-            refused += 1
-            continue
-        pos = numpy.asarray(rec["pos"], dtype=numpy.float64)
-        min_lod = segment_min_lod(rec, nodes)
-        for node in nodes:
-            if len(node["tris"]) == 0:
-                continue
-            m = numpy.asarray(node["matrix"], dtype=numpy.float64)
-            v = numpy.asarray(node["verts"], dtype=numpy.float64) @ m[:3, :3].T + m[:3, 3]
-            n = node["normals"]
-            if n is not None:
-                n = numpy.asarray(n, dtype=numpy.float64) @ numpy.linalg.inv(m[:3, :3])
-            # glTF axes with the mirror still applied: undoing the mirror is x -> -x, and the
-            # bundle offset applies in bundle axes; keep everything in "mirrored glTF" form and
-            # add the offset mirrored too, so daemesh.glb_to_local does the whole conversion once
-            v[:, 0] -= pos[0]  # bundle +x is glTF -x
-            v[:, 1] += pos[1]
-            v[:, 2] += pos[2]
-            pieces.append(
-                (
-                    v,
-                    n,
-                    node["uvs"],
-                    node["tris"],
-                    node["material_runs"],
-                    (rec["pos"][0], rec["pos"][2]),
-                    min_lod,
-                )
-            )
-    return {"pieces": pieces, "refused": refused, "missing": missing}
+def _tile_levels(name, mesh, tile, detail_scale, view_distance, refine_error):
+    """`(levels, ladder)` for one network tile shape (`tilemesh.build_levels`)."""
+    # Same ladder as the derived tiles (`beamng/tilelod`): each level is the set of
+    # segments CS2 still draws at that distance, carried in on the `#L<n>` marks the
+    # merge kept on the material names.
+    return tilemesh.build_levels(
+        dae,
+        name,
+        mesh,
+        detail_scale,
+        lod.DEFAULT_LEVEL_OF_DETAIL,
+        TILE_DETAIL_PX,
+        view_distance=view_distance,
+        targets=tilemesh.TILE_TARGETS if view_distance else None,
+        tile=tile,
+        # NO boundary pins: `boundary_pins` exists for products clipped at the tile edge
+        # (a triangle belongs to the tile its centroid is in), where two neighbours share
+        # vertices along the seam. A network tile is bucketed by SEGMENT ORIGIN and holds
+        # every segment WHOLE, so its geometry reaches ~100 m past the edge and shares no
+        # vertex with any neighbour - the 2 m band pinned a large share of every tile
+        # (a pinned vertex is its own cluster) and the far level came out ~5x its target,
+        # 3.8 M triangles against 0.8 M (validation pass 2026-08-31, C1).
+        pins=False,
+        # ...and the NEAREST level, which the ladder never touches, is refined under a
+        # measured bound: a road tile ships `Visible Mesh Final`, so this mesh is the surface
+        # the car drives on and the bound is what keeps it there (`tilemesh._refined`).
+        refine_error=refine_error,
+    )
+
+
+def _write_tile_shape(level, name, ox, oy, levels, ladder):
+    """Write one tile shape's `.dae`; returns the record the parent places it from."""
+    shape = dae.Shape(name, levels, collision=[], billboard_px=None, null_px=ladder["nullPx"])
+    stats = dae.write_shape(level.path("art", "shapes", "networks", f"{name}.dae"), shape)
+    return {
+        "name": name,
+        "ox": ox,
+        "oy": oy,
+        "triangles": stats["triangles"],
+        "vertices": stats["vertices"],
+        "changed": bool(stats.get("changed")),
+        "lod": tilemesh.compact(levels, ladder),
+        "extraGeoms": sum(len(ms) for _px, ms in levels) - len(levels),
+    }
 
 
 INPUTS = ("layer:networks", "layer:networkMeshes", "derived:materials.json")

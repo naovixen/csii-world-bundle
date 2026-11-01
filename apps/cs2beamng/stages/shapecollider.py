@@ -55,20 +55,7 @@ def collider(shape_name, base_mesh, lod_mesh, kind, options, is_tree=True):
     # so the triangle cap gives way instead: a few thousand collision triangles cost far less
     # than a trap.
     oversized = footprint > BOX_COLLIDER_MAX_METRES
-    # Over the triangle cap the collider is DECIMATED to it, never boxed. The cap used to be
-    # the point at which a shape fell back to the box (with the oversized guard above keeping
-    # the airport off that path), and at 20,000 it was never reached: "simplified" shipped the
-    # full LOD 1 hull on every building, a residential block at 20,700 collision triangles and
-    # the world at 25 M from object statics alone (refactor Phase 10 survey §1). Clustering the
-    # hull to the cap keeps the building's shape for the car to touch and bounds what the
-    # collision system loads.
-    status = "mesh"
-    cap = int(options["colmesh_max_tris"] or 0)
-    if options["collision_preset"] != "exact" and cap > 0 and len(tris) > cap:
-        verts, tris = _decimated(verts, tris, cap)
-        status = "mesh_decimated"
-    elif oversized and cap > 0 and len(tris) > cap:
-        status = "mesh_oversized"
+    verts, tris, status = _capped(verts, tris, oversized, options)
     cut = _from_geometry(shape_name, base_mesh, verts, tris, status)
     if cut is not None:
         return cut
@@ -86,6 +73,25 @@ def collider(shape_name, base_mesh, lod_mesh, kind, options, is_tree=True):
     return (
         dae.Mesh(f"Colmesh_{shape_name}", box_v, box_t, [(base_mesh.runs[0][0], len(box_t))]),
     ), "box"
+
+
+def _capped(verts, tris, oversized, options):
+    """`(verts, tris, status)`: the colmesh's triangles under the cap, and which rule applied."""
+    # Over the triangle cap the collider is DECIMATED to it, never boxed. The cap used to be
+    # the point at which a shape fell back to the box (with the oversized guard above keeping
+    # the airport off that path), and at 20,000 it was never reached: "simplified" shipped the
+    # full LOD 1 hull on every building, a residential block at 20,700 collision triangles and
+    # the world at 25 M from object statics alone (refactor Phase 10 survey §1). Clustering the
+    # hull to the cap keeps the building's shape for the car to touch and bounds what the
+    # collision system loads.
+    status = "mesh"
+    cap = int(options["colmesh_max_tris"] or 0)
+    if options["collision_preset"] != "exact" and cap > 0 and len(tris) > cap:
+        verts, tris = _decimated(verts, tris, cap)
+        status = "mesh_decimated"
+    elif oversized and cap > 0 and len(tris) > cap:
+        status = "mesh_oversized"
+    return verts, tris, status
 
 
 def _trunk(shape_name, base_mesh):

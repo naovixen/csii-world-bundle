@@ -1,6 +1,6 @@
 """Every setting, and the tables derived from them.
 
-The eight catalog modules declare one `Setting` per key; this joins them into `SETTINGS` and
+The nine catalog modules declare one `Setting` per key; this joins them into `SETTINGS` and
 derives the dictionaries the rest of the app imports. Those tables are exactly what they were
 when they were written out by hand — the difference is that they are now consequences of one
 declaration rather than sixteen places to remember.
@@ -9,7 +9,18 @@ A sparse table (`UNITS`, `SUBSET_OF`, `PARENT_OFF`, …) holds only the keys who
 which is what the code reading it expects: every one of them is probed with `in` or `.get`.
 """
 
-from . import build, collision, driven, navigation, paths, sections, textures, tuning, world
+from . import (
+    build,
+    collision,
+    driven,
+    navigation,
+    paths,
+    scenery,
+    sections,
+    textures,
+    tuning,
+    world,
+)
 from .model import Setting
 
 #: Declaration order, which is the order `SCHEMA` and the reference page come out in.
@@ -20,6 +31,7 @@ SETTINGS: tuple[Setting, ...] = (
     *textures.TEXTURE_SETTINGS,
     *navigation.NAVIGATION_SETTINGS,
     *tuning.TUNING_SETTINGS,
+    *scenery.SCENERY_SETTINGS,
     *build.BUILD_SETTINGS,
     *driven.DRIVEN_SETTINGS,
 )

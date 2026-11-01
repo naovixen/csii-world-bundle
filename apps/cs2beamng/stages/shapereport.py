@@ -73,11 +73,57 @@ def report(results, demand, scan_stats, options, errors, started, progress, rewr
     colliders = {}
     for row in results.values():
         colliders[row["collider"]] = colliders.get(row["collider"], 0) + 1
-    # trunk cylinders that are really canopy cylinders - see `trunkRatio` in `shape_job`
-    trunk_ratios = [r["trunkRatio"] for r in results.values() if r.get("trunkRatio") is not None]
-    trunk_wide = sum(1 for r in trunk_ratios if r > TRUNK_WIDE_RATIO)
+    trunk_fit = _trunk_fit(results)
     promoted = [r for r in results.values() if (r.get("lods") or {}).get("lod0Promoted")]
     kept_small = [r for r in results.values() if (r.get("lods") or {}).get("lod0KeptSmall")]
+    residency = _residency(results, progress)
+    _log_ladder(progress, switch_summary, promoted, kept_small, options)
+    return {
+        "shapes": len(results),
+        "lod0Promoted": len(promoted),
+        "lod0KeptSmall": len(kept_small),
+        **residency,
+        "shapesRewritten": rewritten,
+        "orphansRemoved": orphans,
+        "failed": len(errors),
+        "errors": errors[:20],
+        "scan": scan_stats,
+        "triangles": sum(r["triangles"] for r in results.values()),
+        "colliders": colliders,
+        "trunkFit": trunk_fit,
+        "imposters": {
+            "shapes": sum(1 for r in results.values() if r.get("billboardPx")),
+            "ofShapes": len(results),
+            "minMetres": round(options["imposter_min_metres"], 1),
+            "vanillaShare": "west_coast_usa 3.1 %, italy 7.2 %, johnson_valley 4.4 %",
+        },
+        "detailScale": options["detail_scale"],
+        "detailScaleProp": options.get("detail_scale_prop") or options["detail_scale"],
+        "levelOfDetail": options["level_of_detail"],
+        "drawDistance": summary,
+        "approximations": _approximations(
+            results, demand, rows_by_pair, options, scan_stats, switch_summary, trunk_fit["wide"]
+        ),
+        "seconds": round(time.monotonic() - started, 1),
+    }
+
+
+def _trunk_fit(results):
+    """Trunk cylinders that are really canopy cylinders - see `trunkRatio` in `shape_job`."""
+    trunk_ratios = [r["trunkRatio"] for r in results.values() if r.get("trunkRatio") is not None]
+    trunk_wide = sum(1 for r in trunk_ratios if r > TRUNK_WIDE_RATIO)
+    return {
+        "shapes": len(trunk_ratios),
+        "wide": trunk_wide,
+        "medianRatio": (
+            round(sorted(trunk_ratios)[len(trunk_ratios) // 2], 3) if trunk_ratios else None
+        ),
+        "ratio": TRUNK_WIDE_RATIO,
+    }
+
+
+def _residency(results, progress):
+    """The residency levers' counts, in report order, each logged where it fired."""
     # residency (Phase 10 §8): shapes shipping the game's LOD 1 as their nearest level, and the
     # authored levels left out for being byte-identical to LOD 0 - both declared, both counted
     lod0_dropped = [r for r in results.values() if (r.get("lods") or {}).get("lod0Dropped")]
@@ -85,7 +131,7 @@ def report(results, demand, scan_stats, options, errors, started, progress, rewr
         len((r.get("lods") or {}).get("identicalLevels") or ()) for r in results.values()
     )
     # ...and the bake's generated levels left out for being the geometry of the level above them
-    # (`shapelods._load_generated`; MeshLab stalling at one count for two targets)
+    # (`shapelevels.load_generated`; MeshLab stalling at one count for two targets)
     identical_generated = sum(
         int((r.get("lods") or {}).get("identicalGenerated") or 0) for r in results.values()
     )
@@ -122,11 +168,7 @@ def report(results, demand, scan_stats, options, errors, started, progress, rewr
             f"shapes: {identical_generated} generated levels left out for being identical to the "
             "level above them"
         )
-    _log_ladder(progress, switch_summary, promoted, kept_small, options)
     return {
-        "shapes": len(results),
-        "lod0Promoted": len(promoted),
-        "lod0KeptSmall": len(kept_small),
         "lod0Dropped": len(lod0_dropped),
         "lod0DroppedTriangles": sum((r["lods"].get("lod0Triangles") or 0) for r in lod0_dropped),
         "refinedShapes": len(refined),
@@ -135,41 +177,6 @@ def report(results, demand, scan_stats, options, errors, started, progress, rewr
         "lod0DropSkippedDistance": len(kept_far),
         "identicalLevelsDropped": identical_levels,
         "identicalGeneratedDropped": identical_generated,
-        "shapesRewritten": rewritten,
-        "orphansRemoved": orphans,
-        "failed": len(errors),
-        "errors": errors[:20],
-        "scan": scan_stats,
-        "triangles": sum(r["triangles"] for r in results.values()),
-        "colliders": colliders,
-        "trunkFit": {
-            "shapes": len(trunk_ratios),
-            "wide": trunk_wide,
-            "medianRatio": (
-                round(sorted(trunk_ratios)[len(trunk_ratios) // 2], 3) if trunk_ratios else None
-            ),
-            "ratio": TRUNK_WIDE_RATIO,
-        },
-        "imposters": {
-            "shapes": sum(1 for r in results.values() if r.get("billboardPx")),
-            "ofShapes": len(results),
-            "minMetres": round(options["imposter_min_metres"], 1),
-            "vanillaShare": "west_coast_usa 3.1 %, italy 7.2 %, johnson_valley 4.4 %",
-        },
-        "detailScale": options["detail_scale"],
-        "detailScaleProp": options.get("detail_scale_prop") or options["detail_scale"],
-        "levelOfDetail": options["level_of_detail"],
-        "drawDistance": summary,
-        "approximations": _approximations(
-            results,
-            demand,
-            rows_by_pair,
-            options,
-            scan_stats,
-            switch_summary,
-            trunk_wide,
-        ),
-        "seconds": round(time.monotonic() - started, 1),
     }
 
 

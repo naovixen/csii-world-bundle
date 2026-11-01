@@ -95,7 +95,7 @@ check(
 # game's cull scaled by `detail_scale`; the coarsest level is sized at the anchor, UNSCALED —
 # so when the anchor is the game's cull the null landed `detail_scale` times above the coarsest
 # level and took the whole band up to LOD 0: the tile vanished mid-range and came back nearer
-# (validation pass 2026-08-31, A1). `test_a3_rules.test_torque_detail_selection` states the rule;
+# (validation pass 2026-08-31, A1). `test_a3_lods.test_torque_detail_selection` states the rule;
 # this pins that a tile ladder obeys it.
 def torque_pick(sizes, null_px, p):
     cands = [(s, f"mesh:{i}") for i, s in enumerate(sizes)] + [(null_px, "null")]

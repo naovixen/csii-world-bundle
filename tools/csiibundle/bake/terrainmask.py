@@ -99,7 +99,7 @@ def run(context, progress):
             "wouldLower": lowered,
             "worstDrop": round(worst, 3),
             # shallow `area` clip records: they never carve, and until v5 they were the one
-            # record class the containment pass took unconditionally (clipgrid._bin_deep, A3)
+            # record class the containment pass took unconditionally (clipblocks.bin_deep, A3)
             "areaShallow": int(hm.area_shallow),
         },
     }

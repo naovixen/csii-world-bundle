@@ -148,6 +148,20 @@ def build_levels(
         view_distance=view_distance,
         distinct_only=not decimating,
     )
+    out, decimated, refined = _level_meshes(
+        dae, shape_name, mesh, ladder, targets, tile, pins, refine_error
+    )
+    ladder["decimated"] = decimated
+    ladder["refined"] = refined
+    if not out:
+        ladder["nullPx"] = None
+        return [(always_px, daemesh.split_mesh(mesh))], ladder
+    return out, ladder
+
+
+def _level_meshes(dae, shape_name, mesh, ladder, targets, tile, pins, refine_error):
+    """`(out, decimated, refined)` - each ladder level's visible subset, decimated past the
+    nearest level or refined at it, as `build_levels` describes."""
     out = []
     decimated = []
     refined = []
@@ -168,18 +182,13 @@ def build_levels(
             if len(part.tris) != before:
                 refined.append((before, len(part.tris), moved))
         out.append((px, daemesh.split_mesh(part)))
-    ladder["decimated"] = decimated
-    ladder["refined"] = refined
-    if not out:
-        ladder["nullPx"] = None
-        return [(always_px, daemesh.split_mesh(mesh))], ladder
-    return out, ladder
+    return out, decimated, refined
 
 
 # The nearest level of a tile is refined only where at least this many triangles make the MeshLab
 # round trip worth its seconds; a small tile has nothing to find.
 REFINE_MIN_TRIS = 2_000
-# Deepest first, first pass wins - the shape rule's ladder (`bake/lods.REFINE_TARGETS`).
+# Deepest first, first pass wins - the shape rule's ladder (`bake/lodrefine.REFINE_TARGETS`).
 REFINE_TARGETS = (0.5, 0.6, 0.7, 0.8, 0.9)
 
 

@@ -152,6 +152,34 @@ def _check_light_manager(ctx):
         )
 
 
+def _ground_bytes(level_dir):
+    """The ground's own textures (art/terrains + art/ground), so the estimate's one calibrated
+    texture ratio (`size/ground_texture_per_source`) can be scored and learnt like the mesh
+    ratios are - it never was, and drifted 32 % from the level (validation pass 2026-08-31)."""
+    ground_bytes = 0
+    for sub in ("terrains", "ground"):
+        folder = os.path.join(level_dir, "art", sub)
+        if os.path.isdir(folder):
+            for root, _dirs, names in os.walk(folder):
+                for name in names:
+                    try:
+                        ground_bytes += os.path.getsize(os.path.join(root, name))
+                    except OSError:
+                        pass
+    return ground_bytes
+
+
+def _note_renderer(ctx, api, api_source):
+    """Direct3D 11 keeps every texture fully resident, so say so."""
+    if api == "DirectX 11":
+        ctx.note(
+            f"renderer: BeamNG last ran on Direct3D 11 ({api_source}), which does NOT stream "
+            f"texture mips - every texture is fully resident there. Vulkan (0.37+) and Direct3D "
+            f"12 (0.39+) evict unused mips against the card's budget; 0.39.1 falls back to D3D11 "
+            f"on cards with too little VRAM, so check Options > Graphics > Renderer"
+        )
+
+
 def check_residency(ctx):
     """What the level mounts against what this machine is known to hold (audit §64/§65)."""
     # -- what the level MOUNTS (audit §64, recalibrated §65) -----------------------------------------------------
@@ -165,19 +193,7 @@ def check_residency(ctx):
     budget_mib = resident_budget_mib(vram_mib, pixels)
     failure_mib = resident_failure_mib(vram_mib, pixels)
     api, api_source = graphics_api()
-    # the ground's own textures (art/terrains + art/ground), so the estimate's one calibrated
-    # texture ratio (`size/ground_texture_per_source`) can be scored and learnt like the mesh
-    # ratios are - it never was, and drifted 32 % from the level (validation pass 2026-08-31)
-    ground_bytes = 0
-    for sub in ("terrains", "ground"):
-        folder = os.path.join(ctx.level_dir, "art", sub)
-        if os.path.isdir(folder):
-            for root, _dirs, names in os.walk(folder):
-                for name in names:
-                    try:
-                        ground_bytes += os.path.getsize(os.path.join(root, name))
-                    except OSError:
-                        pass
+    ground_bytes = _ground_bytes(ctx.level_dir)
     ctx.checks["resident"] = {
         "graphicsApi": api,
         "graphicsApiSource": api_source,
@@ -199,13 +215,7 @@ def check_residency(ctx):
         "cookedShapes": resident["cookedShapes"],
         "shapes": resident["shapes"],
     }
-    if api == "DirectX 11":
-        ctx.note(
-            f"renderer: BeamNG last ran on Direct3D 11 ({api_source}), which does NOT stream "
-            f"texture mips - every texture is fully resident there. Vulkan (0.37+) and Direct3D "
-            f"12 (0.39+) evict unused mips against the card's budget; 0.39.1 falls back to D3D11 "
-            f"on cards with too little VRAM, so check Options > Graphics > Renderer"
-        )
+    _note_renderer(ctx, api, api_source)
     if total_mib > budget_mib:
         where = (
             "AT OR OVER the measured failure point"

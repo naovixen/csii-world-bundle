@@ -84,22 +84,12 @@ def check_cooked_shapes(ctx):
     for every shape whose source is gone. Tiles (networks, derived) have no such record; their
     thresholds are guaranteed at the writer (`dae.Shape`) instead.
     """
-    path = os.path.join(ctx.level_dir, "cs2beamng_state", "shapes.state.json")
-    try:
-        with open(path, encoding="utf-8") as handle:
-            results = json.load(handle)["shared"]["shapes"]["results"]
-    except (OSError, ValueError, KeyError, TypeError):
+    rows = _recorded_rows(ctx.level_dir)
+    if rows is None:
         ctx.checks["cookedShapesChecked"] = 0
         return
-    pairs = results["$pairs"] if isinstance(results, dict) and "$pairs" in results else results
-    rows = [row for _key, row in pairs] if pairs and isinstance(pairs[0], list) else list(pairs)
     with_source = {os.path.basename(p).lower() for _n, p in ctx.dae_files}
-    static_collision = {}
-    for _rel, _n, obj in ctx.objects:
-        if obj.get("class") == "TSStatic" and obj.get("shapeName"):
-            static_collision.setdefault(
-                os.path.basename(str(obj["shapeName"])).lower(), str(obj.get("collisionType") or "")
-            )
+    static_collision = _static_collision(ctx.objects)
     checked = bad_detail = bad_null = 0
     mismatched = []
     unbound = {}
@@ -138,6 +128,34 @@ def check_cooked_shapes(ctx):
     ctx.checks["invalidDetailShapes"] = int(ctx.checks.get("invalidDetailShapes") or 0) + bad_detail
     ctx.checks["cookedNullAboveCoarsest"] = bad_null
     ctx.checks["cookedUnboundMaterials"] = len(unbound)
+    _note_unbound_and_mismatched(ctx, unbound, mismatched)
+
+
+def _recorded_rows(level_dir):
+    """The shapes stage's per-shape result rows, or None when its state file cannot be read."""
+    path = os.path.join(level_dir, "cs2beamng_state", "shapes.state.json")
+    try:
+        with open(path, encoding="utf-8") as handle:
+            results = json.load(handle)["shared"]["shapes"]["results"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    pairs = results["$pairs"] if isinstance(results, dict) and "$pairs" in results else results
+    return [row for _key, row in pairs] if pairs and isinstance(pairs[0], list) else list(pairs)
+
+
+def _static_collision(objects):
+    """`{shape file name: collisionType}` of the first TSStatic placing each shape."""
+    static_collision = {}
+    for _rel, _n, obj in objects:
+        if obj.get("class") == "TSStatic" and obj.get("shapeName"):
+            static_collision.setdefault(
+                os.path.basename(str(obj["shapeName"])).lower(), str(obj.get("collisionType") or "")
+            )
+    return static_collision
+
+
+def _note_unbound_and_mismatched(ctx, unbound, mismatched):
+    """Name the unmapped materials; count and name the TSStatics whose collisionType disagrees."""
     for name, file in list(unbound.items())[:10]:
         ctx.note(
             f"{file}: binds material {name!r} which no materials file maps (BeamNG's orange checker)"

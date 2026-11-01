@@ -1,6 +1,6 @@
 """Only a DEEP clip band may delete terrain — for `area` records as well as strips (§8c).
 
-`clipgrid._bin_deep` decides which records the containment pass (the deletion rule) sees at
+`clipblocks.bin_deep` decides which records the containment pass (the deletion rule) sees at
 all. It skipped shallow STRIPS and binned every `area` record unconditionally; on the reference
 city all 266 area records are shallow (median top 0.3 m), so each one could delete the faces
 under it while `deep_touch` stayed False and the build report showed nothing (validation pass
@@ -24,14 +24,14 @@ def check(ok, claim, detail=""):
 
 
 def main():
-    from csiibundle import clipgrid, containment
+    from csiibundle import clipblocks, containment
 
     block = containment.CLIP_CONTAIN_BLOCK
     # an area record is `(cells (N, 2) col/row, lane_y, bottom, top)` — see `_rasterise_area`
     square = numpy.array([[10.0, 10.0], [40.0, 10.0], [40.0, 40.0], [10.0, 40.0]])
     shallow = (square, 500.0, -0.3, 0.3)  # a surface cut: top well under CLIP_DEEP_BAND_TOP
     deep = (square + 200.0, 500.0, -0.3, containment.CLIP_DEEP_BAND_TOP + 1.0)  # a portal
-    bins, shallow_count = clipgrid._bin_deep([], [shallow, deep], 512, 512, block)
+    bins, shallow_count = clipblocks.bin_deep([], [shallow, deep], 512, 512, block)
     binned = sorted({i for indices in bins.values() for i in indices})
     check(
         binned == [1],
@@ -41,7 +41,7 @@ def main():
     check(shallow_count == 1, "and the shallow one is counted", f"{shallow_count}")
     # a record whose top is exactly the threshold is shallow: the rule is `top > CLIP_DEEP_BAND_TOP`
     edge = (square, 500.0, -0.3, containment.CLIP_DEEP_BAND_TOP)
-    bins, shallow_count = clipgrid._bin_deep([], [edge], 512, 512, block)
+    bins, shallow_count = clipblocks.bin_deep([], [edge], 512, 512, block)
     check(not bins and shallow_count == 1, "a top AT the threshold is shallow (strict >)")
     # the strips keep their own rule: `carves` is the last element of a strip_cells row
     lc = numpy.array([[10.0, 10.0], [20.0, 10.0]])
@@ -57,7 +57,7 @@ def main():
         numpy.array([20.0]),
         False,
     )
-    bins, shallow_count = clipgrid._bin_deep([strip_row], [deep], 512, 512, block)
+    bins, shallow_count = clipblocks.bin_deep([strip_row], [deep], 512, 512, block)
     binned = sorted({i for indices in bins.values() for i in indices})
     check(
         binned == [1] and shallow_count == 0,

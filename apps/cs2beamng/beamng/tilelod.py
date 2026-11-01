@@ -242,7 +242,7 @@ def tile_levels(
         # LOD 0 went to the null: the tile vanished in the mid-range and came back nearer
         # (validation pass 2026-08-31, A1; `tools/beamng/lod_audit.select` states the rule).
         # A Torque detail's size is where it STOPS, so the ladder keeps its sizes and the null
-        # comes down under the coarsest one - the rule `stages/shapewrite._above_null` applies
+        # comes down under the coarsest one - the rule `stages/shapebillboard.above_null` applies
         # to object shapes. DECLARED: such a tile draws to its ladder's anchor (the game's own
         # cull, or the view distance), not to the scaled cull - the scale is a residency lever
         # for object shapes, and pulling the anchor in with it would pull LOD 0 in too.

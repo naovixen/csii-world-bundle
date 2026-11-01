@@ -62,24 +62,7 @@ def to_ratio(verts, tris, uvs, normals, ratio):
     )
     workdir = tempfile.mkdtemp(prefix="csii_meshlab_")
     try:
-        obj = os.path.join(workdir, "prim.obj")
-        with open(os.path.join(workdir, "prim.mtl"), "w") as handle:
-            handle.write("newmtl m\nmap_Kd dummy.png\n")
-        # a 1x1 grey png, written raw so PIL is not a dependency here
-        with open(os.path.join(workdir, "dummy.png"), "wb") as handle:
-            handle.write(
-                bytes.fromhex(
-                    "89504e470d0a1a0a0000000d494844520000000100000001080200000090"
-                    "7753de0000000c49444154789c636868680000030401814bd3d210000000"
-                    "0049454e44ae426082"
-                )
-            )
-        lines = ["mtllib prim.mtl", "usemtl m"]
-        lines += [f"v {v[0]:.6f} {v[1]:.6f} {v[2]:.6f}" for v in verts]
-        lines += [f"vt {t[0]:.6f} {t[1]:.6f}" for t in uv]
-        lines += [f"f {a}/{a} {b}/{b} {c}/{c}" for a, b, c in (tris + 1)]
-        with open(obj, "w") as handle:
-            handle.write("\n".join(lines) + "\n")
+        obj = _write_obj(workdir, verts, tris, uv)
         ms = pymeshlab.MeshSet()
         ms.load_new_mesh(obj)
         ms.apply_filter("meshing_remove_duplicate_vertices")
@@ -110,3 +93,26 @@ def to_ratio(verts, tris, uvs, normals, ratio):
     new_verts = out_v[corner_vertex[first]]
     new_uvs = wedge[first]
     return new_verts, None, new_uvs, new_tris
+
+
+def _write_obj(workdir, verts, tris, uv):
+    """The textured OBJ `to_ratio` hands MeshLab, written into `workdir`. Returns its path."""
+    obj = os.path.join(workdir, "prim.obj")
+    with open(os.path.join(workdir, "prim.mtl"), "w") as handle:
+        handle.write("newmtl m\nmap_Kd dummy.png\n")
+    # a 1x1 grey png, written raw so PIL is not a dependency here
+    with open(os.path.join(workdir, "dummy.png"), "wb") as handle:
+        handle.write(
+            bytes.fromhex(
+                "89504e470d0a1a0a0000000d494844520000000100000001080200000090"
+                "7753de0000000c49444154789c636868680000030401814bd3d210000000"
+                "0049454e44ae426082"
+            )
+        )
+    lines = ["mtllib prim.mtl", "usemtl m"]
+    lines += [f"v {v[0]:.6f} {v[1]:.6f} {v[2]:.6f}" for v in verts]
+    lines += [f"vt {t[0]:.6f} {t[1]:.6f}" for t in uv]
+    lines += [f"f {a}/{a} {b}/{b} {c}/{c}" for a, b, c in (tris + 1)]
+    with open(obj, "w") as handle:
+        handle.write("\n".join(lines) + "\n")
+    return obj

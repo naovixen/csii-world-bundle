@@ -116,8 +116,6 @@ func tools/colour_model.py::main
 func tools/csiibundle/areas.py::build_pieces
 func tools/csiibundle/bake/areas.py::run
 func tools/csiibundle/bake/lanegeometry.py::run
-func tools/csiibundle/bake/lods.py::_process_file
-func tools/csiibundle/bake/lods.py::run
 func tools/csiibundle/bake/markings.py::run
 func tools/csiibundle/bake/runner.py::run
 func tools/csiibundle/bake/skirts.py::run

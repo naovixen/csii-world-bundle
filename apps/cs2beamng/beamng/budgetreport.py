@@ -48,6 +48,14 @@ def report(result, compare=None):
         f"({result['spawn'][0]:.0f}, {result['spawn'][1]:.0f})"
     )
     add("")
+    _resident(result, add)
+    _heaviest_shapes(result, add)
+    _triangles(result, add)
+    _counts(result, compare, add)
+    return "\n".join(lines)
+
+
+def _resident(result, add):
     add("  resident                    MiB")
     for group, value in sorted(result["meshBytes"].items(), key=lambda kv: -kv[1]):
         add(f"    meshes {group:<20} {value / MIB:8.0f}")
@@ -56,6 +64,9 @@ def report(result, compare=None):
         add(f"    textures {ext:<18} {value / MIB:8.0f}")
     add(f"    {'RESIDENT TOTAL':<27}{result['residentTotal'] / MIB:8.0f}")
     add("")
+
+
+def _heaviest_shapes(result, add):
     top100 = result.get("shapeBytesTop100") or 0
     if top100:
         share = 100.0 * top100 / max(1, result["meshBytesTotal"])
@@ -67,6 +78,9 @@ def report(result, compare=None):
         for value, name in (result.get("heaviestShapes") or [])[:8]:
             add(f"    {name[:44]:<44}{value / MIB:8.1f} MiB")
         add("")
+
+
+def _triangles(result, add):
     add("  triangles inside the view distance")
     for group, value in sorted(result["trianglesInView"].items(), key=lambda kv: -kv[1]):
         add(f"    {group:<27}{value:>12,}  ({result['staticsInView'].get(group, 0)} statics)")
@@ -76,6 +90,9 @@ def report(result, compare=None):
         add(f"    could not be read: {', '.join(result['unknownLadders'])}. Build with `keep_dae`")
         add("    to measure them.")
     add("")
+
+
+def _counts(result, compare, add):
     reference = compare.get("west_coast_usa") or {}
     add("  counts                        this   west_coast_usa")
     for key, label in (
@@ -103,7 +120,6 @@ def report(result, compare=None):
             "(objects and forest items with any collision)"
         )
     add(f"    {'cooked shapes':<22}{result['cooked']:>10,} of {result['shapeFiles']:,}")
-    return "\n".join(lines)
 
 
 def main(argv=None):

@@ -612,7 +612,7 @@ withdrawn (§8.8). The levers that remain are all "less city": `authored_lod0_ma
 | `decalBias` / fog / shadow distance with the view | already there since scene v4 (`decalBias` and `fogAtmosphereHeight` scale with `view_distance`); vanilla sets no `shadowDistance` and neither do we — closed |
 | one material per LOD 2 | measured on the bundle: 1,528 of 1,615 LOD 2 levels already bind ONE material; the 87 that bind 2–4 would lose their texturing under a merge — not done, on purpose |
 | `castShadows` by size | done (`shadow_min_radius`) |
-| worked-example test for `authored_lod_limits` | `tools/test_a3_rules.py::test_authored_lod_limits_worked_example` — a 24 × 12 × 18 m house with a 6,000- and an 800-triangle level gives limits [142, 133, 103]: LOD 0 to 181 m, LOD 1 to 512 m, LOD 2 to 16 km; the coarsest level's limit is the mesh's own `m_MinLod`; a 0.5 bias lifts every limit by three. Plus the ring's two-box case. |
+| worked-example test for `authored_lod_limits` | `tools/test_a3_residency.py::test_authored_lod_limits_worked_example` — a 24 × 12 × 18 m house with a 6,000- and an 800-triangle level gives limits [142, 133, 103]: LOD 0 to 181 m, LOD 1 to 512 m, LOD 2 to 16 km; the coarsest level's limit is the mesh's own `m_MinLod`; a 0.5 bias lifts every limit by three. Plus the ring's two-box case. |
 
 ### 8.9 Locating the loader and the collision builder in the engine binary (step 2 of the DLL route)
 
@@ -755,7 +755,7 @@ the hand-over's pixel size, the null one under it (`shapewrite._far_level`); (7)
 floor stopped two 2.9 m sheds 616 m short of the ring — a 1 px coarsest level with no null is
 allowed. The v27 build's shapes stage also failed with a KeyError and the audit read the
 previous state — it now refuses to run without a finished report. Torque's selection rule is
-pinned as `tools/test_a3_rules.py::test_torque_detail_selection`.
+pinned as `tools/test_a3_lods.py::test_torque_detail_selection`.
 
 v28 audited clean and its budget said **32.4 M building triangles in view at 4 km**: with
 `authored_lod1_drop` on, a house's LOD 2 (game start 16 km) fell under the hand-over and was

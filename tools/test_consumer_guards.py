@@ -1,11 +1,11 @@
 """The latent guards of the 2026-08-31 validation pass, each pinned where the defect lived.
 
 * B4 — a building takes a generated level only where THAT level's bake backend is MeshLab
-  (`stages/shapes._lod_backend` per level, `shapelods.lod_levels`).
+  (`stages/shapejobs._lod_backend` per level, `shapelods.lod_levels`).
 * B7 — `stages/poi` reads the navgraph's DecalRoads from the build's own object tree, never
   from disk, and says which source it used.
 * B8 — a building the game does not draw gets no skirt (`bake/skirts.admit`).
-* B9 — a segment record with no mesh file is counted (`stages/networks._load_parts`).
+* B9 — a segment record with no mesh file is counted (`stages/networkparts._load_parts`).
 * B10 — a corrupt `derived/materials.json` raises instead of silently changing every tile's
   materials (`bake/tiles.material_specs`).
 * B13 — an archive member cannot escape the mods folder (`modinstall.member_dest`).
@@ -29,7 +29,7 @@ def check(ok, claim, detail=""):
 
 
 def test_meshlab_gate_per_level():
-    from cs2beamng.stages import shapes
+    from cs2beamng.stages import shapejobs
 
     index = {
         "a": {"backends": ["cluster", "meshlab"]},
@@ -37,11 +37,15 @@ def test_meshlab_gate_per_level():
         "c": {"backends": ["cluster", "cluster"]},
         "d": {"backend": "meshlab"},  # an older bake: one string for every level
     }
-    check(shapes._lod_backend(index, "a", "") == (2,), "only the level MeshLab shaped is admitted")
-    check(shapes._lod_backend(index, "b", "") == (1, 2), "both when it shaped both")
-    check(shapes._lod_backend(index, "c", "") == (), "none when it shaped neither")
-    check(shapes._lod_backend(index, "d", "") == (1, 2), "an older bake's one string covers both")
-    check(shapes._lod_backend(index, "missing", "") == (), "an asset the bake never saw: none")
+    check(
+        shapejobs._lod_backend(index, "a", "") == (2,), "only the level MeshLab shaped is admitted"
+    )
+    check(shapejobs._lod_backend(index, "b", "") == (1, 2), "both when it shaped both")
+    check(shapejobs._lod_backend(index, "c", "") == (), "none when it shaped neither")
+    check(
+        shapejobs._lod_backend(index, "d", "") == (1, 2), "an older bake's one string covers both"
+    )
+    check(shapejobs._lod_backend(index, "missing", "") == (), "an asset the bake never saw: none")
 
 
 def test_poi_roads_come_from_the_tree():
@@ -110,10 +114,10 @@ def test_skirt_admission():
 
 
 def test_missing_network_mesh_is_counted():
-    from cs2beamng.stages import networks
+    from cs2beamng.stages import networkparts
 
     with tempfile.TemporaryDirectory() as tmp:
-        parts = networks._load_parts(tmp, [{"assetId": "seg_nope", "pos": [0, 0, 0]}])
+        parts = networkparts._load_parts(tmp, [{"assetId": "seg_nope", "pos": [0, 0, 0]}])
         check(
             parts["missing"] == 1 and not parts["pieces"],
             "a record with no mesh file is counted as missing",
