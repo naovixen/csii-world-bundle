@@ -51,8 +51,11 @@ packages = [
     "csiibundle.bake",
     "cs2beamng",
     "cs2beamng.pipeline",
+    "cs2beamng.server",
+    "cs2beamng.settings",
     "cs2beamng.stages",
     "cs2beamng.beamng",
+    "cs2beamng.beamng.levelcheck",
 ]
 
 [tool.setuptools.package-data]
