@@ -640,6 +640,15 @@ def run(context, progress):
             "worstDisplacement": 0.0,
         },
     }
+
+    def _absorb_refine(per_level):
+        agg = stats["refine"]
+        for _level, got in sorted((per_level or {}).items()):
+            agg["levels"] += 1
+            agg["trisIn"] += got["trisIn"]
+            agg["trisOut"] += got["tris"]
+            agg["worstDisplacement"] = max(agg["worstDisplacement"], got["displacement"])
+
     index = dict(reused)
     stats["reused"] = len(reused)
     for entry in reused.values():
@@ -654,14 +663,6 @@ def run(context, progress):
                     stats["trisOut"][i] += t
             stats["identicalLevels"] += len(entry.get("identical") or ())
     started = time.monotonic()
-
-    def _absorb_refine(per_level):
-        agg = stats["refine"]
-        for _level, got in sorted((per_level or {}).items()):
-            agg["levels"] += 1
-            agg["trisIn"] += got["trisIn"]
-            agg["trisOut"] += got["tris"]
-            agg["worstDisplacement"] = max(agg["worstDisplacement"], got["displacement"])
 
     def account(result):
         asset_id, status, st = result
