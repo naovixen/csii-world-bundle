@@ -147,7 +147,7 @@ def test_against_a_real_build():
     _check_score_and_bases(estimate, est, measured, stale_bake)
 
 
-def _stale_bake(estimate, values, bundle):
+def _stale_bake(_estimate, values, bundle):
     from cs2beamng.pipeline import estimatebase
 
     """THE BAKE ON DISK HAS TO BE THE ONE THAT BUILT THIS LEVEL. Both halves of the estimate
@@ -202,7 +202,7 @@ def _check_texture_half(values, bundle, level, stale_bake, wanted, baked):
         )
 
 
-def _check_score_and_bases(estimate, est, measured, stale_bake):
+def _check_score_and_bases(_estimate, est, measured, stale_bake):
     from cs2beamng.pipeline import estimatescore
 
     """The calibrated byte totals (a regression gate, not a proof) and the stated bases."""

@@ -92,7 +92,7 @@ def plan_is_warm(bundle, derived_dir, values):
     return _plan_key(bundle, derived_dir, values) in _PLAN_CACHE
 
 
-def _plan_key(bundle, derived_dir, values):
+def _plan_key(bundle, derived_dir, _values):
     try:
         stamp = os.stat(os.path.join(derived_dir, "materials.json")).st_mtime_ns
     except OSError:
@@ -154,7 +154,7 @@ def _ground_texture_bytes(bundle):
     return int(source * ratio)
 
 
-def _variant_jobs(values, derived_dir, table):
+def _variant_jobs(_values, derived_dir, table):
     """The tinted-albedo job for every paint variant the bake baked.
 
     A variant is another albedo (and, where the material cuts or blends, another opacity map) and

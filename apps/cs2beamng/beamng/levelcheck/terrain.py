@@ -71,7 +71,7 @@ def check_ground(ctx):
             )
 
 
-def _ground_check(terrain, bundle_dir, progress):
+def _ground_check(terrain, bundle_dir, _progress):
     _size, heights, _layers, _names, block = terrain
     position = [float(v) for v in block["position"]]
     square = float(block.get("squareSize", 1.0))

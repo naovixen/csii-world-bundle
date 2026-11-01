@@ -121,7 +121,7 @@ def _mesh_normal_maps(level, rgb, base_name):
     return path, path
 
 
-def _mesh_colour_maps(level, rgb, name, size):
+def _mesh_colour_maps(level, rgb, name, _size):
     """`(base, detail)` — a low-passed base and the albedo's deviation from its own mean.
 
     The BASE slot must be LOW-FREQUENCY, because the detail slot carries the ground's deviation

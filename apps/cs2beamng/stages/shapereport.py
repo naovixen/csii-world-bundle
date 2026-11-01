@@ -306,7 +306,7 @@ def _lod_approximations(results, demand, rows_by_pair, options, switch_summary):
     }
 
 
-def _placement_approximations(results, options, scan_stats, trunk_wide):
+def _placement_approximations(results, _options, scan_stats, trunk_wide):
     """The five about what a shape collides with, what is removed, and what is not ported."""
     return {
         "treeTrunkCylinderFit": {

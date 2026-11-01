@@ -45,7 +45,7 @@ def score(estimated, measured):
     return out
 
 
-def observe(estimated, measured, index=None, values=None):
+def observe(estimated, measured, _index=None, _values=None):
     """Blend one build's measured bytes back into the per-kind ratios.
 
     Only the halves that are RATIOS move: the texture half is arithmetic and has nothing to

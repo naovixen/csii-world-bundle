@@ -17,7 +17,7 @@ from .mapstore import key_for, load, paths, poi_path, write
 SUGGESTIONS = 12  # offered, not placed; `poi_max` is what a build derives
 
 
-def suggestions(bundle, midpoints):
+def suggestions(_bundle, midpoints):
     """Places worth offering as fast-travel points, by the build's own rule.
 
     `stages.poi._derive` picks the densest road cells at least `DERIVED_SEPARATION` apart and

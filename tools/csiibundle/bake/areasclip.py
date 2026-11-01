@@ -50,7 +50,7 @@ def _log_clip(stats, progress):
         )
 
 
-def clip_roads(pieces, catalogue, road, ground, progress):
+def clip_roads(pieces, catalogue, road, _ground, progress):
     """Drop the paint of `["Terrain"]`-only prefabs where a road surface is on top of it —
     CS2's own `decalLayers` mask, applied per conformed piece; the story, the measured overlap
     and the declared approximation are the module docstring."""

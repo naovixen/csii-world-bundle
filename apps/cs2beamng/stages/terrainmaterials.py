@@ -298,7 +298,7 @@ def _ground_mesh_materials(out, level, names, surfaces_dir, tiling_block, gain):
         }
 
 
-def _notes(out, guessed_tiling, missing_height, sharpen, gain):
+def _notes(out, guessed_tiling, missing_height, sharpen, _gain):
     """The counted approximations the stage report prints (audit §47/§48)."""
     # The ground mesh materials go in their OWN file, NOT beside the TerrainMaterials.
     # Measured against every shipped vanilla level: `art/terrains/*.materials.json` holds 191

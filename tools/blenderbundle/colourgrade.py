@@ -138,7 +138,7 @@ def _apply_light_gain(gain):
         )
 
 
-def _report(grading, view, exposure, gamma, gain, available, missing):
+def _report(grading, view, exposure, gamma, gain, available, _missing):
     """What was applied, and — when the view is missing — what could not be."""
     LOG.step(
         f"grading applied from grading.json: view transform {view}, "

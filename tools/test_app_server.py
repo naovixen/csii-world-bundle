@@ -95,7 +95,7 @@ def test_server(tmp):
             pass
 
 
-def _serves_the_page(client, server, settings_mod, tmp):
+def _serves_the_page(client, server, _settings_mod, _tmp):
     """GET / carries the token, and every module the page imports is served — a missing one
     is a blank screen, not an error."""
     status, page = client.call("GET", "/", token=False)
@@ -128,7 +128,7 @@ def _serves_the_page(client, server, settings_mod, tmp):
     )
 
 
-def _refuses_without_a_token(client, server, settings_mod, tmp):
+def _refuses_without_a_token(client, server, _settings_mod, _tmp):
     """Traversal, missing token, and a rejected POST that must not poison the socket it came in
     on."""
     status, _ = client.call("GET", "/static/../server.py", token=False)
@@ -161,7 +161,7 @@ def _refuses_without_a_token(client, server, settings_mod, tmp):
     )
 
 
-def _reports_its_state(client, server, settings_mod, tmp):
+def _reports_its_state(client, _server, settings_mod, _tmp):
     """What the UI reads before a person touches anything: detection, capability, cost."""
     status, payload = client.call("GET", "/api/settings")
     check(
@@ -198,7 +198,7 @@ def _reports_its_state(client, server, settings_mod, tmp):
     check(any("nope" in e for e in payload["errors"]), "unknown key reported")
 
 
-def _applies_settings(client, server, settings_mod, tmp):
+def _applies_settings(client, _server, _settings_mod, _tmp):
     """Applying values, the preset round trip, and the two ways a bad request is refused."""
     status, payload = client.call("POST", "/api/settings", raw_body=b"{not json")
     check(status == 400, "malformed body -> 400, not silently ignored")
@@ -220,7 +220,7 @@ def _applies_settings(client, server, settings_mod, tmp):
     check(status == 400, "unknown preset -> 400")
 
 
-def _caches_the_census(client, server, settings_mod, tmp):
+def _caches_the_census(client, _server, _settings_mod, _tmp):
     """The census is expensive and does not change under the app, so it is computed once."""
     status, census = client.call("GET", "/api/census")
     check(
@@ -232,7 +232,7 @@ def _caches_the_census(client, server, settings_mod, tmp):
     check(status == 200 and (time.monotonic() - t1) < 0.5, "census is cached")
 
 
-def _drives_dependent_settings(client, server, settings_mod, tmp):
+def _drives_dependent_settings(client, _server, _settings_mod, _tmp):
     """E6: the settings with no control of their own, set by the one that drives them. The rule
     lives in the APP, so it is asserted through the app's own API."""
     # -- E6: the settings with no control of their own, set by the one that drives them -----
@@ -267,7 +267,7 @@ def _drives_dependent_settings(client, server, settings_mod, tmp):
     client.call("POST", "/api/settings", {"values": {"networks": True, "prop_density": 100}})
 
 
-def _starts_one_build(client, server, settings_mod, tmp):
+def _starts_one_build(client, server, _settings_mod, _tmp):
     """Exactly one start wins, however many arrive at once, and the losers get 409 rather than
     500."""
     status, payload = client.call("POST", "/api/start")
@@ -291,7 +291,7 @@ def _starts_one_build(client, server, settings_mod, tmp):
     wait_until(lambda: server.runner.running(), 2.0)
 
 
-def _streams_progress(client, server, settings_mod, tmp):
+def _streams_progress(client, server, _settings_mod, tmp):
     """The SSE stream delivers ordered progress and a log delta, and cancel stops the build."""
     status, ctype, seen = client.sse()
     check(status == 200 and ctype.startswith("text/event-stream"), "SSE stream")

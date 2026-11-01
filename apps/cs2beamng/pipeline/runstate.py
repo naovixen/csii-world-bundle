@@ -58,7 +58,7 @@ def copy_state(state):
     return out
 
 
-def refresh_estimates(state, census, now):
+def refresh_estimates(state, _census, now):
     """Fill elapsed / eta per stage and overall from what is known right now."""
     overall_remaining = 0.0
     known = True

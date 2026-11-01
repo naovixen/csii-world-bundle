@@ -12,7 +12,7 @@ from .estimatebase import KIND_SECTION, TILE_GROUPS, dir_bytes, load_json
 # -- the meshes, calibrated -----------------------------------------------------------------------
 
 
-def _kind_groups(groups, selected, rates, values):
+def _kind_groups(groups, selected, rates, _values):
     """Fill `groups` with one entry per placed kind, and return their bytes."""
     total = 0
     for kind, bucket in sorted(selected.items()):
@@ -139,7 +139,7 @@ def _mesh_basis(rates):
     return "from the reference city"
 
 
-def terrain_file_bytes(values, bundle):
+def terrain_file_bytes(values, _bundle):
     """The heightfield on disk: three bytes a sample plus a header.
 
     MEASURED on the reference level - an 8,192 grid wrote 201,326,743 bytes, which is

@@ -91,7 +91,7 @@ class Ring:
         self.members += 1
         self.triangles += len(ring["tris"])
 
-    def write(self, level, options):
+    def write(self, level, _options):
         """One `.dae` + one `TSStatic` per cell. Returns the report dict."""
         out_dir = level.path("art", "shapes", PRODUCT)
         names = set()

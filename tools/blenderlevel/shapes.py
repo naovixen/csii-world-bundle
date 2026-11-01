@@ -25,7 +25,7 @@ def tiles_in_region(level_dir, objects, center, radius, products):
     return out
 
 
-def import_tiles(tiles, materials, level_dir, center, radius):
+def import_tiles(tiles, _materials, _level_dir, _center, _radius):
     imported = 0
     for name, path, pos, product in tiles:
         if not os.path.isfile(path):

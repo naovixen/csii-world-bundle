@@ -13,7 +13,7 @@ from csiibundle import instances as bundle_instances
 from ..beamng import placement
 
 
-def units(census, settings):
+def units(census, _settings):
     counts = ((census or {}).get("bundle") or {}).get("counts") or {}
     return int(counts.get("instances") or 0) or None
 

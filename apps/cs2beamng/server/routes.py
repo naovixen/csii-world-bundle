@@ -110,25 +110,25 @@ def _quit(handler, _query, _body):
 
 
 GET = {
-    "/": Route(lambda h, q, b: h.serve_index(), auth=False),
-    STATIC_PREFIX: Route(lambda h, q, b: h.serve_static(h.path_after(STATIC_PREFIX)), auth=False),
-    "/events": Route(lambda h, q, b: h.events(int((q.get("since") or ["0"])[0]))),
-    "/api/state": Route(_json_of("state", lambda q, b: True)),
+    "/": Route(lambda h, _q, _b: h.serve_index(), auth=False),
+    STATIC_PREFIX: Route(lambda h, _q, _b: h.serve_static(h.path_after(STATIC_PREFIX)), auth=False),
+    "/events": Route(lambda h, q, _b: h.events(int((q.get("since") or ["0"])[0]))),
+    "/api/state": Route(_json_of("state", lambda _q, _b: True)),
     "/api/settings": Route(_json_of("settings_payload")),
-    "/api/census": Route(_json_of("census", lambda q, b: "force" in q)),
+    "/api/census": Route(_json_of("census", lambda q, _b: "force" in q)),
     "/api/map": Route(_json_of("map_view")),
     "/api/map.png": Route(_map_png),
-    "/api/report": Route(lambda h, q, b: h.reply_json({"report": h.app.report()})),
+    "/api/report": Route(lambda h, _q, _b: h.reply_json({"report": h.app.report()})),
 }
 
 POST = {
-    "/api/settings": Route(_json_of("update_settings", lambda q, b: b.get("values") or {})),
+    "/api/settings": Route(_json_of("update_settings", lambda _q, b: b.get("values") or {})),
     "/api/preset": Route(_preset),
-    "/api/poi": Route(_json_of("save_points", lambda q, b: b.get("points") or [])),
-    "/api/poi/snap": Route(_json_of("snap_point", lambda q, b: b.get("at") or [])),
+    "/api/poi": Route(_json_of("save_points", lambda _q, b: b.get("points") or [])),
+    "/api/poi/snap": Route(_json_of("snap_point", lambda _q, b: b.get("at") or [])),
     "/api/start": Route(_json_with_status("start_build")),
     "/api/cancel": Route(_json_of("cancel_build")),
-    "/api/open": Route(_json_of("open_path", lambda q, b: b.get("what"))),
+    "/api/open": Route(_json_of("open_path", lambda _q, b: b.get("what"))),
     "/api/browse": Route(_browse),
     "/api/installmod": Route(_json_of("install_mod")),
     "/api/quit": Route(_quit),

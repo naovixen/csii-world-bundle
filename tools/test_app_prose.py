@@ -269,7 +269,7 @@ def _check_kinds(settings_mod, keys):
     )
 
 
-def _check_sections(settings_mod, keys):
+def _check_sections(settings_mod, _keys):
     """E2's gate: adding a section is a DATA change, not a code change."""
     # Adding one must touch nothing but `SECTIONS` — not the schema, not the layout, not the
     # setting that remembers where you were. Adding one here and reading it back out is the same
