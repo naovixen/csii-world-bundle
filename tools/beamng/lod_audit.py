@@ -26,6 +26,7 @@ different question: not "how many triangles" but "is anything drawn twice, or no
 """
 
 import argparse
+import itertools
 import json
 import math
 import os
@@ -34,7 +35,7 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "tools"))
 
-from csiibundle import lod, lodchain  # noqa: E402
+from csiibundle import lod, lodchain
 
 
 def load_state(level_dir, stage):
@@ -97,12 +98,16 @@ def main():
     # a build whose shapes stage failed leaves the PREVIOUS build's state behind, and an audit
     # of that is an audit of the wrong level (2026-08-30: a KeyError'd stage, exit 1, audited)
     try:
-        with open(os.path.join(args.level_dir, "cs2beamng_report.json"), encoding="utf-8") as handle:
+        with open(
+            os.path.join(args.level_dir, "cs2beamng_report.json"), encoding="utf-8"
+        ) as handle:
             report = json.load(handle)
         for stage in ("shapes", "instances"):
             status = ((report.get("stages") or {}).get(stage) or {}).get("status")
             if status not in (None, "done", "skipped", "unchanged"):
-                print(f"the last build's {stage} stage is {status!r} - the state on disk is an older build's; not auditing")
+                print(
+                    f"the last build's {stage} stage is {status!r} - the state on disk is an older build's; not auditing"
+                )
                 return 2
         if report.get("status") not in (None, "ok", "done", "built"):
             print(f"the last build's status is {report.get('status')!r} - not auditing")
@@ -124,10 +129,11 @@ def main():
         pass
     hand_over = args.hand_over or float(options.get("far_ring_metres") or 0.0)
     try:
-        cells = (load_state(args.level_dir, "instances")["result"].get("farRing") or {}).get("cells") or []
+        cells = (load_state(args.level_dir, "instances")["result"].get("farRing") or {}).get(
+            "cells"
+        ) or []
     except (OSError, KeyError):
         cells = []
-    cell_by_name = {c["name"]: c for c in cells}
 
     fails = {}
 
@@ -148,12 +154,14 @@ def main():
         bb = int(bb) if bb else None
         cull_m = float(row.get("gameCullMetres") or 0.0)
         # R1
-        if any(a <= b for a, b in zip(sizes, sizes[1:])):
+        if any(a <= b for a, b in itertools.pairwise(sizes)):
             fail("R1", name, f"sizes not strictly decreasing: {sizes}")
         if sizes and min(sizes) <= null_px:
             fail("R1", name, f"a mesh size {min(sizes)} at or under the null {null_px}")
         if bb is not None and not (null_px < bb < (min(sizes) if sizes else bb + 1)):
-            fail("R1", name, f"billboard {bb} not between the null {null_px} and the meshes {sizes}")
+            fail(
+                "R1", name, f"billboard {bb} not between the null {null_px} and the meshes {sizes}"
+            )
         # R3 / R4 / R7
         generated = [s for s in (lods.get("switches") or []) if s.get("level")]
         if kind == "tree":
@@ -196,7 +204,11 @@ def main():
                 scales = {float(options["detail_scale_prop"])}
             elif real_kind == "tree" and options.get("detail_scale_tree"):
                 scales = {float(options["detail_scale_tree"])}
-            elif real_kind == "building" and options.get("detail_scale_large") and radius >= float(options.get("large_radius_m") or 0.0):
+            elif (
+                real_kind == "building"
+                and options.get("detail_scale_large")
+                and radius >= float(options.get("large_radius_m") or 0.0)
+            ):
                 scales = {float(options["detail_scale_large"])}
             if not row.get("kind"):
                 for key in ("detail_scale_prop", "detail_scale_tree", "detail_scale_large"):
@@ -209,7 +221,11 @@ def main():
             ]
             # the shipped sizes are a subset (levels under the hand-over drop; lod1_drop; lod0 drop)
             shipped = set(sizes)
-            expect_set = {int(math.ceil(e)) for e in expect} | {int(round(e)) for e in expect} | {int(e) for e in expect}
+            expect_set = (
+                {int(math.ceil(e)) for e in expect}
+                | {int(round(e)) for e in expect}
+                | {int(e) for e in expect}
+            )
             strange = [s for s in shipped if s not in expect_set and s != null_px + 1]
             # a size clamped strictly-decreasing by one is allowed (the writer's -1 rounding guard)
             strange = [s for s in strange if (s + 1) not in expect_set]
@@ -217,7 +233,11 @@ def main():
                 fail("R5", name, f"switch sizes {strange} are not the game's {sorted(expect_set)}")
         # R6
         if lods.get("lod0Dropped"):
-            if lods.get("triangles") and lods.get("lod0Triangles") and lods["triangles"][0] >= lods["lod0Triangles"]:
+            if (
+                lods.get("triangles")
+                and lods.get("lod0Triangles")
+                and lods["triangles"][0] >= lods["lod0Triangles"]
+            ):
                 fail("R6", name, "LOD 0 dropped but the nearest level is not smaller than it")
         # R8: a billboard's own size is its FAR STOP, so it must sit one pixel over the null -
         # the card then draws from the coarsest mesh down to the cull (vanilla:
@@ -225,7 +245,11 @@ def main():
         # billboard parked at the old takeover size leaves [null, bb) selecting the null:
         # SpruceTree01 vanished from 99 m to 601 m while R1 passed (2026-08-31).
         if bb is not None and bb > null_px + 1:
-            fail("R8", name, f"billboard {bb} not adjacent to the null {null_px} - nothing drawn in [{null_px}, {bb}) px")
+            fail(
+                "R8",
+                name,
+                f"billboard {bb} not adjacent to the null {null_px} - nothing drawn in [{null_px}, {bb}) px",
+            )
         # R2: the ring pair
         far = lods.get("far") or {}
         if far.get("ring") and hand_over > 0 and radius > 0:
@@ -236,9 +260,17 @@ def main():
             drawn_beyond = [d for d, w in walk if w.startswith("mesh") and d > stop_m * 1.001]
             absent_within = [d for d, w in walk if not w.startswith("mesh") and d < stop_m * 0.999]
             if drawn_beyond:
-                fail("R2", name, f"drawn at {drawn_beyond[0]:.0f} m, beyond its stop at {stop_m:.0f} m")
+                fail(
+                    "R2",
+                    name,
+                    f"drawn at {drawn_beyond[0]:.0f} m, beyond its stop at {stop_m:.0f} m",
+                )
             if absent_within:
-                fail("R2", name, f"not drawn at {absent_within[0]:.0f} m, inside its stop at {stop_m:.0f} m")
+                fail(
+                    "R2",
+                    name,
+                    f"not drawn at {absent_within[0]:.0f} m, inside its stop at {stop_m:.0f} m",
+                )
             # against the hand-over: the building must not stop short of it by more than the
             # rounding of one pixel can explain, and never run past it into the ring
             gap = hand_over - stop_m
@@ -247,7 +279,11 @@ def main():
             else:
                 overlap_max = max(overlap_max, -gap)
             if stop_m < hand_over * 0.999:
-                fail("R2", name, f"stops at {stop_m:.0f} m, {gap:.0f} m short of the {hand_over:.0f} m hand-over (a gap where nothing of it is drawn)")
+                fail(
+                    "R2",
+                    name,
+                    f"stops at {stop_m:.0f} m, {gap:.0f} m short of the {hand_over:.0f} m hand-over (a gap where nothing of it is drawn)",
+                )
             if bb is not None:
                 fail("R2", name, "a ring member with a runtime billboard under the ring")
     # the cells
@@ -261,17 +297,27 @@ def main():
         walk = sweep(r, [near, ring], null, None, end_m * 1.5)
         ring_near = [d for d, w in walk if w == "mesh:1" and d < start_m * 0.999]
         if ring_near:
-            fail("R2", c["name"], f"ring drawn at {ring_near[0]:.0f} m, nearer than its start {start_m:.0f} m")
+            fail(
+                "R2",
+                c["name"],
+                f"ring drawn at {ring_near[0]:.0f} m, nearer than its start {start_m:.0f} m",
+            )
         if start_m > hand_over * 1.001:
             fail("R2", c["name"], f"cell starts at {start_m:.0f} m, past the hand-over")
         if start_m < hand_over * 0.9:
             fail("R2", c["name"], f"cell starts at {start_m:.0f} m, well short of the hand-over")
 
-    print(f"shapes {counts['shapes']:,}: {counts['building']:,} buildings ({counts['chain']:,} with the game's chain, {counts['ring']:,} ring members), {counts['prop']:,} props, {counts['tree']:,} trees; ring cells {len(cells)}")
+    print(
+        f"shapes {counts['shapes']:,}: {counts['building']:,} buildings ({counts['chain']:,} with the game's chain, {counts['ring']:,} ring members), {counts['prop']:,} props, {counts['tree']:,} trees; ring cells {len(cells)}"
+    )
     if cells:
-        print(f"hand-over {hand_over:.0f} m: buildings stop up to {gap_max:.0f} m short of it (a gap) and up to {overlap_max:.0f} m past it (an overlap, inside the ring)")
+        print(
+            f"hand-over {hand_over:.0f} m: buildings stop up to {gap_max:.0f} m short of it (a gap) and up to {overlap_max:.0f} m past it (an overlap, inside the ring)"
+        )
     else:
-        print("no ring cells recorded in instances.state.json (built before the report carried them)")
+        print(
+            "no ring cells recorded in instances.state.json (built before the report carried them)"
+        )
     ok = True
     for rule in ("R1", "R2", "R3", "R4", "R5", "R6", "R7", "R8", "R9"):
         bad = fails.get(rule) or []

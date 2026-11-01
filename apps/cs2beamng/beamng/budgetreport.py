@@ -92,7 +92,10 @@ def report(result, compare=None):
     placed = result.get("collisionTrianglesPlaced")
     if placed is not None:
         by_group = ", ".join(
-            f"{g} {n:,}" for g, n in sorted(result.get("collisionPlacedByGroup", {}).items(), key=lambda kv: -kv[1])
+            f"{g} {n:,}"
+            for g, n in sorted(
+                result.get("collisionPlacedByGroup", {}).items(), key=lambda kv: -kv[1]
+            )
         )
         add(f"    {'collision placed':<22}{placed:>10,}  ({by_group})")
         add(

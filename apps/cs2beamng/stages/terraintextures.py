@@ -159,7 +159,6 @@ def _neutral_map(level, kind, tier="detail", size=1024):
     three texture objects in VRAM, for one flat gray (refactor Phase 10 survey §6)."""
     del tier
     name = f"{level.name}_neutral_{kind}.png"
-    path = level.path("art", "terrains", name)
     value = NEUTRAL_MAPS[kind]
     if isinstance(value, tuple):
         data = png.encode_rgb(numpy.tile(numpy.asarray(value, dtype=numpy.uint8), (size, size, 1)))

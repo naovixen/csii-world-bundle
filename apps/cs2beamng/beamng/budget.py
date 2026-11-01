@@ -91,7 +91,13 @@ BILLBOARD_TRIANGLES = 2  # a card
 
 
 def detail_at(
-    levels, radius, distance, screen_height=1080.0, fov_degrees=45.0, null_px=None, billboard_px=None
+    levels,
+    radius,
+    distance,
+    screen_height=1080.0,
+    fov_degrees=45.0,
+    null_px=None,
+    billboard_px=None,
 ):
     """Which detail a shape of `radius` uses at `distance`, as its triangle count.
 
@@ -333,7 +339,9 @@ def measure(level_dir, view_distance, spawn=None, screen_height=1080.0):
                 distance = math.hypot(float(pos[0]) - spawn_xy[0], float(pos[1]) - spawn_xy[1])
                 if distance > view_distance:
                     continue
-                radius = (shape.get("radius") or radius_hint("", shape)) * float(item.get("scale") or 1.0)
+                radius = (shape.get("radius") or radius_hint("", shape)) * float(
+                    item.get("scale") or 1.0
+                )
                 in_view["forest"] += detail_at(
                     shape["levels"],
                     radius,

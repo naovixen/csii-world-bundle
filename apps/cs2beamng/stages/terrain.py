@@ -269,7 +269,9 @@ def run(ctx, progress):
     level.write_materials("ground", ground_materials)  # the cut meshes' plain v1.5 Materials
     orphans = _sweep_terrain_orphans(level, materials, ground_materials)
     if orphans:
-        progress.log(f"terrain: {orphans} textures in art/terrains/ no material names any more, removed")
+        progress.log(
+            f"terrain: {orphans} textures in art/terrains/ no material names any more, removed"
+        )
     level.write_objects()
     progress.check()
     for note in notes:  # every approximation is counted where it is made

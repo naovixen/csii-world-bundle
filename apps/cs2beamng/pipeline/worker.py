@@ -56,7 +56,9 @@ def guard_level_dir(settings, level_dir):
     other levels' `info.json` folders is refused before a byte is written.
     """
     if not str(settings.get("level_name") or "").strip():
-        raise RuntimeError("level_name is empty - the build would write into the output folder itself")
+        raise RuntimeError(
+            "level_name is empty - the build would write into the output folder itself"
+        )
     if os.path.normcase(os.path.normpath(level_dir)) == os.path.normcase(
         os.path.normpath(settings["output"])
     ):

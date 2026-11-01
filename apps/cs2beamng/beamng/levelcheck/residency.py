@@ -10,9 +10,9 @@ import os
 import xml.etree.ElementTree as ET
 
 from ..machine import (
-    graphics_api,
     VANILLA_MAX_RESIDENT_MIB,
     _texture_reduction,
+    graphics_api,
     light_manager,
     render_target,
     resident_budget_mib,

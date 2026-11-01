@@ -40,7 +40,11 @@ def voxelize(verts, tris, tri_ids, cell, origin, shape):
     a, b, c = v[t[:, 0]], v[t[:, 1]], v[t[:, 2]]
     # samples per triangle from its longest edge, so a big wall gets many and a sliver one
     edge = numpy.maximum.reduce(
-        [numpy.linalg.norm(b - a, axis=1), numpy.linalg.norm(c - b, axis=1), numpy.linalg.norm(a - c, axis=1)]
+        [
+            numpy.linalg.norm(b - a, axis=1),
+            numpy.linalg.norm(c - b, axis=1),
+            numpy.linalg.norm(a - c, axis=1),
+        ]
     )
     steps = numpy.clip(numpy.ceil(edge / (0.5 * cell)).astype(int), 1, 64)
     for n in numpy.unique(steps):
@@ -57,7 +61,9 @@ def voxelize(verts, tris, tri_ids, cell, origin, shape):
         )
         idx = numpy.floor((pts - origin) / cell).astype(numpy.int64)
         idx = numpy.clip(idx, 0, numpy.asarray(shape) - 1)
-        flat = numpy.ravel_multi_index((idx[..., 0].ravel(), idx[..., 1].ravel(), idx[..., 2].ravel()), shape)
+        flat = numpy.ravel_multi_index(
+            (idx[..., 0].ravel(), idx[..., 1].ravel(), idx[..., 2].ravel()), shape
+        )
         occupied.ravel()[flat] = True
         owner = numpy.repeat(numpy.asarray(tri_ids)[sel], idx.shape[1])
         ids.ravel()[flat] = owner
@@ -108,8 +114,10 @@ def _greedy_rectangles(mask, value):
             while c + w < cols and mask[r, c + w] and value[r, c + w] == val:
                 w += 1
             h = 1
-            while r + h < rows and numpy.all(mask[r + h, c : c + w]) and numpy.all(
-                value[r + h, c : c + w] == val
+            while (
+                r + h < rows
+                and numpy.all(mask[r + h, c : c + w])
+                and numpy.all(value[r + h, c : c + w] == val)
             ):
                 h += 1
             mask[r : r + h, c : c + w] = False
@@ -186,13 +194,21 @@ def silhouette(verts, tris, tri_colour_ids, colours, cells=DEFAULT_CELLS, min_ce
     t = numpy.asarray(tris, dtype=numpy.int64).reshape(-1, 3)
     if len(v) == 0 or len(t) == 0:
         empty = numpy.zeros((0, 3))
-        return empty, empty, numpy.zeros((0, 4)), numpy.zeros((0, 3), dtype=numpy.int64), {"cells": 0}
+        return (
+            empty,
+            empty,
+            numpy.zeros((0, 4)),
+            numpy.zeros((0, 3), dtype=numpy.int64),
+            {"cells": 0},
+        )
     lo, hi = v.min(axis=0), v.max(axis=0)
     extent = hi - lo
     cell = max(float(min_cell), float(extent.max()) / max(int(cells), 1))
     shape = tuple(int(x) for x in numpy.maximum(numpy.ceil(extent / cell), 1).astype(int))
     origin = lo
-    occupied, ids = voxelize(v, t, numpy.asarray(tri_colour_ids, dtype=numpy.int64), cell, origin, shape)
+    occupied, ids = voxelize(
+        v, t, numpy.asarray(tri_colour_ids, dtype=numpy.int64), cell, origin, shape
+    )
     solid = fill_from_outside(occupied)
     # a filled cell with no id (interior) takes the nearest marked one below/beside it: use the
     # colour of any occupied cell; fall back to id 0

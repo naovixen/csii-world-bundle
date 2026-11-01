@@ -148,8 +148,11 @@ def test_shapes_and_instances():
         check(
             abs(row["nullPx"] - expected) <= 1,
             f"the null threshold is the game's {row['gamePx']:.2f} px"
-            + (" (far silhouette, x1)" if far else
-               f" x 6{' / imposter reach' if row.get('billboardPx') else ' (no imposter)'}"),
+            + (
+                " (far silhouette, x1)"
+                if far
+                else f" x 6{' / imposter reach' if row.get('billboardPx') else ' (no imposter)'}"
+            ),
         )
 
         # -- placement

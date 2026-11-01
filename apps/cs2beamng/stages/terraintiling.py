@@ -12,7 +12,7 @@ import numpy
 from csiibundle import images, png
 from csiibundle import splat as splat_mod
 
-from .terraintextures import BASE_LOWPASS, _rgb_texture
+from .terraintextures import BASE_LOWPASS
 
 # The pixel size the low-passed ground-mesh base map is written at (`_mesh_colour_maps`): it
 # holds `BASE_LOWPASS` texels of information, and the sampler's bilinear filter upsamples.

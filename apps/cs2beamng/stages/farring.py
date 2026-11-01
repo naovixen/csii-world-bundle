@@ -31,7 +31,6 @@ import math
 import os
 
 import numpy
-
 from csiibundle import lod
 
 from ..beamng import dae, daemesh
@@ -133,7 +132,9 @@ class Ring:
             # The near detail is a 1 mm triangle 500 m underground: drawn, and invisible.
             near = dae.Mesh(
                 f"{name}_NEAR",
-                numpy.array([[0, 0, -500], [0.001, 0, -500], [0, 0.001, -500]], dtype=numpy.float32),
+                numpy.array(
+                    [[0, 0, -500], [0.001, 0, -500], [0, 0.001, -500]], dtype=numpy.float32
+                ),
                 numpy.array([[0, 1, 2]], dtype=numpy.int64),
                 [(MATERIAL, 1)],
                 normals=numpy.array([[0, 0, 1]] * 3, dtype=numpy.float32),

@@ -36,16 +36,15 @@ from csiibundle import tints
 
 from ..beamng import frame, placement
 from ..beamng import level as level_mod
-from . import Stage, level_of
-from . import farring
+from . import Stage, farring, level_of
 from .instanceforest import (
-    drop_rare_types,
     ANNOTATION,
     ELEVATED_SUFFIX,
     FOREST_COLLIDABLE_MIN_FOOTPRINT,
     FOREST_COLLIDABLE_MIN_HEIGHT,
     NO_COLLIDER,
     clear_forest,
+    drop_rare_types,
     flush,
     forest_bytes,
     merge_thin_types,
@@ -516,8 +515,6 @@ def _add_static(
     group = level_mod.cell_of(position)
     level.add(["Objects", group], obj, key=f"instance:{record['id']}:{name}:{ordinal}")
     return obj["collisionType"] + (":noShadow" if no_shadow else "")
-
-
 
 
 def _collision_policy(settings):

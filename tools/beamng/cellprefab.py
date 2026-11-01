@@ -35,7 +35,7 @@ NAMESPACE = uuid.UUID("7a1f8d1a-6f1e-5d0e-9b8c-0c3e11a8ef00")
 
 
 def _lines(path):
-    with open(path, "r", encoding="utf-8") as handle:
+    with open(path, encoding="utf-8") as handle:
         return [json.loads(line) for line in handle if line.strip()]
 
 

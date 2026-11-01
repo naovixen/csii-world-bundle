@@ -197,7 +197,9 @@ def _refined(dae, shape_name, part, max_error):
         return part, None
     source = {
         "verts": numpy.asarray(part.verts, dtype=numpy.float64),
-        "normals": None if part.normals is None else numpy.asarray(part.normals, dtype=numpy.float64),
+        "normals": None
+        if part.normals is None
+        else numpy.asarray(part.normals, dtype=numpy.float64),
         "uvs": None if part.uvs is None else numpy.asarray(part.uvs, dtype=numpy.float64),
         "tris": numpy.asarray(part.tris, dtype=numpy.int64),
         "material_runs": list(part.runs),
@@ -328,9 +330,7 @@ def compact(levels, ladder):
         "decimatedTo": sum(b for _a, b in pairs),
         "nullLowered": bool(ladder.get("nullLowered")),
         # the NEAREST level's measured refinement (`_refined`), which the ladder never touches
-        "refined": [
-            (a, b, m) for a, b, m in (ladder.get("refined") or []) if a is not None
-        ],
+        "refined": [(a, b, m) for a, b, m in (ladder.get("refined") or []) if a is not None],
     }
 
 

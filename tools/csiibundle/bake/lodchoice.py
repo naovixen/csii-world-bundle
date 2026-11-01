@@ -16,6 +16,7 @@ def quadric_available():
 
 MESHLAB_MIN_TRIS = 20_000
 
+
 def best_levels(node, targets, backend):
     """`(levels, measured)`: one level per target, each the better of the two decimators by
     its own two-sided displacement, and `measured[li] = (distances, weights)` for the winner.

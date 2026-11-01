@@ -397,7 +397,8 @@ def test_residency_chain_rules():
     """Phase 10 residency: an authored level byte-identical to LOD 0 is not shipped, and over
     `authored_lod0_max_tris` the game's LOD 1 becomes the nearest level (LOD 0 left out)."""
     print("residency: the authored chain")
-    from cs2beamng.beamng import daemesh, level as level_mod
+    from cs2beamng.beamng import daemesh
+    from cs2beamng.beamng import level as level_mod
     from cs2beamng.stages import shapelods
 
     size = numpy.array([40.0, 1.0, 10.0])
@@ -422,7 +423,10 @@ def test_residency_chain_rules():
     chain = shapelods.authored_chain(
         "Heavy", [(1, real1, size), (2, lod2, size)], size, area, bias, radius, 1.0, opts_drop, base
     )
-    check(chain["lod0Dropped"] and not chain["lod1Dropped"], "over the cap LOD 0 goes and LOD 1 is kept")
+    check(
+        chain["lod0Dropped"] and not chain["lod1Dropped"],
+        "over the cap LOD 0 goes and LOD 1 is kept",
+    )
     check(len(chain["thresholds"]) == len(chain["meshes"]) == 2, "one threshold per shipped level")
     check(chain["colliderMesh"] is chain["meshes"][0], "the collider still comes off LOD 1")
     stats = {}
@@ -434,8 +438,15 @@ def test_residency_chain_rules():
     check(stats["lod0Triangles"] == 30000, "...and the report knows what was left out")
 
     chain = shapelods.authored_chain(
-        "Light", [(1, real1, size), (2, lod2, size)], size, area, bias, radius, 1.0,
-        dict(opts, authored_lod0_max_tris=50000, authored_lod1_drop=True), base,
+        "Light",
+        [(1, real1, size), (2, lod2, size)],
+        size,
+        area,
+        bias,
+        radius,
+        1.0,
+        dict(opts, authored_lod0_max_tris=50000, authored_lod1_drop=True),
+        base,
     )
     check(
         not chain["lod0Dropped"] and chain["lod1Dropped"] and len(chain["meshes"]) == 1,
@@ -443,7 +454,9 @@ def test_residency_chain_rules():
     )
 
     plain = level_mod.tsstatic("a", "/s.dae", [0, 0, 0], [1, 0, 0, 0, 1, 0, 0, 0, 1])
-    tinted = level_mod.tsstatic("b", "/s.dae", [0, 0, 0], [1, 0, 0, 0, 1, 0, 0, 0, 1], instanced=True)
+    tinted = level_mod.tsstatic(
+        "b", "/s.dae", [0, 0, 0], [1, 0, 0, 0, 1, 0, 0, 0, 1], instanced=True
+    )
     check(plain["useInstanceRenderData"] is False, "a TSStatic with no colour has no instance data")
     check(tinted["useInstanceRenderData"] is True, "...one carrying a colour asks for it")
 
@@ -459,9 +472,9 @@ def test_authored_lod_limits_worked_example():
     """
     print("authored LOD limits: the worked example")
     import numpy
-    from csiibundle import lod, lodchain
-    from cs2beamng.stages import farring
     from cs2beamng.beamng import level as level_mod
+    from cs2beamng.stages import farring
+    from csiibundle import lod, lodchain
 
     size = numpy.array([24.0, 12.0, 18.0])  # a 24 x 12 x 18 m house
     levels = [(size, 6000 * 3), (size, 800 * 3)]  # LOD 1 6,000 triangles, LOD 2 800
@@ -471,9 +484,12 @@ def test_authored_lod_limits_worked_example():
         limits[-1] == int(lod.mesh_min_lod(size, 0.0, 0.0)),
         "the coarsest level's limit is the mesh's own m_MinLod - it draws to the game's cull",
     )
-    check(all(a > b for a, b in zip(limits, limits[1:])), "limits fall with the index")
-    metres = [round(lod.cull_distance(l)) for l in limits]
-    check(metres == [181, 512, 16389], f"...which is LOD 0 to 181 m, LOD 1 to 512 m, LOD 2 to 16 km ({metres})")
+    check(all(a > b for a, b in itertools.pairwise(limits)), "limits fall with the index")
+    metres = [round(lod.cull_distance(limit)) for limit in limits]
+    check(
+        metres == [181, 512, 16389],
+        f"...which is LOD 0 to 181 m, LOD 1 to 512 m, LOD 2 to 16 km ({metres})",
+    )
     check(
         lodchain.authored_lod_limits(size, levels[:1], 0.0) == [142, 103],
         "with one authored level LOD 0 keeps the same limit and the level takes the mesh's",
@@ -484,12 +500,23 @@ def test_authored_lod_limits_worked_example():
     )
 
     # the far ring: two boxes in one 512 m cell, one merged shape, sizes strictly decreasing
-    import os, tempfile
+    import os
+    import tempfile
+
     d = tempfile.mkdtemp(prefix="cs2ring_")
     lv = level_mod.Level(os.path.join(d, "demo"), "demo", "Demo")
     lv.set_stage("instances")
     box = numpy.array(
-        [[0, 0, 0], [10, 0, 0], [10, 10, 0], [0, 10, 0], [0, 0, 20], [10, 0, 20], [10, 10, 20], [0, 10, 20]],
+        [
+            [0, 0, 0],
+            [10, 0, 0],
+            [10, 10, 0],
+            [0, 10, 0],
+            [0, 0, 20],
+            [10, 0, 20],
+            [10, 10, 20],
+            [0, 10, 20],
+        ],
         dtype=float,
     )
     tris = [[0, 1, 2], [0, 2, 3], [4, 5, 6], [4, 6, 7], [0, 1, 5], [0, 5, 4]]
@@ -504,15 +531,24 @@ def test_authored_lod_limits_worked_example():
     ring.add(ring_data, [100, 100, 50], [[1, 0, 0], [0, 1, 0], [0, 0, 1]], [1, 1, 1])
     ring.add(ring_data, [300, 200, 50], [[0, -1, 0], [1, 0, 0], [0, 0, 1]], [2, 2, 2])
     report = ring.write(lv, {})
-    check(len(report["cells"]) == 1 and report["members"] == 2, "two boxes 200 m apart share one 512 m cell")
+    check(
+        len(report["cells"]) == 1 and report["members"] == 2,
+        "two boxes 200 m apart share one 512 m cell",
+    )
     cell = report["cells"][0]
-    check(cell["nearPx"] > cell["ringPx"] > cell["nullPx"] >= 1, "the cell's sizes: near > ring > null")
+    check(
+        cell["nearPx"] > cell["ringPx"] > cell["nullPx"] >= 1,
+        "the cell's sizes: near > ring > null",
+    )
     shape = os.path.join(d, "demo", "art", "shapes", "farring", "farring_0_0.dae")
     text = open(shape, encoding="utf-8").read()
     import re
+
     start = int(re.search(r"_a(\d+)", text).group(1))
     null = int(re.search(r"nulldetail(\d+)", text).group(1))
-    check(start > null >= 1, f"the cell starts at {start} px and stops at {null} px - a band exists")
+    check(
+        start > null >= 1, f"the cell starts at {start} px and stops at {null} px - a band exists"
+    )
     check("COLOR" in text, "the merged mesh carries its vertex colours (lod_vertcol)")
 
 
@@ -522,7 +558,9 @@ def test_torque_detail_selection():
     and a level's own size is where it stops. A null under the coarsest level stops nothing
     nearer than that level's size; a null ABOVE a level's size hides that level."""
     print("Torque's detail selection")
-    import importlib.util, os
+    import importlib.util
+    import os
+
     spec = importlib.util.spec_from_file_location(
         "lod_audit", os.path.join(os.path.dirname(__file__), "beamng", "lod_audit.py")
     )
@@ -532,8 +570,14 @@ def test_torque_detail_selection():
     check(sel([44, 3], 2, None, 100) == "mesh:0", "p=100: the 44 px level")
     check(sel([44, 3], 2, None, 10) == "mesh:1", "p=10: the 3 px level (drawn down to 3 px)")
     check(sel([44, 3], 2, None, 2.5) == "null", "p=2.5: the null - nothing drawn")
-    check(sel([44], 3, None, 10) == "null", "a null ABOVE the coarsest size hides everything under 44 px")
-    check(sel([44, 3], 2, 2.5, 2.7) == "billboard", "a billboard between the coarsest level and the null")
+    check(
+        sel([44], 3, None, 10) == "null",
+        "a null ABOVE the coarsest size hides everything under 44 px",
+    )
+    check(
+        sel([44, 3], 2, 2.5, 2.7) == "billboard",
+        "a billboard between the coarsest level and the null",
+    )
     check(sel([200, 20], 5, None, 4) == "none", "under every size: nothing")
 
 
@@ -569,7 +613,9 @@ def test_budget_detail_at_matches_the_audit():
                 else levels[sizes[int(picked.split(":")[1])]]
             )
             # `detail_at` takes a radius/distance; feed it a pair that projects to exactly p px
-            got = budget.detail_at(levels, p, budget.screen_px(1.0, 1.0), null_px=null_px, billboard_px=bb)
+            got = budget.detail_at(
+                levels, p, budget.screen_px(1.0, 1.0), null_px=null_px, billboard_px=bb
+            )
             disagreements += int(got != expect)
     check(disagreements == 0, f"the two selections agree on 2,100 cases ({disagreements} differ)")
 
@@ -581,7 +627,9 @@ def test_billboard_runs_to_the_null():
     selected the null: SpruceTree01 (mesh 655, bb 164, null 27) drew NOTHING from 99 m to
     601 m while every level and the billboard individually looked legal (audit R8 pins this)."""
     print("the billboard runs to the null")
-    import importlib.util, os
+    import importlib.util
+    import os
+
     spec = importlib.util.spec_from_file_location(
         "lod_audit", os.path.join(os.path.dirname(__file__), "beamng", "lod_audit.py")
     )
@@ -602,7 +650,9 @@ def test_level_dir_guard():
     """The worker refuses to build into the levels ROOT (twice it wrote a level's insides
     beside every other level - 6.5 GB of art/ and forest/ under levels/ itself)."""
     print("the level-dir guard")
-    import os, tempfile
+    import os
+    import tempfile
+
     from cs2beamng.pipeline.worker import guard_level_dir
 
     root = tempfile.mkdtemp(prefix="cs2guard_")
@@ -623,7 +673,9 @@ def test_level_dir_guard():
         "a dir already holding other levels is refused",
     )
     ok_dir = os.path.join(root, "new_level")
-    check(not refuses({"output": root, "level_name": "new_level"}, ok_dir), "a fresh level dir passes")
+    check(
+        not refuses({"output": root, "level_name": "new_level"}, ok_dir), "a fresh level dir passes"
+    )
 
 
 def test_coarsest_level_stops_one_pixel_over_the_null():
@@ -640,7 +692,18 @@ def test_coarsest_level_stops_one_pixel_over_the_null():
         options = {"generate_lods": True, "switch_error_px": 6.0}
         for null_px in (3.0, 9.0, 40.0):
             _levels, stats, meshes = shapelods.lod_levels(
-                tmp, "src", "shape", mesh, null_px, 8.0, [None, None], "prop", {}, {}, "level", options
+                tmp,
+                "src",
+                "shape",
+                mesh,
+                null_px,
+                8.0,
+                [None, None],
+                "prop",
+                {},
+                {},
+                "level",
+                options,
             )
             sizes = stats["detailSizes"]
             check(
@@ -673,7 +736,9 @@ def test_tree_with_one_generated_level_keeps_its_billboard():
     out, bb = shapewrite._vegetation_imposter(job(), levels, None, null, stats)
     check(len(out) == 1 and out[0][0] == 50, f"LOD 0 alone remains ({[p for p, _m in out]})")
     check(bb == null + 1, f"and the card runs from LOD 0's stop to the null ({bb} px)")
-    check(stats.get("imposter", {}).get("handoverPx") == 50, "the hand-over recorded is LOD 0's stop")
+    check(
+        stats.get("imposter", {}).get("handoverPx") == 50, "the hand-over recorded is LOD 0's stop"
+    )
     # a runtime billboard is for vegetation only (C3): a prop or a building never earns one,
     # whatever its reach - the engine bakes one atlas per shape at play time and never frees it
     opts = {"imposters": True, "imposter_min_metres": 0.0, "level_of_detail": 0.7}
@@ -685,7 +750,9 @@ def test_tree_with_one_generated_level_keeps_its_billboard():
     bb, null_out = shapewrite._imposter_thresholds(20.0, 4.0, size, 0.0, opts, None, kind="tree")
     check(bb is not None and null_out < 20.0, f"a tree does ({bb} px, null {null_out:.1f})")
     # no band at all: LOD 0 itself stops at the null - nothing to replace
-    out, bb = shapewrite._vegetation_imposter(job(), [(int(null) + 1, [lod0]), (int(null) + 1, [lod1])], None, null, {})
+    out, bb = shapewrite._vegetation_imposter(
+        job(), [(int(null) + 1, [lod0]), (int(null) + 1, [lod1])], None, null, {}
+    )
     check(bb is None and len(out) == 2, "a tree whose LOD 0 already stops at the null gets no card")
 
 
@@ -701,21 +768,41 @@ def test_thin_oversized_shape_has_no_collider():
     def plane(size):
         h = size / 2.0
         verts = numpy.array(
-            [[-h, -h, 0], [h, -h, 0], [h, h, 0], [-h, h, 0],
-             [-h, -h, 0.05], [h, -h, 0.05], [h, h, 0.05], [-h, h, 0.05]],
+            [
+                [-h, -h, 0],
+                [h, -h, 0],
+                [h, h, 0],
+                [-h, h, 0],
+                [-h, -h, 0.05],
+                [h, -h, 0.05],
+                [h, h, 0.05],
+                [-h, h, 0.05],
+            ],
             dtype=numpy.float32,
         )
         tris = numpy.array([[0, 1, 2], [0, 2, 3], [4, 6, 5], [4, 7, 6]], dtype=numpy.int64)
         return dae.Mesh("plane", verts, tris, [("mat", len(tris))])
 
-    options = {"collide": {"prop": True}, "colmesh_max_tris": 2000, "collision_preset": "simplified"}
+    options = {
+        "collide": {"prop": True},
+        "colmesh_max_tris": 2000,
+        "collision_preset": "simplified",
+    }
     big = plane(138.0)
     meshes, status = shapecollider.collider("field", big, big, "prop", options, is_tree=False)
-    check(status == "oversizedThin" and meshes == (), f"a 138 m plane 5 cm tall: {status!r}, no colmesh")
-    check(status in instanceforest.NO_COLLIDER, "and the instances stage reads that as 'no collision'")
+    check(
+        status == "oversizedThin" and meshes == (),
+        f"a 138 m plane 5 cm tall: {status!r}, no colmesh",
+    )
+    check(
+        status in instanceforest.NO_COLLIDER, "and the instances stage reads that as 'no collision'"
+    )
     small = plane(2.0)
     meshes, status = shapecollider.collider("sign", small, small, "prop", options, is_tree=False)
-    check(status == "box" and len(meshes) == 1, f"a 2 m plane 5 cm tall keeps its padded box: {status!r}")
+    check(
+        status == "box" and len(meshes) == 1,
+        f"a 2 m plane 5 cm tall keeps its padded box: {status!r}",
+    )
     check(
         shapecollider.BOX_COLLIDER_MAX_METRES == 20.0,
         "the guard is the declared 20 m (the constant's first test)",
@@ -735,7 +822,16 @@ def test_far_ring_cell_is_split_at_the_vertex_cap():
     lv = level_mod.Level(os.path.join(d, "demo"), "demo", "Demo")
     lv.set_stage("instances")
     box = numpy.array(
-        [[0, 0, 0], [10, 0, 0], [10, 10, 0], [0, 10, 0], [0, 0, 20], [10, 0, 20], [10, 10, 20], [0, 10, 20]],
+        [
+            [0, 0, 0],
+            [10, 0, 0],
+            [10, 10, 0],
+            [0, 10, 0],
+            [0, 0, 20],
+            [10, 0, 20],
+            [10, 10, 20],
+            [0, 10, 20],
+        ],
         dtype=float,
     )
     ring_data = {
@@ -754,11 +850,17 @@ def test_far_ring_cell_is_split_at_the_vertex_cap():
         report["cellCount"] == 1 and len(report["cells"]) == 1,
         f"one cell, counted under its own key ({report['cellCount']} / {len(report['cells'])})",
     )
-    text = open(os.path.join(d, "demo", "art", "shapes", "farring", "farring_0_0.dae"), encoding="utf-8").read()
+    text = open(
+        os.path.join(d, "demo", "art", "shapes", "farring", "farring_0_0.dae"), encoding="utf-8"
+    ).read()
     import re
+
     # the writer names the first part `<name>_a<px>` and every further one `<name>_p<i>_a<px>`
     parts = re.findall(r'<node id="farring_0_0_p\d+_a\d+"', text)
-    check(len(parts) >= 1, f"the cell's geometry is split into {len(parts) + 1} parts under the vertex cap")
+    check(
+        len(parts) >= 1,
+        f"the cell's geometry is split into {len(parts) + 1} parts under the vertex cap",
+    )
 
 
 def main():

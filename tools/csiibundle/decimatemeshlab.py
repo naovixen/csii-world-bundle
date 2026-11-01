@@ -75,9 +75,9 @@ def to_ratio(verts, tris, uvs, normals, ratio):
                 )
             )
         lines = ["mtllib prim.mtl", "usemtl m"]
-        lines += ["v %.6f %.6f %.6f" % (v[0], v[1], v[2]) for v in verts]
-        lines += ["vt %.6f %.6f" % (t[0], t[1]) for t in uv]
-        lines += ["f %d/%d %d/%d %d/%d" % (a, a, b, b, c, c) for a, b, c in (tris + 1)]
+        lines += [f"v {v[0]:.6f} {v[1]:.6f} {v[2]:.6f}" for v in verts]
+        lines += [f"vt {t[0]:.6f} {t[1]:.6f}" for t in uv]
+        lines += [f"f {a}/{a} {b}/{b} {c}/{c}" for a, b, c in (tris + 1)]
         with open(obj, "w") as handle:
             handle.write("\n".join(lines) + "\n")
         ms = pymeshlab.MeshSet()
@@ -105,9 +105,7 @@ def to_ratio(verts, tris, uvs, normals, ratio):
     # weld wedges back to per-vertex verts/uvs: one output vertex per unique (vertex, uv)
     corner_vertex = out_t.reshape(-1)
     key = numpy.concatenate([out_v[corner_vertex], numpy.round(wedge, 6)], axis=1)
-    _, first, inverse = numpy.unique(
-        key.round(6), axis=0, return_index=True, return_inverse=True
-    )
+    _, first, inverse = numpy.unique(key.round(6), axis=0, return_index=True, return_inverse=True)
     new_tris = inverse.reshape(-1, 3)
     new_verts = out_v[corner_vertex[first]]
     new_uvs = wedge[first]

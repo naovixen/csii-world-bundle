@@ -106,9 +106,7 @@ def report(results, demand, scan_stats, options, errors, started, progress, rewr
             "surface tolerance"
         )
     # ...and the shapes that KEPT full detail because the game's own LOD 1 was too far from it
-    kept_far = [
-        r for r in results.values() if (r.get("lods") or {}).get("lod0DropSkippedDistance")
-    ]
+    kept_far = [r for r in results.values() if (r.get("lods") or {}).get("lod0DropSkippedDistance")]
     if kept_far:
         worst = max(r["lods"]["lod0DropSkippedDistance"] for r in kept_far)
         progress.log(

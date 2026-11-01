@@ -4,12 +4,11 @@
 plain data — no context, no progress, nothing that cannot be pickled.
 """
 
+import json
+import math
 import os
 from dataclasses import dataclass
 from typing import Any
-
-import json
-import math
 
 import numpy
 from csiibundle import glb, lod, png, silhouette
@@ -572,7 +571,7 @@ def _mean_albedo(bundle_dir, derived_dir, canonical):
                     if weight > 0.0
                     else mean
                 )
-            except Exception:  # noqa: BLE001 - an unreadable texture is mid grey
+            except Exception:  # an unreadable texture is mid grey
                 _ALBEDO[key] = mean
         mean = _ALBEDO[key]
     return [float(min(1.0, max(0.0, mean[i] * float(factor[i])))) for i in range(3)]
